@@ -1,0 +1,24 @@
+# {{CONFIG_PATH}}
+
+name: {{TMUX_SESSION_NAME}}
+root: {{WORKTREE_PATH}}
+tmux_options: -CC
+attach: false
+
+on_project_start: |
+  tmux resize-pane -t {{TMUX_SESSION_NAME}}:0.0 -y 15%
+  tmux resize-pane -t {{TMUX_SESSION_NAME}}:0.2 -y 35%
+
+startup_pane: 2
+
+windows:
+  - workspace-{{TMUX_SESSION_NAME}}:
+      layout: even-vertical
+      panes:
+        - |
+          printf '\033]2;workspace-{{TMUX_SESSION_NAME}}\a' &&
+          tmux resize-pane -t {{TMUX_SESSION_NAME}}:0.0 -y 15% &&
+          tmux resize-pane -t {{TMUX_SESSION_NAME}}:0.2 -y 35% &&
+          ascii-banner "{{DISPLAY_NAME}}" --rainbow --random -W --center --minimal
+        - claude --continue || claude
+        - echo "Worktree: {{WORKTREE_BRANCH}} ({{PROJECT_NAME}})"
