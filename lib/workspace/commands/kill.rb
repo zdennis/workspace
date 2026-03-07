@@ -72,10 +72,6 @@ module Workspace
           candidate_window_ids = launcher_uids.filter_map { |uid| live_sessions[uid] }.uniq
           candidate_window_ids.each do |wid|
             sessions_in_window = live_sessions.select { |_, w| w == wid }.keys
-            tracked_in_window = []
-            @state.each do |_, info|
-              tracked_in_window << info if sessions_in_window.include?(info["unique_id"])
-            end
             tracked_project_names = []
             @state.each do |project, info|
               tracked_project_names << project if sessions_in_window.include?(info["unique_id"])
