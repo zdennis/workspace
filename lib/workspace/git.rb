@@ -94,6 +94,10 @@ module Workspace
         return {type: :pr_url, value: input}
       end
 
+      if (match = input.match(%r{https?://github\.com/.+/.+/issues?/(\d+)}))
+        return {type: :issue_url, value: "issue-#{match[1]}"}
+      end
+
       if input.match?(/\A[A-Z]+-\d+\z/)
         return {type: :jira_key, value: input}
       end

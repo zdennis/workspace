@@ -159,6 +159,7 @@ module Workspace
         opts.separator "  PROJ-123                                  JIRA issue key (used as branch name)"
         opts.separator "  https://mycompany.atlassian.net/.../123   JIRA URL (extracts issue key)"
         opts.separator "  https://github.com/.../pull/471           GitHub PR URL (fetches branch name)"
+        opts.separator "  https://github.com/.../issues/123         GitHub issue URL (branch: issue-123)"
         opts.separator "  user/PROJ-123                             Branch name (used as-is)"
         opts.separator ""
         opts.separator "The worktree is created in .worktrees/ under the project root."

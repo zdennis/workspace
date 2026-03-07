@@ -16,6 +16,16 @@ RSpec.describe Workspace::Git do
       expect(result).to eq({type: :pr_url, value: "https://github.com/owner/repo/pull/471"})
     end
 
+    it "parses a GitHub issue URL" do
+      result = git.parse_start_input("https://github.com/owner/repo/issues/42")
+      expect(result).to eq({type: :issue_url, value: "issue-42"})
+    end
+
+    it "parses a GitHub issue URL with singular path" do
+      result = git.parse_start_input("https://github.com/owner/repo/issue/42")
+      expect(result).to eq({type: :issue_url, value: "issue-42"})
+    end
+
     it "parses a JIRA key" do
       result = git.parse_start_input("PROJ-123")
       expect(result).to eq({type: :jira_key, value: "PROJ-123"})
