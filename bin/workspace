@@ -1,3 +1,4 @@
 #!/usr/bin/env ruby
 require_relative "../lib/workspace"
-Workspace.run(ARGV)
+cli = Workspace.build_cli
+cli.run(ARGV)
