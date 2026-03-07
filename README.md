@@ -23,7 +23,7 @@ A macOS CLI for managing tmuxinator-based development workspaces in iTerm2. Laun
 - **[window-tool](https://github.com/zdennis/window-tool)** — fast window management via Accessibility API (must be on PATH)
 - **[gh](https://cli.github.com/)** — GitHub CLI (for `workspace start` with PR URLs)
 - **git** — version control
-- **[ascii-banner](https://github.com/zdennis/ascii-banner)** — terminal banner display (optional, used in tmuxinator templates)
+- **[ascii-banner](https://github.com/zdennis/homebrew-bin/blob/main/docs/README.ascii-banner.md)** — terminal banner display (optional, used in tmuxinator templates)
 
 ## Installation
 
@@ -34,10 +34,16 @@ git clone git@github.com:zdennis/workspace.git ~/source/opensource/workspace
 export PATH="$HOME/source/opensource/workspace/bin:$PATH"
 ```
 
-2. Copy the tmuxinator templates to your config directory:
+2. Run the init command to install tmuxinator templates:
 
 ```sh
-cp project-template.yml project-worktree-template.yml ~/.config/tmuxinator/
+workspace init
+```
+
+This creates `~/.config/tmuxinator/` (if needed) and copies the project templates into it. Use `--dry-run` to preview what would happen:
+
+```sh
+workspace init --dry-run
 ```
 
 3. Ensure `window-tool` is on your PATH (see [window-tool](https://github.com/zdennis/window-tool)).
@@ -49,6 +55,26 @@ workspace <subcommand> [options]
 ```
 
 ### Subcommands
+
+#### init
+
+Install tmuxinator templates and create the config directory. Safe to run multiple times — skips files that are already up to date and won't overwrite modified templates unless forced.
+
+```sh
+workspace init            # install templates
+workspace init --dry-run  # preview what would happen
+workspace init --force    # overwrite modified templates
+```
+
+#### doctor
+
+Check that all required dependencies are installed and properly configured.
+
+```sh
+workspace doctor
+```
+
+Exits with a non-zero status if any issues are found, so it can be used in scripts.
 
 #### launch
 
@@ -129,6 +155,14 @@ Show detailed state of tracked launcher sessions.
 
 ```sh
 workspace status
+```
+
+#### whereis
+
+Print the workspace installation directory. Useful for debugging symlinked installs.
+
+```sh
+workspace whereis
 ```
 
 ## State

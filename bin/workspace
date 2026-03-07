@@ -2,11 +2,13 @@
 require "optparse"
 require "open3"
 require "json"
+require "fileutils"
 
+WORKSPACE_DIR = File.expand_path("../..", File.realpath(__FILE__))
 TMUXINATOR_DIR = File.expand_path("~/.config/tmuxinator")
 TMUXINATOR_TEMPLATE = File.join(TMUXINATOR_DIR, "project-template.yml")
 TMUXINATOR_WORKTREE_TEMPLATE = File.join(TMUXINATOR_DIR, "project-worktree-template.yml")
-WINDOW_TOOL = File.expand_path("../window-tool", __FILE__)
+WINDOW_TOOL = "window-tool"
 STATE_FILE = File.expand_path("~/.workspace-state.json")
 
 def main_help
@@ -14,6 +16,8 @@ def main_help
     Usage: workspace <subcommand> [options]
 
     Subcommands:
+      init            Install tmuxinator templates and create config directory
+      doctor          Check that all required dependencies are installed
       launch          Launch tmuxinator projects in iTerm windows
       start           Create a worktree and launch it (from JIRA key, PR URL, or branch)
       add             Add a tmuxinator config for a project directory
@@ -23,6 +27,7 @@ def main_help
       list-projects   List all available tmuxinator projects
       list            List currently active (launched) projects
       status          Show detailed state of tracked launcher sessions
+      whereis         Print the workspace installation directory
       help            Show this help message
 
     Run 'workspace <subcommand> --help' for subcommand-specific help.
@@ -1055,6 +1060,219 @@ def start_worktree(args)
   launch([config_name])
 end
 
+def whereis(args)
+  parser = OptionParser.new do |opts|
+    opts.banner = "Usage: workspace whereis"
+    opts.separator ""
+    opts.separator "Print the workspace installation directory."
+  end
+  parser.parse!(args)
+
+  puts WORKSPACE_DIR
+end
+
+def check_command(name, version_flag: "--version", version_pattern: /(\d+)/, min_major: nil, install_hint: nil)
+  path = `which #{name} 2>/dev/null`.strip
+  if path.empty?
+    return {found: false, install_hint: install_hint}
+  end
+
+  version_str = nil
+  major = nil
+  if version_flag
+    output = `#{name} #{version_flag} 2>/dev/null`.strip
+    match = output.match(version_pattern)
+    if match
+      major = match[1].to_i
+      version_str = "#{major}+"
+    end
+  end
+
+  if min_major && major && major < min_major
+    return {found: true, version: version_str, outdated: true, min_version: "#{min_major}+", install_hint: install_hint}
+  end
+
+  {found: true, version: version_str}
+end
+
+def check_app(name, bundle_id:, install_hint:)
+  result = `mdfind "kMDItemCFBundleIdentifier == '#{bundle_id}'" 2>/dev/null`.strip
+  if result.empty?
+    {found: false, install_hint: install_hint}
+  else
+    {found: true}
+  end
+end
+
+def doctor(args)
+  parser = OptionParser.new do |opts|
+    opts.banner = "Usage: workspace doctor"
+    opts.separator ""
+    opts.separator "Check that all required dependencies are installed and configured."
+  end
+  parser.parse!(args)
+
+  puts "workspace doctor"
+  puts ""
+
+  issues = 0
+
+  checks = [
+    {
+      name: "ruby",
+      check: -> { check_command("ruby", version_pattern: /(\d+)/, min_major: 3, install_hint: "Install via rbenv, asdf, or https://www.ruby-lang.org/en/downloads/") }
+    },
+    {
+      name: "tmux",
+      check: -> { check_command("tmux", version_flag: "-V", version_pattern: /(\d+)/, min_major: 3, install_hint: "brew install tmux") }
+    },
+    {
+      name: "tmuxinator",
+      check: -> { check_command("tmuxinator", version_flag: "version", version_pattern: /(\d+)/, install_hint: "brew install tmuxinator") }
+    },
+    {
+      name: "iTerm2",
+      check: -> { check_app("iTerm2", bundle_id: "com.googlecode.iterm2", install_hint: "https://iterm2.com/") }
+    },
+    {
+      name: "window-tool",
+      check: -> { check_command("window-tool", version_flag: nil, install_hint: "https://github.com/zdennis/window-tool") }
+    },
+    {
+      name: "git",
+      check: -> { check_command("git", version_pattern: /(\d+)/, min_major: 2, install_hint: "brew install git") }
+    },
+    {
+      name: "gh",
+      check: -> { check_command("gh", version_pattern: /(\d+)/, min_major: 2, install_hint: "brew install gh") }
+    },
+    {
+      name: "ascii-banner",
+      check: -> { check_command("ascii-banner", version_flag: nil, install_hint: "https://github.com/zdennis/homebrew-bin/blob/main/docs/README.ascii-banner.md") }
+    }
+  ]
+
+  checks.each do |entry|
+    result = entry[:check].call
+    if result[:found]
+      if result[:outdated]
+        puts "  ✗  #{entry[:name]} (found #{result[:version]}, need #{result[:min_version]})"
+        puts "     ↳ install: #{result[:install_hint]}"
+        issues += 1
+      elsif result[:version]
+        puts "  ✓  #{entry[:name]} (#{result[:version]})"
+      else
+        puts "  ✓  #{entry[:name]}"
+      end
+    else
+      puts "  ✗  #{entry[:name]} (not found)"
+      puts "     ↳ install: #{result[:install_hint]}"
+      issues += 1
+    end
+  end
+
+  # Check templates
+  templates = ["project-template.yml", "project-worktree-template.yml"]
+  all_installed = templates.all? { |t| File.exist?(File.join(TMUXINATOR_DIR, t)) }
+
+  if all_installed
+    puts "  ✓  templates installed"
+  else
+    missing = templates.reject { |t| File.exist?(File.join(TMUXINATOR_DIR, t)) }
+    puts "  ✗  templates (missing: #{missing.join(', ')})"
+    puts "     ↳ fix: run 'workspace init' to install them"
+    issues += 1
+  end
+
+  puts ""
+  if issues > 0
+    puts "#{issues} issue(s) found."
+    exit 1
+  else
+    puts "Everything looks good!"
+  end
+end
+
+def init(args)
+  dry_run = false
+  force = false
+  parser = OptionParser.new do |opts|
+    opts.banner = "Usage: workspace init [options]"
+    opts.separator ""
+    opts.separator "Set up workspace by installing tmuxinator templates and creating"
+    opts.separator "the config directory if it doesn't exist."
+    opts.separator ""
+    opts.separator "Options:"
+    opts.on("--dry-run", "Show what would be done without making changes") do
+      dry_run = true
+    end
+    opts.on("-f", "--force", "Overwrite existing templates even if they differ") do
+      force = true
+    end
+  end
+  parser.parse!(args)
+
+  templates = [
+    "project-template.yml",
+    "project-worktree-template.yml"
+  ]
+
+  puts "workspace init#{dry_run ? ' (dry run)' : ''}"
+  puts ""
+
+  # Step 1: Create tmuxinator config directory
+  if File.directory?(TMUXINATOR_DIR)
+    puts "  exists  #{TMUXINATOR_DIR}"
+  else
+    if dry_run
+      puts "  create  #{TMUXINATOR_DIR}"
+    else
+      FileUtils.mkdir_p(TMUXINATOR_DIR)
+      puts "  create  #{TMUXINATOR_DIR}"
+    end
+  end
+
+  # Step 2: Copy templates
+  templates.each do |template|
+    src = File.join(WORKSPACE_DIR, template)
+    dest = File.join(TMUXINATOR_DIR, template)
+
+    unless File.exist?(src)
+      $stderr.puts "  error   #{template} not found in #{WORKSPACE_DIR}"
+      next
+    end
+
+    if File.exist?(dest)
+      if FileUtils.identical?(src, dest)
+        puts "  skip    #{template} (already up to date)"
+      elsif force
+        if dry_run
+          puts "  update  #{template} -> #{dest}"
+        else
+          FileUtils.cp(src, dest)
+          puts "  update  #{template} -> #{dest}"
+        end
+      else
+        puts "  skip    #{template} (already exists, use --force to overwrite)"
+      end
+    else
+      if dry_run
+        puts "  copy    #{template} -> #{dest}"
+      else
+        FileUtils.cp(src, dest)
+        puts "  copy    #{template} -> #{dest}"
+      end
+    end
+  end
+
+  puts ""
+  if dry_run
+    puts "No changes made (dry run)."
+  else
+    puts "Done! Workspace is ready to use."
+  end
+end
+
 def relaunch(args)
   parser = OptionParser.new do |opts|
     opts.banner = "Usage: workspace relaunch"
@@ -1085,6 +1303,10 @@ end
 subcommand = ARGV.shift
 
 case subcommand
+when "init"
+  init(ARGV)
+when "doctor"
+  doctor(ARGV)
 when "launch"
   launch(ARGV)
 when "start"
@@ -1103,6 +1325,8 @@ when "list"
   list_active(ARGV)
 when "status"
   status(ARGV)
+when "whereis"
+  whereis(ARGV)
 when "help", "--help", "-h", nil
   main_help
 else
