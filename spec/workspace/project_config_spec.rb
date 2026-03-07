@@ -113,8 +113,8 @@ RSpec.describe Workspace::ProjectConfig do
     it "returns sorted project names excluding templates" do
       File.write(File.join(tmpdir, "beta.yml"), "")
       File.write(File.join(tmpdir, "alpha.yml"), "")
-      File.write(File.join(tmpdir, "project-worktree-template.yml"), "")
-      File.write(File.join(tmpdir, "project-template.yml"), "")
+      File.write(File.join(tmpdir, "workspace.project-worktree-template.yml"), "")
+      File.write(File.join(tmpdir, "workspace.project-template.yml"), "")
 
       expect(pc.available_projects).to eq(["alpha", "beta"])
     end

@@ -17,8 +17,8 @@ A macOS CLI (Ruby) for managing tmuxinator-based development workspaces in iTerm
 - `lib/workspace/window_manager.rb` — iTerm2 window operations: find, focus, position, close
 - `lib/workspace/window_layout.rb` — Window positioning math
 - `lib/workspace/commands/` — Complex command objects (launch, kill, focus, start)
-- `project-template.yml` — Tmuxinator template for standard projects
-- `project-worktree-template.yml` — Tmuxinator template for git worktree projects
+- `lib/templates/workspace.project-template.yml` — Tmuxinator template for standard projects
+- `lib/templates/workspace.project-worktree-template.yml` — Tmuxinator template for git worktree projects
 - State tracked in `~/.workspace-state.json`
 - Configs installed to `~/.config/tmuxinator/`
 

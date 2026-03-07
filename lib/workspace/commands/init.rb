@@ -4,8 +4,8 @@ module Workspace
     # the config directory if it doesn't exist.
     class Init
       TEMPLATES = [
-        "project-template.yml",
-        "project-worktree-template.yml"
+        "workspace.project-template.yml",
+        "workspace.project-worktree-template.yml"
       ].freeze
 
       # @param config [Workspace::Config] configuration for path lookups
@@ -52,11 +52,11 @@ module Workspace
 
       def install_templates(dry_run, force)
         TEMPLATES.each do |template|
-          src = File.join(@config.workspace_dir, template)
+          src = File.join(@config.templates_dir, template)
           dest = File.join(@config.tmuxinator_dir, template)
 
           unless File.exist?(src)
-            @error_output.puts "  error   #{template} not found in #{@config.workspace_dir}"
+            @error_output.puts "  error   #{template} not found in #{@config.templates_dir}"
             next
           end
 

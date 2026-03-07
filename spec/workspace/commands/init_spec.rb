@@ -19,9 +19,10 @@ RSpec.describe Workspace::Commands::Init do
   after { FileUtils.remove_entry(tmpdir) }
 
   def create_source_templates
-    FileUtils.mkdir_p(workspace_dir)
+    templates_dir = config.templates_dir
+    FileUtils.mkdir_p(templates_dir)
     Workspace::Commands::Init::TEMPLATES.each do |template|
-      File.write(File.join(workspace_dir, template), "#{template} content")
+      File.write(File.join(templates_dir, template), "#{template} content")
     end
   end
 
@@ -38,7 +39,7 @@ RSpec.describe Workspace::Commands::Init do
           expect(File.read(dest)).to eq("#{template} content")
         end
         expect(output.string).to include("create  #{tmuxinator_dir}")
-        expect(output.string).to include("copy    project-template.yml")
+        expect(output.string).to include("copy    workspace.project-template.yml")
         expect(output.string).to include("Done! Workspace is ready to use.")
       end
     end
@@ -60,12 +61,12 @@ RSpec.describe Workspace::Commands::Init do
         create_source_templates
         FileUtils.mkdir_p(tmuxinator_dir)
         Workspace::Commands::Init::TEMPLATES.each do |template|
-          FileUtils.cp(File.join(workspace_dir, template), File.join(tmuxinator_dir, template))
+          FileUtils.cp(File.join(config.templates_dir, template), File.join(tmuxinator_dir, template))
         end
 
         command.call
 
-        expect(output.string).to include("skip    project-template.yml (already up to date)")
+        expect(output.string).to include("skip    workspace.project-template.yml (already up to date)")
       end
     end
 
@@ -73,23 +74,23 @@ RSpec.describe Workspace::Commands::Init do
       it "skips without --force" do
         create_source_templates
         FileUtils.mkdir_p(tmuxinator_dir)
-        File.write(File.join(tmuxinator_dir, "project-template.yml"), "old content")
+        File.write(File.join(tmuxinator_dir, "workspace.project-template.yml"), "old content")
 
         command.call
 
-        expect(output.string).to include("skip    project-template.yml (already exists, use --force to overwrite)")
-        expect(File.read(File.join(tmuxinator_dir, "project-template.yml"))).to eq("old content")
+        expect(output.string).to include("skip    workspace.project-template.yml (already exists, use --force to overwrite)")
+        expect(File.read(File.join(tmuxinator_dir, "workspace.project-template.yml"))).to eq("old content")
       end
 
       it "overwrites with --force" do
         create_source_templates
         FileUtils.mkdir_p(tmuxinator_dir)
-        File.write(File.join(tmuxinator_dir, "project-template.yml"), "old content")
+        File.write(File.join(tmuxinator_dir, "workspace.project-template.yml"), "old content")
 
         command.call(force: true)
 
-        expect(output.string).to include("update  project-template.yml")
-        expect(File.read(File.join(tmuxinator_dir, "project-template.yml"))).to eq("project-template.yml content")
+        expect(output.string).to include("update  workspace.project-template.yml")
+        expect(File.read(File.join(tmuxinator_dir, "workspace.project-template.yml"))).to eq("workspace.project-template.yml content")
       end
     end
 
@@ -102,31 +103,32 @@ RSpec.describe Workspace::Commands::Init do
         expect(File.directory?(tmuxinator_dir)).to be false
         expect(output.string).to include("workspace init (dry run)")
         expect(output.string).to include("create  #{tmuxinator_dir}")
-        expect(output.string).to include("copy    project-template.yml")
+        expect(output.string).to include("copy    workspace.project-template.yml")
         expect(output.string).to include("No changes made (dry run).")
       end
 
       it "does not overwrite with --force and --dry-run" do
         create_source_templates
         FileUtils.mkdir_p(tmuxinator_dir)
-        File.write(File.join(tmuxinator_dir, "project-template.yml"), "old content")
+        File.write(File.join(tmuxinator_dir, "workspace.project-template.yml"), "old content")
 
         command.call(dry_run: true, force: true)
 
-        expect(File.read(File.join(tmuxinator_dir, "project-template.yml"))).to eq("old content")
-        expect(output.string).to include("update  project-template.yml")
+        expect(File.read(File.join(tmuxinator_dir, "workspace.project-template.yml"))).to eq("old content")
+        expect(output.string).to include("update  workspace.project-template.yml")
       end
     end
 
     context "when source template is missing" do
       it "reports error and continues" do
-        FileUtils.mkdir_p(workspace_dir)
-        File.write(File.join(workspace_dir, "project-worktree-template.yml"), "content")
+        templates_dir = config.templates_dir
+        FileUtils.mkdir_p(templates_dir)
+        File.write(File.join(templates_dir, "workspace.project-worktree-template.yml"), "content")
 
         command.call
 
-        expect(error_output.string).to include("error   project-template.yml not found")
-        expect(output.string).to include("copy    project-worktree-template.yml")
+        expect(error_output.string).to include("error   workspace.project-template.yml not found")
+        expect(output.string).to include("copy    workspace.project-worktree-template.yml")
       end
     end
   end

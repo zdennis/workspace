@@ -72,7 +72,7 @@ module Workspace
         end
       end
 
-      templates = ["project-template.yml", "project-worktree-template.yml"]
+      templates = ["workspace.project-template.yml", "workspace.project-worktree-template.yml"]
       all_installed = templates.all? { |t| File.exist?(File.join(@config.tmuxinator_dir, t)) }
 
       if all_installed

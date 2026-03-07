@@ -99,7 +99,7 @@ module Workspace
     def available_projects
       Dir.glob(File.join(@config.tmuxinator_dir, "*.yml"))
         .map { |f| File.basename(f, ".yml") }
-        .reject { |n| n.match?(/^project-.*template$/) }
+        .reject { |n| n.match?(/^(project|workspace\.project)-.*template$/) }
         .sort
     end
   end
