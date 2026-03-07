@@ -125,10 +125,10 @@ Workspace tracks launcher pane UUIDs and iTerm window IDs in `~/.workspace-state
 
 ## Tmuxinator Templates
 
-The repo includes two templates that should be placed in `~/.config/tmuxinator/`:
+The repo includes two templates in `lib/templates/` that are installed to `~/.config/tmuxinator/` by `workspace init`:
 
-- **`project-template.yml`** — standard project layout with 3 panes (banner, claude, shell)
-- **`project-worktree-template.yml`** — worktree variant, roots into the worktree directory
+- **`workspace.project-template.yml`** — standard project layout with 3 panes (banner, claude, shell)
+- **`workspace.project-worktree-template.yml`** — worktree variant, roots into the worktree directory
 
 Templates use placeholders like `{{PROJECT_NAME}}` and `{{PROJECT_ROOT}}` that are filled in automatically by `workspace add` and `workspace start`.
 
