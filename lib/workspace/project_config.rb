@@ -4,7 +4,7 @@ module Workspace
     # @param config [Workspace::Config] configuration for path lookups
     # @param output [IO] output stream for user-facing messages
     # @param git [Workspace::Git] git operations for sanitize_for_filesystem
-    def initialize(config:, output: $stdout, git: Git.new)
+    def initialize(config:, git:, output: $stdout)
       @config = config
       @output = output
       @git = git
