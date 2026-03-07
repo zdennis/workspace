@@ -11,6 +11,7 @@ require_relative "workspace/iterm"
 require_relative "workspace/window_layout"
 require_relative "workspace/commands/launch"
 require_relative "workspace/commands/kill"
+require_relative "workspace/commands/focus"
 
 # Workspace CLI for managing tmuxinator-based development workspaces in iTerm2.
 #
@@ -237,35 +238,14 @@ module Workspace
       exit 1
     end
 
-    project = args.first
-
-    # Look up the saved iTerm window ID from state
-    state = load_state
-    window_id = state.dig(project, "iterm_window_id")
-
-    unless window_id
-      result = ITERM.find_window_for_project(project)
-      if result
-        window_id = result.to_i
-        state[project] ||= {}
-        state[project]["iterm_window_id"] = window_id
-        save_state(state)
-      end
-    end
-
-    unless window_id
-      warn "Error: No iTerm window found for '#{project}'"
-      warn "Run 'workspace launch #{project}' first, or 'workspace status' to see tracked projects."
-      exit 1
-    end
-
-    puts "Focusing #{project}..."
-    result = ITERM.focus_and_shake(window_id)
-    if result == "not_found"
-      warn "Error: iTerm window #{window_id} no longer exists for '#{project}'"
-      warn "Run 'workspace launch #{project}' to relaunch."
-      exit 1
-    end
+    focus_command = Commands::Focus.new(
+      state: State.new(config: CONFIG),
+      iterm: ITERM
+    )
+    focus_command.call(args.first)
+  rescue Workspace::Error => e
+    warn "Error: #{e.message}"
+    exit 1
   end
 
   def kill_workspace(args)
