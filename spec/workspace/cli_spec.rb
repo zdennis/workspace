@@ -58,7 +58,9 @@ module CLITestHelpers
     def window_exists?(_wid) = false
     def find_window_by_title(_title) = nil
     def find_window_for_project(_project) = nil
-    def focus_and_shake(_wid) = "ok"
+    def focus_by_id(_wid) = true
+    def shake_by_id(_wid) = true
+    def live_window_ids = Set.new
     def set_window_bounds(_wid, _x, _y, _w, _h) = nil
     def close_window(_wid) = nil
     def window_titles = []
@@ -219,6 +221,23 @@ RSpec.describe Workspace::CLI do
       cli, output, _ = build_test_cli
       cli.run(["list"])
       expect(output.string).to include("No active projects.")
+    end
+
+    it "lists projects whose window IDs are live" do
+      state = CLITestHelpers::FakeState.new
+      state["proj-a"] = {"unique_id" => "uid1", "iterm_window_id" => 100}
+      state["proj-b"] = {"unique_id" => "uid2", "iterm_window_id" => 200}
+      state["proj-c"] = {"unique_id" => "uid3", "iterm_window_id" => 300}
+
+      wm = CLITestHelpers::FakeWindowManager.new
+      wm.define_singleton_method(:live_window_ids) { Set.new([100, 300]) }
+
+      cli, output, _ = build_test_cli(state: state, window_manager: wm)
+      cli.run(["list"])
+
+      expect(output.string).to include("proj-a")
+      expect(output.string).not_to include("proj-b")
+      expect(output.string).to include("proj-c")
     end
   end
 
