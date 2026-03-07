@@ -1,8 +1,8 @@
 RSpec.describe Workspace::WindowLayout do
   let(:config) { Workspace::Config.new }
-  let(:iterm) { double("iterm") }
+  let(:window_manager) { double("window_manager") }
   let(:output) { StringIO.new }
-  let(:layout) { described_class.new(iterm: iterm, config: config, output: output) }
+  let(:layout) { described_class.new(window_manager: window_manager, config: config, output: output) }
 
   describe "#calculate_positions" do
     it "returns empty array for 0 windows" do

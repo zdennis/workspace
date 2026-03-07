@@ -13,7 +13,8 @@ A macOS CLI (Ruby) for managing tmuxinator-based development workspaces in iTerm
 - `lib/workspace/doctor.rb` — Dependency checking
 - `lib/workspace/tmux.rb` — Tmux session management
 - `lib/workspace/project_config.rb` — Tmuxinator config generation
-- `lib/workspace/iterm.rb` — iTerm2 AppleScript automation
+- `lib/workspace/iterm.rb` — iTerm2 session/pane lifecycle (AppleScript)
+- `lib/workspace/window_manager.rb` — iTerm2 window operations: find, focus, position, close
 - `lib/workspace/window_layout.rb` — Window positioning math
 - `lib/workspace/commands/` — Complex command objects (launch, kill, focus, start)
 - `project-template.yml` — Tmuxinator template for standard projects
@@ -32,6 +33,40 @@ A macOS CLI (Ruby) for managing tmuxinator-based development workspaces in iTerm
 ## Subcommands
 
 init, doctor, launch, start, add, kill, relaunch, focus, list-projects, list, status, whereis
+
+## Adding a Subcommand
+
+1. Create `lib/workspace/commands/foo.rb` with a `call` method (or keep it inline in CLI for simple commands)
+2. Add `cmd_foo` method in CLI that parses options with OptionParser and delegates
+3. Add case branch in `CLI#run`
+4. Wire dependencies in `Workspace.build_cli` if using a command object
+5. Add `require_relative` in `workspace.rb`
+6. Add help text to `main_help` in CLI
+
+## State File (~/.workspace-state.json)
+
+```json
+{
+  "project-name": {
+    "unique_id": "iTerm session UUID (written by Launch after pane creation)",
+    "iterm_window_id": 123
+  }
+}
+```
+
+- Written by: Launch (after pane creation and window discovery)
+- Consumed by: Launch (reattach), Kill, Focus, List, Status
+- Loaded explicitly via `@state.load`; saved via `@state.save`
+- Silently resets to `{}` on corrupt JSON
+
+## External Dependencies
+
+- **tmux / tmuxinator**: Session management (required)
+- **window-tool**: Screen geometry and window positioning (required) — https://github.com/zdennis/window-tool
+- **gh**: GitHub CLI for PR branch resolution in `start` (optional)
+- **ascii-banner**: Cosmetic banner in launcher pane (optional)
+- **git**: Version control operations (required)
+- **iTerm2**: Terminal emulator, controlled via AppleScript (required)
 
 ## Conventions
 

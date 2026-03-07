@@ -6,15 +6,17 @@ module Workspace
     # and arranges them on screen.
     class Launch
       # @param state [Workspace::State] state persistence
-      # @param iterm [Workspace::ITerm] iTerm automation
+      # @param iterm [Workspace::ITerm] iTerm session/pane automation
+      # @param window_manager [Workspace::WindowManager] iTerm window operations
       # @param tmux [Workspace::Tmux] tmux session operations
       # @param project_config [Workspace::ProjectConfig] project config management
       # @param window_layout [Workspace::WindowLayout] window positioning
       # @param output [IO] output stream for user-facing messages
       # @param error_output [IO] error output stream for warnings
-      def initialize(state:, iterm:, tmux:, project_config:, window_layout:, output: $stdout, error_output: $stderr)
+      def initialize(state:, iterm:, window_manager:, tmux:, project_config:, window_layout:, output: $stdout, error_output: $stderr)
         @state = state
         @iterm = iterm
+        @window_manager = window_manager
         @tmux = tmux
         @project_config = project_config
         @window_layout = window_layout
@@ -46,6 +48,8 @@ module Workspace
 
         session_names = wait_for_tmux_sessions(projects)
 
+        # Brief pause after tmux sessions are found but before searching for
+        # iTerm windows — iTerm needs a moment to create windows for new sessions.
         sleep 1
 
         find_iterm_windows(projects, session_names)
@@ -94,6 +98,9 @@ module Workspace
         end
       end
 
+      # Polls for tmux sessions to appear after pane creation. Tmuxinator
+      # starts sessions asynchronously via iTerm's "write text" command, so
+      # we need to wait for them to register with the tmux server.
       def wait_for_tmux_sessions(projects)
         @output.puts "Waiting for tmux sessions..."
         window_prefix = "workspace"
@@ -125,6 +132,9 @@ module Workspace
         session_names
       end
 
+      # Polls for iTerm windows matching each project's tmux session. Windows
+      # appear after tmux-CC creates them, which takes a variable amount of time.
+      # First checks saved window IDs, then falls back to title-based search.
       def find_iterm_windows(projects, session_names)
         @output.puts "Waiting for project windows to appear..."
         window_prefix = "workspace"
@@ -133,7 +143,7 @@ module Workspace
         projects.each do |project|
           saved_id = @state.dig(project, "iterm_window_id")
           next unless saved_id
-          if @iterm.window_exists?(saved_id)
+          if @window_manager.window_exists?(saved_id)
             @found_windows[project] = saved_id.to_s
             @output.puts "  Found window for #{project} (saved ID)"
           end
@@ -148,7 +158,7 @@ module Workspace
             next if @found_windows.key?(project)
             tmux_name = session_names[project]
             title_to_find = "#{window_prefix}-#{tmux_name}"
-            result = @iterm.find_window_by_title(title_to_find)
+            result = @window_manager.find_window_by_title(title_to_find)
             if result
               @found_windows[project] = result
               @state[project] = (@state[project] || {}).merge("iterm_window_id" => result.to_i)

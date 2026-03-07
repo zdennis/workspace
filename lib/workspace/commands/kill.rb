@@ -5,13 +5,15 @@ module Workspace
     # all tracked projects within them are being killed.
     class Kill
       # @param state [Workspace::State] state persistence
-      # @param iterm [Workspace::ITerm] iTerm automation
+      # @param iterm [Workspace::ITerm] iTerm session/pane automation
+      # @param window_manager [Workspace::WindowManager] iTerm window operations
       # @param tmux [Workspace::Tmux] tmux session operations
       # @param output [IO] output stream for user-facing messages
       # @param error_output [IO] error output stream for warnings
-      def initialize(state:, iterm:, tmux:, output: $stdout, error_output: $stderr)
+      def initialize(state:, iterm:, window_manager:, tmux:, output: $stdout, error_output: $stderr)
         @state = state
         @iterm = iterm
+        @window_manager = window_manager
         @tmux = tmux
         @output = output
         @error_output = error_output
@@ -97,7 +99,7 @@ module Workspace
       def close_launcher_windows(window_ids)
         window_ids.each do |wid|
           @output.puts "Closing launcher window #{wid}"
-          @iterm.close_window(wid)
+          @window_manager.close_window(wid)
         end
       end
 

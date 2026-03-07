@@ -4,11 +4,11 @@ module Workspace
     # Looks up saved window IDs from state, falls back to live search.
     class Focus
       # @param state [Workspace::State] state persistence
-      # @param iterm [Workspace::ITerm] iTerm automation
+      # @param window_manager [Workspace::WindowManager] iTerm window operations
       # @param output [IO] output stream for user-facing messages
-      def initialize(state:, iterm:, output: $stdout)
+      def initialize(state:, window_manager:, output: $stdout)
         @state = state
-        @iterm = iterm
+        @window_manager = window_manager
         @output = output
       end
 
@@ -22,7 +22,7 @@ module Workspace
         window_id = @state.dig(project, "iterm_window_id")
 
         unless window_id
-          result = @iterm.find_window_for_project(project)
+          result = @window_manager.find_window_for_project(project)
           if result
             window_id = result.to_i
             @state[project] = (@state[project] || {}).merge("iterm_window_id" => window_id)
@@ -37,7 +37,7 @@ module Workspace
         end
 
         @output.puts "Focusing #{project}..."
-        result = @iterm.focus_and_shake(window_id)
+        result = @window_manager.focus_and_shake(window_id)
         if result == "not_found"
           raise Workspace::Error,
             "iTerm window #{window_id} no longer exists for '#{project}'\n" \

@@ -1,3 +1,5 @@
+require "open3"
+
 module Workspace
   # Checks that all required dependencies are installed and configured.
   class Doctor
@@ -94,16 +96,16 @@ module Workspace
     private
 
     def check_command(name, version_flag: "--version", version_pattern: /(\d+)/, min_major: nil, install_hint: nil)
-      path = `which #{name} 2>/dev/null`.strip
-      if path.empty?
+      stdout, _, status = Open3.capture3("which", name)
+      if !status.success? || stdout.strip.empty?
         return {found: false, install_hint: install_hint}
       end
 
       version_str = nil
       major = nil
       if version_flag
-        output = `#{name} #{version_flag} 2>/dev/null`.strip
-        match = output.match(version_pattern)
+        stdout, _ = Open3.capture3(name, version_flag)
+        match = stdout.strip.match(version_pattern)
         if match
           major = match[1].to_i
           version_str = "#{major}+"
@@ -118,8 +120,8 @@ module Workspace
     end
 
     def check_app(name, bundle_id:, install_hint:)
-      result = `mdfind "kMDItemCFBundleIdentifier == '#{bundle_id}'" 2>/dev/null`.strip
-      if result.empty?
+      stdout, _, status = Open3.capture3("mdfind", "kMDItemCFBundleIdentifier == '#{bundle_id}'")
+      if !status.success? || stdout.strip.empty?
         {found: false, install_hint: install_hint}
       else
         {found: true}

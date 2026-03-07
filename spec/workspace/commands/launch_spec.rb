@@ -13,6 +13,7 @@ RSpec.describe Workspace::Commands::Launch do
   let(:error_output) { StringIO.new }
 
   let(:iterm) { double("iterm") }
+  let(:window_manager) { double("window_manager") }
   let(:tmux) { double("tmux") }
   let(:project_config) { double("project_config") }
   let(:window_layout) { double("window_layout") }
@@ -21,6 +22,7 @@ RSpec.describe Workspace::Commands::Launch do
     described_class.new(
       state: state,
       iterm: iterm,
+      window_manager: window_manager,
       tmux: tmux,
       project_config: project_config,
       window_layout: window_layout,
@@ -55,8 +57,8 @@ RSpec.describe Workspace::Commands::Launch do
         allow(iterm).to receive(:find_existing_sessions).and_return({"proj1" => "uid-1"})
         allow(iterm).to receive(:relaunch_in_session).with("uid-1", "tmuxinator start proj1 --attach").and_return("ok")
         allow(iterm).to receive(:find_launcher_window_id).and_return(nil)
-        allow(iterm).to receive(:window_exists?).and_return(false)
-        allow(iterm).to receive(:find_window_by_title).and_return("200")
+        allow(window_manager).to receive(:window_exists?).and_return(false)
+        allow(window_manager).to receive(:find_window_by_title).and_return("200")
         allow(window_layout).to receive(:arrange)
       end
 
@@ -81,8 +83,8 @@ RSpec.describe Workspace::Commands::Launch do
         allow(iterm).to receive(:find_existing_sessions).and_return({})
         allow(iterm).to receive(:find_launcher_window_id).and_return(nil)
         allow(iterm).to receive(:create_launcher_panes).and_return({"proj1" => "new-uid"})
-        allow(iterm).to receive(:window_exists?).and_return(false)
-        allow(iterm).to receive(:find_window_by_title).and_return("300")
+        allow(window_manager).to receive(:window_exists?).and_return(false)
+        allow(window_manager).to receive(:find_window_by_title).and_return("300")
         allow(window_layout).to receive(:arrange)
       end
 
@@ -117,8 +119,8 @@ RSpec.describe Workspace::Commands::Launch do
         allow(iterm).to receive(:relaunch_in_session).and_return("not_found")
         allow(iterm).to receive(:find_launcher_window_id).and_return(nil)
         allow(iterm).to receive(:create_launcher_panes).and_return({"proj1" => "new-uid"})
-        allow(iterm).to receive(:window_exists?).and_return(false)
-        allow(iterm).to receive(:find_window_by_title).and_return("400")
+        allow(window_manager).to receive(:window_exists?).and_return(false)
+        allow(window_manager).to receive(:find_window_by_title).and_return("400")
         allow(window_layout).to receive(:arrange)
       end
 

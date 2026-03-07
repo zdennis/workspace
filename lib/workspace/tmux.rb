@@ -1,3 +1,5 @@
+require "open3"
+
 module Workspace
   # Manages tmux session operations for the workspace CLI.
   class Tmux
@@ -8,7 +10,8 @@ module Workspace
 
     # @return [Array<String>] list of active tmux session names
     def sessions
-      `tmux list-sessions -F '\#{session_name}' 2>/dev/null`.strip.lines.map(&:strip)
+      stdout, _, status = Open3.capture3("tmux", "list-sessions", "-F", "\#{session_name}")
+      status.success? ? stdout.strip.lines.map(&:strip) : []
     end
 
     # @return [void]

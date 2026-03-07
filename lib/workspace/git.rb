@@ -12,20 +12,21 @@ module Workspace
 
     # @return [String, nil] the root of the current git repository
     def root
-      result = `git rev-parse --show-toplevel 2>/dev/null`.strip
-      result.empty? ? nil : result
+      stdout, _, status = Open3.capture3("git", "rev-parse", "--show-toplevel")
+      status.success? ? stdout.strip : nil
     end
 
     # @return [String] the default branch name (main or master)
     def default_branch
-      ref = `git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null`.strip
-      return ref.sub("refs/remotes/origin/", "") unless ref.empty?
-      `git rev-parse --verify --quiet refs/heads/main >/dev/null 2>&1 && echo main || echo master`.strip
+      stdout, _, status = Open3.capture3("git", "symbolic-ref", "refs/remotes/origin/HEAD")
+      return stdout.strip.sub("refs/remotes/origin/", "") if status.success? && !stdout.strip.empty?
+      system("git", "show-ref", "--verify", "--quiet", "refs/heads/main") ? "main" : "master"
     end
 
     # @return [String] the current branch name
     def current_branch
-      `git rev-parse --abbrev-ref HEAD 2>/dev/null`.strip
+      stdout, _, status = Open3.capture3("git", "rev-parse", "--abbrev-ref", "HEAD")
+      status.success? ? stdout.strip : ""
     end
 
     # @param name [String] branch name
@@ -48,8 +49,9 @@ module Workspace
 
     # @return [Array<String>] list of remote branch names (without origin/ prefix)
     def fetch_remote_branches
-      `git fetch --prune 2>/dev/null`
-      `git branch -r 2>/dev/null`.lines.map { |l| l.strip.sub("origin/", "") }.reject { |b| b.include?("->") }
+      Open3.capture3("git", "fetch", "--prune")
+      stdout, _ = Open3.capture3("git", "branch", "-r")
+      stdout.lines.map { |l| l.strip.sub("origin/", "") }.reject { |b| b.include?("->") }
     end
 
     # @param pattern [String] search pattern
@@ -70,8 +72,8 @@ module Workspace
     # @param path [String] worktree path
     # @return [Boolean] true if a worktree exists at the given path
     def worktree_exists?(path)
-      worktrees = `git worktree list --porcelain 2>/dev/null`
-      worktrees.include?("worktree #{path}")
+      stdout, _ = Open3.capture3("git", "worktree", "list", "--porcelain")
+      stdout.include?("worktree #{path}")
     end
 
     # @param name [String] input to sanitize
@@ -110,7 +112,8 @@ module Workspace
       repo = match[1]
       pr_number = match[2]
 
-      output = `gh pr view #{pr_number} --repo #{repo} --json headRefName --jq .headRefName 2>/dev/null`.strip
+      stdout, _, status = Open3.capture3("gh", "pr", "view", pr_number, "--repo", repo, "--json", "headRefName", "--jq", ".headRefName")
+      output = status.success? ? stdout.strip : ""
       if output.empty?
         raise Workspace::Error, "Could not fetch PR ##{pr_number} from #{repo}\nMake sure you have access and `gh` is authenticated."
       end

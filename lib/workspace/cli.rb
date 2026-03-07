@@ -16,10 +16,11 @@ module Workspace
     # @param output [IO] output stream for user-facing messages
     # @param error_output [IO] error output stream for warnings and errors
     # @param input [IO] input stream for interactive prompts
-    def initialize(config:, state:, iterm:, tmux:, git:, project_config:, window_layout:, doctor:, output: $stdout, error_output: $stderr, input: $stdin)
+    def initialize(config:, state:, iterm:, window_manager:, tmux:, git:, project_config:, window_layout:, doctor:, output: $stdout, error_output: $stderr, input: $stdin)
       @config = config
       @state = state
       @iterm = iterm
+      @window_manager = window_manager
       @tmux = tmux
       @git = git
       @project_config = project_config
@@ -138,6 +139,7 @@ module Workspace
       Commands::Launch.new(
         state: @state,
         iterm: @iterm,
+        window_manager: @window_manager,
         tmux: @tmux,
         project_config: @project_config,
         window_layout: @window_layout,
@@ -166,6 +168,7 @@ module Workspace
       launch_command = Commands::Launch.new(
         state: @state,
         iterm: @iterm,
+        window_manager: @window_manager,
         tmux: @tmux,
         project_config: @project_config,
         window_layout: @window_layout,
@@ -193,6 +196,7 @@ module Workspace
       Commands::Kill.new(
         state: @state,
         iterm: @iterm,
+        window_manager: @window_manager,
         tmux: @tmux,
         output: @output,
         error_output: @error_output
@@ -211,7 +215,7 @@ module Workspace
 
       Commands::Focus.new(
         state: @state,
-        iterm: @iterm,
+        window_manager: @window_manager,
         output: @output
       ).call(args.first)
     end

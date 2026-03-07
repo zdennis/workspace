@@ -4,11 +4,11 @@ module Workspace
   # Calculates and applies window positions for arranging project windows
   # across the active screen.
   class WindowLayout
-    # @param iterm [Workspace::ITerm] iTerm automation for setting window bounds
+    # @param window_manager [Workspace::WindowManager] window operations for setting bounds
     # @param config [Workspace::Config] configuration for window_tool path
     # @param output [IO] output stream for user-facing messages
-    def initialize(iterm:, config:, output: $stdout)
-      @iterm = iterm
+    def initialize(window_manager:, config:, output: $stdout)
+      @window_manager = window_manager
       @config = config
       @output = output
     end
@@ -31,7 +31,7 @@ module Workspace
 
       project_window_ids.each_with_index do |entry, i|
         pos = positions[i]
-        @iterm.set_window_bounds(entry[:window_id], pos[:x], pos[:y], pos[:width], pos[:height])
+        @window_manager.set_window_bounds(entry[:window_id], pos[:x], pos[:y], pos[:width], pos[:height])
         @output.puts "  Positioned #{entry[:project]} at #{pos[:x]},#{pos[:y]} (#{pos[:width]}x#{pos[:height]})"
       end
     end

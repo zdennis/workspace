@@ -12,12 +12,14 @@ RSpec.describe Workspace::Commands::Kill do
   let(:output) { StringIO.new }
   let(:error_output) { StringIO.new }
   let(:iterm) { double("iterm") }
+  let(:window_manager) { double("window_manager") }
   let(:tmux) { double("tmux") }
 
   subject(:command) do
     described_class.new(
       state: state,
       iterm: iterm,
+      window_manager: window_manager,
       tmux: tmux,
       output: output,
       error_output: error_output
@@ -102,27 +104,27 @@ RSpec.describe Workspace::Commands::Kill do
         live_sessions = {"uid1" => "win-100", "uid2" => "win-100"}
         allow(iterm).to receive(:find_existing_sessions).and_return({"proj1" => "uid1", "proj2" => "uid2"})
         allow(iterm).to receive(:session_map).and_return(live_sessions)
-        allow(iterm).to receive(:close_window)
+        allow(window_manager).to receive(:close_window)
         allow(tmux).to receive(:sessions).and_return(["proj1"])
         allow(tmux).to receive(:kill_session)
 
         command.call(["proj1"])
 
         # Should NOT close the window because proj2 is still in it
-        expect(iterm).not_to have_received(:close_window)
+        expect(window_manager).not_to have_received(:close_window)
       end
 
       it "closes launcher window when all its projects are killed" do
         live_sessions = {"uid1" => "win-100", "uid2" => "win-100"}
         allow(iterm).to receive(:find_existing_sessions).and_return({"proj1" => "uid1", "proj2" => "uid2"})
         allow(iterm).to receive(:session_map).and_return(live_sessions)
-        allow(iterm).to receive(:close_window)
+        allow(window_manager).to receive(:close_window)
         allow(tmux).to receive(:sessions).and_return(["proj1", "proj2"])
         allow(tmux).to receive(:kill_session)
 
         command.call(["proj1", "proj2"])
 
-        expect(iterm).to have_received(:close_window).with("win-100")
+        expect(window_manager).to have_received(:close_window).with("win-100")
       end
     end
   end

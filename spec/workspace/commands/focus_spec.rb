@@ -10,10 +10,10 @@ RSpec.describe Workspace::Commands::Focus do
     s
   end
   let(:output) { StringIO.new }
-  let(:iterm) { double("iterm") }
+  let(:window_manager) { double("window_manager") }
 
   subject(:command) do
-    described_class.new(state: state, iterm: iterm, output: output)
+    described_class.new(state: state, window_manager: window_manager, output: output)
   end
 
   after { FileUtils.remove_entry(tmpdir) }
@@ -23,11 +23,11 @@ RSpec.describe Workspace::Commands::Focus do
       state["myproject"] = {"unique_id" => "uid1", "iterm_window_id" => 42}
       state.save
 
-      allow(iterm).to receive(:focus_and_shake).with(42).and_return("ok")
+      allow(window_manager).to receive(:focus_and_shake).with(42).and_return("ok")
 
       command.call("myproject")
 
-      expect(iterm).to have_received(:focus_and_shake).with(42)
+      expect(window_manager).to have_received(:focus_and_shake).with(42)
       expect(output.string).to include("Focusing myproject")
     end
 
@@ -35,20 +35,20 @@ RSpec.describe Workspace::Commands::Focus do
       state["myproject"] = {"unique_id" => "uid1"}
       state.save
 
-      allow(iterm).to receive(:find_window_for_project).with("myproject").and_return("99")
-      allow(iterm).to receive(:focus_and_shake).with(99).and_return("ok")
+      allow(window_manager).to receive(:find_window_for_project).with("myproject").and_return("99")
+      allow(window_manager).to receive(:focus_and_shake).with(99).and_return("ok")
 
       command.call("myproject")
 
       state.load
       expect(state.dig("myproject", "iterm_window_id")).to eq(99)
-      expect(iterm).to have_received(:focus_and_shake).with(99)
+      expect(window_manager).to have_received(:focus_and_shake).with(99)
     end
 
     it "raises Workspace::Error when no window is found anywhere" do
       state.save
 
-      allow(iterm).to receive(:find_window_for_project).with("myproject").and_return(nil)
+      allow(window_manager).to receive(:find_window_for_project).with("myproject").and_return(nil)
 
       expect { command.call("myproject") }.to raise_error(
         Workspace::Error, /No iTerm window found for 'myproject'/
@@ -59,7 +59,7 @@ RSpec.describe Workspace::Commands::Focus do
       state["myproject"] = {"unique_id" => "uid1", "iterm_window_id" => 42}
       state.save
 
-      allow(iterm).to receive(:focus_and_shake).with(42).and_return("not_found")
+      allow(window_manager).to receive(:focus_and_shake).with(42).and_return("not_found")
 
       expect { command.call("myproject") }.to raise_error(
         Workspace::Error, /no longer exists/

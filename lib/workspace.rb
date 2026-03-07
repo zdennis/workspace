@@ -8,6 +8,7 @@ require_relative "workspace/doctor"
 require_relative "workspace/tmux"
 require_relative "workspace/project_config"
 require_relative "workspace/iterm"
+require_relative "workspace/window_manager"
 require_relative "workspace/window_layout"
 require_relative "workspace/commands/init"
 require_relative "workspace/commands/launch"
@@ -34,16 +35,18 @@ module Workspace
     config = Config.new
     state = State.new(config: config)
     iterm = ITerm.new(config: config, output: output)
+    window_manager = WindowManager.new(config: config)
     tmux = Tmux.new(config: config)
     git = Git.new(output: output, input: input)
     project_config = ProjectConfig.new(config: config, git: git, output: output)
-    window_layout = WindowLayout.new(iterm: iterm, config: config, output: output)
+    window_layout = WindowLayout.new(window_manager: window_manager, config: config, output: output)
     doctor = Doctor.new(config: config, output: output)
 
     CLI.new(
       config: config,
       state: state,
       iterm: iterm,
+      window_manager: window_manager,
       tmux: tmux,
       git: git,
       project_config: project_config,

@@ -52,6 +52,9 @@ module CLITestHelpers
     def find_launcher_window_id(_state, **_opts) = nil
     def create_launcher_panes(_projects, _commands, **_opts) = {}
     def relaunch_in_session(_uid, _cmd) = "ok"
+  end
+
+  class FakeWindowManager
     def window_exists?(_wid) = false
     def find_window_by_title(_title) = nil
     def find_window_for_project(_project) = nil
@@ -118,6 +121,7 @@ RSpec.describe Workspace::CLI do
     config = overrides[:config] || Workspace::Config.new
     state = overrides[:state] || CLITestHelpers::FakeState.new
     iterm = overrides[:iterm] || CLITestHelpers::FakeITerm.new
+    window_manager = overrides[:window_manager] || CLITestHelpers::FakeWindowManager.new
     tmux = overrides[:tmux] || CLITestHelpers::FakeTmux.new
     git = overrides[:git] || Workspace::Git.new(output: output, input: input)
     project_config = overrides[:project_config] || CLITestHelpers::FakeProjectConfig.new
@@ -128,6 +132,7 @@ RSpec.describe Workspace::CLI do
       config: config,
       state: state,
       iterm: iterm,
+      window_manager: window_manager,
       tmux: tmux,
       git: git,
       project_config: project_config,
