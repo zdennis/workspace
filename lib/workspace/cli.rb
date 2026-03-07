@@ -17,7 +17,7 @@ module Workspace
     # @param output [IO] output stream for user-facing messages
     # @param error_output [IO] error output stream for warnings and errors
     # @param input [IO] input stream for interactive prompts
-    def initialize(config:, state:, iterm:, window_manager:, tmux:, git:, project_config:, window_layout:, doctor:, output: $stdout, error_output: $stderr, input: $stdin)
+    def initialize(config:, state:, iterm:, window_manager:, tmux:, git:, project_config:, window_layout:, doctor:, project_settings:, hook_runner:, output: $stdout, error_output: $stderr, input: $stdin)
       @config = config
       @state = state
       @iterm = iterm
@@ -27,6 +27,8 @@ module Workspace
       @project_config = project_config
       @window_layout = window_layout
       @doctor = doctor
+      @project_settings = project_settings
+      @hook_runner = hook_runner
       @output = output
       @error_output = error_output
       @input = input
@@ -169,6 +171,8 @@ module Workspace
         window_layout: @window_layout,
         output: @output
       ).call(projects, reattach: reattach, prompts: prompts)
+
+      projects.each { |p| @hook_runner.run(p, "post_launch") }
     end
 
     def cmd_start(args)
@@ -213,6 +217,8 @@ module Workspace
         input: @input
       )
       start_command.call(args.first, prompt: prompt)
+      # post_start hook — project name not easily available here,
+      # so hooks for start should use post_launch (which fires from Launch)
     end
 
     def cmd_stop(args)
@@ -248,7 +254,8 @@ module Workspace
         output: @output,
         input: @input
       )
-      stop_command.call(args.first, force: force)
+      project = stop_command.call(args.first, force: force)
+      @hook_runner.run(project, "post_stop") if project
     end
 
     def cmd_kill(args)
@@ -260,7 +267,7 @@ module Workspace
       end
       parser.parse!(args)
 
-      Commands::Kill.new(
+      killed = Commands::Kill.new(
         state: @state,
         iterm: @iterm,
         window_manager: @window_manager,
@@ -268,6 +275,8 @@ module Workspace
         output: @output,
         error_output: @error_output
       ).call(args)
+
+      killed.each { |p| @hook_runner.run(p, "post_kill") }
     end
 
     def cmd_focus(args)
@@ -286,11 +295,14 @@ module Workspace
 
       raise UsageError, parser.help if args.empty?
 
+      project = args.first
       Commands::Focus.new(
         state: @state,
         window_manager: @window_manager,
         output: @output
-      ).call(args.first, shake: shake)
+      ).call(project, shake: shake)
+
+      @hook_runner.run(project, "post_focus")
     end
 
     def cmd_tile(args)
@@ -349,6 +361,8 @@ module Workspace
         output: @output,
         error_output: @error_output
       ).call(project, spec)
+
+      @hook_runner.run(project, "post_resize")
     end
 
     def cmd_layout(args)

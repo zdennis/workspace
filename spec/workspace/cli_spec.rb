@@ -119,6 +119,29 @@ module CLITestHelpers
     def run
     end
   end
+
+  class FakeProjectSettings
+    def load(_project_name) = {}
+    def save(_project_name, _data) = nil
+    def load_global = {}
+    def hook_for(_project_name, _event) = nil
+    def layouts_for(_project_name) = {}
+    def project_config_path(name) = "/tmp/workspace/projects/#{name}.yml"
+    def global_config_path = "/tmp/workspace/config.yml"
+  end
+
+  class FakeHookRunner
+    attr_reader :runs
+
+    def initialize
+      @runs = []
+    end
+
+    def run(project, event, env: {})
+      @runs << {project: project, event: event, env: env}
+      true
+    end
+  end
 end
 
 RSpec.describe Workspace::CLI do
@@ -132,6 +155,8 @@ RSpec.describe Workspace::CLI do
     project_config = overrides[:project_config] || CLITestHelpers::FakeProjectConfig.new
     window_layout = overrides[:window_layout] || CLITestHelpers::FakeWindowLayout.new
     doctor = overrides[:doctor] || CLITestHelpers::FakeDoctor.new
+    project_settings = overrides[:project_settings] || CLITestHelpers::FakeProjectSettings.new
+    hook_runner = overrides[:hook_runner] || CLITestHelpers::FakeHookRunner.new
 
     cli = Workspace::CLI.new(
       config: config,
@@ -143,11 +168,13 @@ RSpec.describe Workspace::CLI do
       project_config: project_config,
       window_layout: window_layout,
       doctor: doctor,
+      project_settings: project_settings,
+      hook_runner: hook_runner,
       output: output,
       error_output: error_output,
       input: input
     )
-    [cli, output, error_output]
+    [cli, output, error_output, hook_runner]
   end
 
   describe "#run" do

@@ -34,6 +34,11 @@ module Workspace
       File.join(tmuxinator_dir, "workspace.project-worktree-template.yml")
     end
 
+    # @return [String] path to the workspace config directory
+    def workspace_config_dir
+      File.expand_path("~/.config/workspace")
+    end
+
     # @return [String] the window-tool binary name
     def window_tool
       "window-tool"

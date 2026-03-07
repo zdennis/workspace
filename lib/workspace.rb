@@ -11,6 +11,8 @@ require_relative "workspace/project_config"
 require_relative "workspace/iterm"
 require_relative "workspace/window_manager"
 require_relative "workspace/window_layout"
+require_relative "workspace/project_settings"
+require_relative "workspace/hook_runner"
 require_relative "workspace/commands/init"
 require_relative "workspace/commands/launch"
 require_relative "workspace/commands/kill"
@@ -46,6 +48,8 @@ module Workspace
     project_config = ProjectConfig.new(config: config, git: git, output: output)
     window_layout = WindowLayout.new(window_manager: window_manager, config: config, output: output)
     doctor = Doctor.new(config: config, output: output)
+    project_settings = ProjectSettings.new(config: config)
+    hook_runner = HookRunner.new(project_settings: project_settings, output: output, error_output: error_output)
 
     CLI.new(
       config: config,
@@ -57,6 +61,8 @@ module Workspace
       project_config: project_config,
       window_layout: window_layout,
       doctor: doctor,
+      project_settings: project_settings,
+      hook_runner: hook_runner,
       output: output,
       error_output: error_output,
       input: input

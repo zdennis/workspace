@@ -65,6 +65,7 @@ module Workspace
         @project_config.remove(project)
 
         @output.puts "Stopped #{project}."
+        project
       end
 
       private
