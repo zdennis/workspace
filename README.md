@@ -171,6 +171,45 @@ Print the workspace installation directory. Useful for debugging symlinked insta
 workspace whereis
 ```
 
+## Project Structure
+
+```
+lib/workspace.rb                  # Module root, build_cli factory, error classes
+lib/workspace/
+  cli.rb                          # CLI dispatch and OptionParser definitions
+  config.rb                       # Path constants and configuration
+  state.rb                        # JSON-persisted session state
+  git.rb                          # Git and worktree operations
+  doctor.rb                       # Dependency checking
+  tmux.rb                        # Tmux session management
+  project_config.rb               # Tmuxinator config generation
+  iterm.rb                        # iTerm2 AppleScript automation
+  window_layout.rb                # Window positioning math and arrangement
+  commands/
+    launch.rb                     # Launch orchestration
+    kill.rb                       # Session teardown
+    focus.rb                      # Window focusing
+    start.rb                      # Worktree creation flow
+```
+
+No runtime dependencies beyond Ruby stdlib. The CLI receives all collaborators via constructor injection.
+
+## Development
+
+```sh
+git clone git@github.com:zdennis/workspace.git
+cd workspace
+bundle install
+bundle exec rake          # runs StandardRB + RSpec
+```
+
+Generate YARD docs:
+
+```sh
+bundle exec yard
+open doc/index.html
+```
+
 ## State
 
 Workspace tracks launcher pane UUIDs and iTerm window IDs in `~/.workspace-state.json`. This file is managed automatically.
