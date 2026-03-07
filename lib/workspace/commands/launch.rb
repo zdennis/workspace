@@ -62,7 +62,7 @@ module Workspace
       def validate_configs(projects)
         missing = projects.reject { |p| @project_config.exists?(p) }
         return if missing.empty?
-        messages = missing.map { |name| "  - #{name}" }
+        messages = missing.map { |name| "  - #{name} (expected #{@project_config.config_path_for(name)})" }
         raise Workspace::Error, "No tmuxinator config found for:\n#{messages.join("\n")}"
       end
 

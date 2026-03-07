@@ -32,9 +32,10 @@ RSpec.describe Workspace::Commands::Launch do
   describe "#call" do
     it "raises Workspace::Error when a config is missing" do
       allow(project_config).to receive(:exists?).with("missing-project").and_return(false)
+      allow(project_config).to receive(:config_path_for).with("missing-project").and_return("/path/to/missing-project.yml")
 
       expect { command.call(["missing-project"]) }.to raise_error(
-        Workspace::Error, /No tmuxinator config found for/
+        Workspace::Error, /No tmuxinator config found for.*expected.*missing-project\.yml/m
       )
     end
 

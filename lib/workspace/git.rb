@@ -176,6 +176,7 @@ module Workspace
         cmd << base if base
       end
 
+      @output.puts "Running: #{cmd.join(" ")}"
       _, stderr, status = Open3.capture3(*cmd)
       unless status.success?
         raise Workspace::Error, "Error creating worktree: #{stderr}"

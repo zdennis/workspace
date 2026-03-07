@@ -84,9 +84,15 @@ module Workspace
     end
 
     # @param name [String] project name
+    # @return [String] path to the tmuxinator config file for the given project
+    def config_path_for(name)
+      @config.config_path_for(name)
+    end
+
+    # @param name [String] project name
     # @return [Boolean] whether a config exists for this project
     def exists?(name)
-      File.exist?(@config.config_path_for(name))
+      File.exist?(config_path_for(name))
     end
 
     # @return [Array<String>] sorted list of available project names

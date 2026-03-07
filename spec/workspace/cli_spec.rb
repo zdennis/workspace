@@ -89,6 +89,10 @@ module CLITestHelpers
       "test-config"
     end
 
+    def config_path_for(name)
+      "~/.config/tmuxinator/#{name}.yml"
+    end
+
     def exists?(_name)
       true
     end
