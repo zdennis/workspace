@@ -5,6 +5,7 @@ require "fileutils"
 require_relative "workspace/config"
 require_relative "workspace/state"
 require_relative "workspace/git"
+require_relative "workspace/doctor"
 
 # Workspace CLI for managing tmuxinator-based development workspaces in iTerm2.
 #
@@ -1028,39 +1029,6 @@ module Workspace
     puts WORKSPACE_DIR
   end
 
-  def check_command(name, version_flag: "--version", version_pattern: /(\d+)/, min_major: nil, install_hint: nil)
-    path = `which #{name} 2>/dev/null`.strip
-    if path.empty?
-      return {found: false, install_hint: install_hint}
-    end
-
-    version_str = nil
-    major = nil
-    if version_flag
-      output = `#{name} #{version_flag} 2>/dev/null`.strip
-      match = output.match(version_pattern)
-      if match
-        major = match[1].to_i
-        version_str = "#{major}+"
-      end
-    end
-
-    if min_major && major && major < min_major
-      return {found: true, version: version_str, outdated: true, min_version: "#{min_major}+", install_hint: install_hint}
-    end
-
-    {found: true, version: version_str}
-  end
-
-  def check_app(name, bundle_id:, install_hint:)
-    result = `mdfind "kMDItemCFBundleIdentifier == '#{bundle_id}'" 2>/dev/null`.strip
-    if result.empty?
-      {found: false, install_hint: install_hint}
-    else
-      {found: true}
-    end
-  end
-
   def doctor(args)
     parser = OptionParser.new do |opts|
       opts.banner = "Usage: workspace doctor"
@@ -1069,85 +1037,9 @@ module Workspace
     end
     parser.parse!(args)
 
-    puts "workspace doctor"
-    puts ""
-
-    issues = 0
-
-    checks = [
-      {
-        name: "ruby",
-        check: -> { check_command("ruby", version_pattern: /(\d+)/, min_major: 3, install_hint: "Install via rbenv, asdf, or https://www.ruby-lang.org/en/downloads/") }
-      },
-      {
-        name: "tmux",
-        check: -> { check_command("tmux", version_flag: "-V", version_pattern: /(\d+)/, min_major: 3, install_hint: "brew install tmux") }
-      },
-      {
-        name: "tmuxinator",
-        check: -> { check_command("tmuxinator", version_flag: "version", version_pattern: /(\d+)/, install_hint: "brew install tmuxinator") }
-      },
-      {
-        name: "iTerm2",
-        check: -> { check_app("iTerm2", bundle_id: "com.googlecode.iterm2", install_hint: "https://iterm2.com/") }
-      },
-      {
-        name: "window-tool",
-        check: -> { check_command("window-tool", version_flag: nil, install_hint: "https://github.com/zdennis/window-tool") }
-      },
-      {
-        name: "git",
-        check: -> { check_command("git", version_pattern: /(\d+)/, min_major: 2, install_hint: "brew install git") }
-      },
-      {
-        name: "gh",
-        check: -> { check_command("gh", version_pattern: /(\d+)/, min_major: 2, install_hint: "brew install gh") }
-      },
-      {
-        name: "ascii-banner",
-        check: -> { check_command("ascii-banner", version_flag: nil, install_hint: "https://github.com/zdennis/homebrew-bin/blob/main/docs/README.ascii-banner.md") }
-      }
-    ]
-
-    checks.each do |entry|
-      result = entry[:check].call
-      if result[:found]
-        if result[:outdated]
-          puts "  ✗  #{entry[:name]} (found #{result[:version]}, need #{result[:min_version]})"
-          puts "     ↳ install: #{result[:install_hint]}"
-          issues += 1
-        elsif result[:version]
-          puts "  ✓  #{entry[:name]} (#{result[:version]})"
-        else
-          puts "  ✓  #{entry[:name]}"
-        end
-      else
-        puts "  ✗  #{entry[:name]} (not found)"
-        puts "     ↳ install: #{result[:install_hint]}"
-        issues += 1
-      end
-    end
-
-    # Check templates
-    templates = ["project-template.yml", "project-worktree-template.yml"]
-    all_installed = templates.all? { |t| File.exist?(File.join(TMUXINATOR_DIR, t)) }
-
-    if all_installed
-      puts "  ✓  templates installed"
-    else
-      missing = templates.reject { |t| File.exist?(File.join(TMUXINATOR_DIR, t)) }
-      puts "  ✗  templates (missing: #{missing.join(", ")})"
-      puts "     ↳ fix: run 'workspace init' to install them"
-      issues += 1
-    end
-
-    puts ""
-    if issues > 0
-      puts "#{issues} issue(s) found."
-      exit 1
-    else
-      puts "Everything looks good!"
-    end
+    Doctor.new(config: CONFIG).run
+  rescue Workspace::Error
+    exit 1
   end
 
   def init(args)
