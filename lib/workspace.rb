@@ -18,6 +18,7 @@ require_relative "workspace/commands/focus"
 require_relative "workspace/commands/start"
 require_relative "workspace/commands/stop"
 require_relative "workspace/commands/tile"
+require_relative "workspace/commands/resize"
 require_relative "workspace/cli"
 
 # Workspace CLI for managing tmuxinator-based development workspaces in iTerm2.

@@ -61,6 +61,8 @@ module Workspace
         cmd_focus(args)
       when "tile"
         cmd_tile(args)
+      when "resize"
+        cmd_resize(args)
       when "list-projects"
         cmd_list_projects(args)
       when "list"
@@ -106,6 +108,7 @@ module Workspace
           relaunch        Kill and relaunch all active workspace projects
           focus           Bring a project's iTerm window to the front
           tile            Tile all windows for a project across the screen
+          resize          Resize tmux panes for a running project
           list-projects   List all available tmuxinator projects
           list            List currently active (launched) projects
           status          Show detailed state of tracked launcher sessions
@@ -307,6 +310,36 @@ module Workspace
         window_layout: @window_layout,
         output: @output
       ).call(args.first)
+    end
+
+    def cmd_resize(args)
+      parser = OptionParser.new do |opts|
+        opts.banner = "Usage: workspace resize <project> <pane-spec>"
+        opts.separator ""
+        opts.separator "Resize tmux panes for a running workspace project."
+        opts.separator ""
+        opts.separator "Pane spec is a comma-separated list of sizes, one per pane:"
+        opts.separator "  Rows:       10 or 10h     (absolute row count)"
+        opts.separator "  Percentage: 50%           (percentage of window height)"
+        opts.separator "  Skip:       (empty)       (leave pane as-is)"
+        opts.separator ""
+        opts.separator "Examples:"
+        opts.separator "  workspace resize myproject 15%,,35%      # pane 0=15%, skip 1, pane 2=35%"
+        opts.separator "  workspace resize myproject 10h,80%,20%   # pane 0=10 rows, 1=80%, 2=20%"
+        opts.separator "  workspace resize myproject 33%,33%,33%   # equal thirds"
+      end
+      parser.parse!(args)
+
+      raise UsageError, parser.help if args.size < 2
+
+      project = args[0]
+      spec = args[1]
+
+      Commands::Resize.new(
+        tmux: @tmux,
+        output: @output,
+        error_output: @error_output
+      ).call(project, spec)
     end
 
     def cmd_init(args)

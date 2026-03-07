@@ -71,6 +71,7 @@ module CLITestHelpers
     def start_server = nil
     def kill_session(_name) = nil
     def rename_window(_session, _index, _name) = nil
+    def resize_pane(_session, _pane, _size) = true
 
     def command_for(_project, **_opts)
       "tmuxinator start test --attach"
@@ -260,6 +261,24 @@ RSpec.describe Workspace::CLI do
         expect(e.status).to eq(1)
       }
       expect(error_output.string).to include("No project specified")
+    end
+  end
+
+  describe "#run with resize" do
+    it "exits 1 when missing arguments" do
+      cli, _, error_output = build_test_cli
+      expect { cli.run(["resize"]) }.to raise_error(SystemExit) { |e|
+        expect(e.status).to eq(1)
+      }
+      expect(error_output.string).to include("Usage: workspace resize")
+    end
+
+    it "exits 1 when missing pane spec" do
+      cli, _, error_output = build_test_cli
+      expect { cli.run(["resize", "myproject"]) }.to raise_error(SystemExit) { |e|
+        expect(e.status).to eq(1)
+      }
+      expect(error_output.string).to include("Usage: workspace resize")
     end
   end
 

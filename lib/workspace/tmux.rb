@@ -45,6 +45,15 @@ module Workspace
       true
     end
 
+    # @param session_name [String] tmux session name
+    # @param pane [String] pane target (e.g. "0.1")
+    # @param size [String] size value (e.g. "10" for rows, "50%" for percentage)
+    # @return [Boolean] true if resize succeeded
+    def resize_pane(session_name, pane, size)
+      target = "#{session_name}:#{pane}"
+      system("tmux", "resize-pane", "-t", target, "-y", size)
+    end
+
     # @param project [String] project/config name
     # @param reattach [Boolean] whether to reattach to existing session
     # @return [String] the shell command to start/attach the project

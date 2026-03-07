@@ -81,10 +81,31 @@ RSpec.describe Workspace::Tmux do
       expect(tmux).not_to have_received(:system).with("tmux", "send-keys", "-t", "my-session:0.1", "Enter")
     end
 
-    it "returns false when send-keys fails" do
+    it "returns false when send-keys literal fails" do
       allow(tmux).to receive(:system).and_return(false)
 
       result = tmux.send_keys("bad-session", "0.1", "text")
+
+      expect(result).to be false
+    end
+  end
+
+  describe "#resize_pane" do
+    let(:tmux) { described_class.new(config: config) }
+
+    it "calls tmux resize-pane with the target and size" do
+      allow(tmux).to receive(:system).and_return(true)
+
+      result = tmux.resize_pane("my-session", "0.1", "50%")
+
+      expect(result).to be true
+      expect(tmux).to have_received(:system).with("tmux", "resize-pane", "-t", "my-session:0.1", "-y", "50%")
+    end
+
+    it "returns false when resize fails" do
+      allow(tmux).to receive(:system).and_return(false)
+
+      result = tmux.resize_pane("bad-session", "0.0", "10")
 
       expect(result).to be false
     end
