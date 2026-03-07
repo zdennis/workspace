@@ -44,6 +44,7 @@ RSpec.describe Workspace::Commands::Kill do
 
       it "kills tmux sessions for specified projects" do
         allow(iterm).to receive(:find_existing_sessions).and_return({})
+        allow(tmux).to receive(:session_name_for).with("proj1").and_return("proj1")
         allow(tmux).to receive(:sessions).and_return(["proj1"])
         allow(tmux).to receive(:kill_session)
 
@@ -53,8 +54,20 @@ RSpec.describe Workspace::Commands::Kill do
         expect(result).to eq(["proj1"])
       end
 
+      it "resolves tmux session name before killing" do
+        allow(iterm).to receive(:find_existing_sessions).and_return({})
+        allow(tmux).to receive(:session_name_for).with("proj1").and_return("custom-session")
+        allow(tmux).to receive(:sessions).and_return(["custom-session"])
+        allow(tmux).to receive(:kill_session)
+
+        command.call(["proj1"])
+
+        expect(tmux).to have_received(:kill_session).with("custom-session")
+      end
+
       it "returns killed project names" do
         allow(iterm).to receive(:find_existing_sessions).and_return({})
+        allow(tmux).to receive(:session_name_for).and_return("proj1", "proj2")
         allow(tmux).to receive(:sessions).and_return(["proj1", "proj2"])
         allow(tmux).to receive(:kill_session)
 
@@ -64,6 +77,7 @@ RSpec.describe Workspace::Commands::Kill do
 
       it "kills all projects when none specified" do
         allow(iterm).to receive(:find_existing_sessions).and_return({})
+        allow(tmux).to receive(:session_name_for).and_return("proj1", "proj2")
         allow(tmux).to receive(:sessions).and_return(["proj1", "proj2"])
         allow(tmux).to receive(:kill_session)
 
@@ -73,6 +87,7 @@ RSpec.describe Workspace::Commands::Kill do
 
       it "removes iterm_window_id but keeps unique_id in state" do
         allow(iterm).to receive(:find_existing_sessions).and_return({})
+        allow(tmux).to receive(:session_name_for).with("proj1").and_return("proj1")
         allow(tmux).to receive(:sessions).and_return(["proj1"])
         allow(tmux).to receive(:kill_session)
 
@@ -105,6 +120,7 @@ RSpec.describe Workspace::Commands::Kill do
         allow(iterm).to receive(:find_existing_sessions).and_return({"proj1" => "uid1", "proj2" => "uid2"})
         allow(iterm).to receive(:session_map).and_return(live_sessions)
         allow(window_manager).to receive(:close_window)
+        allow(tmux).to receive(:session_name_for).with("proj1").and_return("proj1")
         allow(tmux).to receive(:sessions).and_return(["proj1"])
         allow(tmux).to receive(:kill_session)
 
@@ -119,6 +135,7 @@ RSpec.describe Workspace::Commands::Kill do
         allow(iterm).to receive(:find_existing_sessions).and_return({"proj1" => "uid1", "proj2" => "uid2"})
         allow(iterm).to receive(:session_map).and_return(live_sessions)
         allow(window_manager).to receive(:close_window)
+        allow(tmux).to receive(:session_name_for).and_return("proj1", "proj2")
         allow(tmux).to receive(:sessions).and_return(["proj1", "proj2"])
         allow(tmux).to receive(:kill_session)
 
