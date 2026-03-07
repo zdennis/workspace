@@ -1,5 +1,4 @@
 require "optparse"
-require "open3"
 require "json"
 require "fileutils"
 require_relative "workspace/config"
@@ -9,6 +8,7 @@ require_relative "workspace/doctor"
 require_relative "workspace/tmux"
 require_relative "workspace/project_config"
 require_relative "workspace/iterm"
+require_relative "workspace/window_layout"
 
 # Workspace CLI for managing tmuxinator-based development workspaces in iTerm2.
 #
@@ -27,6 +27,7 @@ module Workspace
   TMUX = Tmux.new(config: CONFIG)
   PROJECT_CONFIG = ProjectConfig.new(config: CONFIG, git: GIT)
   ITERM = ITerm.new(config: CONFIG)
+  WINDOW_LAYOUT = WindowLayout.new(iterm: ITERM, config: CONFIG)
 
   WORKSPACE_DIR = CONFIG.workspace_dir
   TMUXINATOR_DIR = CONFIG.tmuxinator_dir
@@ -318,33 +319,12 @@ module Workspace
     save_state(state)
 
     # Step 8: Stagger all found windows left-to-right on the active screen.
-    # This runs after all windows have appeared so the final positions aren't
-    # overwritten by tmuxinator's own window-tool positioning.
     puts "Arranging windows..."
-    screen_info, _ = Open3.capture2(WINDOW_TOOL, "active-screen")
-    screen_x, screen_y, screen_w, screen_h = screen_info.strip.split("\t").map(&:to_i)
-
-    window_width = (screen_w * 0.22).to_i
-    window_height = (screen_h * 0.9).to_i
-    y_pos = screen_y + ((screen_h - window_height) / 2).to_i
-
-    total_width_needed = window_width * projects.size
-    spacing = if total_width_needed > screen_w
-      ((screen_w - window_width).to_f / [projects.size - 1, 1].max).to_i
-    else
-      window_width
-    end
-
-    start_x = screen_x + ((screen_w - (spacing * (projects.size - 1) + window_width)) / 2).to_i
-
-    projects.each_with_index do |project, i|
+    project_window_ids = projects.filter_map do |project|
       window_id = found[project]
-      next unless window_id
-
-      x_pos = start_x + (spacing * i)
-      ITERM.set_window_bounds(window_id, x_pos, y_pos, window_width, window_height)
-      puts "  Positioned #{project} at #{x_pos},#{y_pos} (#{window_width}x#{window_height})"
+      {project: project, window_id: window_id} if window_id
     end
+    WINDOW_LAYOUT.arrange(project_window_ids)
 
     puts "Done! Launched #{projects.size} project(s)."
   end
