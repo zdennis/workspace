@@ -7,6 +7,7 @@ require_relative "workspace/state"
 require_relative "workspace/git"
 require_relative "workspace/doctor"
 require_relative "workspace/tmux"
+require_relative "workspace/project_config"
 
 # Workspace CLI for managing tmuxinator-based development workspaces in iTerm2.
 #
@@ -23,6 +24,7 @@ module Workspace
   CONFIG = Config.new
   GIT = Git.new
   TMUX = Tmux.new(config: CONFIG)
+  PROJECT_CONFIG = ProjectConfig.new(config: CONFIG, git: GIT)
 
   WORKSPACE_DIR = CONFIG.workspace_dir
   TMUXINATOR_DIR = CONFIG.tmuxinator_dir
@@ -97,41 +99,12 @@ module Workspace
     HELP
   end
 
-  # Resolve a project argument: if it looks like a path (contains / or is .),
-  # expand it and derive the project name from the directory name.
-  # Returns [project_name, project_root] or [arg, nil] if it's just a name.
   def resolve_project_arg(arg)
-    if arg == "." || arg.include?("/") || File.directory?(arg)
-      root = File.expand_path(arg)
-      name = File.basename(root)
-      [name, root]
-    else
-      [arg, nil]
-    end
+    PROJECT_CONFIG.resolve_project_arg(arg)
   end
 
-  # Create a tmuxinator config from the template. Returns the project name.
   def create_project_config(name, root)
-    config_path = File.join(TMUXINATOR_DIR, "#{name}.yml")
-    if File.exist?(config_path)
-      puts "Config already exists: #{config_path}"
-      return name
-    end
-
-    unless File.exist?(TMUXINATOR_TEMPLATE)
-      warn "Error: Template not found: #{TMUXINATOR_TEMPLATE}"
-      exit 1
-    end
-
-    template = File.read(TMUXINATOR_TEMPLATE)
-    content = template
-      .gsub("{{PROJECT_NAME}}", name)
-      .gsub("{{PROJECT_ROOT}}", root)
-      .gsub("{{CONFIG_PATH}}", config_path)
-
-    File.write(config_path, content)
-    puts "Created config: #{config_path}"
-    name
+    PROJECT_CONFIG.create(name, root)
   end
 
   def tmux_session_name_for(config_name)
@@ -349,7 +322,7 @@ module Workspace
       end
     end
 
-    missing = projects.reject { |p| File.exist?(File.join(TMUXINATOR_DIR, "#{p}.yml")) }
+    missing = projects.reject { |p| PROJECT_CONFIG.exists?(p) }
     unless missing.empty?
       warn "Error: No tmuxinator config found for:"
       missing.each { |name| warn "  - #{name} (expected #{TMUXINATOR_DIR}/#{name}.yml)" }
@@ -743,11 +716,7 @@ module Workspace
     end
     parser.parse!(args)
 
-    Dir.glob(File.join(TMUXINATOR_DIR, "*.yml"))
-      .map { |f| File.basename(f, ".yml") }
-      .reject { |n| n.match?(/^project-.*template$/) }
-      .sort
-      .each { |name| puts name }
+    PROJECT_CONFIG.available_projects.each { |name| puts name }
   end
 
   def list_active(args)
@@ -859,34 +828,7 @@ module Workspace
   end
 
   def create_worktree_config(project_name, worktree_name, worktree_path, branch_name)
-    # tmux session names can't have dots, so sanitize
-    tmux_session_name = "#{project_name}.wt-#{sanitize_for_filesystem(worktree_name)}"
-      .tr(".", "-")
-    config_name = "#{project_name}.worktree-#{sanitize_for_filesystem(worktree_name)}"
-    config_path = File.join(TMUXINATOR_DIR, "#{config_name}.yml")
-
-    if File.exist?(config_path)
-      puts "Config already exists: #{config_path}"
-      return config_name
-    end
-
-    unless File.exist?(TMUXINATOR_WORKTREE_TEMPLATE)
-      warn "Error: Worktree template not found: #{TMUXINATOR_WORKTREE_TEMPLATE}"
-      exit 1
-    end
-
-    template = File.read(TMUXINATOR_WORKTREE_TEMPLATE)
-    content = template
-      .gsub("{{TMUX_SESSION_NAME}}", tmux_session_name)
-      .gsub("{{WORKTREE_PATH}}", worktree_path)
-      .gsub("{{PROJECT_NAME}}", project_name)
-      .gsub("{{WORKTREE_BRANCH}}", branch_name)
-      .gsub("{{DISPLAY_NAME}}", "#{project_name}/#{worktree_name}")
-      .gsub("{{CONFIG_PATH}}", config_path)
-
-    File.write(config_path, content)
-    puts "Created config: #{config_path}"
-    config_name
+    PROJECT_CONFIG.create_worktree(project_name, worktree_name, worktree_path, branch_name)
   end
 
   def start_worktree(args)
