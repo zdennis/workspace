@@ -3,6 +3,7 @@ require "open3"
 require "json"
 require "fileutils"
 require_relative "workspace/config"
+require_relative "workspace/state"
 
 # Workspace CLI for managing tmuxinator-based development workspaces in iTerm2.
 #
@@ -139,14 +140,13 @@ module Workspace
   end
 
   def load_state
-    return {} unless File.exist?(STATE_FILE)
-    JSON.parse(File.read(STATE_FILE))
-  rescue JSON::ParserError
-    {}
+    State.new(config: CONFIG).load.to_h
   end
 
   def save_state(state)
-    File.write(STATE_FILE, JSON.pretty_generate(state))
+    s = State.new(config: CONFIG)
+    state.each { |k, v| s[k] = v }
+    s.save
   end
 
   def iterm_window_titles
