@@ -78,3 +78,15 @@ init, doctor, launch, start, add, kill, relaunch, focus, list-projects, list, st
 - YARD docs on all public classes and methods
 - Tests use RSpec, run with `bundle exec rspec`
 - Lint with `bundle exec standardrb lib/ spec/`
+
+## Pre-commit Requirements
+
+Before every commit, run all 5 review agents in parallel using the Agent tool. Each agent should only review files changed in the current commit (or on the topic branch vs main). Pass this context when launching each agent.
+
+1. `.claude/agents/staff-engineer.md` — Architecture and complexity review
+2. `.claude/agents/new-user.md` — UX and discoverability review
+3. `.claude/agents/ai-agent-operator.md` — Automation and scriptability review
+4. `.claude/agents/testing-craftsperson.md` — Test coverage, `bundle exec rspec`, and `bundle exec standardrb lib/ spec/`
+5. `.claude/agents/power-user.md` — Edge cases and extensibility review
+
+All 5 must pass before committing. Address any concerns raised before proceeding.
