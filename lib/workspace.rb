@@ -9,6 +9,7 @@ require_relative "workspace/tmux"
 require_relative "workspace/project_config"
 require_relative "workspace/iterm"
 require_relative "workspace/window_layout"
+require_relative "workspace/commands/launch"
 
 # Workspace CLI for managing tmuxinator-based development workspaces in iTerm2.
 #
@@ -195,138 +196,17 @@ module Workspace
       end
     end
 
-    missing = projects.reject { |p| PROJECT_CONFIG.exists?(p) }
-    unless missing.empty?
-      warn "Error: No tmuxinator config found for:"
-      missing.each { |name| warn "  - #{name} (expected #{TMUXINATOR_DIR}/#{name}.yml)" }
-      exit 1
-    end
-
-    # Step 1: Ensure the tmux server is running
-    TMUX.start_server
-
-    # Step 2: Load state and check which sessions still exist
-    state = load_state
-    existing = find_existing_sessions(state)
-
-    reuse_projects = projects.select { |p| existing.key?(p) }
-    new_projects = projects.reject { |p| existing.key?(p) }
-
-    # Step 3: Relaunch in existing panes
-    reuse_projects.each do |project|
-      uid = existing[project]
-      puts "Reusing existing pane for #{project}..."
-      result = relaunch_in_session(uid, project, reattach: reattach)
-      if result != "ok"
-        warn "  Warning: Session for #{project} disappeared, will create new pane"
-        new_projects << project
-        state.delete(project)
-      end
-    end
-
-    # Step 4: Create new panes for projects that need them
-    if new_projects.any?
-      puts "Creating #{new_projects.size} new launcher pane(s)..."
-      new_session_ids = create_launcher_panes(new_projects, state: state, reattach: reattach)
-
-      new_session_ids.each do |project, uid|
-        state[project] = {"unique_id" => uid}
-        puts "  Created pane for #{project} (#{uid})"
-      end
-    end
-
-    # Step 5: Save state
-    save_state(state)
-
-    # Step 6: Wait for tmux sessions to exist, then rename their windows.
-    # The tmux session name may differ from the config name (e.g., worktree
-    # configs abbreviate "worktree" to "wt" and replace dots with dashes).
-    puts "Waiting for tmux sessions..."
-    window_prefix = "workspace"
-    max_wait = 30
-    elapsed = 0
-    sessions_ready = []
-
-    # Build a mapping of config name -> tmux session name
-    session_names = projects.map { |p| [p, tmux_session_name_for(p)] }.to_h
-
-    while sessions_ready.size < projects.size && elapsed < max_wait
-      sleep 1
-      elapsed += 1
-      existing_tmux = TMUX.sessions
-      projects.each do |project|
-        next if sessions_ready.include?(project)
-        tmux_name = session_names[project]
-        if existing_tmux.include?(tmux_name)
-          TMUX.rename_window(tmux_name, 0, "#{window_prefix}-#{tmux_name}")
-          sessions_ready << project
-          puts "  Session ready: #{project} (tmux: #{tmux_name})"
-        end
-      end
-    end
-
-    not_found = projects - sessions_ready
-    if not_found.any?
-      warn "Warning: Timed out waiting for sessions: #{not_found.join(", ")}"
-    end
-
-    # Give iTerm a moment to sync the renamed titles
-    sleep 1
-
-    # Step 7: Wait for all project windows to appear and save their IDs.
-    # First check if we already have a saved window ID that still exists.
-    # Then fall back to searching by window title (only reliable right after
-    # rename, before user switches tabs).
-    puts "Waiting for project windows to appear..."
-    found = {}
-
-    # Check saved window IDs first
-    projects.each do |project|
-      saved_id = state.dig(project, "iterm_window_id")
-      next unless saved_id
-      if ITERM.window_exists?(saved_id)
-        found[project] = saved_id.to_s
-        puts "  Found window for #{project} (saved ID)"
-      end
-    end
-
-    # Poll for remaining windows by title
-    max_window_wait = 30
-    window_elapsed = 0
-    while found.size < projects.size && window_elapsed < max_window_wait
-      sleep 1
-      window_elapsed += 1
-      projects.each do |project|
-        next if found.key?(project)
-        tmux_name = session_names[project]
-        title_to_find = "#{window_prefix}-#{tmux_name}"
-        result = ITERM.find_window_by_title(title_to_find)
-        if result
-          found[project] = result
-          state[project] ||= {}
-          state[project]["iterm_window_id"] = result.to_i
-          puts "  Found window for #{project}"
-        end
-      end
-    end
-
-    missing_windows = projects.reject { |p| found.key?(p) }
-    if missing_windows.any?
-      warn "Warning: Could not find windows for: #{missing_windows.join(", ")}"
-    end
-
-    # Save state with window IDs
-    save_state(state)
-
-    # Step 8: Stagger all found windows left-to-right on the active screen.
-    puts "Arranging windows..."
-    project_window_ids = projects.filter_map do |project|
-      window_id = found[project]
-      {project: project, window_id: window_id} if window_id
-    end
-    WINDOW_LAYOUT.arrange(project_window_ids)
-
-    puts "Done! Launched #{projects.size} project(s)."
+    launch_command = Commands::Launch.new(
+      state: State.new(config: CONFIG),
+      iterm: ITERM,
+      tmux: TMUX,
+      project_config: PROJECT_CONFIG,
+      window_layout: WINDOW_LAYOUT
+    )
+    launch_command.call(projects, reattach: reattach)
+  rescue Workspace::Error => e
+    warn "Error: #{e.message}"
+    exit 1
   end
 
   def status(args)
