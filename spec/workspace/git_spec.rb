@@ -1,0 +1,137 @@
+require "stringio"
+
+RSpec.describe Workspace::Git do
+  let(:output) { StringIO.new }
+  let(:input) { StringIO.new }
+  subject(:git) { described_class.new(output: output, input: input) }
+
+  describe "#parse_start_input" do
+    it "parses a JIRA URL" do
+      result = git.parse_start_input("https://mycompany.atlassian.net/browse/PROJ-123")
+      expect(result).to eq({type: :jira_key, value: "PROJ-123"})
+    end
+
+    it "parses a GitHub PR URL" do
+      result = git.parse_start_input("https://github.com/owner/repo/pull/471")
+      expect(result).to eq({type: :pr_url, value: "https://github.com/owner/repo/pull/471"})
+    end
+
+    it "parses a JIRA key" do
+      result = git.parse_start_input("PROJ-123")
+      expect(result).to eq({type: :jira_key, value: "PROJ-123"})
+    end
+
+    it "parses a branch name" do
+      result = git.parse_start_input("user/PROJ-123")
+      expect(result).to eq({type: :branch, value: "user/PROJ-123"})
+    end
+
+    it "treats lowercase jira-like input as a branch" do
+      result = git.parse_start_input("proj-123")
+      expect(result).to eq({type: :branch, value: "proj-123"})
+    end
+  end
+
+  describe "#sanitize_for_filesystem" do
+    it "replaces special characters with dashes" do
+      expect(git.sanitize_for_filesystem('a/b\\c:d*e?"f<g>h|i')).to eq("a-b-c-d-e-f-g-h-i")
+    end
+
+    it "collapses consecutive dashes" do
+      expect(git.sanitize_for_filesystem("a//b")).to eq("a-b")
+    end
+
+    it "strips leading and trailing dashes" do
+      expect(git.sanitize_for_filesystem("/hello/")).to eq("hello")
+    end
+
+    it "handles already-clean names" do
+      expect(git.sanitize_for_filesystem("feature-branch")).to eq("feature-branch")
+    end
+  end
+
+  describe "#find_matching_branches" do
+    let(:branches) do
+      ["main", "feature/PROJ-123", "feature/PROJ-124", "bugfix/proj-123-hotfix"]
+    end
+
+    it "returns exact matches first" do
+      result = git.find_matching_branches("main", branches: branches)
+      expect(result).to eq(["main"])
+    end
+
+    it "returns contains matches when no exact match" do
+      result = git.find_matching_branches("PROJ-123", branches: branches)
+      expect(result).to eq(["feature/PROJ-123"])
+    end
+
+    it "returns case-insensitive matches as last resort" do
+      result = git.find_matching_branches("proj-124", branches: branches)
+      expect(result).to eq(["feature/PROJ-124"])
+    end
+
+    it "returns empty when nothing matches" do
+      result = git.find_matching_branches("nonexistent", branches: branches)
+      expect(result).to eq([])
+    end
+  end
+
+  describe "#prompt_branch_selection" do
+    it "returns the selected branch for a valid choice" do
+      input = StringIO.new("2\n")
+      git = described_class.new(output: output, input: input)
+      result = git.prompt_branch_selection(["branch-a", "branch-b", "branch-c"], "pattern")
+      expect(result).to eq("branch-b")
+    end
+
+    it "returns nil when user chooses 0" do
+      input = StringIO.new("0\n")
+      git = described_class.new(output: output, input: input)
+      result = git.prompt_branch_selection(["branch-a"], "pattern")
+      expect(result).to be_nil
+    end
+
+    it "displays the branches and prompt" do
+      input = StringIO.new("1\n")
+      git = described_class.new(output: output, input: input)
+      git.prompt_branch_selection(["branch-a", "branch-b"], "test")
+      expect(output.string).to include("Multiple remote branches match 'test':")
+      expect(output.string).to include("1) branch-a")
+      expect(output.string).to include("2) branch-b")
+      expect(output.string).to include("0) None")
+    end
+  end
+
+  describe "#prompt_base_branch" do
+    it "returns default branch when current equals default" do
+      git = described_class.new(output: output, input: input)
+      allow(git).to receive(:default_branch).and_return("main")
+      allow(git).to receive(:current_branch).and_return("main")
+      expect(git.prompt_base_branch).to eq("main")
+    end
+
+    it "returns default branch when user chooses 1" do
+      input = StringIO.new("1\n")
+      git = described_class.new(output: output, input: input)
+      allow(git).to receive(:default_branch).and_return("main")
+      allow(git).to receive(:current_branch).and_return("feature-x")
+      expect(git.prompt_base_branch).to eq("main")
+    end
+
+    it "returns current branch when user chooses 2" do
+      input = StringIO.new("2\n")
+      git = described_class.new(output: output, input: input)
+      allow(git).to receive(:default_branch).and_return("main")
+      allow(git).to receive(:current_branch).and_return("feature-x")
+      expect(git.prompt_base_branch).to eq("feature-x")
+    end
+
+    it "returns nil when user chooses 3 (cancel)" do
+      input = StringIO.new("3\n")
+      git = described_class.new(output: output, input: input)
+      allow(git).to receive(:default_branch).and_return("main")
+      allow(git).to receive(:current_branch).and_return("feature-x")
+      expect(git.prompt_base_branch).to be_nil
+    end
+  end
+end

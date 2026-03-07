@@ -4,6 +4,7 @@ require "json"
 require "fileutils"
 require_relative "workspace/config"
 require_relative "workspace/state"
+require_relative "workspace/git"
 
 # Workspace CLI for managing tmuxinator-based development workspaces in iTerm2.
 #
@@ -11,9 +12,14 @@ require_relative "workspace/state"
 # This is a temporary scaffolding approach -- later phases will extract
 # these into proper classes.
 module Workspace
+  class Error < StandardError; end
+
+  class UsageError < Error; end
+
   module_function
 
   CONFIG = Config.new
+  GIT = Git.new
 
   WORKSPACE_DIR = CONFIG.workspace_dir
   TMUXINATOR_DIR = CONFIG.tmuxinator_dir
@@ -808,141 +814,59 @@ module Workspace
   # --- Worktree / start helpers ---
 
   def sanitize_for_filesystem(name)
-    name.gsub(%r{[/\\:*?"<>|]}, "-").gsub(/-{2,}/, "-").gsub(/^-|-$/, "")
+    GIT.sanitize_for_filesystem(name)
   end
 
   def git_root
-    root = `git rev-parse --show-toplevel 2>/dev/null`.strip
-    root.empty? ? nil : root
+    GIT.root
   end
 
   def git_default_branch
-    # Try origin/HEAD first, fall back to main/master
-    ref = `git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null`.strip
-    return ref.sub("refs/remotes/origin/", "") unless ref.empty?
-    `git rev-parse --verify --quiet refs/heads/main >/dev/null 2>&1 && echo main || echo master`.strip
+    GIT.default_branch
   end
 
   def git_current_branch
-    `git rev-parse --abbrev-ref HEAD 2>/dev/null`.strip
+    GIT.current_branch
   end
 
   def git_branch_exists?(name)
-    system("git", "show-ref", "--verify", "--quiet", "refs/heads/#{name}") ||
-      system("git", "show-ref", "--verify", "--quiet", "refs/remotes/origin/#{name}")
+    GIT.branch_exists?(name)
   end
 
   def git_local_branch_exists?(name)
-    system("git", "show-ref", "--verify", "--quiet", "refs/heads/#{name}")
+    GIT.local_branch_exists?(name)
   end
 
   def git_remote_branch_exists?(name)
-    system("git", "show-ref", "--verify", "--quiet", "refs/remotes/origin/#{name}")
+    GIT.remote_branch_exists?(name)
   end
 
   def git_fetch_remote_branches
-    `git fetch --prune 2>/dev/null`
-    `git branch -r 2>/dev/null`.lines.map { |l| l.strip.sub("origin/", "") }.reject { |b| b.include?("->") }
+    GIT.fetch_remote_branches
   end
 
   def git_find_matching_branches(pattern)
-    remote_branches = git_fetch_remote_branches
-    # Exact match first
-    exact = remote_branches.select { |b| b == pattern }
-    return exact unless exact.empty?
-
-    # Contains match
-    contains = remote_branches.select { |b| b.include?(pattern) }
-    return contains unless contains.empty?
-
-    # Case-insensitive contains
-    remote_branches.select { |b| b.downcase.include?(pattern.downcase) }
+    GIT.find_matching_branches(pattern)
   end
 
   def git_worktree_exists?(path)
-    worktrees = `git worktree list --porcelain 2>/dev/null`
-    worktrees.include?("worktree #{path}")
+    GIT.worktree_exists?(path)
   end
 
   def parse_start_input(input)
-    # JIRA URL: https://mycompany.atlassian.net/browse/PROJ-123
-    if input.match?(%r{https?://.*atlassian\.net/browse/([A-Z]+-\d+)})
-      key = input.match(%r{/browse/([A-Z]+-\d+)})[1]
-      return {type: :jira_key, value: key}
-    end
-
-    # GitHub PR URL: https://github.com/owner/repo/pull/123
-    if input.match?(%r{https?://github\.com/.+/.+/pull/\d+})
-      return {type: :pr_url, value: input}
-    end
-
-    # JIRA key: PROJ-123
-    if input.match?(/\A[A-Z]+-\d+\z/)
-      return {type: :jira_key, value: input}
-    end
-
-    # Branch name: anything else
-    {type: :branch, value: input}
+    GIT.parse_start_input(input)
   end
 
   def resolve_branch_from_pr(pr_url)
-    # Extract owner/repo and PR number
-    match = pr_url.match(%r{github\.com/([^/]+/[^/]+)/pull/(\d+)})
-    unless match
-      warn "Error: Could not parse PR URL: #{pr_url}"
-      exit 1
-    end
-    repo = match[1]
-    pr_number = match[2]
-
-    output = `gh pr view #{pr_number} --repo #{repo} --json headRefName --jq .headRefName 2>/dev/null`.strip
-    if output.empty?
-      warn "Error: Could not fetch PR ##{pr_number} from #{repo}"
-      warn "Make sure you have access and `gh` is authenticated."
-      exit 1
-    end
-    output
+    GIT.resolve_branch_from_pr(pr_url)
   end
 
   def prompt_branch_selection(matches, pattern)
-    puts ""
-    puts "Multiple remote branches match '#{pattern}':"
-    puts ""
-    matches.each_with_index do |branch, i|
-      puts "  #{i + 1}) #{branch}"
-    end
-    puts "  0) None — create a new branch instead"
-    puts ""
-    print "Choose [1-#{matches.size}, 0]: "
-    choice = $stdin.gets&.strip&.to_i
-    if choice && choice > 0 && choice <= matches.size
-      matches[choice - 1]
-    end
+    GIT.prompt_branch_selection(matches, pattern)
   end
 
   def prompt_base_branch
-    default_branch = git_default_branch
-    current = git_current_branch
-
-    if current == default_branch
-      return default_branch
-    end
-
-    puts ""
-    puts "Branch does not exist. Create from:"
-    puts ""
-    puts "  1) #{default_branch} (default branch)"
-    puts "  2) #{current} (current branch)"
-    puts "  3) Cancel"
-    puts ""
-    print "Choose [1/2/3]: "
-    choice = $stdin.gets&.strip
-    case choice
-    when "1", ""
-      default_branch
-    when "2"
-      current
-    end
+    GIT.prompt_base_branch
   end
 
   def create_worktree_config(project_name, worktree_name, worktree_path, branch_name)
@@ -1073,21 +997,9 @@ module Workspace
     worktrees_dir = File.join(root, ".worktrees")
     Dir.mkdir(worktrees_dir) unless File.directory?(worktrees_dir)
 
-    # Build and run git worktree add command
-    cmd = ["git", "worktree", "add"]
-    if git_branch_exists?(branch_name)
-      cmd += [worktree_path, branch_name]
-    else
-      cmd += ["-b", branch_name, worktree_path]
-      cmd << base if defined?(base) && base
-    end
-
-    puts "Running: #{cmd.join(" ")}"
-    _, stderr, status = Open3.capture3(*cmd)
-    unless status.success?
-      warn "Error creating worktree: #{stderr}"
-      exit 1
-    end
+    # Create the worktree
+    base_branch = defined?(base) ? base : nil
+    GIT.create_worktree(worktree_path, branch_name, base: base_branch)
     puts "Worktree created at: #{worktree_path}"
 
     # Ensure .worktrees is in .gitignore
