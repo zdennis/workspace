@@ -33,11 +33,12 @@ Skip change analysis and use the specified version directly:
 
 1. **Get the current version** from `lib/workspace/version.rb`
 2. **Calculate the new version** based on the bump type (or use the explicit version)
-3. **Update the version** in `lib/workspace/version.rb`
-4. **Commit** with message: `Bump version to <version>`
-5. **Create tag** `v<version>`
-6. **Check if tag exists** - if the tag already exists, inform the user and stop
-7. **Push the commit and tag** to origin
+3. **Update documentation** — Run `/readme update` to sync subcommand docs and the README.md table with any changes since the last release. Commit doc changes separately if any: `Update subcommand documentation`
+4. **Update the version** in `lib/workspace/version.rb`
+5. **Commit** with message: `Bump version to <version>`
+6. **Create tag** `v<version>`
+7. **Check if tag exists** - if the tag already exists, inform the user and stop
+8. **Push the commit and tag** to origin
 
 ### If NO argument is provided:
 
@@ -56,10 +57,11 @@ Skip change analysis and use the specified version directly:
    - Summarize the changes since last tag
    - Show your recommended bump type with reasoning
    - Let the user confirm or choose a different version
-6. **Update the version** in `lib/workspace/version.rb` to the chosen version
-7. **Commit** with message: `Bump version to <version>`
-8. **Create tag** `v<version>`
-9. **Push the commit and tag** to origin
+6. **Update documentation** — Run `/readme update` to sync subcommand docs and the README.md table with any changes since the last release. Commit doc changes separately if any: `Update subcommand documentation`
+7. **Update the version** in `lib/workspace/version.rb` to the chosen version
+8. **Commit** with message: `Bump version to <version>`
+9. **Create tag** `v<version>`
+10. **Push the commit and tag** to origin
 
 ## Version File
 

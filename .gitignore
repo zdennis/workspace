@@ -2,3 +2,4 @@ coverage/
 bin/dev/
 .bundle/
 .claude/settings.local.json
+.yardoc/
