@@ -1,4 +1,5 @@
 require "open3"
+require "json"
 
 module Workspace
   # Calculates and applies window positions for arranging project windows
@@ -18,27 +19,15 @@ module Workspace
     # @param project_window_ids [Array<Hash>] array of {project:, window_id:} hashes
     # @return [void]
     def arrange(project_window_ids)
-      return if project_window_ids.empty?
+      apply_layout(project_window_ids, method(:calculate_positions), "Positioned")
+    end
 
-      require "json"
-      screen_json, status = Open3.capture2(@config.window_tool, "active-screen", "--json")
-      unless status.success?
-        raise Workspace::Error, "Could not detect screen geometry. Is window-tool installed?"
-      end
-      screen = JSON.parse(screen_json)
-      screen_x, screen_y, screen_w, screen_h = screen.values_at("x", "y", "width", "height")
-
-      positions = calculate_positions(
-        screen_x: screen_x, screen_y: screen_y,
-        screen_w: screen_w, screen_h: screen_h,
-        count: project_window_ids.size
-      )
-
-      project_window_ids.each_with_index do |entry, i|
-        pos = positions[i]
-        @window_manager.set_window_bounds(entry[:window_id], pos[:x], pos[:y], pos[:width], pos[:height])
-        @output.puts "  Positioned #{entry[:project]} at #{pos[:x]},#{pos[:y]} (#{pos[:width]}x#{pos[:height]})"
-      end
+    # Tiles project windows as equal-width columns filling the full screen.
+    #
+    # @param project_window_ids [Array<Hash>] array of {project:, window_id:} hashes
+    # @return [void]
+    def tile(project_window_ids)
+      apply_layout(project_window_ids, method(:calculate_tile_positions), "Tiled")
     end
 
     # Pure math: calculates window positions for a given screen and count.
@@ -72,6 +61,55 @@ module Workspace
           width: window_width,
           height: window_height
         }
+      end
+    end
+
+    # Pure math: calculates equal-width column positions filling the screen.
+    #
+    # @param screen_x [Integer] screen x offset
+    # @param screen_y [Integer] screen y offset
+    # @param screen_w [Integer] screen width
+    # @param screen_h [Integer] screen height
+    # @param count [Integer] number of windows to tile
+    # @return [Array<Hash>] array of {x:, y:, width:, height:} hashes
+    def calculate_tile_positions(screen_x:, screen_y:, screen_w:, screen_h:, count:)
+      return [] if count == 0
+
+      col_width = screen_w / count
+
+      count.times.map do |i|
+        w = (i == count - 1) ? screen_w - (col_width * i) : col_width
+        {
+          x: screen_x + (col_width * i),
+          y: screen_y,
+          width: w,
+          height: screen_h
+        }
+      end
+    end
+
+    private
+
+    def apply_layout(project_window_ids, calculator, verb)
+      return if project_window_ids.empty?
+
+      screen_json, status = Open3.capture2(@config.window_tool, "active-screen", "--json")
+      unless status.success?
+        raise Workspace::Error, "Could not detect screen geometry. Is window-tool installed?"
+      end
+      screen = JSON.parse(screen_json)
+      screen_x, screen_y, screen_w, screen_h = screen.values_at("x", "y", "width", "height")
+
+      positions = calculator.call(
+        screen_x: screen_x, screen_y: screen_y,
+        screen_w: screen_w, screen_h: screen_h,
+        count: project_window_ids.size
+      )
+
+      project_window_ids.each_with_index do |entry, i|
+        pos = positions[i]
+        @window_manager.set_window_bounds(entry[:window_id], pos[:x], pos[:y], pos[:width], pos[:height])
+        @output.puts "  #{verb} #{entry[:project]} at #{pos[:x]},#{pos[:y]} (#{pos[:width]}x#{pos[:height]})"
       end
     end
   end

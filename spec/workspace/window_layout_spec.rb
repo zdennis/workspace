@@ -86,4 +86,54 @@ RSpec.describe Workspace::WindowLayout do
       expect(left_margin).to eq(right_margin)
     end
   end
+
+  describe "#calculate_tile_positions" do
+    it "returns empty array for 0 windows" do
+      result = layout.calculate_tile_positions(
+        screen_x: 0, screen_y: 0, screen_w: 1920, screen_h: 1080, count: 0
+      )
+      expect(result).to eq([])
+    end
+
+    it "fills screen with a single window" do
+      result = layout.calculate_tile_positions(
+        screen_x: 0, screen_y: 0, screen_w: 1920, screen_h: 1080, count: 1
+      )
+      expect(result.size).to eq(1)
+      pos = result.first
+      expect(pos[:x]).to eq(0)
+      expect(pos[:y]).to eq(0)
+      expect(pos[:width]).to eq(1920)
+      expect(pos[:height]).to eq(1080)
+    end
+
+    it "splits screen into equal columns for 3 windows" do
+      result = layout.calculate_tile_positions(
+        screen_x: 0, screen_y: 0, screen_w: 1920, screen_h: 1080, count: 3
+      )
+      expect(result.size).to eq(3)
+      expect(result[0]).to eq(x: 0, y: 0, width: 640, height: 1080)
+      expect(result[1]).to eq(x: 640, y: 0, width: 640, height: 1080)
+      expect(result[2]).to eq(x: 1280, y: 0, width: 640, height: 1080)
+    end
+
+    it "gives the last column any remainder pixels" do
+      result = layout.calculate_tile_positions(
+        screen_x: 0, screen_y: 0, screen_w: 1920, screen_h: 1080, count: 7
+      )
+      # 1920 / 7 = 274, 274 * 7 = 1918, remainder = 2
+      expect(result.first[:width]).to eq(274)
+      expect(result.last[:width]).to eq(276)
+      # All columns together fill the screen
+      expect(result.last[:x] + result.last[:width]).to eq(1920)
+    end
+
+    it "handles non-zero screen offsets" do
+      result = layout.calculate_tile_positions(
+        screen_x: 1920, screen_y: 100, screen_w: 1920, screen_h: 1080, count: 2
+      )
+      expect(result[0]).to eq(x: 1920, y: 100, width: 960, height: 1080)
+      expect(result[1]).to eq(x: 2880, y: 100, width: 960, height: 1080)
+    end
+  end
 end

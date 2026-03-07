@@ -59,6 +59,8 @@ module Workspace
         cmd_relaunch(args)
       when "focus"
         cmd_focus(args)
+      when "tile"
+        cmd_tile(args)
       when "list-projects"
         cmd_list_projects(args)
       when "list"
@@ -103,6 +105,7 @@ module Workspace
           kill            Kill active workspace projects and their tmux sessions
           relaunch        Kill and relaunch all active workspace projects
           focus           Bring a project's iTerm window to the front
+          tile            Tile all windows for a project across the screen
           list-projects   List all available tmuxinator projects
           list            List currently active (launched) projects
           status          Show detailed state of tracked launcher sessions
@@ -281,6 +284,28 @@ module Workspace
         window_manager: @window_manager,
         output: @output
       ).call(args.first, shake: shake)
+    end
+
+    def cmd_tile(args)
+      parser = OptionParser.new do |opts|
+        opts.banner = "Usage: workspace tile <project>"
+        opts.separator ""
+        opts.separator "Tile all active windows for a project across the screen."
+        opts.separator "Matches the base project and all its worktree sessions."
+        opts.separator ""
+        opts.separator "Example:"
+        opts.separator "  workspace tile window-tool    # tiles window-tool + all window-tool.worktree-* windows"
+      end
+      parser.parse!(args)
+
+      raise UsageError, parser.help if args.empty?
+
+      Commands::Tile.new(
+        state: @state,
+        window_manager: @window_manager,
+        window_layout: @window_layout,
+        output: @output
+      ).call(args.first)
     end
 
     def cmd_init(args)
