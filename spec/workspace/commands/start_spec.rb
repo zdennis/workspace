@@ -68,6 +68,23 @@ RSpec.describe Workspace::Commands::Start do
       end
     end
 
+    context "with a GitHub issue URL" do
+      it "uses issue number as branch name" do
+        allow(git).to receive(:root).and_return(tmpdir)
+        allow(git).to receive(:parse_start_input).with("https://github.com/org/repo/issues/42").and_return({type: :issue_url, value: "issue-42"})
+        allow(git).to receive(:sanitize_for_filesystem).with("issue-42").and_return("issue-42")
+        allow(git).to receive(:worktree_exists?).and_return(false)
+        allow(git).to receive(:branch_exists?).with("issue-42").and_return(true)
+        allow(git).to receive(:create_worktree)
+        allow(project_config).to receive(:create_worktree).and_return("myproject.worktree-issue-42")
+        allow(launch_command).to receive(:call)
+
+        command.call("https://github.com/org/repo/issues/42")
+
+        expect(launch_command).to have_received(:call).with(["myproject.worktree-issue-42"])
+      end
+    end
+
     context "with an existing worktree" do
       it "skips creation and launches directly" do
         allow(git).to receive(:root).and_return(tmpdir)
