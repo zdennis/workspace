@@ -1,4 +1,5 @@
 coverage/
+doc/
 bin/dev/
 .bundle/
 .claude/settings.local.json
