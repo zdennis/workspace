@@ -10,6 +10,7 @@ require_relative "workspace/project_config"
 require_relative "workspace/iterm"
 require_relative "workspace/window_layout"
 require_relative "workspace/commands/launch"
+require_relative "workspace/commands/kill"
 
 # Workspace CLI for managing tmuxinator-based development workspaces in iTerm2.
 #
@@ -276,75 +277,12 @@ module Workspace
     end
     parser.parse!(args)
 
-    state = load_state
-    if state.empty?
-      puts "No active workspace projects."
-      return []
-    end
-
-    # Determine which projects to kill
-    projects = if args.empty?
-      state.keys
-    else
-      args.select { |p| state.key?(p) }.tap do |found|
-        not_found = args - found
-        not_found.each { |p| warn "Warning: '#{p}' is not an active workspace project" }
-      end
-    end
-
-    if projects.empty?
-      puts "No matching workspace projects to kill."
-      return []
-    end
-
-    # Save the list of projects before killing (for relaunch)
-    killed_projects = projects.dup
-
-    # Find the launcher window BEFORE killing tmux sessions, since killing
-    # sessions may change the state of launcher panes.
-    existing = find_existing_sessions(state)
-    launcher_uids = projects.filter_map { |p| existing[p] }
-    launcher_window_ids_to_close = []
-    if launcher_uids.any?
-      live_sessions = iterm_session_map
-      # Group launcher panes by their window
-      candidate_window_ids = launcher_uids.filter_map { |uid| live_sessions[uid] }.uniq
-      candidate_window_ids.each do |wid|
-        # Find all tracked projects that have launcher panes in this window
-        sessions_in_window = live_sessions.select { |_, w| w == wid }.keys
-        tracked_in_window = state.select { |_, info| sessions_in_window.include?(info["unique_id"]) }.keys
-        # Only close the window if ALL tracked projects in it are being killed
-        if (tracked_in_window - projects).empty?
-          launcher_window_ids_to_close << wid
-        end
-      end
-    end
-
-    # Kill tmux sessions (this also closes the tmux -CC iTerm windows)
-    projects.each do |project|
-      if tmux_sessions.include?(project)
-        puts "Killing tmux session: #{project}"
-        TMUX.kill_session(project)
-      end
-    end
-
-    # Close launcher windows only if all their tracked projects are being killed
-    launcher_window_ids_to_close.each do |wid|
-      puts "Closing launcher window #{wid}"
-      ITERM.close_window(wid)
-    end
-
-    # Clear iterm_window_id for killed projects but keep unique_id.
-    # The launcher pane is still alive (idle at a shell prompt after the tmux
-    # session was killed). Keeping the unique_id lets the next launch reuse it
-    # instead of creating a new window.
-    projects.each do |p|
-      state[p]&.delete("iterm_window_id")
-    end
-    save_state(state)
-
-    puts "Killed #{killed_projects.size} project(s): #{killed_projects.join(", ")}"
-    killed_projects
+    kill_command = Commands::Kill.new(
+      state: State.new(config: CONFIG),
+      iterm: ITERM,
+      tmux: TMUX
+    )
+    kill_command.call(args)
   end
 
   def list_projects(args)
