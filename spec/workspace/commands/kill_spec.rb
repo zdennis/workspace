@@ -85,7 +85,7 @@ RSpec.describe Workspace::Commands::Kill do
         expect(result).to contain_exactly("proj1", "proj2")
       end
 
-      it "removes iterm_window_id but keeps unique_id in state" do
+      it "removes killed projects from state" do
         allow(iterm).to receive(:find_existing_sessions).and_return({})
         allow(tmux).to receive(:session_name_for).with("proj1").and_return("proj1")
         allow(tmux).to receive(:sessions).and_return(["proj1"])
@@ -94,8 +94,8 @@ RSpec.describe Workspace::Commands::Kill do
         command.call(["proj1"])
 
         state.load
-        expect(state["proj1"]["unique_id"]).to eq("uid1")
-        expect(state["proj1"]["iterm_window_id"]).to be_nil
+        expect(state["proj1"]).to be_nil
+        expect(state["proj2"]).not_to be_nil
       end
 
       it "warns about unknown projects" do

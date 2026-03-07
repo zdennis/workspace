@@ -43,7 +43,7 @@ module Workspace
         launcher_window_ids_to_close = find_launcher_windows_to_close(targets)
         kill_tmux_sessions(targets)
         close_launcher_windows(launcher_window_ids_to_close)
-        clear_window_ids(targets)
+        remove_from_state(targets)
 
         @state.save
 
@@ -105,13 +105,9 @@ module Workspace
         end
       end
 
-      def clear_window_ids(targets)
+      def remove_from_state(targets)
         targets.each do |p|
-          info = @state[p]
-          if info
-            info.delete("iterm_window_id")
-            @state[p] = info
-          end
+          @state.delete(p)
         end
       end
     end
