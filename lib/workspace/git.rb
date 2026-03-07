@@ -112,7 +112,7 @@ module Workspace
 
       output = `gh pr view #{pr_number} --repo #{repo} --json headRefName --jq .headRefName 2>/dev/null`.strip
       if output.empty?
-        raise Workspace::Error, "Could not fetch PR ##{pr_number} from #{repo}. Make sure you have access and `gh` is authenticated."
+        raise Workspace::Error, "Could not fetch PR ##{pr_number} from #{repo}\nMake sure you have access and `gh` is authenticated."
       end
       output
     end
