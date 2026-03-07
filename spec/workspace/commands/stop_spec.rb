@@ -97,6 +97,23 @@ RSpec.describe Workspace::Commands::Stop do
           expect(output.string).to include("Stopped myproject.worktree-PROJ-123")
         end
 
+        it "removes marker file before worktree removal" do
+          worktree_dir = File.join(tmpdir, "worktree")
+          Dir.mkdir(worktree_dir)
+          marker = File.join(worktree_dir, ".workspace-project")
+          File.write(marker, "myproject.worktree-PROJ-123")
+
+          File.write(config_path, YAML.dump("name" => "myproject-wt-PROJ-123", "root" => worktree_dir))
+          allow(git).to receive(:worktree_exists?).with(worktree_dir).and_return(true)
+          allow(git).to receive(:remove_worktree)
+          allow(kill_command).to receive(:call).and_return([])
+          allow(project_config).to receive(:remove)
+
+          command.call("myproject.worktree-PROJ-123", force: true)
+
+          expect(File.exist?(marker)).to be false
+        end
+
         it "removes worktree before killing session" do
           input.puts "y"
           input.rewind

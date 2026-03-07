@@ -56,6 +56,8 @@ module Workspace
           end
         end
 
+        remove_marker_file(worktree_path)
+
         @output.puts "Removing worktree..."
         @git.remove_worktree(worktree_path, force: force)
 
@@ -66,6 +68,11 @@ module Workspace
       end
 
       private
+
+      def remove_marker_file(worktree_path)
+        marker = File.join(worktree_path, MARKER_FILE)
+        File.delete(marker) if File.exist?(marker)
+      end
 
       def detect_project
         dir = Dir.pwd
