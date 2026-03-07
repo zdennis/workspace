@@ -1,4 +1,5 @@
 require "optparse"
+require "securerandom"
 
 module Workspace
   # Command-line interface for the workspace CLI.
@@ -64,6 +65,8 @@ module Workspace
         cmd_status(args)
       when "whereis"
         cmd_whereis(args)
+      when "alfred"
+        cmd_alfred(args)
       when "version", "--version", "-v"
         @output.puts "workspace #{Workspace::VERSION}"
       when "help", "--help", "-h", nil
@@ -101,6 +104,7 @@ module Workspace
           list            List currently active (launched) projects
           status          Show detailed state of tracked launcher sessions
           whereis         Print the workspace installation directory
+          alfred          Manage the Alfred workflow for workspace focus
           help            Show this help message
 
         Run 'workspace <subcommand> --help' for subcommand-specific help.
@@ -378,6 +382,148 @@ module Workspace
       parser.parse!(args)
 
       @output.puts @config.workspace_dir
+    end
+
+    def cmd_alfred(args)
+      subcommand = args.shift
+
+      case subcommand
+      when "install"
+        alfred_install(args)
+      when "uninstall"
+        alfred_uninstall(args)
+      when "info"
+        alfred_info(args)
+      when "help", "--help", "-h", nil
+        alfred_help
+      else
+        raise UsageError, "Unknown alfred subcommand: #{subcommand}\n\n" + alfred_help_text
+      end
+    end
+
+    def alfred_help
+      @output.puts alfred_help_text
+    end
+
+    def alfred_help_text
+      <<~HELP
+        Usage: workspace alfred <subcommand>
+
+        Subcommands:
+          install     Install or update the Alfred workflow
+          uninstall   Remove the Alfred workflow
+          info        Show workflow installation status
+
+        The workflow lets you type 'wf' in Alfred to list and focus
+        active workspace projects. Assign a hotkey in Alfred Preferences
+        > Workflows > Workspace Focus.
+      HELP
+    end
+
+    def alfred_workflows_dir
+      File.expand_path("~/Library/Application Support/Alfred/Alfred.alfredpreferences/workflows")
+    end
+
+    def alfred_source_dir
+      File.join(@config.workspace_dir, "extensions", "alfred", "workspace-focus")
+    end
+
+    def find_installed_workflow
+      dir = alfred_workflows_dir
+      return nil unless File.directory?(dir)
+
+      plist = Dir.glob(File.join(dir, "*/info.plist")).find do |p|
+        File.read(p).include?("com.zdennis.workspace-focus")
+      end
+      plist ? File.dirname(plist) : nil
+    end
+
+    def alfred_install(args)
+      parser = OptionParser.new do |opts|
+        opts.banner = "Usage: workspace alfred install"
+        opts.separator ""
+        opts.separator "Install or update the Alfred workflow for workspace focus."
+        opts.separator "Copies workflow files to Alfred's preferences directory."
+      end
+      parser.parse!(args)
+
+      unless File.directory?(alfred_workflows_dir)
+        raise Error, "Alfred workflows directory not found at #{alfred_workflows_dir}\nIs Alfred installed?"
+      end
+
+      unless File.directory?(alfred_source_dir)
+        raise Error, "Alfred workflow source not found at #{alfred_source_dir}"
+      end
+
+      existing = find_installed_workflow
+      if existing
+        target_dir = existing
+        @output.puts "Updating existing workflow..."
+      else
+        workflow_id = "user.workflow.#{SecureRandom.uuid.upcase}"
+        target_dir = File.join(alfred_workflows_dir, workflow_id)
+        FileUtils.mkdir_p(target_dir)
+        @output.puts "Installing new workflow..."
+      end
+
+      %w[info.plist list_projects.rb focus_project.rb].each do |file|
+        src = File.join(alfred_source_dir, file)
+        dst = File.join(target_dir, file)
+        FileUtils.cp(src, dst)
+        FileUtils.chmod(0o755, dst) if file.end_with?(".rb")
+      end
+
+      @output.puts "Installed to #{target_dir}"
+      @output.puts "Type 'wf' in Alfred to list active workspace projects."
+    end
+
+    def alfred_uninstall(args)
+      parser = OptionParser.new do |opts|
+        opts.banner = "Usage: workspace alfred uninstall"
+        opts.separator ""
+        opts.separator "Remove the Alfred workflow for workspace focus."
+      end
+      parser.parse!(args)
+
+      target_dir = find_installed_workflow
+      unless target_dir
+        @output.puts "Workspace Focus workflow is not installed."
+        return
+      end
+
+      @output.print "Remove workflow from #{target_dir}? [y/N] "
+      answer = @input.gets&.strip
+      unless answer&.match?(/\Ay(es)?\z/i)
+        @output.puts "Cancelled."
+        return
+      end
+
+      FileUtils.rm_rf(target_dir)
+      @output.puts "Removed."
+    end
+
+    def alfred_info(args)
+      parser = OptionParser.new do |opts|
+        opts.banner = "Usage: workspace alfred info"
+        opts.separator ""
+        opts.separator "Show the installation status of the Alfred workflow."
+      end
+      parser.parse!(args)
+
+      unless File.directory?(alfred_workflows_dir)
+        @output.puts "Alfred is not installed."
+        return
+      end
+
+      target_dir = find_installed_workflow
+      if target_dir
+        @output.puts "Workspace Focus workflow is installed."
+        @output.puts "Location: #{target_dir}"
+        @output.puts "Keyword: wf"
+      else
+        @output.puts "Workspace Focus workflow is not installed."
+        @output.puts "Run 'workspace alfred install' to install it."
+      end
     end
   end
 end

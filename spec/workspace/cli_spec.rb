@@ -253,6 +253,61 @@ RSpec.describe Workspace::CLI do
     end
   end
 
+  describe "#run with alfred" do
+    it "shows help when no subcommand given" do
+      cli, output, _ = build_test_cli
+      cli.run(["alfred"])
+      expect(output.string).to include("Usage: workspace alfred")
+      expect(output.string).to include("install")
+      expect(output.string).to include("uninstall")
+      expect(output.string).to include("info")
+    end
+
+    it "shows help for --help" do
+      cli, output, _ = build_test_cli
+      cli.run(["alfred", "--help"])
+      expect(output.string).to include("Usage: workspace alfred")
+    end
+
+    it "exits 1 for unknown alfred subcommand" do
+      cli, _, error_output = build_test_cli
+      expect { cli.run(["alfred", "bogus"]) }.to raise_error(SystemExit) { |e|
+        expect(e.status).to eq(1)
+      }
+      expect(error_output.string).to include("Unknown alfred subcommand: bogus")
+    end
+
+    describe "install" do
+      it "raises error when Alfred is not installed" do
+        config = Workspace::Config.new(workspace_dir: "/test/workspace")
+        cli, _, _ = build_test_cli(config: config)
+        expect { cli.run(["alfred", "install"]) }.to raise_error(SystemExit) { |e|
+          expect(e.status).to eq(1)
+        }
+      end
+    end
+
+    describe "info" do
+      it "reports Alfred not installed when workflows dir missing" do
+        cli, output, _ = build_test_cli
+        allow(File).to receive(:directory?).and_call_original
+        allow(File).to receive(:directory?).with(include("Alfred.alfredpreferences/workflows")).and_return(false)
+        cli.run(["alfred", "info"])
+        expect(output.string).to include("Alfred is not installed")
+      end
+    end
+
+    describe "uninstall" do
+      it "reports not installed when workflow not found" do
+        cli, output, _ = build_test_cli
+        allow(Dir).to receive(:glob).and_call_original
+        allow(Dir).to receive(:glob).with(include("Alfred.alfredpreferences/workflows")).and_return([])
+        cli.run(["alfred", "uninstall"])
+        expect(output.string).to include("not installed")
+      end
+    end
+  end
+
   describe "#run with relaunch" do
     it "exits 1 when no active projects" do
       cli, _, error_output = build_test_cli
