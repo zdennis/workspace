@@ -235,58 +235,11 @@ module Workspace
       end
       parser.parse!(args)
 
-      templates = [
-        "project-template.yml",
-        "project-worktree-template.yml"
-      ]
-
-      @output.puts "workspace init#{" (dry run)" if dry_run}"
-      @output.puts ""
-
-      tmuxinator_dir = @config.tmuxinator_dir
-      workspace_dir = @config.workspace_dir
-
-      if File.directory?(tmuxinator_dir)
-        @output.puts "  exists  #{tmuxinator_dir}"
-      elsif dry_run
-        @output.puts "  create  #{tmuxinator_dir}"
-      else
-        FileUtils.mkdir_p(tmuxinator_dir)
-        @output.puts "  create  #{tmuxinator_dir}"
-      end
-
-      templates.each do |template|
-        src = File.join(workspace_dir, template)
-        dest = File.join(tmuxinator_dir, template)
-
-        unless File.exist?(src)
-          @error_output.puts "  error   #{template} not found in #{workspace_dir}"
-          next
-        end
-
-        if File.exist?(dest)
-          if FileUtils.identical?(src, dest)
-            @output.puts "  skip    #{template} (already up to date)"
-          elsif force
-            FileUtils.cp(src, dest) unless dry_run
-            @output.puts "  update  #{template} -> #{dest}"
-          else
-            @output.puts "  skip    #{template} (already exists, use --force to overwrite)"
-          end
-        elsif dry_run
-          @output.puts "  copy    #{template} -> #{dest}"
-        else
-          FileUtils.cp(src, dest)
-          @output.puts "  copy    #{template} -> #{dest}"
-        end
-      end
-
-      @output.puts ""
-      if dry_run
-        @output.puts "No changes made (dry run)."
-      else
-        @output.puts "Done! Workspace is ready to use."
-      end
+      Commands::Init.new(
+        config: @config,
+        output: @output,
+        error_output: @error_output
+      ).call(dry_run: dry_run, force: force)
     end
 
     def cmd_doctor(args)
