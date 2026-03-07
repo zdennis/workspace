@@ -64,6 +64,8 @@ module Workspace
         cmd_status(args)
       when "whereis"
         cmd_whereis(args)
+      when "version", "--version", "-v"
+        @output.puts "workspace #{Workspace::VERSION}"
       when "help", "--help", "-h", nil
         main_help
       else

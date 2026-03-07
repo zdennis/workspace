@@ -1,6 +1,7 @@
 require "optparse"
 require "json"
 require "fileutils"
+require_relative "workspace/version"
 require_relative "workspace/config"
 require_relative "workspace/state"
 require_relative "workspace/git"
