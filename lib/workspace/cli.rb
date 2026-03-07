@@ -96,7 +96,7 @@ module Workspace
           add             Add a tmuxinator config for a project directory
           kill            Kill active workspace projects and their tmux sessions
           relaunch        Kill and relaunch all active workspace projects
-          focus           Bring a project's tmux window to the front and shake it
+          focus           Bring a project's iTerm window to the front
           list-projects   List all available tmuxinator projects
           list            List currently active (launched) projects
           status          Show detailed state of tracked launcher sessions
