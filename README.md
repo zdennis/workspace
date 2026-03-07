@@ -62,114 +62,23 @@ workspace <subcommand> [options]
 
 ### Subcommands
 
-#### init
+| Subcommand | Docs | Description |
+|------------|------|-------------|
+| init | [README](docs/README.init.md) | Install tmuxinator templates and create config directory |
+| doctor | [README](docs/README.doctor.md) | Check that all required dependencies are installed |
+| launch | [README](docs/README.launch.md) | Launch tmuxinator projects in iTerm2 windows |
+| start | [README](docs/README.start.md) | Create a git worktree and launch it (from JIRA key, PR/issue URL, or branch) |
+| add | [README](docs/README.add.md) | Add a tmuxinator config for a project directory |
+| kill | [README](docs/README.kill.md) | Kill active workspace projects and their tmux sessions |
+| relaunch | [README](docs/README.relaunch.md) | Kill and relaunch all active workspace projects |
+| focus | [README](docs/README.focus.md) | Bring a project's tmux window to the front and shake it |
+| list-projects | [README](docs/README.list-projects.md) | List all available tmuxinator projects |
+| list | [README](docs/README.list.md) | List currently active (launched) projects |
+| status | [README](docs/README.status.md) | Show detailed state of tracked launcher sessions |
+| whereis | [README](docs/README.whereis.md) | Print the workspace installation directory |
+| version | [README](docs/README.version.md) | Print the workspace version |
 
-Install tmuxinator templates and create the config directory. Safe to run multiple times — skips files that are already up to date and won't overwrite modified templates unless forced.
-
-```sh
-workspace init            # install templates
-workspace init --dry-run  # preview what would happen
-workspace init --force    # overwrite modified templates
-```
-
-#### doctor
-
-Check that all required dependencies are installed and properly configured.
-
-```sh
-workspace doctor
-```
-
-Exits with a non-zero status if any issues are found, so it can be used in scripts.
-
-#### launch
-
-Launch tmuxinator projects in iTerm windows, arranged left-to-right on the active display.
-
-```sh
-workspace launch my-notes work-notes billing
-```
-
-Reuses existing launcher panes when available. Use `--reattach` to preserve tmux session state when reconnecting.
-
-#### start
-
-Create a git worktree and launch it as a workspace project. Run from within a git repository.
-
-```sh
-workspace start PROJ-123                                  # JIRA issue key
-workspace start https://mycompany.atlassian.net/.../123   # JIRA URL
-workspace start https://github.com/owner/repo/pull/471    # GitHub PR URL
-workspace start user/PROJ-123                             # Branch name
-```
-
-Creates the worktree in `.worktrees/` under the project root, generates a tmuxinator config, and launches it.
-
-#### kill
-
-Kill workspace projects and their tmux sessions.
-
-```sh
-workspace kill                  # kill all active projects
-workspace kill my-notes         # kill specific project
-```
-
-#### relaunch
-
-Kill all active projects and relaunch them.
-
-```sh
-workspace relaunch
-```
-
-#### focus
-
-Bring a project's iTerm window to the front and shake it.
-
-```sh
-workspace focus my-notes
-```
-
-#### add
-
-Add a tmuxinator config for a project directory.
-
-```sh
-workspace add ~/Code/my-project
-workspace add .                   # current directory
-```
-
-#### list-projects
-
-List all available tmuxinator projects.
-
-```sh
-workspace list-projects
-```
-
-#### list
-
-List currently active (launched) projects.
-
-```sh
-workspace list
-```
-
-#### status
-
-Show detailed state of tracked launcher sessions.
-
-```sh
-workspace status
-```
-
-#### whereis
-
-Print the workspace installation directory. Useful for debugging symlinked installs.
-
-```sh
-workspace whereis
-```
+Run `workspace <subcommand> --help` for subcommand-specific help.
 
 ## Project Structure
 
