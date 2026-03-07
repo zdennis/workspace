@@ -121,6 +121,45 @@ RSpec.describe Workspace::Commands::Start do
         expect(output.string).to include("Worktree already exists")
         expect(launch_command).to have_received(:call)
       end
+
+      it "writes .workspace-project marker in existing worktree" do
+        worktree_path = File.join(tmpdir, ".worktrees", "PROJ-123")
+        FileUtils.mkdir_p(worktree_path)
+
+        allow(git).to receive(:root).and_return(tmpdir)
+        allow(git).to receive(:parse_start_input).with("PROJ-123").and_return({type: :jira_key, value: "PROJ-123"})
+        allow(git).to receive(:sanitize_for_filesystem).with("PROJ-123").and_return("PROJ-123")
+        allow(git).to receive(:worktree_exists?).and_return(true)
+        allow(project_config).to receive(:create_worktree).and_return("myproject.worktree-PROJ-123")
+        allow(launch_command).to receive(:call)
+
+        command.call("PROJ-123")
+
+        marker = File.join(worktree_path, ".workspace-project")
+        expect(File.exist?(marker)).to be true
+        expect(File.read(marker)).to eq("myproject.worktree-PROJ-123")
+      end
+    end
+
+    context "with a new worktree" do
+      it "writes .workspace-project marker after creation" do
+        worktree_path = File.join(tmpdir, ".worktrees", "PROJ-456")
+
+        allow(git).to receive(:root).and_return(tmpdir)
+        allow(git).to receive(:parse_start_input).with("PROJ-456").and_return({type: :jira_key, value: "PROJ-456"})
+        allow(git).to receive(:sanitize_for_filesystem).with("PROJ-456").and_return("PROJ-456")
+        allow(git).to receive(:worktree_exists?).and_return(false)
+        allow(git).to receive(:branch_exists?).with("PROJ-456").and_return(true)
+        allow(git).to receive(:create_worktree) { FileUtils.mkdir_p(worktree_path) }
+        allow(project_config).to receive(:create_worktree).and_return("myproject.worktree-PROJ-456")
+        allow(launch_command).to receive(:call)
+
+        command.call("PROJ-456")
+
+        marker = File.join(worktree_path, ".workspace-project")
+        expect(File.exist?(marker)).to be true
+        expect(File.read(marker)).to eq("myproject.worktree-PROJ-456")
+      end
     end
   end
 end

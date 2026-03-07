@@ -254,12 +254,12 @@ RSpec.describe Workspace::CLI do
   end
 
   describe "#run with stop" do
-    it "exits 1 when no project specified" do
+    it "exits 1 when no project specified and no marker file found" do
       cli, _, error_output = build_test_cli
       expect { cli.run(["stop"]) }.to raise_error(SystemExit) { |e|
         expect(e.status).to eq(1)
       }
-      expect(error_output.string).to include("Usage: workspace stop")
+      expect(error_output.string).to include("No project specified")
     end
   end
 

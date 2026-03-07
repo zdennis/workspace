@@ -36,6 +36,7 @@ module Workspace
         if @git.worktree_exists?(worktree_path)
           @output.puts "Worktree already exists at: #{worktree_path}"
           config_name = @project_config.create_worktree(project_name, worktree_dir_name, worktree_path, branch_name)
+          write_project_marker(worktree_path, config_name)
           @output.puts "Launching #{config_name}..."
           prompts = prompt ? {config_name => prompt} : {}
           @launch_command.call([config_name], prompts: prompts)
@@ -56,6 +57,7 @@ module Workspace
         ensure_gitignore(root)
 
         config_name = @project_config.create_worktree(project_name, worktree_dir_name, worktree_path, branch_name)
+        write_project_marker(worktree_path, config_name)
         @output.puts "Launching #{config_name}..."
         prompts = prompt ? {config_name => prompt} : {}
         @launch_command.call([config_name], prompts: prompts)
@@ -112,6 +114,11 @@ module Workspace
         end
         @output.puts "Will create '#{branch_name}' from '#{base}'"
         {branch_name: branch_name, base_branch: base}
+      end
+
+      def write_project_marker(worktree_path, config_name)
+        return unless File.directory?(worktree_path)
+        File.write(File.join(worktree_path, ".workspace-project"), config_name)
       end
 
       def create_worktree_directory(root)

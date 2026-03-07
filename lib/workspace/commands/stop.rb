@@ -19,13 +19,21 @@ module Workspace
         @input = input
       end
 
+      MARKER_FILE = ".workspace-project"
+
       # Stops a worktree project: kills the session, removes the worktree, and cleans up config.
       #
-      # @param project [String] project/config name (as shown by workspace list)
+      # @param project [String, nil] project/config name, or nil to detect from cwd
       # @param force [Boolean] force worktree removal even with uncommitted changes
       # @return [void]
       # @raise [Workspace::Error] if the project config is not a worktree project
-      def call(project, force: false)
+      def call(project = nil, force: false)
+        project ||= detect_project
+        unless project
+          raise Workspace::Error,
+            "No project specified and no #{MARKER_FILE} found in current directory.\n" \
+            "Run from inside a worktree, or specify the project name."
+        end
         config_path = @project_config.config_path_for(project)
         unless File.exist?(config_path)
           raise Workspace::Error, "No config found for '#{project}'.\nRun 'workspace list' to see active projects."
@@ -58,6 +66,18 @@ module Workspace
       end
 
       private
+
+      def detect_project
+        dir = Dir.pwd
+        loop do
+          marker = File.join(dir, MARKER_FILE)
+          return File.read(marker).strip if File.exist?(marker)
+          parent = File.dirname(dir)
+          break if parent == dir
+          dir = parent
+        end
+        nil
+      end
 
       def read_worktree_path(config_path)
         config = YAML.safe_load_file(config_path)

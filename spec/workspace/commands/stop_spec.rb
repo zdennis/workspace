@@ -138,6 +138,54 @@ RSpec.describe Workspace::Commands::Stop do
       end
     end
 
+    context "with marker file auto-detection" do
+      it "detects project from .workspace-project in current directory" do
+        marker_dir = File.join(tmpdir, "worktree-dir")
+        Dir.mkdir(marker_dir)
+        File.write(File.join(marker_dir, ".workspace-project"), "myproject.worktree-PROJ-123")
+
+        File.write(config_path, YAML.dump("name" => "myproject-wt-PROJ-123", "root" => "/path/to/worktree"))
+        allow(git).to receive(:worktree_exists?).with("/path/to/worktree").and_return(true)
+        allow(git).to receive(:remove_worktree)
+        allow(kill_command).to receive(:call).and_return([])
+        allow(project_config).to receive(:remove)
+
+        allow(Dir).to receive(:pwd).and_return(marker_dir)
+
+        command.call(nil, force: true)
+
+        expect(kill_command).to have_received(:call).with(["myproject.worktree-PROJ-123"])
+        expect(output.string).to include("Stopped myproject.worktree-PROJ-123")
+      end
+
+      it "walks up directories to find .workspace-project" do
+        marker_dir = File.join(tmpdir, "worktree-dir")
+        sub_dir = File.join(marker_dir, "src", "lib")
+        FileUtils.mkdir_p(sub_dir)
+        File.write(File.join(marker_dir, ".workspace-project"), "myproject.worktree-PROJ-123")
+
+        File.write(config_path, YAML.dump("name" => "myproject-wt-PROJ-123", "root" => "/path/to/worktree"))
+        allow(git).to receive(:worktree_exists?).with("/path/to/worktree").and_return(true)
+        allow(git).to receive(:remove_worktree)
+        allow(kill_command).to receive(:call).and_return([])
+        allow(project_config).to receive(:remove)
+
+        allow(Dir).to receive(:pwd).and_return(sub_dir)
+
+        command.call(nil, force: true)
+
+        expect(kill_command).to have_received(:call).with(["myproject.worktree-PROJ-123"])
+      end
+
+      it "raises error when no marker file found and no project given" do
+        allow(Dir).to receive(:pwd).and_return(tmpdir)
+
+        expect { command.call(nil) }.to raise_error(
+          Workspace::Error, /No project specified/
+        )
+      end
+    end
+
     context "with corrupt config" do
       before do
         File.write(config_path, "{{invalid yaml")
