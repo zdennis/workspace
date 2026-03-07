@@ -1,21 +1,29 @@
 # workspace focus
 
-Bring a project's iTerm window to the front and shake it.
+Bring a project's iTerm window to the front.
 
 ## Usage
 
 ```sh
-workspace focus <project>
+workspace focus [options] <project>
 ```
+
+## Options
+
+| Option | Description |
+|--------|-------------|
+| `--shake` | Shake the window after focusing to draw attention |
 
 ## Details
 
-Finds the iTerm window for the specified project and brings it to the front. The window shakes briefly to draw your attention to it.
+Finds the iTerm window for the specified project by title and brings it to the front using `window-tool`.
 
-First checks for a saved window ID in the state file. If the saved window has disappeared, searches all iTerm windows by title and pane/session names.
-
-## Example
+## Examples
 
 ```sh
+# Focus a project window
 workspace focus my-notes
+
+# Focus and shake the window
+workspace focus --shake my-notes
 ```
