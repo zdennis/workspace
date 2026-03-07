@@ -17,8 +17,10 @@ require_relative "workspace/cli"
 
 # Workspace CLI for managing tmuxinator-based development workspaces in iTerm2.
 module Workspace
+  # Raised for runtime errors in workspace operations.
   class Error < StandardError; end
 
+  # Raised for invalid usage or missing required arguments.
   class UsageError < Error; end
 
   # Assembles the full dependency graph and returns a ready-to-run CLI instance.

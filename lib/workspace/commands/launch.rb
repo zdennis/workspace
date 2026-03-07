@@ -1,4 +1,5 @@
 module Workspace
+  # Command objects for complex workspace operations.
   module Commands
     # Orchestrates launching tmuxinator projects in iTerm2.
     # Validates configs, manages sessions, creates panes, polls for windows,
