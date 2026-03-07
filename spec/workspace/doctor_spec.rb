@@ -8,7 +8,7 @@ RSpec.describe Workspace::Doctor do
     doctor = described_class.new(config: config, output: output)
     begin
       doctor.run
-    rescue Workspace::Error, SystemExit
+    rescue Workspace::Error
       # Expected if dependencies are missing in test environment
     end
     expect(output.string).to include("workspace doctor")
@@ -19,7 +19,7 @@ RSpec.describe Workspace::Doctor do
     doctor = described_class.new(config: config, output: output)
     begin
       doctor.run
-    rescue Workspace::Error, SystemExit
+    rescue Workspace::Error
       # Expected if dependencies are missing
     end
     expect(output.string).to include("ruby")

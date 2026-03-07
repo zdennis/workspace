@@ -86,8 +86,7 @@ module Workspace
 
       @output.puts ""
       if issues > 0
-        @output.puts "#{issues} issue(s) found."
-        exit 1
+        raise Workspace::Error, "#{issues} issue(s) found."
       else
         @output.puts "Everything looks good!"
       end
