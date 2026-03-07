@@ -23,6 +23,12 @@ RSpec.describe Workspace::ProjectConfig do
       expect(root).to eq(File.expand_path("."))
     end
 
+    it "strips leading periods from directory names" do
+      name, root = pc.resolve_project_arg("/tmp/.bin-zdennis")
+      expect(name).to eq("bin-zdennis")
+      expect(root).to eq("/tmp/.bin-zdennis")
+    end
+
     it "returns [name, nil] for a plain name" do
       name, root = pc.resolve_project_arg("my-project")
       expect(name).to eq("my-project")

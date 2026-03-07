@@ -15,7 +15,7 @@ module Workspace
     def resolve_project_arg(arg)
       if arg == "." || arg.include?("/") || File.directory?(arg)
         root = File.expand_path(arg)
-        name = File.basename(root)
+        name = File.basename(root).sub(/^\.+/, "")
         [name, root]
       else
         [arg, nil]
