@@ -40,16 +40,15 @@ module Workspace
           return
         end
 
-        base_branch = resolve_or_create_branch(root, branch_name, worktree_dir_name, worktree_path)
-        return unless base_branch != :cancelled
+        result = resolve_or_create_branch(branch_name)
+        return if result == :cancelled
 
-        # Update in case branch selection changed them
-        worktree_dir_name = @git.sanitize_for_filesystem(@branch_name || branch_name)
+        branch_name = result[:branch_name]
+        worktree_dir_name = @git.sanitize_for_filesystem(branch_name)
         worktree_path = File.join(root, ".worktrees", worktree_dir_name)
-        branch_name = @branch_name || branch_name
 
         create_worktree_directory(root)
-        @git.create_worktree(worktree_path, branch_name, base: @base_branch)
+        @git.create_worktree(worktree_path, branch_name, base: result[:base_branch])
         @output.puts "Worktree created at: #{worktree_path}"
 
         ensure_gitignore(root)
@@ -75,28 +74,25 @@ module Workspace
         end
       end
 
-      def resolve_or_create_branch(root, branch_name, worktree_dir_name, worktree_path)
+      def resolve_or_create_branch(branch_name)
         @output.puts "Fetching remote branches..."
-        @branch_name = branch_name
-        @base_branch = nil
 
         if @git.branch_exists?(branch_name)
           @output.puts "Branch '#{branch_name}' exists."
-          return true
+          return {branch_name: branch_name, base_branch: nil}
         end
 
         matches = @git.find_matching_branches(branch_name)
         if matches.any?
           if matches.size == 1 && matches.first == branch_name
             @output.puts "Found exact remote match: #{branch_name}"
-            return true
+            return {branch_name: branch_name, base_branch: nil}
           end
 
           selected = @git.prompt_branch_selection(matches, branch_name)
           if selected
-            @branch_name = selected
-            @output.puts "Using branch: #{@branch_name}"
-            return true
+            @output.puts "Using branch: #{selected}"
+            return {branch_name: selected, base_branch: nil}
           end
 
           base = @git.prompt_base_branch
@@ -104,9 +100,8 @@ module Workspace
             @output.puts "Cancelled."
             return :cancelled
           end
-          @base_branch = base
           @output.puts "Will create '#{branch_name}' from '#{base}'"
-          return true
+          return {branch_name: branch_name, base_branch: base}
         end
 
         base = @git.prompt_base_branch
@@ -114,9 +109,8 @@ module Workspace
           @output.puts "Cancelled."
           return :cancelled
         end
-        @base_branch = base
         @output.puts "Will create '#{branch_name}' from '#{base}'"
-        true
+        {branch_name: branch_name, base_branch: base}
       end
 
       def create_worktree_directory(root)
