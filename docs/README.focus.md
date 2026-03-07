@@ -16,7 +16,7 @@ workspace focus [options] <project>
 
 ## Details
 
-Finds the iTerm window for the specified project by title and brings it to the front using `window-tool`.
+Finds the iTerm window for the specified project using its stored window ID and brings it to the front via `window-tool`.
 
 ## Examples
 
