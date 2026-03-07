@@ -7,18 +7,22 @@ RSpec.describe Workspace::Tmux do
   after { FileUtils.remove_entry(tmpdir) }
 
   describe "#command_for" do
-    it "returns tmuxinator command when not reattaching" do
+    it "returns tmuxinator command using the namespaced config name" do
       tmux = described_class.new(config: config)
-      expect(tmux.command_for("myproject")).to eq("tmuxinator start myproject --attach")
+      expect(tmux.command_for("myproject")).to eq("tmuxinator start workspace.myproject --attach")
     end
 
     it "returns tmuxinator command when reattaching but session does not exist" do
       tmux = described_class.new(config: config)
       allow(tmux).to receive(:sessions).and_return([])
-      expect(tmux.command_for("myproject", reattach: true)).to eq("tmuxinator start myproject --attach")
+      expect(tmux.command_for("myproject", reattach: true)).to eq("tmuxinator start workspace.myproject --attach")
     end
 
     it "returns tmux attach command when reattaching and session exists" do
+      config_path = config.config_path_for("myproject")
+      FileUtils.mkdir_p(File.dirname(config_path))
+      File.write(config_path, "name: myproject\nroot: /tmp\n")
+
       tmux = described_class.new(config: config)
       allow(tmux).to receive(:sessions).and_return(["myproject"])
       expect(tmux.command_for("myproject", reattach: true)).to eq("tmux -CC attach -t myproject")

@@ -97,9 +97,9 @@ module Workspace
 
     # @return [Array<String>] sorted list of available project names
     def available_projects
-      Dir.glob(File.join(@config.tmuxinator_dir, "*.yml"))
-        .map { |f| File.basename(f, ".yml") }
-        .reject { |n| n.match?(/^(project|workspace\.project)-.*template$/) }
+      Dir.glob(File.join(@config.tmuxinator_dir, "workspace.*.yml"))
+        .map { |f| File.basename(f, ".yml").delete_prefix("workspace.") }
+        .reject { |n| n.match?(/^project-.*template$/) }
         .sort
     end
   end

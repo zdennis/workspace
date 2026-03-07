@@ -43,7 +43,7 @@ RSpec.describe Workspace::Config do
 
     it "builds the expected config file path" do
       expect(config.config_path_for("my-project")).to eq(
-        File.join(File.expand_path("~/.config/tmuxinator"), "my-project.yml")
+        File.join(File.expand_path("~/.config/tmuxinator"), "workspace.my-project.yml")
       )
     end
   end

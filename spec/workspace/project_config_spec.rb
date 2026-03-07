@@ -9,7 +9,7 @@ RSpec.describe Workspace::ProjectConfig do
 
   before do
     allow(config).to receive(:tmuxinator_dir).and_return(tmpdir)
-    allow(config).to receive(:config_path_for) { |name| File.join(tmpdir, "#{name}.yml") }
+    allow(config).to receive(:config_path_for) { |name| File.join(tmpdir, "workspace.#{name}.yml") }
   end
 
   after { FileUtils.remove_entry(tmpdir) }
@@ -46,14 +46,14 @@ RSpec.describe Workspace::ProjectConfig do
       result = pc.create("myapp", "/home/user/myapp")
       expect(result).to eq("myapp")
 
-      content = File.read(File.join(tmpdir, "myapp.yml"))
+      content = File.read(File.join(tmpdir, "workspace.myapp.yml"))
       expect(content).to include("name: myapp")
       expect(content).to include("root: /home/user/myapp")
-      expect(content).to include("config: #{File.join(tmpdir, "myapp.yml")}")
+      expect(content).to include("config: #{File.join(tmpdir, "workspace.myapp.yml")}")
     end
 
     it "skips creation when config already exists" do
-      File.write(File.join(tmpdir, "existing.yml"), "name: existing\n")
+      File.write(File.join(tmpdir, "workspace.existing.yml"), "name: existing\n")
       result = pc.create("existing", "/tmp/existing")
       expect(result).to eq("existing")
       expect(output.string).to include("Config already exists")
@@ -78,7 +78,7 @@ RSpec.describe Workspace::ProjectConfig do
       result = pc.create_worktree("myapp", "PROJ-123", "/tmp/worktrees/PROJ-123", "PROJ-123")
 
       expect(result).to eq("myapp.worktree-PROJ-123")
-      content = File.read(File.join(tmpdir, "myapp.worktree-PROJ-123.yml"))
+      content = File.read(File.join(tmpdir, "workspace.myapp.worktree-PROJ-123.yml"))
       expect(content).to include("name: myapp-wt-PROJ-123")
       expect(content).to include("root: /tmp/worktrees/PROJ-123")
       expect(content).to include("project: myapp")
@@ -98,7 +98,7 @@ RSpec.describe Workspace::ProjectConfig do
     subject(:pc) { described_class.new(config: config, output: output, git: git) }
 
     it "returns true when config file exists" do
-      File.write(File.join(tmpdir, "myapp.yml"), "name: myapp\n")
+      File.write(File.join(tmpdir, "workspace.myapp.yml"), "name: myapp\n")
       expect(pc.exists?("myapp")).to be true
     end
 
@@ -111,10 +111,11 @@ RSpec.describe Workspace::ProjectConfig do
     subject(:pc) { described_class.new(config: config, output: output, git: git) }
 
     it "returns sorted project names excluding templates" do
-      File.write(File.join(tmpdir, "beta.yml"), "")
-      File.write(File.join(tmpdir, "alpha.yml"), "")
+      File.write(File.join(tmpdir, "workspace.beta.yml"), "")
+      File.write(File.join(tmpdir, "workspace.alpha.yml"), "")
       File.write(File.join(tmpdir, "workspace.project-worktree-template.yml"), "")
       File.write(File.join(tmpdir, "workspace.project-template.yml"), "")
+      File.write(File.join(tmpdir, "other-tool.yml"), "")
 
       expect(pc.available_projects).to eq(["alpha", "beta"])
     end

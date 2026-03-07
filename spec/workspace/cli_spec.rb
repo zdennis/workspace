@@ -93,7 +93,7 @@ module CLITestHelpers
     end
 
     def config_path_for(name)
-      "~/.config/tmuxinator/#{name}.yml"
+      "~/.config/tmuxinator/workspace.#{name}.yml"
     end
 
     def exists?(_name)

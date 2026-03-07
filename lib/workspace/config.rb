@@ -42,7 +42,7 @@ module Workspace
     # @param name [String] the project name
     # @return [String] path to the tmuxinator config file for the given project
     def config_path_for(name)
-      File.join(tmuxinator_dir, "#{name}.yml")
+      File.join(tmuxinator_dir, "workspace.#{name}.yml")
     end
   end
 end
