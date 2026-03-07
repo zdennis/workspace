@@ -46,7 +46,13 @@ This creates `~/.config/tmuxinator/` (if needed) and copies the project template
 workspace init --dry-run
 ```
 
-3. Ensure `window-tool` is on your PATH (see [window-tool](https://github.com/zdennis/window-tool)).
+3. Run the doctor command to verify all dependencies are installed:
+
+```sh
+workspace doctor
+```
+
+This checks for all required tools and provides install instructions for anything missing.
 
 ## Usage
 
