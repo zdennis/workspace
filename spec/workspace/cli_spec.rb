@@ -230,12 +230,13 @@ RSpec.describe Workspace::CLI do
   end
 
   describe "#run with relaunch" do
-    it "raises error when no active projects" do
+    it "exits 1 when no active projects" do
       cli, _, error_output = build_test_cli
       expect { cli.run(["relaunch"]) }.to raise_error(SystemExit) { |e|
         expect(e.status).to eq(1)
       }
       expect(error_output.string).to include("No active workspace projects to relaunch")
+      expect(error_output.string).not_to include("Error:")
     end
 
     it "kills and relaunches active projects" do

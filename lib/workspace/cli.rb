@@ -263,7 +263,8 @@ module Workspace
 
       @state.load
       if @state.empty?
-        raise Error, "No active workspace projects to relaunch."
+        @error_output.puts "No active workspace projects to relaunch."
+        exit 1
       end
 
       projects = @state.keys.dup
