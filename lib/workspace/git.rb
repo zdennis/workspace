@@ -94,7 +94,7 @@ module Workspace
         return {type: :pr_url, value: input}
       end
 
-      if (match = input.match(%r{https?://github\.com/.+/.+/issues?/(\d+)}))
+      if (match = input.match(%r{https?://github\.com/.+/.+/issues/(\d+)}))
         return {type: :issue_url, value: "issue-#{match[1]}"}
       end
 

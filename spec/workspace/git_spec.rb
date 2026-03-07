@@ -21,9 +21,9 @@ RSpec.describe Workspace::Git do
       expect(result).to eq({type: :issue_url, value: "issue-42"})
     end
 
-    it "parses a GitHub issue URL with singular path" do
+    it "treats singular /issue/ path as a branch (GitHub only uses /issues/)" do
       result = git.parse_start_input("https://github.com/owner/repo/issue/42")
-      expect(result).to eq({type: :issue_url, value: "issue-42"})
+      expect(result).to eq({type: :branch, value: "https://github.com/owner/repo/issue/42"})
     end
 
     it "parses a JIRA key" do
