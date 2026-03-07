@@ -51,10 +51,8 @@ module Workspace
     def session_name_for(config_name)
       config_path = @config.config_path_for(config_name)
       return config_name unless File.exist?(config_path)
-      File.readlines(config_path).each do |line|
-        if line.match?(/^name:\s/)
-          return line.split(/\s+/, 2).last.strip
-        end
+      File.foreach(config_path) do |line|
+        return line.split(/\s+/, 2).last.strip if line.match?(/^name:\s/)
       end
       config_name
     end
