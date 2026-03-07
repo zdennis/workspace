@@ -350,14 +350,9 @@ module Workspace
       project = args[0]
       spec = args[1]
 
-      layout_command = Commands::Layout.new(
-        state: @state,
-        tmux: @tmux,
-        output: @output
-      )
       Commands::Resize.new(
         tmux: @tmux,
-        layout_command: layout_command,
+        layout_command: build_layout_command,
         output: @output,
         error_output: @error_output
       ).call(project, spec)
@@ -373,20 +368,29 @@ module Workspace
         raise UsageError, layout_help_text if args.empty?
         project = args[0]
         name = args[1] || Commands::Layout::DEFAULT_NAME
-        Commands::Layout.new(state: @state, tmux: @tmux, output: @output).save(project, name)
+        build_layout_command.save(project, name)
       when "restore"
         raise UsageError, layout_help_text if args.empty?
         project = args[0]
         name = args[1] || Commands::Layout::DEFAULT_NAME
-        Commands::Layout.new(state: @state, tmux: @tmux, output: @output).restore(project, name)
+        build_layout_command.restore(project, name)
       when "list"
         raise UsageError, layout_help_text if args.empty?
-        Commands::Layout.new(state: @state, tmux: @tmux, output: @output).list(args[0])
+        build_layout_command.list(args[0])
       when "help", "--help", "-h", nil
         layout_help
       else
         raise UsageError, "Unknown layout subcommand: #{subcommand}\n\n" + layout_help_text
       end
+    end
+
+    def build_layout_command
+      Commands::Layout.new(
+        state: @state,
+        tmux: @tmux,
+        project_settings: @project_settings,
+        output: @output
+      )
     end
 
     def layout_help
