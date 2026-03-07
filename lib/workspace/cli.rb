@@ -207,10 +207,16 @@ module Workspace
     end
 
     def cmd_focus(args)
+      shake = false
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace focus <project>"
+        opts.banner = "Usage: workspace focus [options] <project>"
         opts.separator ""
-        opts.separator "Bring the project's tmux window to the front and shake it."
+        opts.separator "Bring the project's iTerm window to the front."
+        opts.separator ""
+        opts.separator "Options:"
+        opts.on("--shake", "Shake the window after focusing") do
+          shake = true
+        end
       end
       parser.parse!(args)
 
@@ -220,7 +226,7 @@ module Workspace
         state: @state,
         window_manager: @window_manager,
         output: @output
-      ).call(args.first)
+      ).call(args.first, shake: shake)
     end
 
     def cmd_init(args)

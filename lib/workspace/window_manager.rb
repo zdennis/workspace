@@ -73,39 +73,18 @@ module Workspace
       (result == "not_found") ? nil : result
     end
 
-    # @param window_id [String, Integer] iTerm window ID
-    # @return [String] "ok" or "not_found"
-    def focus_and_shake(window_id)
-      script = <<~APPLESCRIPT
-        tell application "iTerm2"
-          try
-            set targetWindow to window id #{window_id}
-          on error
-            return "not_found"
-          end try
-          activate
-          select targetWindow
+    # @param title [String] window title pattern to match
+    # @return [Boolean] whether a window was focused
+    def focus_by_title(title)
+      _, _, status = Open3.capture3(@config.window_tool, "focus-by-title", title)
+      status.success?
+    end
 
-          -- shake
-          tell targetWindow
-            set winBounds to bounds
-            set curX to item 1 of winBounds
-            set curY to item 2 of winBounds
-            set winWidth to (item 3 of winBounds) - curX
-            set winHeight to (item 4 of winBounds) - curY
-            set shakeOffset to 12
-            repeat 6 times
-              set bounds to {curX + shakeOffset, curY, curX + winWidth + shakeOffset, curY + winHeight}
-              delay 0.04
-              set bounds to {curX - shakeOffset, curY, curX + winWidth - shakeOffset, curY + winHeight}
-              delay 0.04
-            end repeat
-            set bounds to {curX, curY, curX + winWidth, curY + winHeight}
-          end tell
-          return "ok"
-        end tell
-      APPLESCRIPT
-      execute_applescript(script)
+    # @param title [String] window title pattern to match
+    # @return [Boolean] whether a window was shaken
+    def shake_by_title(title)
+      _, _, status = Open3.capture3(@config.window_tool, "shake-by-title", title)
+      status.success?
     end
 
     # @param window_id [String, Integer] iTerm window ID

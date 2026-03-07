@@ -1,7 +1,6 @@
 module Workspace
   module Commands
-    # Brings a project's iTerm window to the front and shakes it.
-    # Looks up saved window IDs from state, falls back to live search.
+    # Brings a project's iTerm window to the front, optionally shaking it.
     class Focus
       # @param state [Workspace::State] state persistence
       # @param window_manager [Workspace::WindowManager] iTerm window operations
@@ -12,37 +11,23 @@ module Workspace
         @output = output
       end
 
-      # Focuses the given project's iTerm window and shakes it.
+      # Focuses the given project's iTerm window, optionally shaking it.
       #
       # @param project [String] project name
+      # @param shake [Boolean] whether to shake the window after focusing
       # @return [void]
-      # @raise [Workspace::Error] if no window is found or it has disappeared
-      def call(project)
-        @state.load
-        window_id = @state.dig(project, "iterm_window_id")
+      # @raise [Workspace::Error] if no window is found
+      def call(project, shake: false)
+        title = "workspace-#{project}"
 
-        unless window_id
-          result = @window_manager.find_window_for_project(project)
-          if result
-            window_id = result.to_i
-            @state[project] = (@state[project] || {}).merge("iterm_window_id" => window_id)
-            @state.save
-          end
-        end
-
-        unless window_id
+        @output.puts "Focusing #{project}..."
+        unless @window_manager.focus_by_title(title)
           raise Workspace::Error,
             "No iTerm window found for '#{project}'\n" \
             "Run 'workspace launch #{project}' first, or 'workspace status' to see tracked projects."
         end
 
-        @output.puts "Focusing #{project}..."
-        result = @window_manager.focus_and_shake(window_id)
-        if result == "not_found"
-          raise Workspace::Error,
-            "iTerm window #{window_id} no longer exists for '#{project}'\n" \
-            "Run 'workspace launch #{project}' to relaunch."
-        end
+        @window_manager.shake_by_title(title) if shake
       end
     end
   end
