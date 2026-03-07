@@ -20,8 +20,10 @@ module Workspace
     def arrange(project_window_ids)
       return if project_window_ids.empty?
 
-      screen_info, _ = Open3.capture2(@config.window_tool, "active-screen")
-      screen_x, screen_y, screen_w, screen_h = screen_info.strip.split("\t").map(&:to_i)
+      require "json"
+      screen_json, _ = Open3.capture2(@config.window_tool, "active-screen", "--json")
+      screen = JSON.parse(screen_json)
+      screen_x, screen_y, screen_w, screen_h = screen.values_at("x", "y", "width", "height")
 
       positions = calculate_positions(
         screen_x: screen_x, screen_y: screen_y,

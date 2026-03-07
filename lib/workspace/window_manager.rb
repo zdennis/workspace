@@ -96,20 +96,14 @@ module Workspace
       Set.new(windows.map { |w| w["window_id"] })
     end
 
-    # @param window_id [String, Integer] iTerm window ID
+    # @param window_id [String, Integer] window ID (CGWindowID)
     # @param x [Integer] x position
     # @param y [Integer] y position
     # @param width [Integer] window width
     # @param height [Integer] window height
     # @return [void]
     def set_window_bounds(window_id, x, y, width, height)
-      script = <<~APPLESCRIPT
-        tell application "iTerm2"
-          set targetWindow to window id #{window_id}
-          set bounds of targetWindow to {#{x}, #{y}, #{x + width}, #{y + height}}
-        end tell
-      APPLESCRIPT
-      system("osascript", "-e", script)
+      system(@config.window_tool, "move", "id=#{window_id}", x.to_s, y.to_s, width.to_s, height.to_s)
     end
 
     # @param window_id [String, Integer] iTerm window ID
@@ -128,7 +122,7 @@ module Workspace
     # @return [Array<Array<String>>] parsed window-tool list output
     def window_titles
       output, _ = Open3.capture2(@config.window_tool, "list")
-      output.lines.map { |line| line.strip.split("\t", 4) }
+      output.lines.drop(1).map { |line| line.strip.split("\t", 5) }
     end
 
     private
