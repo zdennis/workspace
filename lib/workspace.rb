@@ -6,6 +6,7 @@ require_relative "workspace/config"
 require_relative "workspace/state"
 require_relative "workspace/git"
 require_relative "workspace/doctor"
+require_relative "workspace/tmux"
 
 # Workspace CLI for managing tmuxinator-based development workspaces in iTerm2.
 #
@@ -21,6 +22,7 @@ module Workspace
 
   CONFIG = Config.new
   GIT = Git.new
+  TMUX = Tmux.new(config: CONFIG)
 
   WORKSPACE_DIR = CONFIG.workspace_dir
   TMUXINATOR_DIR = CONFIG.tmuxinator_dir
@@ -132,18 +134,8 @@ module Workspace
     name
   end
 
-  # Read the tmux session name from a tmuxinator config file.
-  # The config filename (minus .yml) may differ from the tmux session name
-  # (e.g., worktree configs use abbreviated names for tmux).
   def tmux_session_name_for(config_name)
-    config_path = File.join(TMUXINATOR_DIR, "#{config_name}.yml")
-    return config_name unless File.exist?(config_path)
-    File.readlines(config_path).each do |line|
-      if line.match?(/^name:\s/)
-        return line.split(/\s+/, 2).last.strip
-      end
-    end
-    config_name
+    TMUX.session_name_for(config_name)
   end
 
   def load_state
@@ -315,15 +307,11 @@ module Workspace
   end
 
   def tmux_sessions
-    `tmux list-sessions -F '\#{session_name}' 2>/dev/null`.strip.lines.map(&:strip)
+    TMUX.sessions
   end
 
   def tmux_command_for(project, reattach: false)
-    if reattach && tmux_sessions.include?(project)
-      "tmux -CC attach -t #{project}"
-    else
-      "tmuxinator start #{project} --attach"
-    end
+    TMUX.command_for(project, reattach: reattach)
   end
 
   def launch(args)
@@ -369,7 +357,7 @@ module Workspace
     end
 
     # Step 1: Ensure the tmux server is running
-    system("tmux", "start-server")
+    TMUX.start_server
 
     # Step 2: Load state and check which sessions still exist
     state = load_state
@@ -419,12 +407,12 @@ module Workspace
     while sessions_ready.size < projects.size && elapsed < max_wait
       sleep 1
       elapsed += 1
-      existing_tmux = `tmux list-sessions -F '\#{session_name}' 2>/dev/null`.strip.lines.map(&:strip)
+      existing_tmux = TMUX.sessions
       projects.each do |project|
         next if sessions_ready.include?(project)
         tmux_name = session_names[project]
         if existing_tmux.include?(tmux_name)
-          system("tmux", "rename-window", "-t", "#{tmux_name}:0", "#{window_prefix}-#{tmux_name}")
+          TMUX.rename_window(tmux_name, 0, "#{window_prefix}-#{tmux_name}")
           sessions_ready << project
           puts "  Session ready: #{project} (tmux: #{tmux_name})"
         end
@@ -717,7 +705,7 @@ module Workspace
     projects.each do |project|
       if tmux_sessions.include?(project)
         puts "Killing tmux session: #{project}"
-        system("tmux", "kill-session", "-t", project)
+        TMUX.kill_session(project)
       end
     end
 
