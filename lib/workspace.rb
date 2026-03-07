@@ -12,6 +12,7 @@ require_relative "workspace/window_layout"
 require_relative "workspace/commands/launch"
 require_relative "workspace/commands/kill"
 require_relative "workspace/commands/focus"
+require_relative "workspace/commands/start"
 
 # Workspace CLI for managing tmuxinator-based development workspaces in iTerm2.
 #
@@ -326,68 +327,6 @@ module Workspace
     end
   end
 
-  # --- Worktree / start helpers ---
-
-  def sanitize_for_filesystem(name)
-    GIT.sanitize_for_filesystem(name)
-  end
-
-  def git_root
-    GIT.root
-  end
-
-  def git_default_branch
-    GIT.default_branch
-  end
-
-  def git_current_branch
-    GIT.current_branch
-  end
-
-  def git_branch_exists?(name)
-    GIT.branch_exists?(name)
-  end
-
-  def git_local_branch_exists?(name)
-    GIT.local_branch_exists?(name)
-  end
-
-  def git_remote_branch_exists?(name)
-    GIT.remote_branch_exists?(name)
-  end
-
-  def git_fetch_remote_branches
-    GIT.fetch_remote_branches
-  end
-
-  def git_find_matching_branches(pattern)
-    GIT.find_matching_branches(pattern)
-  end
-
-  def git_worktree_exists?(path)
-    GIT.worktree_exists?(path)
-  end
-
-  def parse_start_input(input)
-    GIT.parse_start_input(input)
-  end
-
-  def resolve_branch_from_pr(pr_url)
-    GIT.resolve_branch_from_pr(pr_url)
-  end
-
-  def prompt_branch_selection(matches, pattern)
-    GIT.prompt_branch_selection(matches, pattern)
-  end
-
-  def prompt_base_branch
-    GIT.prompt_base_branch
-  end
-
-  def create_worktree_config(project_name, worktree_name, worktree_path, branch_name)
-    PROJECT_CONFIG.create_worktree(project_name, worktree_name, worktree_path, branch_name)
-  end
-
   def start_worktree(args)
     parser = OptionParser.new do |opts|
       opts.banner = "Usage: workspace start <jira-key|jira-url|pr-url|branch>"
@@ -409,100 +348,22 @@ module Workspace
       exit 1
     end
 
-    root = git_root
-    unless root
-      warn "Error: Not inside a git repository."
-      exit 1
-    end
-
-    project_name = File.basename(root).sub(/^\.+/, "")
-    input = args.first
-    parsed = parse_start_input(input)
-
-    # Resolve to a branch name
-    case parsed[:type]
-    when :pr_url
-      puts "Fetching PR details..."
-      branch_name = resolve_branch_from_pr(parsed[:value])
-      puts "PR branch: #{branch_name}"
-    when :jira_key
-      branch_name = parsed[:value]
-    when :branch
-      branch_name = parsed[:value]
-    end
-
-    worktree_dir_name = sanitize_for_filesystem(branch_name)
-    worktree_path = File.join(root, ".worktrees", worktree_dir_name)
-
-    # Check if worktree already exists
-    if git_worktree_exists?(worktree_path)
-      puts "Worktree already exists at: #{worktree_path}"
-      config_name = create_worktree_config(project_name, worktree_dir_name, worktree_path, branch_name)
-      puts "Launching #{config_name}..."
-      launch([config_name])
-      return
-    end
-
-    # Fetch and check for branch
-    puts "Fetching remote branches..."
-    if git_branch_exists?(branch_name)
-      puts "Branch '#{branch_name}' exists."
-    else
-      # Fuzzy match against remote branches
-      matches = git_find_matching_branches(branch_name)
-      if matches.any?
-        if matches.size == 1 && matches.first == branch_name
-          branch_name = matches.first
-          puts "Found exact remote match: #{branch_name}"
-        else
-          selected = prompt_branch_selection(matches, branch_name)
-          if selected
-            branch_name = selected
-            worktree_dir_name = sanitize_for_filesystem(branch_name)
-            worktree_path = File.join(root, ".worktrees", worktree_dir_name)
-            puts "Using branch: #{branch_name}"
-          else
-            base = prompt_base_branch
-            unless base
-              puts "Cancelled."
-              return
-            end
-            puts "Will create '#{branch_name}' from '#{base}'"
-          end
-        end
-      else
-        # No matches at all
-        base = prompt_base_branch
-        unless base
-          puts "Cancelled."
-          return
-        end
-        puts "Will create '#{branch_name}' from '#{base}'"
-      end
-    end
-
-    # Create .worktrees directory
-    worktrees_dir = File.join(root, ".worktrees")
-    Dir.mkdir(worktrees_dir) unless File.directory?(worktrees_dir)
-
-    # Create the worktree
-    base_branch = defined?(base) ? base : nil
-    GIT.create_worktree(worktree_path, branch_name, base: base_branch)
-    puts "Worktree created at: #{worktree_path}"
-
-    # Ensure .worktrees is in .gitignore
-    gitignore = File.join(root, ".gitignore")
-    if File.exist?(gitignore)
-      unless File.read(gitignore).include?(".worktrees")
-        File.open(gitignore, "a") { |f| f.puts ".worktrees" }
-        puts "Added .worktrees to .gitignore"
-      end
-    end
-
-    # Create tmuxinator config and launch
-    config_name = create_worktree_config(project_name, worktree_dir_name, worktree_path, branch_name)
-    puts "Launching #{config_name}..."
-    launch([config_name])
+    launch_command = Commands::Launch.new(
+      state: State.new(config: CONFIG),
+      iterm: ITERM,
+      tmux: TMUX,
+      project_config: PROJECT_CONFIG,
+      window_layout: WINDOW_LAYOUT
+    )
+    start_command = Commands::Start.new(
+      git: GIT,
+      project_config: PROJECT_CONFIG,
+      launch_command: launch_command
+    )
+    start_command.call(args.first)
+  rescue Workspace::Error => e
+    warn "Error: #{e.message}"
+    exit 1
   end
 
   def whereis(args)
