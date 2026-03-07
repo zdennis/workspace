@@ -2,6 +2,7 @@ require "optparse"
 require "open3"
 require "json"
 require "fileutils"
+require_relative "workspace/config"
 
 # Workspace CLI for managing tmuxinator-based development workspaces in iTerm2.
 #
@@ -11,12 +12,14 @@ require "fileutils"
 module Workspace
   module_function
 
-  WORKSPACE_DIR = File.expand_path("..", __dir__)
-  TMUXINATOR_DIR = File.expand_path("~/.config/tmuxinator")
-  TMUXINATOR_TEMPLATE = File.join(TMUXINATOR_DIR, "project-template.yml")
-  TMUXINATOR_WORKTREE_TEMPLATE = File.join(TMUXINATOR_DIR, "project-worktree-template.yml")
-  WINDOW_TOOL = "window-tool"
-  STATE_FILE = File.expand_path("~/.workspace-state.json")
+  CONFIG = Config.new
+
+  WORKSPACE_DIR = CONFIG.workspace_dir
+  TMUXINATOR_DIR = CONFIG.tmuxinator_dir
+  TMUXINATOR_TEMPLATE = CONFIG.project_template_path
+  TMUXINATOR_WORKTREE_TEMPLATE = CONFIG.worktree_template_path
+  WINDOW_TOOL = CONFIG.window_tool
+  STATE_FILE = CONFIG.state_file
 
   # Entry point for the CLI. Dispatches to the appropriate subcommand.
   #
