@@ -4,3 +4,4 @@ bin/dev/
 .bundle/
 .claude/settings.local.json
 .yardoc/
+.worktrees
