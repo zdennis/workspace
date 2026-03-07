@@ -18,16 +18,23 @@ module Workspace
       # @return [void]
       # @raise [Workspace::Error] if no window is found
       def call(project, shake: false)
-        title = "workspace-#{project}"
+        @state.load
+        window_id = @state.dig(project, "iterm_window_id")
 
-        @output.puts "Focusing #{project}..."
-        unless @window_manager.focus_by_title(title)
+        unless window_id
           raise Workspace::Error,
             "No iTerm window found for '#{project}'\n" \
             "Run 'workspace launch #{project}' first, or 'workspace status' to see tracked projects."
         end
 
-        @window_manager.shake_by_title(title) if shake
+        @output.puts "Focusing #{project}..."
+        unless @window_manager.focus_by_id(window_id)
+          raise Workspace::Error,
+            "iTerm window #{window_id} no longer exists for '#{project}'\n" \
+            "Run 'workspace launch #{project}' to relaunch."
+        end
+
+        @window_manager.shake_by_id(window_id) if shake
       end
     end
   end

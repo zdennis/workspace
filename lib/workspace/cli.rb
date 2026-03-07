@@ -338,8 +338,8 @@ module Workspace
         return
       end
 
-      existing = @iterm.find_existing_sessions(@state)
-      active = @state.keys.select { |p| existing.key?(p) }
+      live_ids = @window_manager.live_window_ids
+      active = @state.keys.select { |p| live_ids.include?(@state.dig(p, "iterm_window_id")) }
 
       if active.empty?
         @output.puts "No active projects."

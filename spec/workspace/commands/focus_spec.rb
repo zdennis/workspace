@@ -3,49 +3,75 @@ require "tmpdir"
 RSpec.describe Workspace::Commands::Focus do
   let(:tmpdir) { Dir.mktmpdir }
   let(:config) { Workspace::Config.new(workspace_dir: tmpdir) }
+  let(:state_file) { File.join(tmpdir, "state.json") }
+  let(:state) do
+    s = Workspace::State.new(config: config)
+    allow(config).to receive(:state_file).and_return(state_file)
+    s
+  end
   let(:output) { StringIO.new }
   let(:window_manager) { double("window_manager") }
 
   subject(:command) do
-    described_class.new(state: Workspace::State.new(config: config), window_manager: window_manager, output: output)
+    described_class.new(state: state, window_manager: window_manager, output: output)
   end
 
   after { FileUtils.remove_entry(tmpdir) }
 
   describe "#call" do
-    it "focuses window by title pattern" do
-      allow(window_manager).to receive(:focus_by_title).with("workspace-myproject").and_return(true)
+    it "focuses window by stored window ID" do
+      state["myproject"] = {"unique_id" => "uid1", "iterm_window_id" => 42}
+      state.save
+
+      allow(window_manager).to receive(:focus_by_id).with(42).and_return(true)
 
       command.call("myproject")
 
-      expect(window_manager).to have_received(:focus_by_title).with("workspace-myproject")
+      expect(window_manager).to have_received(:focus_by_id).with(42)
       expect(output.string).to include("Focusing myproject")
     end
 
     it "shakes window when shake: true" do
-      allow(window_manager).to receive(:focus_by_title).with("workspace-myproject").and_return(true)
-      allow(window_manager).to receive(:shake_by_title).with("workspace-myproject").and_return(true)
+      state["myproject"] = {"unique_id" => "uid1", "iterm_window_id" => 42}
+      state.save
+
+      allow(window_manager).to receive(:focus_by_id).with(42).and_return(true)
+      allow(window_manager).to receive(:shake_by_id).with(42).and_return(true)
 
       command.call("myproject", shake: true)
 
-      expect(window_manager).to have_received(:focus_by_title).with("workspace-myproject")
-      expect(window_manager).to have_received(:shake_by_title).with("workspace-myproject")
+      expect(window_manager).to have_received(:focus_by_id).with(42)
+      expect(window_manager).to have_received(:shake_by_id).with(42)
     end
 
     it "does not shake when shake: false" do
-      allow(window_manager).to receive(:focus_by_title).with("workspace-myproject").and_return(true)
-      allow(window_manager).to receive(:shake_by_title)
+      state["myproject"] = {"unique_id" => "uid1", "iterm_window_id" => 42}
+      state.save
+
+      allow(window_manager).to receive(:focus_by_id).with(42).and_return(true)
+      allow(window_manager).to receive(:shake_by_id)
 
       command.call("myproject")
 
-      expect(window_manager).not_to have_received(:shake_by_title)
+      expect(window_manager).not_to have_received(:shake_by_id)
     end
 
-    it "raises Workspace::Error when no window is found" do
-      allow(window_manager).to receive(:focus_by_title).with("workspace-myproject").and_return(false)
+    it "raises Workspace::Error when no window ID in state" do
+      state.save
 
       expect { command.call("myproject") }.to raise_error(
         Workspace::Error, /No iTerm window found for 'myproject'/
+      )
+    end
+
+    it "raises Workspace::Error when window no longer exists" do
+      state["myproject"] = {"unique_id" => "uid1", "iterm_window_id" => 42}
+      state.save
+
+      allow(window_manager).to receive(:focus_by_id).with(42).and_return(false)
+
+      expect { command.call("myproject") }.to raise_error(
+        Workspace::Error, /no longer exists/
       )
     end
   end

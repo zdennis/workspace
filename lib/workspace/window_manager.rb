@@ -73,18 +73,27 @@ module Workspace
       (result == "not_found") ? nil : result
     end
 
-    # @param title [String] window title pattern to match
-    # @return [Boolean] whether a window was focused
-    def focus_by_title(title)
-      _, _, status = Open3.capture3(@config.window_tool, "focus-by-title", title)
+    # @param window_id [String, Integer] window ID (CGWindowID)
+    # @return [Boolean] whether the window was focused
+    def focus_by_id(window_id)
+      _, _, status = Open3.capture3(@config.window_tool, "focus", "id=#{window_id}")
       status.success?
     end
 
-    # @param title [String] window title pattern to match
-    # @return [Boolean] whether a window was shaken
-    def shake_by_title(title)
-      _, _, status = Open3.capture3(@config.window_tool, "shake-by-title", title)
+    # @param window_id [String, Integer] window ID (CGWindowID)
+    # @return [Boolean] whether the window was shaken
+    def shake_by_id(window_id)
+      _, _, status = Open3.capture3(@config.window_tool, "shake", "id=#{window_id}")
       status.success?
+    end
+
+    # @return [Set<Integer>] set of window IDs for all current iTerm windows
+    def live_window_ids
+      require "json"
+      output, _, status = Open3.capture3(@config.window_tool, "list", "--json")
+      return Set.new unless status.success?
+      windows = JSON.parse(output)
+      Set.new(windows.map { |w| w["window_id"] })
     end
 
     # @param window_id [String, Integer] iTerm window ID
