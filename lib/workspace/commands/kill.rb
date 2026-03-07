@@ -89,9 +89,10 @@ module Workspace
 
       def kill_tmux_sessions(targets)
         targets.each do |project|
-          if @tmux.sessions.include?(project)
-            @output.puts "Killing tmux session: #{project}"
-            @tmux.kill_session(project)
+          session_name = @tmux.session_name_for(project)
+          if @tmux.sessions.include?(session_name)
+            @output.puts "Killing tmux session: #{session_name}"
+            @tmux.kill_session(session_name)
           end
         end
       end
