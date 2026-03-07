@@ -88,12 +88,15 @@ module Workspace
     end
 
     # @return [Set<Integer>] set of window IDs for all current iTerm windows
+    # @raise [Workspace::Error] if window-tool fails
     def live_window_ids
       require "json"
       output, _, status = Open3.capture3(@config.window_tool, "list", "--json")
-      return Set.new unless status.success?
+      unless status.success?
+        raise Workspace::Error, "window-tool list failed. Is window-tool installed?"
+      end
       windows = JSON.parse(output)
-      Set.new(windows.map { |w| w["window_id"] })
+      Set.new(windows.map { |w| w["window_id"].to_i })
     end
 
     # @param window_id [String, Integer] window ID (CGWindowID)

@@ -21,7 +21,10 @@ module Workspace
       return if project_window_ids.empty?
 
       require "json"
-      screen_json, _ = Open3.capture2(@config.window_tool, "active-screen", "--json")
+      screen_json, status = Open3.capture2(@config.window_tool, "active-screen", "--json")
+      unless status.success?
+        raise Workspace::Error, "Could not detect screen geometry. Is window-tool installed?"
+      end
       screen = JSON.parse(screen_json)
       screen_x, screen_y, screen_w, screen_h = screen.values_at("x", "y", "width", "height")
 
