@@ -90,6 +90,43 @@ RSpec.describe Workspace::Tmux do
     end
   end
 
+  describe "#capture_layout" do
+    let(:tmux) { described_class.new(config: config) }
+
+    it "returns the layout string on success" do
+      allow(Open3).to receive(:capture3)
+        .with("tmux", "list-windows", "-t", "my-session:0", "-F", "\#{window_layout}")
+        .and_return(["abc1,119x51,0,0[119x5,0,0]\n", "", double(success?: true)])
+
+      expect(tmux.capture_layout("my-session")).to eq("abc1,119x51,0,0[119x5,0,0]")
+    end
+
+    it "returns nil on failure" do
+      allow(Open3).to receive(:capture3).and_return(["", "error", double(success?: false)])
+
+      expect(tmux.capture_layout("bad-session")).to be_nil
+    end
+  end
+
+  describe "#apply_layout" do
+    let(:tmux) { described_class.new(config: config) }
+
+    it "calls select-layout with the layout string" do
+      allow(tmux).to receive(:system).and_return(true)
+
+      result = tmux.apply_layout("my-session", "abc1,119x51,0,0[119x5,0,0]")
+
+      expect(result).to be true
+      expect(tmux).to have_received(:system).with("tmux", "select-layout", "-t", "my-session:0", "abc1,119x51,0,0[119x5,0,0]")
+    end
+
+    it "returns false on failure" do
+      allow(tmux).to receive(:system).and_return(false)
+
+      expect(tmux.apply_layout("bad", "layout")).to be false
+    end
+  end
+
   describe "#resize_pane" do
     let(:tmux) { described_class.new(config: config) }
 

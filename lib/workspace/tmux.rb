@@ -54,6 +54,24 @@ module Workspace
       system("tmux", "resize-pane", "-t", target, "-y", size)
     end
 
+    # @param session_name [String] tmux session name
+    # @param window [String] window index (default "0")
+    # @return [String, nil] the layout string, or nil if capture fails
+    def capture_layout(session_name, window: "0")
+      target = "#{session_name}:#{window}"
+      stdout, _, status = Open3.capture3("tmux", "list-windows", "-t", target, "-F", "\#{window_layout}")
+      status.success? ? stdout.strip : nil
+    end
+
+    # @param session_name [String] tmux session name
+    # @param layout [String] tmux layout string
+    # @param window [String] window index (default "0")
+    # @return [Boolean] true if apply succeeded
+    def apply_layout(session_name, layout, window: "0")
+      target = "#{session_name}:#{window}"
+      system("tmux", "select-layout", "-t", target, layout)
+    end
+
     # @param project [String] project/config name
     # @param reattach [Boolean] whether to reattach to existing session
     # @return [String] the shell command to start/attach the project

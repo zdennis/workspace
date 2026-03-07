@@ -72,6 +72,8 @@ module CLITestHelpers
     def kill_session(_name) = nil
     def rename_window(_session, _index, _name) = nil
     def resize_pane(_session, _pane, _size) = true
+    def capture_layout(_session, **_opts) = "layout-string"
+    def apply_layout(_session, _layout, **_opts) = true
 
     def command_for(_project, **_opts)
       "tmuxinator start test --attach"
@@ -279,6 +281,33 @@ RSpec.describe Workspace::CLI do
         expect(e.status).to eq(1)
       }
       expect(error_output.string).to include("Usage: workspace resize")
+    end
+  end
+
+  describe "#run with layout" do
+    it "shows help when no subcommand given" do
+      cli, output, _ = build_test_cli
+      cli.run(["layout"])
+      expect(output.string).to include("Usage: workspace layout")
+      expect(output.string).to include("save")
+      expect(output.string).to include("restore")
+      expect(output.string).to include("list")
+    end
+
+    it "exits 1 for unknown layout subcommand" do
+      cli, _, error_output = build_test_cli
+      expect { cli.run(["layout", "bogus"]) }.to raise_error(SystemExit) { |e|
+        expect(e.status).to eq(1)
+      }
+      expect(error_output.string).to include("Unknown layout subcommand: bogus")
+    end
+
+    it "exits 1 when save has no project" do
+      cli, _, error_output = build_test_cli
+      expect { cli.run(["layout", "save"]) }.to raise_error(SystemExit) { |e|
+        expect(e.status).to eq(1)
+      }
+      expect(error_output.string).to include("Usage: workspace layout")
     end
   end
 

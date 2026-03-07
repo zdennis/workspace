@@ -5,8 +5,9 @@ module Workspace
     class Resize
       # @param tmux [Workspace::Tmux] tmux session operations
       # @param output [IO] output stream for user-facing messages
-      def initialize(tmux:, output: $stdout, error_output: $stderr)
+      def initialize(tmux:, layout_command: nil, output: $stdout, error_output: $stderr)
         @tmux = tmux
+        @layout_command = layout_command
         @output = output
         @error_output = error_output
       end
@@ -22,6 +23,8 @@ module Workspace
         unless @tmux.sessions.include?(session_name)
           raise Workspace::Error, "No active tmux session for '#{project}'.\nRun 'workspace launch #{project}' to start it."
         end
+
+        @layout_command&.auto_save(project, "_before_resize")
 
         sizes = parse_spec(spec)
         if sizes.empty?

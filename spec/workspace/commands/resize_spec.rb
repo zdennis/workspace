@@ -88,6 +88,19 @@ RSpec.describe Workspace::Commands::Resize do
       expect(output.string).not_to include("Pane 0")
     end
 
+    it "auto-saves layout before resizing when layout_command provided" do
+      layout_command = double("layout_command")
+      expect(layout_command).to receive(:auto_save).with("myproject", "_before_resize")
+
+      cmd = described_class.new(
+        tmux: tmux,
+        layout_command: layout_command,
+        output: output,
+        error_output: error_output
+      )
+      cmd.call("myproject", "50%,50%")
+    end
+
     it "resolves tmux session name from config" do
       allow(tmux).to receive(:session_name_for).with("myproject").and_return("my-tmux-session")
       allow(tmux).to receive(:sessions).and_return(["my-tmux-session"])

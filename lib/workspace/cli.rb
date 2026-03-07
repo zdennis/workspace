@@ -63,6 +63,8 @@ module Workspace
         cmd_tile(args)
       when "resize"
         cmd_resize(args)
+      when "layout"
+        cmd_layout(args)
       when "list-projects"
         cmd_list_projects(args)
       when "list"
@@ -109,6 +111,7 @@ module Workspace
           focus           Bring a project's iTerm window to the front
           tile            Tile all windows for a project across the screen
           resize          Resize tmux panes for a running project
+          layout          Save/restore tmux pane layouts (auto-saved before resize)
           list-projects   List all available tmuxinator projects
           list            List currently active (launched) projects
           status          Show detailed state of tracked launcher sessions
@@ -335,11 +338,65 @@ module Workspace
       project = args[0]
       spec = args[1]
 
+      layout_command = Commands::Layout.new(
+        state: @state,
+        tmux: @tmux,
+        output: @output
+      )
       Commands::Resize.new(
         tmux: @tmux,
+        layout_command: layout_command,
         output: @output,
         error_output: @error_output
       ).call(project, spec)
+    end
+
+    def cmd_layout(args)
+      subcommand = args.shift
+
+      case subcommand
+      when "save"
+        raise UsageError, layout_help_text if args.empty?
+        project = args[0]
+        name = args[1] || Commands::Layout::DEFAULT_NAME
+        Commands::Layout.new(state: @state, tmux: @tmux, output: @output).save(project, name)
+      when "restore"
+        raise UsageError, layout_help_text if args.empty?
+        project = args[0]
+        name = args[1] || Commands::Layout::DEFAULT_NAME
+        Commands::Layout.new(state: @state, tmux: @tmux, output: @output).restore(project, name)
+      when "list"
+        raise UsageError, layout_help_text if args.empty?
+        Commands::Layout.new(state: @state, tmux: @tmux, output: @output).list(args[0])
+      when "help", "--help", "-h", nil
+        layout_help
+      else
+        raise UsageError, "Unknown layout subcommand: #{subcommand}\n\n" + layout_help_text
+      end
+    end
+
+    def layout_help
+      @output.puts layout_help_text
+    end
+
+    def layout_help_text
+      <<~HELP
+        Usage: workspace layout <subcommand> <project> [name]
+
+        Subcommands:
+          save <project> [name]      Save the current pane layout (default name: 'default')
+          restore <project> [name]   Restore a saved layout (default name: 'default')
+          list <project>             List saved layouts for a project
+
+        Layouts are auto-saved as '_before_resize' whenever you run 'workspace resize',
+        so you can always undo with: workspace layout restore <project> _before_resize
+
+        Examples:
+          workspace layout save myproject           # save as 'default'
+          workspace layout save myproject coding    # save as 'coding'
+          workspace layout restore myproject        # restore 'default'
+          workspace layout list myproject           # show saved layouts
+      HELP
     end
 
     def cmd_init(args)
