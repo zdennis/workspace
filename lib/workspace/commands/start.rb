@@ -1,7 +1,7 @@
 module Workspace
   module Commands
     # Creates a git worktree and launches it as a workspace project.
-    # Accepts JIRA keys, PR URLs, or branch names as input.
+    # Accepts JIRA keys, GitHub PR/issue URLs, or branch names as input.
     class Start
       # @param git [Workspace::Git] git operations
       # @param project_config [Workspace::ProjectConfig] config generation
@@ -67,9 +67,7 @@ module Workspace
           branch = @git.resolve_branch_from_pr(parsed[:value])
           @output.puts "PR branch: #{branch}"
           branch
-        when :jira_key
-          parsed[:value]
-        when :branch
+        when :issue_url, :jira_key, :branch
           parsed[:value]
         end
       end
