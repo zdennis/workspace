@@ -45,7 +45,7 @@ RSpec.describe Workspace::Commands::Start do
         command.call("https://github.com/org/repo/pull/123")
 
         expect(git).to have_received(:resolve_branch_from_pr)
-        expect(launch_command).to have_received(:call).with(["myproject.worktree-feature-PROJ-123"])
+        expect(launch_command).to have_received(:call).with(["myproject.worktree-feature-PROJ-123"], prompts: {})
         expect(output.string).to include("Fetching PR details")
         expect(output.string).to include("PR branch: feature/PROJ-123")
       end
@@ -64,7 +64,7 @@ RSpec.describe Workspace::Commands::Start do
 
         command.call("PROJ-123")
 
-        expect(launch_command).to have_received(:call).with(["myproject.worktree-PROJ-123"])
+        expect(launch_command).to have_received(:call).with(["myproject.worktree-PROJ-123"], prompts: {})
       end
     end
 
@@ -81,7 +81,27 @@ RSpec.describe Workspace::Commands::Start do
 
         command.call("https://github.com/org/repo/issues/42")
 
-        expect(launch_command).to have_received(:call).with(["myproject.worktree-issue-42"])
+        expect(launch_command).to have_received(:call).with(["myproject.worktree-issue-42"], prompts: {})
+      end
+    end
+
+    context "with a prompt" do
+      it "passes prompt through to launch command" do
+        allow(git).to receive(:root).and_return(tmpdir)
+        allow(git).to receive(:parse_start_input).with("PROJ-123").and_return({type: :jira_key, value: "PROJ-123"})
+        allow(git).to receive(:sanitize_for_filesystem).with("PROJ-123").and_return("PROJ-123")
+        allow(git).to receive(:worktree_exists?).and_return(false)
+        allow(git).to receive(:branch_exists?).with("PROJ-123").and_return(true)
+        allow(git).to receive(:create_worktree)
+        allow(project_config).to receive(:create_worktree).and_return("myproject.worktree-PROJ-123")
+        allow(launch_command).to receive(:call)
+
+        command.call("PROJ-123", prompt: "Fix the bug")
+
+        expect(launch_command).to have_received(:call).with(
+          ["myproject.worktree-PROJ-123"],
+          prompts: {"myproject.worktree-PROJ-123" => "Fix the bug"}
+        )
       end
     end
 

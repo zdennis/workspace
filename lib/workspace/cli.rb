@@ -116,6 +116,7 @@ module Workspace
 
     def cmd_launch(args)
       reattach = false
+      prompt = nil
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: workspace launch [options] <project1> [project2] ..."
         opts.separator ""
@@ -126,6 +127,9 @@ module Workspace
         opts.separator "Options:"
         opts.on("--reattach", "Reattach to existing tmux sessions, preserving session state.") do
           reattach = true
+        end
+        opts.on("--prompt PROMPT", "Send an initial prompt to Claude in each project") do |p|
+          prompt = p
         end
         opts.separator ""
         opts.separator "Note: --reattach uses tmux -CC attach which may trigger an iTerm dialog."
@@ -145,6 +149,8 @@ module Workspace
         end
       end
 
+      prompts = prompt ? projects.each_with_object({}) { |p, h| h[p] = prompt } : {}
+
       Commands::Launch.new(
         state: @state,
         iterm: @iterm,
@@ -153,12 +159,13 @@ module Workspace
         project_config: @project_config,
         window_layout: @window_layout,
         output: @output
-      ).call(projects, reattach: reattach)
+      ).call(projects, reattach: reattach, prompts: prompts)
     end
 
     def cmd_start(args)
+      prompt = nil
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace start <jira-key|jira-url|pr-url|branch>"
+        opts.banner = "Usage: workspace start [options] <jira-key|jira-url|pr-url|branch>"
         opts.separator ""
         opts.separator "Create a git worktree and launch it as a workspace project."
         opts.separator ""
@@ -168,6 +175,11 @@ module Workspace
         opts.separator "  https://github.com/.../pull/471           GitHub PR URL (fetches branch name)"
         opts.separator "  https://github.com/.../issues/123         GitHub issue URL (branch: issue-123)"
         opts.separator "  user/PROJ-123                             Branch name (used as-is)"
+        opts.separator ""
+        opts.separator "Options:"
+        opts.on("--prompt PROMPT", "Send an initial prompt to Claude after launching") do |p|
+          prompt = p
+        end
         opts.separator ""
         opts.separator "The worktree is created in .worktrees/ under the project root."
       end
@@ -191,7 +203,7 @@ module Workspace
         output: @output,
         input: @input
       )
-      start_command.call(args.first)
+      start_command.call(args.first, prompt: prompt)
     end
 
     def cmd_stop(args)

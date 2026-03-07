@@ -28,9 +28,10 @@ module Workspace
       #
       # @param projects [Array<String>] list of project/config names to launch
       # @param reattach [Boolean] whether to reattach to existing tmux sessions
+      # @param prompts [Hash{String => String}] project name => prompt text to send to Claude pane
       # @return [void]
       # @raise [Workspace::Error] if any project configs are missing
-      def call(projects, reattach: false)
+      def call(projects, reattach: false, prompts: {})
         validate_configs(projects)
 
         @tmux.start_server
@@ -57,6 +58,8 @@ module Workspace
         @state.save
 
         arrange_windows(projects)
+
+        send_prompts(session_names, prompts) if prompts.any?
 
         @output.puts "Done! Launched #{projects.size} project(s)."
       end
@@ -170,6 +173,26 @@ module Workspace
         missing_windows = projects.reject { |p| @found_windows.key?(p) }
         if missing_windows.any?
           @error_output.puts "Warning: Could not find windows for: #{missing_windows.join(", ")}"
+        end
+      end
+
+      # Pane index where Claude Code runs in the standard workspace templates.
+      # Templates define panes as: 0 = banner, 1 = claude, 2 = shell.
+      CLAUDE_PANE = "0.1"
+
+      def send_prompts(session_names, prompts)
+        # Claude needs time to initialize after the tmux session starts.
+        # 5 seconds is a conservative default; Claude typically starts in 2-3s.
+        @output.puts "Waiting for Claude to start..."
+        sleep 5
+
+        prompts.each do |project, prompt_text|
+          tmux_name = session_names[project]
+          next unless tmux_name
+          @output.puts "Sending prompt to #{project}..."
+          unless @tmux.send_keys(tmux_name, CLAUDE_PANE, prompt_text)
+            @error_output.puts "Warning: Failed to send prompt to #{project}"
+          end
         end
       end
 

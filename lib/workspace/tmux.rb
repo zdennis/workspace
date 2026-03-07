@@ -33,6 +33,18 @@ module Workspace
       system("tmux", "rename-window", "-t", "#{session_name}:#{window_index}", new_name)
     end
 
+    # @param session_name [String] tmux session name
+    # @param pane [String] pane target (e.g. "0.1" for window 0, pane 1)
+    # @param text [String] text to send (sent in literal mode to avoid key-name interpretation)
+    # @param enter [Boolean] whether to press Enter after sending
+    # @return [Boolean] true if send succeeded
+    def send_keys(session_name, pane, text, enter: true)
+      target = "#{session_name}:#{pane}"
+      return false unless system("tmux", "send-keys", "-l", "-t", target, text)
+      return false if enter && !system("tmux", "send-keys", "-t", target, "Enter")
+      true
+    end
+
     # @param project [String] project/config name
     # @param reattach [Boolean] whether to reattach to existing session
     # @return [String] the shell command to start/attach the project

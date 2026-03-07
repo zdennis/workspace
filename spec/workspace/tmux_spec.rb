@@ -58,4 +58,35 @@ RSpec.describe Workspace::Tmux do
       expect(tmux.session_name_for("missing")).to eq("missing")
     end
   end
+
+  describe "#send_keys" do
+    let(:tmux) { described_class.new(config: config) }
+
+    it "sends text in literal mode and presses Enter by default" do
+      allow(tmux).to receive(:system).and_return(true)
+
+      result = tmux.send_keys("my-session", "0.1", "hello world")
+
+      expect(result).to be true
+      expect(tmux).to have_received(:system).with("tmux", "send-keys", "-l", "-t", "my-session:0.1", "hello world")
+      expect(tmux).to have_received(:system).with("tmux", "send-keys", "-t", "my-session:0.1", "Enter")
+    end
+
+    it "skips Enter when enter: false" do
+      allow(tmux).to receive(:system).and_return(true)
+
+      tmux.send_keys("my-session", "0.1", "hello", enter: false)
+
+      expect(tmux).to have_received(:system).once
+      expect(tmux).not_to have_received(:system).with("tmux", "send-keys", "-t", "my-session:0.1", "Enter")
+    end
+
+    it "returns false when send-keys fails" do
+      allow(tmux).to receive(:system).and_return(false)
+
+      result = tmux.send_keys("bad-session", "0.1", "text")
+
+      expect(result).to be false
+    end
+  end
 end

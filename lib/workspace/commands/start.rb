@@ -19,9 +19,10 @@ module Workspace
       # Creates a worktree from the given input and launches it.
       #
       # @param input_string [String] JIRA key, PR URL, or branch name
+      # @param prompt [String, nil] optional prompt to send to Claude after launching
       # @return [void]
       # @raise [Workspace::Error] if not in a git repository
-      def call(input_string)
+      def call(input_string, prompt: nil)
         root = @git.root
         raise Workspace::Error, "Not inside a git repository." unless root
 
@@ -36,7 +37,8 @@ module Workspace
           @output.puts "Worktree already exists at: #{worktree_path}"
           config_name = @project_config.create_worktree(project_name, worktree_dir_name, worktree_path, branch_name)
           @output.puts "Launching #{config_name}..."
-          @launch_command.call([config_name])
+          prompts = prompt ? {config_name => prompt} : {}
+          @launch_command.call([config_name], prompts: prompts)
           return
         end
 
@@ -55,7 +57,8 @@ module Workspace
 
         config_name = @project_config.create_worktree(project_name, worktree_dir_name, worktree_path, branch_name)
         @output.puts "Launching #{config_name}..."
-        @launch_command.call([config_name])
+        prompts = prompt ? {config_name => prompt} : {}
+        @launch_command.call([config_name], prompts: prompts)
       end
 
       private
