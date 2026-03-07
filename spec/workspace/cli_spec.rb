@@ -224,4 +224,33 @@ RSpec.describe Workspace::CLI do
       expect(called).to be true
     end
   end
+
+  describe "#run with relaunch" do
+    it "raises error when no active projects" do
+      cli, _, error_output = build_test_cli
+      expect { cli.run(["relaunch"]) }.to raise_error(SystemExit) { |e|
+        expect(e.status).to eq(1)
+      }
+      expect(error_output.string).to include("No active workspace projects to relaunch")
+    end
+
+    it "kills and relaunches active projects" do
+      state = CLITestHelpers::FakeState.new
+      state["proj1"] = {"unique_id" => "uid1"}
+      state["proj2"] = {"unique_id" => "uid2"}
+
+      tmux = CLITestHelpers::FakeTmux.new
+      allow(tmux).to receive(:sessions).and_return(["proj1", "proj2"])
+
+      iterm = CLITestHelpers::FakeITerm.new
+      allow(iterm).to receive(:find_window_by_title).and_return("123")
+
+      cli, output, _ = build_test_cli(state: state, tmux: tmux, iterm: iterm)
+      allow(cli).to receive(:sleep)
+
+      cli.run(["relaunch"])
+
+      expect(output.string).to include("Will relaunch: proj1, proj2")
+    end
+  end
 end
