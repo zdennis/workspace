@@ -253,6 +253,16 @@ RSpec.describe Workspace::CLI do
     end
   end
 
+  describe "#run with stop" do
+    it "exits 1 when no project specified" do
+      cli, _, error_output = build_test_cli
+      expect { cli.run(["stop"]) }.to raise_error(SystemExit) { |e|
+        expect(e.status).to eq(1)
+      }
+      expect(error_output.string).to include("Usage: workspace stop")
+    end
+  end
+
   describe "#run with alfred" do
     it "shows help when no subcommand given" do
       cli, output, _ = build_test_cli

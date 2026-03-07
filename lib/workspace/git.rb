@@ -170,6 +170,21 @@ module Workspace
     end
 
     # @param path [String] worktree path
+    # @param force [Boolean] force removal even with uncommitted changes
+    # @return [void]
+    # @raise [Workspace::Error] if worktree removal fails
+    def remove_worktree(path, force: false)
+      cmd = ["git", "worktree", "remove"]
+      cmd << "--force" if force
+      cmd << path
+
+      _, stderr, status = Open3.capture3(*cmd)
+      unless status.success?
+        raise Workspace::Error, "Error removing worktree: #{stderr.strip}"
+      end
+    end
+
+    # @param path [String] worktree path
     # @param branch [String] branch name
     # @param base [String, nil] base branch for new branch creation
     # @return [void]

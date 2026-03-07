@@ -49,6 +49,8 @@ module Workspace
         cmd_launch(args)
       when "start"
         cmd_start(args)
+      when "stop"
+        cmd_stop(args)
       when "add", "add-project"
         cmd_add(args)
       when "kill"
@@ -96,6 +98,7 @@ module Workspace
           doctor          Check that all required dependencies are installed
           launch          Launch tmuxinator projects in iTerm windows
           start           Create a worktree and launch it (from JIRA key, PR URL, or branch)
+          stop            Kill a worktree project and remove its worktree
           add             Add a tmuxinator config for a project directory
           kill            Kill active workspace projects and their tmux sessions
           relaunch        Kill and relaunch all active workspace projects
@@ -189,6 +192,41 @@ module Workspace
         input: @input
       )
       start_command.call(args.first)
+    end
+
+    def cmd_stop(args)
+      force = false
+      parser = OptionParser.new do |opts|
+        opts.banner = "Usage: workspace stop <project>"
+        opts.separator ""
+        opts.separator "Kill a worktree project's session and remove its git worktree."
+        opts.separator "The inverse of 'workspace start'."
+        opts.separator ""
+        opts.separator "Options:"
+        opts.on("-f", "--force", "Skip confirmation and force worktree removal") do
+          force = true
+        end
+      end
+      parser.parse!(args)
+
+      raise UsageError, parser.help if args.empty?
+
+      kill_command = Commands::Kill.new(
+        state: @state,
+        iterm: @iterm,
+        window_manager: @window_manager,
+        tmux: @tmux,
+        output: @output,
+        error_output: @error_output
+      )
+      stop_command = Commands::Stop.new(
+        git: @git,
+        project_config: @project_config,
+        kill_command: kill_command,
+        output: @output,
+        input: @input
+      )
+      stop_command.call(args.first, force: force)
     end
 
     def cmd_kill(args)

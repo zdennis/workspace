@@ -83,6 +83,16 @@ module Workspace
       config_name
     end
 
+    # @param name [String] project or config name
+    # @return [void]
+    def remove(name)
+      path = config_path_for(name)
+      if File.exist?(path)
+        File.delete(path)
+        @output.puts "Removed config: #{path}"
+      end
+    end
+
     # @param name [String] project name
     # @return [String] path to the tmuxinator config file for the given project
     def config_path_for(name)
