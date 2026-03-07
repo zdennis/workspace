@@ -8,6 +8,7 @@ require_relative "workspace/git"
 require_relative "workspace/doctor"
 require_relative "workspace/tmux"
 require_relative "workspace/project_config"
+require_relative "workspace/iterm"
 
 # Workspace CLI for managing tmuxinator-based development workspaces in iTerm2.
 #
@@ -25,6 +26,7 @@ module Workspace
   GIT = Git.new
   TMUX = Tmux.new(config: CONFIG)
   PROJECT_CONFIG = ProjectConfig.new(config: CONFIG, git: GIT)
+  ITERM = ITerm.new(config: CONFIG)
 
   WORKSPACE_DIR = CONFIG.workspace_dir
   TMUXINATOR_DIR = CONFIG.tmuxinator_dir
@@ -122,161 +124,31 @@ module Workspace
   end
 
   def iterm_window_titles
-    output, _ = Open3.capture2(WINDOW_TOOL, "list")
-    output.lines.map { |line| line.strip.split("\t", 4) }
+    ITERM.window_titles
   end
 
-  # Returns a hash of { unique_id => window_id } for all iTerm sessions
   def iterm_session_map
-    script = <<~APPLESCRIPT
-      tell application "iTerm2"
-        set output to ""
-        repeat with w in every window
-          set wid to id of w
-          repeat with t in every tab of w
-            repeat with s in every session of t
-              set output to output & unique ID of s & "\\t" & wid & "\\n"
-            end repeat
-          end repeat
-        end repeat
-        return output
-      end tell
-    APPLESCRIPT
-    output = `osascript -e '#{script.gsub("'", "'\\''")}'`.strip
-    result = {}
-    output.each_line do |line|
-      uid, wid = line.strip.split("\t")
-      result[uid] = wid if uid && wid
-    end
-    result
+    ITERM.session_map
   end
 
-  # Find which tracked sessions still exist in iTerm
   def find_existing_sessions(state)
-    return {} if state.empty?
-    live_sessions = iterm_session_map
-    existing = {}
-    state.each do |project, info|
-      uid = info["unique_id"]
-      if uid && live_sessions.key?(uid)
-        existing[project] = uid
-      end
-    end
-    existing
+    ITERM.find_existing_sessions(state)
   end
 
-  # Find the launcher window ID by checking which window contains tracked sessions
   def find_launcher_window_id(state)
-    live_sessions = iterm_session_map
-    state.each do |_project, info|
-      uid = info["unique_id"]
-      next unless uid
-      wid = live_sessions[uid]
-      return wid if wid
-    end
-    nil
+    ITERM.find_launcher_window_id(state)
   end
 
-  # Create new launcher panes for projects, returning { project => unique_id }
-  # Reuses an existing launcher window if one exists, otherwise creates a new one.
   def create_launcher_panes(projects, state: {}, reattach: false)
     return {} if projects.empty?
-
     commands = projects.map { |p| [p, tmux_command_for(p, reattach: reattach)] }.to_h
-
-    # Check if there's an existing launcher window we can add panes to
     launcher_wid = find_launcher_window_id(state)
-
-    panes = {}
-    if launcher_wid
-      # Use keystrokes to split panes in the existing launcher window.
-      # This avoids the tmux -CC integration dialog that AppleScript's
-      # split command triggers on tmux -CC sessions.
-      projects.each_with_index do |project, i|
-        sleep 1 if i > 0
-        script = <<~APPLESCRIPT
-          tell application "iTerm2"
-            activate
-            set targetWindow to window id #{launcher_wid}
-            select targetWindow
-
-            -- Send Cmd+Shift+D to split horizontally
-            tell application "System Events"
-              tell process "iTerm2"
-                keystroke "d" using {shift down, command down}
-              end tell
-            end tell
-
-            delay 0.5
-
-            -- The new split pane is now the current session
-            tell current session of targetWindow
-              write text "#{commands[project]}"
-              return unique ID
-            end tell
-          end tell
-        APPLESCRIPT
-        uid = `osascript -e '#{script.gsub("'", "'\\''")}'`.strip
-        panes[project] = uid unless uid.empty?
-      end
-    else
-      # No existing launcher window — create a new one
-      first, *rest = projects
-      script = <<~APPLESCRIPT
-        tell application "iTerm2"
-          set output to ""
-          set launcherWindow to (create window with default profile)
-          tell current session of launcherWindow
-            write text "#{commands[first]}"
-            set output to output & unique ID of (current session of launcherWindow) & "\\t" & "#{first}" & "\\n"
-      APPLESCRIPT
-
-      rest.each_with_index do |project, i|
-        script += <<~APPLESCRIPT
-          delay 1
-          set newSession#{i} to split horizontally with default profile
-          tell newSession#{i}
-            write text "#{commands[project]}"
-          end tell
-          set output to output & unique ID of newSession#{i} & "\\t" & "#{project}" & "\\n"
-        APPLESCRIPT
-      end
-
-      script += <<~APPLESCRIPT
-          end tell
-        end tell
-      APPLESCRIPT
-
-      output = `osascript -e '#{script.gsub("'", "'\\''")}'`.strip
-      output.each_line do |line|
-        uid, proj = line.strip.split("\t")
-        panes[proj] = uid if uid && proj
-      end
-    end
-    panes
+    ITERM.create_launcher_panes(projects, commands, launcher_wid: launcher_wid)
   end
 
-  # Send tmuxinator command to an existing session
   def relaunch_in_session(unique_id, project, reattach: false)
     cmd = tmux_command_for(project, reattach: reattach)
-    script = <<~APPLESCRIPT
-      tell application "iTerm2"
-        repeat with w in every window
-          repeat with t in every tab of w
-            repeat with s in every session of t
-              if unique ID of s is "#{unique_id}" then
-                tell s
-                  write text "#{cmd}"
-                end tell
-                return "ok"
-              end if
-            end repeat
-          end repeat
-        end repeat
-        return "not_found"
-      end tell
-    APPLESCRIPT
-    `osascript -e '#{script.gsub("'", "'\\''")}'`.strip
+    ITERM.relaunch_in_session(unique_id, cmd)
   end
 
   def tmux_sessions
@@ -411,18 +283,7 @@ module Workspace
     projects.each do |project|
       saved_id = state.dig(project, "iterm_window_id")
       next unless saved_id
-      script = <<~APPLESCRIPT
-        tell application "iTerm2"
-          try
-            set w to window id #{saved_id}
-            return "ok"
-          on error
-            return "not_found"
-          end try
-        end tell
-      APPLESCRIPT
-      result = `osascript -e '#{script.gsub("'", "'\\''")}'`.strip
-      if result == "ok"
+      if ITERM.window_exists?(saved_id)
         found[project] = saved_id.to_s
         puts "  Found window for #{project} (saved ID)"
       end
@@ -438,18 +299,8 @@ module Workspace
         next if found.key?(project)
         tmux_name = session_names[project]
         title_to_find = "#{window_prefix}-#{tmux_name}"
-        script = <<~APPLESCRIPT
-          tell application "iTerm2"
-            repeat with w in every window
-              if name of w contains "#{title_to_find}" then
-                return id of w as string
-              end if
-            end repeat
-            return "not_found"
-          end tell
-        APPLESCRIPT
-        result = `osascript -e '#{script.gsub("'", "'\\''")}'`.strip
-        if result != "not_found"
+        result = ITERM.find_window_by_title(title_to_find)
+        if result
           found[project] = result
           state[project] ||= {}
           state[project]["iterm_window_id"] = result.to_i
@@ -491,13 +342,7 @@ module Workspace
       next unless window_id
 
       x_pos = start_x + (spacing * i)
-      script = <<~APPLESCRIPT
-        tell application "iTerm2"
-          set targetWindow to window id #{window_id}
-          set bounds of targetWindow to {#{x_pos}, #{y_pos}, #{x_pos + window_width}, #{y_pos + window_height}}
-        end tell
-      APPLESCRIPT
-      system("osascript", "-e", script)
+      ITERM.set_window_bounds(window_id, x_pos, y_pos, window_width, window_height)
       puts "  Positioned #{project} at #{x_pos},#{y_pos} (#{window_width}x#{window_height})"
     end
 
@@ -537,39 +382,10 @@ module Workspace
     state = load_state
     window_id = state.dig(project, "iterm_window_id")
 
-    # If no saved window ID, try a live search:
-    # 1. Check window titles for workspace-$project or $project
-    # 2. Check pane/session names within each window for workspace-$project,
-    #    [$project], or $project (like worktree-iterm does)
     unless window_id
-      window_prefix = "workspace"
-      title_to_find = "#{window_prefix}-#{project}"
-      script = <<~APPLESCRIPT
-        tell application "iTerm2"
-          -- First pass: window titles matching workspace-prefixed name
-          repeat with w in every window
-            if name of w contains "#{title_to_find}" then
-              return id of w as string
-            end if
-          end repeat
-          -- Second pass: pane/session names matching workspace-prefixed name or [project]
-          repeat with w in every window
-            repeat with t in every tab of w
-              repeat with s in every session of t
-                set sName to name of s
-                if sName contains "#{title_to_find}" or sName contains "[#{project}]" then
-                  return id of w as string
-                end if
-              end repeat
-            end repeat
-          end repeat
-          return "not_found"
-        end tell
-      APPLESCRIPT
-      result = `osascript -e '#{script.gsub("'", "'\\''")}'`.strip
-      if result != "not_found"
+      result = ITERM.find_window_for_project(project)
+      if result
         window_id = result.to_i
-        # Save it for next time
         state[project] ||= {}
         state[project]["iterm_window_id"] = window_id
         save_state(state)
@@ -582,38 +398,8 @@ module Workspace
       exit 1
     end
 
-    script = <<~APPLESCRIPT
-      tell application "iTerm2"
-        try
-          set targetWindow to window id #{window_id}
-        on error
-          return "not_found"
-        end try
-        activate
-        select targetWindow
-
-        -- shake
-        tell targetWindow
-          set winBounds to bounds
-          set curX to item 1 of winBounds
-          set curY to item 2 of winBounds
-          set winWidth to (item 3 of winBounds) - curX
-          set winHeight to (item 4 of winBounds) - curY
-          set shakeOffset to 12
-          repeat 6 times
-            set bounds to {curX + shakeOffset, curY, curX + winWidth + shakeOffset, curY + winHeight}
-            delay 0.04
-            set bounds to {curX - shakeOffset, curY, curX + winWidth - shakeOffset, curY + winHeight}
-            delay 0.04
-          end repeat
-          set bounds to {curX, curY, curX + winWidth, curY + winHeight}
-        end tell
-        return "ok"
-      end tell
-    APPLESCRIPT
-
     puts "Focusing #{project}..."
-    result = `osascript -e '#{script.gsub("'", "'\\''")}'`.strip
+    result = ITERM.focus_and_shake(window_id)
     if result == "not_found"
       warn "Error: iTerm window #{window_id} no longer exists for '#{project}'"
       warn "Run 'workspace launch #{project}' to relaunch."
@@ -685,14 +471,7 @@ module Workspace
     # Close launcher windows only if all their tracked projects are being killed
     launcher_window_ids_to_close.each do |wid|
       puts "Closing launcher window #{wid}"
-      script = <<~APPLESCRIPT
-        tell application "iTerm2"
-          try
-            close (window id #{wid})
-          end try
-        end tell
-      APPLESCRIPT
-      system("osascript", "-e", script)
+      ITERM.close_window(wid)
     end
 
     # Clear iterm_window_id for killed projects but keep unique_id.
