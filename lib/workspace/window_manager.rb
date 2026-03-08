@@ -33,7 +33,7 @@ module Workspace
       script = <<~APPLESCRIPT
         tell application "iTerm2"
           repeat with w in every window
-            if name of w contains "#{title}" then
+            if name of w = "#{title}" then
               return id of w as string
             end if
           end repeat
@@ -53,7 +53,7 @@ module Workspace
         tell application "iTerm2"
           -- First pass: window titles matching workspace-prefixed name
           repeat with w in every window
-            if name of w contains "#{title_to_find}" then
+            if name of w = "#{title_to_find}" then
               return id of w as string
             end if
           end repeat
@@ -62,7 +62,7 @@ module Workspace
             repeat with t in every tab of w
               repeat with s in every session of t
                 set sName to name of s
-                if sName contains "#{title_to_find}" or sName contains "[#{project}]" then
+                if sName = "#{title_to_find}" or sName = "[#{project}]" then
                   return id of w as string
                 end if
               end repeat
