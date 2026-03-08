@@ -166,6 +166,7 @@ end
 RSpec.describe Workspace::CLI do
   def build_test_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new, **overrides)
     config = overrides[:config] || Workspace::Config.new
+    logger = overrides[:logger] || Workspace::Logger.new(output: error_output)
     state = overrides[:state] || CLITestHelpers::FakeState.new
     iterm = overrides[:iterm] || CLITestHelpers::FakeITerm.new
     window_manager = overrides[:window_manager] || CLITestHelpers::FakeWindowManager.new
@@ -189,6 +190,7 @@ RSpec.describe Workspace::CLI do
       doctor: doctor,
       project_settings: project_settings,
       hook_runner: hook_runner,
+      logger: logger,
       output: output,
       error_output: error_output,
       input: input
@@ -236,6 +238,28 @@ RSpec.describe Workspace::CLI do
         expect(e.status).to eq(1)
       }
       expect(error_output.string).to include("Usage: workspace launch")
+    end
+  end
+
+  describe "--debug flag" do
+    it "enables debug logging and writes to stderr" do
+      error_output = StringIO.new
+      cli, _, _ = build_test_cli(error_output: error_output)
+      cli.run(["--debug", "--help"])
+      expect(error_output.string).to include("[DEBUG]")
+    end
+
+    it "strips --debug before dispatching subcommand" do
+      cli, output, _ = build_test_cli
+      cli.run(["--debug", "--help"])
+      expect(output.string).to match(/Usage: workspace/)
+    end
+
+    it "includes --debug in help text" do
+      cli, output, _ = build_test_cli
+      cli.run(["help"])
+      expect(output.string).to include("--debug")
+      expect(output.string).to include("WORKSPACE_DEBUG")
     end
   end
 

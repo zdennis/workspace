@@ -7,10 +7,12 @@ module Workspace
     # @param project_settings [Workspace::ProjectSettings] project config reader
     # @param output [IO] output stream for user-facing messages
     # @param error_output [IO] error output stream for warnings
-    def initialize(project_settings:, output: $stdout, error_output: $stderr)
+    # @param logger [Workspace::Logger] debug logger
+    def initialize(project_settings:, output: $stdout, error_output: $stderr, logger: Workspace::Logger.new)
       @project_settings = project_settings
       @output = output
       @error_output = error_output
+      @logger = logger
     end
 
     # Runs a hook for the given project and event, if one is configured.
@@ -22,7 +24,11 @@ module Workspace
     # @return [Boolean] true if hook ran successfully or no hook defined
     def run(project, event, env: {}, chdir: nil)
       script = @project_settings.hook_for(project, event)
-      return true unless script
+      unless script
+        @logger.debug { "hook_runner: no #{event} hook for #{project}" }
+        return true
+      end
+      @logger.debug { "hook_runner: running #{event} hook for #{project}: #{script}" }
 
       hook_env = {"WORKSPACE_PROJECT" => project}.merge(env)
 

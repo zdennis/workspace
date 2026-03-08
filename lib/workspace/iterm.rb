@@ -6,9 +6,11 @@ module Workspace
   class ITerm
     # @param config [Workspace::Config] configuration for window_tool path
     # @param output [IO] output stream for user-facing messages
-    def initialize(config:, output: $stdout)
+    # @param logger [Workspace::Logger] debug logger
+    def initialize(config:, output: $stdout, logger: Workspace::Logger.new)
       @config = config
       @output = output
+      @logger = logger
     end
 
     # @return [Hash{String => String}] mapping of unique_id to window_id for all iTerm sessions
@@ -165,7 +167,9 @@ module Workspace
     # @param script [String] AppleScript code to execute
     # @return [String] stripped output from osascript
     def execute_applescript(script)
+      @logger.debug { "iterm: executing AppleScript (#{script.lines.first&.strip}...)" }
       stdout, _ = Open3.capture3("osascript", "-e", script)
+      @logger.debug { "iterm: AppleScript result=#{stdout.strip.inspect}" }
       stdout.strip
     end
 

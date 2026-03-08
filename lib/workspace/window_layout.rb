@@ -8,10 +8,12 @@ module Workspace
     # @param window_manager [Workspace::WindowManager] window operations for setting bounds
     # @param config [Workspace::Config] configuration for window_tool path
     # @param output [IO] output stream for user-facing messages
-    def initialize(window_manager:, config:, output: $stdout)
+    # @param logger [Workspace::Logger] debug logger
+    def initialize(window_manager:, config:, output: $stdout, logger: Workspace::Logger.new)
       @window_manager = window_manager
       @config = config
       @output = output
+      @logger = logger
     end
 
     # Arranges project windows left-to-right on the active screen.
@@ -138,11 +140,13 @@ module Workspace
     def apply_layout(project_window_ids, calculator, verb)
       return if project_window_ids.empty?
 
+      @logger.debug { "window_layout: fetching active screen geometry" }
       screen_json, status = Open3.capture2(@config.window_tool, "active-screen", "--json")
       unless status.success?
         raise Workspace::Error, "Could not detect screen geometry. Is window-tool installed?"
       end
       screen = JSON.parse(screen_json)
+      @logger.debug { "window_layout: screen geometry #{screen.inspect}" }
       screen_x, screen_y, screen_w, screen_h = screen.values_at("x", "y", "width", "height")
 
       positions = calculator.call(

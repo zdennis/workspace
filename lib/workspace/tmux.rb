@@ -4,24 +4,31 @@ module Workspace
   # Manages tmux session operations for the workspace CLI.
   class Tmux
     # @param config [Workspace::Config] configuration for path lookups
-    def initialize(config:)
+    # @param logger [Workspace::Logger] debug logger
+    def initialize(config:, logger: Workspace::Logger.new)
       @config = config
+      @logger = logger
     end
 
     # @return [Array<String>] list of active tmux session names
     def sessions
+      @logger.debug { "tmux: listing sessions" }
       stdout, _, status = Open3.capture3("tmux", "list-sessions", "-F", "\#{session_name}")
-      status.success? ? stdout.strip.lines.map(&:strip) : []
+      result = status.success? ? stdout.strip.lines.map(&:strip) : []
+      @logger.debug { "tmux: found #{result.size} session(s): #{result.join(", ")}" }
+      result
     end
 
     # @return [void]
     def start_server
+      @logger.debug { "tmux: starting server" }
       system("tmux", "start-server")
     end
 
     # @param name [String] tmux session name
     # @return [void]
     def kill_session(name)
+      @logger.debug { "tmux: killing session #{name}" }
       system("tmux", "kill-session", "-t", name)
     end
 
@@ -30,6 +37,7 @@ module Workspace
     # @param new_name [String] new window name
     # @return [void]
     def rename_window(session_name, window_index, new_name)
+      @logger.debug { "tmux: renaming window #{session_name}:#{window_index} to #{new_name}" }
       system("tmux", "rename-window", "-t", "#{session_name}:#{window_index}", new_name)
     end
 
@@ -40,6 +48,7 @@ module Workspace
     # @return [Boolean] true if send succeeded
     def send_keys(session_name, pane, text, enter: true)
       target = "#{session_name}:#{pane}"
+      @logger.debug { "tmux: send-keys to #{target}" }
       return false unless system("tmux", "send-keys", "-l", "-t", target, text)
       return false if enter && !system("tmux", "send-keys", "-t", target, "Enter")
       true

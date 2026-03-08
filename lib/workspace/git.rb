@@ -5,9 +5,11 @@ module Workspace
   class Git
     # @param output [IO] output stream for user-facing messages
     # @param input [IO] input stream for interactive prompts
-    def initialize(output: $stdout, input: $stdin)
+    # @param logger [Workspace::Logger] debug logger
+    def initialize(output: $stdout, input: $stdin, logger: Workspace::Logger.new)
       @output = output
       @input = input
+      @logger = logger
     end
 
     # @return [String, nil] the root of the current git repository
@@ -116,11 +118,13 @@ module Workspace
       repo = match[1]
       pr_number = match[2]
 
+      @logger.debug { "git: fetching PR ##{pr_number} from #{repo} via gh" }
       stdout, _, status = Open3.capture3("gh", "pr", "view", pr_number, "--repo", repo, "--json", "headRefName", "--jq", ".headRefName")
       output = status.success? ? stdout.strip : ""
       if output.empty?
         raise Workspace::Error, "Could not fetch PR ##{pr_number} from #{repo}\nMake sure you have access and `gh` is authenticated."
       end
+      @logger.debug { "git: PR branch resolved to #{output}" }
       output
     end
 
@@ -178,6 +182,7 @@ module Workspace
       cmd << "--force" if force
       cmd << path
 
+      @logger.debug { "git: #{cmd.join(" ")}" }
       _, stderr, status = Open3.capture3(*cmd)
       unless status.success?
         raise Workspace::Error, "Error removing worktree: #{stderr.strip}"
@@ -198,6 +203,7 @@ module Workspace
         cmd << base if base
       end
 
+      @logger.debug { "git: #{cmd.join(" ")}" }
       @output.puts "Running: #{cmd.join(" ")}"
       _, stderr, status = Open3.capture3(*cmd)
       unless status.success?

@@ -2,6 +2,7 @@ require "optparse"
 require "json"
 require "fileutils"
 require_relative "workspace/version"
+require_relative "workspace/logger"
 require_relative "workspace/config"
 require_relative "workspace/state"
 require_relative "workspace/git"
@@ -37,19 +38,21 @@ module Workspace
   # @param output [IO] output stream for user-facing messages
   # @param error_output [IO] error output stream for warnings and errors
   # @param input [IO] input stream for interactive prompts
+  # @param logger [Workspace::Logger, nil] debug logger (created automatically if nil)
   # @return [Workspace::CLI] a fully-wired CLI instance
-  def self.build_cli(output: $stdout, error_output: $stderr, input: $stdin)
+  def self.build_cli(output: $stdout, error_output: $stderr, input: $stdin, logger: nil)
+    logger ||= Logger.new(output: error_output, enabled: ENV.key?("WORKSPACE_DEBUG"))
     config = Config.new
-    state = State.new(config: config)
-    iterm = ITerm.new(config: config, output: output)
-    window_manager = WindowManager.new(config: config)
-    tmux = Tmux.new(config: config)
-    git = Git.new(output: output, input: input)
+    state = State.new(config: config, logger: logger)
+    iterm = ITerm.new(config: config, output: output, logger: logger)
+    window_manager = WindowManager.new(config: config, logger: logger)
+    tmux = Tmux.new(config: config, logger: logger)
+    git = Git.new(output: output, input: input, logger: logger)
     project_config = ProjectConfig.new(config: config, git: git, output: output)
-    window_layout = WindowLayout.new(window_manager: window_manager, config: config, output: output)
+    window_layout = WindowLayout.new(window_manager: window_manager, config: config, output: output, logger: logger)
     doctor = Doctor.new(config: config, output: output)
     project_settings = ProjectSettings.new(config: config)
-    hook_runner = HookRunner.new(project_settings: project_settings, output: output, error_output: error_output)
+    hook_runner = HookRunner.new(project_settings: project_settings, output: output, error_output: error_output, logger: logger)
 
     CLI.new(
       config: config,
@@ -63,6 +66,7 @@ module Workspace
       doctor: doctor,
       project_settings: project_settings,
       hook_runner: hook_runner,
+      logger: logger,
       output: output,
       error_output: error_output,
       input: input

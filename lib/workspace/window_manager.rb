@@ -5,8 +5,10 @@ module Workspace
   # Separated from session/pane lifecycle (handled by ITerm).
   class WindowManager
     # @param config [Workspace::Config] configuration for window_tool path
-    def initialize(config:)
+    # @param logger [Workspace::Logger] debug logger
+    def initialize(config:, logger: Workspace::Logger.new)
       @config = config
+      @logger = logger
     end
 
     # @param window_id [String, Integer] iTerm window ID
@@ -76,7 +78,9 @@ module Workspace
     # @param window_id [String, Integer] window ID (CGWindowID)
     # @return [Boolean] whether the window was focused
     def focus_by_id(window_id)
+      @logger.debug { "window_manager: focus id=#{window_id}" }
       _, _, status = Open3.capture3(@config.window_tool, "focus", "id=#{window_id}")
+      @logger.debug { "window_manager: focus result=#{status.success?}" }
       status.success?
     end
 
@@ -91,12 +95,15 @@ module Workspace
     # @raise [Workspace::Error] if window-tool fails
     def live_window_ids
       require "json"
+      @logger.debug { "window_manager: listing live window IDs" }
       output, _, status = Open3.capture3(@config.window_tool, "list", "--json")
       unless status.success?
         raise Workspace::Error, "window-tool list failed. Is window-tool installed?"
       end
       windows = JSON.parse(output)
-      Set.new(windows.map { |w| w["window_id"].to_i })
+      ids = Set.new(windows.map { |w| w["window_id"].to_i })
+      @logger.debug { "window_manager: found #{ids.size} live window(s)" }
+      ids
     end
 
     # Returns the current bounds for all requested windows in a single call.
@@ -127,6 +134,7 @@ module Workspace
     # @param height [Integer] window height
     # @return [void]
     def set_window_bounds(window_id, x, y, width, height)
+      @logger.debug { "window_manager: move id=#{window_id} to #{x},#{y} #{width}x#{height}" }
       system(@config.window_tool, "move", "id=#{window_id}", x.to_s, y.to_s, width.to_s, height.to_s)
     end
 
@@ -154,7 +162,9 @@ module Workspace
     # @param script [String] AppleScript code to execute
     # @return [String] stripped output from osascript
     def execute_applescript(script)
+      @logger.debug { "window_manager: executing AppleScript (#{script.lines.first&.strip}...)" }
       stdout, _ = Open3.capture3("osascript", "-e", script)
+      @logger.debug { "window_manager: AppleScript result=#{stdout.strip.inspect}" }
       stdout.strip
     end
   end
