@@ -5,3 +5,4 @@ bin/dev/
 .claude/settings.local.json
 .yardoc/
 .worktrees
+.workspace-project
