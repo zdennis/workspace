@@ -1,6 +1,6 @@
 # workspace init
 
-Install tmuxinator templates and create the config directory.
+Install tmuxinator templates and create the workspace config directory.
 
 ## Usage
 
@@ -17,14 +17,18 @@ workspace init [options]
 
 ## Details
 
-Sets up workspace by installing tmuxinator templates into `~/.config/tmuxinator/` and creating the config directory if it doesn't exist.
+Sets up workspace by:
 
-Safe to run multiple times — skips files that are already up to date and won't overwrite modified templates unless `--force` is used.
+1. Installing tmuxinator templates into `~/.config/tmuxinator/`
+2. Creating `~/.config/workspace/` and `~/.config/workspace/projects/`
+3. Installing a default `~/.config/workspace/config.yml` with empty hooks and layouts
+
+Safe to run multiple times — skips files that are already up to date and won't overwrite modified templates unless `--force` is used. The global `config.yml` is never overwritten.
 
 ## Examples
 
 ```sh
-# Install templates
+# Install templates and create config directory
 workspace init
 
 # Preview what would happen

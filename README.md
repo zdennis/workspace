@@ -70,7 +70,7 @@ workspace <subcommand> [options]
 | current | [README](docs/README.current.md) | Print the workspace project name for the current directory |
 | doctor | [README](docs/README.doctor.md) | Check that all required dependencies are installed |
 | focus | [README](docs/README.focus.md) | Bring a project's iTerm window to the front |
-| init | [README](docs/README.init.md) | Install tmuxinator templates and create config directory |
+| init | [README](docs/README.init.md) | Install tmuxinator templates and create workspace config directory |
 | kill | [README](docs/README.kill.md) | Kill a worktree project and remove its worktree |
 | launch | [README](docs/README.launch.md) | Launch tmuxinator projects in iTerm2 windows |
 | layout | [README](docs/README.layout.md) | Save/restore tmux pane layouts (auto-saved before resize) |

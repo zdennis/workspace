@@ -32,6 +32,8 @@ If the branch already exists (locally or remotely), it checks it out. If not, it
 
 If multiple remote branches match your input, you'll be prompted to select one or create a new branch.
 
+If a worktree for the branch already exists at a non-standard location (created outside of workspace via `git worktree add`), it is automatically adopted — a tmuxinator config and project marker are created, and the worktree is launched without being recreated.
+
 ## Examples
 
 ```sh
@@ -46,4 +48,7 @@ workspace start https://github.com/org/repo/issues/42
 
 # Start from a branch name
 workspace start feature/my-feature
+
+# Start with an initial prompt for Claude
+workspace start PROJ-123 --prompt "Fix the login bug"
 ```
