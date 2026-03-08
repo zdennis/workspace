@@ -1,3 +1,5 @@
+require "yaml"
+
 module Workspace
   module Commands
     # Sets up workspace by installing tmuxinator templates and creating
@@ -17,6 +19,8 @@ module Workspace
         @error_output = error_output
       end
 
+      DEFAULT_GLOBAL_CONFIG = {"hooks" => {}, "layouts" => {}}.freeze
+
       # @param dry_run [Boolean] show what would be done without making changes
       # @param force [Boolean] overwrite existing templates even if they differ
       # @return [void]
@@ -26,6 +30,8 @@ module Workspace
 
         ensure_tmuxinator_dir(dry_run)
         install_templates(dry_run, force)
+        ensure_workspace_config_dir(dry_run)
+        install_global_config(dry_run)
 
         @output.puts ""
         if dry_run
@@ -61,6 +67,35 @@ module Workspace
           end
 
           install_template(src, dest, template, dry_run, force)
+        end
+      end
+
+      def ensure_workspace_config_dir(dry_run)
+        workspace_dir = @config.workspace_config_dir
+        projects_dir = File.join(workspace_dir, "projects")
+
+        [workspace_dir, projects_dir].each do |dir|
+          if File.directory?(dir)
+            @output.puts "  exists  #{dir}"
+          elsif dry_run
+            @output.puts "  create  #{dir}"
+          else
+            FileUtils.mkdir_p(dir)
+            @output.puts "  create  #{dir}"
+          end
+        end
+      end
+
+      def install_global_config(dry_run)
+        path = File.join(@config.workspace_config_dir, "config.yml")
+
+        if File.exist?(path)
+          @output.puts "  skip    config.yml (already exists)"
+        elsif dry_run
+          @output.puts "  create  config.yml -> #{path}"
+        else
+          File.write(path, YAML.dump(DEFAULT_GLOBAL_CONFIG))
+          @output.puts "  create  config.yml -> #{path}"
         end
       end
 

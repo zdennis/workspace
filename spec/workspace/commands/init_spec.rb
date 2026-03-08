@@ -4,6 +4,7 @@ RSpec.describe Workspace::Commands::Init do
   let(:tmpdir) { Dir.mktmpdir }
   let(:workspace_dir) { File.join(tmpdir, "workspace") }
   let(:tmuxinator_dir) { File.join(tmpdir, "tmuxinator") }
+  let(:workspace_config_dir) { File.join(tmpdir, "workspace_config") }
   let(:output) { StringIO.new }
   let(:error_output) { StringIO.new }
   let(:config) { Workspace::Config.new(workspace_dir: workspace_dir) }
@@ -14,6 +15,7 @@ RSpec.describe Workspace::Commands::Init do
 
   before do
     allow(config).to receive(:tmuxinator_dir).and_return(tmuxinator_dir)
+    allow(config).to receive(:workspace_config_dir).and_return(workspace_config_dir)
   end
 
   after { FileUtils.remove_entry(tmpdir) }
@@ -42,6 +44,20 @@ RSpec.describe Workspace::Commands::Init do
         expect(output.string).to include("copy    workspace.project-template.yml")
         expect(output.string).to include("Done! Workspace is ready to use.")
       end
+
+      it "creates workspace config dir, projects dir, and global config" do
+        create_source_templates
+
+        command.call
+
+        expect(File.directory?(workspace_config_dir)).to be true
+        expect(File.directory?(File.join(workspace_config_dir, "projects"))).to be true
+
+        config_path = File.join(workspace_config_dir, "config.yml")
+        expect(File.exist?(config_path)).to be true
+        data = YAML.safe_load_file(config_path)
+        expect(data).to eq({"hooks" => {}, "layouts" => {}})
+      end
     end
 
     context "when tmuxinator dir already exists" do
@@ -53,6 +69,20 @@ RSpec.describe Workspace::Commands::Init do
 
         expect(output.string).to include("exists  #{tmuxinator_dir}")
         expect(output.string).not_to include("create  #{tmuxinator_dir}")
+      end
+    end
+
+    context "when workspace config dir and global config already exist" do
+      it "reports exists and skips config.yml" do
+        create_source_templates
+        FileUtils.mkdir_p(File.join(workspace_config_dir, "projects"))
+        File.write(File.join(workspace_config_dir, "config.yml"), YAML.dump({"hooks" => {}}))
+
+        command.call
+
+        expect(output.string).to include("exists  #{workspace_config_dir}")
+        expect(output.string).to include("exists  #{File.join(workspace_config_dir, "projects")}")
+        expect(output.string).to include("skip    config.yml (already exists)")
       end
     end
 
@@ -101,9 +131,12 @@ RSpec.describe Workspace::Commands::Init do
         command.call(dry_run: true)
 
         expect(File.directory?(tmuxinator_dir)).to be false
+        expect(File.directory?(workspace_config_dir)).to be false
         expect(output.string).to include("workspace init (dry run)")
         expect(output.string).to include("create  #{tmuxinator_dir}")
         expect(output.string).to include("copy    workspace.project-template.yml")
+        expect(output.string).to include("create  #{workspace_config_dir}")
+        expect(output.string).to include("create  config.yml")
         expect(output.string).to include("No changes made (dry run).")
       end
 
