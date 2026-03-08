@@ -11,10 +11,11 @@ module Workspace
       # @param kill_command [Commands::Kill] kill command for session teardown
       # @param output [IO] output stream for user-facing messages
       # @param input [IO] input stream for interactive prompts
-      def initialize(git:, project_config:, kill_command:, output: $stdout, input: $stdin)
+      def initialize(git:, project_config:, kill_command:, project_detector:, output: $stdout, input: $stdin)
         @git = git
         @project_config = project_config
         @kill_command = kill_command
+        @project_detector = project_detector
         @output = output
         @input = input
       end
@@ -28,7 +29,7 @@ module Workspace
       # @return [void]
       # @raise [Workspace::Error] if the project config is not a worktree project
       def call(project = nil, force: false, working_dir: Dir.pwd)
-        project ||= detect_project(working_dir)
+        project ||= @project_detector.detect_from_marker(working_dir)
         unless project
           raise Workspace::Error,
             "No project specified and no #{MARKER_FILE} found in current directory.\n" \
@@ -73,18 +74,6 @@ module Workspace
       def remove_marker_file(worktree_path)
         marker = File.join(worktree_path, MARKER_FILE)
         File.delete(marker) if File.exist?(marker)
-      end
-
-      def detect_project(working_dir)
-        dir = working_dir
-        loop do
-          marker = File.join(dir, MARKER_FILE)
-          return File.read(marker).strip if File.exist?(marker)
-          parent = File.dirname(dir)
-          break if parent == dir
-          dir = parent
-        end
-        nil
       end
 
       def read_worktree_path(config_path)

@@ -8,12 +8,14 @@ RSpec.describe Workspace::Commands::Stop do
   let(:git) { double("git") }
   let(:project_config) { double("project_config") }
   let(:kill_command) { double("kill_command") }
+  let(:project_detector) { Workspace::ProjectDetector.new(state: CLITestHelpers::FakeState.new, project_config: project_config) }
 
   subject(:command) do
     described_class.new(
       git: git,
       project_config: project_config,
       kill_command: kill_command,
+      project_detector: project_detector,
       output: output,
       input: input
     )
@@ -169,7 +171,7 @@ RSpec.describe Workspace::Commands::Stop do
 
         cmd = described_class.new(
           git: git, project_config: project_config, kill_command: kill_command,
-          output: output, input: input
+          project_detector: project_detector, output: output, input: input
         )
         cmd.call(nil, force: true, working_dir: marker_dir)
 
@@ -191,7 +193,7 @@ RSpec.describe Workspace::Commands::Stop do
 
         cmd = described_class.new(
           git: git, project_config: project_config, kill_command: kill_command,
-          output: output, input: input
+          project_detector: project_detector, output: output, input: input
         )
         cmd.call(nil, force: true, working_dir: sub_dir)
 
@@ -201,7 +203,7 @@ RSpec.describe Workspace::Commands::Stop do
       it "raises error when no marker file found and no project given" do
         cmd = described_class.new(
           git: git, project_config: project_config, kill_command: kill_command,
-          output: output, input: input
+          project_detector: project_detector, output: output, input: input
         )
 
         expect { cmd.call(nil, working_dir: tmpdir) }.to raise_error(

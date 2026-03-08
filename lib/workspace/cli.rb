@@ -35,7 +35,7 @@ module Workspace
     # @param output [IO] output stream for user-facing messages
     # @param error_output [IO] error output stream for warnings and errors
     # @param input [IO] input stream for interactive prompts
-    def initialize(config:, state:, project_config:, window_manager:, doctor:, project_settings:, hook_runner:, launch_command:, kill_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd)
+    def initialize(config:, state:, project_config:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd)
       @config = config
       @state = state
       @project_config = project_config
@@ -43,6 +43,7 @@ module Workspace
       @doctor = doctor
       @project_settings = project_settings
       @hook_runner = hook_runner
+      @project_detector = project_detector
       @launch_command = launch_command
       @kill_command = kill_command
       @start_command = start_command
@@ -298,7 +299,7 @@ module Workspace
       end
       parser.parse!(args)
 
-      project = args.first || detect_current_project
+      project = args.first || @project_detector.detect(@working_dir)
       raise UsageError, parser.help unless project
 
       @focus_command.call(project, shake: shake, highlight: highlight ? highlight_color : nil)
@@ -319,7 +320,7 @@ module Workspace
       end
       parser.parse!(args)
 
-      project = args.first || detect_current_project
+      project = args.first || @project_detector.detect(@working_dir)
       raise UsageError, parser.help unless project
 
       @tile_command.call(project)
@@ -345,7 +346,7 @@ module Workspace
 
       if args.size == 1
         # Could be just a pane spec if we can detect the project
-        project = detect_current_project
+        project = @project_detector.detect(@working_dir)
         if project
           spec = args[0]
         else
@@ -378,7 +379,7 @@ module Workspace
         name ||= Commands::Layout::DEFAULT_NAME
         @layout_command.restore(project, name)
       when "list"
-        project = args[0] || detect_current_project
+        project = args[0] || @project_detector.detect(@working_dir)
         raise UsageError, layout_help_text unless project
         @layout_command.list(project)
       when "help", "--help", "-h", nil
@@ -395,9 +396,9 @@ module Workspace
     def resolve_layout_args(args)
       case args.size
       when 0
-        [detect_current_project, nil]
+        [@project_detector.detect(@working_dir), nil]
       when 1
-        detected = detect_current_project
+        detected = @project_detector.detect(@working_dir)
         if detected
           [detected, args[0]]
         else
@@ -541,7 +542,7 @@ module Workspace
           @output.puts YAML.dump(data)
         end
       else
-        project = args.first || detect_current_project
+        project = args.first || @project_detector.detect(@working_dir)
         raise UsageError, parser.help unless project
         data = @project_settings.load(project)
         path = @project_settings.project_config_path(project)
@@ -628,7 +629,7 @@ module Workspace
       end
       parser.parse!(args)
 
-      project = detect_current_project
+      project = @project_detector.detect(@working_dir)
       unless project
         raise Workspace::Error, "Not inside a workspace project directory. Run 'workspace list --all' to see available projects."
       end
@@ -787,46 +788,6 @@ module Workspace
         @output.puts "Workspace Focus workflow is not installed."
         @output.puts "Run 'workspace alfred install' to install it."
       end
-    end
-
-    MARKER_FILE = ".workspace-project"
-
-    def detect_current_project
-      # First: walk up looking for .workspace-project marker (worktree projects)
-      dir = resolve_real_path(@working_dir)
-      loop do
-        marker = File.join(dir, MARKER_FILE)
-        return File.read(marker).strip if File.exist?(marker)
-        parent = File.dirname(dir)
-        break if parent == dir
-        dir = parent
-      end
-
-      # Second: match cwd against active project roots (longest match wins)
-      @state.load
-      cwd = resolve_real_path(@working_dir)
-      best_match = nil
-      best_length = -1
-      @state.keys.each do |project|
-        root = @project_config.project_root_for(project)
-        next unless root
-        expanded = resolve_real_path(root)
-        prefix = "#{expanded}/"
-        if cwd == expanded || cwd.start_with?(prefix)
-          if expanded.length > best_length
-            best_match = project
-            best_length = expanded.length
-          end
-        end
-      end
-
-      best_match
-    end
-
-    def resolve_real_path(path)
-      File.realpath(path)
-    rescue Errno::ENOENT
-      File.expand_path(path)
     end
   end
 end

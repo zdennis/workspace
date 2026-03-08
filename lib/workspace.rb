@@ -14,6 +14,7 @@ require_relative "workspace/window_manager"
 require_relative "workspace/window_layout"
 require_relative "workspace/project_settings"
 require_relative "workspace/hook_runner"
+require_relative "workspace/project_detector"
 require_relative "workspace/commands/init"
 require_relative "workspace/commands/launch"
 require_relative "workspace/commands/kill"
@@ -53,12 +54,13 @@ module Workspace
     doctor = Doctor.new(config: config, output: output)
     project_settings = ProjectSettings.new(config: config)
     hook_runner = HookRunner.new(project_settings: project_settings, project_config: project_config, output: output, error_output: error_output, logger: logger)
+    project_detector = ProjectDetector.new(state: state, project_config: project_config)
 
     # Pre-build command objects so CLI delegates rather than constructs
     kill_command = Commands::Kill.new(state: state, iterm: iterm, window_manager: window_manager, tmux: tmux, output: output, error_output: error_output)
     launch_command = Commands::Launch.new(state: state, iterm: iterm, window_manager: window_manager, tmux: tmux, project_config: project_config, window_layout: window_layout, output: output, error_output: error_output)
     start_command = Commands::Start.new(git: git, project_config: project_config, launch_command: launch_command, output: output, input: input)
-    stop_command = Commands::Stop.new(git: git, project_config: project_config, kill_command: kill_command, output: output, input: input)
+    stop_command = Commands::Stop.new(git: git, project_config: project_config, kill_command: kill_command, project_detector: project_detector, output: output, input: input)
     focus_command = Commands::Focus.new(state: state, window_manager: window_manager, output: output)
     tile_command = Commands::Tile.new(state: state, window_manager: window_manager, window_layout: window_layout, output: output)
     layout_command = Commands::Layout.new(state: state, tmux: tmux, project_settings: project_settings, output: output)
@@ -73,6 +75,7 @@ module Workspace
       doctor: doctor,
       project_settings: project_settings,
       hook_runner: hook_runner,
+      project_detector: project_detector,
       launch_command: launch_command,
       kill_command: kill_command,
       start_command: start_command,
