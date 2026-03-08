@@ -105,6 +105,21 @@ module Workspace
       File.exist?(config_path_for(name))
     end
 
+    # Returns the root directory for a project by reading its tmuxinator config.
+    #
+    # @param name [String] project name
+    # @return [String, nil] the project root path, or nil if config doesn't exist
+    def project_root_for(name)
+      path = config_path_for(name)
+      return nil unless File.exist?(path)
+
+      require "yaml"
+      config = YAML.safe_load_file(path)
+      config&.dig("root")
+    rescue Psych::SyntaxError
+      nil
+    end
+
     # @return [Array<String>] sorted list of available project names
     def available_projects
       Dir.glob(File.join(@config.tmuxinator_dir, "workspace.*.yml"))

@@ -38,6 +38,16 @@ module Workspace
       {}
     end
 
+    # Creates a default project config if one does not already exist.
+    #
+    # @param project_name [String] project name
+    # @return [void]
+    def ensure_exists(project_name)
+      path = project_config_path(project_name)
+      return if File.exist?(path)
+      save(project_name, {"hooks" => {}, "layouts" => {}})
+    end
+
     # @param project_name [String] project name
     # @param event [String] hook event name (e.g. "post_launch")
     # @return [String, nil] hook script or nil

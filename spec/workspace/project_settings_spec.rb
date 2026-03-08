@@ -99,6 +99,31 @@ RSpec.describe Workspace::ProjectSettings do
     end
   end
 
+  describe "#ensure_exists" do
+    it "creates a default config when none exists" do
+      settings.ensure_exists("newproject")
+
+      path = File.join(tmpdir, "projects", "newproject.yml")
+      expect(File.exist?(path)).to be true
+      data = YAML.safe_load_file(path)
+      expect(data).to eq({"hooks" => {}, "layouts" => {}})
+    end
+
+    it "does not overwrite an existing config" do
+      projects_dir = File.join(tmpdir, "projects")
+      FileUtils.mkdir_p(projects_dir)
+      File.write(
+        File.join(projects_dir, "existing.yml"),
+        YAML.dump({"hooks" => {"post_launch" => "echo hi"}})
+      )
+
+      settings.ensure_exists("existing")
+
+      data = YAML.safe_load_file(File.join(projects_dir, "existing.yml"))
+      expect(data).to eq({"hooks" => {"post_launch" => "echo hi"}})
+    end
+  end
+
   describe "#layouts_for" do
     it "returns empty hash when no layouts exist" do
       expect(settings.layouts_for("myproject")).to eq({})

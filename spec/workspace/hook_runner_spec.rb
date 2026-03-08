@@ -64,5 +64,37 @@ RSpec.describe Workspace::HookRunner do
       runner.run("myproject", "post_launch")
       expect(error_output.string).to include("something went wrong")
     end
+
+    it "runs the hook in the specified chdir directory" do
+      allow(project_settings).to receive(:hook_for)
+        .with("myproject", "post_launch")
+        .and_return("pwd")
+
+      dir = Dir.mktmpdir
+      begin
+        runner.run("myproject", "post_launch", chdir: dir)
+        expect(output.string).to include(File.realpath(dir))
+      ensure
+        FileUtils.remove_entry(dir)
+      end
+    end
+
+    it "falls back to current directory when chdir does not exist" do
+      allow(project_settings).to receive(:hook_for)
+        .with("myproject", "post_launch")
+        .and_return("pwd")
+
+      runner.run("myproject", "post_launch", chdir: "/nonexistent/path")
+      expect(output.string).to include(File.realpath(Dir.pwd))
+    end
+
+    it "runs in current directory when chdir is nil" do
+      allow(project_settings).to receive(:hook_for)
+        .with("myproject", "post_launch")
+        .and_return("pwd")
+
+      runner.run("myproject", "post_launch", chdir: nil)
+      expect(output.string).to include(File.realpath(Dir.pwd))
+    end
   end
 end

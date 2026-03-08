@@ -113,6 +113,24 @@ RSpec.describe Workspace::ProjectConfig do
     end
   end
 
+  describe "#project_root_for" do
+    subject(:pc) { described_class.new(config: config, output: output, git: git) }
+
+    it "returns the root from the tmuxinator config" do
+      File.write(File.join(tmpdir, "workspace.myapp.yml"), "name: myapp\nroot: /home/user/myapp\n")
+      expect(pc.project_root_for("myapp")).to eq("/home/user/myapp")
+    end
+
+    it "returns nil when config does not exist" do
+      expect(pc.project_root_for("nonexistent")).to be_nil
+    end
+
+    it "returns nil when config is corrupt YAML" do
+      File.write(File.join(tmpdir, "workspace.bad.yml"), ": :\n  - {\n")
+      expect(pc.project_root_for("bad")).to be_nil
+    end
+  end
+
   describe "#available_projects" do
     subject(:pc) { described_class.new(config: config, output: output, git: git) }
 

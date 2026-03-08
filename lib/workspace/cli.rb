@@ -67,6 +67,8 @@ module Workspace
         cmd_resize(args)
       when "layout"
         cmd_layout(args)
+      when "config"
+        cmd_config(args)
       when "list-projects"
         cmd_list_projects(args)
       when "list"
@@ -114,6 +116,7 @@ module Workspace
           tile            Tile all windows for a project across the screen
           resize          Resize tmux panes for a running project
           layout          Save/restore tmux pane layouts (auto-saved before resize)
+          config          Show project or global configuration
           list-projects   List all available tmuxinator projects
           list            List currently active (launched) projects
           status          Show detailed state of tracked launcher sessions
@@ -172,7 +175,10 @@ module Workspace
         output: @output
       ).call(projects, reattach: reattach, prompts: prompts)
 
-      projects.each { |p| @hook_runner.run(p, "post_launch") }
+      projects.each do |p|
+        @project_settings.ensure_exists(p)
+        @hook_runner.run(p, "post_launch", chdir: @project_config.project_root_for(p))
+      end
     end
 
     def cmd_start(args)
@@ -276,7 +282,7 @@ module Workspace
         error_output: @error_output
       ).call(args)
 
-      killed.each { |p| @hook_runner.run(p, "post_kill") }
+      killed.each { |p| @hook_runner.run(p, "post_kill", chdir: @project_config.project_root_for(p)) }
     end
 
     def cmd_focus(args)
@@ -302,7 +308,7 @@ module Workspace
         output: @output
       ).call(project, shake: shake)
 
-      @hook_runner.run(project, "post_focus")
+      @hook_runner.run(project, "post_focus", chdir: @project_config.project_root_for(project))
     end
 
     def cmd_tile(args)
@@ -357,7 +363,7 @@ module Workspace
         error_output: @error_output
       ).call(project, spec)
 
-      @hook_runner.run(project, "post_resize")
+      @hook_runner.run(project, "post_resize", chdir: @project_config.project_root_for(project))
     end
 
     def cmd_layout(args)
@@ -498,6 +504,48 @@ module Workspace
           next
         end
         @project_config.create(name, root)
+        @project_settings.ensure_exists(name)
+      end
+    end
+
+    def cmd_config(args)
+      global = false
+      parser = OptionParser.new do |opts|
+        opts.banner = "Usage: workspace config [options] [project]"
+        opts.separator ""
+        opts.separator "Show project or global workspace configuration."
+        opts.separator ""
+        opts.separator "Options:"
+        opts.on("--global", "Show global configuration instead of project config") do
+          global = true
+        end
+        opts.separator ""
+        opts.separator "Examples:"
+        opts.separator "  workspace config myproject    # show project config"
+        opts.separator "  workspace config --global     # show global config"
+      end
+      parser.parse!(args)
+
+      if global
+        data = @project_settings.load_global
+        path = @project_settings.global_config_path
+        @output.puts "# #{path}"
+        if data.empty?
+          @output.puts "# (no global config found)"
+        else
+          @output.puts YAML.dump(data)
+        end
+      else
+        raise UsageError, parser.help if args.empty?
+        project = args.first
+        data = @project_settings.load(project)
+        path = @project_settings.project_config_path(project)
+        @output.puts "# #{path}"
+        if data.empty?
+          @output.puts "# (no config found for '#{project}')"
+        else
+          @output.puts YAML.dump(data)
+        end
       end
     end
 

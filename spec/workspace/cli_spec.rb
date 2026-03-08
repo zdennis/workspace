@@ -108,6 +108,10 @@ module CLITestHelpers
     def available_projects
       ["project-a", "project-b"]
     end
+
+    def project_root_for(_name)
+      nil
+    end
   end
 
   class FakeWindowLayout
@@ -124,6 +128,7 @@ module CLITestHelpers
     def load(_project_name) = {}
     def save(_project_name, _data) = nil
     def load_global = {}
+    def ensure_exists(_project_name) = nil
     def hook_for(_project_name, _event) = nil
     def layouts_for(_project_name) = {}
     def project_config_path(name) = "/tmp/workspace/projects/#{name}.yml"
@@ -137,8 +142,8 @@ module CLITestHelpers
       @runs = []
     end
 
-    def run(project, event, env: {})
-      @runs << {project: project, event: event, env: env}
+    def run(project, event, env: {}, chdir: nil)
+      @runs << {project: project, event: event, env: env, chdir: chdir}
       true
     end
   end
@@ -335,6 +340,47 @@ RSpec.describe Workspace::CLI do
         expect(e.status).to eq(1)
       }
       expect(error_output.string).to include("Usage: workspace layout")
+    end
+  end
+
+  describe "#run with config" do
+    it "exits 1 when no project specified and not --global" do
+      cli, _, error_output = build_test_cli
+      expect { cli.run(["config"]) }.to raise_error(SystemExit) { |e|
+        expect(e.status).to eq(1)
+      }
+      expect(error_output.string).to include("Usage: workspace config")
+    end
+
+    it "shows project config" do
+      project_settings = CLITestHelpers::FakeProjectSettings.new
+      project_settings.define_singleton_method(:load) { |_name| {"hooks" => {"post_launch" => "echo hi"}} }
+      project_settings.define_singleton_method(:project_config_path) { |name| "/tmp/workspace/projects/#{name}.yml" }
+
+      cli, output, _ = build_test_cli(project_settings: project_settings)
+      cli.run(["config", "myproject"])
+
+      expect(output.string).to include("post_launch")
+      expect(output.string).to include("echo hi")
+    end
+
+    it "shows global config with --global" do
+      project_settings = CLITestHelpers::FakeProjectSettings.new
+      project_settings.define_singleton_method(:load_global) { {"layouts" => {"equal" => "even-vertical"}} }
+      project_settings.define_singleton_method(:global_config_path) { "/tmp/workspace/config.yml" }
+
+      cli, output, _ = build_test_cli(project_settings: project_settings)
+      cli.run(["config", "--global"])
+
+      expect(output.string).to include("equal")
+      expect(output.string).to include("even-vertical")
+    end
+
+    it "reports when no project config found" do
+      cli, output, _ = build_test_cli
+      cli.run(["config", "nonexistent"])
+
+      expect(output.string).to include("no config found for 'nonexistent'")
     end
   end
 

@@ -18,15 +18,19 @@ module Workspace
     # @param project [String] project name
     # @param event [String] hook event name (e.g. "post_launch")
     # @param env [Hash] additional environment variables
+    # @param chdir [String, nil] working directory for the hook script
     # @return [Boolean] true if hook ran successfully or no hook defined
-    def run(project, event, env: {})
+    def run(project, event, env: {}, chdir: nil)
       script = @project_settings.hook_for(project, event)
       return true unless script
 
       hook_env = {"WORKSPACE_PROJECT" => project}.merge(env)
 
+      capture_opts = {}
+      capture_opts[:chdir] = chdir if chdir && File.directory?(chdir)
+
       @output.puts "Running #{event} hook..."
-      stdout, stderr, status = Open3.capture3(hook_env, "sh", "-c", script)
+      stdout, stderr, status = Open3.capture3(hook_env, "sh", "-c", script, **capture_opts)
       @output.print stdout unless stdout.empty?
 
       unless status.success?
