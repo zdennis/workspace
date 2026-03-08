@@ -77,7 +77,6 @@ module CLITestHelpers
     def set_window_bounds(_wid, _x, _y, _w, _h) = nil
     def all_window_bounds(_wids) = {}
     def close_window(_wid) = nil
-    def window_titles = []
   end
 
   class FakeTmux

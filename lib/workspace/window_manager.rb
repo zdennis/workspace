@@ -156,12 +156,6 @@ module Workspace
       system("osascript", "-e", script)
     end
 
-    # @return [Array<Array<String>>] parsed window-tool list output
-    def window_titles
-      output, _ = Open3.capture2(@config.window_tool, "list")
-      output.lines.drop(1).map { |line| line.strip.split("\t", 5) }
-    end
-
     private
 
     # @param script [String] AppleScript code to execute
