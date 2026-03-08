@@ -99,6 +99,27 @@ module Workspace
       Set.new(windows.map { |w| w["window_id"].to_i })
     end
 
+    # Returns the current bounds for all requested windows in a single call.
+    #
+    # @param window_ids [Array<Integer, String>] window IDs to look up
+    # @return [Hash<Integer, Hash>] map of window_id => {x:, y:, width:, height:}
+    def all_window_bounds(window_ids)
+      require "json"
+      output, _, status = Open3.capture3(@config.window_tool, "list", "--json")
+      return {} unless status.success?
+
+      windows = JSON.parse(output)
+      id_set = Set.new(window_ids.map(&:to_i))
+      result = {}
+      windows.each do |w|
+        wid = w["window_id"].to_i
+        if id_set.include?(wid)
+          result[wid] = {x: w["x"], y: w["y"], width: w["width"], height: w["height"]}
+        end
+      end
+      result
+    end
+
     # @param window_id [String, Integer] window ID (CGWindowID)
     # @param x [Integer] x position
     # @param y [Integer] y position

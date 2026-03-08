@@ -62,6 +62,7 @@ module CLITestHelpers
     def shake_by_id(_wid) = true
     def live_window_ids = Set.new
     def set_window_bounds(_wid, _x, _y, _w, _h) = nil
+    def all_window_bounds(_wids) = {}
     def close_window(_wid) = nil
     def window_titles = []
   end
@@ -116,6 +117,7 @@ module CLITestHelpers
 
   class FakeWindowLayout
     def arrange(_ids) = nil
+    def tile(_ids) = nil
     def calculate_positions(**_opts) = []
   end
 

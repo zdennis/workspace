@@ -90,50 +90,88 @@ RSpec.describe Workspace::WindowLayout do
   describe "#calculate_tile_positions" do
     it "returns empty array for 0 windows" do
       result = layout.calculate_tile_positions(
-        screen_x: 0, screen_y: 0, screen_w: 1920, screen_h: 1080, count: 0
+        screen_x: 0, screen_y: 0, screen_w: 1920, screen_h: 1080, current_bounds: []
       )
       expect(result).to eq([])
     end
 
-    it "fills screen with a single window" do
+    it "preserves size of a single window" do
       result = layout.calculate_tile_positions(
-        screen_x: 0, screen_y: 0, screen_w: 1920, screen_h: 1080, count: 1
+        screen_x: 0, screen_y: 0, screen_w: 1920, screen_h: 1080,
+        current_bounds: [{x: 100, y: 200, width: 600, height: 800}]
       )
       expect(result.size).to eq(1)
       pos = result.first
+      expect(pos[:width]).to eq(600)
+      expect(pos[:height]).to eq(800)
       expect(pos[:x]).to eq(0)
-      expect(pos[:y]).to eq(0)
-      expect(pos[:width]).to eq(1920)
-      expect(pos[:height]).to eq(1080)
+      # vertically centered: (1080 - 800) / 2 = 140
+      expect(pos[:y]).to eq(140)
     end
 
-    it "splits screen into equal columns for 3 windows" do
+    it "places windows side-by-side keeping their sizes when they fit" do
+      bounds = [
+        {x: 0, y: 0, width: 500, height: 800},
+        {x: 0, y: 0, width: 600, height: 900},
+        {x: 0, y: 0, width: 400, height: 700}
+      ]
       result = layout.calculate_tile_positions(
-        screen_x: 0, screen_y: 0, screen_w: 1920, screen_h: 1080, count: 3
+        screen_x: 0, screen_y: 0, screen_w: 1920, screen_h: 1080,
+        current_bounds: bounds
       )
       expect(result.size).to eq(3)
-      expect(result[0]).to eq(x: 0, y: 0, width: 640, height: 1080)
-      expect(result[1]).to eq(x: 640, y: 0, width: 640, height: 1080)
-      expect(result[2]).to eq(x: 1280, y: 0, width: 640, height: 1080)
+      # Widths preserved
+      expect(result[0][:width]).to eq(500)
+      expect(result[1][:width]).to eq(600)
+      expect(result[2][:width]).to eq(400)
+      # Heights preserved
+      expect(result[0][:height]).to eq(800)
+      expect(result[1][:height]).to eq(900)
+      expect(result[2][:height]).to eq(700)
+      # Positions: left-to-right, starting at screen_x
+      expect(result[0][:x]).to eq(0)
+      expect(result[1][:x]).to eq(500)
+      expect(result[2][:x]).to eq(1100)
+      # Vertically centered
+      expect(result[0][:y]).to eq(140) # (1080 - 800) / 2
+      expect(result[1][:y]).to eq(90)  # (1080 - 900) / 2
+      expect(result[2][:y]).to eq(190) # (1080 - 700) / 2
     end
 
-    it "gives the last column any remainder pixels" do
+    it "shrinks windows proportionally when total width exceeds screen" do
+      bounds = [
+        {x: 0, y: 0, width: 1200, height: 1000},
+        {x: 0, y: 0, width: 1200, height: 800}
+      ]
       result = layout.calculate_tile_positions(
-        screen_x: 0, screen_y: 0, screen_w: 1920, screen_h: 1080, count: 7
+        screen_x: 0, screen_y: 0, screen_w: 1920, screen_h: 1080,
+        current_bounds: bounds
       )
-      # 1920 / 7 = 274, 274 * 7 = 1918, remainder = 2
-      expect(result.first[:width]).to eq(274)
-      expect(result.last[:width]).to eq(276)
-      # All columns together fill the screen
-      expect(result.last[:x] + result.last[:width]).to eq(1920)
+      # Total = 2400, scale = 1920/2400 = 0.8
+      expect(result[0][:width]).to eq(960)  # 1200 * 0.8
+      expect(result[1][:width]).to eq(960)  # 1200 * 0.8
+      expect(result[0][:height]).to eq(800) # 1000 * 0.8
+      expect(result[1][:height]).to eq(640) # 800 * 0.8
+      expect(result[0][:x]).to eq(0)
+      expect(result[1][:x]).to eq(960)
     end
 
     it "handles non-zero screen offsets" do
+      bounds = [
+        {x: 0, y: 0, width: 800, height: 900},
+        {x: 0, y: 0, width: 800, height: 900}
+      ]
       result = layout.calculate_tile_positions(
-        screen_x: 1920, screen_y: 100, screen_w: 1920, screen_h: 1080, count: 2
+        screen_x: 1920, screen_y: 100, screen_w: 1920, screen_h: 1080,
+        current_bounds: bounds
       )
-      expect(result[0]).to eq(x: 1920, y: 100, width: 960, height: 1080)
-      expect(result[1]).to eq(x: 2880, y: 100, width: 960, height: 1080)
+      expect(result[0][:x]).to eq(1920)
+      expect(result[1][:x]).to eq(2720)
+      expect(result[0][:width]).to eq(800)
+      expect(result[1][:width]).to eq(800)
+      # Vertically centered within screen: 100 + (1080 - 900) / 2 = 190
+      expect(result[0][:y]).to eq(190)
+      expect(result[1][:y]).to eq(190)
     end
   end
 end
