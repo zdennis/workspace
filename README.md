@@ -71,15 +71,15 @@ workspace <subcommand> [options]
 | doctor | [README](docs/README.doctor.md) | Check that all required dependencies are installed |
 | focus | [README](docs/README.focus.md) | Bring a project's iTerm window to the front |
 | init | [README](docs/README.init.md) | Install tmuxinator templates and create config directory |
-| kill | [README](docs/README.kill.md) | Kill active workspace projects and their tmux sessions |
+| kill | [README](docs/README.kill.md) | Kill a worktree project and remove its worktree |
 | launch | [README](docs/README.launch.md) | Launch tmuxinator projects in iTerm2 windows |
 | layout | [README](docs/README.layout.md) | Save/restore tmux pane layouts (auto-saved before resize) |
 | list | [README](docs/README.list.md) | List active projects (`--all` for all available) |
-| relaunch | [README](docs/README.relaunch.md) | Kill and relaunch all active workspace projects |
+| relaunch | [README](docs/README.relaunch.md) | Stop and relaunch all active workspace projects |
 | resize | [README](docs/README.resize.md) | Resize tmux panes for a running project |
 | start | [README](docs/README.start.md) | Create a git worktree and launch it (from JIRA key, PR/issue URL, or branch) |
 | status | [README](docs/README.status.md) | Show detailed state of tracked launcher sessions |
-| stop | [README](docs/README.stop.md) | Kill a worktree project and remove its worktree |
+| stop | [README](docs/README.stop.md) | Stop active workspace projects and their tmux sessions |
 | tile | [README](docs/README.tile.md) | Tile all windows for a project across the screen |
 | version | [README](docs/README.version.md) | Print the workspace version |
 | whereis | [README](docs/README.whereis.md) | Print the workspace installation directory |
