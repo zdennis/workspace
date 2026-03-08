@@ -8,6 +8,16 @@ module Workspace
       @config = config
       @output = output
       @git = git
+      @root_cache = {}
+    end
+
+    # Derives a project name from a directory path by taking the basename
+    # and stripping leading dots.
+    #
+    # @param path [String] a directory path
+    # @return [String] the derived project name
+    def self.name_from_path(path)
+      File.basename(path).sub(/^\.+/, "")
     end
 
     # @param arg [String] a project name or path
@@ -15,8 +25,7 @@ module Workspace
     def resolve_project_arg(arg)
       if arg == "." || arg.include?("/") || File.directory?(arg)
         root = File.expand_path(arg)
-        name = File.basename(root).sub(/^\.+/, "")
-        [name, root]
+        [self.class.name_from_path(root), root]
       else
         [arg, nil]
       end
@@ -106,18 +115,14 @@ module Workspace
     end
 
     # Returns the root directory for a project by reading its tmuxinator config.
+    # Results are cached for the lifetime of this instance.
     #
     # @param name [String] project name
     # @return [String, nil] the project root path, or nil if config doesn't exist
     def project_root_for(name)
-      path = config_path_for(name)
-      return nil unless File.exist?(path)
+      return @root_cache[name] if @root_cache.key?(name)
 
-      require "yaml"
-      config = YAML.safe_load_file(path)
-      config&.dig("root")
-    rescue Psych::SyntaxError
-      nil
+      @root_cache[name] = read_project_root(name)
     end
 
     # @return [Array<String>] sorted list of available project names
@@ -126,6 +131,19 @@ module Workspace
         .map { |f| File.basename(f, ".yml").delete_prefix("workspace.") }
         .reject { |n| n.match?(/^project-.*template$/) }
         .sort
+    end
+
+    private
+
+    def read_project_root(name)
+      path = config_path_for(name)
+      return nil unless File.exist?(path)
+
+      require "yaml"
+      config = YAML.safe_load_file(path)
+      config&.dig("root")
+    rescue Psych::SyntaxError
+      nil
     end
   end
 end

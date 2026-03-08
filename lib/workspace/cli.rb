@@ -6,6 +6,15 @@ module Workspace
   # Receives all collaborators via constructor injection and dispatches
   # subcommands via a case statement.
   class CLI
+    # Injectable exit handler. Defaults to Kernel for real exits.
+    # Override with a fake in tests to prevent SystemExit from killing the process.
+    class << self
+      attr_writer :exit_handler
+
+      def exit_handler
+        @exit_handler ||= Kernel
+      end
+    end
     # @param config [Workspace::Config] configuration for path lookups
     # @param state [Workspace::State] state persistence
     # @param iterm [Workspace::ITerm] iTerm automation
@@ -94,14 +103,14 @@ module Workspace
         @error_output.puts "Unknown subcommand: #{subcommand}"
         @error_output.puts
         main_help
-        exit 1
+        self.class.exit_handler.exit(1)
       end
     rescue UsageError => e
       @error_output.puts e.message
-      exit 1
+      self.class.exit_handler.exit(1)
     rescue Error => e
       @error_output.puts "Error: #{e.message}"
-      exit 1
+      self.class.exit_handler.exit(1)
     end
 
     private
@@ -190,7 +199,7 @@ module Workspace
 
       projects.each do |p|
         @project_settings.ensure_exists(p)
-        @hook_runner.run(p, "post_launch", chdir: @project_config.project_root_for(p))
+        @hook_runner.run(p, "post_launch")
       end
     end
 
@@ -296,7 +305,7 @@ module Workspace
         error_output: @error_output
       ).call(args)
 
-      killed.each { |p| @hook_runner.run(p, "post_kill", chdir: @project_config.project_root_for(p)) }
+      killed.each { |p| @hook_runner.run(p, "post_kill") }
     end
 
     def cmd_focus(args)
@@ -332,7 +341,7 @@ module Workspace
         output: @output
       ).call(project, shake: shake, highlight: highlight ? highlight_color : nil)
 
-      @hook_runner.run(project, "post_focus", chdir: @project_config.project_root_for(project))
+      @hook_runner.run(project, "post_focus")
     end
 
     def cmd_tile(args)
@@ -399,7 +408,7 @@ module Workspace
         error_output: @error_output
       ).call(project, spec)
 
-      @hook_runner.run(project, "post_resize", chdir: @project_config.project_root_for(project))
+      @hook_runner.run(project, "post_resize")
     end
 
     def cmd_layout(args)
@@ -528,7 +537,7 @@ module Workspace
       @state.load
       if @state.empty?
         @error_output.puts "No active workspace projects to relaunch."
-        exit 1
+        self.class.exit_handler.exit(1)
       end
 
       projects = @state.keys.dup

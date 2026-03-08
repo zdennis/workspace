@@ -1,168 +1,6 @@
 require "stringio"
 require "tmpdir"
 
-module CLITestHelpers
-  class FakeState
-    def initialize
-      @data = {}
-    end
-
-    def load
-      self
-    end
-
-    def save
-    end
-
-    def [](key)
-      @data[key]
-    end
-
-    def []=(key, value)
-      @data[key] = value
-    end
-
-    def delete(key)
-      @data.delete(key)
-    end
-
-    def keys
-      @data.keys
-    end
-
-    def empty?
-      @data.empty?
-    end
-
-    def each(&block)
-      @data.each(&block)
-    end
-
-    def dig(*keys)
-      @data.dig(*keys)
-    end
-
-    def to_h
-      @data.dup
-    end
-
-    def prune(live_ids)
-      pruned = []
-      @data.each_key do |project|
-        wid = @data[project]["iterm_window_id"]
-        unless wid && live_ids.include?(wid.to_i)
-          pruned << project
-        end
-      end
-      pruned.each { |p| @data.delete(p) }
-      pruned
-    end
-  end
-
-  class FakeITerm
-    def session_map = {}
-    def find_existing_sessions(_state, **_opts) = {}
-    def find_launcher_window_id(_state, **_opts) = nil
-    def create_launcher_panes(_projects, _commands, **_opts) = {}
-    def relaunch_in_session(_uid, _cmd) = "ok"
-  end
-
-  class FakeWindowManager
-    def window_exists?(_wid) = false
-    def find_window_by_title(_title) = nil
-    def find_window_for_project(_project) = nil
-    def focus_by_id(_wid, highlight: nil) = true
-    def shake_by_id(_wid) = true
-    def live_window_ids = Set.new
-    def set_window_bounds(_wid, _x, _y, _w, _h) = nil
-    def all_window_bounds(_wids) = {}
-    def close_window(_wid) = nil
-  end
-
-  class FakeTmux
-    def sessions = []
-    def start_server = nil
-    def kill_session(_name) = nil
-    def rename_window(_session, _index, _name) = nil
-    def resize_pane(_session, _pane, _size) = true
-    def capture_layout(_session, **_opts) = "layout-string"
-    def apply_layout(_session, _layout, **_opts) = true
-
-    def command_for(_project, **_opts)
-      "tmuxinator start test --attach"
-    end
-
-    def session_name_for(config)
-      config
-    end
-  end
-
-  class FakeProjectConfig
-    def resolve_project_arg(arg)
-      [arg, nil]
-    end
-
-    def create(name, _root)
-      name
-    end
-
-    def create_worktree(_pn, _wn, _wp, _bn)
-      "test-config"
-    end
-
-    def config_path_for(name)
-      "~/.config/tmuxinator/workspace.#{name}.yml"
-    end
-
-    def exists?(_name)
-      true
-    end
-
-    def available_projects
-      ["project-a", "project-b"]
-    end
-
-    def project_root_for(_name)
-      nil
-    end
-  end
-
-  class FakeWindowLayout
-    def arrange(_ids) = nil
-    def tile(_ids) = nil
-    def calculate_positions(**_opts) = []
-  end
-
-  class FakeDoctor
-    def run
-    end
-  end
-
-  class FakeProjectSettings
-    def load(_project_name) = {}
-    def save(_project_name, _data) = nil
-    def load_global = {}
-    def ensure_exists(_project_name) = nil
-    def hook_for(_project_name, _event) = nil
-    def layouts_for(_project_name) = {}
-    def project_config_path(name) = "/tmp/workspace/projects/#{name}.yml"
-    def global_config_path = "/tmp/workspace/config.yml"
-  end
-
-  class FakeHookRunner
-    attr_reader :runs
-
-    def initialize
-      @runs = []
-    end
-
-    def run(project, event, env: {}, chdir: nil)
-      @runs << {project: project, event: event, env: env, chdir: chdir}
-      true
-    end
-  end
-end
-
 RSpec.describe Workspace::CLI do
   def build_test_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new, **overrides)
     config = overrides[:config] || Workspace::Config.new
@@ -215,7 +53,7 @@ RSpec.describe Workspace::CLI do
 
     it "exits 1 and prints error for unknown subcommand" do
       cli, _, error_output = build_test_cli
-      expect { cli.run(["bogus"]) }.to raise_error(SystemExit) { |e|
+      expect { cli.run(["bogus"]) }.to raise_error(FakeSystemExit) { |e|
         expect(e.status).to eq(1)
       }
       expect(error_output.string).to include("Unknown subcommand: bogus")
@@ -228,7 +66,7 @@ RSpec.describe Workspace::CLI do
       end
 
       cli, _, error_output = build_test_cli(doctor: doctor)
-      expect { cli.run(["doctor"]) }.to raise_error(SystemExit) { |e|
+      expect { cli.run(["doctor"]) }.to raise_error(FakeSystemExit) { |e|
         expect(e.status).to eq(1)
       }
       expect(error_output.string).to include("Error: something broke")
@@ -236,7 +74,7 @@ RSpec.describe Workspace::CLI do
 
     it "exits 1 when a Workspace::UsageError is raised" do
       cli, _, error_output = build_test_cli
-      expect { cli.run(["launch"]) }.to raise_error(SystemExit) { |e|
+      expect { cli.run(["launch"]) }.to raise_error(FakeSystemExit) { |e|
         expect(e.status).to eq(1)
       }
       expect(error_output.string).to include("Usage: workspace launch")
@@ -349,7 +187,7 @@ RSpec.describe Workspace::CLI do
         project_config.define_singleton_method(:project_root_for) { |_name| app_dir }
 
         cli, _, error_output = build_test_cli(state: state, project_config: project_config, working_dir: app_extra_dir)
-        expect { cli.run(["current"]) }.to raise_error(SystemExit) { |e|
+        expect { cli.run(["current"]) }.to raise_error(FakeSystemExit) { |e|
           expect(e.status).to eq(1)
         }
         expect(error_output.string).to include("Not inside a workspace project directory.")
@@ -358,7 +196,7 @@ RSpec.describe Workspace::CLI do
 
     it "exits 1 when not inside a workspace project" do
       cli, _, error_output = build_test_cli
-      expect { cli.run(["current"]) }.to raise_error(SystemExit) { |e|
+      expect { cli.run(["current"]) }.to raise_error(FakeSystemExit) { |e|
         expect(e.status).to eq(1)
       }
       expect(error_output.string).to include("Not inside a workspace project directory.")
@@ -420,6 +258,7 @@ RSpec.describe Workspace::CLI do
         state["my-project"] = {"unique_id" => "uid1"}
 
         tmux = CLITestHelpers::FakeTmux.new
+        allow(tmux).to receive(:sessions).and_return(["my-project"])
 
         cli, output, _ = build_test_cli(state: state, tmux: tmux, working_dir: dir)
         cli.run(["layout", "save", "coding"])
@@ -523,7 +362,7 @@ RSpec.describe Workspace::CLI do
   describe "#run with stop" do
     it "exits 1 when no project specified and no marker file found" do
       cli, _, error_output = build_test_cli
-      expect { cli.run(["stop"]) }.to raise_error(SystemExit) { |e|
+      expect { cli.run(["stop"]) }.to raise_error(FakeSystemExit) { |e|
         expect(e.status).to eq(1)
       }
       expect(error_output.string).to include("No project specified")
@@ -533,7 +372,7 @@ RSpec.describe Workspace::CLI do
   describe "#run with resize" do
     it "exits 1 when missing arguments" do
       cli, _, error_output = build_test_cli
-      expect { cli.run(["resize"]) }.to raise_error(SystemExit) { |e|
+      expect { cli.run(["resize"]) }.to raise_error(FakeSystemExit) { |e|
         expect(e.status).to eq(1)
       }
       expect(error_output.string).to include("Usage: workspace resize")
@@ -541,7 +380,7 @@ RSpec.describe Workspace::CLI do
 
     it "exits 1 when missing pane spec and no project detected" do
       cli, _, error_output = build_test_cli
-      expect { cli.run(["resize", "myproject"]) }.to raise_error(SystemExit) { |e|
+      expect { cli.run(["resize", "myproject"]) }.to raise_error(FakeSystemExit) { |e|
         expect(e.status).to eq(1)
       }
       expect(error_output.string).to include("Usage: workspace resize")
@@ -560,7 +399,7 @@ RSpec.describe Workspace::CLI do
 
     it "exits 1 for unknown layout subcommand" do
       cli, _, error_output = build_test_cli
-      expect { cli.run(["layout", "bogus"]) }.to raise_error(SystemExit) { |e|
+      expect { cli.run(["layout", "bogus"]) }.to raise_error(FakeSystemExit) { |e|
         expect(e.status).to eq(1)
       }
       expect(error_output.string).to include("Unknown layout subcommand: bogus")
@@ -568,7 +407,7 @@ RSpec.describe Workspace::CLI do
 
     it "exits 1 when save has no project" do
       cli, _, error_output = build_test_cli
-      expect { cli.run(["layout", "save"]) }.to raise_error(SystemExit) { |e|
+      expect { cli.run(["layout", "save"]) }.to raise_error(FakeSystemExit) { |e|
         expect(e.status).to eq(1)
       }
       expect(error_output.string).to include("Usage: workspace layout")
@@ -578,7 +417,7 @@ RSpec.describe Workspace::CLI do
   describe "#run with config" do
     it "exits 1 when no project specified and not --global" do
       cli, _, error_output = build_test_cli
-      expect { cli.run(["config"]) }.to raise_error(SystemExit) { |e|
+      expect { cli.run(["config"]) }.to raise_error(FakeSystemExit) { |e|
         expect(e.status).to eq(1)
       }
       expect(error_output.string).to include("Usage: workspace config")
@@ -634,7 +473,7 @@ RSpec.describe Workspace::CLI do
 
     it "exits 1 for unknown alfred subcommand" do
       cli, _, error_output = build_test_cli
-      expect { cli.run(["alfred", "bogus"]) }.to raise_error(SystemExit) { |e|
+      expect { cli.run(["alfred", "bogus"]) }.to raise_error(FakeSystemExit) { |e|
         expect(e.status).to eq(1)
       }
       expect(error_output.string).to include("Unknown alfred subcommand: bogus")
@@ -644,7 +483,7 @@ RSpec.describe Workspace::CLI do
       it "raises error when Alfred is not installed" do
         config = Workspace::Config.new(workspace_dir: "/test/workspace")
         cli, _, _ = build_test_cli(config: config)
-        expect { cli.run(["alfred", "install"]) }.to raise_error(SystemExit) { |e|
+        expect { cli.run(["alfred", "install"]) }.to raise_error(FakeSystemExit) { |e|
           expect(e.status).to eq(1)
         }
       end
@@ -674,7 +513,7 @@ RSpec.describe Workspace::CLI do
   describe "#run with relaunch" do
     it "exits 1 when no active projects" do
       cli, _, error_output = build_test_cli
-      expect { cli.run(["relaunch"]) }.to raise_error(SystemExit) { |e|
+      expect { cli.run(["relaunch"]) }.to raise_error(FakeSystemExit) { |e|
         expect(e.status).to eq(1)
       }
       expect(error_output.string).to include("No active workspace projects to relaunch")

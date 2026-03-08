@@ -52,7 +52,7 @@ module Workspace
     window_layout = WindowLayout.new(window_manager: window_manager, config: config, output: output, logger: logger)
     doctor = Doctor.new(config: config, output: output)
     project_settings = ProjectSettings.new(config: config)
-    hook_runner = HookRunner.new(project_settings: project_settings, output: output, error_output: error_output, logger: logger)
+    hook_runner = HookRunner.new(project_settings: project_settings, project_config: project_config, output: output, error_output: error_output, logger: logger)
 
     CLI.new(
       config: config,

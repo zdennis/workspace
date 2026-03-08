@@ -1,0 +1,7 @@
+#!/bin/bash
+# Run the test suite multiple times and report example counts to check for ordering issues.
+runs=${1:-5}
+for i in $(seq 1 "$runs"); do
+  count=$(bundle exec rspec 2>&1 | grep -oE '^[0-9]+ examples')
+  echo "Run $i: $count"
+done
