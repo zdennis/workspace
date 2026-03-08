@@ -110,25 +110,25 @@ module Workspace
         Usage: workspace <subcommand> [options]
 
         Subcommands:
-          init            Install tmuxinator templates and create config directory
-          doctor          Check that all required dependencies are installed
-          launch          Launch tmuxinator projects in iTerm windows
-          start           Create a worktree and launch it (from JIRA key, PR URL, or branch)
-          stop            Kill a worktree project and remove its worktree (auto-detects from cwd)
           add             Add a tmuxinator config for a project directory
-          kill            Kill active workspace projects and their tmux sessions
-          relaunch        Kill and relaunch all active workspace projects
-          focus           Bring a project's iTerm window to the front
-          tile            Tile all windows for a project across the screen
-          resize          Resize tmux panes for a running project
-          layout          Save/restore tmux pane layouts (auto-saved before resize)
+          alfred          Manage the Alfred workflow for workspace focus
           config          Show project or global configuration
           current         Print the workspace project name for the current directory
-          list            List currently active (launched) projects (--all for all available)
-          status          Show detailed state of tracked launcher sessions
-          whereis         Print the workspace installation directory
-          alfred          Manage the Alfred workflow for workspace focus
+          doctor          Check that all required dependencies are installed
+          focus           Bring a project's iTerm window to the front
           help            Show this help message
+          init            Install tmuxinator templates and create config directory
+          kill            Kill active workspace projects and their tmux sessions
+          launch          Launch tmuxinator projects in iTerm windows
+          layout          Save/restore tmux pane layouts (auto-saved before resize)
+          list            List currently active (launched) projects (--all for all available)
+          relaunch        Kill and relaunch all active workspace projects
+          resize          Resize tmux panes for a running project
+          start           Create a worktree and launch it (from JIRA key, PR URL, or branch)
+          status          Show detailed state of tracked launcher sessions
+          stop            Kill a worktree project and remove its worktree (auto-detects from cwd)
+          tile            Tile all windows for a project across the screen
+          whereis         Print the workspace installation directory
 
         Global options:
           --debug         Print detailed debug output to stderr
