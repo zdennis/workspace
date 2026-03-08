@@ -24,12 +24,4 @@ RSpec.configure do |config|
   config.disable_monkey_patching!
   config.order = :random
   Kernel.srand config.seed
-
-  config.before(:suite) do
-    Workspace::CLI.exit_handler = FakeExitHandler
-  end
-
-  config.after(:suite) do
-    Workspace::CLI.exit_handler = Kernel
-  end
 end

@@ -6,15 +6,6 @@ module Workspace
   # Receives all collaborators via constructor injection and dispatches
   # subcommands via a case statement.
   class CLI
-    # Injectable exit handler. Defaults to Kernel for real exits.
-    # Override with a fake in tests to prevent SystemExit from killing the process.
-    class << self
-      attr_writer :exit_handler
-
-      def exit_handler
-        @exit_handler ||= Kernel
-      end
-    end
     # @param config [Workspace::Config] configuration for path lookups
     # @param state [Workspace::State] state persistence
     # @param project_config [Workspace::ProjectConfig] project config management
@@ -35,7 +26,8 @@ module Workspace
     # @param output [IO] output stream for user-facing messages
     # @param error_output [IO] error output stream for warnings and errors
     # @param input [IO] input stream for interactive prompts
-    def initialize(config:, state:, project_config:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd)
+    # @param exit_handler [#exit] callable for process exit (Kernel in production, FakeExitHandler in tests)
+    def initialize(config:, state:, project_config:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd)
       @config = config
       @state = state
       @project_config = project_config
@@ -53,6 +45,7 @@ module Workspace
       @layout_command = layout_command
       @resize_command = resize_command
       @init_command = init_command
+      @exit_handler = exit_handler
       @logger = logger
       @output = output
       @error_output = error_output
@@ -117,14 +110,14 @@ module Workspace
         @error_output.puts "Unknown subcommand: #{subcommand}"
         @error_output.puts
         main_help
-        self.class.exit_handler.exit(1)
+        @exit_handler.exit(1)
       end
     rescue UsageError => e
       @error_output.puts e.message
-      self.class.exit_handler.exit(1)
+      @exit_handler.exit(1)
     rescue Error => e
       @error_output.puts "Error: #{e.message}"
-      self.class.exit_handler.exit(1)
+      @exit_handler.exit(1)
     end
 
     private
@@ -477,7 +470,7 @@ module Workspace
       @state.load
       if @state.empty?
         @error_output.puts "No active workspace projects to relaunch."
-        self.class.exit_handler.exit(1)
+        @exit_handler.exit(1)
       end
 
       projects = @state.keys.dup

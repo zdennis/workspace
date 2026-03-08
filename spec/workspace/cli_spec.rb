@@ -52,6 +52,7 @@ RSpec.describe Workspace::CLI do
       logger: logger,
       output: output,
       error_output: error_output,
+      exit_handler: overrides[:exit_handler] || FakeExitHandler,
       input: input,
       working_dir: working_dir
     )
