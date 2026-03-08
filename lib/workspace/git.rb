@@ -78,6 +78,23 @@ module Workspace
       stdout.include?("worktree #{path}")
     end
 
+    # Returns the worktree path for a branch, if one exists anywhere.
+    #
+    # @param branch_name [String] the branch name to search for
+    # @return [String, nil] the worktree path or nil if no worktree exists for that branch
+    def find_worktree_by_branch(branch_name)
+      stdout, _ = Open3.capture3("git", "worktree", "list", "--porcelain")
+      current_path = nil
+      stdout.each_line do |line|
+        if line.start_with?("worktree ")
+          current_path = line.sub("worktree ", "").strip
+        elsif line.strip == "branch refs/heads/#{branch_name}"
+          return current_path
+        end
+      end
+      nil
+    end
+
     # @param name [String] input to sanitize
     # @return [String] filesystem-safe version of the name
     def sanitize_for_filesystem(name)

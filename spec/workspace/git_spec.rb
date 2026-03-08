@@ -112,6 +112,36 @@ RSpec.describe Workspace::Git do
     end
   end
 
+  describe "#find_worktree_by_branch" do
+    it "returns the worktree path when a worktree exists for the branch" do
+      porcelain = <<~OUTPUT
+        worktree /Users/me/project
+        HEAD abc123
+        branch refs/heads/main
+
+        worktree /Users/me/elsewhere/feature-x
+        HEAD def456
+        branch refs/heads/feature-x
+
+      OUTPUT
+      allow(Open3).to receive(:capture3).with("git", "worktree", "list", "--porcelain").and_return([porcelain, "", double(success?: true)])
+
+      expect(git.find_worktree_by_branch("feature-x")).to eq("/Users/me/elsewhere/feature-x")
+    end
+
+    it "returns nil when no worktree exists for the branch" do
+      porcelain = <<~OUTPUT
+        worktree /Users/me/project
+        HEAD abc123
+        branch refs/heads/main
+
+      OUTPUT
+      allow(Open3).to receive(:capture3).with("git", "worktree", "list", "--porcelain").and_return([porcelain, "", double(success?: true)])
+
+      expect(git.find_worktree_by_branch("feature-x")).to be_nil
+    end
+  end
+
   describe "#prompt_base_branch" do
     it "returns default branch when current equals default" do
       git = described_class.new(output: output, input: input)

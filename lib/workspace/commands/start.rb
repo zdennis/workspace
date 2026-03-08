@@ -50,6 +50,19 @@ module Workspace
         worktree_dir_name = @git.sanitize_for_filesystem(branch_name)
         worktree_path = File.join(root, ".worktrees", worktree_dir_name)
 
+        # Check if a worktree for this branch exists at a non-standard location
+        existing_path = @git.find_worktree_by_branch(branch_name)
+        if existing_path
+          @output.puts "Adopting existing worktree at: #{existing_path}"
+          adopt_dir_name = File.basename(existing_path)
+          config_name = @project_config.create_worktree(project_name, adopt_dir_name, existing_path, branch_name)
+          write_project_marker(existing_path, config_name)
+          @output.puts "Launching #{config_name}..."
+          prompts = prompt ? {config_name => prompt} : {}
+          @launch_command.call([config_name], prompts: prompts)
+          return
+        end
+
         create_worktree_directory(root)
         @git.create_worktree(worktree_path, branch_name, base: result[:base_branch])
         @output.puts "Worktree created at: #{worktree_path}"

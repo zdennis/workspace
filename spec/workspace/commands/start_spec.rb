@@ -36,6 +36,7 @@ RSpec.describe Workspace::Commands::Start do
         allow(git).to receive(:resolve_branch_from_pr).and_return("feature/PROJ-123")
         allow(git).to receive(:sanitize_for_filesystem).with("feature/PROJ-123").and_return("feature-PROJ-123")
         allow(git).to receive(:worktree_exists?).and_return(false)
+        allow(git).to receive(:find_worktree_by_branch).and_return(nil)
         allow(git).to receive(:branch_exists?).with("feature/PROJ-123").and_return(true)
         allow(git).to receive(:create_worktree)
         allow(project_config).to receive(:create_worktree).and_return("myproject.worktree-feature-PROJ-123")
@@ -57,6 +58,7 @@ RSpec.describe Workspace::Commands::Start do
         allow(git).to receive(:parse_start_input).with("PROJ-123").and_return({type: :jira_key, value: "PROJ-123"})
         allow(git).to receive(:sanitize_for_filesystem).with("PROJ-123").and_return("PROJ-123")
         allow(git).to receive(:worktree_exists?).and_return(false)
+        allow(git).to receive(:find_worktree_by_branch).and_return(nil)
         allow(git).to receive(:branch_exists?).with("PROJ-123").and_return(true)
         allow(git).to receive(:create_worktree)
         allow(project_config).to receive(:create_worktree).and_return("myproject.worktree-PROJ-123")
@@ -74,6 +76,7 @@ RSpec.describe Workspace::Commands::Start do
         allow(git).to receive(:parse_start_input).with("https://github.com/org/repo/issues/42").and_return({type: :issue_url, value: "issue-42"})
         allow(git).to receive(:sanitize_for_filesystem).with("issue-42").and_return("issue-42")
         allow(git).to receive(:worktree_exists?).and_return(false)
+        allow(git).to receive(:find_worktree_by_branch).and_return(nil)
         allow(git).to receive(:branch_exists?).with("issue-42").and_return(true)
         allow(git).to receive(:create_worktree)
         allow(project_config).to receive(:create_worktree).and_return("myproject.worktree-issue-42")
@@ -91,6 +94,7 @@ RSpec.describe Workspace::Commands::Start do
         allow(git).to receive(:parse_start_input).with("PROJ-123").and_return({type: :jira_key, value: "PROJ-123"})
         allow(git).to receive(:sanitize_for_filesystem).with("PROJ-123").and_return("PROJ-123")
         allow(git).to receive(:worktree_exists?).and_return(false)
+        allow(git).to receive(:find_worktree_by_branch).and_return(nil)
         allow(git).to receive(:branch_exists?).with("PROJ-123").and_return(true)
         allow(git).to receive(:create_worktree)
         allow(project_config).to receive(:create_worktree).and_return("myproject.worktree-PROJ-123")
@@ -141,6 +145,35 @@ RSpec.describe Workspace::Commands::Start do
       end
     end
 
+    context "with a worktree at a non-standard location" do
+      it "adopts the existing worktree and launches" do
+        external_path = File.join(tmpdir, "elsewhere", "feature-branch")
+        FileUtils.mkdir_p(external_path)
+
+        allow(git).to receive(:root).and_return(tmpdir)
+        allow(git).to receive(:parse_start_input).with("feature-branch").and_return({type: :branch, value: "feature-branch"})
+        allow(git).to receive(:sanitize_for_filesystem).with("feature-branch").and_return("feature-branch")
+        allow(git).to receive(:worktree_exists?).and_return(false)
+        allow(git).to receive(:branch_exists?).with("feature-branch").and_return(true)
+        allow(git).to receive(:find_worktree_by_branch).with("feature-branch").and_return(external_path)
+        allow(project_config).to receive(:create_worktree).and_return("myproject.worktree-feature-branch")
+        allow(launch_command).to receive(:call)
+
+        command.call("feature-branch")
+
+        expect(git).not_to have_received(:create_worktree) if git.respond_to?(:create_worktree)
+        expect(output.string).to include("Adopting existing worktree at: #{external_path}")
+        expect(project_config).to have_received(:create_worktree).with(
+          anything, "feature-branch", external_path, "feature-branch"
+        )
+        expect(launch_command).to have_received(:call).with(["myproject.worktree-feature-branch"], prompts: {})
+
+        marker = File.join(external_path, ".workspace-project")
+        expect(File.exist?(marker)).to be true
+        expect(File.read(marker)).to eq("myproject.worktree-feature-branch")
+      end
+    end
+
     context "with a new worktree" do
       it "writes .workspace-project marker after creation" do
         worktree_path = File.join(tmpdir, ".worktrees", "PROJ-456")
@@ -149,6 +182,7 @@ RSpec.describe Workspace::Commands::Start do
         allow(git).to receive(:parse_start_input).with("PROJ-456").and_return({type: :jira_key, value: "PROJ-456"})
         allow(git).to receive(:sanitize_for_filesystem).with("PROJ-456").and_return("PROJ-456")
         allow(git).to receive(:worktree_exists?).and_return(false)
+        allow(git).to receive(:find_worktree_by_branch).and_return(nil)
         allow(git).to receive(:branch_exists?).with("PROJ-456").and_return(true)
         allow(git).to receive(:create_worktree) { FileUtils.mkdir_p(worktree_path) }
         allow(project_config).to receive(:create_worktree).and_return("myproject.worktree-PROJ-456")
