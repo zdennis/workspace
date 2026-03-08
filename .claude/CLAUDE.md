@@ -68,6 +68,17 @@ init, doctor, launch, start, add, kill, relaunch, focus, list, status, whereis
 - **git**: Version control operations (required)
 - **iTerm2**: Terminal emulator, controlled via AppleScript (required)
 
+## Dependency Injection
+
+- All collaborators are injected via keyword arguments in `initialize`
+- `Workspace.build_cli` is the sole composition root — all object construction happens there
+- Command objects are pre-built in `build_cli` and passed to CLI; CLI never constructs commands
+- IO streams (`output:`, `error_output:`, `input:`) are injectable on every class that produces output
+- `exit_handler:` is injectable on CLI (defaults to `Kernel`, tests use `FakeExitHandler`)
+- `ProjectDetector` is shared between CLI and Stop for working-directory detection
+- `File`, `Open3`, `YAML` are called directly (not wrapped) — test with stubs or temp dirs
+- No DI container or framework needed — the dependency graph fits in a single factory method
+
 ## Conventions
 
 - Follow existing code style (methods, snake_case, minimal abstraction)
