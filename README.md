@@ -64,18 +64,25 @@ workspace <subcommand> [options]
 
 | Subcommand | Docs | Description |
 |------------|------|-------------|
-| init | [README](docs/README.init.md) | Install tmuxinator templates and create config directory |
-| doctor | [README](docs/README.doctor.md) | Check that all required dependencies are installed |
-| launch | [README](docs/README.launch.md) | Launch tmuxinator projects in iTerm2 windows |
-| start | [README](docs/README.start.md) | Create a git worktree and launch it (from JIRA key, PR/issue URL, or branch) |
 | add | [README](docs/README.add.md) | Add a tmuxinator config for a project directory |
+| alfred | [README](docs/README.alfred.md) | Manage the Alfred workflow for workspace focus |
+| config | [README](docs/README.config.md) | Show project or global configuration |
+| current | [README](docs/README.current.md) | Print the workspace project name for the current directory |
+| doctor | [README](docs/README.doctor.md) | Check that all required dependencies are installed |
+| focus | [README](docs/README.focus.md) | Bring a project's iTerm window to the front |
+| init | [README](docs/README.init.md) | Install tmuxinator templates and create config directory |
 | kill | [README](docs/README.kill.md) | Kill active workspace projects and their tmux sessions |
-| relaunch | [README](docs/README.relaunch.md) | Kill and relaunch all active workspace projects |
-| focus | [README](docs/README.focus.md) | Bring a project's tmux window to the front and shake it |
+| launch | [README](docs/README.launch.md) | Launch tmuxinator projects in iTerm2 windows |
+| layout | [README](docs/README.layout.md) | Save/restore tmux pane layouts (auto-saved before resize) |
 | list | [README](docs/README.list.md) | List active projects (`--all` for all available) |
+| relaunch | [README](docs/README.relaunch.md) | Kill and relaunch all active workspace projects |
+| resize | [README](docs/README.resize.md) | Resize tmux panes for a running project |
+| start | [README](docs/README.start.md) | Create a git worktree and launch it (from JIRA key, PR/issue URL, or branch) |
 | status | [README](docs/README.status.md) | Show detailed state of tracked launcher sessions |
-| whereis | [README](docs/README.whereis.md) | Print the workspace installation directory |
+| stop | [README](docs/README.stop.md) | Kill a worktree project and remove its worktree |
+| tile | [README](docs/README.tile.md) | Tile all windows for a project across the screen |
 | version | [README](docs/README.version.md) | Print the workspace version |
+| whereis | [README](docs/README.whereis.md) | Print the workspace installation directory |
 
 Run `workspace <subcommand> --help` for subcommand-specific help.
 
@@ -93,11 +100,17 @@ lib/workspace/
   project_config.rb               # Tmuxinator config generation
   iterm.rb                        # iTerm2 AppleScript automation
   window_layout.rb                # Window positioning math and arrangement
+  window_manager.rb               # iTerm2 window operations
   commands/
-    launch.rb                     # Launch orchestration
-    kill.rb                       # Session teardown
     focus.rb                      # Window focusing
+    init.rb                       # Template installation
+    kill.rb                       # Session teardown
+    launch.rb                     # Launch orchestration
+    layout.rb                     # Pane layout save/restore
+    resize.rb                     # Pane resizing
     start.rb                      # Worktree creation flow
+    stop.rb                       # Worktree teardown
+    tile.rb                       # Window tiling
 ```
 
 No runtime dependencies beyond Ruby stdlib. The CLI receives all collaborators via constructor injection.

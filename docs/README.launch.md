@@ -13,6 +13,7 @@ workspace launch [options] <project1> [project2] ...
 | Option | Description |
 |--------|-------------|
 | `--reattach` | Reattach to existing tmux sessions, preserving session state |
+| `--prompt PROMPT` | Send an initial prompt to Claude in each project |
 
 ## Details
 
@@ -40,4 +41,7 @@ workspace launch --reattach my-project
 
 # Launch from a directory path
 workspace launch ~/Code/my-project
+
+# Launch with a prompt for Claude
+workspace launch --prompt "Review the README" my-project
 ```

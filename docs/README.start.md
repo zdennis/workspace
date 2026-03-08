@@ -5,8 +5,14 @@ Create a git worktree and launch it as a workspace project.
 ## Usage
 
 ```sh
-workspace start <jira-key|jira-url|pr-url|issue-url|branch>
+workspace start [options] <jira-key|jira-url|pr-url|issue-url|branch>
 ```
+
+## Options
+
+| Option | Description |
+|--------|-------------|
+| `--prompt PROMPT` | Send an initial prompt to Claude after launching |
 
 ## Accepted Inputs
 
