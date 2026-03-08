@@ -272,6 +272,111 @@ RSpec.describe Workspace::CLI do
     end
   end
 
+  describe "#run with current" do
+    it "detects worktree project from marker file" do
+      Dir.mktmpdir do |dir|
+        File.write(File.join(dir, ".workspace-project"), "my-worktree-project")
+        allow(Dir).to receive(:pwd).and_return(dir)
+
+        cli, output, _ = build_test_cli
+        cli.run(["current"])
+        expect(output.string.strip).to eq("my-worktree-project")
+      end
+    end
+
+    it "detects project from active project root" do
+      Dir.mktmpdir do |dir|
+        state = CLITestHelpers::FakeState.new
+        state["my-project"] = {"unique_id" => "uid1", "iterm_window_id" => 100}
+
+        project_config = CLITestHelpers::FakeProjectConfig.new
+        project_config.define_singleton_method(:project_root_for) { |_name| dir }
+
+        allow(Dir).to receive(:pwd).and_return(dir)
+
+        cli, output, _ = build_test_cli(state: state, project_config: project_config)
+        cli.run(["current"])
+        expect(output.string.strip).to eq("my-project")
+      end
+    end
+
+    it "detects project from subdirectory of project root" do
+      Dir.mktmpdir do |dir|
+        subdir = File.join(dir, "src")
+        FileUtils.mkdir_p(subdir)
+
+        state = CLITestHelpers::FakeState.new
+        state["my-project"] = {"unique_id" => "uid1", "iterm_window_id" => 100}
+
+        project_config = CLITestHelpers::FakeProjectConfig.new
+        project_config.define_singleton_method(:project_root_for) { |_name| dir }
+
+        allow(Dir).to receive(:pwd).and_return(subdir)
+
+        cli, output, _ = build_test_cli(state: state, project_config: project_config)
+        cli.run(["current"])
+        expect(output.string.strip).to eq("my-project")
+      end
+    end
+
+    it "picks the longest matching root when roots overlap" do
+      Dir.mktmpdir do |dir|
+        subdir = File.join(dir, "services", "auth")
+        FileUtils.mkdir_p(subdir)
+
+        state = CLITestHelpers::FakeState.new
+        state["monorepo"] = {"unique_id" => "uid1", "iterm_window_id" => 100}
+        state["auth-service"] = {"unique_id" => "uid2", "iterm_window_id" => 200}
+
+        project_config = CLITestHelpers::FakeProjectConfig.new
+        roots = {"monorepo" => dir, "auth-service" => subdir}
+        project_config.define_singleton_method(:project_root_for) { |name| roots[name] }
+
+        allow(Dir).to receive(:pwd).and_return(subdir)
+
+        cli, output, _ = build_test_cli(state: state, project_config: project_config)
+        cli.run(["current"])
+        expect(output.string.strip).to eq("auth-service")
+      end
+    end
+
+    it "does not false-match projects with similar prefixes" do
+      Dir.mktmpdir do |dir|
+        app_dir = File.join(dir, "app")
+        app_extra_dir = File.join(dir, "app-extra")
+        FileUtils.mkdir_p(app_dir)
+        FileUtils.mkdir_p(app_extra_dir)
+
+        state = CLITestHelpers::FakeState.new
+        state["app"] = {"unique_id" => "uid1", "iterm_window_id" => 100}
+
+        project_config = CLITestHelpers::FakeProjectConfig.new
+        project_config.define_singleton_method(:project_root_for) { |_name| app_dir }
+
+        allow(Dir).to receive(:pwd).and_return(app_extra_dir)
+
+        cli, _, error_output = build_test_cli(state: state, project_config: project_config)
+        expect { cli.run(["current"]) }.to raise_error(SystemExit) { |e|
+          expect(e.status).to eq(1)
+        }
+        expect(error_output.string).to include("Not inside a workspace project directory.")
+      end
+    end
+
+    it "exits 1 when not inside a workspace project" do
+      Dir.mktmpdir do |dir|
+        allow(Dir).to receive(:pwd).and_return(dir)
+
+        cli, _, error_output = build_test_cli
+        expect { cli.run(["current"]) }.to raise_error(SystemExit) { |e|
+          expect(e.status).to eq(1)
+        }
+        expect(error_output.string).to include("Not inside a workspace project directory.")
+        expect(error_output.string).to include("workspace list --all")
+      end
+    end
+  end
+
   describe "#run with list --all" do
     it "lists all available projects" do
       cli, output, _ = build_test_cli

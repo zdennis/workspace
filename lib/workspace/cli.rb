@@ -73,6 +73,8 @@ module Workspace
         cmd_layout(args)
       when "config"
         cmd_config(args)
+      when "current"
+        cmd_current(args)
       when "list-projects"
         cmd_list(["--all"] + args)
       when "list"
@@ -121,6 +123,7 @@ module Workspace
           resize          Resize tmux panes for a running project
           layout          Save/restore tmux pane layouts (auto-saved before resize)
           config          Show project or global configuration
+          current         Print the workspace project name for the current directory
           list            List currently active (launched) projects (--all for all available)
           status          Show detailed state of tracked launcher sessions
           whereis         Print the workspace installation directory
@@ -622,6 +625,24 @@ module Workspace
       end
     end
 
+    def cmd_current(args)
+      parser = OptionParser.new do |opts|
+        opts.banner = "Usage: workspace current"
+        opts.separator ""
+        opts.separator "Print the workspace project name for the current directory."
+        opts.separator "Detects worktree projects via .workspace-project marker files,"
+        opts.separator "then falls back to matching active project roots."
+      end
+      parser.parse!(args)
+
+      project = detect_current_project
+      unless project
+        raise Workspace::Error, "Not inside a workspace project directory. Run 'workspace list --all' to see available projects."
+      end
+
+      @output.puts project
+    end
+
     def cmd_whereis(args)
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: workspace whereis"
@@ -773,6 +794,46 @@ module Workspace
         @output.puts "Workspace Focus workflow is not installed."
         @output.puts "Run 'workspace alfred install' to install it."
       end
+    end
+
+    MARKER_FILE = ".workspace-project"
+
+    def detect_current_project
+      # First: walk up looking for .workspace-project marker (worktree projects)
+      dir = resolve_real_path(Dir.pwd)
+      loop do
+        marker = File.join(dir, MARKER_FILE)
+        return File.read(marker).strip if File.exist?(marker)
+        parent = File.dirname(dir)
+        break if parent == dir
+        dir = parent
+      end
+
+      # Second: match cwd against active project roots (longest match wins)
+      @state.load
+      cwd = resolve_real_path(Dir.pwd)
+      best_match = nil
+      best_length = -1
+      @state.keys.each do |project|
+        root = @project_config.project_root_for(project)
+        next unless root
+        expanded = resolve_real_path(root)
+        prefix = "#{expanded}/"
+        if cwd == expanded || cwd.start_with?(prefix)
+          if expanded.length > best_length
+            best_match = project
+            best_length = expanded.length
+          end
+        end
+      end
+
+      best_match
+    end
+
+    def resolve_real_path(path)
+      File.realpath(path)
+    rescue Errno::ENOENT
+      File.expand_path(path)
     end
   end
 end
