@@ -272,8 +272,29 @@ RSpec.describe Workspace::CLI do
     end
   end
 
-  describe "#run with list-projects" do
-    it "lists available projects" do
+  describe "#run with list --all" do
+    it "lists all available projects" do
+      cli, output, _ = build_test_cli
+      cli.run(["list", "--all"])
+      expect(output.string).to include("project-a")
+      expect(output.string).to include("project-b")
+    end
+
+    it "does not load state or check windows" do
+      wm = CLITestHelpers::FakeWindowManager.new
+      called = false
+      wm.define_singleton_method(:live_window_ids) do
+        called = true
+        Set.new
+      end
+
+      cli, output, _ = build_test_cli(window_manager: wm)
+      cli.run(["list", "--all"])
+      expect(called).to be false
+      expect(output.string).to include("project-a")
+    end
+
+    it "works via list-projects alias" do
       cli, output, _ = build_test_cli
       cli.run(["list-projects"])
       expect(output.string).to include("project-a")
@@ -324,7 +345,7 @@ RSpec.describe Workspace::CLI do
     it "shows no active projects when state is empty" do
       cli, output, _ = build_test_cli
       cli.run(["list"])
-      expect(output.string).to include("No active projects.")
+      expect(output.string).to include("No active projects. Run 'workspace list --all' to see available projects.")
     end
 
     it "lists projects whose window IDs are live and prunes dead ones" do
@@ -355,7 +376,7 @@ RSpec.describe Workspace::CLI do
       cli, output, _ = build_test_cli(state: state, window_manager: wm)
       cli.run(["list"])
 
-      expect(output.string).to include("No active projects.")
+      expect(output.string).to include("No active projects. Run 'workspace list --all' to see available projects.")
       expect(state).to be_empty
     end
   end

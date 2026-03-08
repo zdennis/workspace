@@ -74,7 +74,7 @@ module Workspace
       when "config"
         cmd_config(args)
       when "list-projects"
-        cmd_list_projects(args)
+        cmd_list(["--all"] + args)
       when "list"
         cmd_list(args)
       when "status"
@@ -121,8 +121,7 @@ module Workspace
           resize          Resize tmux panes for a running project
           layout          Save/restore tmux pane layouts (auto-saved before resize)
           config          Show project or global configuration
-          list-projects   List all available tmuxinator projects
-          list            List currently active (launched) projects
+          list            List currently active (launched) projects (--all for all available)
           status          Show detailed state of tracked launcher sessions
           whereis         Print the workspace installation directory
           alfred          Manage the Alfred workflow for workspace focus
@@ -559,28 +558,28 @@ module Workspace
       end
     end
 
-    def cmd_list_projects(args)
-      parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace list-projects"
-        opts.separator ""
-        opts.separator "List all available tmuxinator projects."
-      end
-      parser.parse!(args)
-
-      @project_config.available_projects.each { |name| @output.puts name }
-    end
-
     def cmd_list(args)
+      all = false
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace list"
+        opts.banner = "Usage: workspace list [options]"
         opts.separator ""
         opts.separator "List currently active (launched) projects."
+        opts.separator ""
+        opts.separator "Options:"
+        opts.on("--all", "List all available projects (not just active ones)") do
+          all = true
+        end
       end
       parser.parse!(args)
+
+      if all
+        @project_config.available_projects.each { |name| @output.puts name }
+        return
+      end
 
       @state.load
       if @state.empty?
-        @output.puts "No active projects."
+        @output.puts "No active projects. Run 'workspace list --all' to see available projects."
         return
       end
 
@@ -589,7 +588,7 @@ module Workspace
       @state.save if pruned.any?
 
       if @state.empty?
-        @output.puts "No active projects."
+        @output.puts "No active projects. Run 'workspace list --all' to see available projects."
       else
         @state.keys.sort.each { |p| @output.puts p }
       end

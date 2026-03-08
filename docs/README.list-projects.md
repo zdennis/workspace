@@ -1,6 +1,6 @@
 # workspace list-projects
 
-List all available tmuxinator projects.
+Alias for [`workspace list --all`](README.list.md).
 
 ## Usage
 
@@ -8,15 +8,4 @@ List all available tmuxinator projects.
 workspace list-projects
 ```
 
-## Details
-
-Lists all workspace tmuxinator configs found in `~/.config/tmuxinator/`. Template files are excluded from the listing.
-
-## Example
-
-```sh
-$ workspace list-projects
-billing
-my-notes
-work-notes
-```
+This is equivalent to `workspace list --all`. See [workspace list](README.list.md) for details.

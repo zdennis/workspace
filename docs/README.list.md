@@ -5,12 +5,22 @@ List currently active (launched) projects.
 ## Usage
 
 ```sh
-workspace list
+workspace list [options]
 ```
+
+## Options
+
+| Flag | Description |
+|------|-------------|
+| `--all` | List all available projects (not just active ones) |
 
 ## Details
 
-Shows which projects are currently running by checking the state file against live iTerm sessions. Only projects with active launcher panes are listed.
+By default, shows which projects are currently running by checking the state file against live iTerm sessions. Only projects with active launcher panes are listed. Dead sessions are automatically pruned.
+
+With `--all`, lists all workspace tmuxinator configs found in `~/.config/tmuxinator/`. Template files are excluded from the listing.
+
+`list-projects` is a hidden alias for `list --all`.
 
 ## Example
 
@@ -18,4 +28,9 @@ Shows which projects are currently running by checking the state file against li
 $ workspace list
 billing
 my-notes
+
+$ workspace list --all
+billing
+my-notes
+work-notes
 ```

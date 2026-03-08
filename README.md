@@ -72,8 +72,7 @@ workspace <subcommand> [options]
 | kill | [README](docs/README.kill.md) | Kill active workspace projects and their tmux sessions |
 | relaunch | [README](docs/README.relaunch.md) | Kill and relaunch all active workspace projects |
 | focus | [README](docs/README.focus.md) | Bring a project's tmux window to the front and shake it |
-| list-projects | [README](docs/README.list-projects.md) | List all available tmuxinator projects |
-| list | [README](docs/README.list.md) | List currently active (launched) projects |
+| list | [README](docs/README.list.md) | List active projects (`--all` for all available) |
 | status | [README](docs/README.status.md) | Show detailed state of tracked launcher sessions |
 | whereis | [README](docs/README.whereis.md) | Print the workspace installation directory |
 | version | [README](docs/README.version.md) | Print the workspace version |
