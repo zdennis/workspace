@@ -17,28 +17,41 @@ module Workspace
     end
     # @param config [Workspace::Config] configuration for path lookups
     # @param state [Workspace::State] state persistence
-    # @param iterm [Workspace::ITerm] iTerm automation
-    # @param tmux [Workspace::Tmux] tmux session operations
-    # @param git [Workspace::Git] git operations
     # @param project_config [Workspace::ProjectConfig] project config management
-    # @param window_layout [Workspace::WindowLayout] window positioning
+    # @param window_manager [Workspace::WindowManager] iTerm window operations
     # @param doctor [Workspace::Doctor] dependency checking
+    # @param project_settings [Workspace::ProjectSettings] per-project settings
+    # @param hook_runner [Workspace::HookRunner] lifecycle hook execution
+    # @param launch_command [Workspace::Commands::Launch] pre-built launch command
+    # @param kill_command [Workspace::Commands::Kill] pre-built kill command
+    # @param start_command [Workspace::Commands::Start] pre-built start command
+    # @param stop_command [Workspace::Commands::Stop] pre-built stop command
+    # @param focus_command [Workspace::Commands::Focus] pre-built focus command
+    # @param tile_command [Workspace::Commands::Tile] pre-built tile command
+    # @param layout_command [Workspace::Commands::Layout] pre-built layout command
+    # @param resize_command [Workspace::Commands::Resize] pre-built resize command
+    # @param init_command [Workspace::Commands::Init] pre-built init command
     # @param logger [Workspace::Logger] debug logger
     # @param output [IO] output stream for user-facing messages
     # @param error_output [IO] error output stream for warnings and errors
     # @param input [IO] input stream for interactive prompts
-    def initialize(config:, state:, iterm:, window_manager:, tmux:, git:, project_config:, window_layout:, doctor:, project_settings:, hook_runner:, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd)
+    def initialize(config:, state:, project_config:, window_manager:, doctor:, project_settings:, hook_runner:, launch_command:, kill_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd)
       @config = config
       @state = state
-      @iterm = iterm
-      @window_manager = window_manager
-      @tmux = tmux
-      @git = git
       @project_config = project_config
-      @window_layout = window_layout
+      @window_manager = window_manager
       @doctor = doctor
       @project_settings = project_settings
       @hook_runner = hook_runner
+      @launch_command = launch_command
+      @kill_command = kill_command
+      @start_command = start_command
+      @stop_command = stop_command
+      @focus_command = focus_command
+      @tile_command = tile_command
+      @layout_command = layout_command
+      @resize_command = resize_command
+      @init_command = init_command
       @logger = logger
       @output = output
       @error_output = error_output
@@ -187,15 +200,7 @@ module Workspace
 
       prompts = prompt ? projects.each_with_object({}) { |p, h| h[p] = prompt } : {}
 
-      Commands::Launch.new(
-        state: @state,
-        iterm: @iterm,
-        window_manager: @window_manager,
-        tmux: @tmux,
-        project_config: @project_config,
-        window_layout: @window_layout,
-        output: @output
-      ).call(projects, reattach: reattach, prompts: prompts)
+      @launch_command.call(projects, reattach: reattach, prompts: prompts)
 
       projects.each do |p|
         @project_settings.ensure_exists(p)
@@ -228,23 +233,7 @@ module Workspace
 
       raise UsageError, parser.help if args.empty?
 
-      launch_command = Commands::Launch.new(
-        state: @state,
-        iterm: @iterm,
-        window_manager: @window_manager,
-        tmux: @tmux,
-        project_config: @project_config,
-        window_layout: @window_layout,
-        output: @output
-      )
-      start_command = Commands::Start.new(
-        git: @git,
-        project_config: @project_config,
-        launch_command: launch_command,
-        output: @output,
-        input: @input
-      )
-      start_command.call(args.first, prompt: prompt)
+      @start_command.call(args.first, prompt: prompt)
       # post_start hook — project name not easily available here,
       # so hooks for start should use post_launch (which fires from Launch)
     end
@@ -267,23 +256,7 @@ module Workspace
       end
       parser.parse!(args)
 
-      kill_command = Commands::Kill.new(
-        state: @state,
-        iterm: @iterm,
-        window_manager: @window_manager,
-        tmux: @tmux,
-        output: @output,
-        error_output: @error_output
-      )
-      stop_command = Commands::Stop.new(
-        git: @git,
-        project_config: @project_config,
-        kill_command: kill_command,
-        output: @output,
-        input: @input,
-        working_dir: @working_dir
-      )
-      project = stop_command.call(args.first, force: force)
+      project = @stop_command.call(args.first, force: force, working_dir: @working_dir)
       @hook_runner.run(project, "post_stop") if project
     end
 
@@ -296,14 +269,7 @@ module Workspace
       end
       parser.parse!(args)
 
-      killed = Commands::Kill.new(
-        state: @state,
-        iterm: @iterm,
-        window_manager: @window_manager,
-        tmux: @tmux,
-        output: @output,
-        error_output: @error_output
-      ).call(args)
+      killed = @kill_command.call(args)
 
       killed.each { |p| @hook_runner.run(p, "post_kill") }
     end
@@ -335,11 +301,7 @@ module Workspace
       project = args.first || detect_current_project
       raise UsageError, parser.help unless project
 
-      Commands::Focus.new(
-        state: @state,
-        window_manager: @window_manager,
-        output: @output
-      ).call(project, shake: shake, highlight: highlight ? highlight_color : nil)
+      @focus_command.call(project, shake: shake, highlight: highlight ? highlight_color : nil)
 
       @hook_runner.run(project, "post_focus")
     end
@@ -360,12 +322,7 @@ module Workspace
       project = args.first || detect_current_project
       raise UsageError, parser.help unless project
 
-      Commands::Tile.new(
-        state: @state,
-        window_manager: @window_manager,
-        window_layout: @window_layout,
-        output: @output
-      ).call(project)
+      @tile_command.call(project)
     end
 
     def cmd_resize(args)
@@ -401,12 +358,7 @@ module Workspace
         raise UsageError, parser.help
       end
 
-      Commands::Resize.new(
-        tmux: @tmux,
-        layout_command: build_layout_command,
-        output: @output,
-        error_output: @error_output
-      ).call(project, spec)
+      @resize_command.call(project, spec)
 
       @hook_runner.run(project, "post_resize")
     end
@@ -419,16 +371,16 @@ module Workspace
         project, name = resolve_layout_args(args)
         raise UsageError, layout_help_text unless project
         name ||= Commands::Layout::DEFAULT_NAME
-        build_layout_command.save(project, name)
+        @layout_command.save(project, name)
       when "restore"
         project, name = resolve_layout_args(args)
         raise UsageError, layout_help_text unless project
         name ||= Commands::Layout::DEFAULT_NAME
-        build_layout_command.restore(project, name)
+        @layout_command.restore(project, name)
       when "list"
         project = args[0] || detect_current_project
         raise UsageError, layout_help_text unless project
-        build_layout_command.list(project)
+        @layout_command.list(project)
       when "help", "--help", "-h", nil
         layout_help
       else
@@ -454,15 +406,6 @@ module Workspace
       else
         [args[0], args[1]]
       end
-    end
-
-    def build_layout_command
-      Commands::Layout.new(
-        state: @state,
-        tmux: @tmux,
-        project_settings: @project_settings,
-        output: @output
-      )
     end
 
     def layout_help
@@ -508,11 +451,7 @@ module Workspace
       end
       parser.parse!(args)
 
-      Commands::Init.new(
-        config: @config,
-        output: @output,
-        error_output: @error_output
-      ).call(dry_run: dry_run, force: force)
+      @init_command.call(dry_run: dry_run, force: force)
     end
 
     def cmd_doctor(args)

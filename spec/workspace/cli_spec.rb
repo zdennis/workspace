@@ -6,29 +6,46 @@ RSpec.describe Workspace::CLI do
     config = overrides[:config] || Workspace::Config.new
     logger = overrides[:logger] || Workspace::Logger.new(output: error_output)
     state = overrides[:state] || CLITestHelpers::FakeState.new
-    iterm = overrides[:iterm] || CLITestHelpers::FakeITerm.new
     window_manager = overrides[:window_manager] || CLITestHelpers::FakeWindowManager.new
     tmux = overrides[:tmux] || CLITestHelpers::FakeTmux.new
-    git = overrides[:git] || Workspace::Git.new(output: output, input: input)
     project_config = overrides[:project_config] || CLITestHelpers::FakeProjectConfig.new
-    window_layout = overrides[:window_layout] || CLITestHelpers::FakeWindowLayout.new
     doctor = overrides[:doctor] || CLITestHelpers::FakeDoctor.new
     project_settings = overrides[:project_settings] || CLITestHelpers::FakeProjectSettings.new
     hook_runner = overrides[:hook_runner] || CLITestHelpers::FakeHookRunner.new
     working_dir = overrides[:working_dir] || Dir.tmpdir
 
+    # Pre-build command objects (matching build_cli pattern)
+    iterm = overrides[:iterm] || CLITestHelpers::FakeITerm.new
+    window_layout = overrides[:window_layout] || CLITestHelpers::FakeWindowLayout.new
+    git = overrides[:git] || Workspace::Git.new(output: output, input: input)
+
+    kill_command = overrides[:kill_command] || Workspace::Commands::Kill.new(state: state, iterm: iterm, window_manager: window_manager, tmux: tmux, output: output, error_output: error_output)
+    launch_command = overrides[:launch_command] || Workspace::Commands::Launch.new(state: state, iterm: iterm, window_manager: window_manager, tmux: tmux, project_config: project_config, window_layout: window_layout, output: output, error_output: error_output)
+    start_command = overrides[:start_command] || Workspace::Commands::Start.new(git: git, project_config: project_config, launch_command: launch_command, output: output, input: input)
+    stop_command = overrides[:stop_command] || Workspace::Commands::Stop.new(git: git, project_config: project_config, kill_command: kill_command, output: output, input: input)
+    focus_command = overrides[:focus_command] || Workspace::Commands::Focus.new(state: state, window_manager: window_manager, output: output)
+    tile_command = overrides[:tile_command] || Workspace::Commands::Tile.new(state: state, window_manager: window_manager, window_layout: window_layout, output: output)
+    layout_command = overrides[:layout_command] || Workspace::Commands::Layout.new(state: state, tmux: tmux, project_settings: project_settings, output: output)
+    resize_command = overrides[:resize_command] || Workspace::Commands::Resize.new(tmux: tmux, layout_command: layout_command, output: output, error_output: error_output)
+    init_command = overrides[:init_command] || Workspace::Commands::Init.new(config: config, output: output, error_output: error_output)
+
     cli = Workspace::CLI.new(
       config: config,
       state: state,
-      iterm: iterm,
-      window_manager: window_manager,
-      tmux: tmux,
-      git: git,
       project_config: project_config,
-      window_layout: window_layout,
+      window_manager: window_manager,
       doctor: doctor,
       project_settings: project_settings,
       hook_runner: hook_runner,
+      launch_command: launch_command,
+      kill_command: kill_command,
+      start_command: start_command,
+      stop_command: stop_command,
+      focus_command: focus_command,
+      tile_command: tile_command,
+      layout_command: layout_command,
+      resize_command: resize_command,
+      init_command: init_command,
       logger: logger,
       output: output,
       error_output: error_output,

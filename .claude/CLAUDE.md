@@ -79,6 +79,18 @@ init, doctor, launch, start, add, kill, relaunch, focus, list, status, whereis
 - Tests use RSpec, run with `bundle exec rspec`
 - Lint with `bundle exec standardrb lib/ spec/`
 
+## Analysis and Research Output (Pyramid Principle)
+
+When performing analysis, evaluation, or research — whether directly or via agent teams — always structure output using the Pyramid Principle (Barbara Minto):
+
+1. **Lead with the answer.** State the verdict/recommendation in 1-2 sentences at the very top.
+2. **Follow with a compact recommendation list.** Actionable items, ordered by value, before any supporting detail.
+3. **Then provide the detailed analysis.** Supporting evidence, trade-offs, and methodology come after the recommendations.
+
+The reader should be able to stop reading after the first two sections and have the full picture. Details are there for those who want to dive deeper.
+
+This applies to: architecture reviews, agent team reports, research notes, Obsidian project notes, and any written analysis saved to files.
+
 ## Pre-commit Requirements
 
 Before every commit, run all 5 review agents in parallel using the Agent tool. Each agent should only review files changed in the current commit (or on the topic branch vs main). Pass this context when launching each agent.

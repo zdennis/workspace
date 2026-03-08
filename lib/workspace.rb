@@ -54,18 +54,34 @@ module Workspace
     project_settings = ProjectSettings.new(config: config)
     hook_runner = HookRunner.new(project_settings: project_settings, project_config: project_config, output: output, error_output: error_output, logger: logger)
 
+    # Pre-build command objects so CLI delegates rather than constructs
+    kill_command = Commands::Kill.new(state: state, iterm: iterm, window_manager: window_manager, tmux: tmux, output: output, error_output: error_output)
+    launch_command = Commands::Launch.new(state: state, iterm: iterm, window_manager: window_manager, tmux: tmux, project_config: project_config, window_layout: window_layout, output: output, error_output: error_output)
+    start_command = Commands::Start.new(git: git, project_config: project_config, launch_command: launch_command, output: output, input: input)
+    stop_command = Commands::Stop.new(git: git, project_config: project_config, kill_command: kill_command, output: output, input: input)
+    focus_command = Commands::Focus.new(state: state, window_manager: window_manager, output: output)
+    tile_command = Commands::Tile.new(state: state, window_manager: window_manager, window_layout: window_layout, output: output)
+    layout_command = Commands::Layout.new(state: state, tmux: tmux, project_settings: project_settings, output: output)
+    resize_command = Commands::Resize.new(tmux: tmux, layout_command: layout_command, output: output, error_output: error_output)
+    init_command = Commands::Init.new(config: config, output: output, error_output: error_output)
+
     CLI.new(
       config: config,
       state: state,
-      iterm: iterm,
-      window_manager: window_manager,
-      tmux: tmux,
-      git: git,
       project_config: project_config,
-      window_layout: window_layout,
+      window_manager: window_manager,
       doctor: doctor,
       project_settings: project_settings,
       hook_runner: hook_runner,
+      launch_command: launch_command,
+      kill_command: kill_command,
+      start_command: start_command,
+      stop_command: stop_command,
+      focus_command: focus_command,
+      tile_command: tile_command,
+      layout_command: layout_command,
+      resize_command: resize_command,
+      init_command: init_command,
       logger: logger,
       output: output,
       error_output: error_output,
