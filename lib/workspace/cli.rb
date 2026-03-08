@@ -135,15 +135,15 @@ module Workspace
           focus           Bring a project's iTerm window to the front
           help            Show this help message
           init            Install tmuxinator templates and create config directory
-          kill            Kill active workspace projects and their tmux sessions
+          kill            Kill a worktree project and remove its worktree (auto-detects from cwd)
           launch          Launch tmuxinator projects in iTerm windows
           layout          Save/restore tmux pane layouts (auto-saved before resize)
           list            List currently active (launched) projects (--all for all available)
-          relaunch        Kill and relaunch all active workspace projects
+          relaunch        Stop and relaunch all active workspace projects
           resize          Resize tmux panes for a running project
           start           Create a worktree and launch it (from JIRA key, PR URL, or branch)
           status          Show detailed state of tracked launcher sessions
-          stop            Kill a worktree project and remove its worktree (auto-detects from cwd)
+          stop            Stop active workspace projects and their tmux sessions
           tile            Tile all windows for a project across the screen
           whereis         Print the workspace installation directory
 
@@ -233,9 +233,24 @@ module Workspace
     end
 
     def cmd_stop(args)
+      parser = OptionParser.new do |opts|
+        opts.banner = "Usage: workspace stop [project1] [project2] ..."
+        opts.separator ""
+        opts.separator "Stop workspace projects and their tmux sessions."
+        opts.separator "If no projects are specified, stops all active workspace projects."
+        opts.separator "Projects can be restarted with 'workspace launch'."
+      end
+      parser.parse!(args)
+
+      stopped = @kill_command.call(args)
+
+      stopped.each { |p| @hook_runner.run(p, "post_stop") }
+    end
+
+    def cmd_kill(args)
       force = false
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace stop [project]"
+        opts.banner = "Usage: workspace kill [project]"
         opts.separator ""
         opts.separator "Kill a worktree project's session and remove its git worktree."
         opts.separator "The inverse of 'workspace start'."
@@ -251,21 +266,7 @@ module Workspace
       parser.parse!(args)
 
       project = @stop_command.call(args.first, force: force, working_dir: @working_dir)
-      @hook_runner.run(project, "post_stop") if project
-    end
-
-    def cmd_kill(args)
-      parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace kill [project1] [project2] ..."
-        opts.separator ""
-        opts.separator "Kill workspace projects and their tmux sessions."
-        opts.separator "If no projects are specified, kills all active workspace projects."
-      end
-      parser.parse!(args)
-
-      killed = @kill_command.call(args)
-
-      killed.each { |p| @hook_runner.run(p, "post_kill") }
+      @hook_runner.run(project, "post_kill") if project
     end
 
     def cmd_focus(args)
@@ -463,7 +464,7 @@ module Workspace
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: workspace relaunch"
         opts.separator ""
-        opts.separator "Kill all active workspace projects and relaunch them."
+        opts.separator "Stop all active workspace projects and relaunch them."
       end
       parser.parse!(args)
 
@@ -476,7 +477,7 @@ module Workspace
       projects = @state.keys.dup
       @output.puts "Will relaunch: #{projects.join(", ")}"
 
-      cmd_kill([])
+      cmd_stop([])
 
       sleep 2
 

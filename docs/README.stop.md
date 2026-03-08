@@ -1,36 +1,30 @@
 # workspace stop
 
-Kill a worktree project's session and remove its git worktree. The inverse of `workspace start`.
+Stop workspace projects and their tmux sessions.
 
 ## Usage
 
 ```sh
-workspace stop [options] [project]
+workspace stop [project1] [project2] ...
 ```
-
-## Options
-
-| Option | Description |
-|--------|-------------|
-| `-f`, `--force` | Skip confirmation and force worktree removal |
 
 ## Details
 
-If no project is specified, detects the current worktree project from a `.workspace-project` marker file in the working directory.
+Stops the specified projects' tmux sessions and cleans up their iTerm launcher windows. If no projects are specified, stops all active workspace projects.
 
-Kills the tmux session, removes the git worktree, and cleans up the tmuxinator config. Prompts for confirmation before proceeding unless `--force` is used.
+Launcher windows are only closed when all tracked projects within them have been stopped. If other projects still share the window, it is preserved.
 
-Only works on worktree-based projects created by `workspace start`. For non-worktree projects, use `workspace kill` instead.
+Projects can be restarted with `workspace launch`.
 
 ## Examples
 
 ```sh
-# Stop the current worktree project (auto-detected from cwd)
+# Stop all active projects
 workspace stop
 
-# Stop a specific worktree project
-workspace stop myproject.worktree-PROJ-123
+# Stop a specific project
+workspace stop my-notes
 
-# Force stop without confirmation
-workspace stop -f myproject.worktree-PROJ-123
+# Stop multiple specific projects
+workspace stop my-notes billing
 ```

@@ -34,7 +34,7 @@ module Workspace
         targets = resolve_targets(projects)
 
         if targets.empty?
-          @output.puts "No matching workspace projects to kill."
+          @output.puts "No matching workspace projects to stop."
           return []
         end
 
@@ -47,7 +47,7 @@ module Workspace
 
         @state.save
 
-        @output.puts "Killed #{killed_projects.size} project(s): #{killed_projects.join(", ")}"
+        @output.puts "Stopped #{killed_projects.size} project(s): #{killed_projects.join(", ")}"
         killed_projects
       end
 

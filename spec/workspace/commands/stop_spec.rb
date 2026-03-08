@@ -51,11 +51,11 @@ RSpec.describe Workspace::Commands::Stop do
         )
       end
 
-      it "suggests workspace kill for non-worktree projects" do
+      it "suggests workspace stop for non-worktree projects" do
         allow(git).to receive(:worktree_exists?).with("/path/to/worktree").and_return(false)
 
         expect { command.call("myproject.worktree-PROJ-123") }.to raise_error(
-          Workspace::Error, /workspace kill/
+          Workspace::Error, /workspace stop/
         )
       end
 

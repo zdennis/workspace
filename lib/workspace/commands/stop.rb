@@ -42,7 +42,7 @@ module Workspace
 
         worktree_path = read_worktree_path(config_path)
         unless worktree_path && @git.worktree_exists?(worktree_path)
-          raise Workspace::Error, "'#{project}' does not appear to be a worktree project.\nUse 'workspace kill #{project}' to stop non-worktree projects."
+          raise Workspace::Error, "'#{project}' does not appear to be a worktree project.\nUse 'workspace stop #{project}' to stop non-worktree projects."
         end
 
         @output.puts "Stopping #{project}..."

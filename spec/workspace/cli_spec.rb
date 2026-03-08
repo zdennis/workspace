@@ -381,9 +381,17 @@ RSpec.describe Workspace::CLI do
   end
 
   describe "#run with stop" do
+    it "stops all active projects when none specified" do
+      cli, output, _ = build_test_cli
+      cli.run(["stop"])
+      expect(output.string).to include("No active workspace projects")
+    end
+  end
+
+  describe "#run with kill" do
     it "exits 1 when no project specified and no marker file found" do
       cli, _, error_output = build_test_cli
-      expect { cli.run(["stop"]) }.to raise_error(FakeSystemExit) { |e|
+      expect { cli.run(["kill"]) }.to raise_error(FakeSystemExit) { |e|
         expect(e.status).to eq(1)
       }
       expect(error_output.string).to include("No project specified")
