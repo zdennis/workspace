@@ -76,10 +76,15 @@ module Workspace
     end
 
     # @param window_id [String, Integer] window ID (CGWindowID)
+    # @param highlight [String, nil] color to highlight the window after focusing
     # @return [Boolean] whether the window was focused
-    def focus_by_id(window_id)
-      @logger.debug { "window_manager: focus id=#{window_id}" }
-      _, _, status = Open3.capture3(@config.window_tool, "focus", "id=#{window_id}")
+    def focus_by_id(window_id, highlight: nil)
+      args = [@config.window_tool, "focus", "id=#{window_id}"]
+      if highlight
+        args += ["+", "highlight", "id=#{window_id}", "--color", highlight]
+      end
+      @logger.debug { "window_manager: focus #{args.join(" ")}" }
+      _, _, status = Open3.capture3(*args)
       @logger.debug { "window_manager: focus result=#{status.success?}" }
       status.success?
     end

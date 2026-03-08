@@ -299,6 +299,8 @@ module Workspace
 
     def cmd_focus(args)
       shake = false
+      highlight = false
+      highlight_color = "green"
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: workspace focus [options] <project>"
         opts.separator ""
@@ -307,6 +309,13 @@ module Workspace
         opts.separator "Options:"
         opts.on("--shake", "Shake the window after focusing") do
           shake = true
+        end
+        opts.on("--highlight", "Highlight the window after focusing") do
+          highlight = true
+        end
+        opts.on("--color COLOR", "Color for highlight (default: green)",
+          "Colors: red, green, blue, yellow, orange, purple, white, cyan, magenta, random") do |c|
+          highlight_color = c
         end
       end
       parser.parse!(args)
@@ -318,7 +327,7 @@ module Workspace
         state: @state,
         window_manager: @window_manager,
         output: @output
-      ).call(project, shake: shake)
+      ).call(project, shake: shake, highlight: highlight ? highlight_color : nil)
 
       @hook_runner.run(project, "post_focus", chdir: @project_config.project_root_for(project))
     end

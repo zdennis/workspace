@@ -18,6 +18,26 @@ RSpec.describe Workspace::WindowManager do
 
       expect(manager.focus_by_id(99)).to be false
     end
+
+    it "chains highlight command when highlight color given" do
+      status = instance_double(Process::Status, success?: true)
+      allow(Open3).to receive(:capture3).with(
+        config.window_tool, "focus", "id=42",
+        "+", "highlight", "id=42", "--color", "green"
+      ).and_return(["", "", status])
+
+      expect(manager.focus_by_id(42, highlight: "green")).to be true
+    end
+
+    it "chains highlight with custom color" do
+      status = instance_double(Process::Status, success?: true)
+      allow(Open3).to receive(:capture3).with(
+        config.window_tool, "focus", "id=42",
+        "+", "highlight", "id=42", "--color", "red"
+      ).and_return(["", "", status])
+
+      expect(manager.focus_by_id(42, highlight: "red")).to be true
+    end
   end
 
   describe "#shake_by_id" do

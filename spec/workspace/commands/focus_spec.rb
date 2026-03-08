@@ -23,11 +23,11 @@ RSpec.describe Workspace::Commands::Focus do
       state["myproject"] = {"unique_id" => "uid1", "iterm_window_id" => 42}
       state.save
 
-      allow(window_manager).to receive(:focus_by_id).with(42).and_return(true)
+      allow(window_manager).to receive(:focus_by_id).with(42, highlight: nil).and_return(true)
 
       command.call("myproject")
 
-      expect(window_manager).to have_received(:focus_by_id).with(42)
+      expect(window_manager).to have_received(:focus_by_id).with(42, highlight: nil)
       expect(output.string).to include("Focusing myproject")
     end
 
@@ -35,12 +35,12 @@ RSpec.describe Workspace::Commands::Focus do
       state["myproject"] = {"unique_id" => "uid1", "iterm_window_id" => 42}
       state.save
 
-      allow(window_manager).to receive(:focus_by_id).with(42).and_return(true)
+      allow(window_manager).to receive(:focus_by_id).with(42, highlight: nil).and_return(true)
       allow(window_manager).to receive(:shake_by_id).with(42).and_return(true)
 
       command.call("myproject", shake: true)
 
-      expect(window_manager).to have_received(:focus_by_id).with(42)
+      expect(window_manager).to have_received(:focus_by_id).with(42, highlight: nil)
       expect(window_manager).to have_received(:shake_by_id).with(42)
     end
 
@@ -48,12 +48,23 @@ RSpec.describe Workspace::Commands::Focus do
       state["myproject"] = {"unique_id" => "uid1", "iterm_window_id" => 42}
       state.save
 
-      allow(window_manager).to receive(:focus_by_id).with(42).and_return(true)
+      allow(window_manager).to receive(:focus_by_id).with(42, highlight: nil).and_return(true)
       allow(window_manager).to receive(:shake_by_id)
 
       command.call("myproject")
 
       expect(window_manager).not_to have_received(:shake_by_id)
+    end
+
+    it "passes highlight color to focus_by_id" do
+      state["myproject"] = {"unique_id" => "uid1", "iterm_window_id" => 42}
+      state.save
+
+      allow(window_manager).to receive(:focus_by_id).with(42, highlight: "green").and_return(true)
+
+      command.call("myproject", highlight: "green")
+
+      expect(window_manager).to have_received(:focus_by_id).with(42, highlight: "green")
     end
 
     it "raises Workspace::Error when no window ID in state" do
@@ -68,7 +79,7 @@ RSpec.describe Workspace::Commands::Focus do
       state["myproject"] = {"unique_id" => "uid1", "iterm_window_id" => 42}
       state.save
 
-      allow(window_manager).to receive(:focus_by_id).with(42).and_return(false)
+      allow(window_manager).to receive(:focus_by_id).with(42, highlight: nil).and_return(false)
 
       expect { command.call("myproject") }.to raise_error(
         Workspace::Error, /no longer exists/

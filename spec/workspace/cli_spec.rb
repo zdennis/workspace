@@ -70,7 +70,7 @@ module CLITestHelpers
     def window_exists?(_wid) = false
     def find_window_by_title(_title) = nil
     def find_window_for_project(_project) = nil
-    def focus_by_id(_wid) = true
+    def focus_by_id(_wid, highlight: nil) = true
     def shake_by_id(_wid) = true
     def live_window_ids = Set.new
     def set_window_bounds(_wid, _x, _y, _w, _h) = nil
