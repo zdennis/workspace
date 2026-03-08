@@ -14,10 +14,11 @@ module Workspace
     # @param project_config [Workspace::ProjectConfig] project config management
     # @param window_layout [Workspace::WindowLayout] window positioning
     # @param doctor [Workspace::Doctor] dependency checking
+    # @param logger [Workspace::Logger] debug logger
     # @param output [IO] output stream for user-facing messages
     # @param error_output [IO] error output stream for warnings and errors
     # @param input [IO] input stream for interactive prompts
-    def initialize(config:, state:, iterm:, window_manager:, tmux:, git:, project_config:, window_layout:, doctor:, project_settings:, hook_runner:, output: $stdout, error_output: $stderr, input: $stdin)
+    def initialize(config:, state:, iterm:, window_manager:, tmux:, git:, project_config:, window_layout:, doctor:, project_settings:, hook_runner:, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin)
       @config = config
       @state = state
       @iterm = iterm
@@ -29,6 +30,7 @@ module Workspace
       @doctor = doctor
       @project_settings = project_settings
       @hook_runner = hook_runner
+      @logger = logger
       @output = output
       @error_output = error_output
       @input = input
@@ -40,7 +42,9 @@ module Workspace
     # @return [void]
     def run(argv)
       args = argv.dup
+      @logger.enable! if args.delete("--debug")
       subcommand = args.shift
+      @logger.debug { "subcommand=#{subcommand} args=#{args.inspect}" }
 
       case subcommand
       when "init"
@@ -124,7 +128,13 @@ module Workspace
           alfred          Manage the Alfred workflow for workspace focus
           help            Show this help message
 
+        Global options:
+          --debug         Print detailed debug output to stderr
+
         Run 'workspace <subcommand> --help' for subcommand-specific help.
+
+        Environment variables:
+          WORKSPACE_DEBUG   Enable debug output (same as --debug)
       HELP
     end
 
@@ -575,12 +585,13 @@ module Workspace
       end
 
       live_ids = @window_manager.live_window_ids
-      active = @state.keys.select { |p| live_ids.include?(@state.dig(p, "iterm_window_id")) }
+      pruned = @state.prune(live_ids)
+      @state.save if pruned.any?
 
-      if active.empty?
+      if @state.empty?
         @output.puts "No active projects."
       else
-        active.sort.each { |p| @output.puts p }
+        @state.keys.sort.each { |p| @output.puts p }
       end
     end
 
@@ -598,10 +609,17 @@ module Workspace
         return
       end
 
-      existing = @iterm.find_existing_sessions(@state)
+      live_ids = @window_manager.live_window_ids
+      pruned = @state.prune(live_ids)
+      @state.save if pruned.any?
+
+      if @state.empty?
+        @output.puts "No tracked sessions."
+        return
+      end
+
       @state.each do |project, info|
-        alive = existing.key?(project) ? "alive" : "gone"
-        @output.puts "  #{project}: #{info["unique_id"]} [#{alive}]"
+        @output.puts "  #{project}: #{info["unique_id"]} [alive]"
       end
     end
 

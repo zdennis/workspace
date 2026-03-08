@@ -44,6 +44,18 @@ module CLITestHelpers
     def to_h
       @data.dup
     end
+
+    def prune(live_ids)
+      pruned = []
+      @data.each_key do |project|
+        wid = @data[project]["iterm_window_id"]
+        unless wid && live_ids.include?(wid.to_i)
+          pruned << project
+        end
+      end
+      pruned.each { |p| @data.delete(p) }
+      pruned
+    end
   end
 
   class FakeITerm
@@ -251,6 +263,37 @@ RSpec.describe Workspace::CLI do
       cli.run(["status"])
       expect(output.string).to include("No tracked sessions.")
     end
+
+    it "prunes gone sessions and shows only alive ones" do
+      state = CLITestHelpers::FakeState.new
+      state["alive-proj"] = {"unique_id" => "uid1", "iterm_window_id" => 100}
+      state["dead-proj"] = {"unique_id" => "uid2", "iterm_window_id" => 200}
+
+      wm = CLITestHelpers::FakeWindowManager.new
+      wm.define_singleton_method(:live_window_ids) { Set.new([100]) }
+
+      cli, output, _ = build_test_cli(state: state, window_manager: wm)
+      cli.run(["status"])
+
+      expect(output.string).to include("alive-proj")
+      expect(output.string).to include("[alive]")
+      expect(output.string).not_to include("dead-proj")
+      expect(state.keys).to eq(["alive-proj"])
+    end
+
+    it "shows no tracked sessions after all are pruned" do
+      state = CLITestHelpers::FakeState.new
+      state["dead-proj"] = {"unique_id" => "uid1", "iterm_window_id" => 200}
+
+      wm = CLITestHelpers::FakeWindowManager.new
+      wm.define_singleton_method(:live_window_ids) { Set.new }
+
+      cli, output, _ = build_test_cli(state: state, window_manager: wm)
+      cli.run(["status"])
+
+      expect(output.string).to include("No tracked sessions.")
+      expect(state).to be_empty
+    end
   end
 
   describe "#run with list" do
@@ -260,7 +303,7 @@ RSpec.describe Workspace::CLI do
       expect(output.string).to include("No active projects.")
     end
 
-    it "lists projects whose window IDs are live" do
+    it "lists projects whose window IDs are live and prunes dead ones" do
       state = CLITestHelpers::FakeState.new
       state["proj-a"] = {"unique_id" => "uid1", "iterm_window_id" => 100}
       state["proj-b"] = {"unique_id" => "uid2", "iterm_window_id" => 200}
@@ -275,6 +318,21 @@ RSpec.describe Workspace::CLI do
       expect(output.string).to include("proj-a")
       expect(output.string).not_to include("proj-b")
       expect(output.string).to include("proj-c")
+      expect(state.keys).to contain_exactly("proj-a", "proj-c")
+    end
+
+    it "shows no active projects after all are pruned" do
+      state = CLITestHelpers::FakeState.new
+      state["dead-proj"] = {"unique_id" => "uid1", "iterm_window_id" => 999}
+
+      wm = CLITestHelpers::FakeWindowManager.new
+      wm.define_singleton_method(:live_window_ids) { Set.new }
+
+      cli, output, _ = build_test_cli(state: state, window_manager: wm)
+      cli.run(["list"])
+
+      expect(output.string).to include("No active projects.")
+      expect(state).to be_empty
     end
   end
 

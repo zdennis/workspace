@@ -82,4 +82,45 @@ RSpec.describe Workspace::State do
       expect(state["c"]).to be_nil
     end
   end
+
+  describe "#prune" do
+    subject(:state) do
+      s = described_class.new(config: config)
+      s["alive-project"] = {"unique_id" => "uid1", "iterm_window_id" => 100}
+      s["dead-project"] = {"unique_id" => "uid2", "iterm_window_id" => 200}
+      s["also-alive"] = {"unique_id" => "uid3", "iterm_window_id" => 300}
+      s
+    end
+
+    it "removes entries whose window ID is not in the live set" do
+      pruned = state.prune(Set.new([100, 300]))
+      expect(pruned).to eq(["dead-project"])
+      expect(state.keys).to contain_exactly("alive-project", "also-alive")
+    end
+
+    it "removes entries with no iterm_window_id" do
+      state["no-wid"] = {"unique_id" => "uid4"}
+      pruned = state.prune(Set.new([100, 200, 300]))
+      expect(pruned).to eq(["no-wid"])
+    end
+
+    it "returns empty array when all entries are live" do
+      pruned = state.prune(Set.new([100, 200, 300]))
+      expect(pruned).to be_empty
+      expect(state.keys.size).to eq(3)
+    end
+
+    it "removes all entries when none are live" do
+      pruned = state.prune(Set.new)
+      expect(pruned).to contain_exactly("alive-project", "dead-project", "also-alive")
+      expect(state).to be_empty
+    end
+
+    it "does not call save" do
+      state.save
+      state.prune(Set.new)
+      loaded = described_class.new(config: config).load
+      expect(loaded.keys.size).to eq(3)
+    end
+  end
 end
