@@ -1,4 +1,5 @@
 require "stringio"
+require "tmpdir"
 
 module CLITestHelpers
   class FakeState
@@ -177,6 +178,7 @@ RSpec.describe Workspace::CLI do
     doctor = overrides[:doctor] || CLITestHelpers::FakeDoctor.new
     project_settings = overrides[:project_settings] || CLITestHelpers::FakeProjectSettings.new
     hook_runner = overrides[:hook_runner] || CLITestHelpers::FakeHookRunner.new
+    working_dir = overrides[:working_dir] || Dir.tmpdir
 
     cli = Workspace::CLI.new(
       config: config,
@@ -193,7 +195,8 @@ RSpec.describe Workspace::CLI do
       logger: logger,
       output: output,
       error_output: error_output,
-      input: input
+      input: input,
+      working_dir: working_dir
     )
     [cli, output, error_output, hook_runner]
   end
@@ -276,9 +279,8 @@ RSpec.describe Workspace::CLI do
     it "detects worktree project from marker file" do
       Dir.mktmpdir do |dir|
         File.write(File.join(dir, ".workspace-project"), "my-worktree-project")
-        allow(Dir).to receive(:pwd).and_return(dir)
 
-        cli, output, _ = build_test_cli
+        cli, output, _ = build_test_cli(working_dir: dir)
         cli.run(["current"])
         expect(output.string.strip).to eq("my-worktree-project")
       end
@@ -292,9 +294,7 @@ RSpec.describe Workspace::CLI do
         project_config = CLITestHelpers::FakeProjectConfig.new
         project_config.define_singleton_method(:project_root_for) { |_name| dir }
 
-        allow(Dir).to receive(:pwd).and_return(dir)
-
-        cli, output, _ = build_test_cli(state: state, project_config: project_config)
+        cli, output, _ = build_test_cli(state: state, project_config: project_config, working_dir: dir)
         cli.run(["current"])
         expect(output.string.strip).to eq("my-project")
       end
@@ -311,9 +311,7 @@ RSpec.describe Workspace::CLI do
         project_config = CLITestHelpers::FakeProjectConfig.new
         project_config.define_singleton_method(:project_root_for) { |_name| dir }
 
-        allow(Dir).to receive(:pwd).and_return(subdir)
-
-        cli, output, _ = build_test_cli(state: state, project_config: project_config)
+        cli, output, _ = build_test_cli(state: state, project_config: project_config, working_dir: subdir)
         cli.run(["current"])
         expect(output.string.strip).to eq("my-project")
       end
@@ -332,9 +330,7 @@ RSpec.describe Workspace::CLI do
         roots = {"monorepo" => dir, "auth-service" => subdir}
         project_config.define_singleton_method(:project_root_for) { |name| roots[name] }
 
-        allow(Dir).to receive(:pwd).and_return(subdir)
-
-        cli, output, _ = build_test_cli(state: state, project_config: project_config)
+        cli, output, _ = build_test_cli(state: state, project_config: project_config, working_dir: subdir)
         cli.run(["current"])
         expect(output.string.strip).to eq("auth-service")
       end
@@ -353,9 +349,7 @@ RSpec.describe Workspace::CLI do
         project_config = CLITestHelpers::FakeProjectConfig.new
         project_config.define_singleton_method(:project_root_for) { |_name| app_dir }
 
-        allow(Dir).to receive(:pwd).and_return(app_extra_dir)
-
-        cli, _, error_output = build_test_cli(state: state, project_config: project_config)
+        cli, _, error_output = build_test_cli(state: state, project_config: project_config, working_dir: app_extra_dir)
         expect { cli.run(["current"]) }.to raise_error(SystemExit) { |e|
           expect(e.status).to eq(1)
         }
@@ -364,16 +358,12 @@ RSpec.describe Workspace::CLI do
     end
 
     it "exits 1 when not inside a workspace project" do
-      Dir.mktmpdir do |dir|
-        allow(Dir).to receive(:pwd).and_return(dir)
-
-        cli, _, error_output = build_test_cli
-        expect { cli.run(["current"]) }.to raise_error(SystemExit) { |e|
-          expect(e.status).to eq(1)
-        }
-        expect(error_output.string).to include("Not inside a workspace project directory.")
-        expect(error_output.string).to include("workspace list --all")
-      end
+      cli, _, error_output = build_test_cli
+      expect { cli.run(["current"]) }.to raise_error(SystemExit) { |e|
+        expect(e.status).to eq(1)
+      }
+      expect(error_output.string).to include("Not inside a workspace project directory.")
+      expect(error_output.string).to include("workspace list --all")
     end
   end
 
@@ -404,6 +394,39 @@ RSpec.describe Workspace::CLI do
       cli.run(["list-projects"])
       expect(output.string).to include("project-a")
       expect(output.string).to include("project-b")
+    end
+  end
+
+  describe "auto-detection from working_dir" do
+    it "focus auto-detects project from marker file" do
+      Dir.mktmpdir do |dir|
+        File.write(File.join(dir, ".workspace-project"), "my-project")
+
+        state = CLITestHelpers::FakeState.new
+        state["my-project"] = {"unique_id" => "uid1", "iterm_window_id" => 100}
+
+        wm = CLITestHelpers::FakeWindowManager.new
+
+        cli, output, _ = build_test_cli(state: state, window_manager: wm, working_dir: dir)
+        cli.run(["focus"])
+        expect(output.string).to include("Focusing my-project")
+      end
+    end
+
+    it "layout save treats single arg as layout name when project detected" do
+      Dir.mktmpdir do |dir|
+        File.write(File.join(dir, ".workspace-project"), "my-project")
+
+        state = CLITestHelpers::FakeState.new
+        state["my-project"] = {"unique_id" => "uid1"}
+
+        tmux = CLITestHelpers::FakeTmux.new
+
+        cli, output, _ = build_test_cli(state: state, tmux: tmux, working_dir: dir)
+        cli.run(["layout", "save", "coding"])
+        expect(output.string).to include("my-project")
+        expect(output.string).to include("coding")
+      end
     end
   end
 
@@ -517,7 +540,7 @@ RSpec.describe Workspace::CLI do
       expect(error_output.string).to include("Usage: workspace resize")
     end
 
-    it "exits 1 when missing pane spec" do
+    it "exits 1 when missing pane spec and no project detected" do
       cli, _, error_output = build_test_cli
       expect { cli.run(["resize", "myproject"]) }.to raise_error(SystemExit) { |e|
         expect(e.status).to eq(1)

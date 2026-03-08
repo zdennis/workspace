@@ -167,9 +167,11 @@ RSpec.describe Workspace::Commands::Stop do
         allow(kill_command).to receive(:call).and_return([])
         allow(project_config).to receive(:remove)
 
-        allow(Dir).to receive(:pwd).and_return(marker_dir)
-
-        command.call(nil, force: true)
+        cmd = described_class.new(
+          git: git, project_config: project_config, kill_command: kill_command,
+          output: output, input: input, working_dir: marker_dir
+        )
+        cmd.call(nil, force: true)
 
         expect(kill_command).to have_received(:call).with(["myproject.worktree-PROJ-123"])
         expect(output.string).to include("Stopped myproject.worktree-PROJ-123")
@@ -187,17 +189,22 @@ RSpec.describe Workspace::Commands::Stop do
         allow(kill_command).to receive(:call).and_return([])
         allow(project_config).to receive(:remove)
 
-        allow(Dir).to receive(:pwd).and_return(sub_dir)
-
-        command.call(nil, force: true)
+        cmd = described_class.new(
+          git: git, project_config: project_config, kill_command: kill_command,
+          output: output, input: input, working_dir: sub_dir
+        )
+        cmd.call(nil, force: true)
 
         expect(kill_command).to have_received(:call).with(["myproject.worktree-PROJ-123"])
       end
 
       it "raises error when no marker file found and no project given" do
-        allow(Dir).to receive(:pwd).and_return(tmpdir)
+        cmd = described_class.new(
+          git: git, project_config: project_config, kill_command: kill_command,
+          output: output, input: input, working_dir: tmpdir
+        )
 
-        expect { command.call(nil) }.to raise_error(
+        expect { cmd.call(nil) }.to raise_error(
           Workspace::Error, /No project specified/
         )
       end

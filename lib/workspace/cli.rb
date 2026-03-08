@@ -18,7 +18,7 @@ module Workspace
     # @param output [IO] output stream for user-facing messages
     # @param error_output [IO] error output stream for warnings and errors
     # @param input [IO] input stream for interactive prompts
-    def initialize(config:, state:, iterm:, window_manager:, tmux:, git:, project_config:, window_layout:, doctor:, project_settings:, hook_runner:, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin)
+    def initialize(config:, state:, iterm:, window_manager:, tmux:, git:, project_config:, window_layout:, doctor:, project_settings:, hook_runner:, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd)
       @config = config
       @state = state
       @iterm = iterm
@@ -34,6 +34,7 @@ module Workspace
       @output = output
       @error_output = error_output
       @input = input
+      @working_dir = working_dir
     end
 
     # Parses the subcommand from argv and dispatches to the appropriate method.
@@ -270,7 +271,8 @@ module Workspace
         project_config: @project_config,
         kill_command: kill_command,
         output: @output,
-        input: @input
+        input: @input,
+        working_dir: @working_dir
       )
       project = stop_command.call(args.first, force: force)
       @hook_runner.run(project, "post_stop") if project
@@ -302,9 +304,10 @@ module Workspace
       highlight = false
       highlight_color = "green"
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace focus [options] <project>"
+        opts.banner = "Usage: workspace focus [options] [project]"
         opts.separator ""
         opts.separator "Bring the project's iTerm window to the front."
+        opts.separator "Auto-detects the project from the current directory if not specified."
         opts.separator ""
         opts.separator "Options:"
         opts.on("--shake", "Shake the window after focusing") do
@@ -320,9 +323,9 @@ module Workspace
       end
       parser.parse!(args)
 
-      raise UsageError, parser.help if args.empty?
+      project = args.first || detect_current_project
+      raise UsageError, parser.help unless project
 
-      project = args.first
       Commands::Focus.new(
         state: @state,
         window_manager: @window_manager,
@@ -334,9 +337,10 @@ module Workspace
 
     def cmd_tile(args)
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace tile <project>"
+        opts.banner = "Usage: workspace tile [project]"
         opts.separator ""
         opts.separator "Tile all active windows for a project across the screen."
+        opts.separator "Auto-detects the project from the current directory if not specified."
         opts.separator "Matches the base project and all its worktree sessions."
         opts.separator ""
         opts.separator "Example:"
@@ -344,19 +348,20 @@ module Workspace
       end
       parser.parse!(args)
 
-      raise UsageError, parser.help if args.empty?
+      project = args.first || detect_current_project
+      raise UsageError, parser.help unless project
 
       Commands::Tile.new(
         state: @state,
         window_manager: @window_manager,
         window_layout: @window_layout,
         output: @output
-      ).call(args.first)
+      ).call(project)
     end
 
     def cmd_resize(args)
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace resize <project> <pane-spec>"
+        opts.banner = "Usage: workspace resize [project] <pane-spec>"
         opts.separator ""
         opts.separator "Resize tmux panes for a running workspace project."
         opts.separator ""
@@ -372,10 +377,20 @@ module Workspace
       end
       parser.parse!(args)
 
-      raise UsageError, parser.help if args.size < 2
-
-      project = args[0]
-      spec = args[1]
+      if args.size == 1
+        # Could be just a pane spec if we can detect the project
+        project = detect_current_project
+        if project
+          spec = args[0]
+        else
+          raise UsageError, parser.help
+        end
+      elsif args.size >= 2
+        project = args[0]
+        spec = args[1]
+      else
+        raise UsageError, parser.help
+      end
 
       Commands::Resize.new(
         tmux: @tmux,
@@ -392,22 +407,43 @@ module Workspace
 
       case subcommand
       when "save"
-        raise UsageError, layout_help_text if args.empty?
-        project = args[0]
-        name = args[1] || Commands::Layout::DEFAULT_NAME
+        project, name = resolve_layout_args(args)
+        raise UsageError, layout_help_text unless project
+        name ||= Commands::Layout::DEFAULT_NAME
         build_layout_command.save(project, name)
       when "restore"
-        raise UsageError, layout_help_text if args.empty?
-        project = args[0]
-        name = args[1] || Commands::Layout::DEFAULT_NAME
+        project, name = resolve_layout_args(args)
+        raise UsageError, layout_help_text unless project
+        name ||= Commands::Layout::DEFAULT_NAME
         build_layout_command.restore(project, name)
       when "list"
-        raise UsageError, layout_help_text if args.empty?
-        build_layout_command.list(args[0])
+        project = args[0] || detect_current_project
+        raise UsageError, layout_help_text unless project
+        build_layout_command.list(project)
       when "help", "--help", "-h", nil
         layout_help
       else
         raise UsageError, "Unknown layout subcommand: #{subcommand}\n\n" + layout_help_text
+      end
+    end
+
+    # Resolves layout save/restore args, handling auto-detection.
+    # With 0 args: detect project, no layout name
+    # With 1 arg: if project detected, treat arg as layout name; otherwise as project
+    # With 2 args: first is project, second is layout name
+    def resolve_layout_args(args)
+      case args.size
+      when 0
+        [detect_current_project, nil]
+      when 1
+        detected = detect_current_project
+        if detected
+          [detected, args[0]]
+        else
+          [args[0], nil]
+        end
+      else
+        [args[0], args[1]]
       end
     end
 
@@ -557,8 +593,8 @@ module Workspace
           @output.puts YAML.dump(data)
         end
       else
-        raise UsageError, parser.help if args.empty?
-        project = args.first
+        project = args.first || detect_current_project
+        raise UsageError, parser.help unless project
         data = @project_settings.load(project)
         path = @project_settings.project_config_path(project)
         @output.puts "# #{path}"
@@ -809,7 +845,7 @@ module Workspace
 
     def detect_current_project
       # First: walk up looking for .workspace-project marker (worktree projects)
-      dir = resolve_real_path(Dir.pwd)
+      dir = resolve_real_path(@working_dir)
       loop do
         marker = File.join(dir, MARKER_FILE)
         return File.read(marker).strip if File.exist?(marker)
@@ -820,7 +856,7 @@ module Workspace
 
       # Second: match cwd against active project roots (longest match wins)
       @state.load
-      cwd = resolve_real_path(Dir.pwd)
+      cwd = resolve_real_path(@working_dir)
       best_match = nil
       best_length = -1
       @state.keys.each do |project|

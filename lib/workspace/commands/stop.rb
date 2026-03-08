@@ -11,12 +11,13 @@ module Workspace
       # @param kill_command [Commands::Kill] kill command for session teardown
       # @param output [IO] output stream for user-facing messages
       # @param input [IO] input stream for interactive prompts
-      def initialize(git:, project_config:, kill_command:, output: $stdout, input: $stdin)
+      def initialize(git:, project_config:, kill_command:, output: $stdout, input: $stdin, working_dir: Dir.pwd)
         @git = git
         @project_config = project_config
         @kill_command = kill_command
         @output = output
         @input = input
+        @working_dir = working_dir
       end
 
       MARKER_FILE = ".workspace-project"
@@ -76,7 +77,7 @@ module Workspace
       end
 
       def detect_project
-        dir = Dir.pwd
+        dir = @working_dir
         loop do
           marker = File.join(dir, MARKER_FILE)
           return File.read(marker).strip if File.exist?(marker)
