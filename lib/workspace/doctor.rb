@@ -4,9 +4,11 @@ module Workspace
   # Checks that all required dependencies are installed and configured.
   class Doctor
     # @param config [Workspace::Config] configuration for path lookups
+    # @param state [Workspace::State] state persistence for health checks
     # @param output [IO] output stream for results
-    def initialize(config:, output: $stdout)
+    def initialize(config:, state:, output: $stdout)
       @config = config
+      @state = state
       @output = output
     end
 
@@ -84,6 +86,8 @@ module Workspace
         issues += 1
       end
 
+      issues += check_duplicate_window_ids
+
       @output.puts ""
       if issues > 0
         raise Workspace::Error, "#{issues} issue(s) found."
@@ -93,6 +97,31 @@ module Workspace
     end
 
     private
+
+    def check_duplicate_window_ids
+      @state.load
+      return 0 if @state.empty?
+
+      ids_to_projects = {}
+      @state.each do |project, data|
+        wid = data["iterm_window_id"]
+        next unless wid
+        (ids_to_projects[wid] ||= []) << project
+      end
+
+      duplicates = ids_to_projects.select { |_, projects| projects.size > 1 }
+      if duplicates.any?
+        @output.puts "  ✗  state: duplicate window IDs detected"
+        duplicates.each do |wid, projects|
+          @output.puts "     ↳ window #{wid} claimed by: #{projects.join(", ")}"
+        end
+        @output.puts "     ↳ fix: run 'workspace stop' then 'workspace launch' for affected projects"
+        1
+      else
+        @output.puts "  ✓  state: no duplicate window IDs"
+        0
+      end
+    end
 
     def check_command(name, version_flag: "--version", version_pattern: /(\d+)/, min_major: nil, install_hint: nil)
       stdout, _, status = Open3.capture3("which", name)

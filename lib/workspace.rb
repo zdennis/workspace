@@ -51,7 +51,7 @@ module Workspace
     git = Git.new(output: output, input: input, logger: logger)
     project_config = ProjectConfig.new(config: config, git: git, output: output)
     window_layout = WindowLayout.new(window_manager: window_manager, config: config, output: output, logger: logger)
-    doctor = Doctor.new(config: config, output: output)
+    doctor = Doctor.new(config: config, state: state, output: output)
     project_settings = ProjectSettings.new(config: config)
     hook_runner = HookRunner.new(project_settings: project_settings, project_config: project_config, output: output, error_output: error_output, logger: logger)
     project_detector = ProjectDetector.new(state: state, project_config: project_config)
