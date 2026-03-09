@@ -57,8 +57,7 @@ RSpec.describe Workspace::Commands::Launch do
         allow(iterm).to receive(:find_existing_sessions).and_return({"proj1" => "uid-1"})
         allow(iterm).to receive(:relaunch_in_session).with("uid-1", "tmuxinator start proj1 --attach").and_return("ok")
         allow(iterm).to receive(:find_launcher_window_id).and_return(nil)
-        allow(window_manager).to receive(:window_exists?).and_return(false)
-        allow(window_manager).to receive(:find_window_by_title).and_return("200")
+        allow(window_manager).to receive(:iterm_windows).and_return({200 => "workspace-proj1"})
         allow(window_layout).to receive(:arrange)
       end
 
@@ -83,8 +82,7 @@ RSpec.describe Workspace::Commands::Launch do
         allow(iterm).to receive(:find_existing_sessions).and_return({})
         allow(iterm).to receive(:find_launcher_window_id).and_return(nil)
         allow(iterm).to receive(:create_launcher_panes).and_return({"proj1" => "new-uid"})
-        allow(window_manager).to receive(:window_exists?).and_return(false)
-        allow(window_manager).to receive(:find_window_by_title).and_return("300")
+        allow(window_manager).to receive(:iterm_windows).and_return({300 => "workspace-proj1"})
         allow(window_layout).to receive(:arrange)
       end
 
@@ -119,8 +117,7 @@ RSpec.describe Workspace::Commands::Launch do
         allow(iterm).to receive(:relaunch_in_session).and_return("not_found")
         allow(iterm).to receive(:find_launcher_window_id).and_return(nil)
         allow(iterm).to receive(:create_launcher_panes).and_return({"proj1" => "new-uid"})
-        allow(window_manager).to receive(:window_exists?).and_return(false)
-        allow(window_manager).to receive(:find_window_by_title).and_return("400")
+        allow(window_manager).to receive(:iterm_windows).and_return({400 => "workspace-proj1"})
         allow(window_layout).to receive(:arrange)
       end
 

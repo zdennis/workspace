@@ -14,78 +14,45 @@ module Workspace
     # @param window_id [String, Integer] iTerm window ID
     # @return [Boolean] whether the window exists
     def window_exists?(window_id)
-      script = <<~APPLESCRIPT
-        tell application "iTerm2"
-          try
-            set w to window id #{window_id}
-            return "ok"
-          on error
-            return "not_found"
-          end try
-        end tell
-      APPLESCRIPT
-      execute_applescript(script) == "ok"
+      iterm_windows.key?(window_id.to_i)
     end
 
     # @param title [String] window title to search for
     # @return [String, nil] window ID string or nil
     def find_window_by_title(title)
-      script = <<~APPLESCRIPT
-        tell application "iTerm2"
-          set bestId to "not_found"
-          set bestLen to 999999
-          repeat with w in every window
-            set wName to name of w
-            if wName contains "#{title}" then
-              if (count of wName) < bestLen then
-                set bestId to id of w as string
-                set bestLen to count of wName
-              end if
-            end if
-          end repeat
-          return bestId
-        end tell
-      APPLESCRIPT
-      result = execute_applescript(script)
-      (result == "not_found") ? nil : result
+      best_id = nil
+      best_len = Float::INFINITY
+      iterm_windows.each do |wid, wname|
+        if wname.include?(title) && wname.length < best_len
+          best_id = wid.to_s
+          best_len = wname.length
+        end
+      end
+      best_id
     end
 
     # @param project [String] project name
     # @return [String, nil] window ID string or nil
     def find_window_for_project(project)
-      window_prefix = "workspace"
-      title_to_find = "#{window_prefix}-#{project}"
-      script = <<~APPLESCRIPT
-        tell application "iTerm2"
-          -- First pass: window titles matching workspace-prefixed name (shortest match wins)
-          set bestId to "not_found"
-          set bestLen to 999999
-          repeat with w in every window
-            set wName to name of w
-            if wName contains "#{title_to_find}" then
-              if (count of wName) < bestLen then
-                set bestId to id of w as string
-                set bestLen to count of wName
-              end if
-            end if
-          end repeat
-          if bestId is not "not_found" then return bestId
-          -- Second pass: pane/session names matching workspace-prefixed name or [project]
-          repeat with w in every window
-            repeat with t in every tab of w
-              repeat with s in every session of t
-                set sName to name of s
-                if sName contains "#{title_to_find}" or sName contains "[#{project}]" then
-                  return id of w as string
-                end if
-              end repeat
-            end repeat
-          end repeat
-          return "not_found"
-        end tell
-      APPLESCRIPT
-      result = execute_applescript(script)
-      (result == "not_found") ? nil : result
+      title_to_find = "workspace-#{project}"
+      find_window_by_title(title_to_find)
+    end
+
+    # Returns all iTerm2 windows as a hash of window_id => title.
+    # Uses window-tool for fast, reliable window enumeration.
+    #
+    # @return [Hash<Integer, String>] map of window_id => title
+    def iterm_windows
+      require "json"
+      output, _, status = Open3.capture3(@config.window_tool, "list", "--app", "iTerm2", "--json")
+      return {} unless status.success?
+
+      windows = JSON.parse(output)
+      result = {}
+      windows.each do |w|
+        result[w["window_id"].to_i] = w["title"].to_s
+      end
+      result
     end
 
     # @param window_id [String, Integer] window ID (CGWindowID)
@@ -114,7 +81,7 @@ module Workspace
     def live_window_ids
       require "json"
       @logger.debug { "window_manager: listing live window IDs" }
-      output, _, status = Open3.capture3(@config.window_tool, "list", "--json")
+      output, _, status = Open3.capture3(@config.window_tool, "list", "--app", "iTerm2", "--json")
       unless status.success?
         raise Workspace::Error, "window-tool list failed. Is window-tool installed?"
       end
@@ -130,7 +97,7 @@ module Workspace
     # @return [Hash<Integer, Hash>] map of window_id => {x:, y:, width:, height:}
     def all_window_bounds(window_ids)
       require "json"
-      output, _, status = Open3.capture3(@config.window_tool, "list", "--json")
+      output, _, status = Open3.capture3(@config.window_tool, "list", "--app", "iTerm2", "--json")
       return {} unless status.success?
 
       windows = JSON.parse(output)
@@ -170,14 +137,5 @@ module Workspace
     end
 
     private
-
-    # @param script [String] AppleScript code to execute
-    # @return [String] stripped output from osascript
-    def execute_applescript(script)
-      @logger.debug { "window_manager: executing AppleScript (#{script.lines.first&.strip}...)" }
-      stdout, _ = Open3.capture3("osascript", "-e", script)
-      @logger.debug { "window_manager: AppleScript result=#{stdout.strip.inspect}" }
-      stdout.strip
-    end
   end
 end

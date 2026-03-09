@@ -558,9 +558,11 @@ RSpec.describe Workspace::CLI do
       allow(tmux).to receive(:sessions).and_return(["proj1", "proj2"])
 
       iterm = CLITestHelpers::FakeITerm.new
-      allow(iterm).to receive(:find_window_by_title).and_return("123")
 
-      cli, output, _ = build_test_cli(state: state, tmux: tmux, iterm: iterm)
+      window_manager = CLITestHelpers::FakeWindowManager.new
+      allow(window_manager).to receive(:iterm_windows).and_return({123 => "workspace-proj1", 124 => "workspace-proj2"})
+
+      cli, output, _ = build_test_cli(state: state, tmux: tmux, iterm: iterm, window_manager: window_manager)
       allow(cli).to receive(:sleep)
 
       cli.run(["relaunch"])

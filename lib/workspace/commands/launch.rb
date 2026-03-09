@@ -143,28 +143,40 @@ module Workspace
         window_prefix = "workspace"
         @found_windows = {}
 
-        projects.each do |project|
-          saved_id = @state.dig(project, "iterm_window_id")
-          next unless saved_id
-          if @window_manager.window_exists?(saved_id)
-            @found_windows[project] = saved_id.to_s
-            @output.puts "  Found window for #{project} (saved ID)"
-          end
-        end
-
+        # Single batch lookup of all iTerm windows per iteration
         max_window_wait = 30
         window_elapsed = 0
         while @found_windows.size < projects.size && window_elapsed < max_window_wait
-          sleep 1
+          sleep 1 if window_elapsed > 0
           window_elapsed += 1
+          all_windows = @window_manager.iterm_windows
+
           projects.each do |project|
             next if @found_windows.key?(project)
+
+            # Try saved window ID first
+            saved_id = @state.dig(project, "iterm_window_id")
+            if saved_id && all_windows.key?(saved_id.to_i)
+              @found_windows[project] = saved_id.to_s
+              @output.puts "  Found window for #{project} (saved ID)"
+              next
+            end
+
+            # Fall back to title matching (shortest title wins)
             tmux_name = session_names[project]
             title_to_find = "#{window_prefix}-#{tmux_name}"
-            result = @window_manager.find_window_by_title(title_to_find)
-            if result
-              @found_windows[project] = result
-              @state[project] = (@state[project] || {}).merge("iterm_window_id" => result.to_i)
+            best_id = nil
+            best_len = Float::INFINITY
+            all_windows.each do |wid, wname|
+              if wname.include?(title_to_find) && wname.length < best_len
+                best_id = wid.to_s
+                best_len = wname.length
+              end
+            end
+
+            if best_id
+              @found_windows[project] = best_id
+              @state[project] = (@state[project] || {}).merge("iterm_window_id" => best_id.to_i)
               @output.puts "  Found window for #{project}"
             end
           end

@@ -60,14 +60,14 @@ RSpec.describe Workspace::WindowManager do
     it "returns a set of integer window IDs" do
       json = '[{"window_id": 100, "title": "foo"}, {"window_id": 200, "title": "bar"}]'
       status = instance_double(Process::Status, success?: true)
-      allow(Open3).to receive(:capture3).with(config.window_tool, "list", "--json").and_return([json, "", status])
+      allow(Open3).to receive(:capture3).with(config.window_tool, "list", "--app", "iTerm2", "--json").and_return([json, "", status])
 
       expect(manager.live_window_ids).to eq(Set.new([100, 200]))
     end
 
     it "raises Workspace::Error when window-tool fails" do
       status = instance_double(Process::Status, success?: false)
-      allow(Open3).to receive(:capture3).with(config.window_tool, "list", "--json").and_return(["", "", status])
+      allow(Open3).to receive(:capture3).with(config.window_tool, "list", "--app", "iTerm2", "--json").and_return(["", "", status])
 
       expect { manager.live_window_ids }.to raise_error(Workspace::Error, /window-tool list failed/)
     end
@@ -77,7 +77,7 @@ RSpec.describe Workspace::WindowManager do
     it "returns bounds for requested window IDs in a single call" do
       json = '[{"window_id": 100, "x": 10, "y": 20, "width": 800, "height": 600}, {"window_id": 200, "x": 50, "y": 60, "width": 400, "height": 300}, {"window_id": 300, "x": 0, "y": 0, "width": 100, "height": 100}]'
       status = instance_double(Process::Status, success?: true)
-      allow(Open3).to receive(:capture3).with(config.window_tool, "list", "--json").and_return([json, "", status])
+      allow(Open3).to receive(:capture3).with(config.window_tool, "list", "--app", "iTerm2", "--json").and_return([json, "", status])
 
       result = manager.all_window_bounds([100, 200])
 
@@ -88,7 +88,7 @@ RSpec.describe Workspace::WindowManager do
 
     it "returns empty hash when window-tool fails" do
       status = instance_double(Process::Status, success?: false)
-      allow(Open3).to receive(:capture3).with(config.window_tool, "list", "--json").and_return(["", "", status])
+      allow(Open3).to receive(:capture3).with(config.window_tool, "list", "--app", "iTerm2", "--json").and_return(["", "", status])
 
       expect(manager.all_window_bounds([100])).to eq({})
     end
