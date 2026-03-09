@@ -13,6 +13,7 @@ workspace list [options]
 | Flag | Description |
 |------|-------------|
 | `--all` | List all available projects (not just active ones) |
+| `--json` | Output as JSON |
 
 ## Details
 
@@ -22,7 +23,7 @@ With `--all`, lists all workspace tmuxinator configs found in `~/.config/tmuxina
 
 `list-projects` is a hidden alias for `list --all`.
 
-## Example
+## Examples
 
 ```sh
 $ workspace list
@@ -33,4 +34,10 @@ $ workspace list --all
 billing
 my-notes
 work-notes
+
+$ workspace list --json
+["billing","my-notes"]
+
+$ workspace list --all --json
+["billing","my-notes","work-notes"]
 ```
