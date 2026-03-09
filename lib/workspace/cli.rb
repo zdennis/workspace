@@ -551,6 +551,7 @@ module Workspace
 
     def cmd_list(args)
       all = false
+      json = false
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: workspace list [options]"
         opts.separator ""
@@ -560,17 +561,26 @@ module Workspace
         opts.on("--all", "List all available projects (not just active ones)") do
           all = true
         end
+        opts.on("--json", "Output as JSON") { json = true }
       end
       parser.parse!(args)
 
       if all
-        @project_config.available_projects.each { |name| @output.puts name }
+        if json
+          @output.puts JSON.generate(@project_config.available_projects)
+        else
+          @project_config.available_projects.each { |name| @output.puts name }
+        end
         return
       end
 
       @state.load
       if @state.empty?
-        @output.puts "No active projects. Run 'workspace list --all' to see available projects."
+        if json
+          @output.puts "[]"
+        else
+          @output.puts "No active projects. Run 'workspace list --all' to see available projects."
+        end
         return
       end
 
@@ -579,23 +589,33 @@ module Workspace
       @state.save if pruned.any?
 
       if @state.empty?
-        @output.puts "No active projects. Run 'workspace list --all' to see available projects."
+        if json
+          @output.puts "[]"
+        else
+          @output.puts "No active projects. Run 'workspace list --all' to see available projects."
+        end
+      elsif json
+        @output.puts JSON.generate(@state.keys.sort)
       else
         @state.keys.sort.each { |p| @output.puts p }
       end
     end
 
     def cmd_status(args)
+      json = false
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace status"
+        opts.banner = "Usage: workspace status [options]"
         opts.separator ""
         opts.separator "Show detailed state of tracked launcher sessions."
+        opts.separator ""
+        opts.separator "Options:"
+        opts.on("--json", "Output as JSON") { json = true }
       end
       parser.parse!(args)
 
       @state.load
       if @state.empty?
-        @output.puts "No tracked sessions."
+        json ? @output.puts("{}") : @output.puts("No tracked sessions.")
         return
       end
 
@@ -604,12 +624,18 @@ module Workspace
       @state.save if pruned.any?
 
       if @state.empty?
-        @output.puts "No tracked sessions."
+        json ? @output.puts("{}") : @output.puts("No tracked sessions.")
         return
       end
 
-      @state.each do |project, info|
-        @output.puts "  #{project}: #{info["unique_id"]} [alive]"
+      if json
+        @output.puts JSON.pretty_generate(@state.to_h)
+      else
+        @state.each do |project, info|
+          wid = info["iterm_window_id"]
+          wid_str = wid ? "  window_id=#{wid}" : ""
+          @output.puts "  #{project}#{wid_str}  [alive]"
+        end
       end
     end
 

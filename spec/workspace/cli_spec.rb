@@ -253,6 +253,13 @@ RSpec.describe Workspace::CLI do
       expect(output.string).to include("project-a")
       expect(output.string).to include("project-b")
     end
+
+    it "outputs JSON array with --json" do
+      cli, output, _ = build_test_cli
+      cli.run(["list", "--all", "--json"])
+      result = JSON.parse(output.string)
+      expect(result).to include("project-a", "project-b")
+    end
   end
 
   describe "auto-detection from working_dir" do
@@ -308,6 +315,7 @@ RSpec.describe Workspace::CLI do
       cli.run(["status"])
 
       expect(output.string).to include("alive-proj")
+      expect(output.string).to include("window_id=100")
       expect(output.string).to include("[alive]")
       expect(output.string).not_to include("dead-proj")
       expect(state.keys).to eq(["alive-proj"])
@@ -325,6 +333,30 @@ RSpec.describe Workspace::CLI do
 
       expect(output.string).to include("No tracked sessions.")
       expect(state).to be_empty
+    end
+
+    it "outputs JSON with --json" do
+      state = CLITestHelpers::FakeState.new
+      state["proj1"] = {"unique_id" => "uid1", "iterm_window_id" => 100}
+      state["proj2"] = {"unique_id" => "uid2", "iterm_window_id" => 200}
+
+      wm = CLITestHelpers::FakeWindowManager.new
+      wm.define_singleton_method(:live_window_ids) { Set.new([100, 200]) }
+
+      cli, output, _ = build_test_cli(state: state, window_manager: wm)
+      cli.run(["status", "--json"])
+
+      result = JSON.parse(output.string)
+      expect(result).to include(
+        "proj1" => a_hash_including("unique_id" => "uid1", "iterm_window_id" => 100),
+        "proj2" => a_hash_including("unique_id" => "uid2", "iterm_window_id" => 200)
+      )
+    end
+
+    it "outputs empty JSON object with --json when no sessions" do
+      cli, output, _ = build_test_cli
+      cli.run(["status", "--json"])
+      expect(JSON.parse(output.string)).to eq({})
     end
   end
 
@@ -365,6 +397,26 @@ RSpec.describe Workspace::CLI do
 
       expect(output.string).to include("No active projects. Run 'workspace list --all' to see available projects.")
       expect(state).to be_empty
+    end
+
+    it "outputs JSON array with --json" do
+      state = CLITestHelpers::FakeState.new
+      state["proj-b"] = {"unique_id" => "uid1", "iterm_window_id" => 100}
+      state["proj-a"] = {"unique_id" => "uid2", "iterm_window_id" => 200}
+
+      wm = CLITestHelpers::FakeWindowManager.new
+      wm.define_singleton_method(:live_window_ids) { Set.new([100, 200]) }
+
+      cli, output, _ = build_test_cli(state: state, window_manager: wm)
+      cli.run(["list", "--json"])
+
+      expect(JSON.parse(output.string)).to eq(["proj-a", "proj-b"])
+    end
+
+    it "outputs empty JSON array with --json when no active projects" do
+      cli, output, _ = build_test_cli
+      cli.run(["list", "--json"])
+      expect(JSON.parse(output.string)).to eq([])
     end
   end
 
