@@ -38,11 +38,13 @@ module Workspace
         if @git.worktree_exists?(worktree_path)
           @output.puts "Worktree already exists at: #{worktree_path}"
           config_name = @project_config.create_worktree(project_name, worktree_dir_name, worktree_path, branch_name)
+          @project_settings.ensure_exists(project_name)
           seed_worktree_hooks(project_name, config_name)
           write_project_marker(worktree_path, config_name)
           @output.puts "Launching #{config_name}..."
           prompts = prompt ? {config_name => prompt} : {}
           @launch_command.call([config_name], prompts: prompts)
+          @project_settings.ensure_exists(config_name)
           return
         end
 
@@ -59,11 +61,13 @@ module Workspace
           @output.puts "Adopting existing worktree at: #{existing_path}"
           adopt_dir_name = File.basename(existing_path)
           config_name = @project_config.create_worktree(project_name, adopt_dir_name, existing_path, branch_name)
+          @project_settings.ensure_exists(project_name)
           seed_worktree_hooks(project_name, config_name)
           write_project_marker(existing_path, config_name)
           @output.puts "Launching #{config_name}..."
           prompts = prompt ? {config_name => prompt} : {}
           @launch_command.call([config_name], prompts: prompts)
+          @project_settings.ensure_exists(config_name)
           return
         end
 
@@ -74,11 +78,13 @@ module Workspace
         ensure_gitignore(root)
 
         config_name = @project_config.create_worktree(project_name, worktree_dir_name, worktree_path, branch_name)
+        @project_settings.ensure_exists(project_name)
         seed_worktree_hooks(project_name, config_name)
         write_project_marker(worktree_path, config_name)
         @output.puts "Launching #{config_name}..."
         prompts = prompt ? {config_name => prompt} : {}
         @launch_command.call([config_name], prompts: prompts)
+        @project_settings.ensure_exists(config_name)
       end
 
       private

@@ -279,7 +279,7 @@ RSpec.describe Workspace::Commands::Start do
         command.call("PROJ-789")
 
         worktree_data = project_settings.load(worktree_config)
-        expect(worktree_data).to eq({})
+        expect(worktree_data).to eq({"hooks" => {}, "layouts" => {}})
       end
     end
   end
