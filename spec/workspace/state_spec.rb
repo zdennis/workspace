@@ -83,6 +83,31 @@ RSpec.describe Workspace::State do
     end
   end
 
+  describe "backup on save" do
+    it "creates a .bak file with previous contents" do
+      state = described_class.new(config: config)
+      state["proj1"] = {"unique_id" => "uid1"}
+      state.save
+
+      state["proj2"] = {"unique_id" => "uid2"}
+      state.save
+
+      backup = JSON.parse(File.read("#{state_file}.bak"))
+      expect(backup.keys).to eq(["proj1"])
+
+      current = JSON.parse(File.read(state_file))
+      expect(current.keys).to contain_exactly("proj1", "proj2")
+    end
+
+    it "does not create .bak when no prior file exists" do
+      state = described_class.new(config: config)
+      state["proj1"] = {"unique_id" => "uid1"}
+      state.save
+
+      expect(File.exist?("#{state_file}.bak")).to be false
+    end
+  end
+
   describe "concurrent save" do
     it "merges in-memory changes with state written by another process" do
       # Simulate process A loading state

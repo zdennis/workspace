@@ -1,3 +1,4 @@
+require "fileutils"
 require "json"
 
 module Workspace
@@ -46,6 +47,7 @@ module Workspace
       @data = disk_data
       @dirty_keys.clear
       @deleted_keys.clear
+      backup_state_file
       File.write(@config.state_file, JSON.pretty_generate(@data))
     end
 
@@ -117,6 +119,14 @@ module Workspace
     end
 
     private
+
+    def backup_state_file
+      src = @config.state_file
+      return unless File.exist?(src)
+      FileUtils.cp(src, "#{src}.bak")
+    rescue => e
+      @logger.debug { "state: backup failed: #{e.message}" }
+    end
 
     # @return [Hash] current state from disk, or empty hash if missing/corrupt
     def read_disk_state
