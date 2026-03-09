@@ -83,6 +83,49 @@ RSpec.describe Workspace::State do
     end
   end
 
+  describe "concurrent save" do
+    it "merges in-memory changes with state written by another process" do
+      # Simulate process A loading state
+      state_a = described_class.new(config: config).load
+      state_a["project-a"] = {"unique_id" => "uid-a"}
+
+      # Simulate process B saving state while A is still running
+      state_b = described_class.new(config: config).load
+      state_b["project-b"] = {"unique_id" => "uid-b"}
+      state_b.save
+
+      # Process A saves — should merge, not clobber B's entry
+      state_a.save
+
+      loaded = described_class.new(config: config).load
+      expect(loaded["project-a"]).to eq({"unique_id" => "uid-a"})
+      expect(loaded["project-b"]).to eq({"unique_id" => "uid-b"})
+    end
+
+    it "applies deletes even when disk state has changed" do
+      # Set up initial state with two projects
+      state = described_class.new(config: config)
+      state["proj1"] = {"unique_id" => "uid1"}
+      state["proj2"] = {"unique_id" => "uid2"}
+      state.save
+
+      # Process A loads, then deletes proj1
+      state_a = described_class.new(config: config).load
+      state_a.delete("proj1")
+
+      # Process B adds proj3 concurrently
+      state_b = described_class.new(config: config).load
+      state_b["proj3"] = {"unique_id" => "uid3"}
+      state_b.save
+
+      # Process A saves — should remove proj1, keep proj2 and proj3
+      state_a.save
+
+      loaded = described_class.new(config: config).load
+      expect(loaded.keys).to contain_exactly("proj2", "proj3")
+    end
+  end
+
   describe "#prune" do
     subject(:state) do
       s = described_class.new(config: config)
