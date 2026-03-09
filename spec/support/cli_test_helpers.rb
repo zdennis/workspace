@@ -150,6 +150,11 @@ module CLITestHelpers
     def global_config_path = "/tmp/workspace/config.yml"
   end
 
+  class FakeRepairCommand
+    def call = nil
+    def set_window_id(_project, _wid) = nil
+  end
+
   class FakeHookRunner
     attr_reader :runs
 

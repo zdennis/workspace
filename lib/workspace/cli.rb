@@ -27,7 +27,7 @@ module Workspace
     # @param error_output [IO] error output stream for warnings and errors
     # @param input [IO] input stream for interactive prompts
     # @param exit_handler [#exit] callable for process exit (Kernel in production, FakeExitHandler in tests)
-    def initialize(config:, state:, project_config:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd)
+    def initialize(config:, state:, project_config:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd)
       @config = config
       @state = state
       @project_config = project_config
@@ -45,6 +45,7 @@ module Workspace
       @layout_command = layout_command
       @resize_command = resize_command
       @init_command = init_command
+      @repair_command = repair_command
       @exit_handler = exit_handler
       @logger = logger
       @output = output
@@ -98,6 +99,8 @@ module Workspace
         cmd_list(args)
       when "status"
         cmd_status(args)
+      when "repair"
+        cmd_repair(args)
       when "whereis"
         cmd_whereis(args)
       when "alfred"
@@ -140,6 +143,7 @@ module Workspace
           layout          Save/restore tmux pane layouts (auto-saved before resize)
           list            List currently active (launched) projects (--all for all available)
           relaunch        Stop and relaunch all active workspace projects
+          repair          Rebuild state from live iTerm windows
           resize          Resize tmux panes for a running project
           start           Create a worktree and launch it (from JIRA key, PR URL, or branch)
           status          Show detailed state of tracked launcher sessions
@@ -663,6 +667,31 @@ module Workspace
       end
 
       @output.puts project
+    end
+
+    def cmd_repair(args)
+      window_id = nil
+      parser = OptionParser.new do |opts|
+        opts.banner = "Usage: workspace repair [project] [options]"
+        opts.separator ""
+        opts.separator "Rebuild state from live iTerm windows."
+        opts.separator "Scans for windows with 'workspace-{name}' titles and"
+        opts.separator "reconstructs the state file from what's actually running."
+        opts.separator ""
+        opts.separator "Options:"
+        opts.on("--window-id WID", Integer, "Manually set the window ID for a project") do |wid|
+          window_id = wid
+        end
+      end
+      parser.parse!(args)
+
+      if window_id
+        project = args.first
+        raise UsageError, "Project name required with --window-id\n\n#{parser.help}" unless project
+        @repair_command.set_window_id(project, window_id)
+      else
+        @repair_command.call
+      end
     end
 
     def cmd_whereis(args)
