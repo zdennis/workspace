@@ -22,7 +22,7 @@ module Workspace
         @state.load
         window_id = @state.dig(project, "iterm_window_id")
 
-        unless window_id
+        unless window_id && window_id != 0
           raise Workspace::Error,
             "No iTerm window found for '#{project}'\n" \
             "Run 'workspace launch #{project}' first, or 'workspace status' to see tracked projects."

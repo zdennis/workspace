@@ -173,6 +173,10 @@ module Workspace
         missing_windows = projects.reject { |p| @found_windows.key?(p) }
         if missing_windows.any?
           @error_output.puts "Warning: Could not find windows for: #{missing_windows.join(", ")}"
+          # Clear stale window IDs so focus/other commands don't use invalid IDs
+          missing_windows.each do |project|
+            @state[project]&.delete("iterm_window_id")
+          end
         end
       end
 
