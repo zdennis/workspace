@@ -32,12 +32,18 @@ module Workspace
     def find_window_by_title(title)
       script = <<~APPLESCRIPT
         tell application "iTerm2"
+          set bestId to "not_found"
+          set bestLen to 999999
           repeat with w in every window
-            if name of w = "#{title}" then
-              return id of w as string
+            set wName to name of w
+            if wName contains "#{title}" then
+              if (count of wName) < bestLen then
+                set bestId to id of w as string
+                set bestLen to count of wName
+              end if
             end if
           end repeat
-          return "not_found"
+          return bestId
         end tell
       APPLESCRIPT
       result = execute_applescript(script)
@@ -51,18 +57,25 @@ module Workspace
       title_to_find = "#{window_prefix}-#{project}"
       script = <<~APPLESCRIPT
         tell application "iTerm2"
-          -- First pass: window titles matching workspace-prefixed name
+          -- First pass: window titles matching workspace-prefixed name (shortest match wins)
+          set bestId to "not_found"
+          set bestLen to 999999
           repeat with w in every window
-            if name of w = "#{title_to_find}" then
-              return id of w as string
+            set wName to name of w
+            if wName contains "#{title_to_find}" then
+              if (count of wName) < bestLen then
+                set bestId to id of w as string
+                set bestLen to count of wName
+              end if
             end if
           end repeat
+          if bestId is not "not_found" then return bestId
           -- Second pass: pane/session names matching workspace-prefixed name or [project]
           repeat with w in every window
             repeat with t in every tab of w
               repeat with s in every session of t
                 set sName to name of s
-                if sName = "#{title_to_find}" or sName = "[#{project}]" then
+                if sName contains "#{title_to_find}" or sName contains "[#{project}]" then
                   return id of w as string
                 end if
               end repeat
