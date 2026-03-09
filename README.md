@@ -76,6 +76,7 @@ workspace <subcommand> [options]
 | layout | [README](docs/README.layout.md) | Save/restore tmux pane layouts (auto-saved before resize) |
 | list | [README](docs/README.list.md) | List active projects (`--all` for all available) |
 | relaunch | [README](docs/README.relaunch.md) | Stop and relaunch all active workspace projects |
+| repair | [README](docs/README.repair.md) | Rebuild state from live iTerm windows |
 | resize | [README](docs/README.resize.md) | Resize tmux panes for a running project |
 | start | [README](docs/README.start.md) | Create a git worktree and launch it (from JIRA key, PR/issue URL, or branch) |
 | status | [README](docs/README.status.md) | Show detailed state of tracked launcher sessions |
