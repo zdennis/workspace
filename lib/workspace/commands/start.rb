@@ -5,12 +5,14 @@ module Workspace
     class Start
       # @param git [Workspace::Git] git operations
       # @param project_config [Workspace::ProjectConfig] config generation
+      # @param project_settings [Workspace::ProjectSettings] per-project settings
       # @param launch_command [#call] launch command (Commands::Launch or similar)
       # @param output [IO] output stream for user-facing messages
       # @param input [IO] input stream for interactive prompts
-      def initialize(git:, project_config:, launch_command:, output: $stdout, input: $stdin)
+      def initialize(git:, project_config:, project_settings:, launch_command:, output: $stdout, input: $stdin)
         @git = git
         @project_config = project_config
+        @project_settings = project_settings
         @launch_command = launch_command
         @output = output
         @input = input
@@ -36,6 +38,7 @@ module Workspace
         if @git.worktree_exists?(worktree_path)
           @output.puts "Worktree already exists at: #{worktree_path}"
           config_name = @project_config.create_worktree(project_name, worktree_dir_name, worktree_path, branch_name)
+          seed_worktree_hooks(project_name, config_name)
           write_project_marker(worktree_path, config_name)
           @output.puts "Launching #{config_name}..."
           prompts = prompt ? {config_name => prompt} : {}
@@ -56,6 +59,7 @@ module Workspace
           @output.puts "Adopting existing worktree at: #{existing_path}"
           adopt_dir_name = File.basename(existing_path)
           config_name = @project_config.create_worktree(project_name, adopt_dir_name, existing_path, branch_name)
+          seed_worktree_hooks(project_name, config_name)
           write_project_marker(existing_path, config_name)
           @output.puts "Launching #{config_name}..."
           prompts = prompt ? {config_name => prompt} : {}
@@ -70,6 +74,7 @@ module Workspace
         ensure_gitignore(root)
 
         config_name = @project_config.create_worktree(project_name, worktree_dir_name, worktree_path, branch_name)
+        seed_worktree_hooks(project_name, config_name)
         write_project_marker(worktree_path, config_name)
         @output.puts "Launching #{config_name}..."
         prompts = prompt ? {config_name => prompt} : {}
@@ -127,6 +132,18 @@ module Workspace
         end
         @output.puts "Will create '#{branch_name}' from '#{base}'"
         {branch_name: branch_name, base_branch: base}
+      end
+
+      def seed_worktree_hooks(parent_project, worktree_config_name)
+        parent_data = @project_settings.load(parent_project)
+        worktree_hooks = parent_data["worktree_hooks"]
+        return unless worktree_hooks&.any?
+
+        worktree_data = @project_settings.load(worktree_config_name)
+        return if worktree_data["hooks"]&.any?
+
+        worktree_data["hooks"] = worktree_hooks.dup
+        @project_settings.save(worktree_config_name, worktree_data)
       end
 
       def write_project_marker(worktree_path, config_name)

@@ -23,7 +23,7 @@ RSpec.describe Workspace::CLI do
 
     kill_command = overrides[:kill_command] || Workspace::Commands::Kill.new(state: state, iterm: iterm, window_manager: window_manager, tmux: tmux, output: output, error_output: error_output)
     launch_command = overrides[:launch_command] || Workspace::Commands::Launch.new(state: state, iterm: iterm, window_manager: window_manager, tmux: tmux, project_config: project_config, window_layout: window_layout, output: output, error_output: error_output)
-    start_command = overrides[:start_command] || Workspace::Commands::Start.new(git: git, project_config: project_config, launch_command: launch_command, output: output, input: input)
+    start_command = overrides[:start_command] || Workspace::Commands::Start.new(git: git, project_config: project_config, project_settings: project_settings, launch_command: launch_command, output: output, input: input)
     stop_command = overrides[:stop_command] || Workspace::Commands::Stop.new(git: git, project_config: project_config, kill_command: kill_command, project_detector: project_detector, output: output, input: input)
     focus_command = overrides[:focus_command] || Workspace::Commands::Focus.new(state: state, window_manager: window_manager, output: output)
     tile_command = overrides[:tile_command] || Workspace::Commands::Tile.new(state: state, window_manager: window_manager, window_layout: window_layout, output: output)

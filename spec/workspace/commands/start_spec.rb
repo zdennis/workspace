@@ -6,12 +6,14 @@ RSpec.describe Workspace::Commands::Start do
   let(:input) { StringIO.new }
   let(:git) { double("git") }
   let(:project_config) { double("project_config") }
+  let(:project_settings) { CLITestHelpers::FakeProjectSettings.new }
   let(:launch_command) { double("launch_command") }
 
   subject(:command) do
     described_class.new(
       git: git,
       project_config: project_config,
+      project_settings: project_settings,
       launch_command: launch_command,
       output: output,
       input: input
@@ -193,6 +195,91 @@ RSpec.describe Workspace::Commands::Start do
         marker = File.join(worktree_path, ".workspace-project")
         expect(File.exist?(marker)).to be true
         expect(File.read(marker)).to eq("myproject.worktree-PROJ-456")
+      end
+    end
+
+    context "worktree hooks" do
+      let(:settings_dir) { File.join(tmpdir, "config") }
+      let(:config) { Workspace::Config.new(workspace_dir: tmpdir) }
+      let(:project_settings) do
+        ps = Workspace::ProjectSettings.new(config: config)
+        allow(config).to receive(:workspace_config_dir).and_return(settings_dir)
+        ps
+      end
+
+      before do
+        FileUtils.mkdir_p(File.join(settings_dir, "projects"))
+      end
+
+      it "seeds worktree hooks from parent project's worktree_hooks" do
+        parent_name = Workspace::ProjectConfig.name_from_path(tmpdir)
+        project_settings.save(parent_name, {
+          "hooks" => {"post_launch" => "echo parent"},
+          "worktree_hooks" => {"post_launch" => "echo worktree launched", "post_focus" => "echo focused"}
+        })
+
+        worktree_config = "#{parent_name}.worktree-PROJ-789"
+        allow(git).to receive(:root).and_return(tmpdir)
+        allow(git).to receive(:parse_start_input).with("PROJ-789").and_return({type: :jira_key, value: "PROJ-789"})
+        allow(git).to receive(:sanitize_for_filesystem).with("PROJ-789").and_return("PROJ-789")
+        allow(git).to receive(:worktree_exists?).and_return(false)
+        allow(git).to receive(:find_worktree_by_branch).and_return(nil)
+        allow(git).to receive(:branch_exists?).with("PROJ-789").and_return(true)
+        allow(git).to receive(:create_worktree) { FileUtils.mkdir_p(File.join(tmpdir, ".worktrees", "PROJ-789")) }
+        allow(project_config).to receive(:create_worktree).and_return(worktree_config)
+        allow(launch_command).to receive(:call)
+
+        command.call("PROJ-789")
+
+        worktree_data = project_settings.load(worktree_config)
+        expect(worktree_data["hooks"]).to eq({
+          "post_launch" => "echo worktree launched",
+          "post_focus" => "echo focused"
+        })
+      end
+
+      it "does not overwrite existing worktree hooks" do
+        parent_name = Workspace::ProjectConfig.name_from_path(tmpdir)
+        worktree_config = "#{parent_name}.worktree-PROJ-789"
+        project_settings.save(parent_name, {
+          "worktree_hooks" => {"post_launch" => "echo from parent"}
+        })
+        project_settings.save(worktree_config, {
+          "hooks" => {"post_launch" => "echo custom"}
+        })
+
+        allow(git).to receive(:root).and_return(tmpdir)
+        allow(git).to receive(:parse_start_input).with("PROJ-789").and_return({type: :jira_key, value: "PROJ-789"})
+        allow(git).to receive(:sanitize_for_filesystem).with("PROJ-789").and_return("PROJ-789")
+        allow(git).to receive(:worktree_exists?).and_return(true)
+        allow(project_config).to receive(:create_worktree).and_return(worktree_config)
+        allow(launch_command).to receive(:call)
+
+        command.call("PROJ-789")
+
+        worktree_data = project_settings.load(worktree_config)
+        expect(worktree_data["hooks"]["post_launch"]).to eq("echo custom")
+      end
+
+      it "does nothing when parent has no worktree_hooks" do
+        parent_name = Workspace::ProjectConfig.name_from_path(tmpdir)
+        worktree_config = "#{parent_name}.worktree-PROJ-789"
+        project_settings.save(parent_name, {"hooks" => {"post_launch" => "echo parent"}})
+
+        allow(git).to receive(:root).and_return(tmpdir)
+        allow(git).to receive(:parse_start_input).with("PROJ-789").and_return({type: :jira_key, value: "PROJ-789"})
+        allow(git).to receive(:sanitize_for_filesystem).with("PROJ-789").and_return("PROJ-789")
+        allow(git).to receive(:worktree_exists?).and_return(false)
+        allow(git).to receive(:find_worktree_by_branch).and_return(nil)
+        allow(git).to receive(:branch_exists?).with("PROJ-789").and_return(true)
+        allow(git).to receive(:create_worktree) { FileUtils.mkdir_p(File.join(tmpdir, ".worktrees", "PROJ-789")) }
+        allow(project_config).to receive(:create_worktree).and_return(worktree_config)
+        allow(launch_command).to receive(:call)
+
+        command.call("PROJ-789")
+
+        worktree_data = project_settings.load(worktree_config)
+        expect(worktree_data).to eq({})
       end
     end
   end
