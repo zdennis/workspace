@@ -97,4 +97,56 @@ RSpec.describe Workspace::Commands::Tile do
       expect(focused_ids).to contain_exactly(100, 200)
     end
   end
+
+  describe "#call_all" do
+    it "raises error when no active windows found" do
+      expect { command.call_all }.to raise_error(
+        Workspace::Error, /No active workspace windows found/
+      )
+    end
+
+    it "tiles all active projects" do
+      state["project-a"] = {"iterm_window_id" => 100}
+      state["project-b"] = {"iterm_window_id" => 200}
+      state["project-c"] = {"iterm_window_id" => 300}
+
+      wm = CLITestHelpers::FakeWindowManager.new
+      wm.define_singleton_method(:live_window_ids) { Set.new([100, 200, 300]) }
+
+      tiled_entries = nil
+      wl = CLITestHelpers::FakeWindowLayout.new
+      wl.define_singleton_method(:tile) { |entries| tiled_entries = entries }
+
+      cmd = described_class.new(
+        state: state, window_manager: wm, window_layout: wl, output: output
+      )
+      cmd.call_all
+
+      expect(tiled_entries.size).to eq(3)
+      expect(tiled_entries.map { |e| e[:project] }).to eq(
+        ["project-a", "project-b", "project-c"]
+      )
+      expect(output.string).to include("Tiling 3 window(s)")
+    end
+
+    it "only includes projects with live windows" do
+      state["alive"] = {"iterm_window_id" => 100}
+      state["dead"] = {"iterm_window_id" => 200}
+
+      wm = CLITestHelpers::FakeWindowManager.new
+      wm.define_singleton_method(:live_window_ids) { Set.new([100]) }
+
+      tiled_entries = nil
+      wl = CLITestHelpers::FakeWindowLayout.new
+      wl.define_singleton_method(:tile) { |entries| tiled_entries = entries }
+
+      cmd = described_class.new(
+        state: state, window_manager: wm, window_layout: wl, output: output
+      )
+      cmd.call_all
+
+      expect(tiled_entries.size).to eq(1)
+      expect(tiled_entries.first[:project]).to eq("alive")
+    end
+  end
 end

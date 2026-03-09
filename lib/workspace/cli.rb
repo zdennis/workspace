@@ -302,22 +302,30 @@ module Workspace
     end
 
     def cmd_tile(args)
+      all = false
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace tile [project]"
+        opts.banner = "Usage: workspace tile [options] [project]"
         opts.separator ""
         opts.separator "Tile all active windows for a project across the screen."
         opts.separator "Auto-detects the project from the current directory if not specified."
         opts.separator "Matches the base project and all its worktree sessions."
         opts.separator ""
+        opts.separator "Options:"
+        opts.on("--all", "Tile all active workspace projects") { all = true }
+        opts.separator ""
         opts.separator "Example:"
         opts.separator "  workspace tile window-tool    # tiles window-tool + all window-tool.worktree-* windows"
+        opts.separator "  workspace tile --all          # tiles all active workspace windows"
       end
       parser.parse!(args)
 
-      project = args.first || @project_detector.detect(@working_dir)
-      raise UsageError, parser.help unless project
-
-      @tile_command.call(project)
+      if all
+        @tile_command.call_all
+      else
+        project = args.first || @project_detector.detect(@working_dir)
+        raise UsageError, parser.help unless project
+        @tile_command.call(project)
+      end
     end
 
     def cmd_resize(args)

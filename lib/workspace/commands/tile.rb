@@ -36,7 +36,34 @@ module Workspace
         end
 
         @output.puts "Tiling #{matching.size} window(s) for #{project}..."
+        tile_projects(matching)
+      end
 
+      # Tiles all active workspace project windows.
+      #
+      # @return [void]
+      # @raise [Workspace::Error] if no active windows are found
+      def call_all
+        @state.load
+        live_ids = @window_manager.live_window_ids
+
+        matching = @state.keys.select { |key|
+          live_ids.include?(@state.dig(key, "iterm_window_id"))
+        }.sort
+
+        if matching.empty?
+          raise Workspace::Error,
+            "No active workspace windows found.\n" \
+            "Run 'workspace list' to see active projects."
+        end
+
+        @output.puts "Tiling #{matching.size} window(s)..."
+        tile_projects(matching)
+      end
+
+      private
+
+      def tile_projects(matching)
         entries = matching.map { |key|
           {project: key, window_id: @state.dig(key, "iterm_window_id")}
         }
