@@ -48,7 +48,9 @@ module Workspace
       @dirty_keys.clear
       @deleted_keys.clear
       backup_state_file
-      File.write(@config.state_file, JSON.pretty_generate(@data))
+      tmp = "#{@config.state_file}.tmp"
+      File.write(tmp, JSON.pretty_generate(@data))
+      File.rename(tmp, @config.state_file)
     end
 
     # @param key [String]
