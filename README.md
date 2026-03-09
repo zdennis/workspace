@@ -80,7 +80,7 @@ workspace <subcommand> [options]
 | start | [README](docs/README.start.md) | Create a git worktree and launch it (from JIRA key, PR/issue URL, or branch) |
 | status | [README](docs/README.status.md) | Show detailed state of tracked launcher sessions |
 | stop | [README](docs/README.stop.md) | Stop active workspace projects and their tmux sessions |
-| tile | [README](docs/README.tile.md) | Tile all windows for a project across the screen |
+| tile | [README](docs/README.tile.md) | Tile windows across the screen (`--all` for all projects) |
 | version | [README](docs/README.version.md) | Print the workspace version |
 | whereis | [README](docs/README.whereis.md) | Print the workspace installation directory |
 
