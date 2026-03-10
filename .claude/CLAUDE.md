@@ -89,6 +89,8 @@ init, doctor, launch, start, add, stop, kill, relaunch, focus, list, status, whe
 - YARD docs on all public classes and methods
 - Tests use RSpec, run with `bundle exec rspec`
 - Lint with `bundle exec standardrb lib/ spec/`
+- `bin/` is for project executables (the public interface) — only `bin/workspace` belongs here
+- `script/` is for project-specific dev scripts and tooling (e.g., test helpers, one-off utilities)
 
 ## Analysis and Research Output (Pyramid Principle)
 
