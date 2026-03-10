@@ -33,17 +33,6 @@ separate command. Key question: should `kill` gain a `--remove` flag
 instead, or is the destructive nature of removing configs better served
 by a dedicated subcommand with its own confirmation prompt?
 
-
-### Test feature
-
-This is a test feature request
-
-
-### Test input file feature
-
-This came from a file.
-It has multiple lines.
-
 ## Completed
 
 _None yet._
