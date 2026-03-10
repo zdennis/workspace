@@ -90,6 +90,27 @@ RSpec.describe Workspace::Tmux do
     end
   end
 
+  describe "#send_key" do
+    let(:tmux) { described_class.new(config: config) }
+
+    it "sends a key name in non-literal mode" do
+      allow(tmux).to receive(:system).and_return(true)
+
+      result = tmux.send_key("my-session", "0.1", "C-c")
+
+      expect(result).to be true
+      expect(tmux).to have_received(:system).with("tmux", "send-keys", "-t", "my-session:0.1", "C-c")
+    end
+
+    it "returns false when send fails" do
+      allow(tmux).to receive(:system).and_return(false)
+
+      result = tmux.send_key("bad-session", "0.1", "C-c")
+
+      expect(result).to be false
+    end
+  end
+
   describe "#capture_layout" do
     let(:tmux) { described_class.new(config: config) }
 

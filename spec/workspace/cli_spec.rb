@@ -31,6 +31,7 @@ RSpec.describe Workspace::CLI do
     resize_command = overrides[:resize_command] || Workspace::Commands::Resize.new(tmux: tmux, layout_command: layout_command, output: output, error_output: error_output)
     init_command = overrides[:init_command] || Workspace::Commands::Init.new(config: config, output: output, error_output: error_output)
     repair_command = overrides[:repair_command] || CLITestHelpers::FakeRepairCommand.new
+    claude_command = overrides[:claude_command] || CLITestHelpers::FakeClaudeCommand.new
 
     cli = Workspace::CLI.new(
       config: config,
@@ -51,6 +52,7 @@ RSpec.describe Workspace::CLI do
       resize_command: resize_command,
       init_command: init_command,
       repair_command: repair_command,
+      claude_command: claude_command,
       logger: logger,
       output: output,
       error_output: error_output,

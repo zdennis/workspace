@@ -54,6 +54,19 @@ module Workspace
       true
     end
 
+    # Sends a single key name to a tmux pane (non-literal mode).
+    # Used for special keys like "C-c", "Enter", "Escape".
+    #
+    # @param session_name [String] tmux session name
+    # @param pane [String] pane target (e.g. "0.1")
+    # @param key_name [String] tmux key name (e.g. "C-c", "Enter")
+    # @return [Boolean] true if send succeeded
+    def send_key(session_name, pane, key_name)
+      target = "#{session_name}:#{pane}"
+      @logger.debug { "tmux: send-key #{key_name} to #{target}" }
+      system("tmux", "send-keys", "-t", target, key_name)
+    end
+
     # @param session_name [String] tmux session name
     # @param pane [String] pane target (e.g. "0.1")
     # @param size [String] size value (e.g. "10" for rows, "50%" for percentage)

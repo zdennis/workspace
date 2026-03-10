@@ -17,6 +17,7 @@ require_relative "workspace/project_settings"
 require_relative "workspace/hook_runner"
 require_relative "workspace/project_detector"
 require_relative "workspace/commands/init"
+require_relative "workspace/commands/claude"
 require_relative "workspace/commands/launch"
 require_relative "workspace/commands/kill"
 require_relative "workspace/commands/focus"
@@ -70,6 +71,7 @@ module Workspace
     resize_command = Commands::Resize.new(tmux: tmux, layout_command: layout_command, output: output, error_output: error_output)
     init_command = Commands::Init.new(config: config, output: output, error_output: error_output)
     repair_command = Commands::Repair.new(state: state, iterm: iterm, window_manager: window_manager, output: output)
+    claude_command = Commands::Claude.new(state: state, tmux: tmux, output: output, error_output: error_output)
 
     CLI.new(
       config: config,
@@ -90,6 +92,7 @@ module Workspace
       resize_command: resize_command,
       init_command: init_command,
       repair_command: repair_command,
+      claude_command: claude_command,
       logger: logger,
       output: output,
       error_output: error_output,

@@ -197,9 +197,7 @@ module Workspace
         end
       end
 
-      # Pane index where Claude Code runs in the standard workspace templates.
-      # Templates define panes as: 0 = banner, 1 = claude, 2 = shell.
-      CLAUDE_PANE = "0.1"
+      CLAUDE_PANE = Commands::Claude::CLAUDE_PANE
 
       def send_prompts(session_names, prompts)
         # Claude needs time to initialize after the tmux session starts.

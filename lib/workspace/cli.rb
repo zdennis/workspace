@@ -27,7 +27,7 @@ module Workspace
     # @param error_output [IO] error output stream for warnings and errors
     # @param input [IO] input stream for interactive prompts
     # @param exit_handler [#exit] callable for process exit (Kernel in production, FakeExitHandler in tests)
-    def initialize(config:, state:, project_config:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd)
+    def initialize(config:, state:, project_config:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, claude_command:, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd)
       @config = config
       @state = state
       @project_config = project_config
@@ -46,6 +46,7 @@ module Workspace
       @resize_command = resize_command
       @init_command = init_command
       @repair_command = repair_command
+      @claude_command = claude_command
       @exit_handler = exit_handler
       @logger = logger
       @output = output
@@ -83,6 +84,10 @@ module Workspace
         cmd_relaunch(args)
       when "focus"
         cmd_focus(args)
+      when "deactivate"
+        cmd_deactivate(args)
+      when "reactivate"
+        cmd_reactivate(args)
       when "tile"
         cmd_tile(args)
       when "resize"
@@ -127,6 +132,17 @@ module Workspace
 
     private
 
+    def resolve_claude_targets(args, all, parser)
+      if all
+        @state.load
+        @state.keys
+      else
+        project = args.first || @project_detector.detect(@working_dir)
+        raise UsageError, parser.help unless project
+        [project]
+      end
+    end
+
     def main_help
       @output.puts <<~HELP
         Usage: workspace <subcommand> [options]
@@ -136,6 +152,7 @@ module Workspace
           alfred          Manage the Alfred workflow for workspace focus
           config          Show project or global configuration
           current         Print the workspace project name for the current directory
+          deactivate      Deactivate Claude in a project's tmux pane (sends Ctrl-C)
           doctor          Check that all required dependencies are installed
           event-log       Manage the event log (compact)
           focus           Bring a project's iTerm window to the front
@@ -145,6 +162,7 @@ module Workspace
           launch          Launch tmuxinator projects in iTerm windows
           layout          Save/restore tmux pane layouts (auto-saved before resize)
           list            List currently active (launched) projects (--all for all available)
+          reactivate      Reactivate Claude in a project's tmux pane
           relaunch        Stop and relaunch all active workspace projects
           repair          Rebuild state from live iTerm windows
           resize          Resize tmux panes for a running project
@@ -695,6 +713,40 @@ module Workspace
       else
         @repair_command.call
       end
+    end
+
+    def cmd_deactivate(args)
+      all = false
+      parser = OptionParser.new do |opts|
+        opts.banner = "Usage: workspace deactivate [options] [project]"
+        opts.separator ""
+        opts.separator "Deactivate Claude in a project's tmux pane by sending Ctrl-C."
+        opts.separator "Auto-detects the project from the current directory if not specified."
+        opts.separator ""
+        opts.separator "Options:"
+        opts.on("--all", "Deactivate Claude in all active projects") { all = true }
+      end
+      parser.parse!(args)
+
+      projects = resolve_claude_targets(args, all, parser)
+      @claude_command.deactivate(projects)
+    end
+
+    def cmd_reactivate(args)
+      all = false
+      parser = OptionParser.new do |opts|
+        opts.banner = "Usage: workspace reactivate [options] [project]"
+        opts.separator ""
+        opts.separator "Reactivate Claude in a project's tmux pane with 'claude --continue || claude'."
+        opts.separator "Auto-detects the project from the current directory if not specified."
+        opts.separator ""
+        opts.separator "Options:"
+        opts.on("--all", "Reactivate Claude in all active projects") { all = true }
+      end
+      parser.parse!(args)
+
+      projects = resolve_claude_targets(args, all, parser)
+      @claude_command.reactivate(projects)
     end
 
     def cmd_event_log(args)
