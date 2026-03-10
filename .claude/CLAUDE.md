@@ -106,12 +106,13 @@ This applies to: architecture reviews, agent team reports, research notes, Obsid
 
 ## Feature Requests
 
-Feature requests are tracked in `.worktrees/feature-requests/FEATURE_REQUESTS.md`, which is a git worktree checked out to the orphan `notes` branch. This branch has no shared history with `main` and never merges.
+Feature requests are tracked in `.worktrees/feature-requests/FEATURE_REQUESTS.md`, which is a git worktree checked out to the orphan `feature-requests` branch. This branch has no shared history with `main` and never merges.
 
 - **File path:** `.worktrees/feature-requests/FEATURE_REQUESTS.md`
 - **Read/edit:** Use the Read/Edit tools directly on the file at its worktree path
 - **Commit changes:** Run git commands with `-C .worktrees/feature-requests` (e.g., `git -C .worktrees/feature-requests add -A && git -C .worktrees/feature-requests commit -m "Add request"`)
 - **Push:** `git -C .worktrees/feature-requests push`
+- **Quick view:** `script/feature-requests`
 
 When the user asks to capture, add, view, list, or look up feature requests, always use this worktree. Never create feature request files on `main` or any feature branch.
 

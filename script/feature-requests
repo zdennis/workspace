@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# List feature requests from the feature-requests branch
+git show feature-requests:FEATURE_REQUESTS.md
