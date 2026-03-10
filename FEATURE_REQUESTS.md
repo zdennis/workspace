@@ -33,6 +33,22 @@ separate command. Key question: should `kill` gain a `--remove` flag
 instead, or is the destructive nature of removing configs better served
 by a dedicated subcommand with its own confirmation prompt?
 
+### `workspace deactivate` / `workspace reactivate`
+
+Deactivate the Claude pane in a project by sending Ctrl-C multiple times
+to kill the running Claude process. Reactivate it later with
+`claude --continue || claude`. This saves memory and CPU for idle
+sessions that aren't actively being used.
+
+- `workspace deactivate <project>` — send Ctrl-C to the Claude pane
+  (pane 0.1) several times to ensure the process exits
+- `workspace reactivate <project>` — send `claude --continue || claude`
+  to the Claude pane to restart it
+- Both should auto-detect the project from the current directory if not
+  specified
+- Consider `--all` flags to deactivate/reactivate all active projects
+  at once
+
 ## Completed
 
 _None yet._
