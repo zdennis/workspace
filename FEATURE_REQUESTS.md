@@ -38,6 +38,12 @@ by a dedicated subcommand with its own confirmation prompt?
 
 This is a test feature request
 
+
+### Test input file feature
+
+This came from a file.
+It has multiple lines.
+
 ## Completed
 
 _None yet._
