@@ -1,3 +1,166 @@
-#!/usr/bin/env bash
-# List feature requests from the feature-requests branch
-git show feature-requests:FEATURE_REQUESTS.md
+#!/usr/bin/env ruby
+#
+# Manage feature requests tracked on the feature-requests branch.
+#
+# Usage:
+#   script/feature-requests              # list (default)
+#   script/feature-requests list         # list all feature requests
+#   script/feature-requests create       # create a new feature request
+#   script/feature-requests update       # open file in $EDITOR
+#   script/feature-requests complete     # move a request to Completed
+#   script/feature-requests help         # show this help
+
+PROJECT_ROOT = File.expand_path("..", __dir__)
+WORKTREE_DIR = File.join(PROJECT_ROOT, ".worktrees", "feature-requests")
+FILE = File.join(WORKTREE_DIR, "FEATURE_REQUESTS.md")
+BRANCH = "feature-requests"
+
+def ensure_worktree
+  return if File.directory?(WORKTREE_DIR)
+  puts "Creating worktree at #{WORKTREE_DIR}..."
+  system("git", "worktree", "add", WORKTREE_DIR, BRANCH) || abort("Failed to create worktree.")
+end
+
+def commit_and_push(message)
+  system("git", "-C", WORKTREE_DIR, "add", "-A")
+  system("git", "-C", WORKTREE_DIR, "commit", "-m", message)
+  system("git", "-C", WORKTREE_DIR, "push")
+end
+
+def read_file
+  File.read(FILE)
+end
+
+def write_file(content)
+  File.write(FILE, content)
+end
+
+def open_requests
+  content = read_file
+  open_section = content[/^## Open\n(.*?)(?=^## Completed)/m, 1] || ""
+  open_section.scan(/^### (.+)/).flatten
+end
+
+def cmd_list
+  ensure_worktree
+  puts read_file
+end
+
+def cmd_create
+  ensure_worktree
+
+  print "Title (e.g., `workspace foo --bar`): "
+  title = $stdin.gets&.strip
+  abort "Aborted." if title.nil? || title.empty?
+
+  puts "Description (end with an empty line):"
+  lines = []
+  while (line = $stdin.gets)
+    break if line.strip.empty?
+    lines << line.rstrip
+  end
+
+  entry = "\n### #{title}\n\n#{lines.join("\n")}\n"
+
+  content = read_file
+  content.sub!(/^(## Completed)/, "#{entry}\n\\1")
+  write_file(content)
+
+  puts "\nAdded: #{title}"
+  commit_and_push("Add feature request: #{title}")
+end
+
+def cmd_update
+  ensure_worktree
+
+  editor = ENV["EDITOR"] || "vim"
+  system(editor, FILE)
+
+  diff_output, status = Open3.capture2("git", "-C", WORKTREE_DIR, "diff", "--quiet")
+  if status.success?
+    puts "No changes."
+    return
+  end
+
+  print "Commit message [Update feature requests]: "
+  msg = $stdin.gets&.strip
+  msg = "Update feature requests" if msg.nil? || msg.empty?
+  commit_and_push(msg)
+end
+
+def cmd_complete
+  ensure_worktree
+
+  titles = open_requests
+  if titles.empty?
+    puts "No open feature requests."
+    return
+  end
+
+  puts "Open feature requests:"
+  titles.each_with_index do |t, i|
+    puts "  #{i + 1}. #{t}"
+  end
+
+  print "\nNumber to complete (or q to quit): "
+  choice = $stdin.gets&.strip
+  return puts("Cancelled.") if choice.nil? || choice == "q" || choice.empty?
+
+  idx = choice.to_i - 1
+  if idx < 0 || idx >= titles.size
+    abort "Invalid selection."
+  end
+
+  title = titles[idx]
+  content = read_file
+
+  # Extract the block: ### title through next ### or ## Completed
+  block_pattern = /^(### #{Regexp.escape(title)}\n(?:(?!^### |^## Completed).*\n)*)/
+  block = content[block_pattern]
+  abort "Could not find request block." unless block
+
+  # Remove from Open section
+  content.sub!(block, "")
+
+  # Remove "_None yet._" from Completed section
+  content.sub!(/^_None yet\._\n?/, "")
+
+  # Append to Completed section
+  content.sub!(/^(## Completed\n)/, "\\1\n#{block}")
+  write_file(content)
+
+  puts "\nCompleted: #{title}"
+  commit_and_push("Complete feature request: #{title}")
+end
+
+def cmd_help
+  puts <<~HELP
+    Usage: script/feature-requests [command]
+
+    Commands:
+      list       List all feature requests (default)
+      create     Create a new feature request interactively
+      update     Open feature requests file in $EDITOR
+      complete   Move an open request to completed
+      help       Show this help
+
+    Branch: #{BRANCH}
+    Worktree: #{WORKTREE_DIR}
+    File: #{FILE}
+  HELP
+end
+
+require "open3"
+
+command = ARGV.first || "list"
+case command
+when "list"     then cmd_list
+when "create"   then cmd_create
+when "update"   then cmd_update
+when "complete" then cmd_complete
+when "help", "-h", "--help" then cmd_help
+else
+  puts "Unknown command: #{command}\n\n"
+  cmd_help
+  exit 1
+end
