@@ -69,6 +69,7 @@ workspace <subcommand> [options]
 | config | [README](docs/README.config.md) | Show project or global configuration |
 | current | [README](docs/README.current.md) | Print the workspace project name for the current directory |
 | doctor | [README](docs/README.doctor.md) | Check that all required dependencies are installed |
+| event-log | [README](docs/README.event-log.md) | Manage the append-only event log (compact) |
 | focus | [README](docs/README.focus.md) | Bring a project's iTerm window to the front |
 | init | [README](docs/README.init.md) | Install tmuxinator templates and create workspace config directory |
 | kill | [README](docs/README.kill.md) | Kill a worktree project and remove its worktree |
