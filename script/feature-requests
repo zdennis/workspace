@@ -5,7 +5,9 @@
 # Usage:
 #   script/feature-requests              # list (default)
 #   script/feature-requests list         # list all feature requests
-#   script/feature-requests create       # create a new feature request
+#   script/feature-requests create       # create a new feature request (interactive)
+#   script/feature-requests create --feature "Title: description"
+#   script/feature-requests create --input-file /path/to/file.md
 #   script/feature-requests update       # open file in $EDITOR
 #   script/feature-requests complete     # move a request to Completed
 #   script/feature-requests help         # show this help
@@ -46,12 +48,69 @@ def cmd_list
   puts read_file
 end
 
-def cmd_create
+def cmd_create(args)
   ensure_worktree
 
+  feature_text = nil
+  input_file = nil
+
+  parser = OptionParser.new do |opts|
+    opts.banner = "Usage: script/feature-requests create [options]"
+    opts.on("--feature FEATURE", "Feature request as 'Title: description' or just a title") do |f|
+      feature_text = f
+    end
+    opts.on("--input-file FILE", "Read feature request from a file (first line = title, rest = description)") do |f|
+      input_file = f
+    end
+  end
+  parser.parse!(args)
+
+  title, description = if input_file
+    parse_from_file(input_file)
+  elsif feature_text
+    parse_from_string(feature_text)
+  else
+    prompt_interactively
+  end
+
+  abort "Aborted." if title.nil? || title.empty?
+
+  entry = if description.empty?
+    "\n### #{title}\n"
+  else
+    "\n### #{title}\n\n#{description}\n"
+  end
+
+  content = read_file
+  content.sub!(/^(## Completed)/, "#{entry}\n\\1")
+  write_file(content)
+
+  puts "Added: #{title}"
+  commit_and_push("Add feature request: #{title}")
+end
+
+def parse_from_file(path)
+  abort "File not found: #{path}" unless File.exist?(path)
+  lines = File.readlines(path, chomp: true)
+  title = lines.shift&.strip
+  # Skip blank lines between title and description
+  lines.shift while lines.first&.strip&.empty?
+  [title, lines.join("\n")]
+end
+
+def parse_from_string(text)
+  if text.include?(": ")
+    title, desc = text.split(": ", 2)
+    [title.strip, desc.strip]
+  else
+    [text.strip, ""]
+  end
+end
+
+def prompt_interactively
   print "Title (e.g., `workspace foo --bar`): "
   title = $stdin.gets&.strip
-  abort "Aborted." if title.nil? || title.empty?
+  return [nil, ""] if title.nil? || title.empty?
 
   puts "Description (end with an empty line):"
   lines = []
@@ -59,15 +118,7 @@ def cmd_create
     break if line.strip.empty?
     lines << line.rstrip
   end
-
-  entry = "\n### #{title}\n\n#{lines.join("\n")}\n"
-
-  content = read_file
-  content.sub!(/^(## Completed)/, "#{entry}\n\\1")
-  write_file(content)
-
-  puts "\nAdded: #{title}"
-  commit_and_push("Add feature request: #{title}")
+  [title, lines.join("\n")]
 end
 
 def cmd_update
@@ -139,7 +190,10 @@ def cmd_help
 
     Commands:
       list       List all feature requests (default)
-      create     Create a new feature request interactively
+      create     Create a new feature request
+                   --feature "Title: description"
+                   --input-file /path/to/file.md
+                   (no flags = interactive prompt)
       update     Open feature requests file in $EDITOR
       complete   Move an open request to completed
       help       Show this help
@@ -151,11 +205,12 @@ def cmd_help
 end
 
 require "open3"
+require "optparse"
 
-command = ARGV.first || "list"
+command = ARGV.shift || "list"
 case command
 when "list"     then cmd_list
-when "create"   then cmd_create
+when "create"   then cmd_create(ARGV)
 when "update"   then cmd_update
 when "complete" then cmd_complete
 when "help", "-h", "--help" then cmd_help
