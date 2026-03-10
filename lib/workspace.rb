@@ -4,6 +4,7 @@ require "fileutils"
 require_relative "workspace/version"
 require_relative "workspace/logger"
 require_relative "workspace/config"
+require_relative "workspace/event_log"
 require_relative "workspace/state"
 require_relative "workspace/git"
 require_relative "workspace/doctor"
@@ -45,7 +46,8 @@ module Workspace
   def self.build_cli(output: $stdout, error_output: $stderr, input: $stdin, logger: nil)
     logger ||= Logger.new(output: error_output, enabled: ENV.key?("WORKSPACE_DEBUG"))
     config = Config.new
-    state = State.new(config: config, logger: logger)
+    event_log = EventLog.new(config: config, output: output, logger: logger)
+    state = State.new(config: config, event_log: event_log, logger: logger)
     iterm = ITerm.new(config: config, output: output, logger: logger)
     window_manager = WindowManager.new(config: config, logger: logger)
     tmux = Tmux.new(config: config, logger: logger)

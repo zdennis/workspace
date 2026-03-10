@@ -2,9 +2,44 @@ require "stringio"
 require "tmpdir"
 
 module CLITestHelpers
+  class FakeEventLog
+    attr_reader :events
+
+    def initialize
+      @events = []
+    end
+
+    def append(type:, project:, data: {})
+      @events << {"type" => type, "project" => project, "data" => data}
+    end
+
+    def reconstruct
+      state = {}
+      @events.each do |event|
+        case event["type"]
+        when "state_set", "launched", "window_discovered", "repaired", "migrated", "compacted"
+          state[event["project"]] ||= {}
+          state[event["project"]].merge!(event["data"]) if event["data"]
+        when "state_removed", "killed", "stopped", "pruned"
+          state.delete(event["project"])
+        end
+      end
+      state
+    end
+
+    def exists? = false
+    def size = 0
+    def warn_if_large = nil
+    def compact = reconstruct
+  end
+
   class FakeState
     def initialize
       @data = {}
+    end
+
+    def event_log
+      @event_log ||= FakeEventLog.new
     end
 
     def load

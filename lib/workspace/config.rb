@@ -19,6 +19,11 @@ module Workspace
       File.expand_path("~/.workspace-state.json")
     end
 
+    # @return [String] path to the event log file
+    def event_log_file
+      File.expand_path("~/.workspace-events.jsonl")
+    end
+
     # @return [String] path to the source templates directory
     def templates_dir
       File.join(workspace_dir, "lib", "templates")

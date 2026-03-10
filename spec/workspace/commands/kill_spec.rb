@@ -4,10 +4,12 @@ RSpec.describe Workspace::Commands::Kill do
   let(:tmpdir) { Dir.mktmpdir }
   let(:config) { Workspace::Config.new(workspace_dir: tmpdir) }
   let(:state_file) { File.join(tmpdir, "state.json") }
+  let(:event_log_file) { File.join(tmpdir, "events.jsonl") }
   let(:state) do
-    s = Workspace::State.new(config: config)
     allow(config).to receive(:state_file).and_return(state_file)
-    s
+    allow(config).to receive(:event_log_file).and_return(event_log_file)
+    event_log = Workspace::EventLog.new(config: config)
+    Workspace::State.new(config: config, event_log: event_log)
   end
   let(:output) { StringIO.new }
   let(:error_output) { StringIO.new }

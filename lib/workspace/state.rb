@@ -3,50 +3,55 @@ require "json"
 
 module Workspace
   # Wraps JSON-persisted workspace state for tracked sessions.
+  # The event log is the source of truth; the state file is a materialized view.
   class State
     # @param config [Workspace::Config] configuration providing state_file path
+    # @param event_log [Workspace::EventLog] append-only event log
     # @param logger [Workspace::Logger] debug logger
-    def initialize(config:, logger: Workspace::Logger.new)
+    def initialize(config:, event_log:, logger: Workspace::Logger.new)
       @config = config
+      @event_log = event_log
       @logger = logger
       @data = {}
-      @dirty_keys = Set.new
-      @deleted_keys = Set.new
     end
 
-    # @return [State] self, after loading state from disk (empty if missing or corrupt)
+    # @return [Workspace::EventLog] the event log backing this state
+    attr_reader :event_log
+
+    # Loads state by replaying the event log. Falls back to the state file
+    # for migration if no event log exists yet.
+    #
+    # @return [State] self
     def load
-      @logger.debug { "state: loading from #{@config.state_file}" }
-      @data = if File.exist?(@config.state_file)
-        JSON.parse(File.read(@config.state_file))
+      if @event_log.exists?
+        @logger.debug { "state: reconstructing from event log" }
+        @data = @event_log.reconstruct
+        @logger.debug { "state: reconstructed #{@data.keys.size} project(s): #{@data.keys.join(", ")}" }
+        @event_log.warn_if_large
+      elsif File.exist?(@config.state_file)
+        @logger.debug { "state: migrating from state file to event log" }
+        @data = JSON.parse(File.read(@config.state_file))
+        @data.each do |project, info|
+          @event_log.append(type: "migrated", project: project, data: info)
+        end
+        @logger.debug { "state: migrated #{@data.keys.size} project(s)" }
       else
-        @logger.debug { "state: file not found, starting empty" }
-        {}
+        @logger.debug { "state: no event log or state file, starting empty" }
+        @data = {}
       end
-      @dirty_keys.clear
-      @deleted_keys.clear
-      @logger.debug { "state: loaded #{@data.keys.size} project(s): #{@data.keys.join(", ")}" }
       self
     rescue JSON::ParserError
-      @logger.debug { "state: corrupt JSON, resetting to empty" }
+      @logger.debug { "state: corrupt state file, starting empty" }
       @data = {}
-      @dirty_keys.clear
-      @deleted_keys.clear
       self
     end
 
-    # Merges in-memory changes with the current file on disk before writing.
-    # This prevents concurrent launches from clobbering each other's state.
+    # Reconstructs state from the event log and writes the state file.
     #
     # @return [void]
     def save
+      @data = @event_log.reconstruct
       @logger.debug { "state: saving #{@data.keys.size} project(s) to #{@config.state_file}" }
-      disk_data = read_disk_state
-      @dirty_keys.each { |k| disk_data[k] = @data[k] if @data.key?(k) }
-      @deleted_keys.each { |k| disk_data.delete(k) }
-      @data = disk_data
-      @dirty_keys.clear
-      @deleted_keys.clear
       backup_state_file
       tmp = "#{@config.state_file}.tmp"
       File.write(tmp, JSON.pretty_generate(@data))
@@ -59,20 +64,22 @@ module Workspace
       @data[key]
     end
 
+    # Sets a project's state and appends a state_set event to the log.
+    #
     # @param key [String]
     # @param value [Object]
     # @return [Object]
     def []=(key, value)
-      @dirty_keys.add(key)
-      @deleted_keys.delete(key)
+      @event_log.append(type: "state_set", project: key, data: value)
       @data[key] = value
     end
 
+    # Removes a project from state and appends a state_removed event to the log.
+    #
     # @param key [String]
     # @return [Object, nil]
     def delete(key)
-      @deleted_keys.add(key)
-      @dirty_keys.delete(key)
+      @event_log.append(type: "state_removed", project: key)
       @data.delete(key)
     end
 
@@ -128,14 +135,6 @@ module Workspace
       FileUtils.cp(src, "#{src}.bak")
     rescue => e
       @logger.debug { "state: backup failed: #{e.message}" }
-    end
-
-    # @return [Hash] current state from disk, or empty hash if missing/corrupt
-    def read_disk_state
-      return {} unless File.exist?(@config.state_file)
-      JSON.parse(File.read(@config.state_file))
-    rescue JSON::ParserError
-      {}
     end
   end
 end

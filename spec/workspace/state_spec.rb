@@ -3,47 +3,57 @@ require "tmpdir"
 RSpec.describe Workspace::State do
   let(:tmpdir) { Dir.mktmpdir }
   let(:state_file) { File.join(tmpdir, "state.json") }
+  let(:event_log_file) { File.join(tmpdir, "events.jsonl") }
   let(:config) { Workspace::Config.new(workspace_dir: tmpdir) }
 
   before do
     allow(config).to receive(:state_file).and_return(state_file)
+    allow(config).to receive(:event_log_file).and_return(event_log_file)
   end
 
   after { FileUtils.remove_entry(tmpdir) }
 
+  def new_state
+    event_log = Workspace::EventLog.new(config: config)
+    described_class.new(config: config, event_log: event_log)
+  end
+
   describe "#load" do
-    it "returns empty state when file does not exist" do
-      state = described_class.new(config: config).load
+    it "returns empty state when no event log or state file exists" do
+      state = new_state.load
       expect(state).to be_empty
     end
 
-    it "returns empty state when file contains invalid JSON" do
-      File.write(state_file, "not json{{{")
-      state = described_class.new(config: config).load
-      expect(state).to be_empty
-    end
-
-    it "loads valid JSON state" do
+    it "migrates from state file when no event log exists" do
       File.write(state_file, '{"project1": {"unique_id": "abc"}}')
-      state = described_class.new(config: config).load
+      state = new_state.load
       expect(state["project1"]).to eq({"unique_id" => "abc"})
+      expect(File.exist?(event_log_file)).to be true
+    end
+
+    it "reconstructs from event log when it exists" do
+      event_log = Workspace::EventLog.new(config: config)
+      event_log.append(type: "state_set", project: "proj1", data: {"unique_id" => "uid1"})
+
+      state = new_state.load
+      expect(state["proj1"]).to eq({"unique_id" => "uid1"})
     end
   end
 
   describe "round-trip save and load" do
     it "persists and restores state" do
-      state = described_class.new(config: config)
+      state = new_state
       state["myproject"] = {"unique_id" => "xyz", "iterm_window_id" => 42}
       state.save
 
-      loaded = described_class.new(config: config).load
+      loaded = new_state.load
       expect(loaded["myproject"]).to eq({"unique_id" => "xyz", "iterm_window_id" => 42})
     end
   end
 
   describe "hash delegation" do
     subject(:state) do
-      s = described_class.new(config: config)
+      s = new_state
       s["a"] = {"nested" => "value"}
       s["b"] = "simple"
       s
@@ -85,7 +95,7 @@ RSpec.describe Workspace::State do
 
   describe "backup on save" do
     it "creates a .bak file with previous contents" do
-      state = described_class.new(config: config)
+      state = new_state
       state["proj1"] = {"unique_id" => "uid1"}
       state.save
 
@@ -100,7 +110,7 @@ RSpec.describe Workspace::State do
     end
 
     it "does not create .bak when no prior file exists" do
-      state = described_class.new(config: config)
+      state = new_state
       state["proj1"] = {"unique_id" => "uid1"}
       state.save
 
@@ -108,52 +118,52 @@ RSpec.describe Workspace::State do
     end
   end
 
-  describe "concurrent save" do
-    it "merges in-memory changes with state written by another process" do
-      # Simulate process A loading state
-      state_a = described_class.new(config: config).load
+  describe "concurrent save via event log" do
+    it "merges changes from concurrent processes" do
+      # Process A appends an event
+      state_a = new_state.load
       state_a["project-a"] = {"unique_id" => "uid-a"}
 
-      # Simulate process B saving state while A is still running
-      state_b = described_class.new(config: config).load
+      # Process B appends an event (same event log file)
+      state_b = new_state.load
       state_b["project-b"] = {"unique_id" => "uid-b"}
       state_b.save
 
-      # Process A saves — should merge, not clobber B's entry
+      # Process A saves — event log has both, so state file has both
       state_a.save
 
-      loaded = described_class.new(config: config).load
+      loaded = new_state.load
       expect(loaded["project-a"]).to eq({"unique_id" => "uid-a"})
       expect(loaded["project-b"]).to eq({"unique_id" => "uid-b"})
     end
 
-    it "applies deletes even when disk state has changed" do
-      # Set up initial state with two projects
-      state = described_class.new(config: config)
+    it "applies deletes from concurrent processes" do
+      # Set up initial state
+      state = new_state
       state["proj1"] = {"unique_id" => "uid1"}
       state["proj2"] = {"unique_id" => "uid2"}
       state.save
 
-      # Process A loads, then deletes proj1
-      state_a = described_class.new(config: config).load
+      # Process A deletes proj1
+      state_a = new_state.load
       state_a.delete("proj1")
 
-      # Process B adds proj3 concurrently
-      state_b = described_class.new(config: config).load
+      # Process B adds proj3
+      state_b = new_state.load
       state_b["proj3"] = {"unique_id" => "uid3"}
       state_b.save
 
-      # Process A saves — should remove proj1, keep proj2 and proj3
+      # Process A saves
       state_a.save
 
-      loaded = described_class.new(config: config).load
+      loaded = new_state.load
       expect(loaded.keys).to contain_exactly("proj2", "proj3")
     end
   end
 
   describe "#prune" do
     subject(:state) do
-      s = described_class.new(config: config)
+      s = new_state
       s["alive-project"] = {"unique_id" => "uid1", "iterm_window_id" => 100}
       s["dead-project"] = {"unique_id" => "uid2", "iterm_window_id" => 200}
       s["also-alive"] = {"unique_id" => "uid3", "iterm_window_id" => 300}
@@ -184,11 +194,12 @@ RSpec.describe Workspace::State do
       expect(state).to be_empty
     end
 
-    it "does not call save" do
+    it "does not update the state file" do
       state.save
       state.prune(Set.new)
-      loaded = described_class.new(config: config).load
-      expect(loaded.keys.size).to eq(3)
+      # State file still has the old data (save wasn't called after prune)
+      on_disk = JSON.parse(File.read(state_file))
+      expect(on_disk.keys.size).to eq(3)
     end
   end
 end

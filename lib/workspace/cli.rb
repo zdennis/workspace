@@ -101,6 +101,8 @@ module Workspace
         cmd_status(args)
       when "repair"
         cmd_repair(args)
+      when "event-log"
+        cmd_event_log(args)
       when "whereis"
         cmd_whereis(args)
       when "alfred"
@@ -135,6 +137,7 @@ module Workspace
           config          Show project or global configuration
           current         Print the workspace project name for the current directory
           doctor          Check that all required dependencies are installed
+          event-log       Manage the event log (compact)
           focus           Bring a project's iTerm window to the front
           help            Show this help message
           init            Install tmuxinator templates and create config directory
@@ -691,6 +694,31 @@ module Workspace
         @repair_command.set_window_id(project, window_id)
       else
         @repair_command.call
+      end
+    end
+
+    def cmd_event_log(args)
+      subcommand = args.shift
+
+      case subcommand
+      when "compact"
+        event_log = @state.event_log
+        before_size = event_log.size
+        state = event_log.compact
+        after_size = event_log.size
+        @output.puts "Compacted event log: #{before_size} -> #{after_size} bytes (#{state.size} project(s))"
+      when "help", "--help", "-h", nil
+        @output.puts <<~HELP
+          Usage: workspace event-log <subcommand>
+
+          Subcommands:
+            compact    Compact the event log to current state only
+            help       Show this help
+
+          The event log is at: #{@config.event_log_file}
+        HELP
+      else
+        raise UsageError, "Unknown event-log subcommand: #{subcommand}"
       end
     end
 
