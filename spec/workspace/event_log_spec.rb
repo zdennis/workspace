@@ -151,5 +151,52 @@ RSpec.describe Workspace::EventLog do
       event_log.warn_if_large
       expect(output.string).to be_empty
     end
+
+    it "uses threshold from global config" do
+      project_settings = instance_double(Workspace::ProjectSettings)
+      allow(project_settings).to receive(:load_global).and_return({"event_log_compact_threshold" => "1kb"})
+
+      el = described_class.new(config: config, project_settings: project_settings, error_output: output)
+      File.write(event_log_file, "x" * 2_000) # 2KB > 1KB threshold
+      el.warn_if_large
+      expect(output.string).to include("event-log compact")
+    end
+
+    it "does not warn when below custom threshold" do
+      project_settings = instance_double(Workspace::ProjectSettings)
+      allow(project_settings).to receive(:load_global).and_return({"event_log_compact_threshold" => "1mb"})
+
+      el = described_class.new(config: config, project_settings: project_settings, error_output: output)
+      File.write(event_log_file, "x" * 11_000) # 11KB < 1MB threshold
+      el.warn_if_large
+      expect(output.string).to be_empty
+    end
+  end
+
+  describe "#compact_threshold" do
+    it "parses kb" do
+      ps = instance_double(Workspace::ProjectSettings)
+      allow(ps).to receive(:load_global).and_return({"event_log_compact_threshold" => "50kb"})
+      el = described_class.new(config: config, project_settings: ps)
+      expect(el.compact_threshold).to eq(50 * 1024)
+    end
+
+    it "parses mb" do
+      ps = instance_double(Workspace::ProjectSettings)
+      allow(ps).to receive(:load_global).and_return({"event_log_compact_threshold" => "2mb"})
+      el = described_class.new(config: config, project_settings: ps)
+      expect(el.compact_threshold).to eq(2 * 1024 * 1024)
+    end
+
+    it "parses plain number as bytes" do
+      ps = instance_double(Workspace::ProjectSettings)
+      allow(ps).to receive(:load_global).and_return({"event_log_compact_threshold" => "5000"})
+      el = described_class.new(config: config, project_settings: ps)
+      expect(el.compact_threshold).to eq(5000)
+    end
+
+    it "falls back to default when not configured" do
+      expect(event_log.compact_threshold).to eq(Workspace::EventLog::DEFAULT_COMPACT_THRESHOLD)
+    end
   end
 end

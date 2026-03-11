@@ -47,7 +47,8 @@ module Workspace
   def self.build_cli(output: $stdout, error_output: $stderr, input: $stdin, logger: nil)
     logger ||= Logger.new(output: error_output, enabled: ENV.key?("WORKSPACE_DEBUG"))
     config = Config.new
-    event_log = EventLog.new(config: config, error_output: error_output, logger: logger)
+    project_settings = ProjectSettings.new(config: config)
+    event_log = EventLog.new(config: config, project_settings: project_settings, error_output: error_output, logger: logger)
     state = State.new(config: config, event_log: event_log, logger: logger)
     iterm = ITerm.new(config: config, output: output, logger: logger)
     window_manager = WindowManager.new(config: config, logger: logger)
@@ -56,7 +57,6 @@ module Workspace
     project_config = ProjectConfig.new(config: config, git: git, output: output)
     window_layout = WindowLayout.new(window_manager: window_manager, config: config, output: output, logger: logger)
     doctor = Doctor.new(config: config, state: state, output: output)
-    project_settings = ProjectSettings.new(config: config)
     hook_runner = HookRunner.new(project_settings: project_settings, project_config: project_config, output: output, error_output: error_output, logger: logger)
     project_detector = ProjectDetector.new(state: state, project_config: project_config)
 
