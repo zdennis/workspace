@@ -33,18 +33,15 @@ separate command. Key question: should `kill` gain a `--remove` flag
 instead, or is the destructive nature of removing configs better served
 by a dedicated subcommand with its own confirmation prompt?
 
-
-### Claude MCP servers config setting
-
-Add a claude.mcp_servers setting in global and project config that specifies MCP servers passed to claude via --mcp-servers flag when workspace launches or reactivates a project. Project settings override global. Affects the claude command template used by launch (pane 0.1) and reactivate.
-
-## Completed
-
 ### Structured JSON envelope for --json output
 
 Wrap all --json output in a standard envelope object (e.g. {"data": ..., "warnings": [...]}) so metadata like event log size warnings can be included without polluting the data. Currently warnings go to stderr which works but loses the info in non-interactive/piped contexts.
 
+## Completed
 
+### Claude MCP servers config setting
+
+Add a claude.mcp_servers setting in global and project config that specifies MCP servers passed to claude via --mcp-servers flag when workspace launches or reactivates a project. Project settings override global. Affects the claude command template used by launch (pane 0.1) and reactivate.
 
 ### `workspace deactivate` / `workspace reactivate`
 
@@ -61,5 +58,3 @@ sessions that aren't actively being used.
   specified
 - Consider `--all` flags to deactivate/reactivate all active projects
   at once
-
-
