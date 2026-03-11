@@ -31,7 +31,6 @@ Config files are edited directly — there is no `set` subcommand.
 |---------|-------------|
 | `hooks` | Global hooks applied to all projects |
 | `layouts` | Default tmux pane layouts |
-| `claude.mcp_servers` | MCP servers passed to Claude via `--mcp-servers` |
 | `event_log_compact_threshold` | Size warning threshold (e.g., "10kb", "1mb"). Default: 10kb |
 
 ### Project settings
@@ -41,7 +40,6 @@ Config files are edited directly — there is no `set` subcommand.
 | `hooks` | Project-specific hooks (e.g., `post_launch`) |
 | `layouts` | Project-specific tmux pane layouts |
 | `worktree_hooks` | Hooks seeded into new worktrees created from this project |
-| `claude.mcp_servers` | MCP servers for this project (overrides global) |
 
 ## Examples
 
