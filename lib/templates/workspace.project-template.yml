@@ -20,5 +20,5 @@ windows:
           tmux resize-pane -t {{PROJECT_NAME}}:0.0 -y 15% &&
           tmux resize-pane -t {{PROJECT_NAME}}:0.2 -y 35% &&
           ascii-banner "{{PROJECT_NAME}}" --rainbow --random -W --center --minimal
-        - claude --continue || claude
+        - {{CLAUDE_COMMAND}}
         - echo 'Ready to work on {{PROJECT_NAME}}'

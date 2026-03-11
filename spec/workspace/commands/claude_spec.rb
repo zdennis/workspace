@@ -3,10 +3,13 @@ RSpec.describe Workspace::Commands::Claude do
   let(:error_output) { StringIO.new }
   let(:tmux) { CLITestHelpers::FakeTmux.new }
 
+  let(:project_settings) { CLITestHelpers::FakeProjectSettings.new }
+
   subject(:command) do
     described_class.new(
       state: CLITestHelpers::FakeState.new,
       tmux: tmux,
+      project_settings: project_settings,
       output: output,
       error_output: error_output
     )

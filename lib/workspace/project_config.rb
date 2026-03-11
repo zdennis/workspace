@@ -2,12 +2,14 @@ module Workspace
   # Manages tmuxinator config file generation for projects and worktrees.
   class ProjectConfig
     # @param config [Workspace::Config] configuration for path lookups
-    # @param output [IO] output stream for user-facing messages
     # @param git [Workspace::Git] git operations for sanitize_for_filesystem
-    def initialize(config:, git:, output: $stdout)
+    # @param project_settings [Workspace::ProjectSettings] for claude command resolution
+    # @param output [IO] output stream for user-facing messages
+    def initialize(config:, git:, project_settings:, output: $stdout)
       @config = config
       @output = output
       @git = git
+      @project_settings = project_settings
       @root_cache = {}
     end
 
@@ -51,6 +53,7 @@ module Workspace
         .gsub("{{PROJECT_NAME}}", name)
         .gsub("{{PROJECT_ROOT}}", root)
         .gsub("{{CONFIG_PATH}}", config_path)
+        .gsub("{{CLAUDE_COMMAND}}", @project_settings.claude_command_for(name))
 
       File.write(config_path, content)
       @output.puts "Created config: #{config_path}"
@@ -86,6 +89,7 @@ module Workspace
         .gsub("{{WORKTREE_BRANCH}}", branch_name)
         .gsub("{{DISPLAY_NAME}}", "#{project_name}/#{worktree_name}")
         .gsub("{{CONFIG_PATH}}", config_path)
+        .gsub("{{CLAUDE_COMMAND}}", @project_settings.claude_command_for(project_name))
 
       File.write(config_path, content)
       @output.puts "Created config: #{config_path}"

@@ -162,4 +162,31 @@ RSpec.describe Workspace::ProjectSettings do
       expect(settings.global_config_path).to eq(File.join(tmpdir, "config.yml"))
     end
   end
+
+  describe "#claude_command_for" do
+    it "returns default command when no MCP servers configured" do
+      expect(settings.claude_command_for("myproject")).to eq("claude --continue || claude")
+    end
+
+    it "includes MCP servers from global config" do
+      File.write(File.join(tmpdir, "config.yml"), YAML.dump({"claude" => {"mcp_servers" => ["sentry", "playwright"]}}))
+      expect(settings.claude_command_for("myproject")).to eq(
+        "claude --continue --mcp-servers sentry,playwright || claude --mcp-servers sentry,playwright"
+      )
+    end
+
+    it "project config overrides global" do
+      File.write(File.join(tmpdir, "config.yml"), YAML.dump({"claude" => {"mcp_servers" => ["sentry"]}}))
+      FileUtils.mkdir_p(File.join(tmpdir, "projects"))
+      File.write(File.join(tmpdir, "projects", "myproject.yml"), YAML.dump({"claude" => {"mcp_servers" => ["playwright"]}}))
+      expect(settings.claude_command_for("myproject")).to eq(
+        "claude --continue --mcp-servers playwright || claude --mcp-servers playwright"
+      )
+    end
+
+    it "returns default when MCP servers list is empty" do
+      File.write(File.join(tmpdir, "config.yml"), YAML.dump({"claude" => {"mcp_servers" => []}}))
+      expect(settings.claude_command_for("myproject")).to eq("claude --continue || claude")
+    end
+  end
 end
