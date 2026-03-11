@@ -33,7 +33,10 @@ module Workspace
         "data" => data
       }
       @logger.debug { "event_log: append #{type} for #{project}" }
-      File.open(@config.event_log_file, "a") { |f| f.puts JSON.generate(event) }
+      File.open(@config.event_log_file, "a") do |f|
+        f.puts JSON.generate(event)
+        f.flush
+      end
     end
 
     # Reads all events from the log file.
@@ -46,7 +49,11 @@ module Workspace
         next if stripped.empty?
         JSON.parse(stripped)
       rescue JSON::ParserError
-        @logger.debug { "event_log: skipping corrupt line" }
+        @logger.debug { "event_log: skipping corrupt line: #{stripped[0..100]}" }
+        unless @warned_corrupt
+          @error_output.puts "Warning: Corrupt event log line(s) skipped. Run with WORKSPACE_DEBUG=1 for details."
+          @warned_corrupt = true
+        end
         nil
       end
     end

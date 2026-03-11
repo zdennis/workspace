@@ -99,6 +99,11 @@ module Workspace
           @state[project] = {"unique_id" => uid}
           @output.puts "  Created pane for #{project} (#{uid})"
         end
+
+        missing_panes = new_projects - new_session_ids.keys
+        if missing_panes.any?
+          @error_output.puts "Warning: Failed to create panes for: #{missing_panes.join(", ")}"
+        end
       end
 
       # Polls for tmux sessions to appear after pane creation. Tmuxinator
