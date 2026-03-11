@@ -37,6 +37,11 @@ by a dedicated subcommand with its own confirmation prompt?
 
 Wrap all --json output in a standard envelope object (e.g. {"data": ..., "warnings": [...]}) so metadata like event log size warnings can be included without polluting the data. Currently warnings go to stderr which works but loses the info in non-interactive/piped contexts.
 
+
+### Create launcher panes individually instead of in a single AppleScript
+
+The current approach builds all panes in one AppleScript that concatenates uid/project output. If the output is truncated with many panes, some projects silently fail to register. Creating panes one at a time (or in smaller batches) would be more reliable, though slower. Consider a hybrid approach: batch creation with per-pane verification and retry.
+
 ## Completed
 
 ### Claude MCP servers config setting
