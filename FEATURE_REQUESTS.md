@@ -33,6 +33,11 @@ separate command. Key question: should `kill` gain a `--remove` flag
 instead, or is the destructive nature of removing configs better served
 by a dedicated subcommand with its own confirmation prompt?
 
+
+### Structured JSON envelope for --json output
+
+Wrap all --json output in a standard envelope object (e.g. {"data": ..., "warnings": [...]}) so metadata like event log size warnings can be included without polluting the data. Currently warnings go to stderr which works but loses the info in non-interactive/piped contexts.
+
 ## Completed
 
 ### `workspace deactivate` / `workspace reactivate`
