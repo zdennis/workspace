@@ -553,9 +553,30 @@ module Workspace
           global = true
         end
         opts.separator ""
+        opts.separator "Config files:"
+        opts.separator "  Global:  #{@project_settings.global_config_path}"
+        opts.separator "  Project: #{@config.workspace_config_dir}/projects/<name>.yml"
+        opts.separator ""
+        opts.separator "Global settings:"
+        opts.separator "  hooks:                         Global hooks (applied to all projects)"
+        opts.separator "  layouts:                       Default tmux pane layouts"
+        opts.separator "  event_log_compact_threshold:   Size warning threshold for the event log"
+        opts.separator "                                 Formats: \"10kb\", \"1mb\", \"500b\", \"1024\""
+        opts.separator "                                 Default: 10kb"
+        opts.separator ""
+        opts.separator "Project settings (in projects/<name>.yml):"
+        opts.separator "  hooks:                         Project-specific hooks (post_launch, etc.)"
+        opts.separator "  layouts:                       Project-specific tmux pane layouts"
+        opts.separator "  worktree_hooks:                Hooks seeded into new worktrees"
+        opts.separator ""
         opts.separator "Examples:"
-        opts.separator "  workspace config myproject    # show project config"
-        opts.separator "  workspace config --global     # show global config"
+        opts.separator "  workspace config myproject     # show project config"
+        opts.separator "  workspace config               # show config for project in current dir"
+        opts.separator "  workspace config --global      # show global config"
+        opts.separator ""
+        opts.separator "To edit, open the config file directly:"
+        opts.separator "  $EDITOR #{@project_settings.global_config_path}"
+        opts.separator "  $EDITOR #{@config.workspace_config_dir}/projects/<name>.yml"
       end
       parser.parse!(args)
 
