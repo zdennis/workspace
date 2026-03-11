@@ -12,7 +12,7 @@ RSpec.describe Workspace::EventLog do
 
   after { FileUtils.remove_entry(tmpdir) }
 
-  subject(:event_log) { described_class.new(config: config, output: output) }
+  subject(:event_log) { described_class.new(config: config, error_output: output) }
 
   describe "#append" do
     it "creates the file and writes a JSONL line" do

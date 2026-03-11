@@ -9,11 +9,11 @@ module Workspace
     LARGE_THRESHOLD = 10_240 # 10KB
 
     # @param config [Workspace::Config] configuration for file paths
-    # @param output [IO] output stream for warnings
+    # @param error_output [IO] error output stream for warnings (stderr)
     # @param logger [Workspace::Logger] debug logger
-    def initialize(config:, output: $stdout, logger: Workspace::Logger.new)
+    def initialize(config:, error_output: $stderr, logger: Workspace::Logger.new)
       @config = config
-      @output = output
+      @error_output = error_output
       @logger = logger
     end
 
@@ -107,7 +107,7 @@ module Workspace
     def warn_if_large
       return unless size > LARGE_THRESHOLD
       kb = (size / 1024.0).round(1)
-      @output.puts "Note: Event log is #{kb}KB. Run 'workspace event-log compact' to compact it."
+      @error_output.puts "Note: Event log is #{kb}KB. Run 'workspace event-log compact' to compact it."
     end
   end
 end
