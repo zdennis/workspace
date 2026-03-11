@@ -181,7 +181,6 @@ module CLITestHelpers
     def ensure_exists(_project_name) = nil
     def hook_for(_project_name, _event) = nil
     def layouts_for(_project_name) = {}
-    def claude_command_for(_project_name) = "claude --continue || claude"
     def project_config_path(name) = "/tmp/workspace/projects/#{name}.yml"
     def global_config_path = "/tmp/workspace/config.yml"
   end

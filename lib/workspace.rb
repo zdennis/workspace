@@ -54,7 +54,7 @@ module Workspace
     window_manager = WindowManager.new(config: config, logger: logger)
     tmux = Tmux.new(config: config, logger: logger)
     git = Git.new(output: output, input: input, logger: logger)
-    project_config = ProjectConfig.new(config: config, git: git, project_settings: project_settings, output: output)
+    project_config = ProjectConfig.new(config: config, git: git, output: output)
     window_layout = WindowLayout.new(window_manager: window_manager, config: config, output: output, logger: logger)
     doctor = Doctor.new(config: config, state: state, output: output)
     hook_runner = HookRunner.new(project_settings: project_settings, project_config: project_config, output: output, error_output: error_output, logger: logger)
@@ -71,7 +71,7 @@ module Workspace
     resize_command = Commands::Resize.new(tmux: tmux, layout_command: layout_command, output: output, error_output: error_output)
     init_command = Commands::Init.new(config: config, output: output, error_output: error_output)
     repair_command = Commands::Repair.new(state: state, iterm: iterm, window_manager: window_manager, output: output)
-    claude_command = Commands::Claude.new(state: state, tmux: tmux, project_settings: project_settings, output: output, error_output: error_output)
+    claude_command = Commands::Claude.new(state: state, tmux: tmux, output: output, error_output: error_output)
 
     CLI.new(
       config: config,

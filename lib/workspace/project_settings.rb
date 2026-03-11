@@ -64,22 +64,6 @@ module Workspace
       global_layouts.merge(project_layouts)
     end
 
-    # Returns the full claude command for a project, including MCP server flags
-    # if configured. Project-level claude.mcp_servers overrides global.
-    #
-    # @param project_name [String] project name
-    # @return [String] the claude command string
-    def claude_command_for(project_name)
-      servers = load(project_name).dig("claude", "mcp_servers")
-      servers = load_global.dig("claude", "mcp_servers") unless servers&.any?
-      if servers&.any?
-        flag = "--mcp-servers #{servers.join(",")}"
-        "claude --continue #{flag} || claude #{flag}"
-      else
-        "claude --continue || claude"
-      end
-    end
-
     # @param project_name [String] project name
     # @return [String] path to the project config file
     def project_config_path(project_name)

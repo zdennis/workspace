@@ -15,7 +15,7 @@ RSpec.describe Workspace::ProjectConfig do
   after { FileUtils.remove_entry(tmpdir) }
 
   describe "#resolve_project_arg" do
-    subject(:pc) { described_class.new(config: config, output: output, git: git, project_settings: CLITestHelpers::FakeProjectSettings.new) }
+    subject(:pc) { described_class.new(config: config, output: output, git: git) }
 
     it "resolves a path to [name, root]" do
       name, root = pc.resolve_project_arg(".")
@@ -37,7 +37,7 @@ RSpec.describe Workspace::ProjectConfig do
   end
 
   describe "#create" do
-    subject(:pc) { described_class.new(config: config, output: output, git: git, project_settings: CLITestHelpers::FakeProjectSettings.new) }
+    subject(:pc) { described_class.new(config: config, output: output, git: git) }
 
     it "raises error when template is missing" do
       allow(config).to receive(:project_template_path).and_return(File.join(tmpdir, "nonexistent.yml"))
@@ -67,7 +67,7 @@ RSpec.describe Workspace::ProjectConfig do
   end
 
   describe "#create_worktree" do
-    subject(:pc) { described_class.new(config: config, output: output, git: git, project_settings: CLITestHelpers::FakeProjectSettings.new) }
+    subject(:pc) { described_class.new(config: config, output: output, git: git) }
 
     it "creates a worktree config with all placeholders substituted" do
       template_path = File.join(tmpdir, "project-worktree-template.yml")
@@ -101,7 +101,7 @@ RSpec.describe Workspace::ProjectConfig do
   end
 
   describe "#exists?" do
-    subject(:pc) { described_class.new(config: config, output: output, git: git, project_settings: CLITestHelpers::FakeProjectSettings.new) }
+    subject(:pc) { described_class.new(config: config, output: output, git: git) }
 
     it "returns true when config file exists" do
       File.write(File.join(tmpdir, "workspace.myapp.yml"), "name: myapp\n")
@@ -114,7 +114,7 @@ RSpec.describe Workspace::ProjectConfig do
   end
 
   describe "#project_root_for" do
-    subject(:pc) { described_class.new(config: config, output: output, git: git, project_settings: CLITestHelpers::FakeProjectSettings.new) }
+    subject(:pc) { described_class.new(config: config, output: output, git: git) }
 
     it "returns the root from the tmuxinator config" do
       File.write(File.join(tmpdir, "workspace.myapp.yml"), "name: myapp\nroot: /home/user/myapp\n")
@@ -132,7 +132,7 @@ RSpec.describe Workspace::ProjectConfig do
   end
 
   describe "#available_projects" do
-    subject(:pc) { described_class.new(config: config, output: output, git: git, project_settings: CLITestHelpers::FakeProjectSettings.new) }
+    subject(:pc) { described_class.new(config: config, output: output, git: git) }
 
     it "returns sorted project names excluding templates" do
       File.write(File.join(tmpdir, "workspace.beta.yml"), "")
