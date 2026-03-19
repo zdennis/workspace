@@ -638,10 +638,6 @@ module Workspace
         return
       end
 
-      live_ids = @window_manager.live_window_ids
-      pruned = @state.prune(live_ids)
-      @state.save if pruned.any?
-
       if @state.empty?
         if json
           @output.puts "[]"
@@ -672,10 +668,6 @@ module Workspace
         json ? @output.puts("{}") : @output.puts("No tracked sessions.")
         return
       end
-
-      live_ids = @window_manager.live_window_ids
-      pruned = @state.prune(live_ids)
-      @state.save if pruned.any?
 
       if @state.empty?
         json ? @output.puts("{}") : @output.puts("No tracked sessions.")
