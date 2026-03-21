@@ -167,13 +167,14 @@ module Workspace
               next
             end
 
-            # Fall back to title matching (shortest title wins)
+            # Fall back to title matching (exact project name, shortest title wins)
             tmux_name = session_names[project]
             title_to_find = "#{window_prefix}-#{tmux_name}"
+            pattern = /#{Regexp.escape(title_to_find)}(?=[\s\[\]]|$)/
             best_id = nil
             best_len = Float::INFINITY
             all_windows.each do |wid, wname|
-              if wname.include?(title_to_find) && wname.length < best_len
+              if wname.match?(pattern) && wname.length < best_len
                 best_id = wid.to_s
                 best_len = wname.length
               end
