@@ -56,6 +56,7 @@ RSpec.describe Workspace::Commands::Launch do
         state["proj1"] = {"unique_id" => "uid-1"}
         state.save
 
+        allow(iterm).to receive(:session_map).and_return({"uid-1" => "100"})
         allow(iterm).to receive(:find_existing_sessions).and_return({"proj1" => "uid-1"})
         allow(iterm).to receive(:relaunch_in_session).with("uid-1", "tmuxinator start proj1 --attach").and_return("ok")
         allow(iterm).to receive(:find_launcher_window_id).and_return(nil)
@@ -81,6 +82,7 @@ RSpec.describe Workspace::Commands::Launch do
         allow(tmux).to receive(:sessions).and_return(["proj1"])
         allow(tmux).to receive(:rename_window)
 
+        allow(iterm).to receive(:session_map).and_return({})
         allow(iterm).to receive(:find_existing_sessions).and_return({})
         allow(iterm).to receive(:find_launcher_window_id).and_return(nil)
         allow(iterm).to receive(:create_launcher_panes).and_return({"proj1" => "new-uid"})
@@ -115,6 +117,7 @@ RSpec.describe Workspace::Commands::Launch do
         state["proj1"] = {"unique_id" => "old-uid"}
         state.save
 
+        allow(iterm).to receive(:session_map).and_return({"old-uid" => "100"})
         allow(iterm).to receive(:find_existing_sessions).and_return({"proj1" => "old-uid"})
         allow(iterm).to receive(:relaunch_in_session).and_return("not_found")
         allow(iterm).to receive(:find_launcher_window_id).and_return(nil)

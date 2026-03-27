@@ -37,13 +37,14 @@ module Workspace
         @tmux.start_server
 
         @state.load
-        existing = @iterm.find_existing_sessions(@state)
+        live_sessions = @iterm.session_map
+        existing = @iterm.find_existing_sessions(@state, live_sessions: live_sessions)
 
         reuse_projects = projects.select { |p| existing.key?(p) }
         new_projects = projects.reject { |p| existing.key?(p) }
 
         relaunch_existing(reuse_projects, existing, new_projects, reattach: reattach)
-        create_new_panes(new_projects, reattach: reattach)
+        create_new_panes(new_projects, reattach: reattach, live_sessions: live_sessions)
 
         @state.save
 
@@ -87,12 +88,12 @@ module Workspace
         end
       end
 
-      def create_new_panes(new_projects, reattach:)
+      def create_new_panes(new_projects, reattach:, live_sessions: nil)
         return if new_projects.empty?
 
         @output.puts "Creating #{new_projects.size} new launcher pane(s)..."
         commands = new_projects.map { |p| [p, @tmux.command_for(p, reattach: reattach)] }.to_h
-        launcher_wid = @iterm.find_launcher_window_id(@state)
+        launcher_wid = @iterm.find_launcher_window_id(@state, live_sessions: live_sessions)
         new_session_ids = @iterm.create_launcher_panes(new_projects, commands, launcher_wid: launcher_wid)
 
         new_session_ids.each do |project, uid|

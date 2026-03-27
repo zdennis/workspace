@@ -79,24 +79,14 @@ module Workspace
           sleep 1 if i > 0
           script = <<~APPLESCRIPT
             tell application "iTerm2"
-              activate
               set targetWindow to window id #{launcher_wid}
-              select targetWindow
-
-              -- Send Cmd+Shift+D to split horizontally
-              tell application "System Events"
-                tell process "iTerm2"
-                  keystroke "d" using {shift down, command down}
-                end tell
+              tell current session of current tab of targetWindow
+                set newSession to (split horizontally with default profile)
               end tell
-
-              delay 0.5
-
-              -- The new split pane is now the current session
-              tell current session of targetWindow
+              tell newSession
                 write text "#{commands[project]}"
-                return unique ID
               end tell
+              return unique ID of newSession
             end tell
           APPLESCRIPT
           uid = execute_applescript(script)
