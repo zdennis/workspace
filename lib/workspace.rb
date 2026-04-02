@@ -27,6 +27,7 @@ require_relative "workspace/commands/tile"
 require_relative "workspace/commands/resize"
 require_relative "workspace/commands/layout"
 require_relative "workspace/commands/repair"
+require_relative "workspace/commands/cleanup"
 require_relative "workspace/cli"
 
 # Workspace CLI for managing tmuxinator-based development workspaces in iTerm2.
@@ -71,6 +72,7 @@ module Workspace
     resize_command = Commands::Resize.new(tmux: tmux, layout_command: layout_command, output: output, error_output: error_output)
     init_command = Commands::Init.new(config: config, output: output, error_output: error_output)
     repair_command = Commands::Repair.new(state: state, iterm: iterm, window_manager: window_manager, output: output)
+    cleanup_command = Commands::Cleanup.new(state: state, window_manager: window_manager, tmux: tmux, output: output, input: input)
     claude_command = Commands::Claude.new(state: state, tmux: tmux, output: output, error_output: error_output)
 
     CLI.new(
@@ -92,6 +94,7 @@ module Workspace
       resize_command: resize_command,
       init_command: init_command,
       repair_command: repair_command,
+      cleanup_command: cleanup_command,
       claude_command: claude_command,
       logger: logger,
       output: output,

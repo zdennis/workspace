@@ -22,12 +22,15 @@ module Workspace
     # @param layout_command [Workspace::Commands::Layout] pre-built layout command
     # @param resize_command [Workspace::Commands::Resize] pre-built resize command
     # @param init_command [Workspace::Commands::Init] pre-built init command
+    # @param repair_command [Workspace::Commands::Repair] pre-built repair command
+    # @param cleanup_command [Workspace::Commands::Cleanup] pre-built cleanup command
+    # @param claude_command [Workspace::Commands::Claude] pre-built claude command
     # @param logger [Workspace::Logger] debug logger
     # @param output [IO] output stream for user-facing messages
     # @param error_output [IO] error output stream for warnings and errors
     # @param input [IO] input stream for interactive prompts
     # @param exit_handler [#exit] callable for process exit (Kernel in production, FakeExitHandler in tests)
-    def initialize(config:, state:, project_config:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, claude_command:, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd)
+    def initialize(config:, state:, project_config:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, claude_command:, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd)
       @config = config
       @state = state
       @project_config = project_config
@@ -46,6 +49,7 @@ module Workspace
       @resize_command = resize_command
       @init_command = init_command
       @repair_command = repair_command
+      @cleanup_command = cleanup_command
       @claude_command = claude_command
       @exit_handler = exit_handler
       @logger = logger
@@ -106,6 +110,8 @@ module Workspace
         cmd_status(args)
       when "repair"
         cmd_repair(args)
+      when "cleanup"
+        cmd_cleanup(args)
       when "event-log"
         cmd_event_log(args)
       when "whereis"
@@ -150,6 +156,7 @@ module Workspace
         Subcommands:
           add             Add a tmuxinator config for a project directory
           alfred          Manage the Alfred workflow for workspace focus
+          cleanup         Detect and remove zombie sessions from state
           config          Show project or global configuration
           current         Print the workspace project name for the current directory
           deactivate      Deactivate Claude in a project's tmux pane (sends Ctrl-C)
@@ -726,6 +733,27 @@ module Workspace
       else
         @repair_command.call
       end
+    end
+
+    def cmd_cleanup(args)
+      force = false
+      parser = OptionParser.new do |opts|
+        opts.banner = "Usage: workspace cleanup [options]"
+        opts.separator ""
+        opts.separator "Detect and remove zombie sessions from state."
+        opts.separator "A zombie session is one where the state file has an entry but"
+        opts.separator "the corresponding tmux session or iTerm window no longer exists."
+        opts.separator ""
+        opts.separator "Lists all zombie sessions and asks for confirmation before removing."
+        opts.separator ""
+        opts.separator "Options:"
+        opts.on("-f", "--force", "Skip confirmation and remove zombies immediately") do
+          force = true
+        end
+      end
+      parser.parse!(args)
+
+      @cleanup_command.call(force: force)
     end
 
     def cmd_deactivate(args)
