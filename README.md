@@ -66,6 +66,7 @@ workspace <subcommand> [options]
 |------------|------|-------------|
 | add | [README](docs/README.add.md) | Add a tmuxinator config for a project directory |
 | alfred | [README](docs/README.alfred.md) | Manage the Alfred workflow for workspace focus |
+| cleanup | [README](docs/README.cleanup.md) | Detect and remove zombie sessions from state |
 | config | [README](docs/README.config.md) | Show project or global configuration |
 | current | [README](docs/README.current.md) | Print the workspace project name for the current directory |
 | deactivate | [README](docs/README.deactivate.md) | Deactivate Claude in a project's tmux pane (sends Ctrl-C) |
@@ -106,6 +107,7 @@ lib/workspace/
   window_layout.rb                # Window positioning math and arrangement
   window_manager.rb               # iTerm2 window operations
   commands/
+    cleanup.rb                    # Zombie session detection and removal
     focus.rb                      # Window focusing
     init.rb                       # Template installation
     kill.rb                       # Session teardown
