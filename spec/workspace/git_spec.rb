@@ -112,6 +112,79 @@ RSpec.describe Workspace::Git do
     end
   end
 
+  describe "#worktree_exists?" do
+    let(:worktree_path) { "/Users/me/project/.worktrees/feature-x" }
+
+    it "returns true when the path appears in the worktree list" do
+      porcelain = <<~OUTPUT
+        worktree /Users/me/project
+        HEAD abc123
+        branch refs/heads/main
+
+        worktree #{worktree_path}
+        HEAD def456
+        branch refs/heads/feature-x
+
+      OUTPUT
+      allow(Open3).to receive(:capture3)
+        .with("git", "-C", worktree_path, "worktree", "list", "--porcelain")
+        .and_return([porcelain, "", double(success?: true)])
+
+      expect(git.worktree_exists?(worktree_path)).to be true
+    end
+
+    it "returns false when the path does not appear in the worktree list" do
+      porcelain = <<~OUTPUT
+        worktree /Users/me/project
+        HEAD abc123
+        branch refs/heads/main
+
+      OUTPUT
+      allow(Open3).to receive(:capture3)
+        .with("git", "-C", worktree_path, "worktree", "list", "--porcelain")
+        .and_return([porcelain, "", double(success?: true)])
+
+      expect(git.worktree_exists?(worktree_path)).to be false
+    end
+
+    it "returns false when git errors (e.g. path does not exist)" do
+      allow(Open3).to receive(:capture3)
+        .with("git", "-C", worktree_path, "worktree", "list", "--porcelain")
+        .and_return(["", "fatal: not a git repository", double(success?: false)])
+
+      expect(git.worktree_exists?(worktree_path)).to be false
+    end
+  end
+
+  describe "#remove_worktree" do
+    let(:worktree_path) { "/Users/me/project/.worktrees/feature-x" }
+
+    it "runs git worktree remove with -C set to the worktree path" do
+      allow(Open3).to receive(:capture3)
+        .with("git", "-C", worktree_path, "worktree", "remove", worktree_path)
+        .and_return(["", "", double(success?: true)])
+
+      expect { git.remove_worktree(worktree_path) }.not_to raise_error
+    end
+
+    it "passes --force when force: true" do
+      allow(Open3).to receive(:capture3)
+        .with("git", "-C", worktree_path, "worktree", "remove", "--force", worktree_path)
+        .and_return(["", "", double(success?: true)])
+
+      expect { git.remove_worktree(worktree_path, force: true) }.not_to raise_error
+    end
+
+    it "raises Workspace::Error when git fails" do
+      allow(Open3).to receive(:capture3)
+        .with("git", "-C", worktree_path, "worktree", "remove", worktree_path)
+        .and_return(["", "fatal: not a worktree", double(success?: false)])
+
+      expect { git.remove_worktree(worktree_path) }
+        .to raise_error(Workspace::Error, /fatal: not a worktree/)
+    end
+  end
+
   describe "#find_worktree_by_branch" do
     it "returns the worktree path when a worktree exists for the branch" do
       porcelain = <<~OUTPUT
@@ -124,7 +197,7 @@ RSpec.describe Workspace::Git do
         branch refs/heads/feature-x
 
       OUTPUT
-      allow(Open3).to receive(:capture3).with("git", "worktree", "list", "--porcelain").and_return([porcelain, "", double(success?: true)])
+      allow(Open3).to receive(:capture3).with("git", "-C", Dir.pwd, "worktree", "list", "--porcelain").and_return([porcelain, "", double(success?: true)])
 
       expect(git.find_worktree_by_branch("feature-x")).to eq("/Users/me/elsewhere/feature-x")
     end
@@ -136,9 +209,21 @@ RSpec.describe Workspace::Git do
         branch refs/heads/main
 
       OUTPUT
-      allow(Open3).to receive(:capture3).with("git", "worktree", "list", "--porcelain").and_return([porcelain, "", double(success?: true)])
+      allow(Open3).to receive(:capture3).with("git", "-C", Dir.pwd, "worktree", "list", "--porcelain").and_return([porcelain, "", double(success?: true)])
 
       expect(git.find_worktree_by_branch("feature-x")).to be_nil
+    end
+
+    it "uses the provided repo: path for -C" do
+      porcelain = <<~OUTPUT
+        worktree /Users/me/project
+        HEAD abc123
+        branch refs/heads/main
+
+      OUTPUT
+      allow(Open3).to receive(:capture3).with("git", "-C", "/Users/me/project", "worktree", "list", "--porcelain").and_return([porcelain, "", double(success?: true)])
+
+      expect(git.find_worktree_by_branch("feature-x", repo: "/Users/me/project")).to be_nil
     end
   end
 

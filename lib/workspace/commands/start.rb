@@ -56,7 +56,7 @@ module Workspace
         worktree_path = File.join(root, ".worktrees", worktree_dir_name)
 
         # Check if a worktree for this branch exists at a non-standard location
-        existing_path = @git.find_worktree_by_branch(branch_name)
+        existing_path = @git.find_worktree_by_branch(branch_name, repo: root)
         if existing_path
           @output.puts "Adopting existing worktree at: #{existing_path}"
           adopt_dir_name = File.basename(existing_path)

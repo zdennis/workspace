@@ -74,16 +74,17 @@ module Workspace
     # @param path [String] worktree path
     # @return [Boolean] true if a worktree exists at the given path
     def worktree_exists?(path)
-      stdout, _ = Open3.capture3("git", "worktree", "list", "--porcelain")
+      stdout, _ = Open3.capture3("git", "-C", path, "worktree", "list", "--porcelain")
       stdout.include?("worktree #{path}")
     end
 
     # Returns the worktree path for a branch, if one exists anywhere.
     #
     # @param branch_name [String] the branch name to search for
+    # @param repo [String] path to any directory inside the owning repo (defaults to Dir.pwd)
     # @return [String, nil] the worktree path or nil if no worktree exists for that branch
-    def find_worktree_by_branch(branch_name)
-      stdout, _ = Open3.capture3("git", "worktree", "list", "--porcelain")
+    def find_worktree_by_branch(branch_name, repo: Dir.pwd)
+      stdout, _ = Open3.capture3("git", "-C", repo, "worktree", "list", "--porcelain")
       current_path = nil
       stdout.each_line do |line|
         if line.start_with?("worktree ")
@@ -195,7 +196,7 @@ module Workspace
     # @return [void]
     # @raise [Workspace::Error] if worktree removal fails
     def remove_worktree(path, force: false)
-      cmd = ["git", "worktree", "remove"]
+      cmd = ["git", "-C", path, "worktree", "remove"]
       cmd << "--force" if force
       cmd << path
 

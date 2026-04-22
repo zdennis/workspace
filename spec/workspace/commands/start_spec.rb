@@ -157,7 +157,7 @@ RSpec.describe Workspace::Commands::Start do
         allow(git).to receive(:sanitize_for_filesystem).with("feature-branch").and_return("feature-branch")
         allow(git).to receive(:worktree_exists?).and_return(false)
         allow(git).to receive(:branch_exists?).with("feature-branch").and_return(true)
-        allow(git).to receive(:find_worktree_by_branch).with("feature-branch").and_return(external_path)
+        allow(git).to receive(:find_worktree_by_branch).with("feature-branch", repo: tmpdir).and_return(external_path)
         allow(project_config).to receive(:create_worktree).and_return("myproject.worktree-feature-branch")
         allow(launch_command).to receive(:call)
 
