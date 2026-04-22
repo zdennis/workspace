@@ -49,6 +49,13 @@ module Workspace
     end
 
     # @param project_name [String] project name
+    # @return [void]
+    def remove(project_name)
+      path = project_config_path(project_name)
+      File.delete(path) if File.exist?(path)
+    end
+
+    # @param project_name [String] project name
     # @param event [String] hook event name (e.g. "post_launch")
     # @return [String, nil] hook script or nil
     def hook_for(project_name, event)

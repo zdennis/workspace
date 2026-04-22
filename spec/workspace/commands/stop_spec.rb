@@ -7,6 +7,7 @@ RSpec.describe Workspace::Commands::Stop do
   let(:input) { StringIO.new }
   let(:git) { double("git") }
   let(:project_config) { double("project_config") }
+  let(:project_settings) { double("project_settings") }
   let(:kill_command) { double("kill_command") }
   let(:project_detector) { Workspace::ProjectDetector.new(state: CLITestHelpers::FakeState.new, project_config: project_config) }
 
@@ -14,6 +15,7 @@ RSpec.describe Workspace::Commands::Stop do
     described_class.new(
       git: git,
       project_config: project_config,
+      project_settings: project_settings,
       kill_command: kill_command,
       project_detector: project_detector,
       output: output,
@@ -90,12 +92,14 @@ RSpec.describe Workspace::Commands::Stop do
           allow(git).to receive(:remove_worktree)
           allow(kill_command).to receive(:call).and_return(["myproject.worktree-PROJ-123"])
           allow(project_config).to receive(:remove)
+          allow(project_settings).to receive(:remove)
 
           command.call("myproject.worktree-PROJ-123")
 
           expect(git).to have_received(:remove_worktree).with("/path/to/worktree", force: false)
           expect(kill_command).to have_received(:call).with(["myproject.worktree-PROJ-123"])
           expect(project_config).to have_received(:remove).with("myproject.worktree-PROJ-123")
+          expect(project_settings).to have_received(:remove).with("myproject.worktree-PROJ-123")
           expect(output.string).to include("Stopped myproject.worktree-PROJ-123")
         end
 
@@ -110,6 +114,7 @@ RSpec.describe Workspace::Commands::Stop do
           allow(git).to receive(:remove_worktree)
           allow(kill_command).to receive(:call).and_return([])
           allow(project_config).to receive(:remove)
+          allow(project_settings).to receive(:remove)
 
           command.call("myproject.worktree-PROJ-123", force: true)
 
@@ -127,16 +132,18 @@ RSpec.describe Workspace::Commands::Stop do
             []
           }
           allow(project_config).to receive(:remove) { order << :remove_config }
+          allow(project_settings).to receive(:remove) { order << :remove_settings }
 
           command.call("myproject.worktree-PROJ-123")
 
-          expect(order).to eq([:remove_worktree, :kill, :remove_config])
+          expect(order).to eq([:remove_worktree, :kill, :remove_config, :remove_settings])
         end
 
         it "skips confirmation with force flag" do
           allow(git).to receive(:remove_worktree)
           allow(kill_command).to receive(:call).and_return([])
           allow(project_config).to receive(:remove)
+          allow(project_settings).to receive(:remove)
 
           command.call("myproject.worktree-PROJ-123", force: true)
 
@@ -149,6 +156,7 @@ RSpec.describe Workspace::Commands::Stop do
           allow(git).to receive(:remove_worktree)
           allow(kill_command).to receive(:call).and_return([])
           allow(project_config).to receive(:remove)
+          allow(project_settings).to receive(:remove)
 
           command.call("myproject.worktree-PROJ-123", force: true)
 
@@ -168,10 +176,11 @@ RSpec.describe Workspace::Commands::Stop do
         allow(git).to receive(:remove_worktree)
         allow(kill_command).to receive(:call).and_return([])
         allow(project_config).to receive(:remove)
+        allow(project_settings).to receive(:remove)
 
         cmd = described_class.new(
-          git: git, project_config: project_config, kill_command: kill_command,
-          project_detector: project_detector, output: output, input: input
+          git: git, project_config: project_config, project_settings: project_settings,
+          kill_command: kill_command, project_detector: project_detector, output: output, input: input
         )
         cmd.call(nil, force: true, working_dir: marker_dir)
 
@@ -190,10 +199,11 @@ RSpec.describe Workspace::Commands::Stop do
         allow(git).to receive(:remove_worktree)
         allow(kill_command).to receive(:call).and_return([])
         allow(project_config).to receive(:remove)
+        allow(project_settings).to receive(:remove)
 
         cmd = described_class.new(
-          git: git, project_config: project_config, kill_command: kill_command,
-          project_detector: project_detector, output: output, input: input
+          git: git, project_config: project_config, project_settings: project_settings,
+          kill_command: kill_command, project_detector: project_detector, output: output, input: input
         )
         cmd.call(nil, force: true, working_dir: sub_dir)
 
@@ -202,8 +212,8 @@ RSpec.describe Workspace::Commands::Stop do
 
       it "raises error when no marker file found and no project given" do
         cmd = described_class.new(
-          git: git, project_config: project_config, kill_command: kill_command,
-          project_detector: project_detector, output: output, input: input
+          git: git, project_config: project_config, project_settings: project_settings,
+          kill_command: kill_command, project_detector: project_detector, output: output, input: input
         )
 
         expect { cmd.call(nil, working_dir: tmpdir) }.to raise_error(

@@ -11,9 +11,10 @@ module Workspace
       # @param kill_command [Commands::Kill] kill command for session teardown
       # @param output [IO] output stream for user-facing messages
       # @param input [IO] input stream for interactive prompts
-      def initialize(git:, project_config:, kill_command:, project_detector:, output: $stdout, input: $stdin)
+      def initialize(git:, project_config:, project_settings:, kill_command:, project_detector:, output: $stdout, input: $stdin)
         @git = git
         @project_config = project_config
+        @project_settings = project_settings
         @kill_command = kill_command
         @project_detector = project_detector
         @output = output
@@ -64,6 +65,7 @@ module Workspace
 
         @kill_command.call([project])
         @project_config.remove(project)
+        @project_settings.remove(project)
 
         @output.puts "Stopped #{project}."
         project
