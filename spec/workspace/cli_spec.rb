@@ -33,6 +33,7 @@ RSpec.describe Workspace::CLI do
     repair_command = overrides[:repair_command] || CLITestHelpers::FakeRepairCommand.new
     cleanup_command = overrides[:cleanup_command] || Workspace::Commands::Cleanup.new(state: state, window_manager: window_manager, tmux: tmux, output: output, input: input)
     claude_command = overrides[:claude_command] || CLITestHelpers::FakeClaudeCommand.new
+    lookup_command = overrides[:lookup_command] || Workspace::Commands::Lookup.new(project_config: project_config, output: output)
 
     cli = Workspace::CLI.new(
       config: config,
@@ -55,6 +56,7 @@ RSpec.describe Workspace::CLI do
       repair_command: repair_command,
       cleanup_command: cleanup_command,
       claude_command: claude_command,
+      lookup_command: lookup_command,
       logger: logger,
       output: output,
       error_output: error_output,

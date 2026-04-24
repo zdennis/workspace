@@ -25,12 +25,13 @@ module Workspace
     # @param repair_command [Workspace::Commands::Repair] pre-built repair command
     # @param cleanup_command [Workspace::Commands::Cleanup] pre-built cleanup command
     # @param claude_command [Workspace::Commands::Claude] pre-built claude command
+    # @param lookup_command [Workspace::Commands::Lookup] pre-built lookup command
     # @param logger [Workspace::Logger] debug logger
     # @param output [IO] output stream for user-facing messages
     # @param error_output [IO] error output stream for warnings and errors
     # @param input [IO] input stream for interactive prompts
     # @param exit_handler [#exit] callable for process exit (Kernel in production, FakeExitHandler in tests)
-    def initialize(config:, state:, project_config:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, claude_command:, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd)
+    def initialize(config:, state:, project_config:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, claude_command:, lookup_command:, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd)
       @config = config
       @state = state
       @project_config = project_config
@@ -51,6 +52,7 @@ module Workspace
       @repair_command = repair_command
       @cleanup_command = cleanup_command
       @claude_command = claude_command
+      @lookup_command = lookup_command
       @exit_handler = exit_handler
       @logger = logger
       @output = output
@@ -116,6 +118,8 @@ module Workspace
         cmd_event_log(args)
       when "whereis"
         cmd_whereis(args)
+      when "lookup"
+        cmd_lookup(args)
       when "alfred"
         cmd_alfred(args)
       when "version", "--version", "-v"
@@ -169,6 +173,7 @@ module Workspace
           launch          Launch tmuxinator projects in iTerm windows
           layout          Save/restore tmux pane layouts (auto-saved before resize)
           list            List currently active (launched) projects (--all for all available)
+          lookup          Find a workspace project by worktree path, branch, or project name
           reactivate      Reactivate Claude in a project's tmux pane
           relaunch        Stop and relaunch all active workspace projects
           repair          Rebuild state from live iTerm windows
@@ -824,6 +829,33 @@ module Workspace
       parser.parse!(args)
 
       @output.puts @config.workspace_dir
+    end
+
+    def cmd_lookup(args)
+      parser = OptionParser.new do |opts|
+        opts.banner = "Usage: workspace lookup <path|branch|project>"
+        opts.separator ""
+        opts.separator "Find a workspace project by worktree path, branch name, or project key."
+        opts.separator ""
+        opts.separator "Arguments:"
+        opts.separator "  /path/to/.worktrees/pr-21291   Worktree directory path"
+        opts.separator "  pr-21291                       Branch name or project key"
+        opts.separator "  AIKYA-389-skip-validation      Full branch name"
+        opts.separator ""
+        opts.separator "Returns the workspace project name if found, or exits with status 1 if not found."
+      end
+      parser.parse!(args)
+
+      raise UsageError, parser.help if args.empty?
+
+      query = args.first
+      project = @lookup_command.call(query)
+
+      if project
+        @output.puts project
+      else
+        raise Workspace::Error, "No workspace project found for '#{query}'"
+      end
     end
 
     def cmd_alfred(args)
