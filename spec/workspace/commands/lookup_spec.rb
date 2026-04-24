@@ -7,8 +7,9 @@ RSpec.describe Workspace::Commands::Lookup do
   end
 
   class FakeProjectConfig
-    def initialize(projects: [])
+    def initialize(projects: [], roots: {})
       @projects = projects
+      @roots = roots
     end
 
     def available_projects
@@ -17,6 +18,10 @@ RSpec.describe Workspace::Commands::Lookup do
 
     def exists?(name)
       @projects.include?(name)
+    end
+
+    def project_root_for(name)
+      @roots[name]
     end
   end
 
@@ -29,6 +34,73 @@ RSpec.describe Workspace::Commands::Lookup do
         result = lookup.call("myproject")
 
         expect(result).to eq("myproject")
+      end
+    end
+
+    context "with project root directory" do
+      it "finds project by exact root path" do
+        tmpdir = Dir.mktmpdir
+        root = File.join(tmpdir, "myproject")
+        Dir.mkdir(root)
+        pc = FakeProjectConfig.new(
+          projects: ["myproject"],
+          roots: {"myproject" => root}
+        )
+        lookup = build_lookup(project_config: pc)
+
+        result = lookup.call(root)
+
+        expect(result).to eq("myproject")
+      ensure
+        FileUtils.rm_rf(tmpdir) if tmpdir
+      end
+
+      it "finds project when given a subdirectory of the root" do
+        tmpdir = Dir.mktmpdir
+        root = File.join(tmpdir, "myproject")
+        Dir.mkdir(root)
+        subdir = File.join(root, "src", "lib")
+        FileUtils.mkdir_p(subdir)
+        pc = FakeProjectConfig.new(
+          projects: ["myproject"],
+          roots: {"myproject" => root}
+        )
+        lookup = build_lookup(project_config: pc)
+
+        result = lookup.call(subdir)
+
+        expect(result).to eq("myproject")
+      ensure
+        FileUtils.rm_rf(tmpdir) if tmpdir
+      end
+
+      it "expands tilde paths for root matching" do
+        # Use a real path that exists for this test
+        root = File.expand_path("~")
+        pc = FakeProjectConfig.new(
+          projects: ["home"],
+          roots: {"home" => "~"}
+        )
+        lookup = build_lookup(project_config: pc)
+
+        result = lookup.call(root)
+
+        expect(result).to eq("home")
+      end
+
+      it "returns nil when path doesn't match any project root" do
+        tmpdir = Dir.mktmpdir
+        pc = FakeProjectConfig.new(
+          projects: ["myproject"],
+          roots: {"myproject" => File.join(tmpdir, "projects", "myproject")}
+        )
+        lookup = build_lookup(project_config: pc)
+
+        result = lookup.call(File.join(tmpdir, "unknown"))
+
+        expect(result).to be_nil
+      ensure
+        FileUtils.rm_rf(tmpdir) if tmpdir
       end
     end
 

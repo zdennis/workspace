@@ -9,25 +9,43 @@ module Workspace
         @output = output
       end
 
-      # Looks up a workspace project by worktree path, branch name, or project key.
-      # Returns the project name if found, or nil if not found.
+      # Looks up a workspace project by worktree path, project root directory,
+      # branch name, or project key. Returns the project name if found, or nil if not found.
       #
-      # @param query [String] worktree path, branch name, or project key
+      # @param query [String] worktree path, project root, branch name, or project key
       # @return [String, nil] the project name, or nil if not found
       def call(query)
-        # If it's a directory path, extract the worktree name from it
+        # If it's a directory path, check if it's a project root or worktree
         if File.directory?(query)
-          find_by_worktree_path(query)
-        else
-          # Try as a project name first (exact match)
-          return query if @project_config.exists?(query)
-
-          # Try as a worktree name or branch name
-          find_by_name(query)
+          expanded = File.expand_path(query)
+          # First check if it's a project root
+          result = find_by_project_root(expanded)
+          return result if result
+          # Otherwise try as a worktree path
+          return find_by_worktree_path(query)
         end
+
+        # Try as a project name first (exact match)
+        return query if @project_config.exists?(query)
+
+        # Try as a worktree name or branch name
+        find_by_name(query)
       end
 
       private
+
+      def find_by_project_root(expanded_path)
+        @project_config.available_projects.each do |project|
+          root = @project_config.project_root_for(project)
+          next unless root
+          expanded_root = File.expand_path(root)
+          # Check for exact match or if query is a subdirectory of the root
+          if expanded_path == expanded_root || expanded_path.start_with?(expanded_root + "/")
+            return project
+          end
+        end
+        nil
+      end
 
       def find_by_worktree_path(path)
         expanded = File.expand_path(path)
