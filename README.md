@@ -70,6 +70,7 @@ workspace <subcommand> [options]
 | config | [README](docs/README.config.md) | Show project or global configuration |
 | current | [README](docs/README.current.md) | Print the workspace project name for the current directory |
 | deactivate | [README](docs/README.deactivate.md) | Deactivate Claude in a project's tmux pane (sends Ctrl-C) |
+| dir | [README](docs/README.dir.md) | Print the root directory of a workspace project |
 | doctor | [README](docs/README.doctor.md) | Check that all required dependencies are installed |
 | event-log | [README](docs/README.event-log.md) | Manage the append-only event log (compact) |
 | focus | [README](docs/README.focus.md) | Bring a project's iTerm window to the front |
@@ -78,6 +79,7 @@ workspace <subcommand> [options]
 | launch | [README](docs/README.launch.md) | Launch tmuxinator projects in iTerm2 windows |
 | layout | [README](docs/README.layout.md) | Save/restore tmux pane layouts (auto-saved before resize) |
 | list | [README](docs/README.list.md) | List active projects (`--all` for all available) |
+| lookup | [README](docs/README.lookup.md) | Find a workspace project by worktree path, branch, or project name |
 | reactivate | [README](docs/README.reactivate.md) | Reactivate Claude in a project's tmux pane |
 | relaunch | [README](docs/README.relaunch.md) | Stop and relaunch all active workspace projects |
 | repair | [README](docs/README.repair.md) | Rebuild state from live iTerm windows |
