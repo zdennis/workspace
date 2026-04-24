@@ -141,6 +141,54 @@ RSpec.describe Workspace::CLI do
     end
   end
 
+  describe "#run with dir" do
+    it "outputs project root directory" do
+      pc = CLITestHelpers::FakeProjectConfig.new(
+        "project-a" => "/path/to/project-a"
+      )
+      cli, output, _ = build_test_cli(project_config: pc)
+      cli.run(["dir", "project-a"])
+      expect(output.string.strip).to eq("/path/to/project-a")
+    end
+
+    it "expands tilde in project root" do
+      pc = CLITestHelpers::FakeProjectConfig.new(
+        "project-a" => "~/my-project"
+      )
+      cli, output, _ = build_test_cli(project_config: pc)
+      cli.run(["dir", "project-a"])
+      expanded = File.expand_path("~/my-project")
+      expect(output.string.strip).to eq(expanded)
+    end
+
+    it "exits 1 when project has no root configured" do
+      pc = CLITestHelpers::FakeProjectConfig.new
+      cli, _, error_output = build_test_cli(project_config: pc)
+      expect { cli.run(["dir", "project-a"]) }.to raise_error(FakeSystemExit) { |e|
+        expect(e.status).to eq(1)
+      }
+      expect(error_output.string).to include("not found or has no root")
+    end
+
+    it "exits 1 when project does not exist" do
+      pc = CLITestHelpers::FakeProjectConfig.new
+      pc.define_singleton_method(:project_root_for) { |name| nil }
+      cli, _, error_output = build_test_cli(project_config: pc)
+      expect { cli.run(["dir", "unknown-project"]) }.to raise_error(FakeSystemExit) { |e|
+        expect(e.status).to eq(1)
+      }
+      expect(error_output.string).to include("not found or has no root")
+    end
+
+    it "exits 1 when no project argument given" do
+      cli, _, error_output = build_test_cli
+      expect { cli.run(["dir"]) }.to raise_error(FakeSystemExit) { |e|
+        expect(e.status).to eq(1)
+      }
+      expect(error_output.string).to include("Usage:")
+    end
+  end
+
   describe "#run with current" do
     it "detects worktree project from marker file" do
       Dir.mktmpdir do |dir|
@@ -266,7 +314,37 @@ RSpec.describe Workspace::CLI do
       cli, output, _ = build_test_cli
       cli.run(["list", "--all", "--json"])
       result = JSON.parse(output.string)
-      expect(result).to include("project-a", "project-b")
+      # New format: array of objects with name and directory
+      expect(result).to be_an(Array)
+      expect(result.map { |p| p["name"] }).to include("project-a", "project-b")
+    end
+
+    it "includes directory in JSON objects" do
+      pc = CLITestHelpers::FakeProjectConfig.new(
+        "project-a" => "/path/a",
+        "project-b" => "~/path/b"
+      )
+      cli, output, _ = build_test_cli(project_config: pc)
+      cli.run(["list", "--all", "--json"])
+      result = JSON.parse(output.string)
+
+      proj_a = result.find { |p| p["name"] == "project-a" }
+      expect(proj_a).to have_key("directory")
+      expect(proj_a["directory"]).to eq("/path/a")
+
+      proj_b = result.find { |p| p["name"] == "project-b" }
+      expect(proj_b).to have_key("directory")
+      expect(proj_b["directory"]).to eq(File.expand_path("~/path/b"))
+    end
+
+    it "sets directory to null when project has no root" do
+      pc = CLITestHelpers::FakeProjectConfig.new("project-a" => nil)
+      cli, output, _ = build_test_cli(project_config: pc)
+      cli.run(["list", "--all", "--json"])
+      result = JSON.parse(output.string)
+
+      proj_a = result.find { |p| p["name"] == "project-a" }
+      expect(proj_a["directory"]).to be_nil
     end
   end
 

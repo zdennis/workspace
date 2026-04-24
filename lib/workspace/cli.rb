@@ -120,6 +120,8 @@ module Workspace
         cmd_whereis(args)
       when "lookup"
         cmd_lookup(args)
+      when "dir"
+        cmd_dir(args)
       when "alfred"
         cmd_alfred(args)
       when "version", "--version", "-v"
@@ -164,6 +166,7 @@ module Workspace
           config          Show project or global configuration
           current         Print the workspace project name for the current directory
           deactivate      Deactivate Claude in a project's tmux pane (sends Ctrl-C)
+          dir             Print the root directory of a workspace project
           doctor          Check that all required dependencies are installed
           event-log       Manage the event log (compact)
           focus           Bring a project's iTerm window to the front
@@ -633,7 +636,12 @@ module Workspace
 
       if all
         if json
-          @output.puts JSON.generate(@project_config.available_projects)
+          projects = @project_config.available_projects.map do |name|
+            root = @project_config.project_root_for(name)
+            directory = root ? File.expand_path(root) : nil
+            {"name" => name, "directory" => directory}
+          end
+          @output.puts JSON.generate(projects)
         else
           @project_config.available_projects.each { |name| @output.puts name }
         end
@@ -856,6 +864,30 @@ module Workspace
       else
         raise Workspace::Error, "No workspace project found for '#{query}'"
       end
+    end
+
+    def cmd_dir(args)
+      parser = OptionParser.new do |opts|
+        opts.banner = "Usage: workspace dir <project>"
+        opts.separator ""
+        opts.separator "Print the root directory of a workspace project."
+        opts.separator ""
+        opts.separator "Examples:"
+        opts.separator "  workspace dir work-notes     # /Users/zdennis/Documents/Obsidian-LocalOnly/Zendesk"
+        opts.separator "  workspace dir growth-engine  # /Users/zdennis/Code/zendesk/growth-engine"
+      end
+      parser.parse!(args)
+
+      raise UsageError, parser.help if args.empty?
+
+      project = args.first
+      root = @project_config.project_root_for(project)
+
+      unless root
+        raise Workspace::Error, "Project '#{project}' not found or has no root directory configured"
+      end
+
+      @output.puts File.expand_path(root)
     end
 
     def cmd_alfred(args)

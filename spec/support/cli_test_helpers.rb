@@ -134,6 +134,10 @@ module CLITestHelpers
   end
 
   class FakeProjectConfig
+    def initialize(roots = {})
+      @roots = roots
+    end
+
     def resolve_project_arg(arg)
       [arg, nil]
     end
@@ -158,8 +162,8 @@ module CLITestHelpers
       ["project-a", "project-b"]
     end
 
-    def project_root_for(_name)
-      nil
+    def project_root_for(name)
+      @roots[name]
     end
   end
 
