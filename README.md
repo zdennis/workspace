@@ -82,6 +82,7 @@ workspace <subcommand> [options]
 | lookup | [README](docs/README.lookup.md) | Find a workspace project by worktree path, branch, or project name |
 | reactivate | [README](docs/README.reactivate.md) | Reactivate Claude in a project's tmux pane |
 | relaunch | [README](docs/README.relaunch.md) | Stop and relaunch all active workspace projects |
+| set-command | [README](docs/README.set-command.md) | Set the shell command for a pane in a project config |
 | repair | [README](docs/README.repair.md) | Rebuild state from live iTerm windows |
 | resize | [README](docs/README.resize.md) | Resize tmux panes for a running project |
 | start | [README](docs/README.start.md) | Create a git worktree and launch it (from JIRA key, PR/issue URL, or branch) |
