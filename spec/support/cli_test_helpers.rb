@@ -199,6 +199,10 @@ module CLITestHelpers
     def set_window_id(_project, _wid) = nil
   end
 
+  class FakeUpdatePaneCommand
+    def call(project:, command:, pane_index:) = nil
+  end
+
   class FakeHookRunner
     attr_reader :runs
 

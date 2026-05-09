@@ -26,12 +26,13 @@ module Workspace
     # @param cleanup_command [Workspace::Commands::Cleanup] pre-built cleanup command
     # @param claude_command [Workspace::Commands::Claude] pre-built claude command
     # @param lookup_command [Workspace::Commands::Lookup] pre-built lookup command
+    # @param update_pane_command [Workspace::Commands::UpdatePaneCommand] pre-built set-command command
     # @param logger [Workspace::Logger] debug logger
     # @param output [IO] output stream for user-facing messages
     # @param error_output [IO] error output stream for warnings and errors
     # @param input [IO] input stream for interactive prompts
     # @param exit_handler [#exit] callable for process exit (Kernel in production, FakeExitHandler in tests)
-    def initialize(config:, state:, project_config:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, claude_command:, lookup_command:, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd)
+    def initialize(config:, state:, project_config:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, claude_command:, lookup_command:, update_pane_command:, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd)
       @config = config
       @state = state
       @project_config = project_config
@@ -53,6 +54,7 @@ module Workspace
       @cleanup_command = cleanup_command
       @claude_command = claude_command
       @lookup_command = lookup_command
+      @update_pane_command = update_pane_command
       @exit_handler = exit_handler
       @logger = logger
       @output = output
@@ -114,6 +116,8 @@ module Workspace
         cmd_repair(args)
       when "cleanup"
         cmd_cleanup(args)
+      when "set-command"
+        cmd_set_pane_command(args)
       when "event-log"
         cmd_event_log(args)
       when "whereis"
@@ -183,6 +187,7 @@ module Workspace
           resize          Resize tmux panes for a running project
           start           Create a worktree and launch it (from JIRA key, PR URL, or branch)
           status          Show detailed state of tracked launcher sessions
+          set-command     Set the shell command for a pane in a project config (--pane <N>)
           stop            Stop active workspace projects and their tmux sessions
           tile            Tile all windows for a project across the screen
           whereis         Print the workspace installation directory
@@ -767,6 +772,31 @@ module Workspace
       parser.parse!(args)
 
       @cleanup_command.call(force: force)
+    end
+
+    def cmd_set_pane_command(args)
+      pane_index = nil
+      parser = OptionParser.new do |opts|
+        opts.banner = "Usage: workspace set-command <project> <command> --pane <N>"
+        opts.separator ""
+        opts.separator "Set the shell command for a specific pane in a project's tmuxinator config."
+        opts.separator ""
+        opts.separator "Pane index N is 1-based. If N exceeds the number of existing panes,"
+        opts.separator "you will be asked whether to append a new pane."
+        opts.separator ""
+        opts.separator "Options:"
+        opts.on("--pane N", Integer, "Pane index (1-based)") do |n|
+          pane_index = n
+        end
+      end
+      parser.parse!(args)
+
+      project = args.shift
+      command = args.join(" ").strip
+
+      raise UsageError, "No command provided.\n\n#{parser.help}" if command.empty?
+
+      @update_pane_command.call(project: project, command: command, pane_index: pane_index)
     end
 
     def cmd_deactivate(args)

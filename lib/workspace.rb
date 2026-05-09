@@ -29,6 +29,7 @@ require_relative "workspace/commands/layout"
 require_relative "workspace/commands/repair"
 require_relative "workspace/commands/cleanup"
 require_relative "workspace/commands/lookup"
+require_relative "workspace/commands/update_pane_command"
 require_relative "workspace/cli"
 
 # Workspace CLI for managing tmuxinator-based development workspaces in iTerm2.
@@ -76,6 +77,7 @@ module Workspace
     cleanup_command = Commands::Cleanup.new(state: state, window_manager: window_manager, tmux: tmux, output: output, input: input)
     claude_command = Commands::Claude.new(state: state, tmux: tmux, output: output, error_output: error_output)
     lookup_command = Commands::Lookup.new(project_config: project_config, output: output)
+    update_pane_command = Commands::UpdatePaneCommand.new(config: config, project_config: project_config, output: output, input: input)
 
     CLI.new(
       config: config,
@@ -99,6 +101,7 @@ module Workspace
       cleanup_command: cleanup_command,
       claude_command: claude_command,
       lookup_command: lookup_command,
+      update_pane_command: update_pane_command,
       logger: logger,
       output: output,
       error_output: error_output,
