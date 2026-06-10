@@ -71,6 +71,30 @@ module Workspace
       remote_branches.select { |b| b.downcase.include?(pattern.downcase) }
     end
 
+    # Returns true if the given path is a linked git worktree (not the main worktree).
+    # Linked worktrees have a `.git` file (not directory) starting with "gitdir:".
+    #
+    # @param path [String] directory path to check
+    # @return [Boolean] true if path is a linked git worktree
+    def linked_worktree?(path)
+      gitdir = File.join(path, ".git")
+      File.file?(gitdir) && File.read(gitdir).start_with?("gitdir:")
+    rescue
+      false
+    end
+
+    # Returns the current branch name for a worktree directory.
+    # Returns nil if the HEAD is detached or an error occurs.
+    #
+    # @param path [String] worktree directory path
+    # @return [String, nil] the branch name, or nil if detached or error
+    def worktree_branch(path)
+      stdout, _, status = Open3.capture3("git", "-C", path, "rev-parse", "--abbrev-ref", "HEAD")
+      return nil unless status.success?
+      result = stdout.strip
+      (result == "HEAD") ? nil : result
+    end
+
     # @param path [String] worktree path
     # @return [Boolean] true if a worktree exists at the given path
     def worktree_exists?(path)

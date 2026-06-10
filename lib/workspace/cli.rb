@@ -24,6 +24,7 @@ module Workspace
     # @param init_command [Workspace::Commands::Init] pre-built init command
     # @param repair_command [Workspace::Commands::Repair] pre-built repair command
     # @param cleanup_command [Workspace::Commands::Cleanup] pre-built cleanup command
+    # @param prune_command [Workspace::Commands::Prune] pre-built prune command
     # @param claude_command [Workspace::Commands::Claude] pre-built claude command
     # @param lookup_command [Workspace::Commands::Lookup] pre-built lookup command
     # @param update_pane_command [Workspace::Commands::UpdatePaneCommand] pre-built set-command command
@@ -32,7 +33,7 @@ module Workspace
     # @param error_output [IO] error output stream for warnings and errors
     # @param input [IO] input stream for interactive prompts
     # @param exit_handler [#exit] callable for process exit (Kernel in production, FakeExitHandler in tests)
-    def initialize(config:, state:, project_config:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, claude_command:, lookup_command:, update_pane_command:, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd)
+    def initialize(config:, state:, project_config:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd)
       @config = config
       @state = state
       @project_config = project_config
@@ -52,6 +53,7 @@ module Workspace
       @init_command = init_command
       @repair_command = repair_command
       @cleanup_command = cleanup_command
+      @prune_command = prune_command
       @claude_command = claude_command
       @lookup_command = lookup_command
       @update_pane_command = update_pane_command
@@ -116,6 +118,8 @@ module Workspace
         cmd_repair(args)
       when "cleanup"
         cmd_cleanup(args)
+      when "prune"
+        cmd_prune(args)
       when "set-command"
         cmd_set_pane_command(args)
       when "event-log"
@@ -181,6 +185,7 @@ module Workspace
           layout          Save/restore tmux pane layouts (auto-saved before resize)
           list            List currently active (launched) projects (--all for all available)
           lookup          Find a workspace project by worktree path, branch, or project name
+          prune           Remove worktree projects whose PR is closed or merged
           reactivate      Reactivate Claude in a project's tmux pane
           relaunch        Stop and relaunch all active workspace projects
           repair          Rebuild state from live iTerm windows
@@ -772,6 +777,33 @@ module Workspace
       parser.parse!(args)
 
       @cleanup_command.call(force: force)
+    end
+
+    def cmd_prune(args)
+      dry_run = false
+      force = false
+      parser = OptionParser.new do |opts|
+        opts.banner = "Usage: workspace prune [options]"
+        opts.separator ""
+        opts.separator "Remove worktree-backed workspace projects whose associated GitHub PR"
+        opts.separator "is closed or merged. Scans all tmuxinator configs and state entries."
+        opts.separator ""
+        opts.separator "For each eligible project, removes the git worktree, tmuxinator config,"
+        opts.separator "project settings, and state entry."
+        opts.separator ""
+        opts.separator "Requires the `gh` CLI to be installed and authenticated."
+        opts.separator ""
+        opts.separator "Options:"
+        opts.on("--dry-run", "Show what would be removed without making changes") do
+          dry_run = true
+        end
+        opts.on("-f", "--force", "Skip confirmation and remove immediately") do
+          force = true
+        end
+      end
+      parser.parse!(args)
+
+      @prune_command.call(dry_run: dry_run, force: force)
     end
 
     def cmd_set_pane_command(args)

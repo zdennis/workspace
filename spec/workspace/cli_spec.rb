@@ -32,6 +32,8 @@ RSpec.describe Workspace::CLI do
     init_command = overrides[:init_command] || Workspace::Commands::Init.new(config: config, output: output, error_output: error_output)
     repair_command = overrides[:repair_command] || CLITestHelpers::FakeRepairCommand.new
     cleanup_command = overrides[:cleanup_command] || Workspace::Commands::Cleanup.new(state: state, window_manager: window_manager, tmux: tmux, output: output, input: input)
+    kill_command_for_prune = instance_double(Workspace::Commands::Kill)
+    prune_command = overrides[:prune_command] || Workspace::Commands::Prune.new(state: state, project_config: project_config, project_settings: project_settings, git: git, kill_command: kill_command_for_prune, output: output, input: input)
     claude_command = overrides[:claude_command] || CLITestHelpers::FakeClaudeCommand.new
     lookup_command = overrides[:lookup_command] || Workspace::Commands::Lookup.new(project_config: project_config, output: output)
     update_pane_command = overrides[:update_pane_command] || CLITestHelpers::FakeUpdatePaneCommand.new
@@ -56,6 +58,7 @@ RSpec.describe Workspace::CLI do
       init_command: init_command,
       repair_command: repair_command,
       cleanup_command: cleanup_command,
+      prune_command: prune_command,
       claude_command: claude_command,
       lookup_command: lookup_command,
       update_pane_command: update_pane_command,
