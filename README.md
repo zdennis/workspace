@@ -80,6 +80,7 @@ workspace <subcommand> [options]
 | layout | [README](docs/README.layout.md) | Save/restore tmux pane layouts (auto-saved before resize) |
 | list | [README](docs/README.list.md) | List active projects (`--all` for all available) |
 | lookup | [README](docs/README.lookup.md) | Find a workspace project by worktree path, branch, or project name |
+| prune | [README](docs/README.prune.md) | Remove worktree projects whose PR is closed or merged |
 | reactivate | [README](docs/README.reactivate.md) | Reactivate Claude in a project's tmux pane |
 | relaunch | [README](docs/README.relaunch.md) | Stop and relaunch all active workspace projects |
 | set-command | [README](docs/README.set-command.md) | Set the shell command for a pane in a project config |
