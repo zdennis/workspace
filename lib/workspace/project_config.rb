@@ -12,12 +12,21 @@ module Workspace
     end
 
     # Derives a project name from a directory path by taking the basename
-    # and stripping leading dots.
+    # and stripping leading dots. When the path is inside a .worktrees/
+    # directory, prefixes the name with the repo basename to avoid collisions
+    # across repositories (e.g. /path/to/repo-a/.worktrees/MYJIRA-123 → "repo-a-MYJIRA-123").
     #
     # @param path [String] a directory path
     # @return [String] the derived project name
     def self.name_from_path(path)
-      File.basename(path).sub(/^\.+/, "")
+      expanded = File.expand_path(path)
+      if (m = expanded.match(%r{/([^/]+)/\.worktrees/([^/]+)$}))
+        repo = m[1].sub(/^\.+/, "")
+        worktree = m[2].sub(/^\.+/, "")
+        "#{repo}-#{worktree}"
+      else
+        File.basename(expanded).sub(/^\.+/, "")
+      end
     end
 
     # @param arg [String] a project name or path

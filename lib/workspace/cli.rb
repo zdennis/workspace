@@ -548,6 +548,8 @@ module Workspace
         opts.separator ""
         opts.separator "Add tmuxinator configs for project directories."
         opts.separator "Uses the directory name as the project name."
+        opts.separator "For paths inside .worktrees/, prefixes with the repo name"
+        opts.separator "(e.g. repo/.worktrees/MYJIRA-123 → repo-MYJIRA-123)."
         opts.separator "Does nothing if a config already exists."
       end
       parser.parse!(args)
@@ -563,6 +565,7 @@ module Workspace
         end
         @project_config.create(name, root)
         @project_settings.ensure_exists(name)
+        @output.puts "Project name: #{name}"
       end
     end
 

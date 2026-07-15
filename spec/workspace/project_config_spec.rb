@@ -29,6 +29,24 @@ RSpec.describe Workspace::ProjectConfig do
       expect(root).to eq("/tmp/.bin-zdennis")
     end
 
+    it "prefixes with repo name for paths inside .worktrees/" do
+      name, root = pc.resolve_project_arg("/path/to/repo-a/.worktrees/MYJIRA-123")
+      expect(name).to eq("repo-a-MYJIRA-123")
+      expect(root).to eq("/path/to/repo-a/.worktrees/MYJIRA-123")
+    end
+
+    it "prefixes with repo name for .worktrees/ paths with a trailing slash" do
+      name, root = pc.resolve_project_arg("/path/to/repo-a/.worktrees/MYJIRA-123/")
+      expect(name).to eq("repo-a-MYJIRA-123")
+      expect(root).to eq("/path/to/repo-a/.worktrees/MYJIRA-123")
+    end
+
+    it "strips leading dots from worktree name in .worktrees/ paths" do
+      name, root = pc.resolve_project_arg("/path/to/repo-a/.worktrees/.hidden-branch")
+      expect(name).to eq("repo-a-hidden-branch")
+      expect(root).to eq("/path/to/repo-a/.worktrees/.hidden-branch")
+    end
+
     it "returns [name, nil] for a plain name" do
       name, root = pc.resolve_project_arg("my-project")
       expect(name).to eq("my-project")
