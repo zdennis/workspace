@@ -10,7 +10,7 @@ workspace add <path> [path2] ...
 
 ## Details
 
-Creates a tmuxinator config for each specified directory, using the directory name as the project name. Does nothing if a config already exists for that project.
+Creates a tmuxinator config for each specified directory. The project name is derived from the directory name. For paths inside a `.worktrees/` directory, the repo name is prepended to avoid collisions across repositories (e.g. `repo/.worktrees/MYJIRA-123` → `repo-MYJIRA-123`). Does nothing if a config already exists for that project.
 
 The generated config uses the standard project template with 3 panes: a banner pane, a Claude pane, and a shell pane.
 
