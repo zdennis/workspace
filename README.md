@@ -66,6 +66,7 @@ workspace <subcommand> [options]
 |------------|------|-------------|
 | add | [README](docs/README.add.md) | Add a tmuxinator config for a project directory |
 | alfred | [README](docs/README.alfred.md) | Manage the Alfred workflow for workspace focus |
+| capture | [README](docs/README.capture.md) | Print a tmux pane's scrollback buffer to stdout |
 | cleanup | [README](docs/README.cleanup.md) | Detect and remove zombie sessions from state |
 | config | [README](docs/README.config.md) | Show project or global configuration |
 | current | [README](docs/README.current.md) | Print the workspace project name for the current directory |
