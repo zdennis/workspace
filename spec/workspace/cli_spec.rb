@@ -841,7 +841,7 @@ RSpec.describe Workspace::CLI do
   end
 
   describe "#run with run --wait" do
-    it "wraps the command with the shell callback before sending to run_command" do
+    it "writes a script file and sends the source command to run_command" do
       run_command = CLITestHelpers::FakeRunCommand.new
       run_result_store = CLITestHelpers::FakeRunResultStore.new
 
@@ -858,10 +858,16 @@ RSpec.describe Workspace::CLI do
       cli.run(["run", "myproject", "echo hi", "--wait"])
 
       sent_command = run_command.calls.first[:command]
-      expect(sent_command).to include("echo hi")
-      expect(sent_command).to include("workspace report-run-status")
-      expect(sent_command).to include(".stdout")
-      expect(sent_command).to include(".stderr")
+      # The pane receives `. '/path/uuid.sh'`, not the raw command inline
+      expect(sent_command).to match(/\A\. '.*\.sh'\z/)
+
+      script_path = sent_command.match(/\A\. '(.+\.sh)'\z/)[1]
+      script = File.read(script_path)
+      cmd_path = script_path.sub(/\.sh\z/, ".cmd")
+      expect(File.read(cmd_path)).to eq("echo hi")
+      expect(script).to include("workspace report-run-status")
+      expect(script).to include(".stdout")
+      expect(script).to include(".stderr")
     end
 
     it "prints exit status and stdout after the run completes" do
@@ -1011,9 +1017,11 @@ RSpec.describe Workspace::CLI do
       )
       cli.run(["run", "myproject", "echo hi", "--wait", "--dry-run"])
 
-      expect(output.string).to include("(echo hi)")
+      expect(output.string).to include("echo hi")
       expect(output.string).to include("workspace report-run-status")
       expect(output.string).to include(".stdout")
+      expect(output.string).to include(".cmd")
+      expect(output.string).to include(".sh")
       expect(run_command.calls).to be_empty
       expect(hook_runner.runs).not_to include(hash_including(event: "post_run"))
     end
@@ -1028,6 +1036,53 @@ RSpec.describe Workspace::CLI do
 
       expect(output.string).to include("'/Users/a b/.workspace-runs/<uuid>.stdout'")
       expect(output.string).to include("2>'/Users/a b/.workspace-runs/<uuid>.stderr'")
+      expect(output.string).to include("'/Users/a b/.workspace-runs/<uuid>.cmd'")
+    end
+
+    it "exits 1 with a quoting error when the command has an unbalanced single quote" do
+      run_command = CLITestHelpers::FakeRunCommand.new
+      cli, _, error_output = build_test_cli(run_command: run_command)
+
+      expect {
+        cli.run(["run", "myproject", "echo what's up", "--wait"])
+      }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+
+      expect(error_output.string).to include("invalid shell quoting")
+      expect(error_output.string).to include("double quotes")
+      expect(run_command.calls).to be_empty
+    end
+
+    it "exits 1 with a quoting error when the command has an unbalanced double quote" do
+      run_command = CLITestHelpers::FakeRunCommand.new
+      cli, _, error_output = build_test_cli(run_command: run_command)
+
+      expect {
+        cli.run(["run", "myproject", 'echo "hi', "--wait"])
+      }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+
+      expect(error_output.string).to include("invalid shell quoting")
+      expect(run_command.calls).to be_empty
+    end
+
+    it "accepts a command with valid nested quotes" do
+      run_command = CLITestHelpers::FakeRunCommand.new
+      run_result_store = CLITestHelpers::FakeRunResultStore.new
+
+      allow(run_result_store).to receive(:ensure_dir)
+      allow(run_result_store).to receive(:wait) do |u, **|
+        Workspace::RunResult.new(
+          uuid: u, project: "myproject", command: "echo hi",
+          status: 0, stdout: "", stderr: "",
+          started_at: "2024-01-01T00:00:00Z", finished_at: "2024-01-01T00:00:01Z"
+        )
+      end
+
+      cli, _, _ = build_test_cli(run_command: run_command, run_result_store: run_result_store)
+      expect {
+        cli.run(["run", "myproject", 'echo "hello world"', "--wait"])
+      }.not_to raise_error
+
+      expect(run_command.calls).not_to be_empty
     end
   end
 

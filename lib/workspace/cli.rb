@@ -1,5 +1,6 @@
 require "optparse"
 require "securerandom"
+require "shellwords"
 require "time"
 
 module Workspace
@@ -438,6 +439,7 @@ module Workspace
       focus = false
       dry_run = false
       wait = false
+      close = false
       timeout_secs = Workspace::RunResultStore::DEFAULT_TIMEOUT
 
       parser = OptionParser.new do |opts|
@@ -478,6 +480,9 @@ module Workspace
         opts.on("--timeout N", Integer, "Seconds to wait (default: #{Workspace::RunResultStore::DEFAULT_TIMEOUT}, requires --wait)") do |n|
           timeout_secs = n
         end
+        opts.on("--close", "Send 'exit' to the pane after the command runs (closes the shell/pane)") do
+          close = true
+        end
       end
       parser.parse!(args)
 
@@ -488,6 +493,11 @@ module Workspace
       if wait && no_enter
         raise UsageError,
           "--wait requires the command to be sent with Enter (incompatible with --no-enter).\n\n#{parser.help}"
+      end
+
+      if close && no_enter
+        raise UsageError,
+          "--close sends 'exit' after the command runs, which requires Enter (incompatible with --no-enter).\n\n#{parser.help}"
       end
 
       pane = if pane_opt
@@ -519,21 +529,32 @@ module Workspace
       end
 
       if wait && dry_run
-        # Show the wrapper that --wait would actually send, not the bare command.
-        @output.puts wrapped_run_command(command, "<uuid>")
+        # Show what --wait would write and send, without writing anything.
+        escaped_dir = @config.run_results_dir.gsub("'", "'\\''")
+        @output.puts "# <uuid>.cmd contents:"
+        @output.puts command
+        @output.puts "# <uuid>.sh contents:"
+        @output.puts "bash '#{escaped_dir}/<uuid>.cmd' > '#{escaped_dir}/<uuid>.stdout' 2>'#{escaped_dir}/<uuid>.stderr'"
+        @output.puts "workspace report-run-status <uuid> $?"
+        @output.puts "# pane command: . '#{escaped_dir}/<uuid>.sh'"
+        if close
+          @output.puts "tmux send-keys -l -t <session>:<pane> exit"
+          @output.puts "tmux send-keys -t <session>:<pane> Enter"
+        end
         return
       elsif wait
         uuid = SecureRandom.uuid
         @run_result_store.ensure_dir
 
         @run_command.call(
-          project, wrapped_run_command(command, uuid),
+          project, write_run_script(command, uuid),
           pane: pane,
           split: split,
           vertical: vertical,
           enter: true,
           focus: focus,
-          dry_run: false
+          dry_run: false,
+          close: close
         )
 
         result = @run_result_store.wait(uuid, timeout: timeout_secs)
@@ -560,20 +581,45 @@ module Workspace
         vertical: vertical,
         enter: !no_enter,
         focus: focus,
-        dry_run: dry_run
+        dry_run: dry_run,
+        close: close
       )
 
       # --dry-run performs no real work, so post_run hooks must not observe it as a run.
       @hook_runner.run(project, "post_run") unless dry_run
     end
 
-    # Builds the shell snippet that --wait sends to the pane: run the command with
-    # stdout/stderr redirected to side-car files, then report the exit status back.
-    # The results directory is single-quoted so home paths containing spaces work.
-    def wrapped_run_command(command, uuid)
-      escaped_dir = @config.run_results_dir.gsub("'", "'\\\\''")
-      "(#{command}) > '#{escaped_dir}/#{uuid}.stdout' 2>'#{escaped_dir}/#{uuid}.stderr'; " \
-        "workspace report-run-status #{uuid} $?"
+    # Writes two files and returns the pane command string for --wait:
+    #   <uuid>.cmd  — the raw command text (executed via `bash <uuid>.cmd`)
+    #   <uuid>.sh   — the wrapper: runs cmd with redirected I/O, then reports status
+    #
+    # Separating the command from the wrapper means the command is never
+    # interpolated inside shell syntax, so single quotes, backslashes, and
+    # other shell metacharacters in the command work correctly.
+    #
+    # Raises UsageError early if the command has unbalanced shell quotes, so the
+    # user gets a clear message before anything is written or sent to tmux.
+    def write_run_script(command, uuid)
+      begin
+        Shellwords.split(command) # raises ArgumentError on unbalanced quotes
+      rescue ArgumentError => e
+        raise UsageError,
+          "Command has invalid shell quoting (#{e.message}).\n" \
+          "Hint: if your argument contains single quotes (e.g. \"what's\"), " \
+          "wrap it in double quotes instead: echo \"what's up\". " \
+          "For unbalanced double quotes, escape the inner ones with backslash: echo \"he said \\\"hello\\\"\"."
+      end
+
+      dir = @config.run_results_dir
+      cmd_path = File.join(dir, "#{uuid}.cmd")
+      script_path = File.join(dir, "#{uuid}.sh")
+      escaped_dir = dir.gsub("'", "'\\''")
+      File.write(cmd_path, command)
+      File.write(script_path, <<~SH)
+        bash '#{escaped_dir}/#{uuid}.cmd' > '#{escaped_dir}/#{uuid}.stdout' 2>'#{escaped_dir}/#{uuid}.stderr'
+        workspace report-run-status #{uuid} $?
+      SH
+      ". '#{escaped_dir}/#{uuid}.sh'"
     end
 
     def cmd_run_and_report(args)

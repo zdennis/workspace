@@ -21,6 +21,7 @@ workspace run [project] <command> [options]
 | `--dry-run` | Print the tmux command without executing it |
 | `--wait` | Wait for the command to finish and report exit status, stdout, and stderr |
 | `--timeout N` | Seconds to wait before giving up (default: 300, requires `--wait`) |
+| `--close` | Send `exit` to the pane after the command runs (closes the shell/pane) |
 
 ## Details
 
@@ -30,16 +31,27 @@ The command is sent to the tmux pane using `tmux send-keys` in literal mode (`-l
 
 **Split panes** — `--split` creates a new horizontal pane below the bottommost pane, then sends the command there. `--split --vertical` splits side-by-side instead. The split uses `tmux split-window -P -F '#{pane_index}'` to capture the new pane index atomically.
 
-**Waiting for results** — `--wait` wraps the command in a UUID-keyed shell callback before sending it to tmux:
-```sh
-(<command>) > ~/.workspace-runs/<uuid>.stdout 2>~/.workspace-runs/<uuid>.stderr
-workspace report-run-status <uuid> $?
+**Waiting for results** — `--wait` writes two UUID-keyed files to `~/.workspace-runs/` before sending anything to tmux:
+
+- `<uuid>.cmd` — the raw command text, written verbatim (no shell interpolation)
+- `<uuid>.sh` — the wrapper script that runs the `.cmd` file with redirected I/O and then calls `workspace report-run-status`
+
+The pane receives `. ~/.workspace-runs/<uuid>.sh` via `tmux send-keys`. The parent process polls `~/.workspace-runs/<uuid>.json` for completion, then prints the exit status, stdout, and stderr. The workspace process exits with the command's exit code.
+
+Writing the command to a `.cmd` file instead of interpolating it inline means single quotes, backslashes, and other shell metacharacters in the command are passed through unchanged. However, `--wait` validates shell quoting early using `Shellwords.split` and raises an error with a hint if the command has unbalanced quotes:
+
 ```
-The parent process polls `~/.workspace-runs/<uuid>.json` for completion, then prints the exit status, stdout, and stderr. The workspace process exits with the command's exit code. Requires `workspace` to be on PATH inside the tmux pane's shell.
+Error: Command has invalid shell quoting (shell single quote is not closed).
+Hint: if your argument contains single quotes (e.g. "what's"), wrap it in double quotes instead: echo "what's up"
+```
 
-**`--wait` is incompatible with `--no-enter`** — the wrapper must be executed by the shell, so Enter must be sent.
+Requires `workspace` to be on PATH inside the tmux pane's shell.
 
-**`--dry-run` with `--wait`** prints the wrapper form (showing the UUID placeholder), not the bare command.
+**`--wait` is incompatible with `--no-enter`** — the wrapper script must be executed by the shell, so Enter must be sent.
+
+**`--close` is incompatible with `--no-enter`** — `exit` must be submitted to the shell.
+
+**`--dry-run` with `--wait`** prints the contents of both files that would be written (`.cmd` and `.sh`) and the pane command that would be sent, using `<uuid>` as a placeholder. Nothing is written or sent.
 
 Result files in `~/.workspace-runs/` accumulate and are not automatically cleaned up.
 
@@ -63,4 +75,10 @@ workspace run scooter 'rake spec' --wait
 
 # Wait with a shorter timeout
 workspace run scooter 'rake spec' --wait --timeout 60
+
+# Run a command in a split pane and close the pane when done
+workspace run scooter 'rake spec' --split --close
+
+# Wait for a command and close the pane after it finishes
+workspace run scooter 'rake spec' --wait --close
 ```

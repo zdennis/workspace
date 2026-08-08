@@ -25,6 +25,7 @@ module Workspace
       # @param enter [Boolean] press Enter after sending text (default: true)
       # @param focus [Boolean] bring the project's iTerm window to front after sending
       # @param dry_run [Boolean] print what would be executed without running it
+      # @param close [Boolean] send 'exit' to the pane after the command (closes the shell/pane)
       # @return [void]
       # @raise [Workspace::Error] if no active tmux session exists for the project
       # @raise [Workspace::Error] if the session's window has no panes
@@ -32,7 +33,7 @@ module Workspace
       # @raise [Workspace::Error] if tmux fails to split the window (with split: true)
       # @raise [Workspace::Error] if tmux fails to send the command to the target pane
       def call(project, command, pane: :bottom, split: false, vertical: false,
-        enter: true, focus: false, dry_run: false)
+        enter: true, focus: false, dry_run: false, close: false)
         session_name = @tmux.session_name_for(project)
         unless @tmux.sessions.include?(session_name)
           raise Workspace::Error,
@@ -40,7 +41,8 @@ module Workspace
         end
 
         if split
-          split_and_run(session_name, command, vertical: vertical, enter: enter, dry_run: dry_run)
+          split_and_run(session_name, command, vertical: vertical, enter: enter,
+            dry_run: dry_run, close: close)
         else
           pane_index = resolve_pane(session_name, pane)
           pane_spec = "0.#{pane_index}"
@@ -48,10 +50,18 @@ module Workspace
           if dry_run
             @output.puts "tmux send-keys -l -t #{session_name}:#{pane_spec} #{command.inspect}"
             @output.puts "tmux send-keys -t #{session_name}:#{pane_spec} Enter" if enter
+            @output.puts "tmux send-keys -l -t #{session_name}:#{pane_spec} exit" if close
+            @output.puts "tmux send-keys -t #{session_name}:#{pane_spec} Enter" if close
           else
             unless @tmux.send_keys(session_name, pane_spec, command, enter: enter)
               raise Workspace::Error,
                 "Failed to send command to pane #{pane_index} of '#{project}'"
+            end
+            if close
+              unless @tmux.send_keys(session_name, pane_spec, "exit", enter: true)
+                raise Workspace::Error,
+                  "Failed to send exit to pane #{pane_index} of '#{project}'"
+              end
             end
           end
         end
@@ -80,7 +90,7 @@ module Workspace
         end
       end
 
-      def split_and_run(session_name, command, vertical:, enter:, dry_run:)
+      def split_and_run(session_name, command, vertical:, enter:, dry_run:, close:)
         pane_list = @tmux.panes(session_name, window: "0")
         raise Workspace::Error, "No panes found for session '#{session_name}'" if pane_list.empty?
 
@@ -91,6 +101,8 @@ module Workspace
           @output.puts "tmux split-window #{flag} -t #{session_name}:0.#{last_pane}"
           @output.puts "tmux send-keys -l -t #{session_name}:0.<new_pane> #{command.inspect}"
           @output.puts "tmux send-keys -t #{session_name}:0.<new_pane> Enter" if enter
+          @output.puts "tmux send-keys -l -t #{session_name}:0.<new_pane> exit" if close
+          @output.puts "tmux send-keys -t #{session_name}:0.<new_pane> Enter" if close
           return
         end
 
@@ -107,6 +119,13 @@ module Workspace
         unless @tmux.send_keys(session_name, pane_spec, command, enter: enter)
           raise Workspace::Error,
             "Failed to send command to new split pane of '#{session_name}'"
+        end
+
+        if close
+          unless @tmux.send_keys(session_name, pane_spec, "exit", enter: true)
+            raise Workspace::Error,
+              "Failed to send exit to new split pane of '#{session_name}'"
+          end
         end
       end
 
