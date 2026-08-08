@@ -83,6 +83,9 @@ workspace <subcommand> [options]
 | prune | [README](docs/README.prune.md) | Remove worktree projects whose PR is closed or merged |
 | reactivate | [README](docs/README.reactivate.md) | Reactivate Claude in a project's tmux pane |
 | relaunch | [README](docs/README.relaunch.md) | Stop and relaunch all active workspace projects |
+| report-run-status | [README](docs/README.report-run-status.md) | Internal: write run result for --wait (called by shell wrapper) |
+| run | [README](docs/README.run.md) | Send a shell command to a pane in a project's tmux session |
+| run-and-report | [README](docs/README.run-and-report.md) | Run a command as a subprocess and capture stdout/stderr/exit status |
 | set-command | [README](docs/README.set-command.md) | Set the shell command for a pane in a project config |
 | repair | [README](docs/README.repair.md) | Rebuild state from live iTerm windows |
 | resize | [README](docs/README.resize.md) | Resize tmux panes for a running project |
