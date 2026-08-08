@@ -223,6 +223,60 @@ module CLITestHelpers
     end
   end
 
+  class FakeRunAndReportCommand
+    attr_reader :calls
+
+    def initialize
+      @calls = []
+      @next_result = nil
+    end
+
+    def stub_result(result)
+      @next_result = result
+    end
+
+    def call(command, project: nil, dir: nil)
+      @calls << {command: command, project: project, dir: dir}
+      @next_result || Workspace::RunResult.new(
+        uuid: "fake-uuid", project: project, command: command,
+        status: 0, stdout: "", stderr: "",
+        started_at: "2024-01-01T00:00:00Z", finished_at: "2024-01-01T00:00:01Z"
+      )
+    end
+  end
+
+  class FakeRunResultStore
+    attr_reader :written
+
+    def initialize
+      @written = []
+      @results = {}
+    end
+
+    def ensure_dir = nil
+
+    def write(result)
+      @written << result
+      @results[result.uuid] = result
+    end
+
+    def read(uuid)
+      @results[uuid]
+    end
+
+    def exist?(uuid)
+      @results.key?(uuid)
+    end
+
+    def read_stdout(_uuid) = ""
+
+    def read_stderr(_uuid) = ""
+
+    def wait(uuid, timeout: 300, poll_interval: 0.1)
+      @results[uuid] || raise(Workspace::Error, "Timed out waiting for run #{uuid}")
+    end
+  end
+
   class FakeHookRunner
     attr_reader :runs
 

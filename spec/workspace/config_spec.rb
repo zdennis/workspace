@@ -47,4 +47,42 @@ RSpec.describe Workspace::Config do
       )
     end
   end
+
+  describe "#run_results_dir" do
+    subject(:config) { described_class.new }
+
+    it "returns the run results directory path" do
+      expect(config.run_results_dir).to eq(File.expand_path("~/.workspace-runs"))
+    end
+  end
+
+  describe "#run_result_path" do
+    subject(:config) { described_class.new }
+
+    it "builds the expected path for a uuid" do
+      expect(config.run_result_path("abc-123")).to eq(
+        File.join(File.expand_path("~/.workspace-runs"), "abc-123.json")
+      )
+    end
+  end
+
+  describe "#run_stdout_path" do
+    subject(:config) { described_class.new }
+
+    it "builds the expected path for a uuid" do
+      expect(config.run_stdout_path("abc-123")).to eq(
+        File.join(File.expand_path("~/.workspace-runs"), "abc-123.stdout")
+      )
+    end
+  end
+
+  describe "#run_stderr_path" do
+    subject(:config) { described_class.new }
+
+    it "builds the expected path for a uuid" do
+      expect(config.run_stderr_path("abc-123")).to eq(
+        File.join(File.expand_path("~/.workspace-runs"), "abc-123.stderr")
+      )
+    end
+  end
 end

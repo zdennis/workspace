@@ -1,5 +1,6 @@
 require "optparse"
 require "securerandom"
+require "time"
 
 module Workspace
   # Command-line interface for the workspace CLI.
@@ -33,7 +34,7 @@ module Workspace
     # @param error_output [IO] error output stream for warnings and errors
     # @param input [IO] input stream for interactive prompts
     # @param exit_handler [#exit] callable for process exit (Kernel in production, FakeExitHandler in tests)
-    def initialize(config:, state:, project_config:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd)
+    def initialize(config:, state:, project_config:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd)
       @config = config
       @state = state
       @project_config = project_config
@@ -58,6 +59,8 @@ module Workspace
       @lookup_command = lookup_command
       @update_pane_command = update_pane_command
       @run_command = run_command
+      @run_result_store = run_result_store
+      @run_and_report_command = run_and_report_command
       @exit_handler = exit_handler
       @logger = logger
       @output = output
@@ -105,6 +108,10 @@ module Workspace
         cmd_resize(args)
       when "run"
         cmd_run(args)
+      when "run-and-report"
+        cmd_run_and_report(args)
+      when "report-run-status"
+        cmd_report_run_status(args)
       when "layout"
         cmd_layout(args)
       when "config"
@@ -194,6 +201,8 @@ module Workspace
           repair          Rebuild state from live iTerm windows
           resize          Resize tmux panes for a running project
           run             Send a shell command to a pane in a running project's tmux session
+          run-and-report  Run a command as a subprocess, capture stdout/stderr/exit status
+          report-run-status  Internal: write run result for --wait (called by shell wrapper)
           start           Create a worktree and launch it (from JIRA key, PR URL, or branch)
           status          Show detailed state of tracked launcher sessions
           set-command     Set the shell command for a pane in a project config (--pane <N>)
@@ -428,6 +437,8 @@ module Workspace
       no_enter = false
       focus = false
       dry_run = false
+      wait = false
+      timeout_secs = Workspace::RunResultStore::DEFAULT_TIMEOUT
 
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: workspace run [project] <command> [options]"
@@ -461,11 +472,22 @@ module Workspace
         opts.on("--dry-run", "Print the tmux command without executing it") do
           dry_run = true
         end
+        opts.on("--wait", "Wait for the command to finish and report exit status, stdout, stderr") do
+          wait = true
+        end
+        opts.on("--timeout N", Integer, "Seconds to wait (default: #{Workspace::RunResultStore::DEFAULT_TIMEOUT}, requires --wait)") do |n|
+          timeout_secs = n
+        end
       end
       parser.parse!(args)
 
       if vertical && !split
         raise UsageError, "--vertical requires --split.\n\n#{parser.help}"
+      end
+
+      if wait && no_enter
+        raise UsageError,
+          "--wait requires the command to be sent with Enter (incompatible with --no-enter).\n\n#{parser.help}"
       end
 
       pane = if pane_opt
@@ -496,6 +518,41 @@ module Workspace
         raise UsageError, parser.help
       end
 
+      if wait && dry_run
+        # Show the wrapper that --wait would actually send, not the bare command.
+        @output.puts wrapped_run_command(command, "<uuid>")
+        return
+      elsif wait
+        uuid = SecureRandom.uuid
+        @run_result_store.ensure_dir
+
+        @run_command.call(
+          project, wrapped_run_command(command, uuid),
+          pane: pane,
+          split: split,
+          vertical: vertical,
+          enter: true,
+          focus: focus,
+          dry_run: false
+        )
+
+        result = @run_result_store.wait(uuid, timeout: timeout_secs)
+
+        @output.puts "Exit status: #{result.status}"
+        unless result.stdout.empty?
+          @output.puts "--- stdout ---"
+          @output.print result.stdout
+        end
+        unless result.stderr.empty?
+          @output.puts "--- stderr ---"
+          @output.print result.stderr
+        end
+
+        @hook_runner.run(project, "post_run")
+        @exit_handler.exit(result.status) unless result.status == 0
+        return
+      end
+
       @run_command.call(
         project, command,
         pane: pane,
@@ -508,6 +565,79 @@ module Workspace
 
       # --dry-run performs no real work, so post_run hooks must not observe it as a run.
       @hook_runner.run(project, "post_run") unless dry_run
+    end
+
+    # Builds the shell snippet that --wait sends to the pane: run the command with
+    # stdout/stderr redirected to side-car files, then report the exit status back.
+    # The results directory is single-quoted so home paths containing spaces work.
+    def wrapped_run_command(command, uuid)
+      escaped_dir = @config.run_results_dir.gsub("'", "'\\\\''")
+      "(#{command}) > '#{escaped_dir}/#{uuid}.stdout' 2>'#{escaped_dir}/#{uuid}.stderr'; " \
+        "workspace report-run-status #{uuid} $?"
+    end
+
+    def cmd_run_and_report(args)
+      parser = OptionParser.new do |opts|
+        opts.banner = "Usage: workspace run-and-report '<command>'"
+        opts.separator ""
+        opts.separator "Run a shell command as a subprocess (bypassing tmux)."
+        opts.separator "Captures stdout, stderr, and exit status, writes them under a UUID,"
+        opts.separator "prints the JSON result, and exits with the command's exit code."
+      end
+      parser.parse!(args)
+
+      raise UsageError, parser.help if args.empty?
+
+      command = args.join(" ")
+      project = @project_detector.detect(@working_dir)
+
+      result = @run_and_report_command.call(command, project: project)
+
+      @output.puts result.to_json
+      @exit_handler.exit(result.status) unless result.status == 0
+    end
+
+    def cmd_report_run_status(args)
+      parser = OptionParser.new do |opts|
+        opts.banner = "Usage: workspace report-run-status <uuid> <exit_code>"
+        opts.separator ""
+        opts.separator "Internal command called by the --wait shell wrapper."
+        opts.separator "Reads <uuid>.stdout and <uuid>.stderr from the run results directory,"
+        opts.separator "writes the complete JSON result file, and exits 0."
+      end
+      parser.parse!(args)
+
+      raise UsageError, parser.help if args.size < 2
+
+      uuid = args[0]
+
+      # UUIDs index into the run-results directory, so reject anything that could
+      # escape it (e.g. "../../etc/passwd").
+      unless uuid.match?(/\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z/)
+        raise UsageError, "Invalid UUID format: #{uuid.inspect}\n\n#{parser.help}"
+      end
+
+      exit_code = begin
+        Integer(args[1])
+      rescue ArgumentError, TypeError
+        raise UsageError, "exit_code must be an integer, got: #{args[1].inspect}\n\n#{parser.help}"
+      end
+
+      stdout = @run_result_store.read_stdout(uuid)
+      stderr = @run_result_store.read_stderr(uuid)
+
+      result = Workspace::RunResult.new(
+        uuid: uuid,
+        project: nil,
+        command: nil,
+        status: exit_code,
+        stdout: stdout,
+        stderr: stderr,
+        started_at: nil,
+        finished_at: Time.now.utc.iso8601
+      )
+
+      @run_result_store.write(result)
     end
 
     def cmd_layout(args)

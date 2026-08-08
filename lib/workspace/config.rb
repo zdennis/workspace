@@ -54,5 +54,28 @@ module Workspace
     def config_path_for(name)
       File.join(tmuxinator_dir, "workspace.#{name}.yml")
     end
+
+    # @return [String] path to the directory that stores run-result files
+    def run_results_dir
+      File.expand_path("~/.workspace-runs")
+    end
+
+    # @param uuid [String]
+    # @return [String]
+    def run_result_path(uuid)
+      File.join(run_results_dir, "#{uuid}.json")
+    end
+
+    # @param uuid [String]
+    # @return [String]
+    def run_stdout_path(uuid)
+      File.join(run_results_dir, "#{uuid}.stdout")
+    end
+
+    # @param uuid [String]
+    # @return [String]
+    def run_stderr_path(uuid)
+      File.join(run_results_dir, "#{uuid}.stderr")
+    end
   end
 end

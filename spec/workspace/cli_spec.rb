@@ -38,6 +38,8 @@ RSpec.describe Workspace::CLI do
     lookup_command = overrides[:lookup_command] || Workspace::Commands::Lookup.new(project_config: project_config, output: output)
     update_pane_command = overrides[:update_pane_command] || CLITestHelpers::FakeUpdatePaneCommand.new
     run_command = overrides[:run_command] || CLITestHelpers::FakeRunCommand.new
+    run_result_store = overrides[:run_result_store] || CLITestHelpers::FakeRunResultStore.new
+    run_and_report_command = overrides[:run_and_report_command] || CLITestHelpers::FakeRunAndReportCommand.new
 
     cli = Workspace::CLI.new(
       config: config,
@@ -64,6 +66,8 @@ RSpec.describe Workspace::CLI do
       lookup_command: lookup_command,
       update_pane_command: update_pane_command,
       run_command: run_command,
+      run_result_store: run_result_store,
+      run_and_report_command: run_and_report_command,
       logger: logger,
       output: output,
       error_output: error_output,
@@ -833,6 +837,290 @@ RSpec.describe Workspace::CLI do
       cli, output, _ = build_test_cli
       cli.run(["help"])
       expect(output.string).to include("run")
+    end
+  end
+
+  describe "#run with run --wait" do
+    it "wraps the command with the shell callback before sending to run_command" do
+      run_command = CLITestHelpers::FakeRunCommand.new
+      run_result_store = CLITestHelpers::FakeRunResultStore.new
+
+      allow(run_result_store).to receive(:ensure_dir)
+      allow(run_result_store).to receive(:wait) do |u, **|
+        Workspace::RunResult.new(
+          uuid: u, project: "myproject", command: "echo hi",
+          status: 0, stdout: "hi\n", stderr: "",
+          started_at: "2024-01-01T00:00:00Z", finished_at: "2024-01-01T00:00:01Z"
+        )
+      end
+
+      cli, _, _ = build_test_cli(run_command: run_command, run_result_store: run_result_store)
+      cli.run(["run", "myproject", "echo hi", "--wait"])
+
+      sent_command = run_command.calls.first[:command]
+      expect(sent_command).to include("echo hi")
+      expect(sent_command).to include("workspace report-run-status")
+      expect(sent_command).to include(".stdout")
+      expect(sent_command).to include(".stderr")
+    end
+
+    it "prints exit status and stdout after the run completes" do
+      run_command = CLITestHelpers::FakeRunCommand.new
+      run_result_store = CLITestHelpers::FakeRunResultStore.new
+
+      allow(run_result_store).to receive(:ensure_dir)
+      allow(run_result_store).to receive(:wait) do |u, **|
+        Workspace::RunResult.new(
+          uuid: u, project: "myproject", command: "echo hi",
+          status: 0, stdout: "hello world\n", stderr: "",
+          started_at: "2024-01-01T00:00:00Z", finished_at: "2024-01-01T00:00:01Z"
+        )
+      end
+
+      cli, output, _ = build_test_cli(run_command: run_command, run_result_store: run_result_store)
+      cli.run(["run", "myproject", "echo hi", "--wait"])
+
+      expect(output.string).to include("Exit status: 0")
+      expect(output.string).to include("hello world")
+    end
+
+    it "passes --timeout to the poll" do
+      run_command = CLITestHelpers::FakeRunCommand.new
+      run_result_store = CLITestHelpers::FakeRunResultStore.new
+      received_timeout = nil
+
+      allow(run_result_store).to receive(:ensure_dir)
+      allow(run_result_store).to receive(:wait) do |u, timeout:, **|
+        received_timeout = timeout
+        Workspace::RunResult.new(
+          uuid: u, project: nil, command: nil,
+          status: 0, stdout: "", stderr: "",
+          started_at: nil, finished_at: "2024-01-01T00:00:01Z"
+        )
+      end
+
+      cli, _, _ = build_test_cli(run_command: run_command, run_result_store: run_result_store)
+      cli.run(["run", "myproject", "echo hi", "--wait", "--timeout", "60"])
+
+      expect(received_timeout).to eq(60)
+    end
+
+    it "fires post_run hook after --wait completes" do
+      run_command = CLITestHelpers::FakeRunCommand.new
+      run_result_store = CLITestHelpers::FakeRunResultStore.new
+      hook_runner = CLITestHelpers::FakeHookRunner.new
+
+      allow(run_result_store).to receive(:ensure_dir)
+      allow(run_result_store).to receive(:wait) do |u, **|
+        Workspace::RunResult.new(
+          uuid: u, project: nil, command: nil,
+          status: 0, stdout: "", stderr: "",
+          started_at: nil, finished_at: "2024-01-01T00:00:01Z"
+        )
+      end
+
+      cli, _, _ = build_test_cli(
+        run_command: run_command,
+        run_result_store: run_result_store,
+        hook_runner: hook_runner
+      )
+      cli.run(["run", "myproject", "echo hi", "--wait"])
+
+      expect(hook_runner.runs).to include(hash_including(project: "myproject", event: "post_run"))
+    end
+
+    it "exits 1 when store raises timeout error" do
+      run_command = CLITestHelpers::FakeRunCommand.new
+      run_result_store = CLITestHelpers::FakeRunResultStore.new
+
+      allow(run_result_store).to receive(:ensure_dir)
+      allow(run_result_store).to receive(:wait).and_raise(
+        Workspace::Error, "Timed out waiting for run x (300s)"
+      )
+
+      cli, _, error_output = build_test_cli(
+        run_command: run_command,
+        run_result_store: run_result_store
+      )
+      expect { cli.run(["run", "myproject", "echo hi", "--wait"]) }.to raise_error(FakeSystemExit) { |e|
+        expect(e.status).to eq(1)
+      }
+      expect(error_output.string).to include("Timed out")
+    end
+
+    it "exits with the command's exit status when it is non-zero" do
+      run_command = CLITestHelpers::FakeRunCommand.new
+      run_result_store = CLITestHelpers::FakeRunResultStore.new
+
+      allow(run_result_store).to receive(:ensure_dir)
+      allow(run_result_store).to receive(:wait) do |u, **|
+        Workspace::RunResult.new(
+          uuid: u, project: "myproject", command: "false",
+          status: 3, stdout: "", stderr: "",
+          started_at: nil, finished_at: "2024-01-01T00:00:01Z"
+        )
+      end
+
+      cli, output, _ = build_test_cli(run_command: run_command, run_result_store: run_result_store)
+      expect { cli.run(["run", "myproject", "false", "--wait"]) }.to raise_error(FakeSystemExit) { |e|
+        expect(e.status).to eq(3)
+      }
+      expect(output.string).to include("Exit status: 3")
+    end
+
+    it "prints stderr when the run produced any" do
+      run_command = CLITestHelpers::FakeRunCommand.new
+      run_result_store = CLITestHelpers::FakeRunResultStore.new
+
+      allow(run_result_store).to receive(:ensure_dir)
+      allow(run_result_store).to receive(:wait) do |u, **|
+        Workspace::RunResult.new(
+          uuid: u, project: "myproject", command: "echo oops >&2",
+          status: 0, stdout: "", stderr: "oops\n",
+          started_at: nil, finished_at: "2024-01-01T00:00:01Z"
+        )
+      end
+
+      cli, output, _ = build_test_cli(run_command: run_command, run_result_store: run_result_store)
+      cli.run(["run", "myproject", "echo oops >&2", "--wait"])
+
+      expect(output.string).to include("--- stderr ---")
+      expect(output.string).to include("oops")
+    end
+
+    it "exits 1 when --wait is combined with --no-enter" do
+      run_command = CLITestHelpers::FakeRunCommand.new
+      cli, _, error_output = build_test_cli(run_command: run_command)
+
+      expect { cli.run(["run", "myproject", "echo hi", "--wait", "--no-enter"]) }.to raise_error(FakeSystemExit) { |e|
+        expect(e.status).to eq(1)
+      }
+      expect(error_output.string).to include("--wait requires the command to be sent with Enter")
+      expect(run_command.calls).to be_empty
+    end
+
+    it "prints the wrapper form for --wait --dry-run without running anything" do
+      run_command = CLITestHelpers::FakeRunCommand.new
+      run_result_store = CLITestHelpers::FakeRunResultStore.new
+      hook_runner = CLITestHelpers::FakeHookRunner.new
+
+      cli, output, _ = build_test_cli(
+        run_command: run_command,
+        run_result_store: run_result_store,
+        hook_runner: hook_runner
+      )
+      cli.run(["run", "myproject", "echo hi", "--wait", "--dry-run"])
+
+      expect(output.string).to include("(echo hi)")
+      expect(output.string).to include("workspace report-run-status")
+      expect(output.string).to include(".stdout")
+      expect(run_command.calls).to be_empty
+      expect(hook_runner.runs).not_to include(hash_including(event: "post_run"))
+    end
+
+    it "single-quotes the results directory so paths with spaces survive the shell" do
+      config = Workspace::Config.new
+      allow(config).to receive(:run_results_dir).and_return("/Users/a b/.workspace-runs")
+
+      run_command = CLITestHelpers::FakeRunCommand.new
+      cli, output, _ = build_test_cli(config: config, run_command: run_command)
+      cli.run(["run", "myproject", "echo hi", "--wait", "--dry-run"])
+
+      expect(output.string).to include("'/Users/a b/.workspace-runs/<uuid>.stdout'")
+      expect(output.string).to include("2>'/Users/a b/.workspace-runs/<uuid>.stderr'")
+    end
+  end
+
+  describe "#run with run-and-report" do
+    it "exits 1 when no command given" do
+      cli, _, error_output = build_test_cli
+      expect { cli.run(["run-and-report"]) }.to raise_error(FakeSystemExit) { |e|
+        expect(e.status).to eq(1)
+      }
+      expect(error_output.string).to include("Usage: workspace run-and-report")
+    end
+
+    it "delegates to run_and_report_command and prints JSON" do
+      cmd = CLITestHelpers::FakeRunAndReportCommand.new
+      cli, output, _ = build_test_cli(run_and_report_command: cmd)
+      cli.run(["run-and-report", "echo hi"])
+
+      expect(cmd.calls.size).to eq(1)
+      expect(cmd.calls.first[:command]).to eq("echo hi")
+      expect(output.string).to include('"uuid"')
+      expect(output.string).to include('"status"')
+    end
+
+    it "exits with the command's exit code when non-zero" do
+      cmd = CLITestHelpers::FakeRunAndReportCommand.new
+      cmd.stub_result(Workspace::RunResult.new(
+        uuid: "x", project: nil, command: "exit 2",
+        status: 2, stdout: "", stderr: "oops\n",
+        started_at: nil, finished_at: "2024-01-01T00:00:01Z"
+      ))
+
+      cli, _, _ = build_test_cli(run_and_report_command: cmd)
+      expect { cli.run(["run-and-report", "exit 2"]) }.to raise_error(FakeSystemExit) { |e|
+        expect(e.status).to eq(2)
+      }
+    end
+
+    it "shows run-and-report in help output" do
+      cli, output, _ = build_test_cli
+      cli.run(["help"])
+      expect(output.string).to include("run-and-report")
+    end
+  end
+
+  describe "#run with report-run-status" do
+    let(:uuid) { "11111111-2222-3333-4444-555555555555" }
+
+    it "writes the result JSON using the store" do
+      store = CLITestHelpers::FakeRunResultStore.new
+      cli, _, _ = build_test_cli(run_result_store: store)
+      cli.run(["report-run-status", uuid, "0"])
+
+      expect(store.written.size).to eq(1)
+      expect(store.written.first.uuid).to eq(uuid)
+      expect(store.written.first.status).to eq(0)
+    end
+
+    it "records a non-zero exit code correctly" do
+      store = CLITestHelpers::FakeRunResultStore.new
+      cli, _, _ = build_test_cli(run_result_store: store)
+      cli.run(["report-run-status", uuid, "127"])
+
+      expect(store.written.first.status).to eq(127)
+    end
+
+    it "exits 1 when too few arguments given" do
+      cli, _, error_output = build_test_cli
+      expect { cli.run(["report-run-status", "only-uuid"]) }.to raise_error(FakeSystemExit) { |e|
+        expect(e.status).to eq(1)
+      }
+      expect(error_output.string).to include("Usage: workspace report-run-status")
+    end
+
+    it "exits 1 with a usage error when the exit code is not an integer" do
+      store = CLITestHelpers::FakeRunResultStore.new
+      cli, _, error_output = build_test_cli(run_result_store: store)
+
+      expect { cli.run(["report-run-status", uuid, "not-a-number"]) }.to raise_error(FakeSystemExit) { |e|
+        expect(e.status).to eq(1)
+      }
+      expect(error_output.string).to include("exit_code must be an integer")
+      expect(store.written).to be_empty
+    end
+
+    it "exits 1 when the uuid is not a well-formed UUID" do
+      store = CLITestHelpers::FakeRunResultStore.new
+      cli, _, error_output = build_test_cli(run_result_store: store)
+
+      expect { cli.run(["report-run-status", "../../etc/passwd", "0"]) }.to raise_error(FakeSystemExit) { |e|
+        expect(e.status).to eq(1)
+      }
+      expect(error_output.string).to include("Invalid UUID format")
+      expect(store.written).to be_empty
     end
   end
 end

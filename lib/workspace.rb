@@ -1,6 +1,7 @@
 require "optparse"
 require "json"
 require "fileutils"
+require "time"
 require_relative "workspace/version"
 require_relative "workspace/logger"
 require_relative "workspace/config"
@@ -32,6 +33,9 @@ require_relative "workspace/commands/prune"
 require_relative "workspace/commands/lookup"
 require_relative "workspace/commands/update_pane_command"
 require_relative "workspace/commands/run"
+require_relative "workspace/run_result"
+require_relative "workspace/run_result_store"
+require_relative "workspace/commands/run_and_report"
 require_relative "workspace/cli"
 
 # Workspace CLI for managing tmuxinator-based development workspaces in iTerm2.
@@ -89,6 +93,9 @@ module Workspace
       error_output: error_output
     )
 
+    run_result_store = RunResultStore.new(config: config)
+    run_and_report_command = Commands::RunAndReport.new(run_result_store: run_result_store)
+
     CLI.new(
       config: config,
       state: state,
@@ -114,6 +121,8 @@ module Workspace
       lookup_command: lookup_command,
       update_pane_command: update_pane_command,
       run_command: run_command,
+      run_result_store: run_result_store,
+      run_and_report_command: run_and_report_command,
       logger: logger,
       output: output,
       error_output: error_output,
