@@ -840,6 +840,104 @@ RSpec.describe Workspace::CLI do
     end
   end
 
+  describe "#run with run --pipe" do
+    it "joins command and pipe stage with a shell pipe" do
+      run_command = CLITestHelpers::FakeRunCommand.new
+      cli, _, _ = build_test_cli(run_command: run_command)
+      cli.run(["run", "myproject", "cmd1", "--pipe", "cmd2"])
+
+      expect(run_command.calls.first[:command]).to eq("cmd1 | cmd2")
+    end
+
+    it "joins multiple --pipe stages in order" do
+      run_command = CLITestHelpers::FakeRunCommand.new
+      cli, _, _ = build_test_cli(run_command: run_command)
+      cli.run(["run", "myproject", "cmd1", "--pipe", "cmd2", "--pipe", "cmd3"])
+
+      expect(run_command.calls.first[:command]).to eq("cmd1 | cmd2 | cmd3")
+    end
+
+    it "sends the piped command with enter: true by default" do
+      run_command = CLITestHelpers::FakeRunCommand.new
+      cli, _, _ = build_test_cli(run_command: run_command)
+      cli.run(["run", "myproject", "echo hello", "--pipe", "grep hello"])
+
+      expect(run_command.calls.first[:command]).to eq("echo hello | grep hello")
+      expect(run_command.calls.first[:enter]).to eq(true)
+    end
+
+    it "exits 1 when --pipe is combined with --no-enter" do
+      cli, _, error_output = build_test_cli
+      expect { cli.run(["run", "myproject", "echo hi", "--pipe", "cat", "--no-enter"]) }
+        .to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+      expect(error_output.string).to include("--pipe")
+      expect(error_output.string).to include("--no-enter")
+    end
+
+    it "writes the piped command verbatim to the .cmd file when using --wait" do
+      run_command = CLITestHelpers::FakeRunCommand.new
+      run_result_store = CLITestHelpers::FakeRunResultStore.new
+
+      allow(run_result_store).to receive(:ensure_dir)
+      allow(run_result_store).to receive(:wait) do |u, **|
+        Workspace::RunResult.new(
+          uuid: u, project: "myproject", command: "cmd1 | cmd2",
+          status: 0, stdout: "", stderr: "",
+          started_at: nil, finished_at: "2024-01-01T00:00:01Z"
+        )
+      end
+
+      cli, _, _ = build_test_cli(run_command: run_command, run_result_store: run_result_store)
+      cli.run(["run", "myproject", "cmd1", "--pipe", "cmd2", "--wait"])
+
+      sent = run_command.calls.first[:command]
+      expect(sent).to match(/\A\. '.*\.sh'\z/)
+      cmd_path = sent.match(/\A\. '(.+\.sh)'\z/)[1].sub(/\.sh\z/, ".cmd")
+      expect(File.read(cmd_path)).to eq("cmd1 | cmd2")
+    end
+
+    it "passes the joined command to run_command with dry_run: true" do
+      run_command = CLITestHelpers::FakeRunCommand.new
+      cli, _, _ = build_test_cli(run_command: run_command)
+      cli.run(["run", "myproject", "cmd1", "--pipe", "cmd2", "--dry-run"])
+
+      expect(run_command.calls.first[:command]).to eq("cmd1 | cmd2")
+      expect(run_command.calls.first[:dry_run]).to eq(true)
+    end
+
+    it "shows the joined command in --wait --dry-run output" do
+      run_command = CLITestHelpers::FakeRunCommand.new
+      run_result_store = CLITestHelpers::FakeRunResultStore.new
+      cli, output, _ = build_test_cli(run_command: run_command, run_result_store: run_result_store)
+      cli.run(["run", "myproject", "cmd1", "--pipe", "cmd2", "--wait", "--dry-run"])
+
+      expect(output.string).to include("cmd1 | cmd2")
+      expect(run_command.calls).to be_empty
+    end
+
+    it "exits 1 when --pipe is given an empty string" do
+      cli, _, error_output = build_test_cli
+      expect { cli.run(["run", "myproject", "echo hi", "--pipe", ""]) }
+        .to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+      expect(error_output.string).to include("--pipe")
+    end
+
+    it "raises UsageError when --pipe stage has unbalanced quotes" do
+      cli, _, error_output = build_test_cli
+      expect { cli.run(["run", "myproject", "echo hi", "--pipe", "grep 'bad", "--wait"]) }
+        .to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+      expect(error_output.string).to include("invalid shell quoting")
+    end
+
+    it "does not mask unbalanced quotes across pipe stages" do
+      cli, _, error_output = build_test_cli
+      # "echo 'hello" and "world'" together would balance if validated as one joined string
+      expect { cli.run(["run", "myproject", "echo 'hello", "--pipe", "world'", "--wait"]) }
+        .to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+      expect(error_output.string).to include("invalid shell quoting")
+    end
+  end
+
   describe "#run with run --wait" do
     it "writes a script file and sends the source command to run_command" do
       run_command = CLITestHelpers::FakeRunCommand.new

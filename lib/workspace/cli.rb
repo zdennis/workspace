@@ -156,6 +156,9 @@ module Workspace
     rescue UsageError => e
       @error_output.puts e.message
       @exit_handler.exit(1)
+    rescue OptionParser::InvalidArgument, OptionParser::MissingArgument => e
+      @error_output.puts e.message
+      @exit_handler.exit(1)
     rescue Error => e
       @error_output.puts "Error: #{e.message}"
       @exit_handler.exit(1)
@@ -440,6 +443,7 @@ module Workspace
       dry_run = false
       wait = false
       close = false
+      pipe_commands = []
       timeout_secs = Workspace::RunResultStore::DEFAULT_TIMEOUT
 
       parser = OptionParser.new do |opts|
@@ -483,6 +487,10 @@ module Workspace
         opts.on("--close", "Send 'exit' to the pane after the command runs (closes the shell/pane)") do
           close = true
         end
+        opts.on("--pipe CMD", String,
+          "Pipe command output into CMD (repeatable for multi-stage pipelines)") do |cmd|
+          pipe_commands << cmd
+        end
       end
       parser.parse!(args)
 
@@ -498,6 +506,11 @@ module Workspace
       if close && no_enter
         raise UsageError,
           "--close sends 'exit' after the command runs, which requires Enter (incompatible with --no-enter).\n\n#{parser.help}"
+      end
+
+      if pipe_commands.any? && no_enter
+        raise UsageError,
+          "--pipe runs a shell pipeline, which requires Enter (incompatible with --no-enter).\n\n#{parser.help}"
       end
 
       pane = if pane_opt
@@ -526,6 +539,13 @@ module Workspace
         command = args[1..].join(" ")
       else
         raise UsageError, parser.help
+      end
+
+      if pipe_commands.any?
+        # Validate each stage individually — joining first would let unbalanced quotes
+        # in one stage cancel out unbalanced quotes in another, masking the error.
+        ([command] + pipe_commands).each { |stage| validate_shell_quoting!(stage) }
+        command = ([command] + pipe_commands).join(" | ")
       end
 
       if wait && dry_run
@@ -600,15 +620,7 @@ module Workspace
     # Raises UsageError early if the command has unbalanced shell quotes, so the
     # user gets a clear message before anything is written or sent to tmux.
     def write_run_script(command, uuid)
-      begin
-        Shellwords.split(command) # raises ArgumentError on unbalanced quotes
-      rescue ArgumentError => e
-        raise UsageError,
-          "Command has invalid shell quoting (#{e.message}).\n" \
-          "Hint: if your argument contains single quotes (e.g. \"what's\"), " \
-          "wrap it in double quotes instead: echo \"what's up\". " \
-          "For unbalanced double quotes, escape the inner ones with backslash: echo \"he said \\\"hello\\\"\"."
-      end
+      validate_shell_quoting!(command)
 
       dir = @config.run_results_dir
       cmd_path = File.join(dir, "#{uuid}.cmd")
@@ -620,6 +632,16 @@ module Workspace
         workspace report-run-status #{uuid} $?
       SH
       ". '#{escaped_dir}/#{uuid}.sh'"
+    end
+
+    def validate_shell_quoting!(command)
+      Shellwords.split(command)
+    rescue ArgumentError => e
+      raise UsageError,
+        "Command has invalid shell quoting (#{e.message}).\n" \
+        "Hint: if your argument contains single quotes (e.g. \"what's\"), " \
+        "wrap it in double quotes instead: echo \"what's up\". " \
+        "For unbalanced double quotes, escape the inner ones with backslash: echo \"he said \\\"hello\\\"\"."
     end
 
     def cmd_run_and_report(args)
