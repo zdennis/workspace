@@ -22,6 +22,7 @@ workspace run [project] <command> [options]
 | `--wait` | Wait for the command to finish and report exit status, stdout, and stderr |
 | `--timeout N` | Seconds to wait before giving up (default: 300, requires `--wait`) |
 | `--close` | Send `exit` to the pane after the command runs (closes the shell/pane) |
+| `--pipe CMD` | Pipe the command output into CMD (repeatable for multi-stage pipelines) |
 
 ## Details
 
@@ -50,6 +51,15 @@ Requires `workspace` to be on PATH inside the tmux pane's shell.
 **`--wait` is incompatible with `--no-enter`** — the wrapper script must be executed by the shell, so Enter must be sent.
 
 **`--close` is incompatible with `--no-enter`** — `exit` must be submitted to the shell.
+
+**Piping commands** — `--pipe CMD` appends `| CMD` to the command before it is sent or written to the `.cmd` file. Multiple `--pipe` flags build a multi-stage pipeline in declaration order:
+
+```sh
+workspace run scooter "find . -name '*.log'" --pipe "grep ERROR" --pipe "wc -l"
+# sends: find . -name '*.log' | grep ERROR | wc -l
+```
+
+Each stage is individually validated for shell quoting before the stages are joined, so an unbalanced quote in one stage cannot mask an unbalanced quote in another. `--pipe` is incompatible with `--no-enter` since the pipeline must be submitted to the shell.
 
 **`--dry-run` with `--wait`** prints the contents of both files that would be written (`.cmd` and `.sh`) and the pane command that would be sent, using `<uuid>` as a placeholder. Nothing is written or sent.
 
@@ -81,4 +91,12 @@ workspace run scooter 'rake spec' --split --close
 
 # Wait for a command and close the pane after it finishes
 workspace run scooter 'rake spec' --wait --close
+
+# Pipe output of one claude invocation into another
+workspace run scooter "claude -p 'find recent Slack @-mentions'" \
+  --pipe "claude -p 'summarize and notify me'" \
+  --split --wait --close
+
+# Multi-stage pipeline
+workspace run scooter 'grep ERROR log/production.log' --pipe 'sort' --pipe 'uniq -c'
 ```
