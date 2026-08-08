@@ -37,6 +37,7 @@ RSpec.describe Workspace::CLI do
     claude_command = overrides[:claude_command] || CLITestHelpers::FakeClaudeCommand.new
     lookup_command = overrides[:lookup_command] || Workspace::Commands::Lookup.new(project_config: project_config, output: output)
     update_pane_command = overrides[:update_pane_command] || CLITestHelpers::FakeUpdatePaneCommand.new
+    run_command = overrides[:run_command] || CLITestHelpers::FakeRunCommand.new
 
     cli = Workspace::CLI.new(
       config: config,
@@ -62,6 +63,7 @@ RSpec.describe Workspace::CLI do
       claude_command: claude_command,
       lookup_command: lookup_command,
       update_pane_command: update_pane_command,
+      run_command: run_command,
       logger: logger,
       output: output,
       error_output: error_output,
@@ -673,6 +675,164 @@ RSpec.describe Workspace::CLI do
       cli.run(["relaunch"])
 
       expect(output.string).to include("Will relaunch: proj1, proj2")
+    end
+  end
+
+  describe "#run with run" do
+    it "exits 1 and shows usage when no arguments given" do
+      cli, _, error_output = build_test_cli
+      expect { cli.run(["run"]) }.to raise_error(FakeSystemExit) { |e|
+        expect(e.status).to eq(1)
+      }
+      expect(error_output.string).to include("Usage: workspace run")
+    end
+
+    it "dispatches to run_command with explicit project and command" do
+      run_command = CLITestHelpers::FakeRunCommand.new
+      cli, _, _ = build_test_cli(run_command: run_command)
+      cli.run(["run", "myproject", "echo hi"])
+
+      expect(run_command.calls.size).to eq(1)
+      call = run_command.calls.first
+      expect(call[:project]).to eq("myproject")
+      expect(call[:command]).to eq("echo hi")
+      expect(call[:pane]).to eq(:bottom)
+      expect(call[:enter]).to eq(true)
+    end
+
+    it "auto-detects project from cwd when only command given" do
+      Dir.mktmpdir do |dir|
+        File.write(File.join(dir, ".workspace-project"), "detected-project")
+
+        run_command = CLITestHelpers::FakeRunCommand.new
+        cli, _, _ = build_test_cli(run_command: run_command, working_dir: dir)
+        cli.run(["run", "echo hello"])
+
+        expect(run_command.calls.first[:project]).to eq("detected-project")
+        expect(run_command.calls.first[:command]).to eq("echo hello")
+      end
+    end
+
+    it "exits 1 when only command given and project cannot be detected" do
+      cli, _, error_output = build_test_cli(working_dir: Dir.tmpdir)
+      expect { cli.run(["run", "echo hello"]) }.to raise_error(FakeSystemExit) { |e|
+        expect(e.status).to eq(1)
+      }
+      expect(error_output.string).to include("Usage: workspace run")
+    end
+
+    it "passes --pane N as integer to run_command" do
+      run_command = CLITestHelpers::FakeRunCommand.new
+      cli, _, _ = build_test_cli(run_command: run_command)
+      cli.run(["run", "myproject", "rake spec", "--pane", "2"])
+
+      expect(run_command.calls.first[:pane]).to eq(2)
+    end
+
+    it "passes --pane bottom as :bottom to run_command" do
+      run_command = CLITestHelpers::FakeRunCommand.new
+      cli, _, _ = build_test_cli(run_command: run_command)
+      cli.run(["run", "myproject", "rake spec", "--pane", "bottom"])
+
+      expect(run_command.calls.first[:pane]).to eq(:bottom)
+    end
+
+    it "exits 1 for invalid --pane value" do
+      cli, _, error_output = build_test_cli
+      expect { cli.run(["run", "myproject", "echo hi", "--pane", "invalid"]) }.to raise_error(FakeSystemExit) { |e|
+        expect(e.status).to eq(1)
+      }
+      expect(error_output.string).to include("Invalid --pane value")
+    end
+
+    it "passes --bottom as pane: :bottom" do
+      run_command = CLITestHelpers::FakeRunCommand.new
+      cli, _, _ = build_test_cli(run_command: run_command)
+      cli.run(["run", "myproject", "echo hi", "--bottom"])
+
+      expect(run_command.calls.first[:pane]).to eq(:bottom)
+    end
+
+    it "passes --split flag to run_command" do
+      run_command = CLITestHelpers::FakeRunCommand.new
+      cli, _, _ = build_test_cli(run_command: run_command)
+      cli.run(["run", "myproject", "tail -f log/dev.log", "--split"])
+
+      expect(run_command.calls.first[:split]).to eq(true)
+    end
+
+    it "passes --split --vertical flags to run_command" do
+      run_command = CLITestHelpers::FakeRunCommand.new
+      cli, _, _ = build_test_cli(run_command: run_command)
+      cli.run(["run", "myproject", "rails console", "--split", "--vertical"])
+
+      expect(run_command.calls.first[:split]).to eq(true)
+      expect(run_command.calls.first[:vertical]).to eq(true)
+    end
+
+    it "exits 1 when --vertical is given without --split" do
+      cli, _, error_output = build_test_cli
+      expect { cli.run(["run", "myproject", "rails console", "--vertical"]) }.to raise_error(FakeSystemExit) { |e|
+        expect(e.status).to eq(1)
+      }
+      expect(error_output.string).to include("--vertical requires --split")
+    end
+
+    it "joins multi-word trailing args into a single command" do
+      run_command = CLITestHelpers::FakeRunCommand.new
+      cli, _, _ = build_test_cli(run_command: run_command)
+      cli.run(["run", "myproject", "echo", "hello", "world"])
+
+      expect(run_command.calls.first[:project]).to eq("myproject")
+      expect(run_command.calls.first[:command]).to eq("echo hello world")
+    end
+
+    it "passes --no-enter as enter: false" do
+      run_command = CLITestHelpers::FakeRunCommand.new
+      cli, _, _ = build_test_cli(run_command: run_command)
+      cli.run(["run", "myproject", "echo hi", "--no-enter"])
+
+      expect(run_command.calls.first[:enter]).to eq(false)
+    end
+
+    it "passes --focus flag to run_command" do
+      run_command = CLITestHelpers::FakeRunCommand.new
+      cli, _, _ = build_test_cli(run_command: run_command)
+      cli.run(["run", "myproject", "echo hi", "--focus"])
+
+      expect(run_command.calls.first[:focus]).to eq(true)
+    end
+
+    it "passes --dry-run flag to run_command" do
+      run_command = CLITestHelpers::FakeRunCommand.new
+      cli, _, _ = build_test_cli(run_command: run_command)
+      cli.run(["run", "myproject", "echo hi", "--dry-run"])
+
+      expect(run_command.calls.first[:dry_run]).to eq(true)
+    end
+
+    it "fires post_run hook after running" do
+      run_command = CLITestHelpers::FakeRunCommand.new
+      hook_runner = CLITestHelpers::FakeHookRunner.new
+      cli, _, _ = build_test_cli(run_command: run_command, hook_runner: hook_runner)
+      cli.run(["run", "myproject", "echo hi"])
+
+      expect(hook_runner.runs).to include(hash_including(project: "myproject", event: "post_run"))
+    end
+
+    it "does not fire post_run hook for --dry-run" do
+      run_command = CLITestHelpers::FakeRunCommand.new
+      hook_runner = CLITestHelpers::FakeHookRunner.new
+      cli, _, _ = build_test_cli(run_command: run_command, hook_runner: hook_runner)
+      cli.run(["run", "myproject", "echo hi", "--dry-run"])
+
+      expect(hook_runner.runs).not_to include(hash_including(event: "post_run"))
+    end
+
+    it "shows run in help output" do
+      cli, output, _ = build_test_cli
+      cli.run(["help"])
+      expect(output.string).to include("run")
     end
   end
 end

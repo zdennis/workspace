@@ -76,6 +76,43 @@ module Workspace
       system("tmux", "resize-pane", "-t", target, "-y", size)
     end
 
+    # Lists pane indices for a given session window.
+    #
+    # @param session_name [String] tmux session name
+    # @param window [String] window index (default "0")
+    # @return [Array<Integer>] sorted pane indices, empty array on failure
+    def panes(session_name, window: "0")
+      target = "#{session_name}:#{window}"
+      @logger.debug { "tmux: listing panes for #{target}" }
+      stdout, _, status = Open3.capture3("tmux", "list-panes", "-t", target, "-F", "\#{pane_index}")
+      return [] unless status.success?
+      stdout.strip.lines.map { |l| l.strip.to_i }.sort
+    end
+
+    # Splits a pane in the given window.
+    #
+    # Uses `-P -F '#{pane_index}'` so the new pane's index is reported by tmux itself.
+    # Callers must not re-query {#panes} and assume the last entry is the new pane —
+    # that is racy and can be defeated by tmux pane index reuse.
+    #
+    # @param session_name [String] tmux session name
+    # @param window [String] window index (default "0")
+    # @param pane [Integer, nil] pane index to split; nil targets the window (tmux picks active pane)
+    # @param vertical [Boolean] true = side-by-side (-h), false = top/bottom (-v, default)
+    # @return [Integer, nil] index of the newly created pane, or nil if the split failed
+    def split_window(session_name, window: "0", pane: nil, vertical: false)
+      target = pane ? "#{session_name}:#{window}.#{pane}" : "#{session_name}:#{window}"
+      @logger.debug { "tmux: split-window #{vertical ? "-h" : "-v"} -t #{target}" }
+      stdout, _, status = Open3.capture3(
+        "tmux", "split-window", (vertical ? "-h" : "-v"), "-t", target,
+        "-P", "-F", "\#{pane_index}"
+      )
+      return nil unless status.success?
+      new_index = stdout.strip
+      return nil if new_index.empty?
+      new_index.to_i
+    end
+
     # @param session_name [String] tmux session name
     # @param window [String] window index (default "0")
     # @return [String, nil] the layout string, or nil if capture fails

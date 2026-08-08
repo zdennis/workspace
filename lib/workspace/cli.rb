@@ -33,7 +33,7 @@ module Workspace
     # @param error_output [IO] error output stream for warnings and errors
     # @param input [IO] input stream for interactive prompts
     # @param exit_handler [#exit] callable for process exit (Kernel in production, FakeExitHandler in tests)
-    def initialize(config:, state:, project_config:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd)
+    def initialize(config:, state:, project_config:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd)
       @config = config
       @state = state
       @project_config = project_config
@@ -57,6 +57,7 @@ module Workspace
       @claude_command = claude_command
       @lookup_command = lookup_command
       @update_pane_command = update_pane_command
+      @run_command = run_command
       @exit_handler = exit_handler
       @logger = logger
       @output = output
@@ -102,6 +103,8 @@ module Workspace
         cmd_tile(args)
       when "resize"
         cmd_resize(args)
+      when "run"
+        cmd_run(args)
       when "layout"
         cmd_layout(args)
       when "config"
@@ -190,6 +193,7 @@ module Workspace
           relaunch        Stop and relaunch all active workspace projects
           repair          Rebuild state from live iTerm windows
           resize          Resize tmux panes for a running project
+          run             Send a shell command to a pane in a running project's tmux session
           start           Create a worktree and launch it (from JIRA key, PR URL, or branch)
           status          Show detailed state of tracked launcher sessions
           set-command     Set the shell command for a pane in a project config (--pane <N>)
@@ -414,6 +418,96 @@ module Workspace
       @resize_command.call(project, spec)
 
       @hook_runner.run(project, "post_resize")
+    end
+
+    def cmd_run(args)
+      pane_opt = nil
+      bottom = false
+      split = false
+      vertical = false
+      no_enter = false
+      focus = false
+      dry_run = false
+
+      parser = OptionParser.new do |opts|
+        opts.banner = "Usage: workspace run [project] <command> [options]"
+        opts.separator ""
+        opts.separator "Send a shell command to a pane in a running project's tmux session."
+        opts.separator "Defaults to the bottommost pane. Auto-detects project from cwd if omitted."
+        opts.separator ""
+        opts.separator "Options:"
+        opts.on("--pane N", String,
+          "Target pane by zero-based index, or 'bottom' for the last pane") do |n|
+          pane_opt = n
+        end
+        # --bottom is intentionally equivalent to the default. It exists so scripts can
+        # state the target pane explicitly rather than relying on an implicit default.
+        opts.on("--bottom", "Target the bottommost pane (default behavior)") do
+          bottom = true
+        end
+        opts.on("--split", "Create a new pane below the bottommost and run command there") do
+          split = true
+        end
+        opts.on("--vertical",
+          "With --split, split side-by-side (vertical divider) instead of horizontal") do
+          vertical = true
+        end
+        opts.on("--no-enter", "Send command text without pressing Enter") do
+          no_enter = true
+        end
+        opts.on("--focus", "Bring the project's iTerm window to the front after sending") do
+          focus = true
+        end
+        opts.on("--dry-run", "Print the tmux command without executing it") do
+          dry_run = true
+        end
+      end
+      parser.parse!(args)
+
+      if vertical && !split
+        raise UsageError, "--vertical requires --split.\n\n#{parser.help}"
+      end
+
+      pane = if pane_opt
+        case pane_opt
+        when /\A\d+\z/
+          pane_opt.to_i
+        when "bottom"
+          :bottom
+        else
+          raise UsageError, "Invalid --pane value: '#{pane_opt}'. Use a number or 'bottom'.\n\n#{parser.help}"
+        end
+      elsif bottom
+        :bottom
+      else
+        :bottom
+      end
+
+      if args.size == 1
+        project = @project_detector.detect(@working_dir)
+        raise UsageError, parser.help unless project
+        command = args[0]
+      elsif args.size >= 2
+        project = args[0]
+        # Join trailing args so `workspace run proj echo hello world` sends the whole
+        # command rather than silently dropping everything after the first word.
+        command = args[1..].join(" ")
+      else
+        raise UsageError, parser.help
+      end
+
+      @run_command.call(
+        project, command,
+        pane: pane,
+        split: split,
+        vertical: vertical,
+        enter: !no_enter,
+        focus: focus,
+        dry_run: dry_run
+      )
+
+      # --dry-run performs no real work, so post_run hooks must not observe it as a run.
+      @hook_runner.run(project, "post_run") unless dry_run
     end
 
     def cmd_layout(args)

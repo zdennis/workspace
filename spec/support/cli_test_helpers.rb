@@ -124,6 +124,14 @@ module CLITestHelpers
     def capture_layout(_session, **_opts) = "layout-string"
     def apply_layout(_session, _layout, **_opts) = true
 
+    def panes(_session, **_opts)
+      [0, 1, 2]
+    end
+
+    def split_window(_session, **_opts)
+      3
+    end
+
     def command_for(_project, **_opts)
       "tmuxinator start test --attach"
     end
@@ -201,6 +209,18 @@ module CLITestHelpers
 
   class FakeUpdatePaneCommand
     def call(project:, command:, pane_index:) = nil
+  end
+
+  class FakeRunCommand
+    attr_reader :calls
+
+    def initialize
+      @calls = []
+    end
+
+    def call(project, command, **opts)
+      @calls << {project: project, command: command, **opts}
+    end
   end
 
   class FakeHookRunner

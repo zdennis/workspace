@@ -168,4 +168,77 @@ RSpec.describe Workspace::Tmux do
       expect(result).to be false
     end
   end
+
+  describe "#panes" do
+    let(:tmux) { described_class.new(config: config) }
+
+    it "returns sorted pane indices on success" do
+      allow(Open3).to receive(:capture3)
+        .with("tmux", "list-panes", "-t", "my-session:0", "-F", "\#{pane_index}")
+        .and_return(["2\n0\n1\n", "", double(success?: true)])
+
+      expect(tmux.panes("my-session")).to eq([0, 1, 2])
+    end
+
+    it "returns empty array on failure" do
+      allow(Open3).to receive(:capture3).and_return(["", "error", double(success?: false)])
+
+      expect(tmux.panes("bad-session")).to eq([])
+    end
+
+    it "accepts a window keyword argument" do
+      allow(Open3).to receive(:capture3)
+        .with("tmux", "list-panes", "-t", "my-session:1", "-F", "\#{pane_index}")
+        .and_return(["0\n1\n", "", double(success?: true)])
+
+      expect(tmux.panes("my-session", window: "1")).to eq([0, 1])
+    end
+  end
+
+  describe "#split_window" do
+    let(:tmux) { described_class.new(config: config) }
+
+    def stub_split(target, stdout: "3\n", success: true)
+      allow(Open3).to receive(:capture3)
+        .with("tmux", "split-window", anything, "-t", target, "-P", "-F", "\#{pane_index}")
+        .and_return([stdout, "", double(success?: success)])
+    end
+
+    it "splits vertically (top/bottom) by default and returns the new pane index" do
+      stub_split("my-session:0")
+
+      expect(tmux.split_window("my-session")).to eq(3)
+      expect(Open3).to have_received(:capture3)
+        .with("tmux", "split-window", "-v", "-t", "my-session:0", "-P", "-F", "\#{pane_index}")
+    end
+
+    it "splits horizontally (side-by-side) when vertical: true" do
+      stub_split("my-session:0")
+
+      expect(tmux.split_window("my-session", vertical: true)).to eq(3)
+      expect(Open3).to have_received(:capture3)
+        .with("tmux", "split-window", "-h", "-t", "my-session:0", "-P", "-F", "\#{pane_index}")
+    end
+
+    it "targets a specific pane when pane: is given" do
+      stub_split("my-session:0.2")
+
+      tmux.split_window("my-session", pane: 2)
+
+      expect(Open3).to have_received(:capture3)
+        .with("tmux", "split-window", "-v", "-t", "my-session:0.2", "-P", "-F", "\#{pane_index}")
+    end
+
+    it "returns nil when split fails" do
+      stub_split("my-session:0", stdout: "", success: false)
+
+      expect(tmux.split_window("my-session")).to be_nil
+    end
+
+    it "returns nil when tmux reports no pane index" do
+      stub_split("my-session:0", stdout: "\n")
+
+      expect(tmux.split_window("my-session")).to be_nil
+    end
+  end
 end
