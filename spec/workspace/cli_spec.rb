@@ -40,6 +40,7 @@ RSpec.describe Workspace::CLI do
     run_command = overrides[:run_command] || CLITestHelpers::FakeRunCommand.new
     run_result_store = overrides[:run_result_store] || CLITestHelpers::FakeRunResultStore.new
     run_and_report_command = overrides[:run_and_report_command] || CLITestHelpers::FakeRunAndReportCommand.new
+    capture_command = overrides[:capture_command] || CLITestHelpers::FakeCaptureCommand.new
 
     cli = Workspace::CLI.new(
       config: config,
@@ -68,6 +69,7 @@ RSpec.describe Workspace::CLI do
       run_command: run_command,
       run_result_store: run_result_store,
       run_and_report_command: run_and_report_command,
+      capture_command: capture_command,
       logger: logger,
       output: output,
       error_output: error_output,
@@ -1181,6 +1183,111 @@ RSpec.describe Workspace::CLI do
       }.not_to raise_error
 
       expect(run_command.calls).not_to be_empty
+    end
+  end
+
+  describe "#run with capture" do
+    it "exits 1 and shows usage when no project given and cwd has no workspace project" do
+      cli, _, error_output = build_test_cli(working_dir: Dir.tmpdir)
+      expect { cli.run(["capture"]) }.to raise_error(FakeSystemExit) { |e|
+        expect(e.status).to eq(1)
+      }
+      expect(error_output.string).to include("Usage: workspace capture")
+    end
+
+    it "auto-detects project from cwd when project arg is omitted" do
+      Dir.mktmpdir do |dir|
+        File.write(File.join(dir, ".workspace-project"), "detected-project")
+
+        capture_command = CLITestHelpers::FakeCaptureCommand.new
+        cli, _, _ = build_test_cli(capture_command: capture_command, working_dir: dir)
+        cli.run(["capture"])
+
+        expect(capture_command.calls.first[:project]).to eq("detected-project")
+      end
+    end
+
+    it "exits 1 when --lines is zero" do
+      cli, _, error_output = build_test_cli
+      expect { cli.run(["capture", "myproject", "--lines", "0"]) }.to raise_error(FakeSystemExit) { |e|
+        expect(e.status).to eq(1)
+      }
+      expect(error_output.string).to include("--lines must be a positive integer")
+    end
+
+    it "exits 1 when --lines is negative" do
+      cli, _, error_output = build_test_cli
+      expect { cli.run(["capture", "myproject", "--lines", "-5"]) }.to raise_error(FakeSystemExit) { |e|
+        expect(e.status).to eq(1)
+      }
+      expect(error_output.string).to include("--lines must be a positive integer")
+    end
+
+    it "exits 1 when --all and --lines are both specified" do
+      cli, _, error_output = build_test_cli
+      expect { cli.run(["capture", "myproject", "--all", "--lines", "200"]) }.to raise_error(FakeSystemExit) { |e|
+        expect(e.status).to eq(1)
+      }
+      expect(error_output.string).to include("--all and --lines are mutually exclusive")
+    end
+
+    it "dispatches to capture_command with explicit project and default options" do
+      capture_command = CLITestHelpers::FakeCaptureCommand.new
+      cli, _, _ = build_test_cli(capture_command: capture_command)
+      cli.run(["capture", "myproject"])
+
+      expect(capture_command.calls.size).to eq(1)
+      call = capture_command.calls.first
+      expect(call[:project]).to eq("myproject")
+      expect(call[:pane]).to eq(:bottom)
+      expect(call[:lines]).to eq(100)
+      expect(call[:all]).to eq(false)
+    end
+
+    it "passes --pane N as an integer" do
+      capture_command = CLITestHelpers::FakeCaptureCommand.new
+      cli, _, _ = build_test_cli(capture_command: capture_command)
+      cli.run(["capture", "myproject", "--pane", "1"])
+
+      expect(capture_command.calls.first[:pane]).to eq(1)
+    end
+
+    it "passes --pane bottom as :bottom" do
+      capture_command = CLITestHelpers::FakeCaptureCommand.new
+      cli, _, _ = build_test_cli(capture_command: capture_command)
+      cli.run(["capture", "myproject", "--pane", "bottom"])
+
+      expect(capture_command.calls.first[:pane]).to eq(:bottom)
+    end
+
+    it "exits 1 for an invalid --pane value" do
+      cli, _, error_output = build_test_cli
+      expect { cli.run(["capture", "myproject", "--pane", "invalid"]) }.to raise_error(FakeSystemExit) { |e|
+        expect(e.status).to eq(1)
+      }
+      expect(error_output.string).to include("Invalid --pane value")
+    end
+
+    it "passes --lines N to capture_command" do
+      capture_command = CLITestHelpers::FakeCaptureCommand.new
+      cli, _, _ = build_test_cli(capture_command: capture_command)
+      cli.run(["capture", "myproject", "--lines", "200"])
+
+      expect(capture_command.calls.first[:lines]).to eq(200)
+    end
+
+    it "passes --all flag to capture_command" do
+      capture_command = CLITestHelpers::FakeCaptureCommand.new
+      cli, _, _ = build_test_cli(capture_command: capture_command)
+      cli.run(["capture", "myproject", "--all"])
+
+      expect(capture_command.calls.first[:all]).to eq(true)
+    end
+
+    it "shows capture in help output" do
+      cli, output, _ = build_test_cli
+      cli.run(["help"])
+      expect(output.string).to include("capture")
     end
   end
 

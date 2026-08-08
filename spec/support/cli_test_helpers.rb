@@ -245,6 +245,18 @@ module CLITestHelpers
     end
   end
 
+  class FakeCaptureCommand
+    attr_reader :calls
+
+    def initialize
+      @calls = []
+    end
+
+    def call(project, pane: :bottom, lines: 100, all: false)
+      @calls << {project: project, pane: pane, lines: lines, all: all}
+    end
+  end
+
   class FakeRunResultStore
     attr_reader :written
 

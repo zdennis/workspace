@@ -33,6 +33,7 @@ require_relative "workspace/commands/prune"
 require_relative "workspace/commands/lookup"
 require_relative "workspace/commands/update_pane_command"
 require_relative "workspace/commands/run"
+require_relative "workspace/commands/capture"
 require_relative "workspace/run_result"
 require_relative "workspace/run_result_store"
 require_relative "workspace/commands/run_and_report"
@@ -95,6 +96,7 @@ module Workspace
 
     run_result_store = RunResultStore.new(config: config)
     run_and_report_command = Commands::RunAndReport.new(run_result_store: run_result_store)
+    capture_command = Commands::Capture.new(tmux: tmux, output: output, error_output: error_output)
 
     CLI.new(
       config: config,
@@ -123,6 +125,7 @@ module Workspace
       run_command: run_command,
       run_result_store: run_result_store,
       run_and_report_command: run_and_report_command,
+      capture_command: capture_command,
       logger: logger,
       output: output,
       error_output: error_output,

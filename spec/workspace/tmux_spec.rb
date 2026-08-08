@@ -129,6 +129,48 @@ RSpec.describe Workspace::Tmux do
     end
   end
 
+  describe "#capture_pane" do
+    let(:tmux) { described_class.new(config: config) }
+
+    it "returns stdout on success using default 100 lines" do
+      allow(Open3).to receive(:capture3)
+        .with("tmux", "capture-pane", "-t", "my-session:0.2", "-p", "-S", "-100")
+        .and_return(["log output\n", "", double(success?: true)])
+
+      expect(tmux.capture_pane("my-session", 2)).to eq("log output\n")
+    end
+
+    it "uses -S - when all: true" do
+      allow(Open3).to receive(:capture3)
+        .with("tmux", "capture-pane", "-t", "my-session:0.0", "-p", "-S", "-")
+        .and_return(["full history\n", "", double(success?: true)])
+
+      expect(tmux.capture_pane("my-session", 0, all: true)).to eq("full history\n")
+    end
+
+    it "uses -S -N for a custom lines count" do
+      allow(Open3).to receive(:capture3)
+        .with("tmux", "capture-pane", "-t", "my-session:0.1", "-p", "-S", "-200")
+        .and_return(["200 lines\n", "", double(success?: true)])
+
+      expect(tmux.capture_pane("my-session", 1, lines: 200)).to eq("200 lines\n")
+    end
+
+    it "returns nil on failure" do
+      allow(Open3).to receive(:capture3).and_return(["", "error", double(success?: false)])
+
+      expect(tmux.capture_pane("bad-session", 0)).to be_nil
+    end
+
+    it "returns empty string when buffer is empty (valid)" do
+      allow(Open3).to receive(:capture3)
+        .with("tmux", "capture-pane", "-t", "my-session:0.0", "-p", "-S", "-100")
+        .and_return(["", "", double(success?: true)])
+
+      expect(tmux.capture_pane("my-session", 0)).to eq("")
+    end
+  end
+
   describe "#apply_layout" do
     let(:tmux) { described_class.new(config: config) }
 

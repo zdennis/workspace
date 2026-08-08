@@ -35,7 +35,7 @@ module Workspace
     # @param error_output [IO] error output stream for warnings and errors
     # @param input [IO] input stream for interactive prompts
     # @param exit_handler [#exit] callable for process exit (Kernel in production, FakeExitHandler in tests)
-    def initialize(config:, state:, project_config:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd)
+    def initialize(config:, state:, project_config:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd)
       @config = config
       @state = state
       @project_config = project_config
@@ -62,6 +62,7 @@ module Workspace
       @run_command = run_command
       @run_result_store = run_result_store
       @run_and_report_command = run_and_report_command
+      @capture_command = capture_command
       @exit_handler = exit_handler
       @logger = logger
       @output = output
@@ -107,6 +108,8 @@ module Workspace
         cmd_tile(args)
       when "resize"
         cmd_resize(args)
+      when "capture"
+        cmd_capture(args)
       when "run"
         cmd_run(args)
       when "run-and-report"
@@ -184,6 +187,7 @@ module Workspace
         Subcommands:
           add             Add a tmuxinator config for a project directory
           alfred          Manage the Alfred workflow for workspace focus
+          capture         Print a tmux pane's scrollback buffer to stdout
           cleanup         Detect and remove zombie sessions from state
           config          Show project or global configuration
           current         Print the workspace project name for the current directory
@@ -642,6 +646,63 @@ module Workspace
         "Hint: if your argument contains single quotes (e.g. \"what's\"), " \
         "wrap it in double quotes instead: echo \"what's up\". " \
         "For unbalanced double quotes, escape the inner ones with backslash: echo \"he said \\\"hello\\\"\"."
+    end
+
+    def cmd_capture(args)
+      pane_opt = nil
+      lines_opt = 100
+      all = false
+
+      parser = OptionParser.new do |opts|
+        opts.banner = "Usage: workspace capture <project> [options]"
+        opts.separator ""
+        opts.separator "Read a tmux pane's scrollback buffer and print it to stdout."
+        opts.separator "Defaults to the bottommost pane and last 100 lines."
+        opts.separator ""
+        opts.separator "Options:"
+        opts.on("--pane N", String,
+          "Target pane by zero-based index, or 'bottom' for the last pane") do |n|
+          pane_opt = n
+        end
+        opts.on("--lines N", Integer,
+          "Number of lines from the bottom to capture (default: 100)") do |n|
+          lines_opt = n
+        end
+        opts.on("--all", "Capture full pane history up to tmux history-limit") do
+          all = true
+        end
+      end
+      parser.parse!(args)
+
+      if lines_opt <= 0
+        raise UsageError, "--lines must be a positive integer.\n\n#{parser.help}"
+      end
+
+      if all && lines_opt != 100
+        raise UsageError, "--all and --lines are mutually exclusive.\n\n#{parser.help}"
+      end
+
+      if args.empty?
+        project = @project_detector.detect(@working_dir)
+        raise UsageError, parser.help unless project
+      else
+        project = args.first
+      end
+
+      pane = if pane_opt
+        case pane_opt
+        when /\A\d+\z/
+          pane_opt.to_i
+        when "bottom"
+          :bottom
+        else
+          raise UsageError, "Invalid --pane value: '#{pane_opt}'. Use a number or 'bottom'.\n\n#{parser.help}"
+        end
+      else
+        :bottom
+      end
+
+      @capture_command.call(project, pane: pane, lines: lines_opt, all: all)
     end
 
     def cmd_run_and_report(args)

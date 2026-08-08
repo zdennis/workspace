@@ -122,6 +122,22 @@ module Workspace
       status.success? ? stdout.strip : nil
     end
 
+    # Captures the scrollback buffer of a tmux pane and returns it as a string.
+    #
+    # @param session_name [String] tmux session name
+    # @param pane [Integer] zero-based pane index within window 0
+    # @param lines [Integer] number of lines from the bottom to capture (default 100)
+    # @param all [Boolean] capture the full history up to history-limit (overrides lines:)
+    # @return [String, nil] the captured text, or nil if tmux reported failure
+    def capture_pane(session_name, pane, lines: 100, all: false)
+      target = "#{session_name}:0.#{pane}"
+      @logger.debug { "tmux: capture-pane -t #{target} (all=#{all}, lines=#{lines})" }
+      args = ["tmux", "capture-pane", "-t", target, "-p"]
+      args += all ? ["-S", "-"] : ["-S", "-#{lines}"]
+      stdout, _, status = Open3.capture3(*args)
+      status.success? ? stdout : nil
+    end
+
     # @param session_name [String] tmux session name
     # @param layout [String] tmux layout string
     # @param window [String] window index (default "0")
