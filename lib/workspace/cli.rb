@@ -35,10 +35,11 @@ module Workspace
     # @param error_output [IO] error output stream for warnings and errors
     # @param input [IO] input stream for interactive prompts
     # @param exit_handler [#exit] callable for process exit (Kernel in production, FakeExitHandler in tests)
-    def initialize(config:, state:, project_config:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd)
+    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd)
       @config = config
       @state = state
       @project_config = project_config
+      @git = git
       @window_manager = window_manager
       @doctor = doctor
       @project_settings = project_settings
@@ -987,6 +988,7 @@ module Workspace
     def cmd_list(args)
       all = false
       json = false
+      with_url = false
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: workspace list [options]"
         opts.separator ""
@@ -997,6 +999,7 @@ module Workspace
           all = true
         end
         opts.on("--json", "Output as JSON") { json = true }
+        opts.on("--with-url", "Include the git origin URL alongside each project name") { with_url = true }
       end
       parser.parse!(args)
 
@@ -1005,9 +1008,20 @@ module Workspace
           projects = @project_config.available_projects.map do |name|
             root = @project_config.project_root_for(name)
             directory = root ? File.expand_path(root) : nil
-            {"name" => name, "directory" => directory}
+            entry = {"name" => name, "directory" => directory}
+            entry["url"] = root ? @git.remote_url(directory || root) : nil if with_url
+            entry
           end
           @output.puts JSON.generate(projects)
+        elsif with_url
+          rows = @project_config.available_projects.map do |name|
+            root = @project_config.project_root_for(name)
+            dir = root ? File.expand_path(root) : nil
+            url = dir ? @git.remote_url(dir) : nil
+            [name, url || ""]
+          end
+          name_width = rows.map { |r| r[0].length }.max || 0
+          rows.each { |name, url| @output.puts "#{name.ljust(name_width)}  #{url}".rstrip }
         else
           @project_config.available_projects.each { |name| @output.puts name }
         end
@@ -1024,14 +1038,24 @@ module Workspace
         return
       end
 
-      if @state.empty?
-        if json
-          @output.puts "[]"
-        else
-          @output.puts "No active projects. Run 'workspace list --all' to see available projects."
+      if json && with_url
+        projects = @state.keys.sort.map do |name|
+          root = @project_config.project_root_for(name)
+          dir = root ? File.expand_path(root) : nil
+          {"name" => name, "directory" => dir, "url" => (dir ? @git.remote_url(dir) : nil)}
         end
+        @output.puts JSON.generate(projects)
       elsif json
         @output.puts JSON.generate(@state.keys.sort)
+      elsif with_url
+        rows = @state.keys.sort.map do |name|
+          root = @project_config.project_root_for(name)
+          dir = root ? File.expand_path(root) : nil
+          url = dir ? @git.remote_url(dir) : nil
+          [name, url || ""]
+        end
+        name_width = rows.map { |r| r[0].length }.max || 0
+        rows.each { |name, url| @output.puts "#{name.ljust(name_width)}  #{url}".rstrip }
       else
         @state.keys.sort.each { |p| @output.puts p }
       end

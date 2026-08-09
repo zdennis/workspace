@@ -102,6 +102,7 @@ module Workspace
       config: config,
       state: state,
       project_config: project_config,
+      git: git,
       window_manager: window_manager,
       doctor: doctor,
       project_settings: project_settings,

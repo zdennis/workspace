@@ -259,4 +259,27 @@ RSpec.describe Workspace::Git do
       expect(git.prompt_base_branch).to be_nil
     end
   end
+
+  describe "#remote_url" do
+    it "returns the origin remote URL for a git repository" do
+      Dir.mktmpdir do |dir|
+        system("git", "-C", dir, "init", "--quiet")
+        system("git", "-C", dir, "remote", "add", "origin", "git@github.com:org/repo.git")
+        expect(git.remote_url(dir)).to eq("git@github.com:org/repo.git")
+      end
+    end
+
+    it "returns nil for a directory with no origin remote" do
+      Dir.mktmpdir do |dir|
+        system("git", "-C", dir, "init", "--quiet")
+        expect(git.remote_url(dir)).to be_nil
+      end
+    end
+
+    it "returns nil for a non-git directory" do
+      Dir.mktmpdir do |dir|
+        expect(git.remote_url(dir)).to be_nil
+      end
+    end
+  end
 end

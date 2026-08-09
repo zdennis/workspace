@@ -46,6 +46,7 @@ RSpec.describe Workspace::CLI do
       config: config,
       state: state,
       project_config: project_config,
+      git: git,
       window_manager: window_manager,
       doctor: doctor,
       project_settings: project_settings,
@@ -478,6 +479,111 @@ RSpec.describe Workspace::CLI do
       cli, output, _ = build_test_cli
       cli.run(["list", "--json"])
       expect(JSON.parse(output.string)).to eq([])
+    end
+
+    it "outputs JSON objects with url when --json and --with-url combined" do
+      state = CLITestHelpers::FakeState.new
+      state["proj-a"] = {"unique_id" => "uid1", "iterm_window_id" => 100}
+
+      pc = CLITestHelpers::FakeProjectConfig.new("proj-a" => "/path/a")
+      git = instance_double(Workspace::Git)
+      allow(git).to receive(:remote_url).with("/path/a").and_return("https://github.com/org/proj-a")
+
+      cli, output, _ = build_test_cli(state: state, project_config: pc, git: git)
+      cli.run(["list", "--json", "--with-url"])
+
+      result = JSON.parse(output.string)
+      expect(result).to be_an(Array)
+      proj = result.find { |p| p["name"] == "proj-a" }
+      expect(proj["url"]).to eq("https://github.com/org/proj-a")
+      expect(proj["directory"]).to eq("/path/a")
+    end
+
+    context "with --with-url" do
+      it "prints name and URL columns for active projects" do
+        state = CLITestHelpers::FakeState.new
+        state["proj-a"] = {"unique_id" => "uid1", "iterm_window_id" => 100}
+        state["proj-b"] = {"unique_id" => "uid2", "iterm_window_id" => 200}
+
+        pc = CLITestHelpers::FakeProjectConfig.new(
+          "proj-a" => "/path/a",
+          "proj-b" => "/path/b"
+        )
+
+        git = instance_double(Workspace::Git)
+        allow(git).to receive(:remote_url).with("/path/a").and_return("https://github.com/org/proj-a")
+        allow(git).to receive(:remote_url).with("/path/b").and_return("https://github.com/org/proj-b")
+
+        cli, output, _ = build_test_cli(state: state, project_config: pc, git: git)
+        cli.run(["list", "--with-url"])
+
+        lines = output.string.lines.map(&:chomp)
+        expect(lines).to include(match(/\Aproj-a\s+https:\/\/github\.com\/org\/proj-a\z/))
+        expect(lines).to include(match(/\Aproj-b\s+https:\/\/github\.com\/org\/proj-b\z/))
+      end
+
+      it "omits URL column when project has no root" do
+        state = CLITestHelpers::FakeState.new
+        state["proj-a"] = {"unique_id" => "uid1"}
+
+        pc = CLITestHelpers::FakeProjectConfig.new("proj-a" => nil)
+        git = instance_double(Workspace::Git)
+        allow(git).to receive(:remote_url).and_return(nil)
+
+        cli, output, _ = build_test_cli(state: state, project_config: pc, git: git)
+        cli.run(["list", "--with-url"])
+
+        expect(output.string).to include("proj-a")
+        expect(git).not_to have_received(:remote_url)
+      end
+
+      it "shows empty URL when remote_url returns nil" do
+        state = CLITestHelpers::FakeState.new
+        state["proj-a"] = {"unique_id" => "uid1"}
+
+        pc = CLITestHelpers::FakeProjectConfig.new("proj-a" => "/path/a")
+        git = instance_double(Workspace::Git)
+        allow(git).to receive(:remote_url).with("/path/a").and_return(nil)
+
+        cli, output, _ = build_test_cli(state: state, project_config: pc, git: git)
+        cli.run(["list", "--with-url"])
+
+        expect(output.string.chomp).to eq("proj-a")
+      end
+    end
+  end
+
+  describe "#run with list --all and --with-url" do
+    it "prints name and URL columns for all available projects" do
+      pc = CLITestHelpers::FakeProjectConfig.new(
+        "project-a" => "/path/a",
+        "project-b" => "/path/b"
+      )
+
+      git = instance_double(Workspace::Git)
+      allow(git).to receive(:remote_url).with("/path/a").and_return("https://github.com/org/project-a")
+      allow(git).to receive(:remote_url).with("/path/b").and_return("https://github.com/org/project-b")
+
+      cli, output, _ = build_test_cli(project_config: pc, git: git)
+      cli.run(["list", "--all", "--with-url"])
+
+      lines = output.string.lines.map(&:chomp)
+      expect(lines).to include(match(/\Aproject-a\s+https:\/\/github\.com\/org\/project-a\z/))
+      expect(lines).to include(match(/\Aproject-b\s+https:\/\/github\.com\/org\/project-b\z/))
+    end
+
+    it "includes url key in JSON when --json and --with-url combined" do
+      pc = CLITestHelpers::FakeProjectConfig.new("project-a" => "/path/a")
+
+      git = instance_double(Workspace::Git)
+      allow(git).to receive(:remote_url).with("/path/a").and_return("https://github.com/org/project-a")
+
+      cli, output, _ = build_test_cli(project_config: pc, git: git)
+      cli.run(["list", "--all", "--json", "--with-url"])
+
+      result = JSON.parse(output.string)
+      proj = result.find { |p| p["name"] == "project-a" }
+      expect(proj["url"]).to eq("https://github.com/org/project-a")
     end
   end
 

@@ -71,6 +71,18 @@ module Workspace
       remote_branches.select { |b| b.downcase.include?(pattern.downcase) }
     end
 
+    # Returns the origin remote URL for a git repository at the given path.
+    # Works for both main worktrees and linked worktrees.
+    #
+    # @param path [String] directory path of the git repository
+    # @return [String, nil] the remote URL, or nil if not a git repo or no origin remote
+    def remote_url(path)
+      stdout, _, status = Open3.capture3("git", "-C", path, "remote", "get-url", "origin")
+      status.success? ? stdout.strip : nil
+    rescue
+      nil
+    end
+
     # Returns true if the given path is a linked git worktree (not the main worktree).
     # Linked worktrees have a `.git` file (not directory) starting with "gitdir:".
     #
