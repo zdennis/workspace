@@ -988,7 +988,7 @@ module Workspace
     def cmd_list(args)
       all = false
       json = false
-      with_url = false
+      show_urls = false
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: workspace list [options]"
         opts.separator ""
@@ -999,7 +999,7 @@ module Workspace
           all = true
         end
         opts.on("--json", "Output as JSON") { json = true }
-        opts.on("--with-url", "Include the git origin URL alongside each project name") { with_url = true }
+        opts.on("--show-urls", "Include the git origin URL alongside each project name") { show_urls = true }
       end
       parser.parse!(args)
 
@@ -1009,11 +1009,11 @@ module Workspace
             root = @project_config.project_root_for(name)
             directory = root ? File.expand_path(root) : nil
             entry = {"name" => name, "directory" => directory}
-            entry["url"] = root ? @git.remote_url(directory || root) : nil if with_url
+            entry["url"] = root ? @git.remote_url(directory || root) : nil if show_urls
             entry
           end
           @output.puts JSON.generate(projects)
-        elsif with_url
+        elsif show_urls
           rows = @project_config.available_projects.map do |name|
             root = @project_config.project_root_for(name)
             dir = root ? File.expand_path(root) : nil
@@ -1038,7 +1038,7 @@ module Workspace
         return
       end
 
-      if json && with_url
+      if json && show_urls
         projects = @state.keys.sort.map do |name|
           root = @project_config.project_root_for(name)
           dir = root ? File.expand_path(root) : nil
@@ -1047,7 +1047,7 @@ module Workspace
         @output.puts JSON.generate(projects)
       elsif json
         @output.puts JSON.generate(@state.keys.sort)
-      elsif with_url
+      elsif show_urls
         rows = @state.keys.sort.map do |name|
           root = @project_config.project_root_for(name)
           dir = root ? File.expand_path(root) : nil

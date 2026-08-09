@@ -14,7 +14,7 @@ workspace list [options]
 |------|-------------|
 | `--all` | List all available projects (not just active ones) |
 | `--json` | Output as JSON |
-| `--with-url` | Include the git origin URL alongside each project name |
+| `--show-urls` | Include the git origin URL alongside each project name |
 
 ## Details
 
@@ -24,7 +24,7 @@ With `--all`, lists all workspace tmuxinator configs found in `~/.config/tmuxina
 
 `list-projects` is a hidden alias for `list --all`.
 
-`--with-url` reads the `origin` remote URL from the project's git repository (no network call). Projects with no configured root or no `origin` remote show a blank URL column. Combine with `--all` to see URLs for every available project. When combined with `--json`, each object gains a `"url"` key.
+`--show-urls` reads the `origin` remote URL from the project's git repository (no network call). Projects with no configured root or no `origin` remote show a blank URL column. Combine with `--all` to see URLs for every available project. When combined with `--json`, each object gains a `"url"` key.
 
 ## Examples
 
@@ -38,11 +38,11 @@ billing
 my-notes
 work-notes
 
-$ workspace list --with-url
+$ workspace list --show-urls
 billing        https://github.com/zendesk/billing
 my-notes       git@github.com:zdennis/my-notes.git
 
-$ workspace list --all --with-url
+$ workspace list --all --show-urls
 billing        https://github.com/zendesk/billing
 my-notes       git@github.com:zdennis/my-notes.git
 work-notes     https://github.com/zendesk/work-notes
@@ -53,9 +53,9 @@ $ workspace list --json
 $ workspace list --all --json
 ["billing","my-notes","work-notes"]
 
-$ workspace list --json --with-url
+$ workspace list --json --show-urls
 [{"name":"billing","directory":"/path/to/billing","url":"https://github.com/zendesk/billing"},...]
 
-$ workspace list --all --json --with-url
+$ workspace list --all --json --show-urls
 [{"name":"billing","directory":"/path/to/billing","url":"https://github.com/zendesk/billing"},...]
 ```
