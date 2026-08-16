@@ -1,5 +1,6 @@
 require "spec_helper"
 require "tmpdir"
+require "delegate"
 
 # Captures the completion callback instead of polling tmux on a thread, so
 # specs can decide exactly when a stage finishes.
@@ -22,6 +23,24 @@ class FakeSentinelPoller
   end
 
   def stopped? = !!@stopped
+end
+
+# Wraps a real client and refuses the first N status reports, so specs can watch
+# what the agent does when a report goes unanswered.
+class FlakyStatusClient < SimpleDelegator
+  attr_reader :status_attempts
+
+  def initialize(inner, failures:)
+    super(inner)
+    @failures = failures
+    @status_attempts = []
+  end
+
+  def report_status(payload)
+    @status_attempts << payload
+    raise Workspace::Error, "connection refused" if @status_attempts.size <= @failures
+    __getobj__.report_status(payload)
+  end
 end
 
 RSpec.describe Workspace::Commands::Agent do
@@ -90,6 +109,7 @@ RSpec.describe Workspace::Commands::Agent do
       epoch_generator: -> { "wa-TESTEPOCH" },
       signal_trapper: signal_trapper,
       sentinel_poller_factory: sentinel_poller_factory,
+      retry_backoff: 0,
       output: output,
       error_output: error_output
     )
@@ -458,6 +478,255 @@ RSpec.describe Workspace::Commands::Agent do
         agent.report_progress("WC-999", "nobody is listening")
         sleep 0.05
         expect(coordinator.status_messages).to be_empty
+      end
+    end
+  end
+
+  describe "reporting status the coordinator does not accept" do
+    def send_command(overrides = {})
+      message = {
+        "type" => "command",
+        "workspace" => "myapp",
+        "work_item_ref" => "WC-42",
+        "dispatch_id" => "d-7a1",
+        "body" => "/build add OAuth support"
+      }.merge(overrides)
+      UNIXSocket.open(agent_socket_path) { |s| s.puts(message.to_json) }
+    end
+
+    def write_pipeline_config
+      File.write(project_config_path, <<~YAML)
+        pipeline:
+          panes:
+            - role: researcher
+            - role: implementer
+          handoff: file_handoff
+      YAML
+    end
+
+    context "when the first attempt goes unanswered" do
+      let(:client) do
+        FlakyStatusClient.new(
+          Workspace::WorkCoordinatorClient.new(
+            socket_path: wc_socket_path, status_socket_path: wc_status_socket_path
+          ),
+          failures: 1
+        )
+      end
+
+      it "retries it as the same report rather than treating silence as success" do
+        coordinator.start
+        write_pipeline_config
+
+        run_agent do
+          send_command
+          wait_until { coordinator.status_messages.any? }
+
+          expect(client.status_attempts.size).to eq(2)
+          expect(client.status_attempts[0]).to eq(client.status_attempts[1])
+          expect(coordinator.status_messages.size).to eq(1)
+          expect(coordinator.status_messages.first).to include("message_id" => "m-1", "sequence" => 1)
+          expect(pipeline_state.current("WC-42")).to include(pane_index: 0)
+        end
+      end
+    end
+
+    it "gives up on a report the coordinator has no work item for" do
+      coordinator.start
+      write_pipeline_config
+
+      run_agent do
+        coordinator.reply = {"ok" => false, "error" => "unknown_work_item", "action" => "give_up"}
+        send_command
+        wait_until { pipeline_state.current("WC-42").nil? && coordinator.status_messages.any? }
+
+        expect(coordinator.status_messages.size).to eq(1)
+        expect(pipeline_state.current("WC-42")).to be_nil
+      end
+    end
+
+    it "keeps reporting for other work items after one is given up on" do
+      coordinator.start
+      write_pipeline_config
+
+      run_agent do
+        coordinator.reply = {"ok" => false, "error" => "unknown_work_item", "action" => "give_up"}
+        send_command
+        wait_until { coordinator.status_messages.any? }
+        coordinator.reply = {"ok" => true, "epoch" => "test-wc-epoch"}
+
+        send_command("work_item_ref" => "WC-43", "dispatch_id" => "d-7a2")
+        wait_until { coordinator.status_messages.size >= 2 }
+
+        expect(coordinator.status_messages.last).to include("work_item_ref" => "WC-43")
+        expect(pipeline_state.current("WC-43")).to include(pane_index: 0)
+      end
+    end
+
+    it "aborts the pipeline when the coordinator says the work item is already finished" do
+      coordinator.start
+      write_pipeline_config
+
+      run_agent do
+        send_command
+        wait_until { pollers.any? }
+        coordinator.reply = {"ok" => false, "error" => "terminal_state", "action" => "abort_pipeline"}
+
+        agent.report_progress("WC-42", "still working")
+        wait_until { pipeline_state.current("WC-42").nil? }
+
+        expect(pipeline_state.current("WC-42")).to be_nil
+        expect(pollers.first).to be_stopped
+        expect(error_output.string).to include("work-coordinator aborted the pipeline")
+      end
+    end
+
+    it "keeps the pipeline running and replays reports after the coordinator comes back" do
+      coordinator.start
+      write_pipeline_config
+
+      run_agent do
+        send_command
+        wait_until { pollers.any? }
+        coordinator.stop
+
+        agent.report_progress("WC-42", "buffered while the coordinator was down")
+
+        expect(pipeline_state.current("WC-42")).to include(pane_index: 0)
+        expect(pollers.first).not_to be_stopped
+
+        restarted = FakeWorkCoordinator.new(
+          socket_path: wc_socket_path,
+          status_socket_path: wc_status_socket_path,
+          reply: {"ok" => true, "epoch" => "test-wc-epoch-2"}
+        )
+        restarted.start
+        begin
+          agent.report_progress("WC-42", "after the coordinator came back")
+          wait_until { restarted.status_messages.size >= 2 && restarted.registrations.any? }
+
+          expect(restarted.status_messages.map { |m| m["message"] }).to eq([
+            "after the coordinator came back",
+            "buffered while the coordinator was down"
+          ])
+          expect(restarted.registrations.last).to include("name" => "myapp")
+          expect(restarted.registrations.last["in_flight"]).to include(
+            hash_including("work_item_ref" => "WC-42")
+          )
+        ensure
+          restarted.stop
+        end
+      end
+    end
+  end
+
+  describe "steering work in mid-pipeline" do
+    def send_command(overrides = {})
+      message = {
+        "type" => "command",
+        "workspace" => "myapp",
+        "work_item_ref" => "WC-42",
+        "dispatch_id" => "d-7a1",
+        "body" => "/build add OAuth support"
+      }.merge(overrides)
+      UNIXSocket.open(agent_socket_path) { |s| s.puts(message.to_json) }
+    end
+
+    def send_inject(overrides = {})
+      message = {
+        "type" => "inject",
+        "workspace" => "myapp",
+        "work_item_ref" => "WC-42",
+        "dispatch_id" => "d-7a1",
+        "body" => "use Postgres not SQLite",
+        "interrupt" => false
+      }.merge(overrides)
+      UNIXSocket.open(agent_socket_path) do |s|
+        s.puts(message.to_json)
+        JSON.parse(s.gets)
+      end
+    end
+
+    before do
+      coordinator.start
+      File.write(project_config_path, <<~YAML)
+        pipeline:
+          panes:
+            - role: researcher
+            - role: implementer
+          handoff: file_handoff
+      YAML
+    end
+
+    it "holds a steer for the next stage without disturbing the running one" do
+      run_agent do
+        send_command
+        wait_until { pollers.any? }
+        sent_before = tmux.sent_keys.size
+
+        expect(send_inject).to eq("ok" => true, "queued_for_pane" => 1)
+        expect(tmux.sent_keys.size).to eq(sent_before)
+
+        pollers.first.on_complete.call("research done")
+
+        expect(tmux.sent_keys.last).to include(pane: 1, text: "use Postgres not SQLite")
+      end
+    end
+
+    it "interrupts the running stage for an urgent steer" do
+      run_agent do
+        send_command
+        wait_until { pollers.any? }
+
+        expect(send_inject("interrupt" => true)).to eq("ok" => true, "queued_for_pane" => 0)
+
+        expect(tmux.sent_key_names.last).to include(session: "myapp", pane: 0, key: "C-c")
+        expect(tmux.sent_keys.last).to include(pane: 0, text: "use Postgres not SQLite")
+      end
+    end
+
+    it "refuses a steer for a work item that is not running" do
+      run_agent do
+        send_command("work_item_ref" => "WC-43", "dispatch_id" => "d-7a2")
+        wait_until { pollers.any? }
+        sent_before = tmux.sent_keys.size
+
+        expect(send_inject).to eq("ok" => false, "error" => "no_active_pipeline")
+        expect(tmux.sent_keys.size).to eq(sent_before)
+      end
+    end
+
+    it "refuses a queued steer when there is no stage left to give it to" do
+      run_agent do
+        send_command
+        wait_until { pollers.any? }
+        pollers.first.on_complete.call("research done")
+        wait_until { pipeline_state.current("WC-42")&.[](:pane_index) == 1 }
+        sent_before = tmux.sent_keys.size
+
+        expect(send_inject).to eq("ok" => false, "error" => "no_next_stage")
+        expect(tmux.sent_keys.size).to eq(sent_before)
+      end
+    end
+
+    it "answers every inbound message so a caller never reads a bare EOF" do
+      run_agent do
+        expect(send_inject("workspace" => "api")).to eq("ok" => false, "error" => "wrong_workspace")
+        expect(send_inject("type" => "nonsense")).to eq("ok" => false, "error" => "unknown_type")
+
+        reply = UNIXSocket.open(agent_socket_path) do |s|
+          s.puts("garbage")
+          JSON.parse(s.gets)
+        end
+        expect(reply).to eq("ok" => false, "error" => "malformed_message")
+      end
+    end
+
+    it "refuses a steer for a work item it has never seen" do
+      run_agent do
+        expect(send_inject("work_item_ref" => "WC-999")).to eq("ok" => false, "error" => "no_active_pipeline")
+        expect(tmux.sent_keys).to be_empty
+        expect(tmux.sent_key_names).to be_empty
       end
     end
   end

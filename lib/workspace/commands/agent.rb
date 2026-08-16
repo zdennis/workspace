@@ -9,6 +9,12 @@ module Workspace
     # registers with the work-coordinator, binds its own Unix socket, and
     # serves commands until terminated.
     class Agent
+      # How many times one status report is sent before it is buffered for replay.
+      REPORT_ATTEMPTS = 3
+
+      # How many unacknowledged reports are held before the oldest are dropped.
+      MAX_PENDING_REPORTS = 500
+
       # @param config [Workspace::Config] path configuration
       # @param tmux [Workspace::Tmux] tmux session operations
       # @param work_coordinator_client [Workspace::WorkCoordinatorClient] coordinator client
@@ -17,6 +23,7 @@ module Workspace
       # @param epoch_generator [#call] returns a new epoch string
       # @param signal_trapper [#trap] receives SIGTERM/SIGINT handler registration
       # @param sentinel_poller_factory [#call] builds a poller for a session/pane pair
+      # @param retry_backoff [Float] seconds to wait between status report retries
       # @param logger [Workspace::Logger] debug logger
       # @param output [IO] output stream for user-facing messages
       # @param error_output [IO] error output stream for errors
@@ -24,6 +31,7 @@ module Workspace
         epoch_generator: -> { "wa-#{Agent.ulid}" },
         signal_trapper: Signal,
         sentinel_poller_factory: nil,
+        retry_backoff: 0.5,
         logger: Workspace::Logger.new, output: $stdout, error_output: $stderr)
         @config = config
         @tmux = tmux
@@ -33,8 +41,13 @@ module Workspace
         @epoch_generator = epoch_generator
         @signal_trapper = signal_trapper
         @sentinel_poller_factory = sentinel_poller_factory || method(:build_sentinel_poller)
+        @retry_backoff = retry_backoff
         @pollers = {}
         @sequences = Hash.new(0)
+        @queued_steers = {}
+        @pending_reports = []
+        @buffering_announced = false
+        @wc_epoch = nil
         # Poller threads advance the pipeline while the accept loop may be
         # dispatching another command; both mutate @pollers and pipeline state.
         @state_lock = Mutex.new
@@ -82,14 +95,19 @@ module Workspace
       def serve(server)
         loop do
           client = server.accept
-          line = client.gets
-          client.close
-          next unless line
-
           begin
-            dispatch(JSON.parse(line))
+            line = client.gets
+            dispatch(JSON.parse(line), client) if line
           rescue JSON::ParserError => e
             @logger.debug { "malformed message dropped: #{e.message}" }
+            reply_to(client, "ok" => false, "error" => "malformed_message")
+          rescue => e
+            # One bad pane or a wedged tmux must cost us this connection, not
+            # the agent and every pipeline running under it.
+            @error_output.puts "workspace agent: dropped a message: #{e.message}"
+            reply_to(client, "ok" => false, "error" => "internal_error")
+          ensure
+            client.close
           end
         rescue IOError, Errno::EBADF
           break
@@ -117,6 +135,7 @@ module Workspace
       def fail_pipeline(work_item_ref, message)
         entry = @state_lock.synchronize do
           @pollers.delete(work_item_ref)&.stop
+          @queued_steers.delete(work_item_ref)
           found = @pipeline_state.current(work_item_ref)
           @pipeline_state.complete(work_item_ref: work_item_ref) if found
           found
@@ -130,17 +149,77 @@ module Workspace
       private
 
       # Routes a parsed message, ignoring anything addressed to another workspace.
-      def dispatch(message)
+      def dispatch(message, client = nil)
         workspace = message["workspace"]
         if workspace != @current_name
           @logger.debug { "dropped message for workspace '#{workspace}' (I am '#{@current_name}')" }
-          return
+          return reply_to(client, "ok" => false, "error" => "wrong_workspace")
         end
 
+        # Every inbound connection ends in one JSON line, so a caller can always
+        # read a reply and tell an answer apart from a dead agent.
         case message["type"]
-        when "command" then handle_command(message)
-        else @logger.debug { "unknown message type: #{message["type"]}" }
+        when "command"
+          handle_command(message)
+          reply_to(client, "ok" => true)
+        when "inject" then handle_inject(message, client)
+        else
+          @logger.debug { "unknown message type: #{message["type"]}" }
+          reply_to(client, "ok" => false, "error" => "unknown_type")
         end
+      end
+
+      # Accepts a mid-pipeline steer from the coordinator and answers on the same
+      # connection. An urgent steer interrupts the running stage; an ordinary one
+      # waits for the next stage so the running stage is left alone.
+      def handle_inject(message, client)
+        ref = message["work_item_ref"]
+
+        # Held across the decision and the keystrokes: a poller thread advancing
+        # this work item mid-inject would otherwise send C-c to a pane the work
+        # item has already left.
+        reply = @state_lock.synchronize do
+          entry = @pipeline_state.current(ref)
+          if entry.nil?
+            @logger.debug { "steer for #{ref} dropped: no active pipeline" }
+            {"ok" => false, "error" => "no_active_pipeline"}
+          elsif message["interrupt"]
+            deliver_urgent_steer(entry, message["body"])
+            {"ok" => true, "queued_for_pane" => entry[:pane_index]}
+          elsif (next_stage = next_stage_for(entry))
+            (@queued_steers[ref] ||= []) << message["body"]
+            {"ok" => true, "queued_for_pane" => next_stage[:pane_index]}
+          else
+            # Nothing comes after the last stage, so there is no later pane to
+            # hold this for. Say so rather than queue it into a vanishing state.
+            {"ok" => false, "error" => "no_next_stage"}
+          end
+        end
+
+        reply_to(client, reply)
+      end
+
+      # Interrupts whatever the stage's pane is doing, then types the steer into it.
+      def deliver_urgent_steer(entry, body)
+        @tmux.send_key(entry[:workspace_name], entry[:pane_index], "C-c")
+        @tmux.send_keys(entry[:workspace_name], entry[:pane_index], body)
+      end
+
+      # The stage after the one this entry is sitting on, or nil when it is last.
+      def next_stage_for(entry)
+        stages = @pipeline_config.stages_for(entry[:workspace_name]) || []
+        index = stages.index { |stage| stage[:pane_index] == entry[:pane_index] }
+        index && stages[index + 1]
+      end
+
+      # Answers on the connection the message arrived on. A fire-and-forget
+      # sender that has already hung up is not an error worth reporting.
+      def reply_to(client, payload)
+        client&.puts(payload.to_json)
+        nil
+      rescue SystemCallError, IOError => e
+        @logger.debug { "no one was listening for the reply: #{e.message}" }
+        nil
       end
 
       # Delivers a command body to the first pipeline stage, or to pane 0 when the
@@ -226,14 +305,23 @@ module Workspace
         if next_stage
           @tmux.send_keys(entry[:workspace_name], next_stage[:pane_index],
             handoff_instructions(next_stage[:role], handoff_path))
+          deliver_queued_steers(entry[:workspace_name], work_item_ref, next_stage[:pane_index])
           @pipeline_state.advance(work_item_ref: work_item_ref, to_stage: next_stage)
           watch_for_completion(work_item_ref, next_stage[:pane_index])
         else
+          @queued_steers.delete(work_item_ref)
           @pipeline_state.complete(work_item_ref: work_item_ref)
           @pollers.delete(work_item_ref)&.stop
         end
 
         [entry, next_stage, from_pane]
+      end
+
+      # Hands the next stage any steers that arrived while the previous stage was
+      # still running. Called with the state lock already held.
+      def deliver_queued_steers(name, work_item_ref, pane)
+        steers = @queued_steers.delete(work_item_ref) || []
+        steers.each { |steer| @tmux.send_keys(name, pane, steer) }
       end
 
       # The stage-to-stage contract: where the previous stage's output lives and
@@ -274,9 +362,119 @@ module Workspace
       # number, then sends it. A coordinator we cannot reach must not take the
       # pipeline down with it.
       def report(entry, payload)
-        status_client.report_status(stamp(entry).merge(payload))
+        # Stamped once, up front: a retry is the same report, so it carries the
+        # same message id and sequence number the coordinator already saw.
+        full_payload = stamp(entry).merge(payload)
+        ref = entry[:work_item_ref]
+
+        REPORT_ATTEMPTS.times do |attempt|
+          begin
+            return handle_status_reply(ref, status_client.report_status(full_payload))
+          rescue Workspace::Error => e
+            last_error = e
+          end
+          if attempt == REPORT_ATTEMPTS - 1
+            buffer_report(ref, full_payload, last_error)
+          else
+            sleep(@retry_backoff * (attempt + 1))
+          end
+        end
+        nil
+      end
+
+      # Holds a report the coordinator would not take, so it can be replayed once
+      # the coordinator is back. The pipeline keeps running either way. The buffer
+      # is capped so an agent left running against a dead coordinator for hours
+      # does not grow without bound; the oldest reports are the ones dropped.
+      def buffer_report(work_item_ref, payload, error)
+        dropped = @state_lock.synchronize do
+          @pending_reports << payload
+          @pending_reports.shift if @pending_reports.size > MAX_PENDING_REPORTS
+        end
+        unless @buffering_announced
+          @buffering_announced = true
+          @error_output.puts "workspace agent: work-coordinator unreachable; holding status updates until it returns"
+        end
+        @logger.debug { "buffered report for #{work_item_ref} after #{REPORT_ATTEMPTS} attempts: #{error.message}" }
+        @logger.debug { "dropped oldest buffered report for #{dropped["work_item_ref"]}" } if dropped
+      end
+
+      # Acts on the coordinator's answer to a status report. The coordinator is
+      # the authority on whether a work item is still worth reporting on.
+      def handle_status_reply(work_item_ref, reply)
+        case reply["action"]
+        when "give_up"
+          @error_output.puts "workspace agent: work-coordinator has no record of #{work_item_ref}; stopping its pipeline"
+          @state_lock.synchronize do
+            @pollers.delete(work_item_ref)&.stop
+            @queued_steers.delete(work_item_ref)
+            @pipeline_state.complete(work_item_ref: work_item_ref)
+          end
+        when "abort_pipeline"
+          fail_pipeline(work_item_ref, "work-coordinator aborted the pipeline (#{reply["error"]})")
+        when "reregister"
+          handle_wc_restart(reply["epoch"])
+        when nil
+          check_epoch(reply["epoch"])
+        else
+          @logger.debug { "unknown action #{reply["action"].inspect} from work-coordinator" }
+          check_epoch(reply["epoch"])
+        end
+        reply
+      end
+
+      # A new epoch means the coordinator we are talking to is not the one we
+      # registered with, so it knows nothing about our in-flight work.
+      def check_epoch(epoch)
+        return if epoch.nil? || epoch == @wc_epoch
+        handle_wc_restart(epoch) if @wc_epoch
+        @wc_epoch = epoch
+      end
+
+      def handle_wc_restart(epoch)
+        @logger.debug { "work-coordinator restarted (epoch #{@wc_epoch.inspect} -> #{epoch.inspect}); re-registering" }
+        @wc_epoch = epoch
+        # Replaying into a coordinator that would not have us back would just
+        # burn the buffer, so the drain waits on a good registration.
+        drain_pending_reports if re_register
+      end
+
+      # @return [Boolean] true when the coordinator accepted the registration
+      def re_register
+        reply = status_client.register(
+          name: @current_name,
+          socket: @config.agent_socket_path(@current_name),
+          pipeline: true,
+          epoch: @epoch_generator.call,
+          in_flight: @pipeline_state.in_flight
+        )
+        return true if reply["ok"]
+
+        @error_output.puts "workspace agent: work-coordinator refused re-registration: #{reply["error"]}"
+        false
       rescue Workspace::Error => e
-        @logger.debug { "status report failed: #{e.message}" }
+        @error_output.puts "workspace agent: could not re-register with work-coordinator: #{e.message}"
+        false
+      end
+
+      # Replays everything the coordinator missed, in the order it was reported.
+      # Stops at the first refusal and puts the rest back at the front, because a
+      # report arriving after a later one is worse than one arriving late.
+      def drain_pending_reports
+        pending = @state_lock.synchronize { @pending_reports.slice!(0..-1) || [] }
+        @buffering_announced = false if pending.any?
+
+        until pending.empty?
+          payload = pending.first
+          begin
+            status_client.report_status(payload)
+          rescue Workspace::Error => e
+            @logger.debug { "replay stopped at #{payload["work_item_ref"]}: #{e.message}" }
+            @state_lock.synchronize { @pending_reports.unshift(*pending) }
+            return
+          end
+          pending.shift
+        end
       end
 
       # Builds the envelope for one status message. Counters live on the agent
@@ -322,6 +520,7 @@ module Workspace
       def register(name, socket_path, epoch, wc_socket)
         @client = wc_socket ? rebind_client(wc_socket) : @work_coordinator_client
         reply = @client.register(name: name, socket: socket_path, pipeline: true, epoch: epoch)
+        @wc_epoch = reply["epoch"]
         return true if reply["ok"]
 
         @error_output.puts "Could not register with work-coordinator: #{reply["error"]}"

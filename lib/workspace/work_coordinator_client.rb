@@ -70,7 +70,7 @@ module Workspace
       end
       raise Workspace::Error, "work-coordinator closed the connection without replying" if reply.nil?
       JSON.parse(reply)
-    rescue Errno::ENOENT, Errno::ECONNREFUSED => e
+    rescue SystemCallError, IOError => e
       raise Workspace::Error, "Could not reach work-coordinator at #{path}: #{e.message}"
     rescue JSON::ParserError => e
       raise Workspace::Error, "Invalid reply from work-coordinator at #{path}: #{e.message}"

@@ -124,12 +124,18 @@ module CLITestHelpers
     def capture_layout(_session, **_opts) = "layout-string"
     def apply_layout(_session, _layout, **_opts) = true
 
-    attr_reader :sent_keys
+    attr_reader :sent_keys, :sent_key_names
     attr_accessor :captured_output
 
     def initialize
       @sent_keys = []
+      @sent_key_names = []
       @captured_output = ""
+    end
+
+    def send_key(session, pane, key_name)
+      sent_key_names << {session: session, pane: pane, key: key_name}
+      true
     end
 
     def capture_pane(_session, _pane, **_opts)
