@@ -62,31 +62,64 @@ RSpec.describe Workspace::Tmux do
   describe "#send_keys" do
     let(:tmux) { described_class.new(config: config) }
 
-    it "sends text in literal mode and presses Enter by default" do
+    it "pastes the full text via buffer and presses Enter by default" do
       allow(tmux).to receive(:system).and_return(true)
+      allow(tmux).to receive(:tmux_load_buffer).and_return(true)
 
       result = tmux.send_keys("my-session", "0.1", "hello world")
 
       expect(result).to be true
-      expect(tmux).to have_received(:system).with("tmux", "send-keys", "-l", "-t", "my-session:0.1", "hello world")
+      expect(tmux).to have_received(:tmux_load_buffer).with(anything, "hello world")
+      expect(tmux).to have_received(:system).with("tmux", "paste-buffer", "-b", anything, "-t", "my-session:0.1")
       expect(tmux).to have_received(:system).with("tmux", "send-keys", "-t", "my-session:0.1", "Enter")
     end
 
     it "skips Enter when enter: false" do
       allow(tmux).to receive(:system).and_return(true)
+      allow(tmux).to receive(:tmux_load_buffer).and_return(true)
 
       tmux.send_keys("my-session", "0.1", "hello", enter: false)
 
-      expect(tmux).to have_received(:system).once
       expect(tmux).not_to have_received(:system).with("tmux", "send-keys", "-t", "my-session:0.1", "Enter")
     end
 
-    it "returns false when send-keys literal fails" do
-      allow(tmux).to receive(:system).and_return(false)
+    it "returns false when load-buffer fails" do
+      allow(tmux).to receive(:tmux_load_buffer).and_return(false)
 
       result = tmux.send_keys("bad-session", "0.1", "text")
 
       expect(result).to be false
+    end
+
+    it "returns false when paste-buffer fails" do
+      allow(tmux).to receive(:system).and_return(false)
+      allow(tmux).to receive(:tmux_load_buffer).and_return(true)
+
+      result = tmux.send_keys("bad-session", "0.1", "text")
+
+      expect(result).to be false
+    end
+
+    it "sends multiline text as one paste so newlines are line-breaks not separate submissions" do
+      allow(tmux).to receive(:system).and_return(true)
+      allow(tmux).to receive(:tmux_load_buffer).and_return(true)
+      text = "count to 10\n\nStatus reporting:\nsome command"
+
+      tmux.send_keys("my-session", "0.1", text)
+
+      expect(tmux).to have_received(:tmux_load_buffer).with(anything, text)
+      expect(tmux).to have_received(:system).with("tmux", "paste-buffer", "-b", anything, "-t", "my-session:0.1").once
+      expect(tmux).to have_received(:system).with("tmux", "send-keys", "-t", "my-session:0.1", "Enter").once
+    end
+
+    it "handles text starting with '-' without flag parsing errors" do
+      allow(tmux).to receive(:system).and_return(true)
+      allow(tmux).to receive(:tmux_load_buffer).and_return(true)
+
+      result = tmux.send_keys("my-session", "0.1", "--ref WC-1")
+
+      expect(result).to be true
+      expect(tmux).to have_received(:tmux_load_buffer).with(anything, "--ref WC-1")
     end
   end
 

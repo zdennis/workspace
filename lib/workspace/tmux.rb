@@ -49,9 +49,26 @@ module Workspace
     def send_keys(session_name, pane, text, enter: true)
       target = "#{session_name}:#{pane}"
       @logger.debug { "tmux: send-keys to #{target}" }
-      return false unless system("tmux", "send-keys", "-l", "-t", target, text)
-      return false if enter && !system("tmux", "send-keys", "-t", target, "Enter")
-      true
+      # Send the full text as one paste so that embedded newlines appear as
+      # line-breaks in the input buffer (not as separate message submissions).
+      # Sending each line with Enter would submit them as individual messages
+      # in prompts like Claude Code where Enter == submit.
+      # We route through load-buffer + paste-buffer unconditionally because
+      # tmux 3.x incorrectly parses the text argument as flags when it starts
+      # with '-', even in -l (literal) mode.
+      buf = "ws_send_#{object_id}"
+      return false unless tmux_load_buffer(buf, text)
+      begin
+        return false unless system("tmux", "paste-buffer", "-b", buf, "-t", target)
+        return true unless enter
+        system("tmux", "send-keys", "-t", target, "Enter") ? true : false
+      ensure
+        begin
+          system("tmux", "delete-buffer", "-b", buf)
+        rescue
+          nil
+        end
+      end
     end
 
     # Sends a single key name to a tmux pane (non-literal mode).
@@ -66,6 +83,21 @@ module Workspace
       @logger.debug { "tmux: send-key #{key_name} to #{target}" }
       system("tmux", "send-keys", "-t", target, key_name)
     end
+
+    private
+
+    # Loads text into a named tmux buffer via stdin.
+    # Extracted for testability.
+    #
+    # @param buf [String] buffer name
+    # @param content [String] content to load
+    # @return [Boolean] true if load-buffer succeeded
+    def tmux_load_buffer(buf, content)
+      IO.popen(["tmux", "load-buffer", "-b", buf, "-"], "w") { |io| io.write(content) }
+      $?.success?
+    end
+
+    public
 
     # @param session_name [String] tmux session name
     # @param pane [String] pane target (e.g. "0.1")
