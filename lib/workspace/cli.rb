@@ -806,7 +806,7 @@ module Workspace
         "workspace" => name,
         "work_item_ref" => work_item,
         "dispatch_id" => "debug-#{SecureRandom.hex(4)}",
-        "body" => body || "Begin work on #{work_item}."
+        "body" => jsonl_body(body || "Begin work on #{work_item}.")
       }
       agent_run_send(name, message, dry_run: dry_run)
     end
@@ -838,53 +838,83 @@ module Workspace
         "workspace" => name,
         "work_item_ref" => work_item,
         "interrupt" => interrupt,
-        "body" => body
+        "body" => jsonl_body(body)
       }
       agent_run_send(name, message, dry_run: dry_run)
     end
 
     def cmd_agent_run_examples
+      name = @project_detector.detect(@working_dir) || "workspace"
+
       examples = [
         {
-          label: "command — deliver a work item to the first pipeline stage",
+          label: "command — check GitHub CI status (safe, read-only)",
+          cli: "workspace agent-run command --work-item WC-42 --body \"What is the current status of GitHub CI for this branch?\"",
           message: {
             "type" => "command",
-            "workspace" => "<workspace-name>",
+            "workspace" => name,
             "work_item_ref" => "WC-42",
             "dispatch_id" => "debug-abcd1234",
-            "body" => "Begin work on WC-42."
+            "body" => "What is the current status of GitHub CI for this branch?"
+          }
+        },
+        {
+          label: "command — run the linter (safe, re-runnable)",
+          cli: "workspace agent-run command --work-item WC-42 --body \"Run the linter and report any issues.\"",
+          message: {
+            "type" => "command",
+            "workspace" => name,
+            "work_item_ref" => "WC-42",
+            "dispatch_id" => "debug-abcd1234",
+            "body" => "Run the linter and report any issues."
           }
         },
         {
           label: "inject — queue a steer for the next pipeline stage",
+          cli: "workspace agent-run inject --work-item WC-42 --body \"Focus on the failing tests, not the linter warnings.\"",
           message: {
             "type" => "inject",
-            "workspace" => "<workspace-name>",
+            "workspace" => name,
             "work_item_ref" => "WC-42",
             "interrupt" => false,
-            "body" => "Focus on the login bug, not the sidebar."
+            "body" => "Focus on the failing tests, not the linter warnings."
           }
         },
         {
-          label: "inject --interrupt — urgent steer: Ctrl-C then retype into the current stage",
+          label: "inject --interrupt — urgent steer: stop current stage and redirect",
+          cli: "workspace agent-run inject --interrupt --work-item WC-42 --body \"Stop. Run bundle exec rspec spec/workspace/cli_spec.rb first.\"",
           message: {
             "type" => "inject",
-            "workspace" => "<workspace-name>",
+            "workspace" => name,
             "work_item_ref" => "WC-42",
             "interrupt" => true,
-            "body" => "Stop what you are doing and fix the failing test first."
+            "body" => "Stop. Run bundle exec rspec spec/workspace/cli_spec.rb first."
           }
         }
       ]
 
       examples.each_with_index do |example, i|
         @output.puts "#{i + 1}. #{example[:label]}"
+        @output.puts "   Run it: #{example[:cli]}"
         @output.puts "   JSONL (sent as a single line):"
         JSON.pretty_generate(example[:message]).each_line do |line|
           @output.puts "   #{line}"
         end
         @output.puts unless i == examples.size - 1
       end
+    end
+
+    # If +body+ looks like JSON (parses successfully), compact it to a single
+    # line so it travels safely as JSONL. Plain strings pass through unchanged.
+    def jsonl_body(body)
+      parsed = JSON.parse(body)
+      compacted = parsed.to_json
+      if compacted != body.strip
+        @output.puts "(body compacted to JSONL)"
+      end
+      compacted
+    rescue JSON::ParserError
+      body
     end
 
     # Pretty-prints +message+ as the JSONL that will be sent, then sends it
