@@ -9,6 +9,8 @@ A macOS CLI for managing tmuxinator-based development workspaces in iTerm2. Laun
 - **Focus** a project's window and shake it to draw attention
 - **Kill** and **relaunch** workspace projects with session state preservation
 - **Add** new projects from any directory
+- **Agent** — run a long-lived daemon that registers with [work-coordinator](https://github.com/zdennis/work-coordinator), routes commands to the right pane, and drives multi-step pipelines
+- **Pipeline** — sequence panes as a staged pipeline (researcher → implementer → reviewer) with automatic handoff and sentinel-based completion detection
 - Reuses existing launcher panes instead of creating new windows
 - Tracks iTerm window IDs for reliable window management across tab switches
 - Positions windows left-to-right on the active display

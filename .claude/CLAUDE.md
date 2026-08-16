@@ -16,7 +16,11 @@ A macOS CLI (Ruby) for managing tmuxinator-based development workspaces in iTerm
 - `lib/workspace/iterm.rb` — iTerm2 session/pane lifecycle (AppleScript)
 - `lib/workspace/window_manager.rb` — iTerm2 window operations: find, focus, position, close
 - `lib/workspace/window_layout.rb` — Window positioning math
-- `lib/workspace/commands/` — Complex command objects (launch, kill, focus, start)
+- `lib/workspace/commands/` — Complex command objects (launch, kill, focus, start, agent)
+- `lib/workspace/work_coordinator_client.rb` — JSONL client for work-coordinator sockets
+- `lib/workspace/pipeline_config.rb` — Reads per-project pipeline stage config from `~/.config/workspace/projects/<name>.yml`
+- `lib/workspace/pipeline_state.rb` — In-flight work item tracking, disk-persisted to `~/.local/state/workspace/<name>/pipeline.json`
+- `lib/workspace/sentinel_poller.rb` — Background poller watching tmux panes for `WORKSPACE_DONE:` sentinel
 - `lib/templates/workspace.project-template.yml` — Tmuxinator template for standard projects
 - `lib/templates/workspace.project-worktree-template.yml` — Tmuxinator template for git worktree projects
 - State tracked in `~/.workspace-state.json`
@@ -32,7 +36,7 @@ A macOS CLI (Ruby) for managing tmuxinator-based development workspaces in iTerm
 
 ## Subcommands
 
-init, doctor, launch, start, add, stop, kill, relaunch, focus, list, status, whereis
+init, doctor, launch, start, add, stop, kill, relaunch, focus, list, status, whereis, agent, pipeline
 
 ## Adding a Subcommand
 
