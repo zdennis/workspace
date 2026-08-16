@@ -55,6 +55,14 @@ module Workspace
       File.join(workspace_projects_dir, "#{name}.yml")
     end
 
+    # Handoff files carry one pipeline stage's output to the next, so they live
+    # under the user's own config directory rather than in shared /tmp.
+    #
+    # @return [String] path to the directory holding pipeline handoff files
+    def handoff_dir
+      File.join(workspace_config_dir, "handoffs")
+    end
+
     # @param name [String] the workspace name
     # @return [String] path to the agent's own Unix socket
     def agent_socket_path(name)

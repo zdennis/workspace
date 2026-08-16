@@ -1,6 +1,28 @@
 require "spec_helper"
 require "tmpdir"
 
+# Captures the completion callback instead of polling tmux on a thread, so
+# specs can decide exactly when a stage finishes.
+class FakeSentinelPoller
+  attr_reader :session_name, :pane, :on_complete
+
+  def initialize(session_name:, pane:)
+    @session_name = session_name
+    @pane = pane
+  end
+
+  def start(&block)
+    @on_complete = block
+    self
+  end
+
+  def stop
+    @stopped = true
+  end
+
+  def stopped? = !!@stopped
+end
+
 RSpec.describe Workspace::Commands::Agent do
   # Unix socket paths cap at 104 bytes on macOS, so stay under /tmp directly.
   let(:tmpdir) { Dir.mktmpdir("ws-agent", "/tmp") }
@@ -23,6 +45,7 @@ RSpec.describe Workspace::Commands::Agent do
       allow(c).to receive(:work_coordinator_socket).and_return(wc_socket_path)
       allow(c).to receive(:work_coordinator_status_socket).and_return(wc_status_socket_path)
       allow(c).to receive(:project_config_path).with("myapp").and_return(project_config_path)
+      allow(c).to receive(:handoff_dir).and_return(File.join(tmpdir, "handoffs"))
     end
   end
 
@@ -51,6 +74,11 @@ RSpec.describe Workspace::Commands::Agent do
   let(:pipeline_config) { Workspace::PipelineConfig.new(config: config) }
   let(:pipeline_state) { Workspace::PipelineState.new(pipeline_config: pipeline_config) }
 
+  let(:pollers) { [] }
+  let(:sentinel_poller_factory) do
+    ->(session_name:, pane:) { FakeSentinelPoller.new(session_name: session_name, pane: pane).tap { |p| pollers << p } }
+  end
+
   subject(:agent) do
     described_class.new(
       config: config,
@@ -60,6 +88,7 @@ RSpec.describe Workspace::Commands::Agent do
       pipeline_state: pipeline_state,
       epoch_generator: -> { "wa-TESTEPOCH" },
       signal_trapper: signal_trapper,
+      sentinel_poller_factory: sentinel_poller_factory,
       output: output,
       error_output: error_output
     )
@@ -174,6 +203,147 @@ RSpec.describe Workspace::Commands::Agent do
 
         expect(tmux.sent_keys.last).to include(session: "myapp", pane: 0)
         expect(pipeline_state.in_flight_refs).to be_empty
+      end
+    end
+
+    it "ignores a command addressed to another workspace and keeps serving its own" do
+      run_agent do
+        send_command("workspace" => "api", "work_item_ref" => "WC-50")
+        send_command
+
+        wait_until { tmux.sent_keys.any? }
+        sleep 0.05
+
+        expect(tmux.sent_keys.size).to eq(1)
+        expect(tmux.sent_keys.last).to include(text: "/build add OAuth support")
+        expect(pipeline_state.current("WC-50")).to be_nil
+      end
+    end
+
+    it "drops unreadable input and keeps accepting later commands" do
+      run_agent do
+        UNIXSocket.open(agent_socket_path) { |s| s.puts("garbage") }
+        send_command
+
+        wait_until { tmux.sent_keys.any? }
+        expect(tmux.sent_keys.last).to include(text: "/build add OAuth support")
+      end
+    end
+
+    it "handles a command that the coordinator retried after the agent came up" do
+      File.write(project_config_path, <<~YAML)
+        pipeline:
+          panes:
+            - role: researcher
+            - role: implementer
+          handoff: file_handoff
+      YAML
+
+      run_agent do
+        sleep 0.05
+        send_command
+
+        wait_until { tmux.sent_keys.any? }
+        expect(tmux.sent_keys.last).to include(pane: 0, text: "/build add OAuth support")
+        expect(pipeline_state.current("WC-42")).to include(pane_index: 0, phase: "researcher")
+      end
+    end
+  end
+
+  describe "running the pipeline" do
+    def send_command
+      message = {
+        "type" => "command",
+        "workspace" => "myapp",
+        "work_item_ref" => "WC-42",
+        "dispatch_id" => "d-7a1",
+        "body" => "/build add OAuth support"
+      }
+      UNIXSocket.open(agent_socket_path) { |s| s.puts(message.to_json) }
+    end
+
+    before do
+      coordinator.start
+      File.write(project_config_path, <<~YAML)
+        pipeline:
+          panes:
+            - role: researcher
+            - role: implementer
+            - role: reviewer
+          handoff: file_handoff
+      YAML
+    end
+
+    it "hands the finished stage's output to the next stage and reports the advance" do
+      tmux.captured_output = "research notes\nWORKSPACE_DONE: Initial research complete\n"
+
+      run_agent do
+        send_command
+        wait_until { pollers.any? }
+        expect(pollers.first.pane).to eq(0)
+
+        pollers.first.on_complete.call("Initial research complete")
+
+        handoff = File.join(tmpdir, "handoffs", "myapp-WC-42-handoff.txt")
+        expect(File.read(handoff)).to include("research notes")
+        expect(tmux.sent_keys.last).to include(session: "myapp", pane: 1)
+        expect(tmux.sent_keys.last[:text]).to include(handoff)
+        expect(tmux.sent_keys.last[:text]).to include("WORKSPACE_DONE:")
+        expect(pollers.first).to be_stopped
+        expect(pipeline_state.current("WC-42")).to include(pane_index: 1, phase: "implementer")
+        expect(pollers.last.pane).to eq(1)
+
+        wait_until { coordinator.status_messages.size >= 2 }
+        expect(coordinator.status_messages[0]).to include(
+          "type" => "phase_change", "message_id" => "m-1", "sequence" => 1,
+          "workspace" => "myapp", "work_item_ref" => "WC-42", "phase" => "implementer"
+        )
+        expect(coordinator.status_messages[1]).to include(
+          "type" => "pipeline_advanced", "message_id" => "m-2", "sequence" => 2,
+          "from_pane" => 0, "to_pane" => 1
+        )
+      end
+    end
+
+    it "keeps advancing when the coordinator has gone away" do
+      tmux.captured_output = "research notes\n"
+
+      run_agent do
+        send_command
+        wait_until { pollers.any? }
+        coordinator.stop
+
+        pollers.first.on_complete.call("Initial research complete")
+
+        expect(pipeline_state.current("WC-42")).to include(pane_index: 1, phase: "implementer")
+        expect(tmux.sent_keys.last).to include(pane: 1)
+        expect(pollers.last.pane).to eq(1)
+      end
+    end
+
+    it "reports the work item complete when the final stage finishes" do
+      tmux.captured_output = "review log\n"
+
+      run_agent do
+        send_command
+        wait_until { pollers.any? }
+
+        pollers.last.on_complete.call("research done")
+        pollers.last.on_complete.call("implementation done")
+        wait_until { coordinator.status_messages.size >= 4 }
+
+        expect(pipeline_state.current("WC-42")).to include(pane_index: 2, phase: "reviewer")
+
+        pollers.last.on_complete.call("PR #123 opened and all checks passed")
+
+        wait_until { coordinator.status_messages.size >= 5 }
+        expect(coordinator.status_messages.last).to include(
+          "type" => "task_complete", "message_id" => "m-5", "sequence" => 5,
+          "workspace" => "myapp", "work_item_ref" => "WC-42",
+          "summary" => "PR #123 opened and all checks passed"
+        )
+        expect(pipeline_state.current("WC-42")).to be_nil
+        expect(pollers.last).to be_stopped
       end
     end
   end

@@ -1,5 +1,6 @@
 require "socket"
 require "json"
+require "fileutils"
 require "securerandom"
 
 module Workspace
@@ -15,12 +16,14 @@ module Workspace
       # @param pipeline_state [Workspace::PipelineState] in-flight work item tracking
       # @param epoch_generator [#call] returns a new epoch string
       # @param signal_trapper [#trap] receives SIGTERM/SIGINT handler registration
+      # @param sentinel_poller_factory [#call] builds a poller for a session/pane pair
       # @param logger [Workspace::Logger] debug logger
       # @param output [IO] output stream for user-facing messages
       # @param error_output [IO] error output stream for errors
       def initialize(config:, tmux:, work_coordinator_client:, pipeline_config:, pipeline_state:,
         epoch_generator: -> { "wa-#{Agent.ulid}" },
         signal_trapper: Signal,
+        sentinel_poller_factory: nil,
         logger: Workspace::Logger.new, output: $stdout, error_output: $stderr)
         @config = config
         @tmux = tmux
@@ -29,6 +32,11 @@ module Workspace
         @pipeline_state = pipeline_state
         @epoch_generator = epoch_generator
         @signal_trapper = signal_trapper
+        @sentinel_poller_factory = sentinel_poller_factory || method(:build_sentinel_poller)
+        @pollers = {}
+        # Poller threads advance the pipeline while the accept loop may be
+        # dispatching another command; both mutate @pollers and pipeline state.
+        @state_lock = Mutex.new
         @logger = logger
         @output = output
         @error_output = error_output
@@ -109,19 +117,138 @@ module Workspace
         ref = message["work_item_ref"]
         stages = @pipeline_config.stages_for(@current_name)
 
-        if stages
-          stage = stages.first
-          @tmux.send_keys(@current_name, stage[:pane_index], message["body"])
-          @pipeline_state.start(
-            work_item_ref: ref,
-            workspace_name: @current_name,
-            dispatch_id: message["dispatch_id"]
-          )
-          @logger.debug { "pipeline started for #{ref} at pane #{stage[:pane_index]} (#{stage[:role]})" }
-        else
-          @tmux.send_keys(@current_name, 0, message["body"])
-          @logger.debug { "command delivered to default pane for #{ref}" }
+        @state_lock.synchronize do
+          if stages
+            stage = stages.first
+            @tmux.send_keys(@current_name, stage[:pane_index], message["body"])
+            @pipeline_state.start(
+              work_item_ref: ref,
+              workspace_name: @current_name,
+              dispatch_id: message["dispatch_id"]
+            )
+            @logger.debug { "pipeline started for #{ref} at pane #{stage[:pane_index]} (#{stage[:role]})" }
+            watch_for_completion(ref, stage[:pane_index])
+          else
+            @tmux.send_keys(@current_name, 0, message["body"])
+            @logger.debug { "command delivered to default pane for #{ref}" }
+          end
         end
+      end
+
+      # Watches a stage's pane for the completion sentinel, replacing any poller
+      # already watching this work item.
+      def watch_for_completion(work_item_ref, pane)
+        @pollers.delete(work_item_ref)&.stop
+        poller = @sentinel_poller_factory.call(session_name: @current_name, pane: pane)
+        @pollers[work_item_ref] = poller
+        poller.start { |summary| advance_pipeline(work_item_ref, summary) }
+      end
+
+      # Hands the finished stage's output to the next stage, or reports the work
+      # item complete when the finished stage was the last one.
+      def advance_pipeline(work_item_ref, summary)
+        entry, next_stage, from_pane = @state_lock.synchronize do
+          advance_state(work_item_ref)
+        end
+        return unless entry
+
+        # Reporting talks to the coordinator over a socket, so it stays outside
+        # the lock — a slow coordinator must not stall command dispatch.
+        if next_stage
+          report_phase_change(entry, next_stage[:role])
+          report_pipeline_advanced(entry, from_pane, next_stage[:pane_index])
+        else
+          report_task_complete(entry, summary)
+        end
+      rescue => e
+        @error_output.puts "workspace agent: could not advance #{work_item_ref}: #{e.message}"
+      end
+
+      # Moves the work item onto its next stage (or off the pipeline) and returns
+      # the entry, the stage moved to, and the pane moved from.
+      def advance_state(work_item_ref)
+        entry = @pipeline_state.current(work_item_ref)
+        return nil unless entry
+
+        stages = @pipeline_config.stages_for(entry[:workspace_name]) || []
+        current_index = stages.index { |stage| stage[:pane_index] == entry[:pane_index] }
+        next_stage = current_index && stages[current_index + 1]
+        from_pane = entry[:pane_index]
+
+        captured = @tmux.capture_pane(entry[:workspace_name], from_pane, all: true) || ""
+        handoff_path = write_handoff(entry[:workspace_name], work_item_ref, captured)
+
+        if next_stage
+          @tmux.send_keys(entry[:workspace_name], next_stage[:pane_index],
+            handoff_instructions(next_stage[:role], handoff_path))
+          @pipeline_state.advance(work_item_ref: work_item_ref, to_stage: next_stage)
+          watch_for_completion(work_item_ref, next_stage[:pane_index])
+        else
+          @pipeline_state.complete(work_item_ref: work_item_ref)
+          @pollers.delete(work_item_ref)&.stop
+        end
+
+        [entry, next_stage, from_pane]
+      end
+
+      # The stage-to-stage contract: where the previous stage's output lives and
+      # how this stage signals that it is finished.
+      def handoff_instructions(role, handoff_path)
+        "You are the #{role} stage. Context from the previous stage: #{handoff_path}\n" \
+          "When you are done, print a single line: #{SentinelPoller::SENTINEL} <one-line summary>"
+      end
+
+      # Writes a stage's captured output where the next stage can read it.
+      # The work item reference comes off a socket, so it is reduced to path-safe
+      # characters before it is allowed anywhere near a filename.
+      def write_handoff(name, work_item_ref, content)
+        dir = @config.handoff_dir
+        FileUtils.mkdir_p(dir, mode: 0o700)
+        path = File.join(dir, "#{path_safe(name)}-#{path_safe(work_item_ref)}-handoff.txt")
+        File.write(path, content, perm: 0o600)
+        path
+      end
+
+      def path_safe(value)
+        value.to_s.gsub(/[^A-Za-z0-9_-]/, "_")
+      end
+
+      def report_phase_change(entry, phase)
+        report(entry, "type" => "phase_change", "phase" => phase)
+      end
+
+      def report_pipeline_advanced(entry, from_pane, to_pane)
+        report(entry, "type" => "pipeline_advanced", "from_pane" => from_pane, "to_pane" => to_pane)
+      end
+
+      def report_task_complete(entry, summary)
+        report(entry, "type" => "task_complete", "summary" => summary)
+      end
+
+      # Stamps a status payload with the work item's next message id and sequence
+      # number, then sends it. A coordinator we cannot reach must not take the
+      # pipeline down with it.
+      def report(entry, payload)
+        entry[:message_id_counter] += 1
+        entry[:sequence] += 1
+        envelope = {
+          "message_id" => "m-#{entry[:message_id_counter]}",
+          "sequence" => entry[:sequence],
+          "workspace" => entry[:workspace_name],
+          "work_item_ref" => entry[:work_item_ref]
+        }
+        status_client.report_status(envelope.merge(payload))
+      rescue Workspace::Error => e
+        @logger.debug { "status report failed: #{e.message}" }
+      end
+
+      def status_client
+        @client || @work_coordinator_client
+      end
+
+      def build_sentinel_poller(session_name:, pane:)
+        SentinelPoller.new(tmux: @tmux, session_name: session_name, pane: pane,
+          logger: @logger, error_output: @error_output)
       end
 
       # Returns true when the socket path is free to bind (cleaning up a stale
@@ -165,6 +292,8 @@ module Workspace
       end
 
       def shutdown(name, socket_path, server)
+        @pollers.each_value(&:stop)
+        @pollers.clear
         server.close unless server.closed?
         File.unlink(socket_path) if File.socket?(socket_path)
         @client.deregister(name: name)

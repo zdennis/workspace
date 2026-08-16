@@ -32,6 +32,27 @@ module Workspace
       @entries[work_item_ref]
     end
 
+    # Moves a tracked work item onto a later pipeline stage.
+    #
+    # @param work_item_ref [String]
+    # @param to_stage [Hash] the stage hash to move to, with :pane_index and :role
+    # @return [Hash, nil] the updated entry, or nil when untracked
+    def advance(work_item_ref:, to_stage:)
+      entry = @entries[work_item_ref]
+      return nil unless entry
+      entry[:pane_index] = to_stage[:pane_index]
+      entry[:phase] = to_stage[:role]
+      entry
+    end
+
+    # Stops tracking a work item.
+    #
+    # @param work_item_ref [String]
+    # @return [Hash, nil] the removed entry, or nil when untracked
+    def complete(work_item_ref:)
+      @entries.delete(work_item_ref)
+    end
+
     # @return [Array<String>] every tracked work item reference
     def in_flight_refs
       @entries.keys
