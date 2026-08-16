@@ -33,9 +33,10 @@ module Workspace
 
     # Polls the pane in a background thread until the sentinel appears.
     #
+    # @param on_error [#call, nil] called with the message when polling dies
     # @yieldparam summary [String] the text following the sentinel
     # @return [Thread] the polling thread
-    def start(&on_complete)
+    def start(on_error: nil, &on_complete)
       @running = true
       @thread = Thread.new do
         # Taken inside the thread so a failing capture is reported here rather
@@ -52,6 +53,7 @@ module Workspace
       rescue => e
         @error_output.puts "workspace agent: stopped watching #{@session_name} pane #{@pane}: #{e.message}"
         @logger.debug { "sentinel poller backtrace: #{e.backtrace&.first(5)&.join("\n")}" }
+        on_error&.call(e.message)
       ensure
         @running = false
       end

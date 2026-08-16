@@ -66,6 +66,31 @@ RSpec.describe Workspace::SentinelPoller do
     expect(error_output.string).to include("tmux exploded")
   end
 
+  it "hands the failure message to on_error when polling dies unexpectedly" do
+    tmux = Object.new
+    def tmux.capture_pane(*, **) = raise("tmux exploded")
+    poller = described_class.new(
+      tmux: tmux, session_name: "myapp", pane: 0, poll_interval: 0.01, error_output: error_output
+    )
+    failures = Queue.new
+    poller.start(on_error: ->(message) { failures << message }) { |_| }
+
+    expect(Timeout.timeout(1) { failures.pop }).to eq("tmux exploded")
+  end
+
+  it "does not call on_error when the stage completes normally" do
+    poller = described_class.new(
+      tmux: ScriptedTmux.new(["", "WORKSPACE_DONE: done\n"]),
+      session_name: "myapp", pane: 0, poll_interval: 0.01, error_output: error_output
+    )
+    failures = []
+    summaries = Queue.new
+    poller.start(on_error: ->(message) { failures << message }) { |summary| summaries << summary }
+
+    expect(Timeout.timeout(1) { summaries.pop }).to eq("done")
+    expect(failures).to be_empty
+  end
+
   it "does not kill the calling thread when stopped from inside its callback" do
     poller = described_class.new(
       tmux: ScriptedTmux.new(["", "WORKSPACE_DONE: done\n"]),

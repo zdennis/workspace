@@ -20,9 +20,7 @@ module Workspace
         workspace_name: workspace_name,
         dispatch_id: dispatch_id,
         pane_index: stage ? stage[:pane_index] : 0,
-        phase: stage && stage[:role],
-        message_id_counter: 0,
-        sequence: 0
+        phase: stage && stage[:role]
       }
     end
 

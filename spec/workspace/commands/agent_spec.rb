@@ -4,15 +4,16 @@ require "tmpdir"
 # Captures the completion callback instead of polling tmux on a thread, so
 # specs can decide exactly when a stage finishes.
 class FakeSentinelPoller
-  attr_reader :session_name, :pane, :on_complete
+  attr_reader :session_name, :pane, :on_complete, :on_error
 
   def initialize(session_name:, pane:)
     @session_name = session_name
     @pane = pane
   end
 
-  def start(&block)
+  def start(on_error: nil, &block)
     @on_complete = block
+    @on_error = on_error
     self
   end
 
@@ -251,14 +252,14 @@ RSpec.describe Workspace::Commands::Agent do
   end
 
   describe "running the pipeline" do
-    def send_command
+    def send_command(overrides = {})
       message = {
         "type" => "command",
         "workspace" => "myapp",
         "work_item_ref" => "WC-42",
         "dispatch_id" => "d-7a1",
         "body" => "/build add OAuth support"
-      }
+      }.merge(overrides)
       UNIXSocket.open(agent_socket_path) { |s| s.puts(message.to_json) }
     end
 
@@ -293,13 +294,13 @@ RSpec.describe Workspace::Commands::Agent do
         expect(pipeline_state.current("WC-42")).to include(pane_index: 1, phase: "implementer")
         expect(pollers.last.pane).to eq(1)
 
-        wait_until { coordinator.status_messages.size >= 2 }
-        expect(coordinator.status_messages[0]).to include(
-          "type" => "phase_change", "message_id" => "m-1", "sequence" => 1,
+        wait_until { coordinator.status_messages.size >= 3 }
+        expect(coordinator.status_messages[1]).to include(
+          "type" => "phase_change", "message_id" => "m-2", "sequence" => 2,
           "workspace" => "myapp", "work_item_ref" => "WC-42", "phase" => "implementer"
         )
-        expect(coordinator.status_messages[1]).to include(
-          "type" => "pipeline_advanced", "message_id" => "m-2", "sequence" => 2,
+        expect(coordinator.status_messages[2]).to include(
+          "type" => "pipeline_advanced", "message_id" => "m-3", "sequence" => 3,
           "from_pane" => 0, "to_pane" => 1
         )
       end
@@ -330,20 +331,133 @@ RSpec.describe Workspace::Commands::Agent do
 
         pollers.last.on_complete.call("research done")
         pollers.last.on_complete.call("implementation done")
-        wait_until { coordinator.status_messages.size >= 4 }
+        wait_until { coordinator.status_messages.size >= 5 }
 
         expect(pipeline_state.current("WC-42")).to include(pane_index: 2, phase: "reviewer")
 
         pollers.last.on_complete.call("PR #123 opened and all checks passed")
 
-        wait_until { coordinator.status_messages.size >= 5 }
+        wait_until { coordinator.status_messages.size >= 6 }
         expect(coordinator.status_messages.last).to include(
-          "type" => "task_complete", "message_id" => "m-5", "sequence" => 5,
+          "type" => "task_complete", "message_id" => "m-6", "sequence" => 6,
           "workspace" => "myapp", "work_item_ref" => "WC-42",
           "summary" => "PR #123 opened and all checks passed"
         )
         expect(pipeline_state.current("WC-42")).to be_nil
         expect(pollers.last).to be_stopped
+      end
+    end
+
+    it "takes a work item out of the pipeline when its stage fails" do
+      run_agent do
+        send_command
+        wait_until { pollers.any? }
+
+        pollers.first.on_error.call("Claude pane exited unexpectedly")
+
+        wait_until { coordinator.status_messages.any? { |m| m["type"] == "error" } }
+        expect(coordinator.status_messages.last).to include(
+          "type" => "error", "workspace" => "myapp", "work_item_ref" => "WC-42",
+          "message" => "Claude pane exited unexpectedly"
+        )
+        expect(error_output.string).to include("WC-42 failed at pane 0: Claude pane exited unexpectedly")
+        expect(pipeline_state.in_flight_refs).not_to include("WC-42")
+        expect(pollers.first).to be_stopped
+        expect(pollers.size).to eq(1)
+      end
+    end
+
+    it "advances one work item without disturbing another in the same workspace" do
+      run_agent do
+        send_command
+        wait_until { pollers.size == 1 }
+        send_command("work_item_ref" => "WC-43", "dispatch_id" => "d-7a2")
+        wait_until { pollers.size == 2 }
+
+        pollers.first.on_complete.call("research done")
+
+        expect(pipeline_state.current("WC-42")).to include(pane_index: 1, phase: "implementer")
+        expect(pipeline_state.current("WC-43")).to include(pane_index: 0, phase: "researcher")
+      end
+    end
+  end
+
+  describe "reporting status" do
+    def send_command(overrides = {})
+      message = {
+        "type" => "command",
+        "workspace" => "myapp",
+        "work_item_ref" => "WC-42",
+        "dispatch_id" => "d-7a1",
+        "body" => "/build add OAuth support"
+      }.merge(overrides)
+      UNIXSocket.open(agent_socket_path) { |s| s.puts(message.to_json) }
+    end
+
+    before { coordinator.start }
+
+    def write_pipeline_config
+      File.write(project_config_path, <<~YAML)
+        pipeline:
+          panes:
+            - role: researcher
+            - role: implementer
+          handoff: file_handoff
+      YAML
+    end
+
+    it "reports that work has started" do
+      write_pipeline_config
+
+      run_agent do
+        send_command
+        wait_until { coordinator.status_messages.any? }
+
+        expect(coordinator.status_messages.first).to include(
+          "type" => "status_update", "message_id" => "m-1", "sequence" => 1,
+          "workspace" => "myapp", "work_item_ref" => "WC-42",
+          "message" => "Pipeline started at stage researcher (pane 0)"
+        )
+      end
+    end
+
+    it "reports that a command reached a workspace with no pipeline" do
+      run_agent do
+        send_command
+        wait_until { coordinator.status_messages.any? }
+
+        expect(coordinator.status_messages.first).to include(
+          "type" => "status_update", "workspace" => "myapp", "work_item_ref" => "WC-42",
+          "message" => "Command delivered to default pane"
+        )
+      end
+    end
+
+    it "reports notable progress mid-stage without touching the pane" do
+      write_pipeline_config
+
+      run_agent do
+        send_command
+        wait_until { pipeline_state.current("WC-42") }
+        sent_before = tmux.sent_keys.size
+
+        agent.report_progress("WC-42", "Running tests in pane 1")
+
+        wait_until { coordinator.status_messages.size >= 2 }
+        expect(coordinator.status_messages.last).to include(
+          "type" => "status_update", "work_item_ref" => "WC-42",
+          "message" => "Running tests in pane 1"
+        )
+        expect(tmux.sent_keys.size).to eq(sent_before)
+        expect(pipeline_state.current("WC-42")).to include(pane_index: 0)
+      end
+    end
+
+    it "ignores a progress report for a work item it is not tracking" do
+      run_agent do
+        agent.report_progress("WC-999", "nobody is listening")
+        sleep 0.05
+        expect(coordinator.status_messages).to be_empty
       end
     end
   end

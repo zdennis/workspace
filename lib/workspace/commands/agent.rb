@@ -34,6 +34,7 @@ module Workspace
         @signal_trapper = signal_trapper
         @sentinel_poller_factory = sentinel_poller_factory || method(:build_sentinel_poller)
         @pollers = {}
+        @sequences = Hash.new(0)
         # Poller threads advance the pipeline while the accept loop may be
         # dispatching another command; both mutate @pollers and pipeline state.
         @state_lock = Mutex.new
@@ -95,6 +96,37 @@ module Workspace
         end
       end
 
+      # Reports something noteworthy that happened while a stage is running.
+      # Never touches the pane, so a running stage keeps going.
+      #
+      # @param work_item_ref [String]
+      # @param message [String] the progress text
+      # @return [void]
+      def report_progress(work_item_ref, message)
+        entry = @pipeline_state.current(work_item_ref)
+        return unless entry
+        report(entry, "type" => "status_update", "message" => message)
+      end
+
+      # Takes a work item out of the pipeline after its current stage failed.
+      # No further stage is started for it.
+      #
+      # @param work_item_ref [String]
+      # @param message [String] why the work item failed
+      # @return [void]
+      def fail_pipeline(work_item_ref, message)
+        entry = @state_lock.synchronize do
+          @pollers.delete(work_item_ref)&.stop
+          found = @pipeline_state.current(work_item_ref)
+          @pipeline_state.complete(work_item_ref: work_item_ref) if found
+          found
+        end
+        return unless entry
+
+        @error_output.puts "workspace agent: #{work_item_ref} failed at pane #{entry[:pane_index]}: #{message}"
+        report(entry, "type" => "error", "message" => message)
+      end
+
       private
 
       # Routes a parsed message, ignoring anything addressed to another workspace.
@@ -117,22 +149,34 @@ module Workspace
         ref = message["work_item_ref"]
         stages = @pipeline_config.stages_for(@current_name)
 
-        @state_lock.synchronize do
+        entry, started_message, watch_pane = @state_lock.synchronize do
           if stages
             stage = stages.first
             @tmux.send_keys(@current_name, stage[:pane_index], message["body"])
-            @pipeline_state.start(
+            started = @pipeline_state.start(
               work_item_ref: ref,
               workspace_name: @current_name,
               dispatch_id: message["dispatch_id"]
             )
             @logger.debug { "pipeline started for #{ref} at pane #{stage[:pane_index]} (#{stage[:role]})" }
-            watch_for_completion(ref, stage[:pane_index])
+            [started, "Pipeline started at stage #{stage[:role]} (pane #{stage[:pane_index]})", stage[:pane_index]]
           else
             @tmux.send_keys(@current_name, 0, message["body"])
             @logger.debug { "command delivered to default pane for #{ref}" }
+            [untracked_entry(ref), "Command delivered to default pane"]
           end
         end
+
+        # Reported before the poller is armed so the "started" message always
+        # precedes anything the poller thread goes on to report.
+        report(entry, "type" => "status_update", "message" => started_message)
+        @state_lock.synchronize { watch_for_completion(ref, watch_pane) } if watch_pane
+      end
+
+      # A one-shot reporting entry for work the agent does not track in the
+      # pipeline. It exists only long enough to stamp a single status message.
+      def untracked_entry(work_item_ref)
+        {work_item_ref: work_item_ref, workspace_name: @current_name}
       end
 
       # Watches a stage's pane for the completion sentinel, replacing any poller
@@ -141,7 +185,8 @@ module Workspace
         @pollers.delete(work_item_ref)&.stop
         poller = @sentinel_poller_factory.call(session_name: @current_name, pane: pane)
         @pollers[work_item_ref] = poller
-        poller.start { |summary| advance_pipeline(work_item_ref, summary) }
+        on_error = ->(message) { fail_pipeline(work_item_ref, message) }
+        poller.start(on_error: on_error) { |summary| advance_pipeline(work_item_ref, summary) }
       end
 
       # Hands the finished stage's output to the next stage, or reports the work
@@ -229,17 +274,26 @@ module Workspace
       # number, then sends it. A coordinator we cannot reach must not take the
       # pipeline down with it.
       def report(entry, payload)
-        entry[:message_id_counter] += 1
-        entry[:sequence] += 1
-        envelope = {
-          "message_id" => "m-#{entry[:message_id_counter]}",
-          "sequence" => entry[:sequence],
-          "workspace" => entry[:workspace_name],
-          "work_item_ref" => entry[:work_item_ref]
-        }
-        status_client.report_status(envelope.merge(payload))
+        status_client.report_status(stamp(entry).merge(payload))
       rescue Workspace::Error => e
         @logger.debug { "status report failed: #{e.message}" }
+      end
+
+      # Builds the envelope for one status message. Counters live on the agent
+      # keyed by work item so they survive a work item leaving and re-entering
+      # the pipeline, and they are taken under the lock because the accept loop
+      # and a poller thread can both report on the same work item.
+      def stamp(entry)
+        ref = entry[:work_item_ref]
+        @state_lock.synchronize do
+          sequence = (@sequences[ref] += 1)
+          {
+            "message_id" => "m-#{sequence}",
+            "sequence" => sequence,
+            "workspace" => entry[:workspace_name],
+            "work_item_ref" => ref
+          }
+        end
       end
 
       def status_client
