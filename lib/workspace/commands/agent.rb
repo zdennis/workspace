@@ -11,18 +11,22 @@ module Workspace
       # @param config [Workspace::Config] path configuration
       # @param tmux [Workspace::Tmux] tmux session operations
       # @param work_coordinator_client [Workspace::WorkCoordinatorClient] coordinator client
+      # @param pipeline_config [Workspace::PipelineConfig] per-project pipeline configuration
+      # @param pipeline_state [Workspace::PipelineState] in-flight work item tracking
       # @param epoch_generator [#call] returns a new epoch string
       # @param signal_trapper [#trap] receives SIGTERM/SIGINT handler registration
       # @param logger [Workspace::Logger] debug logger
       # @param output [IO] output stream for user-facing messages
       # @param error_output [IO] error output stream for errors
-      def initialize(config:, tmux:, work_coordinator_client:,
+      def initialize(config:, tmux:, work_coordinator_client:, pipeline_config:, pipeline_state:,
         epoch_generator: -> { "wa-#{Agent.ulid}" },
         signal_trapper: Signal,
         logger: Workspace::Logger.new, output: $stdout, error_output: $stderr)
         @config = config
         @tmux = tmux
         @work_coordinator_client = work_coordinator_client
+        @pipeline_config = pipeline_config
+        @pipeline_state = pipeline_state
         @epoch_generator = epoch_generator
         @signal_trapper = signal_trapper
         @logger = logger
@@ -43,6 +47,7 @@ module Workspace
       # @param wc_socket [String, nil] override path to the coordinator socket
       # @return [Boolean] false when the agent refused to start, true after a clean shutdown
       def call(name:, wc_socket: nil)
+        @current_name = name
         socket_path = @config.agent_socket_path(name)
 
         return false unless claim_socket(name, socket_path)
@@ -61,20 +66,63 @@ module Workspace
         shutdown(name, socket_path, server) if server
       end
 
-      # Accepts connections until the server is closed.
+      # Accepts and dispatches one JSON message per connection until the server closes.
       #
       # @param server [UNIXServer] the bound server
       # @return [void]
       def serve(server)
         loop do
           client = server.accept
+          line = client.gets
           client.close
+          next unless line
+
+          begin
+            dispatch(JSON.parse(line))
+          rescue JSON::ParserError => e
+            @logger.debug { "malformed message dropped: #{e.message}" }
+          end
         rescue IOError, Errno::EBADF
           break
         end
       end
 
       private
+
+      # Routes a parsed message, ignoring anything addressed to another workspace.
+      def dispatch(message)
+        workspace = message["workspace"]
+        if workspace != @current_name
+          @logger.debug { "dropped message for workspace '#{workspace}' (I am '#{@current_name}')" }
+          return
+        end
+
+        case message["type"]
+        when "command" then handle_command(message)
+        else @logger.debug { "unknown message type: #{message["type"]}" }
+        end
+      end
+
+      # Delivers a command body to the first pipeline stage, or to pane 0 when the
+      # workspace has no pipeline configured.
+      def handle_command(message)
+        ref = message["work_item_ref"]
+        stages = @pipeline_config.stages_for(@current_name)
+
+        if stages
+          stage = stages.first
+          @tmux.send_keys(@current_name, stage[:pane_index], message["body"])
+          @pipeline_state.start(
+            work_item_ref: ref,
+            workspace_name: @current_name,
+            dispatch_id: message["dispatch_id"]
+          )
+          @logger.debug { "pipeline started for #{ref} at pane #{stage[:pane_index]} (#{stage[:role]})" }
+        else
+          @tmux.send_keys(@current_name, 0, message["body"])
+          @logger.debug { "command delivered to default pane for #{ref}" }
+        end
+      end
 
       # Returns true when the socket path is free to bind (cleaning up a stale
       # socket if needed), false when another agent is already answering.

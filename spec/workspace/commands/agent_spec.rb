@@ -14,11 +14,15 @@ RSpec.describe Workspace::Commands::Agent do
   end
 
   # Config stub that routes all socket paths into the spec's tmpdir.
+  let(:project_config_path) { File.join(tmpdir, "myapp.yml") }
+  let(:tmux) { CLITestHelpers::FakeTmux.new }
+
   let(:config) do
     instance_double(Workspace::Config).tap do |c|
       allow(c).to receive(:agent_socket_path).with("myapp").and_return(agent_socket_path)
       allow(c).to receive(:work_coordinator_socket).and_return(wc_socket_path)
       allow(c).to receive(:work_coordinator_status_socket).and_return(wc_status_socket_path)
+      allow(c).to receive(:project_config_path).with("myapp").and_return(project_config_path)
     end
   end
 
@@ -44,11 +48,16 @@ RSpec.describe Workspace::Commands::Agent do
     end.new
   end
 
+  let(:pipeline_config) { Workspace::PipelineConfig.new(config: config) }
+  let(:pipeline_state) { Workspace::PipelineState.new(pipeline_config: pipeline_config) }
+
   subject(:agent) do
     described_class.new(
       config: config,
-      tmux: CLITestHelpers::FakeTmux.new,
+      tmux: tmux,
       work_coordinator_client: client,
+      pipeline_config: pipeline_config,
+      pipeline_state: pipeline_state,
       epoch_generator: -> { "wa-TESTEPOCH" },
       signal_trapper: signal_trapper,
       output: output,
@@ -119,6 +128,53 @@ RSpec.describe Workspace::Commands::Agent do
       expect(agent.call(name: "myapp")).to be false
       expect(error_output.string).to include("already_registered")
       expect(File.exist?(agent_socket_path)).to be false
+    end
+  end
+
+  describe "receiving a command from the coordinator" do
+    def send_command(overrides = {})
+      message = {
+        "type" => "command",
+        "workspace" => "myapp",
+        "work_item_ref" => "WC-42",
+        "dispatch_id" => "d-7a1",
+        "body" => "/build add OAuth support"
+      }.merge(overrides)
+      UNIXSocket.open(agent_socket_path) { |s| s.puts(message.to_json) }
+    end
+
+    before { coordinator.start }
+
+    it "starts the pipeline at the first stage when the workspace has one" do
+      File.write(project_config_path, <<~YAML)
+        pipeline:
+          panes:
+            - role: researcher
+            - role: implementer
+          handoff: file_handoff
+      YAML
+
+      run_agent do
+        send_command
+        wait_until { tmux.sent_keys.any? }
+
+        expect(tmux.sent_keys.last).to include(
+          session: "myapp", pane: 0, text: "/build add OAuth support"
+        )
+        expect(pipeline_state.current("WC-42")).to include(
+          dispatch_id: "d-7a1", pane_index: 0, phase: "researcher"
+        )
+      end
+    end
+
+    it "delivers to the default pane when the workspace has no pipeline" do
+      run_agent do
+        send_command
+        wait_until { tmux.sent_keys.any? }
+
+        expect(tmux.sent_keys.last).to include(session: "myapp", pane: 0)
+        expect(pipeline_state.in_flight_refs).to be_empty
+      end
     end
   end
 

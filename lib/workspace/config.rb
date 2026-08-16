@@ -44,6 +44,17 @@ module Workspace
       File.expand_path("~/.config/workspace")
     end
 
+    # @return [String] path to the per-project workspace config directory
+    def workspace_projects_dir
+      File.join(workspace_config_dir, "projects")
+    end
+
+    # @param name [String] the workspace name
+    # @return [String] path to the project's workspace config file
+    def project_config_path(name)
+      File.join(workspace_projects_dir, "#{name}.yml")
+    end
+
     # @param name [String] the workspace name
     # @return [String] path to the agent's own Unix socket
     def agent_socket_path(name)

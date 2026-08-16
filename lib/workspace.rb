@@ -35,6 +35,8 @@ require_relative "workspace/commands/update_pane_command"
 require_relative "workspace/commands/run"
 require_relative "workspace/commands/capture"
 require_relative "workspace/work_coordinator_client"
+require_relative "workspace/pipeline_config"
+require_relative "workspace/pipeline_state"
 require_relative "workspace/commands/agent"
 require_relative "workspace/run_result"
 require_relative "workspace/run_result_store"
@@ -105,10 +107,13 @@ module Workspace
       status_socket_path: config.work_coordinator_status_socket,
       logger: logger
     )
+    pipeline_config = PipelineConfig.new(config: config)
     agent_command = Commands::Agent.new(
       config: config,
       tmux: tmux,
       work_coordinator_client: work_coordinator_client,
+      pipeline_config: pipeline_config,
+      pipeline_state: PipelineState.new(pipeline_config: pipeline_config),
       logger: logger,
       output: output,
       error_output: error_output
