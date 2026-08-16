@@ -744,7 +744,29 @@ module Workspace
 
     # Sends a raw JSONL message to a running agent socket for manual testing and
     # exploration. Always pretty-prints what is being sent before sending it.
+    #
+    # Usage with a subcommand:
+    #   workspace agent-run command --work-item WC-42
+    #
+    # Usage with raw JSON body (workspace is read from the message):
+    #   workspace agent-run --body '{"type":"command","workspace":"myproject",...}'
     def cmd_agent_run(args)
+      body = nil
+      dry_run = false
+
+      # Peek for --body / --dry-run before deciding whether to dispatch to a
+      # subcommand. OptionParser would consume them anyway; doing it here lets
+      # us keep a clean subcommand path for the common case.
+      parser = OptionParser.new do |opts|
+        opts.on("--body JSON", "Full message JSON to send directly (workspace read from message)") { |v| body = v }
+        opts.on("--dry-run", "Print without sending") { dry_run = true }
+      end
+      parser.order!(args)  # stops at the first non-option so subcommand words survive
+
+      if body
+        return cmd_agent_run_raw(body, dry_run: dry_run)
+      end
+
       subcommand = args.shift
       case subcommand
       when "command" then cmd_agent_run_command(args)
@@ -755,9 +777,26 @@ module Workspace
       end
     end
 
+    # Parses +body+ as the full message JSON, compacts it to one line, and
+    # sends it directly to the agent socket named in the message's "workspace"
+    # field. Useful for copy-pasting an example and firing it immediately.
+    def cmd_agent_run_raw(body, dry_run: false)
+      message = begin
+        JSON.parse(jsonl_body(body))
+      rescue JSON::ParserError => e
+        raise UsageError, "Invalid JSON in --body: #{e.message}"
+      end
+
+      name = message["workspace"]
+      raise UsageError, "Message JSON must include a \"workspace\" key" if name.nil? || name.empty?
+
+      agent_run_send(name, message, dry_run: dry_run)
+    end
+
     def agent_run_help
       <<~HELP
         Usage: workspace agent-run <subcommand> [options]
+               workspace agent-run --body '<full message JSON>' [--dry-run]
 
         Send a raw JSONL message to a running agent socket.
         Always prints the message being sent before sending it.
@@ -766,6 +805,10 @@ module Workspace
           command    Send a "command" message (delivers work to the first pipeline stage)
           inject     Send an "inject" message (steers a running work item)
           examples   Print all stock example messages without sending anything
+
+        Raw mode (paste a full message directly):
+          --body JSON         Complete message JSON; workspace is read from the message
+          --dry-run           Print without sending
 
         Options (command):
           --name NAME         Workspace name (default: detected from cwd)
