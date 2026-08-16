@@ -125,12 +125,13 @@ module CLITestHelpers
     def apply_layout(_session, _layout, **_opts) = true
 
     attr_reader :sent_keys, :sent_key_names
-    attr_accessor :captured_output
+    attr_accessor :captured_output, :pane_indexes
 
     def initialize
       @sent_keys = []
       @sent_key_names = []
       @captured_output = ""
+      @pane_indexes = [0, 1, 2]
     end
 
     def send_key(session, pane, key_name)
@@ -148,7 +149,7 @@ module CLITestHelpers
     end
 
     def panes(_session, **_opts)
-      [0, 1, 2]
+      @pane_indexes
     end
 
     def split_window(_session, **_opts)

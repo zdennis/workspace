@@ -114,7 +114,6 @@ module Workspace
       tmux: tmux,
       work_coordinator_client: work_coordinator_client,
       pipeline_config: pipeline_config,
-      pipeline_state: PipelineState.new(pipeline_config: pipeline_config),
       logger: logger,
       output: output,
       error_output: error_output

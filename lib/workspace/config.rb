@@ -69,6 +69,21 @@ module Workspace
       "/tmp/workspace-#{name}.sock"
     end
 
+    # Pipeline state outlives the agent process, so it lives under the XDG state
+    # directory rather than in /tmp where a reboot would take it.
+    #
+    # @param name [String] the workspace name
+    # @return [String] path to the project's pipeline state directory
+    def pipeline_state_dir(name)
+      File.join(File.expand_path(ENV.fetch("XDG_STATE_HOME", "~/.local/state")), "workspace", name)
+    end
+
+    # @param name [String] the workspace name
+    # @return [String] path to the project's persisted pipeline state file
+    def pipeline_state_path(name)
+      File.join(pipeline_state_dir(name), "pipeline.json")
+    end
+
     # @return [String] path to the work-coordinator main socket
     def work_coordinator_socket
       "/tmp/work-coordinator.sock"

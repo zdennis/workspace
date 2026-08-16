@@ -1,4 +1,5 @@
 require "optparse"
+require "socket"
 require "securerandom"
 require "shellwords"
 require "time"
@@ -115,6 +116,8 @@ module Workspace
         cmd_capture(args)
       when "agent"
         cmd_agent(args)
+      when "pipeline"
+        cmd_pipeline(args)
       when "run"
         cmd_run(args)
       when "run-and-report"
@@ -209,6 +212,7 @@ module Workspace
           layout          Save/restore tmux pane layouts (auto-saved before resize)
           list            List currently active (launched) projects (--all for all available)
           lookup          Find a workspace project by worktree path, branch, or project name
+          pipeline        Inspect and drive a project's agent pipeline
           prune           Remove worktree projects whose PR is closed or merged
           reactivate      Reactivate Claude in a project's tmux pane
           relaunch        Stop and relaunch all active workspace projects
@@ -731,6 +735,153 @@ module Workspace
       raise UsageError, parser.help if name.nil?
 
       @exit_handler.exit(1) unless @agent_command.call(name: name, wc_socket: wc_socket)
+    end
+
+    # Drives and inspects a running agent's pipeline. These are operator tools:
+    # everything that touches a pane goes through the agent that owns it, so a
+    # manual nudge cannot get the agent's own view of the pipeline out of step.
+    def cmd_pipeline(args)
+      case args.shift
+      when "start" then cmd_pipeline_start(args)
+      when "advance" then cmd_pipeline_advance(args)
+      when "status" then cmd_pipeline_status(args)
+      when "reset" then cmd_pipeline_reset(args)
+      when "help", nil then @output.puts pipeline_help
+      else
+        raise UsageError, pipeline_help
+      end
+    end
+
+    def pipeline_help
+      <<~HELP
+        Usage: workspace pipeline <subcommand> [options]
+
+        Subcommands:
+          start <project> --work-item REF    Send a work item into the project's pipeline
+          advance <project> --work-item REF  Mark the running stage complete and move on
+          status <project>                   Show what the project has in flight
+          reset <project>                    Clear a stopped project's pipeline state
+
+        Options:
+          --work-item REF   Work item reference (e.g. WC-42)
+          --body TEXT       Message body to send (start/advance)
+          --json            Print status as JSON (status only)
+
+        'advance' marks the running stage complete even if it has not finished.
+      HELP
+    end
+
+    def cmd_pipeline_start(args)
+      project, work_item, body = parse_pipeline_args(args, "start")
+      raise UsageError, "Missing project or --work-item.\n\n#{pipeline_help}" if project.nil? || work_item.nil?
+
+      reply = send_to_agent(project,
+        "type" => "command", "workspace" => project, "work_item_ref" => work_item,
+        "dispatch_id" => "manual-#{SecureRandom.hex(4)}",
+        "body" => body || "Begin work on #{work_item}.")
+      raise Error, "The agent for #{project} refused the work item: #{reply["error"]}" unless reply["ok"]
+      @output.puts "Sent #{work_item} into #{project}'s pipeline"
+    end
+
+    # Types the completion sentinel into the running stage's pane, which is
+    # exactly what a finished stage would print, so the agent advances normally.
+    def cmd_pipeline_advance(args)
+      project, work_item, body = parse_pipeline_args(args, "advance")
+      raise UsageError, "Missing project or --work-item.\n\n#{pipeline_help}" if project.nil? || work_item.nil?
+
+      # The body reaches a live shell, so it is escaped rather than interpolated.
+      sentinel = "#{SentinelPoller::SENTINEL} #{body || "manual advance"}"
+      reply = send_to_agent(project,
+        "type" => "inject", "workspace" => project, "work_item_ref" => work_item,
+        "interrupt" => true, "body" => "echo #{Shellwords.escape(sentinel)}")
+      raise Error, "The agent for #{project} refused the advance: #{reply["error"]}" unless reply["ok"]
+      @output.puts "Nudged #{project}/#{work_item} to advance"
+    end
+
+    def cmd_pipeline_status(args)
+      as_json = false
+      parser = OptionParser.new do |opts|
+        opts.banner = "Usage: workspace pipeline status <project>"
+        opts.on("--json", "Print the in-flight entries as JSON") { as_json = true }
+      end
+      parser.parse!(args)
+      project = args.shift
+      raise UsageError, parser.help if project.nil?
+
+      entries = read_pipeline_state(project)
+      return @output.puts JSON.pretty_generate(entries.values) if as_json
+
+      if entries.empty?
+        @output.puts "No pipeline work in flight for #{project}"
+        return
+      end
+
+      @output.puts "WORK ITEM  PANE  STAGE"
+      entries.each_value do |entry|
+        @output.puts "#{entry["work_item_ref"]}  pane #{entry["pane_index"]}  #{entry["phase"] || "(no pipeline)"}"
+      end
+    end
+
+    # Tolerates an unreadable state file the way the agent does, so the command
+    # an operator reaches for when things look wrong is not the one that dies.
+    def read_pipeline_state(project)
+      state_path = @config.pipeline_state_path(project)
+      return {} unless File.exist?(state_path)
+      entries = JSON.parse(File.read(state_path))
+      entries.is_a?(Hash) ? entries : {}
+    rescue JSON::ParserError, SystemCallError
+      @error_output.puts "Could not read #{project}'s pipeline state at #{state_path}; treating it as empty"
+      {}
+    end
+
+    # The agent holds this state in memory while it runs, so clearing the file
+    # under a live agent would only put the two out of step.
+    def cmd_pipeline_reset(args)
+      project = args.shift
+      raise UsageError, "Usage: workspace pipeline reset <project>" if project.nil?
+
+      if agent_running?(project)
+        raise Error, "The agent for #{project} is running; stop it (Ctrl-C in its pane, " \
+          "or kill the 'workspace agent' process) before resetting its pipeline state"
+      end
+
+      state_path = @config.pipeline_state_path(project)
+      File.unlink(state_path) if File.exist?(state_path)
+      @output.puts "Cleared pipeline state for #{project}"
+    end
+
+    def parse_pipeline_args(args, subcommand)
+      work_item = nil
+      body = nil
+      parser = OptionParser.new do |opts|
+        opts.banner = "Usage: workspace pipeline #{subcommand} <project> --work-item REF"
+        opts.on("--work-item REF", "Work item reference") { |v| work_item = v }
+        opts.on("--body TEXT", "Message body") { |v| body = v }
+      end
+      parser.parse!(args)
+      project = args.shift
+      raise UsageError, "Unexpected arguments: #{args.join(" ")}\n\n#{parser.help}" if args.any?
+      [project, work_item, body]
+    end
+
+    def send_to_agent(project, message)
+      reply = UNIXSocket.open(@config.agent_socket_path(project)) do |socket|
+        socket.puts(message.to_json)
+        socket.gets
+      end
+      raise Error, "The agent for #{project} closed the connection without replying" if reply.nil?
+      JSON.parse(reply)
+    rescue SystemCallError, IOError
+      raise Error, "No agent is running for #{project}. Start one with: workspace agent --name #{project}"
+    rescue JSON::ParserError
+      raise Error, "Unreadable reply from the agent for #{project}"
+    end
+
+    def agent_running?(project)
+      UNIXSocket.open(@config.agent_socket_path(project), &:close)
+      true
+    rescue SystemCallError
+      false
     end
 
     def cmd_run_and_report(args)

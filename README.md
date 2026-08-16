@@ -65,6 +65,7 @@ workspace <subcommand> [options]
 | Subcommand | Docs | Description |
 |------------|------|-------------|
 | add | [README](docs/README.add.md) | Add a tmuxinator config for a project directory |
+| agent | [README](docs/README.agent.md) | Run the long-lived workspace agent for a project |
 | alfred | [README](docs/README.alfred.md) | Manage the Alfred workflow for workspace focus |
 | capture | [README](docs/README.capture.md) | Print a tmux pane's scrollback buffer to stdout |
 | cleanup | [README](docs/README.cleanup.md) | Detect and remove zombie sessions from state |
@@ -81,6 +82,7 @@ workspace <subcommand> [options]
 | layout | [README](docs/README.layout.md) | Save/restore tmux pane layouts (auto-saved before resize) |
 | list | [README](docs/README.list.md) | List active projects (`--all` for all available) |
 | lookup | [README](docs/README.lookup.md) | Find a workspace project by worktree path, branch, or project name |
+| pipeline | [README](docs/README.pipeline.md) | Inspect and drive a project's agent pipeline |
 | prune | [README](docs/README.prune.md) | Remove worktree projects whose PR is closed or merged |
 | reactivate | [README](docs/README.reactivate.md) | Reactivate Claude in a project's tmux pane |
 | relaunch | [README](docs/README.relaunch.md) | Stop and relaunch all active workspace projects |

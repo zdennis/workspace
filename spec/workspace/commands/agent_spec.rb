@@ -731,6 +731,134 @@ RSpec.describe Workspace::Commands::Agent do
     end
   end
 
+  describe "surviving a restart" do
+    let(:state_path) { File.join(tmpdir, "pipeline.json") }
+    let(:pipeline_state) do
+      Workspace::PipelineState.new(pipeline_config: pipeline_config, state_path: state_path)
+    end
+
+    def write_pipeline_config
+      File.write(project_config_path, <<~YAML)
+        pipeline:
+          panes:
+            - role: researcher
+            - role: implementer
+          handoff: file_handoff
+      YAML
+    end
+
+    # What the previous agent process would have left on disk mid-stage.
+    def write_persisted_state(pane_index: 1)
+      File.write(state_path, JSON.pretty_generate(
+        "WC-42" => {
+          work_item_ref: "WC-42", workspace_name: "myapp",
+          dispatch_id: "d-7a1", pane_index: pane_index, phase: "implementer"
+        }
+      ))
+    end
+
+    it "re-registers with its in-flight work when the coordinator restarted under it" do
+      coordinator.start
+      write_pipeline_config
+
+      run_agent do
+        send_command = {
+          "type" => "command", "workspace" => "myapp", "work_item_ref" => "WC-42",
+          "dispatch_id" => "d-7a1", "body" => "/build add OAuth support"
+        }
+        UNIXSocket.open(agent_socket_path) { |s| s.puts(send_command.to_json) }
+        wait_until { pollers.any? }
+
+        # The coordinator answering with an epoch we have not seen is the agent's
+        # only signal that it is talking to a different process than it registered with.
+        coordinator.reply = {"ok" => true, "epoch" => "wc-epoch-2"}
+        agent.report_progress("WC-42", "still working")
+
+        wait_until { coordinator.registrations.size >= 2 }
+        expect(coordinator.registrations.last).to include("type" => "register", "name" => "myapp")
+        expect(coordinator.registrations.last["in_flight"]).to include(
+          hash_including("work_item_ref" => "WC-42", "dispatch_id" => "d-7a1")
+        )
+        expect(pollers.first).not_to be_stopped
+        expect(pipeline_state.current("WC-42")).to include(pane_index: 0)
+      end
+    end
+
+    it "picks work back up from disk and re-attaches to the pane that survived" do
+      coordinator.start
+      write_pipeline_config
+      write_persisted_state(pane_index: 1)
+      tmux.pane_indexes = [0, 1, 2]
+
+      run_agent do
+        expect(coordinator.last_registration["in_flight"]).to include(
+          hash_including("work_item_ref" => "WC-42", "dispatch_id" => "d-7a1", "phase" => "implementer")
+        )
+        expect(pollers.map(&:pane)).to eq([1])
+        expect(pipeline_state.current("WC-42")).to include(pane_index: 1)
+      end
+    end
+
+    it "treats a work item as lost when tmux cannot say whether its pane is there" do
+      coordinator.start
+      write_pipeline_config
+      write_persisted_state(pane_index: 1)
+      allow(tmux).to receive(:panes).and_raise(Workspace::Error, "tmux server not running")
+
+      run_agent do
+        expect(coordinator.last_registration["in_flight"]).to be_empty
+        expect(pipeline_state.in_flight_refs).not_to include("WC-42")
+      end
+    end
+
+    it "drops work whose pane did not survive rather than pretending it is running" do
+      coordinator.start
+      write_pipeline_config
+      write_persisted_state(pane_index: 1)
+      tmux.pane_indexes = [0, 2]
+
+      run_agent do
+        expect(coordinator.last_registration["in_flight"]).to be_empty
+        expect(pipeline_state.in_flight_refs).not_to include("WC-42")
+        expect(pollers).to be_empty
+        expect(error_output.string).to include("WC-42 lost its pane (1)")
+        expect(JSON.parse(File.read(state_path))).to be_empty
+      end
+    end
+
+    it "keeps its own state at the config's path when none is injected" do
+      allow(config).to receive(:pipeline_state_path).with("myapp").and_return(state_path)
+      coordinator.start
+      write_pipeline_config
+
+      unwired = described_class.new(
+        config: config, tmux: tmux, work_coordinator_client: client,
+        pipeline_config: pipeline_config,
+        epoch_generator: -> { "wa-TESTEPOCH" },
+        signal_trapper: signal_trapper,
+        sentinel_poller_factory: sentinel_poller_factory,
+        retry_backoff: 0, output: output, error_output: error_output
+      )
+      thread = Thread.new { unwired.call(name: "myapp") }
+      wait_until { output.string.include?("ready") || !thread.alive? }
+
+      begin
+        UNIXSocket.open(agent_socket_path) do |s|
+          s.puts({"type" => "command", "workspace" => "myapp", "work_item_ref" => "WC-42",
+                  "dispatch_id" => "d-7a1", "body" => "go"}.to_json)
+        end
+        wait_until { File.exist?(state_path) }
+
+        expect(JSON.parse(File.read(state_path))).to include(
+          "WC-42" => hash_including("pane_index" => 0, "phase" => "researcher")
+        )
+      ensure
+        signal_trapper.handlers["TERM"]&.call
+        thread.join(2)
+      end
+    end
+  end
+
   describe "starting a second agent for the same workspace" do
     it "refuses to start and leaves the running agent untouched" do
       coordinator.start

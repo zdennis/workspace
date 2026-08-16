@@ -85,4 +85,19 @@ RSpec.describe Workspace::Config do
       )
     end
   end
+  describe "#pipeline_state_path" do
+    subject(:config) { described_class.new }
+
+    it "puts a project's state under the XDG state directory" do
+      expect(config.pipeline_state_path("myapp")).to eq(
+        File.join(File.expand_path("~/.local/state"), "workspace", "myapp", "pipeline.json")
+      )
+    end
+
+    it "honours XDG_STATE_HOME when it is set" do
+      allow(ENV).to receive(:fetch).with("XDG_STATE_HOME", "~/.local/state").and_return("/custom/state")
+
+      expect(config.pipeline_state_dir("myapp")).to eq("/custom/state/workspace/myapp")
+    end
+  end
 end

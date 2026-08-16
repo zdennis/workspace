@@ -19,7 +19,8 @@ module Workspace
       # @param tmux [Workspace::Tmux] tmux session operations
       # @param work_coordinator_client [Workspace::WorkCoordinatorClient] coordinator client
       # @param pipeline_config [Workspace::PipelineConfig] per-project pipeline configuration
-      # @param pipeline_state [Workspace::PipelineState] in-flight work item tracking
+      # @param pipeline_state [Workspace::PipelineState, nil] in-flight work item
+      #   tracking; built from the project's persisted state file when omitted
       # @param epoch_generator [#call] returns a new epoch string
       # @param signal_trapper [#trap] receives SIGTERM/SIGINT handler registration
       # @param sentinel_poller_factory [#call] builds a poller for a session/pane pair
@@ -27,7 +28,7 @@ module Workspace
       # @param logger [Workspace::Logger] debug logger
       # @param output [IO] output stream for user-facing messages
       # @param error_output [IO] error output stream for errors
-      def initialize(config:, tmux:, work_coordinator_client:, pipeline_config:, pipeline_state:,
+      def initialize(config:, tmux:, work_coordinator_client:, pipeline_config:, pipeline_state: nil,
         epoch_generator: -> { "wa-#{Agent.ulid}" },
         signal_trapper: Signal,
         sentinel_poller_factory: nil,
@@ -73,6 +74,12 @@ module Workspace
         socket_path = @config.agent_socket_path(name)
 
         return false unless claim_socket(name, socket_path)
+
+        @pipeline_state ||= PipelineState.new(
+          pipeline_config: @pipeline_config,
+          state_path: @config.pipeline_state_path(name)
+        )
+        recover_in_flight
 
         epoch = @epoch_generator.call
         return false unless register(name, socket_path, epoch, wc_socket)
@@ -147,6 +154,34 @@ module Workspace
       end
 
       private
+
+      # Picks up work the previous agent process left behind. A stage whose pane
+      # is still alive gets its watch re-armed so it can still finish; a stage
+      # whose pane died is dropped, and leaving it out of the registration is
+      # what tells the coordinator to reconcile it.
+      def recover_in_flight
+        @pipeline_state.in_flight_refs.each do |ref|
+          entry = @pipeline_state.current(ref)
+          pane = entry[:pane_index]
+
+          # Checked against the session we are actually serving, not the name in
+          # the file, so the liveness check and the re-armed watch cannot differ.
+          if pane_alive?(@current_name, pane)
+            @state_lock.synchronize { watch_for_completion(ref, pane) }
+            @logger.debug { "re-attached sentinel watch for #{ref} at pane #{pane}" }
+          else
+            @error_output.puts "workspace agent: #{ref} lost its pane (#{pane}) while the agent was down"
+            @pipeline_state.complete(work_item_ref: ref)
+          end
+        end
+      end
+
+      def pane_alive?(session_name, pane_index)
+        @tmux.panes(session_name).include?(pane_index)
+      rescue => e
+        @logger.debug { "pane check failed for #{session_name}: #{e.message}" }
+        false
+      end
 
       # Routes a parsed message, ignoring anything addressed to another workspace.
       def dispatch(message, client = nil)
@@ -519,7 +554,8 @@ module Workspace
 
       def register(name, socket_path, epoch, wc_socket)
         @client = wc_socket ? rebind_client(wc_socket) : @work_coordinator_client
-        reply = @client.register(name: name, socket: socket_path, pipeline: true, epoch: epoch)
+        reply = @client.register(name: name, socket: socket_path, pipeline: true, epoch: epoch,
+          in_flight: @pipeline_state.in_flight)
         @wc_epoch = reply["epoch"]
         return true if reply["ok"]
 
