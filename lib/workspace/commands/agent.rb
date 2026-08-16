@@ -263,8 +263,8 @@ module Workspace
         nil
       end
 
-      # Delivers a command body to the first pipeline stage, or to pane 1 when the
-      # workspace has no pipeline configured.
+      # Delivers a command body to the first pipeline stage, or the detected Claude
+      # pane when the workspace has no pipeline configured.
       def handle_command(message)
         ref = message["work_item_ref"]
         stages = @pipeline_config.stages_for(@current_name)
@@ -282,9 +282,11 @@ module Workspace
             @logger.debug { "pipeline started for #{ref} at pane #{stage[:pane_index]} (#{stage[:role]})" }
             [started, "Pipeline started at stage #{stage[:role]} (pane #{stage[:pane_index]})", stage[:pane_index]]
           else
-            @tmux.send_keys(@current_name, pane_target(1), text)
-            @logger.debug { "command delivered to default pane for #{ref}" }
-            [untracked_entry(ref), "Command delivered to default pane"]
+            target = claude_pane_target
+            @logger.debug { "delivering #{ref} to #{@current_name}:#{target}" }
+            @tmux.send_keys(@current_name, target, text)
+            @logger.debug { "command delivered to #{@current_name}:#{target} for #{ref}" }
+            [untracked_entry(ref), "Command delivered to #{@current_name}:#{target}"]
           end
         end
 
@@ -315,6 +317,16 @@ module Workspace
       # All workspaces use a single window, so pane N is always "0.N".
       def pane_target(index)
         "0.#{index}"
+      end
+
+      # Returns the tmux pane target for the Claude Code pane in the current workspace.
+      # Detects by pane title so that layout changes don't break routing.
+      # Falls back to pane 1 if detection fails.
+      def claude_pane_target
+        TmuxPane.new("Claude Code", tmux: @tmux).target(@current_name)
+      rescue Workspace::Error => e
+        @logger.debug { "agent: Claude pane not found (#{e.message}); falling back to pane 1" }
+        pane_target(1)
       end
 
       # A one-shot reporting entry for work the agent does not track in the

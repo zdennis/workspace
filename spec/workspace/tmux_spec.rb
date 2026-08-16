@@ -283,4 +283,49 @@ RSpec.describe Workspace::Tmux do
       expect(tmux.split_window("my-session")).to be_nil
     end
   end
+
+  describe "#find_pane_by_title" do
+    let(:tmux) { described_class.new(config: config) }
+
+    def stub_list_panes(target, stdout:, success: true)
+      status = instance_double(Process::Status, success?: success)
+      allow(Open3).to receive(:capture3)
+        .with("tmux", "list-panes", "-t", target, "-F", "\#{pane_index} \#{pane_title}")
+        .and_return([stdout, "", status])
+    end
+
+    it "returns the index of the first pane whose title contains the pattern (case-insensitive)" do
+      stub_list_panes("my-session:0", stdout: "0 banner\n1 ✳ Claude Code 2.1.0\n2 zsh\n")
+
+      expect(tmux.find_pane_by_title("my-session", "claude code")).to eq(1)
+    end
+
+    it "matches case-insensitively" do
+      stub_list_panes("my-session:0", stdout: "0 banner\n1 CLAUDE CODE 2.1.0\n")
+
+      expect(tmux.find_pane_by_title("my-session", "Claude Code")).to eq(1)
+    end
+
+    it "returns nil when no pane title matches" do
+      stub_list_panes("my-session:0", stdout: "0 banner\n1 zsh\n")
+
+      expect(tmux.find_pane_by_title("my-session", "Claude Code")).to be_nil
+    end
+
+    it "returns nil when list-panes fails" do
+      stub_list_panes("my-session:0", stdout: "", success: false)
+
+      expect(tmux.find_pane_by_title("my-session", "Claude Code")).to be_nil
+    end
+  end
+
+  describe "#find_claude_pane" do
+    let(:tmux) { described_class.new(config: config) }
+
+    it "delegates to find_pane_by_title with 'Claude Code'" do
+      allow(tmux).to receive(:find_pane_by_title).with("my-session", "Claude Code", window: "0").and_return(2)
+
+      expect(tmux.find_claude_pane("my-session")).to eq(2)
+    end
+  end
 end

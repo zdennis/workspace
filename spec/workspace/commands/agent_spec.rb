@@ -574,7 +574,7 @@ RSpec.describe Workspace::Commands::Agent do
 
         expect(coordinator.status_messages.first).to include(
           "type" => "status_update", "workspace" => "myapp", "work_item_ref" => "WC-42",
-          "message" => "Command delivered to default pane"
+          "message" => "Command delivered to myapp:0.1"
         )
       end
     end

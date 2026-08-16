@@ -471,7 +471,7 @@ module Workspace
         opts.separator ""
         opts.separator "Options:"
         opts.on("--pane N", String,
-          "Target pane by zero-based index, or 'bottom' for the last pane") do |n|
+          "Target pane: zero-based index, 'bottom', or a title substring (e.g. 'Claude Code')") do |n|
           pane_opt = n
         end
         # --bottom is intentionally equivalent to the default. It exists so scripts can
@@ -530,20 +530,7 @@ module Workspace
           "--pipe runs a shell pipeline, which requires Enter (incompatible with --no-enter).\n\n#{parser.help}"
       end
 
-      pane = if pane_opt
-        case pane_opt
-        when /\A\d+\z/
-          pane_opt.to_i
-        when "bottom"
-          :bottom
-        else
-          raise UsageError, "Invalid --pane value: '#{pane_opt}'. Use a number or 'bottom'.\n\n#{parser.help}"
-        end
-      elsif bottom
-        :bottom
-      else
-        :bottom
-      end
+      pane = pane_opt || :bottom
 
       if args.size == 1
         project = @project_detector.detect(@working_dir)
@@ -674,7 +661,7 @@ module Workspace
         opts.separator ""
         opts.separator "Options:"
         opts.on("--pane N", String,
-          "Target pane by zero-based index, or 'bottom' for the last pane") do |n|
+          "Target pane: zero-based index, 'bottom', or a title substring (e.g. 'Claude Code')") do |n|
           pane_opt = n
         end
         opts.on("--lines N", Integer,
@@ -702,18 +689,7 @@ module Workspace
         project = args.first
       end
 
-      pane = if pane_opt
-        case pane_opt
-        when /\A\d+\z/
-          pane_opt.to_i
-        when "bottom"
-          :bottom
-        else
-          raise UsageError, "Invalid --pane value: '#{pane_opt}'. Use a number or 'bottom'.\n\n#{parser.help}"
-        end
-      else
-        :bottom
-      end
+      pane = pane_opt || :bottom
 
       @capture_command.call(project, pane: pane, lines: lines_opt, all: all)
     end

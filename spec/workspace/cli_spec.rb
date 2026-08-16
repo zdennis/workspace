@@ -835,28 +835,28 @@ RSpec.describe Workspace::CLI do
       expect(error_output.string).to include("Usage: workspace run")
     end
 
-    it "passes --pane N as integer to run_command" do
+    it "passes --pane N as a string to run_command (TmuxPane resolves at runtime)" do
       run_command = CLITestHelpers::FakeRunCommand.new
       cli, _, _ = build_test_cli(run_command: run_command)
       cli.run(["run", "myproject", "rake spec", "--pane", "2"])
 
-      expect(run_command.calls.first[:pane]).to eq(2)
+      expect(run_command.calls.first[:pane]).to eq("2")
     end
 
-    it "passes --pane bottom as :bottom to run_command" do
+    it "passes --pane bottom as a string to run_command" do
       run_command = CLITestHelpers::FakeRunCommand.new
       cli, _, _ = build_test_cli(run_command: run_command)
       cli.run(["run", "myproject", "rake spec", "--pane", "bottom"])
 
-      expect(run_command.calls.first[:pane]).to eq(:bottom)
+      expect(run_command.calls.first[:pane]).to eq("bottom")
     end
 
-    it "exits 1 for invalid --pane value" do
-      cli, _, error_output = build_test_cli
-      expect { cli.run(["run", "myproject", "echo hi", "--pane", "invalid"]) }.to raise_error(FakeSystemExit) { |e|
-        expect(e.status).to eq(1)
-      }
-      expect(error_output.string).to include("Invalid --pane value")
+    it "passes --pane with a title substring string to run_command" do
+      run_command = CLITestHelpers::FakeRunCommand.new
+      cli, _, _ = build_test_cli(run_command: run_command)
+      cli.run(["run", "myproject", "echo hi", "--pane", "Claude Code"])
+
+      expect(run_command.calls.first[:pane]).to eq("Claude Code")
     end
 
     it "passes --bottom as pane: :bottom" do
@@ -1370,28 +1370,28 @@ RSpec.describe Workspace::CLI do
       expect(call[:all]).to eq(false)
     end
 
-    it "passes --pane N as an integer" do
+    it "passes --pane N as a string to capture_command (TmuxPane resolves at runtime)" do
       capture_command = CLITestHelpers::FakeCaptureCommand.new
       cli, _, _ = build_test_cli(capture_command: capture_command)
       cli.run(["capture", "myproject", "--pane", "1"])
 
-      expect(capture_command.calls.first[:pane]).to eq(1)
+      expect(capture_command.calls.first[:pane]).to eq("1")
     end
 
-    it "passes --pane bottom as :bottom" do
+    it "passes --pane bottom as a string to capture_command" do
       capture_command = CLITestHelpers::FakeCaptureCommand.new
       cli, _, _ = build_test_cli(capture_command: capture_command)
       cli.run(["capture", "myproject", "--pane", "bottom"])
 
-      expect(capture_command.calls.first[:pane]).to eq(:bottom)
+      expect(capture_command.calls.first[:pane]).to eq("bottom")
     end
 
-    it "exits 1 for an invalid --pane value" do
-      cli, _, error_output = build_test_cli
-      expect { cli.run(["capture", "myproject", "--pane", "invalid"]) }.to raise_error(FakeSystemExit) { |e|
-        expect(e.status).to eq(1)
-      }
-      expect(error_output.string).to include("Invalid --pane value")
+    it "passes --pane with a title substring string to capture_command" do
+      capture_command = CLITestHelpers::FakeCaptureCommand.new
+      cli, _, _ = build_test_cli(capture_command: capture_command)
+      cli.run(["capture", "myproject", "--pane", "Claude Code"])
+
+      expect(capture_command.calls.first[:pane]).to eq("Claude Code")
     end
 
     it "passes --lines N to capture_command" do

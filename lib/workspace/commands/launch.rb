@@ -204,8 +204,6 @@ module Workspace
         end
       end
 
-      CLAUDE_PANE = Commands::Claude::CLAUDE_PANE
-
       def send_prompts(session_names, prompts)
         # Claude needs time to initialize after the tmux session starts.
         # 5 seconds is a conservative default; Claude typically starts in 2-3s.
@@ -216,7 +214,12 @@ module Workspace
           tmux_name = session_names[project]
           next unless tmux_name
           @output.puts "Sending prompt to #{project}..."
-          unless @tmux.send_keys(tmux_name, CLAUDE_PANE, prompt_text)
+          pane = begin
+            TmuxPane.new("Claude Code", tmux: @tmux).target(tmux_name)
+          rescue Workspace::Error
+            Commands::Claude::CLAUDE_PANE_FALLBACK
+          end
+          unless @tmux.send_keys(tmux_name, pane, prompt_text)
             @error_output.puts "Warning: Failed to send prompt to #{project}"
           end
         end

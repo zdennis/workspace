@@ -44,8 +44,7 @@ module Workspace
           split_and_run(session_name, command, vertical: vertical, enter: enter,
             dry_run: dry_run, close: close)
         else
-          pane_index = resolve_pane(session_name, pane)
-          pane_spec = "0.#{pane_index}"
+          pane_spec = TmuxPane.new(pane, tmux: @tmux).target(session_name)
 
           if dry_run
             @output.puts "tmux send-keys -l -t #{session_name}:#{pane_spec} #{command.inspect}"
@@ -55,12 +54,12 @@ module Workspace
           else
             unless @tmux.send_keys(session_name, pane_spec, command, enter: enter)
               raise Workspace::Error,
-                "Failed to send command to pane #{pane_index} of '#{project}'"
+                "Failed to send command to pane #{pane_spec} of '#{project}'"
             end
             if close
               unless @tmux.send_keys(session_name, pane_spec, "exit", enter: true)
                 raise Workspace::Error,
-                  "Failed to send exit to pane #{pane_index} of '#{project}'"
+                  "Failed to send exit to pane #{pane_spec} of '#{project}'"
               end
             end
           end
@@ -70,25 +69,6 @@ module Workspace
       end
 
       private
-
-      def resolve_pane(session_name, pane)
-        pane_list = @tmux.panes(session_name, window: "0")
-        raise Workspace::Error, "No panes found for session '#{session_name}'" if pane_list.empty?
-
-        case pane
-        when :bottom, "bottom", nil
-          pane_list.last
-        when Integer
-          unless pane_list.include?(pane)
-            raise Workspace::Error,
-              "Pane #{pane} does not exist for '#{session_name}' " \
-              "(available: #{pane_list.join(", ")})"
-          end
-          pane
-        else
-          pane_list.last
-        end
-      end
 
       def split_and_run(session_name, command, vertical:, enter:, dry_run:, close:)
         pane_list = @tmux.panes(session_name, window: "0")

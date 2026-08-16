@@ -4,7 +4,7 @@ module Workspace
     # Deactivate sends Ctrl-C to kill the running Claude process.
     # Reactivate sends the claude startup command to restart it.
     class Claude
-      CLAUDE_PANE = "0.1"
+      CLAUDE_PANE_FALLBACK = "0.1"
       REACTIVATE_COMMAND = "claude --continue || claude"
       CTRL_C_COUNT = 3
       CTRL_C_DELAY = 0.5
@@ -27,8 +27,9 @@ module Workspace
       def deactivate(projects)
         each_active_session(projects) do |project, session_name|
           @output.puts "  Deactivating Claude in #{project}..."
+          pane = claude_pane(session_name)
           CTRL_C_COUNT.times do |i|
-            @tmux.send_key(session_name, CLAUDE_PANE, "C-c")
+            @tmux.send_key(session_name, pane, "C-c")
             sleep CTRL_C_DELAY if i < CTRL_C_COUNT - 1
           end
         end
@@ -42,12 +43,18 @@ module Workspace
       def reactivate(projects)
         each_active_session(projects) do |project, session_name|
           @output.puts "  Reactivating Claude in #{project}..."
-          @tmux.send_keys(session_name, CLAUDE_PANE, REACTIVATE_COMMAND)
+          @tmux.send_keys(session_name, claude_pane(session_name), REACTIVATE_COMMAND)
         end
         @output.puts "Done."
       end
 
       private
+
+      def claude_pane(session_name)
+        TmuxPane.new("Claude Code", tmux: @tmux).target(session_name)
+      rescue Workspace::Error
+        CLAUDE_PANE_FALLBACK
+      end
 
       def each_active_session(projects)
         active_sessions = @tmux.sessions

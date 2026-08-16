@@ -152,6 +152,14 @@ module CLITestHelpers
       @pane_indexes
     end
 
+    def find_pane_by_title(_session, _pattern, **_opts)
+      nil
+    end
+
+    def find_claude_pane(_session, **_opts)
+      1
+    end
+
     def split_window(_session, **_opts)
       3
     end
@@ -322,7 +330,7 @@ module CLITestHelpers
       @result = true
     end
 
-    def call(name:, wc_socket: nil)
+    def call(name:, wc_socket: nil, force: false)
       @calls << {name: name, wc_socket: wc_socket}
       @result
     end

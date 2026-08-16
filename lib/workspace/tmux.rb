@@ -89,6 +89,40 @@ module Workspace
       stdout.strip.lines.map { |l| l.strip.to_i }.sort
     end
 
+    # Finds the first pane whose title contains the given string (case-insensitive).
+    # Useful for locating panes by process name or displayed title.
+    #
+    # @param session_name [String] tmux session name
+    # @param title_pattern [String] case-insensitive substring to match against pane titles
+    # @param window [String] window index (default "0")
+    # @return [Integer, nil] pane index of the first matching pane, or nil if not found
+    def find_pane_by_title(session_name, title_pattern, window: "0")
+      target = "#{session_name}:#{window}"
+      pattern = title_pattern.downcase
+      @logger.debug { "tmux: searching for pane matching #{title_pattern.inspect} in #{target}" }
+      stdout, _, status = Open3.capture3("tmux", "list-panes", "-t", target, "-F", "\#{pane_index} \#{pane_title}")
+      return nil unless status.success?
+      stdout.strip.lines.each do |line|
+        index_str, title = line.strip.split(" ", 2)
+        next unless title&.downcase&.include?(pattern)
+        index = index_str.to_i
+        @logger.debug { "tmux: found #{title_pattern.inspect} at pane #{index} (title: #{title.strip})" }
+        return index
+      end
+      @logger.debug { "tmux: no pane matching #{title_pattern.inspect} found in #{target}" }
+      nil
+    end
+
+    # Finds the pane running Claude Code, identified by its title.
+    # Claude Code sets its own pane title to "✳ Claude Code X.X.X".
+    #
+    # @param session_name [String] tmux session name
+    # @param window [String] window index (default "0")
+    # @return [Integer, nil] pane index of the Claude Code pane, or nil if not found
+    def find_claude_pane(session_name, window: "0")
+      find_pane_by_title(session_name, "Claude Code", window: window)
+    end
+
     # Splits a pane in the given window.
     #
     # Uses `-P -F '#{pane_index}'` so the new pane's index is reported by tmux itself.
