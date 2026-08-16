@@ -14,6 +14,7 @@ workspace pipeline <subcommand> [options]
 | `advance <project> --work-item REF` | Mark the running stage complete and move on |
 | `status <project>` | Show what the project has in flight |
 | `reset <project>` | Clear a stopped project's pipeline state |
+| `help` | Print the subcommand and option summary |
 
 ## Options
 
@@ -29,9 +30,9 @@ workspace pipeline <subcommand> [options]
 
 **`start`** sends a synthetic command with a `manual-` dispatch id. The agent handles it exactly as it would one from the coordinator: the body is typed into the first stage's pane and the work item starts being tracked. Without `--body` it sends `Begin work on <REF>.`
 
-**`advance`** interrupts the running stage and types the completion sentinel into its pane — the same line a finished stage prints. The agent's watch sees it and advances normally, capturing the handoff and starting the next stage. It does not wait for the stage to actually be done: an advance marks it complete whether it is or not. The body is escaped before it reaches the pane's shell.
+**`advance`** interrupts the running stage and types the completion sentinel into its pane — the same line a finished stage prints. The agent's watch sees it and advances normally, capturing the handoff and starting the next stage. It does not wait for the stage to actually be done: an advance marks it complete whether it is or not. `--body` becomes the one-line summary after the sentinel, and defaults to `manual advance`; it is escaped before it reaches the pane's shell.
 
-**`status`** reads the persisted state file at `~/.local/state/workspace/<project>/pipeline.json`, so it works whether or not the agent is running. It prints one line per in-flight work item with its pane index and phase. Because it reads the file rather than asking the agent, a poll landing mid-transition can show a stage the agent has just moved past.
+**`status`** reads the persisted state file at `$XDG_STATE_HOME/workspace/<project>/pipeline.json` (`~/.local/state/...` by default), so it works whether or not the agent is running. It prints one line per in-flight work item with its pane index and phase. Because it reads the file rather than asking the agent, a poll landing mid-transition can show a stage the agent has just moved past.
 
 **`--json`** prints the in-flight entries as a JSON array, including the `dispatch_id` the table leaves out, for scripts that need to correlate their own dispatches. An idle project prints `[]`.
 

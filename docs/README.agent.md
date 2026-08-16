@@ -66,6 +66,7 @@ The coordinator's answer to a status report decides what the agent does next:
 | `error: "wrong_workspace"` | Message was addressed to a different workspace |
 | `error: "unknown_type"` | Unrecognized `type` field |
 | `error: "malformed_message"` | The line was not valid JSON |
+| `error: "internal_error"` | The message raised while being handled; the connection is dropped, the agent keeps running |
 
 ## Epochs and restarts
 
