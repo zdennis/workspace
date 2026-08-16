@@ -209,7 +209,7 @@ RSpec.describe Workspace::Commands::Agent do
         wait_until { tmux.sent_keys.any? }
 
         expect(tmux.sent_keys.last).to include(
-          session: "myapp", pane: 0, text: "/build add OAuth support"
+          session: "myapp", pane: "0.0", text: "/build add OAuth support"
         )
         expect(pipeline_state.current("WC-42")).to include(
           dispatch_id: "d-7a1", pane_index: 0, phase: "researcher"
@@ -222,7 +222,7 @@ RSpec.describe Workspace::Commands::Agent do
         send_command
         wait_until { tmux.sent_keys.any? }
 
-        expect(tmux.sent_keys.last).to include(session: "myapp", pane: 0)
+        expect(tmux.sent_keys.last).to include(session: "myapp", pane: "0.1")
         expect(pipeline_state.in_flight_refs).to be_empty
       end
     end
@@ -265,7 +265,7 @@ RSpec.describe Workspace::Commands::Agent do
         send_command
 
         wait_until { tmux.sent_keys.any? }
-        expect(tmux.sent_keys.last).to include(pane: 0, text: "/build add OAuth support")
+        expect(tmux.sent_keys.last).to include(pane: "0.0", text: "/build add OAuth support")
         expect(pipeline_state.current("WC-42")).to include(pane_index: 0, phase: "researcher")
       end
     end
@@ -307,7 +307,7 @@ RSpec.describe Workspace::Commands::Agent do
 
         handoff = File.join(tmpdir, "handoffs", "myapp-WC-42-handoff.txt")
         expect(File.read(handoff)).to include("research notes")
-        expect(tmux.sent_keys.last).to include(session: "myapp", pane: 1)
+        expect(tmux.sent_keys.last).to include(session: "myapp", pane: "0.1")
         expect(tmux.sent_keys.last[:text]).to include(handoff)
         expect(tmux.sent_keys.last[:text]).to include("WORKSPACE_DONE:")
         expect(pollers.first).to be_stopped
@@ -337,7 +337,7 @@ RSpec.describe Workspace::Commands::Agent do
         pollers.first.on_complete.call("Initial research complete")
 
         expect(pipeline_state.current("WC-42")).to include(pane_index: 1, phase: "implementer")
-        expect(tmux.sent_keys.last).to include(pane: 1)
+        expect(tmux.sent_keys.last).to include(pane: "0.1")
         expect(pollers.last.pane).to eq(1)
       end
     end
@@ -669,7 +669,7 @@ RSpec.describe Workspace::Commands::Agent do
 
         pollers.first.on_complete.call("research done")
 
-        expect(tmux.sent_keys.last).to include(pane: 1, text: "use Postgres not SQLite")
+        expect(tmux.sent_keys.last).to include(pane: "0.1", text: "use Postgres not SQLite")
       end
     end
 
@@ -680,8 +680,8 @@ RSpec.describe Workspace::Commands::Agent do
 
         expect(send_inject("interrupt" => true)).to eq("ok" => true, "queued_for_pane" => 0)
 
-        expect(tmux.sent_key_names.last).to include(session: "myapp", pane: 0, key: "C-c")
-        expect(tmux.sent_keys.last).to include(pane: 0, text: "use Postgres not SQLite")
+        expect(tmux.sent_key_names.last).to include(session: "myapp", pane: "0.0", key: "C-c")
+        expect(tmux.sent_keys.last).to include(pane: "0.0", text: "use Postgres not SQLite")
       end
     end
 

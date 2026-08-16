@@ -238,8 +238,8 @@ module Workspace
 
       # Interrupts whatever the stage's pane is doing, then types the steer into it.
       def deliver_urgent_steer(entry, body)
-        @tmux.send_key(entry[:workspace_name], entry[:pane_index], "C-c")
-        @tmux.send_keys(entry[:workspace_name], entry[:pane_index], body)
+        @tmux.send_key(entry[:workspace_name], pane_target(entry[:pane_index]), "C-c")
+        @tmux.send_keys(entry[:workspace_name], pane_target(entry[:pane_index]), body)
       end
 
       # The stage after the one this entry is sitting on, or nil when it is last.
@@ -259,7 +259,7 @@ module Workspace
         nil
       end
 
-      # Delivers a command body to the first pipeline stage, or to pane 0 when the
+      # Delivers a command body to the first pipeline stage, or to pane 1 when the
       # workspace has no pipeline configured.
       def handle_command(message)
         ref = message["work_item_ref"]
@@ -268,7 +268,7 @@ module Workspace
         entry, started_message, watch_pane = @state_lock.synchronize do
           if stages
             stage = stages.first
-            @tmux.send_keys(@current_name, stage[:pane_index], message["body"])
+            @tmux.send_keys(@current_name, pane_target(stage[:pane_index]), message["body"])
             started = @pipeline_state.start(
               work_item_ref: ref,
               workspace_name: @current_name,
@@ -277,7 +277,7 @@ module Workspace
             @logger.debug { "pipeline started for #{ref} at pane #{stage[:pane_index]} (#{stage[:role]})" }
             [started, "Pipeline started at stage #{stage[:role]} (pane #{stage[:pane_index]})", stage[:pane_index]]
           else
-            @tmux.send_keys(@current_name, 0, message["body"])
+            @tmux.send_keys(@current_name, pane_target(1), message["body"])
             @logger.debug { "command delivered to default pane for #{ref}" }
             [untracked_entry(ref), "Command delivered to default pane"]
           end
@@ -287,6 +287,12 @@ module Workspace
         # precedes anything the poller thread goes on to report.
         report(entry, "type" => "status_update", "message" => started_message)
         @state_lock.synchronize { watch_for_completion(ref, watch_pane) } if watch_pane
+      end
+
+      # Converts a bare pane index to a qualified tmux target within window 0.
+      # All workspaces use a single window, so pane N is always "0.N".
+      def pane_target(index)
+        "0.#{index}"
       end
 
       # A one-shot reporting entry for work the agent does not track in the
@@ -340,7 +346,7 @@ module Workspace
         handoff_path = write_handoff(entry[:workspace_name], work_item_ref, captured)
 
         if next_stage
-          @tmux.send_keys(entry[:workspace_name], next_stage[:pane_index],
+          @tmux.send_keys(entry[:workspace_name], pane_target(next_stage[:pane_index]),
             handoff_instructions(next_stage[:role], handoff_path))
           deliver_queued_steers(entry[:workspace_name], work_item_ref, next_stage[:pane_index])
           @pipeline_state.advance(work_item_ref: work_item_ref, to_stage: next_stage)
@@ -358,7 +364,7 @@ module Workspace
       # still running. Called with the state lock already held.
       def deliver_queued_steers(name, work_item_ref, pane)
         steers = @queued_steers.delete(work_item_ref) || []
-        steers.each { |steer| @tmux.send_keys(name, pane, steer) }
+        steers.each { |steer| @tmux.send_keys(name, pane_target(pane), steer) }
       end
 
       # The stage-to-stage contract: where the previous stage's output lives and
