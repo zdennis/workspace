@@ -718,6 +718,7 @@ module Workspace
     def cmd_agent(args)
       name = nil
       wc_socket = nil
+      force = false
 
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: workspace agent [options]"
@@ -728,13 +729,14 @@ module Workspace
         opts.separator "Options:"
         opts.on("--name NAME", "Workspace name (defaults to the detected project)") { |v| name = v }
         opts.on("--wc-socket PATH", "Path to the work-coordinator socket") { |v| wc_socket = v }
+        opts.on("-f", "--force", "Kill any running agent for this workspace before starting") { force = true }
       end
       parser.parse!(args)
 
       name ||= @project_detector.detect(@working_dir)
       raise UsageError, parser.help if name.nil?
 
-      @exit_handler.exit(1) unless @agent_command.call(name: name, wc_socket: wc_socket)
+      @exit_handler.exit(1) unless @agent_command.call(name: name, wc_socket: wc_socket, force: force)
     end
 
     # Drives and inspects a running agent's pipeline. These are operator tools:

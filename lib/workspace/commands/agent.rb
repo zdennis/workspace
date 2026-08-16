@@ -2,6 +2,7 @@ require "socket"
 require "json"
 require "fileutils"
 require "securerandom"
+require "shellwords"
 
 module Workspace
   module Commands
@@ -68,12 +69,13 @@ module Workspace
       #
       # @param name [String] workspace name
       # @param wc_socket [String, nil] override path to the coordinator socket
+      # @param force [Boolean] kill any running agent before starting
       # @return [Boolean] false when the agent refused to start, true after a clean shutdown
-      def call(name:, wc_socket: nil)
+      def call(name:, wc_socket: nil, force: false)
         @current_name = name
         socket_path = @config.agent_socket_path(name)
 
-        return false unless claim_socket(name, socket_path)
+        return false unless claim_socket(name, socket_path, force: force)
 
         @pipeline_state ||= PipelineState.new(
           pipeline_config: @pipeline_config,
@@ -540,8 +542,13 @@ module Workspace
 
       # Returns true when the socket path is free to bind (cleaning up a stale
       # socket if needed), false when another agent is already answering.
-      def claim_socket(name, socket_path)
+      # When +force+ is true and an agent is running, kills it and waits for
+      # the socket to be released before returning.
+      def claim_socket(name, socket_path, force: false)
         UNIXSocket.open(socket_path) { |s| s.close }
+        # A live agent is answering. Force-kill it if requested.
+        return kill_existing_agent(name, socket_path) if force
+
         @error_output.puts "workspace agent '#{name}' is already running"
         false
       rescue Errno::ECONNREFUSED
@@ -550,6 +557,42 @@ module Workspace
         true
       rescue Errno::ENOENT
         true
+      end
+
+      # Finds the PID listening on +socket_path+, sends SIGTERM, and waits up
+      # to 5 seconds for it to exit. Returns true when the socket is gone,
+      # false when the process did not exit in time.
+      def kill_existing_agent(name, socket_path)
+        pid = lsof_pid(socket_path)
+        if pid
+          @output.puts "Stopping existing workspace agent '#{name}' (PID #{pid})..."
+          Process.kill("TERM", pid)
+        else
+          @logger.debug { "force: no PID found for #{socket_path}; removing socket directly" }
+        end
+
+        deadline = Time.now + 5
+        loop do
+          break unless File.socket?(socket_path)
+          if Time.now > deadline
+            @error_output.puts "workspace agent '#{name}': timed out waiting for previous agent to exit"
+            return false
+          end
+          sleep 0.1
+        end
+        true
+      rescue Errno::ESRCH
+        # Process was already gone; socket may still be there — remove it.
+        File.unlink(socket_path) if File.socket?(socket_path)
+        true
+      end
+
+      # Returns the PID of the process listening on the given Unix socket path,
+      # or nil when none is found (requires lsof).
+      def lsof_pid(socket_path)
+        output = `lsof -t #{socket_path.shellescape} 2>/dev/null`.strip
+        pid = output.to_i
+        (pid > 0) ? pid : nil
       end
 
       def register(name, socket_path, epoch, wc_socket)
