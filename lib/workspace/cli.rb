@@ -116,6 +116,8 @@ module Workspace
         cmd_capture(args)
       when "agent"
         cmd_agent(args)
+      when "agent-run"
+        cmd_agent_run(args)
       when "pipeline"
         cmd_pipeline(args)
       when "run"
@@ -195,6 +197,7 @@ module Workspace
         Subcommands:
           add             Add a tmuxinator config for a project directory
           agent           Run the workspace agent for a project (long-lived)
+          agent-run       Send a raw message to a running agent socket (debugging)
           alfred          Manage the Alfred workflow for workspace focus
           capture         Print a tmux pane's scrollback buffer to stdout
           cleanup         Detect and remove zombie sessions from state
@@ -737,6 +740,169 @@ module Workspace
       raise UsageError, parser.help if name.nil?
 
       @exit_handler.exit(1) unless @agent_command.call(name: name, wc_socket: wc_socket, force: force)
+    end
+
+    # Sends a raw JSONL message to a running agent socket for manual testing and
+    # exploration. Always pretty-prints what is being sent before sending it.
+    def cmd_agent_run(args)
+      subcommand = args.shift
+      case subcommand
+      when "command" then cmd_agent_run_command(args)
+      when "inject" then cmd_agent_run_inject(args)
+      when "examples" then cmd_agent_run_examples
+      else
+        raise UsageError, agent_run_help
+      end
+    end
+
+    def agent_run_help
+      <<~HELP
+        Usage: workspace agent-run <subcommand> [options]
+
+        Send a raw JSONL message to a running agent socket.
+        Always prints the message being sent before sending it.
+
+        Subcommands:
+          command    Send a "command" message (delivers work to the first pipeline stage)
+          inject     Send an "inject" message (steers a running work item)
+          examples   Print all stock example messages without sending anything
+
+        Options (command):
+          --name NAME         Workspace name (default: detected from cwd)
+          --work-item REF     Work item reference, e.g. WC-42  (required)
+          --body TEXT         Text to type into the first pipeline pane
+          --dry-run           Print the message without sending it
+
+        Options (inject):
+          --name NAME         Workspace name (default: detected from cwd)
+          --work-item REF     Work item reference  (required)
+          --body TEXT         Text to inject into the pane  (required)
+          --interrupt         Interrupt the running stage first (sends Ctrl-C)
+          --dry-run           Print the message without sending it
+      HELP
+    end
+
+    def cmd_agent_run_command(args)
+      name = nil
+      work_item = nil
+      body = nil
+      dry_run = false
+
+      parser = OptionParser.new do |opts|
+        opts.banner = "Usage: workspace agent-run command [options]"
+        opts.on("--name NAME", "Workspace name") { |v| name = v }
+        opts.on("--work-item REF", "Work item reference") { |v| work_item = v }
+        opts.on("--body TEXT", "Text to deliver to the pipeline") { |v| body = v }
+        opts.on("--dry-run", "Print without sending") { dry_run = true }
+      end
+      parser.parse!(args)
+
+      name ||= @project_detector.detect(@working_dir)
+      raise UsageError, "Missing workspace name.\n\n#{agent_run_help}" if name.nil?
+      raise UsageError, "Missing --work-item.\n\n#{agent_run_help}" if work_item.nil?
+
+      message = {
+        "type" => "command",
+        "workspace" => name,
+        "work_item_ref" => work_item,
+        "dispatch_id" => "debug-#{SecureRandom.hex(4)}",
+        "body" => body || "Begin work on #{work_item}."
+      }
+      agent_run_send(name, message, dry_run: dry_run)
+    end
+
+    def cmd_agent_run_inject(args)
+      name = nil
+      work_item = nil
+      body = nil
+      interrupt = false
+      dry_run = false
+
+      parser = OptionParser.new do |opts|
+        opts.banner = "Usage: workspace agent-run inject [options]"
+        opts.on("--name NAME", "Workspace name") { |v| name = v }
+        opts.on("--work-item REF", "Work item reference") { |v| work_item = v }
+        opts.on("--body TEXT", "Text to inject into the pane") { |v| body = v }
+        opts.on("--interrupt", "Interrupt the running stage first (sends Ctrl-C)") { interrupt = true }
+        opts.on("--dry-run", "Print without sending") { dry_run = true }
+      end
+      parser.parse!(args)
+
+      name ||= @project_detector.detect(@working_dir)
+      raise UsageError, "Missing workspace name.\n\n#{agent_run_help}" if name.nil?
+      raise UsageError, "Missing --work-item.\n\n#{agent_run_help}" if work_item.nil?
+      raise UsageError, "Missing --body.\n\n#{agent_run_help}" if body.nil?
+
+      message = {
+        "type" => "inject",
+        "workspace" => name,
+        "work_item_ref" => work_item,
+        "interrupt" => interrupt,
+        "body" => body
+      }
+      agent_run_send(name, message, dry_run: dry_run)
+    end
+
+    def cmd_agent_run_examples
+      examples = [
+        {
+          label: "command — deliver a work item to the first pipeline stage",
+          message: {
+            "type" => "command",
+            "workspace" => "<workspace-name>",
+            "work_item_ref" => "WC-42",
+            "dispatch_id" => "debug-abcd1234",
+            "body" => "Begin work on WC-42."
+          }
+        },
+        {
+          label: "inject — queue a steer for the next pipeline stage",
+          message: {
+            "type" => "inject",
+            "workspace" => "<workspace-name>",
+            "work_item_ref" => "WC-42",
+            "interrupt" => false,
+            "body" => "Focus on the login bug, not the sidebar."
+          }
+        },
+        {
+          label: "inject --interrupt — urgent steer: Ctrl-C then retype into the current stage",
+          message: {
+            "type" => "inject",
+            "workspace" => "<workspace-name>",
+            "work_item_ref" => "WC-42",
+            "interrupt" => true,
+            "body" => "Stop what you are doing and fix the failing test first."
+          }
+        }
+      ]
+
+      examples.each_with_index do |example, i|
+        @output.puts "#{i + 1}. #{example[:label]}"
+        @output.puts "   JSONL (sent as a single line):"
+        JSON.pretty_generate(example[:message]).each_line do |line|
+          @output.puts "   #{line}"
+        end
+        @output.puts unless i == examples.size - 1
+      end
+    end
+
+    # Pretty-prints +message+ as the JSONL that will be sent, then sends it
+    # (unless +dry_run+ is true) and pretty-prints the reply.
+    def agent_run_send(name, message, dry_run: false)
+      socket_path = @config.agent_socket_path(name)
+      @output.puts "Sending JSONL to #{socket_path}:"
+      JSON.pretty_generate(message).each_line { |line| @output.puts "  #{line}" }
+
+      if dry_run
+        @output.puts "(dry-run: not sent)"
+        return
+      end
+
+      @output.puts
+      reply = send_to_agent(name, message)
+      @output.puts "Reply:"
+      JSON.pretty_generate(reply).each_line { |line| @output.puts "  #{line}" }
     end
 
     # Drives and inspects a running agent's pipeline. These are operator tools:
