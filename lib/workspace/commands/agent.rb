@@ -187,6 +187,7 @@ module Workspace
 
       # Routes a parsed message, ignoring anything addressed to another workspace.
       def dispatch(message, client = nil)
+        @logger.debug { "received: #{JSON.pretty_generate(message)}" }
         workspace = message["workspace"]
         if workspace != @current_name
           @logger.debug { "dropped message for workspace '#{workspace}' (I am '#{@current_name}')" }
@@ -236,6 +237,9 @@ module Workspace
         reply_to(client, reply)
       end
 
+      # Steers deliberately carry no reporting instructions: an inject lands in a
+      # Claude that is already mid-task and already has them from its command.
+      #
       # Interrupts whatever the stage's pane is doing, then types the steer into it.
       def deliver_urgent_steer(entry, body)
         @tmux.send_key(entry[:workspace_name], pane_target(entry[:pane_index]), "C-c")
@@ -264,11 +268,12 @@ module Workspace
       def handle_command(message)
         ref = message["work_item_ref"]
         stages = @pipeline_config.stages_for(@current_name)
+        text = "#{message["body"]}#{reporting_text(message)}"
 
         entry, started_message, watch_pane = @state_lock.synchronize do
           if stages
             stage = stages.first
-            @tmux.send_keys(@current_name, pane_target(stage[:pane_index]), message["body"])
+            @tmux.send_keys(@current_name, pane_target(stage[:pane_index]), text)
             started = @pipeline_state.start(
               work_item_ref: ref,
               workspace_name: @current_name,
@@ -277,7 +282,7 @@ module Workspace
             @logger.debug { "pipeline started for #{ref} at pane #{stage[:pane_index]} (#{stage[:role]})" }
             [started, "Pipeline started at stage #{stage[:role]} (pane #{stage[:pane_index]})", stage[:pane_index]]
           else
-            @tmux.send_keys(@current_name, pane_target(1), message["body"])
+            @tmux.send_keys(@current_name, pane_target(1), text)
             @logger.debug { "command delivered to default pane for #{ref}" }
             [untracked_entry(ref), "Command delivered to default pane"]
           end
@@ -287,6 +292,23 @@ module Workspace
         # precedes anything the poller thread goes on to report.
         report(entry, "type" => "status_update", "message" => started_message)
         @state_lock.synchronize { watch_for_completion(ref, watch_pane) } if watch_pane
+      end
+
+      # The coordinator ships a ready-rendered block telling Claude how to report
+      # progress back. We only frame it — the text, its substitutions, and whether
+      # it is sent at all are all the coordinator's decisions.
+      #
+      # Only stage 1 sees this. Later stages get handoff_instructions instead, and
+      # their visibility comes from the agent's own phase_change and
+      # pipeline_advanced reports rather than from anything Claude runs by hand.
+      def reporting_text(message)
+        instructions = message["reporting_instructions"]
+        return "" unless instructions.is_a?(String)
+
+        stripped = instructions.strip
+        return "" if stripped.empty?
+
+        "\n\n--- Status reporting ---\n#{stripped}"
       end
 
       # Converts a bare pane index to a qualified tmux target within window 0.
@@ -487,7 +509,7 @@ module Workspace
         reply = status_client.register(
           name: @current_name,
           socket: @config.agent_socket_path(@current_name),
-          pipeline: true,
+          pipeline: @pipeline_config.pipeline?(@current_name),
           epoch: @epoch_generator.call,
           in_flight: @pipeline_state.in_flight
         )
@@ -603,7 +625,11 @@ module Workspace
 
       def register(name, socket_path, epoch, wc_socket)
         @client = wc_socket ? rebind_client(wc_socket) : @work_coordinator_client
-        reply = @client.register(name: name, socket: socket_path, pipeline: true, epoch: epoch,
+        # The coordinator conditions the reporting instructions it sends on this flag:
+        # a pipeline workspace must not be told to report task_complete itself, because
+        # the sentinel poller already does.
+        reply = @client.register(name: name, socket: socket_path,
+          pipeline: @pipeline_config.pipeline?(@current_name), epoch: epoch,
           in_flight: @pipeline_state.in_flight)
         @wc_epoch = reply["epoch"]
         return true if reply["ok"]

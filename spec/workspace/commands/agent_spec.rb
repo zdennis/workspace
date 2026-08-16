@@ -148,7 +148,7 @@ RSpec.describe Workspace::Commands::Agent do
           "type" => "register",
           "name" => "myapp",
           "socket" => agent_socket_path,
-          "pipeline" => true,
+          "pipeline" => false,
           "epoch" => "wa-TESTEPOCH",
           "in_flight" => []
         )
@@ -178,6 +178,36 @@ RSpec.describe Workspace::Commands::Agent do
       expect(agent.call(name: "myapp")).to be false
       expect(error_output.string).to include("already_registered")
       expect(File.exist?(agent_socket_path)).to be false
+    end
+
+    context "when the workspace has a pipeline configured" do
+      before do
+        File.write(project_config_path, <<~YAML)
+          pipeline:
+            panes:
+              - role: researcher
+              - role: implementer
+            handoff: file_handoff
+        YAML
+      end
+
+      it "registers with pipeline: true" do
+        coordinator.start
+
+        run_agent do
+          expect(coordinator.last_registration).to include("pipeline" => true)
+        end
+      end
+    end
+
+    context "when the workspace has no pipeline configured" do
+      it "registers with pipeline: false" do
+        coordinator.start
+
+        run_agent do
+          expect(coordinator.last_registration).to include("pipeline" => false)
+        end
+      end
     end
   end
 
@@ -248,6 +278,102 @@ RSpec.describe Workspace::Commands::Agent do
 
         wait_until { tmux.sent_keys.any? }
         expect(tmux.sent_keys.last).to include(text: "/build add OAuth support")
+      end
+    end
+
+    describe "reporting_instructions appended to the body" do
+      it "omits the section when the field is absent (default pane)" do
+        run_agent do
+          send_command("body" => "do the thing")
+          wait_until { tmux.sent_keys.any? }
+          expect(tmux.sent_keys.last).to include(pane: "0.1", text: "do the thing")
+        end
+      end
+
+      it "omits the section when the field is absent (pipeline pane)" do
+        File.write(project_config_path, <<~YAML)
+          pipeline:
+            panes:
+              - role: researcher
+            handoff: file_handoff
+        YAML
+
+        run_agent do
+          send_command("body" => "do the thing")
+          wait_until { tmux.sent_keys.any? }
+          expect(tmux.sent_keys.last).to include(pane: "0.0", text: "do the thing")
+        end
+      end
+
+      it "omits the section when reporting_instructions is nil" do
+        run_agent do
+          send_command("body" => "do the thing", "reporting_instructions" => nil)
+          wait_until { tmux.sent_keys.any? }
+          expect(tmux.sent_keys.last).to include(text: "do the thing")
+        end
+      end
+
+      it "omits the section and does not raise when reporting_instructions is a non-String (e.g. 42)" do
+        run_agent do
+          send_command("body" => "do the thing", "reporting_instructions" => 42)
+          wait_until { tmux.sent_keys.any? }
+          expect(tmux.sent_keys.last).to include(text: "do the thing")
+        end
+      end
+
+      it "omits the section when reporting_instructions is an empty string" do
+        run_agent do
+          send_command("body" => "do the thing", "reporting_instructions" => "")
+          wait_until { tmux.sent_keys.any? }
+          expect(tmux.sent_keys.last).to include(text: "do the thing")
+        end
+      end
+
+      it "omits the section when reporting_instructions is whitespace-only" do
+        run_agent do
+          send_command("body" => "do the thing", "reporting_instructions" => "   \n  ")
+          wait_until { tmux.sent_keys.any? }
+          expect(tmux.sent_keys.last).to include(text: "do the thing")
+        end
+      end
+
+      it "appends the section to the body (default pane) when reporting_instructions is a valid string" do
+        run_agent do
+          send_command("body" => "do the thing", "reporting_instructions" => "run report --ref WC-1")
+          wait_until { tmux.sent_keys.any? }
+          expect(tmux.sent_keys.last).to include(
+            pane: "0.1",
+            text: "do the thing\n\n--- Status reporting ---\nrun report --ref WC-1"
+          )
+        end
+      end
+
+      it "appends the section to the body (pipeline pane) when reporting_instructions is a valid string" do
+        File.write(project_config_path, <<~YAML)
+          pipeline:
+            panes:
+              - role: researcher
+            handoff: file_handoff
+        YAML
+
+        run_agent do
+          send_command("body" => "do the thing", "reporting_instructions" => "run report --ref WC-1")
+          wait_until { tmux.sent_keys.any? }
+          expect(tmux.sent_keys.last).to include(
+            pane: "0.0",
+            text: "do the thing\n\n--- Status reporting ---\nrun report --ref WC-1"
+          )
+        end
+      end
+
+      it "strips surrounding whitespace from reporting_instructions before appending" do
+        run_agent do
+          send_command("body" => "do the thing", "reporting_instructions" => "  run report  \n")
+          wait_until { tmux.sent_keys.any? }
+          expect(tmux.sent_keys.last).to include(
+            text: "do the thing\n\n--- Status reporting ---\nrun report"
+          )
+        end
       end
     end
 
@@ -781,6 +907,32 @@ RSpec.describe Workspace::Commands::Agent do
         )
         expect(pollers.first).not_to be_stopped
         expect(pipeline_state.current("WC-42")).to include(pane_index: 0)
+      end
+    end
+
+    it "re-registers with pipeline: true when the workspace has a pipeline" do
+      coordinator.start
+      write_pipeline_config
+
+      run_agent do
+        coordinator.reply = {"ok" => true, "epoch" => "wc-epoch-2"}
+        agent.report_progress("WC-42", "still working")
+
+        wait_until { coordinator.registrations.size >= 2 }
+        expect(coordinator.registrations.last).to include("pipeline" => true)
+      end
+    end
+
+    it "re-registers with pipeline: false when the workspace has no pipeline" do
+      coordinator.start
+      # no pipeline config written
+
+      run_agent do
+        coordinator.reply = {"ok" => true, "epoch" => "wc-epoch-2"}
+        agent.report_progress("WC-42", "still working")
+
+        wait_until { coordinator.registrations.size >= 2 }
+        expect(coordinator.registrations.last).to include("pipeline" => false)
       end
     end
 
