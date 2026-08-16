@@ -14,10 +14,13 @@ workspace agent [options]
 |--------|-------------|
 | `--name NAME` | Workspace name (defaults to the project detected from the current directory) |
 | `--wc-socket PATH` | Override the path to the work-coordinator socket |
+| `-f`, `--force` | Terminate a running agent for this workspace and take its place |
 
 ## Details
 
 **One agent per workspace** — on startup the agent probes its own socket at `/tmp/workspace-<name>.sock`. If something answers, it refuses to start rather than stealing the socket from a running agent. A socket left behind by an unclean shutdown does not answer, so it is removed and the agent starts normally.
+
+`--force` turns that refusal into a handover: the agent finds the process holding the socket with `lsof`, sends it `SIGTERM`, and waits up to 5 seconds for it to exit before binding the socket itself. In-flight state is already on disk, so the replacement picks the pipeline back up as it would after any other restart.
 
 **Pipeline** — a project's stages come from `pipeline.panes` in `~/.config/workspace/projects/<name>.yml`. Each entry's position is its pane index:
 
@@ -91,4 +94,7 @@ workspace agent
 
 # Run it for a named project against a non-default coordinator
 workspace agent --name scooter --wc-socket /tmp/wc-dev.sock
+
+# Replace the agent already running for this workspace
+workspace agent --force
 ```
