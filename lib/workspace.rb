@@ -34,6 +34,8 @@ require_relative "workspace/commands/lookup"
 require_relative "workspace/commands/update_pane_command"
 require_relative "workspace/commands/run"
 require_relative "workspace/commands/capture"
+require_relative "workspace/work_coordinator_client"
+require_relative "workspace/commands/agent"
 require_relative "workspace/run_result"
 require_relative "workspace/run_result_store"
 require_relative "workspace/commands/run_and_report"
@@ -98,6 +100,20 @@ module Workspace
     run_and_report_command = Commands::RunAndReport.new(run_result_store: run_result_store)
     capture_command = Commands::Capture.new(tmux: tmux, output: output, error_output: error_output)
 
+    work_coordinator_client = WorkCoordinatorClient.new(
+      socket_path: config.work_coordinator_socket,
+      status_socket_path: config.work_coordinator_status_socket,
+      logger: logger
+    )
+    agent_command = Commands::Agent.new(
+      config: config,
+      tmux: tmux,
+      work_coordinator_client: work_coordinator_client,
+      logger: logger,
+      output: output,
+      error_output: error_output
+    )
+
     CLI.new(
       config: config,
       state: state,
@@ -127,6 +143,7 @@ module Workspace
       run_result_store: run_result_store,
       run_and_report_command: run_and_report_command,
       capture_command: capture_command,
+      agent_command: agent_command,
       logger: logger,
       output: output,
       error_output: error_output,

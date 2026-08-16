@@ -289,6 +289,21 @@ module CLITestHelpers
     end
   end
 
+  class FakeAgentCommand
+    attr_reader :calls
+    attr_accessor :result
+
+    def initialize
+      @calls = []
+      @result = true
+    end
+
+    def call(name:, wc_socket: nil)
+      @calls << {name: name, wc_socket: wc_socket}
+      @result
+    end
+  end
+
   class FakeHookRunner
     attr_reader :runs
 

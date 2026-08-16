@@ -30,12 +30,13 @@ module Workspace
     # @param claude_command [Workspace::Commands::Claude] pre-built claude command
     # @param lookup_command [Workspace::Commands::Lookup] pre-built lookup command
     # @param update_pane_command [Workspace::Commands::UpdatePaneCommand] pre-built set-command command
+    # @param agent_command [Workspace::Commands::Agent] pre-built agent command
     # @param logger [Workspace::Logger] debug logger
     # @param output [IO] output stream for user-facing messages
     # @param error_output [IO] error output stream for warnings and errors
     # @param input [IO] input stream for interactive prompts
     # @param exit_handler [#exit] callable for process exit (Kernel in production, FakeExitHandler in tests)
-    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd)
+    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, agent_command:, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd)
       @config = config
       @state = state
       @project_config = project_config
@@ -64,6 +65,7 @@ module Workspace
       @run_result_store = run_result_store
       @run_and_report_command = run_and_report_command
       @capture_command = capture_command
+      @agent_command = agent_command
       @exit_handler = exit_handler
       @logger = logger
       @output = output
@@ -111,6 +113,8 @@ module Workspace
         cmd_resize(args)
       when "capture"
         cmd_capture(args)
+      when "agent"
+        cmd_agent(args)
       when "run"
         cmd_run(args)
       when "run-and-report"
@@ -187,6 +191,7 @@ module Workspace
 
         Subcommands:
           add             Add a tmuxinator config for a project directory
+          agent           Run the workspace agent for a project (long-lived)
           alfred          Manage the Alfred workflow for workspace focus
           capture         Print a tmux pane's scrollback buffer to stdout
           cleanup         Detect and remove zombie sessions from state
@@ -704,6 +709,28 @@ module Workspace
       end
 
       @capture_command.call(project, pane: pane, lines: lines_opt, all: all)
+    end
+
+    def cmd_agent(args)
+      name = nil
+      wc_socket = nil
+
+      parser = OptionParser.new do |opts|
+        opts.banner = "Usage: workspace agent [options]"
+        opts.separator ""
+        opts.separator "Run the long-lived workspace agent for a project."
+        opts.separator "Registers with the work-coordinator and serves commands until terminated."
+        opts.separator ""
+        opts.separator "Options:"
+        opts.on("--name NAME", "Workspace name (defaults to the detected project)") { |v| name = v }
+        opts.on("--wc-socket PATH", "Path to the work-coordinator socket") { |v| wc_socket = v }
+      end
+      parser.parse!(args)
+
+      name ||= @project_detector.detect(@working_dir)
+      raise UsageError, parser.help if name.nil?
+
+      @exit_handler.exit(1) unless @agent_command.call(name: name, wc_socket: wc_socket)
     end
 
     def cmd_run_and_report(args)

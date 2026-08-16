@@ -44,6 +44,22 @@ module Workspace
       File.expand_path("~/.config/workspace")
     end
 
+    # @param name [String] the workspace name
+    # @return [String] path to the agent's own Unix socket
+    def agent_socket_path(name)
+      "/tmp/workspace-#{name}.sock"
+    end
+
+    # @return [String] path to the work-coordinator main socket
+    def work_coordinator_socket
+      "/tmp/work-coordinator.sock"
+    end
+
+    # @return [String] path to the work-coordinator status socket
+    def work_coordinator_status_socket
+      "/tmp/work-coordinator-status.sock"
+    end
+
     # @return [String] the window-tool binary name
     def window_tool
       "window-tool"

@@ -41,6 +41,7 @@ RSpec.describe Workspace::CLI do
     run_result_store = overrides[:run_result_store] || CLITestHelpers::FakeRunResultStore.new
     run_and_report_command = overrides[:run_and_report_command] || CLITestHelpers::FakeRunAndReportCommand.new
     capture_command = overrides[:capture_command] || CLITestHelpers::FakeCaptureCommand.new
+    agent_command = overrides[:agent_command] || CLITestHelpers::FakeAgentCommand.new
 
     cli = Workspace::CLI.new(
       config: config,
@@ -71,6 +72,7 @@ RSpec.describe Workspace::CLI do
       run_result_store: run_result_store,
       run_and_report_command: run_and_report_command,
       capture_command: capture_command,
+      agent_command: agent_command,
       logger: logger,
       output: output,
       error_output: error_output,
@@ -1335,6 +1337,24 @@ RSpec.describe Workspace::CLI do
         expect(e.status).to eq(1)
       }
       expect(error_output.string).to include("--all and --lines are mutually exclusive")
+    end
+
+    it "dispatches to agent_command with --name and --wc-socket" do
+      agent_command = CLITestHelpers::FakeAgentCommand.new
+      cli, _, _ = build_test_cli(agent_command: agent_command)
+      cli.run(["agent", "--name", "myapp", "--wc-socket", "/tmp/wc.sock"])
+
+      expect(agent_command.calls).to eq([{name: "myapp", wc_socket: "/tmp/wc.sock"}])
+    end
+
+    it "exits 1 when the agent refuses to start" do
+      agent_command = CLITestHelpers::FakeAgentCommand.new
+      agent_command.result = false
+      cli, _, _ = build_test_cli(agent_command: agent_command)
+
+      expect { cli.run(["agent", "--name", "myapp"]) }.to raise_error(FakeSystemExit) { |e|
+        expect(e.status).to eq(1)
+      }
     end
 
     it "dispatches to capture_command with explicit project and default options" do
