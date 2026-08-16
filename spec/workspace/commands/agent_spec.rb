@@ -343,7 +343,7 @@ RSpec.describe Workspace::Commands::Agent do
           wait_until { tmux.sent_keys.any? }
           expect(tmux.sent_keys.last).to include(
             pane: "0.1",
-            text: "do the thing\n\n--- Status reporting ---\nrun report --ref WC-1"
+            text: "do the thing\n\nStatus reporting:\nrun report --ref WC-1"
           )
         end
       end
@@ -361,7 +361,7 @@ RSpec.describe Workspace::Commands::Agent do
           wait_until { tmux.sent_keys.any? }
           expect(tmux.sent_keys.last).to include(
             pane: "0.0",
-            text: "do the thing\n\n--- Status reporting ---\nrun report --ref WC-1"
+            text: "do the thing\n\nStatus reporting:\nrun report --ref WC-1"
           )
         end
       end
@@ -371,7 +371,7 @@ RSpec.describe Workspace::Commands::Agent do
           send_command("body" => "do the thing", "reporting_instructions" => "  run report  \n")
           wait_until { tmux.sent_keys.any? }
           expect(tmux.sent_keys.last).to include(
-            text: "do the thing\n\n--- Status reporting ---\nrun report"
+            text: "do the thing\n\nStatus reporting:\nrun report"
           )
         end
       end
@@ -742,6 +742,51 @@ RSpec.describe Workspace::Commands::Agent do
         ensure
           restarted.stop
         end
+      end
+    end
+  end
+
+  describe "coordinator_restart notification" do
+    def send_command(overrides = {})
+      message = {
+        "type" => "command",
+        "workspace" => "myapp",
+        "work_item_ref" => "WC-42",
+        "dispatch_id" => "d-7a1",
+        "body" => "/build add OAuth support"
+      }.merge(overrides)
+      UNIXSocket.open(agent_socket_path) { |s| s.puts(message.to_json) }
+    end
+
+    def write_pipeline_config
+      File.write(project_config_path, <<~YAML)
+        pipeline:
+          panes:
+            - role: researcher
+            - role: implementer
+          handoff: file_handoff
+      YAML
+    end
+
+    it "buffers the next report immediately without hitting the coordinator" do
+      coordinator.start
+      write_pipeline_config
+
+      run_agent do
+        send_command
+        wait_until { pollers.any? }
+
+        UNIXSocket.open(agent_socket_path) do |s|
+          s.puts({"type" => "coordinator_restart", "dispatch_id" => "d-test-1"}.to_json)
+        end
+        sleep 0.05
+
+        coordinator.status_messages.clear
+        agent.report_progress("WC-42", "after coordinator_restart")
+        sleep 0.05
+
+        expect(agent.instance_variable_get(:@pending_reports)).not_to be_empty
+        expect(coordinator.status_messages).to be_empty
       end
     end
   end

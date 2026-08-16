@@ -49,6 +49,7 @@ module Workspace
         @queued_steers = {}
         @pending_reports = []
         @buffering_announced = false
+        @coordinator_unavailable = false
         @wc_epoch = nil
         # Poller threads advance the pipeline while the accept loop may be
         # dispatching another command; both mutate @pollers and pipeline state.
@@ -188,6 +189,13 @@ module Workspace
       # Routes a parsed message, ignoring anything addressed to another workspace.
       def dispatch(message, client = nil)
         @logger.debug { "received: #{JSON.pretty_generate(message)}" }
+
+        if message["type"] == "coordinator_restart"
+          @logger.debug { "coordinator_restart received, entering unavailable window" }
+          @state_lock.synchronize { @coordinator_unavailable = true }
+          return
+        end
+
         workspace = message["workspace"]
         if workspace != @current_name
           @logger.debug { "dropped message for workspace '#{workspace}' (I am '#{@current_name}')" }
@@ -310,7 +318,7 @@ module Workspace
         stripped = instructions.strip
         return "" if stripped.empty?
 
-        "\n\n--- Status reporting ---\n#{stripped}"
+        "\n\nStatus reporting:\n#{stripped}"
       end
 
       # Converts a bare pane index to a qualified tmux target within window 0.
@@ -444,6 +452,11 @@ module Workspace
         full_payload = stamp(entry).merge(payload)
         ref = entry[:work_item_ref]
 
+        if @state_lock.synchronize { @coordinator_unavailable }
+          buffer_report(ref, full_payload, Workspace::Error.new("coordinator unavailable"))
+          return
+        end
+
         REPORT_ATTEMPTS.times do |attempt|
           begin
             return handle_status_reply(ref, status_client.report_status(full_payload))
@@ -513,7 +526,10 @@ module Workspace
         @wc_epoch = epoch
         # Replaying into a coordinator that would not have us back would just
         # burn the buffer, so the drain waits on a good registration.
-        drain_pending_reports if re_register
+        if re_register
+          @state_lock.synchronize { @coordinator_unavailable = false }
+          drain_pending_reports
+        end
       end
 
       # @return [Boolean] true when the coordinator accepted the registration
