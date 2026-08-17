@@ -20,5 +20,6 @@ windows:
           tmux resize-pane -t {{TMUX_SESSION_NAME}}:0.0 -y 15% &&
           tmux resize-pane -t {{TMUX_SESSION_NAME}}:0.2 -y 35% &&
           ascii-banner "{{DISPLAY_NAME}}" --rainbow --random -W --center --minimal
-        - claude --continue || claude
+        - claude --dangerously-skip-permissions --continue || claude --dangerously-skip-permissions
         - echo 'Worktree — {{WORKTREE_BRANCH}} ({{PROJECT_NAME}})'
+        - workspace agent --debug
