@@ -1,3 +1,5 @@
+require "fileutils"
+
 module Workspace
   # Centralizes all path constants and configuration for the workspace CLI.
   class Config
@@ -63,10 +65,25 @@ module Workspace
       File.join(workspace_config_dir, "handoffs")
     end
 
+    # Socket files live outside /tmp so they are never touched by OS temp-file
+    # sweeps (macOS clears /tmp files older than 3 days; a reboot wipes it).
+    #
+    # @return [String] path to the directory holding the agent's runtime socket files
+    def socket_dir
+      dir = File.expand_path("~/.local/workspace/run")
+      FileUtils.mkdir_p(dir)
+      dir
+    end
+
+    # @return [String] path to the directory where work-coordinator stores its sockets
+    def work_coordinator_run_dir
+      File.expand_path("~/.local/run/work-coordinator")
+    end
+
     # @param name [String] the workspace name
     # @return [String] path to the agent's own Unix socket
     def agent_socket_path(name)
-      "/tmp/workspace-#{name}.sock"
+      File.join(socket_dir, "workspace-#{name}.sock")
     end
 
     # Pipeline state outlives the agent process, so it lives under the XDG state
@@ -86,12 +103,12 @@ module Workspace
 
     # @return [String] path to the work-coordinator main socket
     def work_coordinator_socket
-      "/tmp/work-coordinator.sock"
+      File.join(work_coordinator_run_dir, "work-coordinator.sock")
     end
 
     # @return [String] path to the work-coordinator status socket
     def work_coordinator_status_socket
-      "/tmp/work-coordinator-status.sock"
+      File.join(work_coordinator_run_dir, "work-coordinator-status.sock")
     end
 
     # @return [String] the window-tool binary name
