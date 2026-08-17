@@ -79,6 +79,8 @@ An unreachable coordinator never takes the pipeline down. Reports are retried, t
 
 **Socket resilience** — agent sockets live at `~/.local/workspace/run/` rather than `/tmp`, so OS temp-file sweeps never delete them. As an additional safeguard, a background watcher checks `File.socket?` every 5 seconds; if the file is gone (e.g. manual deletion, filesystem remount) it rebinds the socket at the same path and re-registers with the coordinator. If re-registration fails (coordinator also down at that moment) the watcher retries each cycle until it succeeds.
 
+**Stale-slot recovery** — the agent includes its PID in every `register` message. When a fresh agent starts for a workspace that is already registered, the coordinator checks whether the registered PID is still alive. If the old process is dead, the coordinator replaces the registration; if it is alive, it rejects with `already_registered` as before.
+
 **Agent restarts** — in-flight state is persisted to `$XDG_STATE_HOME/workspace/<name>/pipeline.json` (`~/.local/state/...` by default) on every change, written to a temp file and renamed so a crash mid-write cannot truncate it. A restarted agent reads it back and checks each recorded pane:
 
 - The pane survived: the agent re-attaches its watch, and the stage finishes and advances as if nothing happened.
