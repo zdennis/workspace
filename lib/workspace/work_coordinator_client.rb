@@ -29,16 +29,19 @@ module Workspace
     # @param pipeline [Boolean] whether the agent participates in the pipeline
     # @param epoch [String] the agent's epoch identifier
     # @param in_flight [Array<Hash>] work items the agent believes are in flight
+    # @param pid [Integer] the agent's process ID, so the coordinator can verify
+    #   liveness when a name conflict is detected
     # @return [Hash] the parsed reply
     # @raise [Workspace::Error] if the coordinator cannot be reached
-    def register(name:, socket:, pipeline:, epoch:, in_flight: [])
+    def register(name:, socket:, pipeline:, epoch:, in_flight: [], pid: Process.pid)
       send_message(@socket_path, {
         "type" => "register",
         "name" => name,
         "socket" => socket,
         "pipeline" => pipeline,
         "epoch" => epoch,
-        "in_flight" => in_flight
+        "in_flight" => in_flight,
+        "pid" => pid
       })
     end
 
