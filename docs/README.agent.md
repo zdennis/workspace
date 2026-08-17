@@ -77,6 +77,8 @@ Every agent process mints a ULID epoch on startup, and every status reply carrie
 
 An unreachable coordinator never takes the pipeline down. Reports are retried, then buffered (up to 500, oldest dropped first) and replayed in order once the coordinator is back.
 
+**Socket resilience** — macOS sweeps `/tmp` daily (files older than 3 days), which can silently delete the agent's socket file. The agent's open file descriptor survives that deletion, so it appears healthy while new callers cannot reach it. A background watcher checks `File.socket?` every 5 seconds; if the file is gone it rebinds the socket at the same path and re-registers with the coordinator. If re-registration fails (coordinator also down at that moment) the watcher retries each cycle until it succeeds.
+
 **Agent restarts** — in-flight state is persisted to `$XDG_STATE_HOME/workspace/<name>/pipeline.json` (`~/.local/state/...` by default) on every change, written to a temp file and renamed so a crash mid-write cannot truncate it. A restarted agent reads it back and checks each recorded pane:
 
 - The pane survived: the agent re-attaches its watch, and the stage finishes and advances as if nothing happened.
