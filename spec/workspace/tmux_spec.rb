@@ -65,6 +65,7 @@ RSpec.describe Workspace::Tmux do
     it "pastes the full text via buffer and presses Enter by default" do
       allow(tmux).to receive(:system).and_return(true)
       allow(tmux).to receive(:tmux_load_buffer).and_return(true)
+      allow(tmux).to receive(:sleep)
 
       result = tmux.send_keys("my-session", "0.1", "hello world")
 
@@ -77,6 +78,7 @@ RSpec.describe Workspace::Tmux do
     it "skips Enter when enter: false" do
       allow(tmux).to receive(:system).and_return(true)
       allow(tmux).to receive(:tmux_load_buffer).and_return(true)
+      allow(tmux).to receive(:sleep)
 
       tmux.send_keys("my-session", "0.1", "hello", enter: false)
 
@@ -94,6 +96,7 @@ RSpec.describe Workspace::Tmux do
     it "returns false when paste-buffer fails" do
       allow(tmux).to receive(:system).and_return(false)
       allow(tmux).to receive(:tmux_load_buffer).and_return(true)
+      allow(tmux).to receive(:sleep)
 
       result = tmux.send_keys("bad-session", "0.1", "text")
 
@@ -103,6 +106,7 @@ RSpec.describe Workspace::Tmux do
     it "sends multiline text as one paste so newlines are line-breaks not separate submissions" do
       allow(tmux).to receive(:system).and_return(true)
       allow(tmux).to receive(:tmux_load_buffer).and_return(true)
+      allow(tmux).to receive(:sleep)
       text = "count to 10\n\nStatus reporting:\nsome command"
 
       tmux.send_keys("my-session", "0.1", text)
@@ -112,9 +116,32 @@ RSpec.describe Workspace::Tmux do
       expect(tmux).to have_received(:system).with("tmux", "send-keys", "-t", "my-session:0.1", "Enter").once
     end
 
+    it "sends Enter twice for large pastes so Claude Code's collapse widget is dismissed then submitted" do
+      allow(tmux).to receive(:system).and_return(true)
+      allow(tmux).to receive(:tmux_load_buffer).and_return(true)
+      allow(tmux).to receive(:sleep)
+      large_text = "x" * 1_001
+
+      result = tmux.send_keys("my-session", "0.1", large_text)
+
+      expect(result).to be true
+      expect(tmux).to have_received(:system).with("tmux", "send-keys", "-t", "my-session:0.1", "Enter").twice
+    end
+
+    it "sends Enter once for small pastes" do
+      allow(tmux).to receive(:system).and_return(true)
+      allow(tmux).to receive(:tmux_load_buffer).and_return(true)
+      allow(tmux).to receive(:sleep)
+
+      tmux.send_keys("my-session", "0.1", "short text")
+
+      expect(tmux).to have_received(:system).with("tmux", "send-keys", "-t", "my-session:0.1", "Enter").once
+    end
+
     it "handles text starting with '-' without flag parsing errors" do
       allow(tmux).to receive(:system).and_return(true)
       allow(tmux).to receive(:tmux_load_buffer).and_return(true)
+      allow(tmux).to receive(:sleep)
 
       result = tmux.send_keys("my-session", "0.1", "--ref WC-1")
 

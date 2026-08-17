@@ -61,6 +61,14 @@ module Workspace
       begin
         return false unless system("tmux", "paste-buffer", "-b", buf, "-t", target)
         return true unless enter
+        # Claude Code collapses large pastes into a summary widget that requires
+        # a second Enter to submit. Give the UI time to render, then send Enter
+        # twice so the first dismisses the widget and the second submits.
+        large_paste = text.bytesize > 1_000
+        sleep(large_paste ? 0.3 : 0.05)
+        return false unless system("tmux", "send-keys", "-t", target, "Enter")
+        return true unless large_paste
+        sleep 0.1
         system("tmux", "send-keys", "-t", target, "Enter") ? true : false
       ensure
         begin
