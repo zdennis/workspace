@@ -16,6 +16,9 @@ module Workspace
       # How many unacknowledged reports are held before the oldest are dropped.
       MAX_PENDING_REPORTS = 500
 
+      # How often the socket watcher checks that the agent's socket file is still there.
+      SOCKET_POLL_INTERVAL = 5
+
       # @param config [Workspace::Config] path configuration
       # @param tmux [Workspace::Tmux] tmux session operations
       # @param work_coordinator_client [Workspace::WorkCoordinatorClient] coordinator client
@@ -50,6 +53,9 @@ module Workspace
         @pending_reports = []
         @buffering_announced = false
         @coordinator_unavailable = false
+        @shutting_down = false
+        @shutdown_signal = Queue.new
+        @server = nil
         @wc_epoch = nil
         # Poller threads advance the pipeline while the accept loop may be
         # dispatching another command; both mutate @pollers and pipeline state.
@@ -87,24 +93,31 @@ module Workspace
         epoch = @epoch_generator.call
         return false unless register(name, socket_path, epoch, wc_socket)
 
-        server = UNIXServer.new(socket_path)
-        install_signal_handlers(server)
+        @server = UNIXServer.new(socket_path)
+        install_signal_handlers
 
         @output.puts "workspace agent '#{name}' ready"
-        serve(server)
+        watcher = start_socket_watcher(socket_path)
+        serve
 
         true
       ensure
-        shutdown(name, socket_path, server) if server
+        @shutting_down = true
+        @shutdown_signal << :stop
+        watcher&.join(1)
+        watcher&.kill
+        shutdown(name, socket_path) if @server
       end
 
-      # Accepts and dispatches one JSON message per connection until the server closes.
+      # Accepts and dispatches one JSON message per connection until the server
+      # closes. Reads +@server+ on every pass so a socket the watcher rebound
+      # takes over without the loop restarting.
       #
-      # @param server [UNIXServer] the bound server
       # @return [void]
-      def serve(server)
+      def serve
         loop do
-          client = server.accept
+          break if @shutting_down
+          client = @server.accept
           begin
             line = client.gets
             dispatch(JSON.parse(line), client) if line
@@ -120,7 +133,9 @@ module Workspace
             client.close
           end
         rescue IOError, Errno::EBADF
-          break
+          # Either we are on our way out, or the watcher swapped the server out
+          # from under the accept — in which case we go round on the new one.
+          break if @shutting_down
         end
       end
 
@@ -532,6 +547,44 @@ module Workspace
         end
       end
 
+      # Watches for the agent's socket file going missing — macOS sweeps old
+      # /tmp entries, and another agent start for this workspace unlinks it.
+      # The listening fd survives that, so the agent looks healthy while no
+      # caller can reach it; rebinding and re-registering is what actually
+      # restores it.
+      def start_socket_watcher(socket_path)
+        Thread.new do
+          needs_registration = false
+          loop do
+            # Woken by shutdown rather than slept through, so a terminating
+            # agent does not wait out a whole poll interval to exit.
+            @shutdown_signal.pop(timeout: SOCKET_POLL_INTERVAL)
+            break if @shutting_down
+
+            unless File.socket?(socket_path)
+              @logger.debug { "agent socket at #{socket_path} has disappeared; rebinding" }
+              begin
+                old_server = @server
+                @server = UNIXServer.new(socket_path)
+                begin
+                  old_server.close
+                rescue IOError, SystemCallError
+                  nil
+                end
+                needs_registration = true
+              rescue => e
+                @error_output.puts "workspace agent: could not rebind its socket: #{e.message}"
+              end
+            end
+
+            # Retry re_register each cycle until it succeeds — if it failed
+            # after a rebind (e.g. coordinator was also down), the coordinator
+            # has no record of our socket and will never dispatch work to us.
+            needs_registration = !re_register if needs_registration
+          end
+        end
+      end
+
       # @return [Boolean] true when the coordinator accepted the registration
       def re_register
         reply = status_client.register(
@@ -677,16 +730,19 @@ module Workspace
         )
       end
 
-      def install_signal_handlers(server)
+      def install_signal_handlers
         %w[TERM INT].each do |signal|
-          @signal_trapper.trap(signal) { server.close }
+          @signal_trapper.trap(signal) do
+            @shutting_down = true
+            @server.close
+          end
         end
       end
 
-      def shutdown(name, socket_path, server)
+      def shutdown(name, socket_path)
         @pollers.each_value(&:stop)
         @pollers.clear
-        server.close unless server.closed?
+        @server.close unless @server.closed?
         File.unlink(socket_path) if File.socket?(socket_path)
         @client.deregister(name: name)
       rescue Workspace::Error => e

@@ -1056,6 +1056,43 @@ RSpec.describe Workspace::Commands::Agent do
     end
   end
 
+  describe "losing its socket while it is running" do
+    # macOS sweeps old /tmp entries and a second agent start unlinks the path,
+    # so the file can vanish under a perfectly healthy listener.
+    before { stub_const("#{described_class}::SOCKET_POLL_INTERVAL", 0.02) }
+
+    it "rebinds the socket so callers can reach it again" do
+      coordinator.start
+
+      run_agent do
+        File.unlink(agent_socket_path)
+        wait_until { File.socket?(agent_socket_path) }
+
+        expect(File.socket?(agent_socket_path)).to be true
+
+        UNIXSocket.open(agent_socket_path) do |s|
+          s.puts({"type" => "command", "workspace" => "myapp", "work_item_ref" => "WC-42",
+                  "dispatch_id" => "d-7a1", "body" => "still listening"}.to_json)
+        end
+        wait_until { tmux.sent_keys.any? }
+        expect(tmux.sent_keys.last).to include(text: "still listening")
+      end
+    end
+
+    it "re-registers with the coordinator so it knows the new socket is live" do
+      coordinator.start
+
+      run_agent do
+        wait_until { coordinator.registrations.size >= 1 }
+        File.unlink(agent_socket_path)
+
+        wait_until { coordinator.registrations.size >= 2 }
+        expect(coordinator.registrations.last).to include("type" => "register", "name" => "myapp",
+          "socket" => agent_socket_path)
+      end
+    end
+  end
+
   describe "starting a second agent for the same workspace" do
     it "refuses to start and leaves the running agent untouched" do
       coordinator.start
