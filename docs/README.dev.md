@@ -59,13 +59,20 @@ workspace config set dev.stop_timeout 20s         # SIGTERM → SIGKILL grace (d
 
 **Crashes** — the wrapper releases the lock whenever the command exits. If the wrapper itself is SIGKILLed, its lock is reaped as a dead holder. When the dev command survives it, `down` and `status` report the orphaned process group, and `down --force` kills it. The group is only ever signalled while the wrapper's pid still matches its recorded start time, except for this explicit `--force`, and never once a live process has taken the wrapper's pid (the group id has then been reused by something unrelated; the stale lock is just removed).
 
+**The `devenv` window is set `remain-on-exit`**, so it stays open after the wrapper exits and crash output stays readable. `down` and `--takeover` close the dead pane once the env is actually stopped; a ready-check timeout, giving up on `--max-wait`/startup, or `lock clear devenv` leave the window open — close it by hand with `tmux kill-window`.
+
+**No tmux server running** — `up` fails fast: `tmux server not running; start the workspace with 'workspace launch', then run 'workspace dev up' again.`
+
+**A foreign pgid** — when a stale (wrapper-gone) holder's recorded process group has live processes this user isn't permitted to signal (its id was likely reused by another user), `down` (with or without `--force`) and `up --takeover` refuse and leave the lock in place, printing a `ps -axo pid,pgid,user,stat,command | awk '$2 == N'` inspection hint; `status` shows the same note. `workspace lock clear devenv` still clears the lock unconditionally, but prints `Could not stop process group N (pid P): ... not permitted ...` instead of stopping it.
+
+**`--takeover` jumps the queue** — it stops the current holder and hands the lock straight to this worktree, ahead of anyone already waiting with `--wait`.
+
 **`status`** shows the holder's worktree and branch, pid/pgid, pane, uptime, whether `dev.ready` currently passes, and the queue.
 
 ## Known limitations
 
 - The 120s ready timeout and the 30s wrapper startup timeout are fixed and not yet configurable.
 - Only one dev service is supported per project, guarded by the single `devenv` lock.
-- The `devenv` tmux window stays open after the dev command crashes, so its output can still be read. Close it by hand with `tmux kill-window`, or run `dev down`.
 
 ## Examples
 
