@@ -27,6 +27,8 @@ A macOS CLI (Ruby) for managing tmuxinator-based development workspaces in iTerm
 - `lib/workspace/lock_namespace.rb` — Resolves the shared lock namespace (git common dir) from a cwd
 - `lib/workspace/lock_holder.rb` — Identifies the calling agent's pid/start time and checks holder/waiter liveness
 - `lib/workspace/lock_store.rb` — Flock-guarded JSON lock store (acquire/release/status/clear), reaped on every op
+- `lib/workspace/lock_config.rb` — Reads a project's `locks.idle_grace` (falls back to 5m with a warning)
+- `lib/workspace/lock_idle_tracker.rb` — Marks an agent's lock idle/active from `session-event` hooks, for idle takeover
 - `lib/workspace/agent_provider.rb` — Registry of coding-agent CLIs workspace can monitor
 - `lib/workspace/hook_installer.rb` — Merges workspace's hooks into an agent's own settings file
 - `lib/workspace/file_backup.rb` — Copies a file aside before workspace edits it

@@ -9,6 +9,7 @@ workspace lock acquire <name> [options]
 workspace lock release [<name>|--all]
 workspace lock status  [<name>]
 workspace lock clear   [<name>|--all]
+workspace lock instructions [<name>]
 ```
 
 ## Options (acquire)
@@ -32,6 +33,7 @@ workspace lock clear   [<name>|--all]
 |------|---------|
 | 0 | Acquired |
 | 1 | Held by someone else (no `--wait`) |
+| 3 | This agent's hold was taken over while it was idle (see **Idle takeover**); nothing was queued, re-run to queue again |
 | 4 | Cleared by someone else while waiting |
 | 5 | This agent already holds or waits for a different lock (the deadlock rule) — release it first |
 | 75 | Still queued after `--max-wait`; re-run to keep waiting |
@@ -61,7 +63,25 @@ Acquired edit lock. Release with: workspace lock release edit
 
 **SIGINT/SIGTERM** — interrupting a queued `acquire --wait` removes its queue entry before exiting.
 
-**`release`/`clear` are idempotent** — both exit 0 even when there was nothing to release or clear (releasing a lock this agent doesn't hold, or clearing a name with no entry), and say so in their output rather than treating it as an error. A future `--json` flag (planned) will let a caller distinguish "nothing to do" from "released/cleared something" without parsing prose.
+**Idle takeover** — a lock held by an agent that has stopped working doesn't block everyone else forever. The `workspace session-event` hook (installed by [`workspace init`](README.init.md)) marks the agent's hold idle when its turn ends (`Stop`), recording `idle_since`, and marks it active again on its next prompt (`UserPromptSubmit`) or tool use (`PreToolUse`). Only the calling agent's own hold is touched, matched by pid and start time. Once a hold has been idle for `locks.idle_grace` (default `5m`), the waiter at the head of the queue takes it over on its next poll; waiters further back never do, and a hold whose agent has resumed is never taken. The new holder's `acquire` prints `Took over edit lock from %12 ... idle since <time>.` on stderr before its usual `Acquired` line. `status` shows an idle hold as `IDLE since <time>`.
+
+The displaced agent is told once, the next time it runs `acquire` or `release` for that lock (or `release --all`): stderr gets `Your edit lock was taken over by %13 "PROJ-13 ..." in <worktree> at <time>, after this agent had been idle for 312s.`, and the command exits 3. An `acquire` that reports a takeover does not queue; re-run it to wait for the lock again. Idle takeover never applies to the dev environment (`devenv`, a `kind: "process"` holder).
+
+Set the grace period per project, in seconds or with an `s`, `m` or `h` suffix:
+
+```sh
+workspace config set locks.idle_grace 10m
+```
+
+An invalid stored value (for example one hand-edited to `0`) falls back to the default with a warning instead of failing the lock command.
+
+**`instructions`** — prints the prompt block that tells a coding agent how to use a lock, versioned with the CLI so it always matches these commands. `<name>` defaults to `edit` and is substituted into every command:
+
+```
+Before editing files, run `workspace lock acquire edit --wait --task "<your task>"` using Bash with run_in_background. Do not edit anything until it reports "Acquired". When your edits are complete, run `workspace lock release edit`. Never run `workspace lock clear`.
+```
+
+**`release`/`clear` are idempotent** — both exit 0 even when there was nothing to release or clear, except that `release` exits 3 when it reports an idle takeover (releasing a lock this agent doesn't hold, or clearing a name with no entry), and say so in their output rather than treating it as an error. A future `--json` flag (planned) will let a caller distinguish "nothing to do" from "released/cleared something" without parsing prose.
 
 **`clear`** — removes a lock's holder and queue unconditionally, with no liveness check and no confirmation prompt. Use it to recover from a stuck lock. Clearing `devenv` also stops the dev environment: SIGTERM to its wrapper, then SIGKILL to its process group after `dev.stop_timeout` — but only while the wrapper's pid still matches its recorded start time, so a reused process group is never signalled (see [`workspace dev`](README.dev.md)). The lock is cleared either way; if the process group has live processes this user isn't permitted to signal (its id was likely reused by another user), `clear` prints `Could not stop process group N (pid P): ... not permitted ...` instead of stopping it.
 
@@ -84,4 +104,7 @@ workspace lock status edit
 
 # Force-clear a stuck lock
 workspace lock clear edit
+
+# Print the agent prompt block for the edit lock
+workspace lock instructions
 ```
