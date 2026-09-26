@@ -24,6 +24,7 @@ require_relative "workspace/lock_namespace"
 require_relative "workspace/lock_holder"
 require_relative "workspace/lock_store"
 require_relative "workspace/lock_config"
+require_relative "workspace/lock_idle_tracker"
 require_relative "workspace/session_monitor"
 require_relative "workspace/agent_provider"
 require_relative "workspace/file_backup"
@@ -109,7 +110,6 @@ module Workspace
     layout_command = Commands::Layout.new(state: state, tmux: tmux, project_settings: project_settings, output: output)
     resize_command = Commands::Resize.new(tmux: tmux, layout_command: layout_command, output: output, error_output: error_output)
     sessions_command = Commands::Sessions.new(config: config, output: output, error_output: error_output)
-    session_event_command = Commands::SessionEvent.new(config: config, tmux: tmux, input: input, logger: logger)
     init_command = Commands::Init.new(config: config, hook_installer: hook_installer, output: output, error_output: error_output, input: input)
     repair_command = Commands::Repair.new(state: state, iterm: iterm, window_manager: window_manager, output: output)
     cleanup_command = Commands::Cleanup.new(state: state, window_manager: window_manager, tmux: tmux, output: output, input: input)
@@ -133,6 +133,8 @@ module Workspace
     lock_holder = LockHolder.new
     dev_config = DevConfig.new(project_settings: project_settings)
     lock_config = LockConfig.new(project_settings: project_settings, error_output: error_output)
+    lock_idle_tracker = LockIdleTracker.new(config: config, lock_namespace: lock_namespace, lock_holder: lock_holder, logger: logger)
+    session_event_command = Commands::SessionEvent.new(config: config, tmux: tmux, input: input, logger: logger, lock_idle_tracker: lock_idle_tracker)
     process_group_terminator = ProcessGroupTerminator.new
     lock_command = Commands::Lock.new(config: config, lock_namespace: lock_namespace, lock_holder: lock_holder,
       terminator: process_group_terminator, dev_config: dev_config, lock_config: lock_config, output: output, error_output: error_output)
