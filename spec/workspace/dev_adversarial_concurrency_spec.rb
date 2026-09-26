@@ -162,9 +162,9 @@ RSpec.describe "devenv lock: adversarial concurrency" do
       RUBY
     end
 
-    def spawn_wrapper(cwd, wait)
+    def spawn_wrapper(cwd, wait, env = {})
       log = File.join(tmpdir, "wrapper-#{spawned.size}.log")
-      pid = Process.spawn({"SKIP_SIMPLECOV" => "1"}, RbConfig.ruby, "-e", wrapper_script, lock_dir,
+      pid = Process.spawn({"SKIP_SIMPLECOV" => "1", **env}, RbConfig.ruby, "-e", wrapper_script, lock_dir,
         JSON.generate("dev" => dev_settings), wait ? "1" : "0", chdir: cwd, pgroup: true, in: File::NULL, out: log, err: log)
       Process.detach(pid)
       spawned << pid

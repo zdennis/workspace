@@ -21,6 +21,8 @@ module Workspace
       READY_TIMEOUT = 120
       RELEASE_MARGIN = 2
       PASSTHROUGH_ENV = %w[XDG_STATE_HOME WORKSPACE_DEBUG].freeze
+      # Set in a takeover wrapper's window: its `dev __run` queues ahead of everyone.
+      TAKEOVER_ENV = "WORKSPACE_DEV_TAKEOVER"
       NO_COMMAND = %(No dev command configured. Set one with: workspace config set dev.up "<command>")
 
       # @param lock_namespace [Workspace::LockNamespace] resolves the repo's lock store directory
@@ -141,7 +143,8 @@ module Workspace
       end
 
       # The hidden `dev __run` entry point: runs {DevRunner} in the current
-      # pane with this worktree's configured command.
+      # pane with this worktree's configured command. A wrapper opened by
+      # `up --takeover` (TAKEOVER_ENV set) queues ahead of everyone waiting.
       #
       # @param wait [Boolean] queue for the lock instead of failing when it is held
       # @param working_dir [String] directory inside the worktree
@@ -150,30 +153,31 @@ module Workspace
         ctx = context(working_dir)
         raise Workspace::Error, NO_COMMAND unless command?(ctx)
         code = @dev_runner.call(store: ctx[:store], command: ctx[:settings][:up], worktree: ctx[:worktree],
-          branch: ctx[:branch], wait: wait)
+          branch: ctx[:branch], wait: wait, priority: @env[TAKEOVER_ENV] == "1")
         {exit_code: code}
       end
 
       private
 
       # Stops another worktree's env and hands its lock straight to this one,
-      # ahead of anyone already queued: the new wrapper queues first and is
-      # moved to the front, so the stopped holder's release promotes it.
+      # ahead of anyone already queued: the new wrapper joins the queue at its
+      # head in one flocked step, so the stopped holder's release promotes it.
       def take_over(ctx, holder, ready:)
         session = session_for(ctx)
-        wrapper = open_wrapper(ctx, session, wait: true)
+        wrapper = open_wrapper(ctx, session, wait: true, takeover: true)
         code = await_queued(ctx[:store], wrapper)
         return {exit_code: code} unless code.zero?
 
-        ctx[:store].prioritize(LOCK_NAME, wrapper)
         @output.puts "Taking over: stopping dev environment for #{describe(holder)}..."
         stop(ctx, holder)
         code = await_wrapper(ctx[:store], wrapper, wait: false, max_wait: nil)
         finish_up(ctx, session, wrapper, code, ready: ready)
       end
 
-      def open_wrapper(ctx, session, wait:)
-        wrapper = @tmux.new_window(session, name: WINDOW_NAME, cwd: ctx[:worktree], command: run_argv(wait), env: passthrough_env)
+      def open_wrapper(ctx, session, wait:, takeover: false)
+        env = passthrough_env
+        env[TAKEOVER_ENV] = "1" if takeover
+        wrapper = @tmux.new_window(session, name: WINDOW_NAME, cwd: ctx[:worktree], command: run_argv(wait), env: env)
         raise Workspace::Error, "Could not open a #{WINDOW_NAME} window in tmux session #{session}." unless wrapper
         wrapper
       end

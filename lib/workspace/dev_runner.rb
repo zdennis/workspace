@@ -53,14 +53,15 @@ module Workspace
     # @param worktree [String] worktree root, used as the command's cwd
     # @param branch [String, nil] branch recorded in the lock holder
     # @param wait [Boolean] queue FIFO behind the current holder instead of failing
+    # @param priority [Boolean] queue ahead of everyone already waiting (`dev up --takeover`)
     # @return [Integer] the child's exit status, 128 + signal number if it was
     #   killed (or the wait was interrupted), or 4 if the lock was cleared while queued
     # @raise [Workspace::Error] if the lock is held by someone else (without
     #   +wait+), the wrapper does not lead its process group, or the command
     #   cannot be started
-    def call(store:, command:, worktree:, branch: nil, wait: false)
+    def call(store:, command:, worktree:, branch: nil, wait: false, priority: false)
       holder = identity(worktree, branch)
-      waited = acquire!(store, holder, wait)
+      waited = acquire!(store, holder, wait, priority)
       return waited if waited
       begin
         code = run(command, worktree)
@@ -98,8 +99,9 @@ module Workspace
     private
 
     # @return [Integer, nil] an exit code if the wrapper should stop without running
-    def acquire!(store, holder, wait)
-      result = store.acquire(LOCK_NAME, identity: holder, waiter_pid: holder[:pid], waiter_started: holder[:started], wait: wait)
+    def acquire!(store, holder, wait, priority)
+      result = store.acquire(LOCK_NAME, identity: holder, waiter_pid: holder[:pid], waiter_started: holder[:started],
+        wait: wait, priority: priority)
       case result[:status]
       when :acquired, :already_held then nil
       when :queued then wait_in_queue(store, holder[:pid])

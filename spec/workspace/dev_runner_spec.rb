@@ -205,6 +205,24 @@ RSpec.describe Workspace::DevRunner do
         expect(devenv_holder(store)).to be_nil
       end
 
+      it "with priority: true, queues ahead of an earlier waiter so the holder's release promotes it" do
+        store = fake_store
+        hold_as_other(store)
+        store.acquire("devenv", identity: other.merge(pid: 5151, pgid: 5151), waiter_pid: 5151, waiter_started: "s", wait: true)
+        queue = nil
+        sleeper = lambda do |_|
+          queue ||= store.status("devenv").dig("devenv", "queue").map { |w| w["waiter_pid"] }
+          store.release("devenv", 4242)
+        end
+
+        code = run_with(store: store, sleeper: sleeper, spawner: ->(command, chdir) { Process.spawn("/bin/sh", "-c", command, chdir: chdir) },
+          command: "true", worktree: worktree, wait: true, priority: true)
+
+        expect(code).to eq(0)
+        expect(queue).to eq([Process.pid, 5151])
+        expect(devenv_holder(store)).to include("pid" => 5151)
+      end
+
       it "returns 4 without running when the lock is cleared while queued" do
         store = fake_store
         hold_as_other(store)

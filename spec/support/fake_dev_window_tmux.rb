@@ -16,6 +16,6 @@ class FakeDevWindowTmux
 
   def new_window(session, name:, cwd:, command:, env: {})
     @windows << {session: session, name: name, cwd: cwd, command: command}
-    @spawner.call(cwd, command.include?("--wait"))
+    @spawner.call(cwd, command.include?("--wait"), env)
   end
 end

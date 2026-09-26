@@ -45,8 +45,11 @@ module Workspace
     # @param waiter_started [String] that process's `ps` start time
     # @param task [String, nil] free-text description shown in status/queue messages
     # @param wait [Boolean] enqueue instead of refusing when the lock is busy
+    # @param priority [Boolean] go ahead of everyone already queued (`dev up
+    #   --takeover`): take a free lock even with others waiting, or enqueue at
+    #   the head, in the same flocked step so no release can promote past it
     # @return [Hash] :status is one of :acquired, :already_held, :held, :queued, :deadlock
-    def acquire(name, identity:, waiter_pid:, waiter_started:, task: nil, wait: false)
+    def acquire(name, identity:, waiter_pid:, waiter_started:, task: nil, wait: false, priority: false)
       with_lock do |data|
         reap!(data)
         entry = data[name] ||= empty_entry
@@ -61,7 +64,7 @@ module Workspace
           next {status: :deadlock, other: other}
         end
 
-        if holder.nil? && entry["queue"].empty?
+        if holder.nil? && (entry["queue"].empty? || priority)
           entry["holder"] = build_holder(identity, task, waiter_pid: waiter_pid)
           next {status: :acquired}
         end
@@ -70,14 +73,19 @@ module Workspace
 
         existing_index = entry["queue"].index { |w| w["agent_pid"] == identity[:pid] && w["agent_started"] == identity[:started] }
         if existing_index
-          entry["queue"][existing_index]["waiter_pid"] = waiter_pid
-          entry["queue"][existing_index]["waiter_started"] = waiter_started
-          position = existing_index + 1
+          waiter = entry["queue"].delete_at(existing_index)
+          waiter["waiter_pid"] = waiter_pid
+          waiter["waiter_started"] = waiter_started
+          entry["queue"].insert(priority ? 0 : existing_index, waiter)
+          position = priority ? 1 : existing_index + 1
+        elsif priority
+          entry["queue"].unshift(build_waiter(identity, waiter_pid, waiter_started, task))
+          position = 1
         else
           entry["queue"] << build_waiter(identity, waiter_pid, waiter_started, task)
           position = entry["queue"].size
         end
-        total = position + (holder ? 1 : 0)
+        total = entry["queue"].size + (holder ? 1 : 0)
         {status: :queued, position: position, total: total, holder: holder}
       end
     end
@@ -165,22 +173,6 @@ module Workspace
         end
         removed = entry["queue"].reject! { |w| w["waiter_pid"] == waiter_pid }
         removed ? :dequeued : :absent
-      end
-    end
-
-    # Moves a queued waiter to the head of the queue, so the next release
-    # promotes it ahead of everyone who queued earlier (`dev up --takeover`).
-    #
-    # @param name [String] lock name
-    # @param waiter_pid [Integer]
-    # @return [Boolean] whether the waiter was found in the queue
-    def prioritize(name, waiter_pid)
-      with_lock do |data|
-        queue = data.dig(name, "queue") || []
-        index = queue.index { |w| w["waiter_pid"] == waiter_pid }
-        next false unless index
-        queue.unshift(queue.delete_at(index))
-        true
       end
     end
 

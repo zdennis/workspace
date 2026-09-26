@@ -40,9 +40,9 @@ RSpec.describe Workspace::Commands::Dev do
     RUBY
   end
 
-  def spawn_wrapper(cwd, wait)
+  def spawn_wrapper(cwd, wait, env = {})
     log = File.join(tmpdir, "wrapper-#{spawned.size}.log")
-    pid = Process.spawn({"SKIP_SIMPLECOV" => "1"}, RbConfig.ruby, "-e", wrapper_script, lock_dir,
+    pid = Process.spawn({"SKIP_SIMPLECOV" => "1", **env}, RbConfig.ruby, "-e", wrapper_script, lock_dir,
       JSON.generate("dev" => dev_settings), wait ? "1" : "0", chdir: cwd, pgroup: true, in: File::NULL, out: log, err: log)
     Process.detach(pid)
     spawned << pid
@@ -280,11 +280,22 @@ RSpec.describe Workspace::Commands::Dev do
 
       result = described_class.new(lock_namespace: lock_namespace, lock_holder: Workspace::LockHolder.new,
         lineage: Workspace::WorkspaceLineage.new, dev_config: dev_config, dev_runner: runner,
-        terminator: nil, tmux: nil, executable: "unused").run(wait: true, working_dir: login)
+        terminator: nil, tmux: nil, executable: "unused", env: {}).run(wait: true, working_dir: login)
 
       expect(result).to eq(exit_code: 3)
       expect(runner).to have_received(:call).with(store: an_instance_of(Workspace::LockStore), command: "exec sleep 30",
-        worktree: login, branch: "feat/login", wait: true)
+        worktree: login, branch: "feat/login", wait: true, priority: false)
+    end
+
+    it "queues ahead of everyone when its window was opened by a takeover" do
+      runner = double("dev_runner")
+      allow(runner).to receive(:call).and_return(0)
+
+      described_class.new(lock_namespace: lock_namespace, lock_holder: Workspace::LockHolder.new,
+        lineage: Workspace::WorkspaceLineage.new, dev_config: dev_config, dev_runner: runner, terminator: nil, tmux: nil,
+        executable: "unused", env: {"WORKSPACE_DEV_TAKEOVER" => "1"}).run(wait: true, working_dir: login)
+
+      expect(runner).to have_received(:call).with(hash_including(wait: true, priority: true))
     end
   end
 end
@@ -350,6 +361,33 @@ RSpec.describe Workspace::Commands::Dev, "with fake processes and clock" do
   end
 
   after { FileUtils.remove_entry(tmpdir) if File.directory?(tmpdir) }
+
+  # Stands in for the `dev __run` wrapper tmux would start: it takes or
+  # queues for the lock the way DevRunner does, with the window env given.
+  def wrapper_joins(pid, wait: true)
+    allow(tmux).to receive(:new_window) do |_session, env:, **|
+      store.acquire("devenv", identity: process_identity(pid, worktree: worktree, branch: nil), waiter_pid: pid,
+        waiter_started: "s-#{pid}", wait: wait, priority: env["WORKSPACE_DEV_TAKEOVER"] == "1")
+      pid
+    end
+  end
+
+  describe "#up --takeover" do
+    it "queues the new wrapper ahead of an earlier waiter so the stopped holder's lock passes to it" do
+      hold(700)
+      enqueue(800)
+      wrapper_joins(555)
+      allow(terminator).to receive(:stop_holder) do
+        liveness.kill(700)
+        :terminated
+      end
+
+      expect(dev.up(takeover: true, working_dir: worktree)).to eq(exit_code: 0)
+      expect(tmux).to have_received(:new_window).with("app", hash_including(env: {"WORKSPACE_DEV_TAKEOVER" => "1"}))
+      expect(holder).to include("pid" => 555)
+      expect(store.status("devenv").dig("devenv", "queue").map { |w| w["waiter_pid"] }).to eq([800])
+    end
+  end
 
   describe "a process group this user may not signal" do
     let(:foreign) { Workspace::Error.new("process group 700 has running processes this user is not permitted to signal") }

@@ -236,22 +236,30 @@ RSpec.describe Workspace::LockStore do
     end
   end
 
-  describe "#prioritize" do
-    it "moves a waiter to the head of the queue so the next release promotes it" do
+  describe "#acquire with priority" do
+    it "queues ahead of earlier waiters so the next release promotes it" do
       s = store
       s.acquire("edit", identity: identity(pid: 100), waiter_pid: 100, waiter_started: "start-100")
       s.acquire("edit", identity: identity(pid: 200), waiter_pid: 200, waiter_started: "start-200", wait: true)
-      s.acquire("edit", identity: identity(pid: 300), waiter_pid: 300, waiter_started: "start-300", wait: true)
 
-      expect(s.prioritize("edit", 300)).to be(true)
+      result = s.acquire("edit", identity: identity(pid: 300), waiter_pid: 300, waiter_started: "start-300", wait: true, priority: true)
+      expect(result).to include(status: :queued, position: 1, total: 3)
       s.release("edit", 100)
 
       expect(s.status("edit")["edit"]["holder"]["pid"]).to eq(300)
       expect(s.status("edit")["edit"]["queue"].map { |w| w["waiter_pid"] }).to eq([200])
     end
 
-    it "returns false for a pid that is not queued" do
-      expect(store.prioritize("edit", 999)).to be(false)
+    it "moves an agent already queued to the head" do
+      s = store
+      s.acquire("edit", identity: identity(pid: 100), waiter_pid: 100, waiter_started: "start-100")
+      s.acquire("edit", identity: identity(pid: 200), waiter_pid: 200, waiter_started: "start-200", wait: true)
+      s.acquire("edit", identity: identity(pid: 300), waiter_pid: 300, waiter_started: "start-300", wait: true)
+
+      result = s.acquire("edit", identity: identity(pid: 300), waiter_pid: 301, waiter_started: "start-301", wait: true, priority: true)
+
+      expect(result).to include(status: :queued, position: 1)
+      expect(s.status("edit")["edit"]["queue"].map { |w| w["waiter_pid"] }).to eq([301, 200])
     end
   end
 
