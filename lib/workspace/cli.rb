@@ -789,7 +789,9 @@ module Workspace
               (release it first)
           75  still queued after --max-wait
 
-        Note: release/clear exit 0 even when nothing was held/cleared.
+        Note: `lock release`/`lock clear` exit 0 even when nothing was
+        held/cleared. This is scoped to those two subcommands; `acquire`
+        has its own exit codes above.
 
         Examples:
           workspace lock acquire edit --wait --task "PROJ-12 fix login"
@@ -898,6 +900,9 @@ module Workspace
 
         Options (down):
           --force           Also kill a process group left behind by a dead wrapper
+
+        Note: `up` from the worktree that already holds the devenv lock is
+        a no-op (exit 0); it doesn't restart the dev command.
 
         Exit codes (up):
           0   running (or already running for this worktree)
