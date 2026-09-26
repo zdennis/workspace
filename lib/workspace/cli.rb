@@ -479,7 +479,7 @@ module Workspace
         opts.separator ""
         opts.separator "Options:"
         opts.on("--pane N", String,
-          "Target pane: zero-based index, 'bottom', or a title substring (e.g. 'Claude Code')") do |n|
+          "Target pane: zero-based index, 'window.pane' (e.g. '0.1', as shown by 'workspace sessions'), 'bottom', or a title substring (e.g. 'Claude Code')") do |n|
           pane_opt = n
         end
         # --bottom is intentionally equivalent to the default. It exists so scripts can
@@ -670,7 +670,7 @@ module Workspace
         opts.separator ""
         opts.separator "Options:"
         opts.on("--pane N", String,
-          "Target pane: zero-based index, 'window.pane' (from 'workspace sessions'), 'bottom', or a title substring (e.g. 'Claude Code')") do |n|
+          "Target pane: zero-based index, 'window.pane' (e.g. '0.1', from 'workspace sessions'), 'bottom', or a title substring (e.g. 'Claude Code')") do |n|
           pane_opt = n
         end
         opts.on("--lines N", Integer,
