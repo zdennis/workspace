@@ -57,7 +57,7 @@ Acquired edit lock. Release with: workspace lock release edit
 
 **SIGINT/SIGTERM** — interrupting a queued `acquire --wait` removes its queue entry before exiting.
 
-**`clear`** — removes a lock's holder and queue unconditionally, with no liveness check and no confirmation prompt. Use it to recover from a stuck lock.
+**`clear`** — removes a lock's holder and queue unconditionally, with no liveness check and no confirmation prompt. Use it to recover from a stuck lock. Clearing `devenv` also stops the dev environment: SIGTERM to its wrapper, then SIGKILL to its process group after `dev.stop_timeout` — but only while the wrapper's pid still matches its recorded start time, so a reused process group is never signalled (see [`workspace dev`](README.dev.md)).
 
 ## Examples
 

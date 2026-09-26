@@ -16,7 +16,7 @@ A macOS CLI (Ruby) for managing tmuxinator-based development workspaces in iTerm
 - `lib/workspace/iterm.rb` — iTerm2 session/pane lifecycle (AppleScript)
 - `lib/workspace/window_manager.rb` — iTerm2 window operations: find, focus, position, close
 - `lib/workspace/window_layout.rb` — Window positioning math
-- `lib/workspace/commands/` — Complex command objects (launch, kill, focus, start, agent)
+- `lib/workspace/commands/` — Complex command objects (launch, kill, focus, start, agent, lock, dev)
 - `lib/workspace/work_coordinator_client.rb` — JSONL client for work-coordinator sockets
 - `lib/workspace/pipeline_config.rb` — Reads per-project pipeline stage config from `~/.config/workspace/projects/<name>.yml`
 - `lib/workspace/pipeline_state.rb` — In-flight work item tracking, disk-persisted to `~/.local/state/workspace/<name>/pipeline.json`
@@ -30,6 +30,8 @@ A macOS CLI (Ruby) for managing tmuxinator-based development workspaces in iTerm
 - `lib/workspace/agent_provider.rb` — Registry of coding-agent CLIs workspace can monitor
 - `lib/workspace/hook_installer.rb` — Merges workspace's hooks into an agent's own settings file
 - `lib/workspace/file_backup.rb` — Copies a file aside before workspace edits it
+- `lib/workspace/dev_runner.rb` — The `dev __run` wrapper: holds the `devenv` lock while the dev command runs on the pane's TTY, forwarding stop signals once to its process group
+- `lib/workspace/process_group_terminator.rb` — SIGTERM then SIGKILL for a lock holder's process group, after checking pid + start time
 - `lib/workspace/dev_config.rb` — Reads a project's `dev:` block (`up`, `ready`, `stop_timeout`), as written by `workspace config set`
 - `lib/templates/workspace.project-template.yml` — Tmuxinator template for standard projects
 - `lib/templates/workspace.project-worktree-template.yml` — Tmuxinator template for git worktree projects
@@ -46,7 +48,7 @@ A macOS CLI (Ruby) for managing tmuxinator-based development workspaces in iTerm
 
 ## Subcommands
 
-init, doctor, launch, start, add, stop, kill, relaunch, focus, list, status, whereis, agent, pipeline, sessions, session-event, lock, parent
+init, doctor, launch, start, add, stop, kill, relaunch, focus, list, status, whereis, agent, pipeline, sessions, session-event, lock, dev, parent
 
 ## Adding a Subcommand
 

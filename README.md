@@ -75,6 +75,7 @@ workspace <subcommand> [options]
 | config | [README](docs/README.config.md) | Show, set, get, or unset project or global configuration |
 | current | [README](docs/README.current.md) | Print the workspace project name for the current directory |
 | deactivate | [README](docs/README.deactivate.md) | Deactivate Claude in a project's tmux pane (sends Ctrl-C) |
+| dev | [README](docs/README.dev.md) | Start, stop, or inspect the repo's single dev environment (devenv lock) |
 | dir | [README](docs/README.dir.md) | Print the root directory of a workspace project |
 | doctor | [README](docs/README.doctor.md) | Check that all required dependencies are installed |
 | event-log | [README](docs/README.event-log.md) | Manage the append-only event log (compact) |
