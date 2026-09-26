@@ -109,13 +109,16 @@ module Workspace
           return {exit_code: 0}
         end
 
-        unless holder["stale"]
-          result = stop(ctx, holder)
-          @output.puts "Stopped dev environment for #{describe(holder)}#{" (SIGKILL after #{format_seconds(ctx[:settings][:stop_timeout])})" if result == :killed}."
-          return {exit_code: 0}
+        if holder["stale"]
+          result = stop_orphan(ctx, holder, force: force)
+          close_window(holder) if result[:exit_code].zero?
+          return result
         end
 
-        stop_orphan(ctx, holder, force: force)
+        result = stop(ctx, holder)
+        close_window(holder)
+        @output.puts "Stopped dev environment for #{describe(holder)}#{" (SIGKILL after #{format_seconds(ctx[:settings][:stop_timeout])})" if result == :killed}."
+        {exit_code: 0}
       end
 
       # @param working_dir [String] any directory inside the repository
@@ -170,6 +173,7 @@ module Workspace
 
         @output.puts "Taking over: stopping dev environment for #{describe(holder)}..."
         stop(ctx, holder)
+        close_window(holder)
         code = await_wrapper(ctx[:store], wrapper, wait: false, max_wait: nil)
         finish_up(ctx, session, wrapper, code, ready: ready)
       end
@@ -177,9 +181,21 @@ module Workspace
       def open_wrapper(ctx, session, wait:, takeover: false)
         env = passthrough_env
         env[TAKEOVER_ENV] = "1" if takeover
-        wrapper = @tmux.new_window(session, name: WINDOW_NAME, cwd: ctx[:worktree], command: run_argv(wait), env: env)
+        wrapper = @tmux.new_window(session, name: WINDOW_NAME, cwd: ctx[:worktree], command: run_argv(wait), env: env,
+          remain_on_exit: true)
         raise Workspace::Error, "Could not open a #{WINDOW_NAME} window in tmux session #{session}." unless wrapper
         wrapper
+      end
+
+      # The devenv window outlives its wrapper (remain-on-exit) so a crash
+      # stays readable; a window whose env was stopped on purpose is closed.
+      # tmux may take a moment to mark the pane dead after the wrapper exits.
+      def close_window(holder)
+        return unless holder["pane"]
+        deadline = @clock.now + RELEASE_MARGIN
+        until @tmux.close_dead_pane(holder["pane"], pid: holder["pid"]) != false || @clock.now >= deadline
+          @sleeper.call(@poll)
+        end
       end
 
       def finish_up(ctx, session, wrapper, code, ready:)
@@ -295,6 +311,10 @@ module Workspace
         return session if session
         fallback = @tmux.session_name_for(ctx[:config_name])
         return fallback if @tmux.sessions.include?(fallback)
+        unless @tmux.server_running?
+          raise Workspace::Error, "tmux server not running; start the workspace with `workspace launch`, " \
+            "then run `workspace dev up` again."
+        end
         raise Workspace::Error, "No tmux session found for #{ctx[:config_name]}; run `workspace dev up` inside the workspace's tmux session."
       end
 

@@ -393,19 +393,81 @@ RSpec.describe Workspace::Tmux do
     let(:tmux) { described_class.new(config: config) }
 
     it "opens a detached window running the argv directly and returns the pane pid" do
-      allow(Open3).to receive(:capture3).and_return(["4321\n", "", double(success?: true)])
+      allow(Open3).to receive(:capture3).and_return(["4321 %12\n", "", double(success?: true)])
 
       pid = tmux.new_window("app", name: "devenv", cwd: "/w/app", command: ["ruby", "ws", "dev", "__run"], env: {"XDG_STATE_HOME" => "/s"})
 
       expect(pid).to eq(4321)
-      expect(Open3).to have_received(:capture3).with("tmux", "new-window", "-d", "-P", "-F", "\#{pane_pid}", "-t", "app:",
+      expect(Open3).to have_received(:capture3).with("tmux", "new-window", "-d", "-P", "-F", "\#{pane_pid} \#{pane_id}", "-t", "app:",
         "-n", "devenv", "-c", "/w/app", "-e", "XDG_STATE_HOME=/s", "--", "ruby", "ws", "dev", "__run")
+      expect(Open3).to have_received(:capture3).once
+    end
+
+    it "sets remain-on-exit on the new window only when asked" do
+      allow(Open3).to receive(:capture3).and_return(["4321 %12\n", "", double(success?: true)])
+
+      tmux.new_window("app", name: "devenv", cwd: "/w", command: ["true"], remain_on_exit: true)
+
+      expect(Open3).to have_received(:capture3).with("tmux", "set-option", "-w", "-t", "%12", "remain-on-exit", "on")
     end
 
     it "returns nil when tmux fails" do
       allow(Open3).to receive(:capture3).and_return(["", "no session", double(success?: false)])
 
       expect(tmux.new_window("gone", name: "devenv", cwd: "/w", command: ["true"])).to be_nil
+    end
+  end
+
+  describe "#close_dead_pane" do
+    let(:tmux) { described_class.new(config: config) }
+
+    def stub_display(stdout, success: true)
+      allow(Open3).to receive(:capture3).with("tmux", "display-message", "-p", "-t", "%12", "\#{pane_dead} \#{pane_pid}")
+        .and_return([stdout, "", double(success?: success)])
+      allow(Open3).to receive(:capture3).with("tmux", "kill-pane", "-t", "%12").and_return(["", "", double(success?: true)])
+    end
+
+    it "kills a dead pane whose process was the given pid" do
+      stub_display("1 4321\n")
+
+      expect(tmux.close_dead_pane("%12", pid: 4321)).to be(true)
+      expect(Open3).to have_received(:capture3).with("tmux", "kill-pane", "-t", "%12")
+    end
+
+    it "returns false while the pid is still running in the pane" do
+      stub_display("0 4321\n")
+
+      expect(tmux.close_dead_pane("%12", pid: 4321)).to be(false)
+      expect(Open3).not_to have_received(:capture3).with("tmux", "kill-pane", "-t", "%12")
+    end
+
+    it "leaves alone a pane that ran some other process" do
+      stub_display("1 999\n")
+
+      expect(tmux.close_dead_pane("%12", pid: 4321)).to be_nil
+      expect(Open3).not_to have_received(:capture3).with("tmux", "kill-pane", "-t", "%12")
+    end
+
+    it "returns nil when the pane no longer exists" do
+      stub_display("", success: false)
+
+      expect(tmux.close_dead_pane("%12", pid: 4321)).to be_nil
+    end
+  end
+
+  describe "#server_running?" do
+    let(:tmux) { described_class.new(config: config) }
+
+    it "is true when tmux can list sessions" do
+      allow(Open3).to receive(:capture3).with("tmux", "list-sessions").and_return(["app: 1 windows\n", "", double(success?: true)])
+
+      expect(tmux.server_running?).to be(true)
+    end
+
+    it "is false when no server answers" do
+      allow(Open3).to receive(:capture3).with("tmux", "list-sessions").and_return(["", "no server running", double(success?: false)])
+
+      expect(tmux.server_running?).to be(false)
     end
   end
 end

@@ -312,7 +312,7 @@ RSpec.describe Workspace::Commands::Dev, "with fake processes and clock" do
   let(:dev_config) { Workspace::DevConfig.new(project_settings: Struct.new(:data) { def load(_name) = data }.new({"dev" => settings})) }
   let(:lineage) { double("lineage", resolve: double(name: "app", worktree: nil)) }
   let(:terminator) { double("terminator", running?: false) }
-  let(:tmux) { double("tmux", session_name_for_pane: "app", sessions: ["app"], session_name_for: "app") }
+  let(:tmux) { double("tmux", session_name_for_pane: "app", sessions: ["app"], session_name_for: "app", close_dead_pane: nil) }
   let(:dead_pids) { [] }
   let(:signals) { [] }
   let(:now) { [0.0] }
@@ -386,6 +386,83 @@ RSpec.describe Workspace::Commands::Dev, "with fake processes and clock" do
       expect(tmux).to have_received(:new_window).with("app", hash_including(env: {"WORKSPACE_DEV_TAKEOVER" => "1"}))
       expect(holder).to include("pid" => 555)
       expect(store.status("devenv").dig("devenv", "queue").map { |w| w["waiter_pid"] }).to eq([800])
+    end
+  end
+
+  describe "the devenv window" do
+    it "is opened with remain-on-exit so a crash stays readable" do
+      wrapper_joins(555, wait: false)
+
+      expect(dev.up(working_dir: worktree)).to eq(exit_code: 0)
+      expect(tmux).to have_received(:new_window).with("app", hash_including(remain_on_exit: true))
+    end
+
+    it "is closed by `down` once tmux marks the stopped wrapper's pane dead" do
+      hold(700)
+      allow(terminator).to receive(:stop_holder) do
+        liveness.kill(700)
+        :terminated
+      end
+      allow(tmux).to receive(:close_dead_pane).and_return(false, true)
+
+      expect(dev.down(working_dir: worktree)).to eq(exit_code: 0)
+      expect(tmux).to have_received(:close_dead_pane).with("%7", pid: 700).twice
+    end
+
+    it "is closed by `down` for a stale holder whose lock it removed" do
+      orphan(700)
+
+      expect(dev.down(working_dir: worktree)).to eq(exit_code: 0)
+      expect(tmux).to have_received(:close_dead_pane).with("%7", pid: 700)
+    end
+
+    it "is left open when `down` refuses to touch a running orphan" do
+      orphan(700)
+      allow(terminator).to receive(:running?).and_return(true)
+
+      expect(dev.down(working_dir: worktree)).to eq(exit_code: 1)
+      expect(tmux).not_to have_received(:close_dead_pane)
+    end
+
+    it "gives up waiting for a pane that never dies" do
+      hold(700)
+      allow(terminator).to receive(:stop_holder) do
+        liveness.kill(700)
+        :terminated
+      end
+      allow(tmux).to receive(:close_dead_pane).and_return(false)
+
+      expect(dev.down(working_dir: worktree)).to eq(exit_code: 0)
+      expect(tmux).to have_received(:close_dead_pane).exactly(3).times
+    end
+
+    it "of the holder a takeover stopped is closed" do
+      hold(700)
+      wrapper_joins(555)
+      allow(terminator).to receive(:stop_holder) do
+        liveness.kill(700)
+        :terminated
+      end
+
+      expect(dev.up(takeover: true, working_dir: worktree)).to eq(exit_code: 0)
+      expect(tmux).to have_received(:close_dead_pane).with("%7", pid: 700)
+    end
+  end
+
+  describe "finding the tmux session" do
+    let(:tmux) { double("tmux", session_name_for_pane: nil, sessions: [], session_name_for: "app") }
+
+    it "says so when the tmux server is not running" do
+      allow(tmux).to receive(:server_running?).and_return(false)
+
+      expect { dev.up(working_dir: worktree) }.to raise_error(Workspace::Error,
+        "tmux server not running; start the workspace with `workspace launch`, then run `workspace dev up` again.")
+    end
+
+    it "names the missing session when the server is running" do
+      allow(tmux).to receive(:server_running?).and_return(true)
+
+      expect { dev.up(working_dir: worktree) }.to raise_error(Workspace::Error, /No tmux session found for app/)
     end
   end
 
