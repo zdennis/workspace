@@ -2114,6 +2114,7 @@ module Workspace
         opts.on("--json", "Print name, path, git_common_dir, is_worktree, worktree as JSON") { json = true }
       end
       parser.parse!(args)
+      raise UsageError, "--path and --json cannot be used together." if path && json
 
       name = args.first
       @parent_command.call(name, path: path, json: json)

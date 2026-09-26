@@ -32,6 +32,9 @@ named project's configured root directory instead.
 Exits 1 with a message if nothing resolves (non-git directory, no marker) or if
 `NAME` is not a known project.
 
+`--path` and `--json` are mutually exclusive; combining them raises a usage error
+instead of silently preferring one.
+
 ## Examples
 
 ```sh

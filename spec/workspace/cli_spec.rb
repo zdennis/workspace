@@ -1702,6 +1702,17 @@ RSpec.describe Workspace::CLI do
       cli.run(["help"])
       expect(output.string).to include("parent")
     end
+
+    it "raises a usage error when --path and --json are combined" do
+      parent_command = CLITestHelpers::FakeParentCommand.new
+      cli, _, error_output = build_test_cli(parent_command: parent_command)
+
+      expect { cli.run(["parent", "--path", "--json"]) }.to raise_error(FakeSystemExit) { |e|
+        expect(e.status).to eq(1)
+      }
+      expect(error_output.string).to include("--path and --json cannot be used together")
+      expect(parent_command.calls).to be_empty
+    end
   end
 
   describe "#run with run-and-report" do
