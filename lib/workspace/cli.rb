@@ -1669,7 +1669,7 @@ module Workspace
       parser.parse!(args)
       key = args.shift
       value = args.shift
-      raise UsageError, parser.help if key.nil? || value.nil?
+      raise UsageError, parser.help if key.nil? || value.nil? || args.any?
 
       @config_command.set(key, value, project: project, cwd: @working_dir)
     end
@@ -1682,7 +1682,7 @@ module Workspace
       end
       parser.parse!(args)
       key = args.shift
-      raise UsageError, parser.help if key.nil?
+      raise UsageError, parser.help if key.nil? || args.any?
 
       @config_command.get(key, project: project, cwd: @working_dir)
     end
@@ -1695,7 +1695,7 @@ module Workspace
       end
       parser.parse!(args)
       key = args.shift
-      raise UsageError, parser.help if key.nil?
+      raise UsageError, parser.help if key.nil? || args.any?
 
       @config_command.unset(key, project: project, cwd: @working_dir)
     end
