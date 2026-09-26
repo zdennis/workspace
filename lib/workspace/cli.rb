@@ -748,6 +748,7 @@ module Workspace
       when "release" then cmd_lock_release(args)
       when "status" then cmd_lock_status(args)
       when "clear" then cmd_lock_clear(args)
+      when "instructions" then cmd_lock_instructions(args)
       when "help", "--help", "-h", nil then @output.puts lock_help
       else
         raise UsageError, lock_help
@@ -768,6 +769,8 @@ module Workspace
           status  [<name>]           Show holders and queues
           clear   [<name>|--all]     Force-remove a lock's holder and queue
                                      (devenv: also stops the dev env's process group)
+          instructions [<name>]      Print the prompt block that tells a coding
+                                     agent how to use the lock (default: edit)
 
         Options (acquire):
           --task TEXT       Free-text description shown to other waiters
@@ -808,7 +811,23 @@ module Workspace
           workspace lock release edit
           workspace lock status
           workspace lock clear edit
+          workspace lock instructions edit
       HELP
+    end
+
+    def cmd_lock_instructions(args)
+      parser = OptionParser.new do |opts|
+        opts.banner = "Usage: workspace lock instructions [<name>]"
+        opts.separator ""
+        opts.separator "Prints the prompt block that tells a coding agent how to use"
+        opts.separator "lock <name> (default: edit), for pasting into its instructions."
+      end
+      parser.parse!(args)
+
+      name = args.shift || "edit"
+      raise UsageError, parser.help if args.any?
+
+      @lock_command.instructions(name)
     end
 
     def cmd_lock_acquire(args)

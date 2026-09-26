@@ -1,7 +1,7 @@
 require "spec_helper"
 require "tmpdir"
 
-RSpec.describe Workspace::Commands::Lock, "idle takeover" do
+RSpec.describe Workspace::Commands::Lock, "idle takeover and instructions" do
   let(:output) { StringIO.new }
   let(:error_output) { StringIO.new }
   let(:tmpdir) { Dir.mktmpdir("ws-lock-idle-command") }
@@ -111,5 +111,29 @@ RSpec.describe Workspace::Commands::Lock, "idle takeover" do
     now[0] += Workspace::LockStore::DEFAULT_IDLE_GRACE
 
     expect(command_for(waiter_identity, lock_config: nil).acquire("edit", wait: true)).to eq(exit_code: 0)
+  end
+
+  describe "#instructions" do
+    it "prints the agent prompt block for the edit lock by default" do
+      expect(command_for(holder_identity).instructions).to eq(exit_code: 0)
+
+      expect(output.string).to eq(
+        "Before editing files, run `workspace lock acquire edit --wait --task \"<your task>\"` using Bash with " \
+        "run_in_background. Do not edit anything until it reports \"Acquired\". When your edits are complete, " \
+        "run `workspace lock release edit`. Never run `workspace lock clear`.\n"
+      )
+    end
+
+    it "substitutes the lock name into every command" do
+      command_for(holder_identity).instructions("test")
+
+      expect(output.string).to include("workspace lock acquire test --wait", "workspace lock release test")
+      expect(output.string).not_to include("acquire edit")
+      expect(output.string).not_to include("release edit")
+    end
+
+    it "rejects an empty name" do
+      expect { command_for(holder_identity).instructions("") }.to raise_error(Workspace::UsageError)
+    end
   end
 end

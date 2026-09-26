@@ -129,6 +129,19 @@ module Workspace
         {exit_code: displaced.empty? ? 0 : EXIT_DISPLACED}
       end
 
+      # Prints the agent prompt block that tells a coding agent how to use a
+      # lock, versioned with the CLI so it always matches its commands.
+      #
+      # @param name [String] lock name substituted into the commands
+      # @return [Hash] {exit_code:}
+      def instructions(name = "edit")
+        raise Workspace::UsageError, "lock name must not be empty." if name.nil? || name.empty?
+        @output.puts "Before editing files, run `workspace lock acquire #{name} --wait --task \"<your task>\"` " \
+          "using Bash with run_in_background. Do not edit anything until it reports \"Acquired\". " \
+          "When your edits are complete, run `workspace lock release #{name}`. Never run `workspace lock clear`."
+        {exit_code: 0}
+      end
+
       # @param name [String, nil] a single lock name, or nil for every lock
       # @param working_dir [String] directory to resolve the lock namespace from
       # @return [Hash] {exit_code:}

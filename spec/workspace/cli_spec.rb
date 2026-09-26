@@ -1504,6 +1504,22 @@ RSpec.describe Workspace::CLI do
       expect(lock_command.calls).to eq([{action: :clear, name: "edit", all: false}])
     end
 
+    it "dispatches to lock_command#instructions, defaulting to the edit lock" do
+      lock_command = CLITestHelpers::FakeLockCommand.new
+      cli, _, _ = build_test_cli(lock_command: lock_command)
+
+      cli.run(["lock", "instructions"])
+      cli.run(["lock", "instructions", "test"])
+
+      expect(lock_command.calls).to eq([{action: :instructions, name: "edit"}, {action: :instructions, name: "test"}])
+    end
+
+    it "rejects extra arguments to lock instructions" do
+      cli, _, _ = build_test_cli(lock_command: CLITestHelpers::FakeLockCommand.new)
+
+      expect { cli.run(["lock", "instructions", "a", "b"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+    end
+
     it "exits 3 when release reports an idle takeover" do
       lock_command = CLITestHelpers::FakeLockCommand.new
       lock_command.result = {exit_code: 3}
@@ -1512,12 +1528,12 @@ RSpec.describe Workspace::CLI do
       expect { cli.run(["lock", "release", "edit"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(3) }
     end
 
-    it "describes idle takeover in lock help" do
+    it "lists instructions and idle takeover in lock help" do
       cli, output, _ = build_test_cli(lock_command: CLITestHelpers::FakeLockCommand.new)
 
       cli.run(["lock", "help"])
 
-      expect(output.string).to include("locks.idle_grace", "3   this agent's hold was taken over")
+      expect(output.string).to include("instructions [<name>]", "locks.idle_grace", "3   this agent's hold was taken over")
     end
 
     describe "dev" do
