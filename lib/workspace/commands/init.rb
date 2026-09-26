@@ -73,13 +73,20 @@ module Workspace
         return @output.puts "  No detected agent supports hooks; nothing to install." if installable.empty?
 
         @output.puts ""
-        @output.puts "  These hooks would be added:"
-        @hook_installer.preview(installable.first, HOOK_COMMAND)
+        @output.puts "  Would add: #{@hook_installer.summary(installable.first, HOOK_COMMAND)}"
 
-        return unless hooks || confirm?(installable)
+        return installable.each { |provider| @hook_installer.install(provider, project_root, HOOK_COMMAND, dry_run: dry_run) } if hooks
 
-        installable.each do |provider|
-          @hook_installer.install(provider, project_root, HOOK_COMMAND, dry_run: dry_run)
+        loop do
+          case prompt_action(installable)
+          when "v"
+            @hook_installer.preview(installable.first, HOOK_COMMAND)
+          when "i"
+            installable.each { |provider| @hook_installer.install(provider, project_root, HOOK_COMMAND, dry_run: dry_run) }
+            break
+          else
+            break
+          end
         end
       end
 
@@ -97,10 +104,10 @@ module Workspace
         end
       end
 
-      def confirm?(providers)
+      def prompt_action(providers)
         names = providers.map(&:label).join(", ")
-        @output.print "  Install these hooks for #{names}? [y/N] "
-        @input.gets&.strip&.downcase == "y"
+        @output.print "  [v]iew, [i]nstall for #{names}, or [n]othing? [v/i/N] "
+        @input.gets&.strip&.downcase
       end
 
       def ensure_tmuxinator_dir(dry_run)

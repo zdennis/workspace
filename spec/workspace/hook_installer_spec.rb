@@ -95,4 +95,12 @@ RSpec.describe Workspace::HookInstaller do
       expect(output.string).to include("SubagentStop", command)
     end
   end
+
+  describe "#summary" do
+    it "comma-joins every hook event and names the command in one line" do
+      events = provider.hook_settings(command)["hooks"].keys
+
+      expect(installer.summary(provider, command)).to eq("#{events.join(", ")} hooks running `#{command}`")
+    end
+  end
 end

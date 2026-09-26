@@ -49,12 +49,13 @@ RSpec.describe Workspace::Commands::Init do
     context "when an agent with hook support is installed" do
       let(:which) { ->(exe) { exe == "claude" } }
 
-      it "lists the agent and shows the hooks before asking" do
+      it "lists the agent and shows a shorthand summary before asking" do
         command.call(project_root: project_root)
 
         expect(output.string).to include("found   Claude Code")
+        expect(output.string).to include("Would add: ")
         expect(output.string).to include("SubagentStop")
-        expect(output.string).to include("Install these hooks for Claude Code?")
+        expect(output.string).to include("[v]iew, [i]nstall for Claude Code, or [n]othing?")
       end
 
       it "leaves the settings alone when the user declines" do
@@ -65,19 +66,53 @@ RSpec.describe Workspace::Commands::Init do
         expect(File.exist?(settings_path)).to be false
       end
 
+      it "prints the full hook JSON when the user asks to view it, then re-prompts" do
+        input.string = "v\nn\n"
+
+        command.call(project_root: project_root)
+
+        expect(output.string).to include("\"type\": \"command\"")
+        expect(File.exist?(settings_path)).to be false
+      end
+
       it "installs when the user agrees" do
-        input.string = "y\n"
+        input.string = "i\n"
 
         command.call(project_root: project_root)
 
         expect(JSON.parse(File.read(settings_path))["hooks"]).to include("SubagentStop")
       end
 
+      it "installs after viewing, and re-prompts between the two" do
+        input.string = "v\ni\n"
+
+        command.call(project_root: project_root)
+
+        expect(output.string.scan("[v]iew, [i]nstall").size).to eq(2)
+        expect(JSON.parse(File.read(settings_path))["hooks"]).to include("SubagentStop")
+      end
+
+      it "treats an unrecognized answer as declining" do
+        input.string = "x\n"
+
+        command.call(project_root: project_root)
+
+        expect(File.exist?(settings_path)).to be false
+      end
+
+      it "declines without error when stdin is closed" do
+        input.string = ""
+
+        command.call(project_root: project_root)
+
+        expect(File.exist?(settings_path)).to be false
+      end
+
       it "installs without asking when hooks are pre-approved" do
         command.call(project_root: project_root, hooks: true)
 
         expect(File.exist?(settings_path)).to be true
-        expect(output.string).not_to include("Install these hooks")
+        expect(output.string).not_to include("[v]iew")
       end
 
       it "skips the phase entirely when hooks are declined up front" do

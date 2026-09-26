@@ -46,6 +46,17 @@ module Workspace
       end
     end
 
+    # One-line, human-readable summary of what would be added, e.g.
+    # "PreToolUse, PostToolUse hooks running `workspace session-event`".
+    #
+    # @param provider [Workspace::AgentProvider]
+    # @param command [String]
+    # @return [String]
+    def summary(provider, command)
+      events = provider.hook_settings(command)["hooks"].keys.join(", ")
+      "#{events} hooks running `#{command}`"
+    end
+
     # Merges the hooks into the agent's settings file, backing it up first.
     #
     # @param provider [Workspace::AgentProvider]
