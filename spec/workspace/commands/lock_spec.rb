@@ -1,0 +1,200 @@
+require "spec_helper"
+require "tmpdir"
+
+RSpec.describe Workspace::Commands::Lock do
+  let(:output) { StringIO.new }
+  let(:error_output) { StringIO.new }
+  let(:tmpdir) { Dir.mktmpdir("ws-lock-command") }
+  let(:config) { Workspace::Config.new }
+  let(:lock_namespace) { instance_double(Workspace::LockNamespace) }
+  let(:sleeper) { instance_double("sleeper", call: nil) }
+  let(:clock) { class_double(Time, now: base_time) }
+  let(:base_time) { Time.utc(2026, 9, 26, 12, 0, 0) }
+
+  after { FileUtils.remove_entry(tmpdir) if File.directory?(tmpdir) }
+
+  before do
+    allow(lock_namespace).to receive(:resolve).and_return(key: "ns", display: "app", dir: tmpdir)
+  end
+
+  # Each simulated agent needs its own "waiter" pid distinct from this test
+  # process's real Process.pid — otherwise two commands built in the same
+  # RSpec process would look like the same OS process to the lock store.
+  def enqueue_waiter(name:, identity:, task:)
+    store = Workspace::LockStore.new(dir: tmpdir, liveness: identity)
+    id = identity.current
+    store.acquire(name, identity: id, waiter_pid: id[:pid], waiter_started: id[:started], task: task, wait: true)
+  end
+
+  def command_for(identity)
+    described_class.new(config: config, lock_namespace: lock_namespace, lock_holder: identity,
+      output: output, error_output: error_output, sleeper: sleeper, clock: clock,
+      pid_provider: -> { identity.current[:pid] },
+      # Real Signal.trap is process-wide state; a no-op here keeps tests from
+      # leaking signal handlers into whichever example runs next. SIGINT/TERM
+      # dequeuing itself is covered directly by LockStore's #dequeue spec.
+      trap: ->(signal, handler) {})
+  end
+
+  describe "#acquire" do
+    it "acquires a free lock and prints the acquired message" do
+      result = command_for(FakeLockIdentity.new(pid: 100)).acquire("edit", task: "PROJ-1")
+
+      expect(result).to eq(exit_code: 0)
+      expect(output.string).to eq("Acquired edit lock. Release with: workspace lock release edit\n")
+    end
+
+    it "is idempotent for the same agent (re-entrant)" do
+      identity = FakeLockIdentity.new(pid: 100)
+      command_for(identity).acquire("edit")
+
+      result = command_for(identity).acquire("edit")
+
+      expect(result).to eq(exit_code: 0)
+    end
+
+    it "refuses with exit 1 when held by another agent and --wait is not given" do
+      command_for(FakeLockIdentity.new(pid: 100, pane: "%1", worktree: "app.worktree-a")).acquire("edit", task: "task-a")
+
+      result = command_for(FakeLockIdentity.new(pid: 200)).acquire("edit")
+
+      expect(result).to eq(exit_code: 1)
+      expect(error_output.string).to include("held by %1 \"task-a\" in app.worktree-a")
+    end
+
+    it "exits 5 when this agent already holds a different lock (deadlock rule)" do
+      identity = FakeLockIdentity.new(pid: 100)
+      command_for(identity).acquire("edit")
+
+      result = command_for(identity).acquire("test")
+
+      expect(result).to eq(exit_code: 5)
+      expect(error_output.string).to include("already holding or waiting for 'edit'")
+    end
+
+    it "prints the two-line --wait contract and acquires once the holder releases" do
+      holder_identity = FakeLockIdentity.new(pid: 100)
+      command_for(holder_identity).acquire("edit", task: "the-task")
+
+      waiter_identity = FakeLockIdentity.new(pid: 200)
+      waiter_command = command_for(waiter_identity)
+
+      call_count = 0
+      allow(sleeper).to receive(:call) do
+        call_count += 1
+        # Release the lock after the first poll so the loop exits promptly.
+        command_for(holder_identity).release("edit") if call_count == 1
+      end
+
+      result = waiter_command.acquire("edit", wait: true, poll: 0.01)
+
+      expect(result).to eq(exit_code: 0)
+      expect(output.string).to include(
+        "Trying to obtain workspace edit lock (position 1 of 2, held by %1 \"the-task\" in app)...\n"
+      )
+      expect(output.string.lines.last).to eq("Acquired edit lock. Release with: workspace lock release edit\n")
+    end
+
+    it "exits 4 when the lock is cleared while this agent is waiting" do
+      holder_identity = FakeLockIdentity.new(pid: 100)
+      command_for(holder_identity).acquire("edit")
+
+      waiter_identity = FakeLockIdentity.new(pid: 200)
+      waiter_command = command_for(waiter_identity)
+
+      allow(sleeper).to receive(:call) do
+        command_for(holder_identity).clear("edit")
+      end
+
+      result = waiter_command.acquire("edit", wait: true, poll: 0.01)
+
+      expect(result).to eq(exit_code: 4)
+      expect(error_output.string).to include("cleared while waiting")
+    end
+
+    it "exits 75 once --max-wait elapses while still queued" do
+      command_for(FakeLockIdentity.new(pid: 100)).acquire("edit")
+
+      waiter_identity = FakeLockIdentity.new(pid: 200)
+      times = [base_time, base_time, base_time + 10]
+      allow(clock).to receive(:now) { times.shift || base_time + 10 }
+
+      result = command_for(waiter_identity).acquire("edit", wait: true, poll: 0.01, max_wait: 5)
+
+      expect(result).to eq(exit_code: 75)
+      expect(error_output.string).to include("Still queued")
+    end
+  end
+
+  describe "#release" do
+    it "releases a held lock" do
+      identity = FakeLockIdentity.new(pid: 100)
+      command_for(identity).acquire("edit")
+
+      result = command_for(identity).release("edit")
+
+      expect(result).to eq(exit_code: 0)
+      expect(output.string).to include("Released edit lock.")
+    end
+
+    it "says so when this agent does not hold the lock" do
+      command_for(FakeLockIdentity.new(pid: 100)).acquire("edit")
+
+      command_for(FakeLockIdentity.new(pid: 200)).release("edit")
+
+      expect(output.string).to include("edit lock is not held by this agent.")
+    end
+
+    it "releases every lock this agent holds with --all" do
+      identity = FakeLockIdentity.new(pid: 100)
+      command_for(identity).acquire("edit")
+
+      result = command_for(identity).release(nil, all: true)
+
+      expect(result).to eq(exit_code: 0)
+      expect(output.string).to include("Released edit lock.")
+    end
+  end
+
+  describe "#status" do
+    it "reports a free lock" do
+      command_for(FakeLockIdentity.new(pid: 100)).status("edit")
+
+      expect(output.string).to eq("edit lock is free.\n")
+    end
+
+    it "reports a held lock and its queue" do
+      holder = FakeLockIdentity.new(pid: 100)
+      command_for(holder).acquire("edit", task: "the-task")
+      # Enqueue directly against the store: going through Commands::Lock#acquire
+      # with wait: true would block this test until the lock frees up.
+      enqueue_waiter(name: "edit", identity: FakeLockIdentity.new(pid: 200), task: "queued-task")
+
+      command_for(holder).status
+
+      expect(output.string).to include("edit: held by %1 \"the-task\" in app (pid 100")
+      expect(output.string).to include("1. %1 \"queued-task\" in app (pid 200)")
+    end
+  end
+
+  describe "#clear" do
+    it "removes a lock's holder and queue" do
+      command_for(FakeLockIdentity.new(pid: 100)).acquire("edit", task: "the-task")
+
+      result = command_for(FakeLockIdentity.new(pid: 999)).clear("edit")
+
+      expect(result).to eq(exit_code: 0)
+      expect(output.string).to include("Cleared edit: was held by")
+      expect(command_for(FakeLockIdentity.new(pid: 999)).status("edit").tap { |_| }).to eq(exit_code: 0)
+    end
+
+    it "yields the holder record for a kind-specific hook" do
+      command_for(FakeLockIdentity.new(pid: 100)).acquire("devenv")
+
+      yielded = nil
+      command_for(FakeLockIdentity.new(pid: 999)).clear("devenv") { |holder| yielded = holder }
+
+      expect(yielded["pid"]).to eq(100)
+    end
+  end
+end

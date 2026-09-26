@@ -44,6 +44,7 @@ RSpec.describe Workspace::CLI do
     run_result_store = overrides[:run_result_store] || CLITestHelpers::FakeRunResultStore.new
     run_and_report_command = overrides[:run_and_report_command] || CLITestHelpers::FakeRunAndReportCommand.new
     capture_command = overrides[:capture_command] || CLITestHelpers::FakeCaptureCommand.new
+    lock_command = overrides[:lock_command] || CLITestHelpers::FakeLockCommand.new
     agent_command = overrides[:agent_command] || CLITestHelpers::FakeAgentCommand.new
 
     cli = Workspace::CLI.new(
@@ -75,6 +76,7 @@ RSpec.describe Workspace::CLI do
       run_result_store: run_result_store,
       run_and_report_command: run_and_report_command,
       capture_command: capture_command,
+      lock_command: lock_command,
       agent_command: agent_command,
       sessions_command: sessions_command,
       session_event_command: session_event_command,
@@ -1342,6 +1344,86 @@ RSpec.describe Workspace::CLI do
         expect(e.status).to eq(1)
       }
       expect(error_output.string).to include("--all and --lines are mutually exclusive")
+    end
+
+    it "dispatches to lock_command#acquire with --task, --wait, --poll, and --max-wait" do
+      lock_command = CLITestHelpers::FakeLockCommand.new
+      cli, _, _ = build_test_cli(lock_command: lock_command)
+
+      cli.run(["lock", "acquire", "edit", "--task", "PROJ-12", "--wait", "--poll", "1.5", "--max-wait", "9"])
+
+      expect(lock_command.calls).to eq(
+        [{action: :acquire, name: "edit", task: "PROJ-12", wait: true, poll: 1.5, max_wait: 9.0}]
+      )
+    end
+
+    it "exits with the acquire result's exit_code" do
+      lock_command = CLITestHelpers::FakeLockCommand.new
+      lock_command.result = {exit_code: 5}
+      cli, _, _ = build_test_cli(lock_command: lock_command)
+
+      expect { cli.run(["lock", "acquire", "edit"]) }.to raise_error(FakeSystemExit) { |e|
+        expect(e.status).to eq(5)
+      }
+    end
+
+    it "does not exit when acquire succeeds" do
+      lock_command = CLITestHelpers::FakeLockCommand.new
+      cli, _, _ = build_test_cli(lock_command: lock_command)
+
+      expect { cli.run(["lock", "acquire", "edit"]) }.not_to raise_error
+    end
+
+    it "dispatches to lock_command#release" do
+      lock_command = CLITestHelpers::FakeLockCommand.new
+      cli, _, _ = build_test_cli(lock_command: lock_command)
+
+      cli.run(["lock", "release", "edit"])
+
+      expect(lock_command.calls).to eq([{action: :release, name: "edit", all: false}])
+    end
+
+    it "dispatches to lock_command#release with --all" do
+      lock_command = CLITestHelpers::FakeLockCommand.new
+      cli, _, _ = build_test_cli(lock_command: lock_command)
+
+      cli.run(["lock", "release", "--all"])
+
+      expect(lock_command.calls).to eq([{action: :release, name: nil, all: true}])
+    end
+
+    it "dispatches to lock_command#status" do
+      lock_command = CLITestHelpers::FakeLockCommand.new
+      cli, _, _ = build_test_cli(lock_command: lock_command)
+
+      cli.run(["lock", "status", "edit"])
+
+      expect(lock_command.calls).to eq([{action: :status, name: "edit"}])
+    end
+
+    it "dispatches to lock_command#clear" do
+      lock_command = CLITestHelpers::FakeLockCommand.new
+      cli, _, _ = build_test_cli(lock_command: lock_command)
+
+      cli.run(["lock", "clear", "edit"])
+
+      expect(lock_command.calls).to eq([{action: :clear, name: "edit", all: false}])
+    end
+
+    it "raises UsageError for an unknown lock subcommand" do
+      cli, _, _ = build_test_cli
+
+      expect { cli.run(["lock", "bogus"]) }.to raise_error(FakeSystemExit) { |e|
+        expect(e.status).to eq(1)
+      }
+    end
+
+    it "requires a name for release without --all" do
+      cli, _, _ = build_test_cli
+
+      expect { cli.run(["lock", "release"]) }.to raise_error(FakeSystemExit) { |e|
+        expect(e.status).to eq(1)
+      }
     end
 
     it "dispatches to agent_command with --name and --wc-socket" do

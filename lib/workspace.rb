@@ -47,6 +47,7 @@ require_relative "workspace/commands/lookup"
 require_relative "workspace/commands/update_pane_command"
 require_relative "workspace/commands/run"
 require_relative "workspace/commands/capture"
+require_relative "workspace/commands/lock"
 require_relative "workspace/work_coordinator_client"
 require_relative "workspace/pipeline_config"
 require_relative "workspace/pipeline_state"
@@ -121,8 +122,9 @@ module Workspace
     run_and_report_command = Commands::RunAndReport.new(run_result_store: run_result_store)
     capture_command = Commands::Capture.new(tmux: tmux, output: output, error_output: error_output)
 
-    _lock_namespace = LockNamespace.new(config: config, lineage: lineage)
-    _lock_holder = LockHolder.new
+    lock_namespace = LockNamespace.new(config: config, lineage: lineage)
+    lock_holder = LockHolder.new
+    lock_command = Commands::Lock.new(config: config, lock_namespace: lock_namespace, lock_holder: lock_holder, output: output, error_output: error_output)
 
     work_coordinator_client = WorkCoordinatorClient.new(
       socket_path: config.work_coordinator_socket,
@@ -169,6 +171,7 @@ module Workspace
       run_result_store: run_result_store,
       run_and_report_command: run_and_report_command,
       capture_command: capture_command,
+      lock_command: lock_command,
       agent_command: agent_command,
       sessions_command: sessions_command,
       session_event_command: session_event_command,

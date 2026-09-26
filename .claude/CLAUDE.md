@@ -23,6 +23,10 @@ A macOS CLI (Ruby) for managing tmuxinator-based development workspaces in iTerm
 - `lib/workspace/sentinel_poller.rb` — Background poller watching tmux panes for `WORKSPACE_DONE:` sentinel
 - `lib/workspace/session_monitor.rb` — Per-pane coding-agent and sub-agent state, keyed on tmux pane id
 - `lib/workspace/process_tree.rb` — One-shot `ps` snapshot with parent/child lookups
+- `lib/workspace/workspace_lineage.rb` — Resolves a workspace's parent project (marker, then git common dir); shared by locks, `dev`, `config set`, and `parent`
+- `lib/workspace/lock_namespace.rb` — Resolves the shared lock namespace (git common dir) from a cwd
+- `lib/workspace/lock_holder.rb` — Identifies the calling agent's pid/start time and checks holder/waiter liveness
+- `lib/workspace/lock_store.rb` — Flock-guarded JSON lock store (acquire/release/status/clear), reaped on every op
 - `lib/workspace/agent_provider.rb` — Registry of coding-agent CLIs workspace can monitor
 - `lib/workspace/hook_installer.rb` — Merges workspace's hooks into an agent's own settings file
 - `lib/workspace/file_backup.rb` — Copies a file aside before workspace edits it
@@ -41,7 +45,7 @@ A macOS CLI (Ruby) for managing tmuxinator-based development workspaces in iTerm
 
 ## Subcommands
 
-init, doctor, launch, start, add, stop, kill, relaunch, focus, list, status, whereis, agent, pipeline, sessions, session-event
+init, doctor, launch, start, add, stop, kill, relaunch, focus, list, status, whereis, agent, pipeline, sessions, session-event, lock
 
 ## Adding a Subcommand
 

@@ -336,6 +336,36 @@ module CLITestHelpers
     end
   end
 
+  class FakeLockCommand
+    attr_reader :calls
+    attr_accessor :result
+
+    def initialize
+      @calls = []
+      @result = {exit_code: 0}
+    end
+
+    def acquire(name, task: nil, wait: false, poll: nil, max_wait: nil, working_dir: nil)
+      @calls << {action: :acquire, name: name, task: task, wait: wait, poll: poll, max_wait: max_wait}
+      @result
+    end
+
+    def release(name, all: false, working_dir: nil)
+      @calls << {action: :release, name: name, all: all}
+      @result
+    end
+
+    def status(name = nil, working_dir: nil)
+      @calls << {action: :status, name: name}
+      @result
+    end
+
+    def clear(name, all: false, working_dir: nil)
+      @calls << {action: :clear, name: name, all: all}
+      @result
+    end
+  end
+
   class FakeHookRunner
     attr_reader :runs
 
