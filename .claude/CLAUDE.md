@@ -21,6 +21,11 @@ A macOS CLI (Ruby) for managing tmuxinator-based development workspaces in iTerm
 - `lib/workspace/pipeline_config.rb` — Reads per-project pipeline stage config from `~/.config/workspace/projects/<name>.yml`
 - `lib/workspace/pipeline_state.rb` — In-flight work item tracking, disk-persisted to `~/.local/state/workspace/<name>/pipeline.json`
 - `lib/workspace/sentinel_poller.rb` — Background poller watching tmux panes for `WORKSPACE_DONE:` sentinel
+- `lib/workspace/session_monitor.rb` — Per-pane coding-agent and sub-agent state, keyed on tmux pane id
+- `lib/workspace/process_tree.rb` — One-shot `ps` snapshot with parent/child lookups
+- `lib/workspace/agent_provider.rb` — Registry of coding-agent CLIs workspace can monitor
+- `lib/workspace/hook_installer.rb` — Merges workspace's hooks into an agent's own settings file
+- `lib/workspace/file_backup.rb` — Copies a file aside before workspace edits it
 - `lib/templates/workspace.project-template.yml` — Tmuxinator template for standard projects
 - `lib/templates/workspace.project-worktree-template.yml` — Tmuxinator template for git worktree projects
 - State tracked in `~/.workspace-state.json`
@@ -36,7 +41,7 @@ A macOS CLI (Ruby) for managing tmuxinator-based development workspaces in iTerm
 
 ## Subcommands
 
-init, doctor, launch, start, add, stop, kill, relaunch, focus, list, status, whereis, agent, pipeline
+init, doctor, launch, start, add, stop, kill, relaunch, focus, list, status, whereis, agent, pipeline, sessions, session-event
 
 ## Adding a Subcommand
 
@@ -95,6 +100,48 @@ init, doctor, launch, start, add, stop, kill, relaunch, focus, list, status, whe
 - Lint with `bundle exec standardrb lib/ spec/`
 - `bin/` is for project executables (the public interface) — only `bin/workspace` belongs here
 - `script/` is for project-specific dev scripts and tooling (e.g., test helpers, one-off utilities)
+
+## Orchestration
+
+The main interactive session is an **orchestrator**, not an implementer. Its job is
+to hold the plan, decide what happens next, and report results — not to read every
+file itself. Delegate the work to sub-agents via the Agent tool, and keep the
+conversation for decisions the user needs to make.
+
+Delegate when a task means reading across several files, running a broad search,
+reviewing a diff, or doing work that is independent of other work in flight. Launch
+independent agents in a single message so they run concurrently. Do not delegate a
+single-fact lookup when the file and symbol are already known — that costs more than
+it saves.
+
+### Choose the model deliberately
+
+Pass `model:` on every Agent call. The default is not always right, and an
+oversized model on a mechanical task is pure cost.
+
+- **haiku** — mechanical and well-specified: file lookups, running a known command,
+  collecting output, simple edits with an exact target.
+- **sonnet** — the default for real work: implementing a described change, writing
+  tests, focused review, multi-file search that needs judgment.
+- **opus** — reserve for genuine difficulty: architecture decisions, subtle
+  debugging, work where being wrong is expensive and hard to detect.
+
+Balance cost against the value of the answer. Most delegated work is sonnet; reach
+for opus when the task is hard, not when it is important.
+
+### Agents must be terse
+
+Instruct every sub-agent to report only the essentials. A sub-agent's response
+should be the conclusion and the evidence needed to trust it — nothing else.
+
+- No preamble, no restating the task, no narration of what it is about to do.
+- No file dumps. Cite `file_path:line_number` instead of pasting the code.
+- No summary of work already described. If it changed three files, say which three
+  and what changed, in one line each.
+- Report failures plainly, with the error, rather than describing the attempt.
+
+Put this instruction in the agent's prompt. The orchestrator relays what matters to
+the user; a verbose sub-agent report is cost paid for context the user never sees.
 
 ## Analysis and Research Output (Pyramid Principle)
 
