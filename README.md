@@ -72,7 +72,7 @@ workspace <subcommand> [options]
 | alfred | [README](docs/README.alfred.md) | Manage the Alfred workflow for workspace focus |
 | capture | [README](docs/README.capture.md) | Print a tmux pane's scrollback buffer to stdout |
 | cleanup | [README](docs/README.cleanup.md) | Detect and remove zombie sessions from state |
-| config | [README](docs/README.config.md) | Show project or global configuration |
+| config | [README](docs/README.config.md) | Show, set, get, or unset project or global configuration |
 | current | [README](docs/README.current.md) | Print the workspace project name for the current directory |
 | deactivate | [README](docs/README.deactivate.md) | Deactivate Claude in a project's tmux pane (sends Ctrl-C) |
 | dir | [README](docs/README.dir.md) | Print the root directory of a workspace project |

@@ -25,6 +25,7 @@ require_relative "workspace/lock_store"
 require_relative "workspace/session_monitor"
 require_relative "workspace/agent_provider"
 require_relative "workspace/file_backup"
+require_relative "workspace/dev_config"
 require_relative "workspace/hook_installer"
 require_relative "workspace/hook_runner"
 require_relative "workspace/project_detector"
@@ -49,6 +50,7 @@ require_relative "workspace/commands/run"
 require_relative "workspace/commands/capture"
 require_relative "workspace/commands/lock"
 require_relative "workspace/commands/parent"
+require_relative "workspace/commands/config"
 require_relative "workspace/work_coordinator_client"
 require_relative "workspace/pipeline_config"
 require_relative "workspace/pipeline_state"
@@ -127,6 +129,7 @@ module Workspace
     lock_holder = LockHolder.new
     lock_command = Commands::Lock.new(config: config, lock_namespace: lock_namespace, lock_holder: lock_holder, output: output, error_output: error_output)
     parent_command = Commands::Parent.new(lineage: lineage, project_config: project_config, output: output)
+    config_command = Commands::Config.new(project_settings: project_settings, lineage: lineage, file_backup: file_backup, output: output)
 
     work_coordinator_client = WorkCoordinatorClient.new(
       socket_path: config.work_coordinator_socket,
@@ -178,6 +181,7 @@ module Workspace
       agent_command: agent_command,
       sessions_command: sessions_command,
       session_event_command: session_event_command,
+      config_command: config_command,
       logger: logger,
       output: output,
       error_output: error_output,

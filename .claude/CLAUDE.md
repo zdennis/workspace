@@ -30,6 +30,7 @@ A macOS CLI (Ruby) for managing tmuxinator-based development workspaces in iTerm
 - `lib/workspace/agent_provider.rb` — Registry of coding-agent CLIs workspace can monitor
 - `lib/workspace/hook_installer.rb` — Merges workspace's hooks into an agent's own settings file
 - `lib/workspace/file_backup.rb` — Copies a file aside before workspace edits it
+- `lib/workspace/dev_config.rb` — Reads a project's `dev:` block (`up`, `ready`, `stop_timeout`), as written by `workspace config set`
 - `lib/templates/workspace.project-template.yml` — Tmuxinator template for standard projects
 - `lib/templates/workspace.project-worktree-template.yml` — Tmuxinator template for git worktree projects
 - State tracked in `~/.workspace-state.json`

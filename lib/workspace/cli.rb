@@ -38,7 +38,7 @@ module Workspace
     # @param input [IO] input stream for interactive prompts
     # @param exit_handler [#exit] callable for process exit (Kernel in production, FakeExitHandler in tests)
     # @param parent_command [Workspace::Commands::Parent] pre-built parent command
-    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, lock_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd)
+    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, lock_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd)
       @config = config
       @state = state
       @project_config = project_config
@@ -72,6 +72,7 @@ module Workspace
       @lock_command = lock_command
       @parent_command = parent_command
       @agent_command = agent_command
+      @config_command = config_command
       @exit_handler = exit_handler
       @logger = logger
       @output = output
@@ -736,6 +737,117 @@ module Workspace
       @exit_handler.exit(1) unless @agent_command.call(name: name, wc_socket: wc_socket, force: force)
     end
 
+    def cmd_lock(args)
+      case args.shift
+      when "acquire" then cmd_lock_acquire(args)
+      when "release" then cmd_lock_release(args)
+      when "status" then cmd_lock_status(args)
+      when "clear" then cmd_lock_clear(args)
+      when "help", "--help", "-h", nil then @output.puts lock_help
+      else
+        raise UsageError, lock_help
+      end
+    end
+
+    def lock_help
+      <<~HELP
+        Usage: workspace lock <subcommand> [options]
+
+        Coordinates agents sharing a resource through one flock-guarded lock
+        store per repository. Locks are shared across every worktree of a
+        repository, keyed by its git common directory.
+
+        Subcommands:
+          acquire <name> [options]   Acquire a lock, or wait for it
+          release [<name>|--all]     Release a lock this agent holds
+          status  [<name>]           Show holders and queues
+          clear   [<name>|--all]     Force-remove a lock's holder and queue
+
+        Options (acquire):
+          --task TEXT       Free-text description shown to other waiters
+          --wait            Enqueue and poll instead of refusing when busy
+          --poll SECS       Seconds between polls while waiting (default: #{Commands::Lock::DEFAULT_POLL_SECONDS})
+          --max-wait DUR    Give up after DUR seconds (exit 75; re-run to keep waiting)
+
+        Exit codes (acquire):
+          0   acquired
+          1   held by someone else (no --wait)
+          4   cleared by someone else while waiting
+          5   this agent already holds or waits for a different lock
+          75  still queued after --max-wait
+
+        Examples:
+          workspace lock acquire edit --wait --task "PROJ-12 fix login"
+          workspace lock release edit
+          workspace lock status
+          workspace lock clear edit
+      HELP
+    end
+
+    def cmd_lock_acquire(args)
+      task = nil
+      wait = false
+      poll = Commands::Lock::DEFAULT_POLL_SECONDS
+      max_wait = nil
+      parser = OptionParser.new do |opts|
+        opts.banner = "Usage: workspace lock acquire <name> [options]"
+        opts.on("--task TEXT", "Free-text description shown to other waiters") { |v| task = v }
+        opts.on("--wait", "Enqueue and poll instead of refusing when busy") { wait = true }
+        opts.on("--poll SECS", Float, "Seconds between polls while waiting") { |v| poll = v }
+        opts.on("--max-wait DURATION", Float, "Give up after DURATION seconds (exit 75)") { |v| max_wait = v }
+      end
+      parser.parse!(args)
+
+      name = args.shift
+      raise UsageError, parser.help if name.nil? || args.any?
+
+      result = @lock_command.acquire(name, task: task, wait: wait, poll: poll, max_wait: max_wait, working_dir: @working_dir)
+      @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
+    end
+
+    def cmd_lock_release(args)
+      all = false
+      parser = OptionParser.new do |opts|
+        opts.banner = "Usage: workspace lock release [<name>|--all]"
+        opts.on("--all", "Release every lock this agent holds") { all = true }
+      end
+      parser.parse!(args)
+
+      name = args.shift
+      raise UsageError, parser.help if (!all && name.nil?) || (all && name) || args.any?
+
+      result = @lock_command.release(name, all: all, working_dir: @working_dir)
+      @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
+    end
+
+    def cmd_lock_status(args)
+      parser = OptionParser.new do |opts|
+        opts.banner = "Usage: workspace lock status [<name>]"
+      end
+      parser.parse!(args)
+
+      name = args.shift
+      raise UsageError, parser.help if args.any?
+
+      result = @lock_command.status(name, working_dir: @working_dir)
+      @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
+    end
+
+    def cmd_lock_clear(args)
+      all = false
+      parser = OptionParser.new do |opts|
+        opts.banner = "Usage: workspace lock clear [<name>|--all]"
+        opts.on("--all", "Clear every lock in this namespace") { all = true }
+      end
+      parser.parse!(args)
+
+      name = args.shift
+      raise UsageError, parser.help if (!all && name.nil?) || (all && name) || args.any?
+
+      result = @lock_command.clear(name, all: all, working_dir: @working_dir)
+      @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
+    end
+
     # Sends a raw JSONL message to a running agent socket for manual testing and
     # exploration. Always pretty-prints what is being sent before sending it.
     #
@@ -1278,117 +1390,6 @@ module Workspace
       @init_command.call(dry_run: dry_run, force: force, hooks: hooks)
     end
 
-    def cmd_lock(args)
-      case args.shift
-      when "acquire" then cmd_lock_acquire(args)
-      when "release" then cmd_lock_release(args)
-      when "status" then cmd_lock_status(args)
-      when "clear" then cmd_lock_clear(args)
-      when "help", "--help", "-h", nil then @output.puts lock_help
-      else
-        raise UsageError, lock_help
-      end
-    end
-
-    def lock_help
-      <<~HELP
-        Usage: workspace lock <subcommand> [options]
-
-        Coordinates agents sharing a resource through one flock-guarded lock
-        store per repository. Locks are shared across every worktree of a
-        repository, keyed by its git common directory.
-
-        Subcommands:
-          acquire <name> [options]   Acquire a lock, or wait for it
-          release [<name>|--all]     Release a lock this agent holds
-          status  [<name>]           Show holders and queues
-          clear   [<name>|--all]     Force-remove a lock's holder and queue
-
-        Options (acquire):
-          --task TEXT       Free-text description shown to other waiters
-          --wait            Enqueue and poll instead of refusing when busy
-          --poll SECS       Seconds between polls while waiting (default: #{Commands::Lock::DEFAULT_POLL_SECONDS})
-          --max-wait DUR    Give up after DUR seconds (exit 75; re-run to keep waiting)
-
-        Exit codes (acquire):
-          0   acquired
-          1   held by someone else (no --wait)
-          4   cleared by someone else while waiting
-          5   this agent already holds or waits for a different lock
-          75  still queued after --max-wait
-
-        Examples:
-          workspace lock acquire edit --wait --task "PROJ-12 fix login"
-          workspace lock release edit
-          workspace lock status
-          workspace lock clear edit
-      HELP
-    end
-
-    def cmd_lock_acquire(args)
-      task = nil
-      wait = false
-      poll = Commands::Lock::DEFAULT_POLL_SECONDS
-      max_wait = nil
-      parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace lock acquire <name> [options]"
-        opts.on("--task TEXT", "Free-text description shown to other waiters") { |v| task = v }
-        opts.on("--wait", "Enqueue and poll instead of refusing when busy") { wait = true }
-        opts.on("--poll SECS", Float, "Seconds between polls while waiting") { |v| poll = v }
-        opts.on("--max-wait DURATION", Float, "Give up after DURATION seconds (exit 75)") { |v| max_wait = v }
-      end
-      parser.parse!(args)
-
-      name = args.shift
-      raise UsageError, parser.help if name.nil? || args.any?
-
-      result = @lock_command.acquire(name, task: task, wait: wait, poll: poll, max_wait: max_wait, working_dir: @working_dir)
-      @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
-    end
-
-    def cmd_lock_release(args)
-      all = false
-      parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace lock release [<name>|--all]"
-        opts.on("--all", "Release every lock this agent holds") { all = true }
-      end
-      parser.parse!(args)
-
-      name = args.shift
-      raise UsageError, parser.help if (!all && name.nil?) || (all && name) || args.any?
-
-      result = @lock_command.release(name, all: all, working_dir: @working_dir)
-      @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
-    end
-
-    def cmd_lock_status(args)
-      parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace lock status [<name>]"
-      end
-      parser.parse!(args)
-
-      name = args.shift
-      raise UsageError, parser.help if args.any?
-
-      result = @lock_command.status(name, working_dir: @working_dir)
-      @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
-    end
-
-    def cmd_lock_clear(args)
-      all = false
-      parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace lock clear [<name>|--all]"
-        opts.on("--all", "Clear every lock in this namespace") { all = true }
-      end
-      parser.parse!(args)
-
-      name = args.shift
-      raise UsageError, parser.help if (!all && name.nil?) || (all && name) || args.any?
-
-      result = @lock_command.clear(name, all: all, working_dir: @working_dir)
-      @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
-    end
-
     def cmd_sessions(args)
       json = false
       watch = false
@@ -1499,7 +1500,84 @@ module Workspace
       end
     end
 
+    # Project config keys `workspace config set/get/unset` allow. Unlisted
+    # dotted keys are rejected so typos don't silently create config.
+    # Keys `workspace config set/get/unset` allow, mirrored here only for
+    # help text; {Commands::Config::ALLOWED_KEYS} is the source of truth.
+    CONFIG_ALLOWED_KEYS = Commands::Config::ALLOWED_KEYS
+
     def cmd_config(args)
+      case args.first
+      when "set"
+        args.shift
+        cmd_config_set(args)
+      when "get"
+        args.shift
+        cmd_config_get(args)
+      when "unset"
+        args.shift
+        cmd_config_unset(args)
+      else
+        cmd_config_show(args)
+      end
+    end
+
+    def cmd_config_set(args)
+      project = nil
+      parser = OptionParser.new do |opts|
+        opts.banner = "Usage: workspace config set <key> <value> [options]"
+        opts.separator ""
+        opts.separator "Sets a project config key. The project is inferred from cwd"
+        opts.separator "(a worktree resolves to its parent project)."
+        opts.separator ""
+        opts.separator "Allowed keys: #{CONFIG_ALLOWED_KEYS.join(", ")}"
+        opts.separator ""
+        opts.separator "Note: this rewrites the whole YAML file, so YAML.dump drops"
+        opts.separator "any comments already in it."
+        opts.separator ""
+        opts.separator "Options:"
+        opts.on("--project NAME", "Project to configure instead of the one inferred from cwd") { |v| project = v }
+        opts.separator ""
+        opts.separator "Examples:"
+        opts.separator "  workspace config set dev.up \"./start-dev\""
+        opts.separator "  workspace config set dev.stop_timeout 20s"
+        opts.separator "  workspace config set --project myapp dev.up \"bin/dev\""
+      end
+      parser.parse!(args)
+      key = args.shift
+      value = args.shift
+      raise UsageError, parser.help if key.nil? || value.nil?
+
+      @config_command.set(key, value, project: project, cwd: @working_dir)
+    end
+
+    def cmd_config_get(args)
+      project = nil
+      parser = OptionParser.new do |opts|
+        opts.banner = "Usage: workspace config get <key> [options]"
+        opts.on("--project NAME", "Project to read instead of the one inferred from cwd") { |v| project = v }
+      end
+      parser.parse!(args)
+      key = args.shift
+      raise UsageError, parser.help if key.nil?
+
+      @config_command.get(key, project: project, cwd: @working_dir)
+    end
+
+    def cmd_config_unset(args)
+      project = nil
+      parser = OptionParser.new do |opts|
+        opts.banner = "Usage: workspace config unset <key> [options]"
+        opts.on("--project NAME", "Project to configure instead of the one inferred from cwd") { |v| project = v }
+      end
+      parser.parse!(args)
+      key = args.shift
+      raise UsageError, parser.help if key.nil?
+
+      @config_command.unset(key, project: project, cwd: @working_dir)
+    end
+
+    def cmd_config_show(args)
       global = false
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: workspace config [options] [project]"
@@ -1526,13 +1604,19 @@ module Workspace
         opts.separator "  hooks:                         Project-specific hooks (post_launch, etc.)"
         opts.separator "  layouts:                       Project-specific tmux pane layouts"
         opts.separator "  worktree_hooks:                Hooks seeded into new worktrees"
+        opts.separator "  dev.up, dev.ready,             Set via 'workspace config set' (see"
+        opts.separator "  dev.stop_timeout:              'workspace config set --help')"
         opts.separator ""
         opts.separator "Examples:"
         opts.separator "  workspace config myproject     # show project config"
         opts.separator "  workspace config               # show config for project in current dir"
         opts.separator "  workspace config --global      # show global config"
+        opts.separator "  workspace config set dev.up \"./start-dev\""
+        opts.separator "  workspace config get dev.up"
+        opts.separator "  workspace config unset dev.ready"
         opts.separator ""
-        opts.separator "To edit, open the config file directly:"
+        opts.separator "To edit by hand, open the config file directly (loses the set/get/unset"
+        opts.separator "validation, but keeps comments):"
         opts.separator "  $EDITOR #{@project_settings.global_config_path}"
         opts.separator "  $EDITOR #{@config.workspace_config_dir}/projects/<name>.yml"
       end

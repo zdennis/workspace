@@ -82,6 +82,7 @@ RSpec.describe Workspace::CLI do
       agent_command: agent_command,
       sessions_command: sessions_command,
       session_event_command: session_event_command,
+      config_command: overrides[:config_command] || CLITestHelpers::FakeConfigCommand.new,
       logger: logger,
       output: output,
       error_output: error_output,
@@ -711,6 +712,79 @@ RSpec.describe Workspace::CLI do
       cli.run(["config", "nonexistent"])
 
       expect(output.string).to include("no config found for 'nonexistent'")
+    end
+  end
+
+  describe "#run with config set/get/unset" do
+    it "dispatches set to config_command with key, value, and cwd" do
+      config_command = CLITestHelpers::FakeConfigCommand.new
+      cli, _, _ = build_test_cli(config_command: config_command, working_dir: "/tmp/some-project")
+
+      cli.run(["config", "set", "dev.up", "./start-dev"])
+
+      expect(config_command.calls).to eq([{action: :set, key: "dev.up", value: "./start-dev", project: nil, cwd: "/tmp/some-project"}])
+    end
+
+    it "passes --project through to config_command#set" do
+      config_command = CLITestHelpers::FakeConfigCommand.new
+      cli, _, _ = build_test_cli(config_command: config_command)
+
+      cli.run(["config", "set", "--project", "otherapp", "dev.ready", "port:3000"])
+
+      expect(config_command.calls.first[:project]).to eq("otherapp")
+    end
+
+    it "dispatches get to config_command with key and cwd" do
+      config_command = CLITestHelpers::FakeConfigCommand.new
+      cli, _, _ = build_test_cli(config_command: config_command, working_dir: "/tmp/some-project")
+
+      cli.run(["config", "get", "dev.up"])
+
+      expect(config_command.calls).to eq([{action: :get, key: "dev.up", project: nil, cwd: "/tmp/some-project"}])
+    end
+
+    it "dispatches unset to config_command with key and cwd" do
+      config_command = CLITestHelpers::FakeConfigCommand.new
+      cli, _, _ = build_test_cli(config_command: config_command, working_dir: "/tmp/some-project")
+
+      cli.run(["config", "unset", "dev.ready"])
+
+      expect(config_command.calls).to eq([{action: :unset, key: "dev.ready", project: nil, cwd: "/tmp/some-project"}])
+    end
+
+    it "exits 1 with usage when set is missing a key or value" do
+      cli, _, error_output = build_test_cli
+      expect { cli.run(["config", "set", "dev.up"]) }.to raise_error(FakeSystemExit) { |e|
+        expect(e.status).to eq(1)
+      }
+      expect(error_output.string).to include("Usage: workspace config set")
+    end
+
+    it "exits 1 with usage when get is missing a key" do
+      cli, _, error_output = build_test_cli
+      expect { cli.run(["config", "get"]) }.to raise_error(FakeSystemExit) { |e|
+        expect(e.status).to eq(1)
+      }
+      expect(error_output.string).to include("Usage: workspace config get")
+    end
+
+    it "exits 1 with usage when unset is missing a key" do
+      cli, _, error_output = build_test_cli
+      expect { cli.run(["config", "unset"]) }.to raise_error(FakeSystemExit) { |e|
+        expect(e.status).to eq(1)
+      }
+      expect(error_output.string).to include("Usage: workspace config unset")
+    end
+
+    it "surfaces a Workspace::UsageError from config_command as exit 1" do
+      config_command = CLITestHelpers::FakeConfigCommand.new
+      config_command.define_singleton_method(:set) { |*| raise Workspace::UsageError, "Unknown config key 'dev.bogus'." }
+      cli, _, error_output = build_test_cli(config_command: config_command)
+
+      expect { cli.run(["config", "set", "dev.bogus", "x"]) }.to raise_error(FakeSystemExit) { |e|
+        expect(e.status).to eq(1)
+      }
+      expect(error_output.string).to include("Unknown config key 'dev.bogus'")
     end
   end
 

@@ -381,6 +381,26 @@ module CLITestHelpers
     end
   end
 
+  class FakeConfigCommand
+    attr_reader :calls
+
+    def initialize
+      @calls = []
+    end
+
+    def set(key, value, project: nil, cwd: Dir.pwd)
+      @calls << {action: :set, key: key, value: value, project: project, cwd: cwd}
+    end
+
+    def get(key, project: nil, cwd: Dir.pwd)
+      @calls << {action: :get, key: key, project: project, cwd: cwd}
+    end
+
+    def unset(key, project: nil, cwd: Dir.pwd)
+      @calls << {action: :unset, key: key, project: project, cwd: cwd}
+    end
+  end
+
   class FakeHookRunner
     attr_reader :runs
 

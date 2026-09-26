@@ -1,11 +1,14 @@
 # workspace config
 
-Show project or global workspace configuration.
+Show, set, get, or unset project or global workspace configuration.
 
 ## Usage
 
 ```sh
 workspace config [options] [project]
+workspace config set <key> <value> [--project NAME]
+workspace config get <key> [--project NAME]
+workspace config unset <key> [--project NAME]
 ```
 
 ## Options
@@ -13,12 +16,27 @@ workspace config [options] [project]
 | Option | Description |
 |--------|-------------|
 | `--global` | Show global configuration instead of project config |
+| `--project NAME` | (`set`/`get`/`unset`) Configure this project instead of the one inferred from cwd |
 
 ## Details
 
-Displays the YAML configuration for a project or the global workspace config. Auto-detects the project from the current directory if not specified.
+With no subcommand, displays the YAML configuration for a project or the global workspace config. Auto-detects the project from the current directory if not specified.
 
-Config files are edited directly — there is no `set` subcommand.
+`set`, `get`, and `unset` manage a project's config by dotted key, without needing to open the YAML file by hand. The project is inferred from cwd via the same resolver used by `workspace parent`, `workspace lock`, and `dev`: a worktree resolves to its parent project. Pass `--project NAME` to target a different project explicitly.
+
+`set`, `get`, and `unset` are reserved as the first argument to `workspace config`: they are always treated as subcommands, not as a project name. A project literally named `set`, `get`, or `unset` can't be shown via `workspace config <name>`; it would need a different name, or reading its YAML file directly.
+
+Only an allowlisted set of keys can be written this way, so a typo doesn't silently create unused config:
+
+| Key | Description |
+|-----|-------------|
+| `dev.up` | Command that starts the project's dev environment |
+| `dev.ready` | Readiness probe for the dev environment |
+| `dev.stop_timeout` | Grace period before force-stopping the dev environment, e.g. `20s` or `20` |
+
+`dev.stop_timeout` must parse as a duration (a plain number of seconds, or a number with a trailing `s`); anything else is rejected before it's written.
+
+Before writing, `set` and `unset` back up the project's config file (via the same backup mechanism used elsewhere in workspace) and then rewrite it through a temp file and rename. **`YAML.dump` drops comments** — if you've hand-edited the file with comments, they will be lost the first time `set` or `unset` touches it.
 
 ### Config file locations
 
@@ -40,6 +58,7 @@ Config files are edited directly — there is no `set` subcommand.
 | `hooks` | Project-specific hooks (e.g., `post_launch`) |
 | `layouts` | Project-specific tmux pane layouts |
 | `worktree_hooks` | Hooks seeded into new worktrees created from this project |
+| `dev.up`, `dev.ready`, `dev.stop_timeout` | Dev environment config; set via `workspace config set` (see above) |
 
 ## Examples
 
@@ -53,7 +72,21 @@ workspace config
 # Show global configuration
 workspace config --global
 
-# Edit config files directly
+# Configure how a project's dev environment starts
+workspace config set dev.up "./start-dev"
+workspace config set dev.ready "port:3000"
+workspace config set dev.stop_timeout 20s
+
+# Read a key back
+workspace config get dev.up
+
+# Remove a key
+workspace config unset dev.ready
+
+# Target a project other than the one inferred from cwd
+workspace config set --project myapp dev.up "bin/dev"
+
+# Edit config files directly (global config has no set/get/unset)
 $EDITOR ~/.config/workspace/config.yml
 $EDITOR ~/.config/workspace/projects/myproject.yml
 ```
