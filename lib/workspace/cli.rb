@@ -627,6 +627,7 @@ module Workspace
       validate_shell_quoting!(command)
 
       dir = @config.run_results_dir
+      FileUtils.mkdir_p(dir)
       cmd_path = File.join(dir, "#{uuid}.cmd")
       script_path = File.join(dir, "#{uuid}.sh")
       escaped_dir = dir.gsub("'", "'\\''")
