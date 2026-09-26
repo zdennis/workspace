@@ -39,9 +39,11 @@ module Workspace
       # @param poll [Numeric] seconds between polls
       # @param startup_timeout [Numeric] seconds to wait for the wrapper to take a free lock
       # @param ready_timeout [Numeric] seconds to wait for the ready probe to pass
+      # @param kill [#call] probes or signals a wrapper pid, called as `kill.call(signal, pid)` like `Process.kill`
       def initialize(lock_namespace:, lock_holder:, lineage:, dev_config:, dev_runner:, terminator:, tmux:, executable:,
         output: $stdout, error_output: $stderr, env: ENV, sleeper: ->(seconds) { sleep(seconds) }, clock: Lock::MonotonicClock,
-        poll: POLL_SECONDS, startup_timeout: STARTUP_TIMEOUT, ready_timeout: READY_TIMEOUT)
+        poll: POLL_SECONDS, startup_timeout: STARTUP_TIMEOUT, ready_timeout: READY_TIMEOUT,
+        kill: ->(signal, pid) { Process.kill(signal, pid) })
         @lock_namespace = lock_namespace
         @lock_holder = lock_holder
         @lineage = lineage
@@ -58,6 +60,7 @@ module Workspace
         @poll = poll
         @startup_timeout = startup_timeout
         @ready_timeout = ready_timeout
+        @kill = kill
       end
 
       # @param wait [Boolean] queue FIFO behind another worktree's env instead of refusing
@@ -354,13 +357,13 @@ module Workspace
       end
 
       def signal_wrapper(pid)
-        Process.kill("TERM", pid)
+        @kill.call("TERM", pid)
       rescue Errno::ESRCH, Errno::EPERM
         nil
       end
 
       def process_alive?(pid)
-        Process.kill(0, pid)
+        @kill.call(0, pid)
         true
       rescue Errno::ESRCH
         false
@@ -409,6 +412,8 @@ module Workspace
 
       def orphan_note(holder)
         orphan_running?(holder) ? "; its process group #{holder["pgid"]} is still running — stop it with `workspace dev down --force`" : ""
+      rescue Workspace::Error => e
+        "; #{e.message}"
       end
 
       def describe(record)

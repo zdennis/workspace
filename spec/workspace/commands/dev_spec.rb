@@ -288,3 +288,94 @@ RSpec.describe Workspace::Commands::Dev do
     end
   end
 end
+
+RSpec.describe Workspace::Commands::Dev, "with fake processes and clock" do
+  let(:tmpdir) { File.realpath(Dir.mktmpdir("ws-dev-unit")) }
+  let(:lock_dir) { File.join(tmpdir, "locks") }
+  let(:worktree) { tmpdir }
+  let(:output) { StringIO.new }
+  let(:error_output) { StringIO.new }
+  let(:settings) { {"up" => "run-dev", "stop_timeout" => 2} }
+  let(:liveness) { FakeLockLiveness.new }
+  let(:lock_namespace) { Struct.new(:dir) { def resolve(cwd:) = {key: dir, display: "app", dir: dir} }.new(lock_dir) }
+  let(:dev_config) { Workspace::DevConfig.new(project_settings: Struct.new(:data) { def load(_name) = data }.new({"dev" => settings})) }
+  let(:lineage) { double("lineage", resolve: double(name: "app", worktree: nil)) }
+  let(:terminator) { double("terminator", running?: false) }
+  let(:tmux) { double("tmux", session_name_for_pane: "app", sessions: ["app"], session_name_for: "app") }
+  let(:dead_pids) { [] }
+  let(:signals) { [] }
+  let(:now) { [0.0] }
+  let(:on_sleep) { [] }
+
+  def dev(**opts)
+    described_class.new(lock_namespace: lock_namespace, lock_holder: liveness, lineage: lineage, dev_config: dev_config,
+      dev_runner: nil, terminator: terminator, tmux: tmux, executable: "/ws/bin/workspace", output: output,
+      error_output: error_output, env: {"TMUX_PANE" => "%1"}, poll: 1, startup_timeout: 5, ready_timeout: 5,
+      clock: Struct.new(:now_ref) { def now = now_ref[0] }.new(now),
+      sleeper: ->(seconds) {
+        now[0] += seconds
+        on_sleep.shift&.call
+      },
+      kill: ->(signal, pid) {
+        signals << [signal, pid] unless signal == 0
+        raise Errno::ESRCH if dead_pids.include?(pid)
+        1
+      }, **opts)
+  end
+
+  def store
+    Workspace::LockStore.new(dir: lock_dir, liveness: liveness)
+  end
+
+  def process_identity(pid, worktree: "/w/other", branch: "feat/other")
+    {kind: "process", pid: pid, started: "s-#{pid}", pgid: pid, pane: "%7", worktree: worktree, branch: branch}
+  end
+
+  def hold(pid, **opts)
+    store.acquire("devenv", identity: process_identity(pid, **opts), waiter_pid: pid, waiter_started: "s-#{pid}")
+  end
+
+  def enqueue(pid, **opts)
+    store.acquire("devenv", identity: process_identity(pid, **opts), waiter_pid: pid, waiter_started: "s-#{pid}", wait: true)
+  end
+
+  def holder
+    store.status("devenv").dig("devenv", "holder")
+  end
+
+  def orphan(pid)
+    hold(pid)
+    liveness.kill(pid)
+    dead_pids << pid
+  end
+
+  after { FileUtils.remove_entry(tmpdir) if File.directory?(tmpdir) }
+
+  describe "a process group this user may not signal" do
+    let(:foreign) { Workspace::Error.new("process group 700 has running processes this user is not permitted to signal") }
+
+    it "`status` reports it instead of failing" do
+      orphan(700)
+      allow(terminator).to receive(:running?).and_raise(foreign)
+
+      expect(dev.status(working_dir: worktree)).to eq(exit_code: 0)
+      expect(output.string).to include("wrapper pid 700 is gone; process group 700 has running processes this user is not permitted to signal")
+    end
+
+    it "`down --force` raises and keeps the stale lock" do
+      orphan(700)
+      allow(terminator).to receive(:running?).and_raise(foreign)
+
+      expect { dev.down(force: true, working_dir: worktree) }.to raise_error(Workspace::Error, /not permitted/)
+      expect(File.read(File.join(lock_dir, "locks.json"))).to include('"pid": 700')
+    end
+
+    it "`down` of a live holder raises and keeps its lock" do
+      hold(700)
+      allow(terminator).to receive(:stop_holder).and_raise(foreign)
+
+      expect { dev.down(working_dir: worktree) }.to raise_error(Workspace::Error, /not permitted/)
+      expect(holder).to include("pid" => 700)
+    end
+  end
+end
