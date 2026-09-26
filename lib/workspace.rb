@@ -19,6 +19,9 @@ require_relative "workspace/window_layout"
 require_relative "workspace/project_settings"
 require_relative "workspace/process_tree"
 require_relative "workspace/workspace_lineage"
+require_relative "workspace/lock_namespace"
+require_relative "workspace/lock_holder"
+require_relative "workspace/lock_store"
 require_relative "workspace/session_monitor"
 require_relative "workspace/agent_provider"
 require_relative "workspace/file_backup"
@@ -117,6 +120,9 @@ module Workspace
     run_result_store = RunResultStore.new(config: config)
     run_and_report_command = Commands::RunAndReport.new(run_result_store: run_result_store)
     capture_command = Commands::Capture.new(tmux: tmux, output: output, error_output: error_output)
+
+    _lock_namespace = LockNamespace.new(config: config, lineage: lineage)
+    _lock_holder = LockHolder.new
 
     work_coordinator_client = WorkCoordinatorClient.new(
       socket_path: config.work_coordinator_socket,
