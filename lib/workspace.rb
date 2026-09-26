@@ -18,9 +18,16 @@ require_relative "workspace/window_manager"
 require_relative "workspace/window_layout"
 require_relative "workspace/project_settings"
 require_relative "workspace/process_tree"
+require_relative "workspace/workspace_lineage"
+require_relative "workspace/lock_namespace"
+require_relative "workspace/lock_holder"
+require_relative "workspace/lock_store"
 require_relative "workspace/session_monitor"
 require_relative "workspace/agent_provider"
 require_relative "workspace/file_backup"
+require_relative "workspace/dev_config"
+require_relative "workspace/process_group_terminator"
+require_relative "workspace/dev_runner"
 require_relative "workspace/hook_installer"
 require_relative "workspace/hook_runner"
 require_relative "workspace/project_detector"
@@ -43,6 +50,10 @@ require_relative "workspace/commands/lookup"
 require_relative "workspace/commands/update_pane_command"
 require_relative "workspace/commands/run"
 require_relative "workspace/commands/capture"
+require_relative "workspace/commands/lock"
+require_relative "workspace/commands/dev"
+require_relative "workspace/commands/parent"
+require_relative "workspace/commands/config"
 require_relative "workspace/work_coordinator_client"
 require_relative "workspace/pipeline_config"
 require_relative "workspace/pipeline_state"
@@ -89,7 +100,8 @@ module Workspace
     # Pre-build command objects so CLI delegates rather than constructs
     kill_command = Commands::Kill.new(state: state, iterm: iterm, window_manager: window_manager, tmux: tmux, output: output, error_output: error_output)
     launch_command = Commands::Launch.new(state: state, iterm: iterm, window_manager: window_manager, tmux: tmux, project_config: project_config, window_layout: window_layout, config: config, output: output, error_output: error_output)
-    start_command = Commands::Start.new(git: git, project_config: project_config, project_settings: project_settings, launch_command: launch_command, output: output, input: input)
+    lineage = WorkspaceLineage.new
+    start_command = Commands::Start.new(git: git, project_config: project_config, project_settings: project_settings, launch_command: launch_command, lineage: lineage, output: output, input: input)
     stop_command = Commands::Stop.new(git: git, project_config: project_config, project_settings: project_settings, kill_command: kill_command, project_detector: project_detector, output: output, input: input)
     focus_command = Commands::Focus.new(state: state, window_manager: window_manager, output: output)
     tile_command = Commands::Tile.new(state: state, window_manager: window_manager, window_layout: window_layout, output: output)
@@ -115,6 +127,28 @@ module Workspace
     run_result_store = RunResultStore.new(config: config)
     run_and_report_command = Commands::RunAndReport.new(run_result_store: run_result_store)
     capture_command = Commands::Capture.new(tmux: tmux, output: output, error_output: error_output)
+
+    lock_namespace = LockNamespace.new(config: config, lineage: lineage)
+    lock_holder = LockHolder.new
+    dev_config = DevConfig.new(project_settings: project_settings)
+    process_group_terminator = ProcessGroupTerminator.new
+    lock_command = Commands::Lock.new(config: config, lock_namespace: lock_namespace, lock_holder: lock_holder,
+      terminator: process_group_terminator, dev_config: dev_config, output: output, error_output: error_output)
+    dev_runner = DevRunner.new(liveness: lock_holder, output: output)
+    dev_command = Commands::Dev.new(
+      lock_namespace: lock_namespace,
+      lock_holder: lock_holder,
+      lineage: lineage,
+      dev_config: dev_config,
+      dev_runner: dev_runner,
+      terminator: process_group_terminator,
+      tmux: tmux,
+      executable: File.expand_path("../bin/workspace", __dir__),
+      output: output,
+      error_output: error_output
+    )
+    parent_command = Commands::Parent.new(lineage: lineage, project_config: project_config, output: output)
+    config_command = Commands::Config.new(project_settings: project_settings, lineage: lineage, file_backup: file_backup, output: output)
 
     work_coordinator_client = WorkCoordinatorClient.new(
       socket_path: config.work_coordinator_socket,
@@ -161,9 +195,13 @@ module Workspace
       run_result_store: run_result_store,
       run_and_report_command: run_and_report_command,
       capture_command: capture_command,
+      lock_command: lock_command,
+      dev_command: dev_command,
+      parent_command: parent_command,
       agent_command: agent_command,
       sessions_command: sessions_command,
       session_event_command: session_event_command,
+      config_command: config_command,
       logger: logger,
       output: output,
       error_output: error_output,

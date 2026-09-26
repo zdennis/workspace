@@ -100,4 +100,26 @@ RSpec.describe Workspace::Config do
       expect(config.pipeline_state_dir("myapp")).to eq("/custom/state/workspace/myapp")
     end
   end
+
+  describe "#state_dir" do
+    subject(:config) { described_class.new }
+
+    it "defaults to ~/.local/state/workspace" do
+      expect(config.state_dir).to eq(File.join(File.expand_path("~/.local/state"), "workspace"))
+    end
+
+    it "honours XDG_STATE_HOME when it is set" do
+      allow(ENV).to receive(:fetch).with("XDG_STATE_HOME", "~/.local/state").and_return("/custom/state")
+
+      expect(config.state_dir).to eq("/custom/state/workspace")
+    end
+  end
+
+  describe "#lock_dir" do
+    subject(:config) { described_class.new }
+
+    it "puts lock stores under the state directory" do
+      expect(config.lock_dir).to eq(File.join(config.state_dir, "locks"))
+    end
+  end
 end

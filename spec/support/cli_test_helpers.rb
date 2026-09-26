@@ -336,6 +336,103 @@ module CLITestHelpers
     end
   end
 
+  class FakeLockCommand
+    attr_reader :calls
+    attr_accessor :result
+
+    def initialize
+      @calls = []
+      @result = {exit_code: 0}
+    end
+
+    def acquire(name, task: nil, wait: false, poll: nil, max_wait: nil, working_dir: nil)
+      @calls << {action: :acquire, name: name, task: task, wait: wait, poll: poll, max_wait: max_wait}
+      @result
+    end
+
+    def release(name, all: false, working_dir: nil)
+      @calls << {action: :release, name: name, all: all}
+      @result
+    end
+
+    def status(name = nil, working_dir: nil)
+      @calls << {action: :status, name: name}
+      @result
+    end
+
+    def clear(name, all: false, working_dir: nil)
+      @calls << {action: :clear, name: name, all: all}
+      @result
+    end
+  end
+
+  class FakeDevCommand
+    attr_reader :calls
+    attr_accessor :result
+
+    def initialize
+      @calls = []
+      @result = {exit_code: 0}
+    end
+
+    def up(**opts)
+      @calls << {action: :up, **opts.except(:working_dir)}
+      @result
+    end
+
+    def down(**opts)
+      @calls << {action: :down, **opts.except(:working_dir)}
+      @result
+    end
+
+    def status(**opts)
+      @calls << {action: :status}
+      @result
+    end
+
+    def run(**opts)
+      @calls << {action: :run, **opts.except(:working_dir)}
+      @result
+    end
+  end
+
+  class FakeParentCommand
+    attr_reader :calls
+    attr_accessor :result
+
+    def initialize
+      @calls = []
+      @result = nil
+    end
+
+    def call(name = nil, path: false, json: false)
+      @calls << {name: name, path: path, json: json}
+      @result
+    end
+  end
+
+  class FakeConfigCommand
+    attr_reader :calls
+
+    def initialize(get_returns: true)
+      @calls = []
+      @get_returns = get_returns
+    end
+
+    def set(key, value, project: nil, cwd: Dir.pwd)
+      @calls << {action: :set, key: key, value: value, project: project, cwd: cwd}
+    end
+
+    def get(key, project: nil, cwd: Dir.pwd)
+      @calls << {action: :get, key: key, project: project, cwd: cwd}
+      @get_returns
+    end
+
+    def unset(key, project: nil, cwd: Dir.pwd)
+      @calls << {action: :unset, key: key, project: project, cwd: cwd}
+    end
+  end
+
   class FakeHookRunner
     attr_reader :runs
 

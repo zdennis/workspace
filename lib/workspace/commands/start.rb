@@ -9,11 +9,13 @@ module Workspace
       # @param launch_command [#call] launch command (Commands::Launch or similar)
       # @param output [IO] output stream for user-facing messages
       # @param input [IO] input stream for interactive prompts
-      def initialize(git:, project_config:, project_settings:, launch_command:, output: $stdout, input: $stdin)
+      # @param lineage [Workspace::WorkspaceLineage] writes the `.workspace-project` marker
+      def initialize(git:, project_config:, project_settings:, launch_command:, lineage: WorkspaceLineage.new, output: $stdout, input: $stdin)
         @git = git
         @project_config = project_config
         @project_settings = project_settings
         @launch_command = launch_command
+        @lineage = lineage
         @output = output
         @input = input
       end
@@ -153,8 +155,7 @@ module Workspace
       end
 
       def write_project_marker(worktree_path, config_name)
-        return unless File.directory?(worktree_path)
-        File.write(File.join(worktree_path, ".workspace-project"), config_name)
+        @lineage.write_marker(worktree_path, config_name)
       end
 
       def create_worktree_directory(root)

@@ -145,6 +145,54 @@ module Workspace
       name.empty? ? nil : name
     end
 
+    # Opens a background window running +command+ directly (no shell), so the
+    # command itself is the pane's process and leads its own process group.
+    #
+    # @param session_name [String] tmux session to add the window to
+    # @param name [String] window name
+    # @param cwd [String] the window's working directory
+    # @param command [Array<String>] argv to run
+    # @param env [Hash{String=>String}] extra environment for the command
+    # @param remain_on_exit [Boolean] keep this window (only) open once the
+    #   command exits, so its last output stays readable
+    # @return [Integer, nil] the pane's process id, or nil if tmux failed
+    def new_window(session_name, name:, cwd:, command:, env: {}, remain_on_exit: false)
+      @logger.debug { "tmux: new-window #{name} in #{session_name}: #{command.join(" ")}" }
+      args = ["tmux", "new-window", "-d", "-P", "-F", "\#{pane_pid} \#{pane_id}", "-t", "#{session_name}:", "-n", name, "-c", cwd]
+      env.each { |key, value| args.push("-e", "#{key}=#{value}") }
+      stdout, _, status = Open3.capture3(*args, "--", *command)
+      return nil unless status.success?
+      pid, pane_id = stdout.split
+      return nil unless pid
+      Open3.capture3("tmux", "set-option", "-w", "-t", pane_id, "remain-on-exit", "on") if remain_on_exit && pane_id
+      pid.to_i
+    end
+
+    # Closes a pane kept open by remain-on-exit, once its process has exited.
+    # Pane ids can outlive a tmux server restart, so the pane is closed only
+    # if it is dead and its recorded process is +pid+.
+    #
+    # @param pane_id [String] tmux pane id (e.g. "%12")
+    # @param pid [Integer] the process that ran in the pane
+    # @return [Boolean, nil] true once closed, false while +pid+ is still
+    #   running in it, nil if there is no such pane running +pid+
+    def close_dead_pane(pane_id, pid:)
+      stdout, _, status = Open3.capture3("tmux", "display-message", "-p", "-t", pane_id, "\#{pane_dead} \#{pane_pid}")
+      return nil unless status.success?
+      dead, pane_pid = stdout.split
+      return nil unless pane_pid.to_i == pid
+      return false unless dead == "1"
+      @logger.debug { "tmux: closing dead pane #{pane_id}" }
+      _, _, status = Open3.capture3("tmux", "kill-pane", "-t", pane_id)
+      status.success?
+    end
+
+    # @return [Boolean] whether a tmux server is running for this user
+    def server_running?
+      _, _, status = Open3.capture3("tmux", "list-sessions")
+      status.success?
+    end
+
     # Lists panes with the attributes session monitoring needs.
     #
     # Unlike {#panes}, entries carry the tmux pane id (\%23), which stays with a

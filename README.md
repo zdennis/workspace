@@ -72,9 +72,10 @@ workspace <subcommand> [options]
 | alfred | [README](docs/README.alfred.md) | Manage the Alfred workflow for workspace focus |
 | capture | [README](docs/README.capture.md) | Print a tmux pane's scrollback buffer to stdout |
 | cleanup | [README](docs/README.cleanup.md) | Detect and remove zombie sessions from state |
-| config | [README](docs/README.config.md) | Show project or global configuration |
+| config | [README](docs/README.config.md) | Show, set, get, or unset project or global configuration |
 | current | [README](docs/README.current.md) | Print the workspace project name for the current directory |
 | deactivate | [README](docs/README.deactivate.md) | Deactivate Claude in a project's tmux pane (sends Ctrl-C) |
+| dev | [README](docs/README.dev.md) | Start, stop, or inspect the repo's single dev environment (devenv lock) |
 | dir | [README](docs/README.dir.md) | Print the root directory of a workspace project |
 | doctor | [README](docs/README.doctor.md) | Check that all required dependencies are installed |
 | event-log | [README](docs/README.event-log.md) | Manage the append-only event log (compact) |
@@ -84,7 +85,9 @@ workspace <subcommand> [options]
 | launch | [README](docs/README.launch.md) | Launch tmuxinator projects in iTerm2 windows |
 | layout | [README](docs/README.layout.md) | Save/restore tmux pane layouts (auto-saved before resize) |
 | list | [README](docs/README.list.md) | List active projects (`--all` for all available) |
+| lock | [README](docs/README.lock.md) | Acquire, release, inspect, or clear a shared repo-wide lock |
 | lookup | [README](docs/README.lookup.md) | Find a workspace project by worktree path, branch, or project name |
+| parent | [README](docs/README.parent.md) | Print the parent workspace of the current (or given) workspace |
 | pipeline | [README](docs/README.pipeline.md) | Inspect and drive a project's agent pipeline |
 | prune | [README](docs/README.prune.md) | Remove worktree projects whose PR is closed or merged |
 | reactivate | [README](docs/README.reactivate.md) | Reactivate Claude in a project's tmux pane |

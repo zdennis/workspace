@@ -44,6 +44,9 @@ RSpec.describe Workspace::CLI do
     run_result_store = overrides[:run_result_store] || CLITestHelpers::FakeRunResultStore.new
     run_and_report_command = overrides[:run_and_report_command] || CLITestHelpers::FakeRunAndReportCommand.new
     capture_command = overrides[:capture_command] || CLITestHelpers::FakeCaptureCommand.new
+    lock_command = overrides[:lock_command] || CLITestHelpers::FakeLockCommand.new
+    dev_command = overrides[:dev_command] || CLITestHelpers::FakeDevCommand.new
+    parent_command = overrides[:parent_command] || CLITestHelpers::FakeParentCommand.new
     agent_command = overrides[:agent_command] || CLITestHelpers::FakeAgentCommand.new
 
     cli = Workspace::CLI.new(
@@ -75,9 +78,13 @@ RSpec.describe Workspace::CLI do
       run_result_store: run_result_store,
       run_and_report_command: run_and_report_command,
       capture_command: capture_command,
+      lock_command: lock_command,
+      dev_command: dev_command,
+      parent_command: parent_command,
       agent_command: agent_command,
       sessions_command: sessions_command,
       session_event_command: session_event_command,
+      config_command: overrides[:config_command] || CLITestHelpers::FakeConfigCommand.new,
       logger: logger,
       output: output,
       error_output: error_output,
@@ -707,6 +714,95 @@ RSpec.describe Workspace::CLI do
       cli.run(["config", "nonexistent"])
 
       expect(output.string).to include("no config found for 'nonexistent'")
+    end
+  end
+
+  describe "#run with config set/get/unset" do
+    it "dispatches set to config_command with key, value, and cwd" do
+      config_command = CLITestHelpers::FakeConfigCommand.new
+      cli, _, _ = build_test_cli(config_command: config_command, working_dir: "/tmp/some-project")
+
+      cli.run(["config", "set", "dev.up", "./start-dev"])
+
+      expect(config_command.calls).to eq([{action: :set, key: "dev.up", value: "./start-dev", project: nil, cwd: "/tmp/some-project"}])
+    end
+
+    it "passes --project through to config_command#set" do
+      config_command = CLITestHelpers::FakeConfigCommand.new
+      cli, _, _ = build_test_cli(config_command: config_command)
+
+      cli.run(["config", "set", "--project", "otherapp", "dev.ready", "port:3000"])
+
+      expect(config_command.calls.first[:project]).to eq("otherapp")
+    end
+
+    it "dispatches get to config_command with key and cwd" do
+      config_command = CLITestHelpers::FakeConfigCommand.new
+      cli, _, _ = build_test_cli(config_command: config_command, working_dir: "/tmp/some-project")
+
+      cli.run(["config", "get", "dev.up"])
+
+      expect(config_command.calls).to eq([{action: :get, key: "dev.up", project: nil, cwd: "/tmp/some-project"}])
+    end
+
+    it "exits 1 when config_command#get reports the key is unset" do
+      config_command = CLITestHelpers::FakeConfigCommand.new(get_returns: false)
+      cli, _, _ = build_test_cli(config_command: config_command)
+
+      expect { cli.run(["config", "get", "dev.up"]) }.to raise_error(FakeSystemExit) { |e|
+        expect(e.status).to eq(1)
+      }
+    end
+
+    it "exits 0 when config_command#get reports the key is set" do
+      config_command = CLITestHelpers::FakeConfigCommand.new(get_returns: true)
+      cli, _, _ = build_test_cli(config_command: config_command)
+
+      expect { cli.run(["config", "get", "dev.up"]) }.not_to raise_error
+    end
+
+    it "dispatches unset to config_command with key and cwd" do
+      config_command = CLITestHelpers::FakeConfigCommand.new
+      cli, _, _ = build_test_cli(config_command: config_command, working_dir: "/tmp/some-project")
+
+      cli.run(["config", "unset", "dev.ready"])
+
+      expect(config_command.calls).to eq([{action: :unset, key: "dev.ready", project: nil, cwd: "/tmp/some-project"}])
+    end
+
+    it "exits 1 with usage when set is missing a key or value" do
+      cli, _, error_output = build_test_cli
+      expect { cli.run(["config", "set", "dev.up"]) }.to raise_error(FakeSystemExit) { |e|
+        expect(e.status).to eq(1)
+      }
+      expect(error_output.string).to include("Usage: workspace config set")
+    end
+
+    it "exits 1 with usage when get is missing a key" do
+      cli, _, error_output = build_test_cli
+      expect { cli.run(["config", "get"]) }.to raise_error(FakeSystemExit) { |e|
+        expect(e.status).to eq(1)
+      }
+      expect(error_output.string).to include("Usage: workspace config get")
+    end
+
+    it "exits 1 with usage when unset is missing a key" do
+      cli, _, error_output = build_test_cli
+      expect { cli.run(["config", "unset"]) }.to raise_error(FakeSystemExit) { |e|
+        expect(e.status).to eq(1)
+      }
+      expect(error_output.string).to include("Usage: workspace config unset")
+    end
+
+    it "surfaces a Workspace::UsageError from config_command as exit 1" do
+      config_command = CLITestHelpers::FakeConfigCommand.new
+      config_command.define_singleton_method(:set) { |*| raise Workspace::UsageError, "Unknown config key 'dev.bogus'." }
+      cli, _, error_output = build_test_cli(config_command: config_command)
+
+      expect { cli.run(["config", "set", "dev.bogus", "x"]) }.to raise_error(FakeSystemExit) { |e|
+        expect(e.status).to eq(1)
+      }
+      expect(error_output.string).to include("Unknown config key 'dev.bogus'")
     end
   end
 
@@ -1344,6 +1440,148 @@ RSpec.describe Workspace::CLI do
       expect(error_output.string).to include("--all and --lines are mutually exclusive")
     end
 
+    it "dispatches to lock_command#acquire with --task, --wait, --poll, and --max-wait" do
+      lock_command = CLITestHelpers::FakeLockCommand.new
+      cli, _, _ = build_test_cli(lock_command: lock_command)
+
+      cli.run(["lock", "acquire", "edit", "--task", "PROJ-12", "--wait", "--poll", "1.5", "--max-wait", "9"])
+
+      expect(lock_command.calls).to eq(
+        [{action: :acquire, name: "edit", task: "PROJ-12", wait: true, poll: 1.5, max_wait: 9.0}]
+      )
+    end
+
+    it "exits with the acquire result's exit_code" do
+      lock_command = CLITestHelpers::FakeLockCommand.new
+      lock_command.result = {exit_code: 5}
+      cli, _, _ = build_test_cli(lock_command: lock_command)
+
+      expect { cli.run(["lock", "acquire", "edit"]) }.to raise_error(FakeSystemExit) { |e|
+        expect(e.status).to eq(5)
+      }
+    end
+
+    it "does not exit when acquire succeeds" do
+      lock_command = CLITestHelpers::FakeLockCommand.new
+      cli, _, _ = build_test_cli(lock_command: lock_command)
+
+      expect { cli.run(["lock", "acquire", "edit"]) }.not_to raise_error
+    end
+
+    it "dispatches to lock_command#release" do
+      lock_command = CLITestHelpers::FakeLockCommand.new
+      cli, _, _ = build_test_cli(lock_command: lock_command)
+
+      cli.run(["lock", "release", "edit"])
+
+      expect(lock_command.calls).to eq([{action: :release, name: "edit", all: false}])
+    end
+
+    it "dispatches to lock_command#release with --all" do
+      lock_command = CLITestHelpers::FakeLockCommand.new
+      cli, _, _ = build_test_cli(lock_command: lock_command)
+
+      cli.run(["lock", "release", "--all"])
+
+      expect(lock_command.calls).to eq([{action: :release, name: nil, all: true}])
+    end
+
+    it "dispatches to lock_command#status" do
+      lock_command = CLITestHelpers::FakeLockCommand.new
+      cli, _, _ = build_test_cli(lock_command: lock_command)
+
+      cli.run(["lock", "status", "edit"])
+
+      expect(lock_command.calls).to eq([{action: :status, name: "edit"}])
+    end
+
+    it "dispatches to lock_command#clear" do
+      lock_command = CLITestHelpers::FakeLockCommand.new
+      cli, _, _ = build_test_cli(lock_command: lock_command)
+
+      cli.run(["lock", "clear", "edit"])
+
+      expect(lock_command.calls).to eq([{action: :clear, name: "edit", all: false}])
+    end
+
+    describe "dev" do
+      let(:dev_command) { CLITestHelpers::FakeDevCommand.new }
+
+      it "dispatches up with --wait, --takeover, --no-ready and --max-wait" do
+        cli, _, _ = build_test_cli(dev_command: dev_command)
+
+        cli.run(["dev", "up", "--wait", "--takeover", "--no-ready", "--max-wait", "30"])
+
+        expect(dev_command.calls).to eq([{action: :up, wait: true, takeover: true, ready: false, max_wait: 30.0}])
+      end
+
+      it "defaults up to no wait, no takeover, and a ready check" do
+        cli, _, _ = build_test_cli(dev_command: dev_command)
+
+        cli.run(["dev", "up"])
+
+        expect(dev_command.calls).to eq([{action: :up, wait: false, takeover: false, ready: true, max_wait: nil}])
+      end
+
+      it "rejects --max-wait without --wait" do
+        cli, _, error_output = build_test_cli(dev_command: dev_command)
+
+        expect { cli.run(["dev", "up", "--max-wait", "5"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+        expect(error_output.string).to include("--max-wait requires --wait")
+        expect(dev_command.calls).to be_empty
+      end
+
+      it "exits with up's exit code" do
+        dev_command.result = {exit_code: 6}
+        cli, _, _ = build_test_cli(dev_command: dev_command)
+
+        expect { cli.run(["dev", "up"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(6) }
+      end
+
+      it "dispatches down with --force, status, and the hidden __run" do
+        cli, _, _ = build_test_cli(dev_command: dev_command)
+
+        cli.run(["dev", "down", "--force"])
+        cli.run(["dev", "status"])
+        cli.run(["dev", "__run", "--wait"])
+
+        expect(dev_command.calls).to eq([{action: :down, force: true}, {action: :status}, {action: :run, wait: true}])
+      end
+
+      it "prints dev help without a subcommand and rejects unknown ones" do
+        cli, output, _ = build_test_cli(dev_command: dev_command)
+
+        cli.run(["dev"])
+        expect(output.string).to include("Usage: workspace dev <subcommand>")
+        expect(output.string).not_to include("__run")
+        expect { cli.run(["dev", "bogus"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+      end
+
+      it "lists dev in the main help" do
+        cli, output, _ = build_test_cli
+
+        cli.run(["help"])
+
+        expect(output.string).to match(/^\s+dev\s+Start, stop, or inspect/)
+      end
+    end
+
+    it "raises UsageError for an unknown lock subcommand" do
+      cli, _, _ = build_test_cli
+
+      expect { cli.run(["lock", "bogus"]) }.to raise_error(FakeSystemExit) { |e|
+        expect(e.status).to eq(1)
+      }
+    end
+
+    it "requires a name for release without --all" do
+      cli, _, _ = build_test_cli
+
+      expect { cli.run(["lock", "release"]) }.to raise_error(FakeSystemExit) { |e|
+        expect(e.status).to eq(1)
+      }
+    end
+
     it "dispatches to agent_command with --name and --wc-socket" do
       agent_command = CLITestHelpers::FakeAgentCommand.new
       cli, _, _ = build_test_cli(agent_command: agent_command)
@@ -1419,6 +1657,61 @@ RSpec.describe Workspace::CLI do
       cli, output, _ = build_test_cli
       cli.run(["help"])
       expect(output.string).to include("capture")
+    end
+  end
+
+  describe "#run with parent" do
+    it "dispatches to parent_command#call with no options" do
+      parent_command = CLITestHelpers::FakeParentCommand.new
+      cli, _, _ = build_test_cli(parent_command: parent_command)
+
+      cli.run(["parent"])
+
+      expect(parent_command.calls).to eq([{name: nil, path: false, json: false}])
+    end
+
+    it "dispatches with a given project name" do
+      parent_command = CLITestHelpers::FakeParentCommand.new
+      cli, _, _ = build_test_cli(parent_command: parent_command)
+
+      cli.run(["parent", "app.worktree-login"])
+
+      expect(parent_command.calls).to eq([{name: "app.worktree-login", path: false, json: false}])
+    end
+
+    it "dispatches with --path" do
+      parent_command = CLITestHelpers::FakeParentCommand.new
+      cli, _, _ = build_test_cli(parent_command: parent_command)
+
+      cli.run(["parent", "--path"])
+
+      expect(parent_command.calls).to eq([{name: nil, path: true, json: false}])
+    end
+
+    it "dispatches with --json" do
+      parent_command = CLITestHelpers::FakeParentCommand.new
+      cli, _, _ = build_test_cli(parent_command: parent_command)
+
+      cli.run(["parent", "--json"])
+
+      expect(parent_command.calls).to eq([{name: nil, path: false, json: true}])
+    end
+
+    it "shows parent in help output" do
+      cli, output, _ = build_test_cli
+      cli.run(["help"])
+      expect(output.string).to include("parent")
+    end
+
+    it "raises a usage error when --path and --json are combined" do
+      parent_command = CLITestHelpers::FakeParentCommand.new
+      cli, _, error_output = build_test_cli(parent_command: parent_command)
+
+      expect { cli.run(["parent", "--path", "--json"]) }.to raise_error(FakeSystemExit) { |e|
+        expect(e.status).to eq(1)
+      }
+      expect(error_output.string).to include("--path and --json cannot be used together")
+      expect(parent_command.calls).to be_empty
     end
   end
 

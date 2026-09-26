@@ -57,11 +57,9 @@ module Workspace
         # Search all available projects for one matching the name
         @project_config.available_projects.each do |project|
           # Check if this is a worktree config (format: "parent.worktree-name")
-          if project.include?(".worktree-")
-            # Extract the worktree part
-            parts = project.split(".worktree-", 2)
-            base_name = parts[0]
-            worktree_part = parts[1]
+          split = WorkspaceLineage.split_worktree_name(project)
+          if split
+            base_name, worktree_part = split
 
             # Check for exact match with worktree part
             return project if worktree_part == name
