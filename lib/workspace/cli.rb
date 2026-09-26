@@ -37,7 +37,7 @@ module Workspace
     # @param error_output [IO] error output stream for warnings and errors
     # @param input [IO] input stream for interactive prompts
     # @param exit_handler [#exit] callable for process exit (Kernel in production, FakeExitHandler in tests)
-    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, agent_command:, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd)
+    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, agent_command:, sessions_command:, session_event_command:, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd)
       @config = config
       @state = state
       @project_config = project_config
@@ -47,6 +47,8 @@ module Workspace
       @project_settings = project_settings
       @hook_runner = hook_runner
       @project_detector = project_detector
+      @sessions_command = sessions_command
+      @session_event_command = session_event_command
       @launch_command = launch_command
       @kill_command = kill_command
       @start_command = start_command
@@ -116,6 +118,10 @@ module Workspace
         cmd_capture(args)
       when "agent"
         cmd_agent(args)
+      when "sessions"
+        cmd_sessions(args)
+      when "session-event"
+        cmd_session_event(args)
       when "agent-run"
         cmd_agent_run(args)
       when "pipeline"
@@ -224,6 +230,8 @@ module Workspace
           run             Send a shell command to a pane in a running project's tmux session
           run-and-report  Run a command as a subprocess, capture stdout/stderr/exit status
           report-run-status  Internal: write run result for --wait (called by shell wrapper)
+          session-event   Forward one agent hook event to its daemon (installed by init)
+          sessions        Show coding-agent sessions and sub-agents in a workspace
           start           Create a worktree and launch it (from JIRA key, PR URL, or branch)
           status          Show detailed state of tracked launcher sessions
           set-command     Set the shell command for a pane in a project config (--pane <N>)
@@ -1262,6 +1270,54 @@ module Workspace
       parser.parse!(args)
 
       @init_command.call(dry_run: dry_run, force: force, hooks: hooks)
+    end
+
+    def cmd_sessions(args)
+      json = false
+      watch = false
+      interval = 2
+      parser = OptionParser.new do |opts|
+        opts.banner = "Usage: workspace sessions [options] [project]"
+        opts.separator ""
+        opts.separator "Show the coding-agent sessions running in a workspace's panes,"
+        opts.separator "whether each is working or idle, and any sub-agents they started."
+        opts.separator ""
+        opts.separator "Requires a running agent daemon (workspace agent <project>)."
+        opts.separator ""
+        opts.separator "Options:"
+        opts.on("--json", "Emit the raw payload instead of a table") { json = true }
+        opts.on("--watch", "Redraw until interrupted") { watch = true }
+        opts.on("--interval SECONDS", Float, "Seconds between redraws (default 2)") do |value|
+          interval = value
+        end
+      end
+      parser.parse!(args)
+
+      project = args.first || @project_detector.detect(@working_dir)
+      raise UsageError, parser.help unless project
+
+      @sessions_command.call(name: project, json: json, watch: watch, interval: interval)
+    end
+
+    def cmd_session_event(args)
+      workspace = nil
+      parser = OptionParser.new do |opts|
+        opts.banner = "Usage: workspace session-event [options]"
+        opts.separator ""
+        opts.separator "Forward one coding-agent hook event, read as JSON on stdin, to that"
+        opts.separator "workspace's agent daemon. Installed as a hook by 'workspace init';"
+        opts.separator "not normally run by hand."
+        opts.separator ""
+        opts.separator "Always exits 0, so a missing daemon never fails an agent's turn."
+        opts.separator ""
+        opts.separator "Options:"
+        opts.on("--workspace NAME", "Send to NAME instead of the pane's session") do |value|
+          workspace = value
+        end
+      end
+      parser.parse!(args)
+
+      @session_event_command.call(workspace: workspace)
     end
 
     def cmd_doctor(args)

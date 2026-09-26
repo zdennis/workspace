@@ -23,6 +23,12 @@ module Workspace
       "PreToolUse" => "Task"
     }.freeze
 
+    # Arguments that mark a background helper rather than an interactive
+    # session. Claude Code leaves a daemon and pty helpers in a pane's process
+    # tree, and matching one would report the pane as busy long after the
+    # session it served has exited.
+    CLAUDE_BACKGROUND = ["daemon run", "bg-pty-host", "bg-spare"].freeze
+
     # @return [Array<AgentProvider>] every known provider
     def self.all
       @all ||= [
@@ -31,7 +37,8 @@ module Workspace
           label: "Claude Code",
           executable: "claude",
           settings_path: File.join(".claude", "settings.json"),
-          events: CLAUDE_EVENTS
+          events: CLAUDE_EVENTS,
+          background_markers: CLAUDE_BACKGROUND
         ),
         new(
           key: "codex",
@@ -57,19 +64,23 @@ module Workspace
       all.find { |provider| provider.key == key }
     end
 
-    attr_reader :key, :label, :executable, :settings_path, :events
+    attr_reader :key, :label, :executable, :settings_path, :events, :background_markers
 
     # @param key [String] stable identifier
     # @param label [String] human-readable name
     # @param executable [String] binary name to detect on PATH
     # @param settings_path [String, nil] hook settings file, relative to project root
     # @param events [Hash, nil] event name => matcher (nil matcher means "all")
-    def initialize(key:, label:, executable:, settings_path: nil, events: nil)
+    # @param background_markers [Array<String>] argument substrings that mark a
+    #   background helper, not an interactive session
+    def initialize(key:, label:, executable:, settings_path: nil, events: nil,
+      background_markers: [])
       @key = key
       @label = label
       @executable = executable
       @settings_path = settings_path
       @events = events
+      @background_markers = background_markers
     end
 
     # @return [Boolean] whether workspace can install hooks for this agent

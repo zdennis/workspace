@@ -29,6 +29,8 @@ RSpec.describe Workspace::CLI do
     tile_command = overrides[:tile_command] || Workspace::Commands::Tile.new(state: state, window_manager: window_manager, window_layout: window_layout, output: output)
     layout_command = overrides[:layout_command] || Workspace::Commands::Layout.new(state: state, tmux: tmux, project_settings: project_settings, output: output)
     resize_command = overrides[:resize_command] || Workspace::Commands::Resize.new(tmux: tmux, layout_command: layout_command, output: output, error_output: error_output)
+    sessions_command = overrides[:sessions_command] || Workspace::Commands::Sessions.new(config: config, output: output, error_output: error_output)
+    session_event_command = overrides[:session_event_command] || Workspace::Commands::SessionEvent.new(config: config, tmux: tmux, input: input, env: {})
     hook_installer = Workspace::HookInstaller.new(backup: Workspace::FileBackup.new(output: output), output: output, input: input)
     init_command = overrides[:init_command] || Workspace::Commands::Init.new(config: config, hook_installer: hook_installer, which: ->(_exe) { false }, output: output, error_output: error_output, input: input)
     repair_command = overrides[:repair_command] || CLITestHelpers::FakeRepairCommand.new
@@ -74,6 +76,8 @@ RSpec.describe Workspace::CLI do
       run_and_report_command: run_and_report_command,
       capture_command: capture_command,
       agent_command: agent_command,
+      sessions_command: sessions_command,
+      session_event_command: session_event_command,
       logger: logger,
       output: output,
       error_output: error_output,
