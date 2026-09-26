@@ -42,8 +42,7 @@ module Workspace
     #   of the whole group (a wrapper that forwards it itself)
     # @return [Symbol] :not_running (nothing to signal), :terminated (exited
     #   after SIGTERM), or :killed (SIGKILL was sent)
-    # @raise [Workspace::Error] for an unsafe pgid (<= 1, or the caller's own
-    #   group) or a group this user may not signal
+    # @raise [Workspace::Error] for an unsafe pgid (<= 1, or the caller's own group)
     def terminate(pgid, stop_timeout:, leader: nil)
       pgid = Integer(pgid)
       if pgid <= 1 || pgid == @own_pgid
@@ -78,13 +77,13 @@ module Workspace
 
     private
 
+    # EPERM, like in {#running?}, means nothing this user can stop: a group
+    # holding only unreaped zombies, or a pgid since reused by another user.
     def signal(name, target)
       Process.kill(name, target)
       true
-    rescue Errno::ESRCH
+    rescue Errno::ESRCH, Errno::EPERM
       false
-    rescue Errno::EPERM
-      raise Workspace::Error, "not permitted to signal #{(target < 0) ? "process group #{-target}" : "pid #{target}"}"
     end
   end
 end
