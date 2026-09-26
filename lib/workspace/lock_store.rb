@@ -22,14 +22,28 @@ module Workspace
   # A process holder also records its "pgid" and "branch", so `dev down`,
   # `--takeover` and `lock clear` can signal its whole process group; a
   # queued process waiter carries the same fields into its promotion.
+  #
+  # An agent holder whose coding agent has finished its turn is marked idle
+  # (`idle_since`, epoch seconds) by `workspace session-event`. Once it has
+  # been idle for at least +idle_grace+, the head of the queue takes the lock
+  # over on its next poll. The displaced agent is recorded in the entry's
+  # `displaced` list until it next runs `acquire` or `release`, which read it
+  # back through {#pop_displaced}. `kind: "process"` holders are never marked
+  # idle and never taken over.
   class LockStore
+    DEFAULT_IDLE_GRACE = 300
+
     # @param dir [String] this namespace's lock store directory
     # @param liveness [Workspace::LockHolder] checks whether a recorded pid is still alive
     # @param logger [Workspace::Logger] debug logger
-    def initialize(dir:, liveness:, logger: Workspace::Logger.new)
+    # @param clock [#call] returns the current wall-clock time in epoch seconds, for idle tracking
+    # @param idle_grace [Numeric] seconds an agent holder may stay idle before the head waiter may take over
+    def initialize(dir:, liveness:, logger: Workspace::Logger.new, clock: -> { Time.now.to_i }, idle_grace: DEFAULT_IDLE_GRACE)
       @dir = dir
       @liveness = liveness
       @logger = logger
+      @clock = clock
+      @idle_grace = idle_grace
       @lockfile_path = File.join(dir, "locks.lock")
       @data_path = File.join(dir, "locks.json")
     end
@@ -91,10 +105,15 @@ module Workspace
     end
 
     # Checks progress for a queued `acquire --wait`, called once per poll.
+    # When this waiter heads the queue and the holder is an agent that has
+    # been idle for at least +idle_grace+, the lock is taken over here, in the
+    # same flocked step, and the displaced holder is recorded.
     #
     # @param name [String] lock name
     # @param waiter_pid [Integer] the waiting process's own pid
-    # @return [Hash] :status is one of :acquired, :queued, :cleared
+    # @return [Hash] :status is one of :acquired, :queued, :cleared; an
+    #   :acquired result from a takeover also carries :took_over (the
+    #   displaced holder record)
     def poll(name, waiter_pid)
       with_lock do |data|
         reap!(data)
@@ -109,6 +128,11 @@ module Workspace
 
         index = entry["queue"].index { |w| w["waiter_pid"] == waiter_pid }
         next {status: :cleared} unless index
+        if index.zero? && holder && idle_expired?(holder)
+          displace!(entry, holder)
+          entry["holder"] = holder_from_waiter(entry["queue"].shift)
+          next {status: :acquired, took_over: holder}
+        end
         {status: :queued, position: index + 1, total: entry["queue"].size + (holder ? 1 : 0), holder: holder}
       end
     end
@@ -216,6 +240,68 @@ module Workspace
       end
     end
 
+    # Marks every lock held by +identity+ idle (its agent finished a turn) or
+    # active again. Only `kind: "agent"` holders matching both pid and start
+    # time are touched, so another pane's or agent's hold is never changed.
+    # An already-idle holder keeps its original `idle_since`.
+    #
+    # @param identity [Hash] the agent, from {LockHolder#current}
+    # @param idle [Boolean] true to set `idle_since`, false to clear it
+    # @return [Array<String>] names of locks whose idle state changed
+    def mark_idle(identity, idle:)
+      with_lock do |data|
+        data.filter_map do |name, entry|
+          holder = entry["holder"]
+          next unless same_agent?(holder, identity) && holder["kind"] != "process"
+          next if idle == !holder["idle_since"].nil?
+          holder["idle_since"] = idle ? @clock.call : nil
+          name
+        end
+      end
+    end
+
+    # Cheap pre-check for {#mark_idle}, safe to run on every hook: reads
+    # `locks.json` without the flock (it is only ever replaced by an atomic
+    # rename) and reports whether any agent holder in +pane+ would change
+    # state. Never raises.
+    #
+    # @param pane [String, nil] tmux pane id; nil matches any pane
+    # @param idle [Boolean] the state {#mark_idle} would set
+    # @return [Boolean]
+    def idle_change_possible?(pane:, idle:)
+      return false unless File.exist?(@data_path)
+      data = JSON.parse(File.read(@data_path))
+      return false unless data.is_a?(Hash)
+      data.each_value.any? do |entry|
+        holder = entry.is_a?(Hash) && entry["holder"]
+        next false unless holder.is_a?(Hash) && holder["kind"] != "process"
+        next false if pane && holder["pane"] != pane
+        idle == holder["idle_since"].nil?
+      end
+    rescue SystemCallError, JSON::ParserError
+      false
+    end
+
+    # Removes and returns the records of locks taken over from +identity+
+    # while it was idle, so the displaced agent is told exactly once.
+    #
+    # @param identity [Hash] the agent, from {LockHolder#current}
+    # @param name [String, nil] one lock name, or nil for every lock
+    # @return [Array<Hash>] displacement records, each with "name", "at" and
+    #   "idle_since" (epoch seconds), and "by" (the new holder's pane, task, worktree)
+    def pop_displaced(identity, name: nil)
+      return [] unless File.exist?(@data_path)
+      with_lock do |data|
+        data.each_with_object([]) do |(lock_name, entry), found|
+          next if name && lock_name != name
+          mine, others = (entry["displaced"] || []).partition { |r| r["pid"] == identity[:pid] && r["started"] == identity[:started] }
+          next if mine.empty?
+          others.empty? ? entry.delete("displaced") : entry["displaced"] = others
+          found.concat(mine.map { |r| r.merge("name" => lock_name) })
+        end
+      end
+    end
+
     # @return [Array<String>] every lock name with an entry in this namespace
     def names
       with_lock { |data| data.keys }
@@ -281,7 +367,15 @@ module Workspace
 
     def normalize_entry(entry)
       return empty_entry unless entry.is_a?(Hash)
-      {"holder" => normalize_holder(entry["holder"]), "queue" => normalize_queue(entry["queue"])}
+      normalized = {"holder" => normalize_holder(entry["holder"]), "queue" => normalize_queue(entry["queue"])}
+      displaced = normalize_displaced(entry["displaced"])
+      normalized["displaced"] = displaced unless displaced.empty?
+      normalized
+    end
+
+    def normalize_displaced(records)
+      return [] unless records.is_a?(Array)
+      records.select { |r| r.is_a?(Hash) && r["pid"] && r["started"] }
     end
 
     # Drops a holder record missing the fields liveness checks require,
@@ -374,6 +468,30 @@ module Workspace
       {"kind" => "process", "pgid" => identity[:pgid], "branch" => identity[:branch]}
     end
 
+    # An agent holder idle for at least the grace period. A process holder
+    # (the dev environment) is never idle in this sense.
+    def idle_expired?(holder)
+      return false if holder["kind"] == "process"
+      idle_since = holder["idle_since"]
+      idle_since.is_a?(Numeric) && @clock.call - idle_since >= @idle_grace
+    end
+
+    def displace!(entry, holder)
+      head = entry["queue"].first
+      record = {
+        "pid" => holder["pid"],
+        "started" => holder["started"],
+        "pane" => holder["pane"],
+        "task" => holder["task"],
+        "idle_since" => holder["idle_since"],
+        "at" => @clock.call,
+        "by" => {"pane" => head["pane"], "task" => head["task"], "worktree" => head["worktree"]}
+      }
+      records = (entry["displaced"] || []).reject { |r| r["pid"] == holder["pid"] && r["started"] == holder["started"] }
+      entry["displaced"] = records << record
+      @logger.debug { "lock: waiter #{head["waiter_pid"]} took over from idle pid #{holder["pid"]}" }
+    end
+
     def within_liveness_snapshot(&block)
       @liveness.respond_to?(:within_snapshot) ? @liveness.within_snapshot(&block) : yield
     end
@@ -406,20 +524,24 @@ module Workspace
       while entry["holder"].nil? && !entry["queue"].empty?
         candidate = entry["queue"].shift
         next unless waiter_alive?(candidate)
-        entry["holder"] = build_holder(
-          {
-            kind: candidate["kind"] || "agent",
-            pid: candidate["agent_pid"],
-            started: candidate["agent_started"],
-            pane: candidate["pane"],
-            worktree: candidate["worktree"],
-            pgid: candidate["pgid"],
-            branch: candidate["branch"]
-          },
-          candidate["task"],
-          waiter_pid: candidate["waiter_pid"]
-        ).merge("waiter_started" => candidate["waiter_started"], "unclaimed" => true)
+        entry["holder"] = holder_from_waiter(candidate).merge("unclaimed" => true)
       end
+    end
+
+    def holder_from_waiter(waiter)
+      build_holder(
+        {
+          kind: waiter["kind"] || "agent",
+          pid: waiter["agent_pid"],
+          started: waiter["agent_started"],
+          pane: waiter["pane"],
+          worktree: waiter["worktree"],
+          pgid: waiter["pgid"],
+          branch: waiter["branch"]
+        },
+        waiter["task"],
+        waiter_pid: waiter["waiter_pid"]
+      ).merge("waiter_started" => waiter["waiter_started"])
     end
 
     def annotate_entry(entry)
@@ -434,6 +556,10 @@ module Workspace
       data.each_value do |entry|
         entry["holder"] = nil if entry["holder"] && !holder_alive?(entry["holder"])
         entry["queue"].select! { |w| waiter_alive?(w) }
+        if entry["displaced"]
+          entry["displaced"].select! { |r| alive_or_unknown?(r["pid"], r["started"]) }
+          entry.delete("displaced") if entry["displaced"].empty?
+        end
         promote!(entry)
       end
     end

@@ -27,22 +27,19 @@ module Workspace
       raise Workspace::Error, "Invalid dev.stop_timeout for '#{name}': #{e.message}"
     end
 
+    DURATION_UNITS = {"" => 1, "s" => 1, "m" => 60, "h" => 3600}.freeze
+    private_constant :DURATION_UNITS
+
     # Parses a duration string or number into seconds.
-    # Supports: "20s", "20" (plain number = seconds).
+    # Supports: "20", "20s", "5m", "1h" (a plain number is seconds).
     #
     # @param value [String, Numeric] duration string or number
     # @return [Numeric] seconds
     # @raise [ArgumentError] if value isn't a recognized duration
     def self.parse_duration(value)
-      str = value.to_s.strip
-      case str
-      when /\A(\d+(?:\.\d+)?)\s*s\z/i
-        $1.to_f
-      when /\A(\d+(?:\.\d+)?)\z/
-        $1.to_f
-      else
-        raise ArgumentError, "expected a duration like \"20s\" or \"20\", got #{value.inspect}"
-      end
+      match = /\A(\d+(?:\.\d+)?)\s*([smh]?)\z/i.match(value.to_s.strip)
+      raise ArgumentError, "expected a duration like \"20\", \"20s\", \"5m\" or \"1h\", got #{value.inspect}" unless match
+      match[1].to_f * DURATION_UNITS.fetch(match[2].downcase)
     end
   end
 end

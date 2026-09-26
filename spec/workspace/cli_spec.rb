@@ -1504,6 +1504,22 @@ RSpec.describe Workspace::CLI do
       expect(lock_command.calls).to eq([{action: :clear, name: "edit", all: false}])
     end
 
+    it "exits 3 when release reports an idle takeover" do
+      lock_command = CLITestHelpers::FakeLockCommand.new
+      lock_command.result = {exit_code: 3}
+      cli, _, _ = build_test_cli(lock_command: lock_command)
+
+      expect { cli.run(["lock", "release", "edit"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(3) }
+    end
+
+    it "describes idle takeover in lock help" do
+      cli, output, _ = build_test_cli(lock_command: CLITestHelpers::FakeLockCommand.new)
+
+      cli.run(["lock", "help"])
+
+      expect(output.string).to include("locks.idle_grace", "3   this agent's hold was taken over")
+    end
+
     describe "dev" do
       let(:dev_command) { CLITestHelpers::FakeDevCommand.new }
 

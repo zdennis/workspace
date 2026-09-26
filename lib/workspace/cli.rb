@@ -784,14 +784,24 @@ module Workspace
         Exit codes (acquire):
           0   acquired
           1   held by someone else (no --wait)
+          3   this agent's hold was taken over while it was idle (see below);
+              re-run to queue again
           4   cleared by someone else while waiting
           5   this agent already holds or waits for a different lock
               (release it first)
           75  still queued after --max-wait
 
+        Idle takeover: when a holding agent finishes its turn, the
+        session-event hook marks its lock idle; any prompt or tool use marks
+        it active again. Once idle for locks.idle_grace (default 5m; set with
+        `workspace config set locks.idle_grace 10m`), the first waiter in the
+        queue takes the lock over. The displaced agent is told once, on its
+        next acquire or release, which exits 3. The dev environment lock is
+        never taken over this way.
+
         Note: `lock release`/`lock clear` exit 0 even when nothing was
-        held/cleared. This is scoped to those two subcommands; `acquire`
-        has its own exit codes above.
+        held/cleared, except that `release` exits 3 when it reports an idle
+        takeover. `acquire` has its own exit codes above.
 
         Examples:
           workspace lock acquire edit --wait --task "PROJ-12 fix login"
@@ -1669,6 +1679,7 @@ module Workspace
         opts.separator "Examples:"
         opts.separator "  workspace config set dev.up \"./start-dev\""
         opts.separator "  workspace config set dev.stop_timeout 20s"
+        opts.separator "  workspace config set locks.idle_grace 10m"
         opts.separator "  workspace config set --project myapp dev.up \"bin/dev\""
       end
       parser.parse!(args)
@@ -1739,6 +1750,8 @@ module Workspace
         opts.separator "  worktree_hooks:                Hooks seeded into new worktrees"
         opts.separator "  dev.up, dev.ready,             Set via 'workspace config set' (see"
         opts.separator "  dev.stop_timeout:              'workspace config set --help')"
+        opts.separator "  locks.idle_grace:              How long an idle agent keeps a lock before"
+        opts.separator "                                 the next waiter may take it (default: 5m)"
         opts.separator ""
         opts.separator "Note: 'set', 'get', and 'unset' are reserved as the first argument"
         opts.separator "here and are always treated as subcommands, so a project literally"

@@ -19,13 +19,14 @@ require_relative "workspace/window_layout"
 require_relative "workspace/project_settings"
 require_relative "workspace/process_tree"
 require_relative "workspace/workspace_lineage"
+require_relative "workspace/dev_config"
 require_relative "workspace/lock_namespace"
 require_relative "workspace/lock_holder"
 require_relative "workspace/lock_store"
+require_relative "workspace/lock_config"
 require_relative "workspace/session_monitor"
 require_relative "workspace/agent_provider"
 require_relative "workspace/file_backup"
-require_relative "workspace/dev_config"
 require_relative "workspace/process_group_terminator"
 require_relative "workspace/dev_runner"
 require_relative "workspace/hook_installer"
@@ -131,9 +132,10 @@ module Workspace
     lock_namespace = LockNamespace.new(config: config, lineage: lineage)
     lock_holder = LockHolder.new
     dev_config = DevConfig.new(project_settings: project_settings)
+    lock_config = LockConfig.new(project_settings: project_settings, error_output: error_output)
     process_group_terminator = ProcessGroupTerminator.new
     lock_command = Commands::Lock.new(config: config, lock_namespace: lock_namespace, lock_holder: lock_holder,
-      terminator: process_group_terminator, dev_config: dev_config, output: output, error_output: error_output)
+      terminator: process_group_terminator, dev_config: dev_config, lock_config: lock_config, output: output, error_output: error_output)
     dev_runner = DevRunner.new(liveness: lock_holder, output: output)
     dev_command = Commands::Dev.new(
       lock_namespace: lock_namespace,
