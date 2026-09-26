@@ -16,6 +16,9 @@ require_relative "workspace/iterm"
 require_relative "workspace/window_manager"
 require_relative "workspace/window_layout"
 require_relative "workspace/project_settings"
+require_relative "workspace/agent_provider"
+require_relative "workspace/file_backup"
+require_relative "workspace/hook_installer"
 require_relative "workspace/hook_runner"
 require_relative "workspace/project_detector"
 require_relative "workspace/commands/init"
@@ -85,7 +88,9 @@ module Workspace
     tile_command = Commands::Tile.new(state: state, window_manager: window_manager, window_layout: window_layout, output: output)
     layout_command = Commands::Layout.new(state: state, tmux: tmux, project_settings: project_settings, output: output)
     resize_command = Commands::Resize.new(tmux: tmux, layout_command: layout_command, output: output, error_output: error_output)
-    init_command = Commands::Init.new(config: config, output: output, error_output: error_output)
+    file_backup = FileBackup.new(output: output)
+    hook_installer = HookInstaller.new(backup: file_backup, output: output, input: input)
+    init_command = Commands::Init.new(config: config, hook_installer: hook_installer, output: output, error_output: error_output, input: input)
     repair_command = Commands::Repair.new(state: state, iterm: iterm, window_manager: window_manager, output: output)
     cleanup_command = Commands::Cleanup.new(state: state, window_manager: window_manager, tmux: tmux, output: output, input: input)
     prune_command = Commands::Prune.new(state: state, project_config: project_config, project_settings: project_settings, git: git, kill_command: kill_command, output: output, input: input)

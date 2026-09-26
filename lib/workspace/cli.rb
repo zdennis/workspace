@@ -1238,6 +1238,7 @@ module Workspace
     def cmd_init(args)
       dry_run = false
       force = false
+      hooks = nil
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: workspace init [options]"
         opts.separator ""
@@ -1251,10 +1252,16 @@ module Workspace
         opts.on("-f", "--force", "Overwrite existing templates even if they differ") do
           force = true
         end
+        opts.on("--install-hooks", "Install agent session hooks without asking") do
+          hooks = true
+        end
+        opts.on("--no-install-hooks", "Skip the agent session hooks step") do
+          hooks = false
+        end
       end
       parser.parse!(args)
 
-      @init_command.call(dry_run: dry_run, force: force)
+      @init_command.call(dry_run: dry_run, force: force, hooks: hooks)
     end
 
     def cmd_doctor(args)

@@ -10,21 +10,34 @@ module Workspace
         "workspace.project-worktree-template.yml"
       ].freeze
 
+      # Hooks route agent events to this command, which the agent daemon reads.
+      HOOK_COMMAND = "workspace session-event".freeze
+
       # @param config [Workspace::Config] configuration for path lookups
+      # @param hook_installer [Workspace::HookInstaller] installs agent hooks
+      # @param which [#call] returns true when an executable is on PATH
       # @param output [IO] output stream for user-facing messages
       # @param error_output [IO] error output stream for warnings
-      def initialize(config:, output: $stdout, error_output: $stderr)
+      # @param input [IO] input stream for interactive confirmation
+      def initialize(config:, hook_installer:, which: nil,
+        output: $stdout, error_output: $stderr, input: $stdin)
         @config = config
+        @hook_installer = hook_installer
+        @which = which || ->(exe) { system("command", "-v", exe, out: File::NULL, err: File::NULL) }
         @output = output
         @error_output = error_output
+        @input = input
       end
 
       DEFAULT_GLOBAL_CONFIG = {"hooks" => {}, "layouts" => {}}.freeze
 
       # @param dry_run [Boolean] show what would be done without making changes
       # @param force [Boolean] overwrite existing templates even if they differ
+      # @param project_root [String] project whose agent settings receive hooks
+      # @param hooks [Boolean, nil] true installs without asking, false skips the
+      #   phase entirely, nil (the default) prompts
       # @return [void]
-      def call(dry_run: false, force: false)
+      def call(dry_run: false, force: false, project_root: Dir.pwd, hooks: nil)
         @output.puts "workspace init#{" (dry run)" if dry_run}"
         @output.puts ""
 
@@ -32,6 +45,7 @@ module Workspace
         install_templates(dry_run, force)
         ensure_workspace_config_dir(dry_run)
         install_global_config(dry_run)
+        install_agent_hooks(dry_run, project_root, hooks)
 
         @output.puts ""
         if dry_run
@@ -42,6 +56,52 @@ module Workspace
       end
 
       private
+
+      # Agent hooks are per-project, unlike everything else init installs, so
+      # this phase is announced separately and always names the directory it
+      # would touch.
+      def install_agent_hooks(dry_run, project_root, hooks)
+        return if hooks == false
+
+        detected, missing = AgentProvider.all.partition { |p| @which.call(p.executable) }
+
+        @output.puts ""
+        @output.puts "Session monitoring agents (#{project_root}):"
+        report_agents(detected, missing, project_root)
+
+        installable = detected.select(&:supports_hooks?)
+        return @output.puts "  No detected agent supports hooks; nothing to install." if installable.empty?
+
+        @output.puts ""
+        @output.puts "  These hooks would be added:"
+        @hook_installer.preview(installable.first, HOOK_COMMAND)
+
+        return unless hooks || confirm?(installable)
+
+        installable.each do |provider|
+          @hook_installer.install(provider, project_root, HOOK_COMMAND, dry_run: dry_run)
+        end
+      end
+
+      def report_agents(detected, missing, project_root)
+        detected.each do |provider|
+          status = if provider.supports_hooks?
+            @hook_installer.settings_path_for(provider, project_root)
+          else
+            "no hook support yet -- monitored by pane activity only"
+          end
+          @output.puts "  found   #{provider.label.ljust(12)} #{status}"
+        end
+        missing.each do |provider|
+          @output.puts "  absent  #{provider.label.ljust(12)} (#{provider.executable} not on PATH)"
+        end
+      end
+
+      def confirm?(providers)
+        names = providers.map(&:label).join(", ")
+        @output.print "  Install these hooks for #{names}? [y/N] "
+        @input.gets&.strip&.downcase == "y"
+      end
 
       def ensure_tmuxinator_dir(dry_run)
         tmuxinator_dir = @config.tmuxinator_dir
