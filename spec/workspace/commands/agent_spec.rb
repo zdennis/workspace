@@ -165,19 +165,22 @@ RSpec.describe Workspace::Commands::Agent do
       expect(File.exist?(agent_socket_path)).to be false
     end
 
-    it "reports clearly when the coordinator cannot be reached" do
-      expect(agent.call(name: "myapp")).to be false
-      expect(error_output.string).to include("Could not reach work-coordinator")
-      expect(File.exist?(agent_socket_path)).to be false
+    it "starts and keeps serving when the coordinator cannot be reached" do
+      run_agent do
+        expect(error_output.string).to include("Could not reach work-coordinator")
+        expect(error_output.string).to include("work-coordinator unavailable; will keep retrying in the background")
+        expect(File.socket?(agent_socket_path)).to be true
+      end
     end
 
-    it "reports clearly when the coordinator refuses the registration" do
+    it "starts and keeps serving when the coordinator refuses the registration" do
       coordinator.reply = {"ok" => false, "error" => "already_registered"}
       coordinator.start
 
-      expect(agent.call(name: "myapp")).to be false
-      expect(error_output.string).to include("already_registered")
-      expect(File.exist?(agent_socket_path)).to be false
+      run_agent do
+        expect(error_output.string).to include("already_registered")
+        expect(File.socket?(agent_socket_path)).to be true
+      end
     end
 
     context "when the workspace has a pipeline configured" do

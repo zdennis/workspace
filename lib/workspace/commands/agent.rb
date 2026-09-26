@@ -94,7 +94,8 @@ module Workspace
         recover_in_flight
 
         epoch = @epoch_generator.call
-        return false unless register(name, socket_path, epoch, wc_socket)
+        registered = register(name, socket_path, epoch, wc_socket)
+        @error_output.puts "workspace agent: work-coordinator unavailable; will keep retrying in the background" unless registered
 
         @server = UNIXServer.new(socket_path)
         install_signal_handlers
@@ -103,7 +104,7 @@ module Workspace
         @session_monitor.start
 
         @output.puts "workspace agent '#{name}' ready"
-        watcher = start_socket_watcher(socket_path)
+        watcher = start_socket_watcher(socket_path, needs_registration: !registered)
         serve
 
         true
@@ -574,9 +575,8 @@ module Workspace
         )
       end
 
-      def start_socket_watcher(socket_path)
+      def start_socket_watcher(socket_path, needs_registration: false)
         Thread.new do
-          needs_registration = false
           loop do
             # Woken by shutdown rather than slept through, so a terminating
             # agent does not wait out a whole poll interval to exit.
@@ -618,10 +618,10 @@ module Workspace
         )
         return true if reply["ok"]
 
-        @error_output.puts "workspace agent: work-coordinator refused re-registration: #{reply["error"]}"
+        Warn.puts(@error_output, "workspace agent: work-coordinator refused re-registration: #{reply["error"]}")
         false
       rescue Workspace::Error => e
-        @error_output.puts "workspace agent: could not re-register with work-coordinator: #{e.message}"
+        Warn.puts(@error_output, "workspace agent: could not re-register with work-coordinator: #{e.message}")
         false
       end
 
