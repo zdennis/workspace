@@ -670,7 +670,7 @@ module Workspace
         opts.separator ""
         opts.separator "Options:"
         opts.on("--pane N", String,
-          "Target pane: zero-based index, 'bottom', or a title substring (e.g. 'Claude Code')") do |n|
+          "Target pane: zero-based index, 'window.pane' (from 'workspace sessions'), 'bottom', or a title substring (e.g. 'Claude Code')") do |n|
           pane_opt = n
         end
         opts.on("--lines N", Integer,
@@ -1104,10 +1104,7 @@ module Workspace
     end
 
     def agent_running?(project)
-      UNIXSocket.open(@config.agent_socket_path(project), &:close)
-      true
-    rescue SystemCallError
-      false
+      @config.agent_running?(project)
     end
 
     def cmd_run_and_report(args)

@@ -1,4 +1,5 @@
 require "fileutils"
+require "socket"
 
 module Workspace
   # Centralizes all path constants and configuration for the workspace CLI.
@@ -84,6 +85,21 @@ module Workspace
     # @return [String] path to the agent's own Unix socket
     def agent_socket_path(name)
       File.join(socket_dir, "workspace-#{name}.sock")
+    end
+
+    # @param name [String] the workspace name
+    # @return [String] path to the agent's daemon log file, when launched in the background
+    def agent_log_path(name)
+      File.join(socket_dir, "workspace-#{name}.log")
+    end
+
+    # @param name [String] the workspace name
+    # @return [Boolean] whether an agent is currently listening on this workspace's socket
+    def agent_running?(name)
+      UNIXSocket.open(agent_socket_path(name), &:close)
+      true
+    rescue SystemCallError
+      false
     end
 
     # Pipeline state outlives the agent process, so it lives under the XDG state

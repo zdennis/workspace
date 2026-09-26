@@ -14,6 +14,11 @@ RSpec.describe Workspace::Commands::Launch do
   let(:output) { StringIO.new }
   let(:error_output) { StringIO.new }
 
+  before do
+    allow(Process).to receive(:spawn).and_return(999)
+    allow(Process).to receive(:detach)
+  end
+
   let(:iterm) { double("iterm") }
   let(:window_manager) { double("window_manager") }
   let(:tmux) { double("tmux") }
@@ -28,6 +33,7 @@ RSpec.describe Workspace::Commands::Launch do
       tmux: tmux,
       project_config: project_config,
       window_layout: window_layout,
+      config: config,
       output: output,
       error_output: error_output
     )
@@ -70,6 +76,36 @@ RSpec.describe Workspace::Commands::Launch do
         expect(iterm).to have_received(:relaunch_in_session).with("uid-1", "tmuxinator start proj1 --attach")
         expect(output.string).to include("Reusing existing pane for proj1")
         expect(output.string).not_to include("Creating")
+      end
+
+      it "starts the session monitor daemon for the project" do
+        allow(config).to receive(:agent_running?).with("proj1").and_return(false)
+        allow(config).to receive(:agent_log_path).with("proj1").and_return("/tmp/workspace-proj1.log")
+
+        command.call(["proj1"])
+
+        expect(Process).to have_received(:spawn).with(
+          $PROGRAM_NAME, "agent", "--name", "proj1",
+          out: "/tmp/workspace-proj1.log", err: "/tmp/workspace-proj1.log", in: File::NULL
+        )
+        expect(Process).to have_received(:detach).with(999)
+      end
+
+      it "skips starting the daemon when one is already running" do
+        allow(config).to receive(:agent_running?).with("proj1").and_return(true)
+
+        command.call(["proj1"])
+
+        expect(Process).not_to have_received(:spawn)
+      end
+
+      it "warns and continues when the daemon fails to start" do
+        allow(config).to receive(:agent_running?).with("proj1").and_return(false)
+        allow(Process).to receive(:spawn).and_raise(Errno::ENOENT, "workspace")
+
+        command.call(["proj1"])
+
+        expect(error_output.string).to include("Could not start session monitor for proj1")
       end
     end
 
