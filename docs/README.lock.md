@@ -18,7 +18,7 @@ workspace lock clear   [<name>|--all]
 | `--task TEXT` | Free-text description shown to other waiters (e.g. `"PROJ-12 fix login"`) |
 | `--wait` | Enqueue and poll instead of refusing immediately when the lock is busy |
 | `--poll SECS` | Seconds between polls while waiting (default: 5) |
-| `--max-wait DURATION` | Give up after `DURATION` seconds (exit 75); re-run to keep waiting |
+| `--max-wait DURATION` | Stop waiting after `DURATION` seconds (exit 75); re-run to keep waiting |
 
 ## Options (release / clear)
 
@@ -33,7 +33,7 @@ workspace lock clear   [<name>|--all]
 | 0 | Acquired |
 | 1 | Held by someone else (no `--wait`) |
 | 4 | Cleared by someone else while waiting |
-| 5 | This agent already holds or waits for a different lock (the deadlock rule) |
+| 5 | This agent already holds or waits for a different lock (the deadlock rule) — release it first |
 | 75 | Still queued after `--max-wait`; re-run to keep waiting |
 
 ## Details
@@ -55,7 +55,13 @@ Trying to obtain workspace edit lock (position 2 of 3, held by %12 "PROJ-12 fix 
 Acquired edit lock. Release with: workspace lock release edit
 ```
 
+(`%12` is a tmux pane id, identifying which pane holds or is waiting for the lock.)
+
+**`--max-wait` is when to stop waiting, not a hard deadline** — it bounds how long `acquire --wait` polls, not how long the lock stays reserved for this waiter. If the queue promotes this waiter to holder at the instant the deadline fires, `acquire` claims the lock and exits 0 holding it rather than discarding a promotion it just won. A caller that treats exit 75 as "definitely still queued" and exit 0 as "definitely got it early" is therefore always correct; there is no window where the process exits nonzero while secretly holding the lock. Because of this, agents are expected to run `workspace lock acquire --wait` in the background and treat the process's exit — not the printed message — as the signal for whether the lock was obtained: check the exit code (or poll `workspace lock status`) rather than racing the wait loop's own timing.
+
 **SIGINT/SIGTERM** — interrupting a queued `acquire --wait` removes its queue entry before exiting.
+
+**`release`/`clear` are idempotent** — both exit 0 even when there was nothing to release or clear (releasing a lock this agent doesn't hold, or clearing a name with no entry), and say so in their output rather than treating it as an error. A future `--json` flag (planned) will let a caller distinguish "nothing to do" from "released/cleared something" without parsing prose.
 
 **`clear`** — removes a lock's holder and queue unconditionally, with no liveness check and no confirmation prompt. Use it to recover from a stuck lock. Clearing `devenv` also stops the dev environment: SIGTERM to its wrapper, then SIGKILL to its process group after `dev.stop_timeout` — but only while the wrapper's pid still matches its recorded start time, so a reused process group is never signalled (see [`workspace dev`](README.dev.md)).
 

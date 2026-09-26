@@ -773,14 +773,23 @@ module Workspace
           --task TEXT       Free-text description shown to other waiters
           --wait            Enqueue and poll instead of refusing when busy
           --poll SECS       Seconds between polls while waiting (default: #{Commands::Lock::DEFAULT_POLL_SECONDS})
-          --max-wait DUR    Give up after DUR seconds (exit 75; re-run to keep waiting)
+          --max-wait DUR    Stop waiting after DUR seconds (exit 75; re-run to keep
+                            waiting). This is when to give up polling, not a hard
+                            deadline: if promoted to holder at the instant DUR
+                            elapses, acquire still exits 0 holding the lock. Run
+                            `acquire --wait` in the background and treat the
+                            process's exit code as the signal, not the printed
+                            message.
 
         Exit codes (acquire):
           0   acquired
           1   held by someone else (no --wait)
           4   cleared by someone else while waiting
           5   this agent already holds or waits for a different lock
+              (release it first)
           75  still queued after --max-wait
+
+        Note: release/clear exit 0 even when nothing was held/cleared.
 
         Examples:
           workspace lock acquire edit --wait --task "PROJ-12 fix login"
