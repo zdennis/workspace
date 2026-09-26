@@ -65,8 +65,15 @@ RSpec.describe Workspace::DevRunner do
     let(:trap) { ->(signal, handler) { traps.fetch(signal, "DEFAULT").tap { traps[signal] = handler } } }
     let(:liveness) { FakeLockIdentity.new(pid: Process.pid) }
 
-    def runner(store: fake_store, **opts)
-      described_class.new(store: store, liveness: liveness, output: output, env: {"TMUX_PANE" => "%7"}, trap: trap, **opts)
+    let(:kills) { [] }
+
+    def runner(**opts)
+      described_class.new(liveness: liveness, output: output, env: {"TMUX_PANE" => "%7"}, trap: trap,
+        pgrp: -> { Process.pid }, kill: ->(signal, target) { kills << [signal, target] }, sleeper: ->(_) {}, **opts)
+    end
+
+    def run_with(store: fake_store, **opts)
+      runner(**opts.slice(:spawner, :kill, :pgrp, :sleeper)).call(store: store, **opts.except(:spawner, :kill, :pgrp, :sleeper))
     end
 
     it "records a process-kind holder with its pgid, branch, pane and worktree" do
@@ -76,14 +83,14 @@ RSpec.describe Workspace::DevRunner do
         Process.spawn("/bin/sh", "-c", command, chdir: chdir)
       end
 
-      runner(spawner: spawner).call(command: "true", worktree: worktree, branch: "login")
+      run_with(spawner: spawner, command: "true", worktree: worktree, branch: "login")
 
       expect(seen).to include("kind" => "process", "pid" => Process.pid, "started" => "start-#{Process.pid}",
-        "pgid" => Process.getpgrp, "pane" => "%7", "worktree" => worktree, "branch" => "login")
+        "pgid" => Process.pid, "pane" => "%7", "worktree" => worktree, "branch" => "login")
     end
 
     it "runs through the shell in the worktree root and releases the lock on normal exit" do
-      code = runner.call(command: "pwd -P > out.txt; exit 3", worktree: worktree)
+      code = run_with(command: "pwd -P > out.txt; exit 3", worktree: worktree)
 
       expect(code).to eq(3)
       expect(File.read(File.join(worktree, "out.txt")).strip).to eq(File.realpath(worktree))
@@ -91,7 +98,7 @@ RSpec.describe Workspace::DevRunner do
     end
 
     it "prints one header line and one exit-status line" do
-      runner.call(command: "exit 0", worktree: worktree)
+      run_with(command: "exit 0", worktree: worktree)
 
       expect(output.string.lines).to eq([
         "[workspace] devenv lock held for #{worktree}; running: exit 0\n",
@@ -100,7 +107,7 @@ RSpec.describe Workspace::DevRunner do
     end
 
     it "releases the lock when the child crashes" do
-      code = runner.call(command: "kill -USR1 $$", worktree: worktree)
+      code = run_with(command: "kill -USR1 $$", worktree: worktree)
 
       expect(code).to eq(128 + Signal.list["USR1"])
       expect(output.string).to include("exited on SIGUSR1")
@@ -108,7 +115,7 @@ RSpec.describe Workspace::DevRunner do
     end
 
     it "releases the lock when the command cannot be started" do
-      expect { runner.call(command: "true", worktree: File.join(tmpdir, "missing")) }
+      expect { run_with(command: "true", worktree: File.join(tmpdir, "missing")) }
         .to raise_error(Workspace::Error, /cannot run true/)
       expect(devenv_holder).to be_nil
     end
@@ -120,23 +127,108 @@ RSpec.describe Workspace::DevRunner do
         Process.spawn("/bin/sh", "-c", command, chdir: chdir)
       end
 
-      runner(spawner: spawner).call(command: "true", worktree: worktree)
+      run_with(spawner: spawner, command: "true", worktree: worktree)
 
       expect(during.keys).to contain_exactly("INT", "TERM", "HUP")
       expect(during.values).to all(be_a(Proc))
       expect(traps.values).to all(eq("DEFAULT"))
     end
 
-    it "forwards a TERM that arrives before the child is spawned" do
+    it "forwards a TERM that arrives before the child is spawned to its own process group, ignoring its own copy" do
+      child = nil
       spawner = lambda do |command, chdir|
         traps["TERM"].call
-        Process.spawn("/bin/sh", "-c", command, chdir: chdir)
+        child = Process.spawn("/bin/sh", "-c", command, chdir: chdir)
+      end
+      kill = lambda do |signal, target|
+        kills << [signal, target, traps[signal]]
+        Process.kill(signal, child)
       end
 
-      code = runner(spawner: spawner).call(command: "exec sleep 5", worktree: worktree)
+      code = run_with(spawner: spawner, kill: kill, command: "exec sleep 5", worktree: worktree)
 
       expect(code).to eq(128 + Signal.list["TERM"])
+      expect(kills).to eq([["TERM", -Process.pid, "IGNORE"]])
+      expect(traps["TERM"]).to eq("DEFAULT")
       expect(devenv_holder).to be_nil
+    end
+
+    it "forwards each signal to the group only once" do
+      child = nil
+      handler = nil
+      spawner = lambda do |command, chdir|
+        handler = traps["TERM"]
+        handler.call
+        child = Process.spawn("/bin/sh", "-c", command, chdir: chdir)
+      end
+      kill = lambda do |signal, target|
+        kills << [signal, target]
+        handler.call
+        Process.kill(signal, child)
+      end
+
+      run_with(spawner: spawner, kill: kill, command: "exec sleep 5", worktree: worktree)
+
+      expect(kills).to eq([["TERM", -Process.pid]])
+    end
+
+    it "refuses to run unless it leads its own process group" do
+      spawner = ->(*) { raise "should not spawn" }
+
+      expect { run_with(pgrp: -> { Process.pid + 1 }, spawner: spawner, command: "true", worktree: worktree) }
+        .to raise_error(Workspace::Error, /must lead its own process group/)
+      expect(devenv_holder).to be_nil
+    end
+
+    describe "with wait: true" do
+      let(:other) { {kind: "process", pid: 4242, started: "s", pgid: 4242, pane: "%3", worktree: "/w/other", branch: "main"} }
+
+      def hold_as_other(store)
+        store.acquire("devenv", identity: other, waiter_pid: 4242, waiter_started: "s")
+      end
+
+      it "queues behind the holder, then runs once promoted with its process fields intact" do
+        store = fake_store
+        hold_as_other(store)
+        seen = nil
+        sleeper = ->(_) { store.release("devenv", 4242) }
+        spawner = lambda do |command, chdir|
+          seen = devenv_holder(store)
+          Process.spawn("/bin/sh", "-c", command, chdir: chdir)
+        end
+
+        code = run_with(store: store, sleeper: sleeper, spawner: spawner, command: "true", worktree: worktree, branch: "login", wait: true)
+
+        expect(code).to eq(0)
+        expect(seen).to include("kind" => "process", "pid" => Process.pid, "pgid" => Process.pid, "branch" => "login", "worktree" => worktree)
+        expect(output.string).to start_with("[workspace] Trying to obtain workspace devenv lock...\n")
+        expect(devenv_holder(store)).to be_nil
+      end
+
+      it "returns 4 without running when the lock is cleared while queued" do
+        store = fake_store
+        hold_as_other(store)
+        sleeper = ->(_) { store.clear("devenv") }
+
+        code = run_with(store: store, sleeper: sleeper, spawner: ->(*) { raise "should not spawn" },
+          command: "true", worktree: worktree, wait: true)
+
+        expect(code).to eq(4)
+        expect(output.string).to include("devenv lock was cleared while waiting")
+      end
+
+      it "leaves the queue when interrupted while waiting" do
+        store = fake_store
+        hold_as_other(store)
+        sleeper = ->(_) { traps["TERM"].call }
+
+        code = run_with(store: store, sleeper: sleeper, spawner: ->(*) { raise "should not spawn" },
+          command: "true", worktree: worktree, wait: true)
+
+        expect(code).to eq(128 + Signal.list["TERM"])
+        expect(store.status("devenv").dig("devenv", "queue")).to be_empty
+        expect(traps.values).to all(eq("DEFAULT"))
+      end
     end
 
     it "fails cleanly without spawning when another holder has the lock" do
@@ -145,7 +237,7 @@ RSpec.describe Workspace::DevRunner do
         waiter_pid: 4242, waiter_started: "s")
       spawner = ->(*) { raise "should not spawn" }
 
-      expect { runner(store: store, spawner: spawner).call(command: "true", worktree: worktree) }
+      expect { run_with(store: store, spawner: spawner, command: "true", worktree: worktree) }
         .to raise_error(Workspace::Error, "devenv lock is held by pid 4242 (pane %3, worktree /w/other, branch main)")
       expect(devenv_holder(store)["pid"]).to eq(4242)
       expect(output.string).to be_empty
@@ -154,7 +246,7 @@ RSpec.describe Workspace::DevRunner do
     it "raises when its own start time cannot be read" do
       allow(liveness).to receive(:start_time).and_return(nil)
 
-      expect { runner.call(command: "true", worktree: worktree) }.to raise_error(Workspace::Error, /start time/)
+      expect { run_with(command: "true", worktree: worktree) }.to raise_error(Workspace::Error, /start time/)
     end
   end
 
@@ -167,9 +259,9 @@ RSpec.describe Workspace::DevRunner do
         dir, command, worktree = ARGV
         liveness = Workspace::LockHolder.new
         store = Workspace::LockStore.new(dir: dir, liveness: liveness)
-        runner = Workspace::DevRunner.new(store: store, liveness: liveness, env: {"TMUX_PANE" => "%9"})
+        runner = Workspace::DevRunner.new(liveness: liveness, env: {"TMUX_PANE" => "%9"}, poll: 0.1)
         begin
-          exit runner.call(command: command, worktree: worktree, branch: "login")
+          exit runner.call(store: store, command: command, worktree: worktree, branch: "login", wait: ENV["DEV_WAIT"] == "1")
         rescue Workspace::Error => e
           warn e.message
           exit 1
@@ -210,6 +302,37 @@ RSpec.describe Workspace::DevRunner do
       expect(status.exitstatus).to eq(128 + Signal.list["TERM"])
       expect { Process.kill(0, child) }.to raise_error(Errno::ESRCH)
       expect(devenv_holder(real_store)).to be_nil
+    end
+
+    it "reaches the whole group with exactly one SIGTERM when only the wrapper is signalled" do
+      script = 'n = 0; trap("TERM") { n += 1 }; File.write("child.pid", $$.to_s); sleep 0.05 until n > 0; sleep 0.5; File.write("terms.txt", n.to_s)'
+      pid = spawn_wrapper(%(sleep 30 & echo $! > grandchild.pid; #{RbConfig.ruby} -e '#{script}'))
+      wait_for_child_marker("child.pid")
+      grandchild = wait_for_child_marker("grandchild.pid")
+
+      Process.kill("TERM", pid)
+      exit_status(pid)
+
+      expect(wait_until { File.read(File.join(worktree, "terms.txt")) if File.exist?(File.join(worktree, "terms.txt")) }).to eq("1")
+      expect { Process.kill(0, grandchild) }.to raise_error(Errno::ESRCH)
+      expect(devenv_holder(real_store)).to be_nil
+    end
+
+    it "queues behind a live holder with wait and runs once it releases" do
+      holder = real_store.acquire("devenv", identity: {kind: "agent", pid: Process.pid, started: Workspace::LockHolder.new.start_time},
+        waiter_pid: Process.pid, waiter_started: "x")
+      expect(holder).to eq(status: :acquired)
+      log = File.join(tmpdir, "wrapper.log")
+      pid = Process.spawn({"SKIP_SIMPLECOV" => "1", "DEV_WAIT" => "1"}, *wrapper_argv("echo $$ > child.pid; exec sleep 30"),
+        pgroup: true, in: File::NULL, out: log, err: log)
+      spawned << [pid, pid]
+      wait_until { File.read(log).include?("Trying to obtain workspace devenv lock") }
+      expect(File.exist?(File.join(worktree, "child.pid"))).to be(false)
+
+      real_store.release("devenv", Process.pid)
+      wait_for_child_marker("child.pid")
+
+      expect(devenv_holder(real_store)).to include("pid" => pid, "kind" => "process", "pgid" => pid, "branch" => "login")
     end
 
     it "leaves a SIGKILLed wrapper's lock to dead-pid reaping" do
@@ -346,6 +469,49 @@ RSpec.describe Workspace::ProcessGroupTerminator do
     sleep 0.3
 
     expect(described_class.new.terminate(pgid, stop_timeout: 1)).to eq(:not_running)
+  end
+
+  it "sends SIGTERM to the leader alone when given one, and SIGKILL to the group after stop_timeout" do
+    Dir.mktmpdir do |dir|
+      marker = File.join(dir, "child-term")
+      child = %(trap("TERM") { File.write(#{marker.inspect}, "x") }; sleep 30)
+      reader, writer = IO.pipe
+      pid = Process.spawn(RbConfig.ruby, "-e",
+        %(Process.spawn(RbConfig.ruby, "-e", #{child.inspect}); trap("TERM") { exit }; puts "ready"; $stdout.flush; sleep 30),
+        pgroup: true, in: File::NULL, out: writer)
+      writer.close
+      spawned << pid
+      Process.detach(pid)
+      reader.gets
+      sleep 0.2
+
+      result = described_class.new(poll_interval: 0.05).terminate(pid, stop_timeout: 0.5, leader: pid)
+
+      expect(result).to eq(:killed)
+      expect(File.exist?(marker)).to be(false)
+    ensure
+      reader&.close
+    end
+  end
+
+  describe "#stop_holder" do
+    it "signals nothing when the holder's pid and start time no longer match" do
+      pgid = spawn_group("sleep 30")
+      liveness = FakeLockLiveness.new(dead: [pgid])
+
+      result = described_class.new.stop_holder({"pid" => pgid, "started" => "s", "pgid" => pgid}, liveness: liveness, stop_timeout: 1)
+
+      expect(result).to eq(:gone)
+      expect(described_class.new.running?(pgid)).to be(true)
+    end
+
+    it "stops a live holder's group through its wrapper pid" do
+      pgid = spawn_group("sleep 30")
+
+      result = described_class.new.stop_holder({"pid" => pgid, "started" => "s", "pgid" => pgid}, liveness: FakeLockLiveness.new, stop_timeout: 5)
+
+      expect(result).to eq(:terminated)
+    end
   end
 
   it "refuses to signal its own process group or pgid <= 1" do

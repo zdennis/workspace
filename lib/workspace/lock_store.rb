@@ -16,7 +16,8 @@ module Workspace
   # process, for the dev-environment lock in a later PR) — both are stored
   # and reaped identically, since liveness only depends on pid + start time.
   # A process holder also records its "pgid" and "branch", so `dev down`,
-  # `--takeover` and `lock clear` can signal its whole process group.
+  # `--takeover` and `lock clear` can signal its whole process group; a
+  # queued process waiter carries the same fields into its promotion.
   class LockStore
     # @param dir [String] this namespace's lock store directory
     # @param liveness [Workspace::LockHolder] checks whether a recorded pid is still alive
@@ -328,7 +329,7 @@ module Workspace
         "worktree" => identity[:worktree],
         "task" => task,
         "enqueued_at" => now_iso
-      }
+      }.merge(process_fields(identity))
     end
 
     def build_holder(identity, task, waiter_pid: nil)
@@ -347,7 +348,7 @@ module Workspace
 
     def process_fields(identity)
       return {} unless identity[:kind] == "process"
-      {"pgid" => identity[:pgid], "branch" => identity[:branch]}
+      {"kind" => "process", "pgid" => identity[:pgid], "branch" => identity[:branch]}
     end
 
     def within_liveness_snapshot(&block)
@@ -384,11 +385,13 @@ module Workspace
         next unless waiter_alive?(candidate)
         entry["holder"] = build_holder(
           {
-            kind: "agent",
+            kind: candidate["kind"] || "agent",
             pid: candidate["agent_pid"],
             started: candidate["agent_started"],
             pane: candidate["pane"],
-            worktree: candidate["worktree"]
+            worktree: candidate["worktree"],
+            pgid: candidate["pgid"],
+            branch: candidate["branch"]
           },
           candidate["task"],
           waiter_pid: candidate["waiter_pid"]
