@@ -129,6 +129,47 @@ module Workspace
       stdout.strip.lines.map { |l| l.strip.to_i }.sort
     end
 
+    # Names the tmux session a pane belongs to.
+    #
+    # Hooks run inside a pane and inherit TMUX_PANE, so this is how a hook
+    # discovers which workspace it is reporting for without being told.
+    #
+    # @param pane_id [String] a tmux pane id (e.g. "%23")
+    # @return [String, nil] the session name, or nil if the pane is gone
+    def session_name_for_pane(pane_id)
+      stdout, _, status = Open3.capture3(
+        "tmux", "display-message", "-p", "-t", pane_id, "\#{session_name}"
+      )
+      return nil unless status.success?
+      name = stdout.strip
+      name.empty? ? nil : name
+    end
+
+    # Lists panes with the attributes session monitoring needs.
+    #
+    # Unlike {#panes}, entries carry the tmux pane id (\%23), which stays with a
+    # pane for its whole life. Indices shift whenever a pane is split or closed,
+    # so anything that remembers a pane across time must key on the id.
+    #
+    # @param session_name [String] tmux session name
+    # @param window [String] window index (default "0")
+    # @return [Array<Hash>] :id, :index, :pid, :title, :command, :cwd per pane
+    def pane_details(session_name, window: "0")
+      target = "#{session_name}:#{window}"
+      format = ["pane_id", "pane_index", "pane_pid", "pane_current_command",
+        "pane_current_path", "pane_title"].map { |f| "\#{#{f}}" }.join("\t")
+      @logger.debug { "tmux: listing pane details for #{target}" }
+      stdout, _, status = Open3.capture3("tmux", "list-panes", "-t", target, "-F", format)
+      return [] unless status.success?
+
+      stdout.lines.filter_map do |line|
+        id, index, pid, command, cwd, title = line.chomp.split("\t", 6)
+        next if id.nil? || id.empty?
+        {id: id, index: index.to_i, pid: pid.to_i, command: command.to_s,
+         cwd: cwd.to_s, title: title.to_s}
+      end
+    end
+
     # Finds the first pane whose title contains the given string (case-insensitive).
     # Useful for locating panes by process name or displayed title.
     #

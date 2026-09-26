@@ -1,4 +1,5 @@
 require "tmpdir"
+require "json"
 
 RSpec.describe Workspace::Commands::Init do
   let(:tmpdir) { Dir.mktmpdir }
@@ -9,8 +10,16 @@ RSpec.describe Workspace::Commands::Init do
   let(:error_output) { StringIO.new }
   let(:config) { Workspace::Config.new(workspace_dir: workspace_dir) }
 
+  let(:input) { StringIO.new("") }
+  let(:backup) { Workspace::FileBackup.new(output: output) }
+  let(:hook_installer) { Workspace::HookInstaller.new(backup: backup, output: output, input: input) }
+  # Default to a machine with no agents installed so the hook phase stays out of
+  # the way of the template tests; the hook contexts override it.
+  let(:which) { ->(_exe) { false } }
+
   subject(:command) do
-    described_class.new(config: config, output: output, error_output: error_output)
+    described_class.new(config: config, hook_installer: hook_installer, which: which,
+      output: output, error_output: error_output, input: input)
   end
 
   before do
@@ -25,6 +34,115 @@ RSpec.describe Workspace::Commands::Init do
     FileUtils.mkdir_p(templates_dir)
     Workspace::Commands::Init::TEMPLATES.each do |template|
       File.write(File.join(templates_dir, template), "#{template} content")
+    end
+  end
+
+  describe "agent session hooks" do
+    let(:project_root) { File.join(tmpdir, "project") }
+    let(:settings_path) { File.join(project_root, ".claude", "settings.json") }
+
+    before do
+      create_source_templates
+      FileUtils.mkdir_p(project_root)
+    end
+
+    context "when an agent with hook support is installed" do
+      let(:which) { ->(exe) { exe == "claude" } }
+
+      it "lists the agent and shows a shorthand summary before asking" do
+        command.call(project_root: project_root)
+
+        expect(output.string).to include("found   Claude Code")
+        expect(output.string).to include("Would add: ")
+        expect(output.string).to include("SubagentStop")
+        expect(output.string).to include("[v]iew, [i]nstall for Claude Code, or [n]othing?")
+      end
+
+      it "leaves the settings alone when the user declines" do
+        input.string = "n\n"
+
+        command.call(project_root: project_root)
+
+        expect(File.exist?(settings_path)).to be false
+      end
+
+      it "prints the full hook JSON when the user asks to view it, then re-prompts" do
+        input.string = "v\nn\n"
+
+        command.call(project_root: project_root)
+
+        expect(output.string).to include("\"type\": \"command\"")
+        expect(File.exist?(settings_path)).to be false
+      end
+
+      it "installs when the user agrees" do
+        input.string = "i\n"
+
+        command.call(project_root: project_root)
+
+        expect(JSON.parse(File.read(settings_path))["hooks"]).to include("SubagentStop")
+      end
+
+      it "installs after viewing, and re-prompts between the two" do
+        input.string = "v\ni\n"
+
+        command.call(project_root: project_root)
+
+        expect(output.string.scan("[v]iew, [i]nstall").size).to eq(2)
+        expect(JSON.parse(File.read(settings_path))["hooks"]).to include("SubagentStop")
+      end
+
+      it "treats an unrecognized answer as declining" do
+        input.string = "x\n"
+
+        command.call(project_root: project_root)
+
+        expect(File.exist?(settings_path)).to be false
+      end
+
+      it "declines without error when stdin is closed" do
+        input.string = ""
+
+        command.call(project_root: project_root)
+
+        expect(File.exist?(settings_path)).to be false
+      end
+
+      it "installs without asking when hooks are pre-approved" do
+        command.call(project_root: project_root, hooks: true)
+
+        expect(File.exist?(settings_path)).to be true
+        expect(output.string).not_to include("[v]iew")
+      end
+
+      it "skips the phase entirely when hooks are declined up front" do
+        command.call(project_root: project_root, hooks: false)
+
+        expect(output.string).not_to include("Session monitoring agents")
+        expect(File.exist?(settings_path)).to be false
+      end
+    end
+
+    context "when the only installed agent has no hook support" do
+      let(:which) { ->(exe) { exe == "codex" } }
+
+      it "reports it as monitored by pane activity and installs nothing" do
+        command.call(project_root: project_root)
+
+        expect(output.string).to include("found   Codex")
+        expect(output.string).to include("no hook support yet")
+        expect(output.string).to include("nothing to install")
+        expect(output.string).not_to include("Install these hooks")
+      end
+    end
+
+    context "when no agent is installed" do
+      it "reports each one as absent" do
+        command.call(project_root: project_root)
+
+        expect(output.string).to include("absent  Claude Code")
+        expect(output.string).to include("nothing to install")
+      end
     end
   end
 

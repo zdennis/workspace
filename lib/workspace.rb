@@ -3,6 +3,7 @@ require "json"
 require "fileutils"
 require "time"
 require_relative "workspace/version"
+require_relative "workspace/warn"
 require_relative "workspace/logger"
 require_relative "workspace/config"
 require_relative "workspace/event_log"
@@ -16,8 +17,15 @@ require_relative "workspace/iterm"
 require_relative "workspace/window_manager"
 require_relative "workspace/window_layout"
 require_relative "workspace/project_settings"
+require_relative "workspace/process_tree"
+require_relative "workspace/session_monitor"
+require_relative "workspace/agent_provider"
+require_relative "workspace/file_backup"
+require_relative "workspace/hook_installer"
 require_relative "workspace/hook_runner"
 require_relative "workspace/project_detector"
+require_relative "workspace/commands/sessions"
+require_relative "workspace/commands/session_event"
 require_relative "workspace/commands/init"
 require_relative "workspace/commands/claude"
 require_relative "workspace/commands/launch"
@@ -72,20 +80,24 @@ module Workspace
     git = Git.new(output: output, input: input, logger: logger)
     project_config = ProjectConfig.new(config: config, git: git, output: output)
     window_layout = WindowLayout.new(window_manager: window_manager, config: config, output: output, logger: logger)
-    doctor = Doctor.new(config: config, state: state, output: output)
     hook_runner = HookRunner.new(project_settings: project_settings, project_config: project_config, output: output, error_output: error_output, logger: logger)
     project_detector = ProjectDetector.new(state: state, project_config: project_config)
+    file_backup = FileBackup.new(output: output)
+    hook_installer = HookInstaller.new(backup: file_backup, output: output, input: input)
+    doctor = Doctor.new(config: config, state: state, hook_installer: hook_installer, project_detector: project_detector, output: output)
 
     # Pre-build command objects so CLI delegates rather than constructs
     kill_command = Commands::Kill.new(state: state, iterm: iterm, window_manager: window_manager, tmux: tmux, output: output, error_output: error_output)
-    launch_command = Commands::Launch.new(state: state, iterm: iterm, window_manager: window_manager, tmux: tmux, project_config: project_config, window_layout: window_layout, output: output, error_output: error_output)
+    launch_command = Commands::Launch.new(state: state, iterm: iterm, window_manager: window_manager, tmux: tmux, project_config: project_config, window_layout: window_layout, config: config, output: output, error_output: error_output)
     start_command = Commands::Start.new(git: git, project_config: project_config, project_settings: project_settings, launch_command: launch_command, output: output, input: input)
     stop_command = Commands::Stop.new(git: git, project_config: project_config, project_settings: project_settings, kill_command: kill_command, project_detector: project_detector, output: output, input: input)
     focus_command = Commands::Focus.new(state: state, window_manager: window_manager, output: output)
     tile_command = Commands::Tile.new(state: state, window_manager: window_manager, window_layout: window_layout, output: output)
     layout_command = Commands::Layout.new(state: state, tmux: tmux, project_settings: project_settings, output: output)
     resize_command = Commands::Resize.new(tmux: tmux, layout_command: layout_command, output: output, error_output: error_output)
-    init_command = Commands::Init.new(config: config, output: output, error_output: error_output)
+    sessions_command = Commands::Sessions.new(config: config, output: output, error_output: error_output)
+    session_event_command = Commands::SessionEvent.new(config: config, tmux: tmux, input: input, logger: logger)
+    init_command = Commands::Init.new(config: config, hook_installer: hook_installer, output: output, error_output: error_output, input: input)
     repair_command = Commands::Repair.new(state: state, iterm: iterm, window_manager: window_manager, output: output)
     cleanup_command = Commands::Cleanup.new(state: state, window_manager: window_manager, tmux: tmux, output: output, input: input)
     prune_command = Commands::Prune.new(state: state, project_config: project_config, project_settings: project_settings, git: git, kill_command: kill_command, output: output, input: input)
@@ -150,6 +162,8 @@ module Workspace
       run_and_report_command: run_and_report_command,
       capture_command: capture_command,
       agent_command: agent_command,
+      sessions_command: sessions_command,
+      session_event_command: session_event_command,
       logger: logger,
       output: output,
       error_output: error_output,

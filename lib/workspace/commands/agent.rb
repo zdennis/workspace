@@ -36,6 +36,7 @@ module Workspace
         epoch_generator: -> { "wa-#{Agent.ulid}" },
         signal_trapper: Signal,
         sentinel_poller_factory: nil,
+        session_monitor_factory: nil,
         retry_backoff: 0.5,
         logger: Workspace::Logger.new, output: $stdout, error_output: $stderr)
         @config = config
@@ -46,6 +47,8 @@ module Workspace
         @epoch_generator = epoch_generator
         @signal_trapper = signal_trapper
         @sentinel_poller_factory = sentinel_poller_factory || method(:build_sentinel_poller)
+        @session_monitor_factory = session_monitor_factory || method(:build_session_monitor)
+        @session_monitor = nil
         @retry_backoff = retry_backoff
         @pollers = {}
         @sequences = Hash.new(0)
@@ -91,19 +94,24 @@ module Workspace
         recover_in_flight
 
         epoch = @epoch_generator.call
-        return false unless register(name, socket_path, epoch, wc_socket)
+        registered = register(name, socket_path, epoch, wc_socket)
+        @error_output.puts "workspace agent: work-coordinator unavailable; will keep retrying in the background" unless registered
 
         @server = UNIXServer.new(socket_path)
         install_signal_handlers
 
+        @session_monitor = @session_monitor_factory.call(name)
+        @session_monitor.start
+
         @output.puts "workspace agent '#{name}' ready"
-        watcher = start_socket_watcher(socket_path)
+        watcher = start_socket_watcher(socket_path, needs_registration: !registered)
         serve
 
         true
       ensure
         @shutting_down = true
         @shutdown_signal << :stop
+        @session_monitor&.stop
         watcher&.join(1)
         watcher&.kill
         shutdown(name, socket_path) if @server
@@ -224,6 +232,11 @@ module Workspace
           handle_command(message)
           reply_to(client, "ok" => true)
         when "inject" then handle_inject(message, client)
+        when "session_event"
+          @session_monitor&.record(message)
+          reply_to(client, "ok" => true)
+        when "sessions"
+          reply_to(client, @session_monitor&.snapshot || {"workspace" => @current_name, "panes" => []})
         else
           @logger.debug { "unknown message type: #{message["type"]}" }
           reply_to(client, "ok" => false, "error" => "unknown_type")
@@ -552,9 +565,18 @@ module Workspace
       # The listening fd survives that, so the agent looks healthy while no
       # caller can reach it; rebinding and re-registering is what actually
       # restores it.
-      def start_socket_watcher(socket_path)
+      def build_session_monitor(name)
+        SessionMonitor.new(
+          tmux: @tmux,
+          process_tree: ProcessTree.new(logger: @logger),
+          session_name: name,
+          logger: @logger,
+          error_output: @error_output
+        )
+      end
+
+      def start_socket_watcher(socket_path, needs_registration: false)
         Thread.new do
-          needs_registration = false
           loop do
             # Woken by shutdown rather than slept through, so a terminating
             # agent does not wait out a whole poll interval to exit.
@@ -596,10 +618,10 @@ module Workspace
         )
         return true if reply["ok"]
 
-        @error_output.puts "workspace agent: work-coordinator refused re-registration: #{reply["error"]}"
+        Warn.puts(@error_output, "workspace agent: work-coordinator refused re-registration: #{reply["error"]}")
         false
       rescue Workspace::Error => e
-        @error_output.puts "workspace agent: could not re-register with work-coordinator: #{e.message}"
+        Warn.puts(@error_output, "workspace agent: could not re-register with work-coordinator: #{e.message}")
         false
       end
 

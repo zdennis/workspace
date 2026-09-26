@@ -5,10 +5,19 @@ module Workspace
   class Doctor
     # @param config [Workspace::Config] configuration for path lookups
     # @param state [Workspace::State] state persistence for health checks
+    # @param hook_installer [Workspace::HookInstaller] checks agent hook installation
+    # @param project_detector [Workspace::ProjectDetector] detects the current project
+    # @param which [#call] returns true when an executable is on PATH
+    # @param working_dir [String] directory to detect the current project from
     # @param output [IO] output stream for results
-    def initialize(config:, state:, output: $stdout)
+    def initialize(config:, state:, hook_installer:, project_detector:, which: nil,
+      working_dir: Dir.pwd, output: $stdout)
       @config = config
       @state = state
+      @hook_installer = hook_installer
+      @project_detector = project_detector
+      @which = which || ->(exe) { system("command", "-v", exe, out: File::NULL, err: File::NULL) }
+      @working_dir = working_dir
       @output = output
     end
 
@@ -87,6 +96,7 @@ module Workspace
       end
 
       issues += check_duplicate_window_ids
+      issues += check_session_monitoring
 
       @output.puts ""
       if issues > 0
@@ -121,6 +131,36 @@ module Workspace
         @output.puts "  ✓  state: no duplicate window IDs"
         0
       end
+    end
+
+    def check_session_monitoring
+      project = @project_detector.detect(@working_dir)
+      unless project
+        @output.puts "  ⊘  session monitoring (not inside a workspace project, skipped)"
+        return 0
+      end
+
+      issues = 0
+      capable = AgentProvider.all.select { |p| p.supports_hooks? && @which.call(p.executable) }
+      if capable.empty?
+        @output.puts "  ⊘  session monitoring hooks (no hook-capable agent detected, skipped)"
+      elsif capable.any? { |p| @hook_installer.installed?(p, @working_dir, Commands::Init::HOOK_COMMAND) }
+        @output.puts "  ✓  session monitoring hooks installed for #{project}"
+      else
+        @output.puts "  ✗  session monitoring hooks not installed for #{project}"
+        @output.puts "     ↳ fix: run 'workspace init' from the project directory"
+        issues += 1
+      end
+
+      if @config.agent_running?(project)
+        @output.puts "  ✓  session monitor agent running for #{project}"
+      else
+        @output.puts "  ✗  session monitor agent not running for #{project}"
+        @output.puts "     ↳ fix: run 'workspace agent --name #{project}' (workspace launch now does this automatically)"
+        issues += 1
+      end
+
+      issues
     end
 
     def check_command(name, version_flag: "--version", version_pattern: /(\d+)/, min_major: nil, install_hint: nil)

@@ -22,14 +22,17 @@ RSpec.describe Workspace::CLI do
     project_detector = overrides[:project_detector] || Workspace::ProjectDetector.new(state: state, project_config: project_config)
 
     kill_command = overrides[:kill_command] || Workspace::Commands::Kill.new(state: state, iterm: iterm, window_manager: window_manager, tmux: tmux, output: output, error_output: error_output)
-    launch_command = overrides[:launch_command] || Workspace::Commands::Launch.new(state: state, iterm: iterm, window_manager: window_manager, tmux: tmux, project_config: project_config, window_layout: window_layout, output: output, error_output: error_output)
+    launch_command = overrides[:launch_command] || Workspace::Commands::Launch.new(state: state, iterm: iterm, window_manager: window_manager, tmux: tmux, project_config: project_config, window_layout: window_layout, config: config, output: output, error_output: error_output)
     start_command = overrides[:start_command] || Workspace::Commands::Start.new(git: git, project_config: project_config, project_settings: project_settings, launch_command: launch_command, output: output, input: input)
     stop_command = overrides[:stop_command] || Workspace::Commands::Stop.new(git: git, project_config: project_config, project_settings: project_settings, kill_command: kill_command, project_detector: project_detector, output: output, input: input)
     focus_command = overrides[:focus_command] || Workspace::Commands::Focus.new(state: state, window_manager: window_manager, output: output)
     tile_command = overrides[:tile_command] || Workspace::Commands::Tile.new(state: state, window_manager: window_manager, window_layout: window_layout, output: output)
     layout_command = overrides[:layout_command] || Workspace::Commands::Layout.new(state: state, tmux: tmux, project_settings: project_settings, output: output)
     resize_command = overrides[:resize_command] || Workspace::Commands::Resize.new(tmux: tmux, layout_command: layout_command, output: output, error_output: error_output)
-    init_command = overrides[:init_command] || Workspace::Commands::Init.new(config: config, output: output, error_output: error_output)
+    sessions_command = overrides[:sessions_command] || Workspace::Commands::Sessions.new(config: config, output: output, error_output: error_output)
+    session_event_command = overrides[:session_event_command] || Workspace::Commands::SessionEvent.new(config: config, tmux: tmux, input: input, env: {})
+    hook_installer = Workspace::HookInstaller.new(backup: Workspace::FileBackup.new(output: output), output: output, input: input)
+    init_command = overrides[:init_command] || Workspace::Commands::Init.new(config: config, hook_installer: hook_installer, which: ->(_exe) { false }, output: output, error_output: error_output, input: input)
     repair_command = overrides[:repair_command] || CLITestHelpers::FakeRepairCommand.new
     cleanup_command = overrides[:cleanup_command] || Workspace::Commands::Cleanup.new(state: state, window_manager: window_manager, tmux: tmux, output: output, input: input)
     kill_command_for_prune = instance_double(Workspace::Commands::Kill)
@@ -73,6 +76,8 @@ RSpec.describe Workspace::CLI do
       run_and_report_command: run_and_report_command,
       capture_command: capture_command,
       agent_command: agent_command,
+      sessions_command: sessions_command,
+      session_event_command: session_event_command,
       logger: logger,
       output: output,
       error_output: error_output,

@@ -14,6 +14,8 @@ Checks for all required tools (ruby, tmux, tmuxinator, iTerm2, window-tool, git)
 
 Also verifies that tmuxinator templates are installed and checks the state file for health issues such as duplicate window IDs (which can cause commands like `focus` to target the wrong project).
 
+**Session monitoring** — when run from inside a workspace project, also checks that project's session monitoring: whether a hook-capable coding agent (e.g. Claude Code) has its hooks installed for the project, and whether the [`sessions`](README.sessions.md) agent daemon is currently running for it. Skipped when not run from inside a workspace project, or when no hook-capable agent is detected on `PATH`.
+
 Exits with a non-zero status if any issues are found, so it can be used in scripts.
 
 ## Example
@@ -32,6 +34,8 @@ workspace doctor
   ✓  ascii-banner
   ✓  templates installed
   ✓  state: no duplicate window IDs
+  ✓  session monitoring hooks installed for myapp
+  ✓  session monitor agent running for myapp
 
 Everything looks good!
 ```

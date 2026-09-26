@@ -11,15 +11,17 @@ module Workspace
       # @param tmux [Workspace::Tmux] tmux session operations
       # @param project_config [Workspace::ProjectConfig] project config management
       # @param window_layout [Workspace::WindowLayout] window positioning
+      # @param config [Workspace::Config] path configuration, used to find/start the session-monitor agent
       # @param output [IO] output stream for user-facing messages
       # @param error_output [IO] error output stream for warnings
-      def initialize(state:, iterm:, window_manager:, tmux:, project_config:, window_layout:, output: $stdout, error_output: $stderr)
+      def initialize(state:, iterm:, window_manager:, tmux:, project_config:, window_layout:, config:, output: $stdout, error_output: $stderr)
         @state = state
         @iterm = iterm
         @window_manager = window_manager
         @tmux = tmux
         @project_config = project_config
         @window_layout = window_layout
+        @config = config
         @output = output
         @error_output = error_output
       end
@@ -49,6 +51,8 @@ module Workspace
         @state.save
 
         session_names = wait_for_tmux_sessions(projects)
+
+        start_session_monitors(session_names.keys)
 
         # Brief pause after tmux sessions are found but before searching for
         # iTerm windows — iTerm needs a moment to create windows for new sessions.
@@ -139,6 +143,22 @@ module Workspace
         end
 
         session_names
+      end
+
+      # Starts the session-monitor agent daemon for each project that doesn't
+      # already have one running, so `workspace sessions` has something to show
+      # without requiring a separate `workspace agent` invocation.
+      def start_session_monitors(projects)
+        projects.each do |project|
+          next if @config.agent_running?(project)
+
+          log_path = @config.agent_log_path(project)
+          pid = Process.spawn($PROGRAM_NAME, "agent", "--name", project,
+            out: log_path, err: log_path, in: File::NULL)
+          Process.detach(pid)
+        rescue SystemCallError => e
+          @error_output.puts "Warning: Could not start session monitor for #{project}: #{e.message}"
+        end
       end
 
       # Polls for iTerm windows matching each project's tmux session. Windows

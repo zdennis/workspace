@@ -2,15 +2,17 @@ module Workspace
   # Resolves a pane specification to a tmux pane index.
   #
   # Spec forms accepted:
-  #   nil / :bottom / "bottom"  → last pane in the window
-  #   Integer                   → zero-based pane index (validated against live panes)
-  #   String matching /\A\d+\z/ → same as Integer
-  #   Any other String          → case-insensitive title search via Tmux#find_pane_by_title
+  #   nil / :bottom / "bottom"       → last pane in the window
+  #   Integer                        → zero-based pane index (validated against live panes)
+  #   String matching /\A\d+\z/      → same as Integer
+  #   String matching /\A\d+\.\d+\z/ → "window.pane" (as shown by `workspace sessions`/tmux); window overrides the window: kwarg
+  #   Any other String               → case-insensitive title search via Tmux#find_pane_by_title
   #
   # @example
   #   TmuxPane.new("Claude Code", tmux: tmux).target("my-session")  # → "0.1"
   #   TmuxPane.new(2, tmux: tmux).resolve("my-session")             # → 2
   #   TmuxPane.new("bottom", tmux: tmux).resolve("my-session")      # → last index
+  #   TmuxPane.new("1.2", tmux: tmux).resolve("my-session")         # → 2 (window "1")
   class TmuxPane
     # @param spec [nil, :bottom, Integer, String] pane selector
     # @param tmux [Workspace::Tmux] tmux operations
@@ -26,24 +28,26 @@ module Workspace
     # @return [Integer] zero-based pane index
     # @raise [Workspace::Error] if pane cannot be found or is out of range
     def resolve(session_name, window: "0")
+      window, spec = split_window_pane(window)
+
       pane_list = @tmux.panes(session_name, window: window)
       raise Workspace::Error, "No panes found for session '#{session_name}'" if pane_list.empty?
 
-      case @spec
+      case spec
       when nil, :bottom, "bottom"
         pane_list.last
       when Integer
-        validate_index!(@spec, pane_list, session_name)
-        @spec
+        validate_index!(spec, pane_list, session_name)
+        spec
       when /\A\d+\z/
-        index = @spec.to_i
+        index = spec.to_i
         validate_index!(index, pane_list, session_name)
         index
       else
-        index = @tmux.find_pane_by_title(session_name, @spec.to_s, window: window)
+        index = @tmux.find_pane_by_title(session_name, spec.to_s, window: window)
         unless index
           raise Workspace::Error,
-            "No pane matching #{@spec.inspect} found in session '#{session_name}'"
+            "No pane matching #{spec.inspect} found in session '#{session_name}'"
         end
         index
       end
@@ -56,10 +60,22 @@ module Workspace
     # @return [String] target in "window.pane" form
     # @raise [Workspace::Error] if pane cannot be found or is out of range
     def target(session_name, window: "0")
+      window, = split_window_pane(window)
       "#{window}.#{resolve(session_name, window: window)}"
     end
 
     private
+
+    # Splits a "window.pane" spec into its window and pane parts, so the window
+    # embedded in the spec overrides the given default. Returns [window, spec] unchanged
+    # for any other spec form.
+    def split_window_pane(window)
+      if @spec.is_a?(String) && @spec =~ /\A(\d+)\.(\d+)\z/
+        [$1, $2.to_i]
+      else
+        [window, @spec]
+      end
+    end
 
     def validate_index!(index, pane_list, session_name)
       return if pane_list.include?(index)
