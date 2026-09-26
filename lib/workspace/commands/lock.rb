@@ -15,6 +15,9 @@ module Workspace
       # Exit code from `acquire`/`release` when this agent's hold was taken
       # over by the head waiter while the agent sat idle.
       EXIT_DISPLACED = 3
+      # Lock names end up in file keys and in commands an agent is told to run
+      # verbatim, so they are limited to characters that need no shell quoting.
+      NAME_PATTERN = /\A[A-Za-z0-9][A-Za-z0-9._-]*\z/
 
       # Seconds on a clock that never jumps backward or forward with wall-clock
       # changes, so a --max-wait deadline cannot be stretched or cut short.
@@ -69,7 +72,7 @@ module Workspace
       # @param working_dir [String] directory to resolve the lock namespace from
       # @return [Hash] {exit_code:}
       def acquire(name, task: nil, wait: false, poll: DEFAULT_POLL_SECONDS, max_wait: nil, working_dir: Dir.pwd)
-        raise Workspace::UsageError, "lock name must not be empty." if name.nil? || name.empty?
+        validate_name!(name)
         raise Workspace::UsageError, "--poll must be greater than 0." if poll.to_f <= 0
         raise Workspace::UsageError, "--max-wait must be greater than 0." if max_wait && max_wait.to_f <= 0
         store = store_for(working_dir)
@@ -108,6 +111,7 @@ module Workspace
       # @param working_dir [String] directory to resolve the lock namespace from
       # @return [Hash] {exit_code:}
       def release(name, all: false, working_dir: Dir.pwd)
+        validate_name!(name) unless name.nil?
         store = store_for(working_dir)
         identity = require_identity!
         displaced = store.pop_displaced(identity, name: all ? nil : name)
@@ -135,7 +139,7 @@ module Workspace
       # @param name [String] lock name substituted into the commands
       # @return [Hash] {exit_code:}
       def instructions(name = "edit")
-        raise Workspace::UsageError, "lock name must not be empty." if name.nil? || name.empty?
+        validate_name!(name)
         @output.puts "Before editing files, run `workspace lock acquire #{name} --wait --task \"<your task>\"` " \
           "using Bash with run_in_background. Do not edit anything until it reports \"Acquired\". " \
           "When your edits are complete, run `workspace lock release #{name}`. Never run `workspace lock clear`."
@@ -146,6 +150,7 @@ module Workspace
       # @param working_dir [String] directory to resolve the lock namespace from
       # @return [Hash] {exit_code:}
       def status(name = nil, working_dir: Dir.pwd)
+        validate_name!(name) unless name.nil?
         store = store_for(working_dir)
         entries = store.status(name)
 
@@ -173,6 +178,7 @@ module Workspace
       # @yieldparam holder [Hash, nil] the holder record being cleared
       # @return [Hash] {exit_code:}
       def clear(name, all: false, working_dir: Dir.pwd, &on_holder)
+        validate_name!(name) unless name.nil?
         namespace = @lock_namespace.resolve(cwd: working_dir)
         store = LockStore.new(dir: namespace[:dir], liveness: @lock_holder)
         names = (all && name.nil?) ? store.names : [name]
@@ -193,6 +199,12 @@ module Workspace
       end
 
       private
+
+      def validate_name!(name)
+        raise Workspace::UsageError, "lock name must not be empty." if name.nil? || name.empty?
+        return if NAME_PATTERN.match?(name)
+        raise Workspace::UsageError, "invalid lock name #{name.inspect}: use letters, digits, '.', '_' and '-', starting with a letter or digit."
+      end
 
       def store_for(working_dir)
         namespace = @lock_namespace.resolve(cwd: working_dir)

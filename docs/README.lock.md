@@ -40,6 +40,8 @@ workspace lock instructions [<name>]
 
 ## Details
 
+**Lock names** — letters, digits, `.`, `_` and `-`, starting with a letter or digit (for example `edit`, `devenv`, `db-migrate`). Every subcommand rejects any other name with a usage error, because names are pasted into the commands `instructions` tells an agent to run.
+
 **Identity** — a holder is the calling agent's process pid plus its `ps` start time, never a heartbeat. Inside tmux, the agent is found by walking down from the pane's own process (`$TMUX_PANE`); outside tmux, the nearest matching ancestor of the running process is used instead. The start time guards against PID reuse: a dead pid reused by an unrelated process is correctly treated as a different, absent holder.
 
 **Re-entrant** — acquiring a lock this agent already holds succeeds immediately (idempotent); sub-agents launched from the same pane inherit the parent agent's hold.
