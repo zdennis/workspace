@@ -95,6 +95,8 @@ workspace <subcommand> [options]
 | set-command | [README](docs/README.set-command.md) | Set the shell command for a pane in a project config |
 | repair | [README](docs/README.repair.md) | Rebuild state from live iTerm windows |
 | resize | [README](docs/README.resize.md) | Resize tmux panes for a running project |
+| session-event | [README](docs/README.session-event.md) | Forward one coding-agent hook event to a workspace's agent daemon |
+| sessions | [README](docs/README.sessions.md) | Show coding-agent sessions and sub-agents running in a project's panes |
 | start | [README](docs/README.start.md) | Create a git worktree and launch it (from JIRA key, PR/issue URL, or branch) |
 | status | [README](docs/README.status.md) | Show detailed state of tracked launcher sessions |
 | stop | [README](docs/README.stop.md) | Stop active workspace projects and their tmux sessions |

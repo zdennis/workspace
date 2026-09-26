@@ -23,6 +23,8 @@ Reuses existing launcher panes when available instead of creating new windows.
 
 You can pass either a project name (matching an existing tmuxinator config) or a directory path (which will auto-create a config).
 
+Also starts the [session-monitoring agent daemon](README.agent.md) for each launched project, unless one is already running for it. This is what powers [`workspace sessions`](README.sessions.md); run `workspace doctor` to check whether it's set up correctly for the current project.
+
 ## Notes
 
 `--reattach` uses `tmux -CC attach` which may trigger an iTerm dialog. To suppress it, set iTerm > Settings > General > tmux > "When attaching, restore windows" to "Always".
