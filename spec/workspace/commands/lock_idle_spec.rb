@@ -97,22 +97,42 @@ RSpec.describe Workspace::Commands::Lock, "idle takeover and instructions" do
     expect(error_output.string).not_to include("Still queued")
   end
 
-  it "tells the displaced holder on its next acquire, exiting 3 without queueing" do
+  it "tells the displaced holder on its next acquire, then queues it as usual" do
     take_over
     error_output.truncate(0)
     error_output.rewind
+    output.truncate(0)
+    output.rewind
 
-    result = command_for(holder_identity).acquire("edit", wait: true)
+    result = command_for(holder_identity).acquire("edit", wait: true, max_wait: 10)
 
-    expect(result).to eq(exit_code: described_class::EXIT_DISPLACED)
-    expect(result[:exit_code]).to eq(3)
+    expect(result).to eq(exit_code: 75)
     expect(error_output.string).to include("Your edit lock was taken over by %2 \"PROJ-2\" in app.worktree-b")
-    expect(error_output.string).to include("idle for 300s")
-    expect(error_output.string).to include("workspace lock acquire edit --wait")
-    status = Workspace::LockStore.new(dir: tmpdir, liveness: holder_identity).status("edit")["edit"]
-    expect(status["queue"]).to be_empty
+    expect(error_output.string).to include("idle for 300s. Trying to acquire it again.")
+    expect(output.string).to include("Trying to obtain workspace edit lock (position 1 of 2")
+  end
 
-    expect(command_for(holder_identity).acquire("edit", wait: false)).to eq(exit_code: 1)
+  it "notifies the displaced holder only once, even when its acquire then takes the freed lock" do
+    take_over
+    command_for(waiter_identity).release("edit")
+    error_output.truncate(0)
+    error_output.rewind
+
+    expect(command_for(holder_identity).acquire("edit")).to eq(exit_code: 0)
+    expect(error_output.string).to include("Your edit lock was taken over")
+    expect(output.string).to include("Acquired edit lock.")
+
+    error_output.truncate(0)
+    error_output.rewind
+    command_for(holder_identity).release("edit")
+    expect(error_output.string).to be_empty
+  end
+
+  it "reports the displacement and then the busy lock on an acquire without --wait" do
+    take_over
+
+    expect(command_for(holder_identity).acquire("edit")).to eq(exit_code: 1)
+    expect(error_output.string).to include("Your edit lock was taken over", "edit lock is held by %2")
   end
 
   it "tells the displaced holder on its next release, exiting 3 once" do

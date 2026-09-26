@@ -12,8 +12,9 @@ module Workspace
     class Lock
       DEFAULT_POLL_SECONDS = 5
       SIGNAL_CHECK_SECONDS = 0.25
-      # Exit code from `acquire`/`release` when this agent's hold was taken
-      # over by the head waiter while the agent sat idle.
+      # Exit code from `release` when this agent's hold was taken over by the
+      # head waiter while the agent sat idle, leaving nothing to release.
+      # `acquire` reports such a takeover too, then carries on as usual.
       EXIT_DISPLACED = 3
       # Lock names end up in file keys and in commands an agent is told to run
       # verbatim, so they are limited to characters that need no shell quoting.
@@ -81,11 +82,7 @@ module Workspace
         waiter_started = @lock_holder.start_time(waiter_pid)
         raise Workspace::Error, "Could not read the start time of this process (pid #{waiter_pid}) to track its place in the queue." unless waiter_started
 
-        displaced = store.pop_displaced(identity, name: name)
-        unless displaced.empty?
-          report_displaced(displaced, "Re-run `workspace lock acquire #{name} --wait` to queue for it again.")
-          return {exit_code: EXIT_DISPLACED}
-        end
+        report_displaced(store.pop_displaced(identity, name: name), "Trying to acquire it again.")
 
         result = store.acquire(name, identity: identity, waiter_pid: waiter_pid,
           waiter_started: waiter_started, task: task, wait: wait)
