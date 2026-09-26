@@ -1451,6 +1451,26 @@ RSpec.describe Workspace::CLI do
       )
     end
 
+    it "accepts durations like '9m' and '5s' for --max-wait and --poll" do
+      lock_command = CLITestHelpers::FakeLockCommand.new
+      cli, _, _ = build_test_cli(lock_command: lock_command)
+
+      cli.run(["lock", "acquire", "edit", "--wait", "--poll", "5s", "--max-wait", "9m"])
+
+      expect(lock_command.calls).to eq(
+        [{action: :acquire, name: "edit", task: nil, wait: true, poll: 5.0, max_wait: 540.0}]
+      )
+    end
+
+    it "raises a usage error instead of a backtrace for an unparsable --max-wait" do
+      lock_command = CLITestHelpers::FakeLockCommand.new
+      cli, _, error_output = build_test_cli(lock_command: lock_command)
+
+      expect { cli.run(["lock", "acquire", "edit", "--wait", "--max-wait", "nonsense"]) }
+        .to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+      expect(error_output.string).to include("--max-wait")
+    end
+
     it "exits with the acquire result's exit_code" do
       lock_command = CLITestHelpers::FakeLockCommand.new
       lock_command.result = {exit_code: 5}

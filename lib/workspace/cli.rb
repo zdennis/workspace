@@ -775,8 +775,10 @@ module Workspace
         Options (acquire):
           --task TEXT       Free-text description shown to other waiters
           --wait            Enqueue and poll instead of refusing when busy
-          --poll SECS       Seconds between polls while waiting (default: #{Commands::Lock::DEFAULT_POLL_SECONDS})
-          --max-wait DUR    Stop waiting after DUR seconds (exit 75; re-run to keep
+          --poll DURATION   Time between polls while waiting, e.g. "5s" (a plain
+                            number is seconds; default: #{Commands::Lock::DEFAULT_POLL_SECONDS})
+          --max-wait DUR    Stop waiting after DUR, e.g. "9m" (a plain number is
+                            seconds; exit 75; re-run to keep
                             waiting). This is when to give up polling, not a hard
                             deadline: if promoted to holder at the instant DUR
                             elapses, acquire still exits 0 holding the lock. Run
@@ -839,8 +841,8 @@ module Workspace
         opts.banner = "Usage: workspace lock acquire <name> [options]"
         opts.on("--task TEXT", "Free-text description shown to other waiters") { |v| task = v }
         opts.on("--wait", "Enqueue and poll instead of refusing when busy") { wait = true }
-        opts.on("--poll SECS", Float, "Seconds between polls while waiting") { |v| poll = v }
-        opts.on("--max-wait DURATION", Float, "Give up after DURATION seconds (exit 75)") { |v| max_wait = v }
+        opts.on("--poll DURATION", "Time between polls while waiting (e.g. \"5s\", or a plain number of seconds)") { |v| poll = parse_lock_duration("--poll", v) }
+        opts.on("--max-wait DURATION", "Give up after DURATION (e.g. \"9m\", or a plain number of seconds); exits 75") { |v| max_wait = parse_lock_duration("--max-wait", v) }
       end
       parser.parse!(args)
 
@@ -849,6 +851,19 @@ module Workspace
 
       result = @lock_command.acquire(name, task: task, wait: wait, poll: poll, max_wait: max_wait, working_dir: @working_dir)
       @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
+    end
+
+    # Parses a `--poll`/`--max-wait` value as a duration (e.g. "9m", "5s", or
+    # a plain number of seconds), raising a usage error instead of a
+    # backtrace on unparsable input.
+    #
+    # @param flag [String] option name, for the error message
+    # @param value [String] raw option value
+    # @return [Numeric] seconds
+    def parse_lock_duration(flag, value)
+      Workspace::DevConfig.parse_duration(value)
+    rescue ArgumentError => e
+      raise UsageError, "#{flag}: #{e.message}"
     end
 
     def cmd_lock_release(args)
