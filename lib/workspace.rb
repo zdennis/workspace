@@ -80,9 +80,11 @@ module Workspace
     git = Git.new(output: output, input: input, logger: logger)
     project_config = ProjectConfig.new(config: config, git: git, output: output)
     window_layout = WindowLayout.new(window_manager: window_manager, config: config, output: output, logger: logger)
-    doctor = Doctor.new(config: config, state: state, output: output)
     hook_runner = HookRunner.new(project_settings: project_settings, project_config: project_config, output: output, error_output: error_output, logger: logger)
     project_detector = ProjectDetector.new(state: state, project_config: project_config)
+    file_backup = FileBackup.new(output: output)
+    hook_installer = HookInstaller.new(backup: file_backup, output: output, input: input)
+    doctor = Doctor.new(config: config, state: state, hook_installer: hook_installer, project_detector: project_detector, output: output)
 
     # Pre-build command objects so CLI delegates rather than constructs
     kill_command = Commands::Kill.new(state: state, iterm: iterm, window_manager: window_manager, tmux: tmux, output: output, error_output: error_output)
@@ -93,8 +95,6 @@ module Workspace
     tile_command = Commands::Tile.new(state: state, window_manager: window_manager, window_layout: window_layout, output: output)
     layout_command = Commands::Layout.new(state: state, tmux: tmux, project_settings: project_settings, output: output)
     resize_command = Commands::Resize.new(tmux: tmux, layout_command: layout_command, output: output, error_output: error_output)
-    file_backup = FileBackup.new(output: output)
-    hook_installer = HookInstaller.new(backup: file_backup, output: output, input: input)
     sessions_command = Commands::Sessions.new(config: config, output: output, error_output: error_output)
     session_event_command = Commands::SessionEvent.new(config: config, tmux: tmux, input: input, logger: logger)
     init_command = Commands::Init.new(config: config, hook_installer: hook_installer, output: output, error_output: error_output, input: input)
