@@ -336,6 +336,48 @@ RSpec.describe Workspace::LockStore do
 
       expect { store.clear("edit") }.not_to raise_error
     end
+
+    it "wraps a filesystem failure in Workspace::Error naming the path and errno" do
+      s = store
+      allow(FileUtils).to receive(:mkdir_p).and_raise(Errno::EACCES.new(tmpdir))
+
+      expect { s.acquire("edit", identity: identity(pid: 100), waiter_pid: 100, waiter_started: "start-100") }
+        .to raise_error(Workspace::Error, /#{Regexp.escape(tmpdir)}.*errno/)
+    end
+
+    it "chmods the lock dir to 0700 even when it already existed" do
+      FileUtils.mkdir_p(tmpdir, mode: 0o755)
+
+      store.acquire("edit", identity: identity(pid: 100), waiter_pid: 100, waiter_started: "start-100")
+
+      expect(File.stat(tmpdir).mode & 0o777).to eq(0o700)
+    end
+  end
+
+  describe "malformed entries" do
+    it "logs and drops a holder missing required fields" do
+      logger = instance_double(Workspace::Logger, debug: nil)
+      s = described_class.new(dir: tmpdir, liveness: liveness, logger: logger)
+      FileUtils.mkdir_p(tmpdir)
+      File.write(File.join(tmpdir, "locks.json"), JSON.generate("edit" => {"holder" => {"pid" => 100}, "queue" => []}))
+
+      result = s.status("edit")
+
+      expect(result["edit"]["holder"]).to be_nil
+      expect(logger).to have_received(:debug)
+    end
+
+    it "logs and drops a queue entry missing required fields" do
+      logger = instance_double(Workspace::Logger, debug: nil)
+      s = described_class.new(dir: tmpdir, liveness: liveness, logger: logger)
+      FileUtils.mkdir_p(tmpdir)
+      File.write(File.join(tmpdir, "locks.json"), JSON.generate("edit" => {"holder" => nil, "queue" => [{"waiter_pid" => 1}]}))
+
+      result = s.status("edit")
+
+      expect(result["edit"]["queue"]).to eq([])
+      expect(logger).to have_received(:debug)
+    end
   end
 
   describe "namespacing" do

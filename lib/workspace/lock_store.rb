@@ -6,6 +6,10 @@ module Workspace
   # Reads and mutates one namespace's `locks.json`, guarded by `flock` so
   # concurrent CLI invocations serialize their read-modify-write cycles.
   #
+  # The one-lock-per-agent rule ({#acquire}'s deadlock check) is scoped per
+  # namespace: an agent may hold or wait for one lock in *this* store, but
+  # nothing stops it from also holding a lock in another namespace/store.
+  #
   # The lock itself is held on a sentinel file (`locks.lock`), never on
   # `locks.json` directly: `locks.json` is rewritten via tmp-file-then-rename
   # on every op (the same atomic-write idiom used elsewhere in this codebase),
@@ -231,6 +235,7 @@ module Workspace
     #   corruption it exists to fix.
     def with_lock(lenient: false, readonly: false)
       FileUtils.mkdir_p(@dir, mode: 0o700)
+      File.chmod(0o700, @dir)
       result = nil
       lock_mode = readonly ? File::RDONLY : (File::RDWR | File::CREAT)
       File.open(@lockfile_path, lock_mode | File::CREAT, 0o600) do |f|
@@ -240,6 +245,8 @@ module Workspace
         write_data(data) unless readonly
       end
       result
+    rescue SystemCallError => e
+      raise Workspace::Error, "Could not access lock store at #{@dir} (#{e.class}: errno #{e.errno})"
     end
 
     def read_data
@@ -272,14 +279,22 @@ module Workspace
     # Drops a holder record missing the fields liveness checks require,
     # rather than letting it crash reap!/status downstream.
     def normalize_holder(holder)
-      return nil unless holder.is_a?(Hash) && holder["pid"] && holder["started"]
+      return nil if holder.nil?
+      unless holder.is_a?(Hash) && holder["pid"] && holder["started"]
+        @logger.debug { "lock: dropping malformed holder entry: #{holder.inspect}" }
+        return nil
+      end
       holder
     end
 
     # Drops queue entries missing the fields liveness/promotion require.
     def normalize_queue(queue)
       return [] unless queue.is_a?(Array)
-      queue.select { |w| w.is_a?(Hash) && w["waiter_pid"] && w["waiter_started"] }
+      queue.select do |w|
+        valid = w.is_a?(Hash) && w["waiter_pid"] && w["waiter_started"]
+        @logger.debug { "lock: dropping malformed queue entry: #{w.inspect}" } unless valid
+        valid
+      end
     end
 
     def empty_entry

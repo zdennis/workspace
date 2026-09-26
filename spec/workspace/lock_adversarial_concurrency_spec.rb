@@ -124,7 +124,8 @@ RSpec.describe "Lock adversarial concurrency" do
           output: StringIO.new, error_output: StringIO.new, sleeper: ->(_) { sleep 0.01 })
         $stdout.puts "READY"
         $stdout.flush
-        lock.acquire("edit", wait: true, poll: 0.01)
+        result = lock.acquire("edit", wait: true, poll: 0.01)
+        exit(result[:exit_code])
       RUBY
 
       reader, writer = IO.pipe
@@ -188,8 +189,9 @@ RSpec.describe "Lock adversarial concurrency" do
       }
       lock = lock_command(lock_holder: FakeLockIdentity.new(pid: 200), sleeper: sleeper, trap: trap)
 
-      expect { lock.acquire("edit", wait: true, working_dir: tmpdir) }.to raise_error(SystemExit)
+      result = lock.acquire("edit", wait: true, working_dir: tmpdir)
 
+      expect(result[:exit_code]).not_to eq(0), "interrupted waiter must not report success through the exit_code contract"
       holder = fake_store.status("edit")["edit"]["holder"]
       expect(holder&.dig("pid")).not_to eq(200), "interrupted waiter left its agent holding the lock"
     end

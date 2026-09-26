@@ -35,7 +35,7 @@ module Workspace
     def store_dir(key, display)
       slug = display.gsub(/[^A-Za-z0-9_-]+/, "-").gsub(/-{2,}/, "-").gsub(/^-|-$/, "")
       slug = "namespace" if slug.empty?
-      File.join(@config.lock_dir, "#{slug}-#{Digest::SHA1.hexdigest(key)[0, 8]}")
+      File.join(@config.lock_dir, "#{slug}-#{Digest::SHA1.hexdigest(key)[0, 12]}")
     end
   end
 end

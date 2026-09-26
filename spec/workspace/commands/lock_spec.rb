@@ -124,6 +124,24 @@ RSpec.describe Workspace::Commands::Lock do
       expect(result).to eq(exit_code: 75)
       expect(error_output.string).to include("Still queued")
     end
+
+    it "returns the interrupted exit code through the normal {exit_code:} contract, never calling Kernel.exit" do
+      command_for(FakeLockIdentity.new(pid: 100)).acquire("edit")
+
+      waiter_identity = FakeLockIdentity.new(pid: 200)
+      command = described_class.new(config: config, lock_namespace: lock_namespace, lock_holder: waiter_identity,
+        output: output, error_output: error_output, sleeper: sleeper, clock: clock,
+        pid_provider: -> { waiter_identity.current[:pid] },
+        trap: ->(signal, handler) {
+          handler.call if signal == "INT" && handler.respond_to?(:call)
+        })
+
+      expect(Kernel).not_to receive(:exit)
+
+      result = command.acquire("edit", wait: true, poll: 0.01)
+
+      expect(result).to eq(exit_code: 130)
+    end
   end
 
   describe "#release" do

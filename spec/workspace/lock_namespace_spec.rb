@@ -88,6 +88,16 @@ RSpec.describe Workspace::LockNamespace do
     end
   end
 
+  it "suffixes the store directory with a 12-hex-char sha1" do
+    dir = Dir.mktmpdir("ws-lock-plainproject-sha1")
+
+    result = namespace.resolve(cwd: dir)
+
+    expect(File.basename(result[:dir])).to match(/-[0-9a-f]{12}\z/)
+  ensure
+    FileUtils.remove_entry(dir) if File.directory?(dir)
+  end
+
   it "puts the store directory under the configured lock_dir" do
     dir = Dir.mktmpdir("ws-lock-plainproject-2")
 

@@ -153,8 +153,9 @@ module Workspace
           return {exit_code: 0}
         end
 
+        label = cleared_by_label
         names.each do |lock_name|
-          removed = store.clear(lock_name, cleared_by: cleared_by_label, &on_holder)
+          removed = store.clear(lock_name, cleared_by: label, &on_holder)
           describe_cleared(lock_name, removed)
           holder = removed&.dig(:holder)
           stop_process_holder(holder, namespace[:display]) if holder && holder["kind"] == "process"
@@ -190,7 +191,7 @@ module Workspace
 
         loop do
           result = store.poll(name, waiter_pid)
-          abandon_wait(store, name, waiter_pid, interrupted) if interrupted
+          return abandon_wait(store, name, waiter_pid, interrupted) if interrupted
           case result[:status]
           when :acquired
             return acquired(name)
@@ -202,7 +203,7 @@ module Workspace
           return give_up_waiting(store, name, waiter_pid) if deadline && @clock.now >= deadline
 
           sleep_unless_interrupted(poll) { interrupted }
-          abandon_wait(store, name, waiter_pid, interrupted) if interrupted
+          return abandon_wait(store, name, waiter_pid, interrupted) if interrupted
         end
       ensure
         @trap.call("INT", old_int) if old_int
@@ -224,7 +225,7 @@ module Workspace
 
       def abandon_wait(store, name, waiter_pid, exit_status)
         store.dequeue(name, waiter_pid)
-        Kernel.exit(exit_status)
+        {exit_code: exit_status}
       end
 
       # Sleeps in short slices so a signal is acted on promptly: a trap handler
