@@ -236,6 +236,25 @@ RSpec.describe Workspace::LockStore do
     end
   end
 
+  describe "#prioritize" do
+    it "moves a waiter to the head of the queue so the next release promotes it" do
+      s = store
+      s.acquire("edit", identity: identity(pid: 100), waiter_pid: 100, waiter_started: "start-100")
+      s.acquire("edit", identity: identity(pid: 200), waiter_pid: 200, waiter_started: "start-200", wait: true)
+      s.acquire("edit", identity: identity(pid: 300), waiter_pid: 300, waiter_started: "start-300", wait: true)
+
+      expect(s.prioritize("edit", 300)).to be(true)
+      s.release("edit", 100)
+
+      expect(s.status("edit")["edit"]["holder"]["pid"]).to eq(300)
+      expect(s.status("edit")["edit"]["queue"].map { |w| w["waiter_pid"] }).to eq([200])
+    end
+
+    it "returns false for a pid that is not queued" do
+      expect(store.prioritize("edit", 999)).to be(false)
+    end
+  end
+
   describe "#claim_or_dequeue" do
     it "claims a promotion that landed after the waiter's last poll" do
       s = store

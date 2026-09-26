@@ -71,7 +71,7 @@ module Workspace
       def up(wait: false, takeover: false, ready: true, max_wait: nil, working_dir: Dir.pwd)
         raise Workspace::UsageError, "--max-wait must be greater than 0." if max_wait && max_wait.to_f <= 0
         ctx = context(working_dir)
-        raise Workspace::Error, NO_COMMAND unless ctx[:settings][:up]
+        raise Workspace::Error, NO_COMMAND unless command?(ctx)
 
         entry = entry(ctx[:store])
         holder = entry["holder"]
@@ -80,19 +80,15 @@ module Workspace
           return {exit_code: 0}
         end
 
+        return take_over(ctx, holder, ready: ready) if takeover && holder && !holder["stale"]
+
         refused = clear_the_way(ctx, entry, wait: wait, takeover: takeover)
         return refused if refused
 
         session = session_for(ctx)
-        wrapper = @tmux.new_window(session, name: WINDOW_NAME, cwd: ctx[:worktree], command: run_argv(wait), env: passthrough_env)
-        raise Workspace::Error, "Could not open a #{WINDOW_NAME} window in tmux session #{session}." unless wrapper
-
+        wrapper = open_wrapper(ctx, session, wait: wait)
         code = await_wrapper(ctx[:store], wrapper, wait: wait, max_wait: max_wait)
-        code = await_ready(ctx, wrapper) if code.zero? && ready && ctx[:settings][:ready]
-        return {exit_code: code} unless code.zero?
-
-        @output.puts "Dev environment running for #{label(ctx[:worktree])} (#{ctx[:branch]}) in #{session}:#{WINDOW_NAME}."
-        {exit_code: 0}
+        finish_up(ctx, session, wrapper, code, ready: ready)
       end
 
       # Stops this repository's dev environment, whichever worktree holds it.
@@ -149,13 +145,43 @@ module Workspace
       # @return [Hash] {exit_code:} — the dev command's own exit status
       def run(wait: false, working_dir: Dir.pwd)
         ctx = context(working_dir)
-        raise Workspace::Error, NO_COMMAND unless ctx[:settings][:up]
+        raise Workspace::Error, NO_COMMAND unless command?(ctx)
         code = @dev_runner.call(store: ctx[:store], command: ctx[:settings][:up], worktree: ctx[:worktree],
           branch: ctx[:branch], wait: wait)
         {exit_code: code}
       end
 
       private
+
+      # Stops another worktree's env and hands its lock straight to this one,
+      # ahead of anyone already queued: the new wrapper queues first and is
+      # moved to the front, so the stopped holder's release promotes it.
+      def take_over(ctx, holder, ready:)
+        session = session_for(ctx)
+        wrapper = open_wrapper(ctx, session, wait: true)
+        code = await_queued(ctx[:store], wrapper)
+        return {exit_code: code} unless code.zero?
+
+        ctx[:store].prioritize(LOCK_NAME, wrapper)
+        @output.puts "Taking over: stopping dev environment for #{describe(holder)}..."
+        stop(ctx, holder)
+        code = await_wrapper(ctx[:store], wrapper, wait: false, max_wait: nil)
+        finish_up(ctx, session, wrapper, code, ready: ready)
+      end
+
+      def open_wrapper(ctx, session, wait:)
+        wrapper = @tmux.new_window(session, name: WINDOW_NAME, cwd: ctx[:worktree], command: run_argv(wait), env: passthrough_env)
+        raise Workspace::Error, "Could not open a #{WINDOW_NAME} window in tmux session #{session}." unless wrapper
+        wrapper
+      end
+
+      def finish_up(ctx, session, wrapper, code, ready:)
+        code = await_ready(ctx, wrapper) if code.zero? && ready && ctx[:settings][:ready]
+        return {exit_code: code} unless code.zero?
+
+        @output.puts "Dev environment running for #{label(ctx[:worktree])} (#{ctx[:branch]}) in #{session}:#{WINDOW_NAME}."
+        {exit_code: 0}
+      end
 
       def context(working_dir)
         lineage = @lineage.resolve(cwd: working_dir)
@@ -167,6 +193,11 @@ module Workspace
           settings: @dev_config.for_project(lineage.name),
           store: LockStore.new(dir: @lock_namespace.resolve(cwd: working_dir)[:dir], liveness: @lock_holder)
         }
+      end
+
+      # A blank `dev.up` is as good as unset: there is nothing to run.
+      def command?(ctx)
+        !ctx[:settings][:up].to_s.strip.empty?
       end
 
       def git(dir, *args)
@@ -189,12 +220,6 @@ module Workspace
           return nil
         end
 
-        if holder && takeover
-          @output.puts "Taking over: stopping dev environment for #{describe(holder)}..."
-          stop(ctx, holder)
-          return nil
-        end
-
         return nil if wait
         if holder
           @error_output.puts "Dev environment is running for #{describe(holder)}. Use --wait to queue or --takeover to switch."
@@ -214,7 +239,15 @@ module Workspace
       end
 
       def orphan_running?(holder)
-        !!holder["pgid"] && @terminator.running?(holder["pgid"])
+        !!holder["pgid"] && !pgid_reused?(holder) && @terminator.running?(holder["pgid"])
+      end
+
+      # The wrapper led its group, so its pgid is its pid. A live process
+      # with that pid is not the dead wrapper, and the kernel only hands out a
+      # pid once no group uses it: the recorded group is gone and the id now
+      # names an unrelated process (group) that must never be signalled.
+      def pgid_reused?(holder)
+        holder["pgid"] == holder["pid"] && process_alive?(holder["pid"])
       end
 
       def stop_orphan(ctx, holder, force:)
@@ -222,6 +255,9 @@ module Workspace
           return orphan_refusal(holder) unless force
           @terminator.terminate(holder["pgid"], stop_timeout: ctx[:settings][:stop_timeout])
           @output.puts "Killed orphaned dev process group #{holder["pgid"]} (wrapper pid #{holder["pid"]} was gone)."
+        elsif holder["pgid"] && pgid_reused?(holder)
+          @output.puts "Dev environment for #{describe(holder)} was not running (its pid #{holder["pid"]} now belongs " \
+            "to an unrelated process, left alone); removed its stale lock."
         else
           @output.puts "Dev environment for #{describe(holder)} was not running; removed its stale lock."
         end
@@ -286,6 +322,23 @@ module Workspace
           end
           return give_up(pid, queued, limit) if deadline && @clock.now >= deadline
 
+          @sleeper.call(@poll)
+        end
+      end
+
+      # Polls until the takeover wrapper is in the queue (or already holds
+      # the lock, if the holder went away meanwhile).
+      def await_queued(store, pid)
+        deadline = @clock.now + @startup_timeout
+        loop do
+          entry = entry(store)
+          return 0 if entry.dig("holder", "pid") == pid
+          return 0 if (entry["queue"] || []).any? { |w| w["waiter_pid"] == pid }
+          unless process_alive?(pid)
+            @error_output.puts "The dev wrapper (pid #{pid}) exited before it queued for the #{LOCK_NAME} lock."
+            return 1
+          end
+          return give_up(pid, false, @startup_timeout) if @clock.now >= deadline
           @sleeper.call(@poll)
         end
       end

@@ -168,6 +168,22 @@ module Workspace
       end
     end
 
+    # Moves a queued waiter to the head of the queue, so the next release
+    # promotes it ahead of everyone who queued earlier (`dev up --takeover`).
+    #
+    # @param name [String] lock name
+    # @param waiter_pid [Integer]
+    # @return [Boolean] whether the waiter was found in the queue
+    def prioritize(name, waiter_pid)
+      with_lock do |data|
+        queue = data.dig(name, "queue") || []
+        index = queue.index { |w| w["waiter_pid"] == waiter_pid }
+        next false unless index
+        queue.unshift(queue.delete_at(index))
+        true
+      end
+    end
+
     # Ends a timed-out wait in one step: claims the lock if it was promoted
     # to this waiter since its last poll, otherwise leaves the queue.
     #
