@@ -132,7 +132,8 @@ module Workspace
     lock_holder = LockHolder.new
     dev_config = DevConfig.new(project_settings: project_settings)
     process_group_terminator = ProcessGroupTerminator.new
-    lock_command = Commands::Lock.new(config: config, lock_namespace: lock_namespace, lock_holder: lock_holder, output: output, error_output: error_output)
+    lock_command = Commands::Lock.new(config: config, lock_namespace: lock_namespace, lock_holder: lock_holder,
+      terminator: process_group_terminator, dev_config: dev_config, output: output, error_output: error_output)
     dev_runner = DevRunner.new(liveness: lock_holder, output: output)
     dev_command = Commands::Dev.new(
       lock_namespace: lock_namespace,

@@ -35,9 +35,11 @@ module Workspace
       # @param trap [#call] installs a signal handler, injectable so tests don't touch
       #   real process-wide signal state; called as `trap.call(signal, handler)`, exactly
       #   like `Signal.trap`, and must return the previous handler the same way
+      # @param terminator [Workspace::ProcessGroupTerminator] stops a cleared `kind: "process"` holder
+      # @param dev_config [Workspace::DevConfig, nil] supplies that holder's dev.stop_timeout
       def initialize(config:, lock_namespace:, lock_holder:, output: $stdout, error_output: $stderr,
         sleeper: ->(seconds) { sleep(seconds) }, clock: MonotonicClock, pid_provider: -> { Process.pid },
-        trap: ->(signal, handler) { Signal.trap(signal, handler) })
+        trap: ->(signal, handler) { Signal.trap(signal, handler) }, terminator: ProcessGroupTerminator.new, dev_config: nil)
         @config = config
         @lock_namespace = lock_namespace
         @lock_holder = lock_holder
@@ -47,6 +49,8 @@ module Workspace
         @clock = clock
         @pid_provider = pid_provider
         @trap = trap
+        @terminator = terminator
+        @dev_config = dev_config
       end
 
       # @param name [String] lock name
@@ -127,10 +131,12 @@ module Workspace
         {exit_code: 0}
       end
 
-      # Removes a lock's holder and queue unconditionally. For a `kind:
-      # "process"` holder (the dev-environment lock, added in a later PR),
-      # yields the holder to the caller so it can terminate the recorded
-      # process group before the record disappears.
+      # Removes a lock's holder and queue unconditionally. A `kind: "process"`
+      # holder (the dev-environment wrapper) is then stopped: SIGTERM to its
+      # pid, SIGKILL to its recorded pgid after dev.stop_timeout, but only if
+      # its pid is still running with its recorded start time, so a reused
+      # pgid is never signalled. The holder is also yielded while the store is
+      # still locked.
       #
       # @param name [String, nil] lock name, or nil with all: true
       # @param all [Boolean] clear every lock in this namespace
@@ -138,7 +144,8 @@ module Workspace
       # @yieldparam holder [Hash, nil] the holder record being cleared
       # @return [Hash] {exit_code:}
       def clear(name, all: false, working_dir: Dir.pwd, &on_holder)
-        store = store_for(working_dir)
+        namespace = @lock_namespace.resolve(cwd: working_dir)
+        store = LockStore.new(dir: namespace[:dir], liveness: @lock_holder)
         names = (all && name.nil?) ? store.names : [name]
 
         if names.empty?
@@ -149,6 +156,8 @@ module Workspace
         names.each do |lock_name|
           removed = store.clear(lock_name, cleared_by: cleared_by_label, &on_holder)
           describe_cleared(lock_name, removed)
+          holder = removed&.dig(:holder)
+          stop_process_holder(holder, namespace[:display]) if holder && holder["kind"] == "process"
         end
         {exit_code: 0}
       end
@@ -257,6 +266,34 @@ module Workspace
           stale = waiter["stale"] ? " STALE" : ""
           @output.puts "  #{i + 1}. #{waiter["pane"]} \"#{waiter["task"]}\" in #{waiter["worktree"]} (pid #{waiter["agent_pid"]})#{stale}"
         end
+      end
+
+      # Runs after the store is unlocked: the wrapper needs the flock to
+      # release, and would otherwise sit blocked until SIGKILL.
+      def stop_process_holder(holder, project)
+        pid = holder["pid"]
+        pgid = holder["pgid"] || pid
+        timeout = stop_timeout_for(project)
+        case @terminator.stop_holder(holder, liveness: @lock_holder, stop_timeout: timeout)
+        when :gone
+          if @terminator.running?(pgid)
+            @error_output.puts "Process group #{pgid} is still running, but its holder pid #{pid} is gone, so it was not signalled. " \
+              "Stop it with: kill -TERM -#{pgid}"
+          end
+        when :killed
+          @output.puts "Killed process group #{pgid} (pid #{pid}) after #{timeout}s."
+        else
+          @output.puts "Stopped process group #{pgid} (pid #{pid})."
+        end
+      rescue Workspace::Error => e
+        @error_output.puts "Could not stop process group #{pgid} (pid #{pid}): #{e.message}"
+      end
+
+      def stop_timeout_for(project)
+        return DevConfig::DEFAULT_STOP_TIMEOUT unless @dev_config
+        @dev_config.for_project(project)[:stop_timeout]
+      rescue Workspace::Error
+        DevConfig::DEFAULT_STOP_TIMEOUT
       end
 
       def describe_cleared(name, removed)

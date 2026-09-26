@@ -196,5 +196,52 @@ RSpec.describe Workspace::Commands::Lock do
 
       expect(yielded["pid"]).to eq(100)
     end
+
+    context "with a kind: process holder (the dev wrapper)" do
+      let(:liveness) { Workspace::LockHolder.new }
+      let(:terminator) { Workspace::ProcessGroupTerminator.new(poll_interval: 0.05) }
+      let(:dev_config) { instance_double(Workspace::DevConfig, for_project: {stop_timeout: 2}) }
+      let(:group) { Process.spawn(RbConfig.ruby, "-e", "sleep 30", pgroup: true, in: File::NULL).tap { |pid| Process.detach(pid) } }
+
+      after do
+        Process.kill("KILL", -group)
+      rescue Errno::ESRCH, Errno::EPERM
+        nil
+      end
+
+      def hold_devenv(started)
+        store = Workspace::LockStore.new(dir: tmpdir, liveness: FakeLockLiveness.new)
+        store.acquire("devenv", identity: {kind: "process", pid: group, started: started, pgid: group, worktree: "/w/login", branch: "login"},
+          waiter_pid: group, waiter_started: started)
+      end
+
+      def clear_command
+        described_class.new(config: config, lock_namespace: lock_namespace, lock_holder: liveness, output: output,
+          error_output: error_output, terminator: terminator, dev_config: dev_config, trap: ->(*) {})
+      end
+
+      it "stops the recorded process group once the holder's pid and start time are confirmed" do
+        sleep 0.1 until liveness.start_time(group)
+        hold_devenv(liveness.start_time(group))
+
+        result = clear_command.clear("devenv")
+
+        expect(result).to eq(exit_code: 0)
+        expect(output.string).to include("Cleared devenv", "Stopped process group #{group} (pid #{group}).")
+        expect(terminator.running?(group)).to be(false)
+        expect(dev_config).to have_received(:for_project).with("app")
+      end
+
+      it "never signals the group when the recorded start time no longer matches" do
+        sleep 0.1 until liveness.start_time(group)
+        hold_devenv("Thu Jan  1 00:00:00 1970")
+
+        clear_command.clear("devenv")
+
+        expect(terminator.running?(group)).to be(true)
+        expect(error_output.string).to include("Process group #{group} is still running, but its holder pid #{group} is gone",
+          "kill -TERM -#{group}")
+      end
+    end
   end
 end

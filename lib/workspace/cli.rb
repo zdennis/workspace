@@ -767,6 +767,7 @@ module Workspace
           release [<name>|--all]     Release a lock this agent holds
           status  [<name>]           Show holders and queues
           clear   [<name>|--all]     Force-remove a lock's holder and queue
+                                     (devenv: also stops the dev env's process group)
 
         Options (acquire):
           --task TEXT       Free-text description shown to other waiters
