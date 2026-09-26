@@ -102,13 +102,26 @@ module Workspace
       false
     end
 
-    # Pipeline state outlives the agent process, so it lives under the XDG state
-    # directory rather than in /tmp where a reboot would take it.
+    # State that outlives the agent process lives under the XDG state
+    # directory rather than in /tmp, where a reboot would take it.
     #
+    # @return [String] path to workspace's own XDG state directory
+    def state_dir
+      File.join(File.expand_path(ENV.fetch("XDG_STATE_HOME", "~/.local/state")), "workspace")
+    end
+
     # @param name [String] the workspace name
     # @return [String] path to the project's pipeline state directory
     def pipeline_state_dir(name)
-      File.join(File.expand_path(ENV.fetch("XDG_STATE_HOME", "~/.local/state")), "workspace", name)
+      File.join(state_dir, name)
+    end
+
+    # Lock files are shared across every worktree of a repository, so they are
+    # keyed by namespace rather than by workspace name.
+    #
+    # @return [String] path to the directory holding per-namespace lock stores
+    def lock_dir
+      File.join(state_dir, "locks")
     end
 
     # @param name [String] the workspace name
