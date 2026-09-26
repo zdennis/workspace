@@ -61,6 +61,42 @@ RSpec.describe Workspace::Commands::Lock, "idle takeover and instructions" do
     expect(command.acquire("edit", wait: true, max_wait: 1)).to eq(exit_code: 75)
   end
 
+  it "keeps a lock it took over even when a signal arrived during that poll" do
+    command_for(holder_identity).acquire("edit", task: "PROJ-1")
+    mark_holder_idle
+    now[0] += 300
+    command = described_class.new(config: Workspace::Config.new, lock_namespace: lock_namespace, lock_holder: waiter_identity,
+      output: output, error_output: error_output, sleeper: ->(_) { now[0] += 5 }, clock: monotonic,
+      pid_provider: -> { 200 }, trap: ->(signal, handler) { handler.call if signal == "INT" && handler.respond_to?(:call) },
+      lock_config: lock_config, wall_clock: -> { now[0] })
+
+    expect(command.acquire("edit", task: "PROJ-2", wait: true)).to eq(exit_code: 0)
+    expect(error_output.string).to include("Took over edit lock")
+    expect(Workspace::LockStore.new(dir: tmpdir, liveness: waiter_identity).status("edit")["edit"]["holder"]["pid"]).to eq(200)
+  end
+
+  it "takes over an idle holder whose grace runs out at the --max-wait deadline" do
+    command_for(holder_identity).acquire("edit", task: "PROJ-1")
+    mark_holder_idle
+    now[0] += 299
+    reads = [0]
+    wall = now
+    deadline_clock = Object.new
+    deadline_clock.define_singleton_method(:now) do
+      reads[0] += 1
+      next 0.0 if reads[0] == 1
+      wall[0] = 1_000_300
+      10.0
+    end
+    command = described_class.new(config: Workspace::Config.new, lock_namespace: lock_namespace, lock_holder: waiter_identity,
+      output: output, error_output: error_output, sleeper: ->(_) {}, clock: deadline_clock,
+      pid_provider: -> { 200 }, trap: ->(signal, handler) {}, lock_config: lock_config, wall_clock: -> { now[0] })
+
+    expect(command.acquire("edit", task: "PROJ-2", wait: true, max_wait: 1)).to eq(exit_code: 0)
+    expect(error_output.string).to include("Took over edit lock")
+    expect(error_output.string).not_to include("Still queued")
+  end
+
   it "tells the displaced holder on its next acquire, exiting 3 without queueing" do
     take_over
     error_output.truncate(0)

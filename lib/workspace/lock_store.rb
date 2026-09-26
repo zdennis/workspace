@@ -71,6 +71,7 @@ module Workspace
 
         if same_agent?(holder, identity)
           holder.delete("unclaimed")
+          holder["idle_since"] = nil
           next {status: :already_held}
         end
 
@@ -120,19 +121,12 @@ module Workspace
         entry = data[name]
         next {status: :cleared} unless entry
 
-        holder = entry["holder"]
-        if holder && holder["waiter_pid"] == waiter_pid
-          holder.delete("unclaimed")
-          next {status: :acquired}
-        end
+        claimed = claim!(entry, waiter_pid)
+        next claimed if claimed
 
+        holder = entry["holder"]
         index = entry["queue"].index { |w| w["waiter_pid"] == waiter_pid }
         next {status: :cleared} unless index
-        if index.zero? && holder && idle_expired?(holder)
-          displace!(entry, holder)
-          entry["holder"] = holder_from_waiter(entry["queue"].shift)
-          next {status: :acquired, took_over: holder}
-        end
         {status: :queued, position: index + 1, total: entry["queue"].size + (holder ? 1 : 0), holder: holder}
       end
     end
@@ -201,21 +195,22 @@ module Workspace
     end
 
     # Ends a timed-out wait in one step: claims the lock if it was promoted
-    # to this waiter since its last poll, otherwise leaves the queue.
+    # to this waiter since its last poll, or takes it over exactly as {#poll}
+    # would, otherwise leaves the queue.
     #
     # @param name [String] lock name
     # @param waiter_pid [Integer]
-    # @return [Symbol] :acquired or :dequeued
+    # @return [Hash] :status is :acquired or :dequeued; a takeover also
+    #   carries :took_over, as from {#poll}
     def claim_or_dequeue(name, waiter_pid)
       with_lock do |data|
+        reap!(data)
         entry = data[name]
-        holder = entry && entry["holder"]
-        if holder && holder["waiter_pid"] == waiter_pid
-          holder.delete("unclaimed")
-          next :acquired
-        end
-        entry["queue"].reject! { |w| w["waiter_pid"] == waiter_pid } if entry
-        :dequeued
+        next {status: :dequeued} unless entry
+        claimed = claim!(entry, waiter_pid)
+        next claimed if claimed
+        entry["queue"].reject! { |w| w["waiter_pid"] == waiter_pid }
+        {status: :dequeued}
       end
     end
 
@@ -253,6 +248,7 @@ module Workspace
         data.filter_map do |name, entry|
           holder = entry["holder"]
           next unless same_agent?(holder, identity) && holder["kind"] != "process"
+          clamp_idle_since!(holder)
           next if idle == !holder["idle_since"].nil?
           holder["idle_since"] = idle ? @clock.call : nil
           name
@@ -276,7 +272,7 @@ module Workspace
         holder = entry.is_a?(Hash) && entry["holder"]
         next false unless holder.is_a?(Hash) && holder["kind"] != "process"
         next false if pane && holder["pane"] != pane
-        idle == holder["idle_since"].nil?
+        idle == !holder["idle_since"].is_a?(Numeric)
       end
     rescue SystemCallError, JSON::ParserError
       false
@@ -379,13 +375,15 @@ module Workspace
     end
 
     # Drops a holder record missing the fields liveness checks require,
-    # rather than letting it crash reap!/status downstream.
+    # rather than letting it crash reap!/status downstream. A non-numeric
+    # `idle_since` reads as active, so {#mark_idle} can record a real one.
     def normalize_holder(holder)
       return nil if holder.nil?
       unless holder.is_a?(Hash) && holder["pid"] && holder["started"]
         @logger.debug { "lock: dropping malformed holder entry: #{holder.inspect}" }
         return nil
       end
+      holder["idle_since"] = nil unless holder["idle_since"].is_a?(Numeric)
       holder
     end
 
@@ -472,8 +470,36 @@ module Workspace
     # (the dev environment) is never idle in this sense.
     def idle_expired?(holder)
       return false if holder["kind"] == "process"
-      idle_since = holder["idle_since"]
-      idle_since.is_a?(Numeric) && @clock.call - idle_since >= @idle_grace
+      idle_since = clamp_idle_since!(holder)
+      !idle_since.nil? && @clock.call - idle_since >= @idle_grace
+    end
+
+    # An `idle_since` later than now means the wall clock stepped back after
+    # it was recorded: restart the grace period from now, so the skew never
+    # extends it.
+    def clamp_idle_since!(holder)
+      now = @clock.call
+      holder["idle_since"] = now if holder["idle_since"] && holder["idle_since"] > now
+      holder["idle_since"]
+    end
+
+    # Claims +entry+ for +waiter_pid+ when it was already promoted, or takes
+    # it over when this waiter heads the queue and the holder has been idle
+    # past the grace period. Shared by {#poll} and {#claim_or_dequeue}.
+    #
+    # @return [Hash, nil] {status: :acquired}, with :took_over after a
+    #   takeover, or nil when the lock is not this waiter's
+    def claim!(entry, waiter_pid)
+      holder = entry["holder"]
+      return unless holder
+      if holder["waiter_pid"] == waiter_pid
+        holder.delete("unclaimed")
+        return {status: :acquired}
+      end
+      return unless entry["queue"].first&.dig("waiter_pid") == waiter_pid && idle_expired?(holder)
+      displace!(entry, holder)
+      entry["holder"] = holder_from_waiter(entry["queue"].shift)
+      {status: :acquired, took_over: holder}
     end
 
     def displace!(entry, holder)

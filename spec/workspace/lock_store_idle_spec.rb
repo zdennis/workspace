@@ -164,6 +164,80 @@ RSpec.describe Workspace::LockStore, "idle takeover" do
       expect(store.poll("edit", 201)[:status]).to eq(:queued)
       expect(holder["pid"]).to eq(100)
     end
+
+    it "does not take over a holder that re-ran acquire" do
+      hold(100)
+      wait_for(200)
+      store.mark_idle(identity(pid: 100), idle: true)
+      now[0] += 600
+
+      expect(hold(100)).to eq(status: :already_held)
+      expect(holder["idle_since"]).to be_nil
+      expect(store.poll("edit", 201)[:status]).to eq(:queued)
+    end
+
+    it "treats a non-numeric idle_since as active, so the next mark_idle records a real one" do
+      hold(100)
+      wait_for(200)
+      write_holder_field("idle_since", "999999")
+
+      expect(holder["idle_since"]).to be_nil
+      expect(store.mark_idle(identity(pid: 100), idle: true)).to eq(["edit"])
+      now[0] += 300
+      expect(store.poll("edit", 201)[:status]).to eq(:acquired)
+    end
+
+    it "restarts the grace period from now when idle_since is in the future" do
+      hold(100)
+      wait_for(200)
+      write_holder_field("idle_since", now[0] + 86_400)
+
+      expect(store.poll("edit", 201)[:status]).to eq(:queued)
+      expect(holder["idle_since"]).to eq(1_000_000)
+      now[0] += 300
+      expect(store.poll("edit", 201)[:status]).to eq(:acquired)
+    end
+
+    it "clamps a future idle_since when the agent is marked idle again" do
+      hold(100)
+      write_holder_field("idle_since", now[0] + 86_400)
+
+      store.mark_idle(identity(pid: 100), idle: true)
+
+      expect(holder["idle_since"]).to eq(1_000_000)
+    end
+
+    def write_holder_field(key, value)
+      path = File.join(tmpdir, "locks.json")
+      data = JSON.parse(File.read(path))
+      data["edit"]["holder"][key] = value
+      File.write(path, JSON.generate(data))
+    end
+  end
+
+  describe "#claim_or_dequeue takeover" do
+    it "takes over an idle holder at the deadline instead of leaving the queue" do
+      hold(100)
+      wait_for(200)
+      store.mark_idle(identity(pid: 100), idle: true)
+      now[0] += 300
+
+      result = store.claim_or_dequeue("edit", 201)
+
+      expect(result).to include(status: :acquired, took_over: include("pid" => 100))
+      expect(holder["pid"]).to eq(200)
+    end
+
+    it "leaves the queue when the holder's grace has not elapsed" do
+      hold(100)
+      wait_for(200)
+      store.mark_idle(identity(pid: 100), idle: true)
+      now[0] += 299
+
+      expect(store.claim_or_dequeue("edit", 201)).to eq(status: :dequeued)
+      expect(holder["pid"]).to eq(100)
+      expect(store.status("edit")["edit"]["queue"]).to be_empty
+    end
   end
 
   describe "#pop_displaced" do

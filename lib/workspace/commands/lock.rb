@@ -234,12 +234,9 @@ module Workspace
 
         loop do
           result = store.poll(name, waiter_pid)
+          return claimed(name, result) if result[:status] == :acquired
           return abandon_wait(store, name, waiter_pid, interrupted) if interrupted
-          case result[:status]
-          when :acquired
-            report_takeover(name, result[:took_over]) if result[:took_over]
-            return acquired(name)
-          when :cleared
+          if result[:status] == :cleared
             @error_output.puts "#{name} lock was cleared while waiting."
             return {exit_code: 4}
           end
@@ -254,8 +251,15 @@ module Workspace
         @trap.call("TERM", old_term) if old_term
       end
 
-      def report_takeover(name, holder)
-        @error_output.puts "Took over #{name} lock from #{describe_holder(holder)}, idle since #{format_epoch(holder["idle_since"])}."
+      # A claimed lock is kept even when a signal arrived during the same
+      # poll: the agent is told it holds the lock, and a takeover is never
+      # undone after displacing the idle holder.
+      def claimed(name, result)
+        holder = result[:took_over]
+        if holder
+          @error_output.puts "Took over #{name} lock from #{describe_holder(holder)}, idle since #{format_epoch(holder["idle_since"])}."
+        end
+        acquired(name)
       end
 
       def acquired(name)
@@ -263,10 +267,12 @@ module Workspace
         {exit_code: 0}
       end
 
-      # A promotion can land between the last poll and the deadline check, so
-      # the claim-or-dequeue decision is made in one step under the flock.
+      # A promotion or an idle takeover can come due between the last poll and
+      # the deadline check, so the claim-or-dequeue decision is made in one
+      # step under the flock.
       def give_up_waiting(store, name, waiter_pid)
-        return acquired(name) if store.claim_or_dequeue(name, waiter_pid) == :acquired
+        result = store.claim_or_dequeue(name, waiter_pid)
+        return claimed(name, result) if result[:status] == :acquired
         @error_output.puts "Still queued for #{name} lock after --max-wait; re-run to keep waiting."
         {exit_code: 75}
       end
