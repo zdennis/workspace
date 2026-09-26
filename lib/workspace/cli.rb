@@ -801,8 +801,8 @@ module Workspace
         it active again. Once idle for locks.idle_grace (default 5m; set with
         `workspace config set locks.idle_grace 10m`), the first waiter in the
         queue takes the lock over. The displaced agent is told once, on its
-        next acquire or release, which exits 3. The dev environment lock is
-        never taken over this way.
+        next acquire or release; acquire then carries on as usual, while
+        release exits 3. The dev environment lock is never taken over this way.
 
         Note: `lock release`/`lock clear` exit 0 even when nothing was
         held/cleared, except that `release` exits 3 when it reports an idle
