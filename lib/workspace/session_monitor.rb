@@ -82,7 +82,11 @@ module Workspace
     # @return [void]
     def scan
       details = @tmux.pane_details(@session_name)
-      tree = @process_tree.snapshot
+      begin
+        tree = @process_tree.snapshot
+      rescue Workspace::Error => e
+        return @logger.debug { "session monitor: skipping scan: #{e.message}" }
+      end
       now = @clock.now
 
       @lock.synchronize do

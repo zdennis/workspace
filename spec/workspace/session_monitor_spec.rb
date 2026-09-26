@@ -46,6 +46,15 @@ RSpec.describe Workspace::SessionMonitor do
       expect(pane("%1")["label"]).to eq("zsh")
     end
 
+    it "keeps the last known state when the process table cannot be read" do
+      monitor.scan
+      allow(process_tree).to receive(:snapshot).and_raise(Workspace::Error, "ps failed")
+
+      monitor.scan
+
+      expect(pane("%2")["kind"]).to eq("claude")
+    end
+
     it "drops panes that have closed, along with their history" do
       monitor.scan
       allow(tmux).to receive(:pane_details).with("proj").and_return([panes.first])

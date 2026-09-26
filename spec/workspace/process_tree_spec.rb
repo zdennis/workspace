@@ -1,16 +1,18 @@
 RSpec.describe Workspace::ProcessTree do
-  # Columns as macOS `ps -axo pid=,ppid=,comm=,args=` actually emits them:
-  # comm is truncated at 16 characters, so any absolute path is mangled there
-  # and only argv[0] is trustworthy.
+  # Columns as macOS `ps -axo pid=,ppid=,lstart=,comm=,args=` actually emits
+  # them: lstart is always five whitespace-separated tokens, comm is
+  # truncated at 16 characters (so any absolute path is mangled there and
+  # only argv[0] is trustworthy).
   let(:ps_output) do
     <<~PS
-      1     0 launchd         /sbin/launchd
-      100   1 zsh             -zsh
-      200 100 /private/tmp/cla /private/tmp/fakebin/claude --fork-session
-      300 200 node            node /opt/helper.js
-      400   1 claude bg-pty-ho claude bg-pty-host --bg-pty-host /tmp/x.sock
-      500 100 /Users/zdennis/. /Users/zdennis/.local/share/claude/versions/2.1.282 --session-id abc
-      600 100 claude          claude daemon run --origin transient
+      1     0 Thu Jan  1 00:00:00 1970 launchd         /sbin/launchd
+      100   1 Fri Sep 25 08:00:00 2026 zsh             -zsh
+      200 100 Fri Sep 25 08:00:01 2026 /private/tmp/cla /private/tmp/fakebin/claude --fork-session
+      300 200 Fri Sep 25 08:00:02 2026 node            node /opt/helper.js
+      400   1 Fri Sep 25 08:00:03 2026 claude bg-pty-ho claude bg-pty-host --bg-pty-host /tmp/x.sock
+      500 100 Fri Sep 25 08:00:04 2026 /Users/zdennis/. /Users/zdennis/.local/share/claude/versions/2.1.282 --session-id abc
+      600 100 Fri Sep 25 08:00:05 2026 claude          claude daemon run --origin transient
+      700 600 Fri Sep 25 08:00:06 2026 bash            bash -c sleep 1
     PS
   end
 
@@ -18,22 +20,28 @@ RSpec.describe Workspace::ProcessTree do
 
   before do
     allow(Open3).to receive(:capture3)
-      .with("ps", "-axo", "pid=,ppid=,comm=,args=")
+      .with({"LC_ALL" => "C", "TZ" => "UTC"}, "ps", "-axo", "pid=,ppid=,lstart=,comm=,args=")
       .and_return([ps_output, "", instance_double(Process::Status, success?: true)])
   end
 
-  describe "#snapshot" do
-    it "returns an empty snapshot when ps fails" do
-      allow(Open3).to receive(:capture3)
-        .and_return(["", "", instance_double(Process::Status, success?: false)])
+  describe "lstart parsing" do
+    it "captures the five-token start time alongside the other columns" do
+      expect(tree.snapshot.find(200)).to include(pid: 200, ppid: 100, lstart: "Fri Sep 25 08:00:01 2026")
+    end
+  end
 
-      expect(tree.snapshot.processes).to be_empty
+  describe "#snapshot" do
+    it "raises when ps fails, rather than reporting every process as exited" do
+      allow(Open3).to receive(:capture3)
+        .and_return(["", "ps: fork failed", instance_double(Process::Status, success?: false)])
+
+      expect { tree.snapshot }.to raise_error(Workspace::Error, /ps failed/)
     end
   end
 
   describe "#descendants" do
     it "walks the whole subtree, not just direct children" do
-      expect(tree.snapshot.descendants(100).map { |p| p[:pid] }).to contain_exactly(200, 300, 500, 600)
+      expect(tree.snapshot.descendants(100).map { |p| p[:pid] }).to contain_exactly(200, 300, 500, 600, 700)
     end
 
     it "excludes the root itself" do
@@ -69,6 +77,34 @@ RSpec.describe Workspace::ProcessTree do
 
     it "returns nil when nothing matches" do
       expect(tree.snapshot.find_descendant(100, ["codex"])).to be_nil
+    end
+  end
+
+  describe "#ancestors" do
+    it "walks the ppid chain to the root, nearest first" do
+      expect(tree.snapshot.ancestors(300).map { |p| p[:pid] }).to eq([200, 100, 1])
+    end
+
+    it "excludes the starting process itself" do
+      expect(tree.snapshot.ancestors(300)).not_to include(hash_including(pid: 300))
+    end
+
+    it "returns nothing for a process with no known parent" do
+      expect(tree.snapshot.ancestors(1)).to be_empty
+    end
+  end
+
+  describe "#find_ancestor" do
+    it "finds the nearest matching ancestor" do
+      expect(tree.snapshot.find_ancestor(300, ["claude"])[:pid]).to eq(200)
+    end
+
+    it "skips ancestors whose arguments mark them as background helpers" do
+      expect(tree.snapshot.find_ancestor(700, ["claude"], exclude: ["daemon run"])).to be_nil
+    end
+
+    it "returns nil when no ancestor matches" do
+      expect(tree.snapshot.find_ancestor(300, ["codex"])).to be_nil
     end
   end
 end

@@ -16,26 +16,40 @@ module Workspace
     # Reads the process table once. Hold the result for the length of one scan
     # and then discard it — it is a snapshot, not a live view.
     #
+    # `ps` runs under a fixed locale and time zone so `lstart` reads the same
+    # from every caller: it is stored and compared as a process identity.
+    #
     # @return [ProcessTree::Snapshot]
+    # @raise [Workspace::Error] if `ps` fails; an empty table would read as
+    #   every process having exited
     def snapshot
-      stdout, _, status = Open3.capture3("ps", "-axo", "pid=,ppid=,comm=,args=")
+      stdout, stderr, status = Open3.capture3(PS_ENV, "ps", "-axo", "pid=,ppid=,lstart=,comm=,args=")
       unless status.success?
-        @logger.debug { "process_tree: ps failed" }
-        return Snapshot.new([])
+        @logger.debug { "process_tree: ps failed: #{stderr.strip}" }
+        raise Workspace::Error, "could not read the process table (ps failed: #{stderr.strip})"
       end
       Snapshot.new(parse(stdout))
     end
 
+    PS_ENV = {"LC_ALL" => "C", "TZ" => "UTC"}.freeze
+    private_constant :PS_ENV
+
     private
 
-    # `comm` is reported as a bare name, an absolute path, or (for a versioned
-    # install) a path whose basename is the version rather than the executable,
-    # so `args` is carried alongside it and both are matched against.
+    # Under PS_ENV, `lstart` is always five whitespace-separated tokens
+    # ("Thu Sep 26 09:12:03 2026"), so it can be split out even though `comm`
+    # and `args` afterward are variable width. `comm` is reported as a bare
+    # name, an absolute path, or (for a versioned install) a path whose
+    # basename is the version rather than the executable, so `args` is
+    # carried alongside it and both are matched against.
+    LINE_PATTERN = /\A(\d+)\s+(\d+)\s+(\S+\s+\S+\s+\S+\s+\S+\s+\S+)\s+(\S+)\s*(.*)\z/
+
     def parse(stdout)
       stdout.lines.filter_map do |line|
-        pid, ppid, command, args = line.strip.split(/\s+/, 4)
-        next unless pid && ppid && command
-        {pid: pid.to_i, ppid: ppid.to_i, command: command, args: args.to_s}
+        m = LINE_PATTERN.match(line.strip)
+        next unless m
+        pid, ppid, lstart, command, args = m.captures
+        {pid: pid.to_i, ppid: ppid.to_i, lstart: lstart, command: command, args: args.to_s}
       end
     end
 
@@ -97,6 +111,40 @@ module Workspace
       def find(pid)
         @by_pid ||= @processes.to_h { |p| [p[:pid], p] }
         @by_pid[pid]
+      end
+
+      # Walks the ppid chain above pid, nearest first, stopping at the first
+      # unknown or cyclic ancestor.
+      #
+      # @param pid [Integer] process to walk up from, not itself included
+      # @return [Array<Hash>] ancestors, nearest first
+      def ancestors(pid)
+        found = []
+        seen = {pid => true}
+        current = find(pid)
+
+        while current
+          parent = find(current[:ppid])
+          break if parent.nil? || seen[parent[:pid]]
+          seen[parent[:pid]] = true
+          found << parent
+          current = parent
+        end
+        found
+      end
+
+      # Finds the nearest ancestor of pid that looks like one of the named
+      # executables, skipping any whose arguments match an excluded marker.
+      # Used outside tmux, where there is no pane to search downward from.
+      #
+      # @param pid [Integer] process to walk up from
+      # @param names [Array<String>] executable names to look for
+      # @param exclude [Array<String>] argument substrings that disqualify a match
+      # @return [Hash, nil] the nearest matching ancestor
+      def find_ancestor(pid, names, exclude: [])
+        ancestors(pid).find do |process|
+          matches_name?(process, names) && !excluded?(process, exclude)
+        end
       end
 
       private
