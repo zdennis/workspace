@@ -389,6 +389,38 @@ RSpec.describe Workspace::Commands::Dev, "with fake processes and clock" do
     end
   end
 
+  describe "#down --force of an orphaned group" do
+    before do
+      orphan(700)
+      allow(terminator).to receive(:running?).with(700).and_return(true)
+    end
+
+    it "re-checks for a reused pgid right before signalling, not only before deciding to" do
+      guard_before = guard_after = nil
+      allow(terminator).to receive(:terminate) do |_pgid, guard:, **|
+        guard_before = guard.call
+        dead_pids.delete(700) # the group exited and a new process took its id
+        guard_after = guard.call
+        :terminated
+      end
+
+      expect(dev.down(force: true, working_dir: worktree)).to eq(exit_code: 0)
+      expect([guard_before, guard_after]).to eq([true, false])
+    end
+
+    it "reports the reused pgid, not a kill, when the guard stopped the first signal" do
+      allow(terminator).to receive(:terminate) do
+        dead_pids.delete(700)
+        :not_running
+      end
+
+      expect(dev.down(force: true, working_dir: worktree)).to eq(exit_code: 0)
+      expect(output.string).to include("now belongs to an unrelated process, left alone")
+      expect(output.string).not_to include("Killed")
+      expect(holder).to be_nil
+    end
+  end
+
   describe "a process group this user may not signal" do
     let(:foreign) { Workspace::Error.new("process group 700 has running processes this user is not permitted to signal") }
 

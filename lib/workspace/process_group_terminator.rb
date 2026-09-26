@@ -53,15 +53,18 @@ module Workspace
     # @param stop_timeout [Numeric] seconds to wait after SIGTERM before SIGKILL
     # @param leader [Integer, nil] send the SIGTERM to this pid alone instead
     #   of the whole group (a wrapper that forwards it itself)
+    # @param guard [#call, nil] re-checked just before each signal; once it
+    #   returns false (the group id may now name someone else) nothing more is sent
     # @return [Symbol] :not_running (nothing to signal), :terminated (exited
     #   after SIGTERM), or :killed (SIGKILL was sent)
     # @raise [Workspace::Error] for an unsafe pgid (<= 1, or the caller's own
     #   group), or a live group this user may not signal
-    def terminate(pgid, stop_timeout:, leader: nil)
+    def terminate(pgid, stop_timeout:, leader: nil, guard: nil)
       pgid = Integer(pgid)
       if pgid <= 1 || pgid == @own_pgid
         raise Workspace::Error, "refusing to signal process group #{pgid}"
       end
+      return :not_running if guard && !guard.call
       return :not_running unless signal("TERM", leader ? Integer(leader) : -pgid, pgid)
 
       deadline = @clock.call + stop_timeout
@@ -70,6 +73,7 @@ module Workspace
         @sleeper.call(@poll_interval)
       end
       return :terminated unless running?(pgid)
+      return :terminated if guard && !guard.call
       return :terminated unless signal("KILL", -pgid, pgid)
       :killed
     end

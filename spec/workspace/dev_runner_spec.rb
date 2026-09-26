@@ -532,6 +532,30 @@ RSpec.describe Workspace::ProcessGroupTerminator do
     end
   end
 
+  describe "with a guard" do
+    def recording_kill(sent)
+      ->(signal, target) { sent << [signal, target] }
+    end
+
+    it "sends nothing when the guard fails before the SIGTERM" do
+      sent = []
+      terminator = described_class.new(kill: recording_kill(sent), own_pgid: 1)
+
+      expect(terminator.terminate(4242, stop_timeout: 1, guard: -> { false })).to eq(:not_running)
+      expect(sent).to be_empty
+    end
+
+    it "withholds the SIGKILL when the guard fails after the SIGTERM" do
+      sent = []
+      checks = [true, false].each
+      clock = [0, 10].each
+      terminator = described_class.new(kill: recording_kill(sent), own_pgid: 1, clock: -> { clock.next }, sleeper: ->(_s) {})
+
+      expect(terminator.terminate(4242, stop_timeout: 1, guard: -> { checks.next })).to eq(:terminated)
+      expect(sent).to eq([["TERM", -4242], [0, -4242]])
+    end
+  end
+
   describe "when the kernel answers EPERM" do
     def eperm_kill(allowed: [])
       sent = []
@@ -586,9 +610,7 @@ RSpec.describe Workspace::ProcessGroupTerminator do
     end
 
     it "raises when SIGKILL is refused for a group that is still live" do
-      calls = 0
       kill = lambda do |signal, _target|
-        calls += 1
         raise Errno::EPERM if signal == "KILL"
         1
       end

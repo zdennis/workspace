@@ -258,9 +258,13 @@ module Workspace
       end
 
       def stop_orphan(ctx, holder, force:)
-        if orphan_running?(holder)
-          return orphan_refusal(holder) unless force
-          @terminator.terminate(holder["pgid"], stop_timeout: ctx[:settings][:stop_timeout])
+        running = orphan_running?(holder)
+        return orphan_refusal(holder) if running && !force
+
+        # The group can exit and its id be reused at any point up to SIGKILL,
+        # stop_timeout later: the reuse check is repeated just before every signal.
+        if running && @terminator.terminate(holder["pgid"], stop_timeout: ctx[:settings][:stop_timeout],
+          guard: -> { !pgid_reused?(holder) }) != :not_running
           @output.puts "Killed orphaned dev process group #{holder["pgid"]} (wrapper pid #{holder["pid"]} was gone)."
         elsif holder["pgid"] && pgid_reused?(holder)
           @output.puts "Dev environment for #{describe(holder)} was not running (its pid #{holder["pid"]} now belongs " \
