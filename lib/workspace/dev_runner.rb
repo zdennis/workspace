@@ -67,7 +67,7 @@ module Workspace
       ensure
         store.release(LOCK_NAME, holder[:pid])
       end
-      @output.puts "[workspace] #{command} #{describe_exit(code)}; devenv lock released"
+      @output.puts "[workspace] #{command} #{describe_exit(code)}; #{LOCK_NAME} lock released"
       code
     end
 
@@ -121,7 +121,11 @@ module Workspace
           return interrupted
         end
         case store.poll(LOCK_NAME, pid)[:status]
-        when :acquired then return nil
+        when :acquired
+          # A signal that landed during the poll must still win: give the
+          # promoted hold back rather than run after the caller gave up.
+          next if interrupted
+          return nil
         when :cleared
           @output.puts "[workspace] #{LOCK_NAME} lock was cleared while waiting."
           return 4
@@ -142,15 +146,24 @@ module Workspace
     def run(command, worktree)
       @child_pid = nil
       @pending_signal = nil
+      @termsig = nil
+      @skipped = false
       @forwarded = []
       previous = {"INT" => @trap.call("INT", proc {})}
       %w[TERM HUP].each { |sig| previous[sig] = @trap.call(sig, proc { forward(sig) }) }
 
+      # A stop request that arrived before the child exists means it never runs.
+      if @pending_signal
+        @skipped = true
+        @termsig = Signal.list[@pending_signal]
+        return 128 + @termsig
+      end
       @output.puts "[workspace] #{LOCK_NAME} lock held for #{worktree}; running: #{command}"
       @output.flush
       @child_pid = spawn_child(command, worktree)
       forward(@pending_signal) if @pending_signal
       _, status = Process.wait2(@child_pid)
+      @termsig = status.termsig
       status.exitstatus || 128 + status.termsig
     ensure
       previous&.each { |sig, handler| @trap.call(sig, handler) }
@@ -176,9 +189,12 @@ module Workspace
       nil
     end
 
+    # Only a child killed by a signal is described as such: one that exits
+    # normally with a status above 128 (e.g. `exit 130`) is just that status.
     def describe_exit(code)
-      signal = code > 128 && Signal.signame(code - 128)
-      signal ? "exited on SIG#{signal} (status #{code})" : "exited with status #{code}"
+      signal = @termsig && "SIG#{Signal.signame(@termsig)}"
+      return "not started (#{signal} arrived first)" if @skipped
+      signal ? "exited on #{signal} (status #{code})" : "exited with status #{code}"
     end
   end
 end
