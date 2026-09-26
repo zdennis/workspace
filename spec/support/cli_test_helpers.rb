@@ -366,6 +366,21 @@ module CLITestHelpers
     end
   end
 
+  class FakeParentCommand
+    attr_reader :calls
+    attr_accessor :result
+
+    def initialize
+      @calls = []
+      @result = nil
+    end
+
+    def call(name = nil, path: false, json: false)
+      @calls << {name: name, path: path, json: json}
+      @result
+    end
+  end
+
   class FakeHookRunner
     attr_reader :runs
 

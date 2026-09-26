@@ -45,6 +45,7 @@ RSpec.describe Workspace::CLI do
     run_and_report_command = overrides[:run_and_report_command] || CLITestHelpers::FakeRunAndReportCommand.new
     capture_command = overrides[:capture_command] || CLITestHelpers::FakeCaptureCommand.new
     lock_command = overrides[:lock_command] || CLITestHelpers::FakeLockCommand.new
+    parent_command = overrides[:parent_command] || CLITestHelpers::FakeParentCommand.new
     agent_command = overrides[:agent_command] || CLITestHelpers::FakeAgentCommand.new
 
     cli = Workspace::CLI.new(
@@ -77,6 +78,7 @@ RSpec.describe Workspace::CLI do
       run_and_report_command: run_and_report_command,
       capture_command: capture_command,
       lock_command: lock_command,
+      parent_command: parent_command,
       agent_command: agent_command,
       sessions_command: sessions_command,
       session_event_command: session_event_command,
@@ -1501,6 +1503,50 @@ RSpec.describe Workspace::CLI do
       cli, output, _ = build_test_cli
       cli.run(["help"])
       expect(output.string).to include("capture")
+    end
+  end
+
+  describe "#run with parent" do
+    it "dispatches to parent_command#call with no options" do
+      parent_command = CLITestHelpers::FakeParentCommand.new
+      cli, _, _ = build_test_cli(parent_command: parent_command)
+
+      cli.run(["parent"])
+
+      expect(parent_command.calls).to eq([{name: nil, path: false, json: false}])
+    end
+
+    it "dispatches with a given project name" do
+      parent_command = CLITestHelpers::FakeParentCommand.new
+      cli, _, _ = build_test_cli(parent_command: parent_command)
+
+      cli.run(["parent", "app.worktree-login"])
+
+      expect(parent_command.calls).to eq([{name: "app.worktree-login", path: false, json: false}])
+    end
+
+    it "dispatches with --path" do
+      parent_command = CLITestHelpers::FakeParentCommand.new
+      cli, _, _ = build_test_cli(parent_command: parent_command)
+
+      cli.run(["parent", "--path"])
+
+      expect(parent_command.calls).to eq([{name: nil, path: true, json: false}])
+    end
+
+    it "dispatches with --json" do
+      parent_command = CLITestHelpers::FakeParentCommand.new
+      cli, _, _ = build_test_cli(parent_command: parent_command)
+
+      cli.run(["parent", "--json"])
+
+      expect(parent_command.calls).to eq([{name: nil, path: false, json: true}])
+    end
+
+    it "shows parent in help output" do
+      cli, output, _ = build_test_cli
+      cli.run(["help"])
+      expect(output.string).to include("parent")
     end
   end
 

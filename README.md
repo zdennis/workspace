@@ -86,6 +86,7 @@ workspace <subcommand> [options]
 | list | [README](docs/README.list.md) | List active projects (`--all` for all available) |
 | lock | [README](docs/README.lock.md) | Acquire, release, inspect, or clear a shared repo-wide lock |
 | lookup | [README](docs/README.lookup.md) | Find a workspace project by worktree path, branch, or project name |
+| parent | [README](docs/README.parent.md) | Print the parent workspace of the current (or given) workspace |
 | pipeline | [README](docs/README.pipeline.md) | Inspect and drive a project's agent pipeline |
 | prune | [README](docs/README.prune.md) | Remove worktree projects whose PR is closed or merged |
 | reactivate | [README](docs/README.reactivate.md) | Reactivate Claude in a project's tmux pane |

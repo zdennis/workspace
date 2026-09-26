@@ -45,7 +45,7 @@ A macOS CLI (Ruby) for managing tmuxinator-based development workspaces in iTerm
 
 ## Subcommands
 
-init, doctor, launch, start, add, stop, kill, relaunch, focus, list, status, whereis, agent, pipeline, sessions, session-event, lock
+init, doctor, launch, start, add, stop, kill, relaunch, focus, list, status, whereis, agent, pipeline, sessions, session-event, lock, parent
 
 ## Adding a Subcommand
 

@@ -48,6 +48,7 @@ require_relative "workspace/commands/update_pane_command"
 require_relative "workspace/commands/run"
 require_relative "workspace/commands/capture"
 require_relative "workspace/commands/lock"
+require_relative "workspace/commands/parent"
 require_relative "workspace/work_coordinator_client"
 require_relative "workspace/pipeline_config"
 require_relative "workspace/pipeline_state"
@@ -125,6 +126,7 @@ module Workspace
     lock_namespace = LockNamespace.new(config: config, lineage: lineage)
     lock_holder = LockHolder.new
     lock_command = Commands::Lock.new(config: config, lock_namespace: lock_namespace, lock_holder: lock_holder, output: output, error_output: error_output)
+    parent_command = Commands::Parent.new(lineage: lineage, project_config: project_config, output: output)
 
     work_coordinator_client = WorkCoordinatorClient.new(
       socket_path: config.work_coordinator_socket,
@@ -172,6 +174,7 @@ module Workspace
       run_and_report_command: run_and_report_command,
       capture_command: capture_command,
       lock_command: lock_command,
+      parent_command: parent_command,
       agent_command: agent_command,
       sessions_command: sessions_command,
       session_event_command: session_event_command,

@@ -37,7 +37,8 @@ module Workspace
     # @param error_output [IO] error output stream for warnings and errors
     # @param input [IO] input stream for interactive prompts
     # @param exit_handler [#exit] callable for process exit (Kernel in production, FakeExitHandler in tests)
-    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, lock_command:, agent_command:, sessions_command:, session_event_command:, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd)
+    # @param parent_command [Workspace::Commands::Parent] pre-built parent command
+    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, lock_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd)
       @config = config
       @state = state
       @project_config = project_config
@@ -69,6 +70,7 @@ module Workspace
       @run_and_report_command = run_and_report_command
       @capture_command = capture_command
       @lock_command = lock_command
+      @parent_command = parent_command
       @agent_command = agent_command
       @exit_handler = exit_handler
       @logger = logger
@@ -117,10 +119,12 @@ module Workspace
         cmd_resize(args)
       when "capture"
         cmd_capture(args)
-      when "lock"
-        cmd_lock(args)
       when "agent"
         cmd_agent(args)
+      when "lock"
+        cmd_lock(args)
+      when "parent"
+        cmd_parent(args)
       when "sessions"
         cmd_sessions(args)
       when "session-event"
@@ -225,6 +229,7 @@ module Workspace
           list            List currently active (launched) projects (--all for all available)
           lock            Acquire, release, inspect, or clear a shared repo-wide lock
           lookup          Find a workspace project by worktree path, branch, or project name
+          parent          Print the parent workspace of the current (or given) workspace
           pipeline        Inspect and drive a project's agent pipeline
           prune           Remove worktree projects whose PR is closed or merged
           reactivate      Reactivate Claude in a project's tmux pane
@@ -705,117 +710,6 @@ module Workspace
       pane = pane_opt || :bottom
 
       @capture_command.call(project, pane: pane, lines: lines_opt, all: all)
-    end
-
-    def cmd_lock(args)
-      case args.shift
-      when "acquire" then cmd_lock_acquire(args)
-      when "release" then cmd_lock_release(args)
-      when "status" then cmd_lock_status(args)
-      when "clear" then cmd_lock_clear(args)
-      when "help", "--help", "-h", nil then @output.puts lock_help
-      else
-        raise UsageError, lock_help
-      end
-    end
-
-    def lock_help
-      <<~HELP
-        Usage: workspace lock <subcommand> [options]
-
-        Coordinates agents sharing a resource through one flock-guarded lock
-        store per repository. Locks are shared across every worktree of a
-        repository, keyed by its git common directory.
-
-        Subcommands:
-          acquire <name> [options]   Acquire a lock, or wait for it
-          release [<name>|--all]     Release a lock this agent holds
-          status  [<name>]           Show holders and queues
-          clear   [<name>|--all]     Force-remove a lock's holder and queue
-
-        Options (acquire):
-          --task TEXT       Free-text description shown to other waiters
-          --wait            Enqueue and poll instead of refusing when busy
-          --poll SECS       Seconds between polls while waiting (default: #{Commands::Lock::DEFAULT_POLL_SECONDS})
-          --max-wait DUR    Give up after DUR seconds (exit 75; re-run to keep waiting)
-
-        Exit codes (acquire):
-          0   acquired
-          1   held by someone else (no --wait)
-          4   cleared by someone else while waiting
-          5   this agent already holds or waits for a different lock
-          75  still queued after --max-wait
-
-        Examples:
-          workspace lock acquire edit --wait --task "PROJ-12 fix login"
-          workspace lock release edit
-          workspace lock status
-          workspace lock clear edit
-      HELP
-    end
-
-    def cmd_lock_acquire(args)
-      task = nil
-      wait = false
-      poll = Commands::Lock::DEFAULT_POLL_SECONDS
-      max_wait = nil
-      parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace lock acquire <name> [options]"
-        opts.on("--task TEXT", "Free-text description shown to other waiters") { |v| task = v }
-        opts.on("--wait", "Enqueue and poll instead of refusing when busy") { wait = true }
-        opts.on("--poll SECS", Float, "Seconds between polls while waiting") { |v| poll = v }
-        opts.on("--max-wait DURATION", Float, "Give up after DURATION seconds (exit 75)") { |v| max_wait = v }
-      end
-      parser.parse!(args)
-
-      name = args.shift
-      raise UsageError, parser.help if name.nil? || args.any?
-
-      result = @lock_command.acquire(name, task: task, wait: wait, poll: poll, max_wait: max_wait, working_dir: @working_dir)
-      @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
-    end
-
-    def cmd_lock_release(args)
-      all = false
-      parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace lock release [<name>|--all]"
-        opts.on("--all", "Release every lock this agent holds") { all = true }
-      end
-      parser.parse!(args)
-
-      name = args.shift
-      raise UsageError, parser.help if (!all && name.nil?) || (all && name) || args.any?
-
-      result = @lock_command.release(name, all: all, working_dir: @working_dir)
-      @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
-    end
-
-    def cmd_lock_status(args)
-      parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace lock status [<name>]"
-      end
-      parser.parse!(args)
-
-      name = args.shift
-      raise UsageError, parser.help if args.any?
-
-      result = @lock_command.status(name, working_dir: @working_dir)
-      @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
-    end
-
-    def cmd_lock_clear(args)
-      all = false
-      parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace lock clear [<name>|--all]"
-        opts.on("--all", "Clear every lock in this namespace") { all = true }
-      end
-      parser.parse!(args)
-
-      name = args.shift
-      raise UsageError, parser.help if (!all && name.nil?) || (all && name) || args.any?
-
-      result = @lock_command.clear(name, all: all, working_dir: @working_dir)
-      @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
     end
 
     def cmd_agent(args)
@@ -1384,6 +1278,117 @@ module Workspace
       @init_command.call(dry_run: dry_run, force: force, hooks: hooks)
     end
 
+    def cmd_lock(args)
+      case args.shift
+      when "acquire" then cmd_lock_acquire(args)
+      when "release" then cmd_lock_release(args)
+      when "status" then cmd_lock_status(args)
+      when "clear" then cmd_lock_clear(args)
+      when "help", "--help", "-h", nil then @output.puts lock_help
+      else
+        raise UsageError, lock_help
+      end
+    end
+
+    def lock_help
+      <<~HELP
+        Usage: workspace lock <subcommand> [options]
+
+        Coordinates agents sharing a resource through one flock-guarded lock
+        store per repository. Locks are shared across every worktree of a
+        repository, keyed by its git common directory.
+
+        Subcommands:
+          acquire <name> [options]   Acquire a lock, or wait for it
+          release [<name>|--all]     Release a lock this agent holds
+          status  [<name>]           Show holders and queues
+          clear   [<name>|--all]     Force-remove a lock's holder and queue
+
+        Options (acquire):
+          --task TEXT       Free-text description shown to other waiters
+          --wait            Enqueue and poll instead of refusing when busy
+          --poll SECS       Seconds between polls while waiting (default: #{Commands::Lock::DEFAULT_POLL_SECONDS})
+          --max-wait DUR    Give up after DUR seconds (exit 75; re-run to keep waiting)
+
+        Exit codes (acquire):
+          0   acquired
+          1   held by someone else (no --wait)
+          4   cleared by someone else while waiting
+          5   this agent already holds or waits for a different lock
+          75  still queued after --max-wait
+
+        Examples:
+          workspace lock acquire edit --wait --task "PROJ-12 fix login"
+          workspace lock release edit
+          workspace lock status
+          workspace lock clear edit
+      HELP
+    end
+
+    def cmd_lock_acquire(args)
+      task = nil
+      wait = false
+      poll = Commands::Lock::DEFAULT_POLL_SECONDS
+      max_wait = nil
+      parser = OptionParser.new do |opts|
+        opts.banner = "Usage: workspace lock acquire <name> [options]"
+        opts.on("--task TEXT", "Free-text description shown to other waiters") { |v| task = v }
+        opts.on("--wait", "Enqueue and poll instead of refusing when busy") { wait = true }
+        opts.on("--poll SECS", Float, "Seconds between polls while waiting") { |v| poll = v }
+        opts.on("--max-wait DURATION", Float, "Give up after DURATION seconds (exit 75)") { |v| max_wait = v }
+      end
+      parser.parse!(args)
+
+      name = args.shift
+      raise UsageError, parser.help if name.nil? || args.any?
+
+      result = @lock_command.acquire(name, task: task, wait: wait, poll: poll, max_wait: max_wait, working_dir: @working_dir)
+      @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
+    end
+
+    def cmd_lock_release(args)
+      all = false
+      parser = OptionParser.new do |opts|
+        opts.banner = "Usage: workspace lock release [<name>|--all]"
+        opts.on("--all", "Release every lock this agent holds") { all = true }
+      end
+      parser.parse!(args)
+
+      name = args.shift
+      raise UsageError, parser.help if (!all && name.nil?) || (all && name) || args.any?
+
+      result = @lock_command.release(name, all: all, working_dir: @working_dir)
+      @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
+    end
+
+    def cmd_lock_status(args)
+      parser = OptionParser.new do |opts|
+        opts.banner = "Usage: workspace lock status [<name>]"
+      end
+      parser.parse!(args)
+
+      name = args.shift
+      raise UsageError, parser.help if args.any?
+
+      result = @lock_command.status(name, working_dir: @working_dir)
+      @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
+    end
+
+    def cmd_lock_clear(args)
+      all = false
+      parser = OptionParser.new do |opts|
+        opts.banner = "Usage: workspace lock clear [<name>|--all]"
+        opts.on("--all", "Clear every lock in this namespace") { all = true }
+      end
+      parser.parse!(args)
+
+      name = args.shift
+      raise UsageError, parser.help if (!all && name.nil?) || (all && name) || args.any?
+
+      result = @lock_command.clear(name, all: all, working_dir: @working_dir)
+      @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
+    end
+
     def cmd_sessions(args)
       json = false
       watch = false
@@ -1877,6 +1882,24 @@ module Workspace
       else
         raise Workspace::Error, "No workspace project found for '#{query}'"
       end
+    end
+
+    def cmd_parent(args)
+      path = false
+      json = false
+      parser = OptionParser.new do |opts|
+        opts.banner = "Usage: workspace parent [NAME] [--path] [--json]"
+        opts.separator ""
+        opts.separator "Print the parent workspace of the current (or given) workspace."
+        opts.separator "In a non-worktree workspace, prints its own name."
+        opts.separator ""
+        opts.on("--path", "Print the parent's root directory instead of its name") { path = true }
+        opts.on("--json", "Print name, path, git_common_dir, is_worktree, worktree as JSON") { json = true }
+      end
+      parser.parse!(args)
+
+      name = args.first
+      @parent_command.call(name, path: path, json: json)
     end
 
     def cmd_dir(args)
