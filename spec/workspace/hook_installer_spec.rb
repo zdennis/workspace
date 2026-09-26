@@ -70,6 +70,35 @@ RSpec.describe Workspace::HookInstaller do
       expect(File.exist?(settings_path)).to be false
     end
 
+    it "upgrades a previously installed Task-only PreToolUse entry to the new matcher, without duplicating it" do
+      write_settings(
+        "hooks" => {
+          "PreToolUse" => [{"matcher" => "Task", "hooks" => [{"type" => "command", "command" => command}]}]
+        }
+      )
+
+      installer.install(provider, tmpdir, command)
+
+      pre_tool_use = settings["hooks"]["PreToolUse"]
+      expect(pre_tool_use.size).to eq(1)
+      expect(pre_tool_use.first).not_to have_key("matcher")
+    end
+
+    it "is idempotent after upgrading a Task-only PreToolUse entry" do
+      write_settings(
+        "hooks" => {
+          "PreToolUse" => [{"matcher" => "Task", "hooks" => [{"type" => "command", "command" => command}]}]
+        }
+      )
+      installer.install(provider, tmpdir, command)
+      before = settings
+
+      installer.install(provider, tmpdir, command)
+
+      expect(settings).to eq(before)
+      expect(settings["hooks"]["PreToolUse"].size).to eq(1)
+    end
+
     it "refuses to touch a settings file it cannot parse" do
       FileUtils.mkdir_p(File.dirname(settings_path))
       File.write(settings_path, "{ not json")

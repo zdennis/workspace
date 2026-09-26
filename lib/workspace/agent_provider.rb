@@ -18,9 +18,14 @@ module Workspace
       "UserPromptSubmit" => nil,
       "Stop" => nil,
       "SubagentStop" => nil,
-      # Claude Code has no subagent-start event; a sub-agent begins when the
-      # Task tool is invoked, so that is what we match on.
-      "PreToolUse" => "Task"
+      # PreToolUse fires for every tool; workspace wants all of them (a tool
+      # use of any kind marks the holder active again), so the matcher is
+      # nil ("*" in Claude Code's own hook conventions). Sub-agent detection
+      # (the Task tool starting a sub-agent) is done inside session-event by
+      # inspecting the tool name, not by narrowing the matcher here. A
+      # second PreToolUse matcher group (e.g. "Edit|Write|MultiEdit|NotebookEdit")
+      # may be added later without disturbing this one.
+      "PreToolUse" => nil
     }.freeze
 
     # Arguments that mark a background helper rather than an interactive
