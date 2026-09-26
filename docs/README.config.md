@@ -22,7 +22,7 @@ workspace config unset <key> [--project NAME]
 
 With no subcommand, displays the YAML configuration for a project or the global workspace config. Auto-detects the project from the current directory if not specified.
 
-`set`, `get`, and `unset` manage a project's config by dotted key, without needing to open the YAML file by hand. The project is inferred from cwd via the same resolver used by `workspace parent`, `workspace lock`, and `dev`: a worktree resolves to its parent project. Pass `--project NAME` to target a different project explicitly.
+`set`, `get`, and `unset` manage a project's config by dotted key, without needing to open the YAML file by hand. `get` prints the value and exits 0; if the key has no value, it prints nothing on stdout, a short note on stderr, and exits 1. The project is inferred from cwd via the same resolver used by `workspace parent`, `workspace lock`, and `dev`: a worktree resolves to its parent project. Pass `--project NAME` to target a different project explicitly.
 
 `set`, `get`, and `unset` are reserved as the first argument to `workspace config`: they are always treated as subcommands, not as a project name. A project literally named `set`, `get`, or `unset` can't be shown via `workspace config <name>`; it would need a different name, or reading its YAML file directly.
 
@@ -35,6 +35,12 @@ Only an allowlisted set of keys can be written this way, so a typo doesn't silen
 | `dev.stop_timeout` | Grace period before force-stopping the dev environment, e.g. `20s` or `20` |
 
 `dev.stop_timeout` must parse as a duration (a plain number of seconds, or a number with a trailing `s`); anything else is rejected before it's written.
+
+`dev.up` runs via `/bin/sh -c`, so it can carry inline environment variables and quoting, e.g.:
+
+```sh
+workspace config set dev.up 'FOO="bar baz" ./start-dev'
+```
 
 Before writing, `set` and `unset` back up the project's config file (via the same backup mechanism used elsewhere in workspace) and then rewrite it through a temp file and rename. **`YAML.dump` drops comments** — if you've hand-edited the file with comments, they will be lost the first time `set` or `unset` touches it.
 

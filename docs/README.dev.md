@@ -61,6 +61,12 @@ workspace config set dev.stop_timeout 20s         # SIGTERM → SIGKILL grace (d
 
 **`status`** shows the holder's worktree and branch, pid/pgid, pane, uptime, whether `dev.ready` currently passes, and the queue.
 
+## Known limitations
+
+- The 120s ready timeout and the 30s wrapper startup timeout are fixed and not yet configurable.
+- Only one dev service is supported per project, guarded by the single `devenv` lock.
+- The `devenv` tmux window stays open after the dev command crashes, so its output can still be read. Close it by hand with `tmux kill-window`, or run `dev down`.
+
 ## Examples
 
 ```sh
