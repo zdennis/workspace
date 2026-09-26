@@ -1678,13 +1678,18 @@ module Workspace
       project = nil
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: workspace config get <key> [options]"
+        opts.separator ""
+        opts.separator "Prints the value on stdout and exits 0. If the key has no value,"
+        opts.separator "prints nothing on stdout, a note on stderr, and exits 1."
+        opts.separator ""
         opts.on("--project NAME", "Project to read instead of the one inferred from cwd") { |v| project = v }
       end
       parser.parse!(args)
       key = args.shift
       raise UsageError, parser.help if key.nil? || args.any?
 
-      @config_command.get(key, project: project, cwd: @working_dir)
+      found = @config_command.get(key, project: project, cwd: @working_dir)
+      @exit_handler.exit(1) unless found
     end
 
     def cmd_config_unset(args)
@@ -1729,6 +1734,11 @@ module Workspace
         opts.separator "  worktree_hooks:                Hooks seeded into new worktrees"
         opts.separator "  dev.up, dev.ready,             Set via 'workspace config set' (see"
         opts.separator "  dev.stop_timeout:              'workspace config set --help')"
+        opts.separator ""
+        opts.separator "Note: 'set', 'get', and 'unset' are reserved as the first argument"
+        opts.separator "here and are always treated as subcommands, so a project literally"
+        opts.separator "named 'set', 'get', or 'unset' can't be shown this way (see"
+        opts.separator "docs/README.config.md for the workaround)."
         opts.separator ""
         opts.separator "Examples:"
         opts.separator "  workspace config myproject     # show project config"

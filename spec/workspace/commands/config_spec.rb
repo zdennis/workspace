@@ -84,29 +84,58 @@ RSpec.describe Workspace::Commands::Config do
       backups = Dir.glob("#{path}.workspace-backup-*")
       expect(backups).not_to be_empty
     end
+
+    it "serializes concurrent set calls via flock instead of clobbering each other" do
+      command, project_settings = build_command
+      project_dir = Dir.mktmpdir("ws-config-project")
+      name = File.basename(project_dir)
+      project_settings.save(name, {"dev" => {}})
+      path = project_settings.project_config_path(name)
+
+      threads = 10.times.map do |i|
+        Thread.new { command.set("dev.up", "cmd-#{i}", cwd: project_dir) }
+      end
+      threads.each(&:join)
+
+      # Every write took the lock in turn; the file is left with one
+      # consistent value, not a torn/partial write from an interleaved
+      # read-modify-write.
+      data = project_settings.load(name)
+      expect(data["dev"]["up"]).to match(/\Acmd-\d\z/)
+      expect(File.exist?("#{path}.lock")).to eq(true)
+    end
   end
 
   describe "#get" do
-    it "gets a previously set key" do
+    it "gets a previously set key and returns true" do
       output = StringIO.new
       command, project_settings = build_command(output: output)
       project_dir = Dir.mktmpdir("ws-config-project")
       name = File.basename(project_dir)
       project_settings.save(name, {"dev" => {"up" => "bin/dev"}})
 
-      command.get("dev.up", cwd: project_dir)
+      result = command.get("dev.up", cwd: project_dir)
 
       expect(output.string.strip).to eq("bin/dev")
+      expect(result).to eq(true)
     end
 
-    it "prints (unset) for a key with no value" do
+    it "prints nothing on stdout, a note on stderr, and returns false for a key with no value" do
       output = StringIO.new
-      command, = build_command(output: output)
+      error_output = StringIO.new
+      dir = Dir.mktmpdir("ws-config")
+      fake_path_config = Struct.new(:workspace_config_dir).new(dir)
+      project_settings = Workspace::ProjectSettings.new(config: fake_path_config)
+      lineage = Workspace::WorkspaceLineage.new
+      file_backup = Workspace::FileBackup.new(output: output)
+      command = described_class.new(project_settings: project_settings, lineage: lineage, file_backup: file_backup, output: output, error_output: error_output)
       project_dir = Dir.mktmpdir("ws-config-project")
 
-      command.get("dev.up", cwd: project_dir)
+      result = command.get("dev.up", cwd: project_dir)
 
-      expect(output.string.strip).to eq("(unset)")
+      expect(output.string).to eq("")
+      expect(error_output.string).to include("dev.up is not set")
+      expect(result).to eq(false)
     end
 
     it "rejects an unknown key" do

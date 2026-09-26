@@ -514,6 +514,74 @@ RSpec.describe Workspace::ProcessGroupTerminator do
     end
   end
 
+  describe "when the kernel answers EPERM" do
+    def eperm_kill(allowed: [])
+      sent = []
+      kill = lambda do |signal, target|
+        sent << [signal, target]
+        raise Errno::EPERM unless allowed.include?(target)
+        1
+      end
+      [kill, sent]
+    end
+
+    it "treats a group of only zombies as not running" do
+      kill, _sent = eperm_kill
+      terminator = described_class.new(kill: kill, member_states: ->(_pgid) { ["Z", "Z+"] }, own_pgid: 1)
+
+      expect(terminator.running?(4242)).to be(false)
+      expect(terminator.terminate(4242, stop_timeout: 0)).to eq(:not_running)
+    end
+
+    it "treats a group with no members left as not running" do
+      kill, _sent = eperm_kill
+      terminator = described_class.new(kill: kill, member_states: ->(_pgid) { [] }, own_pgid: 1)
+
+      expect(terminator.running?(4242)).to be(false)
+    end
+
+    it "raises instead of reporting success for a live group it may not signal" do
+      kill, _sent = eperm_kill
+      terminator = described_class.new(kill: kill, member_states: ->(_pgid) { ["Z", "Ss"] }, own_pgid: 1)
+
+      expect { terminator.running?(4242) }.to raise_error(Workspace::Error, /process group 4242 has running processes this user is not permitted to signal/)
+      expect { terminator.terminate(4242, stop_timeout: 0) }.to raise_error(Workspace::Error, /not permitted/)
+    end
+
+    it "raises from stop_holder rather than returning a stop that never happened" do
+      kill, _sent = eperm_kill
+      terminator = described_class.new(kill: kill, member_states: ->(_pgid) { ["S"] }, own_pgid: 1)
+
+      expect {
+        terminator.stop_holder({"pid" => 4242, "started" => "s", "pgid" => 4242}, liveness: FakeLockLiveness.new, stop_timeout: 0)
+      }.to raise_error(Workspace::Error, /not permitted/)
+    end
+
+    it "signals the whole group when its leader is a zombie that cannot take the SIGTERM" do
+      kill, sent = eperm_kill(allowed: [-4242])
+      clock = [0, 0, 10, 10].each
+      terminator = described_class.new(kill: kill, member_states: ->(_pgid) { ["Z", "S"] }, own_pgid: 1,
+        clock: -> { clock.next }, sleeper: ->(_s) {})
+
+      expect(terminator.terminate(4242, stop_timeout: 1, leader: 4242)).to eq(:killed)
+      expect(sent).to eq([["TERM", 4242], ["TERM", -4242], [0, -4242], [0, -4242], ["KILL", -4242]])
+    end
+
+    it "raises when SIGKILL is refused for a group that is still live" do
+      calls = 0
+      kill = lambda do |signal, _target|
+        calls += 1
+        raise Errno::EPERM if signal == "KILL"
+        1
+      end
+      clock = [0, 10].each
+      terminator = described_class.new(kill: kill, member_states: ->(_pgid) { ["R"] }, own_pgid: 1,
+        clock: -> { clock.next }, sleeper: ->(_s) {})
+
+      expect { terminator.terminate(4242, stop_timeout: 1) }.to raise_error(Workspace::Error, /not permitted/)
+    end
+  end
+
   it "refuses to signal its own process group or pgid <= 1" do
     expect { described_class.new.terminate(Process.getpgrp, stop_timeout: 1) }.to raise_error(Workspace::Error)
     expect { described_class.new.terminate(1, stop_timeout: 1) }.to raise_error(Workspace::Error)

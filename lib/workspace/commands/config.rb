@@ -15,11 +15,13 @@ module Workspace
       # @param lineage [Workspace::WorkspaceLineage] resolves a project from cwd (worktree -> parent)
       # @param file_backup [Workspace::FileBackup] backs up the config file before it's rewritten
       # @param output [IO] output stream for user-facing messages
-      def initialize(project_settings:, lineage:, file_backup:, output: $stdout)
+      # @param error_output [IO] output stream for user-facing errors
+      def initialize(project_settings:, lineage:, file_backup:, output: $stdout, error_output: $stderr)
         @project_settings = project_settings
         @lineage = lineage
         @file_backup = file_backup
         @output = output
+        @error_output = error_output
       end
 
       # @param key [String] a dotted key from {ALLOWED_KEYS}
@@ -34,23 +36,25 @@ module Workspace
 
         name = project || @lineage.resolve(cwd: cwd).name
         path = @project_settings.project_config_path(name)
-        @file_backup.backup(path)
-        data = @project_settings.load(name)
-        segments = key.split(".")
-        cursor = data
-        segments[0..-2].each do |segment|
-          cursor[segment] = {} unless cursor[segment].is_a?(Hash)
-          cursor = cursor[segment]
+        with_config_lock(path) do
+          @file_backup.backup(path)
+          data = @project_settings.load(name)
+          segments = key.split(".")
+          cursor = data
+          segments[0..-2].each do |segment|
+            cursor[segment] = {} unless cursor[segment].is_a?(Hash)
+            cursor = cursor[segment]
+          end
+          cursor[segments.last] = value
+          write(path, data)
         end
-        cursor[segments.last] = value
-        write(path, data)
         @output.puts "Set #{key} = #{value} for '#{name}'."
       end
 
       # @param key [String] a dotted key from {ALLOWED_KEYS}
       # @param project [String, nil] project to read; defaults to the one inferred from cwd
       # @param cwd [String] directory to infer the project from, when project is nil
-      # @return [void]
+      # @return [Boolean] true if the key had a value, false if unset
       # @raise [Workspace::UsageError] for an unknown key
       def get(key, project: nil, cwd: Dir.pwd)
         validate_key!(key)
@@ -58,7 +62,13 @@ module Workspace
         name = project || @lineage.resolve(cwd: cwd).name
         data = @project_settings.load(name)
         value = data.dig(*key.split("."))
-        @output.puts value.nil? ? "(unset)" : value
+        if value.nil?
+          @error_output.puts "#{key} is not set for '#{name}'."
+          false
+        else
+          @output.puts value
+          true
+        end
       end
 
       # @param key [String] a dotted key from {ALLOWED_KEYS}
@@ -71,16 +81,34 @@ module Workspace
 
         name = project || @lineage.resolve(cwd: cwd).name
         path = @project_settings.project_config_path(name)
-        @file_backup.backup(path)
-        data = @project_settings.load(name)
-        segments = key.split(".")
-        cursor = segments[0..-2].reduce(data) { |node, segment| node.is_a?(Hash) ? node[segment] : nil }
-        cursor.delete(segments.last) if cursor.is_a?(Hash)
-        write(path, data)
+        with_config_lock(path) do
+          @file_backup.backup(path)
+          data = @project_settings.load(name)
+          segments = key.split(".")
+          cursor = segments[0..-2].reduce(data) { |node, segment| node.is_a?(Hash) ? node[segment] : nil }
+          cursor.delete(segments.last) if cursor.is_a?(Hash)
+          write(path, data)
+        end
         @output.puts "Unset #{key} for '#{name}'."
       end
 
       private
+
+      # Guards the load -> mutate -> write cycle with an exclusive flock on a
+      # sibling lock file, so concurrent `set`/`unset` calls for the same
+      # project serialize instead of clobbering each other. The lock is held
+      # on a sentinel file (never on the config file itself), matching
+      # {Workspace::LockStore}'s rationale: the config file is rewritten via
+      # tmp-file-then-rename, which would leave a held flock pointing at a
+      # deleted inode if it were locked directly.
+      def with_config_lock(path)
+        FileUtils.mkdir_p(File.dirname(path))
+        lockfile_path = "#{path}.lock"
+        File.open(lockfile_path, File::RDWR | File::CREAT, 0o600) do |f|
+          f.flock(File::LOCK_EX)
+          yield
+        end
+      end
 
       def validate_key!(key)
         return if ALLOWED_KEYS.include?(key)

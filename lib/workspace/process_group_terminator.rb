@@ -1,3 +1,5 @@
+require "open3"
+
 module Workspace
   # Stops a recorded process group: SIGTERM (to the whole group, or to its
   # leader alone), then SIGKILL to the whole group if anything in it is still
@@ -7,17 +9,28 @@ module Workspace
   # {#terminate} trusts its caller to have checked the holder is still alive;
   # {#stop_holder} does that check itself, so a recycled pgid is never
   # signalled.
+  #
+  # The kernel answers EPERM both for a group holding only unreaped zombies
+  # and for a live group owned by another user, so every EPERM is settled by
+  # looking at the group's members: all zombies (or none) is "not running",
+  # anything else raises rather than reporting a stop that never happened.
   class ProcessGroupTerminator
     # @param clock [#call] returns monotonic seconds
     # @param sleeper [#call] sleeps for the given seconds
     # @param poll_interval [Numeric] seconds between checks while waiting for the group to exit
     # @param own_pgid [Integer] the calling process's own group, which is never signalled
+    # @param kill [#call] sends a signal, called as `kill.call(signal, target)` like `Process.kill`
+    # @param member_states [#call] called with a pgid, returns the `ps` state
+    #   (e.g. "S", "Z+") of every process in that group
     def initialize(clock: -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) },
-      sleeper: ->(seconds) { sleep(seconds) }, poll_interval: 0.1, own_pgid: Process.getpgrp)
+      sleeper: ->(seconds) { sleep(seconds) }, poll_interval: 0.1, own_pgid: Process.getpgrp,
+      kill: ->(signal, target) { Process.kill(signal, target) }, member_states: method(:ps_member_states))
       @clock = clock
       @sleeper = sleeper
       @poll_interval = poll_interval
       @own_pgid = own_pgid
+      @kill = kill
+      @member_states = member_states
     end
 
     # Stops a `kind: "process"` lock holder (the dev wrapper): SIGTERM to the
@@ -42,13 +55,14 @@ module Workspace
     #   of the whole group (a wrapper that forwards it itself)
     # @return [Symbol] :not_running (nothing to signal), :terminated (exited
     #   after SIGTERM), or :killed (SIGKILL was sent)
-    # @raise [Workspace::Error] for an unsafe pgid (<= 1, or the caller's own group)
+    # @raise [Workspace::Error] for an unsafe pgid (<= 1, or the caller's own
+    #   group), or a live group this user may not signal
     def terminate(pgid, stop_timeout:, leader: nil)
       pgid = Integer(pgid)
       if pgid <= 1 || pgid == @own_pgid
         raise Workspace::Error, "refusing to signal process group #{pgid}"
       end
-      return :not_running unless signal("TERM", leader ? Integer(leader) : -pgid)
+      return :not_running unless signal("TERM", leader ? Integer(leader) : -pgid, pgid)
 
       deadline = @clock.call + stop_timeout
       while @clock.call < deadline
@@ -56,34 +70,50 @@ module Workspace
         @sleeper.call(@poll_interval)
       end
       return :terminated unless running?(pgid)
-
-      begin
-        Process.kill("KILL", -pgid)
-      rescue Errno::ESRCH, Errno::EPERM
-        return :terminated
-      end
+      return :terminated unless signal("KILL", -pgid, pgid)
       :killed
     end
 
     # @param pgid [Integer]
     # @return [Boolean] whether any process in the group can still be signalled
+    # @raise [Workspace::Error] if the group has live members this user may not signal
     def running?(pgid)
-      Process.kill(0, -pgid)
-      true
-    rescue Errno::ESRCH, Errno::EPERM
-      # EPERM here means only unreaped zombies are left in the group.
-      false
+      signal(0, -Integer(pgid), Integer(pgid))
     end
 
     private
 
-    # EPERM, like in {#running?}, means nothing this user can stop: a group
-    # holding only unreaped zombies, or a pgid since reused by another user.
-    def signal(name, target)
-      Process.kill(name, target)
+    # @return [Boolean] whether the signal was delivered; false when there is
+    #   nothing left to signal
+    def signal(name, target, pgid)
+      @kill.call(name, target)
       true
-    rescue Errno::ESRCH, Errno::EPERM
+    rescue Errno::ESRCH
       false
+    rescue Errno::EPERM
+      # A zombie leader cannot take its signal; the rest of its group still can.
+      return signal(name, -pgid, pgid) if target != -pgid
+      raise not_permitted(pgid) if live_members?(pgid)
+      false
+    end
+
+    def live_members?(pgid)
+      @member_states.call(pgid).any? { |state| !state.start_with?("Z") }
+    end
+
+    def not_permitted(pgid)
+      Workspace::Error.new("process group #{pgid} has running processes this user is not permitted to signal " \
+        "(its id was likely reused by another user's processes), so it was not signalled. " \
+        "Inspect it with: ps -axo pid,pgid,user,stat,command | awk '$2 == #{pgid}'")
+    end
+
+    def ps_member_states(pgid)
+      stdout, stderr, status = Open3.capture3({"LC_ALL" => "C"}, "ps", "-axo", "pgid=,stat=")
+      raise Workspace::Error, "could not read the process table (ps failed: #{stderr.strip})" unless status.success?
+      stdout.lines.filter_map do |line|
+        group, state = line.split
+        state if group.to_i == pgid && state
+      end
     end
   end
 end

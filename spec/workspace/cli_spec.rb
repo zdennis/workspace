@@ -745,6 +745,22 @@ RSpec.describe Workspace::CLI do
       expect(config_command.calls).to eq([{action: :get, key: "dev.up", project: nil, cwd: "/tmp/some-project"}])
     end
 
+    it "exits 1 when config_command#get reports the key is unset" do
+      config_command = CLITestHelpers::FakeConfigCommand.new(get_returns: false)
+      cli, _, _ = build_test_cli(config_command: config_command)
+
+      expect { cli.run(["config", "get", "dev.up"]) }.to raise_error(FakeSystemExit) { |e|
+        expect(e.status).to eq(1)
+      }
+    end
+
+    it "exits 0 when config_command#get reports the key is set" do
+      config_command = CLITestHelpers::FakeConfigCommand.new(get_returns: true)
+      cli, _, _ = build_test_cli(config_command: config_command)
+
+      expect { cli.run(["config", "get", "dev.up"]) }.not_to raise_error
+    end
+
     it "dispatches unset to config_command with key and cwd" do
       config_command = CLITestHelpers::FakeConfigCommand.new
       cli, _, _ = build_test_cli(config_command: config_command, working_dir: "/tmp/some-project")

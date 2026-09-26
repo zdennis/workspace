@@ -414,8 +414,9 @@ module CLITestHelpers
   class FakeConfigCommand
     attr_reader :calls
 
-    def initialize
+    def initialize(get_returns: true)
       @calls = []
+      @get_returns = get_returns
     end
 
     def set(key, value, project: nil, cwd: Dir.pwd)
@@ -424,6 +425,7 @@ module CLITestHelpers
 
     def get(key, project: nil, cwd: Dir.pwd)
       @calls << {action: :get, key: key, project: project, cwd: cwd}
+      @get_returns
     end
 
     def unset(key, project: nil, cwd: Dir.pwd)
