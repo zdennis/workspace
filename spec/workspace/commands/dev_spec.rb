@@ -498,6 +498,155 @@ RSpec.describe Workspace::Commands::Dev, "with fake processes and clock" do
     end
   end
 
+  def locks_path = File.join(lock_dir, "locks.json")
+
+  def edit_lock
+    data = JSON.parse(File.read(locks_path))
+    yield data["devenv"]
+    File.write(locks_path, JSON.generate(data))
+  end
+
+  describe "#up clearing the way" do
+    it "refuses while a dead wrapper's process group is still running" do
+      orphan(700)
+      allow(terminator).to receive(:running?).with(700).and_return(true)
+      wrapper_joins(555, wait: false)
+
+      expect(dev.up(working_dir: worktree)).to eq(exit_code: 1)
+      expect(error_output.string).to include("process group 700 is still running (its wrapper pid 700 is gone). Stop it with: workspace dev down --force")
+      expect(tmux).not_to have_received(:new_window)
+    end
+
+    it "with --takeover, kills the orphaned group and starts its own" do
+      orphan(700)
+      allow(terminator).to receive(:running?).with(700).and_return(true)
+      allow(terminator).to receive(:terminate).and_return(:terminated)
+      wrapper_joins(555, wait: false)
+
+      expect(dev.up(takeover: true, working_dir: worktree)).to eq(exit_code: 0)
+      expect(terminator).to have_received(:terminate).with(700, stop_timeout: 2, guard: an_instance_of(Proc))
+      expect(output.string).to include("Killed orphaned dev process group 700")
+      expect(holder).to include("pid" => 555)
+    end
+
+    it "refuses without --wait when others are queued for a free lock" do
+      FileUtils.mkdir_p(lock_dir)
+      File.write(locks_path, JSON.generate("devenv" => {"holder" => nil, "queue" => [
+        {"waiter_pid" => 800, "waiter_started" => "s-800", "agent_pid" => 800, "agent_started" => "s-800", "worktree" => "/w/other"}
+      ]}))
+      wrapper_joins(555, wait: false)
+
+      expect(dev.up(working_dir: worktree)).to eq(exit_code: 1)
+      expect(error_output.string).to include("Others are queued for the devenv lock. Use --wait to queue.")
+      expect(tmux).not_to have_received(:new_window)
+    end
+  end
+
+  describe "#up waiting for the wrapper" do
+    it "stops a wrapper that never takes the lock within the startup timeout" do
+      allow(tmux).to receive(:new_window).and_return(555)
+
+      expect(dev.up(working_dir: worktree)).to eq(exit_code: 1)
+      expect(signals).to eq([["TERM", 555]])
+      expect(error_output.string).to include("The dev wrapper (pid 555) did not acquire the devenv lock within 5s; stopped it.")
+    end
+
+    it "fails when the wrapper exits before taking the lock" do
+      allow(tmux).to receive(:new_window).and_return(555)
+      dead_pids << 555
+
+      expect(dev.up(working_dir: worktree)).to eq(exit_code: 1)
+      expect(error_output.string).to include("The dev wrapper (pid 555) exited before it acquired the devenv lock.")
+    end
+
+    it "exits 4 when the lock is cleared while its wrapper is queued" do
+      hold(700)
+      wrapper_joins(555)
+      on_sleep << -> { store.clear("devenv") }
+
+      expect(dev.up(wait: true, working_dir: worktree)).to eq(exit_code: 4)
+      expect(output.string).to include("Trying to obtain workspace devenv lock (held by other (feat/other))...")
+      expect(error_output.string).to include("devenv lock was cleared while waiting.")
+    end
+
+    it "exits 75 and stops its queued wrapper once --max-wait passes" do
+      hold(700)
+      wrapper_joins(555)
+
+      expect(dev.up(wait: true, max_wait: 3, working_dir: worktree)).to eq(exit_code: 75)
+      expect(signals).to eq([["TERM", 555]])
+      expect(now[0]).to eq(3)
+      expect(error_output.string).to include("Still queued for devenv lock after --max-wait; re-run to keep waiting.")
+    end
+  end
+
+  describe "#up --takeover waiting for its wrapper to queue" do
+    before { hold(700) }
+
+    it "stops a wrapper that never queues within the startup timeout, leaving the holder alone" do
+      allow(tmux).to receive(:new_window).and_return(555)
+      allow(terminator).to receive(:stop_holder)
+
+      expect(dev.up(takeover: true, working_dir: worktree)).to eq(exit_code: 1)
+      expect(signals).to eq([["TERM", 555]])
+      expect(terminator).not_to have_received(:stop_holder)
+      expect(holder).to include("pid" => 700)
+    end
+
+    it "fails when the wrapper exits before queueing" do
+      allow(tmux).to receive(:new_window).and_return(555)
+      dead_pids << 555
+
+      expect(dev.up(takeover: true, working_dir: worktree)).to eq(exit_code: 1)
+      expect(error_output.string).to include("The dev wrapper (pid 555) exited before it queued for the devenv lock.")
+    end
+  end
+
+  describe "#up waiting for the ready check" do
+    before { settings["ready"] = "false" }
+
+    it "exits 6 when the dev command exits before the check passes" do
+      wrapper_joins(555, wait: false)
+      on_sleep << -> { liveness.kill(555) }
+
+      expect(dev.up(working_dir: worktree)).to eq(exit_code: 6)
+      expect(error_output.string).to include("The dev command exited before its ready check (false) passed; see the devenv window.")
+    end
+
+    it "stops the env and exits 6 when the check does not pass in time, leaving its window open" do
+      wrapper_joins(555, wait: false)
+      allow(terminator).to receive(:stop_holder) do
+        liveness.kill(555)
+        :terminated
+      end
+
+      expect(dev.up(working_dir: worktree)).to eq(exit_code: 6)
+      expect(error_output.string).to include("Ready check (false) did not pass within 5s; stopped the dev environment and released the devenv lock.")
+      expect(holder).to be_nil
+      expect(tmux).not_to have_received(:close_dead_pane)
+    end
+  end
+
+  describe "#status uptime" do
+    before { hold(700) }
+
+    it "shows hours and minutes for a long-running env" do
+      edit_lock { |entry| entry["holder"]["acquired_at"] = (Time.now - 7260).utc.iso8601 }
+
+      dev.status(working_dir: worktree)
+
+      expect(output.string).to include("pid 700, pgid 700, pane %7, up 2h 1m")
+    end
+
+    it "shows ? for an unreadable acquired_at" do
+      edit_lock { |entry| entry["holder"]["acquired_at"] = "not a time" }
+
+      dev.status(working_dir: worktree)
+
+      expect(output.string).to include("pid 700, pgid 700, pane %7, up ?")
+    end
+  end
+
   describe "a process group this user may not signal" do
     let(:foreign) { Workspace::Error.new("process group 700 has running processes this user is not permitted to signal") }
 
