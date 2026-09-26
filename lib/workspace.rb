@@ -26,6 +26,8 @@ require_relative "workspace/session_monitor"
 require_relative "workspace/agent_provider"
 require_relative "workspace/file_backup"
 require_relative "workspace/dev_config"
+require_relative "workspace/process_group_terminator"
+require_relative "workspace/dev_runner"
 require_relative "workspace/hook_installer"
 require_relative "workspace/hook_runner"
 require_relative "workspace/project_detector"
@@ -49,6 +51,7 @@ require_relative "workspace/commands/update_pane_command"
 require_relative "workspace/commands/run"
 require_relative "workspace/commands/capture"
 require_relative "workspace/commands/lock"
+require_relative "workspace/commands/dev"
 require_relative "workspace/commands/parent"
 require_relative "workspace/commands/config"
 require_relative "workspace/work_coordinator_client"
@@ -127,7 +130,22 @@ module Workspace
 
     lock_namespace = LockNamespace.new(config: config, lineage: lineage)
     lock_holder = LockHolder.new
+    dev_config = DevConfig.new(project_settings: project_settings)
+    process_group_terminator = ProcessGroupTerminator.new
     lock_command = Commands::Lock.new(config: config, lock_namespace: lock_namespace, lock_holder: lock_holder, output: output, error_output: error_output)
+    dev_runner = DevRunner.new(liveness: lock_holder, output: output)
+    dev_command = Commands::Dev.new(
+      lock_namespace: lock_namespace,
+      lock_holder: lock_holder,
+      lineage: lineage,
+      dev_config: dev_config,
+      dev_runner: dev_runner,
+      terminator: process_group_terminator,
+      tmux: tmux,
+      executable: File.expand_path("../bin/workspace", __dir__),
+      output: output,
+      error_output: error_output
+    )
     parent_command = Commands::Parent.new(lineage: lineage, project_config: project_config, output: output)
     config_command = Commands::Config.new(project_settings: project_settings, lineage: lineage, file_backup: file_backup, output: output)
 
@@ -177,6 +195,7 @@ module Workspace
       run_and_report_command: run_and_report_command,
       capture_command: capture_command,
       lock_command: lock_command,
+      dev_command: dev_command,
       parent_command: parent_command,
       agent_command: agent_command,
       sessions_command: sessions_command,

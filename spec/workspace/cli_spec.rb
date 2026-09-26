@@ -45,6 +45,7 @@ RSpec.describe Workspace::CLI do
     run_and_report_command = overrides[:run_and_report_command] || CLITestHelpers::FakeRunAndReportCommand.new
     capture_command = overrides[:capture_command] || CLITestHelpers::FakeCaptureCommand.new
     lock_command = overrides[:lock_command] || CLITestHelpers::FakeLockCommand.new
+    dev_command = overrides[:dev_command] || CLITestHelpers::FakeDevCommand.new
     parent_command = overrides[:parent_command] || CLITestHelpers::FakeParentCommand.new
     agent_command = overrides[:agent_command] || CLITestHelpers::FakeAgentCommand.new
 
@@ -78,6 +79,7 @@ RSpec.describe Workspace::CLI do
       run_and_report_command: run_and_report_command,
       capture_command: capture_command,
       lock_command: lock_command,
+      dev_command: dev_command,
       parent_command: parent_command,
       agent_command: agent_command,
       sessions_command: sessions_command,
@@ -1484,6 +1486,68 @@ RSpec.describe Workspace::CLI do
       cli.run(["lock", "clear", "edit"])
 
       expect(lock_command.calls).to eq([{action: :clear, name: "edit", all: false}])
+    end
+
+    describe "dev" do
+      let(:dev_command) { CLITestHelpers::FakeDevCommand.new }
+
+      it "dispatches up with --wait, --takeover, --no-ready and --max-wait" do
+        cli, _, _ = build_test_cli(dev_command: dev_command)
+
+        cli.run(["dev", "up", "--wait", "--takeover", "--no-ready", "--max-wait", "30"])
+
+        expect(dev_command.calls).to eq([{action: :up, wait: true, takeover: true, ready: false, max_wait: 30.0}])
+      end
+
+      it "defaults up to no wait, no takeover, and a ready check" do
+        cli, _, _ = build_test_cli(dev_command: dev_command)
+
+        cli.run(["dev", "up"])
+
+        expect(dev_command.calls).to eq([{action: :up, wait: false, takeover: false, ready: true, max_wait: nil}])
+      end
+
+      it "rejects --max-wait without --wait" do
+        cli, _, error_output = build_test_cli(dev_command: dev_command)
+
+        expect { cli.run(["dev", "up", "--max-wait", "5"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+        expect(error_output.string).to include("--max-wait requires --wait")
+        expect(dev_command.calls).to be_empty
+      end
+
+      it "exits with up's exit code" do
+        dev_command.result = {exit_code: 6}
+        cli, _, _ = build_test_cli(dev_command: dev_command)
+
+        expect { cli.run(["dev", "up"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(6) }
+      end
+
+      it "dispatches down with --force, status, and the hidden __run" do
+        cli, _, _ = build_test_cli(dev_command: dev_command)
+
+        cli.run(["dev", "down", "--force"])
+        cli.run(["dev", "status"])
+        cli.run(["dev", "__run", "--wait"])
+
+        expect(dev_command.calls).to eq([{action: :down, force: true}, {action: :status}, {action: :run, wait: true}])
+      end
+
+      it "prints dev help without a subcommand and rejects unknown ones" do
+        cli, output, _ = build_test_cli(dev_command: dev_command)
+
+        cli.run(["dev"])
+        expect(output.string).to include("Usage: workspace dev <subcommand>")
+        expect(output.string).not_to include("__run")
+        expect { cli.run(["dev", "bogus"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+      end
+
+      it "lists dev in the main help" do
+        cli, output, _ = build_test_cli
+
+        cli.run(["help"])
+
+        expect(output.string).to match(/^\s+dev\s+Start, stop, or inspect/)
+      end
     end
 
     it "raises UsageError for an unknown lock subcommand" do

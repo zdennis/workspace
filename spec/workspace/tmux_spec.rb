@@ -388,4 +388,24 @@ RSpec.describe Workspace::Tmux do
       expect(tmux.find_claude_pane("my-session")).to eq(2)
     end
   end
+
+  describe "#new_window" do
+    let(:tmux) { described_class.new(config: config) }
+
+    it "opens a detached window running the argv directly and returns the pane pid" do
+      allow(Open3).to receive(:capture3).and_return(["4321\n", "", double(success?: true)])
+
+      pid = tmux.new_window("app", name: "devenv", cwd: "/w/app", command: ["ruby", "ws", "dev", "__run"], env: {"XDG_STATE_HOME" => "/s"})
+
+      expect(pid).to eq(4321)
+      expect(Open3).to have_received(:capture3).with("tmux", "new-window", "-d", "-P", "-F", "\#{pane_pid}", "-t", "app:",
+        "-n", "devenv", "-c", "/w/app", "-e", "XDG_STATE_HOME=/s", "--", "ruby", "ws", "dev", "__run")
+    end
+
+    it "returns nil when tmux fails" do
+      allow(Open3).to receive(:capture3).and_return(["", "no session", double(success?: false)])
+
+      expect(tmux.new_window("gone", name: "devenv", cwd: "/w", command: ["true"])).to be_nil
+    end
+  end
 end

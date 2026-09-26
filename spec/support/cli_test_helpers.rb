@@ -366,6 +366,36 @@ module CLITestHelpers
     end
   end
 
+  class FakeDevCommand
+    attr_reader :calls
+    attr_accessor :result
+
+    def initialize
+      @calls = []
+      @result = {exit_code: 0}
+    end
+
+    def up(**opts)
+      @calls << {action: :up, **opts.except(:working_dir)}
+      @result
+    end
+
+    def down(**opts)
+      @calls << {action: :down, **opts.except(:working_dir)}
+      @result
+    end
+
+    def status(**opts)
+      @calls << {action: :status}
+      @result
+    end
+
+    def run(**opts)
+      @calls << {action: :run, **opts.except(:working_dir)}
+      @result
+    end
+  end
+
   class FakeParentCommand
     attr_reader :calls
     attr_accessor :result

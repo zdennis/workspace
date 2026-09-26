@@ -38,7 +38,8 @@ module Workspace
     # @param input [IO] input stream for interactive prompts
     # @param exit_handler [#exit] callable for process exit (Kernel in production, FakeExitHandler in tests)
     # @param parent_command [Workspace::Commands::Parent] pre-built parent command
-    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, lock_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd)
+    # @param dev_command [Workspace::Commands::Dev] pre-built dev command
+    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd)
       @config = config
       @state = state
       @project_config = project_config
@@ -70,6 +71,7 @@ module Workspace
       @run_and_report_command = run_and_report_command
       @capture_command = capture_command
       @lock_command = lock_command
+      @dev_command = dev_command
       @parent_command = parent_command
       @agent_command = agent_command
       @config_command = config_command
@@ -124,6 +126,8 @@ module Workspace
         cmd_agent(args)
       when "lock"
         cmd_lock(args)
+      when "dev"
+        cmd_dev(args)
       when "parent"
         cmd_parent(args)
       when "sessions"
@@ -217,6 +221,7 @@ module Workspace
           cleanup         Detect and remove zombie sessions from state
           config          Show project or global configuration
           current         Print the workspace project name for the current directory
+          dev             Start, stop, or inspect this repo's dev environment (devenv lock)
           deactivate      Deactivate Claude in a project's tmux pane (sends Ctrl-C)
           dir             Print the root directory of a workspace project
           doctor          Check that all required dependencies are installed
@@ -845,6 +850,114 @@ module Workspace
       raise UsageError, parser.help if (!all && name.nil?) || (all && name) || args.any?
 
       result = @lock_command.clear(name, all: all, working_dir: @working_dir)
+      @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
+    end
+
+    def cmd_dev(args)
+      case args.shift
+      when "up" then cmd_dev_up(args)
+      when "down" then cmd_dev_down(args)
+      when "status" then cmd_dev_status(args)
+      when "__run" then cmd_dev_run(args)
+      when "help", "--help", "-h", nil then @output.puts dev_help
+      else
+        raise UsageError, dev_help
+      end
+    end
+
+    def dev_help
+      <<~HELP
+        Usage: workspace dev <subcommand> [options]
+
+        Runs one dev environment per repository, guarded by the repo-wide
+        devenv lock. The command comes from the parent project's config:
+          workspace config set dev.up "./start-dev"
+          workspace config set dev.ready "port:3000"    (or a shell command)
+          workspace config set dev.stop_timeout 20s
+
+        Subcommands:
+          up [options]      Start this worktree's dev env in a devenv tmux window
+          down [--force]    Stop this repo's dev env, whichever worktree holds it
+          status            Show holder, branch, uptime, pane, readiness, and queue
+
+        Options (up):
+          --wait            Queue behind another worktree's dev env
+          --takeover        Stop another worktree's dev env, then start this one
+          --no-ready        Don't wait for the dev.ready check
+          --max-wait DUR    With --wait, give up after DUR seconds (exit 75)
+
+        Options (down):
+          --force           Also kill a process group left behind by a dead wrapper
+
+        Exit codes (up):
+          0   running (or already running for this worktree)
+          1   running for another worktree (without --wait/--takeover), or failed to start
+          4   devenv lock cleared while waiting
+          6   ready check failed (the env is stopped and the lock released)
+          75  still queued after --max-wait
+
+        Examples:
+          workspace dev up
+          workspace dev up --wait --max-wait 600
+          workspace dev up --takeover
+          workspace dev status
+          workspace dev down
+      HELP
+    end
+
+    def cmd_dev_up(args)
+      wait = false
+      takeover = false
+      ready = true
+      max_wait = nil
+      parser = OptionParser.new do |opts|
+        opts.banner = "Usage: workspace dev up [--wait] [--takeover] [--no-ready] [--max-wait DURATION]"
+        opts.on("--wait", "Queue behind another worktree's dev env") { wait = true }
+        opts.on("--takeover", "Stop another worktree's dev env, then start this one") { takeover = true }
+        opts.on("--[no-]ready", "Wait for the dev.ready check (default: on)") { |v| ready = v }
+        opts.on("--max-wait DURATION", Float, "With --wait, give up after DURATION seconds (exit 75)") { |v| max_wait = v }
+      end
+      parser.parse!(args)
+      raise UsageError, parser.help if args.any?
+      raise UsageError, "--max-wait requires --wait." if max_wait && !wait
+
+      result = @dev_command.up(wait: wait, takeover: takeover, ready: ready, max_wait: max_wait, working_dir: @working_dir)
+      @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
+    end
+
+    def cmd_dev_down(args)
+      force = false
+      parser = OptionParser.new do |opts|
+        opts.banner = "Usage: workspace dev down [--force]"
+        opts.on("--force", "Also kill a process group left behind by a dead wrapper") { force = true }
+      end
+      parser.parse!(args)
+      raise UsageError, parser.help if args.any?
+
+      result = @dev_command.down(force: force, working_dir: @working_dir)
+      @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
+    end
+
+    def cmd_dev_status(args)
+      parser = OptionParser.new { |opts| opts.banner = "Usage: workspace dev status" }
+      parser.parse!(args)
+      raise UsageError, parser.help if args.any?
+
+      result = @dev_command.status(working_dir: @working_dir)
+      @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
+    end
+
+    # Hidden: the wrapper `dev up` runs in the devenv window.
+    def cmd_dev_run(args)
+      wait = false
+      parser = OptionParser.new do |opts|
+        opts.banner = "Usage: workspace dev __run [--wait]"
+        opts.on("--wait", "Queue for the devenv lock") { wait = true }
+      end
+      parser.parse!(args)
+      raise UsageError, parser.help if args.any?
+
+      result = @dev_command.run(wait: wait, working_dir: @working_dir)
       @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
     end
 

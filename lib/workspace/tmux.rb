@@ -145,6 +145,25 @@ module Workspace
       name.empty? ? nil : name
     end
 
+    # Opens a background window running +command+ directly (no shell), so the
+    # command itself is the pane's process and leads its own process group.
+    #
+    # @param session_name [String] tmux session to add the window to
+    # @param name [String] window name
+    # @param cwd [String] the window's working directory
+    # @param command [Array<String>] argv to run
+    # @param env [Hash{String=>String}] extra environment for the command
+    # @return [Integer, nil] the pane's process id, or nil if tmux failed
+    def new_window(session_name, name:, cwd:, command:, env: {})
+      @logger.debug { "tmux: new-window #{name} in #{session_name}: #{command.join(" ")}" }
+      args = ["tmux", "new-window", "-d", "-P", "-F", "\#{pane_pid}", "-t", "#{session_name}:", "-n", name, "-c", cwd]
+      env.each { |key, value| args.push("-e", "#{key}=#{value}") }
+      stdout, _, status = Open3.capture3(*args, "--", *command)
+      return nil unless status.success?
+      pid = stdout.strip
+      pid.empty? ? nil : pid.to_i
+    end
+
     # Lists panes with the attributes session monitoring needs.
     #
     # Unlike {#panes}, entries carry the tmux pane id (\%23), which stays with a
