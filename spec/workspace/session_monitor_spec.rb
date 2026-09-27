@@ -636,22 +636,59 @@ RSpec.describe Workspace::SessionMonitor do
       expect(logged_states.size).to eq(2)
     end
 
-    it "alerts after a restart for an idle stretch logged before it reached the alert threshold" do
-      notifier = instance_double(Workspace::Notifier, notify: :started)
-      alerting = -> {
+    describe "idle alerts across a restart" do
+      let(:notifier) { instance_double(Workspace::Notifier, notify: :started) }
+
+      def alerting_monitor
         described_class.new(tmux: tmux, process_tree: process_tree, session_name: "proj-session",
           idle_after: 30, idle_alert_after: 60, clock: clock, notifier: notifier, event_log: event_log, project: "proj")
-      }
-      first = alerting.call
-      first.scan
-      allow(clock).to receive(:now).and_return(now + 31)
-      first.scan
+      end
 
-      allow(clock).to receive(:now).and_return(now + 120)
-      restarted = alerting.call
-      restarted.scan
+      def at(seconds)
+        allow(clock).to receive(:now).and_return(now + seconds)
+      end
 
-      expect(restarted.send_alerts.size).to eq(1)
+      def alert_events
+        event_log.events.select { |e| e["type"] == "agent_alert" }.map { |e| e["data"] }
+      end
+
+      before do
+        first = alerting_monitor
+        first.scan
+        at(90)
+        first.scan
+        first.send_alerts
+      end
+
+      it "logs each idle alert with the quiet stretch it was for" do
+        expect(alert_events).to eq([
+          {"pane_id" => "%2", "pane_pid" => 200, "kind" => "idle", "idle_since" => "2026-09-26T12:00:00.000Z"}
+        ])
+      end
+
+      it "does not alert again for the same quiet stretch" do
+        at(120)
+        restarted = alerting_monitor
+        restarted.scan
+
+        expect(restarted.send_alerts).to be_empty
+      end
+
+      it "alerts for a quiet stretch that began after the last alert" do
+        first = alerting_monitor
+        first.scan
+        at(100)
+        allow(tmux).to receive(:capture_pane).and_return("new output")
+        first.scan
+        at(140)
+        first.scan
+
+        at(200)
+        restarted = alerting_monitor
+        restarted.scan
+
+        expect(restarted.send_alerts.size).to eq(1)
+      end
     end
 
     it "keeps a restored working pane's start time" do

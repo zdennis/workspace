@@ -180,13 +180,6 @@ RSpec.describe Workspace::EventLog do
 
       expect(event_log.latest_agent_states("proj1").keys).to eq(["%1"])
     end
-
-    it "adds when each state was logged" do
-      event_log.record(type: "agent_state", project: "proj1", data: {"pane_id" => "%1", "state" => "idle"})
-
-      logged_at = event_log.latest_agent_states("proj1")["%1"]["logged_at"]
-      expect(logged_at).to eq(event_log.events.last["timestamp"])
-    end
   end
 
   describe "#compact with activity" do
@@ -226,6 +219,18 @@ RSpec.describe Workspace::EventLog do
 
       kept = event_log.events.select { |e| e["type"] == "agent_state" }
       expect(kept.map { |e| [e["project"], e["data"]["pane_id"]] }).to eq([["proj1", "%1"]])
+    end
+
+    it "keeps the latest idle alert of each pane whose agent_state it keeps" do
+      event_log.append(type: "launched", project: "proj1", data: {"unique_id" => "uid1"})
+      agent_state("proj1", "%1", now - 3600)
+      event_log.record(type: "agent_alert", project: "proj1", data: {"pane_id" => "%1", "idle_since" => "old"})
+      event_log.record(type: "agent_alert", project: "proj1", data: {"pane_id" => "%1", "idle_since" => "new"})
+      event_log.record(type: "agent_alert", project: "proj1", data: {"pane_id" => "%9", "idle_since" => "gone"})
+
+      event_log.compact
+
+      expect(event_log.latest_agent_alerts("proj1").transform_values { |d| d["idle_since"] }).to eq({"%1" => "new"})
     end
 
     it "writes the rewrite owner-only and leaves no temp file behind" do

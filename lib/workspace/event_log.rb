@@ -24,6 +24,9 @@ module Workspace
     # Activity event type for a pane's agent changing state.
     AGENT_STATE = "agent_state"
 
+    # Activity event type for an idle alert sent for a pane.
+    AGENT_ALERT = "agent_alert"
+
     # Event types {#reconstruct} replays into state.
     STATE_EVENT_TYPES = ["state_set", "launched", "window_discovered", "repaired", "migrated", "compacted",
       "state_removed", "killed", "stopped", "pruned"].freeze
@@ -102,15 +105,18 @@ module Workspace
     # restarted agent daemon needs them.
     #
     # @param project [String] project name
-    # @return [Hash{String => Hash}] pane id => that pane's last agent_state
-    #   data, plus "logged_at", the event's timestamp
+    # @return [Hash{String => Hash}] pane id => that pane's last agent_state data
     def latest_agent_states(project)
-      events.each_with_object({}) do |event, latest|
-        next unless event["type"] == AGENT_STATE && event["project"] == project
-        data = event["data"]
-        next unless data.is_a?(Hash) && data["pane_id"]
-        latest[data["pane_id"]] = data.merge("logged_at" => event["timestamp"])
-      end
+      latest_by_pane(AGENT_STATE, project)
+    end
+
+    # The latest {AGENT_ALERT} event for each pane of a project, so a
+    # restarted agent daemon doesn't alert again for the same idle stretch.
+    #
+    # @param project [String] project name
+    # @return [Hash{String => Hash}] pane id => that pane's last agent_alert data
+    def latest_agent_alerts(project)
+      latest_by_pane(AGENT_ALERT, project)
     end
 
     # Reads all events from the log file. A log that can't be read warns
@@ -145,7 +151,8 @@ module Workspace
     # Compacts the log by rewriting it with one event per active project,
     # plus the latest {AGENT_STATE} of each pane whose agent is still there,
     # in a project that is still active, and that changed within
-    # {AGENT_STATE_MAX_AGE}. All other activity history is dropped.
+    # {AGENT_STATE_MAX_AGE}, and the latest {AGENT_ALERT} of each of those
+    # panes. All other activity history is dropped.
     #
     # @return [Hash] the compacted state
     # @raise [Workspace::Error] if the log is busy, or can't be read or rewritten
@@ -228,6 +235,14 @@ module Workspace
       nil
     end
 
+    def latest_by_pane(type, project)
+      events.each_with_object({}) do |event, latest|
+        next unless event["type"] == type && event["project"] == project
+        data = event["data"]
+        latest[data["pane_id"]] = data if data.is_a?(Hash) && data["pane_id"]
+      end
+    end
+
     def replay(all)
       state = {}
       all.each do |event|
@@ -277,17 +292,25 @@ module Workspace
       nil
     end
 
+    # The agent_state events to keep, followed by the alert events of the
+    # panes they belong to.
     def latest_pane_states(all, state)
-      latest = {}
+      states = {}
+      alerts = {}
       all.each do |event|
-        next unless event["type"] == AGENT_STATE && event["data"].is_a?(Hash)
-        latest[[event["project"], event["data"]["pane_id"]]] = event
+        next unless event["data"].is_a?(Hash)
+        key = [event["project"], event["data"]["pane_id"]]
+        case event["type"]
+        when AGENT_STATE then states[key] = event
+        when AGENT_ALERT then alerts[key] = event
+        end
       end
       cutoff = @clock.now - AGENT_STATE_MAX_AGE
-      latest.values.reject do |event|
-        GONE_STATES.include?(event["data"]["state"]) || !state.key?(event["project"]) ||
+      states.reject! do |(project, _), event|
+        GONE_STATES.include?(event["data"]["state"]) || !state.key?(project) ||
           older_than?(event["data"]["since"], cutoff)
       end
+      states.values + alerts.select { |key, _| states.key?(key) }.values
     end
 
     # A time that can't be read is kept rather than guessed at.

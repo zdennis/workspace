@@ -89,6 +89,7 @@ module Workspace
       @event_log = event_log
       @project = project || session_name
       @history = nil
+      @alert_history = {}
       @panes = {}
       @failed_scans = 0
       @lock = Mutex.new
@@ -227,6 +228,7 @@ module Workspace
       due.filter_map do |target, mark, value, alert|
         next unless @notifier.notify(alert)
         @lock.synchronize { target[mark] = value }
+        record_idle_alert(target, value) if mark == :alerted_idle_since
         alert
       rescue => e
         log_alert_failure(e)
@@ -246,10 +248,12 @@ module Workspace
     GONE_STATES = ["closed", "exited"].freeze
     private_constant :GONE_STATES
 
-    # Each pane's last logged state, keyed on pane id. Read once, on the
-    # first scan; nothing in the log is worth failing a scan over.
+    # Each pane's last logged state, keyed on pane id, along with each
+    # pane's last idle alert. Read once, on the first scan; nothing in the
+    # log is worth failing a scan over.
     def load_history
       return {} unless @event_log
+      @alert_history = @event_log.latest_agent_alerts(@project)
       @event_log.latest_agent_states(@project)
     rescue => e
       @logger.debug { "session monitor: could not read state history (#{e.class}: #{e.message})" }
@@ -259,9 +263,8 @@ module Workspace
     # Takes up a pane's logged state after a daemon restart. The pane's pid is
     # checked too, since a restarted tmux server hands out the same pane ids
     # again. An idle pane stays idle, and keeps the time it went idle, until
-    # its output changes. A quiet stretch that had already run past the idle
-    # alert threshold when it was logged counts as alerted, so a restart
-    # doesn't send its alert again.
+    # its output changes. A quiet stretch the last daemon already alerted
+    # for counts as alerted, so a restart doesn't send its alert again.
     def restore_state(pane, detail)
       logged = @history.delete(detail[:id])
       return unless logged["pane_pid"] == detail[:pid] && !GONE_STATES.include?(logged["state"])
@@ -271,16 +274,28 @@ module Workspace
       return unless logged["state"] == "idle"
       pane[:last_activity_at] = since - @idle_after
       pane[:quiet_since_restore] = true
-      pane[:alerted_idle_since] = pane[:last_activity_at] if alerted_before_restart?(logged, pane[:last_activity_at])
+      pane[:alerted_idle_since] = pane[:last_activity_at] if alerted_before_restart?(detail, pane[:last_activity_at])
     rescue ArgumentError
       nil
     end
 
-    def alerted_before_restart?(logged, last_activity_at)
-      return false unless @idle_alert_after && logged["logged_at"]
-      Time.iso8601(logged["logged_at"].to_s) - last_activity_at >= @idle_alert_after
+    # Whether the pane's last logged idle alert was for the quiet stretch
+    # that began at +last_activity_at+. Times are logged to the millisecond.
+    def alerted_before_restart?(detail, last_activity_at)
+      alert = @alert_history.delete(detail[:id])
+      return false unless alert && alert["pane_pid"] == detail[:pid]
+      (Time.iso8601(alert["idle_since"].to_s) - last_activity_at).abs < 0.002
     rescue ArgumentError
       false
+    end
+
+    # Logged so a restarted daemon knows this stretch already alerted.
+    # EventLog#record doesn't raise on a failed write.
+    def record_idle_alert(pane, idle_since)
+      return unless @event_log
+      @event_log.record(type: EventLog::AGENT_ALERT, project: @project,
+        data: {"pane_id" => pane[:pane_id], "pane_pid" => pane[:pid], "kind" => "idle",
+               "idle_since" => idle_since.utc.iso8601(3)})
     end
 
     # The change to record when an agent pane's state differs from the one
