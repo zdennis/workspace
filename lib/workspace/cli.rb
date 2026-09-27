@@ -905,6 +905,8 @@ module Workspace
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: workspace lock status [<name>] [--json]"
         opts.on("--json", "Emit the documented JSON schema instead of a table (see docs/README.lock.md)") { json = true }
+        opts.separator ""
+        opts.separator "Audit trail: locks.jsonl next to locks.json; see docs/README.lock.md."
       end
       parser.parse!(args)
 
@@ -1604,6 +1606,8 @@ module Workspace
         opts.separator "whether each is working or idle, and any sub-agents they started."
         opts.separator ""
         opts.separator "Requires a running agent daemon (workspace agent <project>)."
+        opts.separator ""
+        opts.separator "LOCK column: \"edit ✓\" holds the edit lock; \"edit #N\" is the Nth live waiter."
         opts.separator ""
         opts.separator "Options:"
         opts.on("--json", "Emit the raw payload instead of a table") { json = true }

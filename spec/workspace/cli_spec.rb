@@ -1575,6 +1575,14 @@ RSpec.describe Workspace::CLI do
       expect { cli.run(["lock", "release", "edit"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(3) }
     end
 
+    it "points to the audit log in lock status help" do
+      cli, _, error_output = build_test_cli(lock_command: CLITestHelpers::FakeLockCommand.new)
+
+      expect { cli.run(["lock", "status", "extra", "args"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+
+      expect(error_output.string).to include("Audit trail: locks.jsonl next to locks.json")
+    end
+
     it "lists instructions and idle takeover in lock help" do
       cli, output, _ = build_test_cli(lock_command: CLITestHelpers::FakeLockCommand.new)
 
@@ -2168,6 +2176,16 @@ RSpec.describe Workspace::CLI do
       cli, output, = build_test_cli(config: config)
       cli.run(["pipeline"])
       expect(output.string).to include("workspace pipeline <subcommand>")
+    end
+  end
+
+  describe "sessions" do
+    it "explains the LOCK column legend in its help" do
+      cli, _, error_output = build_test_cli
+
+      expect { cli.run(["sessions"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+
+      expect(error_output.string).to include("edit ✓", "edit #N")
     end
   end
 end
