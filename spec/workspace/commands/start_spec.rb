@@ -3,6 +3,7 @@ require "tmpdir"
 RSpec.describe Workspace::Commands::Start do
   let(:tmpdir) { Dir.mktmpdir }
   let(:output) { StringIO.new }
+  let(:error_output) { StringIO.new }
   let(:input) { StringIO.new }
   let(:git) { double("git") }
   let(:project_config) { double("project_config") }
@@ -16,6 +17,7 @@ RSpec.describe Workspace::Commands::Start do
       project_settings: project_settings,
       launch_command: launch_command,
       output: output,
+      error_output: error_output,
       input: input
     )
   end
@@ -192,6 +194,19 @@ RSpec.describe Workspace::Commands::Start do
         expect(git).not_to have_received(:create_worktree)
         expect(output.string).to include("Worktree already exists")
         expect(launch_command).to have_received(:call)
+      end
+
+      it "warns on stderr when --base is given but ignored" do
+        allow(git).to receive(:root).and_return(tmpdir)
+        allow(git).to receive(:parse_start_input).with("PROJ-123").and_return({type: :jira_key, value: "PROJ-123"})
+        allow(git).to receive(:sanitize_for_filesystem).with("PROJ-123").and_return("PROJ-123")
+        allow(git).to receive(:worktree_exists?).and_return(true)
+        allow(project_config).to receive(:create_worktree).and_return("myproject.worktree-PROJ-123")
+        allow(launch_command).to receive(:call)
+
+        command.call("PROJ-123", base: "develop")
+
+        expect(error_output.string).to include("Note: --base ignored; branch 'PROJ-123' already exists.")
       end
 
       it "writes .workspace-project marker in existing worktree" do

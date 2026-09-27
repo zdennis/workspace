@@ -84,6 +84,7 @@ module Workspace
         worktree_path = File.join(root, ".worktrees", worktree_dir_name)
 
         if @git.worktree_exists?(worktree_path)
+          note_base_ignored(branch_name, quiet: quiet) if base
           return finish_worktree(project_name, worktree_dir_name, worktree_path, branch_name,
             base: nil, created: false, prompt: prompt, prompt_timeout: prompt_timeout, quiet: quiet, already_exists: true)
         end
