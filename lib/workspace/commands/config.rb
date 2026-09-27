@@ -10,7 +10,7 @@ module Workspace
     class Config
       # Keys `set`/`get`/`unset` allow, written to a project's config. Unlisted
       # dotted keys are rejected.
-      ALLOWED_KEYS = %w[dev.up dev.ready dev.stop_timeout dev.startup_timeout dev.ready_timeout dev.kill_grace locks.idle_grace locks.ps_timeout locks.reap_interval alerts.notify alerts.idle_after].freeze
+      ALLOWED_KEYS = %w[dev.up dev.ready dev.stop_timeout dev.startup_timeout dev.ready_timeout dev.kill_grace locks.idle_grace locks.ps_timeout locks.reap_interval alerts.notify alerts.idle_after handoff.threshold handoff.check_prompt handoff.resume_prompt].freeze
 
       # Keys `set`/`get`/`unset` allow, written to the global config
       # (~/.config/workspace/config.yml) instead of a project's — there's one
@@ -180,6 +180,8 @@ module Workspace
         when "locks.reap_interval" then Workspace::LockConfig.parse_reap_interval(value)
         when "alerts.notify" then Workspace::AlertConfig.parse_notify(value)
         when "alerts.idle_after" then Workspace::AlertConfig.parse_idle_after(value)
+        when "handoff.threshold" then Workspace::HandoffConfig.parse_threshold(value)
+        when "handoff.check_prompt", "handoff.resume_prompt" then Workspace::HandoffConfig.parse_prompt(value)
         when "context.source"
           raise ArgumentError, "must be \"statusline\" or \"scrape\"" unless %w[statusline scrape].include?(value)
         when "context.pattern"
