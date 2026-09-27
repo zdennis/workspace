@@ -96,7 +96,13 @@ module Workspace
             "Commit or stash them before finishing."
         end
 
-        branch = @git.worktree_branch(worktree_path) || "HEAD"
+        branch = @git.worktree_branch(worktree_path)
+        if branch.nil?
+          raise Workspace::Error,
+            "'#{project}' is on a detached HEAD at #{worktree_path}.\n" \
+            "Check out a branch first (git -C #{worktree_path} switch -c <branch>), push it, then rerun finish."
+        end
+
         upstream = @git.upstream_branch(worktree_path)
         if upstream.nil?
           raise Workspace::Error,

@@ -83,6 +83,15 @@ RSpec.describe Workspace::Commands::Finish do
             allow(git).to receive(:worktree_branch).with(worktree_path).and_return("feature/x")
           end
 
+          it "tells the user to check out a branch when HEAD is detached" do
+            allow(git).to receive(:worktree_branch).with(worktree_path).and_return(nil)
+            expect(kill_command).not_to receive(:call)
+
+            expect { command.call("myproject.worktree-PROJ-123") }.to raise_error(
+              Workspace::Error, /detached HEAD.*Check out a branch first/m
+            )
+          end
+
           it "raises when the branch has no upstream, with a push hint" do
             allow(git).to receive(:upstream_branch).with(worktree_path).and_return(nil)
             expect(kill_command).not_to receive(:call)
