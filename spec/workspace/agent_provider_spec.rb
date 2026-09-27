@@ -16,6 +16,14 @@ RSpec.describe Workspace::AgentProvider do
       expect(described_class.find("nope")).to be_nil
     end
 
+    it "gives Claude Code a ready pattern matching its prompt box, but leaves other providers without one" do
+      claude = described_class.find("claude")
+
+      expect(claude.ready_pattern).to match("│ > foo")
+      expect(claude.ready_pattern).not_to match("Do you trust the files in this folder?")
+      expect(described_class.find("codex").ready_pattern).to be_nil
+    end
+
     it "opts pi out of the path-segment matching heuristic" do
       expect(described_class.find("pi").path_segment_matching?).to be false
     end

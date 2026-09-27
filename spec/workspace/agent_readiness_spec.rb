@@ -2,7 +2,7 @@ RSpec.describe Workspace::AgentReadiness do
   let(:now) { [0.0] }
   let(:sleeps) { [] }
   let(:panes) { [{id: "%1", window: 0, index: 0, pid: 100, command: "zsh"}, {id: "%2", window: 0, index: 1, pid: 200, command: "claude"}] }
-  let(:screens) { ["Welcome to Claude Code\n> "] }
+  let(:screens) { ["Welcome to Claude Code\n╭──────────╮\n│ > │\n╰──────────╯"] }
   let(:processes) { [] }
   let(:tmux) { instance_double(Workspace::Tmux) }
   let(:process_tree) { instance_double(Workspace::ProcessTree) }
@@ -44,7 +44,7 @@ RSpec.describe Workspace::AgentReadiness do
   end
 
   it "waits while the screen is still changing" do
-    screens.replace(["", "Loading", "Loading.", "Loading..", "> ", "> "])
+    screens.replace(["", "Loading", "Loading.", "Loading..", "│ > │", "│ > │"])
 
     result = readiness.wait("proj", deadline: readiness.deadline_in(60))
 
@@ -106,6 +106,23 @@ RSpec.describe Workspace::AgentReadiness do
     result = readiness.wait("proj", deadline: readiness.deadline_in(1))
 
     expect(result.reason).to eq("Claude Code (pane 0.1) has not drawn its screen yet")
+  end
+
+  it "does not count a static trust dialog as ready, even once the screen is quiet" do
+    allow(tmux).to receive(:capture_screen) { "Do you trust the files in this folder?\n╭──────────╮\n│ 1. Yes   │\n│ 2. No    │\n╰──────────╯" }
+
+    result = readiness.wait("proj", deadline: readiness.deadline_in(5))
+
+    expect(result).not_to be_ready
+    expect(result.reason).to eq("Claude Code (pane 0.1) agent prompt never appeared")
+  end
+
+  it "becomes ready once a dialog is dismissed and the real prompt settles" do
+    screens.replace(["Do you trust the files in this folder?", "Do you trust the files in this folder?", "Welcome to Claude Code\n│ > │"])
+
+    result = readiness.wait("proj", deadline: readiness.deadline_in(60))
+
+    expect(result).to be_ready
   end
 
   it "reports a process table that can't be read" do

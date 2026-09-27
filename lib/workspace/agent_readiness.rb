@@ -1,13 +1,18 @@
 module Workspace
   # Waits until a coding agent in a tmux session is ready to take a prompt.
   #
-  # Ready means two things: a known agent (see {AgentProvider}) is running in
-  # one of the session's panes, and that pane has drawn something and then
-  # stopped changing for a moment. An agent redraws its screen while it
-  # starts up and then sits still at its input prompt, so a quiet screen is
-  # the signal that works for every agent, with or without hooks. Text typed
-  # before then can go to the shell that is still launching the agent, or be
-  # lost while the agent sets up its terminal.
+  # Ready means: a known agent (see {AgentProvider}) is running in one of the
+  # session's panes, that pane has drawn something and then stopped changing
+  # for a moment, and — for a provider that declares a `ready_pattern` — the
+  # settled screen actually shows that agent's input prompt. An agent
+  # redraws its screen while it starts up and then sits still once ready, so
+  # a quiet screen is most of the signal, and works for every agent with or
+  # without a pattern. But quiet alone can also mean the agent is sitting on
+  # a startup dialog (e.g. "Do you trust the files in this folder?"), so a
+  # provider with a pattern is also checked against the settled screen.
+  # Text typed before readiness can go to the shell that is still launching
+  # the agent, or be lost while the agent sets up its terminal, or be
+  # swallowed by a dialog.
   class AgentReadiness
     # Seconds `launch --prompt` waits for an agent before giving up.
     DEFAULT_TIMEOUT = 60
@@ -91,8 +96,12 @@ module Workspace
             screen = current
             quiet_since = now
           elsif now - quiet_since >= @quiet_for
-            @logger.debug { "agent readiness: #{found[:label]} ready in #{session_name}:#{found[:target]}" }
-            return Result.new(ready: true, pane: found[:target], label: found[:label])
+            pattern = found[:provider]&.ready_pattern
+            if pattern.nil? || pattern.match?(current)
+              @logger.debug { "agent readiness: #{found[:label]} ready in #{session_name}:#{found[:target]}" }
+              return Result.new(ready: true, pane: found[:target], label: found[:label])
+            end
+            found[:reason] = "#{found[:label]} (pane #{found[:target]}) agent prompt never appeared"
           end
         else
           pane_id = screen = quiet_since = nil
@@ -130,7 +139,7 @@ module Workspace
       return {reason: "no coding agent is running in tmux session '#{session_name}' yet"} if agents.empty?
 
       chosen = agents.min_by { |detail| [@providers.index(detail[:provider]), detail[:window], detail[:index]] }
-      {id: chosen[:id], target: "#{chosen[:window]}.#{chosen[:index]}", label: chosen[:provider].label}
+      {id: chosen[:id], target: "#{chosen[:window]}.#{chosen[:index]}", label: chosen[:provider].label, provider: chosen[:provider]}
     end
   end
 end

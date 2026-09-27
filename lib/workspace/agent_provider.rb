@@ -41,6 +41,14 @@ module Workspace
     # after the program name, and only for this provider's own processes.
     CLAUDE_BACKGROUND = ["daemon run", "bg-pty-host", "bg-spare"].freeze
 
+    # Matches Claude Code's input prompt box: a box-drawing vertical border
+    # (theme-dependent glyph, `│` or `|`) immediately followed by its `>`
+    # prompt marker, e.g. "│ > ". Anchored to the border+marker pair rather
+    # than the box width so it survives terminal resizes and light/dark
+    # themes. A static dialog (e.g. "Do you trust the files in this
+    # folder?") has its own box but no `>` prompt line, so it never matches.
+    CLAUDE_READY_PATTERN = /^\s*[│|]\s*>\s/
+
     # @return [Array<AgentProvider>] every known provider
     def self.all
       @all ||= [
@@ -50,7 +58,8 @@ module Workspace
           executable: "claude",
           settings_path: File.join(".claude", "settings.json"),
           events: CLAUDE_EVENTS,
-          background_markers: CLAUDE_BACKGROUND
+          background_markers: CLAUDE_BACKGROUND,
+          ready_pattern: CLAUDE_READY_PATTERN
         ),
         new(
           key: "codex",
@@ -108,7 +117,7 @@ module Workspace
       nil
     end
 
-    attr_reader :key, :label, :executable, :settings_path, :events, :background_markers
+    attr_reader :key, :label, :executable, :settings_path, :events, :background_markers, :ready_pattern
 
     # @return [Boolean] whether a versioned install of this executable may be
     #   recognized by a "/#{executable}/" path segment, in addition to an
@@ -127,8 +136,11 @@ module Workspace
     # @param path_segment_matching [Boolean] whether a "/#{executable}/" path
     #   segment also counts as a match (off for a short/generic executable
     #   name where that heuristic risks matching unrelated tools)
+    # @param ready_pattern [Regexp, nil] matched against the pane's screen to
+    #   confirm the agent is actually at its input prompt, not just quiet
+    #   (e.g. sitting on a startup dialog). nil means quiet-only readiness.
     def initialize(key:, label:, executable:, settings_path: nil, events: nil,
-      background_markers: [], path_segment_matching: true)
+      background_markers: [], path_segment_matching: true, ready_pattern: nil)
       @key = key
       @label = label
       @executable = executable
@@ -136,6 +148,7 @@ module Workspace
       @events = events
       @background_markers = background_markers
       @path_segment_matching = path_segment_matching
+      @ready_pattern = ready_pattern
     end
 
     # @return [Boolean] whether workspace can install hooks for this agent
