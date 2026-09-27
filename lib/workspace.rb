@@ -103,11 +103,12 @@ module Workspace
     project_detector = ProjectDetector.new(state: state, project_config: project_config)
     file_backup = FileBackup.new(output: output)
     hook_installer = HookInstaller.new(backup: file_backup, output: output, input: input)
-    doctor = Doctor.new(config: config, state: state, hook_installer: hook_installer, project_detector: project_detector, git: git, output: output)
+    pipeline_config = PipelineConfig.new(config: config)
+    doctor = Doctor.new(config: config, state: state, hook_installer: hook_installer, project_detector: project_detector, git: git, pipeline_config: pipeline_config, output: output)
 
     # Pre-build command objects so CLI delegates rather than constructs
     stop_command = Commands::Stop.new(state: state, iterm: iterm, window_manager: window_manager, tmux: tmux, output: output, error_output: error_output)
-    launch_command = Commands::Launch.new(state: state, iterm: iterm, window_manager: window_manager, tmux: tmux, project_config: project_config, window_layout: window_layout, config: config, output: output, error_output: error_output)
+    launch_command = Commands::Launch.new(state: state, iterm: iterm, window_manager: window_manager, tmux: tmux, project_config: project_config, window_layout: window_layout, config: config, pipeline_config: pipeline_config, output: output, error_output: error_output)
     lineage = WorkspaceLineage.new
     start_command = Commands::Start.new(git: git, project_config: project_config, project_settings: project_settings, launch_command: launch_command, lineage: lineage, hook_installer: hook_installer, output: output, input: input)
     kill_command = Commands::Kill.new(git: git, project_config: project_config, project_settings: project_settings, stop_command: stop_command, project_detector: project_detector, output: output, input: input)
@@ -178,7 +179,6 @@ module Workspace
       status_socket_path: config.work_coordinator_status_socket,
       logger: logger
     )
-    pipeline_config = PipelineConfig.new(config: config)
     agent_command = Commands::Agent.new(
       config: config,
       tmux: tmux,

@@ -16,6 +16,8 @@ Also verifies that tmuxinator templates are installed and checks the state file 
 
 **Session monitoring** — when run from inside a workspace project, also checks that project's session monitoring: whether a hook-capable coding agent (e.g. Claude Code) has its hooks installed for the project, and whether the [`sessions`](README.sessions.md) agent daemon is currently running for it. Skipped when not run from inside a workspace project, or when no hook-capable agent is detected on `PATH`.
 
+**Pipeline config** — also validates the current project's [pipeline config](README.pipeline.md), if it has one, reporting an invalid `timeout:` the same way `launch` does.
+
 Exits with a non-zero status if any issues are found, so it can be used in scripts.
 
 ## Example

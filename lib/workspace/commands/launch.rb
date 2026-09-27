@@ -12,9 +12,10 @@ module Workspace
       # @param project_config [Workspace::ProjectConfig] project config management
       # @param window_layout [Workspace::WindowLayout] window positioning
       # @param config [Workspace::Config] path configuration, used to find/start the session-monitor agent
+      # @param pipeline_config [Workspace::PipelineConfig] validates a project's pipeline config before the daemon starts
       # @param output [IO] output stream for user-facing messages
       # @param error_output [IO] error output stream for warnings
-      def initialize(state:, iterm:, window_manager:, tmux:, project_config:, window_layout:, config:, output: $stdout, error_output: $stderr)
+      def initialize(state:, iterm:, window_manager:, tmux:, project_config:, window_layout:, config:, pipeline_config: nil, output: $stdout, error_output: $stderr)
         @state = state
         @iterm = iterm
         @window_manager = window_manager
@@ -22,6 +23,7 @@ module Workspace
         @project_config = project_config
         @window_layout = window_layout
         @config = config
+        @pipeline_config = pipeline_config || PipelineConfig.new(config: config)
         @output = output
         @error_output = error_output
       end
@@ -153,6 +155,15 @@ module Workspace
           next if @config.agent_running?(project)
 
           log_path = @config.agent_log_path(project)
+
+          begin
+            @pipeline_config.stages_for(project)
+          rescue Workspace::Error => e
+            @error_output.puts "Warning: #{project}'s pipeline config is invalid (#{e.message}); " \
+              "not starting its session monitor. See #{log_path} once fixed."
+            next
+          end
+
           pid = Process.spawn($PROGRAM_NAME, "agent", "--name", project,
             out: log_path, err: log_path, in: File::NULL)
           Process.detach(pid)

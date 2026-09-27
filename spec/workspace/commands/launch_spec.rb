@@ -24,6 +24,7 @@ RSpec.describe Workspace::Commands::Launch do
   let(:tmux) { double("tmux") }
   let(:project_config) { double("project_config") }
   let(:window_layout) { double("window_layout") }
+  let(:pipeline_config) { double("pipeline_config", stages_for: nil) }
 
   subject(:command) do
     described_class.new(
@@ -34,6 +35,7 @@ RSpec.describe Workspace::Commands::Launch do
       project_config: project_config,
       window_layout: window_layout,
       config: config,
+      pipeline_config: pipeline_config,
       output: output,
       error_output: error_output
     )
@@ -106,6 +108,20 @@ RSpec.describe Workspace::Commands::Launch do
         command.call(["proj1"])
 
         expect(error_output.string).to include("Could not start session monitor for proj1")
+      end
+
+      it "warns and skips the daemon when the project's pipeline config is invalid" do
+        allow(config).to receive(:agent_running?).with("proj1").and_return(false)
+        allow(config).to receive(:agent_log_path).with("proj1").and_return("/tmp/workspace-proj1.log")
+        allow(pipeline_config).to receive(:stages_for).with("proj1")
+          .and_raise(Workspace::Error, "Invalid pipeline.panes[0].timeout in /tmp/proj1.yml: must be greater than 0")
+
+        command.call(["proj1"])
+
+        expect(Process).not_to have_received(:spawn)
+        expect(error_output.string).to include("proj1's pipeline config is invalid")
+        expect(error_output.string).to include("must be greater than 0")
+        expect(error_output.string).to include("/tmp/workspace-proj1.log")
       end
     end
 
