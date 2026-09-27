@@ -233,6 +233,7 @@ module Workspace
         terminator: process_group_terminator, interval: reap_interval, logger: logger, error_output: error_output),
       alert_config: alert_config,
       ps_timeout: ps_timeout,
+      event_log: event_log,
       logger: logger,
       output: output,
       error_output: error_output

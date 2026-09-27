@@ -1703,4 +1703,91 @@ RSpec.describe Workspace::Commands::Agent do
       end
     end
   end
+
+  describe "recording activity in the event log" do
+    let(:recorded) { [] }
+    let(:event_log) do
+      events = recorded
+      Object.new.tap do |log|
+        log.define_singleton_method(:record) { |type:, project:, data: {}| events << {type: type, project: project, data: data} }
+      end
+    end
+    let(:quiet_monitor) do
+      Object.new.tap do |monitor|
+        monitor.define_singleton_method(:start) {}
+        monitor.define_singleton_method(:stop) {}
+      end
+    end
+
+    subject(:agent) do
+      described_class.new(
+        config: config, tmux: tmux, work_coordinator_client: client,
+        pipeline_config: pipeline_config, pipeline_state: pipeline_state,
+        epoch_generator: -> { "wa-TESTEPOCH" }, signal_trapper: signal_trapper,
+        sentinel_poller_factory: sentinel_poller_factory, token_generator: token_generator,
+        clock: -> { now }, retry_backoff: 0, session_monitor_factory: ->(_name) { quiet_monitor },
+        event_log: event_log, output: output, error_output: error_output
+      )
+    end
+
+    def send_command
+      message = {"type" => "command", "workspace" => "myapp", "work_item_ref" => "WC-42",
+                 "dispatch_id" => "d-7a1", "body" => "/build add OAuth support"}
+      UNIXSocket.open(agent_socket_path) { |s| s.puts(message.to_json) }
+    end
+
+    def types = recorded.map { |event| event[:type] }
+
+    before do
+      coordinator.start
+      File.write(project_config_path, <<~YAML)
+        pipeline:
+          panes:
+            - role: researcher
+              timeout: 30m
+            - role: implementer
+      YAML
+    end
+
+    it "records the dispatch and each stage completion under the workspace's name" do
+      run_agent do
+        send_command
+        wait_until { pollers.any? }
+        pollers.first.on_complete.call("research done")
+        wait_until { pollers.size == 2 }
+        pollers.last.on_complete.call("all done")
+        wait_until { types.count("stage_completed") == 2 }
+      end
+
+      expect(recorded.map { |e| e[:project] }.uniq).to eq(["myapp"])
+      expect(recorded[0]).to include(type: "dispatched",
+        data: include("work_item_ref" => "WC-42", "dispatch_id" => "d-7a1", "stage" => "researcher", "pane" => 0, "delivery" => "submitted"))
+      expect(recorded[1][:data]).to include("pane" => 0, "next_stage" => "implementer", "next_pane" => 1, "summary" => "research done")
+      expect(recorded[2][:data]).to include("pane" => 1, "next_stage" => nil, "summary" => "all done")
+    end
+
+    it "records a stage that runs past its deadline as stage_timed_out" do
+      run_agent do
+        send_command
+        wait_until { pollers.any? }
+        pollers.first.on_timeout.call
+        wait_until { types.include?("stage_timed_out") }
+      end
+
+      event = recorded.find { |e| e[:type] == "stage_timed_out" }
+      expect(event[:data]).to include("work_item_ref" => "WC-42", "pane" => 0, "message" => a_string_starting_with("timed out after 30m"))
+    end
+
+    it "records a command that never reached its pane as dispatch_failed" do
+      tmux.delivery_status = :not_delivered
+
+      run_agent do
+        send_command
+        wait_until { types.include?("dispatch_failed") }
+      end
+
+      expect(types).to eq(["dispatch_failed"])
+      expect(recorded.first[:data]).to include("work_item_ref" => "WC-42", "message" => "fake not_delivered")
+    end
+  end
 end

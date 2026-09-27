@@ -19,6 +19,9 @@ module Workspace
       # How often the socket watcher checks that the agent's socket file is still there.
       SOCKET_POLL_INTERVAL = 5
 
+      # Longest stage summary written to the event log.
+      MAX_LOGGED_SUMMARY = 500
+
       # @param config [Workspace::Config] path configuration
       # @param tmux [Workspace::Tmux] tmux session operations
       # @param work_coordinator_client [Workspace::WorkCoordinatorClient] coordinator client
@@ -38,6 +41,9 @@ module Workspace
       # @param ps_timeout [Numeric] seconds to wait for `ps` before killing it, for
       #   the session monitor's {Workspace::ProcessTree}
       # @param retry_backoff [Float] seconds to wait between status report retries
+      # @param event_log [Workspace::EventLog, nil] records dispatches, stage
+      #   completions and failures, and (through the session monitor) each agent
+      #   pane's state changes; nil records nothing
       # @param logger [Workspace::Logger] debug logger
       # @param output [IO] output stream for user-facing messages
       # @param error_output [IO] error output stream for errors
@@ -53,6 +59,7 @@ module Workspace
         notifier_factory: nil,
         ps_timeout: Workspace::ProcessTree::DEFAULT_TIMEOUT,
         retry_backoff: 0.5,
+        event_log: nil,
         logger: Workspace::Logger.new, output: $stdout, error_output: $stderr)
         @config = config
         @tmux = tmux
@@ -71,6 +78,7 @@ module Workspace
         @notifier_factory = notifier_factory || ->(command) { Notifier.new(command: command, error_output: @error_output) }
         @ps_timeout = ps_timeout
         @retry_backoff = retry_backoff
+        @event_log = event_log
         @pollers = {}
         @sequences = Hash.new(0)
         @queued_steers = {}
@@ -201,8 +209,10 @@ module Workspace
       # @param watched_by [Object, nil] when given, the work item is only failed
       #   while this poller is still the one watching it, so a watch that has
       #   been replaced cannot fail the stage that replaced it
+      # @param event [String] the event log type: "stage_failed", or
+      #   "stage_timed_out" for a stage that ran past its deadline
       # @return [void]
-      def fail_pipeline(work_item_ref, message, watched_by: nil)
+      def fail_pipeline(work_item_ref, message, watched_by: nil, event: "stage_failed")
         entry = @state_lock.synchronize do
           next nil if watched_by && !@pollers[work_item_ref].equal?(watched_by)
           @pollers.delete(work_item_ref)&.stop
@@ -214,6 +224,7 @@ module Workspace
         return unless entry
 
         @error_output.puts "workspace agent: #{work_item_ref} failed at pane #{entry[:pane_index]}: #{message}"
+        log_activity(event, "work_item_ref" => work_item_ref, "pane" => entry[:pane_index], "message" => message)
         report(entry, "type" => "error", "message" => message)
       end
 
@@ -245,6 +256,7 @@ module Workspace
             @logger.debug { "re-attached sentinel watch for #{ref} at pane #{pane}" }
           else
             @error_output.puts "workspace agent: #{ref} lost its pane (#{pane}) while the agent was down"
+            log_activity("stage_failed", "work_item_ref" => ref, "pane" => pane, "message" => "lost its pane while the agent was down")
             # A watch re-armed earlier in this loop may be advancing its own
             # item on its poller thread, and both end in a write of the file.
             @state_lock.synchronize { @pipeline_state.complete(work_item_ref: ref) }
@@ -433,10 +445,13 @@ module Workspace
         unless delivery.landed?
           failure = "command for #{ref} was not delivered to #{@current_name}: #{delivery.message}"
           @error_output.puts "workspace agent: #{failure}"
+          log_activity("dispatch_failed", "work_item_ref" => ref, "dispatch_id" => message["dispatch_id"], "message" => delivery.message)
           report(entry, "type" => "error", "message" => failure)
           return {"ok" => false, "error" => "not_delivered", "message" => delivery.message}
         end
 
+        log_activity("dispatched", "work_item_ref" => ref, "dispatch_id" => message["dispatch_id"],
+          "stage" => stages&.first&.dig(:role), "pane" => watch_pane, "delivery" => delivery.status.to_s)
         # Reported before the poller is armed so the "started" message always
         # precedes anything the poller thread goes on to report.
         report(entry, "type" => "status_update", "message" => started_message)
@@ -481,6 +496,11 @@ module Workspace
         pane_target(1)
       end
 
+      # Never raises: {Workspace::EventLog#record} swallows write errors.
+      def log_activity(type, data)
+        @event_log&.record(type: type, project: @current_name, data: data)
+      end
+
       # A one-shot reporting entry for work the agent does not track in the
       # pipeline. It exists only long enough to stamp a single status message.
       def untracked_entry(work_item_ref)
@@ -516,7 +536,7 @@ module Workspace
         @pollers[work_item_ref] = poller
         on_error = ->(message) { fail_pipeline(work_item_ref, message, watched_by: poller) }
         on_timeout = lambda do
-          fail_pipeline(work_item_ref, timeout_message(token, deadline, timeout), watched_by: poller)
+          fail_pipeline(work_item_ref, timeout_message(token, deadline, timeout), watched_by: poller, event: "stage_timed_out")
         end
         poller.start(on_error: on_error, on_timeout: on_timeout) do |summary|
           advance_pipeline(work_item_ref, summary, poller)
@@ -552,6 +572,8 @@ module Workspace
           @delivery_lock.synchronize { advance_state(work_item_ref, poller) }
         return unless entry
 
+        log_activity("stage_completed", "work_item_ref" => work_item_ref, "pane" => from_pane,
+          "next_stage" => next_stage&.dig(:role), "next_pane" => next_stage&.dig(:pane_index), "summary" => summary.to_s[0, MAX_LOGGED_SUMMARY])
         # Reporting talks to the coordinator over a socket, so it stays outside
         # the locks — a slow coordinator must not stall command dispatch.
         begin
@@ -745,6 +767,7 @@ module Workspace
         case reply["action"]
         when "give_up"
           @error_output.puts "workspace agent: work-coordinator has no record of #{work_item_ref}; stopping its pipeline"
+          log_activity("pipeline_dropped", "work_item_ref" => work_item_ref, "message" => "work-coordinator has no record of it")
           @state_lock.synchronize do
             @pollers.delete(work_item_ref)&.stop
             @queued_steers.delete(work_item_ref)
