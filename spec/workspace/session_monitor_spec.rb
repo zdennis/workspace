@@ -173,6 +173,15 @@ RSpec.describe Workspace::SessionMonitor do
       expect(lock_reaper).to have_received(:tick).with(["/project", "/project"])
     end
 
+    it "returns zero instead of raising when the reaper raises, so the scan thread keeps running" do
+      reaping = described_class.new(tmux: tmux, process_tree: process_tree, session_name: "proj",
+        clock: clock, lock_reaper: lock_reaper)
+      allow(lock_reaper).to receive(:tick).and_raise(IOError, "closed stream")
+      reaping.scan
+
+      expect(reaping.reap_locks).to eq(0)
+    end
+
     it "does nothing without a reaper" do
       monitor.scan
 
