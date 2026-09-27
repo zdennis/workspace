@@ -30,6 +30,8 @@ module Workspace
       # @param sentinel_poller_factory [#call] builds a poller for a session/pane pair
       # @param session_monitor_factory [#call] builds the session monitor for a workspace name
       # @param lock_reaper [Workspace::LockReaper, nil] reaps stale lock holds from the session monitor's scan thread
+      # @param ps_timeout [Numeric] seconds to wait for `ps` before killing it, for
+      #   the session monitor's {Workspace::ProcessTree}
       # @param retry_backoff [Float] seconds to wait between status report retries
       # @param logger [Workspace::Logger] debug logger
       # @param output [IO] output stream for user-facing messages
@@ -40,6 +42,7 @@ module Workspace
         sentinel_poller_factory: nil,
         session_monitor_factory: nil,
         lock_reaper: nil,
+        ps_timeout: Workspace::ProcessTree::DEFAULT_TIMEOUT,
         retry_backoff: 0.5,
         logger: Workspace::Logger.new, output: $stdout, error_output: $stderr)
         @config = config
@@ -53,6 +56,7 @@ module Workspace
         @session_monitor_factory = session_monitor_factory || method(:build_session_monitor)
         @session_monitor = nil
         @lock_reaper = lock_reaper
+        @ps_timeout = ps_timeout
         @retry_backoff = retry_backoff
         @pollers = {}
         @sequences = Hash.new(0)
@@ -572,7 +576,7 @@ module Workspace
       def build_session_monitor(name)
         SessionMonitor.new(
           tmux: @tmux,
-          process_tree: ProcessTree.new(logger: @logger),
+          process_tree: ProcessTree.new(logger: @logger, timeout: @ps_timeout),
           session_name: name,
           logger: @logger,
           error_output: @error_output,

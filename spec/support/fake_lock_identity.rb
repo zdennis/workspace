@@ -37,6 +37,10 @@ class FakeLockLiveness
     !@dead.include?(pid)
   end
 
+  def start_time(pid = Process.pid)
+    "start-#{pid}"
+  end
+
   def kill(pid)
     @dead << pid
   end

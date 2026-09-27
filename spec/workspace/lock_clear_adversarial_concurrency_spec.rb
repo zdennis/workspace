@@ -140,3 +140,110 @@ RSpec.describe "lock clear on a process holder, under concurrency" do
     expect(devenv_holder_pid).to eq(4242)
   end
 end
+
+# Adversarial concurrency specs for the `clearing` marker (commit a3d00ff).
+# Signals go through the terminator's kill: seam and liveness through
+# FakeLockIdentity; nothing real is signalled.
+RSpec.describe "lock clear's clearing marker, under concurrency" do
+  let(:tmpdir) { Dir.mktmpdir("ws-lock-clear-marker-cc") }
+  let(:output) { StringIO.new }
+  let(:error_output) { StringIO.new }
+  let(:lock_namespace) { instance_double(Workspace::LockNamespace, resolve: {key: "ns", display: "app", dir: tmpdir}) }
+  let(:identity) { FakeLockIdentity.new(pid: 999) }
+  let(:now) { [0.0] }
+  let(:advance) { ->(seconds) { now[0] += seconds } }
+  let(:mono_clock) { double("clock").tap { |c| allow(c).to receive(:now) { now[0] } } }
+  let(:signals) { [] }
+  let(:group_running) { [true] }
+  let(:terminator) do
+    Workspace::ProcessGroupTerminator.new(clock: -> { now[0] }, sleeper: advance, own_pgid: 77,
+      kill: ->(signal, target) {
+        signals << [signal, target]
+        @on_kill&.call(signal, target)
+        case [signal, target]
+        when [0, -4242] then raise Errno::ESRCH unless group_running[0]
+        when ["KILL", -4242]
+          group_running[0] = false
+          identity.kill(4242)
+        end
+      },
+      member_states: ->(_pgid) { group_running[0] ? ["S"] : [] }, member_owners: ->(_pgid) { [] })
+  end
+  let(:lock_command) do
+    Workspace::Commands::Lock.new(config: Workspace::Config.new, lock_namespace: lock_namespace, lock_holder: identity,
+      output: output, error_output: error_output, terminator: terminator, clock: mono_clock, sleeper: advance,
+      pid_provider: -> { 999 }, trap: ->(*) {})
+  end
+  let(:dev_command) do
+    lineage = Object.new
+    lineage.define_singleton_method(:resolve) { |cwd:| Struct.new(:name, :worktree).new("app", nil) }
+    settings = Struct.new(:data) { def load(_name) = data }.new({"dev" => {"up" => "true", "stop_timeout" => 2}})
+    Workspace::Commands::Dev.new(lock_namespace: lock_namespace, lock_holder: identity, lineage: lineage,
+      dev_config: Workspace::DevConfig.new(project_settings: settings), dev_runner: nil, terminator: terminator,
+      tmux: nil, executable: "unused", output: output, error_output: error_output, env: {}, sleeper: advance,
+      clock: mono_clock, poll: 0.1)
+  end
+
+  around do |example|
+    old = ENV.values_at("XDG_STATE_HOME", "XDG_CONFIG_HOME")
+    ENV["XDG_STATE_HOME"] = File.join(tmpdir, "state")
+    ENV["XDG_CONFIG_HOME"] = File.join(tmpdir, "config")
+    example.run
+  ensure
+    ENV["XDG_STATE_HOME"], ENV["XDG_CONFIG_HOME"] = old
+  end
+
+  after { FileUtils.remove_entry(tmpdir) if File.directory?(tmpdir) }
+
+  def store
+    Workspace::LockStore.new(dir: tmpdir, liveness: identity)
+  end
+
+  def hold_devenv
+    wrapper = {kind: "process", pid: 4242, started: "start-4242", pgid: 4242, worktree: "/w/login", branch: "login"}
+    store.acquire("devenv", identity: wrapper, waiter_pid: 4242, waiter_started: "start-4242")
+  end
+
+  def wrapper_terms
+    signals.count { |s| s == ["TERM", 4242] }
+  end
+
+  it "BC1: dev down run while a lock clear is stopping the devenv group signals that group a second time" do
+    hold_devenv
+    @on_kill = ->(signal, target) {
+      next unless [signal, target] == ["TERM", 4242] && !@nested
+      @nested = true
+      dev_command.down(working_dir: tmpdir)
+    }
+
+    lock_command.clear("devenv")
+
+    expect(wrapper_terms).to eq(1)
+  end
+
+  it "BC2: a keep_process_holder by someone other than the marked clearer drops that live clear's marker" do
+    hold_devenv
+    store.clear("devenv", keep_process_holder: true, clearer: {"pid" => 999, "started" => "start-999"})
+    holder = store.status("devenv").dig("devenv", "holder")
+    # `dev down` (which read the holder before the clear marked it) could not
+    # stop the group and re-asserts the lock, while clear 999 is still stopping it.
+    store.keep_process_holder("devenv", holder)
+
+    second = store.clear("devenv", keep_process_holder: true, clearer: {"pid" => 1001, "started" => "start-1001"})
+
+    expect(second).to include(in_progress: true)
+  end
+
+  it "BC3: a lock clear run while dev down is stopping the devenv group signals that group a second time" do
+    hold_devenv
+    @on_kill = ->(signal, target) {
+      next unless [signal, target] == ["TERM", 4242] && !@nested
+      @nested = true
+      lock_command.clear("devenv")
+    }
+
+    dev_command.down(working_dir: tmpdir)
+
+    expect(wrapper_terms).to eq(1)
+  end
+end

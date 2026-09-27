@@ -92,13 +92,16 @@ RSpec.describe "lock clear devenv racing dev up --takeover" do
 
   it "keeps a queued takeover when lock clear runs before the takeover stops the holder" do
     hold(700)
-    wrapper_joins(555)
     allow(clear_terminator).to receive(:stop_holder) { holder_stops_on_term(700) }
-    # The clear lands between the takeover queueing and its own stop.
-    allow(dev_terminator).to receive(:stop_holder) do
+    # The clear lands between the takeover queueing and its own stop (a
+    # clear during that stop is left to the takeover: see the clearing
+    # marker specs in lock_clear_adversarial_concurrency_spec.rb).
+    allow(tmux).to receive(:new_window) do |_session, env:, **|
+      enqueue(555, priority: env["WORKSPACE_DEV_TAKEOVER"] == "1")
       expect(lock_command.clear("devenv")).to eq(exit_code: 0)
-      :gone
+      555
     end
+    allow(dev_terminator).to receive(:stop_holder).and_return(:gone)
 
     expect(dev.up(takeover: true, working_dir: tmpdir)).to eq(exit_code: 0)
     expect(devenv["holder"]).to include("pid" => 555)

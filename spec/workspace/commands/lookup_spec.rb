@@ -1,34 +1,34 @@
 require "stringio"
 
-RSpec.describe Workspace::Commands::Lookup do
-  def build_lookup(project_config: nil)
-    pc = project_config || FakeProjectConfig.new
-    Workspace::Commands::Lookup.new(project_config: pc, output: StringIO.new)
+class LookupSpecFakeProjectConfig
+  def initialize(projects: [], roots: {})
+    @projects = projects
+    @roots = roots
   end
 
-  class FakeProjectConfig
-    def initialize(projects: [], roots: {})
-      @projects = projects
-      @roots = roots
-    end
+  def available_projects
+    @projects
+  end
 
-    def available_projects
-      @projects
-    end
+  def exists?(name)
+    @projects.include?(name)
+  end
 
-    def exists?(name)
-      @projects.include?(name)
-    end
+  def project_root_for(name)
+    @roots[name]
+  end
+end
 
-    def project_root_for(name)
-      @roots[name]
-    end
+RSpec.describe Workspace::Commands::Lookup do
+  def build_lookup(project_config: nil)
+    pc = project_config || LookupSpecFakeProjectConfig.new
+    Workspace::Commands::Lookup.new(project_config: pc, output: StringIO.new)
   end
 
   describe "#call" do
     context "with exact project name match" do
       it "returns the project name" do
-        pc = FakeProjectConfig.new(projects: ["myproject"])
+        pc = LookupSpecFakeProjectConfig.new(projects: ["myproject"])
         lookup = build_lookup(project_config: pc)
 
         result = lookup.call("myproject")
@@ -42,7 +42,7 @@ RSpec.describe Workspace::Commands::Lookup do
         tmpdir = Dir.mktmpdir
         root = File.join(tmpdir, "myproject")
         Dir.mkdir(root)
-        pc = FakeProjectConfig.new(
+        pc = LookupSpecFakeProjectConfig.new(
           projects: ["myproject"],
           roots: {"myproject" => root}
         )
@@ -61,7 +61,7 @@ RSpec.describe Workspace::Commands::Lookup do
         Dir.mkdir(root)
         subdir = File.join(root, "src", "lib")
         FileUtils.mkdir_p(subdir)
-        pc = FakeProjectConfig.new(
+        pc = LookupSpecFakeProjectConfig.new(
           projects: ["myproject"],
           roots: {"myproject" => root}
         )
@@ -77,7 +77,7 @@ RSpec.describe Workspace::Commands::Lookup do
       it "expands tilde paths for root matching" do
         # Use a real path that exists for this test
         root = File.expand_path("~")
-        pc = FakeProjectConfig.new(
+        pc = LookupSpecFakeProjectConfig.new(
           projects: ["home"],
           roots: {"home" => "~"}
         )
@@ -90,7 +90,7 @@ RSpec.describe Workspace::Commands::Lookup do
 
       it "returns nil when path doesn't match any project root" do
         tmpdir = Dir.mktmpdir
-        pc = FakeProjectConfig.new(
+        pc = LookupSpecFakeProjectConfig.new(
           projects: ["myproject"],
           roots: {"myproject" => File.join(tmpdir, "projects", "myproject")}
         )
@@ -106,7 +106,7 @@ RSpec.describe Workspace::Commands::Lookup do
 
     context "with worktree path" do
       it "extracts worktree name and finds matching project" do
-        pc = FakeProjectConfig.new(projects: ["myproject.worktree-pr-123"])
+        pc = LookupSpecFakeProjectConfig.new(projects: ["myproject.worktree-pr-123"])
         lookup = build_lookup(project_config: pc)
 
         # Create a temporary directory to test the path extraction
@@ -122,7 +122,7 @@ RSpec.describe Workspace::Commands::Lookup do
       end
 
       it "expands relative paths" do
-        pc = FakeProjectConfig.new(projects: ["myproject.worktree-feature"])
+        pc = LookupSpecFakeProjectConfig.new(projects: ["myproject.worktree-feature"])
         lookup = build_lookup(project_config: pc)
 
         result = lookup.call(".")
@@ -133,7 +133,7 @@ RSpec.describe Workspace::Commands::Lookup do
 
     context "with branch name" do
       it "finds worktree by exact branch name" do
-        pc = FakeProjectConfig.new(projects: ["myproject.worktree-main-branch"])
+        pc = LookupSpecFakeProjectConfig.new(projects: ["myproject.worktree-main-branch"])
         lookup = build_lookup(project_config: pc)
 
         result = lookup.call("main-branch")
@@ -142,7 +142,7 @@ RSpec.describe Workspace::Commands::Lookup do
       end
 
       it "returns nil when branch not found" do
-        pc = FakeProjectConfig.new(projects: ["myproject.worktree-feature"])
+        pc = LookupSpecFakeProjectConfig.new(projects: ["myproject.worktree-feature"])
         lookup = build_lookup(project_config: pc)
 
         result = lookup.call("unknown-branch")
@@ -151,7 +151,7 @@ RSpec.describe Workspace::Commands::Lookup do
       end
 
       it "handles branch names with special characters" do
-        pc = FakeProjectConfig.new(projects: ["backend.worktree-AIKYA-389-skip-validation"])
+        pc = LookupSpecFakeProjectConfig.new(projects: ["backend.worktree-AIKYA-389-skip-validation"])
         lookup = build_lookup(project_config: pc)
 
         result = lookup.call("AIKYA-389-skip-validation")
@@ -161,7 +161,7 @@ RSpec.describe Workspace::Commands::Lookup do
 
       it "fuzzy-matches normalized branch names" do
         # Filesystem-safe names replace dashes/underscores; this tests that matching is lenient
-        pc = FakeProjectConfig.new(projects: ["backend.worktree-pr_21291"])
+        pc = LookupSpecFakeProjectConfig.new(projects: ["backend.worktree-pr_21291"])
         lookup = build_lookup(project_config: pc)
 
         result = lookup.call("pr-21291")
@@ -172,7 +172,7 @@ RSpec.describe Workspace::Commands::Lookup do
 
     context "with multiple matching projects" do
       it "returns the first exact match" do
-        pc = FakeProjectConfig.new(projects: ["myproject.worktree-feature", "other.worktree-feature"])
+        pc = LookupSpecFakeProjectConfig.new(projects: ["myproject.worktree-feature", "other.worktree-feature"])
         lookup = build_lookup(project_config: pc)
 
         result = lookup.call("feature")
@@ -183,7 +183,7 @@ RSpec.describe Workspace::Commands::Lookup do
 
     context "with no matches" do
       it "returns nil" do
-        pc = FakeProjectConfig.new(projects: ["myproject"])
+        pc = LookupSpecFakeProjectConfig.new(projects: ["myproject"])
         lookup = build_lookup(project_config: pc)
 
         result = lookup.call("unknown")
@@ -194,7 +194,7 @@ RSpec.describe Workspace::Commands::Lookup do
 
     context "with base project name" do
       it "finds the base project when it matches directly" do
-        pc = FakeProjectConfig.new(projects: ["myproject", "myproject.worktree-feature"])
+        pc = LookupSpecFakeProjectConfig.new(projects: ["myproject", "myproject.worktree-feature"])
         lookup = build_lookup(project_config: pc)
 
         result = lookup.call("myproject")
@@ -212,7 +212,7 @@ RSpec.describe Workspace::Commands::Lookup do
           "frontend",
           "frontend.worktree-ui-redesign"
         ]
-        pc = FakeProjectConfig.new(projects: projects)
+        pc = LookupSpecFakeProjectConfig.new(projects: projects)
         lookup = build_lookup(project_config: pc)
 
         expect(lookup.call("pr-21291")).to eq("backend.worktree-pr-21291")

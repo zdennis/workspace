@@ -41,5 +41,20 @@ module Workspace
       raise ArgumentError, "must be greater than 0 and at most #{max}s, got #{value.inspect}" if seconds > max
       seconds
     end
+
+    # Parses a duration string or number into seconds, requiring it fall
+    # within [+min+, +max+] seconds, inclusive.
+    #
+    # @param value [String, Numeric] duration string or number
+    # @param min [Numeric] the smallest number of seconds accepted
+    # @param max [Numeric] the largest number of seconds accepted
+    # @return [Numeric] seconds, always in [min, max]
+    # @raise [ArgumentError] if value isn't a recognized duration, or falls
+    #   outside [min, max]
+    def self.parse_ranged(value, min:, max:)
+      seconds = parse_positive(value)
+      raise ArgumentError, "must be at least #{min}s and at most #{max}s, got #{value.inspect}" if seconds < min || seconds > max
+      seconds
+    end
   end
 end

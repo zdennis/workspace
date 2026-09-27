@@ -49,18 +49,34 @@ module Workspace
     # @param kill_grace [Numeric] seconds the group may take to disappear after SIGKILL
     # @param retry_command [String] the command to run once the group is stopped by hand
     # @param cleared_by [String, nil] identity recorded in the audit log if the lock is kept
+    # @param clearer [Hash, nil] this process's `clearing` marker (see {#clearer}),
+    #   dropped from the holder if the lock is kept
     # @return [Symbol] :terminated, :killed or :gone (nothing the holder
     #   started is known to be running, so its lock may go), or :kept (the
     #   reason and the kept lock were reported on +error_output+)
-    def stop(store, name, holder, stop_timeout:, retry_command:, cleared_by: nil, kill_grace: KILL_GRACE_SECONDS)
+    def stop(store, name, holder, stop_timeout:, retry_command:, cleared_by: nil, kill_grace: KILL_GRACE_SECONDS, clearer: nil)
       pid = holder["pid"]
       pgid = holder["pgid"] || pid
       result, reason = attempt(holder, pgid, pid, stop_timeout, kill_grace)
       return result unless reason
 
       @error_output.puts "Could not stop process group #{pgid} (pid #{pid}): #{reason}"
-      keep(store, name, holder, pgid, pid, retry_command, cleared_by)
+      keep(store, name, holder, pgid, pid, retry_command, cleared_by, clearer)
       :kept
+    end
+
+    # The `clearing` marker naming the process +pid+, recorded on a process
+    # holder it is stopping so a concurrent `lock clear`, `dev down` or `dev
+    # up --takeover` leaves that holder to it. Without a readable start time
+    # there is no marker, since its liveness could not be checked.
+    #
+    # @param pid [Integer] the stopping process's pid
+    # @return [Hash, nil] {"pid", "started"}
+    def clearer(pid)
+      started = @liveness.start_time(pid)
+      started && {"pid" => pid, "started" => started}
+    rescue Workspace::Error
+      nil
     end
 
     private
@@ -89,8 +105,8 @@ module Workspace
     # The lock must keep naming a holder whose group could not be stopped,
     # even if its wrapper released it meanwhile (it exits with its
     # command); only a hold someone else already started under is left alone.
-    def keep(store, name, holder, pgid, pid, retry_command, cleared_by)
-      other = store.keep_process_holder(name, holder, cleared_by: cleared_by)
+    def keep(store, name, holder, pgid, pid, retry_command, cleared_by, clearer)
+      other = store.keep_process_holder(name, holder, cleared_by: cleared_by, clearer: clearer)
       if other
         @error_output.puts "Could not keep #{name} lock for process group #{pgid}: it is now held by pid #{other["pid"]}" \
           "#{" (#{other["worktree"]})" if other["worktree"]}, while process group #{pgid} may still be running. " \

@@ -790,6 +790,46 @@ RSpec.describe Workspace::Commands::Dev, "with fake processes and clock" do
     end
   end
 
+  describe "a holder another process is already stopping" do
+    let(:clearer) { {"pid" => 901, "started" => "start-901"} }
+
+    def mark_held_by_clearer(pid)
+      hold(pid)
+      store.mark_clearing("devenv", holder, clearer)
+    end
+
+    it "`down` signals nothing, says who is stopping it and exits 1" do
+      mark_held_by_clearer(700)
+      allow(terminator).to receive(:stop_holder)
+
+      expect(dev.down(working_dir: worktree)).to eq(exit_code: 1)
+      expect(terminator).not_to have_received(:stop_holder)
+      expect(error_output.string).to include("devenv lock is already being cleared by pid 901")
+      expect(holder["clearing"]).to eq(clearer)
+    end
+
+    it "`up --takeover` signals nothing and leaves its own wrapper queued first" do
+      mark_held_by_clearer(700)
+      wrapper_joins(555)
+      allow(terminator).to receive(:stop_holder)
+
+      expect(dev.up(takeover: true, working_dir: worktree)).to eq(exit_code: 1)
+      expect(terminator).not_to have_received(:stop_holder)
+      expect(store.status("devenv").dig("devenv", "queue").map { |w| w["waiter_pid"] }).to eq([555])
+      expect(error_output.string).to include("already being cleared by pid 901", "stays queued first")
+    end
+
+    it "`down` stops a holder whose marker names a process no longer running, then drops its own marker" do
+      mark_held_by_clearer(700)
+      liveness.kill(901)
+      allow(terminator).to receive(:stop_holder).and_return(:terminated)
+
+      expect(dev.down(working_dir: worktree)).to eq(exit_code: 0)
+      expect(terminator).to have_received(:stop_holder)
+      expect(holder["clearing"]).to be_nil
+    end
+  end
+
   describe "`down` with dev.kill_grace set" do
     let(:settings) { {"up" => "run-dev", "stop_timeout" => 2, "startup_timeout" => 5, "ready_timeout" => 5, "kill_grace" => 7} }
 

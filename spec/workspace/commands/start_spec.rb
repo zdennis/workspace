@@ -276,7 +276,7 @@ RSpec.describe Workspace::Commands::Start do
       end
 
       it "seeds worktree hooks from parent project's worktree_hooks" do
-        parent_name = Workspace::ProjectConfig.name_from_path(tmpdir)
+        parent_name = Workspace::WorkspaceLineage.name_from_path(tmpdir)
         project_settings.save(parent_name, {
           "hooks" => {"post_launch" => "echo parent"},
           "worktree_hooks" => {"post_launch" => "echo worktree launched", "post_focus" => "echo focused"}
@@ -303,7 +303,7 @@ RSpec.describe Workspace::Commands::Start do
       end
 
       it "does not overwrite existing worktree hooks" do
-        parent_name = Workspace::ProjectConfig.name_from_path(tmpdir)
+        parent_name = Workspace::WorkspaceLineage.name_from_path(tmpdir)
         worktree_config = "#{parent_name}.worktree-PROJ-789"
         project_settings.save(parent_name, {
           "worktree_hooks" => {"post_launch" => "echo from parent"}
@@ -326,7 +326,7 @@ RSpec.describe Workspace::Commands::Start do
       end
 
       it "does nothing when parent has no worktree_hooks" do
-        parent_name = Workspace::ProjectConfig.name_from_path(tmpdir)
+        parent_name = Workspace::WorkspaceLineage.name_from_path(tmpdir)
         worktree_config = "#{parent_name}.worktree-PROJ-789"
         project_settings.save(parent_name, {"hooks" => {"post_launch" => "echo parent"}})
 

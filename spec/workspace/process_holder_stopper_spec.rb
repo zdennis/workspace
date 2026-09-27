@@ -24,7 +24,7 @@ RSpec.describe Workspace::ProcessHolderStopper do
     expect(stop).to eq(:kept)
     expect(now[0]).to be_between(described_class::KILL_GRACE_SECONDS, described_class::KILL_GRACE_SECONDS + described_class::KILL_POLL_SECONDS * 2)
     expect(error_output.string).to include("still running 2s after SIGKILL")
-    expect(store).to have_received(:keep_process_holder).with("devenv", holder, cleared_by: nil)
+    expect(store).to have_received(:keep_process_holder).with("devenv", holder, cleared_by: nil, clearer: nil)
   end
 
   it "waits the given kill_grace instead" do

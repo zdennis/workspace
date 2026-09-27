@@ -42,10 +42,11 @@ module Workspace
       # @param clock [#now] monotonic seconds, for timeouts
       # @param poll [Numeric] seconds between polls
       # @param kill [#call] probes or signals a wrapper pid, called as `kill.call(signal, pid)` like `Process.kill`
+      # @param pid_provider [#call] returns this invocation's own pid, recorded on a holder it is stopping
       def initialize(lock_namespace:, lock_holder:, lineage:, dev_config:, dev_runner:, terminator:, tmux:, executable:,
         output: $stdout, error_output: $stderr, env: ENV, sleeper: ->(seconds) { sleep(seconds) }, clock: Lock::MonotonicClock,
         poll: POLL_SECONDS,
-        kill: ->(signal, pid) { Process.kill(signal, pid) })
+        kill: ->(signal, pid) { Process.kill(signal, pid) }, pid_provider: -> { Process.pid })
         @lock_namespace = lock_namespace
         @lock_holder = lock_holder
         @lineage = lineage
@@ -61,6 +62,7 @@ module Workspace
         @clock = clock
         @poll = poll
         @kill = kill
+        @pid_provider = pid_provider
         @holder_stopper = ProcessHolderStopper.for(terminator: terminator, lock_holder: lock_holder, error_output: error_output,
           clock: clock, sleeper: sleeper)
       end
@@ -116,7 +118,7 @@ module Workspace
         end
 
         result = stop(ctx, holder)
-        return {exit_code: 1} if result == :kept
+        return {exit_code: 1} if result == :kept || result == :in_progress
         close_window(holder)
         if result == :gone
           @output.puts "Dev environment for #{describe(holder)} was not running; removed its stale lock."
@@ -182,10 +184,15 @@ module Workspace
         return {exit_code: code} unless code.zero?
 
         @output.puts "Taking over: stopping dev environment for #{describe(holder)}..."
-        if stop(ctx, holder) == :kept
+        case stop(ctx, holder)
+        when :kept
           @error_output.puts "This worktree's dev environment stays queued first for the #{LOCK_NAME} lock in its #{WINDOW_NAME} window. " \
             "Run `workspace dev status` to watch it. Have its owner run `kill -TERM -#{holder["pgid"]}`; " \
             "the lock frees on its own once the group is empty."
+          return {exit_code: 1}
+        when :in_progress
+          @error_output.puts "This worktree's dev environment stays queued first for the #{LOCK_NAME} lock in its #{WINDOW_NAME} window " \
+            "and takes it once that group is stopped. Run `workspace dev status` to watch it."
           return {exit_code: 1}
         end
         close_window(holder)
@@ -328,19 +335,35 @@ module Workspace
       # SIGTERM to the wrapper, which forwards it once to its group; SIGKILL to
       # the group after stop_timeout. Then waits briefly for the lock to free.
       # A group that can't be stopped keeps its lock, exactly as `lock clear`
-      # would (see {ProcessHolderStopper}).
+      # would (see {ProcessHolderStopper}). The holder is marked `clearing`
+      # by this process while it is stopped, the same marker `lock clear`
+      # uses, so a concurrent clear, `dev down` or takeover never signals it
+      # a second time; one already marked by another live process is left to it.
       #
-      # @return [Symbol] :terminated, :killed, :gone, or :kept (reported on stderr)
+      # @return [Symbol] :terminated, :killed, :gone, :kept, or :in_progress
+      #   (another process is stopping it) — the last two reported on stderr
       def stop(ctx, holder)
-        result = @holder_stopper.stop(ctx[:store], LOCK_NAME, holder, stop_timeout: ctx[:settings][:stop_timeout],
-          retry_command: "workspace dev down", kill_grace: kill_grace_for(ctx))
-        return result if result == :kept
-        deadline = @clock.now + RELEASE_MARGIN
-        while @lock_holder.alive?(pid: holder["pid"], started: holder["started"]) && @clock.now < deadline
-          @sleeper.call(@poll)
+        store = ctx[:store]
+        clearer = @holder_stopper.clearer(@pid_provider.call)
+        if (other = store.mark_clearing(LOCK_NAME, holder, clearer))
+          @error_output.puts "#{LOCK_NAME} lock is already being cleared by pid #{other["pid"]}, which is stopping process group " \
+            "#{holder["pgid"] || holder["pid"]} (pid #{holder["pid"]}); nothing to do here. " \
+            "Check the result with: workspace dev status"
+          return :in_progress
         end
-        ctx[:store].release(LOCK_NAME, holder["pid"]) unless @lock_holder.alive?(pid: holder["pid"], started: holder["started"])
-        result
+        begin
+          result = @holder_stopper.stop(store, LOCK_NAME, holder, stop_timeout: ctx[:settings][:stop_timeout],
+            retry_command: "workspace dev down", kill_grace: kill_grace_for(ctx), clearer: clearer)
+          return result if result == :kept
+          deadline = @clock.now + RELEASE_MARGIN
+          while @lock_holder.alive?(pid: holder["pid"], started: holder["started"]) && @clock.now < deadline
+            @sleeper.call(@poll)
+          end
+          store.release(LOCK_NAME, holder["pid"]) unless @lock_holder.alive?(pid: holder["pid"], started: holder["started"])
+          result
+        ensure
+          store.unmark_clearing(LOCK_NAME, holder, clearer)
+        end
       end
 
       def kill_grace_for(ctx)

@@ -194,6 +194,21 @@ RSpec.describe Workspace::Commands::Lock do
       expect(output.string).to include("1. %1 \"queued-task\" in app (pid 200)")
     end
 
+    it "tags a holder with a live clearing marker as CLEARING" do
+      liveness = Workspace::LockHolder.new
+      own_start = liveness.start_time(Process.pid)
+      store = Workspace::LockStore.new(dir: tmpdir, liveness: FakeLockLiveness.new)
+      store.acquire("devenv", identity: {kind: "process", pid: 4242, started: "start-4242", pgid: 4242, worktree: "/w/login"},
+        waiter_pid: 4242, waiter_started: "start-4242")
+      store.clear("devenv", cleared_by: "pid 999", keep_process_holder: true, clearer: {"pid" => Process.pid, "started" => own_start})
+
+      command = described_class.new(config: config, lock_namespace: lock_namespace, lock_holder: liveness,
+        output: output, error_output: error_output, trap: ->(*) {})
+      command.status("devenv")
+
+      expect(output.string).to include("CLEARING by pid #{Process.pid}")
+    end
+
     describe "--json" do
       it "emits an empty locks object for an empty store" do
         command_for(FakeLockIdentity.new(pid: 100)).status(json: true)
@@ -240,6 +255,52 @@ RSpec.describe Workspace::Commands::Lock do
       expect(result).to eq(exit_code: 0)
       expect(output.string).to include("Cleared edit: was held by")
       expect(command_for(FakeLockIdentity.new(pid: 999)).status("edit").tap { |_| }).to eq(exit_code: 0)
+    end
+
+    describe "--json" do
+      it "emits a cleared result for a held lock" do
+        command_for(FakeLockIdentity.new(pid: 100)).acquire("edit", task: "the-task")
+        output.truncate(0)
+        output.rewind
+
+        result = command_for(FakeLockIdentity.new(pid: 999)).clear("edit", json: true)
+
+        expect(result).to eq(exit_code: 0)
+        parsed = JSON.parse(output.string)
+        expect(parsed).to include("schema_version" => Workspace::Commands::Lock::JSON_SCHEMA_VERSION, "name" => "edit", "result" => "cleared")
+        expect(parsed["holder"]["pid"]).to eq(100)
+        expect(error_output.string).to eq("")
+      end
+
+      it "emits a not_held result for a name with no entry" do
+        result = command_for(FakeLockIdentity.new(pid: 999)).clear("edit", json: true)
+
+        expect(result).to eq(exit_code: 0)
+        parsed = JSON.parse(output.string)
+        expect(parsed).to eq("schema_version" => Workspace::Commands::Lock::JSON_SCHEMA_VERSION, "name" => "edit", "result" => "not_held")
+      end
+
+      it "emits a results array for --all" do
+        command_for(FakeLockIdentity.new(pid: 100)).acquire("edit", task: "the-task")
+        output.truncate(0)
+        output.rewind
+
+        result = command_for(FakeLockIdentity.new(pid: 999)).clear(nil, all: true, json: true)
+
+        expect(result).to eq(exit_code: 0)
+        parsed = JSON.parse(output.string)
+        expect(parsed["schema_version"]).to eq(Workspace::Commands::Lock::JSON_SCHEMA_VERSION)
+        expect(parsed["results"]).to contain_exactly(include("name" => "edit", "result" => "cleared"))
+      end
+
+      it "emits the JSON error contract for a usage error" do
+        result = command_for(FakeLockIdentity.new(pid: 999)).clear("bad name!", json: true)
+
+        expect(result).to eq(exit_code: 1)
+        parsed = JSON.parse(output.string)
+        expect(parsed["schema_version"]).to eq(Workspace::Commands::Lock::JSON_SCHEMA_VERSION)
+        expect(parsed["error"]).to be_a(String)
+      end
     end
 
     it "yields the holder record for a kind-specific hook" do
@@ -313,9 +374,9 @@ RSpec.describe Workspace::Commands::Lock do
           waiter_pid: 4242, waiter_started: "start-4242")
       end
 
-      def clear_command(dev_config: nil)
-        described_class.new(config: config, lock_namespace: lock_namespace, lock_holder: FakeLockIdentity.new(pid: 999), output: output,
-          error_output: error_output, terminator: terminator, clock: mono_clock, trap: ->(*) {},
+      def clear_command(dev_config: nil, pid: 999, output: self.output, error_output: self.error_output)
+        described_class.new(config: config, lock_namespace: lock_namespace, lock_holder: FakeLockIdentity.new(pid: pid), output: output,
+          error_output: error_output, terminator: terminator, clock: mono_clock, trap: ->(*) {}, pid_provider: -> { pid },
           sleeper: ->(seconds) { mono[0] += seconds }, dev_config: dev_config)
       end
 
@@ -323,7 +384,7 @@ RSpec.describe Workspace::Commands::Lock do
         Workspace::LockStore.new(dir: tmpdir, liveness: FakeLockLiveness.new).status("devenv").dig("devenv", "holder", "pid")
       end
 
-      it "keeps the lock and exits 1 when the group belongs to another user" do
+      it "keeps the lock and exits 1 when the group belongs to another user, leaving its waiters queued" do
         hold_devenv
         enqueue_waiter(name: "devenv", identity: FakeLockIdentity.new(pid: 300), task: "next")
         allow(terminator).to receive(:stop_holder).and_raise(not_permitted)
@@ -332,7 +393,9 @@ RSpec.describe Workspace::Commands::Lock do
 
         expect(result).to eq(exit_code: 1)
         expect(devenv_holder_pid).to eq(4242)
-        expect(Workspace::LockStore.new(dir: tmpdir, liveness: FakeLockLiveness.new).status("devenv")["devenv"]["queue"]).to be_empty
+        queue = Workspace::LockStore.new(dir: tmpdir, liveness: FakeLockLiveness.new).status("devenv")["devenv"]["queue"]
+        expect(queue.map { |w| w["agent_pid"] }).to eq([300])
+        expect(queue.first).not_to have_key("clearing")
         expect(error_output.string).to include("Could not stop process group 4242 (pid 4242): process group 4242",
           "owned by alice", "Kept devenv lock", "kill -TERM -4242", "workspace lock clear devenv")
         expect(output.string).not_to include("Cleared devenv")
@@ -446,6 +509,64 @@ RSpec.describe Workspace::Commands::Lock do
         expect(devenv_holder_pid).to eq(555)
         expect(output.string).to include("Cleared devenv: was held by ? in /w/login, 1 waiter(s) removed; " \
           "kept the queued takeover by %5 in /w/signup, which takes the lock next.")
+      end
+
+      it "stops the group once when a second clear runs while the first is still stopping it" do
+        hold_devenv
+        second_err = StringIO.new
+        second_result = nil
+        stops = 0
+        allow(terminator).to receive(:stop_holder) do
+          stops += 1
+          second_result ||= clear_command(pid: 998, output: StringIO.new, error_output: second_err).clear("devenv")
+          :terminated
+        end
+
+        result = clear_command.clear("devenv")
+
+        expect(result).to eq(exit_code: 0)
+        expect(stops).to eq(1)
+        expect(second_result).to eq(exit_code: 1)
+        expect(second_err.string).to include("devenv lock is already being cleared by pid 999", "process group 4242",
+          "workspace lock status devenv")
+        expect(devenv_holder_pid).to be_nil
+        events = File.readlines(File.join(tmpdir, "locks.jsonl")).map { |l| JSON.parse(l)["event"] }
+        expect(events.count("clear")).to eq(1)
+        expect(events.count("release")).to eq(1)
+      end
+
+      it "reports the in-progress outcome as JSON when a second clear runs while the first is still stopping it" do
+        hold_devenv
+        second_out = StringIO.new
+        second_result = nil
+        allow(terminator).to receive(:stop_holder) do
+          second_result ||= clear_command(pid: 998, output: second_out, error_output: StringIO.new).clear("devenv", json: true)
+          :terminated
+        end
+
+        clear_command.clear("devenv")
+
+        expect(second_result).to eq(exit_code: 1)
+        parsed = JSON.parse(second_out.string)
+        expect(parsed).to include("schema_version" => Workspace::Commands::Lock::JSON_SCHEMA_VERSION, "name" => "devenv",
+          "result" => "in_progress", "clearer_pid" => 999)
+        expect(parsed["holder"]["pid"]).to eq(4242)
+      end
+
+      it "takes over a clear whose clearer died mid-stop" do
+        hold_devenv
+        allow(terminator).to receive(:stop_holder).and_raise(Interrupt)
+        expect { clear_command(pid: 998).clear("devenv") }.to raise_error(Interrupt)
+        allow(terminator).to receive(:stop_holder).and_return(:terminated)
+
+        identity = FakeLockIdentity.new(pid: 999).tap { |i| i.kill(998) }
+        command = described_class.new(config: config, lock_namespace: lock_namespace, lock_holder: identity, output: output,
+          error_output: error_output, terminator: terminator, clock: mono_clock, trap: ->(*) {}, pid_provider: -> { 999 })
+        result = command.clear("devenv")
+
+        expect(result).to eq(exit_code: 0)
+        expect(devenv_holder_pid).to be_nil
+        expect(output.string).to include("Stopped process group 4242", "Cleared devenv")
       end
 
       it "with --all, clears every other lock and keeps only the one it could not stop" do

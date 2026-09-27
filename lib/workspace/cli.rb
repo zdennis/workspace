@@ -770,8 +770,11 @@ module Workspace
           status  [<name>]           Show holders and queues
           clear   [<name>|--all]     Force-remove a lock's holder and queue
                                      (devenv: also stops the dev env's process group).
-                                     Ordinary waiters are still removed; a queued
-                                     `dev up --takeover` is kept, not removed.
+                                     Ordinary waiters are removed once the lock is
+                                     actually cleared, but stay queued if a kept
+                                     devenv holder can't be stopped; a queued
+                                     `dev up --takeover` is kept either way, not
+                                     removed.
           instructions [<name>]      Print the prompt block that tells a coding
                                      agent how to use the lock (default: edit)
 
@@ -811,8 +814,9 @@ module Workspace
         held/cleared, except that `release` exits 3 when it reports an idle
         takeover, and `clear` exits 1 when it keeps the devenv lock because
         the dev environment's process group could not be stopped (owned by
-        another user, or still running after SIGKILL). `acquire` has its own
-        exit codes above.
+        another user, or still running after SIGKILL), or because it is
+        already being cleared by another `lock clear` (check the result with
+        `workspace lock status <name>`). `acquire` has its own exit codes above.
 
         Enforcement: once hooks are installed (see `workspace init`/`doctor`),
         Edit/Write/MultiEdit/NotebookEdit are denied (exit 2) for any agent
@@ -927,17 +931,23 @@ module Workspace
 
     def cmd_lock_clear(args)
       all = false
+      json = false
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace lock clear [<name>|--all]"
+        opts.banner = "Usage: workspace lock clear [<name>|--all] [--json]"
         opts.on("--all", "Clear every lock in this namespace") { all = true }
+        opts.on("--json", "Emit the documented JSON schema instead of text (see docs/README.lock.md)") { json = true }
       end
       parser.parse!(args)
 
       name = args.shift
-      raise UsageError, parser.help if (!all && name.nil?) || (all && name) || args.any?
+      raise UsageError, parser.help if (!all && name.nil?) || (all && name)
+      raise UsageError, "workspace lock clear: too many arguments.\n\n#{parser.help}" if args.any?
 
-      result = @lock_command.clear(name, all: all, working_dir: @working_dir)
+      result = @lock_command.clear(name, all: all, working_dir: @working_dir, json: json)
       @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
+    rescue OptionParser::ParseError, UsageError => e
+      raise unless json || args.include?("--json")
+      emit_json_usage_error(Commands::Lock::JSON_SCHEMA_VERSION, e.message.lines.first.strip)
     end
 
     def cmd_dev(args)
@@ -983,10 +993,17 @@ module Workspace
 
         Exit codes (up):
           0   running (or already running for this worktree)
-          1   running for another worktree (without --wait/--takeover), or failed to start
+          1   running for another worktree (without --wait/--takeover), or failed to start;
+              also a --takeover whose target is already being stopped by another
+              `lock clear`/`dev down`/`dev up --takeover`
           4   devenv lock cleared while waiting
           6   ready check failed (the env is stopped and the lock released)
           75  still queued after --max-wait
+
+        Exit codes (down):
+          0   stopped (or nothing was running)
+          1   could not stop the process group, or it's already being stopped by
+              another `lock clear`/`dev down`/`dev up --takeover`
 
         Examples:
           workspace dev up
@@ -1841,6 +1858,12 @@ module Workspace
         opts.separator "  dev.kill_grace:"
         opts.separator "  locks.idle_grace:              How long an idle agent keeps a lock before"
         opts.separator "                                 the next waiter may take it (default: 5m)"
+        opts.separator "  locks.ps_timeout:              How long to wait for 'ps' before giving up"
+        opts.separator "                                 (default: 5s, must be > 0)"
+        opts.separator "  locks.reap_interval:           How often the background session-monitor"
+        opts.separator "                                 sweeps out stale lock holders (default: 30s,"
+        opts.separator "                                 must be > 0; takes effect next time the"
+        opts.separator "                                 monitor starts)"
         opts.separator ""
         opts.separator "Note: 'set', 'get', and 'unset' are reserved as the first argument"
         opts.separator "here and are always treated as subcommands, so a project literally"

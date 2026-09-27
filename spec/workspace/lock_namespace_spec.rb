@@ -81,8 +81,8 @@ RSpec.describe Workspace::LockNamespace do
 
       result = namespace.resolve(cwd: dir)
 
-      expect(result[:key]).to eq(Workspace::ProjectConfig.name_from_path(dir))
-      expect(result[:display]).to eq(Workspace::ProjectConfig.name_from_path(dir))
+      expect(result[:key]).to eq(Workspace::WorkspaceLineage.name_from_path(dir))
+      expect(result[:display]).to eq(Workspace::WorkspaceLineage.name_from_path(dir))
     ensure
       FileUtils.remove_entry(dir) if File.directory?(dir)
     end

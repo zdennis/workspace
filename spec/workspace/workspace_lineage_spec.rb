@@ -40,7 +40,7 @@ RSpec.describe Workspace::WorkspaceLineage do
 
       info = lineage.resolve(cwd: root)
 
-      expect(info.name).to eq(Workspace::ProjectConfig.name_from_path(root))
+      expect(info.name).to eq(Workspace::WorkspaceLineage.name_from_path(root))
       expect(File.realpath(info.path)).to eq(File.realpath(root))
       expect(info.is_worktree).to be false
       expect(info.worktree).to be_nil
@@ -59,7 +59,7 @@ RSpec.describe Workspace::WorkspaceLineage do
       info = lineage.resolve(cwd: worktree_path)
 
       expect(info.is_worktree).to be true
-      expect(info.name).to eq(Workspace::ProjectConfig.name_from_path(root))
+      expect(info.name).to eq(Workspace::WorkspaceLineage.name_from_path(root))
       expect(File.realpath(info.path)).to eq(File.realpath(root))
     ensure
       FileUtils.remove_entry(root) if root && File.directory?(root)
@@ -102,7 +102,7 @@ RSpec.describe Workspace::WorkspaceLineage do
 
       info = lineage.resolve(cwd: dir)
 
-      expect(info.name).to eq(Workspace::ProjectConfig.name_from_path(dir))
+      expect(info.name).to eq(Workspace::WorkspaceLineage.name_from_path(dir))
       expect(info.git_common_dir).to be_nil
       expect(info.is_worktree).to be false
     ensure
@@ -115,7 +115,7 @@ RSpec.describe Workspace::WorkspaceLineage do
 
       info = lineage.resolve(cwd: dir)
 
-      expect(info.name).to eq(Workspace::ProjectConfig.name_from_path(dir))
+      expect(info.name).to eq(Workspace::WorkspaceLineage.name_from_path(dir))
     ensure
       FileUtils.remove_entry(dir) if File.directory?(dir)
     end
