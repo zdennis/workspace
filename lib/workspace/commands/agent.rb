@@ -29,6 +29,7 @@ module Workspace
       # @param signal_trapper [#trap] receives SIGTERM/SIGINT handler registration
       # @param sentinel_poller_factory [#call] builds a poller for a session/pane/token
       # @param token_generator [#call] returns a fresh completion token for one stage dispatch
+      # @param clock [#call] returns the current Time, for stage deadlines
       # @param session_monitor_factory [#call] builds the session monitor for a workspace name
       # @param lock_reaper [Workspace::LockReaper, nil] reaps stale lock holds from the session monitor's scan thread
       # @param ps_timeout [Numeric] seconds to wait for `ps` before killing it, for
@@ -42,6 +43,7 @@ module Workspace
         signal_trapper: Signal,
         sentinel_poller_factory: nil,
         token_generator: -> { SecureRandom.hex(4) },
+        clock: -> { Time.now },
         session_monitor_factory: nil,
         lock_reaper: nil,
         ps_timeout: Workspace::ProcessTree::DEFAULT_TIMEOUT,
@@ -56,6 +58,7 @@ module Workspace
         @signal_trapper = signal_trapper
         @sentinel_poller_factory = sentinel_poller_factory || method(:build_sentinel_poller)
         @token_generator = token_generator
+        @clock = clock
         @session_monitor_factory = session_monitor_factory || method(:build_session_monitor)
         @session_monitor = nil
         @lock_reaper = lock_reaper
@@ -95,6 +98,10 @@ module Workspace
       def call(name:, wc_socket: nil, force: false)
         @current_name = name
         socket_path = @config.agent_socket_path(name)
+
+        # Read once up front so a bad stage timeout stops the agent here, with
+        # the config error, rather than later as a dropped dispatch.
+        @pipeline_config.stages_for(name)
 
         return false unless claim_socket(name, socket_path, force: force)
 
@@ -175,9 +182,13 @@ module Workspace
       #
       # @param work_item_ref [String]
       # @param message [String] why the work item failed
+      # @param watched_by [Object, nil] when given, the work item is only failed
+      #   while this poller is still the one watching it, so a watch that has
+      #   been replaced cannot fail the stage that replaced it
       # @return [void]
-      def fail_pipeline(work_item_ref, message)
+      def fail_pipeline(work_item_ref, message, watched_by: nil)
         entry = @state_lock.synchronize do
+          next nil if watched_by && !@pollers[work_item_ref].equal?(watched_by)
           @pollers.delete(work_item_ref)&.stop
           @queued_steers.delete(work_item_ref)
           found = @pipeline_state.current(work_item_ref)
@@ -201,7 +212,8 @@ module Workspace
       # pane, so a stage that finished while the agent was down is seen at once.
       # An entry written before tokens existed has none; its watch falls back to
       # accepting any sentinel printed from now on, which is what the stage was
-      # told to print.
+      # told to print. A deadline that passed while the agent was down fails the
+      # stage on the first pass, unless that pass finds its sentinel.
       def recover_in_flight
         @pipeline_state.in_flight_refs.each do |ref|
           entry = @pipeline_state.current(ref)
@@ -210,7 +222,9 @@ module Workspace
           # Checked against the session we are actually serving, not the name in
           # the file, so the liveness check and the re-armed watch cannot differ.
           if pane_alive?(@current_name, pane)
-            @state_lock.synchronize { watch_for_completion(ref, pane, entry[:sentinel_token]) }
+            @state_lock.synchronize do
+              watch_for_completion(ref, pane, entry[:sentinel_token], @pipeline_state.deadline(ref))
+            end
             @logger.debug { "re-attached sentinel watch for #{ref} at pane #{pane}" }
           else
             @error_output.puts "workspace agent: #{ref} lost its pane (#{pane}) while the agent was down"
@@ -324,20 +338,22 @@ module Workspace
         stages = @pipeline_config.stages_for(@current_name)
         text = "#{message["body"]}#{reporting_text(message)}"
 
-        entry, started_message, watch_pane, token = @state_lock.synchronize do
+        entry, started_message, watch_pane, token, deadline = @state_lock.synchronize do
           if stages
             stage = stages.first
             token = @token_generator.call
+            deadline = stage_deadline(stage)
             @tmux.send_keys(@current_name, pane_target(stage[:pane_index]),
               "#{text}\n\n#{SentinelPoller.instruction(token)}")
             started = @pipeline_state.start(
               work_item_ref: ref,
               workspace_name: @current_name,
               dispatch_id: message["dispatch_id"],
-              sentinel_token: token
+              sentinel_token: token,
+              deadline: deadline
             )
             @logger.debug { "pipeline started for #{ref} at pane #{stage[:pane_index]} (#{stage[:role]})" }
-            [started, "Pipeline started at stage #{stage[:role]} (pane #{stage[:pane_index]})", stage[:pane_index], token]
+            [started, "Pipeline started at stage #{stage[:role]} (pane #{stage[:pane_index]})", stage[:pane_index], token, deadline]
           else
             target = claude_pane_target
             @logger.debug { "delivering #{ref} to #{@current_name}:#{target}" }
@@ -350,7 +366,7 @@ module Workspace
         # Reported before the poller is armed so the "started" message always
         # precedes anything the poller thread goes on to report.
         report(entry, "type" => "status_update", "message" => started_message)
-        @state_lock.synchronize { watch_for_completion(ref, watch_pane, token) } if watch_pane
+        @state_lock.synchronize { watch_for_completion(ref, watch_pane, token, deadline) } if watch_pane
       end
 
       # The coordinator ships a ready-rendered block telling Claude how to report
@@ -392,14 +408,28 @@ module Workspace
         {work_item_ref: work_item_ref, workspace_name: @current_name}
       end
 
+      # When a stage started now must be done by, or nil when its config sets
+      # no timeout.
+      def stage_deadline(stage)
+        stage[:timeout] && @clock.call + stage[:timeout]
+      end
+
       # Watches a stage's pane for the completion sentinel carrying +token+,
-      # replacing any poller already watching this work item.
-      def watch_for_completion(work_item_ref, pane, token)
+      # replacing any poller already watching this work item. A stage still
+      # running at +deadline+ is failed the same way a dead poller is.
+      def watch_for_completion(work_item_ref, pane, token, deadline)
         @pollers.delete(work_item_ref)&.stop
-        poller = @sentinel_poller_factory.call(session_name: @current_name, pane: pane, token: token)
+        poller = @sentinel_poller_factory.call(session_name: @current_name, pane: pane,
+          token: token, deadline: deadline)
         @pollers[work_item_ref] = poller
         on_error = ->(message) { fail_pipeline(work_item_ref, message) }
-        poller.start(on_error: on_error) { |summary| advance_pipeline(work_item_ref, summary, poller) }
+        on_timeout = lambda do
+          fail_pipeline(work_item_ref,
+            "timed out: no #{SentinelPoller.marker(token)} line by #{deadline.utc.iso8601}", watched_by: poller)
+        end
+        poller.start(on_error: on_error, on_timeout: on_timeout) do |summary|
+          advance_pipeline(work_item_ref, summary, poller)
+        end
       end
 
       # Hands the finished stage's output to the next stage, or reports the work
@@ -442,11 +472,13 @@ module Workspace
 
         if next_stage
           token = @token_generator.call
+          deadline = stage_deadline(next_stage)
           @tmux.send_keys(entry[:workspace_name], pane_target(next_stage[:pane_index]),
             handoff_instructions(next_stage[:role], handoff_path, token))
           deliver_queued_steers(entry[:workspace_name], work_item_ref, next_stage[:pane_index])
-          @pipeline_state.advance(work_item_ref: work_item_ref, to_stage: next_stage, sentinel_token: token)
-          watch_for_completion(work_item_ref, next_stage[:pane_index], token)
+          @pipeline_state.advance(work_item_ref: work_item_ref, to_stage: next_stage,
+            sentinel_token: token, deadline: deadline)
+          watch_for_completion(work_item_ref, next_stage[:pane_index], token, deadline)
         else
           @queued_steers.delete(work_item_ref)
           @pipeline_state.complete(work_item_ref: work_item_ref)
@@ -695,9 +727,9 @@ module Workspace
         @client || @work_coordinator_client
       end
 
-      def build_sentinel_poller(session_name:, pane:, token:)
+      def build_sentinel_poller(session_name:, pane:, token:, deadline:)
         SentinelPoller.new(tmux: @tmux, session_name: session_name, pane: pane, token: token,
-          logger: @logger, error_output: @error_output)
+          deadline: deadline, clock: @clock, logger: @logger, error_output: @error_output)
       end
 
       # Returns true when the socket path is free to bind (cleaning up a stale

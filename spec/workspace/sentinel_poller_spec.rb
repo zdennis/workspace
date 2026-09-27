@@ -71,6 +71,37 @@ RSpec.describe Workspace::SentinelPoller do
     end
   end
 
+  describe "with a deadline" do
+    let(:deadline) { Time.utc(2026, 9, 27, 12, 0, 0) }
+
+    # Runs one poller to its end and says which way it ended.
+    def outcome(captures, now:)
+      poller = described_class.new(
+        tmux: ScriptedTmux.new(captures), session_name: "myapp", pane: 0, token: "ab12",
+        deadline: deadline, clock: -> { now }, poll_interval: 0.01, error_output: error_output
+      )
+      result = Queue.new
+      poller.start(on_timeout: -> { result << :timed_out }) { |summary| result << [:done, summary] }
+      Timeout.timeout(1) { result.pop }
+    ensure
+      poller.stop
+    end
+
+    it "gives up once the deadline passes without a sentinel" do
+      expect(outcome(["still working\n"], now: deadline)).to eq(:timed_out)
+    end
+
+    it "keeps waiting while the deadline is still ahead" do
+      captures = ["", "", "WORKSPACE_DONE:ab12 made it\n"]
+      expect(outcome(captures, now: deadline - 1)).to eq([:done, "made it"])
+    end
+
+    it "counts a sentinel already printed when it finds the deadline has passed" do
+      expect(outcome(["WORKSPACE_DONE:ab12 finished while no one watched\n"], now: deadline + 60))
+        .to eq([:done, "finished while no one watched"])
+    end
+  end
+
   describe ".instruction" do
     it "tells the stage the exact line to print" do
       expect(described_class.instruction("ab12"))

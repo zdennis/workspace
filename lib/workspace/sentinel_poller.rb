@@ -38,28 +38,36 @@ module Workspace
     # @param pane [Integer] zero-based pane index within window 0
     # @param token [String, nil] the dispatch token to wait for; nil accepts any
     #   sentinel written after the poller started
+    # @param deadline [Time, nil] when to give up on the stage; nil waits forever
+    # @param clock [#call] returns the current Time
     # @param poll_interval [Numeric] seconds to wait between captures
     # @param logger [Workspace::Logger] debug logger
     # @param error_output [IO] stream for reporting an unexpected poller death
-    def initialize(tmux:, session_name:, pane:, token: nil, poll_interval: 2,
+    def initialize(tmux:, session_name:, pane:, token: nil, deadline: nil,
+      clock: -> { Time.now }, poll_interval: 2,
       logger: Workspace::Logger.new, error_output: $stderr)
       @tmux = tmux
       @session_name = session_name
       @pane = pane
       @pattern = /^\s*#{Regexp.escape(self.class.marker(token))}(?:\s+(.*))?$/
       @token = token
+      @deadline = deadline
+      @clock = clock
       @poll_interval = poll_interval
       @logger = logger
       @error_output = error_output
       @running = false
     end
 
-    # Polls the pane in a background thread until the sentinel appears.
+    # Polls the pane in a background thread until the sentinel appears or the
+    # deadline passes. Each pass checks for the sentinel before the deadline,
+    # so a stage that finished just in time is never failed.
     #
     # @param on_error [#call, nil] called with the message when polling dies
+    # @param on_timeout [#call, nil] called with no arguments once the deadline passes
     # @yieldparam summary [String] the text following the sentinel
     # @return [Thread] the polling thread
-    def start(on_error: nil, &on_complete)
+    def start(on_error: nil, on_timeout: nil, &on_complete)
       @running = true
       @thread = Thread.new do
         # Taken inside the thread so a failing capture is reported here rather
@@ -69,6 +77,10 @@ module Workspace
           summary = scan
           if summary
             on_complete.call(summary)
+            break
+          end
+          if @deadline && @clock.call >= @deadline
+            on_timeout&.call
             break
           end
           sleep @poll_interval
