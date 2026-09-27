@@ -69,7 +69,7 @@ RSpec.describe "workspace lock observability adversarial findings" do
         lock_command: lock_command, dev_command: CLITestHelpers::FakeDevCommand.new,
         parent_command: CLITestHelpers::FakeParentCommand.new, agent_command: CLITestHelpers::FakeAgentCommand.new,
         sessions_command: sessions_command, session_event_command: session_event_command,
-        config_command: CLITestHelpers::FakeConfigCommand.new,
+        config_command: CLITestHelpers::FakeConfigCommand.new, ask_command: CLITestHelpers::FakeAskCommand.new,
         logger: Workspace::Logger.new(output: error_output), output: output, error_output: error_output,
         exit_handler: FakeExitHandler, input: StringIO.new, working_dir: Dir.tmpdir
       )

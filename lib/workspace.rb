@@ -70,6 +70,7 @@ require_relative "workspace/lock_reaper"
 require_relative "workspace/lock_enforcer"
 require_relative "workspace/notifier"
 require_relative "workspace/alert_config"
+require_relative "workspace/ask_store"
 require_relative "workspace/session_monitor"
 require_relative "workspace/agent_provider"
 require_relative "workspace/file_backup"
@@ -103,6 +104,7 @@ require_relative "workspace/commands/lock"
 require_relative "workspace/commands/dev"
 require_relative "workspace/commands/parent"
 require_relative "workspace/commands/config"
+require_relative "workspace/commands/ask"
 require_relative "workspace/work_coordinator_client"
 require_relative "workspace/pipeline_config"
 require_relative "workspace/pipeline_state"
@@ -210,6 +212,11 @@ module Workspace
     parent_command = Commands::Parent.new(lineage: lineage, project_config: project_config, output: output)
     config_command = Commands::Config.new(project_settings: project_settings, lineage: lineage, file_backup: file_backup, output: output)
 
+    alert_config = AlertConfig.new(project_settings: project_settings, project_config: project_config,
+      lineage: lineage, error_output: error_output)
+    ask_command = Commands::Ask.new(config: config, project_detector: project_detector, alert_config: alert_config,
+      output: output, error_output: error_output)
+
     work_coordinator_client = WorkCoordinatorClient.new(
       socket_path: config.work_coordinator_socket,
       status_socket_path: config.work_coordinator_status_socket,
@@ -224,8 +231,7 @@ module Workspace
       # LockHolder's snapshot scope is per-instance, not per-thread.
       lock_reaper: LockReaper.new(lock_namespace: lock_namespace, lock_holder: LockHolder.new(process_tree: process_tree),
         terminator: process_group_terminator, interval: reap_interval, logger: logger, error_output: error_output),
-      alert_config: AlertConfig.new(project_settings: project_settings, project_config: project_config,
-        lineage: lineage, error_output: error_output),
+      alert_config: alert_config,
       ps_timeout: ps_timeout,
       logger: logger,
       output: output,
@@ -269,6 +275,7 @@ module Workspace
       sessions_command: sessions_command,
       session_event_command: session_event_command,
       config_command: config_command,
+      ask_command: ask_command,
       logger: logger,
       output: output,
       error_output: error_output,

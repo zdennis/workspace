@@ -92,7 +92,7 @@ RSpec.describe "pipeline reliability adversarial CLI specs" do
       agent_command: agent_command,
       sessions_command: sessions_command,
       session_event_command: session_event_command,
-      config_command: CLITestHelpers::FakeConfigCommand.new,
+      config_command: CLITestHelpers::FakeConfigCommand.new, ask_command: CLITestHelpers::FakeAskCommand.new,
       logger: logger,
       output: output,
       error_output: error_output,

@@ -49,6 +49,7 @@ RSpec.describe Workspace::CLI do
     dev_command = overrides[:dev_command] || CLITestHelpers::FakeDevCommand.new
     parent_command = overrides[:parent_command] || CLITestHelpers::FakeParentCommand.new
     agent_command = overrides[:agent_command] || CLITestHelpers::FakeAgentCommand.new
+    ask_command = overrides[:ask_command] || CLITestHelpers::FakeAskCommand.new
 
     cli = Workspace::CLI.new(
       config: config,
@@ -87,6 +88,7 @@ RSpec.describe Workspace::CLI do
       sessions_command: sessions_command,
       session_event_command: session_event_command,
       config_command: overrides[:config_command] || CLITestHelpers::FakeConfigCommand.new,
+      ask_command: ask_command,
       logger: logger,
       output: output,
       error_output: error_output,
@@ -873,6 +875,26 @@ RSpec.describe Workspace::CLI do
       cli.run(["config", "nonexistent"])
 
       expect(output.string).to include("no config found for 'nonexistent'")
+    end
+  end
+
+  describe "#run with ask" do
+    it "treats a first word of list as the subcommand when --default is absent" do
+      ask_command = CLITestHelpers::FakeAskCommand.new
+      cli, _, _ = build_test_cli(ask_command: ask_command)
+
+      cli.run(["ask", "list", "--json"])
+
+      expect(ask_command.calls).to contain_exactly(a_hash_including(action: :list, json: true))
+    end
+
+    it "records a question named after a subcommand when --default= is given inline" do
+      ask_command = CLITestHelpers::FakeAskCommand.new
+      cli, _, _ = build_test_cli(ask_command: ask_command)
+
+      cli.run(["ask", "resolve", "--default=x"])
+
+      expect(ask_command.calls).to contain_exactly(a_hash_including(action: :call, question: "resolve", default: "x"))
     end
   end
 

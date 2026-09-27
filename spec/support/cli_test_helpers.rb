@@ -428,6 +428,30 @@ module CLITestHelpers
     end
   end
 
+  class FakeAskCommand
+    attr_reader :calls
+
+    def initialize(result: {exit_code: 0})
+      @calls = []
+      @result = result
+    end
+
+    def call(question: nil, default: nil, context: nil, working_dir: Dir.pwd, json: false)
+      @calls << {action: :call, question: question, default: default, context: context, working_dir: working_dir, json: json}
+      @result
+    end
+
+    def list(working_dir: Dir.pwd, json: false)
+      @calls << {action: :list, working_dir: working_dir, json: json}
+      @result
+    end
+
+    def answer(id, answer, working_dir: Dir.pwd, json: false)
+      @calls << {action: :answer, id: id, answer: answer, working_dir: working_dir, json: json}
+      @result
+    end
+  end
+
   class FakeConfigCommand
     attr_reader :calls
 
