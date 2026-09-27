@@ -46,4 +46,42 @@ RSpec.describe Workspace::LockConfig do
       expect(lock_config.idle_grace_for("app")).to eq(300)
     end
   end
+
+  describe ".parse_ps_timeout" do
+    it "parses seconds and durations" do
+      expect(described_class.parse_ps_timeout("15")).to eq(15.0)
+      expect(described_class.parse_ps_timeout("1m")).to eq(60.0)
+    end
+
+    it "rejects zero, negative and malformed values" do
+      ["0", "0m", "-1", "later"].each do |bad|
+        expect { described_class.parse_ps_timeout(bad) }.to raise_error(ArgumentError)
+      end
+    end
+  end
+
+  describe "#ps_timeout_for" do
+    it "defaults to 5 seconds when unset" do
+      expect(lock_config.ps_timeout_for("app")).to eq(Workspace::ProcessTree::DEFAULT_TIMEOUT)
+    end
+
+    it "reads locks.ps_timeout from the project config" do
+      project_settings.save("app", {"locks" => {"ps_timeout" => "15s"}})
+
+      expect(lock_config.ps_timeout_for("app")).to eq(15.0)
+    end
+
+    it "warns and falls back to the default on an invalid stored value" do
+      project_settings.save("app", {"locks" => {"ps_timeout" => "0"}})
+
+      expect(lock_config.ps_timeout_for("app")).to eq(Workspace::ProcessTree::DEFAULT_TIMEOUT)
+      expect(error_output.string).to include("Warning: invalid locks.ps_timeout for 'app'", "using #{Workspace::ProcessTree::DEFAULT_TIMEOUT}s")
+    end
+
+    it "ignores a locks key that is not a mapping" do
+      project_settings.save("app", {"locks" => "nope"})
+
+      expect(lock_config.ps_timeout_for("app")).to eq(Workspace::ProcessTree::DEFAULT_TIMEOUT)
+    end
+  end
 end

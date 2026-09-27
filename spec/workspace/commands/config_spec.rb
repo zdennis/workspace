@@ -85,6 +85,29 @@ RSpec.describe Workspace::Commands::Config do
       end
     end
 
+    it "accepts locks.ps_timeout as seconds or a duration" do
+      command, project_settings = build_command
+      project_dir = Dir.mktmpdir("ws-config-project")
+      name = File.basename(project_dir)
+
+      command.set("locks.ps_timeout", "15s", cwd: project_dir)
+
+      expect(project_settings.load(name)).to eq({"locks" => {"ps_timeout" => "15s"}})
+      command.set("locks.ps_timeout", "10", cwd: project_dir)
+      expect(project_settings.load(name)).to eq({"locks" => {"ps_timeout" => "10"}})
+    end
+
+    ["0", "0s", "-5", "soon", "5d", ""].each do |bad|
+      it "rejects locks.ps_timeout #{bad.inspect} without writing it" do
+        command, project_settings = build_command
+        project_dir = Dir.mktmpdir("ws-config-project")
+
+        expect { command.set("locks.ps_timeout", bad, cwd: project_dir) }
+          .to raise_error(Workspace::UsageError, /Invalid locks.ps_timeout/)
+        expect(project_settings.load(File.basename(project_dir))).to eq({})
+      end
+    end
+
     it "accepts dev.kill_grace as seconds or a duration, up to the 60s cap" do
       command, project_settings = build_command
       project_dir = Dir.mktmpdir("ws-config-project")

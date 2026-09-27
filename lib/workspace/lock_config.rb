@@ -29,6 +29,22 @@ module Workspace
       setting(name, "idle_grace", LockStore::DEFAULT_IDLE_GRACE) { |value| self.class.parse_idle_grace(value) }
     end
 
+    # Parses and validates a `ps` timeout.
+    #
+    # @param value [String, Numeric] seconds, or a duration like "5m"
+    # @return [Numeric] seconds, always greater than 0
+    # @raise [ArgumentError] if value isn't a positive duration
+    def self.parse_ps_timeout(value)
+      Duration.parse_positive(value)
+    end
+
+    # @param name [String] project name (already resolved to its parent, if a worktree)
+    # @return [Numeric] seconds to wait for `ps` before killing it;
+    #   {ProcessTree::DEFAULT_TIMEOUT} when unset or invalid
+    def ps_timeout_for(name)
+      setting(name, "ps_timeout", ProcessTree::DEFAULT_TIMEOUT) { |value| self.class.parse_ps_timeout(value) }
+    end
+
     private
 
     def setting(name, key, default)

@@ -135,11 +135,19 @@ module Workspace
     capture_command = Commands::Capture.new(tmux: tmux, output: output, error_output: error_output)
 
     lock_namespace = LockNamespace.new(config: config, lineage: lineage)
-    lock_holder = LockHolder.new
-    sessions_command = Commands::Sessions.new(config: config, lock_namespace: lock_namespace, lock_holder: lock_holder,
-      project_config: project_config, output: output, error_output: error_output)
     dev_config = DevConfig.new(project_settings: project_settings)
     lock_config = LockConfig.new(project_settings: project_settings, error_output: error_output)
+    # Resolved once, from cwd's project, since a CLI run and the long-lived
+    # `agent` daemon it may spawn both belong to a single project.
+    ps_timeout = begin
+      lock_config.ps_timeout_for(lineage.resolve(cwd: Dir.pwd).name)
+    rescue Workspace::Error
+      ProcessTree::DEFAULT_TIMEOUT
+    end
+    process_tree = ProcessTree.new(logger: logger, timeout: ps_timeout)
+    lock_holder = LockHolder.new(process_tree: process_tree)
+    sessions_command = Commands::Sessions.new(config: config, lock_namespace: lock_namespace, lock_holder: lock_holder,
+      project_config: project_config, output: output, error_output: error_output)
     lock_idle_tracker = LockIdleTracker.new(config: config, lock_namespace: lock_namespace, lock_holder: lock_holder, logger: logger)
     lock_enforcer = LockEnforcer.new(config: config, lock_namespace: lock_namespace, lock_holder: lock_holder, logger: logger)
     session_event_command = Commands::SessionEvent.new(config: config, tmux: tmux, input: input, error_output: error_output, logger: logger,
@@ -176,8 +184,9 @@ module Workspace
       pipeline_config: pipeline_config,
       # Its own LockHolder: the reaper runs on the monitor thread, and a
       # LockHolder's snapshot scope is per-instance, not per-thread.
-      lock_reaper: LockReaper.new(lock_namespace: lock_namespace, lock_holder: LockHolder.new,
+      lock_reaper: LockReaper.new(lock_namespace: lock_namespace, lock_holder: LockHolder.new(process_tree: process_tree),
         terminator: process_group_terminator, logger: logger, error_output: error_output),
+      ps_timeout: ps_timeout,
       logger: logger,
       output: output,
       error_output: error_output

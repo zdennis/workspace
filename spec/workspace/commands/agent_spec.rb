@@ -1152,5 +1152,22 @@ RSpec.describe Workspace::Commands::Agent do
       expect(monitor.reap_locks).to eq(3)
       expect(lock_reaper).to have_received(:tick)
     end
+
+    it "passes its ps_timeout to the session monitor's process tree" do
+      agent_with_timeout = described_class.new(
+        config: config,
+        tmux: tmux,
+        work_coordinator_client: client,
+        pipeline_config: pipeline_config,
+        pipeline_state: pipeline_state,
+        ps_timeout: 42,
+        output: output,
+        error_output: error_output
+      )
+
+      monitor = agent_with_timeout.send(:build_session_monitor, "myapp")
+
+      expect(monitor.instance_variable_get(:@process_tree).instance_variable_get(:@timeout)).to eq(42)
+    end
   end
 end
