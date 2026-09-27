@@ -26,7 +26,7 @@ The daemon holds the session state; this command only asks for it, over the agen
 
 `--json` output starts with `"schema_version": 1`, matching [`workspace lock status --json`](README.lock.md) and [`workspace dev status --json`](README.dev.md). If no agent daemon is listening, `--json` writes `{"schema_version":1,"error":"..."}` to stdout and exits 1, instead of the plain-text error the table view prints to stderr.
 
-Each pane shows its index, kind, title, state, how long it's been idle, and a LOCK column.
+Each pane shows its index, kind, title, state, how long it's been idle, a LOCK column, and an ASK column.
 
 **STATE column** — one of:
 
@@ -58,6 +58,8 @@ The waiting message is cleaned before it is shown or passed on: each run of whit
 `lock_state`/`lock_position`/`lock_name` are kept for scripts written before multi-lock support: they always describe the `edit` lock when the pane has one, falling back to the pane's first lock (by the label's ordering) otherwise. A script that needs every lock a pane holds should read `locks` instead.
 
 When the LOCK column is hidden (project root unresolved), all five fields (`lock`, `lock_state`, `lock_position`, `lock_name`, `locks`) are absent from each pane's JSON, not merely `null` — a consumer should treat a missing `lock_state` key the same as a `null` one.
+
+**ASK column** — the pane's open [`workspace ask`](README.ask.md) count: blank when there are none, `"N asked"` otherwise. `--json` carries the same count as `open_questions` (an integer, always present, `0` when there are none). A question recorded outside tmux carries no pane id and isn't counted against any row; `workspace ask list` still shows it. Answering a question (`workspace ask answer`) drops it from the count on the next render.
 
 ## Alerts
 
