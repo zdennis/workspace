@@ -313,9 +313,9 @@ RSpec.describe Workspace::Commands::Lock do
           waiter_pid: 4242, waiter_started: "start-4242")
       end
 
-      def clear_command(dev_config: nil)
-        described_class.new(config: config, lock_namespace: lock_namespace, lock_holder: FakeLockIdentity.new(pid: 999), output: output,
-          error_output: error_output, terminator: terminator, clock: mono_clock, trap: ->(*) {},
+      def clear_command(dev_config: nil, pid: 999, output: self.output, error_output: self.error_output)
+        described_class.new(config: config, lock_namespace: lock_namespace, lock_holder: FakeLockIdentity.new(pid: pid), output: output,
+          error_output: error_output, terminator: terminator, clock: mono_clock, trap: ->(*) {}, pid_provider: -> { pid },
           sleeper: ->(seconds) { mono[0] += seconds }, dev_config: dev_config)
       end
 
@@ -446,6 +446,46 @@ RSpec.describe Workspace::Commands::Lock do
         expect(devenv_holder_pid).to eq(555)
         expect(output.string).to include("Cleared devenv: was held by ? in /w/login, 1 waiter(s) removed; " \
           "kept the queued takeover by %5 in /w/signup, which takes the lock next.")
+      end
+
+      it "stops the group once when a second clear runs while the first is still stopping it" do
+        hold_devenv
+        second_err = StringIO.new
+        second_result = nil
+        stops = 0
+        allow(terminator).to receive(:stop_holder) do
+          stops += 1
+          second_result ||= clear_command(pid: 998, output: StringIO.new, error_output: second_err).clear("devenv")
+          :terminated
+        end
+
+        result = clear_command.clear("devenv")
+
+        expect(result).to eq(exit_code: 0)
+        expect(stops).to eq(1)
+        expect(second_result).to eq(exit_code: 1)
+        expect(second_err.string).to include("devenv lock is already being cleared by pid 999", "process group 4242",
+          "workspace lock status devenv")
+        expect(devenv_holder_pid).to be_nil
+        events = File.readlines(File.join(tmpdir, "locks.jsonl")).map { |l| JSON.parse(l)["event"] }
+        expect(events.count("clear")).to eq(1)
+        expect(events.count("release")).to eq(1)
+      end
+
+      it "takes over a clear whose clearer died mid-stop" do
+        hold_devenv
+        allow(terminator).to receive(:stop_holder).and_raise(Interrupt)
+        expect { clear_command(pid: 998).clear("devenv") }.to raise_error(Interrupt)
+        allow(terminator).to receive(:stop_holder).and_return(:terminated)
+
+        identity = FakeLockIdentity.new(pid: 999).tap { |i| i.kill(998) }
+        command = described_class.new(config: config, lock_namespace: lock_namespace, lock_holder: identity, output: output,
+          error_output: error_output, terminator: terminator, clock: mono_clock, trap: ->(*) {}, pid_provider: -> { 999 })
+        result = command.clear("devenv")
+
+        expect(result).to eq(exit_code: 0)
+        expect(devenv_holder_pid).to be_nil
+        expect(output.string).to include("Stopped process group 4242", "Cleared devenv")
       end
 
       it "with --all, clears every other lock and keeps only the one it could not stop" do

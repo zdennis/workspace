@@ -294,20 +294,38 @@ module Workspace
     # {#keep_process_holder}. The `clear` audit event is written here either
     # way, with `holder_kept` when the holder was left in place.
     #
+    # A kept holder is marked `clearing` with +clearer+ (the `lock clear`
+    # process's pid and start time) until {#finish_clear} or
+    # {#keep_process_holder} ends that clear, so a second, concurrent clear
+    # neither stops the same group again nor writes a second `clear` event:
+    # it gets in_progress: true back instead, with nothing changed and
+    # nothing yielded. A marker whose clearer is no longer running (it
+    # crashed or was killed mid-stop) is ignored and replaced, so it never
+    # wedges the lock.
+    #
     # @param name [String] lock name
     # @param cleared_by [String, nil] identity recorded for logging
     # @param keep_process_holder [Boolean] leave a `kind: "process"` holder in place
+    # @param clearer [Hash, nil] "pid" and "started" of the clearing process,
+    #   recorded on a kept holder; nil records no marker
     # @yieldparam holder [Hash, nil] the holder being cleared
     # @return [Hash, nil] the removed {holder:, queue:}, with pending: true
     #   and the takeover waiters left queued (takeovers:) when the holder
-    #   was kept; nil if the lock had no entry
-    def clear(name, cleared_by: nil, keep_process_holder: false)
+    #   was kept; {holder:, clearing:, in_progress: true} when another live
+    #   clear of that holder is under way; nil if the lock had no entry
+    def clear(name, cleared_by: nil, keep_process_holder: false, clearer: nil)
       with_lock(lenient: true) do |data|
         entry = data[name]
         next nil unless entry
         holder = entry["holder"]
+        keep = keep_process_holder && holder && holder["kind"] == "process"
+        if keep && (marker = live_clearing_marker(holder))
+          @logger.debug { "lock: #{name} is already being cleared by pid #{marker["pid"]}" }
+          next {holder: holder, clearing: marker, in_progress: true}
+        end
         yield holder if block_given?
-        if keep_process_holder && holder && holder["kind"] == "process"
+        if keep
+          holder["clearing"] = clearer.slice("pid", "started") if clearer
           takeovers, queue = entry["queue"].partition { |w| w["takeover"] && waiter_alive?(w) }
           entry["queue"] = takeovers
           @logger.debug { "lock: clearing #{name}#{" by #{cleared_by}" if cleared_by}, holder kept until stopped" }
@@ -372,11 +390,12 @@ module Workspace
         current = entry["holder"]
         if same_process?(current, holder)
           current["kept"] = true
+          current.delete("clearing")
           next nil
         end
         next current if current && !current["unclaimed"]
 
-        entry["holder"] = holder.except("unclaimed", "takeover").merge("kept" => true)
+        entry["holder"] = holder.except("unclaimed", "takeover", "clearing").merge("kept" => true)
         if current
           entry["queue"].unshift(waiter_from_holder(current))
           audit(:takeover, name, from: holder_summary(current), to: holder_summary(holder), cleared_by: cleared_by)
@@ -773,6 +792,14 @@ module Workspace
         entry["holder"] = holder_from_waiter(candidate).merge({"unclaimed" => true}, candidate.slice("takeover"))
         audit(:acquire, name, holder: holder_summary(entry["holder"])) if name
       end
+    end
+
+    # The `clearing` marker {#clear} left on +holder+, while the clear that
+    # left it still runs (or its liveness can't be checked).
+    def live_clearing_marker(holder)
+      marker = holder["clearing"]
+      return nil unless marker.is_a?(Hash) && marker["pid"]
+      alive_or_unknown?(marker["pid"], marker["started"]) ? marker : nil
     end
 
     def same_process?(current, holder)

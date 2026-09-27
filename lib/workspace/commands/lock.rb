@@ -187,6 +187,9 @@ module Workspace
       # does a holder whose pid is already gone while its group still has
       # members (and its id was not reused); otherwise a gone holder is
       # cleared. The holder is also yielded while the store is still locked.
+      # A process holder another live `clear` is already stopping is left
+      # to that clear: it is not signalled or logged twice, and this one
+      # exits 1 without clearing it.
       #
       # @param name [String, nil] lock name, or nil with all: true
       # @param all [Boolean] clear every lock in this namespace; one that has
@@ -195,7 +198,8 @@ module Workspace
       # @yieldparam holder [Hash, nil] the holder record being cleared
       # @return [Hash] {exit_code:} — 0 once everything named was cleared, 1
       #   if any lock was kept because its process group could not be stopped,
-      #   or was taken by someone else while it was being stopped
+      #   was taken by someone else while it was being stopped, or was
+      #   already being cleared by another `clear`
       def clear(name, all: false, working_dir: Dir.pwd, &on_holder)
         validate_name!(name) unless name.nil?
         namespace = @lock_namespace.resolve(cwd: working_dir)
@@ -208,7 +212,8 @@ module Workspace
         end
 
         label = cleared_by_label
-        kept = names.reject { |lock_name| clear_one(store, lock_name, label, namespace[:display], &on_holder) }
+        clearer = clearer_marker
+        kept = names.reject { |lock_name| clear_one(store, lock_name, label, clearer, namespace[:display], &on_holder) }
         {exit_code: kept.empty? ? 0 : 1}
       end
 
@@ -365,8 +370,9 @@ module Workspace
       # @return [Boolean] false when the lock was kept for a process group
       #   that could not be stopped, or someone other than a takeover the
       #   clear kept queued holds it by the time the group is stopped
-      def clear_one(store, name, label, project, &on_holder)
-        removed = store.clear(name, cleared_by: label, keep_process_holder: true, &on_holder)
+      def clear_one(store, name, label, clearer, project, &on_holder)
+        removed = store.clear(name, cleared_by: label, keep_process_holder: true, clearer: clearer, &on_holder)
+        return report_clear_in_progress(name, removed) if removed&.dig(:in_progress)
         if removed&.dig(:pending)
           holder = removed[:holder]
           return false unless stop_process_holder(store, name, holder, label, project)
@@ -379,6 +385,26 @@ module Workspace
         end
         describe_cleared(name, removed)
         true
+      end
+
+      # This `clear` process, recorded on a process holder it is stopping so a
+      # concurrent `clear` leaves that holder to it. Without a readable start
+      # time no marker is recorded, since its liveness could not be checked.
+      def clearer_marker
+        pid = @pid_provider.call
+        started = @lock_holder.start_time(pid)
+        started && {"pid" => pid, "started" => started}
+      rescue Workspace::Error
+        nil
+      end
+
+      # @return [false] the lock was not cleared by this invocation
+      def report_clear_in_progress(name, removed)
+        holder = removed[:holder]
+        @error_output.puts "#{name} lock is already being cleared by pid #{removed[:clearing]["pid"]}, which is stopping process " \
+          "group #{holder["pgid"] || holder["pid"]} (pid #{holder["pid"]}); left it to that clear. " \
+          "Check the result with: workspace lock status #{name}"
+        false
       end
 
       # @return [Boolean] true once nothing the holder started is known to be
