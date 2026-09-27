@@ -42,7 +42,7 @@ module Workspace
     # @param parent_command [Workspace::Commands::Parent] pre-built parent command
     # @param dev_command [Workspace::Commands::Dev] pre-built dev command
     # @param clock [#call] returns the current Time, for relative deadline display
-    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now })
+    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now })
       @config = config
       @state = state
       @project_config = project_config
@@ -79,6 +79,7 @@ module Workspace
       @parent_command = parent_command
       @agent_command = agent_command
       @config_command = config_command
+      @statusline_command = statusline_command
       @exit_handler = exit_handler
       @logger = logger
       @output = output
@@ -155,6 +156,8 @@ module Workspace
         cmd_layout(args)
       when "config"
         cmd_config(args)
+      when "statusline"
+        cmd_statusline(args)
       when "current"
         cmd_current(args)
       when "list-projects"
@@ -261,6 +264,7 @@ module Workspace
           start           Create a worktree and launch it (from JIRA key, PR URL, or branch)
           status          Show detailed state of tracked launcher sessions
           set-command     Set the shell command for a pane in a project config (--pane <N>)
+          statusline      Render Claude Code's status line (install as its statusLine command)
           stop            Stop active workspace projects and their tmux sessions
           tile            Tile all windows for a project across the screen
           whereis         Print the workspace installation directory
@@ -1849,7 +1853,26 @@ module Workspace
     # dotted keys are rejected so typos don't silently create config.
     # Keys `workspace config set/get/unset` allow, mirrored here only for
     # help text; {Commands::Config::ALLOWED_KEYS} is the source of truth.
-    CONFIG_ALLOWED_KEYS = Commands::Config::ALLOWED_KEYS
+    CONFIG_ALLOWED_KEYS = Commands::Config::ALLOWED_KEYS + Commands::Config::GLOBAL_ALLOWED_KEYS
+
+    def cmd_statusline(args)
+      parser = OptionParser.new do |opts|
+        opts.banner = "Usage: workspace statusline"
+        opts.separator ""
+        opts.separator "Reads Claude Code's status-line JSON on stdin, records its context-window"
+        opts.separator "usage for this pane, and prints a status line. Install as Claude Code's"
+        opts.separator "statusLine command; not normally run by hand."
+        opts.separator ""
+        opts.separator "Never fails: bad input or a storage error still prints something and"
+        opts.separator "exits 0. A `statusline.command` in the global config (see 'workspace"
+        opts.separator "config set') delegates rendering to another command; a slow or hung"
+        opts.separator "delegate falls back to the built-in line."
+      end
+      parser.parse!(args)
+      raise UsageError, parser.help if args.any?
+
+      @statusline_command.call
+    end
 
     def cmd_config(args)
       case args.first
@@ -1890,6 +1913,12 @@ module Workspace
         opts.separator "  workspace config set alerts.notify 'say \"$WORKSPACE_ALERT_TEXT\"'"
         opts.separator "  workspace config set alerts.idle_after 15m"
         opts.separator "  workspace config set --project myapp dev.up \"bin/dev\""
+        opts.separator "  workspace config set statusline.command \"~/bin/my-statusline\""
+        opts.separator "  workspace config set context.source scrape"
+        opts.separator "  workspace config set context.pattern '(\\d+)% ctx'"
+        opts.separator ""
+        opts.separator "statusline.command, context.source, and context.pattern are global"
+        opts.separator "(one status line and one context source per machine), not per project."
       end
       begin
         parser.parse!(args)
@@ -1956,6 +1985,12 @@ module Workspace
         opts.separator "  event_log_compact_threshold:   Size warning threshold for the event log"
         opts.separator "                                 Formats: \"10kb\", \"1mb\", \"500b\", \"1024\""
         opts.separator "                                 Default: 10kb"
+        opts.separator "  statusline.command:            Delegate 'workspace statusline' rendering to"
+        opts.separator "                                 another command. Set via 'workspace config set'."
+        opts.separator "  context.source:                'statusline' (default) or 'scrape'. Set via"
+        opts.separator "                                 'workspace config set'."
+        opts.separator "  context.pattern:               Regex (one capture group) used when"
+        opts.separator "                                 context.source is 'scrape'."
         opts.separator ""
         opts.separator "Project settings (in projects/<name>.yml):"
         opts.separator "  hooks:                         Project-specific hooks (post_launch, etc.)"

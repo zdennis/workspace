@@ -130,6 +130,11 @@ module Workspace
       File.join(pipeline_state_dir(name), "pipeline.json")
     end
 
+    # @return [String] path to the JSON store of per-pane context-window readings
+    def context_store_path
+      File.join(state_dir, "context.json")
+    end
+
     # @return [String] path to the work-coordinator main socket
     def work_coordinator_socket
       File.join(work_coordinator_run_dir, "work-coordinator.sock")
