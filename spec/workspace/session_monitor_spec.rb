@@ -55,6 +55,27 @@ RSpec.describe Workspace::SessionMonitor do
       expect(pane("%2")["kind"]).to eq("claude")
     end
 
+    it "warns once when the process table can't be read five scans in a row, and again after a new streak" do
+      err = StringIO.new
+      warned = described_class.new(tmux: tmux, process_tree: process_tree, session_name: "proj",
+        clock: clock, error_output: err)
+      allow(process_tree).to receive(:snapshot).and_raise(Workspace::Error, "ps timed out")
+
+      4.times { warned.scan }
+      expect(err.string).to eq("")
+      6.times { warned.scan }
+      expect(err.string.lines).to eq(["workspace agent: can't read the process table for proj " \
+        "(5 scans in a row: ps timed out); idle alerts are paused until it can\n"])
+
+      allow(process_tree).to receive(:snapshot).and_return(snapshot)
+      warned.scan
+      allow(process_tree).to receive(:snapshot).and_raise(Workspace::Error, "ps timed out")
+      4.times { warned.scan }
+      expect(err.string.lines.size).to eq(1)
+      warned.scan
+      expect(err.string.lines.size).to eq(2)
+    end
+
     it "skips the tick instead of stalling when ps hangs" do
       monitor.scan
       hung_tree = Workspace::ProcessTree.new(timeout: 0.1, command: ["/bin/sleep", "30"])
@@ -169,6 +190,310 @@ RSpec.describe Workspace::SessionMonitor do
       monitor.record("event" => "subagent_start", "pane_id" => "%9", "agent" => {"name" => "early"})
 
       expect(pane("%9")["agents"].first["name"]).to eq("early")
+    end
+  end
+
+  describe "waiting" do
+    before { monitor.scan }
+
+    def notify(message = "Claude needs your permission to use Bash")
+      monitor.record("event" => "notification", "pane_id" => "%2", "message" => message)
+    end
+
+    it "reports a pane as waiting after a notification, with the agent's message" do
+      notify
+      allow(clock).to receive(:now).and_return(now + 5)
+
+      expect(pane("%2")).to include("state" => "waiting", "waiting_since" => now.iso8601,
+        "waiting_seconds" => 5, "waiting_message" => "Claude needs your permission to use Bash")
+    end
+
+    it "reports waiting even while the pane's output keeps changing" do
+      notify
+      allow(tmux).to receive(:capture_pane).and_return("spinner frame")
+
+      monitor.scan
+
+      expect(pane("%2")["state"]).to eq("waiting")
+    end
+
+    it "keeps the first start time when a notification repeats during one wait" do
+      notify
+      allow(clock).to receive(:now).and_return(now + 60)
+      notify("Claude is waiting for your input")
+
+      expect(pane("%2")).to include("waiting_since" => now.iso8601,
+        "waiting_message" => "Claude is waiting for your input")
+    end
+
+    %w[user_prompt tool_use subagent_start stop session_start session_end].each do |event|
+      it "clears waiting on a #{event} event" do
+        notify
+
+        monitor.record("event" => event, "pane_id" => "%2")
+
+        expect(pane("%2")).to include("waiting_since" => nil, "waiting_message" => nil)
+        expect(pane("%2")["state"]).not_to eq("waiting")
+      end
+    end
+
+    it "keeps the main agent waiting when a sub-agent stops or uses a tool" do
+      notify
+
+      monitor.record("event" => "subagent_stop", "pane_id" => "%2")
+      monitor.record("event" => "tool_use", "pane_id" => "%2", "agent_id" => "sub-1")
+
+      expect(pane("%2")["state"]).to eq("waiting")
+    end
+
+    it "clears a sub-agent's wait on that sub-agent's next event, not the main agent's" do
+      monitor.record("event" => "notification", "pane_id" => "%2", "agent_id" => "sub-1")
+
+      monitor.record("event" => "tool_use", "pane_id" => "%2")
+      expect(pane("%2")["state"]).to eq("waiting")
+
+      monitor.record("event" => "tool_use", "pane_id" => "%2", "agent_id" => "sub-1")
+      expect(pane("%2")["state"]).not_to eq("waiting")
+    end
+
+    it "keeps two sub-agents' waits apart, so one moving on leaves the other waiting" do
+      monitor.record("event" => "notification", "pane_id" => "%2", "agent_id" => "sub-1", "message" => "first")
+      allow(clock).to receive(:now).and_return(now + 30)
+      monitor.record("event" => "notification", "pane_id" => "%2", "agent_id" => "sub-2", "message" => "second")
+
+      monitor.record("event" => "tool_use", "pane_id" => "%2", "agent_id" => "sub-1")
+
+      expect(pane("%2")).to include("state" => "waiting", "waiting_since" => (now + 30).iso8601,
+        "waiting_message" => "second")
+      monitor.record("event" => "subagent_stop", "pane_id" => "%2", "agent_id" => "sub-2")
+      expect(pane("%2")["state"]).not_to eq("waiting")
+    end
+
+    it "reports the oldest wait when several agents in the pane are waiting" do
+      notify("main")
+      allow(clock).to receive(:now).and_return(now + 30)
+      monitor.record("event" => "notification", "pane_id" => "%2", "agent_id" => "sub-1", "message" => "sub")
+
+      expect(pane("%2")).to include("waiting_since" => now.iso8601, "waiting_message" => "main")
+    end
+
+    it "clears a sub-agent's wait when the turn ends" do
+      monitor.record("event" => "notification", "pane_id" => "%2", "agent_id" => "sub-1")
+
+      monitor.record("event" => "user_prompt", "pane_id" => "%2")
+
+      expect(pane("%2")["state"]).not_to eq("waiting")
+    end
+
+    it "collapses control characters and whitespace in the message and caps its length" do
+      notify("needs your\n\e[31mpermission\e[0m\a  now")
+      expect(pane("%2")["waiting_message"]).to eq("needs your [31mpermission [0m now")
+
+      notify("x" * 500)
+      expect(pane("%2")["waiting_message"].length).to eq(described_class::MAX_MESSAGE_LENGTH)
+    end
+
+    it "clears waiting once the pane no longer runs an agent" do
+      notify
+      allow(snapshot).to receive(:find_descendant).and_return(nil)
+
+      monitor.scan
+
+      expect(pane("%2")["state"]).to eq("working")
+    end
+
+    it "leaves the waiting fields nil for a pane that never waited" do
+      expect(pane("%1")).to include("waiting_since" => nil, "waiting_seconds" => nil, "waiting_message" => nil)
+    end
+  end
+
+  describe "#send_alerts" do
+    let(:notifier) { instance_double(Workspace::Notifier, notify: :started) }
+
+    subject(:monitor) do
+      described_class.new(tmux: tmux, process_tree: process_tree, session_name: "proj",
+        idle_after: 30, clock: clock, notifier: notifier, idle_alert_after: 600)
+    end
+
+    before { monitor.scan }
+
+    def at(seconds)
+      allow(clock).to receive(:now).and_return(now + seconds)
+    end
+
+    it "alerts once when an agent pane starts waiting, with the details in env vars" do
+      monitor.record("event" => "notification", "pane_id" => "%2", "message" => "Claude needs your permission to use Bash")
+      at(4)
+
+      alerts = monitor.send_alerts
+      monitor.send_alerts
+
+      expect(alerts).to eq([{
+        "WORKSPACE_ALERT" => "waiting",
+        "WORKSPACE_ALERT_WORKSPACE" => "proj",
+        "WORKSPACE_ALERT_PANE" => "0.1",
+        "WORKSPACE_ALERT_PANE_ID" => "%2",
+        "WORKSPACE_ALERT_KIND" => "claude",
+        "WORKSPACE_ALERT_SECONDS" => "4",
+        "WORKSPACE_ALERT_MESSAGE" => "Claude needs your permission to use Bash",
+        "WORKSPACE_ALERT_TEXT" => "proj pane 0.1 (Claude Code) is waiting: Claude needs your permission to use Bash"
+      }])
+      expect(notifier).to have_received(:notify).once
+    end
+
+    it "alerts again for a new wait after the last one cleared" do
+      monitor.record("event" => "notification", "pane_id" => "%2")
+      monitor.send_alerts
+      monitor.record("event" => "user_prompt", "pane_id" => "%2")
+      at(10)
+      monitor.record("event" => "notification", "pane_id" => "%2")
+
+      monitor.send_alerts
+
+      expect(notifier).to have_received(:notify).twice
+    end
+
+    it "alerts for a second agent's wait even while the pane is already waiting" do
+      monitor.record("event" => "notification", "pane_id" => "%2", "message" => "main")
+      monitor.send_alerts
+      monitor.record("event" => "notification", "pane_id" => "%2", "agent_id" => "sub-1", "message" => "sub")
+
+      expect(monitor.send_alerts.map { |a| a["WORKSPACE_ALERT_MESSAGE"] }).to eq(["sub"])
+      expect(monitor.send_alerts).to eq([])
+    end
+
+    it "alerts once when an agent pane stays idle past the threshold, not on every scan" do
+      at(599)
+      monitor.scan
+      expect(monitor.send_alerts).to eq([])
+
+      at(600)
+      monitor.scan
+      alerts = monitor.send_alerts
+      at(900)
+      monitor.scan
+      monitor.send_alerts
+
+      expect(alerts.map { |a| [a["WORKSPACE_ALERT"], a["WORKSPACE_ALERT_PANE_ID"], a["WORKSPACE_ALERT_SECONDS"]] })
+        .to eq([["idle", "%2", "600"]])
+      expect(alerts.first["WORKSPACE_ALERT_TEXT"]).to eq("proj pane 0.1 (Claude Code) has been idle for 10m")
+      expect(notifier).to have_received(:notify).once
+    end
+
+    it "alerts for idle again once the pane's output has changed and gone quiet again" do
+      at(600)
+      monitor.scan
+      monitor.send_alerts
+      allow(tmux).to receive(:capture_pane).and_return("new output")
+      at(700)
+      monitor.scan
+      at(1300)
+      monitor.scan
+
+      monitor.send_alerts
+
+      expect(notifier).to have_received(:notify).twice
+    end
+
+    it "does not alert for idle while the pane is waiting, which has its own alert" do
+      monitor.record("event" => "notification", "pane_id" => "%2")
+      monitor.send_alerts
+      at(700)
+      monitor.scan
+
+      expect(monitor.send_alerts).to eq([])
+    end
+
+    it "never alerts for a shell pane" do
+      at(700)
+      monitor.scan
+      monitor.record("event" => "notification", "pane_id" => "%1")
+
+      expect(monitor.send_alerts.map { |a| a["WORKSPACE_ALERT_PANE_ID"] }).to eq(["%2"])
+    end
+
+    it "drops NUL bytes, which can't be passed in an environment variable" do
+      monitor.record("event" => "notification", "pane_id" => "%2", "message" => "a\u0000b")
+
+      expect(monitor.send_alerts.first["WORKSPACE_ALERT_MESSAGE"]).to eq("a b")
+    end
+
+    it "alerts only on waiting when no idle threshold is set" do
+      quiet = described_class.new(tmux: tmux, process_tree: process_tree, session_name: "proj",
+        idle_after: 30, clock: clock, notifier: notifier)
+      quiet.scan
+      at(10_000)
+      quiet.scan
+
+      expect(quiet.send_alerts).to eq([])
+    end
+
+    it "sends nothing without a notifier" do
+      plain = described_class.new(tmux: tmux, process_tree: process_tree, session_name: "proj", clock: clock)
+      plain.scan
+      plain.record("event" => "notification", "pane_id" => "%2")
+
+      expect(plain.send_alerts).to eq([])
+    end
+
+    it "returns an empty list instead of raising when the notifier raises, so the scan thread survives" do
+      allow(notifier).to receive(:notify).and_raise(ThreadError, "can't create Thread")
+      monitor.record("event" => "notification", "pane_id" => "%2")
+
+      expect(monitor.send_alerts).to eq([])
+    end
+
+    it "retries an alert whose notify raised on the next call" do
+      calls = 0
+      allow(notifier).to receive(:notify) { ((calls += 1) == 1) ? raise(ThreadError, "can't create Thread") : :started }
+      monitor.record("event" => "notification", "pane_id" => "%2")
+
+      expect(monitor.send_alerts).to eq([])
+      expect(monitor.send_alerts.map { |a| a["WORKSPACE_ALERT"] }).to eq(["waiting"])
+      expect(monitor.send_alerts).to eq([])
+    end
+
+    it "retries an alert the notifier skipped for having too many runs going, once a run finishes" do
+      agents = (2..6).map { |n| {id: "%#{n}", index: n, pid: n * 100, command: "claude", cwd: "/project", title: "Claude"} }
+      allow(tmux).to receive(:pane_details).with("proj").and_return(agents)
+      monitor.scan
+      agents.each { |a| monitor.record("event" => "notification", "pane_id" => a[:id]) }
+      free_slots = 4
+      allow(notifier).to receive(:notify) do
+        next nil if free_slots.zero?
+        free_slots -= 1
+        :started
+      end
+
+      first = monitor.send_alerts
+      expect(monitor.send_alerts).to eq([])
+      free_slots = 1
+      later = monitor.send_alerts
+
+      expect(first.size).to eq(4)
+      sent = (first + later).map { |a| a["WORKSPACE_ALERT_PANE_ID"] }
+      expect(sent).to match_array(agents.map { |a| a[:id] })
+      expect(monitor.send_alerts).to eq([])
+    end
+
+    it "holds idle alerts while the process table can't be read, since output went uncaptured" do
+      allow(process_tree).to receive(:snapshot).and_raise(Workspace::Error, "ps timed out")
+      at(700)
+      monitor.scan
+
+      expect(monitor.send_alerts).to eq([])
+    end
+  end
+
+  describe "#stop" do
+    it "stops the notifier, so no notify command outlives the monitor" do
+      notifier = instance_double(Workspace::Notifier, stop: nil)
+      monitor = described_class.new(tmux: tmux, process_tree: process_tree, session_name: "proj",
+        clock: clock, notifier: notifier)
+
+      monitor.stop
+
+      expect(notifier).to have_received(:stop)
     end
   end
 

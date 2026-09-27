@@ -49,5 +49,10 @@ RSpec.describe Workspace::AgentProvider do
     it "omits the matcher for events that are not tool-scoped" do
       expect(settings["hooks"]["Stop"].first).not_to have_key("matcher")
     end
+
+    it "subscribes to Notification and PostToolUse, which start and end a pane's wait" do
+      expect(settings["hooks"]).to include("Notification", "PostToolUse")
+      expect(settings["hooks"]["PostToolUse"].first).not_to have_key("matcher")
+    end
   end
 end

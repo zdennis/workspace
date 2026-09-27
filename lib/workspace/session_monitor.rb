@@ -3,7 +3,8 @@ require "digest"
 
 module Workspace
   # Tracks which panes in a workspace are running a coding agent, whether each
-  # one is working or idle, and what sub-agents they have started.
+  # one is working, idle, or waiting on a person, and what sub-agents they have
+  # started.
   #
   # Two sources feed it, and neither is sufficient alone:
   #
@@ -23,6 +24,26 @@ module Workspace
     # signal; changing output is.
     DEFAULT_IDLE_AFTER = 30
 
+    # Longest waiting message kept. A long one is cut rather than dropped.
+    MAX_MESSAGE_LENGTH = 200
+
+    # Scans in a row that can't read the process table before a warning is
+    # printed. One or two failures are routine (a slow `ps`); a streak means
+    # idle alerts have quietly stopped.
+    FAILED_SCANS_WARNING = 5
+
+    # Makes an agent's message safe to print, log, or pass to a command:
+    # each run of whitespace and control characters (newlines, terminal
+    # escapes, bells) becomes one space, and the result is capped.
+    #
+    # @param message [String, nil] text from an agent's hook payload
+    # @return [String, nil] the cleaned message, or nil if nothing is left
+    def self.clean_message(message)
+      return nil unless message.is_a?(String)
+      cleaned = message.scrub.gsub(/[[:space:][:cntrl:]]+/, " ").strip[0, MAX_MESSAGE_LENGTH]
+      cleaned unless cleaned.empty?
+    end
+
     # @param tmux [Workspace::Tmux] pane listing and capture
     # @param process_tree [Workspace::ProcessTree] process table snapshots
     # @param session_name [String] tmux session to watch
@@ -34,9 +55,14 @@ module Workspace
     # @param error_output [IO] stream for reporting an unexpected monitor death
     # @param lock_reaper [Workspace::LockReaper, nil] ticked after every scan with
     #   the panes' working directories, so stale lock holds are reaped
+    # @param notifier [Workspace::Notifier, nil] runs the notify command when an
+    #   agent pane starts waiting or stays idle too long; nil sends no alerts
+    # @param idle_alert_after [Numeric, nil] seconds of idle before an agent
+    #   pane alerts; nil alerts only on waiting
     def initialize(tmux:, process_tree:, session_name:,
       providers: AgentProvider.all, poll_interval: 2, idle_after: DEFAULT_IDLE_AFTER,
-      clock: Time, logger: Workspace::Logger.new, error_output: $stderr, lock_reaper: nil)
+      clock: Time, logger: Workspace::Logger.new, error_output: $stderr, lock_reaper: nil,
+      notifier: nil, idle_alert_after: nil)
       @tmux = tmux
       @process_tree = process_tree
       @session_name = session_name
@@ -47,7 +73,10 @@ module Workspace
       @logger = logger
       @error_output = error_output
       @lock_reaper = lock_reaper
+      @notifier = notifier
+      @idle_alert_after = idle_alert_after
       @panes = {}
+      @failed_scans = 0
       @lock = Mutex.new
       @running = false
     end
@@ -60,6 +89,7 @@ module Workspace
       @thread = Thread.new do
         while @running
           scan
+          send_alerts
           reap_locks
           sleep @poll_interval
         end
@@ -71,7 +101,8 @@ module Workspace
       end
     end
 
-    # Stops scanning. Safe to call more than once.
+    # Stops scanning, and stops any notify command still running. Safe to
+    # call more than once.
     #
     # @return [void]
     def stop
@@ -79,6 +110,7 @@ module Workspace
       thread = @thread
       @thread = nil
       thread.kill if thread && !thread.equal?(Thread.current)
+      @notifier&.stop
     end
 
     # Refreshes every pane's kind and activity from tmux and the process table.
@@ -89,8 +121,15 @@ module Workspace
       begin
         tree = @process_tree.snapshot
       rescue Workspace::Error => e
+        # The panes' output was not captured this time, so their activity is
+        # stale; idle alerts wait for a scan that succeeds.
+        @activity_stale = true
+        @failed_scans += 1
+        warn_failed_scans(e) if @failed_scans == FAILED_SCANS_WARNING
         return @logger.debug { "session monitor: skipping scan: #{e.message}" }
       end
+      @activity_stale = false
+      @failed_scans = 0
       now = @clock.now
 
       @lock.synchronize do
@@ -151,10 +190,94 @@ module Workspace
       0
     end
 
+    # Runs the notify command for each agent pane that has started waiting, or
+    # has stayed idle past the idle alert threshold, since it last alerted.
+    # One wait, or one stretch of unchanged output, alerts once, however many
+    # scans it spans. Shell panes never alert. The notifier returns at once.
+    # An alert counts as sent only once the notifier accepts it, so one the
+    # notifier skips (too many runs still going) or that raises is retried on
+    # the next scan, and doesn't keep later ones from going out. Anything
+    # raised here is logged and swallowed, so alerting can never stall or end
+    # the scan thread.
+    #
+    # @return [Array<Hash>] the environment of each alert sent
+    def send_alerts
+      return [] unless @notifier
+      now = @clock.now
+      due = @lock.synchronize { @panes.values.flat_map { |pane| due_alerts(pane, now) } }
+      due.filter_map do |target, mark, value, alert|
+        next unless @notifier.notify(alert)
+        @lock.synchronize { target[mark] = value }
+        alert
+      rescue => e
+        log_alert_failure(e)
+        nil
+      end
+    rescue => e
+      log_alert_failure(e)
+      []
+    end
+
     private
 
+    NOT_AGENTS = ["shell", "unknown"].freeze
+    private_constant :NOT_AGENTS
+
+    # Each wait alerts on its own, so a second agent in the pane starting to
+    # wait alerts even though the pane was already waiting.
+    #
+    # @return [Array<Array>] per alert due: the hash to mark alerted, the key
+    #   and value that mark it, and the alert's environment
+    def due_alerts(pane, now)
+      return [] if NOT_AGENTS.include?(pane[:kind])
+
+      unless pane[:waits].empty?
+        return pane[:waits].values.reject { |wait| wait[:alerted] }.map do |wait|
+          [wait, :alerted, true, alert_env(pane, "waiting", now - wait[:since], wait[:message])]
+        end
+      end
+
+      return [] if @activity_stale || !@idle_alert_after || !pane[:last_activity_at]
+      idle_for = now - pane[:last_activity_at]
+      return [] if idle_for < @idle_alert_after || pane[:alerted_idle_since] == pane[:last_activity_at]
+      [[pane, :alerted_idle_since, pane[:last_activity_at], alert_env(pane, "idle", idle_for, nil)]]
+    end
+
+    # Printed once per streak; a scan that succeeds starts a new one.
+    def warn_failed_scans(error)
+      @error_output.puts "workspace agent: can't read the process table for #{@session_name} " \
+        "(#{FAILED_SCANS_WARNING} scans in a row: #{error.message}); idle alerts are paused until it can"
+    rescue
+      nil
+    end
+
+    def log_alert_failure(error)
+      @logger.debug { "session monitor: alert failed (#{error.class}: #{error.message})" }
+    rescue
+      nil
+    end
+
+    def alert_env(pane, alert, seconds, message)
+      where = "#{@session_name} pane 0.#{pane[:index]} (#{pane[:label]})"
+      text = if alert == "waiting"
+        "#{where} is waiting#{": #{message}" if message}"
+      else
+        "#{where} has been idle for #{Duration.humanize(seconds)}"
+      end
+      {
+        "WORKSPACE_ALERT" => alert,
+        "WORKSPACE_ALERT_WORKSPACE" => @session_name,
+        "WORKSPACE_ALERT_PANE" => "0.#{pane[:index]}",
+        "WORKSPACE_ALERT_PANE_ID" => pane[:pane_id].to_s,
+        "WORKSPACE_ALERT_KIND" => pane[:kind].to_s,
+        "WORKSPACE_ALERT_SECONDS" => seconds.round.to_s,
+        "WORKSPACE_ALERT_MESSAGE" => message.to_s,
+        "WORKSPACE_ALERT_TEXT" => text
+      }.transform_values { |value| value.delete("\0") }
+    end
+
     def new_pane(pane_id)
-      {pane_id: pane_id, agents: [], kind: "unknown", index: nil}
+      {pane_id: pane_id, agents: [], waits: {}, kind: "unknown", index: nil}
     end
 
     def refresh_pane(detail, tree, now)
@@ -168,6 +291,8 @@ module Workspace
       pane[:kind] = agent ? agent[:provider].key : "shell"
       pane[:label] = agent ? agent[:provider].label : detail[:command]
       pane[:agent_pid] = agent && agent[:pid]
+      # Nobody is left to answer a prompt once the agent has exited.
+      clear_waiting(pane) unless agent
 
       refresh_activity(pane, now)
     end
@@ -200,7 +325,29 @@ module Workspace
       pane[:last_activity_at] ||= now
     end
 
+    # Events that start, end, or restart a turn clear a wait whoever raised it.
+    TURN_EVENTS = ["user_prompt", "stop", "session_start", "session_end"].freeze
+    private_constant :TURN_EVENTS
+
+    # Waits are kept per agent, since the main agent and parallel sub-agents
+    # can each be waiting on a person at once. Any other event from an agent
+    # ends that agent's wait: a tool ran after a permission prompt, say. It
+    # leaves the other agents' waits alone. Hooks mark a sub-agent's events
+    # with its agent_id; SubagentStop always comes from one. Claude Code's
+    # Notification payload carries no tool call id, so a wait can't be tied
+    # to one prompt more tightly than to the agent that raised it.
     def apply_event(pane, event)
+      if event["event"] == "notification"
+        # A repeat notification during one wait keeps the original start, so
+        # the wait is timed (and alerted) once.
+        wait = (pane[:waits][event["agent_id"]] ||= {since: @clock.now})
+        wait[:message] = self.class.clean_message(event["message"])
+      elsif TURN_EVENTS.include?(event["event"])
+        clear_waiting(pane)
+      else
+        pane[:waits].delete(event_agent_id(event))
+      end
+
       case event["event"]
       when "subagent_start"
         pane[:agents] << {name: agent_name(event), state: "running", started_at: @clock.now}
@@ -218,12 +365,35 @@ module Workspace
       end
     end
 
+    def clear_waiting(pane)
+      pane[:waits].clear
+    end
+
+    # The pane reports its longest wait, so the time shown is how long a
+    # person has been keeping some agent in it waiting.
+    def oldest_wait(pane)
+      pane[:waits].values.min_by { |wait| wait[:since] }
+    end
+
+    # nil is the main agent. A SubagentStop without an agent_id (older Claude
+    # Code) still came from some sub-agent, so it never matches the main one.
+    def event_agent_id(event)
+      event["agent_id"] || ((event["event"] == "subagent_stop") ? :sub_agent : nil)
+    end
+
     def agent_name(event)
       event.dig("agent", "name") || "agent"
     end
 
+    def state_of(pane, idle_for)
+      return "waiting" unless pane[:waits].empty?
+      (idle_for < @idle_after) ? "working" : "idle"
+    end
+
     def present(pane, now)
       idle_for = now - (pane[:last_activity_at] || now)
+      wait = oldest_wait(pane)
+      waiting_since = wait&.dig(:since)
       {
         "pane_id" => pane[:pane_id],
         "index" => pane[:index],
@@ -231,8 +401,11 @@ module Workspace
         "label" => pane[:label],
         "title" => pane[:title],
         "cwd" => pane[:cwd],
-        "state" => (idle_for < @idle_after) ? "working" : "idle",
+        "state" => state_of(pane, idle_for),
         "idle_seconds" => idle_for.round,
+        "waiting_since" => waiting_since&.utc&.iso8601,
+        "waiting_seconds" => waiting_since && (now - waiting_since).round,
+        "waiting_message" => wait&.dig(:message),
         "session_id" => pane[:session_id],
         "agents" => pane[:agents].map { |agent|
           {"name" => agent[:name], "state" => agent[:state],

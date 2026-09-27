@@ -67,6 +67,33 @@ RSpec.describe Workspace::Commands::SessionEvent do
       end
     end
 
+    it "forwards a notification with the agent's message, so the pane shows as waiting" do
+      event = deliver("hook_event_name" => "Notification", "session_id" => "sess-1",
+        "message" => "Claude needs your permission to use Bash")
+
+      expect(event).to include("event" => "notification", "pane_id" => "%2",
+        "message" => "Claude needs your permission to use Bash")
+    end
+
+    it "forwards the agent_id a sub-agent's hook carries, and none for the main agent" do
+      expect(deliver("hook_event_name" => "PostToolUse", "tool_name" => "Bash", "agent_id" => "sub-1"))
+        .to include("agent_id" => "sub-1")
+      expect(deliver("hook_event_name" => "PostToolUse", "tool_name" => "Bash")).not_to have_key("agent_id")
+    end
+
+    it "cuts a long notification message instead of dropping it" do
+      event = deliver("hook_event_name" => "Notification", "message" => "x" * 500)
+
+      expect(event["message"].length).to eq(described_class::MAX_MESSAGE_LENGTH)
+    end
+
+    it "forwards a PostToolUse as tool use, which ends a wait for permission" do
+      event = deliver("hook_event_name" => "PostToolUse", "tool_name" => "Bash", "message" => "not a notification")
+
+      expect(event["event"]).to eq("tool_use")
+      expect(event).not_to have_key("message")
+    end
+
     it "sends to an explicitly named workspace instead of the pane's session" do
       allow(config).to receive(:agent_socket_path).with("other").and_return(socket_path)
 

@@ -92,6 +92,28 @@ RSpec.describe Workspace::Commands::Sessions do
       expect(result).to eq({exit_code: 1})
     end
 
+    it "shows a waiting pane with the agent's message on the line below" do
+      waiting = {"workspace" => "proj", "panes" => [
+        {"pane_id" => "%1", "index" => 0, "kind" => "claude", "label" => "Claude Code",
+         "state" => "waiting", "idle_seconds" => 40, "waiting_since" => "2026-09-26T12:00:00Z",
+         "waiting_seconds" => 40, "waiting_message" => "Claude needs your\npermission to use Bash\e[2J", "agents" => []}
+      ]}
+      with_daemon(reply: waiting) { command.call(name: "proj") }
+
+      expect(output.string).to match(/0\.0\s+claude\s+Claude Code\s+waiting\s+40s/)
+      expect(output.string).to include("└─ Claude needs your permission to use Bash [2J")
+      expect(output.string).not_to include("\e")
+    end
+
+    it "cleans the waiting message in --json too, even from a daemon that didn't" do
+      waiting = {"workspace" => "proj", "panes" => [
+        {"pane_id" => "%1", "index" => 0, "state" => "waiting", "waiting_message" => "needs your\n\e[31mpermission", "agents" => []}
+      ]}
+      with_daemon(reply: waiting) { command.call(name: "proj", json: true) }
+
+      expect(JSON.parse(output.string)["panes"].first["waiting_message"]).to eq("needs your [31mpermission")
+    end
+
     it "says so when the workspace has no panes" do
       with_daemon(reply: {"workspace" => "proj", "panes" => []}) { command.call(name: "proj") }
 

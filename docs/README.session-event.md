@@ -24,7 +24,7 @@ It also keeps [`workspace lock`](README.lock.md)'s idle tracking current: `Stop`
 
 It also enforces the `edit` lock: a `PreToolUse` for `Edit`, `Write`, `MultiEdit` or `NotebookEdit` is denied when this namespace's `edit` lock is held by another agent — see [`workspace lock`](README.lock.md#details) for the message and cost. `SessionEnd`, and a `SessionStart` whose `source` is `clear`, release every lock the calling agent holds.
 
-Exits 2, with the deny message on stderr, when an edit is denied. Otherwise always exits 0, whether or not a daemon is listening, so a missing daemon never fails an agent's turn. Currently understands Claude Code's hook events (`SessionStart`, `SessionEnd`, `UserPromptSubmit`, `Stop`, `SubagentStop`, and `PreToolUse` for every tool — the `Task` tool marks a sub-agent starting; `Edit`/`Write`/`MultiEdit`/`NotebookEdit` are checked against the edit lock).
+Exits 2, with the deny message on stderr, when an edit is denied. Otherwise always exits 0, whether or not a daemon is listening, so a missing daemon never fails an agent's turn. Currently understands Claude Code's hook events (`SessionStart`, `SessionEnd`, `UserPromptSubmit`, `Stop`, `SubagentStop`, `PreToolUse` for every tool — the `Task` tool marks a sub-agent starting; `Edit`/`Write`/`MultiEdit`/`NotebookEdit` are checked against the edit lock — `Notification`, which marks the pane `waiting` in [`workspace sessions`](README.sessions.md) and carries the agent's message (cut to 200 characters), and `PostToolUse`, which ends that wait once a tool runs after a permission prompt). Every event it forwards, except `Notification`, ends a wait (a `PreToolUse` for a tool other than `Task` is not forwarded to the daemon).
 
 ## Examples
 

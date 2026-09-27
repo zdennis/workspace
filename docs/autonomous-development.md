@@ -2,13 +2,13 @@
 
 ## Verdict
 
-`workspace` handles the middle of an autonomous run well: each agent gets its own worktree and tmux pane, agents share edits and one dev server safely through locks, and `sessions` shows who is working. The two ends are weak. Starting work needs an iTerm2 desktop and can stop at an interactive prompt, and finishing work (commit, PR, merge, cleanup) is left entirely to the agent. The most important gap is stall detection: an agent waiting on a person, an agent that finished, and an agent that hung all look the same (`idle`), and nothing alerts anyone, so an unattended run stalls silently.
+`workspace` handles the middle of an autonomous run well: each agent gets its own worktree and tmux pane, agents share edits and one dev server safely through locks, and `sessions` shows who is working. The two ends are weak. Starting work needs an iTerm2 desktop and can stop at an interactive prompt, and finishing work (commit, PR, merge, cleanup) is left entirely to the agent. Stall detection has improved: `sessions` now shows a `waiting` state (Claude Code only) when a pane asks for permission or input, and `alerts.notify` can run a command when a pane waits or stays idle too long. The remaining gap is that an agent that finished and an agent that hung both still show `idle` with no distinction, and non-Claude-Code agents never leave `working`/`idle`.
 
 ## Top recommendations
 
 Ordered by value. Effort: S (a day or less), M (a few days), L (a week or more).
 
-1. **Detect and announce "needs a human"**: add a `waiting` session state from the agent's notification hook, plus a notify command hook when a pane waits or goes idle too long. (M)
+1. **Detect and announce "needs a human"**: add a `waiting` session state from the agent's notification hook, plus a notify command hook when a pane waits or goes idle too long. (M) Done: see the [Fixed] waiting-state and alerts items in the gap analysis.
 2. **Make `start` non-interactive**: add `--base`, `--yes` and `--json`, and send `--prompt` only after the agent is ready. (S)
 3. **Add a stage timeout and reliable completion to pipelines**: a per-stage deadline that reports failure, the sentinel instruction for stage 1, and detection that still works once scrollback is full. (M) Done: see the [Fixed] items under "Coordinating agents".
 4. **Add a `finish` command**: check the worktree is clean and pushed, open a PR with `gh`, then remove the worktree; make `kill` and `prune` refuse unpushed or dirty work. (M)
@@ -58,7 +58,7 @@ A person should decide scope, outward-facing actions, and acceptance; agents sho
 | Contested design decision | Pick between options | Question, options, the default taken, `file:line` | A reviewer disagrees, or the spec is silent | Reviewer agent rules; proceed with its ruling; logged | None |
 | Push, merge, PR, deleting branches | Approve outward or destructive actions | Test and lint results, diff summary, target branch | Work ready to leave the machine | Block, unless a written policy pre-approves it (for example "push when tests pass and it is a fast-forward"; never force-push; never delete branches) | None. `kill` confirms, but `--force` skips it (`lib/workspace/commands/kill.rb:51-58`) |
 | Lock or dev conflict needing a person | Stop a process group this user cannot signal | `lock clear devenv` output naming the owner and pgid | `lock clear devenv` exits 1 with "Kept devenv lock" | The lock stays held and waiters stay queued: the run blocks | Message only (`docs/README.lock.md:164`); no alert |
-| Agent waiting on input | Answer the question or permission prompt | The pane | Agent asks | The pane sits `idle`: the run stalls | None; indistinguishable from finished (`lib/workspace/session_monitor.rb:234`) |
+| Agent waiting on input | Answer the question or permission prompt | The pane | Agent asks | The pane shows `waiting` in `sessions` | `alerts.notify` runs, if set (Claude Code only; other agents still sit `idle`) |
 | Review sign-off | Accept or send back | Reviewer verdicts (PASS / CHANGES NEEDED) | Reviews complete | Merge under the written policy if all pass; otherwise fix and re-review | None |
 | Final acceptance | Check each criterion against the running app | Dev environment, PR, criteria checklist | PR ready | PR stays open; nothing merges on its own | None |
 
@@ -180,7 +180,7 @@ workspace lock status --json
 workspace doctor                         # hooks installed, daemon running
 ```
 
-`sessions` asks the project's daemon for pane state. A pane is `working` while its output changes and `idle` after 30s without change (`lib/workspace/session_monitor.rb:24,234`).
+`sessions` asks the project's daemon for pane state. A pane is `working` while its output changes, `idle` after 30s without change, and `waiting` from the agent's `Notification` hook until its next hook event (`lib/workspace/session_monitor.rb`). Set `alerts.notify` to be told when a pane waits or stays idle past `alerts.idle_after`.
 
 What needs babysitting:
 
@@ -229,8 +229,8 @@ Locks serialize editing and the dev environment; anything outside those two stay
 
 `sessions` answers "who is working"; it cannot answer "who needs me".
 
-- **[Missing] A "waiting for a person" state.** Pane state is only `working` or `idle` from output hashing (`lib/workspace/session_monitor.rb:234`), and the hook table has no notification or permission event (`lib/workspace/commands/session_event.rb:16-23`). Fix: map the agent's notification hook to a `waiting` state.
-- **[Missing] Alerts.** Nothing pushes a message when a pane waits, goes idle, or a lock is kept. The author uses a separate `send-message` script. Fix: a configurable `notify` command hook fired on state changes.
+- **[Fixed] A "waiting for a person" state.** Claude Code's `Notification` hook now puts the pane in a `waiting` state, shown in `sessions` with the agent's message, and the next hook event (a prompt, a finished tool, the turn ending) clears it (`lib/workspace/session_monitor.rb`, `lib/workspace/commands/session_event.rb`). Agents without hooks still show only `working`/`idle`.
+- **[Fixed] Alerts.** `alerts.notify` runs a command when an agent pane starts waiting or stays idle past `alerts.idle_after`, once per episode, with the details in `WORKSPACE_ALERT_*` environment variables (`lib/workspace/notifier.rb`, `lib/workspace/session_monitor.rb`). A kept lock still sends nothing.
 - **[Missing] One view across worktrees.** Each worktree is a project with its own daemon, and `sessions` reads one socket (`lib/workspace/commands/sessions.rb:88-103`). Fix: `sessions --all`, walking every active project.
 - **[Missing] Agent activity log.** The event log only records state-file changes (`lib/workspace/state.rb:35,73,82`); dispatches, stage completions and failures are not recorded, and session history is memory-only (`lib/workspace/session_monitor.rb:98-100`). Fix: append agent and pipeline events to the event log.
 - **[Improve] `capture` and `doctor` for scripts.** `capture` has no JSON or filtering (`lib/workspace/commands/capture.rb:24-37`). `doctor` checks the daemon for the current project only (`lib/workspace/doctor.rb:138-168`). Fix: `doctor --all` and `capture --since-last`.

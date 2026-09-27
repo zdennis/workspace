@@ -1,6 +1,7 @@
 require "spec_helper"
 require "stringio"
 require "tmpdir"
+require "fileutils"
 
 RSpec.describe Workspace::Commands::Config do
   def build_command(output: StringIO.new)
@@ -123,6 +124,37 @@ RSpec.describe Workspace::Commands::Config do
       end
     end
 
+    it "accepts alerts.notify and alerts.idle_after" do
+      command, project_settings = build_command
+      project_dir = Dir.mktmpdir("ws-config-project")
+      name = File.basename(project_dir)
+
+      command.set("alerts.notify", "say \"$WORKSPACE_ALERT_TEXT\"", cwd: project_dir)
+      command.set("alerts.idle_after", "15m", cwd: project_dir)
+
+      expect(project_settings.load(name)).to eq({"alerts" => {"notify" => "say \"$WORKSPACE_ALERT_TEXT\"", "idle_after" => "15m"}})
+    end
+
+    it "rejects a blank alerts.notify without writing it" do
+      command, project_settings = build_command
+      project_dir = Dir.mktmpdir("ws-config-project")
+
+      expect { command.set("alerts.notify", "  ", cwd: project_dir) }
+        .to raise_error(Workspace::UsageError, /Invalid alerts.notify: must not be blank/)
+      expect(project_settings.load(File.basename(project_dir))).to eq({})
+    end
+
+    ["0", "-5", "soon"].each do |bad|
+      it "rejects alerts.idle_after #{bad.inspect} without writing it" do
+        command, project_settings = build_command
+        project_dir = Dir.mktmpdir("ws-config-project")
+
+        expect { command.set("alerts.idle_after", bad, cwd: project_dir) }
+          .to raise_error(Workspace::UsageError, /Invalid alerts.idle_after/)
+        expect(project_settings.load(File.basename(project_dir))).to eq({})
+      end
+    end
+
     it "accepts locks.reap_interval as seconds or a duration" do
       command, project_settings = build_command
       project_dir = Dir.mktmpdir("ws-config-project")
@@ -228,6 +260,52 @@ RSpec.describe Workspace::Commands::Config do
       data = project_settings.load(name)
       expect(data["dev"]["up"]).to match(/\Acmd-\d\z/)
       expect(File.exist?("#{path}.lock")).to eq(true)
+    end
+
+    it "names the daemon to restart after a restart-required key, for a plain project" do
+      command, = build_command
+      project_dir = Dir.mktmpdir("ws-config-project")
+      name = File.basename(project_dir)
+
+      command.set("locks.reap_interval", "1m", cwd: project_dir)
+
+      output = command.instance_variable_get(:@output)
+      expect(output.string).to include("workspace agent #{name} --force, or relaunch")
+    end
+
+    it "names the worktree's own daemon (not the parent project) after a restart-required key, inside a worktree" do
+      output = StringIO.new
+      dir = Dir.mktmpdir("ws-config")
+      fake_path_config = Struct.new(:workspace_config_dir).new(dir)
+      project_settings = Workspace::ProjectSettings.new(config: fake_path_config)
+      lineage = Workspace::WorkspaceLineage.new
+      file_backup = Workspace::FileBackup.new(output: output)
+      command = described_class.new(project_settings: project_settings, lineage: lineage, file_backup: file_backup, output: output)
+
+      root = Dir.mktmpdir("ws-config-repo")
+      system("git", "init", "-q", root, out: File::NULL, err: File::NULL)
+      system("git", "-C", root, "commit", "--allow-empty", "-q", "-m", "init", out: File::NULL, err: File::NULL)
+      worktree_path = File.join(root, ".worktrees", "wt1")
+      FileUtils.mkdir_p(File.dirname(worktree_path))
+      system("git", "-C", root, "worktree", "add", "-q", "-b", "wt1-branch", worktree_path, out: File::NULL, err: File::NULL)
+      File.write(File.join(worktree_path, ".workspace-project"), "myapp.worktree-wt1")
+
+      command.set("locks.reap_interval", "1m", cwd: worktree_path)
+
+      expect(output.string).to include("workspace agent myapp.worktree-wt1 --force, or relaunch")
+      expect(output.string).not_to include("workspace agent myapp --force")
+    ensure
+      FileUtils.remove_entry(root) if root && File.directory?(root)
+    end
+
+    it "doesn't add a restart hint for a key that takes effect immediately" do
+      command, = build_command
+      project_dir = Dir.mktmpdir("ws-config-project")
+
+      command.set("dev.up", "./start-dev", cwd: project_dir)
+
+      output = command.instance_variable_get(:@output)
+      expect(output.string).not_to include("Takes effect")
     end
   end
 
