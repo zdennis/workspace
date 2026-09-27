@@ -181,7 +181,8 @@ module Workspace
       stdout, stderr, status = Open3.capture3({"LC_ALL" => "C"}, "ps", "-axo", "pid=,pgid=,stat=,user=", pgroup: true)
       raise Workspace::Error, "could not read the process table (ps failed: #{stderr.strip})" unless status.success?
       stdout.lines.filter_map do |line|
-        pid, group, state, user = line.split
+        # user is the last column and may contain spaces, so it takes the rest of the line.
+        pid, group, state, user = line.strip.split(nil, 4)
         [pid.to_i, state, user] if group.to_i == pgid && state
       end
     end
