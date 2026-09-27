@@ -35,11 +35,9 @@ module Workspace
 
     def duration(dev, key, default, name, require_positive: false)
       return default unless dev.key?(key)
-      seconds = Duration.parse(dev[key])
-      if require_positive && !seconds.positive?
-        raise ArgumentError, "must be greater than 0, got #{dev[key].inspect}"
-      end
-      seconds
+      # Both branches raise ArgumentError on invalid input (plain parse or
+      # positive-only parse), caught below and re-raised with context.
+      require_positive ? Duration.parse_positive(dev[key]) : Duration.parse(dev[key])
     rescue ArgumentError => e
       raise Workspace::Error, "Invalid dev.#{key} for '#{name}': #{e.message}"
     end
