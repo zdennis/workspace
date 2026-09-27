@@ -173,6 +173,24 @@ module Workspace
       }
     end
 
+    # @param pane_id [String] tmux pane id
+    # @return [String, nil] the pane's kind ("shell", "claude", ...), or nil
+    #   when it hasn't been scanned yet
+    def pane_kind(pane_id)
+      @lock.synchronize { @panes[pane_id]&.fetch(:kind) }
+    end
+
+    # @param pane_id [String] tmux pane id
+    # @return [String, nil] "working", "idle" or "waiting", or nil when the
+    #   pane hasn't been scanned yet
+    def pane_state(pane_id)
+      now = @clock.now
+      @lock.synchronize do
+        pane = @panes[pane_id]
+        pane && state_of(pane, now - (pane[:last_activity_at] || now))
+      end
+    end
+
     # Reaps stale lock holds in the namespaces the panes are working in, when
     # the reaper is due. Runs on the scan thread, never the agent's accept
     # loop, so a slow `git` only delays the next scan. A lock store another

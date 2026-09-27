@@ -547,6 +547,23 @@ RSpec.describe Workspace::SessionMonitor do
     end
   end
 
+  describe "#pane_kind and #pane_state" do
+    it "answers for one pane without building the whole snapshot" do
+      monitor.scan
+      monitor.record("pane_id" => "%2", "event" => "notification", "message" => "Allow?")
+
+      expect(monitor.pane_kind("%1")).to eq("shell")
+      expect(monitor.pane_kind("%2")).to eq("claude")
+      expect(monitor.pane_state("%1")).to eq("working")
+      expect(monitor.pane_state("%2")).to eq("waiting")
+    end
+
+    it "returns nil for a pane it hasn't scanned" do
+      expect(monitor.pane_kind("%9")).to be_nil
+      expect(monitor.pane_state("%9")).to be_nil
+    end
+  end
+
   describe "#snapshot" do
     it "orders panes by index" do
       monitor.scan
