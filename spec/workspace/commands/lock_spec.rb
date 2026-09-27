@@ -334,7 +334,7 @@ RSpec.describe Workspace::Commands::Lock do
         expect(devenv_holder_pid).to eq(4242)
         expect(Workspace::LockStore.new(dir: tmpdir, liveness: FakeLockLiveness.new).status("devenv")["devenv"]["queue"]).to be_empty
         expect(error_output.string).to include("Could not stop process group 4242 (pid 4242): process group 4242",
-          "owned by alice", "Kept devenv lock", "sudo kill -TERM -4242", "workspace lock clear devenv")
+          "owned by alice", "Kept devenv lock", "kill -TERM -4242", "workspace lock clear devenv")
         expect(output.string).not_to include("Cleared devenv")
       end
 

@@ -28,6 +28,8 @@ module Workspace
       # @param epoch_generator [#call] returns a new epoch string
       # @param signal_trapper [#trap] receives SIGTERM/SIGINT handler registration
       # @param sentinel_poller_factory [#call] builds a poller for a session/pane pair
+      # @param session_monitor_factory [#call] builds the session monitor for a workspace name
+      # @param lock_reaper [Workspace::LockReaper, nil] reaps stale lock holds from the session monitor's scan thread
       # @param retry_backoff [Float] seconds to wait between status report retries
       # @param logger [Workspace::Logger] debug logger
       # @param output [IO] output stream for user-facing messages
@@ -37,6 +39,7 @@ module Workspace
         signal_trapper: Signal,
         sentinel_poller_factory: nil,
         session_monitor_factory: nil,
+        lock_reaper: nil,
         retry_backoff: 0.5,
         logger: Workspace::Logger.new, output: $stdout, error_output: $stderr)
         @config = config
@@ -49,6 +52,7 @@ module Workspace
         @sentinel_poller_factory = sentinel_poller_factory || method(:build_sentinel_poller)
         @session_monitor_factory = session_monitor_factory || method(:build_session_monitor)
         @session_monitor = nil
+        @lock_reaper = lock_reaper
         @retry_backoff = retry_backoff
         @pollers = {}
         @sequences = Hash.new(0)
@@ -571,7 +575,8 @@ module Workspace
           process_tree: ProcessTree.new(logger: @logger),
           session_name: name,
           logger: @logger,
-          error_output: @error_output
+          error_output: @error_output,
+          lock_reaper: @lock_reaper
         )
       end
 

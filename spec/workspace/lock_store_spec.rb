@@ -232,6 +232,52 @@ RSpec.describe Workspace::LockStore do
     end
   end
 
+  describe "#reap" do
+    it "reaps dead holders and waiters across every lock and returns how many" do
+      s = store
+      s.acquire("edit", identity: identity(pid: 100), waiter_pid: 100, waiter_started: "start-100")
+      s.acquire("edit", identity: identity(pid: 200), waiter_pid: 200, waiter_started: "start-200", wait: true)
+      s.acquire("test", identity: identity(pid: 300), waiter_pid: 300, waiter_started: "start-300")
+      s.acquire("test", identity: identity(pid: 400), waiter_pid: 400, waiter_started: "start-400", wait: true)
+      [100, 400].each { |pid| liveness.kill(pid) }
+
+      expect(s.reap).to eq(2)
+
+      expect(s.status["edit"]["holder"]).to include("pid" => 200, "unclaimed" => true)
+      expect(s.status["test"]).to include("holder" => include("pid" => 300), "queue" => [])
+      reaps = File.readlines(File.join(tmpdir, "locks.jsonl")).map { |l| JSON.parse(l) }.select { |e| e["event"] == "reap" }
+      expect(reaps.map { |e| e["lock"] }).to eq(["edit", "test"])
+    end
+
+    it "returns zero when nothing is stale" do
+      store.acquire("edit", identity: identity(pid: 100), waiter_pid: 100, waiter_started: "start-100")
+
+      expect(store.reap).to eq(0)
+    end
+
+    it "returns zero without waiting or reaping while another process holds the store flock" do
+      store.acquire("edit", identity: identity(pid: 100), waiter_pid: 100, waiter_started: "start-100")
+      liveness.kill(100)
+      File.open(File.join(tmpdir, "locks.lock"), File::RDWR) do |contender|
+        contender.flock(File::LOCK_EX)
+
+        expect(store.reap).to eq(0)
+      end
+
+      expect(store.reap).to eq(1)
+    end
+
+    it "leaves locks.json untouched when nothing is reaped" do
+      store.acquire("edit", identity: identity(pid: 100), waiter_pid: 100, waiter_started: "start-100")
+      path = File.join(tmpdir, "locks.json")
+      before = [File.read(path), File.stat(path).ino]
+
+      store.reap
+
+      expect([File.read(path), File.stat(path).ino]).to eq(before)
+    end
+  end
+
   describe "#current_holder" do
     it "reaps a dead holder and returns the promoted waiter" do
       s = store

@@ -1129,4 +1129,28 @@ RSpec.describe Workspace::Commands::Agent do
       end
     end
   end
+
+  describe "wiring the lock reaper into its session monitor" do
+    # Goes through the real (private) session monitor factory rather than
+    # stubbing it, so dropping the `lock_reaper:` kwarg at either end of the
+    # wiring (here or in Workspace.build_cli) fails this test.
+    it "passes its lock_reaper to the session monitor it builds" do
+      lock_reaper = instance_double(Workspace::LockReaper, tick: 3)
+      agent_with_reaper = described_class.new(
+        config: config,
+        tmux: tmux,
+        work_coordinator_client: client,
+        pipeline_config: pipeline_config,
+        pipeline_state: pipeline_state,
+        lock_reaper: lock_reaper,
+        output: output,
+        error_output: error_output
+      )
+
+      monitor = agent_with_reaper.send(:build_session_monitor, "myapp")
+
+      expect(monitor.reap_locks).to eq(3)
+      expect(lock_reaper).to have_received(:tick)
+    end
+  end
 end

@@ -183,6 +183,26 @@ module Workspace
       end
     end
 
+    # Runs the reap pass every mutating op starts with, on its own, so a
+    # caller with no lock op to run (the session-monitor daemon) can keep
+    # `locks.json` current. Reaps are audited as an op-time reap is, plus
+    # +source+ when given.
+    # Unlike an op, it never waits for the store flock: while another process
+    # holds it, this returns 0 at once and the caller retries on its next
+    # pass. A pass that changes nothing leaves `locks.json` untouched, so a
+    # long-running caller on older code never rewrites fields newer code added.
+    #
+    # @param source [String, nil] recorded as the `source` field of each reap
+    #   audit event, so these reaps can be told apart from an op-time reap
+    # @return [Integer] how many holders and waiters were reaped
+    def reap(source: nil)
+      reaped = with_lock(nonblocking: true, write_unchanged: false) do |data|
+        reap!(data, source: source)
+        @pending_events.count { |e| e[:event] == "reap" }
+      end
+      reaped || 0
+    end
+
     # Reaps dead holders and waiters, promoting the next live waiter, and
     # returns +name+'s holder afterwards. Unlike {#status}, a crashed holder's
     # record is removed rather than just flagged stale.
@@ -448,17 +468,24 @@ module Workspace
     #   `locks.json` reads as empty instead of raising, so `clear` always has
     #   a way to reset the file rather than being wedged by the same
     #   corruption it exists to fix.
-    def with_lock(lenient: false, readonly: false)
+    # @param nonblocking [Boolean] when true and another process holds the
+    #   store flock, returns nil at once without yielding
+    # @param write_unchanged [Boolean] when false, `locks.json` is rewritten
+    #   only if the block changed the data it was given
+    def with_lock(lenient: false, readonly: false, nonblocking: false, write_unchanged: true)
       FileUtils.mkdir_p(@dir, mode: 0o700)
       File.chmod(0o700, @dir)
       result = nil
       lock_mode = readonly ? File::RDONLY : (File::RDWR | File::CREAT)
       File.open(@lockfile_path, lock_mode | File::CREAT, 0o600) do |f|
-        f.flock(readonly ? File::LOCK_SH : File::LOCK_EX)
+        flock_mode = readonly ? File::LOCK_SH : File::LOCK_EX
+        return nil unless f.flock(nonblocking ? flock_mode | File::LOCK_NB : flock_mode)
         @pending_events = []
         data = lenient ? read_data_lenient : read_data
+        original = Marshal.load(Marshal.dump(data)) unless write_unchanged
         result = within_liveness_snapshot { yield data }
-        write_data(data) unless readonly
+        unchanged = !write_unchanged && data == original
+        write_data(data) unless readonly || unchanged
         flush_audit_events
       end
       result
@@ -777,14 +804,14 @@ module Workspace
       }
     end
 
-    def reap!(data)
+    def reap!(data, source: nil)
       data.each do |name, entry|
         if entry["holder"] && !holder_alive?(entry["holder"])
-          audit(:reap, name, holder: holder_summary(entry["holder"]))
+          audit(:reap, name, holder: holder_summary(entry["holder"]), source: source)
           entry["holder"] = nil
         end
         dead, alive = entry["queue"].partition { |w| !waiter_alive?(w) }
-        dead.each { |w| audit(:reap, name, waiter: waiter_summary(w)) }
+        dead.each { |w| audit(:reap, name, waiter: waiter_summary(w), source: source) }
         entry["queue"] = alive
         if entry["displaced"]
           entry["displaced"].select! { |r| alive_or_unknown?(r["pid"], r["started"]) }

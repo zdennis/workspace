@@ -32,9 +32,11 @@ module Workspace
     # @param clock [#now] time source, injected for deterministic tests
     # @param logger [Workspace::Logger] debug logger
     # @param error_output [IO] stream for reporting an unexpected monitor death
+    # @param lock_reaper [Workspace::LockReaper, nil] ticked after every scan with
+    #   the panes' working directories, so stale lock holds are reaped
     def initialize(tmux:, process_tree:, session_name:,
       providers: AgentProvider.all, poll_interval: 2, idle_after: DEFAULT_IDLE_AFTER,
-      clock: Time, logger: Workspace::Logger.new, error_output: $stderr)
+      clock: Time, logger: Workspace::Logger.new, error_output: $stderr, lock_reaper: nil)
       @tmux = tmux
       @process_tree = process_tree
       @session_name = session_name
@@ -44,6 +46,7 @@ module Workspace
       @clock = clock
       @logger = logger
       @error_output = error_output
+      @lock_reaper = lock_reaper
       @panes = {}
       @lock = Mutex.new
       @running = false
@@ -57,6 +60,7 @@ module Workspace
       @thread = Thread.new do
         while @running
           scan
+          reap_locks
           sleep @poll_interval
         end
       rescue => e
@@ -124,6 +128,27 @@ module Workspace
         "updated_at" => now.utc.iso8601,
         "panes" => panes.sort_by { |p| p["index"] || 0 }
       }
+    end
+
+    # Reaps stale lock holds in the namespaces the panes are working in, when
+    # the reaper is due. Runs on the scan thread, never the agent's accept
+    # loop, so a slow `git` only delays the next scan. A lock store another
+    # process holds is skipped rather than waited on, and retried next time.
+    # Anything the reaper raises is logged and swallowed, so reaping can never
+    # end the scan thread, not even when the logger itself raises.
+    #
+    # @return [Integer] how many holders and waiters were reaped
+    def reap_locks
+      return 0 unless @lock_reaper
+      cwds = @lock.synchronize { @panes.values.map { |pane| pane[:cwd] } }
+      @lock_reaper.tick(cwds)
+    rescue => e
+      begin
+        @logger.debug { "session monitor: lock reap failed (#{e.class}: #{e.message})" }
+      rescue
+        nil
+      end
+      0
     end
 
     private

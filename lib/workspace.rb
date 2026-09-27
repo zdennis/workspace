@@ -28,6 +28,7 @@ require_relative "workspace/lock_audit_log"
 require_relative "workspace/lock_store"
 require_relative "workspace/lock_config"
 require_relative "workspace/lock_idle_tracker"
+require_relative "workspace/lock_reaper"
 require_relative "workspace/lock_enforcer"
 require_relative "workspace/session_monitor"
 require_relative "workspace/agent_provider"
@@ -173,6 +174,10 @@ module Workspace
       tmux: tmux,
       work_coordinator_client: work_coordinator_client,
       pipeline_config: pipeline_config,
+      # Its own LockHolder: the reaper runs on the monitor thread, and a
+      # LockHolder's snapshot scope is per-instance, not per-thread.
+      lock_reaper: LockReaper.new(lock_namespace: lock_namespace, lock_holder: LockHolder.new,
+        terminator: process_group_terminator, logger: logger, error_output: error_output),
       logger: logger,
       output: output,
       error_output: error_output

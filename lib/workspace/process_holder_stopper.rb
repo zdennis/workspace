@@ -92,11 +92,11 @@ module Workspace
       if other
         @error_output.puts "Could not keep #{name} lock for process group #{pgid}: it is now held by pid #{other["pid"]}" \
           "#{" (#{other["worktree"]})" if other["worktree"]}, while process group #{pgid} may still be running. " \
-          "Stop the group as its owner (e.g. sudo kill -TERM -#{pgid})."
+          "Have its owner run `kill -TERM -#{pgid}`; the lock frees on its own once the group is empty."
       else
         @error_output.puts "Kept #{name} lock: it still names pid #{pid}, so no second dev environment starts while " \
-          "process group #{pgid} runs. Stop the group as its owner (e.g. sudo kill -TERM -#{pgid}), " \
-          "then run: #{retry_command}"
+          "process group #{pgid} runs. Have its owner run `kill -TERM -#{pgid}`; the lock frees on its own once the " \
+          "group is empty, then run: #{retry_command}"
       end
     end
 
