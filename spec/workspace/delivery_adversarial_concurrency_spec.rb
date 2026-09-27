@@ -46,6 +46,64 @@ RSpec.describe "T3 delivery: concurrency and liveness defects" do
     agent
   end
 
+  it "DC1: a slow deliver holds @state_lock, so an unrelated fail_pipeline stalls behind it" do
+    entered = Queue.new
+    gate = Queue.new
+    slow_tmux = Object.new
+    ok = delivery(:submitted)
+    slow_tmux.define_singleton_method(:deliver) do |*_args, **_opts|
+      entered << true
+      gate.pop
+      ok
+    end
+    agent = build_agent(tmux: slow_tmux, stages: nil)
+    allow(agent).to receive(:claude_pane_target).and_return("0.1")
+
+    sender = Thread.new { agent.send(:handle_command, {"work_item_ref" => "WC-1", "body" => "hi"}) }
+    other = nil
+    begin
+      expect(entered.pop(timeout: 2)).to be(true)
+      # Stands in for another item's poller timing out while the paste is
+      # being checked (up to ~7s per deliver in production).
+      other = Thread.new { agent.fail_pipeline("WC-2", "timed out") }
+      expect(other.join(0.5)).not_to be_nil, "fail_pipeline for WC-2 blocked on the lock held across deliver"
+    ensure
+      gate << true
+      [sender, other].compact.each { |t| t.join(2) || t.kill }
+    end
+  end
+
+  it "DC1: a work item failed while its hand-off is being typed stays failed" do
+    entered = Queue.new
+    gate = Queue.new
+    tmux = Object.new
+    ok = delivery(:submitted)
+    tmux.define_singleton_method(:deliver) do |_s, _p, text, **|
+      if text.start_with?("You are the review stage")
+        entered << true
+        gate.pop
+      end
+      ok
+    end
+    tmux.define_singleton_method(:capture_pane) { |*, **| "stage one output" }
+    pollers = []
+    stages = [{pane_index: 1, role: "impl", timeout: nil}, {pane_index: 2, role: "review", timeout: nil}]
+    agent = build_agent(tmux: tmux, stages: stages, pollers: pollers)
+    agent.send(:handle_command, {"work_item_ref" => "WC-1", "body" => "do it"})
+
+    advancing = Thread.new { pollers.last.on_complete.call("stage one done") }
+    begin
+      expect(entered.pop(timeout: 2)).to be(true)
+      agent.fail_pipeline("WC-1", "work-coordinator aborted the pipeline")
+    ensure
+      gate << true
+      advancing.join(2) || advancing.kill
+    end
+
+    expect(agent.instance_variable_get(:@pipeline_state).current("WC-1")).to be_nil
+    expect(agent).not_to have_received(:report).with(anything, hash_including("type" => "phase_change"))
+  end
+
   it "DC2: a pane whose output keeps moving reports a paste that never appeared as submitted" do
     now = [0.0]
     tmux = Workspace::Tmux.new(config: nil, clock: -> { now[0] }, sleeper: ->(s) { now[0] += s })
@@ -101,5 +159,28 @@ RSpec.describe "T3 delivery: concurrency and liveness defects" do
     failure = launch.send(:deliver_prompt, "proj", "proj", "do it", readiness.deadline_in(3))
 
     expect(failure).to include("nothing changed"), "reported #{failure.inspect}"
+  end
+
+  it "DC5: a queued steer acknowledged ok is dropped without telling the coordinator when it fails to land" do
+    tmux = Object.new
+    tmux.define_singleton_method(:deliver) do |_s, _p, text, **|
+      status = (text == "steer me") ? :not_landed : :submitted
+      Workspace::Tmux::Delivery.new(status: status, message: "fake")
+    end
+    tmux.define_singleton_method(:capture_pane) { |*, **| "stage one output" }
+    pollers = []
+    stages = [{pane_index: 1, role: "impl", timeout: nil}, {pane_index: 2, role: "review", timeout: nil}]
+    agent = build_agent(tmux: tmux, stages: stages, pollers: pollers)
+    replies = []
+    client = Object.new
+    client.define_singleton_method(:puts) { |line| replies << JSON.parse(line) }
+
+    agent.send(:handle_command, {"work_item_ref" => "WC-1", "body" => "do it"})
+    agent.send(:handle_inject, {"work_item_ref" => "WC-1", "body" => "steer me"}, client)
+    expect(replies.last).to include("ok" => true)
+    pollers.last.on_complete.call("stage one done")
+
+    expect(agent).to have_received(:report).with(anything, hash_including("message" => /steer/)),
+      "the steer's failure went only to the daemon's stderr: #{error_output.string.inspect}"
   end
 end

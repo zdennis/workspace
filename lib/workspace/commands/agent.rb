@@ -83,7 +83,14 @@ module Workspace
         @wc_epoch = nil
         # Poller threads advance the pipeline while the accept loop may be
         # dispatching another command; both mutate @pollers and pipeline state.
+        # Held only briefly, never across a delivery to a pane.
         @state_lock = Mutex.new
+        # Deliveries to panes take turns under this lock, taken before
+        # @state_lock and never inside it. A delivery can take seconds to
+        # check, so it keeps a work item from moving between deciding where
+        # text goes and typing it, without stalling failures, reports and
+        # other state changes that need only @state_lock.
+        @delivery_lock = Mutex.new
         @logger = logger
         @output = output
         @error_output = error_output
@@ -290,40 +297,48 @@ module Workspace
       def handle_inject(message, client)
         ref = message["work_item_ref"]
 
-        # Held across the decision and the keystrokes: a poller thread advancing
-        # this work item mid-inject would otherwise send C-c to a pane the work
-        # item has already left.
-        reply = @state_lock.synchronize do
-          entry = @pipeline_state.current(ref)
-          if entry.nil?
-            @logger.debug { "steer for #{ref} dropped: no active pipeline" }
-            {"ok" => false, "error" => "no_active_pipeline"}
-          elsif stale_token?(message, entry)
-            # The sender aimed at a stage that has since finished; typing into
-            # the pane now would reach the stage that replaced it.
-            @logger.debug { "steer for #{ref} dropped: stage token no longer current" }
-            {"ok" => false, "error" => "stale_token"}
-          elsif message["interrupt"]
-            delivery = deliver_urgent_steer(entry, message["body"])
-            if delivery.ok?
-              {"ok" => true, "queued_for_pane" => entry[:pane_index]}
+        # The delivery lock is held across the decision and the keystrokes: a
+        # hand-off moving this work item mid-inject would otherwise send C-c
+        # to a pane the work item has already left.
+        reply = @delivery_lock.synchronize do
+          urgent = nil
+          decided = @state_lock.synchronize do
+            entry = @pipeline_state.current(ref)
+            if entry.nil?
+              @logger.debug { "steer for #{ref} dropped: no active pipeline" }
+              {"ok" => false, "error" => "no_active_pipeline"}
+            elsif stale_token?(message, entry)
+              # The sender aimed at a stage that has since finished; typing into
+              # the pane now would reach the stage that replaced it.
+              @logger.debug { "steer for #{ref} dropped: stage token no longer current" }
+              {"ok" => false, "error" => "stale_token"}
+            elsif message["interrupt"]
+              urgent = entry
+              nil
+            elsif (next_stage = next_stage_for(entry))
+              (@queued_steers[ref] ||= []) << message["body"]
+              {"ok" => true, "queued_for_pane" => next_stage[:pane_index]}
             else
-              # "not_submitted" means the text is in the pane: resending would type it twice.
-              @error_output.puts "workspace agent: steer for #{ref} to pane #{entry[:pane_index]}: #{delivery.message}"
-              {"ok" => false, "error" => (delivery.landed? ? "not_submitted" : "not_delivered"),
-               "message" => delivery.message}
+              # Nothing comes after the last stage, so there is no later pane to
+              # hold this for. Say so rather than queue it into a vanishing state.
+              {"ok" => false, "error" => "no_next_stage"}
             end
-          elsif (next_stage = next_stage_for(entry))
-            (@queued_steers[ref] ||= []) << message["body"]
-            {"ok" => true, "queued_for_pane" => next_stage[:pane_index]}
-          else
-            # Nothing comes after the last stage, so there is no later pane to
-            # hold this for. Say so rather than queue it into a vanishing state.
-            {"ok" => false, "error" => "no_next_stage"}
           end
+          decided || urgent_steer_reply(ref, urgent, message["body"])
         end
 
         reply_to(client, reply)
+      end
+
+      def urgent_steer_reply(ref, entry, body)
+        delivery = deliver_urgent_steer(entry, body)
+        return {"ok" => true, "queued_for_pane" => entry[:pane_index]} if delivery.ok?
+
+        # "not_submitted" means the text is, or may be, in the pane: resending
+        # could type it twice.
+        @error_output.puts "workspace agent: steer for #{ref} to pane #{entry[:pane_index]}: #{delivery.message}"
+        {"ok" => false, "error" => (delivery.landed? ? "not_submitted" : "not_delivered"),
+         "message" => delivery.message}
       end
 
       # An inject may name the stage it was meant for by that stage's token.
@@ -377,32 +392,34 @@ module Workspace
         stages = @pipeline_config.stages_for(@current_name)
         text = "#{message["body"]}#{reporting_text(message)}"
 
-        entry, started_message, watch_pane, token, deadline, timeout, delivery = @state_lock.synchronize do
+        entry, started_message, watch_pane, token, deadline, timeout, delivery = @delivery_lock.synchronize do
           if stages
             stage = stages.first
             token = @token_generator.call
             deadline = stage_deadline(stage)
             # A re-dispatch replaces the item's stage, so the old stage's watch
             # must go now: left current, its sentinel would advance the new one.
-            @pollers.delete(ref)&.stop
+            @state_lock.synchronize { @pollers.delete(ref)&.stop }
             delivery = @tmux.deliver(@current_name, pane_target(stage[:pane_index]),
               "#{text}\n\n#{SentinelPoller.instruction(token)}")
-            unless delivery.landed?
-              # The old stage's watch is already gone, so an item left in the
-              # pipeline here would have nothing running and nothing watching.
-              @queued_steers.delete(ref)
-              @pipeline_state.complete(work_item_ref: ref) if @pipeline_state.current(ref)
-              next [untracked_entry(ref), nil, nil, nil, nil, nil, delivery]
+            @state_lock.synchronize do
+              unless delivery.landed?
+                # The old stage's watch is already gone, so an item left in the
+                # pipeline here would have nothing running and nothing watching.
+                @queued_steers.delete(ref)
+                @pipeline_state.complete(work_item_ref: ref) if @pipeline_state.current(ref)
+                next [untracked_entry(ref), nil, nil, nil, nil, nil, delivery]
+              end
+              started = @pipeline_state.start(
+                work_item_ref: ref,
+                workspace_name: @current_name,
+                dispatch_id: message["dispatch_id"],
+                sentinel_token: token,
+                deadline: deadline
+              )
+              @logger.debug { "pipeline started for #{ref} at pane #{stage[:pane_index]} (#{stage[:role]})" }
+              [started, "Pipeline started at stage #{stage[:role]} (pane #{stage[:pane_index]})", stage[:pane_index], token, deadline, stage[:timeout], delivery]
             end
-            started = @pipeline_state.start(
-              work_item_ref: ref,
-              workspace_name: @current_name,
-              dispatch_id: message["dispatch_id"],
-              sentinel_token: token,
-              deadline: deadline
-            )
-            @logger.debug { "pipeline started for #{ref} at pane #{stage[:pane_index]} (#{stage[:role]})" }
-            [started, "Pipeline started at stage #{stage[:role]} (pane #{stage[:pane_index]})", stage[:pane_index], token, deadline, stage[:timeout], delivery]
           else
             target = claude_pane_target
             @logger.debug { "delivering #{ref} to #{@current_name}:#{target}" }
@@ -530,17 +547,17 @@ module Workspace
       # the next stage does. A hand-off that raises fails the work item: the
       # poller that saw the sentinel is done, and nothing else would look again.
       def advance_pipeline(work_item_ref, summary, poller)
-        entry, next_stage, from_pane, next_watch = @state_lock.synchronize do
-          advance_state(work_item_ref) if @pollers[work_item_ref].equal?(poller)
-        end
+        entry, next_stage, from_pane, next_watch, steer_failures =
+          @delivery_lock.synchronize { advance_state(work_item_ref, poller) }
         return unless entry
 
         # Reporting talks to the coordinator over a socket, so it stays outside
-        # the lock — a slow coordinator must not stall command dispatch.
+        # the locks — a slow coordinator must not stall command dispatch.
         begin
           if next_stage
             report_phase_change(entry, next_stage[:role])
             report_pipeline_advanced(entry, from_pane, next_stage[:pane_index])
+            steer_failures.each { |payload| report(entry, payload) }
           else
             report_task_complete(entry, summary)
           end
@@ -555,23 +572,31 @@ module Workspace
       end
 
       # Moves the work item onto its next stage (or off the pipeline) and returns
-      # the entry, the stage moved to, the pane moved from, and the arguments
-      # for arm_watch once the move has been reported (nil after the last stage).
+      # the entry, the stage moved to, the pane moved from, the arguments for
+      # arm_watch once the move has been reported (nil after the last stage),
+      # and the reports for queued steers that did not land cleanly. Returns
+      # nil when +poller+ no longer watches the item. Called with the delivery
+      # lock held.
       #
-      # The finished stage's poller stays registered until the next watch
-      # replaces it, so a failure before then is still its to report.
-      def advance_state(work_item_ref)
-        entry = @pipeline_state.current(work_item_ref)
+      # The state lock is held only to decide and to commit; the panes are
+      # typed into between the two. The finished stage's poller stays
+      # registered until the next watch replaces it, so a failure before then
+      # is still its to report.
+      def advance_state(work_item_ref, poller)
+        entry, next_stage, steers = @state_lock.synchronize do
+          next unless @pollers[work_item_ref].equal?(poller)
+          found = @pipeline_state.current(work_item_ref)
+          next unless found
+          stage = next_stage_for(found)
+          [found, stage, stage ? @queued_steers.delete(work_item_ref) || [] : []]
+        end
         return nil unless entry
 
-        stages = @pipeline_config.stages_for(entry[:workspace_name]) || []
-        current_index = stages.index { |stage| stage[:pane_index] == entry[:pane_index] }
-        next_stage = current_index && stages[current_index + 1]
         from_pane = entry[:pane_index]
-
         captured = @tmux.capture_pane(entry[:workspace_name], from_pane, all: true) || ""
         handoff_path = write_handoff(entry[:workspace_name], work_item_ref, captured)
 
+        steer_failures = []
         if next_stage
           token = @token_generator.call
           deadline = stage_deadline(next_stage)
@@ -588,27 +613,45 @@ module Workspace
               "could not hand off to the #{next_stage[:role]} stage (pane #{next_stage[:pane_index]}): #{delivery.message}"
           end
           @error_output.puts "workspace agent: #{work_item_ref}: #{delivery.message}" unless delivery.ok?
-          deliver_queued_steers(entry[:workspace_name], work_item_ref, next_stage[:pane_index])
-          @pipeline_state.advance(work_item_ref: work_item_ref, to_stage: next_stage,
-            sentinel_token: token, deadline: deadline)
+          steer_failures = deliver_queued_steers(entry[:workspace_name], work_item_ref, next_stage[:pane_index], steers)
           next_watch = [next_stage[:pane_index], token, deadline, next_stage[:timeout]]
-        else
-          @queued_steers.delete(work_item_ref)
-          @pipeline_state.complete(work_item_ref: work_item_ref)
-          @pollers.delete(work_item_ref)&.stop
         end
 
-        [entry, next_stage, from_pane, next_watch]
+        committed = @state_lock.synchronize do
+          # The item failed, or was aborted, while its panes were being typed
+          # into; moving it now would bring it back.
+          next false unless @pollers[work_item_ref].equal?(poller) && @pipeline_state.current(work_item_ref)
+          if next_stage
+            @pipeline_state.advance(work_item_ref: work_item_ref, to_stage: next_stage,
+              sentinel_token: next_watch[1], deadline: next_watch[2])
+          else
+            @queued_steers.delete(work_item_ref)
+            @pipeline_state.complete(work_item_ref: work_item_ref)
+            @pollers.delete(work_item_ref)&.stop
+          end
+          true
+        end
+        return nil unless committed
+
+        [entry, next_stage, from_pane, next_watch, steer_failures]
       end
 
       # Hands the next stage any steers that arrived while the previous stage was
-      # still running. Called with the state lock already held.
-      def deliver_queued_steers(name, work_item_ref, pane)
-        steers = @queued_steers.delete(work_item_ref) || []
-        steers.each do |steer|
+      # still running. The sender was already told each steer was accepted, so
+      # one that doesn't land cleanly is returned as a report for the
+      # coordinator: an error when it never arrived, a warning when it may have.
+      #
+      # @return [Array<Hash>] report payloads, one per steer not confirmed
+      def deliver_queued_steers(name, work_item_ref, pane, steers)
+        steers.filter_map do |steer|
           delivery = @tmux.deliver(name, pane_target(pane), steer)
           next if delivery.ok?
           @error_output.puts "workspace agent: queued steer for #{work_item_ref} to pane #{pane}: #{delivery.message}"
+          if delivery.landed?
+            {"type" => "status_update", "message" => "Warning: queued steer for pane #{pane}: #{delivery.message}"}
+          else
+            {"type" => "error", "message" => "queued steer for pane #{pane} was not delivered: #{delivery.message}"}
+          end
         end
       end
 
