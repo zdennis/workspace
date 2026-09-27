@@ -89,6 +89,7 @@ module Workspace
       if current_session_id && stored_session_id && stored_session_id != current_session_id
         return absent(ContextReasons::STALE_SESSION)
       end
+      return absent(ContextReasons::NO_READING_YET) if reading["pct"].nil?
       {pct: reading["pct"], error: nil, updated_at: reading["recorded_at"]}
     end
 

@@ -18,6 +18,15 @@ RSpec.describe Workspace::ContextReader do
       expect(result).to eq(pct: 42, error: nil, updated_at: "2026-09-27T00:00:00Z")
     end
 
+    it "reports undetermined (not 0) when the stored reading has a nil pct" do
+      allow(context_store).to receive(:reading_for_pane).with("%1").and_return(
+        {"pct" => nil, "session_id" => "sess-1", "recorded_at" => "2026-09-27T00:00:00Z"}
+      )
+
+      result = reader.read(pane_id: "%1")
+      expect(result).to eq(pct: nil, error: Workspace::ContextReasons::NO_READING_YET, updated_at: nil)
+    end
+
     describe "pid fallback" do
       let(:started) { "Sun Sep 27 10:00:00 2026" }
 
