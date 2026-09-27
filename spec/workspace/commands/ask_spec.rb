@@ -155,7 +155,18 @@ RSpec.describe Workspace::Commands::Ask do
     end
 
     it "raises for an unknown id" do
-      expect { command.answer("nope", "answer", working_dir: "/app") }.to raise_error(Workspace::Error, /No open question/)
+      expect { command.answer("nope", "answer", working_dir: "/app") }.to raise_error(Workspace::Error, /No question 'nope'/)
+    end
+
+    it "raises a distinct message for an already-answered id" do
+      command.call(question: "q1", default: "d1", working_dir: "/app", json: true)
+      id = JSON.parse(output.string)["question"]["id"]
+      output.truncate(0)
+      output.rewind
+      command.answer(id, "first answer", working_dir: "/app")
+
+      expect { command.answer(id, "second answer", working_dir: "/app") }
+        .to raise_error(Workspace::Error, /was already answered/)
     end
 
     it "emits a JSON error instead of raising when --json is given and the id is unknown" do
@@ -163,6 +174,21 @@ RSpec.describe Workspace::Commands::Ask do
 
       expect(result).to eq(exit_code: 1)
       expect(JSON.parse(output.string)).to include("schema_version" => 1)
+    end
+
+    it "emits a JSON error instead of raising when --json is given and the id was already answered" do
+      command.call(question: "q1", default: "d1", working_dir: "/app", json: true)
+      id = JSON.parse(output.string)["question"]["id"]
+      command.answer(id, "first answer", working_dir: "/app")
+      output.truncate(0)
+      output.rewind
+
+      result = command.answer(id, "second answer", working_dir: "/app", json: true)
+
+      expect(result).to eq(exit_code: 1)
+      payload = JSON.parse(output.string)
+      expect(payload).to include("schema_version" => 1)
+      expect(payload["error"]).to match(/was already answered/)
     end
   end
 end

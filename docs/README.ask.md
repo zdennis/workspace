@@ -32,7 +32,7 @@ workspace ask answer <id> "<answer>" [--json]
 
 **Pane** — when run inside tmux, the question is tagged with `$TMUX_PANE`, which is how [`sessions`](README.sessions.md) attributes it to a pane. Outside tmux, the question is still recorded (with no pane), and still shown by `ask list`.
 
-**`answer`** (alias `resolve`) marks a question answered and records the answer text. Answering an already-answered or unknown id fails (exit 1; with `--json`, `{"schema_version":1,"error":"..."}`).
+**`answer`** (alias `resolve`) marks a question answered and records the answer text. Answering an unknown id fails with "No question '\<id\>'"; answering an already-answered id fails with "Question '\<id\>' was already answered" (either way, exit 1; with `--json`, `{"schema_version":1,"error":"..."}`).
 
 **Alerts** — when the project has `alerts.notify` configured (see [`workspace config`](README.config.md)), it runs with the same alert-type variable [`sessions`'s alerts](README.sessions.md#alerts) use:
 

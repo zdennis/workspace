@@ -98,8 +98,13 @@ module Workspace
       # @return [Hash] {exit_code:}
       def answer(id, answer, working_dir: Dir.pwd, json: false)
         name = workspace_for(working_dir)
-        record = store_for(name).answer(id, answer)
-        raise Workspace::Error, "No open question '#{id}' for #{name}." unless record
+        store = store_for(name)
+        record = store.answer(id, answer)
+        unless record
+          already_answered = store.list.any? { |r| r["id"] == id }
+          message = already_answered ? "Question '#{id}' was already answered for #{name}." : "No question '#{id}' for #{name}."
+          raise Workspace::Error, message
+        end
 
         if json
           @output.puts JSON.generate({"schema_version" => JSON_SCHEMA_VERSION, "question" => record})
