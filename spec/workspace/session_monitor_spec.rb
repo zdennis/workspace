@@ -356,6 +356,36 @@ RSpec.describe Workspace::SessionMonitor do
 
       expect(monitor.send_alerts).to eq([])
     end
+
+    it "retries an alert whose notify raised on the next call" do
+      calls = 0
+      allow(notifier).to receive(:notify) { ((calls += 1) == 1) ? raise(ThreadError, "can't create Thread") : nil }
+      monitor.record("event" => "notification", "pane_id" => "%2")
+
+      expect(monitor.send_alerts).to eq([])
+      expect(monitor.send_alerts.map { |a| a["WORKSPACE_ALERT"] }).to eq(["waiting"])
+      expect(monitor.send_alerts).to eq([])
+    end
+
+    it "holds idle alerts while the process table can't be read, since output went uncaptured" do
+      allow(process_tree).to receive(:snapshot).and_raise(Workspace::Error, "ps timed out")
+      at(700)
+      monitor.scan
+
+      expect(monitor.send_alerts).to eq([])
+    end
+  end
+
+  describe "#stop" do
+    it "stops the notifier, so no notify command outlives the monitor" do
+      notifier = instance_double(Workspace::Notifier, stop: nil)
+      monitor = described_class.new(tmux: tmux, process_tree: process_tree, session_name: "proj",
+        clock: clock, notifier: notifier)
+
+      monitor.stop
+
+      expect(notifier).to have_received(:stop)
+    end
   end
 
   describe "#reap_locks" do

@@ -80,7 +80,8 @@ module Workspace
       end
     end
 
-    # Stops scanning. Safe to call more than once.
+    # Stops scanning, and stops any notify command still running. Safe to
+    # call more than once.
     #
     # @return [void]
     def stop
@@ -88,6 +89,7 @@ module Workspace
       thread = @thread
       @thread = nil
       thread.kill if thread && !thread.equal?(Thread.current)
+      @notifier&.stop
     end
 
     # Refreshes every pane's kind and activity from tmux and the process table.
@@ -98,8 +100,12 @@ module Workspace
       begin
         tree = @process_tree.snapshot
       rescue Workspace::Error => e
+        # The panes' output was not captured this time, so their activity is
+        # stale; idle alerts wait for a scan that succeeds.
+        @activity_stale = true
         return @logger.debug { "session monitor: skipping scan: #{e.message}" }
       end
+      @activity_stale = false
       now = @clock.now
 
       @lock.synchronize do
@@ -163,23 +169,27 @@ module Workspace
     # Runs the notify command for each agent pane that has started waiting, or
     # has stayed idle past the idle alert threshold, since it last alerted.
     # One wait, or one stretch of unchanged output, alerts once, however many
-    # scans it spans. Shell panes never alert. The notifier returns at once,
-    # and anything raised here is logged and swallowed, so alerting can never
-    # stall or end the scan thread.
+    # scans it spans. Shell panes never alert. The notifier returns at once.
+    # An alert counts as sent only once the notifier accepts it, so one that
+    # raises is retried on the next scan and doesn't keep later ones from
+    # going out. Anything raised here is logged and swallowed, so alerting can
+    # never stall or end the scan thread.
     #
     # @return [Array<Hash>] the environment of each alert sent
     def send_alerts
       return [] unless @notifier
       now = @clock.now
-      alerts = @lock.synchronize { @panes.values.filter_map { |pane| due_alert(pane, now) } }
-      alerts.each { |alert| @notifier.notify(alert) }
-      alerts
-    rescue => e
-      begin
-        @logger.debug { "session monitor: alert failed (#{e.class}: #{e.message})" }
-      rescue
+      due = @lock.synchronize { @panes.values.filter_map { |pane| due_alert(pane, now) } }
+      due.filter_map do |pane, mark, value, alert|
+        @notifier.notify(alert)
+        @lock.synchronize { pane[mark] = value }
+        alert
+      rescue => e
+        log_alert_failure(e)
         nil
       end
+    rescue => e
+      log_alert_failure(e)
       []
     end
 
@@ -188,20 +198,26 @@ module Workspace
     NOT_AGENTS = ["shell", "unknown"].freeze
     private_constant :NOT_AGENTS
 
+    # @return [Array, nil] the pane, the key and value that mark it alerted,
+    #   and the alert's environment; nil when no alert is due
     def due_alert(pane, now)
       return nil if NOT_AGENTS.include?(pane[:kind])
 
       if (since = pane[:waiting_since])
         return nil if pane[:alerted_waiting_since] == since
-        pane[:alerted_waiting_since] = since
-        return alert_env(pane, "waiting", now - since, pane[:waiting_message])
+        return [pane, :alerted_waiting_since, since, alert_env(pane, "waiting", now - since, pane[:waiting_message])]
       end
 
-      return nil unless @idle_alert_after && pane[:last_activity_at]
+      return nil if @activity_stale || !@idle_alert_after || !pane[:last_activity_at]
       idle_for = now - pane[:last_activity_at]
       return nil if idle_for < @idle_alert_after || pane[:alerted_idle_since] == pane[:last_activity_at]
-      pane[:alerted_idle_since] = pane[:last_activity_at]
-      alert_env(pane, "idle", idle_for, nil)
+      [pane, :alerted_idle_since, pane[:last_activity_at], alert_env(pane, "idle", idle_for, nil)]
+    end
+
+    def log_alert_failure(error)
+      @logger.debug { "session monitor: alert failed (#{error.class}: #{error.message})" }
+    rescue
+      nil
     end
 
     def alert_env(pane, alert, seconds, message)
