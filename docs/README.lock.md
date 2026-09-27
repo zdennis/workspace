@@ -125,7 +125,8 @@ Before editing files, run `workspace lock acquire edit --wait --task "<your task
 - `holder` is `null` when the lock is free; `queue` is `[]` when no one is waiting.
 - `stale` marks a holder or waiter that the next mutating op (`acquire`, `release`, `clear`) would reap as dead — the same annotation the table's `STALE` marker comes from.
 - A corrupt `locks.json` becomes `{"schema_version": 1, "error": "<message>"}` on stdout, exit 1 — the JSON error stays on the same stream as a successful payload, so a caller only ever needs to read stdout and check for an `"error"` key, never stderr, to tell the two apart.
-- Exit codes: `0` on success (including an empty store or a free lock), `1` for a store error, matching the plain command's usage errors otherwise (e.g. a bad lock name).
+- Usage/validation errors (a bad lock name, an unknown flag, extra arguments) get the same treatment: `{"schema_version": 1, "error": "<message>"}` on stdout, exit 1 — never plain text on stderr — as long as `--json` was present on the command line. A caller that always passes `--json` and always reads stdout never needs to special-case argument mistakes.
+- Exit codes: `0` on success (including an empty store or a free lock), `1` for a store error or a usage/validation error.
 
 **`clear`** — removes a lock's holder and queue unconditionally, with no liveness check and no confirmation prompt. Use it to recover from a stuck lock. Clearing `devenv` also stops the dev environment: SIGTERM to its wrapper, then SIGKILL to its process group after `dev.stop_timeout` — but only while the wrapper's pid still matches its recorded start time, so a reused process group is never signalled (see [`workspace dev`](README.dev.md)). The lock is cleared either way; if the process group has live processes this user isn't permitted to signal (its id was likely reused by another user), `clear` prints `Could not stop process group N (pid P): ... not permitted ...` instead of stopping it.
 

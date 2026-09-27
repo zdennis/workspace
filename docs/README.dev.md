@@ -70,7 +70,8 @@ workspace config set dev.stop_timeout 20s         # SIGTERM → SIGKILL grace (d
 - `ready` is `true`/`false` when `dev.ready` is configured and the environment is running (not stale), otherwise `null` (not configured, or nothing to check).
 - `holder`'s `stale` marks a wrapper whose pid is gone (an orphaned process group may still be running — see "Crashes" below); `running` is `false` for a stale holder.
 - A corrupt `locks.json` becomes `{"schema_version": 1, "error": "<message>"}` on stdout, exit 1.
-- Exit codes: `0` on success (including no environment running), `1` for a store error.
+- Usage/validation errors (an unknown flag, extra arguments) get the same treatment when `--json` is present: `{"schema_version": 1, "error": "<message>"}` on stdout, exit 1 — never plain text on stderr.
+- Exit codes: `0` on success (including no environment running), `1` for a store error or a usage/validation error.
 
 ## Details
 

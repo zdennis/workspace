@@ -3,6 +3,7 @@ require "socket"
 require "securerandom"
 require "shellwords"
 require "time"
+require "json"
 
 module Workspace
   # Command-line interface for the workspace CLI.
@@ -187,7 +188,7 @@ module Workspace
     rescue UsageError => e
       @error_output.puts e.message
       @exit_handler.exit(1)
-    rescue OptionParser::InvalidArgument, OptionParser::MissingArgument => e
+    rescue OptionParser::ParseError => e
       @error_output.puts e.message
       @exit_handler.exit(1)
     rescue Error => e
@@ -872,6 +873,18 @@ module Workspace
       raise UsageError, "#{flag}: #{e.message}"
     end
 
+    # Emits the documented `--json` error contract (see docs/README.lock.md,
+    # docs/README.dev.md) to stdout and exits, for usage/validation errors
+    # raised before a command's own `status_json` branch is reached (e.g. bad
+    # option, extra argument, invalid lock name).
+    #
+    # @param schema_version [Integer] the command's JSON schema version
+    # @param message [String] error message (single line; not the full help text)
+    def emit_json_usage_error(schema_version, message)
+      @output.puts JSON.generate({"schema_version" => schema_version, "error" => message})
+      @exit_handler.exit(1)
+    end
+
     def cmd_lock_release(args)
       all = false
       parser = OptionParser.new do |opts|
@@ -900,6 +913,9 @@ module Workspace
 
       result = @lock_command.status(name, working_dir: @working_dir, json: json)
       @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
+    rescue OptionParser::ParseError, UsageError => e
+      raise unless json
+      emit_json_usage_error(Commands::Lock::JSON_SCHEMA_VERSION, e.message)
     end
 
     def cmd_lock_clear(args)
@@ -1016,6 +1032,9 @@ module Workspace
 
       result = @dev_command.status(working_dir: @working_dir, json: json)
       @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
+    rescue OptionParser::ParseError, UsageError => e
+      raise unless json
+      emit_json_usage_error(Commands::Dev::JSON_SCHEMA_VERSION, e.message)
     end
 
     # Hidden: the wrapper `dev up` runs in the devenv window.
