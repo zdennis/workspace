@@ -717,7 +717,7 @@ RSpec.describe Workspace::Commands::Dev, "with fake processes and clock" do
       expect(dev.down(working_dir: worktree)).to eq(exit_code: 1)
       expect(holder).to include("pid" => 700)
       expect(error_output.string).to include("Could not stop process group 700 (pid 700): process group 700 has running processes",
-        "Kept devenv lock", "sudo kill -TERM -700", "then run: workspace dev down")
+        "Kept devenv lock", "kill -TERM -700", "then run: workspace dev down")
       expect(output.string).not_to include("Stopped dev environment")
       expect(tmux).not_to have_received(:close_dead_pane)
     end
@@ -776,6 +776,17 @@ RSpec.describe Workspace::Commands::Dev, "with fake processes and clock" do
       expect(holder).to include("pid" => 700)
       expect(store.status("devenv").dig("devenv", "queue").map { |w| w["waiter_pid"] }).to eq([555])
       expect(error_output.string).to include("Kept devenv lock", "stays queued first for the devenv lock")
+    end
+
+    it "tells the reader to have the group's owner stop it, with no sudo advice" do
+      hold(700)
+      wrapper_joins(555)
+      allow(terminator).to receive(:stop_holder).and_raise(Workspace::Error, "process group 700 has running processes this user is not permitted to signal")
+
+      expect(dev.up(takeover: true, working_dir: worktree)).to eq(exit_code: 1)
+      expect(error_output.string).to include("Run `workspace dev status` to watch it",
+        "Have its owner run `kill -TERM -700`", "the lock frees on its own once the group is empty")
+      expect(error_output.string).not_to include("sudo")
     end
   end
 end
