@@ -10,14 +10,23 @@ module Workspace
     # code path behind both the table and `--json`, so what a future UI reads is
     # exactly what the table shows.
     class Sessions
+      # The lock this column shows; see {Workspace::LockEnforcer::LOCK_NAME}.
+      LOCK_NAME = "edit"
+
       # @param config [Workspace::Config] socket path lookups
+      # @param lock_namespace [Workspace::LockNamespace, nil] resolves the edit
+      #   lock's store directory; nil hides the LOCK column entirely
+      # @param lock_holder [Workspace::LockHolder, nil] checks holder/waiter
+      #   liveness for the lock store; required together with +lock_namespace+
       # @param output [IO] stream for the rendered table or JSON
       # @param error_output [IO] stream for the no-daemon message
       # @param clock [#now] time source, injected for deterministic tests
       # @param sleeper [#call] delay between refreshes, injected for tests
-      def initialize(config:, output: $stdout, error_output: $stderr,
+      def initialize(config:, lock_namespace: nil, lock_holder: nil, output: $stdout, error_output: $stderr,
         clock: Time, sleeper: ->(seconds) { sleep(seconds) })
         @config = config
+        @lock_namespace = lock_namespace
+        @lock_holder = lock_holder
         @output = output
         @error_output = error_output
         @clock = clock
@@ -59,14 +68,15 @@ module Workspace
       end
 
       def render(snapshot, json)
+        panes = snapshot["panes"] || []
+        apply_lock_column(panes)
         return @output.puts(JSON.pretty_generate(snapshot)) if json
 
         @output.puts "workspace: #{snapshot["workspace"]}"
         @output.puts ""
-        panes = snapshot["panes"] || []
         return @output.puts "  no panes" if panes.empty?
 
-        @output.puts format_row("PANE", "KIND", "TITLE", "STATE", "IDLE")
+        @output.puts format_row("PANE", "KIND", "TITLE", "STATE", "IDLE", "LOCK")
         panes.each { |pane| render_pane(pane) }
       end
 
@@ -76,9 +86,36 @@ module Workspace
           pane["kind"],
           truncate(pane["label"] || pane["title"], 22),
           pane["state"],
-          duration(pane["idle_seconds"])
+          duration(pane["idle_seconds"]),
+          pane["lock"]
         )
         Array(pane["agents"]).each { |agent| render_agent(agent) }
+      end
+
+      # Loads the `edit` lock's holder and queue once per render — never per
+      # pane — and stamps each pane's `"lock"` field: "edit ✓" for the
+      # holder's pane, "edit #N" for a queued waiter's pane, or "" (blank) for
+      # every other pane, including one with no agent at all.
+      def apply_lock_column(panes)
+        return unless @lock_namespace && @lock_holder
+
+        positions = lock_positions
+        panes.each { |pane| pane["lock"] = positions[pane["pane_id"]] || "" }
+      end
+
+      def lock_positions
+        namespace = @lock_namespace.resolve(cwd: Dir.pwd)
+        store = LockStore.new(dir: namespace[:dir], liveness: @lock_holder)
+        entry = store.status(LOCK_NAME)[LOCK_NAME] || {}
+        positions = {}
+        holder = entry["holder"]
+        positions[holder["pane"]] = "#{LOCK_NAME} ✓" if holder && holder["pane"]
+        (entry["queue"] || []).each_with_index do |waiter, i|
+          positions[waiter["pane"]] ||= "#{LOCK_NAME} ##{i + 1}" if waiter["pane"]
+        end
+        positions
+      rescue Workspace::Error
+        {}
       end
 
       # Indented to start under the TITLE column so a sub-agent reads as
@@ -88,8 +125,8 @@ module Workspace
           "└─ #{truncate(agent["name"], 20)}", agent["state"]).rstrip
       end
 
-      def format_row(pane, kind, title, state, idle)
-        format("%-6s%-10s%-24s%-10s%s", pane, kind, title, state, idle).rstrip
+      def format_row(pane, kind, title, state, idle, lock = "")
+        format("%-6s%-10s%-24s%-10s%-8s%s", pane, kind, title, state, idle, lock).rstrip
       end
 
       def truncate(value, width)

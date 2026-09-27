@@ -87,6 +87,65 @@ RSpec.describe Workspace::Commands::Sessions do
     end
   end
 
+  describe "lock column" do
+    let(:lock_dir) { File.join(tmpdir, "locks") }
+    let(:lock_namespace) { instance_double(Workspace::LockNamespace, resolve: {key: "ns", display: "app", dir: lock_dir}) }
+    let(:lock_holder) { FakeLockLiveness.new }
+    let(:command) do
+      described_class.new(config: config, lock_namespace: lock_namespace, lock_holder: lock_holder,
+        output: output, error_output: error_output)
+    end
+
+    def acquire(pid:, pane:, wait: false)
+      store = Workspace::LockStore.new(dir: lock_dir, liveness: lock_holder)
+      identity = {kind: "agent", pid: pid, started: "start-#{pid}", pane: pane, worktree: "app"}
+      store.acquire("edit", identity: identity, waiter_pid: pid, waiter_started: "start-#{pid}", wait: wait)
+    end
+
+    it "marks the holder's pane and a waiter's pane, leaving the rest blank" do
+      acquire(pid: 100, pane: "%1")
+      acquire(pid: 200, pane: "%2", wait: true)
+
+      with_daemon { command.call(name: "proj") }
+
+      expect(output.string).to match(/0\.0\s+claude\s+Claude Code\s+working\s+\S*\s*edit ✓/)
+      expect(output.string).to match(/0\.1\s+shell\s+zsh\s+idle\s+\S+\s+edit #1/)
+    end
+
+    it "loads the lock store exactly once per render, not once per pane" do
+      acquire(pid: 100, pane: "%1")
+      call_count = 0
+      dir = lock_dir
+      counting_namespace = Object.new
+      counting_namespace.define_singleton_method(:resolve) do |cwd:|
+        call_count += 1
+        {key: "ns", display: "app", dir: dir}
+      end
+      command = described_class.new(config: config, lock_namespace: counting_namespace, lock_holder: lock_holder,
+        output: output, error_output: error_output)
+
+      with_daemon { command.call(name: "proj") }
+
+      expect(call_count).to eq(1)
+    end
+
+    it "leaves every pane blank when the lock is free" do
+      with_daemon { command.call(name: "proj") }
+
+      expect(output.string).not_to include("edit")
+    end
+
+    it "stamps the lock field on each pane in --json too" do
+      acquire(pid: 100, pane: "%1")
+
+      with_daemon { command.call(name: "proj", json: true) }
+
+      panes = JSON.parse(output.string)["panes"]
+      expect(panes.find { |p| p["pane_id"] == "%1" }["lock"]).to eq("edit ✓")
+      expect(panes.find { |p| p["pane_id"] == "%2" }["lock"]).to eq("")
+    end
+  end
+
   describe "--watch" do
     it "redraws on an interval until interrupted" do
       draws = 0

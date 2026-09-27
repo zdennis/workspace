@@ -113,7 +113,6 @@ module Workspace
     tile_command = Commands::Tile.new(state: state, window_manager: window_manager, window_layout: window_layout, output: output)
     layout_command = Commands::Layout.new(state: state, tmux: tmux, project_settings: project_settings, output: output)
     resize_command = Commands::Resize.new(tmux: tmux, layout_command: layout_command, output: output, error_output: error_output)
-    sessions_command = Commands::Sessions.new(config: config, output: output, error_output: error_output)
     init_command = Commands::Init.new(config: config, hook_installer: hook_installer, output: output, error_output: error_output, input: input)
     repair_command = Commands::Repair.new(state: state, iterm: iterm, window_manager: window_manager, output: output)
     cleanup_command = Commands::Cleanup.new(state: state, window_manager: window_manager, tmux: tmux, output: output, input: input)
@@ -135,6 +134,8 @@ module Workspace
 
     lock_namespace = LockNamespace.new(config: config, lineage: lineage)
     lock_holder = LockHolder.new
+    sessions_command = Commands::Sessions.new(config: config, lock_namespace: lock_namespace, lock_holder: lock_holder,
+      output: output, error_output: error_output)
     dev_config = DevConfig.new(project_settings: project_settings)
     lock_config = LockConfig.new(project_settings: project_settings, error_output: error_output)
     lock_idle_tracker = LockIdleTracker.new(config: config, lock_namespace: lock_namespace, lock_holder: lock_holder, logger: logger)

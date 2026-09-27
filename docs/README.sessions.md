@@ -24,7 +24,9 @@ Requires a running agent daemon for the project (`workspace agent <project>`, or
 
 The daemon holds the session state; this command only asks for it, over the agent's Unix socket. That keeps `--json` and the table behind one code path, so scripting against `--json` sees exactly what the table shows.
 
-Each pane shows its index, kind, title, state (`working`/`idle`), and how long it's been idle. Sub-agents started within a pane (Claude Code's `Task` tool invocations) are listed indented underneath their parent pane.
+Each pane shows its index, kind, title, state (`working`/`idle`), how long it's been idle, and a LOCK column. Sub-agents started within a pane (Claude Code's `Task` tool invocations) are listed indented underneath their parent pane.
+
+**LOCK column** — shows this pane's relationship to the `edit` lock ([`workspace lock`](README.lock.md)): `edit ✓` for the pane currently holding it, `edit #N` for a pane queued at position `N`, or blank for every other pane, including one with no agent at all. The lock store for the current directory's namespace is loaded once per render (never once per pane), so the column costs one extra file read, not a `git`/`ps` call per row.
 
 ## Examples
 
