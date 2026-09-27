@@ -125,9 +125,14 @@ module Workspace
         command = @alert_config.for_workspace(name)[:notify]
         return unless command
 
+        # WORKSPACE_ALERT is the same alert-type variable session_monitor.rb
+        # sets to "waiting"/"idle"; WORKSPACE_ALERT_KIND is reserved there for
+        # the agent kind (e.g. "claude"), which a question has no notion of,
+        # so it is left unset here rather than reused for something else.
         env = {
-          "WORKSPACE_ALERT_KIND" => "question",
+          "WORKSPACE_ALERT" => "question",
           "WORKSPACE_ALERT_WORKSPACE" => name,
+          "WORKSPACE_ALERT_TEXT" => "#{name}: #{record["question"]} (default: #{record["default"]})",
           "WORKSPACE_ALERT_QUESTION" => record["question"],
           "WORKSPACE_ALERT_DEFAULT" => record["default"],
           "WORKSPACE_ALERT_ID" => record["id"]

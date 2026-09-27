@@ -877,7 +877,7 @@ module Workspace
 
         When the project has `alerts.notify` configured (see
         `workspace config set alerts.notify <command>`), it runs with
-        WORKSPACE_ALERT_KIND=question and the question/default in
+        WORKSPACE_ALERT=question and the question/default in
         WORKSPACE_ALERT_* env vars. Without it, the question is just recorded.
 
         Examples:

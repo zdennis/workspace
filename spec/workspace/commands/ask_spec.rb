@@ -60,7 +60,7 @@ RSpec.describe Workspace::Commands::Ask do
         command.call(question: "pg or sqlite?", default: "sqlite", context: "lib/x.rb:1", working_dir: "/app")
 
         expect(notifier).to have_received(:notify).with(hash_including(
-          "WORKSPACE_ALERT_KIND" => "question",
+          "WORKSPACE_ALERT" => "question",
           "WORKSPACE_ALERT_WORKSPACE" => "myapp",
           "WORKSPACE_ALERT_QUESTION" => "pg or sqlite?",
           "WORKSPACE_ALERT_DEFAULT" => "sqlite",
