@@ -1623,11 +1623,6 @@ module Workspace
         end
       end
 
-      if args.include?("--help")
-        @output.puts parser.help
-        @exit_handler.exit(0)
-      end
-
       parser.parse!(args)
 
       project = args.first || @project_detector.detect(@working_dir)
