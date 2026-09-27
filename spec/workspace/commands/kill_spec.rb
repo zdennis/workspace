@@ -64,6 +64,7 @@ RSpec.describe Workspace::Commands::Kill do
       context "with valid worktree" do
         before do
           allow(git).to receive(:worktree_exists?).with("/path/to/worktree").and_return(true)
+          allow(git).to receive(:unsaved_work).with("/path/to/worktree").and_return(nil)
         end
 
         it "cancels when user declines confirmation" do
@@ -111,6 +112,7 @@ RSpec.describe Workspace::Commands::Kill do
 
           File.write(config_path, YAML.dump("name" => "myproject-wt-PROJ-123", "root" => worktree_dir))
           allow(git).to receive(:worktree_exists?).with(worktree_dir).and_return(true)
+          allow(git).to receive(:unsaved_work).with(worktree_dir).and_return(nil)
           allow(git).to receive(:remove_worktree)
           allow(stop_command).to receive(:call).and_return([])
           allow(project_config).to receive(:remove)
@@ -136,7 +138,7 @@ RSpec.describe Workspace::Commands::Kill do
 
           command.call("myproject.worktree-PROJ-123")
 
-          expect(order).to eq([:remove_worktree, :kill, :remove_config, :remove_settings])
+          expect(order).to eq([:remove_worktree, :remove_config, :remove_settings, :kill])
         end
 
         it "skips confirmation with force flag" do
@@ -173,6 +175,7 @@ RSpec.describe Workspace::Commands::Kill do
 
         File.write(config_path, YAML.dump("name" => "myproject-wt-PROJ-123", "root" => "/path/to/worktree"))
         allow(git).to receive(:worktree_exists?).with("/path/to/worktree").and_return(true)
+        allow(git).to receive(:unsaved_work).with("/path/to/worktree").and_return(nil)
         allow(git).to receive(:remove_worktree)
         allow(stop_command).to receive(:call).and_return([])
         allow(project_config).to receive(:remove)
@@ -196,6 +199,7 @@ RSpec.describe Workspace::Commands::Kill do
 
         File.write(config_path, YAML.dump("name" => "myproject-wt-PROJ-123", "root" => "/path/to/worktree"))
         allow(git).to receive(:worktree_exists?).with("/path/to/worktree").and_return(true)
+        allow(git).to receive(:unsaved_work).with("/path/to/worktree").and_return(nil)
         allow(git).to receive(:remove_worktree)
         allow(stop_command).to receive(:call).and_return([])
         allow(project_config).to receive(:remove)
@@ -219,6 +223,55 @@ RSpec.describe Workspace::Commands::Kill do
         expect { cmd.call(nil, working_dir: tmpdir) }.to raise_error(
           Workspace::Error, /No project specified/
         )
+      end
+    end
+
+    context "with unsaved work" do
+      before do
+        File.write(config_path, YAML.dump("name" => "myproject-wt-PROJ-123", "root" => "/path/to/worktree"))
+        allow(git).to receive(:worktree_exists?).with("/path/to/worktree").and_return(true)
+      end
+
+      it "refuses to remove a dirty or unpushed worktree before touching anything" do
+        allow(git).to receive(:unsaved_work).with("/path/to/worktree")
+          .and_return(changed_files: 2, unpushed_commits: 1, branch: "feature/x")
+        expect(git).not_to receive(:remove_worktree)
+        expect(stop_command).not_to receive(:call)
+
+        expect { command.call("myproject.worktree-PROJ-123") }.to raise_error(
+          Workspace::Error, /2 changed file\(s\) and 1 unpushed commit\(s\) on feature\/x/
+        )
+      end
+
+      it "refuses when git cannot answer" do
+        allow(git).to receive(:unsaved_work).with("/path/to/worktree").and_return(:unknown)
+        expect(git).not_to receive(:remove_worktree)
+
+        expect { command.call("myproject.worktree-PROJ-123") }.to raise_error(
+          Workspace::Error, /git couldn't answer/
+        )
+      end
+
+      it "mentions --force as the way out" do
+        allow(git).to receive(:unsaved_work).with("/path/to/worktree")
+          .and_return(changed_files: 2, unpushed_commits: 1, branch: "feature/x")
+
+        expect { command.call("myproject.worktree-PROJ-123") }.to raise_error(
+          Workspace::Error, /--force/
+        )
+      end
+
+      it "proceeds without checking when --force is given" do
+        allow(git).to receive(:unsaved_work).with("/path/to/worktree")
+          .and_return(changed_files: 2, unpushed_commits: 1, branch: "feature/x")
+        allow(git).to receive(:remove_worktree)
+        allow(stop_command).to receive(:call).and_return([])
+        allow(project_config).to receive(:remove)
+        allow(project_settings).to receive(:remove)
+
+        command.call("myproject.worktree-PROJ-123", force: true)
+
+        expect(git).to have_received(:remove_worktree).with("/path/to/worktree", force: true)
       end
     end
 

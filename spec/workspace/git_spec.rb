@@ -185,6 +185,133 @@ RSpec.describe Workspace::Git do
     end
   end
 
+  describe "unsaved work detection" do
+    def run!(*cmd, chdir:)
+      _, stderr, status = Open3.capture3(*cmd, chdir: chdir)
+      raise "#{cmd.join(" ")} failed: #{stderr}" unless status.success?
+    end
+
+    def make_repo_with_remote
+      remote_dir = Dir.mktmpdir
+      run!("git", "init", "--bare", "-b", "main", chdir: remote_dir)
+
+      repo_dir = Dir.mktmpdir
+      run!("git", "clone", remote_dir, repo_dir, chdir: Dir.pwd)
+      run!("git", "config", "user.email", "test@example.com", chdir: repo_dir)
+      run!("git", "config", "user.name", "Test", chdir: repo_dir)
+      File.write(File.join(repo_dir, "README.md"), "hi\n")
+      run!("git", "add", "README.md", chdir: repo_dir)
+      run!("git", "commit", "-m", "initial", chdir: repo_dir)
+      run!("git", "push", "-u", "origin", "main", chdir: repo_dir)
+      [remote_dir, repo_dir]
+    end
+
+    around do |example|
+      @remote_dir, @repo_dir = make_repo_with_remote
+      example.run
+    ensure
+      FileUtils.remove_entry(@remote_dir) if @remote_dir && File.exist?(@remote_dir)
+      FileUtils.remove_entry(@repo_dir) if @repo_dir && File.exist?(@repo_dir)
+    end
+
+    describe "#changed_files_count" do
+      it "returns 0 for a clean repo" do
+        expect(git.changed_files_count(@repo_dir)).to eq(0)
+      end
+
+      it "counts modified tracked files, ignoring untracked ones" do
+        File.write(File.join(@repo_dir, "untracked.txt"), "x")
+        File.write(File.join(@repo_dir, "README.md"), "changed\n")
+
+        expect(git.changed_files_count(@repo_dir)).to eq(1)
+      end
+
+      it "counts staged and unstaged changes to tracked files" do
+        File.write(File.join(@repo_dir, "README.md"), "staged\n")
+        run!("git", "add", "README.md", chdir: @repo_dir)
+        File.write(File.join(@repo_dir, "README.md"), "staged then unstaged\n")
+
+        expect(git.changed_files_count(@repo_dir)).to eq(1)
+      end
+
+      it "returns nil when git cannot answer" do
+        expect(git.changed_files_count(File.join(@repo_dir, "does-not-exist"))).to be_nil
+      end
+    end
+
+    describe "#unpushed_commit_count" do
+      it "returns 0 when HEAD matches its remote" do
+        expect(git.unpushed_commit_count(@repo_dir)).to eq(0)
+      end
+
+      it "counts commits not reachable from any remote-tracking ref" do
+        run!("git", "commit", "--allow-empty", "-m", "unpushed 1", chdir: @repo_dir)
+        run!("git", "commit", "--allow-empty", "-m", "unpushed 2", chdir: @repo_dir)
+
+        expect(git.unpushed_commit_count(@repo_dir)).to eq(2)
+      end
+
+      it "falls back to other local branches when the repo has no remotes" do
+        run!("git", "remote", "remove", "origin", chdir: @repo_dir)
+        run!("git", "branch", "other", chdir: @repo_dir)
+        run!("git", "commit", "--allow-empty", "-m", "on main only", chdir: @repo_dir)
+
+        expect(git.unpushed_commit_count(@repo_dir)).to eq(1)
+      end
+    end
+
+    describe "#unsaved_work" do
+      it "returns nil for a clean, fully-pushed repo" do
+        expect(git.unsaved_work(@repo_dir)).to be_nil
+      end
+
+      it "returns a hash describing dirty tracked files and unpushed commits" do
+        File.write(File.join(@repo_dir, "README.md"), "changed\n")
+        run!("git", "commit", "--allow-empty", "-m", "unpushed", chdir: @repo_dir)
+
+        result = git.unsaved_work(@repo_dir)
+        expect(result).to eq(changed_files: 1, unpushed_commits: 1, branch: "main")
+      end
+
+      it "ignores untracked files entirely" do
+        File.write(File.join(@repo_dir, "untracked.txt"), "x")
+
+        expect(git.unsaved_work(@repo_dir)).to be_nil
+      end
+
+      it "returns :unknown when git cannot answer" do
+        expect(git.unsaved_work(File.join(@repo_dir, "does-not-exist"))).to eq(:unknown)
+      end
+    end
+
+    describe "#upstream_branch" do
+      it "returns the upstream ref when one is set" do
+        expect(git.upstream_branch(@repo_dir)).to eq("origin/main")
+      end
+
+      it "returns nil when there is no upstream" do
+        run!("git", "checkout", "-b", "no-upstream", chdir: @repo_dir)
+        expect(git.upstream_branch(@repo_dir)).to be_nil
+      end
+    end
+
+    describe "#commits_ahead_of_upstream" do
+      it "returns 0 when HEAD matches its upstream" do
+        expect(git.commits_ahead_of_upstream(@repo_dir)).to eq(0)
+      end
+
+      it "counts commits ahead of the upstream" do
+        run!("git", "commit", "--allow-empty", "-m", "ahead", chdir: @repo_dir)
+        expect(git.commits_ahead_of_upstream(@repo_dir)).to eq(1)
+      end
+
+      it "returns nil when there is no upstream" do
+        run!("git", "checkout", "-b", "no-upstream", chdir: @repo_dir)
+        expect(git.commits_ahead_of_upstream(@repo_dir)).to be_nil
+      end
+    end
+  end
+
   describe "#find_worktree_by_branch" do
     it "returns the worktree path when a worktree exists for the branch" do
       porcelain = <<~OUTPUT

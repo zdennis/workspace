@@ -32,7 +32,8 @@ module Workspace
       # for confirmation (unless --force), and removes them.
       #
       # @param dry_run [Boolean] print table but make no changes
-      # @param force [Boolean] skip confirmation prompt
+      # @param force [Boolean] skip confirmation prompt, and remove a candidate's
+      #   worktree even if it has unsaved work
       # @return [Array<String>] names of pruned (or would-be-pruned) projects
       def call(dry_run: false, force: false)
         @state.load
@@ -60,11 +61,21 @@ module Workspace
           end
         end
 
-        candidates.each { |c| remove_candidate(c) }
+        removed = []
+        skipped = []
+        candidates.each do |c|
+          if remove_candidate(c, force: force)
+            removed << c[:project]
+          else
+            skipped << c[:project]
+          end
+        end
         @state.save
 
-        @output.puts "Pruned #{candidates.size} project(s)."
-        candidates.map { |c| c[:project] }
+        summary = "Pruned #{removed.size} project(s)."
+        summary += " Skipped #{skipped.size} with unsaved work: #{skipped.join(", ")}." if skipped.any?
+        @output.puts summary
+        removed
       end
 
       private
@@ -219,19 +230,47 @@ module Workspace
       end
 
       # Removes a single candidate project: kills any live session, removes the
-      # worktree, tmuxinator config, project settings, and state entry.
+      # worktree, tmuxinator config, project settings, and state entry. Skips
+      # (and reports) a candidate whose worktree has unsaved work, unless force
+      # is set.
       #
       # @param candidate [Hash] a candidate hash from detect_candidates
-      # @return [void]
-      def remove_candidate(candidate)
+      # @param force [Boolean] remove even if the worktree has unsaved work
+      # @return [Boolean] true if the candidate was removed, false if it was skipped
+      def remove_candidate(candidate, force:)
         path = candidate[:worktree_path]
         project = candidate[:project]
+        has_worktree = @git.worktree_exists?(path)
+
+        if has_worktree && !force
+          unsaved = @git.unsaved_work(path)
+          if unsaved
+            report_skip(candidate, unsaved)
+            return false
+          end
+        end
 
         @stop_command.call([project]) if @state[project]
-        @git.remove_worktree(path, force: true) if @git.worktree_exists?(path)
+        @git.remove_worktree(path, force: true) if has_worktree
         @project_config.remove(project)
         @project_settings.remove(project)
         @state.delete(project)
+        true
+      end
+
+      # Prints a one-line notice that a candidate was skipped due to unsaved work.
+      #
+      # @param candidate [Hash] the skipped candidate hash
+      # @param unsaved [Hash, Symbol] the :unsaved_work result (a Hash, or :unknown)
+      # @return [void]
+      def report_skip(candidate, unsaved)
+        if unsaved == :unknown
+          @output.puts "  Skipped #{candidate[:project]}: git couldn't check #{candidate[:worktree_path]} for unsaved work."
+        else
+          branch = unsaved[:branch] || "HEAD"
+          @output.puts "  Skipped #{candidate[:project]}: #{unsaved[:changed_files]} changed file(s) and " \
+            "#{unsaved[:unpushed_commits]} unpushed commit(s) on #{branch}. Commit/push, or rerun with --force."
+        end
       end
     end
   end
