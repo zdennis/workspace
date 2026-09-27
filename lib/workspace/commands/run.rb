@@ -1,11 +1,4 @@
 module Workspace
-  # Defined here defensively: this file loads (via require_relative in
-  # workspace.rb) before workspace.rb itself defines Workspace::Error further
-  # down. Reopening with the same superclass once workspace.rb runs is a
-  # no-op, so this only matters when run.rb is required standalone (e.g. in
-  # isolation) or before that definition is reached.
-  class Error < StandardError; end unless const_defined?(:Error)
-
   module Commands
     # Sends a shell command to a specific pane in a running project's tmux session.
     class Run
