@@ -104,4 +104,40 @@ RSpec.describe Workspace::Notifier do
     expect(calls.first[0]).to eq([env, "say hi"])
     expect(calls.first[1]).to include(pgroup: true, in: File::NULL, out: File::NULL)
   end
+
+  describe "#stop" do
+    it "stops a run that is still going and reaps it" do
+      pid_file = File.join(dir, "leader")
+      n = notifier(%(echo $$ > "#{pid_file}"; exec sleep 30), timeout: 30, kill_grace: 1)
+      thread = n.notify(env)
+      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 5
+      sleep 0.01 until File.size?(pid_file) || Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
+      pid = File.read(pid_file).to_i
+
+      n.stop
+
+      expect(thread.join(1)).to eq(thread)
+      expect(child_alive?(pid)).to be false
+      expect(error_output.string).to be_empty
+    end
+
+    it "refuses new runs once stopped" do
+      n = notifier("true")
+      n.stop
+
+      expect(n.notify(env)).to be_nil
+    end
+  end
+
+  it "still stops a run past its timeout when reporting it raises" do
+    pid_file = File.join(dir, "leader")
+    broken = Object.new
+    broken.define_singleton_method(:puts) { |*| raise IOError, "closed stream" }
+    n = described_class.new(command: %(echo $$ > "#{pid_file}"; exec sleep 30), timeout: 0.3, kill_grace: 0.5,
+      error_output: broken)
+
+    n.notify(env).join(5)
+
+    expect(child_alive?(File.read(pid_file).to_i)).to be false
+  end
 end

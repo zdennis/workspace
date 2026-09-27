@@ -8,8 +8,10 @@ module Workspace
   # command line, so a message can't inject shell syntax.
   #
   # Each run happens on its own thread in its own process group. A command
-  # still running after the timeout gets SIGTERM, then SIGKILL, sent to that
-  # group (never to the daemon's own), and is always reaped.
+  # still running after the timeout, or when the notifier is stopped, gets
+  # SIGTERM, then SIGKILL, sent to that group (never to the daemon's own), and
+  # is always reaped. SIGKILL goes out after the grace period even when the
+  # command itself has exited, so a child that ignored SIGTERM can't outlive it.
   class Notifier
     # Seconds a notify command may run before it is stopped.
     DEFAULT_TIMEOUT = 10
@@ -36,6 +38,8 @@ module Workspace
       @spawner = spawner
       @error_output = error_output
       @threads = []
+      @pids = []
+      @stopped = false
       @lock = Mutex.new
     end
 
@@ -45,9 +49,10 @@ module Workspace
     # @return [Thread, nil] the thread running the command, or nil if skipped
     def notify(env)
       @lock.synchronize do
+        return nil if @stopped
         @threads.select!(&:alive?)
         if @threads.size >= @max_in_flight
-          @error_output.puts "workspace agent: skipped notify command for #{env["WORKSPACE_ALERT_TEXT"]} " \
+          report "workspace agent: skipped notify command for #{env["WORKSPACE_ALERT_TEXT"]} " \
             "(#{@threads.size} earlier runs still going)"
           return nil
         end
@@ -66,25 +71,57 @@ module Workspace
       @lock.synchronize { @threads.dup }.each { |thread| thread.join(limit) }
     end
 
+    # Stops every run still going (SIGTERM, then SIGKILL after the grace
+    # period) and refuses new ones. Returns within about twice the grace
+    # period. Safe to call more than once.
+    #
+    # @return [void]
+    def stop
+      pids = @lock.synchronize do
+        @stopped = true
+        @pids.dup
+      end
+      terminate(pids)
+      wait(@kill_grace)
+    end
+
     private
 
     def run(env)
       pid = @spawner.call(env, @command, pgroup: true, in: File::NULL, out: File::NULL)
       waiter = Process.detach(pid)
+      # A stop that landed between the spawn and this registration never saw
+      # the pid, so the run stops itself.
+      stopped = @lock.synchronize do
+        @pids << pid
+        @stopped
+      end
+      return terminate([pid], waiter) if stopped
+
       if waiter.join(@timeout)
         status = waiter.value
-        @error_output.puts "workspace agent: notify command failed (#{status})" if status && !status.success?
+        report "workspace agent: notify command failed (#{status})" if status && !status.success? && !@stopped
         return
       end
+      return if @stopped
 
-      @error_output.puts "workspace agent: notify command still running after #{@timeout}s; stopping it"
-      signal_group("TERM", pid)
-      return if waiter.join(@kill_grace)
-
-      signal_group("KILL", pid)
-      waiter.join
+      report "workspace agent: notify command still running after #{@timeout}s; stopping it"
+      terminate([pid], waiter)
     rescue => e
-      @error_output.puts "workspace agent: notify command failed to start: #{e.message}"
+      report "workspace agent: notify command failed to start: #{e.message}"
+    ensure
+      @lock.synchronize { @pids.delete(pid) } if pid
+    end
+
+    # Waits out the grace period only while some group still has members, but
+    # always sends SIGKILL at the end: the command exiting on SIGTERM says
+    # nothing about a child of it that ignored the signal.
+    def terminate(pids, waiter = nil)
+      pids.each { |pid| signal_group("TERM", pid) }
+      deadline = monotonic + @kill_grace
+      sleep 0.05 while pids.any? { |pid| group_alive?(pid) } && monotonic < deadline
+      pids.each { |pid| signal_group("KILL", pid) }
+      waiter&.join(@kill_grace)
     end
 
     # With pgroup: true the child leads a group whose id is its own pid, so
@@ -92,6 +129,26 @@ module Workspace
     def signal_group(signal, pid)
       Process.kill(signal, -pid)
     rescue Errno::ESRCH, Errno::EPERM
+      nil
+    end
+
+    def group_alive?(pid)
+      Process.kill(0, -pid)
+      true
+    rescue Errno::ESRCH
+      false
+    rescue Errno::EPERM
+      true
+    end
+
+    def monotonic
+      Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    end
+
+    # A closed or broken stream must never keep a run from being stopped.
+    def report(message)
+      @error_output.puts message
+    rescue
       nil
     end
   end
