@@ -30,6 +30,8 @@ The command is pasted into the tmux pane in one piece (`tmux load-buffer` + `pas
 
 If the text landed but Enter didn't visibly submit it, the error tells you not to run `workspace run` again for that command — the text is already sitting in the pane, so resending it would type it a second time. Go to the pane and press Enter there instead.
 
+Sometimes `run` can't tell whether the text arrived at all — the screen kept changing, or it couldn't be read back. That's an "unverified" delivery: it may or may not have landed, so the error still tells you not to resend it; check the pane yourself before deciding what to do.
+
 **Pane targeting** — by default the bottommost pane is used (highest pane index at invocation time). Use `--pane N` for a specific zero-based index, or `--pane bottom` / `--bottom` to be explicit.
 
 **Split panes** — `--split` creates a new horizontal pane below the bottommost pane, then sends the command there. `--split --vertical` splits side-by-side instead. The split uses `tmux split-window -P -F '#{pane_index}'` to capture the new pane index atomically.

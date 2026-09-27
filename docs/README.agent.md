@@ -47,7 +47,13 @@ A project with no `pipeline` block still works: commands go to the Claude Code p
 
 **Steering** — an `inject` message queues a note for the next stage without disturbing the running one. With `interrupt: true` it sends `C-c` to the running stage's pane first and types the note in immediately.
 
-**Delivery checks** — text is pasted into a pane in one piece and Enter is pressed once the pane stops changing. The agent reads the pane back to check each step. If the screen never changes after the paste, the text did not arrive. For a command, the agent then prints `workspace agent: command for <REF> was not delivered …` on stderr, reports an `error` to the coordinator, answers `not_delivered`, and does not start the pipeline. For a hand-off, the work item fails the same way a timed-out stage does. If the text arrived but Enter didn't change the screen, even on a second press, the stage still starts, with a `Warning:` status update, because sending the text again would type it twice. A pane whose output is already scrolling can pass this check without the text having landed.
+A queued steer is delivered when the next stage hands off. If that delivery doesn't land cleanly, the agent reports it to the coordinator rather than silently dropping it: an `error` ("queued steer for pane N was not delivered: …") if it never arrived, or a `status_update` ("Warning: queued steer for pane N: …") if it may have.
+
+**Delivery checks** — text is pasted into a pane in one piece and Enter is pressed once the pane stops changing. The agent reads the pane back to check each step. If the screen never changes after the paste, the text did not arrive. For a command, the agent then prints `workspace agent: command for <REF> was not delivered …` on stderr, reports an `error` to the coordinator, answers `not_delivered`, and does not start the pipeline. For a hand-off, the work item fails the same way a timed-out stage does. If the text arrived but Enter didn't change the screen, even on a second press, the stage still starts, with a `Warning:` status update, because sending the text again would type it twice.
+
+A paste counts as having landed once the pane's screen shows the last 16 non-blank characters of the pasted text, or Claude Code's `[Pasted text #N` placeholder for a large paste.
+
+**Unverified deliveries** — sometimes the agent can't tell whether the text arrived at all: the screen kept changing (so it never settled enough to compare) or it couldn't be read back. That outcome is "unverified" — it may or may not have landed, and, exactly like a text-landed-but-not-submitted delivery, it is never resent, since resending could type it twice. A command in this state starts the stage with a `Warning:` status update. An urgent steer in this state answers `not_submitted` (see below). A prompt sent by `launch --prompt` fails with a message ending "...it may not have arrived" (see [README.launch.md](README.launch.md)).
 
 ## Wire protocol
 
