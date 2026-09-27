@@ -148,25 +148,40 @@ module Workspace
       # `:state`, `:position`, `:name`), ordered {LOCK_NAME} first, then every
       # other lock name alphabetically, so the label and the primary
       # `--json` fields stay deterministic across renders.
+      #
+      # A pane is only ever stamped with one entry per lock name, even when
+      # multiple agents sharing that pane are party to the same lock (e.g.
+      # one holds it while another queues, or two both queue): held beats
+      # queued, and among queued entries the lowest live-queue position wins.
       def lock_positions(root)
         namespace = @lock_namespace.resolve(cwd: root)
         store = LockStore.new(dir: namespace[:dir], liveness: @lock_holder)
         statuses = store.status
         names = statuses.keys.sort_by { |name| [(name == LOCK_NAME) ? 0 : 1, name] }
 
-        positions = Hash.new { |h, k| h[k] = [] }
+        by_pane_and_name = {}
         names.each do |name|
           entry = statuses[name] || {}
           holder = entry["holder"]
           if holder && holder["pane"] && !holder["stale"]
-            positions[holder["pane"]] << {label: "#{name} ✓", state: "held", position: nil, name: name}
+            by_pane_and_name[[holder["pane"], name]] = {label: "#{name} ✓", state: "held", position: nil, name: name}
           end
           live_waiters = (entry["queue"] || []).reject { |waiter| waiter["stale"] }
           live_waiters.each_with_index do |waiter, i|
             next unless waiter["pane"]
-            positions[waiter["pane"]] << {label: "#{name} ##{i + 1}", state: "queued", position: i + 1, name: name}
+            position = i + 1
+            key = [waiter["pane"], name]
+            existing = by_pane_and_name[key]
+            next if existing && (existing[:state] == "held" || existing[:position] <= position)
+            by_pane_and_name[key] = {label: "#{name} ##{position}", state: "queued", position: position, name: name}
           end
         end
+
+        positions = Hash.new { |h, k| h[k] = [] }
+        by_pane_and_name.each do |(pane, _name), entry|
+          positions[pane] << entry
+        end
+        positions.each_value { |entries| entries.sort_by! { |e| [(e[:name] == LOCK_NAME) ? 0 : 1, e[:name]] } }
         positions
       rescue Workspace::Error
         Hash.new { |h, k| h[k] = [] }
