@@ -18,9 +18,16 @@ RSpec.describe Workspace::ProjectConfig do
     subject(:pc) { described_class.new(config: config, output: output, git: git) }
 
     it "resolves a path to [name, root]" do
-      name, root = pc.resolve_project_arg(".")
-      expect(name).to eq(File.basename(Dir.pwd))
-      expect(root).to eq(File.expand_path("."))
+      plain_dir = File.realpath(Dir.mktmpdir("plain-project"))
+      begin
+        Dir.chdir(plain_dir) do
+          name, root = pc.resolve_project_arg(".")
+          expect(name).to eq(File.basename(plain_dir))
+          expect(root).to eq(plain_dir)
+        end
+      ensure
+        FileUtils.remove_entry(plain_dir)
+      end
     end
 
     it "strips leading periods from directory names" do
