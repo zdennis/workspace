@@ -36,7 +36,7 @@ module Workspace
         root = @git.root
         raise Workspace::Error, "Not inside a git repository." unless root
 
-        project_name = ProjectConfig.name_from_path(root)
+        project_name = WorkspaceLineage.name_from_path(root)
         parsed = @git.parse_start_input(input_string)
 
         branch_name = resolve_branch_name(parsed)

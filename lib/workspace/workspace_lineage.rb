@@ -14,11 +14,11 @@ module Workspace
   #      definitely not a worktree, in which case the marker is stale and
   #      is ignored.
   #   2. `git rev-parse --git-common-dir`; its parent directory is the main
-  #      checkout, named via {ProjectConfig.name_from_path}. Inside a git
+  #      checkout, named via {WorkspaceLineage.name_from_path}. Inside a git
   #      submodule, --git-common-dir resolves under the superproject's
   #      `.git/modules/<name>`, so the name is instead derived from the
   #      submodule's own `--show-toplevel`.
-  #   3. {ProjectConfig.name_from_path} on cwd itself, for non-git projects.
+  #   3. {WorkspaceLineage.name_from_path} on cwd itself, for non-git projects.
   class WorkspaceLineage
     MARKER_FILE = ".workspace-project"
     WORKTREE_SEPARATOR = ".worktree-"
@@ -31,6 +31,24 @@ module Workspace
     def self.split_worktree_name(config_name)
       return nil unless config_name&.include?(WORKTREE_SEPARATOR)
       config_name.split(WORKTREE_SEPARATOR, 2)
+    end
+
+    # Derives a project name from a directory path by taking the basename
+    # and stripping leading dots. When the path is inside a .worktrees/
+    # directory, prefixes the name with the repo basename to avoid collisions
+    # across repositories (e.g. /path/to/repo-a/.worktrees/MYJIRA-123 → "repo-a-MYJIRA-123").
+    #
+    # @param path [String] a directory path
+    # @return [String] the derived project name
+    def self.name_from_path(path)
+      expanded = File.expand_path(path)
+      if (m = expanded.match(%r{/([^/]+)/\.worktrees/([^/]+)$}))
+        repo = m[1].sub(/^\.+/, "")
+        worktree = m[2].sub(/^\.+/, "")
+        "#{repo}-#{worktree}"
+      else
+        File.basename(expanded).sub(/^\.+/, "")
+      end
     end
 
     # Result of {#resolve}.
@@ -54,10 +72,10 @@ module Workspace
         name, worktree = split[0], marker
         is_worktree = true
       elsif common_dir
-        name = ProjectConfig.name_from_path(submodule_toplevel(cwd, common_dir) || File.dirname(common_dir))
+        name = self.class.name_from_path(submodule_toplevel(cwd, common_dir) || File.dirname(common_dir))
         worktree = nil
       else
-        name = ProjectConfig.name_from_path(cwd)
+        name = self.class.name_from_path(cwd)
         worktree = nil
       end
 
