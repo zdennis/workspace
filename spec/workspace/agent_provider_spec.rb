@@ -16,11 +16,11 @@ RSpec.describe Workspace::AgentProvider do
       expect(described_class.find("nope")).to be_nil
     end
 
-    it "gives Claude Code a ready pattern matching its prompt box, but leaves other providers without one" do
+    it "gives Claude Code a ready pattern matching its prompt, but leaves other providers without one" do
       claude = described_class.find("claude")
 
-      expect(claude.ready_pattern).to match("│ > foo")
-      expect(claude.ready_pattern).not_to match("Do you trust the files in this folder?")
+      expect(claude.ready_pattern).to match(("─" * 20) + "\n❯ Try something")
+      expect(claude.ready_pattern).not_to match("Do you trust the files in this folder?\n│ ❯ 1. Yes │")
       expect(described_class.find("codex").ready_pattern).to be_nil
     end
 

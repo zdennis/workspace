@@ -41,13 +41,17 @@ module Workspace
     # after the program name, and only for this provider's own processes.
     CLAUDE_BACKGROUND = ["daemon run", "bg-pty-host", "bg-spare"].freeze
 
-    # Matches Claude Code's input prompt box: a box-drawing vertical border
-    # (theme-dependent glyph, `│` or `|`) immediately followed by its `>`
-    # prompt marker, e.g. "│ > ". Anchored to the border+marker pair rather
-    # than the box width so it survives terminal resizes and light/dark
-    # themes. A static dialog (e.g. "Do you trust the files in this
-    # folder?") has its own box but no `>` prompt line, so it never matches.
-    CLAUDE_READY_PATTERN = /^\s*[│|]\s*>\s/
+    # Matches Claude Code's input prompt: a `❯` marker on its own line,
+    # directly under a horizontal rule made of box-drawing dashes (`─`), e.g.
+    #   ────────────────────────
+    #   ❯ Try "write a test..."
+    # Confirmed against a live v2.1.283 pane (no side borders on this
+    # prompt). Anchored to the rule+marker pair, not the rule's width, so it
+    # survives terminal resizes. A modal dialog's own menu items (e.g. "Do
+    # you trust the files in this folder?") also use `❯` to mark the
+    # selected option, but sit inside a `│`-bordered box, not directly under
+    # a bare horizontal rule, so this pattern does not match them.
+    CLAUDE_READY_PATTERN = /─{3,}\n❯[ \t]/
 
     # @return [Array<AgentProvider>] every known provider
     def self.all
