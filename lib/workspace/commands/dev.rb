@@ -43,11 +43,14 @@ module Workspace
       # @param poll [Numeric] seconds between polls
       # @param kill [#call] probes or signals a wrapper pid, called as `kill.call(signal, pid)` like `Process.kill`
       # @param pid_provider [#call] returns this invocation's own pid, recorded on a holder it is stopping
+      # @param event_log [Workspace::EventLog, nil] records waits for the devenv lock and
+      #   takeovers; nil records nothing
       def initialize(lock_namespace:, lock_holder:, lineage:, dev_config:, dev_runner:, terminator:, tmux:, executable:,
         output: $stdout, error_output: $stderr, env: ENV, sleeper: ->(seconds) { sleep(seconds) }, clock: Lock::MonotonicClock,
         poll: POLL_SECONDS,
-        kill: ->(signal, pid) { Process.kill(signal, pid) }, pid_provider: -> { Process.pid })
+        kill: ->(signal, pid) { Process.kill(signal, pid) }, pid_provider: -> { Process.pid }, event_log: nil)
         @lock_namespace = lock_namespace
+        @event_log = event_log
         @lock_holder = lock_holder
         @lineage = lineage
         @dev_config = dev_config
@@ -195,6 +198,7 @@ module Workspace
         end
 
         @output.puts "Taking over: stopping dev environment for #{describe(holder)}..."
+        log_activity(ctx, "lock_takeover", wrapper, "from" => holder.slice("pid", "pgid", "worktree", "branch"))
         case stop(ctx, holder)
         when :kept
           @error_output.puts "This worktree's dev environment stays queued first for the #{LOCK_NAME} lock in its #{WINDOW_NAME} window. " \
@@ -416,29 +420,45 @@ module Workspace
       def await_wrapper(ctx, pid, limit:, limit_name:, deadline: limit && @clock.now + limit)
         store = ctx[:store]
         seen_queued = false
+        started = @clock.now
+        waited = -> { {"waited_seconds" => (@clock.now - started).round(1)} }
 
         loop do
           entry = entry(store)
           holder = entry["holder"]
-          return 0 if holder && holder["pid"] == pid && !holder["stale"]
+          if holder && holder["pid"] == pid && !holder["stale"]
+            log_activity(ctx, "lock_acquired", pid, waited.call) if seen_queued
+            return 0
+          end
 
           queued = (entry["queue"] || []).any? { |w| w["waiter_pid"] == pid }
           if queued && !seen_queued
             @output.puts "Trying to obtain workspace #{LOCK_NAME} lock (held by #{holder ? describe(holder) : "no one"})..."
+            log_activity(ctx, "lock_wait_started", pid, "holder" => holder&.slice("pid", "worktree", "branch"))
             seen_queued = true
           end
           if seen_queued && !queued
             @error_output.puts "#{LOCK_NAME} lock was cleared while waiting."
+            log_activity(ctx, "lock_wait_cleared", pid, waited.call)
             return 4
           end
           unless process_alive?(pid)
             @error_output.puts "The dev wrapper (pid #{pid}) exited before it acquired the #{LOCK_NAME} lock."
             return 1
           end
-          return give_up(pid, queued, limit, limit_name: limit_name) if deadline && @clock.now >= deadline
+          if deadline && @clock.now >= deadline
+            log_activity(ctx, "lock_wait_gave_up", pid, waited.call) if queued
+            return give_up(pid, queued, limit, limit_name: limit_name)
+          end
 
           @sleeper.call(@poll)
         end
+      end
+
+      # Records a devenv lock event for the wrapper +pid+ under the project's
+      # name. EventLog#record never raises.
+      def log_activity(ctx, type, pid, data)
+        @event_log&.record(type: type, project: ctx[:project], data: {"lock" => LOCK_NAME, "pid" => pid}.merge(data))
       end
 
       # Polls until the takeover wrapper is in the queue (or already holds

@@ -195,7 +195,8 @@ module Workspace
       lock_idle_tracker: lock_idle_tracker, lock_enforcer: lock_enforcer)
     process_group_terminator = ProcessGroupTerminator.new
     lock_command = Commands::Lock.new(config: config, lock_namespace: lock_namespace, lock_holder: lock_holder,
-      terminator: process_group_terminator, dev_config: dev_config, lock_config: lock_config, output: output, error_output: error_output)
+      terminator: process_group_terminator, dev_config: dev_config, lock_config: lock_config, event_log: event_log,
+      output: output, error_output: error_output)
     dev_runner = DevRunner.new(liveness: lock_holder, output: output)
     dev_command = Commands::Dev.new(
       lock_namespace: lock_namespace,
@@ -206,6 +207,7 @@ module Workspace
       terminator: process_group_terminator,
       tmux: tmux,
       executable: File.expand_path("../bin/workspace", __dir__),
+      event_log: event_log,
       output: output,
       error_output: error_output
     )

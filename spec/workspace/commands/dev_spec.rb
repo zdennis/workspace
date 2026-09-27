@@ -686,6 +686,58 @@ RSpec.describe Workspace::Commands::Dev, "with fake processes and clock" do
     end
   end
 
+  describe "#up recording devenv waits in the event log" do
+    let(:recorded) { [] }
+    let(:event_log) do
+      events = recorded
+      Object.new.tap do |log|
+        log.define_singleton_method(:record) { |type:, project:, data: {}| events << [project, type, data] }
+      end
+    end
+
+    it "records the wait's start and the acquire, with how long it waited" do
+      hold(700)
+      wrapper_joins(555)
+      on_sleep << -> {} << -> {
+        liveness.kill(700)
+        store.release("devenv", identity: process_identity(700))
+      }
+
+      expect(dev(event_log: event_log).up(wait: true, ready: false, working_dir: worktree)).to eq(exit_code: 0)
+      expect(recorded.map { |project, type, _| [project, type] }).to eq([["app", "lock_wait_started"], ["app", "lock_acquired"]])
+      expect(recorded[0][2]).to include("lock" => "devenv", "pid" => 555, "holder" => include("pid" => 700))
+      expect(recorded[1][2]).to include("lock" => "devenv", "pid" => 555, "waited_seconds" => 2.0)
+    end
+
+    it "records giving up after --max-wait and a wait ended by clear" do
+      hold(700)
+      wrapper_joins(555)
+      dev(event_log: event_log).up(wait: true, max_wait: 3, working_dir: worktree)
+      expect(recorded.last[1..]).to eq(["lock_wait_gave_up", {"lock" => "devenv", "pid" => 555, "waited_seconds" => 3.0}])
+
+      on_sleep << -> { store.clear("devenv") }
+      store.clear("devenv")
+      hold(700)
+      wrapper_joins(556)
+      dev(event_log: event_log).up(wait: true, working_dir: worktree)
+      expect(recorded.last[1]).to eq("lock_wait_cleared")
+    end
+
+    it "records a takeover naming the holder it stops" do
+      hold(700)
+      wrapper_joins(555)
+      allow(terminator).to receive(:stop_holder) do
+        liveness.kill(700)
+        :terminated
+      end
+
+      dev(event_log: event_log).up(takeover: true, ready: false, working_dir: worktree)
+
+      takeover = recorded.find { |_, type, _| type == "lock_takeover" }
+      expect(takeover[2]).to include("lock" => "devenv", "pid" => 555, "from" => include("pid" => 700, "worktree" => "/w/other"))
+    end
+  end
+
   describe "#up --takeover waiting for its wrapper to queue" do
     before { hold(700) }
 

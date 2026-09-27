@@ -52,10 +52,12 @@ module Workspace
       # @param dev_config [Workspace::DevConfig, nil] supplies that holder's dev.stop_timeout and dev.kill_grace
       # @param lock_config [Workspace::LockConfig, nil] supplies the project's locks.idle_grace
       # @param wall_clock [#call] current epoch seconds, for idle tracking in the store
+      # @param event_log [Workspace::EventLog, nil] records lock waits (start,
+      #   acquired, takeover, gave up, cleared, abandoned); nil records nothing
       def initialize(config:, lock_namespace:, lock_holder:, output: $stdout, error_output: $stderr,
         sleeper: ->(seconds) { sleep(seconds) }, clock: MonotonicClock, pid_provider: -> { Process.pid },
         trap: ->(signal, handler) { Signal.trap(signal, handler) }, terminator: ProcessGroupTerminator.new, dev_config: nil,
-        lock_config: nil, wall_clock: -> { Time.now.to_i })
+        lock_config: nil, wall_clock: -> { Time.now.to_i }, event_log: nil)
         @config = config
         @lock_namespace = lock_namespace
         @lock_holder = lock_holder
@@ -69,6 +71,7 @@ module Workspace
         @dev_config = dev_config
         @lock_config = lock_config
         @wall_clock = wall_clock
+        @event_log = event_log
         @holder_stopper = ProcessHolderStopper.for(terminator: terminator, lock_holder: lock_holder, error_output: error_output,
           clock: clock, sleeper: sleeper)
       end
@@ -108,7 +111,10 @@ module Workspace
           {exit_code: 1}
         when :queued
           print_queue_message(name, result)
-          poll_until_acquired(store, name, waiter_pid, poll: poll, max_wait: max_wait)
+          wait_log = wait_logger(working_dir, name, waiter_pid)
+          wait_log.call("lock_wait_started", "task" => task, "position" => result[:position],
+            "holder" => holder_summary(result[:holder]))
+          poll_until_acquired(store, name, waiter_pid, poll: poll, max_wait: max_wait, wait_log: wait_log)
         end
       end
 
@@ -296,25 +302,28 @@ module Workspace
 
       # Signal handlers only record the signal: the store is flock-guarded, and a
       # handler that touched it while the loop held the flock would block forever.
-      def poll_until_acquired(store, name, waiter_pid, poll:, max_wait:)
-        deadline = max_wait ? @clock.now + max_wait : nil
+      def poll_until_acquired(store, name, waiter_pid, poll:, max_wait:, wait_log: ->(*) {})
+        started = @clock.now
+        deadline = max_wait ? started + max_wait : nil
+        waited = -> { (@clock.now - started).round(1) }
         interrupted = nil
         old_int = @trap.call("INT", proc { interrupted ||= 130 })
         old_term = @trap.call("TERM", proc { interrupted ||= 143 })
 
         loop do
           result = store.poll(name, waiter_pid)
-          return claimed(name, result) if result[:status] == :acquired
-          return abandon_wait(store, name, waiter_pid, interrupted) if interrupted
+          return claimed(name, result, wait_log, waited.call) if result[:status] == :acquired
+          return abandon_wait(store, name, waiter_pid, interrupted, wait_log, waited.call) if interrupted
           if result[:status] == :cleared
             @error_output.puts "#{name} lock was cleared while waiting."
+            wait_log.call("lock_wait_cleared", "waited_seconds" => waited.call)
             return {exit_code: 4}
           end
 
-          return give_up_waiting(store, name, waiter_pid) if deadline && @clock.now >= deadline
+          return give_up_waiting(store, name, waiter_pid, wait_log, waited) if deadline && @clock.now >= deadline
 
           sleep_unless_interrupted(poll) { interrupted }
-          return abandon_wait(store, name, waiter_pid, interrupted) if interrupted
+          return abandon_wait(store, name, waiter_pid, interrupted, wait_log, waited.call) if interrupted
         end
       ensure
         @trap.call("INT", old_int) if old_int
@@ -324,10 +333,14 @@ module Workspace
       # A claimed lock is kept even when a signal arrived during the same
       # poll: the agent is told it holds the lock, and a takeover is never
       # undone after displacing the idle holder.
-      def claimed(name, result)
+      def claimed(name, result, wait_log, waited_seconds)
         holder = result[:took_over]
         if holder
           @error_output.puts "Took over #{name} lock from #{describe_holder(holder)}, idle since #{format_epoch(holder["idle_since"])}."
+          wait_log.call("lock_takeover", "waited_seconds" => waited_seconds, "from" => holder_summary(holder),
+            "idle_since" => holder["idle_since"])
+        else
+          wait_log.call("lock_acquired", "waited_seconds" => waited_seconds)
         end
         acquired(name)
       end
@@ -340,16 +353,35 @@ module Workspace
       # A promotion or an idle takeover can come due between the last poll and
       # the deadline check, so the claim-or-dequeue decision is made in one
       # step under the flock.
-      def give_up_waiting(store, name, waiter_pid)
+      def give_up_waiting(store, name, waiter_pid, wait_log, waited)
         result = store.claim_or_dequeue(name, waiter_pid)
-        return claimed(name, result) if result[:status] == :acquired
+        return claimed(name, result, wait_log, waited.call) if result[:status] == :acquired
         @error_output.puts "Still queued for #{name} lock after --max-wait; re-run to keep waiting."
+        wait_log.call("lock_wait_gave_up", "waited_seconds" => waited.call)
         {exit_code: 75}
       end
 
-      def abandon_wait(store, name, waiter_pid, exit_status)
+      def abandon_wait(store, name, waiter_pid, exit_status, wait_log, waited_seconds)
         store.dequeue(name, waiter_pid)
+        wait_log.call("lock_wait_abandoned", "waited_seconds" => waited_seconds, "exit_code" => exit_status)
         {exit_code: exit_status}
+      end
+
+      # Records one waiter's lock wait events in the event log, under the lock
+      # namespace's project name. Resolved only once a wait starts, so an
+      # uncontended acquire costs nothing extra.
+      def wait_logger(working_dir, name, waiter_pid)
+        return ->(*) {} unless @event_log
+        project = @lock_namespace.resolve(cwd: working_dir)[:display]
+        lambda do |type, data|
+          @event_log.record(type: type, project: project, data: {"lock" => name, "pid" => waiter_pid}.merge(data))
+        end
+      rescue Workspace::Error
+        ->(*) {}
+      end
+
+      def holder_summary(holder)
+        holder&.slice("pane", "pid", "worktree", "task")
       end
 
       # Sleeps in short slices so a signal is acted on promptly: a trap handler
