@@ -33,7 +33,10 @@ RSpec.describe Workspace::Commands::Sessions do
       project_config: project_config, output: output, error_output: error_output)
   end
 
-  before { allow(config).to receive(:agent_socket_path).with("proj").and_return(socket_path) }
+  before do
+    allow(config).to receive(:agent_socket_path).with("proj").and_return(socket_path)
+    allow(config).to receive(:ask_state_path).with("proj").and_return(File.join(Dir.mktmpdir, "asks.json"))
+  end
 
   after { FileUtils.remove_entry(tmpdir) }
 
