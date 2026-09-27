@@ -135,7 +135,7 @@ module Workspace
       # Indented like a sub-agent row, so the reason reads as belonging to the
       # pane above it.
       def render_waiting(message)
-        @output.puts format("%-16s%s", "", "└─ #{truncate(message.gsub(/[[:space:][:cntrl:]]+/, " "), 60)}")
+        @output.puts "#{" " * 16}└─ #{truncate(message.gsub(/[[:space:][:cntrl:]]+/, " "), 60)}"
       end
 
       # Loads every lock in the project's namespace once per render — never
