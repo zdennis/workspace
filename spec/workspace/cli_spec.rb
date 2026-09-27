@@ -677,6 +677,69 @@ RSpec.describe Workspace::CLI do
     end
   end
 
+  describe "#run with launch or start and a prompt" do
+    let(:launch_result) { {exit_code: 1, prompt_failures: {"myproject" => "no coding agent"}} }
+
+    it "runs post_launch hooks, then exits 1 when launch could not send the prompt" do
+      launch_command = double("launch", call: launch_result)
+      cli, _, _, hook_runner = build_test_cli(launch_command: launch_command)
+
+      expect { cli.run(["launch", "--prompt", "go", "myproject"]) }.to raise_error(FakeSystemExit) { |e|
+        expect(e.status).to eq(1)
+      }
+      expect(launch_command).to have_received(:call).with(["myproject"], reattach: false, prompts: {"myproject" => "go"})
+      expect(hook_runner.runs).to include(project: "myproject", event: "post_launch", env: {})
+    end
+
+    it "exits 0 when launch sent every prompt" do
+      launch_command = double("launch", call: {exit_code: 0, prompt_failures: {}})
+      cli, = build_test_cli(launch_command: launch_command)
+
+      expect { cli.run(["launch", "--prompt", "go", "myproject"]) }.not_to raise_error
+    end
+
+    it "exits 1 when start could not send the prompt" do
+      start_command = double("start", call: launch_result)
+      cli, = build_test_cli(start_command: start_command)
+
+      expect { cli.run(["start", "--prompt", "go", "PROJ-1"]) }.to raise_error(FakeSystemExit) { |e|
+        expect(e.status).to eq(1)
+      }
+    end
+
+    it "says how long it waits in the --prompt help" do
+      cli, _, error_output = build_test_cli
+      expect { cli.run(["launch"]) }.to raise_error(FakeSystemExit)
+      expect(error_output.string).to include("ready (up to #{Workspace::AgentReadiness::DEFAULT_TIMEOUT}s); exits 1 if it can't be sent")
+    end
+
+    it "passes --prompt-timeout through to launch" do
+      launch_command = double("launch", call: {exit_code: 0, prompt_failures: {}})
+      cli, = build_test_cli(launch_command: launch_command)
+
+      cli.run(["launch", "--prompt", "go", "--prompt-timeout", "90s", "myproject"])
+
+      expect(launch_command).to have_received(:call).with(["myproject"], reattach: false, prompts: {"myproject" => "go"}, prompt_timeout: 90.0)
+    end
+
+    it "passes --prompt-timeout through to start" do
+      start_command = double("start", call: {exit_code: 0, prompt_failures: {}})
+      cli, = build_test_cli(start_command: start_command)
+
+      cli.run(["start", "--prompt", "go", "--prompt-timeout", "2m", "PROJ-1"])
+
+      expect(start_command).to have_received(:call).with("PROJ-1", prompt: "go", prompt_timeout: 120.0)
+    end
+
+    it "rejects a non-positive --prompt-timeout" do
+      cli, _, error_output = build_test_cli
+      expect { cli.run(["launch", "--prompt-timeout", "0", "myproject"]) }.to raise_error(FakeSystemExit) { |e|
+        expect(e.status).to eq(1)
+      }
+      expect(error_output.string).to include("--prompt-timeout")
+    end
+  end
+
   describe "#run with config" do
     it "exits 1 when no project specified and not --global" do
       cli, _, error_output = build_test_cli
@@ -943,6 +1006,17 @@ RSpec.describe Workspace::CLI do
         expect(e.status).to eq(1)
       }
       expect(error_output.string).to include("Usage: workspace run")
+    end
+
+    it "exits 2, not 1, when the text landed but wasn't confirmed submitted" do
+      run_command = CLITestHelpers::FakeRunCommand.new
+      run_command.raise_on_call(Workspace::Commands::Run::NotSubmittedError.new("pasted, but Enter didn't visibly take"))
+      cli, _, error_output = build_test_cli(run_command: run_command)
+
+      expect { cli.run(["run", "myproject", "echo hi"]) }.to raise_error(FakeSystemExit) { |e|
+        expect(e.status).to eq(2)
+      }
+      expect(error_output.string).to include("Error: pasted, but Enter didn't visibly take")
     end
 
     it "passes --pane N as a string to run_command (TmuxPane resolves at runtime)" do

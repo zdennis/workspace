@@ -29,10 +29,13 @@ module Workspace
       # Creates a worktree from the given input and launches it.
       #
       # @param input_string [String] JIRA key, PR URL, or branch name
-      # @param prompt [String, nil] optional prompt to send to Claude after launching
-      # @return [void]
+      # @param prompt [String, nil] optional prompt to send to the coding agent after launching
+      # @param prompt_timeout [Numeric, nil] seconds to wait for the agent to be
+      #   ready before giving up on the prompt; nil uses the launch command's default
+      # @return [Hash, nil] the launch result (+{exit_code:, prompt_failures:}+),
+      #   or nil if branch selection was cancelled
       # @raise [Workspace::Error] if not in a git repository
-      def call(input_string, prompt: nil)
+      def call(input_string, prompt: nil, prompt_timeout: nil)
         root = @git.root
         raise Workspace::Error, "Not inside a git repository." unless root
 
@@ -52,9 +55,9 @@ module Workspace
           write_project_marker(worktree_path, config_name)
           @output.puts "Launching #{config_name}..."
           prompts = prompt ? {config_name => prompt} : {}
-          @launch_command.call([config_name], prompts: prompts)
+          result = launch(config_name, prompts, prompt_timeout)
           @project_settings.ensure_exists(config_name)
-          return
+          return result
         end
 
         result = resolve_or_create_branch(branch_name)
@@ -76,9 +79,9 @@ module Workspace
           write_project_marker(existing_path, config_name)
           @output.puts "Launching #{config_name}..."
           prompts = prompt ? {config_name => prompt} : {}
-          @launch_command.call([config_name], prompts: prompts)
+          result = launch(config_name, prompts, prompt_timeout)
           @project_settings.ensure_exists(config_name)
-          return
+          return result
         end
 
         create_worktree_directory(root)
@@ -94,11 +97,18 @@ module Workspace
         write_project_marker(worktree_path, config_name)
         @output.puts "Launching #{config_name}..."
         prompts = prompt ? {config_name => prompt} : {}
-        @launch_command.call([config_name], prompts: prompts)
+        result = launch(config_name, prompts, prompt_timeout)
         @project_settings.ensure_exists(config_name)
+        result
       end
 
       private
+
+      # @param prompt_timeout [Numeric, nil] nil defers to the launch command's own default
+      def launch(config_name, prompts, prompt_timeout)
+        return @launch_command.call([config_name], prompts: prompts) if prompt_timeout.nil?
+        @launch_command.call([config_name], prompts: prompts, prompt_timeout: prompt_timeout)
+      end
 
       def resolve_branch_name(parsed)
         case parsed[:type]

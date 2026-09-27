@@ -2,6 +2,16 @@ require "optparse"
 require "json"
 require "fileutils"
 require "time"
+
+# Workspace CLI for managing tmuxinator-based development workspaces in iTerm2.
+module Workspace
+  # Raised for runtime errors in workspace operations.
+  class Error < StandardError; end
+
+  # Raised for invalid usage or missing required arguments.
+  class UsageError < Error; end
+end
+
 require_relative "workspace/version"
 require_relative "workspace/warn"
 require_relative "workspace/logger"
@@ -19,6 +29,7 @@ require_relative "workspace/window_manager"
 require_relative "workspace/window_layout"
 require_relative "workspace/project_settings"
 require_relative "workspace/process_tree"
+require_relative "workspace/agent_readiness"
 require_relative "workspace/workspace_lineage"
 require_relative "workspace/duration"
 require_relative "workspace/dev_config"
@@ -74,14 +85,7 @@ require_relative "workspace/run_result_store"
 require_relative "workspace/commands/run_and_report"
 require_relative "workspace/cli"
 
-# Workspace CLI for managing tmuxinator-based development workspaces in iTerm2.
 module Workspace
-  # Raised for runtime errors in workspace operations.
-  class Error < StandardError; end
-
-  # Raised for invalid usage or missing required arguments.
-  class UsageError < Error; end
-
   # Assembles the full dependency graph and returns a ready-to-run CLI instance.
   #
   # @param output [IO] output stream for user-facing messages
@@ -110,7 +114,8 @@ module Workspace
 
     # Pre-build command objects so CLI delegates rather than constructs
     stop_command = Commands::Stop.new(state: state, iterm: iterm, window_manager: window_manager, tmux: tmux, output: output, error_output: error_output)
-    launch_command = Commands::Launch.new(state: state, iterm: iterm, window_manager: window_manager, tmux: tmux, project_config: project_config, window_layout: window_layout, config: config, pipeline_config: pipeline_config, output: output, error_output: error_output)
+    agent_readiness = AgentReadiness.new(tmux: tmux, process_tree: ProcessTree.new(logger: logger), logger: logger)
+    launch_command = Commands::Launch.new(state: state, iterm: iterm, window_manager: window_manager, tmux: tmux, project_config: project_config, window_layout: window_layout, config: config, pipeline_config: pipeline_config, agent_readiness: agent_readiness, output: output, error_output: error_output)
     lineage = WorkspaceLineage.new
     start_command = Commands::Start.new(git: git, project_config: project_config, project_settings: project_settings, launch_command: launch_command, lineage: lineage, hook_installer: hook_installer, output: output, input: input)
     kill_command = Commands::Kill.new(git: git, project_config: project_config, project_settings: project_settings, stop_command: stop_command, project_detector: project_detector, output: output, input: input)

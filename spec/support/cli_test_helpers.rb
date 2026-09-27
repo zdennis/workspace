@@ -125,13 +125,14 @@ module CLITestHelpers
     def apply_layout(_session, _layout, **_opts) = true
 
     attr_reader :sent_keys, :sent_key_names
-    attr_accessor :captured_output, :pane_indexes
+    attr_accessor :captured_output, :pane_indexes, :delivery_status
 
     def initialize
       @sent_keys = []
       @sent_key_names = []
       @captured_output = ""
       @pane_indexes = [0, 1, 2]
+      @delivery_status = :submitted
     end
 
     def send_key(session, pane, key_name)
@@ -144,8 +145,13 @@ module CLITestHelpers
     end
 
     def send_keys(session, pane, text, enter: true)
+      deliver(session, pane, text, enter: enter).ok?
+    end
+
+    # Records the send; the outcome is whatever delivery_status says.
+    def deliver(session, pane, text, enter: true)
       sent_keys << {session: session, pane: pane, text: text, enter: enter}
-      true
+      Workspace::Tmux::Delivery.new(status: delivery_status, message: "fake #{delivery_status}")
     end
 
     def panes(_session, **_opts)
@@ -247,11 +253,17 @@ module CLITestHelpers
     attr_reader :calls
 
     def initialize
+      @error = nil
       @calls = []
+    end
+
+    def raise_on_call(error)
+      @error = error
     end
 
     def call(project, command, **opts)
       @calls << {project: project, command: command, **opts}
+      raise @error if @error
     end
   end
 

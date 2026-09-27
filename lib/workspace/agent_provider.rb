@@ -41,6 +41,18 @@ module Workspace
     # after the program name, and only for this provider's own processes.
     CLAUDE_BACKGROUND = ["daemon run", "bg-pty-host", "bg-spare"].freeze
 
+    # Matches Claude Code's input prompt: a `❯` marker on its own line,
+    # directly under a horizontal rule made of box-drawing dashes (`─`), e.g.
+    #   ────────────────────────
+    #   ❯ Try "write a test..."
+    # Confirmed against a live v2.1.283 pane (no side borders on this
+    # prompt). Anchored to the rule+marker pair, not the rule's width, so it
+    # survives terminal resizes. A modal dialog's own menu items (e.g. "Do
+    # you trust the files in this folder?") also use `❯` to mark the
+    # selected option, but sit inside a `│`-bordered box, not directly under
+    # a bare horizontal rule, so this pattern does not match them.
+    CLAUDE_READY_PATTERN = /─{3,}\n❯[ \t]/
+
     # @return [Array<AgentProvider>] every known provider
     def self.all
       @all ||= [
@@ -50,7 +62,8 @@ module Workspace
           executable: "claude",
           settings_path: File.join(".claude", "settings.json"),
           events: CLAUDE_EVENTS,
-          background_markers: CLAUDE_BACKGROUND
+          background_markers: CLAUDE_BACKGROUND,
+          ready_pattern: CLAUDE_READY_PATTERN
         ),
         new(
           key: "codex",
@@ -85,7 +98,30 @@ module Workspace
       all.find { |provider| provider.key == key }
     end
 
-    attr_reader :key, :label, :executable, :settings_path, :events, :background_markers
+    # Finds the coding agent running in a pane. The agent may be the pane's
+    # foreground command or buried under a shell wrapper, so the pane's own
+    # command is checked before its process tree is walked.
+    #
+    # @param command [String] the pane's current command (tmux pane_current_command)
+    # @param pid [Integer] the pane's process id
+    # @param tree [Workspace::ProcessTree::Snapshot] process table snapshot
+    # @param providers [Array<AgentProvider>] agents to recognize
+    # @return [Hash, nil] +{provider:, pid:}+ for the agent found, or nil
+    def self.detect(command:, pid:, tree:, providers: all)
+      basename = File.basename(command.to_s).downcase
+      direct = providers.find { |p| p.executable == basename }
+      return {provider: direct, pid: pid} if direct
+
+      providers.each do |provider|
+        exact_only = provider.path_segment_matching? ? [] : [provider.executable]
+        match = tree.find_descendant(pid, [provider.executable],
+          exclude: provider.background_markers, include_root: true, exact_only: exact_only)
+        return {provider: provider, pid: match[:pid]} if match
+      end
+      nil
+    end
+
+    attr_reader :key, :label, :executable, :settings_path, :events, :background_markers, :ready_pattern
 
     # @return [Boolean] whether a versioned install of this executable may be
     #   recognized by a "/#{executable}/" path segment, in addition to an
@@ -104,8 +140,11 @@ module Workspace
     # @param path_segment_matching [Boolean] whether a "/#{executable}/" path
     #   segment also counts as a match (off for a short/generic executable
     #   name where that heuristic risks matching unrelated tools)
+    # @param ready_pattern [Regexp, nil] matched against the pane's screen to
+    #   confirm the agent is actually at its input prompt, not just quiet
+    #   (e.g. sitting on a startup dialog). nil means quiet-only readiness.
     def initialize(key:, label:, executable:, settings_path: nil, events: nil,
-      background_markers: [], path_segment_matching: true)
+      background_markers: [], path_segment_matching: true, ready_pattern: nil)
       @key = key
       @label = label
       @executable = executable
@@ -113,6 +152,7 @@ module Workspace
       @events = events
       @background_markers = background_markers
       @path_segment_matching = path_segment_matching
+      @ready_pattern = ready_pattern
     end
 
     # @return [Boolean] whether workspace can install hooks for this agent

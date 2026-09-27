@@ -2,6 +2,15 @@ module Workspace
   module Commands
     # Sends a shell command to a specific pane in a running project's tmux session.
     class Run
+      # Raised when text reached the pane but wasn't confirmed submitted
+      # (tmux status :unsubmitted or :unverified). Distinct from the plain
+      # Workspace::Error used for :not_landed and :failed, so callers can
+      # tell "don't resend, go check" apart from "safe to resend" by exit
+      # code alone, without parsing the message.
+      class NotSubmittedError < Workspace::Error
+        EXIT_CODE = 2
+      end
+
       # @param tmux [Workspace::Tmux] tmux session operations
       # @param state [Workspace::State] state persistence (used for --focus)
       # @param window_manager [Workspace::WindowManager] iTerm window operations (used for --focus)
@@ -47,20 +56,14 @@ module Workspace
           pane_spec = TmuxPane.new(pane, tmux: @tmux).target(session_name)
 
           if dry_run
-            @output.puts "tmux send-keys -l -t #{session_name}:#{pane_spec} #{command.inspect}"
-            @output.puts "tmux send-keys -t #{session_name}:#{pane_spec} Enter" if enter
-            @output.puts "tmux send-keys -l -t #{session_name}:#{pane_spec} exit" if close
-            @output.puts "tmux send-keys -t #{session_name}:#{pane_spec} Enter" if close
+            print_dry_run_delivery(session_name, pane_spec, command, enter: enter)
+            print_dry_run_delivery(session_name, pane_spec, "exit", enter: true) if close
           else
-            unless @tmux.send_keys(session_name, pane_spec, command, enter: enter)
-              raise Workspace::Error,
-                "Failed to send command to pane #{pane_spec} of '#{project}'"
-            end
+            send_text(session_name, pane_spec, command, enter: enter,
+              failure: "Failed to send command to pane #{pane_spec} of '#{project}'")
             if close
-              unless @tmux.send_keys(session_name, pane_spec, "exit", enter: true)
-                raise Workspace::Error,
-                  "Failed to send exit to pane #{pane_spec} of '#{project}'"
-              end
+              send_text(session_name, pane_spec, "exit", enter: true,
+                failure: "Failed to send exit to pane #{pane_spec} of '#{project}'")
             end
           end
         end
@@ -79,10 +82,8 @@ module Workspace
         if dry_run
           flag = vertical ? "-h" : "-v"
           @output.puts "tmux split-window #{flag} -t #{session_name}:0.#{last_pane}"
-          @output.puts "tmux send-keys -l -t #{session_name}:0.<new_pane> #{command.inspect}"
-          @output.puts "tmux send-keys -t #{session_name}:0.<new_pane> Enter" if enter
-          @output.puts "tmux send-keys -l -t #{session_name}:0.<new_pane> exit" if close
-          @output.puts "tmux send-keys -t #{session_name}:0.<new_pane> Enter" if close
+          print_dry_run_delivery(session_name, "0.<new_pane>", command, enter: enter)
+          print_dry_run_delivery(session_name, "0.<new_pane>", "exit", enter: true) if close
           return
         end
 
@@ -96,17 +97,44 @@ module Workspace
 
         pane_spec = "0.#{new_pane_index}"
 
-        unless @tmux.send_keys(session_name, pane_spec, command, enter: enter)
-          raise Workspace::Error,
-            "Failed to send command to new split pane of '#{session_name}'"
-        end
+        send_text(session_name, pane_spec, command, enter: enter,
+          failure: "Failed to send command to new split pane of '#{session_name}'")
 
         if close
-          unless @tmux.send_keys(session_name, pane_spec, "exit", enter: true)
-            raise Workspace::Error,
-              "Failed to send exit to new split pane of '#{session_name}'"
-          end
+          send_text(session_name, pane_spec, "exit", enter: true,
+            failure: "Failed to send exit to new split pane of '#{session_name}'")
         end
+      end
+
+      # Prints the load-buffer + paste-buffer sequence that {Workspace::Tmux#deliver}
+      # actually issues, so --dry-run output matches what a real run would do.
+      def print_dry_run_delivery(session_name, pane_spec, text, enter:)
+        target = "#{session_name}:#{pane_spec}"
+        @output.puts "tmux load-buffer -b <buffer> -"
+        @output.puts "tmux paste-buffer -p -b <buffer> -t #{target}"
+        @output.puts "tmux delete-buffer -b <buffer>"
+        @output.puts "tmux send-keys -t #{target} Enter" if enter
+      end
+
+      # Sends text and raises, with tmux's reason, unless it landed and (with
+      # +enter+) was submitted.
+      def send_text(session_name, pane_spec, text, enter:, failure:)
+        delivery = @tmux.deliver(session_name, pane_spec, text, enter: enter)
+        return if delivery.ok?
+
+        hint = if delivery.status == :unsubmitted
+          " Do not run it again -- it is already in the pane; press Enter there instead."
+        elsif delivery.landed?
+          " Do not run it again -- it may already be in the pane; check before resending."
+        elsif delivery.status == :not_landed
+          " The text never reached the pane; it is safe to run it again."
+        else
+          ""
+        end
+
+        message = "#{failure}: #{delivery.message}.#{hint}"
+        raise NotSubmittedError, message if delivery.landed?
+        raise Workspace::Error, message
       end
 
       def focus_window(project)

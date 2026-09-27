@@ -1,13 +1,19 @@
 require "open3"
+require "securerandom"
 
 module Workspace
   # Manages tmux session operations for the workspace CLI.
   class Tmux
     # @param config [Workspace::Config] configuration for path lookups
     # @param logger [Workspace::Logger] debug logger
-    def initialize(config:, logger: Workspace::Logger.new)
+    # @param clock [#call] monotonic seconds, injected so specs don't wait
+    # @param sleeper [#call] sleeps the given seconds, injected likewise
+    def initialize(config:, logger: Workspace::Logger.new,
+      clock: -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) }, sleeper: ->(seconds) { sleep(seconds) })
       @config = config
       @logger = logger
+      @clock = clock
+      @sleeper = sleeper
     end
 
     # @return [Array<String>] list of active tmux session names
@@ -41,35 +47,95 @@ module Workspace
       system("tmux", "rename-window", "-t", "#{session_name}:#{window_index}", new_name)
     end
 
+    # The outcome of {#deliver}.
+    #
+    # * +:submitted+ — the text appeared in the pane and Enter changed the screen
+    # * +:pasted+ — the text appeared in the pane (no Enter was asked for)
+    # * +:unverified+ — tmux accepted every command, but the text was never
+    #   seen on screen: the pane couldn't be read back, or it kept changing
+    #   without showing the text. It may or may not have arrived.
+    # * +:unsubmitted+ — the text appeared, but Enter left the screen unchanged,
+    #   even after a second try
+    # * +:not_landed+ — tmux accepted the paste, but the pane never changed
+    # * +:failed+ — a tmux command failed; nothing may have reached the pane
+    Delivery = Struct.new(:status, :message, keyword_init: true) do
+      # @return [Boolean] whether the text was seen in the pane and, when
+      #   Enter was asked for, was submitted
+      def ok?
+        [:submitted, :pasted].include?(status)
+      end
+
+      # @return [Boolean] whether the text reached the pane, or may have.
+      #   Sending it again could type it twice.
+      def landed?
+        ok? || [:unsubmitted, :unverified].include?(status)
+      end
+    end
+
+    # Seconds between reads of the pane while a delivery is checked.
+    DELIVERY_POLL = 0.05
+    # Longest wait for pasted text to show up in the pane.
+    LAND_TIMEOUT = 2.0
+    # Longest wait for the pane to stop changing after a paste, before Enter.
+    SETTLE_TIMEOUT = 1.0
+    # Longest wait for one Enter to change the screen.
+    SUBMIT_TIMEOUT = 2.0
+    # How many of the text's last non-blank characters must show on screen
+    # to count as the text having arrived.
+    TAIL_LENGTH = 16
+    # What Claude Code shows in place of a large paste.
+    PASTE_PLACEHOLDER = /\[Pasted text #\d+/
+
+    # Sends text to a pane and reports whether it landed.
+    #
     # @param session_name [String] tmux session name
     # @param pane [String] pane target (e.g. "0.1" for window 0, pane 1)
     # @param text [String] text to send (sent in literal mode to avoid key-name interpretation)
     # @param enter [Boolean] whether to press Enter after sending
-    # @return [Boolean] true if send succeeded
+    # @return [Boolean] true if the text reached the pane and, with +enter+,
+    #   was submitted; see {#deliver} for why a send failed
     def send_keys(session_name, pane, text, enter: true)
+      deliver(session_name, pane, text, enter: enter).ok?
+    end
+
+    # Pastes text into a pane, presses Enter, and checks each step landed by
+    # reading the pane back.
+    #
+    # The whole text goes in as one bracketed paste, so embedded newlines stay
+    # line breaks in the input rather than submitting each line: an agent
+    # like Claude Code treats a bare Enter as submit. It goes through
+    # load-buffer + paste-buffer because tmux 3.x parses a send-keys argument
+    # starting with '-' as flags, even in -l (literal) mode.
+    #
+    # Enter is pressed once the pane has stopped changing, so a large paste
+    # has finished rendering first. If Enter leaves the screen unchanged it is
+    # pressed once more; it is never pressed a second time after the screen
+    # has changed, so a paste can't be submitted twice.
+    #
+    # The paste counts as arrived only once the screen shows the end of the
+    # text (or a paste placeholder) more often than it did before. A pane
+    # that changes without ever showing it, like an agent still streaming
+    # output, gets Enter anyway but reports +:unverified+, since the text may
+    # be there out of sight.
+    #
+    # @param session_name [String] tmux session name
+    # @param pane [String] pane target (e.g. "0.1")
+    # @param text [String] text to send
+    # @param enter [Boolean] whether to press Enter after sending
+    # @return [Workspace::Tmux::Delivery]
+    def deliver(session_name, pane, text, enter: true)
       target = "#{session_name}:#{pane}"
-      @logger.debug { "tmux: send-keys to #{target}" }
-      # Send the full text as one paste so that embedded newlines appear as
-      # line-breaks in the input buffer (not as separate message submissions).
-      # Sending each line with Enter would submit them as individual messages
-      # in prompts like Claude Code where Enter == submit.
-      # We route through load-buffer + paste-buffer unconditionally because
-      # tmux 3.x incorrectly parses the text argument as flags when it starts
-      # with '-', even in -l (literal) mode.
-      buf = "ws_send_#{object_id}"
-      return false unless tmux_load_buffer(buf, text)
+      @logger.debug { "tmux: deliver to #{target} (#{text.bytesize} bytes, enter=#{enter})" }
+      return submit(target, capture_screen(target)) if text.empty? && enter
+      return Delivery.new(status: :pasted, message: "nothing to send") if text.empty?
+
+      before = capture_screen(target)
+      # tmux buffers are shared by every client of the server, so the name
+      # must not repeat across processes or threads.
+      buf = "ws_send_#{Process.pid}_#{SecureRandom.hex(8)}"
       begin
-        return false unless system("tmux", "paste-buffer", "-b", buf, "-t", target)
-        return true unless enter
-        # Claude Code collapses large pastes into a summary widget that requires
-        # a second Enter to submit. Give the UI time to render, then send Enter
-        # twice so the first dismisses the widget and the second submits.
-        large_paste = text.bytesize > 1_000
-        sleep(large_paste ? 0.3 : 0.05)
-        return false unless system("tmux", "send-keys", "-t", target, "Enter")
-        return true unless large_paste
-        sleep 0.1
-        system("tmux", "send-keys", "-t", target, "Enter") ? true : false
+        return failed("tmux could not load the text into a paste buffer") unless tmux_load_buffer(buf, text)
+        return failed("tmux could not paste into #{target}") unless system("tmux", "paste-buffer", "-p", "-b", buf, "-t", target)
       ensure
         begin
           system("tmux", "delete-buffer", "-b", buf)
@@ -77,6 +143,39 @@ module Workspace
           nil
         end
       end
+
+      if before.nil?
+        return submit(target, nil) if enter
+        return Delivery.new(status: :unverified, message: "pasted, but #{target} could not be read back to check")
+      end
+
+      pasted, seen = wait_for_text(target, before, text)
+      unless pasted
+        return Delivery.new(status: :not_landed,
+          message: "pasted, but nothing changed in #{target} within #{LAND_TIMEOUT}s")
+      end
+      unless seen
+        unseen = "#{target} kept changing but never showed the text"
+        return Delivery.new(status: :unverified, message: "pasted, but #{unseen}; it may not have arrived") unless enter
+        result = submit(target, settle(target, pasted))
+        return result if result.status == :failed
+        return Delivery.new(status: :unverified, message: "pasted and pressed Enter, but #{unseen}; it may not have arrived")
+      end
+      return Delivery.new(status: :pasted, message: "pasted into #{target}") unless enter
+
+      submit(target, settle(target, pasted))
+    end
+
+    # Whether a pane's screen shows the end of +text+, or a paste placeholder.
+    # Tells whether a paste reported as not landed turned up later.
+    #
+    # @param session_name [String] tmux session name
+    # @param pane [String] pane target (e.g. "0.1")
+    # @param text [String] text that was pasted
+    # @return [Boolean]
+    def shows_text?(session_name, pane, text)
+      screen = capture_screen("#{session_name}:#{pane}")
+      !screen.nil? && shows_new_text?("", screen, text)
     end
 
     # Sends a single key name to a tmux pane (non-literal mode).
@@ -92,7 +191,87 @@ module Workspace
       system("tmux", "send-keys", "-t", target, key_name)
     end
 
+    # Reads what a pane shows right now (its visible screen, no scrollback).
+    #
+    # @param target [String] any tmux target: "session:0.1", a pane id ("%23")
+    # @return [String, nil] the screen text, or nil if tmux reported failure
+    def capture_screen(target)
+      stdout, _, status = Open3.capture3("tmux", "capture-pane", "-p", "-t", target)
+      status.success? ? stdout : nil
+    end
+
     private
+
+    # Presses Enter, and presses it once more only if the first left the
+    # screen as it was.
+    def submit(target, screen)
+      2.times do
+        return failed("tmux could not press Enter in #{target}") unless system("tmux", "send-keys", "-t", target, "Enter")
+        return Delivery.new(status: :unverified, message: "Enter pressed, but #{target} could not be read back") if screen.nil?
+        return Delivery.new(status: :submitted, message: "submitted in #{target}") if wait_for_change(target, screen, SUBMIT_TIMEOUT)
+      end
+      Delivery.new(status: :unsubmitted,
+        message: "the text is in #{target}, but pressing Enter twice didn't change the screen; it may not have been submitted")
+    end
+
+    def failed(message)
+      Delivery.new(status: :failed, message: message)
+    end
+
+    # Polls the pane until its screen differs from +screen+.
+    #
+    # @return [String, nil] the changed screen, or nil if it never changed
+    def wait_for_change(target, screen, timeout)
+      deadline = @clock.call + timeout
+      loop do
+        current = capture_screen(target)
+        return current if current && current != screen
+        return nil if @clock.call >= deadline
+        @sleeper.call(DELIVERY_POLL)
+      end
+    end
+
+    # Polls the pane after a paste until the screen shows the text.
+    #
+    # @return [Array(String, Boolean)] the latest changed screen (nil if it
+    #   never changed) and whether the text was seen on it
+    def wait_for_text(target, before, text)
+      deadline = @clock.call + LAND_TIMEOUT
+      changed = nil
+      loop do
+        current = capture_screen(target)
+        if current && current != before
+          return [current, true] if shows_new_text?(before, current, text)
+          changed = current
+        end
+        return [changed, false] if @clock.call >= deadline
+        @sleeper.call(DELIVERY_POLL)
+      end
+    end
+
+    # Whether +after+ shows the text's last few characters, or a paste
+    # placeholder, more often than +before+ did. Blanks are dropped from the
+    # text and screens first, since the pane wraps and indents long input.
+    def shows_new_text?(before, after, text)
+      tail = text.gsub(/\s+/, "").chars.last(TAIL_LENGTH).join
+      return false if tail.empty?
+      squashed = ->(screen) { screen.gsub(/\s+/, "") }
+      squashed.call(after).scan(tail).size > squashed.call(before).scan(tail).size ||
+        after.scan(PASTE_PLACEHOLDER).size > before.scan(PASTE_PLACEHOLDER).size
+    end
+
+    # Polls until two reads in a row match, so a large paste has finished
+    # rendering. Gives up after SETTLE_TIMEOUT and returns the latest screen.
+    def settle(target, screen)
+      deadline = @clock.call + SETTLE_TIMEOUT
+      loop do
+        return screen if @clock.call >= deadline
+        @sleeper.call(DELIVERY_POLL)
+        current = capture_screen(target)
+        return screen if current.nil? || current == screen
+        screen = current
+      end
+    end
 
     # Loads text into a named tmux buffer via stdin.
     # Extracted for testability.
@@ -200,20 +379,21 @@ module Workspace
     # so anything that remembers a pane across time must key on the id.
     #
     # @param session_name [String] tmux session name
-    # @param window [String] window index (default "0")
-    # @return [Array<Hash>] :id, :index, :pid, :title, :command, :cwd per pane
+    # @param window [String, nil] window index (default "0"), or nil for
+    #   every window in the session
+    # @return [Array<Hash>] :id, :window, :index, :pid, :title, :command, :cwd per pane
     def pane_details(session_name, window: "0")
-      target = "#{session_name}:#{window}"
-      format = ["pane_id", "pane_index", "pane_pid", "pane_current_command",
+      scope = window.nil? ? ["-s", "-t", session_name] : ["-t", "#{session_name}:#{window}"]
+      format = ["pane_id", "window_index", "pane_index", "pane_pid", "pane_current_command",
         "pane_current_path", "pane_title"].map { |f| "\#{#{f}}" }.join("\t")
-      @logger.debug { "tmux: listing pane details for #{target}" }
-      stdout, _, status = Open3.capture3("tmux", "list-panes", "-t", target, "-F", format)
+      @logger.debug { "tmux: listing pane details for #{scope.last}" }
+      stdout, _, status = Open3.capture3("tmux", "list-panes", *scope, "-F", format)
       return [] unless status.success?
 
       stdout.lines.filter_map do |line|
-        id, index, pid, command, cwd, title = line.chomp.split("\t", 6)
+        id, window_index, index, pid, command, cwd, title = line.chomp.split("\t", 7)
         next if id.nil? || id.empty?
-        {id: id, index: index.to_i, pid: pid.to_i, command: command.to_s,
+        {id: id, window: window_index.to_i, index: index.to_i, pid: pid.to_i, command: command.to_s,
          cwd: cwd.to_s, title: title.to_s}
       end
     end

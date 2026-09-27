@@ -193,6 +193,9 @@ module Workspace
     rescue OptionParser::ParseError => e
       @error_output.puts e.message
       @exit_handler.exit(1)
+    rescue Workspace::Commands::Run::NotSubmittedError => e
+      @error_output.puts "Error: #{e.message}"
+      @exit_handler.exit(Workspace::Commands::Run::NotSubmittedError::EXIT_CODE)
     rescue Error => e
       @error_output.puts "Error: #{e.message}"
       @exit_handler.exit(1)
@@ -270,6 +273,7 @@ module Workspace
     def cmd_launch(args)
       reattach = false
       prompt = nil
+      prompt_timeout = nil
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: workspace launch [options] <project1> [project2] ..."
         opts.separator ""
@@ -281,8 +285,13 @@ module Workspace
         opts.on("--reattach", "Reattach to existing tmux sessions, preserving session state.") do
           reattach = true
         end
-        opts.on("--prompt PROMPT", "Send an initial prompt to Claude in each project") do |p|
+        opts.on("--prompt PROMPT", "Send an initial prompt to the coding agent in each project, once it is",
+          "ready (up to #{AgentReadiness::DEFAULT_TIMEOUT}s); exits 1 if it can't be sent") do |p|
           prompt = p
+        end
+        opts.on("--prompt-timeout DURATION", "How long to wait for the coding agent to be ready for --prompt",
+          "(e.g. \"90s\", or a plain number of seconds); default #{AgentReadiness::DEFAULT_TIMEOUT}s") do |v|
+          prompt_timeout = parse_duration_option("--prompt-timeout", v, positive: true)
         end
         opts.separator ""
         opts.separator "Note: --reattach uses tmux -CC attach which may trigger an iTerm dialog."
@@ -304,16 +313,20 @@ module Workspace
 
       prompts = prompt ? projects.each_with_object({}) { |p, h| h[p] = prompt } : {}
 
-      @launch_command.call(projects, reattach: reattach, prompts: prompts)
+      call_options = {reattach: reattach, prompts: prompts}
+      call_options[:prompt_timeout] = prompt_timeout if prompt_timeout
+      result = @launch_command.call(projects, **call_options)
 
       projects.each do |p|
         @project_settings.ensure_exists(p)
         @hook_runner.run(p, "post_launch")
       end
+      @exit_handler.exit(result[:exit_code]) if result && !result[:exit_code].zero?
     end
 
     def cmd_start(args)
       prompt = nil
+      prompt_timeout = nil
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: workspace start [options] <jira-key|jira-url|pr-url|branch>"
         opts.separator ""
@@ -327,8 +340,13 @@ module Workspace
         opts.separator "  user/PROJ-123                             Branch name (used as-is)"
         opts.separator ""
         opts.separator "Options:"
-        opts.on("--prompt PROMPT", "Send an initial prompt to Claude after launching") do |p|
+        opts.on("--prompt PROMPT", "Send an initial prompt to the coding agent once it is ready",
+          "(up to #{AgentReadiness::DEFAULT_TIMEOUT}s); exits 1 if it can't be sent") do |p|
           prompt = p
+        end
+        opts.on("--prompt-timeout DURATION", "How long to wait for the coding agent to be ready for --prompt",
+          "(e.g. \"90s\", or a plain number of seconds); default #{AgentReadiness::DEFAULT_TIMEOUT}s") do |v|
+          prompt_timeout = parse_duration_option("--prompt-timeout", v, positive: true)
         end
         opts.separator ""
         opts.separator "The worktree is created in .worktrees/ under the project root."
@@ -337,7 +355,8 @@ module Workspace
 
       raise UsageError, parser.help if args.empty?
 
-      @start_command.call(args.first, prompt: prompt)
+      result = @start_command.call(args.first, prompt: prompt, prompt_timeout: prompt_timeout)
+      @exit_handler.exit(result[:exit_code]) if result && !result[:exit_code].zero?
       # post_start hook — project name not easily available here,
       # so hooks for start should use post_launch (which fires from Launch)
     end
@@ -534,6 +553,9 @@ module Workspace
           "Pipe command output into CMD (repeatable for multi-stage pipelines)") do |cmd|
           pipe_commands << cmd
         end
+        opts.separator ""
+        opts.separator "Exit codes: 0 delivered; 1 not delivered, safe to run again; 2 text"
+        opts.separator "  landed but wasn't confirmed submitted — do not resend, check the pane first."
       end
       parser.parse!(args)
 
@@ -877,9 +899,10 @@ module Workspace
     #
     # @param flag [String] option name, for the error message
     # @param value [String] raw option value
+    # @param positive [Boolean] require the duration be greater than 0
     # @return [Numeric] seconds
-    def parse_duration_option(flag, value)
-      Workspace::Duration.parse(value)
+    def parse_duration_option(flag, value, positive: false)
+      positive ? Workspace::Duration.parse_positive(value) : Workspace::Duration.parse(value)
     rescue ArgumentError => e
       raise UsageError, "#{flag}: #{e.message}"
     end

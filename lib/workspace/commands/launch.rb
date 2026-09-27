@@ -5,6 +5,10 @@ module Workspace
     # Validates configs, manages sessions, creates panes, polls for windows,
     # and arranges them on screen.
     class Launch
+      # Times a prompt is pasted into an agent's pane when it never shows up
+      # there. A prompt that did show up is never sent again.
+      MAX_PROMPT_ATTEMPTS = 3
+
       # @param state [Workspace::State] state persistence
       # @param iterm [Workspace::ITerm] iTerm session/pane automation
       # @param window_manager [Workspace::WindowManager] iTerm window operations
@@ -13,9 +17,16 @@ module Workspace
       # @param window_layout [Workspace::WindowLayout] window positioning
       # @param config [Workspace::Config] path configuration, used to find/start the session-monitor agent
       # @param pipeline_config [Workspace::PipelineConfig] validates a project's pipeline config before the daemon starts
+      # @param agent_readiness [Workspace::AgentReadiness] waits for the coding
+      #   agent in a pane to be ready before a prompt is sent
+      # @param prompt_timeout [Numeric] seconds to wait for the agents to be
+      #   ready, shared by every project in one launch
+      # @param sleeper [#call] sleeps the given seconds, injected for fast tests
       # @param output [IO] output stream for user-facing messages
       # @param error_output [IO] error output stream for warnings
-      def initialize(state:, iterm:, window_manager:, tmux:, project_config:, window_layout:, config:, pipeline_config: nil, output: $stdout, error_output: $stderr)
+      def initialize(state:, iterm:, window_manager:, tmux:, project_config:, window_layout:, config:, pipeline_config: nil,
+        agent_readiness: nil, prompt_timeout: AgentReadiness::DEFAULT_TIMEOUT, sleeper: ->(seconds) { sleep(seconds) },
+        output: $stdout, error_output: $stderr)
         @state = state
         @iterm = iterm
         @window_manager = window_manager
@@ -24,6 +35,9 @@ module Workspace
         @window_layout = window_layout
         @config = config
         @pipeline_config = pipeline_config || PipelineConfig.new(config: config)
+        @agent_readiness = agent_readiness || AgentReadiness.new(tmux: tmux, process_tree: ProcessTree.new)
+        @prompt_timeout = prompt_timeout
+        @sleeper = sleeper
         @output = output
         @error_output = error_output
       end
@@ -32,10 +46,12 @@ module Workspace
       #
       # @param projects [Array<String>] list of project/config names to launch
       # @param reattach [Boolean] whether to reattach to existing tmux sessions
-      # @param prompts [Hash{String => String}] project name => prompt text to send to Claude pane
-      # @return [void]
+      # @param prompts [Hash{String => String}] project name => prompt text to
+      #   send to the coding agent (Claude Code first) in that project's session
+      # @return [Hash] +{exit_code:, prompt_failures:}+; exit_code is 1 when any
+      #   prompt was not sent, and prompt_failures maps each such project to why
       # @raise [Workspace::Error] if any project configs are missing
-      def call(projects, reattach: false, prompts: {})
+      def call(projects, reattach: false, prompts: {}, prompt_timeout: @prompt_timeout)
         validate_configs(projects)
 
         @tmux.start_server
@@ -58,7 +74,7 @@ module Workspace
 
         # Brief pause after tmux sessions are found but before searching for
         # iTerm windows — iTerm needs a moment to create windows for new sessions.
-        sleep 1
+        @sleeper.call(1)
 
         find_iterm_windows(projects, session_names)
 
@@ -66,9 +82,13 @@ module Workspace
 
         arrange_windows(projects)
 
-        send_prompts(session_names, prompts) if prompts.any?
+        failures = prompts.any? ? send_prompts(session_names, prompts, prompt_timeout) : {}
 
         @output.puts "Done! Launched #{projects.size} project(s)."
+        unless failures.empty?
+          @error_output.puts "Error: the prompt was not sent to: #{failures.keys.join(", ")}"
+        end
+        {exit_code: failures.empty? ? 0 : 1, prompt_failures: failures}
       end
 
       private
@@ -125,7 +145,7 @@ module Workspace
         session_names = projects.map { |p| [p, @tmux.session_name_for(p)] }.to_h
 
         while sessions_ready.size < projects.size && elapsed < max_wait
-          sleep 1
+          @sleeper.call(1)
           elapsed += 1
           existing_tmux = @tmux.sessions
           projects.each do |project|
@@ -186,7 +206,7 @@ module Workspace
         max_window_wait = 30
         window_elapsed = 0
         while @found_windows.size < projects.size && window_elapsed < max_window_wait
-          sleep 1 if window_elapsed > 0
+          @sleeper.call(1) if window_elapsed > 0
           window_elapsed += 1
           all_windows = @window_manager.iterm_windows
 
@@ -237,24 +257,48 @@ module Workspace
         end
       end
 
-      def send_prompts(session_names, prompts)
-        # Claude needs time to initialize after the tmux session starts.
-        # 5 seconds is a conservative default; Claude typically starts in 2-3s.
-        @output.puts "Waiting for Claude to start..."
-        sleep 5
+      # Sends each project its prompt once its agent is ready. The agents all
+      # started together, so they share one deadline rather than each getting
+      # the full timeout in turn.
+      #
+      # @return [Hash{String => String}] project => why its prompt was not sent
+      def send_prompts(session_names, prompts, prompt_timeout)
+        deadline = @agent_readiness.deadline_in(prompt_timeout)
+        prompts.each_with_object({}) do |(project, prompt_text), failures|
+          @output.puts "Waiting for the coding agent in #{project} to be ready (up to #{prompt_timeout}s)..."
+          failure = deliver_prompt(project, session_names.fetch(project, project), prompt_text, deadline, prompt_timeout)
+          next unless failure
+          @error_output.puts "Error: prompt not sent to #{project}: #{failure}"
+          failures[project] = failure
+        end
+      end
 
-        prompts.each do |project, prompt_text|
-          tmux_name = session_names[project]
-          next unless tmux_name
-          @output.puts "Sending prompt to #{project}..."
-          pane = begin
-            TmuxPane.new("Claude Code", tmux: @tmux).target(tmux_name)
-          rescue Workspace::Error
-            Commands::Claude::CLAUDE_PANE_FALLBACK
+      # Waits for the agent, then pastes the prompt. A paste that never shows
+      # up in the pane is tried again, up to MAX_PROMPT_ATTEMPTS; one that did
+      # show up is not, even if it may not have been submitted, since sending
+      # it again would type it twice. A paste that turns up only after the
+      # check gave up is submitted with Enter rather than pasted again.
+      #
+      # @return [String, nil] why the prompt was not sent, or nil once it was
+      def deliver_prompt(project, tmux_name, prompt_text, deadline, prompt_timeout)
+        last = nil
+        MAX_PROMPT_ATTEMPTS.times do |attempt|
+          ready = @agent_readiness.wait(tmux_name, deadline: deadline)
+          # A retry that runs out of time reports why the paste failed, not
+          # that the agent is still busy redrawing after it.
+          return last&.message || "#{ready.reason} (waited up to #{prompt_timeout}s)" unless ready.ready?
+
+          if last && @tmux.shows_text?(tmux_name, ready.pane, prompt_text)
+            @output.puts "The prompt to #{project} arrived late; submitting it..."
+            delivery = @tmux.deliver(tmux_name, ready.pane, "")
+          else
+            @output.puts "Sending prompt to #{project} (#{ready.label}, pane #{ready.pane})..."
+            delivery = @tmux.deliver(tmux_name, ready.pane, prompt_text)
           end
-          unless @tmux.send_keys(tmux_name, pane, prompt_text)
-            @error_output.puts "Warning: Failed to send prompt to #{project}"
-          end
+          return nil if delivery.ok?
+          return delivery.message if delivery.landed? || attempt == MAX_PROMPT_ATTEMPTS - 1
+          last = delivery
+          @error_output.puts "Warning: prompt to #{project} did not arrive (#{delivery.message}); trying again"
         end
       end
 

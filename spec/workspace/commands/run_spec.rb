@@ -19,7 +19,7 @@ RSpec.describe Workspace::Commands::Run do
     allow(tmux).to receive(:session_name_for).with("myproject").and_return("myproject")
     allow(tmux).to receive(:sessions).and_return(["myproject"])
     allow(tmux).to receive(:panes).with("myproject", window: "0").and_return([0, 1, 2])
-    allow(tmux).to receive(:send_keys).and_return(true)
+    allow(tmux).to receive(:deliver).and_return(Workspace::Tmux::Delivery.new(status: :submitted, message: "ok"))
   end
 
   describe "#call" do
@@ -37,7 +37,7 @@ RSpec.describe Workspace::Commands::Run do
       it "sends command to the last pane" do
         command.call("myproject", "echo hi")
 
-        expect(tmux).to have_received(:send_keys).with("myproject", "0.2", "echo hi", enter: true)
+        expect(tmux).to have_received(:deliver).with("myproject", "0.2", "echo hi", enter: true)
       end
 
       it "resolves tmux session name from config" do
@@ -47,7 +47,7 @@ RSpec.describe Workspace::Commands::Run do
 
         command.call("myproject", "echo hi")
 
-        expect(tmux).to have_received(:send_keys).with("my-tmux-session", "0.1", "echo hi", enter: true)
+        expect(tmux).to have_received(:deliver).with("my-tmux-session", "0.1", "echo hi", enter: true)
       end
     end
 
@@ -55,7 +55,7 @@ RSpec.describe Workspace::Commands::Run do
       it "sends command to the last pane" do
         command.call("myproject", "echo hi", pane: :bottom)
 
-        expect(tmux).to have_received(:send_keys).with("myproject", "0.2", "echo hi", enter: true)
+        expect(tmux).to have_received(:deliver).with("myproject", "0.2", "echo hi", enter: true)
       end
     end
 
@@ -63,7 +63,7 @@ RSpec.describe Workspace::Commands::Run do
       it "sends command to pane 0 rather than falling through to the last pane" do
         command.call("myproject", "echo hi", pane: 0)
 
-        expect(tmux).to have_received(:send_keys).with("myproject", "0.0", "echo hi", enter: true)
+        expect(tmux).to have_received(:deliver).with("myproject", "0.0", "echo hi", enter: true)
       end
     end
 
@@ -91,7 +91,7 @@ RSpec.describe Workspace::Commands::Run do
       it "sends command to the specified pane" do
         command.call("myproject", "rake spec", pane: 1)
 
-        expect(tmux).to have_received(:send_keys).with("myproject", "0.1", "rake spec", enter: true)
+        expect(tmux).to have_received(:deliver).with("myproject", "0.1", "rake spec", enter: true)
       end
 
       it "raises Workspace::Error when pane index is out of range" do
@@ -105,7 +105,7 @@ RSpec.describe Workspace::Commands::Run do
       it "sends text without pressing Enter" do
         command.call("myproject", "rails console", enter: false)
 
-        expect(tmux).to have_received(:send_keys).with("myproject", "0.2", "rails console", enter: false)
+        expect(tmux).to have_received(:deliver).with("myproject", "0.2", "rails console", enter: false)
       end
     end
 
@@ -118,7 +118,7 @@ RSpec.describe Workspace::Commands::Run do
         command.call("myproject", "tail -f log/dev.log", split: true)
 
         expect(tmux).to have_received(:split_window).with("myproject", pane: 2, vertical: false)
-        expect(tmux).to have_received(:send_keys).with("myproject", "0.3", "tail -f log/dev.log", enter: true)
+        expect(tmux).to have_received(:deliver).with("myproject", "0.3", "tail -f log/dev.log", enter: true)
       end
 
       it "uses the reported index even when it is not the highest pane index" do
@@ -126,13 +126,13 @@ RSpec.describe Workspace::Commands::Run do
 
         command.call("myproject", "tail -f log/dev.log", split: true)
 
-        expect(tmux).to have_received(:send_keys).with("myproject", "0.1", "tail -f log/dev.log", enter: true)
+        expect(tmux).to have_received(:deliver).with("myproject", "0.1", "tail -f log/dev.log", enter: true)
       end
 
       it "sends text without Enter when enter: false" do
         command.call("myproject", "rails console", split: true, enter: false)
 
-        expect(tmux).to have_received(:send_keys).with("myproject", "0.3", "rails console", enter: false)
+        expect(tmux).to have_received(:deliver).with("myproject", "0.3", "rails console", enter: false)
       end
 
       it "raises Workspace::Error when split fails" do
@@ -143,8 +143,8 @@ RSpec.describe Workspace::Commands::Run do
         )
       end
 
-      it "raises Workspace::Error when send_keys to the new pane fails" do
-        allow(tmux).to receive(:send_keys).and_return(false)
+      it "raises Workspace::Error when the command never reaches the new pane" do
+        allow(tmux).to receive(:deliver).and_return(Workspace::Tmux::Delivery.new(status: :not_landed, message: "nothing changed"))
 
         expect { command.call("myproject", "tail -f log/dev.log", split: true) }.to raise_error(
           Workspace::Error, /Failed to send command to new split pane/
@@ -197,13 +197,13 @@ RSpec.describe Workspace::Commands::Run do
     end
 
     context "with dry_run: true" do
-      it "prints the tmux send-keys command without executing" do
+      it "prints the load-buffer/paste-buffer sequence without executing" do
         command.call("myproject", "echo hi", dry_run: true)
 
-        expect(output.string).to include("tmux send-keys")
+        expect(output.string).to include("tmux load-buffer")
+        expect(output.string).to include("tmux paste-buffer")
         expect(output.string).to include("myproject")
-        expect(output.string).to include("echo hi")
-        expect(tmux).not_to have_received(:send_keys)
+        expect(tmux).not_to have_received(:deliver)
       end
 
       it "prints Enter line when enter: true" do
@@ -226,17 +226,50 @@ RSpec.describe Workspace::Commands::Run do
 
         expect(output.string).to include("split-window")
         expect(tmux).not_to have_received(:split_window)
-        expect(tmux).not_to have_received(:send_keys)
+        expect(tmux).not_to have_received(:deliver)
       end
     end
 
-    context "when send_keys fails" do
+    context "when the command never reaches the pane" do
       it "raises Workspace::Error" do
-        allow(tmux).to receive(:send_keys).and_return(false)
+        allow(tmux).to receive(:deliver).and_return(Workspace::Tmux::Delivery.new(status: :not_landed, message: "nothing changed"))
 
         expect { command.call("myproject", "echo hi") }.to raise_error(
-          Workspace::Error, /Failed to send command/
+          Workspace::Error, /Failed to send command to pane 0.2 of .myproject.: nothing changed/
         )
+      end
+
+      it "hints that it is safe to run again, since the text never landed" do
+        allow(tmux).to receive(:deliver).and_return(Workspace::Tmux::Delivery.new(status: :not_landed, message: "nothing changed"))
+
+        expect { command.call("myproject", "echo hi") }.to raise_error(Workspace::Error) do |error|
+          expect(error.message.downcase).not_to include("do not run it again")
+          expect(error.message).to include("safe to run it again")
+        end
+      end
+    end
+
+    context "when delivery is unverified (may or may not have landed)" do
+      it "raises a NotSubmittedError with a hint to check before resending" do
+        allow(tmux).to receive(:deliver).and_return(
+          Workspace::Tmux::Delivery.new(status: :unverified, message: "pasted, but the pane could not be read back; it may not have arrived")
+        )
+
+        expect { command.call("myproject", "echo hi") }.to raise_error(Workspace::Commands::Run::NotSubmittedError) do |error|
+          expect(error.message.downcase).to include("do not run it again")
+        end
+      end
+    end
+
+    context "when delivery is unsubmitted (landed but Enter never took)" do
+      it "raises a NotSubmittedError, distinct from a plain not-landed failure" do
+        allow(tmux).to receive(:deliver).and_return(
+          Workspace::Tmux::Delivery.new(status: :unsubmitted, message: "may not have been submitted")
+        )
+
+        expect { command.call("myproject", "echo hi") }.to raise_error(Workspace::Commands::Run::NotSubmittedError) do |error|
+          expect(error.message.downcase).to include("press enter there instead")
+        end
       end
     end
   end
