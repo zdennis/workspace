@@ -26,7 +26,7 @@ module Workspace
     def save(project_name, data)
       path = project_config_path(project_name)
       FileUtils.mkdir_p(File.dirname(path))
-      File.write(path, YAML.dump(data))
+      atomic_write(path, YAML.dump(data))
     end
 
     # @return [Hash] parsed global config, or empty hash if none exists
@@ -38,12 +38,15 @@ module Workspace
       {}
     end
 
+    # Written to a temp file and renamed into place, so readers that don't
+    # take the lock (every `statusline` render) never see a truncated file.
+    #
     # @param data [Hash] config data to write
     # @return [void]
     def save_global(data)
       path = global_config_path
       FileUtils.mkdir_p(File.dirname(path))
-      File.write(path, YAML.dump(data))
+      atomic_write(path, YAML.dump(data))
     end
 
     # Guards a load -> mutate -> write cycle on the global config with an
@@ -105,6 +108,16 @@ module Workspace
     # @return [String] path to the global config file
     def global_config_path
       File.join(@config.workspace_config_dir, "config.yml")
+    end
+
+    private
+
+    def atomic_write(path, content)
+      tmp_path = "#{path}.tmp#{Process.pid}"
+      File.write(tmp_path, content)
+      File.rename(tmp_path, path)
+    ensure
+      File.delete(tmp_path) if tmp_path && File.exist?(tmp_path)
     end
   end
 end

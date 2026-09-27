@@ -25,6 +25,8 @@ module Workspace
     # all still print *something* and exit 0.
     class Statusline
       DEFAULT_DELEGATE_TIMEOUT = 5
+      KILL_GRACE = 0.5
+      THREAD_JOIN_GRACE = 1
 
       # @param context_store [Workspace::ContextStore] records the reading
       # @param renderer [Workspace::StatuslineRenderer] built-in fallback renderer
@@ -34,8 +36,10 @@ module Workspace
       # @param output [IO] stream the rendered line is written to
       # @param logger [Workspace::Logger] debug logger
       # @param delegate_timeout [Numeric] seconds to wait for `statusline.command`
+      # @param terminator [Workspace::ProcessGroupTerminator] stops a timed-out delegate's process group
       def initialize(context_store:, renderer:, project_settings:, env: ENV, input: $stdin, output: $stdout,
-        logger: Workspace::Logger.new, delegate_timeout: DEFAULT_DELEGATE_TIMEOUT)
+        logger: Workspace::Logger.new, delegate_timeout: DEFAULT_DELEGATE_TIMEOUT,
+        terminator: Workspace::ProcessGroupTerminator.new)
         @context_store = context_store
         @renderer = renderer
         @project_settings = project_settings
@@ -44,6 +48,7 @@ module Workspace
         @output = output
         @logger = logger
         @delegate_timeout = delegate_timeout
+        @terminator = terminator
       end
 
       # @return [Hash] {exit_code: 0} — always; see class docs
@@ -112,38 +117,45 @@ module Workspace
         nil
       end
 
-      # Runs `statusline.command` with the same stdin Claude gave us, timed
-      # out so a hung or slow delegate can never freeze the status bar. Kills
-      # and reaps the child on timeout, matching {Workspace::ProcessTree}'s
-      # approach — no Signal.trap, just spawn/wait/kill.
+      # Runs `statusline.command` with the same stdin Claude gave us, bounded
+      # by one deadline covering both the delegate exiting and its stdout
+      # reaching EOF — a delegate that exits but leaves a background child
+      # holding stdout open is as stuck as one that never exits. The delegate
+      # runs in its own process group so a timeout stops everything it
+      # started, not just the shell; Claude renders several times a second,
+      # so orphans would pile up otherwise. No Signal.trap, just
+      # spawn/wait/kill.
       #
       # @return [String, nil] the delegate's stdout, or nil to fall back to
       #   the built-in renderer (non-zero exit, timeout, or spawn failure)
       def run_delegate(command, stdin_data)
+        deadline = now + @delegate_timeout
         in_r, in_w = IO.pipe
         out_r, out_w = IO.pipe
-        pid = Process.spawn(command, in: in_r, out: out_w, err: File::NULL)
+        pid = Process.spawn(command, in: in_r, out: out_w, err: File::NULL, pgroup: true)
         in_r.close
         out_w.close
         waiter = Process.detach(pid)
 
         writer = Thread.new do
           in_w.write(stdin_data)
-        rescue Errno::EPIPE
+        rescue Errno::EPIPE, IOError
           nil
         ensure
           in_w.close unless in_w.closed?
         end
-        reader = Thread.new { out_r.read }
-        reader.report_on_exception = false
+        reader = Thread.new do
+          out_r.read
+        rescue IOError
+          nil
+        end
 
-        unless waiter.join(@delegate_timeout)
+        unless waiter.join(remaining(deadline)) && reader.join(remaining(deadline))
           @logger.debug { "statusline: delegate timed out after #{@delegate_timeout}s" }
-          kill_and_reap(pid, waiter)
+          stop_group(pid, waiter)
           return nil
         end
 
-        writer.join(1)
         output = reader.value
         waiter.value.success? ? output : nil
       rescue SystemCallError, IOError => e
@@ -151,15 +163,28 @@ module Workspace
         nil
       ensure
         [in_w, out_r].each { |io| io.close if io && !io.closed? }
+        [writer, reader].each { |t| t&.join(THREAD_JOIN_GRACE) }
       end
 
-      def kill_and_reap(pid, waiter)
-        Process.kill(:TERM, pid)
-        waiter.join(1) || Process.kill(:KILL, pid)
-      rescue Errno::ESRCH
-        nil
+      def stop_group(pid, waiter)
+        @terminator.terminate(pid, stop_timeout: KILL_GRACE)
+      rescue Workspace::Error, SystemCallError => e
+        @logger.debug { "statusline: could not stop delegate group #{pid} (#{e.message})" }
+        begin
+          Process.kill(:KILL, pid)
+        rescue SystemCallError
+          nil
+        end
       ensure
-        waiter.join
+        waiter.join(THREAD_JOIN_GRACE)
+      end
+
+      def remaining(deadline)
+        [deadline - now, 0].max
+      end
+
+      def now
+        Process.clock_gettime(Process::CLOCK_MONOTONIC)
       end
 
       def presence(value)
