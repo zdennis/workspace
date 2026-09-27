@@ -109,6 +109,8 @@ workspace <subcommand> [options]
 
 Run `workspace <subcommand> --help` for subcommand-specific help.
 
+New to locks and the dev environment? Start with the [walkthrough](docs/GUIDE.locks-and-dev.md).
+
 ## Project Structure
 
 ```
