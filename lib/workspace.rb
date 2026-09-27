@@ -99,7 +99,7 @@ module Workspace
     project_detector = ProjectDetector.new(state: state, project_config: project_config)
     file_backup = FileBackup.new(output: output)
     hook_installer = HookInstaller.new(backup: file_backup, output: output, input: input)
-    doctor = Doctor.new(config: config, state: state, hook_installer: hook_installer, project_detector: project_detector, output: output)
+    doctor = Doctor.new(config: config, state: state, hook_installer: hook_installer, project_detector: project_detector, git: git, output: output)
 
     # Pre-build command objects so CLI delegates rather than constructs
     kill_command = Commands::Kill.new(state: state, iterm: iterm, window_manager: window_manager, tmux: tmux, output: output, error_output: error_output)

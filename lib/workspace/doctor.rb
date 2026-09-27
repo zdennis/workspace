@@ -8,15 +8,17 @@ module Workspace
     # @param hook_installer [Workspace::HookInstaller] checks agent hook installation
     # @param project_detector [Workspace::ProjectDetector] detects the current project
     # @param which [#call] returns true when an executable is on PATH
+    # @param git [Workspace::Git, nil] lists worktrees to check for lock hooks; nil skips that check
     # @param working_dir [String] directory to detect the current project from
     # @param output [IO] output stream for results
-    def initialize(config:, state:, hook_installer:, project_detector:, which: nil,
+    def initialize(config:, state:, hook_installer:, project_detector:, which: nil, git: nil,
       working_dir: Dir.pwd, output: $stdout)
       @config = config
       @state = state
       @hook_installer = hook_installer
       @project_detector = project_detector
       @which = which || ->(exe) { system("command", "-v", exe, out: File::NULL, err: File::NULL) }
+      @git = git
       @working_dir = working_dir
       @output = output
     end
@@ -160,7 +162,30 @@ module Workspace
         issues += 1
       end
 
+      check_worktree_lock_hooks(capable) unless capable.empty?
+
       issues
+    end
+
+    # A worktree without hooks only loses edit-lock enforcement (advisory
+    # elsewhere still applies via `workspace lock`), so this warns rather than
+    # failing doctor.
+    def check_worktree_lock_hooks(capable)
+      return unless @git
+
+      worktrees = @git.list_worktrees(repo: @working_dir).select { |path| File.directory?(path) }
+      return if worktrees.empty?
+
+      missing = worktrees.reject { |path| capable.any? { |p| @hook_installer.installed?(p, path, Commands::Init::HOOK_COMMAND) } }
+      if missing.empty?
+        @output.puts "  ✓  edit lock hooks installed in every worktree"
+      else
+        @output.puts "  ⚠  edit lock hooks missing in #{missing.size} worktree(s): #{missing.join(", ")}"
+        @output.puts "     ↳ fix: run 'workspace init' from each worktree listed above"
+      end
+    rescue Workspace::Error, SystemCallError
+      # git unavailable or not a repo here; the hooks check above already
+      # covers @working_dir, so skipping the rest is not worth failing over.
     end
 
     def check_command(name, version_flag: "--version", version_pattern: /(\d+)/, min_major: nil, install_hint: nil)
