@@ -2450,11 +2450,16 @@ module Workspace
     EVENT_LOG_JSON_SCHEMA_VERSION = 1
 
     def cmd_event_log(args)
-      subcommand = args.shift
+      # The subcommand is the first non-option argument, so a leading flag
+      # (e.g. `event-log --json show`) is dispatched correctly regardless of
+      # where it appears.
+      index = args.index { |a| !a.start_with?("-") }
+      subcommand = index && args[index]
+      rest = index ? args[0...index] + args[(index + 1)..] : args
 
       case subcommand
       when "show"
-        cmd_event_log_show(args)
+        cmd_event_log_show(rest)
       when "compact"
         event_log = @state.event_log
         before_size = event_log.size
@@ -2478,7 +2483,9 @@ module Workspace
           The event log is at: #{@config.event_log_file}
         HELP
       else
-        raise UsageError, "Unknown event-log subcommand: #{subcommand}"
+        message = "Unknown event-log subcommand: #{subcommand}"
+        return emit_json_usage_error(EVENT_LOG_JSON_SCHEMA_VERSION, message) if json_requested?(false, args)
+        raise UsageError, message
       end
     end
 
@@ -2511,7 +2518,7 @@ module Workspace
       end
 
       events = @state.event_log.events
-      events = events.select { |event| event["project"] == project } if project
+      events = events.select { |event| event["project"] == project || event.dig("data", "workspace") == project } if project
       events = events.select { |event| types.include?(event["type"]) } unless types.empty?
       events = events.last(limit) if limit
 
@@ -2526,8 +2533,17 @@ module Workspace
     # summary), so control characters are blanked before reaching a terminal.
     def format_event(event)
       data = event["data"].is_a?(Hash) ? event["data"] : {}
-      details = data.filter_map { |key, value| "#{key}=#{value.is_a?(String) ? value : JSON.generate(value)}" unless value.nil? }
+      details = data.filter_map { |key, value| "#{key}=#{format_event_value(value)}" unless value.nil? }
       [event["timestamp"], event["project"], event["type"], *details].join("  ").gsub(/[[:cntrl:]]+/, " ")
+    end
+
+    # A bare string is ambiguous with the "  " field separator and with "="
+    # inside key=value pairs, so such values are quoted with String#inspect;
+    # plain values (no space, no "=") stay bare for readability. Scripts
+    # should use --json rather than parsing this format.
+    def format_event_value(value)
+      return JSON.generate(value) unless value.is_a?(String)
+      (value.include?(" ") || value.include?("=")) ? value.inspect : value
     end
 
     def cmd_whereis(args)

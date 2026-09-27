@@ -25,7 +25,7 @@ workspace event-log <subcommand>
 | `--limit N` | Only the last N matching events |
 | `--json` | Print `{"schema_version": 1, "events": [...]}` instead of lines |
 
-Each line is `timestamp  project  type  key=value ...`. Control characters in logged text are replaced with spaces. With `--json`, stdout carries only the JSON object, including for usage errors (`{"schema_version": 1, "error": "..."}`); warnings, such as skipped corrupt lines, go to stderr.
+Each line is `timestamp  project  type  key=value ...`. Control characters in logged text are replaced with spaces. A value containing a space or `=` is quoted (Ruby `String#inspect`) so the line stays splittable on `"  "`; scripts should use `--json` instead of parsing this format. `--json` works no matter where the flag appears (e.g. `event-log --json show`); stdout then carries only the JSON object, including for usage errors (`{"schema_version": 1, "error": "..."}`); warnings, such as skipped corrupt lines, go to stderr.
 
 ## Details
 
@@ -35,7 +35,7 @@ This append-only approach eliminates race conditions from concurrent launches â€
 
 ### Agent activity
 
-The same log records what agents and pipelines do. `reconstruct` ignores these events, so they never change state. Each is `{timestamp, type, project, data}`; `project` is the workspace (or, for locks, the lock namespace's project) name.
+The same log records what agents and pipelines do. `reconstruct` ignores these events, so they never change state. Each is `{timestamp, type, project, data}`; `project` is the workspace (or, for locks, the lock namespace's project â€” the parent/main workspace, shared by every worktree of one repo) name. Lock events recorded from a worktree also carry `data.workspace`, that worktree's own workspace name; `--project` matches either field, so `event-log show --project <worktree name>` still finds that worktree's lock waits and takeovers.
 
 | Type | Written by | `data` |
 |------|-----------|--------|
