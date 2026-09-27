@@ -1532,6 +1532,16 @@ RSpec.describe Workspace::CLI do
       expect(lock_command.calls).to eq([{action: :status, name: "edit", json: true}])
     end
 
+    it "emits the JSON error contract for `lock status` when --json appears after a bad flag" do
+      cli, output, _ = build_test_cli(lock_command: CLITestHelpers::FakeLockCommand.new)
+
+      expect { cli.run(["lock", "status", "--bogus", "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+
+      parsed = JSON.parse(output.string)
+      expect(parsed["schema_version"]).to eq(Workspace::Commands::Lock::JSON_SCHEMA_VERSION)
+      expect(parsed["error"]).to be_a(String)
+    end
+
     it "dispatches to lock_command#clear" do
       lock_command = CLITestHelpers::FakeLockCommand.new
       cli, _, _ = build_test_cli(lock_command: lock_command)
@@ -1625,6 +1635,16 @@ RSpec.describe Workspace::CLI do
         cli.run(["dev", "status", "--json"])
 
         expect(dev_command.calls).to eq([{action: :status, json: true}])
+      end
+
+      it "emits the JSON error contract for `dev status` when --json appears after a bad flag" do
+        cli, output, _ = build_test_cli(dev_command: dev_command)
+
+        expect { cli.run(["dev", "status", "--bogus", "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+
+        parsed = JSON.parse(output.string)
+        expect(parsed["schema_version"]).to eq(Workspace::Commands::Dev::JSON_SCHEMA_VERSION)
+        expect(parsed["error"]).to be_a(String)
       end
 
       it "prints dev help without a subcommand and rejects unknown ones" do

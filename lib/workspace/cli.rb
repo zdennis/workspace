@@ -914,7 +914,7 @@ module Workspace
       result = @lock_command.status(name, working_dir: @working_dir, json: json)
       @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
     rescue OptionParser::ParseError, UsageError => e
-      raise unless json
+      raise unless json || args.include?("--json")
       emit_json_usage_error(Commands::Lock::JSON_SCHEMA_VERSION, e.message)
     end
 
@@ -1033,7 +1033,7 @@ module Workspace
       result = @dev_command.status(working_dir: @working_dir, json: json)
       @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
     rescue OptionParser::ParseError, UsageError => e
-      raise unless json
+      raise unless json || args.include?("--json")
       emit_json_usage_error(Commands::Dev::JSON_SCHEMA_VERSION, e.message)
     end
 
