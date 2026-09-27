@@ -51,6 +51,18 @@ RSpec.describe Workspace::LockAuditLog do
     expect(lines.size).to eq(1)
   end
 
+  it "re-checks the size under the rotation lock so a stale size never rotates twice" do
+    small_log = log(rotate_bytes: 200)
+    File.write("#{path}.1", "previous generation\n")
+    small_log.append(event: "acquire", name: "edit", data: {})
+    allow(File).to receive(:size).and_return(10_000)
+
+    small_log.append(event: "release", name: "edit", data: {})
+
+    expect(File.read("#{path}.1")).to eq("previous generation\n")
+    expect(lines.map { |e| e["event"] }).to eq(["acquire", "release"])
+  end
+
   it "never raises when the directory disappears out from under it" do
     FileUtils.remove_entry(tmpdir)
 
