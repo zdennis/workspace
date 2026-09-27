@@ -107,8 +107,8 @@ module Workspace
         begin
           socket.puts(JSON.generate(message))
           reply = socket.gets
-        rescue SystemCallError, IOError => e
-          raise ConnectionError.new("Lost the connection to the agent for #{name}: #{e.message}", "connection_failed")
+        rescue SystemCallError, IOError
+          raise ConnectionError.new("The agent for #{name} closed the connection without replying", "connection_failed")
         ensure
           socket.close
         end

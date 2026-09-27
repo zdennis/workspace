@@ -2462,6 +2462,19 @@ RSpec.describe Workspace::CLI do
         server.close
       end
 
+      it "exits 1 with the same message when the write races the daemon's close (EPIPE after connect)" do
+        cli, _, error_output = build_test_cli(config: config)
+        socket = instance_double(UNIXSocket, close: nil)
+        allow(socket).to receive(:puts).and_raise(Errno::EPIPE)
+        allow(UNIXSocket).to receive(:open).and_return(socket)
+
+        expect { cli.run(["pipeline", "start", "myapp", "--work-item", "WC-42"]) }
+          .to raise_error(FakeSystemExit)
+
+        expect(error_output.string).to include("closed the connection without replying")
+        expect(error_output.string).not_to include("No agent is running")
+      end
+
       it "exits 1 when the agent's reply is not readable" do
         cli, _, error_output = build_test_cli(config: config)
         server = UNIXServer.new(config.agent_socket_path("myapp"))

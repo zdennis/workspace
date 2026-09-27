@@ -81,6 +81,14 @@ RSpec.describe Workspace::Commands::RestartAgent do
     expect(output.string).to include("Restart started on pane 0.1 (%18); context usage isn't known yet.")
   end
 
+  it "reports a closed connection, not 'no daemon', when the socket fails after connecting" do
+    socket = instance_double(UNIXSocket, puts: nil, close: nil)
+    allow(socket).to receive(:gets).and_raise(Errno::EPIPE)
+    allow(UNIXSocket).to receive(:open).and_return(socket)
+
+    expect { call }.to raise_error(Workspace::Error, "The agent for myapp closed the connection without replying")
+  end
+
   it "prints the daemon's warning" do
     with_daemon(started.merge("warning" => "WC-7 has a pipeline stage running on this pane")) { call(force: true) }
 

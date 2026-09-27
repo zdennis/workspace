@@ -1766,14 +1766,21 @@ module Workspace
     end
 
     def send_to_agent(project, message)
-      reply = UNIXSocket.open(@config.agent_socket_path(project)) do |socket|
+      socket = begin
+        UNIXSocket.open(@config.agent_socket_path(project))
+      rescue SystemCallError, IOError
+        raise Error, "No agent is running for #{project}. Start one with: workspace agent --name #{project}"
+      end
+      reply = begin
         socket.puts(message.to_json)
         socket.gets
+      rescue SystemCallError, IOError
+        raise Error, "The agent for #{project} closed the connection without replying"
+      ensure
+        socket.close
       end
       raise Error, "The agent for #{project} closed the connection without replying" if reply.nil?
       JSON.parse(reply)
-    rescue SystemCallError, IOError
-      raise Error, "No agent is running for #{project}. Start one with: workspace agent --name #{project}"
     rescue JSON::ParserError
       raise Error, "Unreadable reply from the agent for #{project}"
     end
