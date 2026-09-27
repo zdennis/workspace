@@ -147,6 +147,15 @@ RSpec.describe Workspace::Git do
       expect(git.worktree_exists?(worktree_path)).to be false
     end
 
+    it "does not match a worktree whose path merely starts with the given path" do
+      porcelain = "worktree #{worktree_path}-bar\nHEAD def456\nbranch refs/heads/feature-x-bar\n\n"
+      allow(Open3).to receive(:capture3)
+        .with("git", "-C", worktree_path, "worktree", "list", "--porcelain")
+        .and_return([porcelain, "", double(success?: true)])
+
+      expect(git.worktree_exists?(worktree_path)).to be false
+    end
+
     it "returns false when git errors (e.g. path does not exist)" do
       allow(Open3).to receive(:capture3)
         .with("git", "-C", worktree_path, "worktree", "list", "--porcelain")
@@ -159,15 +168,34 @@ RSpec.describe Workspace::Git do
   describe "#remove_worktree" do
     let(:worktree_path) { "/Users/me/project/.worktrees/feature-x" }
 
-    it "runs git worktree remove with -C set to the worktree path" do
+    it "re-checks for unsaved work, then removes with --force so untracked files don't block it" do
+      allow(git).to receive(:unsaved_work).with(worktree_path).and_return(nil)
       allow(Open3).to receive(:capture3)
-        .with("git", "-C", worktree_path, "worktree", "remove", worktree_path)
+        .with("git", "-C", worktree_path, "worktree", "remove", "--force", worktree_path)
         .and_return(["", "", double(success?: true)])
 
       expect { git.remove_worktree(worktree_path) }.not_to raise_error
     end
 
-    it "passes --force when force: true" do
+    it "refuses with UnsavedWorkError, without running git worktree remove, when there is unsaved work" do
+      unsaved = {changed_files: 1, unpushed_commits: 0, branch: "feature-x"}
+      allow(git).to receive(:unsaved_work).with(worktree_path).and_return(unsaved)
+      expect(Open3).not_to receive(:capture3).with("git", "-C", worktree_path, "worktree", "remove", any_args)
+
+      expect { git.remove_worktree(worktree_path) }.to raise_error(Workspace::UnsavedWorkError) { |e|
+        expect(e.unsaved).to eq(unsaved)
+        expect(e.message).to include("1 changed file(s) and 0 unpushed commit(s) on feature-x")
+      }
+    end
+
+    it "refuses when git can't tell whether there is unsaved work" do
+      allow(git).to receive(:unsaved_work).with(worktree_path).and_return(:unknown)
+
+      expect { git.remove_worktree(worktree_path) }.to raise_error(Workspace::UnsavedWorkError, /couldn't check/)
+    end
+
+    it "skips the check when force: true" do
+      expect(git).not_to receive(:unsaved_work)
       allow(Open3).to receive(:capture3)
         .with("git", "-C", worktree_path, "worktree", "remove", "--force", worktree_path)
         .and_return(["", "", double(success?: true)])
@@ -177,11 +205,161 @@ RSpec.describe Workspace::Git do
 
     it "raises Workspace::Error when git fails" do
       allow(Open3).to receive(:capture3)
-        .with("git", "-C", worktree_path, "worktree", "remove", worktree_path)
+        .with("git", "-C", worktree_path, "worktree", "remove", "--force", worktree_path)
         .and_return(["", "fatal: not a worktree", double(success?: false)])
 
-      expect { git.remove_worktree(worktree_path) }
+      expect { git.remove_worktree(worktree_path, force: true) }
         .to raise_error(Workspace::Error, /fatal: not a worktree/)
+    end
+  end
+
+  describe "unsaved work detection" do
+    def run!(*cmd, chdir:)
+      _, stderr, status = Open3.capture3(*cmd, chdir: chdir)
+      raise "#{cmd.join(" ")} failed: #{stderr}" unless status.success?
+    end
+
+    def make_repo_with_remote
+      remote_dir = Dir.mktmpdir
+      run!("git", "init", "--bare", "-b", "main", chdir: remote_dir)
+
+      repo_dir = Dir.mktmpdir
+      run!("git", "clone", remote_dir, repo_dir, chdir: Dir.pwd)
+      run!("git", "config", "user.email", "test@example.com", chdir: repo_dir)
+      run!("git", "config", "user.name", "Test", chdir: repo_dir)
+      File.write(File.join(repo_dir, "README.md"), "hi\n")
+      run!("git", "add", "README.md", chdir: repo_dir)
+      run!("git", "commit", "-m", "initial", chdir: repo_dir)
+      run!("git", "push", "-u", "origin", "main", chdir: repo_dir)
+      [remote_dir, repo_dir]
+    end
+
+    around do |example|
+      @remote_dir, @repo_dir = make_repo_with_remote
+      example.run
+    ensure
+      FileUtils.remove_entry(@remote_dir) if @remote_dir && File.exist?(@remote_dir)
+      FileUtils.remove_entry(@repo_dir) if @repo_dir && File.exist?(@repo_dir)
+    end
+
+    describe "#changed_files_count" do
+      it "returns 0 for a clean repo" do
+        expect(git.changed_files_count(@repo_dir)).to eq(0)
+      end
+
+      it "counts modified tracked files, ignoring untracked ones" do
+        File.write(File.join(@repo_dir, "untracked.txt"), "x")
+        File.write(File.join(@repo_dir, "README.md"), "changed\n")
+
+        expect(git.changed_files_count(@repo_dir)).to eq(1)
+      end
+
+      it "counts staged and unstaged changes to tracked files" do
+        File.write(File.join(@repo_dir, "README.md"), "staged\n")
+        run!("git", "add", "README.md", chdir: @repo_dir)
+        File.write(File.join(@repo_dir, "README.md"), "staged then unstaged\n")
+
+        expect(git.changed_files_count(@repo_dir)).to eq(1)
+      end
+
+      it "returns nil when git cannot answer" do
+        expect(git.changed_files_count(File.join(@repo_dir, "does-not-exist"))).to be_nil
+      end
+    end
+
+    describe "#unpushed_commit_count" do
+      it "returns 0 when HEAD matches its remote" do
+        expect(git.unpushed_commit_count(@repo_dir)).to eq(0)
+      end
+
+      it "counts commits not reachable from any remote-tracking ref" do
+        run!("git", "commit", "--allow-empty", "-m", "unpushed 1", chdir: @repo_dir)
+        run!("git", "commit", "--allow-empty", "-m", "unpushed 2", chdir: @repo_dir)
+
+        expect(git.unpushed_commit_count(@repo_dir)).to eq(2)
+      end
+
+      it "falls back to other local branches when the repo has no remotes" do
+        run!("git", "remote", "remove", "origin", chdir: @repo_dir)
+        run!("git", "branch", "other", chdir: @repo_dir)
+        run!("git", "commit", "--allow-empty", "-m", "on main only", chdir: @repo_dir)
+
+        expect(git.unpushed_commit_count(@repo_dir)).to eq(1)
+      end
+
+      it "compares a detached HEAD with every local branch when the repo has no remotes" do
+        run!("git", "remote", "remove", "origin", chdir: @repo_dir)
+        run!("git", "commit", "--allow-empty", "-m", "on main", chdir: @repo_dir)
+        run!("git", "checkout", "-q", "--detach", chdir: @repo_dir)
+        run!("git", "commit", "--allow-empty", "-m", "detached only", chdir: @repo_dir)
+
+        expect(git.unpushed_commit_count(@repo_dir)).to eq(1)
+      end
+
+      it "returns nil when git can't be started" do
+        allow(Open3).to receive(:capture3).and_call_original
+        allow(Open3).to receive(:capture3).with("git", "-C", @repo_dir, "rev-list", any_args).and_raise(Errno::E2BIG)
+
+        expect(git.unpushed_commit_count(@repo_dir)).to be_nil
+      end
+    end
+
+    describe "#unsaved_work" do
+      it "returns nil for a clean, fully-pushed repo" do
+        expect(git.unsaved_work(@repo_dir)).to be_nil
+      end
+
+      it "returns a hash describing dirty tracked files and unpushed commits" do
+        File.write(File.join(@repo_dir, "README.md"), "changed\n")
+        run!("git", "commit", "--allow-empty", "-m", "unpushed", chdir: @repo_dir)
+
+        result = git.unsaved_work(@repo_dir)
+        expect(result).to eq(changed_files: 1, unpushed_commits: 1, branch: "main")
+      end
+
+      it "ignores untracked files entirely" do
+        File.write(File.join(@repo_dir, "untracked.txt"), "x")
+
+        expect(git.unsaved_work(@repo_dir)).to be_nil
+      end
+
+      it "returns nil when the worktree directory no longer exists" do
+        expect(git.unsaved_work(File.join(@repo_dir, "does-not-exist"))).to be_nil
+      end
+
+      it "returns :unknown when git cannot answer for an existing directory" do
+        allow(Open3).to receive(:capture3).and_call_original
+        allow(Open3).to receive(:capture3).with("git", "-C", @repo_dir, "status", any_args).and_return(["", "", instance_double(Process::Status, success?: false)])
+
+        expect(git.unsaved_work(@repo_dir)).to eq(:unknown)
+      end
+    end
+
+    describe "#upstream_branch" do
+      it "returns the upstream ref when one is set" do
+        expect(git.upstream_branch(@repo_dir)).to eq("origin/main")
+      end
+
+      it "returns nil when there is no upstream" do
+        run!("git", "checkout", "-b", "no-upstream", chdir: @repo_dir)
+        expect(git.upstream_branch(@repo_dir)).to be_nil
+      end
+    end
+
+    describe "#commits_ahead_of_upstream" do
+      it "returns 0 when HEAD matches its upstream" do
+        expect(git.commits_ahead_of_upstream(@repo_dir)).to eq(0)
+      end
+
+      it "counts commits ahead of the upstream" do
+        run!("git", "commit", "--allow-empty", "-m", "ahead", chdir: @repo_dir)
+        expect(git.commits_ahead_of_upstream(@repo_dir)).to eq(1)
+      end
+
+      it "returns nil when there is no upstream" do
+        run!("git", "checkout", "-b", "no-upstream", chdir: @repo_dir)
+        expect(git.commits_ahead_of_upstream(@repo_dir)).to be_nil
+      end
     end
   end
 

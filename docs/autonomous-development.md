@@ -2,7 +2,7 @@
 
 ## Verdict
 
-`workspace` handles the middle of an autonomous run well: each agent gets its own worktree and tmux pane, agents share edits and one dev server safely through locks, and `sessions` shows who is working. The two ends are weak. Starting work needs an iTerm2 desktop and can stop at an interactive prompt, and finishing work (commit, PR, merge, cleanup) is left entirely to the agent. Stall detection has improved: `sessions` now shows a `waiting` state (Claude Code only) when a pane asks for permission or input, and `alerts.notify` can run a command when a pane waits or stays idle too long. The remaining gap is that an agent that finished and an agent that hung both still show `idle` with no distinction, and non-Claude-Code agents never leave `working`/`idle`.
+`workspace` handles the middle of an autonomous run well: each agent gets its own worktree and tmux pane, agents share edits and one dev server safely through locks, and `sessions` shows who is working. Starting work still needs an iTerm2 desktop and can stop at an interactive prompt. Finishing work is better than it was: `workspace finish` checks a worktree is clean and pushed (optionally opening a PR) before cleanup, and `kill`/`prune` now refuse to discard unsaved work — but merging a PR is still entirely up to the agent. Stall detection has improved: `sessions` now shows a `waiting` state (Claude Code only) when a pane asks for permission or input, and `alerts.notify` can run a command when a pane waits or stays idle too long. The remaining gap is that an agent that finished and an agent that hung both still show `idle` with no distinction, and non-Claude-Code agents never leave `working`/`idle`.
 
 ## Top recommendations
 
@@ -11,7 +11,7 @@ Ordered by value. Effort: S (a day or less), M (a few days), L (a week or more).
 1. **Detect and announce "needs a human"**: add a `waiting` session state from the agent's notification hook, plus a notify command hook when a pane waits or goes idle too long. (M) Done: see the [Fixed] waiting-state and alerts items in the gap analysis.
 2. **Make `start` non-interactive**: add `--base`, `--yes` and `--json`, and send `--prompt` only after the agent is ready. (S)
 3. **Add a stage timeout and reliable completion to pipelines**: a per-stage deadline that reports failure, the sentinel instruction for stage 1, and detection that still works once scrollback is full. (M) Done: see the [Fixed] items under "Coordinating agents".
-4. **Add a `finish` command**: check the worktree is clean and pushed, open a PR with `gh`, then remove the worktree; make `kill` and `prune` refuse unpushed or dirty work. (M)
+4. **Add a `finish` command**: check the worktree is clean and pushed, open a PR with `gh`, then remove the worktree; make `kill` and `prune` refuse unpushed or dirty work. (M) Done: see the [Fixed] cleanup items under "Finishing work".
 5. **Add a way to request and record human input**: `workspace ask` writes a question with the default taken, shows it in `sessions`, and notifies. (M)
 6. **Pull the task in from its source**: `start PROJ-123` and GitHub issue URLs should fetch the ticket text and acceptance criteria into the initial prompt. (M)
 7. **Add a reliable "send to agent" command** that submits multi-line text and reports whether it landed. (S)
@@ -44,9 +44,9 @@ A goal ("Admins can export invoices by Friday") or a bare user story works the s
 | 4. Agents work | Agent in each pane edits, tests, commits | `workspace sessions <proj> --watch`, `workspace capture <proj> --pane "Claude Code"` | **Good.** Working/idle per pane, sub-agents, lock state. |
 | 5. Shared resources | One agent edits at a time; one dev server | `workspace lock acquire edit --wait`, `workspace dev up --wait` | **Good**, within one dev environment per repo. |
 | 6. Review | Reviewer agents read the diff and run tests | pipeline stage, or orchestrator sub-agents | **Partial.** Pipelines can chain implementer → reviewer, with no timeout. |
-| 7. PR and merge | Push, open PR, merge | `git`, `gh` run by the agent | **None.** Nothing in `lib/` commits, pushes, opens or merges a PR. |
+| 7. PR and merge | Push, open PR, merge | `git`, `gh pr create` (via `workspace finish --pr`) | **Partial.** `finish` can open (or reuse) a PR before cleanup; nothing merges it. |
 | 8. Acceptance | Person checks the criteria against the running app | `workspace dev up` | **None** beyond the dev environment. No record of sign-off. |
-| 9. Cleanup | Remove worktree, config, session | `workspace kill <proj> --force`, `workspace prune` | **Partial.** Removes worktrees, but does not check for unpushed commits. |
+| 9. Cleanup | Remove worktree, config, session | `workspace finish`, `workspace kill <proj> --force`, `workspace prune` | **Good.** `finish` requires the branch clean and pushed before removing it; `kill`/`prune` refuse dirty or unpushed worktrees unless `--force`. |
 
 ## Where a person belongs in the loop
 
@@ -56,7 +56,7 @@ A person should decide scope, outward-facing actions, and acceptance; agents sho
 |---|---|---|---|---|---|
 | Plan from the ticket | Confirm scope and how each criterion is read | Plan file with open questions | Plan written | Proceed with the stated defaults; questions stay logged | None |
 | Contested design decision | Pick between options | Question, options, the default taken, `file:line` | A reviewer disagrees, or the spec is silent | Reviewer agent rules; proceed with its ruling; logged | None |
-| Push, merge, PR, deleting branches | Approve outward or destructive actions | Test and lint results, diff summary, target branch | Work ready to leave the machine | Block, unless a written policy pre-approves it (for example "push when tests pass and it is a fast-forward"; never force-push; never delete branches) | None. `kill` confirms, but `--force` skips it (`lib/workspace/commands/kill.rb:51-58`) |
+| Push, merge, PR, deleting branches | Approve outward or destructive actions | Test and lint results, diff summary, target branch | Work ready to leave the machine | Block, unless a written policy pre-approves it (for example "push when tests pass and it is a fast-forward"; never force-push; never delete branches) | `kill` confirms and refuses dirty/unpushed work unless `--force`; `finish` refuses unconditionally until pushed (no override) — but nothing merges a PR or deletes branches |
 | Lock or dev conflict needing a person | Stop a process group this user cannot signal | `lock clear devenv` output naming the owner and pgid | `lock clear devenv` exits 1 with "Kept devenv lock" | The lock stays held and waiters stay queued: the run blocks | Message only (`docs/README.lock.md:164`); no alert |
 | Agent waiting on input | Answer the question or permission prompt | The pane | Agent asks | The pane shows `waiting` in `sessions` | `alerts.notify` runs, if set (Claude Code only; other agents still sit `idle`) |
 | Review sign-off | Accept or send back | Reviewer verdicts (PASS / CHANGES NEEDED) | Reviews complete | Merge under the written policy if all pass; otherwise fix and re-review | None |
@@ -244,11 +244,11 @@ Every hand-off in the human-in-the-loop table runs through files and conventions
 
 ### Finishing work: the agent does it all, and cleanup can lose work
 
-`workspace` removes worktrees but does not help land the change, and its cleanup does not protect unpushed work.
+`workspace` now protects unpushed work on cleanup and can open the PR, though nothing merges one.
 
-- **[Missing] Commit, push, PR, merge.** No code in `lib/` runs `git commit`, `git push`, `gh pr create` or a merge. Each agent reimplements this, and nothing checks it happened before cleanup. Fix: `workspace finish` that checks clean and pushed, opens the PR, and reports the URL as JSON.
-- **[Improve] `kill` ignores unpushed commits.** It removes the worktree after a y/N prompt, or without one under `--force` (`lib/workspace/commands/kill.rb:51-64`). Committed but unpushed work survives only on the local branch, with no warning. Fix: refuse when the branch is ahead of its upstream unless `--force`.
-- **[Improve] `prune` always forces.** It removes the worktree with `force: true` once the PR is merged or closed (`lib/workspace/commands/prune.rb:231`), deleting uncommitted changes. Fix: skip dirty worktrees unless `--force`.
+- **[Fixed] Commit, push, PR, merge.** `workspace finish` (`lib/workspace/commands/finish.rb`) checks the worktree is clean (tracked files only) and fully pushed, optionally opens or reuses a PR with `gh` (`--pr`; skipped with a note if `gh` is missing), then reuses `Commands::Kill` for cleanup. `--json` reports `{schema_version, project}` or `{schema_version, error}`. Still nothing merges a PR — that stays a person's call.
+- **[Fixed] `kill` ignored unpushed commits.** It now refuses to remove a worktree with uncommitted changes to tracked files or commits unreachable from any remote (or, with no remote, any other local branch) before doing anything (`lib/workspace/commands/kill.rb`, `Git#unsaved_work`). `--force` skips this check along with the confirmation prompt, same as before.
+- **[Fixed] `prune` always forced.** It now runs the same unsaved-work check per candidate; a dirty or unpushed candidate is skipped and reported by name rather than removed, while the rest of the run keeps going (`lib/workspace/commands/prune.rb`). `--force` removes those anyway.
 - **[Fixed] Swapped class names.** CLI `stop` now runs `Commands::Stop` and CLI `kill` now runs `Commands::Kill` (`lib/workspace/cli.rb`). Previously the classes were swapped relative to the commands they backed.
 - **[Improve] Run results pile up.** `run --wait` results are never cleaned up (`lib/workspace/run_result_store.rb:9`). Fix: delete results older than a day on each write.
 - **[Missing] Context handoff.** Long runs depend on an external `agent-context` tool to notice a full context and restart the agent with a handoff prompt. Fix: a `sessions` field for context use, and a `workspace restart-agent --prompt-file` that clears and re-prompts a pane.

@@ -10,6 +10,33 @@ module Workspace
 
   # Raised for invalid usage or missing required arguments.
   class UsageError < Error; end
+
+  # Raised when a worktree can't be removed because it has unsaved work
+  # (or git couldn't tell whether it does).
+  class UnsavedWorkError < Error
+    # @return [Hash, Symbol] the Git#unsaved_work result: a Hash, or :unknown
+    attr_reader :unsaved
+
+    # @param message [String, nil] error message
+    # @param unsaved [Hash, Symbol] the Git#unsaved_work result
+    def initialize(message = nil, unsaved: :unknown)
+      super(message)
+      @unsaved = unsaved
+    end
+
+    # @param unsaved [Hash, Symbol] a Git#unsaved_work result
+    # @return [String] a one-phrase description of the unsaved work
+    def self.describe(unsaved)
+      return "git couldn't check it for unsaved work" if unsaved == :unknown
+      "#{unsaved[:changed_files]} changed file(s) and #{unsaved[:unpushed_commits]} " \
+        "unpushed commit(s) on #{unsaved[:branch] || "HEAD"}"
+    end
+
+    # @return [String] a one-phrase description of the unsaved work
+    def summary
+      self.class.describe(unsaved)
+    end
+  end
 end
 
 require_relative "workspace/version"
@@ -58,6 +85,7 @@ require_relative "workspace/commands/init"
 require_relative "workspace/commands/claude"
 require_relative "workspace/commands/launch"
 require_relative "workspace/commands/kill"
+require_relative "workspace/commands/finish"
 require_relative "workspace/commands/focus"
 require_relative "workspace/commands/start"
 require_relative "workspace/commands/stop"
@@ -119,6 +147,7 @@ module Workspace
     lineage = WorkspaceLineage.new
     start_command = Commands::Start.new(git: git, project_config: project_config, project_settings: project_settings, launch_command: launch_command, lineage: lineage, hook_installer: hook_installer, output: output, input: input)
     kill_command = Commands::Kill.new(git: git, project_config: project_config, project_settings: project_settings, stop_command: stop_command, project_detector: project_detector, output: output, input: input)
+    finish_command = Commands::Finish.new(git: git, project_config: project_config, kill_command: kill_command, project_detector: project_detector, output: output, error_output: error_output, input: input)
     focus_command = Commands::Focus.new(state: state, window_manager: window_manager, output: output)
     tile_command = Commands::Tile.new(state: state, window_manager: window_manager, window_layout: window_layout, output: output)
     layout_command = Commands::Layout.new(state: state, tmux: tmux, project_settings: project_settings, output: output)
@@ -215,6 +244,7 @@ module Workspace
       project_detector: project_detector,
       launch_command: launch_command,
       kill_command: kill_command,
+      finish_command: finish_command,
       start_command: start_command,
       stop_command: stop_command,
       focus_command: focus_command,

@@ -111,7 +111,7 @@ module Workspace
     # @return [Boolean] true if a worktree exists at the given path
     def worktree_exists?(path)
       stdout, _ = Open3.capture3("git", "-C", path, "worktree", "list", "--porcelain")
-      stdout.include?("worktree #{path}")
+      stdout.each_line.any? { |line| line.chomp == "worktree #{path}" }
     end
 
     # Lists every worktree of the repository containing +repo+, including the
@@ -237,14 +237,107 @@ module Workspace
       end
     end
 
+    # @param path [String] worktree directory path
+    # @return [Integer, nil] count of changed tracked files (staged or
+    #   unstaged); untracked files are never counted, or nil if git could not answer
+    def changed_files_count(path)
+      stdout, _, status = Open3.capture3("git", "-C", path, "status", "--porcelain", "--untracked-files=no")
+      return nil unless status.success?
+      stdout.lines.count { |l| !l.strip.empty? }
+    end
+
+    # @param path [String] worktree directory path
+    # @return [Boolean, nil] true if the repository has any remotes, or nil if
+    #   git could not answer
+    def remotes?(path)
+      stdout, _, status = Open3.capture3("git", "-C", path, "remote")
+      return nil unless status.success?
+      !stdout.strip.empty?
+    end
+
+    # Counts commits reachable from the worktree's HEAD that are not pushed
+    # anywhere: not reachable from any remote-tracking ref, or (when the
+    # repository has no remotes) not reachable from any other local branch.
+    #
+    # @param path [String] worktree directory path
+    # @return [Integer, nil] unpushed commit count, or nil if git could not answer
+    def unpushed_commit_count(path)
+      has_remotes = remotes?(path)
+      return nil if has_remotes.nil?
+
+      if has_remotes
+        stdout, _, status = Open3.capture3("git", "-C", path, "rev-list", "--count", "HEAD", "--not", "--remotes")
+      else
+        # --exclude takes the name without refs/heads/ when it applies to --branches.
+        exclude = (branch = worktree_branch(path)) ? ["--exclude=#{branch}"] : []
+        stdout, _, status = Open3.capture3("git", "-C", path, "rev-list", "--count", "HEAD", "--not", *exclude, "--branches")
+      end
+      return nil unless status.success?
+      stdout.strip.to_i
+    rescue SystemCallError
+      nil
+    end
+
+    # Checks whether a worktree has unsaved work: uncommitted changes to
+    # tracked files (untracked files don't count), or commits not pushed anywhere.
+    # A worktree whose directory no longer exists has nothing to check for
+    # (git can't answer for a path that isn't there) and is treated as having
+    # no unsaved work.
+    #
+    # @param path [String] worktree directory path
+    # @return [Hash, Symbol, nil] nil if there is nothing unsaved, :unknown if
+    #   git could not answer, or a hash with :changed_files, :unpushed_commits,
+    #   and :branch when there is unsaved work
+    def unsaved_work(path)
+      return nil unless File.directory?(path)
+
+      changed = changed_files_count(path)
+      return :unknown if changed.nil?
+
+      unpushed = unpushed_commit_count(path)
+      return :unknown if unpushed.nil?
+
+      return nil if changed.zero? && unpushed.zero?
+
+      {changed_files: changed, unpushed_commits: unpushed, branch: worktree_branch(path)}
+    end
+
+    # @param path [String] worktree directory path
+    # @return [String, nil] the upstream branch's full name (e.g. "origin/main"),
+    #   or nil if there is none
+    def upstream_branch(path)
+      stdout, _, status = Open3.capture3("git", "-C", path, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")
+      status.success? ? stdout.strip : nil
+    end
+
+    # @param path [String] worktree directory path
+    # @return [Integer, nil] number of commits on HEAD not in its upstream, or
+    #   nil if there is no upstream or git could not answer
+    def commits_ahead_of_upstream(path)
+      stdout, _, status = Open3.capture3("git", "-C", path, "rev-list", "--count", "@{u}..HEAD")
+      status.success? ? stdout.strip.to_i : nil
+    end
+
+    # Removes a worktree, untracked files included. Unless force is set, it
+    # first re-checks for unsaved work (see #unsaved_work) and refuses, so the
+    # check sits right next to the removal rather than minutes before it.
+    #
     # @param path [String] worktree path
-    # @param force [Boolean] force removal even with uncommitted changes
+    # @param force [Boolean] skip workspace's own unsaved-work re-check; git's
+    #   own `--force` is passed to `worktree remove` either way
     # @return [void]
+    # @raise [Workspace::UnsavedWorkError] if force is false and the worktree has
+    #   unsaved work, or git couldn't tell
     # @raise [Workspace::Error] if worktree removal fails
     def remove_worktree(path, force: false)
-      cmd = ["git", "-C", path, "worktree", "remove"]
-      cmd << "--force" if force
-      cmd << path
+      unless force
+        unsaved = unsaved_work(path)
+        if unsaved
+          raise UnsavedWorkError.new("Not removing #{path}: #{UnsavedWorkError.describe(unsaved)}.", unsaved: unsaved)
+        end
+      end
+
+      cmd = ["git", "-C", path, "worktree", "remove", "--force", path]
 
       @logger.debug { "git: #{cmd.join(" ")}" }
       _, stderr, status = Open3.capture3(*cmd)

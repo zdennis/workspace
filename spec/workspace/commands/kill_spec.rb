@@ -64,6 +64,7 @@ RSpec.describe Workspace::Commands::Kill do
       context "with valid worktree" do
         before do
           allow(git).to receive(:worktree_exists?).with("/path/to/worktree").and_return(true)
+          allow(git).to receive(:unsaved_work).with("/path/to/worktree").and_return(nil)
         end
 
         it "cancels when user declines confirmation" do
@@ -97,28 +98,10 @@ RSpec.describe Workspace::Commands::Kill do
           command.call("myproject.worktree-PROJ-123")
 
           expect(git).to have_received(:remove_worktree).with("/path/to/worktree", force: false)
-          expect(stop_command).to have_received(:call).with(["myproject.worktree-PROJ-123"])
+          expect(stop_command).to have_received(:call).with(["myproject.worktree-PROJ-123"], quiet: false)
           expect(project_config).to have_received(:remove).with("myproject.worktree-PROJ-123")
           expect(project_settings).to have_received(:remove).with("myproject.worktree-PROJ-123")
-          expect(output.string).to include("Stopped myproject.worktree-PROJ-123")
-        end
-
-        it "removes marker file before worktree removal" do
-          worktree_dir = File.join(tmpdir, "worktree")
-          Dir.mkdir(worktree_dir)
-          marker = File.join(worktree_dir, ".workspace-project")
-          File.write(marker, "myproject.worktree-PROJ-123")
-
-          File.write(config_path, YAML.dump("name" => "myproject-wt-PROJ-123", "root" => worktree_dir))
-          allow(git).to receive(:worktree_exists?).with(worktree_dir).and_return(true)
-          allow(git).to receive(:remove_worktree)
-          allow(stop_command).to receive(:call).and_return([])
-          allow(project_config).to receive(:remove)
-          allow(project_settings).to receive(:remove)
-
-          command.call("myproject.worktree-PROJ-123", force: true)
-
-          expect(File.exist?(marker)).to be false
+          expect(output.string).to include("Killing session...")
         end
 
         it "removes worktree before killing session" do
@@ -136,7 +119,7 @@ RSpec.describe Workspace::Commands::Kill do
 
           command.call("myproject.worktree-PROJ-123")
 
-          expect(order).to eq([:remove_worktree, :kill, :remove_config, :remove_settings])
+          expect(order).to eq([:remove_worktree, :remove_config, :remove_settings, :kill])
         end
 
         it "skips confirmation with force flag" do
@@ -149,7 +132,57 @@ RSpec.describe Workspace::Commands::Kill do
 
           expect(output.string).not_to include("[y/N]")
           expect(git).to have_received(:remove_worktree).with("/path/to/worktree", force: true)
-          expect(output.string).to include("Stopped")
+          expect(output.string).to include("Killing session")
+        end
+
+        it "with confirm: false, skips the prompt but still has git re-check before removing" do
+          allow(git).to receive(:remove_worktree)
+          allow(stop_command).to receive(:call).and_return([])
+          allow(project_config).to receive(:remove)
+          allow(project_settings).to receive(:remove)
+
+          command.call("myproject.worktree-PROJ-123", confirm: false)
+
+          expect(output.string).not_to include("[y/N]")
+          expect(git).to have_received(:unsaved_work).with("/path/to/worktree")
+          expect(git).to have_received(:remove_worktree).with("/path/to/worktree", force: false)
+        end
+
+        it "with quiet: true, prints nothing and asks Stop to be quiet too" do
+          allow(git).to receive(:remove_worktree)
+          allow(stop_command).to receive(:call).and_return([])
+          allow(project_config).to receive(:remove)
+          allow(project_settings).to receive(:remove)
+
+          command.call("myproject.worktree-PROJ-123", force: true, quiet: true)
+
+          expect(output.string).to eq("")
+          expect(stop_command).to have_received(:call).with(["myproject.worktree-PROJ-123"], quiet: true)
+        end
+
+        it "yields the project after removing the worktree and before removing config or stopping" do
+          order = []
+          allow(git).to receive(:remove_worktree) { order << :remove_worktree }
+          allow(stop_command).to receive(:call) { order << :stop }
+          allow(project_config).to receive(:remove) { order << :remove_config }
+          allow(project_settings).to receive(:remove) { order << :remove_settings }
+
+          command.call("myproject.worktree-PROJ-123", force: true) { |p| order << [:yield, p] }
+
+          expect(order).to eq([:remove_worktree, [:yield, "myproject.worktree-PROJ-123"], :remove_config, :remove_settings, :stop])
+        end
+
+        it "refuses, touching nothing else, when git's re-check finds unsaved work at removal time" do
+          input.puts "y"
+          input.rewind
+          unsaved = {changed_files: 1, unpushed_commits: 0, branch: "feature/x"}
+          allow(git).to receive(:remove_worktree).and_raise(Workspace::UnsavedWorkError.new("x", unsaved: unsaved))
+          expect(project_config).not_to receive(:remove)
+          expect(stop_command).not_to receive(:call)
+
+          expect { command.call("myproject.worktree-PROJ-123") }.to raise_error(
+            Workspace::UnsavedWorkError, /1 changed file\(s\) and 0 unpushed commit\(s\) on feature\/x.*--force/m
+          )
         end
 
         it "passes force to remove_worktree" do
@@ -173,6 +206,7 @@ RSpec.describe Workspace::Commands::Kill do
 
         File.write(config_path, YAML.dump("name" => "myproject-wt-PROJ-123", "root" => "/path/to/worktree"))
         allow(git).to receive(:worktree_exists?).with("/path/to/worktree").and_return(true)
+        allow(git).to receive(:unsaved_work).with("/path/to/worktree").and_return(nil)
         allow(git).to receive(:remove_worktree)
         allow(stop_command).to receive(:call).and_return([])
         allow(project_config).to receive(:remove)
@@ -184,8 +218,8 @@ RSpec.describe Workspace::Commands::Kill do
         )
         cmd.call(nil, force: true, working_dir: marker_dir)
 
-        expect(stop_command).to have_received(:call).with(["myproject.worktree-PROJ-123"])
-        expect(output.string).to include("Stopped myproject.worktree-PROJ-123")
+        expect(stop_command).to have_received(:call).with(["myproject.worktree-PROJ-123"], quiet: false)
+        expect(output.string).to include("Killing session...")
       end
 
       it "walks up directories to find .workspace-project" do
@@ -196,6 +230,7 @@ RSpec.describe Workspace::Commands::Kill do
 
         File.write(config_path, YAML.dump("name" => "myproject-wt-PROJ-123", "root" => "/path/to/worktree"))
         allow(git).to receive(:worktree_exists?).with("/path/to/worktree").and_return(true)
+        allow(git).to receive(:unsaved_work).with("/path/to/worktree").and_return(nil)
         allow(git).to receive(:remove_worktree)
         allow(stop_command).to receive(:call).and_return([])
         allow(project_config).to receive(:remove)
@@ -207,7 +242,7 @@ RSpec.describe Workspace::Commands::Kill do
         )
         cmd.call(nil, force: true, working_dir: sub_dir)
 
-        expect(stop_command).to have_received(:call).with(["myproject.worktree-PROJ-123"])
+        expect(stop_command).to have_received(:call).with(["myproject.worktree-PROJ-123"], quiet: false)
       end
 
       it "raises error when no marker file found and no project given" do
@@ -222,12 +257,73 @@ RSpec.describe Workspace::Commands::Kill do
       end
     end
 
+    context "with unsaved work" do
+      before do
+        File.write(config_path, YAML.dump("name" => "myproject-wt-PROJ-123", "root" => "/path/to/worktree"))
+        allow(git).to receive(:worktree_exists?).with("/path/to/worktree").and_return(true)
+      end
+
+      it "refuses to remove a dirty or unpushed worktree before touching anything" do
+        allow(git).to receive(:unsaved_work).with("/path/to/worktree")
+          .and_return(changed_files: 2, unpushed_commits: 1, branch: "feature/x")
+        expect(git).not_to receive(:remove_worktree)
+        expect(stop_command).not_to receive(:call)
+
+        expect { command.call("myproject.worktree-PROJ-123") }.to raise_error(
+          Workspace::Error, /2 changed file\(s\) and 1 unpushed commit\(s\) on feature\/x/
+        )
+      end
+
+      it "refuses when git cannot answer" do
+        allow(git).to receive(:unsaved_work).with("/path/to/worktree").and_return(:unknown)
+        expect(git).not_to receive(:remove_worktree)
+
+        expect { command.call("myproject.worktree-PROJ-123") }.to raise_error(
+          Workspace::Error, /git couldn't answer/
+        )
+      end
+
+      it "mentions --force as the way out" do
+        allow(git).to receive(:unsaved_work).with("/path/to/worktree")
+          .and_return(changed_files: 2, unpushed_commits: 1, branch: "feature/x")
+
+        expect { command.call("myproject.worktree-PROJ-123") }.to raise_error(
+          Workspace::Error, /--force/
+        )
+      end
+
+      it "proceeds without checking when --force is given" do
+        allow(git).to receive(:unsaved_work).with("/path/to/worktree")
+          .and_return(changed_files: 2, unpushed_commits: 1, branch: "feature/x")
+        allow(git).to receive(:remove_worktree)
+        allow(stop_command).to receive(:call).and_return([])
+        allow(project_config).to receive(:remove)
+        allow(project_settings).to receive(:remove)
+
+        command.call("myproject.worktree-PROJ-123", force: true)
+
+        expect(git).to have_received(:remove_worktree).with("/path/to/worktree", force: true)
+      end
+    end
+
     context "with corrupt config" do
       before do
         File.write(config_path, "{{invalid yaml")
       end
 
       it "raises a friendly error" do
+        expect { command.call("myproject.worktree-PROJ-123") }.to raise_error(
+          Workspace::Error, /Corrupt config file/
+        )
+      end
+    end
+
+    context "with a config containing a disallowed YAML class" do
+      before do
+        File.write(config_path, "root: !ruby/object {}\n")
+      end
+
+      it "raises a friendly error instead of Psych::DisallowedClass" do
         expect { command.call("myproject.worktree-PROJ-123") }.to raise_error(
           Workspace::Error, /Corrupt config file/
         )

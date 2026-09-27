@@ -13,7 +13,7 @@ workspace prune [options]
 | Option | Description |
 |--------|-------------|
 | `--dry-run` | Show what would be removed without making any changes |
-| `-f, --force` | Skip confirmation and remove immediately |
+| `-f, --force` | Skip confirmation, and remove candidates even with unsaved work |
 
 ## Details
 
@@ -24,14 +24,24 @@ For each tmuxinator config and state entry, `prune`:
 3. Marks the project eligible if the PR is **CLOSED** or **MERGED**
 4. Also marks projects eligible if their backing directory no longer exists on disk
 
-On confirmation, for each eligible project:
-- Kills any live iTerm/tmux session
-- Removes the git worktree (`git worktree remove --force`)
+On confirmation, for each eligible project, in this order:
+- Checks again for unsaved work (see below), right before removing anything
+- Removes the git worktree (`git worktree remove --force`, so untracked files go with it)
 - Removes the tmuxinator config (`~/.config/tmuxinator/workspace.<name>.yml`)
 - Removes the project settings file (`~/.config/workspace/projects/<name>.yml`)
-- Removes the state entry
+- Removes the state entry and kills any live tmux session, last
 
 Requires the `gh` CLI to be installed and authenticated. If `gh` is unavailable, worktree projects are skipped with a warning. Directory-gone projects are always eligible regardless of `gh` availability.
+
+### Unsaved-work check
+
+Same check as `workspace kill`: a candidate with uncommitted changes to tracked files (untracked files don't count) or unpushed commits is **skipped**, not removed — one line is printed per skipped project naming the counts and branch. The check runs immediately before that candidate's worktree is removed, so an edit made while you answered the prompt still counts. A skipped candidate is left exactly as it was: its session keeps running and its config and state entry stay. The rest of the run keeps going regardless. `--force` removes those anyway, in addition to skipping the confirmation prompt.
+
+If git can't answer the check for a candidate, it's skipped the same way (reported as such) rather than guessed about. If git refuses to remove a worktree (it's locked, for example), that candidate is skipped with git's message and the rest are still pruned. The final line counts every skipped candidate: `Pruned N project(s). Skipped M: a, b.`
+
+## Exit status
+
+`prune` exits 0 only if every eligible candidate was removed. If any candidate was skipped (unsaved work, or git refused to remove it), `prune` finishes processing and reporting the rest, saves state, then exits 1 — commit/push the skipped candidates' work and rerun, or rerun with `--force`.
 
 ## Examples
 
@@ -42,6 +52,6 @@ workspace prune --dry-run
 # Prune with confirmation prompt
 workspace prune
 
-# Prune without prompting (useful in automation)
+# Prune without prompting, and remove candidates with unsaved work too
 workspace prune --force
 ```

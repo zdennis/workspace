@@ -25,6 +25,7 @@ RSpec.describe Workspace::CLI do
     launch_command = overrides[:launch_command] || Workspace::Commands::Launch.new(state: state, iterm: iterm, window_manager: window_manager, tmux: tmux, project_config: project_config, window_layout: window_layout, config: config, output: output, error_output: error_output)
     start_command = overrides[:start_command] || Workspace::Commands::Start.new(git: git, project_config: project_config, project_settings: project_settings, launch_command: launch_command, output: output, input: input)
     kill_command = overrides[:kill_command] || Workspace::Commands::Kill.new(git: git, project_config: project_config, project_settings: project_settings, stop_command: stop_command, project_detector: project_detector, output: output, input: input)
+    finish_command = overrides[:finish_command] || Workspace::Commands::Finish.new(git: git, project_config: project_config, kill_command: kill_command, project_detector: project_detector, output: output, error_output: error_output, input: input)
     focus_command = overrides[:focus_command] || Workspace::Commands::Focus.new(state: state, window_manager: window_manager, output: output)
     tile_command = overrides[:tile_command] || Workspace::Commands::Tile.new(state: state, window_manager: window_manager, window_layout: window_layout, output: output)
     layout_command = overrides[:layout_command] || Workspace::Commands::Layout.new(state: state, tmux: tmux, project_settings: project_settings, output: output)
@@ -61,6 +62,7 @@ RSpec.describe Workspace::CLI do
       project_detector: project_detector,
       launch_command: launch_command,
       kill_command: kill_command,
+      finish_command: finish_command,
       start_command: start_command,
       stop_command: stop_command,
       focus_command: focus_command,
@@ -629,6 +631,66 @@ RSpec.describe Workspace::CLI do
         expect(e.status).to eq(1)
       }
       expect(error_output.string).to include("No project specified")
+    end
+
+    it "runs the post_kill hook from inside Kill, before the session is stopped" do
+      kill_command = instance_double(Workspace::Commands::Kill)
+      allow(kill_command).to receive(:call).with("myproject", force: true, working_dir: anything)
+        .and_yield("myproject").and_return("myproject")
+      hook_runner = CLITestHelpers::FakeHookRunner.new
+
+      cli, _, _ = build_test_cli(kill_command: kill_command, hook_runner: hook_runner)
+      cli.run(["kill", "--force", "myproject"])
+
+      expect(hook_runner.runs).to eq([{project: "myproject", event: "post_kill", env: {}}])
+    end
+  end
+
+  describe "#run with finish" do
+    it "exits 1 when no project specified and no marker file found" do
+      cli, _, error_output = build_test_cli
+      expect { cli.run(["finish"]) }.to raise_error(FakeSystemExit) { |e|
+        expect(e.status).to eq(1)
+      }
+      expect(error_output.string).to include("No project specified")
+    end
+
+    it "emits a JSON usage error and exits 1 for a bad flag with --json" do
+      cli, output, _ = build_test_cli
+      expect { cli.run(["finish", "--json", "--bogus-flag"]) }.to raise_error(FakeSystemExit) { |e|
+        expect(e.status).to eq(1)
+      }
+      parsed = JSON.parse(output.string)
+      expect(parsed["schema_version"]).to eq(1)
+      expect(parsed).to have_key("error")
+    end
+
+    it "delegates to the finish collaborator and runs the post_kill hook" do
+      finish_command = instance_double(Workspace::Commands::Finish)
+      allow(finish_command).to receive(:call).with(nil, pr: false, json: false, working_dir: anything)
+        .and_yield("myproject").and_return("myproject")
+      hook_runner = CLITestHelpers::FakeHookRunner.new
+
+      cli, _, _ = build_test_cli(finish_command: finish_command, hook_runner: hook_runner)
+      cli.run(["finish"])
+
+      expect(hook_runner.runs).to include(project: "myproject", event: "post_kill", env: {})
+    end
+
+    it "does not run the post_kill hook under --json, keeping stdout to the JSON line" do
+      finish_command = instance_double(Workspace::Commands::Finish)
+      block_given = nil
+      allow(finish_command).to receive(:call).with(nil, pr: false, json: true, working_dir: anything) do |*_args, &block|
+        block_given = !block.nil?
+        {exit_code: 0}
+      end
+      hook_runner = CLITestHelpers::FakeHookRunner.new
+
+      cli, _, _ = build_test_cli(finish_command: finish_command, hook_runner: hook_runner)
+      cli.run(["finish", "--json"])
+
+      expect(block_given).to be(false)
+      expect(hook_runner.runs).to be_empty
     end
   end
 

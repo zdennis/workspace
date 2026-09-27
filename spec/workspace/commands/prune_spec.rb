@@ -265,7 +265,7 @@ RSpec.describe Workspace::Commands::Prune do
       it "kills the live session, removes worktree, config, settings, and state entry" do
         allow(git).to receive(:worktree_exists?).with(project_root).and_return(true)
         expect(stop_command).to receive(:call).with(["wt-confirm"])
-        expect(git).to receive(:remove_worktree).with(project_root, force: true)
+        expect(git).to receive(:remove_worktree).with(project_root, force: false)
         expect(project_config).to receive(:remove).with("wt-confirm")
         expect(project_settings).to receive(:remove).with("wt-confirm")
 
@@ -463,6 +463,56 @@ RSpec.describe Workspace::Commands::Prune do
 
         result = command.call
         expect(result).to eq(["wt-gone"])
+      end
+    end
+
+    context "when a candidate has unsaved work" do
+      let(:project_root) { File.join(tmpdir, "wt-unsaved") }
+
+      before do
+        make_worktree_dir(project_root)
+        allow(project_config).to receive(:available_projects).and_return(["wt-unsaved"])
+        allow(project_config).to receive(:project_root_for).with("wt-unsaved").and_return(project_root)
+        allow(git).to receive(:linked_worktree?).with(project_root).and_return(true)
+        allow(git).to receive(:worktree_branch).with(project_root).and_return("feature/unsaved")
+        allow_any_instance_of(described_class).to receive(:gh_usable?).and_return(true)
+        allow_any_instance_of(described_class).to receive(:pr_status).with("feature/unsaved", project_root).and_return({number: 14, url: "https://github.com/org/repo/pull/14", state: "MERGED"})
+        allow(git).to receive(:worktree_exists?).with(project_root).and_return(true)
+
+        input.string = "y\n"
+        input.rewind
+      end
+
+      it "skips it, reports why, keeps pruning others, and raises so the CLI exits nonzero" do
+        unsaved = {changed_files: 1, unpushed_commits: 3, branch: "feature/unsaved"}
+        allow(git).to receive(:remove_worktree).with(project_root, force: false)
+          .and_raise(Workspace::UnsavedWorkError.new("unsaved", unsaved: unsaved))
+        expect(project_config).not_to receive(:remove).with("wt-unsaved")
+        expect(stop_command).not_to receive(:call)
+
+        expect { command.call }.to raise_error(Workspace::Error, /1 project\(s\) were skipped: wt-unsaved/)
+        expect(output.string).to include("Skipped wt-unsaved")
+        expect(output.string).to include("1 changed file(s) and 3 unpushed commit(s) on feature/unsaved")
+        expect(output.string).to include("Pruned 0 project(s).")
+      end
+
+      it "skips a candidate whose removal git refuses, with git's reason, still saves state, and raises" do
+        allow(git).to receive(:remove_worktree).with(project_root, force: false)
+          .and_raise(Workspace::Error, "Error removing worktree: cannot remove a locked working tree")
+        expect(state).to receive(:save).and_call_original
+
+        expect { command.call }.to raise_error(Workspace::Error, /1 project\(s\) were skipped/)
+        expect(output.string).to include("Skipped wt-unsaved: Error removing worktree: cannot remove a locked working tree")
+        expect(output.string).to include("Skipped 1: wt-unsaved.")
+      end
+
+      it "removes it anyway with --force" do
+        allow(git).to receive(:remove_worktree)
+        allow(project_config).to receive(:remove).with("wt-unsaved")
+        allow(project_settings).to receive(:remove).with("wt-unsaved")
+
+        result = command.call(force: true)
+        expect(result).to eq(["wt-unsaved"])
       end
     end
   end

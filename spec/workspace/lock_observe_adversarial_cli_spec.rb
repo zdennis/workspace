@@ -30,6 +30,7 @@ RSpec.describe "workspace lock observability adversarial findings" do
       launch_command = Workspace::Commands::Launch.new(state: state, iterm: iterm, window_manager: window_manager, tmux: tmux, project_config: project_config, window_layout: window_layout, config: config, output: output, error_output: error_output)
       start_command = Workspace::Commands::Start.new(git: git, project_config: project_config, project_settings: project_settings, launch_command: launch_command, output: output, input: StringIO.new)
       kill_command = Workspace::Commands::Kill.new(git: git, project_config: project_config, project_settings: project_settings, stop_command: stop_command, project_detector: project_detector, output: output, input: StringIO.new)
+      finish_command = Workspace::Commands::Finish.new(git: git, project_config: project_config, kill_command: kill_command, project_detector: project_detector, output: output, error_output: error_output, input: StringIO.new)
       focus_command = Workspace::Commands::Focus.new(state: state, window_manager: window_manager, output: output)
       tile_command = Workspace::Commands::Tile.new(state: state, window_manager: window_manager, window_layout: window_layout, output: output)
       layout_command = Workspace::Commands::Layout.new(state: state, tmux: tmux, project_settings: project_settings, output: output)
@@ -56,7 +57,7 @@ RSpec.describe "workspace lock observability adversarial findings" do
         config: config, state: state, project_config: project_config, git: git,
         window_manager: window_manager, doctor: doctor, project_settings: project_settings,
         hook_runner: hook_runner, project_detector: project_detector,
-        launch_command: launch_command, kill_command: kill_command, start_command: start_command,
+        launch_command: launch_command, kill_command: kill_command, finish_command: finish_command, start_command: start_command,
         stop_command: stop_command, focus_command: focus_command, tile_command: tile_command,
         layout_command: layout_command, resize_command: resize_command, init_command: init_command,
         repair_command: CLITestHelpers::FakeRepairCommand.new, cleanup_command: cleanup_command,
