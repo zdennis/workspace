@@ -295,6 +295,18 @@ RSpec.describe Workspace::Commands::Dev do
         expect(payload["holder"]).to include("pid" => spawned.last, "branch" => "feat/login")
         expect(payload["ready"]).to be true
       end
+
+      it "emits a JSON error object on stdout, exit 1, for a corrupt locks.json" do
+        FileUtils.mkdir_p(lock_dir)
+        File.write(File.join(lock_dir, "locks.json"), "{not json")
+
+        result = dev.status(working_dir: main, json: true)
+
+        expect(result).to eq(exit_code: 1)
+        payload = JSON.parse(output.string)
+        expect(payload["schema_version"]).to eq(1)
+        expect(payload["error"]).to include("corrupt")
+      end
     end
   end
 
