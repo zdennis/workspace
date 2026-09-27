@@ -10,6 +10,33 @@ module Workspace
 
   # Raised for invalid usage or missing required arguments.
   class UsageError < Error; end
+
+  # Raised when a worktree can't be removed because it has unsaved work
+  # (or git couldn't tell whether it does).
+  class UnsavedWorkError < Error
+    # @return [Hash, Symbol] the Git#unsaved_work result: a Hash, or :unknown
+    attr_reader :unsaved
+
+    # @param message [String, nil] error message
+    # @param unsaved [Hash, Symbol] the Git#unsaved_work result
+    def initialize(message = nil, unsaved: :unknown)
+      super(message)
+      @unsaved = unsaved
+    end
+
+    # @param unsaved [Hash, Symbol] a Git#unsaved_work result
+    # @return [String] a one-phrase description of the unsaved work
+    def self.describe(unsaved)
+      return "git couldn't check it for unsaved work" if unsaved == :unknown
+      "#{unsaved[:changed_files]} changed file(s) and #{unsaved[:unpushed_commits]} " \
+        "unpushed commit(s) on #{unsaved[:branch] || "HEAD"}"
+    end
+
+    # @return [String] a one-phrase description of the unsaved work
+    def summary
+      self.class.describe(unsaved)
+    end
+  end
 end
 
 require_relative "workspace/version"

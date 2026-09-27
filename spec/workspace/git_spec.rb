@@ -168,15 +168,34 @@ RSpec.describe Workspace::Git do
   describe "#remove_worktree" do
     let(:worktree_path) { "/Users/me/project/.worktrees/feature-x" }
 
-    it "runs git worktree remove with -C set to the worktree path" do
+    it "re-checks for unsaved work, then removes with --force so untracked files don't block it" do
+      allow(git).to receive(:unsaved_work).with(worktree_path).and_return(nil)
       allow(Open3).to receive(:capture3)
-        .with("git", "-C", worktree_path, "worktree", "remove", worktree_path)
+        .with("git", "-C", worktree_path, "worktree", "remove", "--force", worktree_path)
         .and_return(["", "", double(success?: true)])
 
       expect { git.remove_worktree(worktree_path) }.not_to raise_error
     end
 
-    it "passes --force when force: true" do
+    it "refuses with UnsavedWorkError, without running git worktree remove, when there is unsaved work" do
+      unsaved = {changed_files: 1, unpushed_commits: 0, branch: "feature-x"}
+      allow(git).to receive(:unsaved_work).with(worktree_path).and_return(unsaved)
+      expect(Open3).not_to receive(:capture3).with("git", "-C", worktree_path, "worktree", "remove", any_args)
+
+      expect { git.remove_worktree(worktree_path) }.to raise_error(Workspace::UnsavedWorkError) { |e|
+        expect(e.unsaved).to eq(unsaved)
+        expect(e.message).to include("1 changed file(s) and 0 unpushed commit(s) on feature-x")
+      }
+    end
+
+    it "refuses when git can't tell whether there is unsaved work" do
+      allow(git).to receive(:unsaved_work).with(worktree_path).and_return(:unknown)
+
+      expect { git.remove_worktree(worktree_path) }.to raise_error(Workspace::UnsavedWorkError, /couldn't check/)
+    end
+
+    it "skips the check when force: true" do
+      expect(git).not_to receive(:unsaved_work)
       allow(Open3).to receive(:capture3)
         .with("git", "-C", worktree_path, "worktree", "remove", "--force", worktree_path)
         .and_return(["", "", double(success?: true)])
@@ -186,10 +205,10 @@ RSpec.describe Workspace::Git do
 
     it "raises Workspace::Error when git fails" do
       allow(Open3).to receive(:capture3)
-        .with("git", "-C", worktree_path, "worktree", "remove", worktree_path)
+        .with("git", "-C", worktree_path, "worktree", "remove", "--force", worktree_path)
         .and_return(["", "fatal: not a worktree", double(success?: false)])
 
-      expect { git.remove_worktree(worktree_path) }
+      expect { git.remove_worktree(worktree_path, force: true) }
         .to raise_error(Workspace::Error, /fatal: not a worktree/)
     end
   end

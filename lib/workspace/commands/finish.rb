@@ -36,19 +36,21 @@ module Workspace
       # @param pr [Boolean] open (or look up) a PR with `gh` before cleanup
       # @param json [Boolean] emit the documented JSON schema instead of plain text
       # @param working_dir [String] cwd to detect the project from, when project is nil
+      # @yieldparam project [String] passed through to Commands::Kill#call: runs after
+      #   the worktree is removed and before the config and session go
       # @return [Hash] {exit_code:} when json is true; the finished project name otherwise
       # @raise [Workspace::Error] if the worktree isn't clean/pushed, gh fails, or it
       #   isn't a worktree project (unless json is true, where this is reported instead)
-      def call(project = nil, pr: false, json: false, working_dir: Dir.pwd)
-        return call_json(project, pr: pr, working_dir: working_dir) if json
+      def call(project = nil, pr: false, json: false, working_dir: Dir.pwd, &after_remove)
+        return call_json(project, pr: pr, working_dir: working_dir, &after_remove) if json
 
-        finish!(project, pr: pr, working_dir: working_dir)
+        finish!(project, pr: pr, working_dir: working_dir, &after_remove)
       end
 
       private
 
-      def call_json(project, pr:, working_dir:)
-        finished = finish!(project, pr: pr, working_dir: working_dir, quiet: true)
+      def call_json(project, pr:, working_dir:, &after_remove)
+        finished = finish!(project, pr: pr, working_dir: working_dir, quiet: true, &after_remove)
         @output.puts JSON.generate({"schema_version" => JSON_SCHEMA_VERSION, "project" => finished})
         {exit_code: 0}
       rescue Workspace::Error => e
@@ -56,7 +58,7 @@ module Workspace
         {exit_code: 1}
       end
 
-      def finish!(project, pr:, working_dir:, quiet: false)
+      def finish!(project, pr:, working_dir:, quiet: false, &after_remove)
         project ||= @project_detector.detect_from_marker(working_dir)
         unless project
           raise Workspace::Error,
@@ -79,7 +81,16 @@ module Workspace
         open_pr!(project, worktree_path, quiet: quiet) if pr
 
         @output.puts "Finishing #{project}..." unless quiet
-        @kill_command.call(project, force: true, working_dir: working_dir)
+        # confirm: false skips Kill's prompt but keeps its unsaved-work check,
+        # which Git#remove_worktree repeats right before removing: anything
+        # committed or edited since the check above is refused, not deleted.
+        begin
+          @kill_command.call(project, confirm: false, quiet: quiet, working_dir: working_dir, &after_remove)
+        rescue Workspace::UnsavedWorkError => e
+          raise Workspace::Error,
+            "'#{project}' has unsaved work: #{e.summary}.\n" \
+            "Not removing the worktree at #{worktree_path}. Commit and push, then rerun finish."
+        end
         project
       end
 

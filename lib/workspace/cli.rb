@@ -403,8 +403,11 @@ module Workspace
       end
       parser.parse!(args)
 
-      project = @kill_command.call(args.first, force: force, working_dir: @working_dir)
-      @hook_runner.run(project, "post_kill") if project
+      # The hook runs from inside Kill, before the session is killed: kill may
+      # be running inside that session, and nothing after the kill would run.
+      @kill_command.call(args.first, force: force, working_dir: @working_dir) do |project|
+        @hook_runner.run(project, "post_kill")
+      end
     end
 
     def cmd_finish(args)
@@ -434,12 +437,15 @@ module Workspace
       end
       parser.parse!(args)
 
-      result = @finish_command.call(args.first, pr: pr, json: json, working_dir: @working_dir)
       if json
+        # No post_kill hook here: its output would land on stdout next to the JSON.
+        result = @finish_command.call(args.first, pr: pr, json: true, working_dir: @working_dir)
         @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
         return
       end
-      @hook_runner.run(result, "post_kill") if result
+      @finish_command.call(args.first, pr: pr, json: false, working_dir: @working_dir) do |project|
+        @hook_runner.run(project, "post_kill")
+      end
     rescue OptionParser::ParseError, UsageError => e
       raise unless json
       emit_json_usage_error(Workspace::Commands::Finish::JSON_SCHEMA_VERSION, e.message.lines.first.strip)

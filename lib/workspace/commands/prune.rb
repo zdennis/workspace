@@ -73,7 +73,7 @@ module Workspace
         @state.save
 
         summary = "Pruned #{removed.size} project(s)."
-        summary += " Skipped #{skipped.size} with unsaved work: #{skipped.join(", ")}." if skipped.any?
+        summary += " Skipped #{skipped.size}: #{skipped.join(", ")}." if skipped.any?
         @output.puts summary
         removed
       end
@@ -229,10 +229,12 @@ module Workspace
         end
       end
 
-      # Removes a single candidate project: kills any live session, removes the
-      # worktree, tmuxinator config, project settings, and state entry. Skips
-      # (and reports) a candidate whose worktree has unsaved work, unless force
-      # is set.
+      # Removes a single candidate project: its worktree, tmuxinator config,
+      # project settings and state entry, then stops its session last (see
+      # Commands::Kill#call for why). Git#remove_worktree checks for unsaved
+      # work right before removing, unless force is set; a candidate with
+      # unsaved work, or whose removal git refuses, is skipped and reported,
+      # and nothing else of it is touched.
       #
       # @param candidate [Hash] a candidate hash from detect_candidates
       # @param force [Boolean] remove even if the worktree has unsaved work
@@ -240,20 +242,22 @@ module Workspace
       def remove_candidate(candidate, force:)
         path = candidate[:worktree_path]
         project = candidate[:project]
-        has_worktree = @git.worktree_exists?(path)
 
-        if has_worktree && !force
-          unsaved = @git.unsaved_work(path)
-          if unsaved
-            report_skip(candidate, unsaved)
+        if @git.worktree_exists?(path)
+          begin
+            @git.remove_worktree(path, force: force)
+          rescue Workspace::UnsavedWorkError => e
+            report_skip(candidate, e.unsaved)
+            return false
+          rescue Workspace::Error => e
+            @output.puts "  Skipped #{project}: #{e.message}"
             return false
           end
         end
 
-        @stop_command.call([project]) if @state[project]
-        @git.remove_worktree(path, force: true) if has_worktree
         @project_config.remove(project)
         @project_settings.remove(project)
+        @stop_command.call([project]) if @state[project]
         @state.delete(project)
         true
       end

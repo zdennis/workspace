@@ -1,4 +1,5 @@
 require "yaml"
+require "stringio"
 
 module Workspace
   module Commands
@@ -23,14 +24,32 @@ module Workspace
 
       MARKER_FILE = ".workspace-project"
 
-      # Kills a worktree project: stops the session, removes the worktree, and cleans up config.
+      # Kills a worktree project. The order is chosen so nothing is lost and
+      # nothing is left half-removed:
+      #
+      # 1. check for unsaved work (unless force), before prompting
+      # 2. confirm (unless force or confirm: false)
+      # 3. remove the worktree; Git#remove_worktree re-checks for unsaved work
+      #    right before removing (unless force), so an edit made while the
+      #    prompt waited is refused rather than deleted
+      # 4. yield to the caller's block (the post_kill hook), then remove the
+      #    config and settings
+      # 5. stop the session last: this may run inside the very session it
+      #    kills, which ends this process before any later statement runs
       #
       # @param project [String, nil] project/config name, or nil to detect from cwd
       # @param force [Boolean] skip confirmation, and skip the unsaved-work refusal
-      # @return [void]
-      # @raise [Workspace::Error] if the project config is not a worktree project, or if it has
-      #   unsaved work and force is false
-      def call(project = nil, force: false, working_dir: Dir.pwd)
+      # @param confirm [Boolean] ask before removing; false skips the prompt but
+      #   (unlike force) still refuses unsaved work
+      # @param quiet [Boolean] print nothing to the output stream
+      # @param working_dir [String] cwd to detect the project from, when project is nil
+      # @yieldparam project [String] the project, after its worktree is removed and
+      #   before its config, settings and session go
+      # @return [String, nil] the project name, or nil if the user cancelled
+      # @raise [Workspace::UnsavedWorkError] if it has unsaved work and force is false
+      # @raise [Workspace::Error] if the project config is not a worktree project
+      def call(project = nil, force: false, confirm: true, quiet: false, working_dir: Dir.pwd)
+        out = quiet ? StringIO.new : @output
         project ||= @project_detector.detect_from_marker(working_dir)
         unless project
           raise Workspace::Error,
@@ -47,57 +66,54 @@ module Workspace
           raise Workspace::Error, "'#{project}' does not appear to be a worktree project.\nUse 'workspace stop #{project}' to stop non-worktree projects."
         end
 
-        check_unsaved_work!(project, worktree_path) unless force
-
-        @output.puts "Stopping #{project}..."
-        @output.puts "  Worktree: #{worktree_path}"
-
         unless force
-          @output.print "Remove worktree and kill session? [y/N] "
+          unsaved = @git.unsaved_work(worktree_path)
+          raise_unsaved_work!(project, worktree_path, unsaved) if unsaved
+        end
+
+        out.puts "Stopping #{project}..."
+        out.puts "  Worktree: #{worktree_path}"
+
+        if confirm && !force
+          out.print "Remove worktree and kill session? [y/N] "
           answer = @input.gets&.strip
           unless answer&.match?(/\Ay(es)?\z/i)
-            @output.puts "Cancelled."
+            out.puts "Cancelled."
             return
           end
         end
 
+        out.puts "Removing worktree..."
+        begin
+          @git.remove_worktree(worktree_path, force: force)
+        rescue Workspace::UnsavedWorkError => e
+          raise_unsaved_work!(project, worktree_path, e.unsaved)
+        end
         remove_marker_file(worktree_path)
 
-        @output.puts "Removing worktree..."
-        @git.remove_worktree(worktree_path, force: force)
-
-        # Remove the config/state entries before killing the tmux session:
-        # this may be running from inside the very session it's about to
-        # kill, which can end this process before later statements run.
+        yield project if block_given?
         @project_config.remove(project)
         @project_settings.remove(project)
 
-        @stop_command.call([project])
-
-        @output.puts "Stopped #{project}."
+        out.puts "Stopped #{project}."
+        @stop_command.call([project], quiet: quiet)
         project
       end
 
       private
 
-      def check_unsaved_work!(project, worktree_path)
-        result = @git.unsaved_work(worktree_path)
-        return if result.nil?
-
-        if result == :unknown
-          raise Workspace::Error,
-            "Could not check '#{project}' for unsaved work (git couldn't answer).\n" \
-            "Not removing the worktree at #{worktree_path}.\n" \
-            "Commit/push, or rerun with --force."
+      def raise_unsaved_work!(project, worktree_path, unsaved)
+        message = if unsaved == :unknown
+          "Could not check '#{project}' for unsaved work (git couldn't answer).\n" \
+            "Not removing the worktree at #{worktree_path}.\n"
+        else
+          "'#{project}' has unsaved work at #{worktree_path}: #{Workspace::UnsavedWorkError.describe(unsaved)}.\n"
         end
-
-        branch = result[:branch] || "HEAD"
-        raise Workspace::Error,
-          "'#{project}' has unsaved work at #{worktree_path}: " \
-          "#{result[:changed_files]} changed file(s) and #{result[:unpushed_commits]} unpushed commit(s) on #{branch}.\n" \
-          "Commit/push, or rerun with --force."
+        raise Workspace::UnsavedWorkError.new("#{message}Commit/push, or rerun with --force.", unsaved: unsaved)
       end
 
+      # The worktree directory is normally gone after removal; this only
+      # matters if something recreated it.
       def remove_marker_file(worktree_path)
         marker = File.join(worktree_path, MARKER_FILE)
         File.delete(marker) if File.exist?(marker)

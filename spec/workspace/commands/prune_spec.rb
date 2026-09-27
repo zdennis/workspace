@@ -264,9 +264,8 @@ RSpec.describe Workspace::Commands::Prune do
 
       it "kills the live session, removes worktree, config, settings, and state entry" do
         allow(git).to receive(:worktree_exists?).with(project_root).and_return(true)
-        allow(git).to receive(:unsaved_work).with(project_root).and_return(nil)
         expect(stop_command).to receive(:call).with(["wt-confirm"])
-        expect(git).to receive(:remove_worktree).with(project_root, force: true)
+        expect(git).to receive(:remove_worktree).with(project_root, force: false)
         expect(project_config).to receive(:remove).with("wt-confirm")
         expect(project_settings).to receive(:remove).with("wt-confirm")
 
@@ -485,16 +484,28 @@ RSpec.describe Workspace::Commands::Prune do
       end
 
       it "skips it, reports why, and keeps pruning others (exit is still success)" do
-        allow(git).to receive(:unsaved_work).with(project_root)
-          .and_return(changed_files: 1, unpushed_commits: 3, branch: "feature/unsaved")
-        expect(git).not_to receive(:remove_worktree)
+        unsaved = {changed_files: 1, unpushed_commits: 3, branch: "feature/unsaved"}
+        allow(git).to receive(:remove_worktree).with(project_root, force: false)
+          .and_raise(Workspace::UnsavedWorkError.new("unsaved", unsaved: unsaved))
         expect(project_config).not_to receive(:remove).with("wt-unsaved")
+        expect(stop_command).not_to receive(:call)
 
         result = command.call
         expect(result).to eq([])
         expect(output.string).to include("Skipped wt-unsaved")
         expect(output.string).to include("1 changed file(s) and 3 unpushed commit(s) on feature/unsaved")
         expect(output.string).to include("Pruned 0 project(s).")
+      end
+
+      it "skips a candidate whose removal git refuses, with git's reason, and still saves state" do
+        allow(git).to receive(:remove_worktree).with(project_root, force: false)
+          .and_raise(Workspace::Error, "Error removing worktree: cannot remove a locked working tree")
+        expect(state).to receive(:save).and_call_original
+
+        result = command.call
+        expect(result).to eq([])
+        expect(output.string).to include("Skipped wt-unsaved: Error removing worktree: cannot remove a locked working tree")
+        expect(output.string).to include("Skipped 1: wt-unsaved.")
       end
 
       it "removes it anyway with --force" do

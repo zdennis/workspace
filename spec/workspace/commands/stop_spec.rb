@@ -44,6 +44,34 @@ RSpec.describe Workspace::Commands::Stop do
         state.save
       end
 
+      it "saves the state entry's removal before killing the session (the caller may be inside it)" do
+        allow(iterm).to receive(:find_existing_sessions).and_return({})
+        allow(tmux).to receive(:session_name_for).with("proj1").and_return("proj1")
+        allow(tmux).to receive(:sessions).and_return(["proj1"])
+        on_disk_at_kill = :not_killed
+        allow(tmux).to receive(:kill_session).with("proj1") do
+          reloaded = Workspace::State.new(config: config, event_log: Workspace::EventLog.new(config: config))
+          reloaded.load
+          on_disk_at_kill = reloaded["proj1"]
+        end
+
+        command.call(["proj1"])
+
+        expect(on_disk_at_kill).to be_nil
+        expect(output.string.index("Stopped 1 project(s)")).to be < output.string.index("Killing tmux session")
+      end
+
+      it "prints nothing with quiet: true" do
+        allow(iterm).to receive(:find_existing_sessions).and_return({})
+        allow(tmux).to receive(:session_name_for).with("proj1").and_return("proj1")
+        allow(tmux).to receive(:sessions).and_return(["proj1"])
+        allow(tmux).to receive(:kill_session)
+
+        command.call(["proj1"], quiet: true)
+
+        expect(output.string).to eq("")
+      end
+
       it "kills tmux sessions for specified projects" do
         allow(iterm).to receive(:find_existing_sessions).and_return({})
         allow(tmux).to receive(:session_name_for).with("proj1").and_return("proj1")

@@ -123,9 +123,28 @@ RSpec.describe Workspace::Commands::Finish do
               )
             end
 
+            it "reports unsaved work Kill finds at removal time without suggesting --force" do
+              allow(git).to receive(:commits_ahead_of_upstream).with(worktree_path).and_return(0)
+              unsaved = {changed_files: 1, unpushed_commits: 0, branch: "feature/x"}
+              allow(kill_command).to receive(:call)
+                .and_raise(Workspace::UnsavedWorkError.new("rerun with --force", unsaved: unsaved))
+
+              expect { command.call("myproject.worktree-PROJ-123") }.to raise_error(Workspace::Error) { |e|
+                expect(e.message).to include("1 changed file(s) and 0 unpushed commit(s) on feature/x")
+                expect(e.message).not_to include("--force")
+              }
+            end
+
+            it "passes quiet: true to Kill under --json" do
+              allow(git).to receive(:commits_ahead_of_upstream).with(worktree_path).and_return(0)
+              expect(kill_command).to receive(:call).with("myproject.worktree-PROJ-123", confirm: false, quiet: true, working_dir: tmpdir)
+
+              command.call("myproject.worktree-PROJ-123", json: true, working_dir: tmpdir)
+            end
+
             it "reuses Kill for cleanup when clean and pushed" do
               allow(git).to receive(:commits_ahead_of_upstream).with(worktree_path).and_return(0)
-              expect(kill_command).to receive(:call).with("myproject.worktree-PROJ-123", force: true, working_dir: tmpdir)
+              expect(kill_command).to receive(:call).with("myproject.worktree-PROJ-123", confirm: false, quiet: false, working_dir: tmpdir)
 
               result = command.call("myproject.worktree-PROJ-123", working_dir: tmpdir)
               expect(result).to eq("myproject.worktree-PROJ-123")
@@ -211,7 +230,7 @@ RSpec.describe Workspace::Commands::Finish do
 
         command.call(nil, working_dir: marker_dir)
 
-        expect(kill_command).to have_received(:call).with("myproject.worktree-PROJ-123", force: true, working_dir: marker_dir)
+        expect(kill_command).to have_received(:call).with("myproject.worktree-PROJ-123", confirm: false, quiet: false, working_dir: marker_dir)
       end
 
       it "raises error when no marker file found and no project given" do

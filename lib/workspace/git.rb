@@ -313,14 +313,25 @@ module Workspace
       status.success? ? stdout.strip.to_i : nil
     end
 
+    # Removes a worktree, untracked files included. Unless force is set, it
+    # first re-checks for unsaved work (see #unsaved_work) and refuses, so the
+    # check sits right next to the removal rather than minutes before it.
+    #
     # @param path [String] worktree path
-    # @param force [Boolean] force removal even with uncommitted changes
+    # @param force [Boolean] skip the unsaved-work check
     # @return [void]
+    # @raise [Workspace::UnsavedWorkError] if force is false and the worktree has
+    #   unsaved work, or git couldn't tell
     # @raise [Workspace::Error] if worktree removal fails
     def remove_worktree(path, force: false)
-      cmd = ["git", "-C", path, "worktree", "remove"]
-      cmd << "--force" if force
-      cmd << path
+      unless force
+        unsaved = unsaved_work(path)
+        if unsaved
+          raise UnsavedWorkError.new("Not removing #{path}: #{UnsavedWorkError.describe(unsaved)}.", unsaved: unsaved)
+        end
+      end
+
+      cmd = ["git", "-C", path, "worktree", "remove", "--force", path]
 
       @logger.debug { "git: #{cmd.join(" ")}" }
       _, stderr, status = Open3.capture3(*cmd)

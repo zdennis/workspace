@@ -98,13 +98,13 @@ RSpec.describe Workspace::Commands::Kill do
           command.call("myproject.worktree-PROJ-123")
 
           expect(git).to have_received(:remove_worktree).with("/path/to/worktree", force: false)
-          expect(stop_command).to have_received(:call).with(["myproject.worktree-PROJ-123"])
+          expect(stop_command).to have_received(:call).with(["myproject.worktree-PROJ-123"], quiet: false)
           expect(project_config).to have_received(:remove).with("myproject.worktree-PROJ-123")
           expect(project_settings).to have_received(:remove).with("myproject.worktree-PROJ-123")
           expect(output.string).to include("Stopped myproject.worktree-PROJ-123")
         end
 
-        it "removes marker file before worktree removal" do
+        it "removes a leftover marker file after the worktree removal succeeds" do
           worktree_dir = File.join(tmpdir, "worktree")
           Dir.mkdir(worktree_dir)
           marker = File.join(worktree_dir, ".workspace-project")
@@ -154,6 +154,56 @@ RSpec.describe Workspace::Commands::Kill do
           expect(output.string).to include("Stopped")
         end
 
+        it "with confirm: false, skips the prompt but still has git re-check before removing" do
+          allow(git).to receive(:remove_worktree)
+          allow(stop_command).to receive(:call).and_return([])
+          allow(project_config).to receive(:remove)
+          allow(project_settings).to receive(:remove)
+
+          command.call("myproject.worktree-PROJ-123", confirm: false)
+
+          expect(output.string).not_to include("[y/N]")
+          expect(git).to have_received(:unsaved_work).with("/path/to/worktree")
+          expect(git).to have_received(:remove_worktree).with("/path/to/worktree", force: false)
+        end
+
+        it "with quiet: true, prints nothing and asks Stop to be quiet too" do
+          allow(git).to receive(:remove_worktree)
+          allow(stop_command).to receive(:call).and_return([])
+          allow(project_config).to receive(:remove)
+          allow(project_settings).to receive(:remove)
+
+          command.call("myproject.worktree-PROJ-123", force: true, quiet: true)
+
+          expect(output.string).to eq("")
+          expect(stop_command).to have_received(:call).with(["myproject.worktree-PROJ-123"], quiet: true)
+        end
+
+        it "yields the project after removing the worktree and before removing config or stopping" do
+          order = []
+          allow(git).to receive(:remove_worktree) { order << :remove_worktree }
+          allow(stop_command).to receive(:call) { order << :stop }
+          allow(project_config).to receive(:remove) { order << :remove_config }
+          allow(project_settings).to receive(:remove) { order << :remove_settings }
+
+          command.call("myproject.worktree-PROJ-123", force: true) { |p| order << [:yield, p] }
+
+          expect(order).to eq([:remove_worktree, [:yield, "myproject.worktree-PROJ-123"], :remove_config, :remove_settings, :stop])
+        end
+
+        it "refuses, touching nothing else, when git's re-check finds unsaved work at removal time" do
+          input.puts "y"
+          input.rewind
+          unsaved = {changed_files: 1, unpushed_commits: 0, branch: "feature/x"}
+          allow(git).to receive(:remove_worktree).and_raise(Workspace::UnsavedWorkError.new("x", unsaved: unsaved))
+          expect(project_config).not_to receive(:remove)
+          expect(stop_command).not_to receive(:call)
+
+          expect { command.call("myproject.worktree-PROJ-123") }.to raise_error(
+            Workspace::UnsavedWorkError, /1 changed file\(s\) and 0 unpushed commit\(s\) on feature\/x.*--force/m
+          )
+        end
+
         it "passes force to remove_worktree" do
           allow(git).to receive(:remove_worktree)
           allow(stop_command).to receive(:call).and_return([])
@@ -187,7 +237,7 @@ RSpec.describe Workspace::Commands::Kill do
         )
         cmd.call(nil, force: true, working_dir: marker_dir)
 
-        expect(stop_command).to have_received(:call).with(["myproject.worktree-PROJ-123"])
+        expect(stop_command).to have_received(:call).with(["myproject.worktree-PROJ-123"], quiet: false)
         expect(output.string).to include("Stopped myproject.worktree-PROJ-123")
       end
 
@@ -211,7 +261,7 @@ RSpec.describe Workspace::Commands::Kill do
         )
         cmd.call(nil, force: true, working_dir: sub_dir)
 
-        expect(stop_command).to have_received(:call).with(["myproject.worktree-PROJ-123"])
+        expect(stop_command).to have_received(:call).with(["myproject.worktree-PROJ-123"], quiet: false)
       end
 
       it "raises error when no marker file found and no project given" do

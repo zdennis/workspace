@@ -632,6 +632,18 @@ RSpec.describe Workspace::CLI do
       }
       expect(error_output.string).to include("No project specified")
     end
+
+    it "runs the post_kill hook from inside Kill, before the session is stopped" do
+      kill_command = instance_double(Workspace::Commands::Kill)
+      allow(kill_command).to receive(:call).with("myproject", force: true, working_dir: anything)
+        .and_yield("myproject").and_return("myproject")
+      hook_runner = CLITestHelpers::FakeHookRunner.new
+
+      cli, _, _ = build_test_cli(kill_command: kill_command, hook_runner: hook_runner)
+      cli.run(["kill", "--force", "myproject"])
+
+      expect(hook_runner.runs).to eq([{project: "myproject", event: "post_kill", env: {}}])
+    end
   end
 
   describe "#run with finish" do
@@ -655,13 +667,30 @@ RSpec.describe Workspace::CLI do
 
     it "delegates to the finish collaborator and runs the post_kill hook" do
       finish_command = instance_double(Workspace::Commands::Finish)
-      allow(finish_command).to receive(:call).with(nil, pr: false, json: false, working_dir: anything).and_return("myproject")
+      allow(finish_command).to receive(:call).with(nil, pr: false, json: false, working_dir: anything)
+        .and_yield("myproject").and_return("myproject")
       hook_runner = CLITestHelpers::FakeHookRunner.new
 
       cli, _, _ = build_test_cli(finish_command: finish_command, hook_runner: hook_runner)
       cli.run(["finish"])
 
       expect(hook_runner.runs).to include(project: "myproject", event: "post_kill", env: {})
+    end
+
+    it "does not run the post_kill hook under --json, keeping stdout to the JSON line" do
+      finish_command = instance_double(Workspace::Commands::Finish)
+      block_given = nil
+      allow(finish_command).to receive(:call).with(nil, pr: false, json: true, working_dir: anything) do |*_args, &block|
+        block_given = !block.nil?
+        {exit_code: 0}
+      end
+      hook_runner = CLITestHelpers::FakeHookRunner.new
+
+      cli, _, _ = build_test_cli(finish_command: finish_command, hook_runner: hook_runner)
+      cli.run(["finish", "--json"])
+
+      expect(block_given).to be(false)
+      expect(hook_runner.runs).to be_empty
     end
   end
 

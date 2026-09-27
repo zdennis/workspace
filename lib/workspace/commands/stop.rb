@@ -1,3 +1,5 @@
+require "stringio"
+
 module Workspace
   module Commands
     # Stops workspace projects and their tmux sessions.
@@ -22,33 +24,38 @@ module Workspace
 
       # Stops the specified projects (or all active projects if none specified).
       #
+      # The state entries are removed and saved before any tmux session is
+      # killed: the caller may be running inside one of those sessions, and
+      # killing it ends this process before later statements run.
+      #
       # @param projects [Array<String>] project names to stop (empty = all)
+      # @param quiet [Boolean] print nothing to the output stream
       # @return [Array<String>] names of stopped projects
-      def call(projects = [])
+      def call(projects = [], quiet: false)
+        out = quiet ? StringIO.new : @output
         @state.load
 
         if @state.empty?
-          @output.puts "No active workspace projects."
+          out.puts "No active workspace projects."
           return []
         end
 
         targets = resolve_targets(projects)
 
         if targets.empty?
-          @output.puts "No matching workspace projects to stop."
+          out.puts "No matching workspace projects to stop."
           return []
         end
 
         killed_projects = targets.dup
 
         launcher_window_ids_to_close = find_launcher_windows_to_close(targets)
-        kill_tmux_sessions(targets)
-        close_launcher_windows(launcher_window_ids_to_close)
         remove_from_state(targets)
-
         @state.save
 
-        @output.puts "Stopped #{killed_projects.size} project(s): #{killed_projects.join(", ")}"
+        out.puts "Stopped #{killed_projects.size} project(s): #{killed_projects.join(", ")}"
+        kill_tmux_sessions(targets, out)
+        close_launcher_windows(launcher_window_ids_to_close, out)
         killed_projects
       end
 
@@ -88,20 +95,20 @@ module Workspace
         windows_to_close
       end
 
-      def kill_tmux_sessions(targets)
+      def kill_tmux_sessions(targets, out)
         active_sessions = @tmux.sessions
         targets.each do |project|
           session_name = @tmux.session_name_for(project)
           if active_sessions.include?(session_name)
-            @output.puts "Killing tmux session: #{session_name}"
+            out.puts "Killing tmux session: #{session_name}"
             @tmux.kill_session(session_name)
           end
         end
       end
 
-      def close_launcher_windows(window_ids)
+      def close_launcher_windows(window_ids, out)
         window_ids.each do |wid|
-          @output.puts "Closing launcher window #{wid}"
+          out.puts "Closing launcher window #{wid}"
           @window_manager.close_window(wid)
         end
       end
