@@ -92,15 +92,22 @@ module Workspace
     # these directories, so a real hold here can never be missed; a false
     # positive from another project's namespace just costs one extra (still
     # cheap) resolve below.
+    #
+    # An unreadable `locks.json` is skipped on its own, so one corrupt
+    # namespace never hides a hold in another; if it is this repo's own, the
+    # store could not have been read below either. An unlistable lock_dir
+    # can't rule anything out, so it takes the slow path.
     def any_edit_hold?
-      Dir.children(@config.lock_dir).any? do |name|
-        dir = File.join(@config.lock_dir, name)
-        next false unless File.directory?(dir)
-        data_path = File.join(dir, "locks.json")
-        next false unless File.exist?(data_path)
-        data = JSON.parse(File.read(data_path))
-        data.is_a?(Hash) && data[LOCK_NAME].is_a?(Hash) && data[LOCK_NAME]["holder"].is_a?(Hash)
-      end
+      Dir.children(@config.lock_dir).any? { |name| edit_hold_in?(File.join(@config.lock_dir, name)) }
+    rescue SystemCallError
+      true
+    end
+
+    def edit_hold_in?(dir)
+      data_path = File.join(dir, "locks.json")
+      return false unless File.file?(data_path)
+      data = JSON.parse(File.read(data_path))
+      data.is_a?(Hash) && data[LOCK_NAME].is_a?(Hash) && data[LOCK_NAME]["holder"].is_a?(Hash)
     rescue SystemCallError, JSON::ParserError
       false
     end
