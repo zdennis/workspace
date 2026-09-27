@@ -58,9 +58,9 @@ project — that's what makes lock enforcement and idle takeover work.
 ## 2. Initialize a project
 
 `workspace init` (above) sets up workspace itself, once, on a machine. To
-bring an existing repo under workspace, run `workspace add` from inside it,
-or just `workspace start` (next section) to create a worktree directly. If
-you already have a tmuxinator config for a project, `workspace launch
+bring an existing repo under workspace, run `workspace add .` from inside
+it, or just `workspace start` (next section) to create a worktree directly.
+If you already have a tmuxinator config for a project, `workspace launch
 <project>` will use it as-is.
 
 ## 3. Launch, and start a worktree
@@ -195,7 +195,7 @@ Because another worktree already holds the `devenv` lock, this is refused:
 
 ```
 $ workspace dev up
-[worktree name and branch of the current holder]
+Dev environment is running for app.worktree-login (feat/login). Use --wait to queue or --takeover to switch.
 ```
 
 (exit 1). You have two ways past that:
@@ -223,10 +223,10 @@ workspace lock release edit
 ```
 
 Acquiring a lock someone else holds fails immediately unless you pass
-`--wait` (queue and poll) or `--max-wait DURATION` (give up after a while,
-exit 75). An agent can hold or wait for only one lock at a time — trying to
-acquire a second while already holding or waiting for one exits 5 and names
-the other lock.
+`--wait` (queue and poll). Add `--max-wait DURATION` to give up after a
+while instead of waiting forever (exit 75). An agent can hold or wait for
+only one lock at a time — trying to acquire a second while already holding
+or waiting for one exits 5 and names the other lock.
 
 **Enforcement** — once the session hooks from `workspace init` (or
 `workspace start`, which installs them automatically for new worktrees) are
