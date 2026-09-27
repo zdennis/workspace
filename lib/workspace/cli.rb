@@ -769,7 +769,8 @@ module Workspace
           release [<name>|--all]     Release a lock this agent holds
           status  [<name>]           Show holders and queues
           clear   [<name>|--all]     Force-remove a lock's holder and queue
-                                     (devenv: also stops the dev env's process group)
+                                     (devenv: also stops the dev env's process group,
+                                     and keeps a queued `dev up --takeover`)
           instructions [<name>]      Print the prompt block that tells a coding
                                      agent how to use the lock (default: edit)
 

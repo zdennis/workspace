@@ -432,6 +432,23 @@ RSpec.describe Workspace::Commands::Lock do
         expect(output.string).to include("Cleared devenv")
       end
 
+      it "hands the lock to a queued dev up --takeover and says so, while still removing other waiters" do
+        hold_devenv
+        enqueue_waiter(name: "devenv", identity: FakeLockIdentity.new(pid: 300), task: "next")
+        Workspace::LockStore.new(dir: tmpdir, liveness: FakeLockLiveness.new).acquire("devenv",
+          identity: {kind: "process", pid: 555, started: "start-555", pgid: 555, pane: "%5", worktree: "/w/signup", branch: "signup"},
+          waiter_pid: 555, waiter_started: "start-555", wait: true, priority: true)
+        allow(terminator).to receive(:stop_holder).and_return(:gone)
+        allow(terminator).to receive_messages(orphan_running?: false, pgid_reused?: false)
+
+        result = clear_command.clear("devenv")
+
+        expect(result).to eq(exit_code: 0)
+        expect(devenv_holder_pid).to eq(555)
+        expect(output.string).to include("Cleared devenv: was held by ? in /w/login, 1 waiter(s) removed; " \
+          "kept the queued takeover by %5 in /w/signup, which takes the lock next.")
+      end
+
       it "with --all, clears every other lock and keeps only the one it could not stop" do
         hold_devenv
         command_for(FakeLockIdentity.new(pid: 100)).acquire("edit")

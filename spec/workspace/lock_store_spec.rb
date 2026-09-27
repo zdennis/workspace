@@ -451,6 +451,34 @@ RSpec.describe Workspace::LockStore do
         expect(events[1]).to include("event" => "release", "lock" => "devenv", "cleared_by" => "pid 9")
       end
 
+      it "keeps a queued takeover, which finish_clear then promotes" do
+        s = store
+        s.acquire("devenv", identity: process_identity(pid: 100), waiter_pid: 100, waiter_started: "start-100")
+        s.acquire("devenv", identity: process_identity(pid: 200), waiter_pid: 200, waiter_started: "start-200", wait: true)
+        s.acquire("devenv", identity: process_identity(pid: 300), waiter_pid: 300, waiter_started: "start-300", wait: true, priority: true)
+
+        removed = s.clear("devenv", keep_process_holder: true)
+
+        expect(removed[:queue].map { |w| w["waiter_pid"] }).to eq([200])
+        expect(removed[:takeovers].map { |w| w["waiter_pid"] }).to eq([300])
+        expect(s.status("devenv")["devenv"]["queue"].map { |w| w["waiter_pid"] }).to eq([300])
+        expect(s.poll("devenv", 200)).to eq(status: :cleared)
+        event = File.readlines(File.join(tmpdir, "locks.jsonl")).map { |l| JSON.parse(l) }.last
+        expect(event).to include("event" => "clear", "queue_size" => 1, "takeovers_kept" => 1)
+
+        expect(s.finish_clear("devenv", removed[:holder])).to be_nil
+        expect(s.status("devenv")["devenv"]["holder"]).to include("pid" => 300)
+      end
+
+      it "marks a waiter that re-queues with priority as a takeover" do
+        s = store
+        s.acquire("devenv", identity: process_identity(pid: 100), waiter_pid: 100, waiter_started: "start-100")
+        s.acquire("devenv", identity: process_identity(pid: 200), waiter_pid: 200, waiter_started: "start-200", wait: true)
+        s.acquire("devenv", identity: process_identity(pid: 200), waiter_pid: 201, waiter_started: "start-201", wait: true, priority: true)
+
+        expect(s.clear("devenv", keep_process_holder: true)[:takeovers].map { |w| w["waiter_pid"] }).to eq([201])
+      end
+
       it "clears an agent holder in one step as usual" do
         s = store
         s.acquire("edit", identity: identity(pid: 100), waiter_pid: 100, waiter_started: "start-100")

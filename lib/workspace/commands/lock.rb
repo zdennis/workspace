@@ -363,14 +363,15 @@ module Workspace
       end
 
       # @return [Boolean] false when the lock was kept for a process group
-      #   that could not be stopped, or someone else holds it by the time
-      #   the group is stopped
+      #   that could not be stopped, or someone other than a takeover the
+      #   clear kept queued holds it by the time the group is stopped
       def clear_one(store, name, label, project, &on_holder)
         removed = store.clear(name, cleared_by: label, keep_process_holder: true, &on_holder)
         if removed&.dig(:pending)
           holder = removed[:holder]
           return false unless stop_process_holder(store, name, holder, label, project)
-          if (other = store.finish_clear(name, holder, cleared_by: label))
+          other = store.finish_clear(name, holder, cleared_by: label)
+          if other && !kept_takeover?(removed, other)
             @error_output.puts "Stopped process group #{holder["pgid"] || holder["pid"]} (pid #{holder["pid"]}), but the " \
               "#{name} lock is now held by #{describe_holder(other)} (pid #{other["pid"]}), so it was not cleared."
             return false
@@ -406,6 +407,21 @@ module Workspace
         DevConfig::DEFAULT_STOP_TIMEOUT
       end
 
+      # The stopped holder's own release promotes a takeover this clear
+      # kept queued: that is the clear's intended successor, not someone
+      # who took the lock out from under it.
+      def kept_takeover?(removed, holder)
+        (removed[:takeovers] || []).any? { |w| w["waiter_pid"] == holder["waiter_pid"] && w["waiter_started"] == holder["waiter_started"] }
+      end
+
+      # A queued `dev up --takeover` is kept by the clear, not removed: it
+      # takes the lock next.
+      def takeover_note(removed)
+        takeover = removed[:takeovers]&.first
+        return "" unless takeover
+        "; kept the queued takeover by #{describe_holder(takeover)}, which takes the lock next"
+      end
+
       def describe_cleared(name, removed)
         if removed.nil?
           @output.puts "#{name}: nothing to clear."
@@ -414,7 +430,7 @@ module Workspace
         holder = removed[:holder]
         queue_size = removed[:queue]&.size || 0
         if holder
-          @output.puts "Cleared #{name}: was held by #{describe_holder(holder)}, #{queue_size} waiter(s) removed."
+          @output.puts "Cleared #{name}: was held by #{describe_holder(holder)}, #{queue_size} waiter(s) removed#{takeover_note(removed)}."
         else
           @output.puts "Cleared #{name}: was free, #{queue_size} waiter(s) removed."
         end
