@@ -72,6 +72,70 @@ RSpec.describe Workspace::Commands::Start do
       end
     end
 
+    context "agent hook installation" do
+      let(:backup) { Workspace::FileBackup.new(output: output) }
+      let(:hook_installer) { Workspace::HookInstaller.new(backup: backup, output: output, input: input) }
+      let(:worktree_path) { File.join(tmpdir, ".worktrees", "PROJ-123") }
+      let(:settings_path) { File.join(worktree_path, ".claude", "settings.json") }
+
+      subject(:command) do
+        described_class.new(
+          git: git, project_config: project_config, project_settings: project_settings,
+          launch_command: launch_command, hook_installer: hook_installer, which: which,
+          output: output, input: input
+        )
+      end
+
+      before do
+        FileUtils.mkdir_p(worktree_path)
+        allow(git).to receive(:root).and_return(tmpdir)
+        allow(git).to receive(:parse_start_input).with("PROJ-123").and_return({type: :jira_key, value: "PROJ-123"})
+        allow(git).to receive(:sanitize_for_filesystem).with("PROJ-123").and_return("PROJ-123")
+        allow(git).to receive(:worktree_exists?).and_return(false)
+        allow(git).to receive(:find_worktree_by_branch).and_return(nil)
+        allow(git).to receive(:branch_exists?).with("PROJ-123").and_return(true)
+        allow(git).to receive(:create_worktree)
+        allow(project_config).to receive(:create_worktree).and_return("myproject.worktree-PROJ-123")
+        allow(launch_command).to receive(:call)
+      end
+
+      context "when a hook-capable agent is detected" do
+        let(:which) { ->(exe) { exe == "claude" } }
+
+        it "installs its hooks into the new worktree" do
+          command.call("PROJ-123")
+
+          expect(File).to exist(settings_path)
+          expect(JSON.parse(File.read(settings_path))["hooks"]).to have_key("PreToolUse")
+        end
+      end
+
+      context "when no hook-capable agent is detected" do
+        let(:which) { ->(_exe) { false } }
+
+        it "installs nothing" do
+          command.call("PROJ-123")
+
+          expect(File).not_to exist(settings_path)
+        end
+      end
+
+      context "with no hook installer" do
+        subject(:command) do
+          described_class.new(
+            git: git, project_config: project_config, project_settings: project_settings,
+            launch_command: launch_command, output: output, input: input
+          )
+        end
+        let(:which) { ->(exe) { exe == "claude" } }
+
+        it "skips hook installation without raising" do
+          expect { command.call("PROJ-123") }.not_to raise_error
+          expect(File).not_to exist(settings_path)
+        end
+      end
+    end
+
     context "with a GitHub issue URL" do
       it "uses issue number as branch name" do
         allow(git).to receive(:root).and_return(tmpdir)
