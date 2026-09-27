@@ -68,11 +68,22 @@ On success, one line of JSON on stdout (nothing else is written to stdout under
   worktree) already existed
 - `created` — whether the worktree was created by this run, as opposed to reused
   or adopted
+- `warnings` — present only when non-empty; notes about a flag that was silently
+  adjusted, e.g. `--base` ignored because the branch already existed
 
-On error, exits 1 with the error on stdout instead:
+On a hard error (bad input, `--base`/`--yes` needed, git failure), exits 1 with
+the error on stdout instead of the success doc:
 
 ```json
 {"schema_version":1,"error":"..."}
+```
+
+The worktree can also be created successfully but the `--prompt` fail to reach
+the coding agent. In that case the success doc above is still emitted, but with
+`error` and `prompt_failures` added and exit code 1:
+
+```json
+{"schema_version":1,"project":"myproject","workspace":"myproject.worktree-PROJ-123","path":"/path/to/.worktrees/PROJ-123","branch":"PROJ-123","base":null,"created":true,"error":"Prompt was not sent to every workspace.","prompt_failures":{"myproject.worktree-PROJ-123":"agent never became ready"}}
 ```
 
 ## Examples
