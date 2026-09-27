@@ -242,7 +242,7 @@ module Workspace
           deactivate      Deactivate Claude in a project's tmux pane (sends Ctrl-C)
           dir             Print the root directory of a workspace project
           doctor          Check that all required dependencies are installed
-          event-log       Manage the event log (compact)
+          event-log       Show or compact the event log (state changes and agent activity)
           finish          Verify a worktree is clean and pushed, then remove it (optionally opens a PR)
           focus           Bring a project's iTerm window to the front
           help            Show this help message
@@ -2139,7 +2139,7 @@ module Workspace
         opts.separator "  layouts:                       Default tmux pane layouts"
         opts.separator "  event_log_compact_threshold:   Size warning threshold for the event log"
         opts.separator "                                 Formats: \"10kb\", \"1mb\", \"500b\", \"1024\""
-        opts.separator "                                 Default: 10kb"
+        opts.separator "                                 Default: 1mb"
         opts.separator "  statusline.command:            Delegate 'workspace statusline' rendering to"
         opts.separator "                                 another command. Set via 'workspace config set'."
         opts.separator "  context.source:                'statusline' (default) or 'scrape'. Set via"
@@ -2481,10 +2481,20 @@ module Workspace
       @claude_command.reactivate(projects)
     end
 
+    # `workspace event-log show --json`'s schema version.
+    EVENT_LOG_JSON_SCHEMA_VERSION = 1
+
     def cmd_event_log(args)
-      subcommand = args.shift
+      # The subcommand is the first non-option argument, so a leading flag
+      # (e.g. `event-log --json show`) is dispatched correctly regardless of
+      # where it appears.
+      index = args.index { |a| !a.start_with?("-") }
+      subcommand = index && args[index]
+      rest = index ? args[0...index] + args[(index + 1)..] : args
 
       case subcommand
+      when "show"
+        cmd_event_log_show(rest)
       when "compact"
         event_log = @state.event_log
         before_size = event_log.size
@@ -2496,14 +2506,90 @@ module Workspace
           Usage: workspace event-log <subcommand>
 
           Subcommands:
+            show       Print events, oldest first (--project, --type, --limit, --json)
             compact    Compact the event log to current state only
             help       Show this help
+
+          Besides state changes, the log records agent activity: dispatches,
+          stage completions, timeouts and failures, lock waits and takeovers,
+          and each agent pane's working/idle/waiting changes. Compacting drops
+          that history, keeping only each live pane's latest state.
 
           The event log is at: #{@config.event_log_file}
         HELP
       else
-        raise UsageError, "Unknown event-log subcommand: #{subcommand}"
+        message = "Unknown event-log subcommand: #{subcommand}"
+        return emit_json_usage_error(EVENT_LOG_JSON_SCHEMA_VERSION, message) if json_requested?(false, args)
+        raise UsageError, message
       end
+    end
+
+    def cmd_event_log_show(args)
+      json = false
+      project = nil
+      types = []
+      limit = nil
+      parser = OptionParser.new do |opts|
+        opts.banner = "Usage: workspace event-log show [options]"
+        opts.separator ""
+        opts.separator "Print event log entries, oldest first."
+        opts.separator ""
+        opts.separator "Options:"
+        opts.on("--project NAME", "Only events for this project") { |value| project = value }
+        opts.on("--type TYPE", "Only events of this type (repeatable, or comma-separated)") do |value|
+          types.concat(value.split(",").map(&:strip).reject(&:empty?))
+        end
+        opts.on("--limit N", Integer, "Only the last N matching events") { |value| limit = value }
+        opts.on("--json", "Emit {schema_version, events} instead of lines") { json = true }
+      end
+      raw_args = args.dup
+      begin
+        parser.parse!(args)
+        raise UsageError, "--limit must be greater than 0." if limit && limit <= 0
+        raise UsageError, "Unexpected argument: #{args.first}" unless args.empty?
+      rescue OptionParser::ParseError, UsageError => e
+        return emit_json_usage_error(EVENT_LOG_JSON_SCHEMA_VERSION, e.message) if json_requested?(json, raw_args)
+        raise UsageError, (e.is_a?(UsageError) ? e.message : "#{e.message}\n\n#{parser.help}")
+      end
+
+      events = @state.event_log.events
+      warn_unseen_event_types(types, events)
+      events = events.select { |event| event["project"] == project || event.dig("data", "workspace") == project } if project
+      events = events.select { |event| types.include?(event["type"]) } unless types.empty?
+      events = events.last(limit) if limit
+
+      if json
+        @output.puts JSON.generate({"schema_version" => EVENT_LOG_JSON_SCHEMA_VERSION, "events" => events})
+      else
+        events.each { |event| @output.puts format_event(event) }
+      end
+    end
+
+    # Event types aren't a closed set: a log can hold types from an older or
+    # newer workspace, so a type no event has is warned about, not rejected.
+    def warn_unseen_event_types(types, events)
+      logged = events.map { |event| event["type"] }.uniq.sort
+      unseen = types.uniq - logged
+      return if unseen.empty?
+      Warn.puts(@error_output, "Warning: no #{unseen.join(", ")} events in the event log " \
+        "(types it has: #{logged.empty? ? "none" : logged.join(", ")})")
+    end
+
+    # One line per event. Logged text can come from a pane (a stage's
+    # summary), so control characters are blanked before reaching a terminal.
+    def format_event(event)
+      data = event["data"].is_a?(Hash) ? event["data"] : {}
+      details = data.filter_map { |key, value| "#{key}=#{format_event_value(value)}" unless value.nil? }
+      [event["timestamp"], event["project"], event["type"], *details].join("  ").gsub(/[[:cntrl:]]+/, " ")
+    end
+
+    # A bare string is ambiguous with the "  " field separator and with "="
+    # inside key=value pairs, so such values are quoted with String#inspect;
+    # plain values (no space, no "=") stay bare for readability. Scripts
+    # should use --json rather than parsing this format.
+    def format_event_value(value)
+      return JSON.generate(value) unless value.is_a?(String)
+      (value.include?(" ") || value.include?("=")) ? value.inspect : value
     end
 
     def cmd_whereis(args)

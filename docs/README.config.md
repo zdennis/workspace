@@ -70,7 +70,7 @@ Before writing, `set` and `unset` back up the project's config file (via the sam
 |---------|-------------|
 | `hooks` | Global hooks applied to all projects |
 | `layouts` | Default tmux pane layouts |
-| `event_log_compact_threshold` | Size warning threshold (e.g., "10kb", "1mb"). Default: 10kb |
+| `event_log_compact_threshold` | Size warning threshold (e.g., "10kb", "1mb"). Default: 1mb |
 
 ### Project settings
 

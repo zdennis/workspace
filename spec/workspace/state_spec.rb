@@ -38,6 +38,26 @@ RSpec.describe Workspace::State do
       state = new_state.load
       expect(state["proj1"]).to eq({"unique_id" => "uid1"})
     end
+
+    it "migrates from the state file once, even when load runs again" do
+      File.write(state_file, '{"project1": {"unique_id": "abc"}}')
+      Workspace::EventLog.new(config: config).record(type: "lock_wait_started", project: "project1")
+
+      new_state.load
+      new_state.load
+
+      types = Workspace::EventLog.new(config: config).events.map { |e| e["type"] }
+      expect(types).to eq(["lock_wait_started", "migrated"])
+    end
+
+    it "does not migrate over a log that already holds state events" do
+      File.write(state_file, '{"stale": {"unique_id": "old"}}')
+      event_log = Workspace::EventLog.new(config: config)
+      event_log.append(type: "launched", project: "proj1", data: {"unique_id" => "uid1"})
+      event_log.append(type: "killed", project: "proj1")
+
+      expect(new_state.load).to be_empty
+    end
   end
 
   describe "round-trip save and load" do
@@ -107,6 +127,19 @@ RSpec.describe Workspace::State do
 
       current = JSON.parse(File.read(state_file))
       expect(current.keys).to contain_exactly("proj1", "proj2")
+    end
+
+    it "raises and leaves the state file alone when the event log can't be read" do
+      state = new_state
+      state["proj1"] = {"unique_id" => "uid1"}
+      state.save
+      before = File.read(state_file)
+      File.chmod(0o000, event_log_file)
+
+      expect { state.save }.to raise_error(Workspace::Error, /could not read the event log #{Regexp.escape(event_log_file)}/)
+      expect(File.read(state_file)).to eq(before)
+    ensure
+      File.chmod(0o600, event_log_file)
     end
 
     it "does not create .bak when no prior file exists" do

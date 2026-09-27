@@ -18,7 +18,7 @@ RSpec.describe Workspace::SessionMonitor do
   end
 
   before do
-    allow(tmux).to receive(:pane_details).with("proj").and_return(panes)
+    allow(tmux).to receive(:pane_details).and_return(panes)
     allow(process_tree).to receive(:snapshot).and_return(snapshot)
     allow(snapshot).to receive(:find_descendant).and_return(nil)
     allow(snapshot).to receive(:find_descendant)
@@ -556,6 +556,280 @@ RSpec.describe Workspace::SessionMonitor do
 
     it "names the workspace and when it was taken" do
       expect(monitor.snapshot).to include("workspace" => "proj", "updated_at" => now.iso8601)
+    end
+  end
+
+  describe "state history in the event log" do
+    let(:tmpdir) { Dir.mktmpdir }
+    let(:log_config) do
+      Workspace::Config.new(workspace_dir: tmpdir).tap do |c|
+        allow(c).to receive(:event_log_file).and_return(File.join(tmpdir, "events.jsonl"))
+      end
+    end
+    let(:log_errors) { StringIO.new }
+    let(:event_log) { Workspace::EventLog.new(config: log_config, error_output: log_errors, clock: clock) }
+
+    after { FileUtils.remove_entry(tmpdir) }
+
+    def logging_monitor
+      described_class.new(tmux: tmux, process_tree: process_tree, session_name: "proj-session",
+        idle_after: 30, clock: clock, event_log: event_log, project: "proj")
+    end
+
+    def logged_states
+      event_log.events.select { |e| e["type"] == "agent_state" }.map { |e| [e["data"]["pane_id"], e["data"]["state"], e["data"]["since"]] }
+    end
+
+    it "records each agent pane's state changes, and none for shell panes" do
+      monitor = logging_monitor
+      monitor.scan
+      allow(clock).to receive(:now).and_return(now + 31)
+      monitor.scan
+      monitor.scan
+
+      expect(logged_states).to eq([
+        ["%2", "working", "2026-09-26T12:00:00.000Z"],
+        ["%2", "idle", "2026-09-26T12:00:30.000Z"]
+      ])
+      expect(event_log.events.map { |e| e["project"] }.uniq).to eq(["proj"])
+      expect(event_log.events.last["data"]).to include("pane_pid" => 200, "index" => 1, "kind" => "claude")
+    end
+
+    it "records waiting from when the agent asked, and closed when the pane goes" do
+      monitor = logging_monitor
+      monitor.scan
+      allow(clock).to receive(:now).and_return(now + 5)
+      monitor.record("event" => "notification", "pane_id" => "%2", "message" => "May I?")
+      allow(clock).to receive(:now).and_return(now + 7)
+      monitor.scan
+      allow(tmux).to receive(:pane_details).with("proj-session").and_return([panes.first])
+      monitor.scan
+
+      expect(logged_states.map { |_, state, since| [state, since] }).to eq([
+        ["working", "2026-09-26T12:00:00.000Z"],
+        ["waiting", "2026-09-26T12:00:05.000Z"],
+        ["closed", "2026-09-26T12:00:07.000Z"]
+      ])
+    end
+
+    it "records exited when the agent leaves a pane that stays open" do
+      monitor = logging_monitor
+      monitor.scan
+      allow(snapshot).to receive(:find_descendant).and_return(nil)
+      monitor.scan
+
+      expect(logged_states.map { |_, state, _| state }).to eq(["working", "exited"])
+    end
+
+    it "picks up an idle pane's state and start time after a restart, without logging it again" do
+      first = logging_monitor
+      first.scan
+      allow(clock).to receive(:now).and_return(now + 31)
+      first.scan
+
+      allow(clock).to receive(:now).and_return(now + 100)
+      restarted = logging_monitor
+      restarted.scan
+      pane = restarted.snapshot["panes"].find { |p| p["pane_id"] == "%2" }
+
+      expect(pane).to include("state" => "idle", "state_since" => "2026-09-26T12:00:30Z", "idle_seconds" => 100)
+      expect(logged_states.size).to eq(2)
+    end
+
+    describe "idle alerts across a restart" do
+      let(:notifier) { instance_double(Workspace::Notifier, notify: :started) }
+
+      def alerting_monitor
+        described_class.new(tmux: tmux, process_tree: process_tree, session_name: "proj-session",
+          idle_after: 30, idle_alert_after: 60, clock: clock, notifier: notifier, event_log: event_log, project: "proj")
+      end
+
+      def at(seconds)
+        allow(clock).to receive(:now).and_return(now + seconds)
+      end
+
+      def alert_events
+        event_log.events.select { |e| e["type"] == "agent_alert" }.map { |e| e["data"] }
+      end
+
+      before do
+        first = alerting_monitor
+        first.scan
+        at(90)
+        first.scan
+        first.send_alerts
+      end
+
+      it "logs each idle alert with the quiet stretch it was for" do
+        expect(alert_events).to eq([
+          {"pane_id" => "%2", "pane_pid" => 200, "kind" => "idle", "idle_since" => "2026-09-26T12:00:00.000Z"}
+        ])
+      end
+
+      it "does not alert again for the same quiet stretch" do
+        at(120)
+        restarted = alerting_monitor
+        restarted.scan
+
+        expect(restarted.send_alerts).to be_empty
+      end
+
+      it "alerts for a quiet stretch that began after the last alert" do
+        first = alerting_monitor
+        first.scan
+        at(100)
+        allow(tmux).to receive(:capture_pane).and_return("new output")
+        first.scan
+        at(140)
+        first.scan
+
+        at(200)
+        restarted = alerting_monitor
+        restarted.scan
+
+        expect(restarted.send_alerts.size).to eq(1)
+      end
+    end
+
+    describe "waiting alerts across a restart" do
+      let(:notifier) { instance_double(Workspace::Notifier, notify: :started) }
+
+      def alerting_monitor
+        described_class.new(tmux: tmux, process_tree: process_tree, session_name: "proj-session",
+          idle_after: 30, clock: clock, notifier: notifier, event_log: event_log, project: "proj")
+      end
+
+      def at(seconds)
+        allow(clock).to receive(:now).and_return(now + seconds)
+      end
+
+      def ask(monitor, agent_id = nil)
+        monitor.record("event" => "notification", "pane_id" => "%2", "agent_id" => agent_id, "message" => "May I?")
+      end
+
+      def alert_events
+        event_log.events.select { |e| e["type"] == "agent_alert" }.map { |e| e["data"] }
+      end
+
+      let!(:first) do
+        alerting_monitor.tap do |monitor|
+          monitor.scan
+          at(5)
+          ask(monitor)
+          monitor.scan
+          monitor.send_alerts
+        end
+      end
+
+      it "logs each waiting alert with the agent and the wait it was for" do
+        expect(alert_events).to eq([
+          {"pane_id" => "%2", "pane_pid" => 200, "kind" => "waiting", "agent_id" => nil,
+           "waiting_since" => "2026-09-26T12:00:05.000Z"}
+        ])
+      end
+
+      it "does not alert again when the agent asks again during the same wait" do
+        at(60)
+        restarted = alerting_monitor
+        restarted.scan
+        ask(restarted)
+        restarted.scan
+
+        expect(restarted.send_alerts).to be_empty
+        expect(restarted.snapshot["panes"].find { |p| p["pane_id"] == "%2" })
+          .to include("state" => "waiting", "waiting_since" => "2026-09-26T12:00:05Z")
+      end
+
+      it "does not alert again when the agent asks before the first scan after the restart" do
+        at(60)
+        restarted = alerting_monitor
+        ask(restarted)
+        restarted.scan
+
+        expect(restarted.send_alerts).to be_empty
+      end
+
+      it "alerts for a wait that begins after the agent moved on" do
+        at(60)
+        restarted = alerting_monitor
+        restarted.scan
+        restarted.record("event" => "post_tool_use", "pane_id" => "%2")
+        ask(restarted)
+        restarted.scan
+
+        expect(restarted.send_alerts.size).to eq(1)
+      end
+
+      it "alerts for another agent's wait in the same pane" do
+        at(60)
+        restarted = alerting_monitor
+        restarted.scan
+        ask(restarted, "sub-1")
+        restarted.scan
+
+        expect(restarted.send_alerts.map { |env| env["WORKSPACE_ALERT"] }).to eq(["waiting"])
+      end
+
+      it "alerts for a new waiting stretch after the pane stopped waiting" do
+        first.record("event" => "stop", "pane_id" => "%2")
+        at(20)
+        first.scan
+        at(60)
+        restarted = alerting_monitor
+        restarted.scan
+        ask(restarted)
+        restarted.scan
+
+        expect(restarted.send_alerts.size).to eq(1)
+      end
+    end
+
+    it "passes a restored pane's agent pid to the context reader on the first scan" do
+      logging_monitor.scan
+      context_reader = instance_double(Workspace::ContextReader)
+      allow(context_reader).to receive(:read).and_return(pct: 10, error: nil, updated_at: nil)
+
+      allow(clock).to receive(:now).and_return(now + 10)
+      restarted = described_class.new(tmux: tmux, process_tree: process_tree, session_name: "proj-session",
+        idle_after: 30, clock: clock, event_log: event_log, project: "proj", context_reader: context_reader)
+      restarted.scan
+      restarted.snapshot
+
+      expect(context_reader).to have_received(:read).with(pane_id: "%2", agent_pid: 250, current_session_id: nil)
+    end
+
+    it "keeps a restored working pane's start time" do
+      logging_monitor.scan
+
+      allow(clock).to receive(:now).and_return(now + 10)
+      restarted = logging_monitor
+      restarted.scan
+
+      expect(restarted.snapshot["panes"].find { |p| p["pane_id"] == "%2" }["state_since"]).to eq("2026-09-26T12:00:00Z")
+      expect(logged_states.size).to eq(1)
+    end
+
+    it "does not restore a pane id that now belongs to a different pane process" do
+      logging_monitor.scan
+      allow(tmux).to receive(:pane_details).with("proj-session").and_return([panes.last.merge(pid: 999)])
+      allow(snapshot).to receive(:find_descendant).with(999, ["claude"], hash_including(include_root: true))
+        .and_return({pid: 1000, command: "claude", args: "claude"})
+
+      allow(clock).to receive(:now).and_return(now + 10)
+      logging_monitor.scan
+
+      expect(logged_states.last).to eq(["%2", "working", "2026-09-26T12:00:10.000Z"])
+    end
+
+    it "keeps scanning when the log can't be written, warning once" do
+      allow(log_config).to receive(:event_log_file).and_return(File.join(tmpdir, "gone", "events.jsonl"))
+      monitor = logging_monitor
+      monitor.scan
+      allow(clock).to receive(:now).and_return(now + 31)
+      monitor.scan
+
+      expect(monitor.snapshot["panes"].find { |p| p["pane_id"] == "%2" }["state"]).to eq("idle")
+      expect(log_errors.string.lines.size).to eq(1)
     end
   end
 

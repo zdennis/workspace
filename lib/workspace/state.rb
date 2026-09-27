@@ -19,22 +19,26 @@ module Workspace
     attr_reader :event_log
 
     # Loads state by replaying the event log. Falls back to the state file
-    # for migration if no event log exists yet.
+    # for migration while the log holds no state events yet, which is also
+    # the case when only activity events (a lock wait, an agent's state)
+    # were written before the first load. Migrating writes state events,
+    # so it happens once.
     #
     # @return [State] self
     def load
-      if @event_log.exists?
-        @logger.debug { "state: reconstructing from event log" }
-        @data = @event_log.reconstruct
-        @logger.debug { "state: reconstructed #{@data.keys.size} project(s): #{@data.keys.join(", ")}" }
-        @event_log.warn_if_large
-      elsif File.exist?(@config.state_file)
+      if File.exist?(@config.state_file) && !@event_log.state_events?
         @logger.debug { "state: migrating from state file to event log" }
         @data = JSON.parse(File.read(@config.state_file))
+        @data = {} unless @data.is_a?(Hash)
         @data.each do |project, info|
           @event_log.append(type: "migrated", project: project, data: info)
         end
         @logger.debug { "state: migrated #{@data.keys.size} project(s)" }
+      elsif @event_log.exists?
+        @logger.debug { "state: reconstructing from event log" }
+        @data = @event_log.reconstruct
+        @logger.debug { "state: reconstructed #{@data.keys.size} project(s): #{@data.keys.join(", ")}" }
+        @event_log.warn_if_large
       else
         @logger.debug { "state: no event log or state file, starting empty" }
         @data = {}
@@ -46,11 +50,14 @@ module Workspace
       self
     end
 
-    # Reconstructs state from the event log and writes the state file.
+    # Reconstructs state from the event log and writes the state file. A log
+    # that can't be read leaves the state file as it was, rather than
+    # writing it out empty.
     #
     # @return [void]
+    # @raise [Workspace::Error] if the event log can't be read
     def save
-      @data = @event_log.reconstruct
+      @data = @event_log.reconstruct(strict: true)
       @logger.debug { "state: saving #{@data.keys.size} project(s) to #{@config.state_file}" }
       backup_state_file
       tmp = "#{@config.state_file}.tmp"

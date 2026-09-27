@@ -128,6 +128,223 @@ RSpec.describe Workspace::EventLog do
     end
   end
 
+  describe "#record" do
+    it "appends an activity event that reconstruct ignores" do
+      event_log.append(type: "launched", project: "proj1", data: {"unique_id" => "uid1"})
+      expect(event_log.record(type: "dispatched", project: "proj1", data: {"work_item_ref" => "W-1"})).to be true
+
+      expect(event_log.events.map { |e| e["type"] }).to eq(["launched", "dispatched"])
+      expect(event_log.reconstruct).to eq({"proj1" => {"unique_id" => "uid1"}})
+    end
+
+    it "warns once on the error stream and carries on when the log can't be written" do
+      allow(config).to receive(:event_log_file).and_return(File.join(tmpdir, "missing-dir", "events.jsonl"))
+
+      expect(event_log.record(type: "dispatched", project: "proj1")).to be false
+      expect(event_log.record(type: "dispatched", project: "proj1")).to be false
+
+      expect(output.string.scan("could not write to the event log").size).to eq(1)
+    end
+
+    it "writes each event as one whole line when several processes append at once" do
+      payload = "x" * 6_000
+      pids = 4.times.map do |n|
+        fork do
+          log = described_class.new(config: config, error_output: StringIO.new)
+          50.times { |i| log.record(type: "dispatched", project: "p#{n}", data: {"i" => i, "pad" => payload}) }
+          exit!(0)
+        end
+      end
+      pids.each { |pid| Process.wait(pid) }
+
+      lines = File.readlines(event_log_file)
+      expect(lines.size).to eq(200)
+      expect(lines.map { |line| JSON.parse(line)["data"]["pad"].size }.uniq).to eq([6_000])
+    end
+  end
+
+  describe "#latest_agent_states" do
+    it "returns the last agent_state per pane for the project" do
+      event_log.record(type: "agent_state", project: "proj1", data: {"pane_id" => "%1", "state" => "working"})
+      event_log.record(type: "agent_state", project: "proj1", data: {"pane_id" => "%1", "state" => "idle"})
+      event_log.record(type: "agent_state", project: "proj1", data: {"pane_id" => "%2", "state" => "waiting"})
+      event_log.record(type: "agent_state", project: "other", data: {"pane_id" => "%1", "state" => "working"})
+
+      states = event_log.latest_agent_states("proj1")
+      expect(states.transform_values { |d| d["state"] }).to eq({"%1" => "idle", "%2" => "waiting"})
+    end
+
+    it "skips lines that are not event objects" do
+      File.write(event_log_file, "3\n[1]\n")
+      event_log.record(type: "agent_state", project: "proj1", data: {"pane_id" => "%1", "state" => "idle"})
+
+      expect(event_log.latest_agent_states("proj1").keys).to eq(["%1"])
+    end
+  end
+
+  describe "#compact with activity" do
+    it "keeps each live pane's latest agent_state and drops other activity" do
+      event_log.append(type: "launched", project: "proj1", data: {"unique_id" => "uid1"})
+      event_log.record(type: "dispatched", project: "proj1")
+      event_log.record(type: "agent_state", project: "proj1", data: {"pane_id" => "%1", "state" => "working"})
+      event_log.record(type: "agent_state", project: "proj1", data: {"pane_id" => "%1", "state" => "idle"})
+      event_log.record(type: "agent_state", project: "proj1", data: {"pane_id" => "%2", "state" => "closed"})
+
+      event_log.compact
+
+      expect(event_log.events.map { |e| [e["type"], e.dig("data", "state")] })
+        .to eq([["compacted", nil], ["agent_state", "idle"]])
+      expect(event_log.latest_agent_states("proj1")["%1"]["state"]).to eq("idle")
+    end
+  end
+
+  describe "#compact housekeeping" do
+    let(:now) { Time.utc(2026, 9, 27, 12, 0, 0) }
+    let(:clock) { class_double(Time, now: now) }
+
+    subject(:event_log) { described_class.new(config: config, error_output: output, clock: clock) }
+
+    def agent_state(project, pane_id, since)
+      event_log.record(type: "agent_state", project: project,
+        data: {"pane_id" => pane_id, "state" => "idle", "since" => since.utc.iso8601(3)})
+    end
+
+    it "drops agent_state of projects no longer in state, and of panes quiet for over a week" do
+      event_log.append(type: "launched", project: "proj1", data: {"unique_id" => "uid1"})
+      agent_state("proj1", "%1", now - 3600)
+      agent_state("proj1", "%2", now - 8 * 24 * 3600)
+      agent_state("gone", "%1", now - 60)
+
+      event_log.compact
+
+      kept = event_log.events.select { |e| e["type"] == "agent_state" }
+      expect(kept.map { |e| [e["project"], e["data"]["pane_id"]] }).to eq([["proj1", "%1"]])
+    end
+
+    it "keeps the latest idle alert of each pane whose agent_state it keeps" do
+      event_log.append(type: "launched", project: "proj1", data: {"unique_id" => "uid1"})
+      agent_state("proj1", "%1", now - 3600)
+      event_log.record(type: "agent_alert", project: "proj1", data: {"pane_id" => "%1", "idle_since" => "old"})
+      event_log.record(type: "agent_alert", project: "proj1", data: {"pane_id" => "%1", "idle_since" => "new"})
+      event_log.record(type: "agent_alert", project: "proj1", data: {"pane_id" => "%9", "idle_since" => "gone"})
+
+      event_log.compact
+
+      expect(event_log.latest_agent_alerts("proj1").transform_values { |d| d["idle"]["idle_since"] }).to eq({"%1" => "new"})
+    end
+
+    it "keeps a pane's waiting alerts per agent only while the pane is still in that wait" do
+      event_log.append(type: "launched", project: "proj1", data: {"unique_id" => "uid1"})
+      event_log.record(type: "agent_state", project: "proj1",
+        data: {"pane_id" => "%1", "state" => "waiting", "since" => (now - 60).utc.iso8601(3)})
+      event_log.record(type: "agent_state", project: "proj1",
+        data: {"pane_id" => "%2", "state" => "working", "since" => (now - 60).utc.iso8601(3)})
+      waiting = ->(pane_id, agent_id, since) {
+        event_log.record(type: "agent_alert", project: "proj1", data: {"pane_id" => pane_id, "kind" => "waiting",
+                                                                       "agent_id" => agent_id, "waiting_since" => since.utc.iso8601(3)})
+      }
+      waiting.call("%1", nil, now - 600)
+      waiting.call("%1", nil, now - 60)
+      waiting.call("%1", "sub-1", now - 30)
+      waiting.call("%1", "sub-2", now - 900)
+      waiting.call("%2", nil, now - 120)
+
+      event_log.compact
+
+      expect(event_log.latest_agent_alerts("proj1").transform_values { |pane|
+        pane["waiting"].transform_values { |d| d["waiting_since"] }
+      }).to eq({"%1" => {nil => "2026-09-27T11:59:00.000Z", "sub-1" => "2026-09-27T11:59:30.000Z"}})
+    end
+  end
+
+  describe "#latest_agent_alerts" do
+    it "reads an alert logged without a kind as an idle alert" do
+      event_log.record(type: "agent_alert", project: "proj1", data: {"pane_id" => "%1", "idle_since" => "t"})
+
+      expect(event_log.latest_agent_alerts("proj1")).to eq({"%1" => {"idle" => {"pane_id" => "%1", "idle_since" => "t"}}})
+    end
+
+    it "writes the rewrite owner-only and leaves no temp file behind" do
+      File.write(event_log_file, "")
+      File.chmod(0o644, event_log_file)
+      event_log.append(type: "launched", project: "proj1")
+
+      event_log.compact
+
+      expect(File.stat(event_log_file).mode & 0o777).to eq(0o600)
+      expect(Dir.children(tmpdir).grep(/\.tmp\z/)).to be_empty
+    end
+
+    it "raises a Workspace::Error and leaves the log alone when it can't be read" do
+      event_log.append(type: "launched", project: "proj1")
+      before = File.read(event_log_file)
+      File.chmod(0o000, event_log_file)
+
+      expect { event_log.compact }.to raise_error(Workspace::Error, /could not compact/)
+    ensure
+      File.chmod(0o600, event_log_file)
+      expect(File.read(event_log_file)).to eq(before)
+    end
+  end
+
+  describe "locking" do
+    let(:lock_file) { "#{event_log_file}.lock" }
+
+    before { stub_const("Workspace::EventLog::LOCK_WAIT", 0.05) }
+
+    def holding_lock
+      File.open(lock_file, File::RDWR | File::CREAT, 0o600) do |lock|
+        lock.flock(File::LOCK_EX)
+        yield
+      end
+    end
+
+    it "still appends when another process holds the lock past the wait" do
+      holding_lock { event_log.append(type: "launched", project: "proj1") }
+
+      expect(event_log.reconstruct.keys).to eq(["proj1"])
+    end
+
+    it "refuses to compact while another process holds the lock" do
+      event_log.append(type: "launched", project: "proj1")
+
+      holding_lock do
+        expect { event_log.compact }.to raise_error(Workspace::Error, /busy/)
+      end
+    end
+  end
+
+  describe "a torn last line" do
+    it "starts the next event on a new line" do
+      File.write(event_log_file, '{"type":"launch')
+
+      event_log.append(type: "launched", project: "proj1")
+
+      expect(File.read(event_log_file).lines.last).to start_with('{"timestamp"')
+      expect(event_log.reconstruct.keys).to eq(["proj1"])
+    end
+  end
+
+  describe "an unreadable log" do
+    before do
+      File.write(event_log_file, JSON.generate({"type" => "launched", "project" => "p", "data" => {}}) + "\n")
+      File.chmod(0o000, event_log_file)
+    end
+
+    after { File.chmod(0o600, event_log_file) }
+
+    it "reads as empty and warns once" do
+      expect(event_log.events).to eq([])
+      expect(event_log.reconstruct).to eq({})
+
+      expect(output.string.scan("could not read the event log").size).to eq(1)
+    end
+
+    it "counts as holding state events, so nothing migrates over it" do
+      expect(event_log.state_events?).to be(true)
+    end
+  end
+
   describe "#size" do
     it "returns 0 when file does not exist" do
       expect(event_log.size).to eq(0)
@@ -141,7 +358,7 @@ RSpec.describe Workspace::EventLog do
 
   describe "#warn_if_large" do
     it "warns when file exceeds threshold" do
-      File.write(event_log_file, "x" * 11_000)
+      File.write(event_log_file, "x" * 1_100_000)
       event_log.warn_if_large
       expect(output.string).to include("event-log compact")
     end

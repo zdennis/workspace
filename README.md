@@ -79,7 +79,7 @@ workspace <subcommand> [options]
 | dev | [README](docs/README.dev.md) | Start, stop, or inspect the repo's single dev environment (devenv lock) |
 | dir | [README](docs/README.dir.md) | Print the root directory of a workspace project |
 | doctor | [README](docs/README.doctor.md) | Check that all required dependencies are installed |
-| event-log | [README](docs/README.event-log.md) | Manage the append-only event log (compact) |
+| event-log | [README](docs/README.event-log.md) | Show or compact the append-only event log of state changes and agent activity |
 | finish | [README](docs/README.finish.md) | Verify a worktree is clean and pushed, then remove it (optionally opens a PR) |
 | focus | [README](docs/README.focus.md) | Bring a project's iTerm window to the front |
 | init | [README](docs/README.init.md) | Install tmuxinator templates and create workspace config directory |

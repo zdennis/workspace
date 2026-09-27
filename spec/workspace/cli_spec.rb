@@ -2573,4 +2573,81 @@ RSpec.describe Workspace::CLI do
       expect(JSON.parse(output.string)).to eq("schema_version" => 1, "error" => "No agent daemon for 'proj'.\nStart one with:  workspace agent proj")
     end
   end
+
+  describe "#run with event-log show" do
+    let(:tmpdir) { Dir.mktmpdir }
+    let(:config) do
+      Workspace::Config.new(workspace_dir: tmpdir).tap do |c|
+        allow(c).to receive(:event_log_file).and_return(File.join(tmpdir, "events.jsonl"))
+        allow(c).to receive(:state_file).and_return(File.join(tmpdir, "state.json"))
+      end
+    end
+    let(:event_log) { Workspace::EventLog.new(config: config, error_output: StringIO.new) }
+    let(:state) { Workspace::State.new(config: config, event_log: event_log) }
+
+    after { FileUtils.remove_entry(tmpdir) }
+
+    before do
+      event_log.append(type: "launched", project: "proj1", data: {"unique_id" => "u1"})
+      event_log.record(type: "dispatched", project: "proj1", data: {"work_item_ref" => "W-1", "summary" => "a\e[31mb"})
+      event_log.record(type: "lock_wait_started", project: "proj2", data: {"lock" => "edit"})
+    end
+
+    it "prints one line per event, oldest first, with control characters blanked" do
+      cli, output, _ = build_test_cli(state: state, config: config)
+      cli.run(["event-log", "show"])
+
+      lines = output.string.lines
+      expect(lines.size).to eq(3)
+      expect(lines[1]).to include("proj1  dispatched  work_item_ref=W-1  summary=a [31mb")
+      expect(lines[1]).not_to include("\e")
+    end
+
+    it "filters by project, type and limit" do
+      cli, output, _ = build_test_cli(state: state, config: config)
+      cli.run(["event-log", "show", "--project", "proj1", "--type", "launched,dispatched", "--limit", "1"])
+
+      expect(output.string.lines.size).to eq(1)
+      expect(output.string).to include("dispatched")
+    end
+
+    it "emits only JSON on stdout with --json" do
+      cli, output, _ = build_test_cli(state: state, config: config)
+      cli.run(["event-log", "show", "--json", "--type", "lock_wait_started"])
+
+      payload = JSON.parse(output.string)
+      expect(payload["schema_version"]).to eq(1)
+      expect(payload["events"].map { |e| e["type"] }).to eq(["lock_wait_started"])
+    end
+
+    it "warns on stderr about a --type no event has, listing the types the log has" do
+      cli, output, error_output = build_test_cli(state: state, config: config)
+      cli.run(["event-log", "show", "--json", "--type", "dispatched,lock_wiat_started"])
+
+      expect(JSON.parse(output.string)["events"].map { |e| e["type"] }).to eq(["dispatched"])
+      expect(error_output.string).to eq("Warning: no lock_wiat_started events in the event log " \
+        "(types it has: dispatched, launched, lock_wait_started)\n")
+    end
+
+    it "does not warn when every --type has events" do
+      cli, _, error_output = build_test_cli(state: state, config: config)
+      cli.run(["event-log", "show", "--type", "launched"])
+
+      expect(error_output.string).to be_empty
+    end
+
+    it "reports a bad option as JSON when --json is anywhere in the arguments" do
+      cli, output, _ = build_test_cli(state: state, config: config)
+      expect { cli.run(["event-log", "show", "--bogus", "--json"]) }.to raise_error(FakeSystemExit)
+
+      expect(JSON.parse(output.string)).to include("schema_version" => 1, "error" => a_string_including("--bogus"))
+    end
+
+    it "rejects a non-positive --limit" do
+      cli, _, error_output = build_test_cli(state: state, config: config)
+      expect { cli.run(["event-log", "show", "--limit", "0"]) }.to raise_error(FakeSystemExit)
+
+      expect(error_output.string).to include("--limit must be greater than 0")
+    end
+  end
 end
