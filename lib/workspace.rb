@@ -57,6 +57,7 @@ require_relative "workspace/window_layout"
 require_relative "workspace/project_settings"
 require_relative "workspace/process_tree"
 require_relative "workspace/agent_readiness"
+require_relative "workspace/agent_restart"
 require_relative "workspace/workspace_lineage"
 require_relative "workspace/duration"
 require_relative "workspace/dev_config"
@@ -109,6 +110,7 @@ require_relative "workspace/commands/dev"
 require_relative "workspace/commands/parent"
 require_relative "workspace/commands/config"
 require_relative "workspace/commands/statusline"
+require_relative "workspace/commands/restart_agent"
 require_relative "workspace/commands/ask"
 require_relative "workspace/work_coordinator_client"
 require_relative "workspace/pipeline_config"
@@ -254,6 +256,8 @@ module Workspace
       error_output: error_output
     )
 
+    restart_agent_command = Commands::RestartAgent.new(config: config, output: output)
+
     CLI.new(
       config: config,
       state: state,
@@ -293,6 +297,7 @@ module Workspace
       config_command: config_command,
       statusline_command: statusline_command,
       ask_command: ask_command,
+      restart_agent_command: restart_agent_command,
       logger: logger,
       output: output,
       error_output: error_output,

@@ -99,6 +99,7 @@ RSpec.describe Workspace::Tmux do
     before do
       allow(tmux).to receive(:system).and_return(true)
       allow(tmux).to receive(:tmux_load_buffer).and_return(true)
+      allow(tmux).to receive(:tmux_paste_buffer).and_return([true, nil])
     end
 
     it "pastes the full text as one bracketed paste and presses Enter once" do
@@ -109,7 +110,7 @@ RSpec.describe Workspace::Tmux do
       expect(result.status).to eq(:submitted)
       expect(result).to be_ok
       expect(tmux).to have_received(:tmux_load_buffer).with(anything, "hello world")
-      expect(tmux).to have_received(:system).with("tmux", "paste-buffer", "-p", "-b", anything, "-t", "my-session:0.1")
+      expect(tmux).to have_received(:tmux_paste_buffer).with(anything, "my-session:0.1")
       expect(enters).to eq(["Enter"])
     end
 
@@ -135,7 +136,7 @@ RSpec.describe Workspace::Tmux do
       tmux.deliver("my-session", "0.1", text)
 
       expect(tmux).to have_received(:tmux_load_buffer).with(anything, text).once
-      expect(tmux).to have_received(:system).with("tmux", "paste-buffer", "-p", "-b", anything, "-t", "my-session:0.1").once
+      expect(tmux).to have_received(:tmux_paste_buffer).with(anything, "my-session:0.1").once
       expect(enters).to eq(["Enter"])
     end
 
@@ -279,13 +280,35 @@ RSpec.describe Workspace::Tmux do
 
     it "reports :failed when paste-buffer fails, and still deletes the buffer" do
       screens("$ ")
-      allow(tmux).to receive(:system).and_return(false)
+      allow(tmux).to receive(:tmux_paste_buffer).and_return([false, nil])
 
       result = tmux.deliver("bad-session", "0.1", "text")
 
       expect(result.status).to eq(:failed)
-      expect(result.message).to include("could not paste")
+      expect(result.message).to eq("tmux could not paste into bad-session:0.1")
       expect(tmux).to have_received(:system).with("tmux", "delete-buffer", "-b", anything)
+    end
+
+    # A config name ("app.worktree-x") passed where the tmux session name
+    # ("app-wt-x") belongs failed every paste with only "could not paste",
+    # which read as a busy pane. tmux's own reason says what went wrong.
+    it "names tmux's reason when paste-buffer fails" do
+      screens("$ ")
+      allow(tmux).to receive(:tmux_paste_buffer).and_return([false, "can't find session: app.worktree-x"])
+
+      result = tmux.deliver("app.worktree-x", "0.1", "text")
+
+      expect(result.status).to eq(:failed)
+      expect(result.message).to eq("tmux could not paste into app.worktree-x:0.1: can't find session: app.worktree-x")
+    end
+
+    it "runs paste-buffer as a bracketed paste and returns tmux's stderr" do
+      status = instance_double(Process::Status, success?: false)
+      allow(Open3).to receive(:capture3)
+        .with("tmux", "paste-buffer", "-p", "-b", "buf-1", "-t", "s:0.1")
+        .and_return(["", "can't find pane: 0.1\n", status])
+
+      expect(described_class.new(config: config).send(:tmux_paste_buffer, "buf-1", "s:0.1")).to eq([false, "can't find pane: 0.1"])
     end
 
     it "reports :failed when Enter can't be pressed" do

@@ -15,7 +15,36 @@ RSpec.describe Workspace::ContextReader do
       )
 
       result = reader.read(pane_id: "%1")
-      expect(result).to eq(pct: 42, error: nil, updated_at: "2026-09-27T00:00:00Z")
+      expect(result).to eq(pct: 42, error: nil, updated_at: "2026-09-27T00:00:00Z",
+        recorded_at: Time.utc(2026, 9, 27), session_id: nil)
+    end
+
+    it "returns the stored session id" do
+      allow(context_store).to receive(:reading_for_pane).with("%1").and_return(
+        {"pct" => 42, "session_id" => "sess-1", "recorded_at" => "2026-09-27T00:00:00Z"}
+      )
+
+      expect(reader.read(pane_id: "%1")[:session_id]).to eq("sess-1")
+    end
+
+    it "keeps a sub-second stamp in recorded_at but reports updated_at in whole seconds" do
+      allow(context_store).to receive(:reading_for_pane).with("%1").and_return(
+        {"pct" => 42, "recorded_at" => "2026-09-27T00:00:00.250000Z"}
+      )
+
+      result = reader.read(pane_id: "%1")
+      expect(result[:recorded_at]).to eq(Time.utc(2026, 9, 27, 0, 0, 0.25r))
+      expect(result[:updated_at]).to eq("2026-09-27T00:00:00Z")
+    end
+
+    it "reports undetermined (not 0) when the stored reading has a nil pct" do
+      allow(context_store).to receive(:reading_for_pane).with("%1").and_return(
+        {"pct" => nil, "session_id" => "sess-1", "recorded_at" => "2026-09-27T00:00:00Z"}
+      )
+
+      result = reader.read(pane_id: "%1")
+      expect(result).to eq(pct: nil, error: Workspace::ContextReasons::NO_READING_YET, updated_at: "2026-09-27T00:00:00Z",
+        recorded_at: Time.utc(2026, 9, 27), session_id: "sess-1")
     end
 
     describe "pid fallback" do
@@ -32,7 +61,7 @@ RSpec.describe Workspace::ContextReader do
         allow(lock_holder).to receive(:alive?).with(pid: 999, started: started).and_return(true)
 
         result = reader.read(pane_id: "%1", agent_pid: 999)
-        expect(result).to eq(pct: 10, error: nil, updated_at: "2026-09-27T00:00:00Z")
+        expect(result).to include(pct: 10, error: nil, updated_at: "2026-09-27T00:00:00Z")
       end
 
       it "uses the pid reading when the status-line process had no pane id" do

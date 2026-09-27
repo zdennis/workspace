@@ -90,6 +90,7 @@ RSpec.describe Workspace::CLI do
       config_command: overrides[:config_command] || CLITestHelpers::FakeConfigCommand.new,
       statusline_command: overrides[:statusline_command] || CLITestHelpers::FakeStatuslineCommand.new,
       ask_command: ask_command,
+      restart_agent_command: overrides[:restart_agent_command],
       logger: logger,
       output: output,
       error_output: error_output,
@@ -739,6 +740,59 @@ RSpec.describe Workspace::CLI do
         expect(e.status).to eq(1)
       }
       expect(error_output.string).to include("Usage: workspace layout")
+    end
+  end
+
+  describe "#run agent-run restart" do
+    let(:restart_command) { double("restart", call: {exit_code: 0}) }
+
+    it "passes the explicit pane, prompt and flags to the restart command" do
+      cli, = build_test_cli(restart_agent_command: restart_command)
+
+      cli.run(["agent-run", "restart", "--name", "myapp", "--pane", "%18", "--prompt", "Read HANDOFF.md",
+        "--force", "--wait", "--timeout", "45s", "--json"])
+
+      expect(restart_command).to have_received(:call).with(name: "myapp", pane: "%18", prompt: "Read HANDOFF.md",
+        force: true, wait: true, timeout: 45, json: true)
+    end
+
+    it "exits with the command's exit code" do
+      allow(restart_command).to receive(:call).and_return({exit_code: 1})
+      cli, = build_test_cli(restart_agent_command: restart_command)
+
+      expect { cli.run(["agent-run", "restart", "--name", "myapp", "--pane", "0.1", "--prompt", "go"]) }
+        .to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+    end
+
+    [
+      [["--name", "myapp", "--prompt", "go"], "Missing --pane."],
+      [["--name", "myapp", "--pane", "0.1"], "Missing --prompt."],
+      [["--name", "myapp", "--pane", "0.1", "--prompt", "go", "--timeout", "11m"], "--timeout: at most 600s"],
+      [["--name", "myapp", "--pane", "0.1", "--prompt", "go", "extra"], "Unexpected argument: extra"]
+    ].each do |args, message|
+      it "rejects #{args.last(2).join(" ")} with a usage error" do
+        cli, _, error_output = build_test_cli(restart_agent_command: restart_command)
+
+        expect { cli.run(["agent-run", "restart", *args]) }.to raise_error(FakeSystemExit)
+        expect(error_output.string).to include(message)
+        expect(restart_command).not_to have_received(:call)
+      end
+
+      it "reports #{args.last(2).join(" ")} as a JSON error with --json" do
+        cli, output = build_test_cli(restart_agent_command: restart_command)
+
+        expect { cli.run(["agent-run", "restart", "--json", *args]) }.to raise_error(FakeSystemExit) { |e|
+          expect(e.status).to eq(1)
+        }
+        expect(JSON.parse(output.string)).to eq("schema_version" => 1, "error" => message)
+      end
+    end
+
+    it "lists restart in the agent-run help" do
+      cli, _, error_output = build_test_cli
+
+      expect { cli.run(["agent-run"]) }.to raise_error(FakeSystemExit)
+      expect(error_output.string).to include("restart    Clear the coding agent in one pane")
     end
   end
 
@@ -2406,6 +2460,19 @@ RSpec.describe Workspace::CLI do
 
         expect(error_output.string).to include("closed the connection without replying")
         server.close
+      end
+
+      it "exits 1 with the same message when the write races the daemon's close (EPIPE after connect)" do
+        cli, _, error_output = build_test_cli(config: config)
+        socket = instance_double(UNIXSocket, close: nil)
+        allow(socket).to receive(:puts).and_raise(Errno::EPIPE)
+        allow(UNIXSocket).to receive(:open).and_return(socket)
+
+        expect { cli.run(["pipeline", "start", "myapp", "--work-item", "WC-42"]) }
+          .to raise_error(FakeSystemExit)
+
+        expect(error_output.string).to include("closed the connection without replying")
+        expect(error_output.string).not_to include("No agent is running")
       end
 
       it "exits 1 when the agent's reply is not readable" do
