@@ -1,236 +1,149 @@
 require "tmpdir"
-require "yaml"
 
 RSpec.describe Workspace::Commands::Stop do
   let(:tmpdir) { Dir.mktmpdir }
+  let(:config) { Workspace::Config.new(workspace_dir: tmpdir) }
+  let(:state_file) { File.join(tmpdir, "state.json") }
+  let(:event_log_file) { File.join(tmpdir, "events.jsonl") }
+  let(:state) do
+    allow(config).to receive(:state_file).and_return(state_file)
+    allow(config).to receive(:event_log_file).and_return(event_log_file)
+    event_log = Workspace::EventLog.new(config: config)
+    Workspace::State.new(config: config, event_log: event_log)
+  end
   let(:output) { StringIO.new }
-  let(:input) { StringIO.new }
-  let(:git) { double("git") }
-  let(:project_config) { double("project_config") }
-  let(:project_settings) { double("project_settings") }
-  let(:kill_command) { double("kill_command") }
-  let(:project_detector) { Workspace::ProjectDetector.new(state: CLITestHelpers::FakeState.new, project_config: project_config) }
+  let(:error_output) { StringIO.new }
+  let(:iterm) { double("iterm") }
+  let(:window_manager) { double("window_manager") }
+  let(:tmux) { double("tmux") }
 
   subject(:command) do
     described_class.new(
-      git: git,
-      project_config: project_config,
-      project_settings: project_settings,
-      kill_command: kill_command,
-      project_detector: project_detector,
+      state: state,
+      iterm: iterm,
+      window_manager: window_manager,
+      tmux: tmux,
       output: output,
-      input: input
+      error_output: error_output
     )
   end
 
   after { FileUtils.remove_entry(tmpdir) }
 
-  let(:config_path) { File.join(tmpdir, "workspace.myproject.worktree-PROJ-123.yml") }
-
-  before do
-    allow(project_config).to receive(:config_path_for)
-      .with("myproject.worktree-PROJ-123")
-      .and_return(config_path)
-  end
-
   describe "#call" do
-    it "raises error when config not found" do
-      expect { command.call("myproject.worktree-PROJ-123") }.to raise_error(
-        Workspace::Error, /No config found/
-      )
+    it "returns empty array when state is empty" do
+      result = command.call
+      expect(result).to eq([])
+      expect(output.string).to include("No active workspace projects")
     end
 
-    context "with existing config" do
+    context "with active projects" do
       before do
-        File.write(config_path, YAML.dump("name" => "myproject-wt-PROJ-123", "root" => "/path/to/worktree"))
+        state["proj1"] = {"unique_id" => "uid1", "iterm_window_id" => 100}
+        state["proj2"] = {"unique_id" => "uid2", "iterm_window_id" => 200}
+        state.save
       end
 
-      it "raises error when not a worktree project" do
-        allow(git).to receive(:worktree_exists?).with("/path/to/worktree").and_return(false)
+      it "kills tmux sessions for specified projects" do
+        allow(iterm).to receive(:find_existing_sessions).and_return({})
+        allow(tmux).to receive(:session_name_for).with("proj1").and_return("proj1")
+        allow(tmux).to receive(:sessions).and_return(["proj1"])
+        allow(tmux).to receive(:kill_session)
 
-        expect { command.call("myproject.worktree-PROJ-123") }.to raise_error(
-          Workspace::Error, /does not appear to be a worktree project/
-        )
+        result = command.call(["proj1"])
+
+        expect(tmux).to have_received(:kill_session).with("proj1")
+        expect(result).to eq(["proj1"])
       end
 
-      it "suggests workspace stop for non-worktree projects" do
-        allow(git).to receive(:worktree_exists?).with("/path/to/worktree").and_return(false)
+      it "resolves tmux session name before killing" do
+        allow(iterm).to receive(:find_existing_sessions).and_return({})
+        allow(tmux).to receive(:session_name_for).with("proj1").and_return("custom-session")
+        allow(tmux).to receive(:sessions).and_return(["custom-session"])
+        allow(tmux).to receive(:kill_session)
 
-        expect { command.call("myproject.worktree-PROJ-123") }.to raise_error(
-          Workspace::Error, /workspace stop/
-        )
+        command.call(["proj1"])
+
+        expect(tmux).to have_received(:kill_session).with("custom-session")
       end
 
-      context "with valid worktree" do
-        before do
-          allow(git).to receive(:worktree_exists?).with("/path/to/worktree").and_return(true)
-        end
+      it "returns killed project names" do
+        allow(iterm).to receive(:find_existing_sessions).and_return({})
+        allow(tmux).to receive(:session_name_for).and_return("proj1", "proj2")
+        allow(tmux).to receive(:sessions).and_return(["proj1", "proj2"])
+        allow(tmux).to receive(:kill_session)
 
-        it "cancels when user declines confirmation" do
-          input.puts "n"
-          input.rewind
+        result = command.call(["proj1", "proj2"])
+        expect(result).to contain_exactly("proj1", "proj2")
+      end
 
-          command.call("myproject.worktree-PROJ-123")
+      it "kills all projects when none specified" do
+        allow(iterm).to receive(:find_existing_sessions).and_return({})
+        allow(tmux).to receive(:session_name_for).and_return("proj1", "proj2")
+        allow(tmux).to receive(:sessions).and_return(["proj1", "proj2"])
+        allow(tmux).to receive(:kill_session)
 
-          expect(output.string).to include("Cancelled")
-          expect(kill_command).not_to have_received(:call) if kill_command.respond_to?(:have_received)
-        end
+        result = command.call
+        expect(result).to contain_exactly("proj1", "proj2")
+      end
 
-        it "cancels on empty input" do
-          input.puts ""
-          input.rewind
+      it "removes killed projects from state" do
+        allow(iterm).to receive(:find_existing_sessions).and_return({})
+        allow(tmux).to receive(:session_name_for).with("proj1").and_return("proj1")
+        allow(tmux).to receive(:sessions).and_return(["proj1"])
+        allow(tmux).to receive(:kill_session)
 
-          command.call("myproject.worktree-PROJ-123")
+        command.call(["proj1"])
 
-          expect(output.string).to include("Cancelled")
-        end
+        state.load
+        expect(state["proj1"]).to be_nil
+        expect(state["proj2"]).not_to be_nil
+      end
 
-        it "removes worktree, kills session, and cleans up config on confirmation" do
-          input.puts "y"
-          input.rewind
+      it "warns about unknown projects" do
+        allow(iterm).to receive(:find_existing_sessions).and_return({})
+        allow(tmux).to receive(:sessions).and_return([])
 
-          allow(git).to receive(:remove_worktree)
-          allow(kill_command).to receive(:call).and_return(["myproject.worktree-PROJ-123"])
-          allow(project_config).to receive(:remove)
-          allow(project_settings).to receive(:remove)
+        command.call(["unknown-project"])
 
-          command.call("myproject.worktree-PROJ-123")
-
-          expect(git).to have_received(:remove_worktree).with("/path/to/worktree", force: false)
-          expect(kill_command).to have_received(:call).with(["myproject.worktree-PROJ-123"])
-          expect(project_config).to have_received(:remove).with("myproject.worktree-PROJ-123")
-          expect(project_settings).to have_received(:remove).with("myproject.worktree-PROJ-123")
-          expect(output.string).to include("Stopped myproject.worktree-PROJ-123")
-        end
-
-        it "removes marker file before worktree removal" do
-          worktree_dir = File.join(tmpdir, "worktree")
-          Dir.mkdir(worktree_dir)
-          marker = File.join(worktree_dir, ".workspace-project")
-          File.write(marker, "myproject.worktree-PROJ-123")
-
-          File.write(config_path, YAML.dump("name" => "myproject-wt-PROJ-123", "root" => worktree_dir))
-          allow(git).to receive(:worktree_exists?).with(worktree_dir).and_return(true)
-          allow(git).to receive(:remove_worktree)
-          allow(kill_command).to receive(:call).and_return([])
-          allow(project_config).to receive(:remove)
-          allow(project_settings).to receive(:remove)
-
-          command.call("myproject.worktree-PROJ-123", force: true)
-
-          expect(File.exist?(marker)).to be false
-        end
-
-        it "removes worktree before killing session" do
-          input.puts "y"
-          input.rewind
-
-          order = []
-          allow(git).to receive(:remove_worktree) { order << :remove_worktree }
-          allow(kill_command).to receive(:call) {
-            order << :kill
-            []
-          }
-          allow(project_config).to receive(:remove) { order << :remove_config }
-          allow(project_settings).to receive(:remove) { order << :remove_settings }
-
-          command.call("myproject.worktree-PROJ-123")
-
-          expect(order).to eq([:remove_worktree, :kill, :remove_config, :remove_settings])
-        end
-
-        it "skips confirmation with force flag" do
-          allow(git).to receive(:remove_worktree)
-          allow(kill_command).to receive(:call).and_return([])
-          allow(project_config).to receive(:remove)
-          allow(project_settings).to receive(:remove)
-
-          command.call("myproject.worktree-PROJ-123", force: true)
-
-          expect(output.string).not_to include("[y/N]")
-          expect(git).to have_received(:remove_worktree).with("/path/to/worktree", force: true)
-          expect(output.string).to include("Stopped")
-        end
-
-        it "passes force to remove_worktree" do
-          allow(git).to receive(:remove_worktree)
-          allow(kill_command).to receive(:call).and_return([])
-          allow(project_config).to receive(:remove)
-          allow(project_settings).to receive(:remove)
-
-          command.call("myproject.worktree-PROJ-123", force: true)
-
-          expect(git).to have_received(:remove_worktree).with("/path/to/worktree", force: true)
-        end
+        expect(error_output.string).to include("Warning: 'unknown-project' is not an active workspace project")
       end
     end
 
-    context "with marker file auto-detection" do
-      it "detects project from .workspace-project in current directory" do
-        marker_dir = File.join(tmpdir, "worktree-dir")
-        Dir.mkdir(marker_dir)
-        File.write(File.join(marker_dir, ".workspace-project"), "myproject.worktree-PROJ-123")
-
-        File.write(config_path, YAML.dump("name" => "myproject-wt-PROJ-123", "root" => "/path/to/worktree"))
-        allow(git).to receive(:worktree_exists?).with("/path/to/worktree").and_return(true)
-        allow(git).to receive(:remove_worktree)
-        allow(kill_command).to receive(:call).and_return([])
-        allow(project_config).to receive(:remove)
-        allow(project_settings).to receive(:remove)
-
-        cmd = described_class.new(
-          git: git, project_config: project_config, project_settings: project_settings,
-          kill_command: kill_command, project_detector: project_detector, output: output, input: input
-        )
-        cmd.call(nil, force: true, working_dir: marker_dir)
-
-        expect(kill_command).to have_received(:call).with(["myproject.worktree-PROJ-123"])
-        expect(output.string).to include("Stopped myproject.worktree-PROJ-123")
-      end
-
-      it "walks up directories to find .workspace-project" do
-        marker_dir = File.join(tmpdir, "worktree-dir")
-        sub_dir = File.join(marker_dir, "src", "lib")
-        FileUtils.mkdir_p(sub_dir)
-        File.write(File.join(marker_dir, ".workspace-project"), "myproject.worktree-PROJ-123")
-
-        File.write(config_path, YAML.dump("name" => "myproject-wt-PROJ-123", "root" => "/path/to/worktree"))
-        allow(git).to receive(:worktree_exists?).with("/path/to/worktree").and_return(true)
-        allow(git).to receive(:remove_worktree)
-        allow(kill_command).to receive(:call).and_return([])
-        allow(project_config).to receive(:remove)
-        allow(project_settings).to receive(:remove)
-
-        cmd = described_class.new(
-          git: git, project_config: project_config, project_settings: project_settings,
-          kill_command: kill_command, project_detector: project_detector, output: output, input: input
-        )
-        cmd.call(nil, force: true, working_dir: sub_dir)
-
-        expect(kill_command).to have_received(:call).with(["myproject.worktree-PROJ-123"])
-      end
-
-      it "raises error when no marker file found and no project given" do
-        cmd = described_class.new(
-          git: git, project_config: project_config, project_settings: project_settings,
-          kill_command: kill_command, project_detector: project_detector, output: output, input: input
-        )
-
-        expect { cmd.call(nil, working_dir: tmpdir) }.to raise_error(
-          Workspace::Error, /No project specified/
-        )
-      end
-    end
-
-    context "with corrupt config" do
+    context "launcher window cleanup" do
       before do
-        File.write(config_path, "{{invalid yaml")
+        state["proj1"] = {"unique_id" => "uid1"}
+        state["proj2"] = {"unique_id" => "uid2"}
+        state.save
       end
 
-      it "raises a friendly error" do
-        expect { command.call("myproject.worktree-PROJ-123") }.to raise_error(
-          Workspace::Error, /Corrupt config file/
-        )
+      it "preserves launcher window when other projects still use it" do
+        live_sessions = {"uid1" => "win-100", "uid2" => "win-100"}
+        allow(iterm).to receive(:find_existing_sessions).and_return({"proj1" => "uid1", "proj2" => "uid2"})
+        allow(iterm).to receive(:session_map).and_return(live_sessions)
+        allow(window_manager).to receive(:close_window)
+        allow(tmux).to receive(:session_name_for).with("proj1").and_return("proj1")
+        allow(tmux).to receive(:sessions).and_return(["proj1"])
+        allow(tmux).to receive(:kill_session)
+
+        command.call(["proj1"])
+
+        # Should NOT close the window because proj2 is still in it
+        expect(window_manager).not_to have_received(:close_window)
+      end
+
+      it "closes launcher window when all its projects are killed" do
+        live_sessions = {"uid1" => "win-100", "uid2" => "win-100"}
+        allow(iterm).to receive(:find_existing_sessions).and_return({"proj1" => "uid1", "proj2" => "uid2"})
+        allow(iterm).to receive(:session_map).and_return(live_sessions)
+        allow(window_manager).to receive(:close_window)
+        allow(tmux).to receive(:session_name_for).and_return("proj1", "proj2")
+        allow(tmux).to receive(:sessions).and_return(["proj1", "proj2"])
+        allow(tmux).to receive(:kill_session)
+
+        command.call(["proj1", "proj2"])
+
+        expect(window_manager).to have_received(:close_window).with("win-100")
       end
     end
   end

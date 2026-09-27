@@ -16,7 +16,7 @@ RSpec.describe Workspace::Commands::Prune do
   let(:git) { instance_double(Workspace::Git) }
   let(:project_config) { instance_double(Workspace::ProjectConfig) }
   let(:project_settings) { instance_double(Workspace::ProjectSettings) }
-  let(:kill_command) { instance_double(Workspace::Commands::Kill) }
+  let(:stop_command) { instance_double(Workspace::Commands::Stop) }
 
   subject(:command) do
     described_class.new(
@@ -24,7 +24,7 @@ RSpec.describe Workspace::Commands::Prune do
       project_config: project_config,
       project_settings: project_settings,
       git: git,
-      kill_command: kill_command,
+      stop_command: stop_command,
       output: output,
       input: input
     )
@@ -264,7 +264,7 @@ RSpec.describe Workspace::Commands::Prune do
 
       it "kills the live session, removes worktree, config, settings, and state entry" do
         allow(git).to receive(:worktree_exists?).with(project_root).and_return(true)
-        expect(kill_command).to receive(:call).with(["wt-confirm"])
+        expect(stop_command).to receive(:call).with(["wt-confirm"])
         expect(git).to receive(:remove_worktree).with(project_root, force: true)
         expect(project_config).to receive(:remove).with("wt-confirm")
         expect(project_settings).to receive(:remove).with("wt-confirm")
@@ -295,11 +295,11 @@ RSpec.describe Workspace::Commands::Prune do
         input.rewind
       end
 
-      it "does not call kill_command when project has no active session" do
+      it "does not call stop_command when project has no active session" do
         allow(git).to receive(:worktree_exists?).with(project_root).and_return(false)
         allow(project_config).to receive(:remove).with("wt-nosession")
         allow(project_settings).to receive(:remove).with("wt-nosession")
-        expect(kill_command).not_to receive(:call)
+        expect(stop_command).not_to receive(:call)
 
         result = command.call
         expect(result).to eq(["wt-nosession"])
@@ -405,7 +405,7 @@ RSpec.describe Workspace::Commands::Prune do
         allow(git).to receive(:worktree_exists?).with(project_root).and_return(false)
         allow(project_config).to receive(:remove).with("wt-state-only")
         allow(project_settings).to receive(:remove).with("wt-state-only")
-        expect(kill_command).to receive(:call).with(["wt-state-only"])
+        expect(stop_command).to receive(:call).with(["wt-state-only"])
 
         result = command.call
         expect(result).to include("wt-state-only")

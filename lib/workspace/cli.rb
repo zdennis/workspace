@@ -20,7 +20,7 @@ module Workspace
     # @param launch_command [Workspace::Commands::Launch] pre-built launch command
     # @param kill_command [Workspace::Commands::Kill] pre-built kill command
     # @param start_command [Workspace::Commands::Start] pre-built start command
-    # @param stop_command [Workspace::Commands::Stop] pre-built stop command
+    # @param stop_command [Workspace::Commands::Stop] pre-built stop command (session-only teardown)
     # @param focus_command [Workspace::Commands::Focus] pre-built focus command
     # @param tile_command [Workspace::Commands::Tile] pre-built tile command
     # @param layout_command [Workspace::Commands::Layout] pre-built layout command
@@ -350,7 +350,7 @@ module Workspace
       end
       parser.parse!(args)
 
-      stopped = @kill_command.call(args)
+      stopped = @stop_command.call(args)
 
       stopped.each { |p| @hook_runner.run(p, "post_stop") }
     end
@@ -373,7 +373,7 @@ module Workspace
       end
       parser.parse!(args)
 
-      project = @stop_command.call(args.first, force: force, working_dir: @working_dir)
+      project = @kill_command.call(args.first, force: force, working_dir: @working_dir)
       @hook_runner.run(project, "post_kill") if project
     end
 
