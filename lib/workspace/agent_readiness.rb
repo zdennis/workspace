@@ -108,13 +108,13 @@ module Workspace
 
     private
 
-    # Picks the session's agent pane: the most preferred provider first, then
-    # the lowest pane index.
+    # Picks the session's agent pane, from any of its windows: the most
+    # preferred provider first, then the lowest window and pane index.
     #
     # @return [Hash] :id, :target and :label when an agent is running, or
     #   :reason when none is
     def find_agent_pane(session_name)
-      details = @tmux.pane_details(session_name)
+      details = @tmux.pane_details(session_name, window: nil)
       return {reason: "tmux session '#{session_name}' has no panes (is it running?)"} if details.empty?
 
       begin
@@ -129,8 +129,8 @@ module Workspace
       end
       return {reason: "no coding agent is running in tmux session '#{session_name}' yet"} if agents.empty?
 
-      chosen = agents.min_by { |detail| [@providers.index(detail[:provider]), detail[:index]] }
-      {id: chosen[:id], target: "0.#{chosen[:index]}", label: chosen[:provider].label}
+      chosen = agents.min_by { |detail| [@providers.index(detail[:provider]), detail[:window], detail[:index]] }
+      {id: chosen[:id], target: "#{chosen[:window]}.#{chosen[:index]}", label: chosen[:provider].label}
     end
   end
 end

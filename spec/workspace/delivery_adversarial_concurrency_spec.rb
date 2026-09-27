@@ -85,7 +85,7 @@ RSpec.describe "T3 delivery: concurrency and liveness defects" do
   it "DC4: a prompt that didn't land near the shared deadline is reported as 'still starting up', hiding the paste failure" do
     now = [0.0]
     tmux = instance_double(Workspace::Tmux)
-    allow(tmux).to receive(:pane_details).and_return([{id: "%2", index: 1, pid: 200, command: "claude"}])
+    allow(tmux).to receive(:pane_details).and_return([{id: "%2", window: 0, index: 1, pid: 200, command: "claude"}])
     allow(tmux).to receive(:capture_screen).and_return("> ")
     process_tree = instance_double(Workspace::ProcessTree, snapshot: Workspace::ProcessTree::Snapshot.new([]))
     readiness = Workspace::AgentReadiness.new(tmux: tmux, process_tree: process_tree,

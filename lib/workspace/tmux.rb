@@ -378,20 +378,21 @@ module Workspace
     # so anything that remembers a pane across time must key on the id.
     #
     # @param session_name [String] tmux session name
-    # @param window [String] window index (default "0")
-    # @return [Array<Hash>] :id, :index, :pid, :title, :command, :cwd per pane
+    # @param window [String, nil] window index (default "0"), or nil for
+    #   every window in the session
+    # @return [Array<Hash>] :id, :window, :index, :pid, :title, :command, :cwd per pane
     def pane_details(session_name, window: "0")
-      target = "#{session_name}:#{window}"
-      format = ["pane_id", "pane_index", "pane_pid", "pane_current_command",
+      scope = window.nil? ? ["-s", "-t", session_name] : ["-t", "#{session_name}:#{window}"]
+      format = ["pane_id", "window_index", "pane_index", "pane_pid", "pane_current_command",
         "pane_current_path", "pane_title"].map { |f| "\#{#{f}}" }.join("\t")
-      @logger.debug { "tmux: listing pane details for #{target}" }
-      stdout, _, status = Open3.capture3("tmux", "list-panes", "-t", target, "-F", format)
+      @logger.debug { "tmux: listing pane details for #{scope.last}" }
+      stdout, _, status = Open3.capture3("tmux", "list-panes", *scope, "-F", format)
       return [] unless status.success?
 
       stdout.lines.filter_map do |line|
-        id, index, pid, command, cwd, title = line.chomp.split("\t", 6)
+        id, window_index, index, pid, command, cwd, title = line.chomp.split("\t", 7)
         next if id.nil? || id.empty?
-        {id: id, index: index.to_i, pid: pid.to_i, command: command.to_s,
+        {id: id, window: window_index.to_i, index: index.to_i, pid: pid.to_i, command: command.to_s,
          cwd: cwd.to_s, title: title.to_s}
       end
     end

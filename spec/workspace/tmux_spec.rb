@@ -324,6 +324,28 @@ RSpec.describe Workspace::Tmux do
     end
   end
 
+  describe "#pane_details" do
+    let(:tmux) { described_class.new(config: config) }
+    let(:ok) { instance_double(Process::Status, success?: true) }
+
+    it "lists every window in the session when window is nil" do
+      allow(Open3).to receive(:capture3).and_return(["%7\t2\t1\t700\tclaude\t/src\tClaude Code\n", "", ok])
+
+      details = tmux.pane_details("proj", window: nil)
+
+      expect(Open3).to have_received(:capture3).with("tmux", "list-panes", "-s", "-t", "proj", "-F", anything)
+      expect(details).to eq([{id: "%7", window: 2, index: 1, pid: 700, command: "claude", cwd: "/src", title: "Claude Code"}])
+    end
+
+    it "lists one window by default" do
+      allow(Open3).to receive(:capture3).and_return(["", "", ok])
+
+      tmux.pane_details("proj")
+
+      expect(Open3).to have_received(:capture3).with("tmux", "list-panes", "-t", "proj:0", "-F", anything)
+    end
+  end
+
   describe "#capture_screen" do
     let(:tmux) { described_class.new(config: config) }
 

@@ -1,7 +1,7 @@
 RSpec.describe Workspace::AgentReadiness do
   let(:now) { [0.0] }
   let(:sleeps) { [] }
-  let(:panes) { [{id: "%1", index: 0, pid: 100, command: "zsh"}, {id: "%2", index: 1, pid: 200, command: "claude"}] }
+  let(:panes) { [{id: "%1", window: 0, index: 0, pid: 100, command: "zsh"}, {id: "%2", window: 0, index: 1, pid: 200, command: "claude"}] }
   let(:screens) { ["Welcome to Claude Code\n> "] }
   let(:processes) { [] }
   let(:tmux) { instance_double(Workspace::Tmux) }
@@ -33,6 +33,16 @@ RSpec.describe Workspace::AgentReadiness do
     expect(tmux).to have_received(:capture_screen).with("%2").at_least(:once)
   end
 
+  it "finds an agent running in a window other than the first" do
+    panes.replace([{id: "%1", window: 0, index: 0, pid: 100, command: "zsh"}, {id: "%7", window: 2, index: 1, pid: 700, command: "claude"}])
+
+    result = readiness.wait("proj", deadline: readiness.deadline_in(60))
+
+    expect(tmux).to have_received(:pane_details).with("proj", window: nil).at_least(:once)
+    expect(result).to be_ready
+    expect(result.pane).to eq("2.1")
+  end
+
   it "waits while the screen is still changing" do
     screens.replace(["", "Loading", "Loading.", "Loading..", "> ", "> "])
 
@@ -44,7 +54,7 @@ RSpec.describe Workspace::AgentReadiness do
   end
 
   it "finds an agent started under a shell wrapper" do
-    panes.replace([{id: "%5", index: 2, pid: 300, command: "zsh"}])
+    panes.replace([{id: "%5", window: 0, index: 2, pid: 300, command: "zsh"}])
     processes.replace([{pid: 301, ppid: 300, command: "claude", args: "claude"}])
 
     result = readiness.wait("proj", deadline: readiness.deadline_in(60))
@@ -54,14 +64,14 @@ RSpec.describe Workspace::AgentReadiness do
   end
 
   it "prefers the first provider, then the lowest pane, when several agents run" do
-    panes.replace([{id: "%1", index: 0, pid: 100, command: "codex"}, {id: "%3", index: 2, pid: 300, command: "claude"},
-      {id: "%2", index: 1, pid: 200, command: "claude"}])
+    panes.replace([{id: "%1", window: 0, index: 0, pid: 100, command: "codex"}, {id: "%3", window: 0, index: 2, pid: 300, command: "claude"},
+      {id: "%2", window: 0, index: 1, pid: 200, command: "claude"}])
 
     expect(readiness.wait("proj", deadline: readiness.deadline_in(60)).pane).to eq("0.1")
   end
 
   it "gives up at the deadline when no agent ever starts, saying why" do
-    panes.replace([{id: "%1", index: 0, pid: 100, command: "zsh"}])
+    panes.replace([{id: "%1", window: 0, index: 0, pid: 100, command: "zsh"}])
 
     result = readiness.wait("proj", deadline: readiness.deadline_in(5))
 
@@ -99,15 +109,15 @@ RSpec.describe Workspace::AgentReadiness do
   end
 
   it "reports a process table that can't be read" do
-    panes.replace([{id: "%1", index: 0, pid: 100, command: "zsh"}])
+    panes.replace([{id: "%1", window: 0, index: 0, pid: 100, command: "zsh"}])
     allow(process_tree).to receive(:snapshot).and_raise(Workspace::Error, "could not read the process table")
 
     expect(readiness.wait("proj", deadline: readiness.deadline_in(1)).reason).to eq("could not read the process table")
   end
 
   it "restarts the quiet period when the agent moves to another pane" do
-    first = [{id: "%2", index: 1, pid: 200, command: "claude"}]
-    second = [{id: "%3", index: 2, pid: 300, command: "claude"}]
+    first = [{id: "%2", window: 0, index: 1, pid: 200, command: "claude"}]
+    second = [{id: "%3", window: 0, index: 2, pid: 300, command: "claude"}]
     calls = [0]
     allow(tmux).to receive(:pane_details) { ((calls[0] += 1) <= 3) ? first : second }
 
