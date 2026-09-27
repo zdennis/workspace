@@ -185,10 +185,11 @@ module Workspace
     # has stayed idle past the idle alert threshold, since it last alerted.
     # One wait, or one stretch of unchanged output, alerts once, however many
     # scans it spans. Shell panes never alert. The notifier returns at once.
-    # An alert counts as sent only once the notifier accepts it, so one that
-    # raises is retried on the next scan and doesn't keep later ones from
-    # going out. Anything raised here is logged and swallowed, so alerting can
-    # never stall or end the scan thread.
+    # An alert counts as sent only once the notifier accepts it, so one the
+    # notifier skips (too many runs still going) or that raises is retried on
+    # the next scan, and doesn't keep later ones from going out. Anything
+    # raised here is logged and swallowed, so alerting can never stall or end
+    # the scan thread.
     #
     # @return [Array<Hash>] the environment of each alert sent
     def send_alerts
@@ -196,7 +197,7 @@ module Workspace
       now = @clock.now
       due = @lock.synchronize { @panes.values.filter_map { |pane| due_alert(pane, now) } }
       due.filter_map do |pane, mark, value, alert|
-        @notifier.notify(alert)
+        next unless @notifier.notify(alert)
         @lock.synchronize { pane[mark] = value }
         alert
       rescue => e

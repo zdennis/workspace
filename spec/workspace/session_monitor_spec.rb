@@ -266,7 +266,7 @@ RSpec.describe Workspace::SessionMonitor do
   end
 
   describe "#send_alerts" do
-    let(:notifier) { instance_double(Workspace::Notifier, notify: nil) }
+    let(:notifier) { instance_double(Workspace::Notifier, notify: :started) }
 
     subject(:monitor) do
       described_class.new(tmux: tmux, process_tree: process_tree, session_name: "proj",
@@ -394,11 +394,34 @@ RSpec.describe Workspace::SessionMonitor do
 
     it "retries an alert whose notify raised on the next call" do
       calls = 0
-      allow(notifier).to receive(:notify) { ((calls += 1) == 1) ? raise(ThreadError, "can't create Thread") : nil }
+      allow(notifier).to receive(:notify) { ((calls += 1) == 1) ? raise(ThreadError, "can't create Thread") : :started }
       monitor.record("event" => "notification", "pane_id" => "%2")
 
       expect(monitor.send_alerts).to eq([])
       expect(monitor.send_alerts.map { |a| a["WORKSPACE_ALERT"] }).to eq(["waiting"])
+      expect(monitor.send_alerts).to eq([])
+    end
+
+    it "retries an alert the notifier skipped for having too many runs going, once a run finishes" do
+      agents = (2..6).map { |n| {id: "%#{n}", index: n, pid: n * 100, command: "claude", cwd: "/project", title: "Claude"} }
+      allow(tmux).to receive(:pane_details).with("proj").and_return(agents)
+      monitor.scan
+      agents.each { |a| monitor.record("event" => "notification", "pane_id" => a[:id]) }
+      free_slots = 4
+      allow(notifier).to receive(:notify) do
+        next nil if free_slots.zero?
+        free_slots -= 1
+        :started
+      end
+
+      first = monitor.send_alerts
+      expect(monitor.send_alerts).to eq([])
+      free_slots = 1
+      later = monitor.send_alerts
+
+      expect(first.size).to eq(4)
+      sent = (first + later).map { |a| a["WORKSPACE_ALERT_PANE_ID"] }
+      expect(sent).to match_array(agents.map { |a| a[:id] })
       expect(monitor.send_alerts).to eq([])
     end
 

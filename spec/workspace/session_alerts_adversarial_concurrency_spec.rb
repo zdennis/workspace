@@ -74,7 +74,7 @@ RSpec.describe "session alerts: concurrency and signals (adversarial)" do
         {id: "%3", index: 2, pid: 300, command: "claude", cwd: "/project", title: "Claude"}
       ]
     end
-    let(:notifier) { instance_double(Workspace::Notifier, notify: nil) }
+    let(:notifier) { instance_double(Workspace::Notifier, notify: :started) }
 
     def build_monitor(notifier)
       described_class.new(tmux: tmux, process_tree: process_tree, session_name: "proj",
@@ -117,7 +117,7 @@ RSpec.describe "session alerts: concurrency and signals (adversarial)" do
           raise ThreadError, "can't create Thread: Resource temporarily unavailable"
         end
         calls << alert["WORKSPACE_ALERT_PANE_ID"]
-        nil
+        :started
       end
       monitor = build_monitor(flaky)
       monitor.scan
