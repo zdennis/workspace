@@ -28,12 +28,20 @@ workspace agent [options]
 pipeline:
   panes:
     - role: researcher
+      timeout: 30m
     - role: implementer
     - role: reviewer
+      timeout: 15m
   handoff: file_handoff
 ```
 
-A command from the coordinator is typed into the first stage's pane. When a stage prints `WORKSPACE_DONE: <summary>`, the agent captures that pane's output to a handoff file under `~/.config/workspace/handoffs/`, points the next stage at it, and moves on. The last stage finishing reports the work item complete.
+A command from the coordinator is typed into the first stage's pane, followed by a line telling the stage how to signal it is done: `When you are done, print a single line: WORKSPACE_DONE:<token> <one-line summary>`. Every later stage gets the same line. The token is random and new for each stage, and only a line that starts with `WORKSPACE_DONE:<token>` ends that stage, so a test that prints `WORKSPACE_DONE:`, or an earlier stage's sentinel sitting in the scrollback, does not. The agent matches the token anywhere in the pane's history, so a full scrollback does not hide it.
+
+When the stage prints its sentinel, the agent captures that pane's output to a handoff file under `~/.config/workspace/handoffs/`, points the next stage at it, and moves on. The last stage finishing reports the work item complete.
+
+**Stage timeouts** — `timeout:` on a stage (`90`, `90s`, `30m`, `2h`) is how long that stage gets to print its sentinel. A stage still running at its deadline fails the work item: the agent prints `workspace agent: <REF> failed at pane N: timed out: …` on stderr, reports an `error` to the coordinator, and drops the item from its pipeline state. No further stage starts. A stage without `timeout:` waits as long as it takes. A `timeout:` that is not a positive duration stops the agent at startup with an error naming the stage.
+
+**Restarts** — the token and deadline of each stage in flight are saved in the pipeline state file, so a restarted agent watches for the same token and keeps the same deadline. A stage that printed its sentinel while the agent was down advances as soon as the agent is back. State written by an older agent has no token; for those items the agent accepts any `WORKSPACE_DONE:` line printed after it restarts, as it did before tokens existed, and they have no deadline.
 
 A project with no `pipeline` block still works: commands go to pane 0 and nothing is tracked.
 
