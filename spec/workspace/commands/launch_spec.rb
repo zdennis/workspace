@@ -81,6 +81,12 @@ RSpec.describe Workspace::Commands::Launch do
         expect(output.string).not_to include("Creating")
       end
 
+      it "suppresses progress output when quiet: true" do
+        command.call(["proj1"], quiet: true)
+
+        expect(output.string).to eq("")
+      end
+
       it "starts the session monitor daemon for the project" do
         allow(config).to receive(:agent_running?).with("proj1").and_return(false)
         allow(config).to receive(:agent_log_path).with("proj1").and_return("/tmp/workspace-proj1.log")
