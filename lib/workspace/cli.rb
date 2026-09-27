@@ -330,6 +330,15 @@ module Workspace
 
       raise UsageError, parser.help if args.empty?
 
+      exit_code = launch_projects(args, reattach: reattach, headless: headless, prompt: prompt, prompt_timeout: prompt_timeout)
+      @exit_handler.exit(exit_code) if exit_code && !exit_code.zero?
+    end
+
+    # Launches the given project args (already parsed, no leading flags) and
+    # returns the resulting exit code without exiting -- so callers with
+    # multiple batches to run (e.g. cmd_relaunch) can attempt every batch
+    # before deciding whether to exit.
+    def launch_projects(args, reattach: false, headless: nil, prompt: nil, prompt_timeout: nil)
       projects = args.map do |arg|
         name, root = @project_config.resolve_project_arg(arg)
         if root
@@ -350,7 +359,7 @@ module Workspace
         @project_settings.ensure_exists(p)
         @hook_runner.run(p, "post_launch")
       end
-      @exit_handler.exit(result[:exit_code]) if result && !result[:exit_code].zero?
+      result && result[:exit_code]
     end
 
     def cmd_start(args)
@@ -2074,9 +2083,14 @@ module Workspace
 
       sleep 2
 
-      # Each project comes back the way it was launched: headless ones stay headless.
-      cmd_launch(windowed.dup) if windowed.any?
-      cmd_launch(["--headless", *headless]) if headless.any?
+      # Each project comes back the way it was launched: headless ones stay
+      # headless. Both batches are attempted even if the windowed batch
+      # fails, so a windowed failure never silently drops the headless
+      # relaunch; the combined exit code reflects either failure.
+      windowed_exit = launch_projects(windowed.dup) if windowed.any?
+      headless_exit = launch_projects(headless.dup, headless: true) if headless.any?
+      failed = [windowed_exit, headless_exit].any? { |code| code && !code.zero? }
+      @exit_handler.exit(1) if failed
     end
 
     def cmd_add(args)

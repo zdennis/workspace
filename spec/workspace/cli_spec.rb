@@ -2791,6 +2791,31 @@ RSpec.describe Workspace::CLI do
       expect(launch_command).to have_received(:call).with(["proj2"], reattach: false, prompts: {}, headless: true)
     end
 
+    it "still relaunches headless projects when the windowed batch fails, and exits 1 overall" do
+      state = CLITestHelpers::FakeState.new
+      state["proj1"] = {"unique_id" => "uid1"}
+      state["proj2"] = {"headless" => true}
+
+      calls = []
+      launch_command = Object.new
+      launch_command.define_singleton_method(:call) do |projects, **opts|
+        calls << [projects, opts]
+        opts[:headless] ? {exit_code: 0, prompt_failures: {}} : {exit_code: 1, prompt_failures: {"proj1" => "window never appeared"}}
+      end
+
+      cli, = build_test_cli(state: state, launch_command: launch_command, stop_command: double("stop", call: []))
+      allow(cli).to receive(:sleep)
+
+      expect { cli.run(["relaunch"]) }.to raise_error(FakeSystemExit) { |e|
+        expect(e.status).to eq(1)
+      }
+
+      expect(calls).to eq([
+        [["proj1"], {reattach: false, prompts: {}}],
+        [["proj2"], {reattach: false, prompts: {}, headless: true}]
+      ])
+    end
+
     it "labels headless projects in status" do
       state = CLITestHelpers::FakeState.new
       state["proj"] = {"headless" => true}
