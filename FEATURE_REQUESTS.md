@@ -69,6 +69,17 @@ Ideas:
   command, so a missed submission doesn't silently concatenate with the
   next one.
 
+Related: `Tmux#send_keys`/`#tmux_load_buffer` (`lib/workspace/tmux.rb:49,103`)
+don't guard against an empty `text`. `workspace agent-run command --body ""`
+(sent as a bare-Enter nudge, to work around the above) writes zero bytes to
+`tmux load-buffer`'s stdin, which never creates the named buffer even though
+the load command itself reports success. The following `paste-buffer` and
+the `ensure`'s `delete-buffer` then both fail against a nonexistent buffer,
+logging `no buffer ws_send_<id>` / `unknown buffer: ws_send_<id>` to the
+`workspace agent` daemon's own stderr. Fix: either short-circuit `send_keys`
+for empty text (skip straight to sending Enter), or have callers pass a
+single space instead of `""`.
+
 ## Completed
 
 ### Claude MCP servers config setting
