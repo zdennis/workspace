@@ -156,9 +156,17 @@ module Workspace
 
     # Replays the event log to reconstruct the current state.
     #
+    # @param strict [Boolean] raise on a log that can't be read, instead of
+    #   warning and reading it as empty
     # @return [Hash] project_name => {data}
-    def reconstruct
-      replay(events)
+    # @raise [Workspace::Error] if +strict+ and the log can't be read
+    def reconstruct(strict: false)
+      return replay(events) unless strict
+      begin
+        replay(read_events)
+      rescue SystemCallError, IOError => e
+        raise Error, "could not read the event log #{@config.event_log_file} (#{e.message})"
+      end
     end
 
     # Compacts the log by rewriting it with one event per active project,

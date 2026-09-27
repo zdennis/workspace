@@ -50,11 +50,14 @@ module Workspace
       self
     end
 
-    # Reconstructs state from the event log and writes the state file.
+    # Reconstructs state from the event log and writes the state file. A log
+    # that can't be read leaves the state file as it was, rather than
+    # writing it out empty.
     #
     # @return [void]
+    # @raise [Workspace::Error] if the event log can't be read
     def save
-      @data = @event_log.reconstruct
+      @data = @event_log.reconstruct(strict: true)
       @logger.debug { "state: saving #{@data.keys.size} project(s) to #{@config.state_file}" }
       backup_state_file
       tmp = "#{@config.state_file}.tmp"

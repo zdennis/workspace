@@ -129,6 +129,19 @@ RSpec.describe Workspace::State do
       expect(current.keys).to contain_exactly("proj1", "proj2")
     end
 
+    it "raises and leaves the state file alone when the event log can't be read" do
+      state = new_state
+      state["proj1"] = {"unique_id" => "uid1"}
+      state.save
+      before = File.read(state_file)
+      File.chmod(0o000, event_log_file)
+
+      expect { state.save }.to raise_error(Workspace::Error, /could not read the event log #{Regexp.escape(event_log_file)}/)
+      expect(File.read(state_file)).to eq(before)
+    ensure
+      File.chmod(0o600, event_log_file)
+    end
+
     it "does not create .bak when no prior file exists" do
       state = new_state
       state["proj1"] = {"unique_id" => "uid1"}
