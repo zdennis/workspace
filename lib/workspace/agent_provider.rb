@@ -25,7 +25,13 @@ module Workspace
       # inspecting the tool name, not by narrowing the matcher here. A
       # second PreToolUse matcher group (e.g. "Edit|Write|MultiEdit|NotebookEdit")
       # may be added later without disturbing this one.
-      "PreToolUse" => nil
+      "PreToolUse" => nil,
+      # Notification fires when the agent needs permission or has sat waiting
+      # for input; it is what puts a pane in the `waiting` state.
+      "Notification" => nil,
+      # PostToolUse is the first event after a person approves a permission
+      # prompt, so it is what takes the pane out of `waiting`.
+      "PostToolUse" => nil
     }.freeze
 
     # Subcommands that mark a background helper rather than an interactive

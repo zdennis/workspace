@@ -19,8 +19,15 @@ module Workspace
         "UserPromptSubmit" => "user_prompt",
         "Stop" => "stop",
         "SubagentStop" => "subagent_stop",
-        "PreToolUse" => "subagent_start"
+        "PreToolUse" => "subagent_start",
+        "Notification" => "notification",
+        "PostToolUse" => "tool_use"
       }.freeze
+
+      # Longest notification message forwarded to the daemon. The message is
+      # shown in `sessions --json` and handed to the notify command; a long
+      # one is cut rather than dropped.
+      MAX_MESSAGE_LENGTH = 200
 
       # @param config [Workspace::Config] socket path lookups
       # @param tmux [Workspace::Tmux] resolves the pane's session name
@@ -113,8 +120,16 @@ module Workspace
           "pane_id" => pane_id,
           "session_id" => payload["session_id"],
           "cwd" => payload["cwd"],
-          "agent" => agent_for(payload)
+          "agent" => agent_for(payload),
+          "message" => message_for(payload)
         }.compact
+      end
+
+      def message_for(payload)
+        message = payload["message"]
+        return nil unless payload["hook_event_name"] == "Notification" && message.is_a?(String)
+
+        message[0, MAX_MESSAGE_LENGTH]
       end
 
       def agent_for(payload)

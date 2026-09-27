@@ -1,6 +1,6 @@
 # workspace sessions
 
-Show which panes in a workspace are running a coding agent, whether each is working or idle, and any sub-agents they have started.
+Show which panes in a workspace are running a coding agent, whether each is working, idle, or waiting on a person, and any sub-agents they have started.
 
 ## Usage
 
@@ -26,7 +26,19 @@ The daemon holds the session state; this command only asks for it, over the agen
 
 `--json` output starts with `"schema_version": 1`, matching [`workspace lock status --json`](README.lock.md) and [`workspace dev status --json`](README.dev.md). If no agent daemon is listening, `--json` writes `{"schema_version":1,"error":"..."}` to stdout and exits 1, instead of the plain-text error the table view prints to stderr.
 
-Each pane shows its index, kind, title, state (`working`/`idle`), how long it's been idle, and a LOCK column. Sub-agents started within a pane (Claude Code's `Task` tool invocations) are listed indented underneath their parent pane.
+Each pane shows its index, kind, title, state, how long it's been idle, and a LOCK column.
+
+**STATE column** — one of:
+
+| State | Meaning |
+|-------|---------|
+| `working` | The pane's output changed in the last 30 seconds |
+| `idle` | The pane's output has not changed for 30 seconds or more |
+| `waiting` | The agent asked for permission or for input (Claude Code's `Notification` hook) and nothing has happened since. The agent's message is shown on the line below the pane |
+
+A pane leaves `waiting` on the agent's next hook event: a submitted prompt, a finished tool (`PostToolUse`, which follows an approved permission prompt), a sub-agent starting or stopping, or the turn or session ending. It also leaves `waiting` when the pane no longer runs an agent. `waiting` needs the `Notification` and `PostToolUse` hooks, which `workspace init` installs; a project whose hooks predate them shows only `working`/`idle` until `workspace init` is re-run (`workspace doctor` reports the hooks as not installed until then).
+
+**`--json` waiting fields** — each pane carries `waiting_since` (ISO 8601 UTC, or `null`), `waiting_seconds` (integer, or `null`) and `waiting_message` (the agent's message, cut to 200 characters, or `null`). All three are `null` unless `state` is `"waiting"`. Sub-agents started within a pane (Claude Code's `Task` tool invocations) are listed indented underneath their parent pane.
 
 **LOCK column** — shows this pane's relationship to every lock in the project's namespace ([`workspace lock`](README.lock.md)), not just `edit`: a pane holding or queued for more than one lock (e.g. `edit` plus a `devenv` process lock) shows all of them, space-joined, `edit` first and any others alphabetical after it — `edit ✓ devenv #2`. A pane with no lock relationship shows blank, including one with no agent at all. A dead holder or waiter (its process no longer alive) never shows `✓`, and is skipped when numbering each lock's queue, so `#1` always refers to the next live waiter. The namespace is resolved from the *rendered workspace's* project root (its tmuxinator config), not the command's own working directory, so `workspace sessions other-project` always shows `other-project`'s lock state, never whatever project happens to be in front of it. If that project's root can't be resolved, the column is hidden rather than guessed. The lock store is loaded once per render (never once per pane), so the column costs one extra file read, not a `git`/`ps` call per row.
 

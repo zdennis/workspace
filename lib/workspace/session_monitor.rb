@@ -3,7 +3,8 @@ require "digest"
 
 module Workspace
   # Tracks which panes in a workspace are running a coding agent, whether each
-  # one is working or idle, and what sub-agents they have started.
+  # one is working, idle, or waiting on a person, and what sub-agents they have
+  # started.
   #
   # Two sources feed it, and neither is sufficient alone:
   #
@@ -168,6 +169,8 @@ module Workspace
       pane[:kind] = agent ? agent[:provider].key : "shell"
       pane[:label] = agent ? agent[:provider].label : detail[:command]
       pane[:agent_pid] = agent && agent[:pid]
+      # Nobody is left to answer a prompt once the agent has exited.
+      clear_waiting(pane) unless agent
 
       refresh_activity(pane, now)
     end
@@ -200,7 +203,18 @@ module Workspace
       pane[:last_activity_at] ||= now
     end
 
+    # Any event but a notification means the agent is moving again: a prompt
+    # was submitted, a tool ran after a permission prompt, or the turn ended.
     def apply_event(pane, event)
+      if event["event"] == "notification"
+        # A repeat notification during one wait keeps the original start, so
+        # the wait is timed (and alerted) once.
+        pane[:waiting_since] ||= @clock.now
+        pane[:waiting_message] = event["message"]
+      else
+        clear_waiting(pane)
+      end
+
       case event["event"]
       when "subagent_start"
         pane[:agents] << {name: agent_name(event), state: "running", started_at: @clock.now}
@@ -218,12 +232,23 @@ module Workspace
       end
     end
 
+    def clear_waiting(pane)
+      pane[:waiting_since] = nil
+      pane[:waiting_message] = nil
+    end
+
     def agent_name(event)
       event.dig("agent", "name") || "agent"
     end
 
+    def state_of(pane, idle_for)
+      return "waiting" if pane[:waiting_since]
+      (idle_for < @idle_after) ? "working" : "idle"
+    end
+
     def present(pane, now)
       idle_for = now - (pane[:last_activity_at] || now)
+      waiting_since = pane[:waiting_since]
       {
         "pane_id" => pane[:pane_id],
         "index" => pane[:index],
@@ -231,8 +256,11 @@ module Workspace
         "label" => pane[:label],
         "title" => pane[:title],
         "cwd" => pane[:cwd],
-        "state" => (idle_for < @idle_after) ? "working" : "idle",
+        "state" => state_of(pane, idle_for),
         "idle_seconds" => idle_for.round,
+        "waiting_since" => waiting_since&.utc&.iso8601,
+        "waiting_seconds" => waiting_since && (now - waiting_since).round,
+        "waiting_message" => pane[:waiting_message],
         "session_id" => pane[:session_id],
         "agents" => pane[:agents].map { |agent|
           {"name" => agent[:name], "state" => agent[:state],

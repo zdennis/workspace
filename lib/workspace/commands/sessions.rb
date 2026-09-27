@@ -4,7 +4,8 @@ require "json"
 module Workspace
   module Commands
     # Shows which panes in a workspace are running a coding agent, whether each
-    # is working or idle, and what sub-agents they have started.
+    # is working, idle, or waiting on a person, and what sub-agents they have
+    # started.
     #
     # The daemon holds the state; this command only asks for it. That keeps one
     # code path behind both the table and `--json`, so what a future UI reads is
@@ -127,7 +128,14 @@ module Workspace
           duration(pane["idle_seconds"]),
           pane["lock"]
         )
+        render_waiting(pane["waiting_message"]) if pane["state"] == "waiting" && pane["waiting_message"]
         Array(pane["agents"]).each { |agent| render_agent(agent) }
+      end
+
+      # Indented like a sub-agent row, so the reason reads as belonging to the
+      # pane above it.
+      def render_waiting(message)
+        @output.puts format("%-16s%s", "", "└─ #{truncate(message.gsub(/[[:space:][:cntrl:]]+/, " "), 60)}")
       end
 
       # Loads every lock in the project's namespace once per render — never

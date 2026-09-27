@@ -172,6 +172,64 @@ RSpec.describe Workspace::SessionMonitor do
     end
   end
 
+  describe "waiting" do
+    before { monitor.scan }
+
+    def notify(message = "Claude needs your permission to use Bash")
+      monitor.record("event" => "notification", "pane_id" => "%2", "message" => message)
+    end
+
+    it "reports a pane as waiting after a notification, with the agent's message" do
+      notify
+      allow(clock).to receive(:now).and_return(now + 5)
+
+      expect(pane("%2")).to include("state" => "waiting", "waiting_since" => now.iso8601,
+        "waiting_seconds" => 5, "waiting_message" => "Claude needs your permission to use Bash")
+    end
+
+    it "reports waiting even while the pane's output keeps changing" do
+      notify
+      allow(tmux).to receive(:capture_pane).and_return("spinner frame")
+
+      monitor.scan
+
+      expect(pane("%2")["state"]).to eq("waiting")
+    end
+
+    it "keeps the first start time when a notification repeats during one wait" do
+      notify
+      allow(clock).to receive(:now).and_return(now + 60)
+      notify("Claude is waiting for your input")
+
+      expect(pane("%2")).to include("waiting_since" => now.iso8601,
+        "waiting_message" => "Claude is waiting for your input")
+    end
+
+    %w[user_prompt tool_use subagent_start subagent_stop stop session_start session_end].each do |event|
+      it "clears waiting on a #{event} event" do
+        notify
+
+        monitor.record("event" => event, "pane_id" => "%2")
+
+        expect(pane("%2")).to include("waiting_since" => nil, "waiting_message" => nil)
+        expect(pane("%2")["state"]).not_to eq("waiting")
+      end
+    end
+
+    it "clears waiting once the pane no longer runs an agent" do
+      notify
+      allow(snapshot).to receive(:find_descendant).and_return(nil)
+
+      monitor.scan
+
+      expect(pane("%2")["state"]).to eq("working")
+    end
+
+    it "leaves the waiting fields nil for a pane that never waited" do
+      expect(pane("%1")).to include("waiting_since" => nil, "waiting_seconds" => nil, "waiting_message" => nil)
+    end
+  end
+
   describe "#reap_locks" do
     let(:lock_reaper) { instance_double(Workspace::LockReaper) }
 
