@@ -332,6 +332,9 @@ module Workspace
     def cmd_start(args)
       prompt = nil
       prompt_timeout = nil
+      base = nil
+      yes = false
+      json = false
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: workspace start [options] <jira-key|jira-url|pr-url|branch>"
         opts.separator ""
@@ -353,17 +356,36 @@ module Workspace
           "(e.g. \"90s\", or a plain number of seconds); default #{AgentReadiness::DEFAULT_TIMEOUT}s") do |v|
           prompt_timeout = parse_duration_option("--prompt-timeout", v, positive: true)
         end
+        opts.on("--base REF", "Branch/ref to create a new branch from, instead of prompting") do |v|
+          base = v
+        end
+        opts.on("--yes", "Accept every default instead of prompting (e.g. the default base branch)") do
+          yes = true
+        end
+        opts.on("--json", "Emit the documented JSON schema instead of plain text (see docs/README.start.md);",
+          "never prompts (see --base/--yes)") do
+          json = true
+        end
         opts.separator ""
         opts.separator "The worktree is created in .worktrees/ under the project root."
+        opts.separator "Never blocks on stdin when stdin isn't a TTY: pass --base/--yes, or it exits with"
+        opts.separator "a usage error naming the flag it needed."
       end
       parser.parse!(args)
 
-      raise UsageError, parser.help if args.empty?
+      if args.empty?
+        raise UsageError, parser.help unless json
+        return emit_json_usage_error(Workspace::Commands::Start::JSON_SCHEMA_VERSION, parser.help.lines.first.strip)
+      end
 
-      result = @start_command.call(args.first, prompt: prompt, prompt_timeout: prompt_timeout)
+      result = @start_command.call(args.first, prompt: prompt, prompt_timeout: prompt_timeout,
+        base: base, yes: yes, json: json)
       @exit_handler.exit(result[:exit_code]) if result && !result[:exit_code].zero?
       # post_start hook — project name not easily available here,
       # so hooks for start should use post_launch (which fires from Launch)
+    rescue OptionParser::ParseError, UsageError => e
+      raise unless json
+      emit_json_usage_error(Workspace::Commands::Start::JSON_SCHEMA_VERSION, e.message.lines.first.strip)
     end
 
     def cmd_stop(args)

@@ -790,7 +790,40 @@ RSpec.describe Workspace::CLI do
 
       cli.run(["start", "--prompt", "go", "--prompt-timeout", "2m", "PROJ-1"])
 
-      expect(start_command).to have_received(:call).with("PROJ-1", prompt: "go", prompt_timeout: 120.0)
+      expect(start_command).to have_received(:call).with("PROJ-1", prompt: "go", prompt_timeout: 120.0,
+        base: nil, yes: false, json: false)
+    end
+
+    it "passes --base and --yes through to start" do
+      start_command = double("start", call: {exit_code: 0, prompt_failures: {}})
+      cli, = build_test_cli(start_command: start_command)
+
+      cli.run(["start", "--base", "develop", "--yes", "PROJ-1"])
+
+      expect(start_command).to have_received(:call).with("PROJ-1", prompt: nil, prompt_timeout: nil,
+        base: "develop", yes: true, json: false)
+    end
+
+    it "passes json: true to start with --json" do
+      start_command = double("start", call: {exit_code: 0})
+      cli, = build_test_cli(start_command: start_command)
+
+      cli.run(["start", "--json", "PROJ-1"])
+
+      expect(start_command).to have_received(:call).with("PROJ-1", prompt: nil, prompt_timeout: nil,
+        base: nil, yes: false, json: true)
+    end
+
+    it "emits a JSON usage error instead of raising when --json start is missing an argument" do
+      output = StringIO.new
+      cli, = build_test_cli(output: output)
+
+      expect { cli.run(["start", "--json"]) }.to raise_error(FakeSystemExit) { |e|
+        expect(e.status).to eq(1)
+      }
+      payload = JSON.parse(output.string)
+      expect(payload["schema_version"]).to eq(1)
+      expect(payload).to have_key("error")
     end
 
     it "rejects a non-positive --prompt-timeout" do

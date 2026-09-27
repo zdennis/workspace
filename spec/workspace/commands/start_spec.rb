@@ -348,5 +348,135 @@ RSpec.describe Workspace::Commands::Start do
         expect(worktree_data).to eq({"hooks" => {}, "layouts" => {}})
       end
     end
+
+    context "non-interactive base branch resolution" do
+      before do
+        allow(git).to receive(:root).and_return(tmpdir)
+        allow(git).to receive(:parse_start_input).with("feature-x").and_return({type: :branch, value: "feature-x"})
+        allow(git).to receive(:sanitize_for_filesystem).with("feature-x").and_return("feature-x")
+        allow(git).to receive(:worktree_exists?).and_return(false)
+        allow(git).to receive(:find_worktree_by_branch).and_return(nil)
+        allow(git).to receive(:branch_exists?).with("feature-x").and_return(false)
+        allow(git).to receive(:find_matching_branches).with("feature-x").and_return([])
+        allow(git).to receive(:create_worktree)
+        allow(project_config).to receive(:create_worktree).and_return("myproject.worktree-feature-x")
+        allow(launch_command).to receive(:call)
+      end
+
+      it "uses --base without prompting, even when stdin is a TTY" do
+        allow(input).to receive(:tty?).and_return(true)
+
+        command.call("feature-x", base: "develop")
+
+        expect(git).to have_received(:create_worktree).with(anything, "feature-x", base: "develop")
+      end
+
+      it "uses the default branch with --yes and no --base" do
+        allow(git).to receive(:default_branch).and_return("main")
+
+        command.call("feature-x", yes: true)
+
+        expect(git).to have_received(:create_worktree).with(anything, "feature-x", base: "main")
+      end
+
+      it "raises a usage error instead of blocking on a non-TTY stdin with no --base/--yes" do
+        expect { command.call("feature-x") }.to raise_error(Workspace::UsageError, /--base.*--yes/m)
+      end
+
+      it "still prompts interactively when stdin is a TTY and neither flag is given" do
+        allow(input).to receive(:tty?).and_return(true)
+        allow(git).to receive(:default_branch).and_return("main")
+        allow(git).to receive(:current_branch).and_return("main")
+        allow(git).to receive(:prompt_base_branch).and_return("main")
+
+        command.call("feature-x")
+
+        expect(git).to have_received(:prompt_base_branch)
+        expect(git).to have_received(:create_worktree).with(anything, "feature-x", base: "main")
+      end
+    end
+
+    context "non-interactive branch selection" do
+      before do
+        allow(git).to receive(:root).and_return(tmpdir)
+        allow(git).to receive(:parse_start_input).with("feature-x").and_return({type: :branch, value: "feature-x"})
+        allow(git).to receive(:sanitize_for_filesystem).with("feature-x").and_return("feature-x")
+        allow(git).to receive(:worktree_exists?).and_return(false)
+        allow(git).to receive(:find_worktree_by_branch).and_return(nil)
+        allow(git).to receive(:branch_exists?).with("feature-x").and_return(false)
+        allow(git).to receive(:find_matching_branches).with("feature-x").and_return(["feature-x-a", "feature-x-b"])
+        allow(git).to receive(:create_worktree)
+        allow(project_config).to receive(:create_worktree).and_return("myproject.worktree-feature-x")
+        allow(launch_command).to receive(:call)
+      end
+
+      it "raises a usage error on ambiguous matches with no --base/--yes on a non-TTY stdin" do
+        expect { command.call("feature-x") }.to raise_error(Workspace::UsageError, /Multiple remote branches match/)
+        expect(git).not_to have_received(:create_worktree)
+      end
+
+      it "falls through to creating a new branch with --yes" do
+        allow(git).to receive(:default_branch).and_return("main")
+
+        command.call("feature-x", yes: true)
+
+        expect(git).to have_received(:create_worktree).with(anything, "feature-x", base: "main")
+      end
+
+      it "falls through to creating a new branch with --base" do
+        command.call("feature-x", base: "develop")
+
+        expect(git).to have_received(:create_worktree).with(anything, "feature-x", base: "develop")
+      end
+    end
+
+    context "with json: true" do
+      before do
+        allow(git).to receive(:root).and_return(tmpdir)
+        allow(git).to receive(:parse_start_input).with("PROJ-123").and_return({type: :jira_key, value: "PROJ-123"})
+        allow(git).to receive(:sanitize_for_filesystem).with("PROJ-123").and_return("PROJ-123")
+        allow(git).to receive(:worktree_exists?).and_return(false)
+        allow(git).to receive(:find_worktree_by_branch).and_return(nil)
+        allow(git).to receive(:branch_exists?).with("PROJ-123").and_return(true)
+        allow(git).to receive(:create_worktree)
+        allow(project_config).to receive(:create_worktree).and_return("myproject.worktree-PROJ-123")
+      end
+
+      it "emits the documented schema and nothing else on stdout" do
+        allow(launch_command).to receive(:call).and_return({exit_code: 0, prompt_failures: {}})
+
+        result = command.call("PROJ-123", json: true)
+
+        expect(result).to eq({exit_code: 0})
+        payload = JSON.parse(output.string)
+        expect(payload).to include(
+          "schema_version" => 1,
+          "project" => Workspace::WorkspaceLineage.name_from_path(tmpdir),
+          "workspace" => "myproject.worktree-PROJ-123",
+          "path" => File.join(tmpdir, ".worktrees", "PROJ-123"),
+          "branch" => "PROJ-123",
+          "created" => true
+        )
+        expect(launch_command).to have_received(:call).with(["myproject.worktree-PROJ-123"], prompts: {}, quiet: true)
+      end
+
+      it "emits a JSON error and exit_code 1 on failure, instead of raising" do
+        allow(git).to receive(:root).and_return(nil)
+
+        result = command.call("PROJ-123", json: true)
+
+        expect(result).to eq({exit_code: 1})
+        expect(JSON.parse(output.string)).to eq({"schema_version" => 1, "error" => "Not inside a git repository."})
+      end
+
+      it "never prompts, even when stdin is a TTY" do
+        allow(input).to receive(:tty?).and_return(true)
+        allow(launch_command).to receive(:call).and_return({exit_code: 0, prompt_failures: {}})
+
+        command.call("PROJ-123", json: true)
+
+        expect(output.string.lines.size).to eq(1)
+      end
+    end
   end
 end
