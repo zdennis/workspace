@@ -164,6 +164,8 @@ module Workspace
             next
           end
 
+          @pipeline_config.literal_sentinel_warnings(project).each { |warning| @error_output.puts "Warning: #{warning}" }
+
           pid = Process.spawn($PROGRAM_NAME, "agent", "--name", project,
             out: log_path, err: log_path, in: File::NULL)
           Process.detach(pid)

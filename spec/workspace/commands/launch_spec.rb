@@ -24,7 +24,7 @@ RSpec.describe Workspace::Commands::Launch do
   let(:tmux) { double("tmux") }
   let(:project_config) { double("project_config") }
   let(:window_layout) { double("window_layout") }
-  let(:pipeline_config) { double("pipeline_config", stages_for: nil) }
+  let(:pipeline_config) { double("pipeline_config", stages_for: nil, literal_sentinel_warnings: []) }
 
   subject(:command) do
     described_class.new(
@@ -108,6 +108,20 @@ RSpec.describe Workspace::Commands::Launch do
         command.call(["proj1"])
 
         expect(error_output.string).to include("Could not start session monitor for proj1")
+      end
+
+      it "warns but still starts the daemon when a stage names the bare completion sentinel" do
+        allow(config).to receive(:agent_running?).with("proj1").and_return(false)
+        allow(config).to receive(:agent_log_path).with("proj1").and_return("/tmp/workspace-proj1.log")
+        allow(pipeline_config).to receive(:literal_sentinel_warnings).with("proj1")
+          .and_return(["proj1's pipeline stage implementer (pane 0) names the bare WORKSPACE_DONE: marker"])
+        allow(Process).to receive(:spawn).and_return(999)
+        allow(Process).to receive(:detach)
+
+        command.call(["proj1"])
+
+        expect(Process).to have_received(:spawn)
+        expect(error_output.string).to include("names the bare WORKSPACE_DONE: marker")
       end
 
       it "warns and skips the daemon when the project's pipeline config is invalid" do

@@ -70,25 +70,46 @@ RSpec.describe Workspace::PipelineConfig do
     expect(pipeline_config.pipeline?("myapp")).to be(false)
   end
 
-  it "refuses a stage that names the bare completion sentinel in its own text" do
+  it "warns, without raising, about a stage that names the bare completion sentinel in its own text" do
     write(<<~YAML)
       pipeline:
         panes:
           - role: "implementer: print WORKSPACE_DONE: when finished"
     YAML
 
-    expect { pipeline_config.stages_for("myapp") }
-      .to raise_error(Workspace::Error, /pipeline\.panes\[0\]\.role in #{Regexp.escape(path)}.*bare WORKSPACE_DONE: marker/)
+    expect { pipeline_config.stages_for("myapp") }.not_to raise_error
+    warnings = pipeline_config.literal_sentinel_warnings("myapp")
+    expect(warnings.size).to eq(1)
+    expect(warnings.first).to match(/pipeline\.panes\[0\]\.role in #{Regexp.escape(path)}.*bare WORKSPACE_DONE: marker/)
   end
 
-  it "accepts a stage whose text mentions the sentinel with a token glued to it" do
+  it "does not warn about a stage whose text mentions the sentinel with a token glued to it" do
     write(<<~YAML)
       pipeline:
         panes:
           - role: "researcher (echoes WORKSPACE_DONE:abc123 itself)"
     YAML
 
-    expect { pipeline_config.stages_for("myapp") }.not_to raise_error
+    expect(pipeline_config.literal_sentinel_warnings("myapp")).to eq([])
+  end
+
+  describe "#literal_sentinel_warnings" do
+    it "is empty when the project has no pipeline config file" do
+      expect(pipeline_config.literal_sentinel_warnings("myapp")).to eq([])
+    end
+
+    it "names the project and stage in the warning" do
+      write(<<~YAML)
+        pipeline:
+          panes:
+            - role: researcher
+            - role: "implementer: print WORKSPACE_DONE: when finished"
+      YAML
+
+      warnings = pipeline_config.literal_sentinel_warnings("myapp")
+      expect(warnings.size).to eq(1)
+      expect(warnings.first).to include("myapp's pipeline stage implementer: print WORKSPACE_DONE: when finished")
+    end
   end
 
   describe "#declared_but_empty?" do

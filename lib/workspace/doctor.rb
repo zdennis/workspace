@@ -183,6 +183,7 @@ module Workspace
       elsif @pipeline_config.declared_but_empty?(project)
         @output.puts "  ⚠  pipeline config for #{project} has no panes; it won't start a pipeline"
       end
+      @pipeline_config.literal_sentinel_warnings(project).each { |warning| @output.puts "  ⚠  #{warning}" }
       0
     rescue Workspace::Error => e
       @output.puts "  ✗  pipeline config invalid for #{project}"

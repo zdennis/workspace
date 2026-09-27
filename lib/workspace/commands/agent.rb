@@ -102,6 +102,7 @@ module Workspace
         # Read once up front so a bad stage timeout stops the agent here, with
         # the config error, rather than later as a dropped dispatch.
         @pipeline_config.stages_for(name)
+        @pipeline_config.literal_sentinel_warnings(name).each { |warning| @error_output.puts "Warning: #{warning}" }
 
         return false unless claim_socket(name, socket_path, force: force)
 
