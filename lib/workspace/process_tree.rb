@@ -43,17 +43,22 @@ module Workspace
     # Spawns `ps` and waits at most @timeout for it, so a wedged process
     # table read can't stall the session monitor's scan thread for good. On
     # timeout the child is killed and reaped before raising.
+    #
+    # The ensure also covers the scan thread being killed mid-read
+    # (SessionMonitor#stop): the child is killed and reaped rather than left
+    # running, and the readers are stopped before their pipes are closed so
+    # none dies with "stream closed in another thread" on stderr.
     def run_ps
       out_r, out_w = IO.pipe
       err_r, err_w = IO.pipe
       pid = Process.spawn(PS_ENV, *@command, in: File::NULL, out: out_w, err: err_w)
+      waiter = Process.detach(pid)
       out_w.close
       err_w.close
-      readers = [out_r, err_r].map { |io| Thread.new { io.read } }
-      waiter = Process.detach(pid)
+      readers = [out_r, err_r].map do |io|
+        Thread.new { io.read }.tap { |t| t.report_on_exception = false }
+      end
       unless waiter.join(@timeout)
-        kill_and_reap(pid, waiter)
-        readers.each(&:kill)
         @logger.debug { "process_tree: ps timed out after #{@timeout}s" }
         raise Workspace::Error, "could not read the process table (ps timed out after #{@timeout}s)"
       end
@@ -61,6 +66,8 @@ module Workspace
     rescue SystemCallError => e
       raise Workspace::Error, "could not read the process table (#{e.class}: #{e.message})"
     ensure
+      kill_and_reap(pid, waiter) if waiter&.alive?
+      readers&.each { |t| t.kill.join }
       [out_r, out_w, err_r, err_w].each { |io| io.close if io && !io.closed? }
     end
 

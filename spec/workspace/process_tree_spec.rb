@@ -60,6 +60,36 @@ RSpec.describe Workspace::ProcessTree do
       end
     end
 
+    it "kills and reaps ps, quietly, when the scan thread is killed mid-read" do
+      spawned = nil
+      allow(Process).to receive(:spawn).and_wrap_original { |original, *args, **opts| spawned = original.call(*args, **opts) }
+      hung = described_class.new(timeout: 10, command: ["/bin/sleep", "30"])
+      captured = StringIO.new
+      original_stderr = $stderr
+      $stderr = captured
+
+      scan = Thread.new { hung.snapshot }
+      sleep 0.1 until spawned
+      sleep 0.2
+      scan.kill
+      scan.join
+      sleep 0.2
+      $stderr = original_stderr
+
+      expect(captured.string).not_to include("stream closed")
+      expect { Process.kill(0, spawned) }.to raise_error(Errno::ESRCH)
+    ensure
+      $stderr = original_stderr
+      begin
+        if spawned && Process.wait(spawned, Process::WNOHANG).nil?
+          Process.kill(:KILL, spawned)
+          Process.wait(spawned)
+        end
+      rescue Errno::ECHILD
+        nil
+      end
+    end
+
     it "raises a Workspace::Error when ps cannot be spawned" do
       missing = described_class.new(command: ["/nonexistent/ps"])
 
