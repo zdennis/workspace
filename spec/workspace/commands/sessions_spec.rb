@@ -146,6 +146,53 @@ RSpec.describe Workspace::Commands::Sessions do
       expect(panes.find { |p| p["pane_id"] == "%2" }["lock"]).to eq("")
     end
 
+    it "stamps structured lock fields for the holder's pane" do
+      acquire(pid: 100, pane: "%1")
+
+      with_daemon { command.call(name: "proj", json: true) }
+
+      pane = JSON.parse(output.string)["panes"].find { |p| p["pane_id"] == "%1" }
+      expect(pane["lock_state"]).to eq("held")
+      expect(pane["lock_position"]).to be_nil
+      expect(pane["lock_name"]).to eq("edit")
+    end
+
+    it "stamps structured lock fields for a queued waiter's pane" do
+      acquire(pid: 100, pane: "%1")
+      acquire(pid: 200, pane: "%2", wait: true)
+
+      with_daemon { command.call(name: "proj", json: true) }
+
+      pane = JSON.parse(output.string)["panes"].find { |p| p["pane_id"] == "%2" }
+      expect(pane["lock_state"]).to eq("queued")
+      expect(pane["lock_position"]).to eq(1)
+      expect(pane["lock_name"]).to eq("edit")
+    end
+
+    it "stamps nil structured lock fields for a pane holding no lock" do
+      acquire(pid: 100, pane: "%1")
+
+      with_daemon { command.call(name: "proj", json: true) }
+
+      pane = JSON.parse(output.string)["panes"].find { |p| p["pane_id"] == "%2" }
+      expect(pane["lock_state"]).to be_nil
+      expect(pane["lock_position"]).to be_nil
+      expect(pane["lock_name"]).to be_nil
+    end
+
+    it "leaves the structured lock fields absent when the column is hidden" do
+      acquire(pid: 100, pane: "%1")
+      allow(project_config).to receive(:project_root_for).with("proj").and_return(nil)
+
+      with_daemon { command.call(name: "proj", json: true) }
+
+      pane = JSON.parse(output.string)["panes"].find { |p| p["pane_id"] == "%1" }
+      expect(pane).not_to have_key("lock_state")
+      expect(pane).not_to have_key("lock_position")
+      expect(pane).not_to have_key("lock_name")
+      expect(pane).not_to have_key("lock")
+    end
+
     it "skips a stale holder and numbers the queue over live waiters only" do
       acquire(pid: 100, pane: "%1")
       acquire(pid: 200, pane: "%2", wait: true)

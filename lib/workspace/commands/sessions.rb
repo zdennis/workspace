@@ -99,14 +99,17 @@ module Workspace
       end
 
       # Loads the `edit` lock's holder and queue once per render — never per
-      # pane — and stamps each pane's `"lock"` field: "edit ✓" for the
-      # holder's pane, "edit #N" for a queued waiter's pane, or "" (blank) for
-      # every other pane, including one with no agent at all. A holder or
-      # waiter flagged `"stale"` (its pid is no longer alive) is treated as
-      # absent: it never renders "✓", and it is skipped when numbering the
-      # queue, so `#1` always refers to the next live waiter.
+      # pane — and stamps each pane with both the human `"lock"` string
+      # ("edit ✓", "edit #2", or "" for no lock) and structured fields for
+      # `--json` consumers: `"lock_state"` ("held", "queued", or nil),
+      # `"lock_position"` (1-based live-queue position, or nil), and
+      # `"lock_name"` (the lock's name, or nil). A holder or waiter flagged
+      # `"stale"` (its pid is no longer alive) is treated as absent: it never
+      # renders "✓" or "held", and it is skipped when numbering the queue, so
+      # `#1`/position 1 always refers to the next live waiter.
       #
-      # Hides the whole column (leaves `"lock"` unset) when the rendered
+      # Hides the whole column — leaving `"lock"`, `"lock_state"`,
+      # `"lock_position"`, and `"lock_name"` all unset — when the rendered
       # workspace's project root can't be resolved, rather than guessing at
       # some other project's lock state via the command's own working
       # directory.
@@ -117,7 +120,13 @@ module Workspace
         return unless root
 
         positions = lock_positions(root)
-        panes.each { |pane| pane["lock"] = positions[pane["pane_id"]] || "" }
+        panes.each do |pane|
+          info = positions[pane["pane_id"]]
+          pane["lock"] = info ? info[:label] : ""
+          pane["lock_state"] = info ? info[:state] : nil
+          pane["lock_position"] = info ? info[:position] : nil
+          pane["lock_name"] = info ? info[:name] : nil
+        end
       end
 
       def project_root
@@ -131,10 +140,13 @@ module Workspace
         entry = store.status(LOCK_NAME)[LOCK_NAME] || {}
         positions = {}
         holder = entry["holder"]
-        positions[holder["pane"]] = "#{LOCK_NAME} ✓" if holder && holder["pane"] && !holder["stale"]
+        if holder && holder["pane"] && !holder["stale"]
+          positions[holder["pane"]] = {label: "#{LOCK_NAME} ✓", state: "held", position: nil, name: LOCK_NAME}
+        end
         live_waiters = (entry["queue"] || []).reject { |waiter| waiter["stale"] }
         live_waiters.each_with_index do |waiter, i|
-          positions[waiter["pane"]] ||= "#{LOCK_NAME} ##{i + 1}" if waiter["pane"]
+          next unless waiter["pane"]
+          positions[waiter["pane"]] ||= {label: "#{LOCK_NAME} ##{i + 1}", state: "queued", position: i + 1, name: LOCK_NAME}
         end
         positions
       rescue Workspace::Error
