@@ -2222,6 +2222,28 @@ RSpec.describe Workspace::CLI do
 
         expect(error_output.string).to include("no_active_pipeline")
       end
+
+      it "sends the running stage's token as expected_token" do
+        cli, = build_test_cli(config: config)
+        write_state("myapp", "WC-42" => {"work_item_ref" => "WC-42", "sentinel_token" => "a1b2c3d4"})
+
+        received = with_fake_agent("myapp", {"ok" => true, "queued_for_pane" => 1}) do
+          cli.run(["pipeline", "advance", "myapp", "--work-item", "WC-42"])
+        end
+
+        expect(received.first["expected_token"]).to eq("a1b2c3d4")
+      end
+
+      it "exits 1 with a clear message when the stage moved on before the advance landed" do
+        cli, _, error_output = build_test_cli(config: config)
+
+        with_fake_agent("myapp", {"ok" => false, "error" => "stale_token"}) do
+          expect { cli.run(["pipeline", "advance", "myapp", "--work-item", "WC-42"]) }
+            .to raise_error(FakeSystemExit)
+        end
+
+        expect(error_output.string).to include("The stage moved on before the advance landed; run 'workspace pipeline advance' again")
+      end
     end
 
     describe "reset" do

@@ -1375,8 +1375,11 @@ module Workspace
       sentinel = "#{SentinelPoller.marker(token)} #{body || "manual advance"}"
       reply = send_to_agent(project,
         "type" => "inject", "workspace" => project, "work_item_ref" => work_item,
-        "interrupt" => true, "body" => "echo #{Shellwords.escape(sentinel)}")
-      raise Error, "The agent for #{project} refused the advance: #{reply["error"]}" unless reply["ok"]
+        "interrupt" => true, "expected_token" => token, "body" => "echo #{Shellwords.escape(sentinel)}")
+      unless reply["ok"]
+        raise Error, "The stage moved on before the advance landed; run 'workspace pipeline advance' again" if reply["error"] == "stale_token"
+        raise Error, "The agent for #{project} refused the advance: #{reply["error"]}"
+      end
       @output.puts "Nudged #{project}/#{work_item} to advance"
     end
 
