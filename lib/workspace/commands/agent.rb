@@ -111,6 +111,7 @@ module Workspace
       # @return [Boolean] false when the agent refused to start, true after a clean shutdown
       def call(name:, wc_socket: nil, force: false)
         @current_name = name
+        @tmux_session = @tmux.session_name_for(name)
         socket_path = @config.agent_socket_path(name)
 
         # Read once up front so a bad stage timeout stops the agent here, with
@@ -237,7 +238,7 @@ module Workspace
 
           # Checked against the session we are actually serving, not the name in
           # the file, so the liveness check and the re-armed watch cannot differ.
-          if pane_alive?(@current_name, pane)
+          if pane_alive?(@tmux_session, pane)
             @state_lock.synchronize do
               watch_for_completion(ref, pane, entry[:sentinel_token], @pipeline_state.deadline(ref))
             end
@@ -355,8 +356,8 @@ module Workspace
       #
       # @return [Workspace::Tmux::Delivery]
       def deliver_urgent_steer(entry, body)
-        @tmux.send_key(entry[:workspace_name], pane_target(entry[:pane_index]), "C-c")
-        @tmux.deliver(entry[:workspace_name], pane_target(entry[:pane_index]), body)
+        @tmux.send_key(@tmux_session, pane_target(entry[:pane_index]), "C-c")
+        @tmux.deliver(@tmux_session, pane_target(entry[:pane_index]), body)
       end
 
       # The stage after the one this entry is sitting on, or nil when it is last.
@@ -400,7 +401,7 @@ module Workspace
             # A re-dispatch replaces the item's stage, so the old stage's watch
             # must go now: left current, its sentinel would advance the new one.
             @state_lock.synchronize { @pollers.delete(ref)&.stop }
-            delivery = @tmux.deliver(@current_name, pane_target(stage[:pane_index]),
+            delivery = @tmux.deliver(@tmux_session, pane_target(stage[:pane_index]),
               "#{text}\n\n#{SentinelPoller.instruction(token)}")
             @state_lock.synchronize do
               unless delivery.landed?
@@ -422,10 +423,10 @@ module Workspace
             end
           else
             target = claude_pane_target
-            @logger.debug { "delivering #{ref} to #{@current_name}:#{target}" }
-            delivery = @tmux.deliver(@current_name, target, text)
-            @logger.debug { "command for #{ref} to #{@current_name}:#{target}: #{delivery.status}" }
-            [untracked_entry(ref), "Command delivered to #{@current_name}:#{target}", nil, nil, nil, nil, delivery]
+            @logger.debug { "delivering #{ref} to #{@tmux_session}:#{target}" }
+            delivery = @tmux.deliver(@tmux_session, target, text)
+            @logger.debug { "command for #{ref} to #{@tmux_session}:#{target}: #{delivery.status}" }
+            [untracked_entry(ref), "Command delivered to #{@tmux_session}:#{target}", nil, nil, nil, nil, delivery]
           end
         end
 
@@ -474,7 +475,7 @@ module Workspace
       # Detects by pane title so that layout changes don't break routing.
       # Falls back to pane 1 if detection fails.
       def claude_pane_target
-        TmuxPane.new("Claude Code", tmux: @tmux).target(@current_name)
+        TmuxPane.new("Claude Code", tmux: @tmux).target(@tmux_session)
       rescue Workspace::Error => e
         @logger.debug { "agent: Claude pane not found (#{e.message}); falling back to pane 1" }
         pane_target(1)
@@ -510,7 +511,7 @@ module Workspace
       # unknown, as for a stage recovered after a restart.
       def watch_for_completion(work_item_ref, pane, token, deadline, timeout = nil)
         @pollers.delete(work_item_ref)&.stop
-        poller = @sentinel_poller_factory.call(session_name: @current_name, pane: pane,
+        poller = @sentinel_poller_factory.call(session_name: @tmux_session, pane: pane,
           token: token, deadline: deadline)
         @pollers[work_item_ref] = poller
         on_error = ->(message) { fail_pipeline(work_item_ref, message, watched_by: poller) }
@@ -592,8 +593,9 @@ module Workspace
         end
         return nil unless entry
 
+        session = @tmux_session
         from_pane = entry[:pane_index]
-        captured = @tmux.capture_pane(entry[:workspace_name], from_pane, all: true) || ""
+        captured = @tmux.capture_pane(session, from_pane, all: true) || ""
         handoff_path = write_handoff(entry[:workspace_name], work_item_ref, captured)
 
         steer_failures = []
@@ -603,7 +605,7 @@ module Workspace
           # The old stage's poller is still keyed in @pollers here; it is left
           # alone until the caller's arm_watch replaces it for the new stage,
           # and its own thread exits on its own once its token no longer matches.
-          delivery = @tmux.deliver(entry[:workspace_name], pane_target(next_stage[:pane_index]),
+          delivery = @tmux.deliver(session, pane_target(next_stage[:pane_index]),
             handoff_instructions(next_stage[:role], handoff_path, token))
           # Raised before the state moves, so the finished stage's poller is
           # still the one watching and the caller fails the item: the next
@@ -613,7 +615,7 @@ module Workspace
               "could not hand off to the #{next_stage[:role]} stage (pane #{next_stage[:pane_index]}): #{delivery.message}"
           end
           @error_output.puts "workspace agent: #{work_item_ref}: #{delivery.message}" unless delivery.ok?
-          steer_failures = deliver_queued_steers(entry[:workspace_name], work_item_ref, next_stage[:pane_index], steers)
+          steer_failures = deliver_queued_steers(session, work_item_ref, next_stage[:pane_index], steers)
           next_watch = [next_stage[:pane_index], token, deadline, next_stage[:timeout]]
         end
 
@@ -642,9 +644,9 @@ module Workspace
       # coordinator: an error when it never arrived, a warning when it may have.
       #
       # @return [Array<Hash>] report payloads, one per steer not confirmed
-      def deliver_queued_steers(name, work_item_ref, pane, steers)
+      def deliver_queued_steers(session, work_item_ref, pane, steers)
         steers.filter_map do |steer|
-          delivery = @tmux.deliver(name, pane_target(pane), steer)
+          delivery = @tmux.deliver(session, pane_target(pane), steer)
           next if delivery.ok?
           @error_output.puts "workspace agent: queued steer for #{work_item_ref} to pane #{pane}: #{delivery.message}"
           if delivery.landed?
@@ -793,7 +795,7 @@ module Workspace
         SessionMonitor.new(
           tmux: @tmux,
           process_tree: ProcessTree.new(logger: @logger, timeout: @ps_timeout),
-          session_name: name,
+          session_name: @tmux.session_name_for(name),
           logger: @logger,
           error_output: @error_output,
           lock_reaper: @lock_reaper,

@@ -230,6 +230,127 @@ RSpec.describe Workspace::Commands::Agent do
     end
   end
 
+  describe "a worktree workspace whose tmux session differs from its config name" do
+    before do
+      allow(tmux).to receive(:session_name_for).with("myapp").and_return("workspace-wt-myapp")
+    end
+
+    def send_command(overrides = {})
+      message = {
+        "type" => "command",
+        "workspace" => "myapp",
+        "work_item_ref" => "WC-42",
+        "dispatch_id" => "d-7a1",
+        "body" => "/build add OAuth support"
+      }.merge(overrides)
+      UNIXSocket.open(agent_socket_path) { |s| s.puts(message.to_json) }
+    end
+
+    before { coordinator.start }
+
+    it "delivers a plain command to the tmux session, not the config name" do
+      run_agent do
+        send_command
+        wait_until { tmux.sent_keys.any? }
+
+        expect(tmux.sent_keys.last).to include(session: "workspace-wt-myapp")
+      end
+    end
+
+    it "delivers the first pipeline stage to the tmux session" do
+      File.write(project_config_path, <<~YAML)
+        pipeline:
+          panes:
+            - role: researcher
+            - role: implementer
+          handoff: file_handoff
+      YAML
+
+      run_agent do
+        send_command
+        wait_until { tmux.sent_keys.any? }
+
+        expect(tmux.sent_keys.last).to include(session: "workspace-wt-myapp", pane: "0.0")
+      end
+    end
+
+    it "arms the sentinel poller against the tmux session" do
+      File.write(project_config_path, <<~YAML)
+        pipeline:
+          panes:
+            - role: researcher
+            - role: implementer
+          handoff: file_handoff
+      YAML
+
+      run_agent do
+        send_command
+        wait_until { pollers.any? }
+
+        expect(pollers.last.session_name).to eq("workspace-wt-myapp")
+      end
+    end
+
+    it "checks pane liveness against the tmux session when recovering in-flight work" do
+      pipeline_state.start(work_item_ref: "WC-1", workspace_name: "myapp",
+        dispatch_id: "d-1", sentinel_token: "tok-old", deadline: nil)
+      expect(tmux).to receive(:panes).with("workspace-wt-myapp").and_return([0, 1]).at_least(:once)
+
+      run_agent { |thread| thread }
+    end
+
+    it "interrupts an urgent steer against the tmux session, not the config name" do
+      File.write(project_config_path, <<~YAML)
+        pipeline:
+          panes:
+            - role: researcher
+            - role: implementer
+          handoff: file_handoff
+      YAML
+
+      run_agent do
+        send_command
+        wait_until { pollers.any? }
+
+        reply = UNIXSocket.open(agent_socket_path) do |s|
+          s.puts({
+            "type" => "inject",
+            "workspace" => "myapp",
+            "work_item_ref" => "WC-42",
+            "dispatch_id" => "d-7a1",
+            "body" => "use Postgres not SQLite",
+            "interrupt" => true
+          }.to_json)
+          JSON.parse(s.gets)
+        end
+
+        expect(reply).to eq("ok" => true, "queued_for_pane" => 0)
+        expect(tmux.sent_key_names.last).to include(session: "workspace-wt-myapp", pane: "0.0", key: "C-c")
+        expect(tmux.sent_keys.last).to include(session: "workspace-wt-myapp", pane: "0.0", text: "use Postgres not SQLite")
+      end
+    end
+
+    it "builds the session monitor against the tmux session, keeping the workspace name for alerts" do
+      alert_config = instance_double(Workspace::AlertConfig)
+      allow(alert_config).to receive(:for_workspace).with("myapp").and_return({})
+      agent_for_worktree = described_class.new(
+        config: config,
+        tmux: tmux,
+        work_coordinator_client: client,
+        pipeline_config: pipeline_config,
+        pipeline_state: pipeline_state,
+        alert_config: alert_config,
+        output: output,
+        error_output: error_output
+      )
+
+      monitor = agent_for_worktree.send(:build_session_monitor, "myapp")
+
+      expect(monitor.instance_variable_get(:@session_name)).to eq("workspace-wt-myapp")
+      expect(alert_config).to have_received(:for_workspace).with("myapp")
+    end
+  end
+
   describe "receiving a command from the coordinator" do
     def send_command(overrides = {})
       message = {

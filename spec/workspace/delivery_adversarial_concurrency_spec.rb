@@ -42,6 +42,7 @@ RSpec.describe "T3 delivery: concurrency and liveness defects" do
       retry_backoff: 0, output: StringIO.new, error_output: error_output
     )
     agent.instance_variable_set(:@current_name, "myapp")
+    agent.instance_variable_set(:@tmux_session, "myapp")
     allow(agent).to receive(:report)
     agent
   end
@@ -86,6 +87,7 @@ RSpec.describe "T3 delivery: concurrency and liveness defects" do
       ok
     end
     tmux.define_singleton_method(:capture_pane) { |*, **| "stage one output" }
+    tmux.define_singleton_method(:session_name_for) { |name| name }
     pollers = []
     stages = [{pane_index: 1, role: "impl", timeout: nil}, {pane_index: 2, role: "review", timeout: nil}]
     agent = build_agent(tmux: tmux, stages: stages, pollers: pollers)
@@ -168,6 +170,7 @@ RSpec.describe "T3 delivery: concurrency and liveness defects" do
       Workspace::Tmux::Delivery.new(status: status, message: "fake")
     end
     tmux.define_singleton_method(:capture_pane) { |*, **| "stage one output" }
+    tmux.define_singleton_method(:session_name_for) { |name| name }
     pollers = []
     stages = [{pane_index: 1, role: "impl", timeout: nil}, {pane_index: 2, role: "review", timeout: nil}]
     agent = build_agent(tmux: tmux, stages: stages, pollers: pollers)
