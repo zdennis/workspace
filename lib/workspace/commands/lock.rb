@@ -434,7 +434,7 @@ module Workspace
         holder = removed[:holder]
         unless json
           @error_output.puts "#{name} lock is already being cleared by pid #{removed[:clearing]["pid"]}, which is stopping process " \
-            "group #{holder["pgid"] || holder["pid"]} (pid #{holder["pid"]}); left it to that clear. " \
+            "group #{holder["pgid"] || holder["pid"]} (pid #{holder["pid"]}); nothing to do here. " \
             "Check the result with: workspace lock status #{name}"
         end
         {cleared: false, json: {"name" => name, "result" => "in_progress", "clearer_pid" => removed[:clearing]["pid"], "holder" => json_holder(holder)}}

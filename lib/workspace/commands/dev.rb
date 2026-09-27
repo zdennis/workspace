@@ -347,7 +347,7 @@ module Workspace
         clearer = @holder_stopper.clearer(@pid_provider.call)
         if (other = store.mark_clearing(LOCK_NAME, holder, clearer))
           @error_output.puts "#{LOCK_NAME} lock is already being cleared by pid #{other["pid"]}, which is stopping process group " \
-            "#{holder["pgid"] || holder["pid"]} (pid #{holder["pid"]}); left it to that process. " \
+            "#{holder["pgid"] || holder["pid"]} (pid #{holder["pid"]}); nothing to do here. " \
             "Check the result with: workspace dev status"
           return :in_progress
         end
