@@ -1598,7 +1598,9 @@ module Workspace
         opts.separator "workspace's agent daemon. Installed as a hook by 'workspace init';"
         opts.separator "not normally run by hand."
         opts.separator ""
-        opts.separator "Always exits 0, so a missing daemon never fails an agent's turn."
+        opts.separator "Exits 2 when the caller's edit lock check fails (a PreToolUse for an"
+        opts.separator "editing tool while another agent holds the edit lock); a missing daemon"
+        opts.separator "otherwise never fails an agent's turn."
         opts.separator ""
         opts.separator "Options:"
         opts.on("--workspace NAME", "Send to NAME instead of the pane's session") do |value|
@@ -1607,7 +1609,8 @@ module Workspace
       end
       parser.parse!(args)
 
-      @session_event_command.call(workspace: workspace)
+      result = @session_event_command.call(workspace: workspace)
+      @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
     end
 
     def cmd_doctor(args)
