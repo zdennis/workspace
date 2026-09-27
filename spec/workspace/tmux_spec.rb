@@ -207,6 +207,20 @@ RSpec.describe Workspace::Tmux do
       expect(tmux.send_keys("my-session", "0.1", "hello")).to be false
     end
 
+    it "reports :not_landed for whitespace-only text instead of a false match" do
+      screens("$ ")
+      allow(tmux).to receive(:system) do |*args|
+        enters << args.last if args[1] == "send-keys"
+        true
+      end
+
+      result = tmux.deliver("my-session", "0.1", "   \n  ")
+
+      expect(result.status).to eq(:not_landed)
+      expect(result).not_to be_landed
+      expect(enters).to be_empty
+    end
+
     it "skips Enter when enter: false and reports :pasted" do
       screens("$ ", "$ hello")
 

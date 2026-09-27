@@ -254,6 +254,7 @@ module Workspace
     # text and screens first, since the pane wraps and indents long input.
     def shows_new_text?(before, after, text)
       tail = text.gsub(/\s+/, "").chars.last(TAIL_LENGTH).join
+      return false if tail.empty?
       squashed = ->(screen) { screen.gsub(/\s+/, "") }
       squashed.call(after).scan(tail).size > squashed.call(before).scan(tail).size ||
         after.scan(PASTE_PLACEHOLDER).size > before.scan(PASTE_PLACEHOLDER).size
