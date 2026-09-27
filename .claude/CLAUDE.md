@@ -33,6 +33,7 @@ A macOS CLI (Ruby) for managing tmuxinator-based development workspaces in iTerm
 - `lib/workspace/lock_config.rb` — Reads a project's `locks.idle_grace` (falls back to 5m with a warning)
 - `lib/workspace/lock_idle_tracker.rb` — Marks an agent's lock idle/active from `session-event` hooks, for idle takeover
 - `lib/workspace/agent_provider.rb` — Registry of coding-agent CLIs workspace can monitor
+- `lib/workspace/agent_readiness.rb` — Waits for a coding agent's pane to be quiet and (if the provider declares one) match its ready pattern before `launch --prompt`/`start --prompt` send text
 - `lib/workspace/hook_installer.rb` — Merges workspace's hooks into an agent's own settings file
 - `lib/workspace/file_backup.rb` — Copies a file aside before workspace edits it
 - `lib/workspace/dev_runner.rb` — The `dev __run` wrapper: holds the `devenv` lock while the dev command runs on the pane's TTY, forwarding stop signals once to its process group
