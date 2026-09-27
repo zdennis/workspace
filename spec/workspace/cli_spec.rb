@@ -1667,6 +1667,23 @@ RSpec.describe Workspace::CLI do
         expect(dev_command.calls).to eq([{action: :up, wait: false, takeover: false, ready: true, max_wait: 5.0}])
       end
 
+      it "accepts durations like '9m' for up --max-wait" do
+        cli, _, _ = build_test_cli(dev_command: dev_command)
+
+        cli.run(["dev", "up", "--max-wait", "9m"])
+
+        expect(dev_command.calls).to eq([{action: :up, wait: false, takeover: false, ready: true, max_wait: 540.0}])
+      end
+
+      it "raises a usage error naming --max-wait for an unparsable up --max-wait" do
+        cli, _, error_output = build_test_cli(dev_command: dev_command)
+
+        expect { cli.run(["dev", "up", "--max-wait", "nonsense"]) }
+          .to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+        expect(error_output.string).to include("--max-wait")
+        expect(dev_command.calls).to be_empty
+      end
+
       it "exits with up's exit code" do
         dev_command.result = {exit_code: 6}
         cli, _, _ = build_test_cli(dev_command: dev_command)

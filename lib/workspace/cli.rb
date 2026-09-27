@@ -857,8 +857,8 @@ module Workspace
         opts.banner = "Usage: workspace lock acquire <name> [options]"
         opts.on("--task TEXT", "Free-text description shown to other waiters") { |v| task = v }
         opts.on("--wait", "Enqueue and poll instead of refusing when busy") { wait = true }
-        opts.on("--poll DURATION", "Time between polls while waiting (e.g. \"5s\", or a plain number of seconds)") { |v| poll = parse_lock_duration("--poll", v) }
-        opts.on("--max-wait DURATION", "Give up after DURATION (e.g. \"9m\", or a plain number of seconds); exits 75; implies --wait") { |v| max_wait = parse_lock_duration("--max-wait", v) }
+        opts.on("--poll DURATION", "Time between polls while waiting (e.g. \"5s\", or a plain number of seconds)") { |v| poll = parse_duration_option("--poll", v) }
+        opts.on("--max-wait DURATION", "Give up after DURATION (e.g. \"9m\", or a plain number of seconds); exits 75; implies --wait") { |v| max_wait = parse_duration_option("--max-wait", v) }
       end
       parser.parse!(args)
 
@@ -869,14 +869,14 @@ module Workspace
       @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
     end
 
-    # Parses a `--poll`/`--max-wait` value as a duration (e.g. "9m", "5s", or
+    # Parses a duration option such as `--poll` or `--max-wait` (e.g. "9m", "5s", or
     # a plain number of seconds), raising a usage error instead of a
     # backtrace on unparsable input.
     #
     # @param flag [String] option name, for the error message
     # @param value [String] raw option value
     # @return [Numeric] seconds
-    def parse_lock_duration(flag, value)
+    def parse_duration_option(flag, value)
       Workspace::Duration.parse(value)
     rescue ArgumentError => e
       raise UsageError, "#{flag}: #{e.message}"
@@ -983,7 +983,8 @@ module Workspace
           --wait            Queue behind another worktree's dev env
           --takeover        Stop another worktree's dev env, then start this one
           --no-ready        Don't wait for the dev.ready check
-          --max-wait DUR    Give up after DUR seconds (exit 75); implies --wait
+          --max-wait DUR    Give up after DUR, e.g. "9m" (a plain number is seconds;
+                            exit 75; implies --wait)
 
         Options (down):
           --force           Also kill a process group left behind by a dead wrapper
@@ -1007,7 +1008,7 @@ module Workspace
 
         Examples:
           workspace dev up
-          workspace dev up --wait --max-wait 600
+          workspace dev up --wait --max-wait 10m
           workspace dev up --takeover
           workspace dev status
           workspace dev down
@@ -1024,7 +1025,7 @@ module Workspace
         opts.on("--wait", "Queue behind another worktree's dev env") { wait = true }
         opts.on("--takeover", "Stop another worktree's dev env, then start this one") { takeover = true }
         opts.on("--[no-]ready", "Wait for the dev.ready check (default: on)") { |v| ready = v }
-        opts.on("--max-wait DURATION", Float, "Give up after DURATION seconds (exit 75); implies --wait") { |v| max_wait = v }
+        opts.on("--max-wait DURATION", "Give up after DURATION (e.g. \"9m\", or a plain number of seconds); exits 75; implies --wait") { |v| max_wait = parse_duration_option("--max-wait", v) }
       end
       parser.parse!(args)
       raise UsageError, parser.help if args.any?
