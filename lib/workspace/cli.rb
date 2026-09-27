@@ -770,8 +770,11 @@ module Workspace
           status  [<name>]           Show holders and queues
           clear   [<name>|--all]     Force-remove a lock's holder and queue
                                      (devenv: also stops the dev env's process group).
-                                     Ordinary waiters are still removed; a queued
-                                     `dev up --takeover` is kept, not removed.
+                                     Ordinary waiters are removed once the lock is
+                                     actually cleared, but stay queued if a kept
+                                     devenv holder can't be stopped; a queued
+                                     `dev up --takeover` is kept either way, not
+                                     removed.
           instructions [<name>]      Print the prompt block that tells a coding
                                      agent how to use the lock (default: edit)
 
@@ -811,8 +814,9 @@ module Workspace
         held/cleared, except that `release` exits 3 when it reports an idle
         takeover, and `clear` exits 1 when it keeps the devenv lock because
         the dev environment's process group could not be stopped (owned by
-        another user, or still running after SIGKILL). `acquire` has its own
-        exit codes above.
+        another user, or still running after SIGKILL), or because it is
+        already being cleared by another `lock clear` (check the result with
+        `workspace lock status <name>`). `acquire` has its own exit codes above.
 
         Enforcement: once hooks are installed (see `workspace init`/`doctor`),
         Edit/Write/MultiEdit/NotebookEdit are denied (exit 2) for any agent
