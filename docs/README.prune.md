@@ -13,7 +13,7 @@ workspace prune [options]
 | Option | Description |
 |--------|-------------|
 | `--dry-run` | Show what would be removed without making any changes |
-| `-f, --force` | Skip confirmation and remove immediately |
+| `-f, --force` | Skip confirmation, and remove candidates even with unsaved work |
 
 ## Details
 
@@ -33,6 +33,12 @@ On confirmation, for each eligible project:
 
 Requires the `gh` CLI to be installed and authenticated. If `gh` is unavailable, worktree projects are skipped with a warning. Directory-gone projects are always eligible regardless of `gh` availability.
 
+### Unsaved-work check
+
+Same check as `workspace kill`: a candidate with uncommitted changes to tracked files (untracked files don't count) or unpushed commits is **skipped**, not removed — one line is printed per skipped project naming the counts and branch. The rest of the run keeps going, and `prune` still exits 0. `--force` removes those anyway, in addition to skipping the confirmation prompt.
+
+If git can't answer the check for a candidate, it's skipped the same way (reported as such) rather than guessed about.
+
 ## Examples
 
 ```sh
@@ -42,6 +48,6 @@ workspace prune --dry-run
 # Prune with confirmation prompt
 workspace prune
 
-# Prune without prompting (useful in automation)
+# Prune without prompting, and remove candidates with unsaved work too
 workspace prune --force
 ```
