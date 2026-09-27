@@ -1,0 +1,84 @@
+require "spec_helper"
+require "tmpdir"
+require "open3"
+require "rbconfig"
+
+# Adversarial specs for T3 (reliable delivery to agents). Each example fails
+# for the defect named in its description; none needs tmux, iTerm2, or a
+# real clock.
+RSpec.describe "T3 delivery: concurrency and liveness defects" do
+  let(:tmpdir) { Dir.mktmpdir("ws-dc") }
+  let(:error_output) { StringIO.new }
+
+  after { FileUtils.remove_entry(tmpdir) }
+
+  def delivery(status, message = "fake #{status}")
+    Workspace::Tmux::Delivery.new(status: status, message: message)
+  end
+
+  def build_agent(tmux:, stages:, pollers: [])
+    pipeline_config = instance_double(Workspace::PipelineConfig)
+    allow(pipeline_config).to receive(:stages_for).and_return(stages)
+    config = instance_double(Workspace::Config, handoff_dir: File.join(tmpdir, "handoffs"))
+    count = 0
+    poller_class = Class.new do
+      attr_reader :on_complete
+
+      def start(on_error: nil, on_timeout: nil, &block)
+        @on_complete = block
+        self
+      end
+
+      def stop = nil
+    end
+    agent = Workspace::Commands::Agent.new(
+      config: config, tmux: tmux, work_coordinator_client: double("wc"),
+      pipeline_config: pipeline_config,
+      pipeline_state: Workspace::PipelineState.new(pipeline_config: pipeline_config),
+      signal_trapper: double("signals"),
+      sentinel_poller_factory: ->(**) { poller_class.new.tap { |p| pollers << p } },
+      token_generator: -> { "tok-#{count += 1}" },
+      clock: -> { Time.utc(2026, 9, 27) },
+      retry_backoff: 0, output: StringIO.new, error_output: error_output
+    )
+    agent.instance_variable_set(:@current_name, "myapp")
+    allow(agent).to receive(:report)
+    agent
+  end
+
+  it "DC2: a pane whose output keeps moving reports a paste that never appeared as submitted" do
+    now = [0.0]
+    tmux = Workspace::Tmux.new(config: nil, clock: -> { now[0] }, sleeper: ->(s) { now[0] += s })
+    frame = 0
+    # A streaming agent (or one redrawing after deliver_urgent_steer's C-c):
+    # every read differs, and "fix the bug" is never on screen.
+    allow(tmux).to receive(:capture_screen) { "working #{frame += 1}" }
+    allow(tmux).to receive(:tmux_load_buffer).and_return(true)
+    allow(tmux).to receive(:system).and_return(true)
+
+    result = tmux.deliver("myapp", "0.1", "fix the bug")
+
+    expect(result.status).not_to eq(:submitted),
+      "reported #{result.status} although the text never showed up on any screen read"
+  end
+
+  it "DC3: two separate processes use the same tmux paste buffer name, so concurrent sends can swap text" do
+    script = <<~RUBY
+      require "workspace"
+      tmux = Workspace::Tmux.new(config: nil)
+      tmux.define_singleton_method(:capture_screen) { |_| nil }
+      tmux.define_singleton_method(:system) { |*| true }
+      tmux.define_singleton_method(:tmux_load_buffer) { |buf, _| puts(buf) || false }
+      tmux.deliver("myapp", "0.1", "hi")
+    RUBY
+    lib = File.expand_path("../../lib", __dir__)
+    names = 2.times.map do
+      out, status = Open3.capture2(RbConfig.ruby, "-I", lib, "-e", script)
+      expect(status).to be_success
+      out.strip
+    end
+
+    expect(names.first).to start_with("ws_send_")
+    expect(names.uniq.size).to eq(2), "both processes loaded tmux buffer #{names.first.inspect}"
+  end
+end

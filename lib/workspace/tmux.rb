@@ -1,4 +1,5 @@
 require "open3"
+require "securerandom"
 
 module Workspace
   # Manages tmux session operations for the workspace CLI.
@@ -50,24 +51,24 @@ module Workspace
     #
     # * +:submitted+ — the text appeared in the pane and Enter changed the screen
     # * +:pasted+ — the text appeared in the pane (no Enter was asked for)
-    # * +:unverified+ — tmux accepted every command, but the pane couldn't be
-    #   read back to check
+    # * +:unverified+ — tmux accepted every command, but the text was never
+    #   seen on screen: the pane couldn't be read back, or it kept changing
+    #   without showing the text. It may or may not have arrived.
     # * +:unsubmitted+ — the text appeared, but Enter left the screen unchanged,
     #   even after a second try
     # * +:not_landed+ — tmux accepted the paste, but the pane never changed
     # * +:failed+ — a tmux command failed; nothing may have reached the pane
     Delivery = Struct.new(:status, :message, keyword_init: true) do
-      # @return [Boolean] whether the text reached the pane and, when Enter was
-      #   asked for, was submitted (or tmux reported success and there was no
-      #   way to check)
+      # @return [Boolean] whether the text was seen in the pane and, when
+      #   Enter was asked for, was submitted
       def ok?
-        [:submitted, :pasted, :unverified].include?(status)
+        [:submitted, :pasted].include?(status)
       end
 
-      # @return [Boolean] whether the text reached the pane, submitted or not.
-      #   Sending it again would type it twice.
+      # @return [Boolean] whether the text reached the pane, or may have.
+      #   Sending it again could type it twice.
       def landed?
-        ok? || status == :unsubmitted
+        ok? || [:unsubmitted, :unverified].include?(status)
       end
     end
 
@@ -79,6 +80,11 @@ module Workspace
     SETTLE_TIMEOUT = 1.0
     # Longest wait for one Enter to change the screen.
     SUBMIT_TIMEOUT = 2.0
+    # How many of the text's last non-blank characters must show on screen
+    # to count as the text having arrived.
+    TAIL_LENGTH = 16
+    # What Claude Code shows in place of a large paste.
+    PASTE_PLACEHOLDER = /\[Pasted text #\d+/
 
     # Sends text to a pane and reports whether it landed.
     #
@@ -106,8 +112,11 @@ module Workspace
     # pressed once more; it is never pressed a second time after the screen
     # has changed, so a paste can't be submitted twice.
     #
-    # A pane whose output is already moving can look as though the text
-    # landed when it didn't; the check can only prove a quiet pane.
+    # The paste counts as arrived only once the screen shows the end of the
+    # text (or a paste placeholder) more often than it did before. A pane
+    # that changes without ever showing it, like an agent still streaming
+    # output, gets Enter anyway but reports +:unverified+, since the text may
+    # be there out of sight.
     #
     # @param session_name [String] tmux session name
     # @param pane [String] pane target (e.g. "0.1")
@@ -121,7 +130,9 @@ module Workspace
       return Delivery.new(status: :pasted, message: "nothing to send") if text.empty?
 
       before = capture_screen(target)
-      buf = "ws_send_#{object_id}_#{Thread.current.object_id}"
+      # tmux buffers are shared by every client of the server, so the name
+      # must not repeat across processes or threads.
+      buf = "ws_send_#{Process.pid}_#{SecureRandom.hex(8)}"
       begin
         return failed("tmux could not load the text into a paste buffer") unless tmux_load_buffer(buf, text)
         return failed("tmux could not paste into #{target}") unless system("tmux", "paste-buffer", "-p", "-b", buf, "-t", target)
@@ -138,14 +149,33 @@ module Workspace
         return Delivery.new(status: :unverified, message: "pasted, but #{target} could not be read back to check")
       end
 
-      pasted = wait_for_change(target, before, LAND_TIMEOUT)
+      pasted, seen = wait_for_text(target, before, text)
       unless pasted
         return Delivery.new(status: :not_landed,
           message: "pasted, but nothing changed in #{target} within #{LAND_TIMEOUT}s")
       end
+      unless seen
+        unseen = "#{target} kept changing but never showed the text"
+        return Delivery.new(status: :unverified, message: "pasted, but #{unseen}; it may not have arrived") unless enter
+        result = submit(target, settle(target, pasted))
+        return result if result.status == :failed
+        return Delivery.new(status: :unverified, message: "pasted and pressed Enter, but #{unseen}; it may not have arrived")
+      end
       return Delivery.new(status: :pasted, message: "pasted into #{target}") unless enter
 
       submit(target, settle(target, pasted))
+    end
+
+    # Whether a pane's screen shows the end of +text+, or a paste placeholder.
+    # Tells whether a paste reported as not landed turned up later.
+    #
+    # @param session_name [String] tmux session name
+    # @param pane [String] pane target (e.g. "0.1")
+    # @param text [String] text that was pasted
+    # @return [Boolean]
+    def shows_text?(session_name, pane, text)
+      screen = capture_screen("#{session_name}:#{pane}")
+      !screen.nil? && shows_new_text?("", screen, text)
     end
 
     # Sends a single key name to a tmux pane (non-literal mode).
@@ -199,6 +229,34 @@ module Workspace
         return nil if @clock.call >= deadline
         @sleeper.call(DELIVERY_POLL)
       end
+    end
+
+    # Polls the pane after a paste until the screen shows the text.
+    #
+    # @return [Array(String, Boolean)] the latest changed screen (nil if it
+    #   never changed) and whether the text was seen on it
+    def wait_for_text(target, before, text)
+      deadline = @clock.call + LAND_TIMEOUT
+      changed = nil
+      loop do
+        current = capture_screen(target)
+        if current && current != before
+          return [current, true] if shows_new_text?(before, current, text)
+          changed = current
+        end
+        return [changed, false] if @clock.call >= deadline
+        @sleeper.call(DELIVERY_POLL)
+      end
+    end
+
+    # Whether +after+ shows the text's last few characters, or a paste
+    # placeholder, more often than +before+ did. Blanks are dropped from the
+    # text and screens first, since the pane wraps and indents long input.
+    def shows_new_text?(before, after, text)
+      tail = text.gsub(/\s+/, "").chars.last(TAIL_LENGTH).join
+      squashed = ->(screen) { screen.gsub(/\s+/, "") }
+      squashed.call(after).scan(tail).size > squashed.call(before).scan(tail).size ||
+        after.scan(PASTE_PLACEHOLDER).size > before.scan(PASTE_PLACEHOLDER).size
     end
 
     # Polls until two reads in a row match, so a large paste has finished

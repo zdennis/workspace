@@ -80,11 +80,11 @@ RSpec.describe Workspace::Tmux do
     end
 
     # Screens that change whenever Enter is pressed, the way a live prompt does.
-    def live_pane(initial: "$ ", after_paste: "$ hello")
+    def live_pane(initial: "$ ")
       screen = [initial]
       allow(tmux).to receive(:capture_screen) { screen[0] }
-      allow(tmux).to receive(:tmux_load_buffer) {
-        screen[0] = after_paste
+      allow(tmux).to receive(:tmux_load_buffer) { |_buf, text|
+        screen[0] = "$ #{text}"
         true
       }
       allow(tmux).to receive(:system) do |*args|
@@ -223,8 +223,34 @@ RSpec.describe Workspace::Tmux do
       result = tmux.deliver("my-session", "0.1", "hello")
 
       expect(result.status).to eq(:unverified)
-      expect(result).to be_ok
+      expect(result).not_to be_ok
+      expect(result).to be_landed
       expect(tmux).to have_received(:system).with("tmux", "send-keys", "-t", "my-session:0.1", "Enter").once
+    end
+
+    it "counts a paste placeholder on screen as the text having arrived" do
+      screens("$ ", "> [Pasted text #1 +40 lines]")
+
+      result = tmux.deliver("my-session", "0.1", "line\n" * 40, enter: false)
+
+      expect(result.status).to eq(:pasted)
+    end
+
+    it "counts the text as arrived when it wraps across lines" do
+      screens("> ", "> please fix the fail\n  ing spec in foo_spec.rb")
+
+      result = tmux.deliver("my-session", "0.1", "please fix the failing spec in foo_spec.rb", enter: false)
+
+      expect(result.status).to eq(:pasted)
+    end
+
+    it "does not count text that was already on screen before the paste" do
+      screens("> hello", "> hello\nthinking...")
+
+      result = tmux.deliver("my-session", "0.1", "hello", enter: false)
+
+      expect(result.status).to eq(:unverified)
+      expect(result.message).to include("never showed the text")
     end
 
     it "reports :failed when load-buffer fails" do
@@ -278,6 +304,23 @@ RSpec.describe Workspace::Tmux do
       tmux.deliver("my-session", "0.1", "hello")
 
       expect(sleeps).to all(eq(described_class::DELIVERY_POLL))
+    end
+  end
+
+  describe "#shows_text?" do
+    let(:tmux) { described_class.new(config: config) }
+
+    it "is true when the screen shows the end of the text" do
+      allow(tmux).to receive(:capture_screen).with("proj:0.1").and_return("> ...and then please do the thing\n")
+
+      expect(tmux.shows_text?("proj", "0.1", "read the notes first, and then please do the thing")).to be true
+    end
+
+    it "is false when the screen does not show it, or can not be read" do
+      allow(tmux).to receive(:capture_screen).and_return("> \n", nil)
+
+      expect(tmux.shows_text?("proj", "0.1", "do the thing")).to be false
+      expect(tmux.shows_text?("proj", "0.1", "do the thing")).to be false
     end
   end
 
