@@ -2553,6 +2553,7 @@ module Workspace
       end
 
       events = @state.event_log.events
+      warn_unseen_event_types(types, events)
       events = events.select { |event| event["project"] == project || event.dig("data", "workspace") == project } if project
       events = events.select { |event| types.include?(event["type"]) } unless types.empty?
       events = events.last(limit) if limit
@@ -2562,6 +2563,16 @@ module Workspace
       else
         events.each { |event| @output.puts format_event(event) }
       end
+    end
+
+    # Event types aren't a closed set: a log can hold types from an older or
+    # newer workspace, so a type no event has is warned about, not rejected.
+    def warn_unseen_event_types(types, events)
+      logged = events.map { |event| event["type"] }.uniq.sort
+      unseen = types.uniq - logged
+      return if unseen.empty?
+      Warn.puts(@error_output, "Warning: no #{unseen.join(", ")} events in the event log " \
+        "(types it has: #{logged.empty? ? "none" : logged.join(", ")})")
     end
 
     # One line per event. Logged text can come from a pane (a stage's

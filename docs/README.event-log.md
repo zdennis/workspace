@@ -21,11 +21,11 @@ workspace event-log <subcommand>
 | Option | Description |
 |--------|-------------|
 | `--project NAME` | Only events for this project |
-| `--type TYPE` | Only events of this type; repeat it or comma-separate several |
+| `--type TYPE` | Only events of this type; repeat it or comma-separate several. A type no event in the log has prints a warning to stderr listing the types the log does have |
 | `--limit N` | Only the last N matching events |
 | `--json` | Print `{"schema_version": 1, "events": [...]}` instead of lines |
 
-Each line is `timestamp  project  type  key=value ...`. Control characters in logged text are replaced with spaces. A value containing a space or `=` is quoted (Ruby `String#inspect`) so the line stays splittable on `"  "`; scripts should use `--json` instead of parsing this format. `--json` works no matter where the flag appears (e.g. `event-log --json show`); stdout then carries only the JSON object, including for usage errors (`{"schema_version": 1, "error": "..."}`); warnings, such as skipped corrupt lines, go to stderr.
+Each line is `timestamp  project  type  key=value ...`. Control characters in logged text are replaced with spaces. A value containing a space or `=` is quoted (Ruby `String#inspect`) so the line stays splittable on `"  "`; scripts should use `--json` instead of parsing this format. `--json` applies to `show` only; `compact` always prints its one-line summary. It works no matter where the flag appears (e.g. `event-log --json show`); stdout then carries only the JSON object, including for usage errors (`{"schema_version": 1, "error": "..."}`); warnings, such as skipped corrupt lines, go to stderr.
 
 ## Details
 

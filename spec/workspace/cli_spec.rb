@@ -2620,6 +2620,22 @@ RSpec.describe Workspace::CLI do
       expect(payload["events"].map { |e| e["type"] }).to eq(["lock_wait_started"])
     end
 
+    it "warns on stderr about a --type no event has, listing the types the log has" do
+      cli, output, error_output = build_test_cli(state: state, config: config)
+      cli.run(["event-log", "show", "--json", "--type", "dispatched,lock_wiat_started"])
+
+      expect(JSON.parse(output.string)["events"].map { |e| e["type"] }).to eq(["dispatched"])
+      expect(error_output.string).to eq("Warning: no lock_wiat_started events in the event log " \
+        "(types it has: dispatched, launched, lock_wait_started)\n")
+    end
+
+    it "does not warn when every --type has events" do
+      cli, _, error_output = build_test_cli(state: state, config: config)
+      cli.run(["event-log", "show", "--type", "launched"])
+
+      expect(error_output.string).to be_empty
+    end
+
     it "reports a bad option as JSON when --json is anywhere in the arguments" do
       cli, output, _ = build_test_cli(state: state, config: config)
       expect { cli.run(["event-log", "show", "--bogus", "--json"]) }.to raise_error(FakeSystemExit)
