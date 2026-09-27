@@ -63,7 +63,7 @@ module Workspace
       identity = @lock_holder.current
       return [] unless identity
 
-      released = store_for(cwd).release_all(identity[:pid])
+      released = store_for(cwd).release_all(identity)
       @logger.debug { "session-event: released #{released.join(", ")} on session end" } unless released.empty?
       released
     rescue => e

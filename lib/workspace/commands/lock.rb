@@ -115,7 +115,7 @@ module Workspace
         report_displaced(displaced, "There is nothing to release.")
 
         if all && name.nil?
-          released = store.release_all(identity[:pid])
+          released = store.release_all(identity)
           if released.empty?
             @output.puts "No locks held."
           else

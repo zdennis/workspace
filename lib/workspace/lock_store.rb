@@ -150,23 +150,23 @@ module Workspace
       end
     end
 
-    # Releases every lock +pid+ holds and removes it from every queue it is
-    # waiting in.
+    # Releases every lock +identity+ holds and removes it from every queue it
+    # is waiting in. Queue entries are matched on the agent recorded in them,
+    # not the waiter pid, since a queued wait runs in its own background
+    # process; that orphaned waiter then sees :cleared on its next {#poll}.
     #
-    # @param pid [Integer]
+    # @param identity [Hash] the agent, from {LockHolder#current}
     # @return [Array<String>] names of locks actually released
-    def release_all(pid)
+    def release_all(identity)
       with_lock do |data|
         reap!(data)
         released = []
         data.each do |name, entry|
-          holder = entry["holder"]
-          if holder && holder["pid"] == pid
-            entry["holder"] = nil
-            promote!(entry)
-            released << name
-          end
-          entry["queue"].reject! { |w| w["waiter_pid"] == pid }
+          entry["queue"].reject! { |w| w["agent_pid"] == identity[:pid] && w["agent_started"] == identity[:started] }
+          next unless same_agent?(entry["holder"], identity)
+          entry["holder"] = nil
+          promote!(entry)
+          released << name
         end
         released
       end
