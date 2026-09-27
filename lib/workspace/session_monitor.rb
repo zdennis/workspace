@@ -132,7 +132,8 @@ module Workspace
 
     # Reaps stale lock holds in the namespaces the panes are working in, when
     # the reaper is due. Runs on the scan thread, never the agent's accept
-    # loop, so a slow `git` or a contended lock store only delays the next scan.
+    # loop, so a slow `git` only delays the next scan. A lock store another
+    # process holds is skipped rather than waited on, and retried next time.
     #
     # @return [Integer] how many holders and waiters were reaped
     def reap_locks

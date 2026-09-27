@@ -254,6 +254,28 @@ RSpec.describe Workspace::LockStore do
 
       expect(store.reap).to eq(0)
     end
+
+    it "returns zero without waiting or reaping while another process holds the store flock" do
+      store.acquire("edit", identity: identity(pid: 100), waiter_pid: 100, waiter_started: "start-100")
+      liveness.kill(100)
+      File.open(File.join(tmpdir, "locks.lock"), File::RDWR) do |contender|
+        contender.flock(File::LOCK_EX)
+
+        expect(store.reap).to eq(0)
+      end
+
+      expect(store.reap).to eq(1)
+    end
+
+    it "leaves locks.json untouched when nothing is reaped" do
+      store.acquire("edit", identity: identity(pid: 100), waiter_pid: 100, waiter_started: "start-100")
+      path = File.join(tmpdir, "locks.json")
+      before = [File.read(path), File.stat(path).ino]
+
+      store.reap
+
+      expect([File.read(path), File.stat(path).ino]).to eq(before)
+    end
   end
 
   describe "#current_holder" do
