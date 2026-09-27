@@ -573,6 +573,28 @@ RSpec.describe Workspace::LockStore do
         expect(s.poll("devenv", 300)).to include(status: :queued, position: 1)
       end
 
+      it "requeues a taken-back takeover still marked as one, so a later clear keeps it" do
+        s = store
+        s.acquire("devenv", identity: process_identity(pid: 100), waiter_pid: 100, waiter_started: "start-100")
+        s.acquire("devenv", identity: process_identity(pid: 300), waiter_pid: 300, waiter_started: "start-300", wait: true, priority: true)
+        removed = s.clear("devenv", keep_process_holder: true)
+        s.release("devenv", 100)
+
+        expect(s.keep_process_holder("devenv", removed[:holder])).to be_nil
+        expect(s.status("devenv")["devenv"]["queue"].first).to include("waiter_pid" => 300, "takeover" => true)
+        expect(s.clear("devenv", keep_process_holder: true)[:takeovers].map { |w| w["waiter_pid"] }).to eq([300])
+      end
+
+      it "drops the takeover mark once the promoted waiter claims the hold" do
+        s = store
+        s.acquire("devenv", identity: process_identity(pid: 100), waiter_pid: 100, waiter_started: "start-100")
+        s.acquire("devenv", identity: process_identity(pid: 300), waiter_pid: 300, waiter_started: "start-300", wait: true, priority: true)
+        s.release("devenv", 100)
+
+        expect(s.poll("devenv", 300)).to include(status: :acquired)
+        expect(s.status("devenv")["devenv"]["holder"]).not_to have_key("takeover")
+      end
+
       it "leaves a hold its new holder already claimed, and returns it" do
         s = store
         holder = hold_and_clear(s)

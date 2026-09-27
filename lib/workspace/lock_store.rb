@@ -79,6 +79,7 @@ module Workspace
 
         if LockHolder.same_agent?(holder, identity)
           holder.delete("unclaimed")
+          holder.delete("takeover")
           holder["idle_since"] = nil
           next {status: :already_held}
         end
@@ -375,7 +376,7 @@ module Workspace
         end
         next current if current && !current["unclaimed"]
 
-        entry["holder"] = holder.except("unclaimed").merge("kept" => true)
+        entry["holder"] = holder.except("unclaimed", "takeover").merge("kept" => true)
         if current
           entry["queue"].unshift(waiter_from_holder(current))
           audit(:takeover, name, from: holder_summary(current), to: holder_summary(holder), cleared_by: cleared_by)
@@ -663,6 +664,7 @@ module Workspace
       return unless holder
       if holder["waiter_pid"] == waiter_pid
         holder.delete("unclaimed")
+        holder.delete("takeover")
         return {status: :acquired}
       end
       return unless entry["queue"].first&.dig("waiter_pid") == waiter_pid && idle_expired?(holder)
@@ -770,12 +772,14 @@ module Workspace
     # Promotes the queue head to holder while the lock is free and the head
     # is alive, dropping dead entries in front of a live one as it goes so
     # FIFO order is preserved for whoever is still around. The new holder is
-    # "unclaimed" until its waiter polls and learns of the promotion.
+    # "unclaimed" until its waiter polls and learns of the promotion, and
+    # keeps a takeover waiter's mark until then, so a promotion taken back
+    # by {#keep_process_holder} requeues it as a takeover.
     def promote!(entry, name = nil)
       while entry["holder"].nil? && !entry["queue"].empty?
         candidate = entry["queue"].shift
         next unless waiter_alive?(candidate)
-        entry["holder"] = holder_from_waiter(candidate).merge("unclaimed" => true)
+        entry["holder"] = holder_from_waiter(candidate).merge({"unclaimed" => true}, candidate.slice("takeover"))
         audit(:acquire, name, holder: holder_summary(entry["holder"])) if name
       end
     end
@@ -796,7 +800,7 @@ module Workspace
         "worktree" => holder["worktree"],
         "task" => holder["task"],
         "enqueued_at" => holder["acquired_at"]
-      }.merge(process_fields({kind: holder["kind"], pgid: holder["pgid"], branch: holder["branch"]}))
+      }.merge(process_fields({kind: holder["kind"], pgid: holder["pgid"], branch: holder["branch"]}), holder.slice("takeover"))
     end
 
     def holder_from_waiter(waiter)
