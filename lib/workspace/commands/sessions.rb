@@ -111,7 +111,8 @@ module Workspace
         apply_lock_column(panes)
         apply_ask_column(panes)
         if json
-          payload = {"schema_version" => JSON_SCHEMA_VERSION}.merge(snapshot).merge("schema_version" => JSON_SCHEMA_VERSION)
+          payload = {"schema_version" => JSON_SCHEMA_VERSION}.merge(snapshot)
+          payload["schema_version"] = JSON_SCHEMA_VERSION
           return @output.puts(JSON.pretty_generate(payload))
         end
 

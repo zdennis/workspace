@@ -92,6 +92,7 @@ RSpec.describe "workspace event-log (adversarial CLI/UX)" do
       sessions_command: sessions_command,
       session_event_command: session_event_command,
       config_command: overrides[:config_command] || CLITestHelpers::FakeConfigCommand.new,
+      statusline_command: CLITestHelpers::FakeStatuslineCommand.new,
       ask_command: ask_command,
       logger: logger,
       output: output,

@@ -474,6 +474,20 @@ module CLITestHelpers
     end
   end
 
+  class FakeStatuslineCommand
+    attr_reader :calls
+
+    def initialize(result: {exit_code: 0})
+      @calls = []
+      @result = result
+    end
+
+    def call
+      @calls << {action: :call}
+      @result
+    end
+  end
+
   class FakeHookRunner
     attr_reader :runs
 

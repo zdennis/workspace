@@ -130,6 +130,11 @@ module Workspace
       File.join(pipeline_state_dir(name), "pipeline.json")
     end
 
+    # @return [String] path to the JSON store of per-pane context-window readings
+    def context_store_path
+      File.join(state_dir, "context.json")
+    end
+
     # @param name [String] the workspace name
     # @return [String] path to the workspace's recorded-question store
     def ask_state_path(name)

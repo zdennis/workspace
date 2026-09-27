@@ -381,4 +381,65 @@ RSpec.describe Workspace::Commands::Config do
       expect { command.unset("dev.bogus", cwd: project_dir) }.to raise_error(Workspace::UsageError, /Unknown config key 'dev.bogus'/)
     end
   end
+
+  describe "global keys" do
+    it "writes statusline.command to the global config, not a project's" do
+      command, project_settings = build_command
+      project_dir = Dir.mktmpdir("ws-config-project")
+
+      command.set("statusline.command", "~/bin/my-statusline", cwd: project_dir)
+
+      expect(project_settings.load_global).to eq({"statusline" => {"command" => "~/bin/my-statusline"}})
+      expect(project_settings.load(File.basename(project_dir))).to eq({})
+    end
+
+    it "reads statusline.command back with #get" do
+      command, = build_command
+      command.set("statusline.command", "~/bin/my-statusline")
+
+      expect(command.get("statusline.command")).to be(true)
+    end
+
+    it "reports unset when a global key has no value" do
+      command, = build_command
+      expect(command.get("statusline.command")).to be(false)
+    end
+
+    it "unsets a global key" do
+      command, project_settings = build_command
+      command.set("context.source", "scrape")
+
+      command.unset("context.source")
+
+      expect(project_settings.load_global.dig("context", "source")).to be_nil
+    end
+
+    it "accepts context.source of statusline or scrape" do
+      command, = build_command
+      expect { command.set("context.source", "scrape") }.not_to raise_error
+      expect { command.set("context.source", "bogus") }.to raise_error(Workspace::UsageError, /Invalid context.source/)
+    end
+
+    it "requires context.pattern to have exactly one capture group" do
+      command, = build_command
+      expect { command.set("context.pattern", '(\d+)% ctx') }.not_to raise_error
+      expect { command.set("context.pattern", "no groups here") }.to raise_error(Workspace::UsageError, /exactly one capture group/)
+      expect { command.set("context.pattern", '(\d+)% (ctx)') }.to raise_error(Workspace::UsageError, /exactly one capture group/)
+    end
+
+    it "rejects an invalid regex" do
+      command, = build_command
+      expect { command.set("context.pattern", "(unterminated") }.to raise_error(Workspace::UsageError)
+    end
+
+    it "serializes concurrent global writers" do
+      command, project_settings = build_command
+      threads = 5.times.map do |i|
+        Thread.new { command.set("statusline.command", "cmd-#{i}") }
+      end
+      threads.each(&:join)
+
+      expect(%w[cmd-0 cmd-1 cmd-2 cmd-3 cmd-4]).to include(project_settings.load_global.dig("statusline", "command"))
+    end
+  end
 end

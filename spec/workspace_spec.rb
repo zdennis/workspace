@@ -67,5 +67,20 @@ RSpec.describe Workspace do
       # dependency reaches the command, not stubbing it out.
       expect(lock_reaper.tick([])).to eq(0)
     end
+
+    it "wires the shared ProcessGroupTerminator into the statusline command" do
+      cli = Workspace.build_cli(
+        output: StringIO.new,
+        error_output: StringIO.new,
+        input: StringIO.new
+      )
+
+      statusline_command = cli.instance_variable_get(:@statusline_command)
+      lock_command = cli.instance_variable_get(:@lock_command)
+
+      terminator = statusline_command.instance_variable_get(:@terminator)
+      expect(terminator).to be_a(Workspace::ProcessGroupTerminator)
+      expect(terminator).to equal(lock_command.instance_variable_get(:@terminator))
+    end
   end
 end

@@ -70,6 +70,10 @@ require_relative "workspace/lock_reaper"
 require_relative "workspace/lock_enforcer"
 require_relative "workspace/notifier"
 require_relative "workspace/alert_config"
+require_relative "workspace/context_reasons"
+require_relative "workspace/context_store"
+require_relative "workspace/context_reader"
+require_relative "workspace/statusline_renderer"
 require_relative "workspace/ask_store"
 require_relative "workspace/session_monitor"
 require_relative "workspace/agent_provider"
@@ -104,6 +108,7 @@ require_relative "workspace/commands/lock"
 require_relative "workspace/commands/dev"
 require_relative "workspace/commands/parent"
 require_relative "workspace/commands/config"
+require_relative "workspace/commands/statusline"
 require_relative "workspace/commands/ask"
 require_relative "workspace/work_coordinator_client"
 require_relative "workspace/pipeline_config"
@@ -214,6 +219,13 @@ module Workspace
     parent_command = Commands::Parent.new(lineage: lineage, project_config: project_config, output: output)
     config_command = Commands::Config.new(project_settings: project_settings, lineage: lineage, file_backup: file_backup, output: output)
 
+    context_store = ContextStore.new(path: config.context_store_path, logger: logger)
+    context_reader = ContextReader.new(context_store: context_store, project_settings: project_settings, tmux: tmux, logger: logger,
+      lock_holder: lock_holder)
+    statusline_command = Commands::Statusline.new(context_store: context_store, renderer: StatuslineRenderer.new(logger: logger),
+      project_settings: project_settings, logger: logger, output: output, input: input, terminator: process_group_terminator,
+      lock_holder: lock_holder)
+
     alert_config = AlertConfig.new(project_settings: project_settings, project_config: project_config,
       lineage: lineage, error_output: error_output)
     ask_command = Commands::Ask.new(config: config, project_detector: project_detector, alert_config: alert_config,
@@ -236,6 +248,7 @@ module Workspace
       alert_config: alert_config,
       ps_timeout: ps_timeout,
       event_log: event_log,
+      context_reader: context_reader,
       logger: logger,
       output: output,
       error_output: error_output
@@ -278,6 +291,7 @@ module Workspace
       sessions_command: sessions_command,
       session_event_command: session_event_command,
       config_command: config_command,
+      statusline_command: statusline_command,
       ask_command: ask_command,
       logger: logger,
       output: output,

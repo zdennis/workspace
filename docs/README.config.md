@@ -41,6 +41,11 @@ Only an allowlisted set of keys can be written this way, so a typo doesn't silen
 | `locks.reap_interval` | How often the session-monitor daemon sweeps for stale lock holders and waiters (default `30s`) |
 | `alerts.notify` | Command the session-monitor daemon runs when an agent pane starts waiting on a person or stays idle past `alerts.idle_after` (unset: no alerts; see [`workspace sessions`](README.sessions.md#alerts)) |
 | `alerts.idle_after` | How long an agent pane may sit idle before `alerts.notify` runs (default `10m`) |
+| `statusline.command` | Global. Delegates [`workspace statusline`](README.statusline.md) rendering to another command instead of the built-in renderer |
+| `context.source` | Global. `statusline` (default) or `scrape` — where `workspace sessions` reads a pane's context usage; see [`workspace statusline`](README.statusline.md) |
+| `context.pattern` | Global. Regex with exactly one capture group, used when `context.source` is `scrape` |
+
+`statusline.command`, `context.source`, and `context.pattern` are always written to the global config, never a project's — there's one status line and one context source per machine. `context.source` must be `statusline` or `scrape`; `context.pattern` must be a valid regex with exactly one capture group.
 
 `dev.stop_timeout`, `dev.startup_timeout`, `dev.ready_timeout`, `dev.kill_grace`, `locks.idle_grace`, `locks.ps_timeout`, `locks.reap_interval`, and `alerts.idle_after` must parse as a duration: a plain number of seconds, or a number with an `s`, `m` or `h` suffix (`20`, `20s`, `5m`, `1h`). `dev.startup_timeout`, `dev.ready_timeout`, `dev.kill_grace`, `locks.idle_grace`, `locks.ps_timeout`, `locks.reap_interval`, and `alerts.idle_after` must also be greater than 0. `alerts.notify` must not be blank. `dev.kill_grace` is also capped at 60s. `locks.ps_timeout` must be between 1s and 60s: too small and `ps` times out on nearly every call, which makes liveness checks come back unknown (treated as alive) and can stall a lock queue behind a clearing marker that never gets to show dead. Anything else is rejected before it's written.
 

@@ -44,6 +44,9 @@ module Workspace
       # @param event_log [Workspace::EventLog, nil] records dispatches, stage
       #   completions and failures, and (through the session monitor) each agent
       #   pane's state changes; nil records nothing
+      # @param context_reader [Workspace::ContextReader, nil] resolves each
+      #   coding-agent pane's context usage for `sessions --json`; nil omits
+      #   context fields
       # @param logger [Workspace::Logger] debug logger
       # @param output [IO] output stream for user-facing messages
       # @param error_output [IO] error output stream for errors
@@ -60,6 +63,7 @@ module Workspace
         ps_timeout: Workspace::ProcessTree::DEFAULT_TIMEOUT,
         retry_backoff: 0.5,
         event_log: nil,
+        context_reader: nil,
         logger: Workspace::Logger.new, output: $stdout, error_output: $stderr)
         @config = config
         @tmux = tmux
@@ -75,6 +79,7 @@ module Workspace
         @session_monitor = nil
         @lock_reaper = lock_reaper
         @alert_config = alert_config
+        @context_reader = context_reader
         @notifier_factory = notifier_factory || ->(command) { Notifier.new(command: command, error_output: @error_output) }
         @ps_timeout = ps_timeout
         @retry_backoff = retry_backoff
@@ -825,7 +830,8 @@ module Workspace
           notifier: notifier,
           idle_alert_after: alerts[:idle_after],
           event_log: @event_log,
-          project: name
+          project: name,
+          context_reader: @context_reader
         )
       end
 

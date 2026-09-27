@@ -8,8 +8,14 @@ module Workspace
     # YAML. Restricted to an allowlist, so a typo doesn't silently create
     # unused config.
     class Config
-      # Keys `set`/`get`/`unset` allow. Unlisted dotted keys are rejected.
+      # Keys `set`/`get`/`unset` allow, written to a project's config. Unlisted
+      # dotted keys are rejected.
       ALLOWED_KEYS = %w[dev.up dev.ready dev.stop_timeout dev.startup_timeout dev.ready_timeout dev.kill_grace locks.idle_grace locks.ps_timeout locks.reap_interval alerts.notify alerts.idle_after].freeze
+
+      # Keys `set`/`get`/`unset` allow, written to the global config
+      # (~/.config/workspace/config.yml) instead of a project's — there's one
+      # status line and one context source per machine, not per project.
+      GLOBAL_ALLOWED_KEYS = %w[statusline.command context.source context.pattern].freeze
 
       # Keys the session-monitor daemon only reads once, at startup. Changing
       # one of these has no effect on an already-running daemon.
@@ -37,6 +43,11 @@ module Workspace
       def set(key, value, project: nil, cwd: Dir.pwd)
         validate_key!(key)
         validate_value!(key, value)
+
+        if GLOBAL_ALLOWED_KEYS.include?(key)
+          set_global(key, value)
+          return
+        end
 
         lineage = @lineage.resolve(cwd: cwd)
         name = project || lineage.name
@@ -68,6 +79,16 @@ module Workspace
       def get(key, project: nil, cwd: Dir.pwd)
         validate_key!(key)
 
+        if GLOBAL_ALLOWED_KEYS.include?(key)
+          value = @project_settings.load_global.dig(*key.split("."))
+          if value.nil?
+            @error_output.puts "#{key} is not set."
+            return false
+          end
+          @output.puts value
+          return true
+        end
+
         name = project || @lineage.resolve(cwd: cwd).name
         data = @project_settings.load(name)
         value = data.dig(*key.split("."))
@@ -88,6 +109,17 @@ module Workspace
       def unset(key, project: nil, cwd: Dir.pwd)
         validate_key!(key)
 
+        if GLOBAL_ALLOWED_KEYS.include?(key)
+          @project_settings.with_global_lock do |data|
+            segments = key.split(".")
+            cursor = segments[0..-2].reduce(data) { |node, segment| node.is_a?(Hash) ? node[segment] : nil }
+            cursor.delete(segments.last) if cursor.is_a?(Hash)
+            data
+          end
+          @output.puts "Unset #{key}."
+          return
+        end
+
         name = project || @lineage.resolve(cwd: cwd).name
         path = @project_settings.project_config_path(name)
         with_config_lock(path) do
@@ -102,6 +134,20 @@ module Workspace
       end
 
       private
+
+      def set_global(key, value)
+        @project_settings.with_global_lock do |data|
+          segments = key.split(".")
+          cursor = data
+          segments[0..-2].each do |segment|
+            cursor[segment] = {} unless cursor[segment].is_a?(Hash)
+            cursor = cursor[segment]
+          end
+          cursor[segments.last] = value
+          data
+        end
+        @output.puts "Set #{key} = #{value}."
+      end
 
       # Guards the load -> mutate -> write cycle with an exclusive flock on a
       # sibling lock file, so concurrent `set`/`unset` calls for the same
@@ -120,8 +166,8 @@ module Workspace
       end
 
       def validate_key!(key)
-        return if ALLOWED_KEYS.include?(key)
-        raise Workspace::UsageError, "Unknown config key '#{key}'. Allowed keys: #{ALLOWED_KEYS.join(", ")}"
+        return if ALLOWED_KEYS.include?(key) || GLOBAL_ALLOWED_KEYS.include?(key)
+        raise Workspace::UsageError, "Unknown config key '#{key}'. Allowed keys: #{(ALLOWED_KEYS + GLOBAL_ALLOWED_KEYS).join(", ")}"
       end
 
       def validate_value!(key, value)
@@ -134,9 +180,57 @@ module Workspace
         when "locks.reap_interval" then Workspace::LockConfig.parse_reap_interval(value)
         when "alerts.notify" then Workspace::AlertConfig.parse_notify(value)
         when "alerts.idle_after" then Workspace::AlertConfig.parse_idle_after(value)
+        when "context.source"
+          raise ArgumentError, "must be \"statusline\" or \"scrape\"" unless %w[statusline scrape].include?(value)
+        when "context.pattern"
+          Regexp.new(value)
+          raise ArgumentError, "must have exactly one capture group" unless capture_group_count(value) == 1
         end
-      rescue ArgumentError => e
+      rescue ArgumentError, RegexpError => e
         raise Workspace::UsageError, "Invalid #{key}: #{e.message}"
+      end
+
+      # Counts capturing groups (named and unnamed) in a regex source by
+      # walking it character by character, skipping escaped characters and
+      # character-class bodies (`[(]` isn't a group), and recognizing named
+      # groups (`(?<name>`, `(?'name'`) while excluding lookaround
+      # (`(?=`, `(?!`, `(?<=`, `(?<!`) and non-capturing groups (`(?:`).
+      # Good enough for validating a config value; not a full regex parser.
+      def capture_group_count(pattern)
+        count = 0
+        in_class = false
+        i = 0
+        chars = pattern.chars
+        while i < chars.size
+          c = chars[i]
+          if c == "\\"
+            i += 2
+            next
+          end
+          if in_class
+            in_class = false if c == "]"
+            i += 1
+            next
+          end
+          case c
+          when "["
+            in_class = true
+          when "("
+            if chars[i + 1] == "?"
+              nxt = chars[i + 2]
+              if nxt == "<" && !["=", "!"].include?(chars[i + 3])
+                count += 1 # named group (?<name>...)
+              elsif nxt == "'"
+                count += 1 # named group (?'name'...)
+              end
+              # else: non-capturing (?:...) or lookaround (?=/?!/?<=/?<!), not counted
+            else
+              count += 1 # unnamed capturing group
+            end
+          end
+          i += 1
+        end
+        count
       end
 
       def write(path, data)

@@ -88,6 +88,7 @@ RSpec.describe Workspace::CLI do
       sessions_command: sessions_command,
       session_event_command: session_event_command,
       config_command: overrides[:config_command] || CLITestHelpers::FakeConfigCommand.new,
+      statusline_command: overrides[:statusline_command] || CLITestHelpers::FakeStatuslineCommand.new,
       ask_command: ask_command,
       logger: logger,
       output: output,
@@ -875,6 +876,30 @@ RSpec.describe Workspace::CLI do
       cli.run(["config", "nonexistent"])
 
       expect(output.string).to include("no config found for 'nonexistent'")
+    end
+  end
+
+  describe "#run with statusline" do
+    it "dispatches to statusline_command" do
+      statusline_command = CLITestHelpers::FakeStatuslineCommand.new
+      cli, = build_test_cli(statusline_command: statusline_command)
+
+      cli.run(["statusline"])
+
+      expect(statusline_command.calls).to eq([{action: :call}])
+    end
+
+    it "exits with the command's exit code" do
+      statusline_command = CLITestHelpers::FakeStatuslineCommand.new(result: {exit_code: 0})
+      cli, = build_test_cli(statusline_command: statusline_command)
+
+      expect { cli.run(["statusline"]) }.not_to raise_error
+    end
+
+    it "rejects extra arguments" do
+      cli, = build_test_cli
+
+      expect { cli.run(["statusline", "bogus"]) }.to raise_error(FakeSystemExit)
     end
   end
 

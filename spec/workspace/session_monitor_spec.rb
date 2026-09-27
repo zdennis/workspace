@@ -725,4 +725,57 @@ RSpec.describe Workspace::SessionMonitor do
       expect(log_errors.string.lines.size).to eq(1)
     end
   end
+
+  describe "context fields" do
+    let(:context_reader) { instance_double(Workspace::ContextReader) }
+
+    subject(:monitor) do
+      described_class.new(tmux: tmux, process_tree: process_tree, session_name: "proj",
+        idle_after: 30, clock: clock, context_reader: context_reader)
+    end
+
+    it "stamps a coding-agent pane with context_pct/context_error/context_updated_at" do
+      allow(context_reader).to receive(:read).with(pane_id: "%2", agent_pid: 250, current_session_id: nil)
+        .and_return(pct: 55, error: nil, updated_at: "2026-09-27T00:00:00Z")
+
+      monitor.scan
+
+      expect(pane("%2")["context_pct"]).to eq(55)
+      expect(pane("%2")["context_error"]).to be_nil
+      expect(pane("%2")["context_updated_at"]).to eq("2026-09-27T00:00:00Z")
+    end
+
+    it "never stamps context fields onto a shell pane" do
+      allow(context_reader).to receive(:read).and_return(pct: 1, error: nil, updated_at: nil)
+      monitor.scan
+
+      expect(pane("%1")).not_to have_key("context_pct")
+      expect(pane("%1")).not_to have_key("context_error")
+    end
+
+    it "reports the reason when context can't be determined" do
+      allow(context_reader).to receive(:read).and_return(pct: nil, error: Workspace::ContextReasons::NO_READING, updated_at: nil)
+
+      monitor.scan
+
+      expect(pane("%2")["context_pct"]).to be_nil
+      expect(pane("%2")["context_error"]).to eq(Workspace::ContextReasons::NO_READING)
+    end
+
+    it "omits context fields entirely when no context_reader is injected" do
+      no_reader_monitor = described_class.new(tmux: tmux, process_tree: process_tree, session_name: "proj",
+        idle_after: 30, clock: clock)
+      no_reader_monitor.scan
+
+      pane = no_reader_monitor.snapshot["panes"].find { |p| p["pane_id"] == "%2" }
+      expect(pane).not_to have_key("context_pct")
+    end
+
+    it "never lets a context_reader failure raise out of a scan" do
+      allow(context_reader).to receive(:read).and_raise(StandardError, "boom")
+
+      expect { monitor.scan }.not_to raise_error
+      expect(pane("%2")["context_error"]).to eq(Workspace::ContextReasons::NO_READING)
+    end
+  end
 end

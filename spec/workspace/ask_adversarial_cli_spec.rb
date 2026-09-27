@@ -63,7 +63,8 @@ RSpec.describe "workspace ask adversarial findings" do
       run_command: run_command, run_result_store: run_result_store, run_and_report_command: run_and_report_command,
       capture_command: capture_command, lock_command: lock_command, dev_command: dev_command, parent_command: parent_command,
       agent_command: agent_command, sessions_command: sessions_command, session_event_command: session_event_command,
-      config_command: CLITestHelpers::FakeConfigCommand.new, ask_command: ask_command, logger: logger,
+      config_command: CLITestHelpers::FakeConfigCommand.new, statusline_command: CLITestHelpers::FakeStatuslineCommand.new,
+      ask_command: ask_command, logger: logger,
       output: output, error_output: error_output, exit_handler: FakeExitHandler, input: input, working_dir: working_dir,
       clock: -> { Time.now }
     )
