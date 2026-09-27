@@ -49,6 +49,7 @@ RSpec.describe Workspace::CLI do
     dev_command = overrides[:dev_command] || CLITestHelpers::FakeDevCommand.new
     parent_command = overrides[:parent_command] || CLITestHelpers::FakeParentCommand.new
     agent_command = overrides[:agent_command] || CLITestHelpers::FakeAgentCommand.new
+    ask_command = overrides[:ask_command] || CLITestHelpers::FakeAskCommand.new
 
     cli = Workspace::CLI.new(
       config: config,
@@ -87,6 +88,7 @@ RSpec.describe Workspace::CLI do
       sessions_command: sessions_command,
       session_event_command: session_event_command,
       config_command: overrides[:config_command] || CLITestHelpers::FakeConfigCommand.new,
+      ask_command: ask_command,
       logger: logger,
       output: output,
       error_output: error_output,
