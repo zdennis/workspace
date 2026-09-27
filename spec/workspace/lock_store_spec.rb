@@ -614,7 +614,7 @@ RSpec.describe Workspace::LockStore do
         s.acquire("devenv", identity: process_identity(pid: 100), waiter_pid: 100, waiter_started: "start-100")
         holder = s.clear("devenv", keep_process_holder: true, clearer: {"pid" => 900, "started" => "start-900"})[:holder]
 
-        s.keep_process_holder("devenv", holder)
+        s.keep_process_holder("devenv", holder, clearer: {"pid" => 900, "started" => "start-900"})
 
         expect(s.status("devenv")["devenv"]["holder"]).not_to have_key("clearing")
         expect(s.clear("devenv", keep_process_holder: true, clearer: {"pid" => 901, "started" => "start-901"})).to include(pending: true)
@@ -626,10 +626,20 @@ RSpec.describe Workspace::LockStore do
         holder = s.clear("devenv", keep_process_holder: true, clearer: {"pid" => 900, "started" => "start-900"})[:holder]
         s.release("devenv", 100)
 
-        s.keep_process_holder("devenv", holder)
+        s.keep_process_holder("devenv", holder, clearer: {"pid" => 900, "started" => "start-900"})
 
         expect(s.status("devenv")["devenv"]["holder"]).to include("pid" => 100, "kept" => true)
         expect(s.status("devenv")["devenv"]["holder"]).not_to have_key("clearing")
+      end
+
+      it "leaves the clearing marker of another clearer in place" do
+        s = store
+        s.acquire("devenv", identity: process_identity(pid: 100), waiter_pid: 100, waiter_started: "start-100")
+        holder = s.clear("devenv", keep_process_holder: true, clearer: {"pid" => 900, "started" => "start-900"})[:holder]
+
+        s.keep_process_holder("devenv", holder, clearer: {"pid" => 901, "started" => "start-901"})
+
+        expect(s.status("devenv")["devenv"]["holder"]["clearing"]).to eq("pid" => 900, "started" => "start-900")
       end
 
       it "restores a holder that released meanwhile" do
@@ -689,6 +699,58 @@ RSpec.describe Workspace::LockStore do
 
         expect(s.keep_process_holder("devenv", holder)).to include("pid" => 300)
         expect(s.status("devenv")["devenv"]["holder"]["pid"]).to eq(300)
+      end
+    end
+
+    describe "#mark_clearing and #unmark_clearing" do
+      let(:me) { {"pid" => 900, "started" => "start-900"} }
+      let(:other) { {"pid" => 901, "started" => "start-901"} }
+
+      def process_identity(pid:)
+        identity(pid: pid).merge(kind: "process", pgid: pid, branch: "main")
+      end
+
+      def held(s)
+        s.acquire("devenv", identity: process_identity(pid: 100), waiter_pid: 100, waiter_started: "start-100")
+        s.status("devenv")["devenv"]["holder"]
+      end
+
+      it "marks the holder and unmarks it again" do
+        s = store
+        holder = held(s)
+
+        expect(s.mark_clearing("devenv", holder, me)).to be_nil
+        expect(s.status("devenv")["devenv"]["holder"]["clearing"]).to eq(me)
+        s.unmark_clearing("devenv", holder, me)
+        expect(s.status("devenv")["devenv"]["holder"]).not_to have_key("clearing")
+      end
+
+      it "returns another live clearer's marker and leaves it in place" do
+        s = store
+        holder = held(s)
+        s.mark_clearing("devenv", holder, other)
+
+        expect(s.mark_clearing("devenv", holder, me)).to eq(other)
+        s.unmark_clearing("devenv", holder, me)
+        expect(s.status("devenv")["devenv"]["holder"]["clearing"]).to eq(other)
+      end
+
+      it "replaces the marker of a clearer that is no longer running" do
+        s = store
+        holder = held(s)
+        s.mark_clearing("devenv", holder, other)
+        liveness.kill(901)
+
+        expect(s.mark_clearing("devenv", holder, me)).to be_nil
+        expect(s.status("devenv")["devenv"]["holder"]["clearing"]).to eq(me)
+      end
+
+      it "leaves a lock clear to the process that marked the holder" do
+        s = store
+        holder = held(s)
+        s.mark_clearing("devenv", holder, other)
+
+        expect(s.clear("devenv", keep_process_holder: true, clearer: me)).to include(in_progress: true)
       end
     end
 

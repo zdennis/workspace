@@ -212,7 +212,7 @@ module Workspace
         end
 
         label = cleared_by_label
-        clearer = clearer_marker
+        clearer = @holder_stopper.clearer(@pid_provider.call)
         kept = names.reject { |lock_name| clear_one(store, lock_name, label, clearer, namespace[:display], &on_holder) }
         {exit_code: kept.empty? ? 0 : 1}
       end
@@ -375,7 +375,7 @@ module Workspace
         return report_clear_in_progress(name, removed) if removed&.dig(:in_progress)
         if removed&.dig(:pending)
           holder = removed[:holder]
-          return false unless stop_process_holder(store, name, holder, label, project)
+          return false unless stop_process_holder(store, name, holder, label, project, clearer)
           other = store.finish_clear(name, holder, cleared_by: label)
           if other && !kept_takeover?(removed, other)
             @error_output.puts "Stopped process group #{holder["pgid"] || holder["pid"]} (pid #{holder["pid"]}), but the " \
@@ -385,17 +385,6 @@ module Workspace
         end
         describe_cleared(name, removed)
         true
-      end
-
-      # This `clear` process, recorded on a process holder it is stopping so a
-      # concurrent `clear` leaves that holder to it. Without a readable start
-      # time no marker is recorded, since its liveness could not be checked.
-      def clearer_marker
-        pid = @pid_provider.call
-        started = @lock_holder.start_time(pid)
-        started && {"pid" => pid, "started" => started}
-      rescue Workspace::Error
-        nil
       end
 
       # @return [false] the lock was not cleared by this invocation
@@ -409,13 +398,13 @@ module Workspace
 
       # @return [Boolean] true once nothing the holder started is known to be
       #   running, so its lock may go; false when its lock was kept
-      def stop_process_holder(store, name, holder, label, project)
+      def stop_process_holder(store, name, holder, label, project, clearer)
         pid = holder["pid"]
         pgid = holder["pgid"] || pid
         settings = dev_settings_for(project)
         timeout = settings[:stop_timeout]
         case @holder_stopper.stop(store, name, holder, stop_timeout: timeout, retry_command: "workspace lock clear #{name}",
-          cleared_by: label, kill_grace: settings[:kill_grace])
+          cleared_by: label, kill_grace: settings[:kill_grace], clearer: clearer)
         when :kept then return false
         when :killed then @output.puts "Killed process group #{pgid} (pid #{pid}) after #{timeout}s."
         when :terminated then @output.puts "Stopped process group #{pgid} (pid #{pid})."

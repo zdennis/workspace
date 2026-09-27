@@ -296,7 +296,9 @@ module Workspace
     #
     # A kept holder is marked `clearing` with +clearer+ (the `lock clear`
     # process's pid and start time) until {#finish_clear} or
-    # {#keep_process_holder} ends that clear, so a second, concurrent clear
+    # {#keep_process_holder} ends that clear (`dev down` and `dev up
+    # --takeover` mark it the same way, with {#mark_clearing}), so a second,
+    # concurrent clear
     # neither stops the same group again nor writes a second `clear` event:
     # it gets in_progress: true back instead, with nothing changed and
     # nothing yielded. A marker whose clearer is no longer running (it
@@ -378,24 +380,28 @@ module Workspace
     # its hold ended in the meantime, it is restored, and a waiter promoted
     # since but not yet told goes back to the head of the queue.
     #
+    # Only a `clearing` marker naming +clearer+ is dropped: one left by
+    # another clearer that is still stopping the group stays in place.
+    #
     # @param name [String] lock name
     # @param holder [Hash] the holder record {#clear} returned
     # @param cleared_by [String, nil] identity recorded for logging
+    # @param clearer [Hash, nil] "pid" and "started" of the process ending its stop
     # @return [Hash, nil] nil once the lock names +holder+ again, or the
     #   record of whoever holds it instead and already knows it (a hold that
     #   cannot be taken back)
-    def keep_process_holder(name, holder, cleared_by: nil)
+    def keep_process_holder(name, holder, cleared_by: nil, clearer: nil)
       with_lock(lenient: true) do |data|
         entry = data[name] ||= empty_entry
         current = entry["holder"]
         if same_process?(current, holder)
           current["kept"] = true
-          current.delete("clearing")
+          drop_clearing_marker!(current, clearer)
           next nil
         end
         next current if current && !current["unclaimed"]
 
-        entry["holder"] = holder.except("unclaimed", "takeover", "clearing").merge("kept" => true)
+        entry["holder"] = drop_clearing_marker!(holder.except("unclaimed", "takeover"), clearer).merge("kept" => true)
         if current
           entry["queue"].unshift(waiter_from_holder(current))
           audit(:takeover, name, from: holder_summary(current), to: holder_summary(holder), cleared_by: cleared_by)
@@ -403,6 +409,45 @@ module Workspace
           audit(:acquire, name, holder: holder_summary(holder), cleared_by: cleared_by)
         end
         @logger.debug { "lock: restored kept holder pid #{holder["pid"]} of #{name}" }
+        nil
+      end
+    end
+
+    # Marks a `kind: "process"` holder as being stopped by +clearer+ (`dev
+    # down` or `dev up --takeover`), exactly as {#clear} marks it for `lock
+    # clear`, unless another live clearer is already stopping it. The marker
+    # is dropped by {#unmark_clearing} or {#keep_process_holder}, or with
+    # the holder once it releases.
+    #
+    # @param name [String] lock name
+    # @param holder [Hash] the holder record about to be stopped
+    # @param clearer [Hash, nil] "pid" and "started" of the stopping process;
+    #   nil only checks for another clearer
+    # @return [Hash, nil] the marker of another live clearer (nothing is
+    #   marked then), or nil
+    def mark_clearing(name, holder, clearer)
+      with_lock(lenient: true) do |data|
+        current = data.dig(name, "holder")
+        next nil unless same_process?(current, holder)
+        marker = live_clearing_marker(current)
+        next marker if marker && !same_clearer?(marker, clearer)
+        current["clearing"] = clearer.slice("pid", "started") if clearer
+        nil
+      end
+    end
+
+    # Drops the `clearing` marker {#mark_clearing} put on +holder+, if it
+    # still names +clearer+.
+    #
+    # @param name [String] lock name
+    # @param holder [Hash] the holder record that was being stopped
+    # @param clearer [Hash, nil] "pid" and "started" of the stopping process
+    # @return [void]
+    def unmark_clearing(name, holder, clearer)
+      return unless clearer
+      with_lock(lenient: true) do |data|
+        current = data.dig(name, "holder")
+        drop_clearing_marker!(current, clearer) if same_process?(current, holder)
         nil
       end
     end
@@ -800,6 +845,16 @@ module Workspace
       marker = holder["clearing"]
       return nil unless marker.is_a?(Hash) && marker["pid"]
       alive_or_unknown?(marker["pid"], marker["started"]) ? marker : nil
+    end
+
+    def same_clearer?(marker, clearer)
+      !clearer.nil? && marker["pid"] == clearer["pid"] && marker["started"] == clearer["started"]
+    end
+
+    def drop_clearing_marker!(holder, clearer)
+      marker = holder["clearing"]
+      holder.delete("clearing") if marker.is_a?(Hash) && same_clearer?(marker, clearer)
+      holder
     end
 
     def same_process?(current, holder)
