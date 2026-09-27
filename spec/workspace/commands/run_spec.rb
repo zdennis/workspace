@@ -197,12 +197,12 @@ RSpec.describe Workspace::Commands::Run do
     end
 
     context "with dry_run: true" do
-      it "prints the tmux send-keys command without executing" do
+      it "prints the load-buffer/paste-buffer sequence without executing" do
         command.call("myproject", "echo hi", dry_run: true)
 
-        expect(output.string).to include("tmux send-keys")
+        expect(output.string).to include("tmux load-buffer")
+        expect(output.string).to include("tmux paste-buffer")
         expect(output.string).to include("myproject")
-        expect(output.string).to include("echo hi")
         expect(tmux).not_to have_received(:deliver)
       end
 

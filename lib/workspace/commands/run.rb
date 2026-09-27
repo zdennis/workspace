@@ -47,10 +47,8 @@ module Workspace
           pane_spec = TmuxPane.new(pane, tmux: @tmux).target(session_name)
 
           if dry_run
-            @output.puts "tmux send-keys -l -t #{session_name}:#{pane_spec} #{command.inspect}"
-            @output.puts "tmux send-keys -t #{session_name}:#{pane_spec} Enter" if enter
-            @output.puts "tmux send-keys -l -t #{session_name}:#{pane_spec} exit" if close
-            @output.puts "tmux send-keys -t #{session_name}:#{pane_spec} Enter" if close
+            print_dry_run_delivery(session_name, pane_spec, command, enter: enter)
+            print_dry_run_delivery(session_name, pane_spec, "exit", enter: true) if close
           else
             send_text(session_name, pane_spec, command, enter: enter,
               failure: "Failed to send command to pane #{pane_spec} of '#{project}'")
@@ -75,10 +73,8 @@ module Workspace
         if dry_run
           flag = vertical ? "-h" : "-v"
           @output.puts "tmux split-window #{flag} -t #{session_name}:0.#{last_pane}"
-          @output.puts "tmux send-keys -l -t #{session_name}:0.<new_pane> #{command.inspect}"
-          @output.puts "tmux send-keys -t #{session_name}:0.<new_pane> Enter" if enter
-          @output.puts "tmux send-keys -l -t #{session_name}:0.<new_pane> exit" if close
-          @output.puts "tmux send-keys -t #{session_name}:0.<new_pane> Enter" if close
+          print_dry_run_delivery(session_name, "0.<new_pane>", command, enter: enter)
+          print_dry_run_delivery(session_name, "0.<new_pane>", "exit", enter: true) if close
           return
         end
 
@@ -101,11 +97,24 @@ module Workspace
         end
       end
 
+      # Prints the load-buffer + paste-buffer sequence that {Workspace::Tmux#deliver}
+      # actually issues, so --dry-run output matches what a real run would do.
+      def print_dry_run_delivery(session_name, pane_spec, text, enter:)
+        target = "#{session_name}:#{pane_spec}"
+        @output.puts "tmux load-buffer -b <buffer> -"
+        @output.puts "tmux paste-buffer -p -b <buffer> -t #{target}"
+        @output.puts "tmux delete-buffer -b <buffer>"
+        @output.puts "tmux send-keys -t #{target} Enter" if enter
+      end
+
       # Sends text and raises, with tmux's reason, unless it landed and (with
       # +enter+) was submitted.
       def send_text(session_name, pane_spec, text, enter:, failure:)
         delivery = @tmux.deliver(session_name, pane_spec, text, enter: enter)
-        raise Workspace::Error, "#{failure}: #{delivery.message}" unless delivery.ok?
+        return if delivery.ok?
+
+        hint = delivery.landed? ? " Do not run it again -- it is already in the pane; press Enter there instead." : ""
+        raise Workspace::Error, "#{failure}: #{delivery.message}.#{hint}"
       end
 
       def focus_window(project)
