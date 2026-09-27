@@ -1470,6 +1470,17 @@ RSpec.describe Workspace::CLI do
       )
     end
 
+    it "turns on --wait when --max-wait is given alone" do
+      lock_command = CLITestHelpers::FakeLockCommand.new
+      cli, _, _ = build_test_cli(lock_command: lock_command)
+
+      cli.run(["lock", "acquire", "edit", "--max-wait", "9"])
+
+      expect(lock_command.calls).to eq(
+        [{action: :acquire, name: "edit", task: nil, wait: true, poll: Workspace::Commands::Lock::DEFAULT_POLL_SECONDS, max_wait: 9.0}]
+      )
+    end
+
     it "raises a usage error instead of a backtrace for an unparsable --max-wait" do
       lock_command = CLITestHelpers::FakeLockCommand.new
       cli, _, error_output = build_test_cli(lock_command: lock_command)
@@ -1648,12 +1659,12 @@ RSpec.describe Workspace::CLI do
         expect(dev_command.calls).to eq([{action: :up, wait: false, takeover: false, ready: true, max_wait: nil}])
       end
 
-      it "rejects --max-wait without --wait" do
-        cli, _, error_output = build_test_cli(dev_command: dev_command)
+      it "turns on --wait when --max-wait is given alone" do
+        cli, _, _ = build_test_cli(dev_command: dev_command)
 
-        expect { cli.run(["dev", "up", "--max-wait", "5"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
-        expect(error_output.string).to include("--max-wait requires --wait")
-        expect(dev_command.calls).to be_empty
+        cli.run(["dev", "up", "--max-wait", "5"])
+
+        expect(dev_command.calls).to eq([{action: :up, wait: true, takeover: false, ready: true, max_wait: 5.0}])
       end
 
       it "exits with up's exit code" do

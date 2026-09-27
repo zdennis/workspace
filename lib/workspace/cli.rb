@@ -785,12 +785,12 @@ module Workspace
                             number is seconds; default: #{Commands::Lock::DEFAULT_POLL_SECONDS})
           --max-wait DUR    Stop waiting after DUR, e.g. "9m" (a plain number is
                             seconds; exit 75; re-run to keep
-                            waiting). This is when to give up polling, not a hard
-                            deadline: if promoted to holder at the instant DUR
-                            elapses, acquire still exits 0 holding the lock. Run
-                            `acquire --wait` in the background and treat the
-                            process's exit code as the signal, not the printed
-                            message.
+                            waiting; implies --wait). This is when to give up
+                            polling, not a hard deadline: if promoted to holder
+                            at the instant DUR elapses, acquire still exits 0
+                            holding the lock. Run `acquire --max-wait` in the
+                            background and treat the process's exit code as
+                            the signal, not the printed message.
 
         Exit codes (acquire):
           0   acquired
@@ -858,13 +858,14 @@ module Workspace
         opts.on("--task TEXT", "Free-text description shown to other waiters") { |v| task = v }
         opts.on("--wait", "Enqueue and poll instead of refusing when busy") { wait = true }
         opts.on("--poll DURATION", "Time between polls while waiting (e.g. \"5s\", or a plain number of seconds)") { |v| poll = parse_lock_duration("--poll", v) }
-        opts.on("--max-wait DURATION", "Give up after DURATION (e.g. \"9m\", or a plain number of seconds); exits 75") { |v| max_wait = parse_lock_duration("--max-wait", v) }
+        opts.on("--max-wait DURATION", "Give up after DURATION (e.g. \"9m\", or a plain number of seconds); exits 75; implies --wait") { |v| max_wait = parse_lock_duration("--max-wait", v) }
       end
       parser.parse!(args)
 
       name = args.shift
       raise UsageError, parser.help if name.nil? || args.any?
 
+      wait ||= !max_wait.nil?
       result = @lock_command.acquire(name, task: task, wait: wait, poll: poll, max_wait: max_wait, working_dir: @working_dir)
       @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
     end
@@ -983,7 +984,7 @@ module Workspace
           --wait            Queue behind another worktree's dev env
           --takeover        Stop another worktree's dev env, then start this one
           --no-ready        Don't wait for the dev.ready check
-          --max-wait DUR    With --wait, give up after DUR seconds (exit 75)
+          --max-wait DUR    Give up after DUR seconds (exit 75); implies --wait
 
         Options (down):
           --force           Also kill a process group left behind by a dead wrapper
@@ -1024,12 +1025,12 @@ module Workspace
         opts.on("--wait", "Queue behind another worktree's dev env") { wait = true }
         opts.on("--takeover", "Stop another worktree's dev env, then start this one") { takeover = true }
         opts.on("--[no-]ready", "Wait for the dev.ready check (default: on)") { |v| ready = v }
-        opts.on("--max-wait DURATION", Float, "With --wait, give up after DURATION seconds (exit 75)") { |v| max_wait = v }
+        opts.on("--max-wait DURATION", Float, "Give up after DURATION seconds (exit 75); implies --wait") { |v| max_wait = v }
       end
       parser.parse!(args)
       raise UsageError, parser.help if args.any?
-      raise UsageError, "--max-wait requires --wait." if max_wait && !wait
 
+      wait ||= !max_wait.nil?
       result = @dev_command.up(wait: wait, takeover: takeover, ready: ready, max_wait: max_wait, working_dir: @working_dir)
       @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
     end

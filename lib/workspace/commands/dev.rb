@@ -70,7 +70,8 @@ module Workspace
       # @param wait [Boolean] queue FIFO behind another worktree's env instead of refusing
       # @param takeover [Boolean] stop another worktree's env first
       # @param ready [Boolean] run the `dev.ready` probe before returning
-      # @param max_wait [Numeric, nil] with +wait+, give up (exit 75) after this many seconds
+      # @param max_wait [Numeric, nil] give up (exit 75) after this many seconds; the CLI
+      #   forces +wait+ true whenever this is set
       # @param working_dir [String] directory inside the worktree to start
       # @return [Hash] {exit_code:} — 0, 1 (refused/failed), 4 (cleared while
       #   queued), 6 (ready check failed), or 75 (still queued after max_wait)
