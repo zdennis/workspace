@@ -17,7 +17,7 @@ module Workspace
       @state = state
       @hook_installer = hook_installer
       @project_detector = project_detector
-      @which = which || ->(exe) { system("command", "-v", exe, out: File::NULL, err: File::NULL) }
+      @which = which || Workspace::Which
       @git = git
       @working_dir = working_dir
       @output = output
@@ -180,12 +180,21 @@ module Workspace
       if missing.empty?
         @output.puts "  ✓  edit lock hooks installed in every worktree"
       else
-        @output.puts "  ⚠  edit lock hooks missing in #{missing.size} worktree(s): #{missing.join(", ")}"
+        @output.puts "  ⚠  edit lock hooks missing in #{missing.size} worktree(s): #{missing.map { |path| short_worktree_label(path, worktrees) }.join(", ")}"
         @output.puts "     ↳ fix: run 'workspace init' from each worktree listed above"
       end
     rescue Workspace::Error, SystemCallError
       # git unavailable or not a repo here; the hooks check above already
       # covers @working_dir, so skipping the rest is not worth failing over.
+    end
+
+    # Shortens a worktree path to its basename for display, unless another
+    # worktree in the list shares that basename, in which case the full path
+    # is kept to avoid ambiguity.
+    def short_worktree_label(path, all_worktrees)
+      basename = File.basename(path)
+      collides = all_worktrees.any? { |other| other != path && File.basename(other) == basename }
+      collides ? path : basename
     end
 
     def check_command(name, version_flag: "--version", version_pattern: /(\d+)/, min_major: nil, install_hint: nil)

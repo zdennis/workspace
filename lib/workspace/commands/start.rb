@@ -21,7 +21,7 @@ module Workspace
         @launch_command = launch_command
         @lineage = lineage
         @hook_installer = hook_installer
-        @which = which || ->(exe) { system("command", "-v", exe, out: File::NULL, err: File::NULL) }
+        @which = which || Workspace::Which
         @output = output
         @input = input
       end
