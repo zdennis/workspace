@@ -19,8 +19,8 @@ module Workspace
     # The placeholder the instruction text shows where the summary goes. A
     # line carrying it is the instruction itself, wrapped onto a line of its
     # own by the pane's width, not the stage reporting back. A wrap can fall
-    # anywhere after the marker, so a line holding nothing after the marker,
-    # or only the start of the placeholder, is the instruction too.
+    # anywhere after the marker: a line holding only the start of the
+    # placeholder is the instruction when the next line carries the rest.
     SUMMARY_PLACEHOLDER = "<one-line summary>".freeze
 
     # @param token [String, nil] the dispatch token, or nil for a tokenless sentinel
@@ -119,20 +119,27 @@ module Workspace
       output = capture
       return nil unless output
 
-      lines = output.lines
-      return nil if lines.size <= @baseline
-
-      lines.drop(@baseline).reverse_each do |line|
-        match = @pattern.match(line)
+      lines = output.lines.drop(@baseline)
+      (lines.size - 1).downto(0) do |i|
+        match = @pattern.match(lines[i])
         next unless match
         summary = match[1].to_s.strip
-        return summary unless echoed_instruction?(summary)
+        return summary unless echoed_instruction?(summary, lines[i + 1])
       end
       nil
     end
 
-    def echoed_instruction?(summary)
-      SUMMARY_PLACEHOLDER.start_with?(summary)
+    # A bare marker is always taken for the instruction wrapped just after
+    # it, never a stage reporting back. This is deliberate: the instruction
+    # asks for a summary, and a narrow pane leaves no other way to tell the
+    # two apart.
+    def echoed_instruction?(summary, next_line)
+      return true if summary.empty? || summary == SUMMARY_PLACEHOLDER
+      return false unless SUMMARY_PLACEHOLDER.start_with?(summary)
+
+      rest = SUMMARY_PLACEHOLDER.delete_prefix(summary).strip
+      continued = next_line.to_s.strip
+      !continued.empty? && (rest.start_with?(continued) || continued.start_with?(rest))
     end
   end
 end

@@ -74,6 +74,19 @@ RSpec.describe Workspace::SentinelPoller do
       expect(poll(["", "  WORKSPACE_DONE:ab12 <one-line\n  summary>\n"], token: "ab12")).to be_nil
     end
 
+    it "ignores the instruction wrapped mid-word inside the placeholder" do
+      expect(poll(["", "WORKSPACE_DONE:ab12 <one-li\nne summary>\n"], token: "ab12")).to be_nil
+    end
+
+    it "counts a real summary that starts with an angle bracket" do
+      expect(poll(["", "WORKSPACE_DONE:ab12 <b>fixed</b>\n"], token: "ab12")).to eq("<b>fixed</b>")
+      expect(poll(["", "WORKSPACE_DONE:ab12 <none>\n"], token: "ab12")).to eq("<none>")
+    end
+
+    it "counts a real summary that happens to start like the placeholder" do
+      expect(poll(["", "WORKSPACE_DONE:ab12 <one\nmore thing\n"], token: "ab12")).to eq("<one")
+    end
+
     it "still finds the stage's real sentinel below a wrapped echo of the instruction" do
       expect(poll(["", "WORKSPACE_DONE:ab12\n<one-line summary>\nWORKSPACE_DONE:ab12 all done\n"], token: "ab12"))
         .to eq("all done")
