@@ -172,6 +172,19 @@ module Workspace
       end
     end
 
+    # Reaps dead holders and waiters, promoting the next live waiter, and
+    # returns +name+'s holder afterwards. Unlike {#status}, a crashed holder's
+    # record is removed rather than just flagged stale.
+    #
+    # @param name [String] lock name
+    # @return [Hash, nil] the live holder record, or nil if the lock is free
+    def current_holder(name)
+      with_lock do |data|
+        reap!(data)
+        data[name]&.dig("holder")
+      end
+    end
+
     # Abandons a wait, e.g. on SIGINT/SIGTERM while blocked in `acquire
     # --wait`: removes the waiter from the queue, or releases the lock if it
     # was already promoted to this waiter, so an interrupted wait never

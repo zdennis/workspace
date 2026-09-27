@@ -38,9 +38,8 @@ module Workspace
       return nil unless any_edit_hold?
 
       store = store_for(cwd)
-      holder = store.status(LOCK_NAME)[LOCK_NAME]&.dig("holder")
+      holder = store.current_holder(LOCK_NAME)
       return nil unless holder
-      return nil if holder["stale"]
 
       identity = @lock_holder.current
       return nil unless identity

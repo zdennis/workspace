@@ -232,6 +232,26 @@ RSpec.describe Workspace::LockStore do
     end
   end
 
+  describe "#current_holder" do
+    it "reaps a dead holder and returns the promoted waiter" do
+      s = store
+      s.acquire("edit", identity: identity(pid: 100), waiter_pid: 100, waiter_started: "start-100")
+      s.acquire("edit", identity: identity(pid: 200), waiter_pid: 201, waiter_started: "start-201", wait: true)
+      liveness.kill(100)
+
+      expect(s.current_holder("edit")).to include("pid" => 200, "unclaimed" => true)
+    end
+
+    it "returns nil once a dead holder with no waiters is reaped" do
+      s = store
+      s.acquire("edit", identity: identity(pid: 100), waiter_pid: 100, waiter_started: "start-100")
+      liveness.kill(100)
+
+      expect(s.current_holder("edit")).to be_nil
+      expect(JSON.parse(File.read(File.join(tmpdir, "locks.json")))["edit"]["holder"]).to be_nil
+    end
+  end
+
   describe "#dequeue" do
     it "removes one waiter, e.g. on SIGINT" do
       s = store
