@@ -864,7 +864,8 @@ module Workspace
 
         Records a question an unattended agent hit, with the default it took,
         so the agent can keep going instead of blocking on a person. Never
-        reads stdin; returns as soon as the question is recorded.
+        reads stdin; returns once the question is recorded and any notify
+        command has finished (it is stopped after 10 seconds).
 
         Subcommands:
           list                    Show open questions for this workspace

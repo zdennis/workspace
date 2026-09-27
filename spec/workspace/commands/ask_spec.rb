@@ -8,7 +8,7 @@ RSpec.describe Workspace::Commands::Ask do
   let(:config) { instance_double(Workspace::Config, ask_state_path: File.join(tmpdir, "asks.json")) }
   let(:project_detector) { instance_double(Workspace::ProjectDetector, detect: "myapp") }
   let(:alert_config) { nil }
-  let(:notifier) { instance_double(Workspace::Notifier, notify: nil) }
+  let(:notifier) { instance_double(Workspace::Notifier, notify: nil, wait: nil) }
   let(:notifier_factory) { ->(_command) { notifier } }
 
   after { FileUtils.remove_entry(tmpdir) if File.directory?(tmpdir) }
@@ -66,6 +66,25 @@ RSpec.describe Workspace::Commands::Ask do
           "WORKSPACE_ALERT_DEFAULT" => "sqlite",
           "WORKSPACE_ALERT_CONTEXT" => "lib/x.rb:1"
         ))
+      end
+
+      it "waits for the notify command, so the process doesn't exit before spawning it" do
+        allow(alert_config).to receive(:for_workspace).with("myapp").and_return(notify: "notify-cmd", idle_after: 600)
+
+        command.call(question: "q", default: "d", working_dir: "/app")
+
+        expect(notifier).to have_received(:notify).ordered
+        expect(notifier).to have_received(:wait).ordered
+      end
+
+      it "labels notify failures as coming from workspace ask" do
+        allow(alert_config).to receive(:for_workspace).with("myapp").and_return(notify: "exit 3", idle_after: 600)
+        real = described_class.new(config: config, project_detector: project_detector, alert_config: alert_config,
+          env: {}, output: output, error_output: error_output)
+
+        real.call(question: "q", default: "d", working_dir: tmpdir)
+
+        expect(error_output.string).to start_with("workspace ask: notify command failed")
       end
     end
 

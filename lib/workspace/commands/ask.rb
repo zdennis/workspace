@@ -4,8 +4,9 @@ module Workspace
   module Commands
     # Records a question an unattended agent hits, along with the default it
     # took, so the agent can keep going instead of blocking on a person.
-    # `ask` never reads stdin and returns as soon as the question is on
-    # disk; a human reviews and resolves open questions later with
+    # `ask` never reads stdin and returns once the question is on disk and
+    # any notify command has finished (or been stopped at its timeout); a
+    # human reviews and resolves open questions later with
     # `ask list`/`ask answer`.
     class Ask
       # Bumped whenever the `--json` payload's shape changes in a
@@ -21,18 +22,21 @@ module Workspace
       # @param env [Hash] process environment, for `TMUX_PANE`
       # @param output [IO] stream for the recorded/listed/answered question
       # @param error_output [IO]
-      def initialize(config:, project_detector:, alert_config: nil, notifier_factory: ->(command) { Notifier.new(command: command) },
+      def initialize(config:, project_detector:, alert_config: nil, notifier_factory: nil,
         env: ENV, output: $stdout, error_output: $stderr)
         @config = config
         @project_detector = project_detector
         @alert_config = alert_config
-        @notifier_factory = notifier_factory
+        @notifier_factory = notifier_factory ||
+          ->(command) { Notifier.new(command: command, error_output: error_output, label: "workspace ask") }
         @env = env
         @output = output
         @error_output = error_output
       end
 
-      # Records a new open question and returns at once.
+      # Records a new open question. Returns at once unless the project has a
+      # notify command, in which case it waits for that command, which the
+      # notifier stops at its own timeout.
       #
       # @param question [String]
       # @param default [String] the default the agent took
@@ -44,13 +48,16 @@ module Workspace
         name = workspace_for(working_dir)
         record = store_for(name).add(question: question, default: default, context: context,
           pane: @env["TMUX_PANE"], worktree: working_dir)
-        notify(name, record)
+        notifier = notify(name, record)
 
         if json
           @output.puts JSON.generate({"schema_version" => JSON_SCHEMA_VERSION, "question" => record})
         else
           @output.puts "Recorded question #{record["id"]} for #{name} (took default: #{default})"
         end
+        # This process exits as soon as `call` returns, which would kill the
+        # notifier thread before it spawns the command.
+        notifier&.wait
         {exit_code: 0}
       rescue Workspace::Error => e
         raise unless json
@@ -120,6 +127,8 @@ module Workspace
       # person watching for alerts hears about the question right away. No
       # notify config means the question is recorded and nothing else
       # happens; that is not an error.
+      #
+      # @return [Workspace::Notifier, nil] the notifier to wait on, if one ran
       def notify(name, record)
         return unless @alert_config
         command = @alert_config.for_workspace(name)[:notify]
@@ -139,9 +148,12 @@ module Workspace
         }
         env["WORKSPACE_ALERT_CONTEXT"] = record["context"] if record["context"]
         env["WORKSPACE_ALERT_PANE"] = record["pane"] if record["pane"]
-        @notifier_factory.call(command).notify(env)
+        notifier = @notifier_factory.call(command)
+        notifier.notify(env)
+        notifier
       rescue Workspace::Error => e
         @error_output.puts "workspace ask: could not read alert settings for #{name}: #{e.message}"
+        nil
       end
     end
   end

@@ -20,7 +20,7 @@ workspace ask answer <id> "<answer>" [--json]
 
 ## Details
 
-**Never blocks** — `ask` never reads stdin. It writes the question to disk and returns; the calling agent keeps going with the default it already stated.
+**Never blocks on a person** — `ask` never reads stdin. It writes the question to disk and returns; the calling agent keeps going with the default it already stated. When `alerts.notify` is configured, `ask` waits for the notify command before returning, so the command actually runs; one still going after 10 seconds is stopped.
 
 **Workspace detection** — same as other commands: the marker file, then the active project for the current directory. `ask`, `ask list`, and `ask answer` all act on the workspace detected from the current directory.
 
