@@ -283,10 +283,15 @@ module Workspace
     # kind-specific side effect.
     #
     # With +keep_process_holder+, a `kind: "process"` holder is left in
-    # place and only the queue is removed, except for a live waiter queued by
-    # `dev up --takeover`: that one means to replace this holder, not wait
+    # place, and so is its queue: each waiter is marked `clearing` with
+    # +clearer+ instead, which holds it back from promotion (and everyone
+    # behind it) while that clearer runs. {#finish_clear} removes those
+    # waiters once the group is stopped; {#keep_process_holder} unmarks them,
+    # so they go on waiting when it can't be. A live waiter queued by `dev up
+    # --takeover` is not marked: it means to replace this holder, not wait
     # on it, so it stays first in line and {#finish_clear} (or the holder's
-    # own release) promotes it. The holder's process group has to be
+    # own release) promotes it. Without +clearer+ the marked waiters are
+    # removed at once instead. The holder's process group has to be
     # stopped outside the flock (the wrapper needs it to release), and the
     # lock must keep naming the holder until that has succeeded, or a second
     # dev environment could start beside one that is still running. The
@@ -327,9 +332,14 @@ module Workspace
         end
         yield holder if block_given?
         if keep
-          holder["clearing"] = clearer.slice("pid", "started") if clearer
           takeovers, queue = entry["queue"].partition { |w| w["takeover"] && waiter_alive?(w) }
-          entry["queue"] = takeovers
+          if clearer
+            marker = clearer.slice("pid", "started")
+            holder["clearing"] = marker
+            queue.each { |w| w["clearing"] = marker }
+          else
+            entry["queue"] = takeovers
+          end
           @logger.debug { "lock: clearing #{name}#{" by #{cleared_by}" if cleared_by}, holder kept until stopped" }
           audit(:clear, name, holder: holder_summary(holder), queue_size: queue.size, cleared_by: cleared_by, holder_kept: true,
             takeovers_kept: takeovers.empty? ? nil : takeovers.size)
@@ -344,30 +354,33 @@ module Workspace
 
     # Completes a {#clear} that kept a `kind: "process"` holder, once its
     # process group is stopped: removes that holder if the lock still names
-    # it (same pid and start time), logging a `release` by +cleared_by+, then
-    # promotes anyone who queued since. A holder that already released or
-    # was reaped is left as it is, and so is whoever holds the lock now.
+    # it (same pid and start time), logging a `release` by +cleared_by+,
+    # removes the waiters that clear marked, then promotes anyone who queued
+    # since. A holder that already released or was reaped is left as it is,
+    # and so is whoever holds the lock now.
     #
     # @param name [String] lock name
     # @param holder [Hash] the holder record {#clear} returned
     # @param cleared_by [String, nil] identity recorded for logging
+    # @param clearer [Hash, nil] the +clearer+ given to {#clear}
     # @return [Hash, nil] nil once the lock no longer names +holder+ (removed
     #   here, or released on its own), or the record of whoever else held it
     #   by then
-    def finish_clear(name, holder, cleared_by: nil)
+    def finish_clear(name, holder, cleared_by: nil, clearer: nil)
       with_lock(lenient: true) do |data|
         entry = data[name]
         next nil unless entry
+        entry["queue"].reject! { |w| waiter_marked_by?(w, clearer) }
         current = entry["holder"]
         other = nil
         if same_process?(current, holder)
           entry["holder"] = nil
           @logger.debug { "lock: cleared #{name}#{" by #{cleared_by}" if cleared_by}" }
           audit(:release, name, holder: holder_summary(holder), cleared_by: cleared_by)
-          promote!(entry, name)
         else
           other = current
         end
+        promote!(entry, name)
         data.delete(name) if entry["holder"].nil? && entry["queue"].empty? && !entry["displaced"]
         other
       end
@@ -381,7 +394,9 @@ module Workspace
     # since but not yet told goes back to the head of the queue.
     #
     # Only a `clearing` marker naming +clearer+ is dropped: one left by
-    # another clearer that is still stopping the group stays in place.
+    # another clearer that is still stopping the group stays in place. The
+    # waiters {#clear} marked for +clearer+ are unmarked, so they go on
+    # waiting for this holder.
     #
     # @param name [String] lock name
     # @param holder [Hash] the holder record {#clear} returned
@@ -393,6 +408,7 @@ module Workspace
     def keep_process_holder(name, holder, cleared_by: nil, clearer: nil)
       with_lock(lenient: true) do |data|
         entry = data[name] ||= empty_entry
+        entry["queue"].each { |w| drop_clearing_marker!(w, clearer) }
         current = entry["holder"]
         if same_process?(current, holder)
           current["kept"] = true
@@ -830,8 +846,11 @@ module Workspace
     # "unclaimed" until its waiter polls and learns of the promotion, and
     # keeps a takeover waiter's mark until then, so a promotion taken back
     # by {#keep_process_holder} requeues it as a takeover.
+    # A waiter marked by a `lock clear` still running stops promotion there,
+    # so it and everyone behind it keep their places until that clear ends.
     def promote!(entry, name = nil)
       while entry["holder"].nil? && !entry["queue"].empty?
+        break if live_clearing_marker(entry["queue"].first)
         candidate = entry["queue"].shift
         next unless waiter_alive?(candidate)
         entry["holder"] = holder_from_waiter(candidate).merge({"unclaimed" => true}, candidate.slice("takeover"))
@@ -839,12 +858,17 @@ module Workspace
       end
     end
 
-    # The `clearing` marker {#clear} left on +holder+, while the clear that
-    # left it still runs (or its liveness can't be checked).
+    # The `clearing` marker {#clear} left on +holder+ (or a waiter), while
+    # the clear that left it still runs (or its liveness can't be checked).
     def live_clearing_marker(holder)
       marker = holder["clearing"]
       return nil unless marker.is_a?(Hash) && marker["pid"]
       alive_or_unknown?(marker["pid"], marker["started"]) ? marker : nil
+    end
+
+    def waiter_marked_by?(waiter, clearer)
+      marker = waiter["clearing"]
+      marker.is_a?(Hash) && same_clearer?(marker, clearer)
     end
 
     def same_clearer?(marker, clearer)

@@ -323,7 +323,7 @@ RSpec.describe Workspace::Commands::Lock do
         Workspace::LockStore.new(dir: tmpdir, liveness: FakeLockLiveness.new).status("devenv").dig("devenv", "holder", "pid")
       end
 
-      it "keeps the lock and exits 1 when the group belongs to another user" do
+      it "keeps the lock and exits 1 when the group belongs to another user, leaving its waiters queued" do
         hold_devenv
         enqueue_waiter(name: "devenv", identity: FakeLockIdentity.new(pid: 300), task: "next")
         allow(terminator).to receive(:stop_holder).and_raise(not_permitted)
@@ -332,7 +332,9 @@ RSpec.describe Workspace::Commands::Lock do
 
         expect(result).to eq(exit_code: 1)
         expect(devenv_holder_pid).to eq(4242)
-        expect(Workspace::LockStore.new(dir: tmpdir, liveness: FakeLockLiveness.new).status("devenv")["devenv"]["queue"]).to be_empty
+        queue = Workspace::LockStore.new(dir: tmpdir, liveness: FakeLockLiveness.new).status("devenv")["devenv"]["queue"]
+        expect(queue.map { |w| w["agent_pid"] }).to eq([300])
+        expect(queue.first).not_to have_key("clearing")
         expect(error_output.string).to include("Could not stop process group 4242 (pid 4242): process group 4242",
           "owned by alice", "Kept devenv lock", "kill -TERM -4242", "workspace lock clear devenv")
         expect(output.string).not_to include("Cleared devenv")

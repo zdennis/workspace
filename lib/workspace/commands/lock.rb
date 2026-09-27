@@ -182,14 +182,16 @@ module Workspace
       # recorded start time, so a reused pgid is never signalled. The lock
       # keeps naming that holder until its group is stopped; a group this
       # user may not signal, or one still running after SIGKILL, keeps its
-      # lock (its waiters are still removed) and makes `clear` exit 1, since
+      # lock (its waiters stay queued behind it) and makes `clear` exit 1, since
       # freeing it would let a second dev environment start beside it. So
       # does a holder whose pid is already gone while its group still has
       # members (and its id was not reused); otherwise a gone holder is
       # cleared. The holder is also yielded while the store is still locked.
       # A process holder another live `clear` is already stopping is left
       # to that clear: it is not signalled or logged twice, and this one
-      # exits 1 without clearing it.
+      # exits 1 without clearing it. While a group is being stopped its
+      # waiters keep their places (none is promoted); they are removed once
+      # it is stopped, and go on waiting if it can't be.
       #
       # @param name [String, nil] lock name, or nil with all: true
       # @param all [Boolean] clear every lock in this namespace; one that has
@@ -376,7 +378,7 @@ module Workspace
         if removed&.dig(:pending)
           holder = removed[:holder]
           return false unless stop_process_holder(store, name, holder, label, project, clearer)
-          other = store.finish_clear(name, holder, cleared_by: label)
+          other = store.finish_clear(name, holder, cleared_by: label, clearer: clearer)
           if other && !kept_takeover?(removed, other)
             @error_output.puts "Stopped process group #{holder["pgid"] || holder["pid"]} (pid #{holder["pid"]}), but the " \
               "#{name} lock is now held by #{describe_holder(other)} (pid #{other["pid"]}), so it was not cleared."

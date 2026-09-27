@@ -451,6 +451,61 @@ RSpec.describe Workspace::LockStore do
         expect(events[1]).to include("event" => "release", "lock" => "devenv", "cleared_by" => "pid 9")
       end
 
+      context "with a clearer" do
+        let(:clearer) { {"pid" => 900, "started" => "start-900"} }
+
+        def hold_queue_and_clear(s)
+          s.acquire("devenv", identity: process_identity(pid: 100), waiter_pid: 100, waiter_started: "start-100")
+          s.acquire("devenv", identity: process_identity(pid: 200), waiter_pid: 200, waiter_started: "start-200", wait: true)
+          s.clear("devenv", keep_process_holder: true, clearer: clearer)
+        end
+
+        it "holds the queue back from promotion while the group is stopped, then removes it" do
+          s = store
+          removed = hold_queue_and_clear(s)
+
+          expect(removed[:queue].map { |w| w["waiter_pid"] }).to eq([200])
+          expect(s.poll("devenv", 200)).to include(status: :queued)
+          s.release("devenv", 100)
+          expect(s.status("devenv")["devenv"]["holder"]).to be_nil
+          expect(s.poll("devenv", 200)).to include(status: :queued)
+
+          expect(s.finish_clear("devenv", removed[:holder], clearer: clearer)).to be_nil
+          expect(s.poll("devenv", 200)).to eq(status: :cleared)
+        end
+
+        it "promotes a waiter that queued after the clear once finish_clear removes the held-back ones" do
+          s = store
+          removed = hold_queue_and_clear(s)
+          s.acquire("devenv", identity: process_identity(pid: 300), waiter_pid: 300, waiter_started: "start-300", wait: true)
+
+          s.finish_clear("devenv", removed[:holder], clearer: clearer)
+
+          expect(s.status("devenv")["devenv"]["holder"]).to include("pid" => 300)
+        end
+
+        it "leaves the queue waiting, unmarked, when the holder is kept" do
+          s = store
+          removed = hold_queue_and_clear(s)
+
+          s.keep_process_holder("devenv", removed[:holder], clearer: clearer)
+
+          queue = s.status("devenv")["devenv"]["queue"]
+          expect(queue.map { |w| w["waiter_pid"] }).to eq([200])
+          expect(queue.first).not_to have_key("clearing")
+        end
+
+        it "no longer holds the queue back once the clearer is gone" do
+          s = store
+          hold_queue_and_clear(s)
+          liveness.kill(900)
+
+          s.release("devenv", 100)
+
+          expect(s.status("devenv")["devenv"]["holder"]).to include("pid" => 200)
+        end
+      end
+
       it "keeps a queued takeover, which finish_clear then promotes" do
         s = store
         s.acquire("devenv", identity: process_identity(pid: 100), waiter_pid: 100, waiter_started: "start-100")
