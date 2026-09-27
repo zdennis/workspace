@@ -106,6 +106,23 @@ RSpec.describe "workspace ask adversarial findings" do
     end
   end
 
+  # --- subcommand dispatch is flag-position independent ---
+  describe "subcommand dispatch with a leading flag" do
+    it "routes `ask --json list` to list, not to recording" do
+      cli.run(["ask", "--json", "list"])
+
+      expect(ask_command.calls).to contain_exactly(a_hash_including(action: :list, json: true))
+    end
+
+    it "routes `ask --json answer <id> <text>` to answer, not to recording" do
+      cli.run(["ask", "--json", "answer", "a1b2c3", "the answer"])
+
+      expect(ask_command.calls).to contain_exactly(
+        a_hash_including(action: :answer, id: "a1b2c3", answer: "the answer", json: true)
+      )
+    end
+  end
+
   # --- AU3: in-CLI help omits --json on `ask answer`, contradicting docs/README.ask.md ---
   describe "help text vs documented behavior" do
     it "AU3: ask_help's usage line for `ask answer` omits [--json], even though `ask answer --json` is supported and documented" do

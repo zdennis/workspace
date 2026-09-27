@@ -852,9 +852,15 @@ module Workspace
       # "list" or "help" is the question text, not a subcommand.
       return cmd_ask_record(args) if args.any? { |a| a == "--default" || a.start_with?("--default=") }
 
-      case args.first
-      when "list" then cmd_ask_list(args.drop(1))
-      when "answer", "resolve" then cmd_ask_answer(args.drop(1))
+      # The subcommand is the first non-option argument, so a leading flag
+      # (e.g. `ask --json list`) doesn't get mistaken for the question text.
+      index = args.index { |a| !a.start_with?("-") }
+      subcommand = index && args[index]
+      rest = index ? args[0...index] + args[(index + 1)..] : args
+
+      case subcommand
+      when "list" then cmd_ask_list(rest)
+      when "answer", "resolve" then cmd_ask_answer(rest)
       when "help", "--help", "-h", nil then @output.puts ask_help
       else cmd_ask_record(args)
       end
@@ -910,7 +916,7 @@ module Workspace
       question = args.shift
       if question.nil? || args.any? || default.nil?
         raise UsageError, parser.help unless json_requested?(json, args)
-        emit_json_usage_error(Commands::Ask::JSON_SCHEMA_VERSION, "workspace ask: a question and --default are required.")
+        return emit_json_usage_error(Commands::Ask::JSON_SCHEMA_VERSION, "workspace ask: a question and --default are required.")
       end
 
       result = @ask_command.call(question: question, default: default, context: context, working_dir: @working_dir, json: json)
@@ -948,7 +954,7 @@ module Workspace
       answer = args.shift
       if id.nil? || answer.nil? || args.any?
         raise UsageError, parser.help unless json_requested?(json, args)
-        emit_json_usage_error(Commands::Ask::JSON_SCHEMA_VERSION, "workspace ask answer: an id and an answer are required.")
+        return emit_json_usage_error(Commands::Ask::JSON_SCHEMA_VERSION, "workspace ask answer: an id and an answer are required.")
       end
 
       result = @ask_command.answer(id, answer, working_dir: @working_dir, json: json)
