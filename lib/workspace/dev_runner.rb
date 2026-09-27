@@ -15,6 +15,11 @@ module Workspace
   # SIGTERM (or SIGHUP) to the wrapper pid only; the wrapper forwards it once
   # to the whole group, reaching the command's own children too, and ignores
   # the copy delivered back to itself.
+  #
+  # The lock is released only once nothing else is left in the wrapper's
+  # group: a process the command left behind, or one running as another user
+  # (a server under `sudo`) that the wrapper cannot signal, keeps the dev
+  # environment running after the command exits, so a second one must not start.
   class DevRunner
     LOCK_NAME = "devenv"
     DEFAULT_POLL_SECONDS = 1
@@ -28,13 +33,17 @@ module Workspace
     # @param kill [#call] sends a signal, called as `kill.call(signal, target)` like `Process.kill`
     # @param pgrp [#call] returns this process's process group id
     # @param sleeper [#call] sleeps between polls while queued
-    # @param poll [Numeric] seconds between polls while queued
+    # @param poll [Numeric] seconds between polls while queued, or while
+    #   waiting for the process group to empty
+    # @param group_members [#call] called with a pgid, returns the pids of that
+    #   group's live (non-zombie) members, whoever owns them
     def initialize(liveness:, output: $stdout, env: ENV,
       trap: ->(signal, handler) { Signal.trap(signal, handler) },
       spawner: ->(command, chdir) { Process.spawn("/bin/sh", "-c", command, chdir: chdir) },
       kill: ->(signal, target) { Process.kill(signal, target) },
       pgrp: -> { Process.getpgrp },
-      sleeper: ->(seconds) { sleep(seconds) }, poll: DEFAULT_POLL_SECONDS)
+      sleeper: ->(seconds) { sleep(seconds) }, poll: DEFAULT_POLL_SECONDS,
+      group_members: ->(pgid) { ProcessGroupTerminator.new.live_member_pids(pgid) })
       @liveness = liveness
       @output = output
       @env = env
@@ -44,6 +53,7 @@ module Workspace
       @pgrp = pgrp
       @sleeper = sleeper
       @poll = poll
+      @group_members = group_members
     end
 
     # Acquires `devenv`, runs +command+ to completion, and releases the lock.
@@ -166,9 +176,35 @@ module Workspace
       forward(@pending_signal) if @pending_signal
       _, status = Process.wait2(@child_pid)
       @termsig = status.termsig
+      wait_for_group
       status.exitstatus || 128 + status.termsig
     ensure
       previous&.each { |sig, handler| @trap.call(sig, handler) }
+    end
+
+    # Runs with the stop-signal handlers still in place, so a SIGTERM that
+    # arrives meanwhile is still forwarded to the group. A process table that
+    # can't be read counts as a group still running.
+    def wait_for_group
+      announced = false
+      loop do
+        others = other_group_members
+        return if others&.empty?
+        unless announced
+          what = others ? "#{others.size} process(es)" : "processes"
+          @output.puts "[workspace] Command exited; waiting for #{what} left in process group #{Process.pid} " \
+            "to exit before releasing the #{LOCK_NAME} lock."
+          @output.flush
+          announced = true
+        end
+        @sleeper.call(@poll)
+      end
+    end
+
+    def other_group_members
+      @group_members.call(Process.pid) - [Process.pid]
+    rescue Workspace::Error
+      nil
     end
 
     def spawn_child(command, worktree)

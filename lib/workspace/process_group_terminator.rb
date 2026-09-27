@@ -113,6 +113,14 @@ module Workspace
       holder["pgid"] == holder["pid"] && pid_alive.call(holder["pid"])
     end
 
+    # @param pgid [Integer]
+    # @return [Array<Integer>] pids of the group's members that are not
+    #   zombies, whoever owns them
+    # @raise [Workspace::Error] if the process table cannot be read
+    def live_member_pids(pgid)
+      ps_members(Integer(pgid)).filter_map { |pid, state, _user| pid unless state.start_with?("Z") }
+    end
+
     private
 
     def pid_alive?(pid)
@@ -158,20 +166,23 @@ module Workspace
     end
 
     def ps_member_states(pgid)
-      ps_members(pgid).map(&:first)
+      ps_members(pgid).map { |_pid, state, _user| state }
     end
 
     def ps_member_owners(pgid)
-      ps_members(pgid).filter_map { |state, user| user unless state.start_with?("Z") }.uniq
+      ps_members(pgid).filter_map { |_pid, state, user| user unless state.start_with?("Z") }.uniq
     end
 
-    # @return [Array<Array(String, String)>] [state, user] for each process in the group
+    # `ps` runs in a process group of its own, so a caller listing its own
+    # group (the dev wrapper) never finds `ps` in it.
+    #
+    # @return [Array<Array(Integer, String, String)>] [pid, state, user] for each process in the group
     def ps_members(pgid)
-      stdout, stderr, status = Open3.capture3({"LC_ALL" => "C"}, "ps", "-axo", "pgid=,stat=,user=")
+      stdout, stderr, status = Open3.capture3({"LC_ALL" => "C"}, "ps", "-axo", "pid=,pgid=,stat=,user=", pgroup: true)
       raise Workspace::Error, "could not read the process table (ps failed: #{stderr.strip})" unless status.success?
       stdout.lines.filter_map do |line|
-        group, state, user = line.split
-        [state, user] if group.to_i == pgid && state
+        pid, group, state, user = line.split
+        [pid.to_i, state, user] if group.to_i == pgid && state
       end
     end
   end

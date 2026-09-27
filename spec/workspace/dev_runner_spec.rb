@@ -67,13 +67,17 @@ RSpec.describe Workspace::DevRunner do
 
     let(:kills) { [] }
 
+    # The group is this rspec process's own pid, so its real members are
+    # never looked up: each example says who else is in it.
     def runner(**opts)
       described_class.new(liveness: liveness, output: output, env: {"TMUX_PANE" => "%7"}, trap: trap,
-        pgrp: -> { Process.pid }, kill: ->(signal, target) { kills << [signal, target] }, sleeper: ->(_) {}, **opts)
+        pgrp: -> { Process.pid }, kill: ->(signal, target) { kills << [signal, target] }, sleeper: ->(_) {},
+        group_members: ->(_pgid) { [Process.pid] }, **opts)
     end
 
     def run_with(store: fake_store, **opts)
-      runner(**opts.slice(:spawner, :kill, :pgrp, :sleeper)).call(store: store, **opts.except(:spawner, :kill, :pgrp, :sleeper))
+      seams = %i[spawner kill pgrp sleeper group_members]
+      runner(**opts.slice(*seams)).call(store: store, **opts.except(*seams))
     end
 
     it "records a process-kind holder with its pgid, branch, pane and worktree" do
@@ -111,6 +115,30 @@ RSpec.describe Workspace::DevRunner do
 
       expect(code).to eq(128 + Signal.list["USR1"])
       expect(output.string).to include("exited on SIGUSR1")
+      expect(devenv_holder).to be_nil
+    end
+
+    it "holds the lock until the rest of its process group has exited" do
+      members = [[Process.pid, 4321], [Process.pid, 4321], [Process.pid]].each
+      held = []
+      code = run_with(command: "exit 0", worktree: worktree, group_members: ->(_pgid) { members.next },
+        sleeper: ->(_) { held << devenv_holder&.dig("pid") })
+
+      expect(code).to eq(0)
+      expect(held).to eq([Process.pid, Process.pid])
+      expect(output.string.scan("waiting for").size).to eq(1)
+      expect(output.string).to include("Command exited; waiting for 1 process(es) left in process group #{Process.pid} " \
+        "to exit before releasing the devenv lock.")
+      expect(devenv_holder).to be_nil
+    end
+
+    it "counts a process table it cannot read as its group still running" do
+      members = [-> { raise Workspace::Error, "ps failed" }, -> { [Process.pid] }].each
+      held = []
+      run_with(command: "exit 0", worktree: worktree, group_members: ->(_pgid) { members.next.call },
+        sleeper: ->(_) { held << devenv_holder&.dig("pid") })
+
+      expect(held).to eq([Process.pid])
       expect(devenv_holder).to be_nil
     end
 
@@ -336,6 +364,17 @@ RSpec.describe Workspace::DevRunner do
       expect(devenv_holder(real_store)).to be_nil
     end
 
+    it "keeps the lock until a process the command left in its group exits" do
+      pid = spawn_wrapper("sleep 1 & echo $! > bg.pid; exit 0")
+      background = wait_for_child_marker("bg.pid")
+      wait_until { File.read(File.join(tmpdir, "wrapper.log")).include?("Command exited; waiting for 1 process(es)") }
+
+      expect(devenv_holder(real_store)).to include("pid" => pid)
+      expect(exit_status(pid).exitstatus).to eq(0)
+      expect { Process.kill(0, background) }.to raise_error(Errno::ESRCH)
+      expect(devenv_holder(real_store)).to be_nil
+    end
+
     it "queues behind a live holder with wait and runs once it releases" do
       holder = real_store.acquire("devenv", identity: {kind: "agent", pid: Process.pid, started: Workspace::LockHolder.new.start_time},
         waiter_pid: Process.pid, waiter_started: "x")
@@ -510,6 +549,13 @@ RSpec.describe Workspace::ProcessGroupTerminator do
     ensure
       reader&.close
     end
+  end
+
+  it "lists a group's live members, without the `ps` it runs" do
+    pgid = spawn_group("sleep 30")
+
+    expect(described_class.new.live_member_pids(pgid)).to eq([pgid])
+    expect(described_class.new.live_member_pids(Process.getpgrp)).not_to be_empty
   end
 
   describe "#orphan_running?" do

@@ -85,7 +85,9 @@ workspace config set dev.ready_timeout 2m         # wait for the dev.ready check
 
 **Ctrl-C** in the `devenv` window stops the command and releases the lock.
 
-**Crashes** — the wrapper releases the lock whenever the command exits. If the wrapper itself is SIGKILLed, its lock is reaped as a dead holder. When the dev command survives it, `down` and `status` report the orphaned process group, and `down --force` kills it. The group is only ever signalled while the wrapper's pid still matches its recorded start time, except for this explicit `--force`, and never once a live process has taken the wrapper's pid (the group id has then been reused by something unrelated; the stale lock is just removed).
+**Leftover processes** — the wrapper releases the lock only once nothing else is left in its process group: when the command exits but something it started is still running (a background job, or a server running as another user under `sudo`), the window prints `Command exited; waiting for N process(es) left in process group P to exit before releasing the devenv lock.` and the lock stays held until they exit. A SIGTERM that arrives meanwhile is still forwarded to the group once.
+
+**Crashes** — the wrapper releases the lock whenever the command and everything left in its group have exited. If the wrapper itself is SIGKILLed, its lock is reaped as a dead holder. When the dev command survives it, `down` and `status` report the orphaned process group, and `down --force` kills it. The group is only ever signalled while the wrapper's pid still matches its recorded start time, except for this explicit `--force`, and never once a live process has taken the wrapper's pid (the group id has then been reused by something unrelated; the stale lock is just removed).
 
 **The `devenv` window is set `remain-on-exit`**, so it stays open after the wrapper exits and crash output stays readable. `down` and `--takeover` close the dead pane once the env is actually stopped; a ready-check timeout, giving up on `--max-wait`/startup, or `lock clear devenv` leave the window open — close it by hand with `tmux kill-window`.
 
