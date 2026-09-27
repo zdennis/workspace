@@ -168,8 +168,26 @@ RSpec.describe Workspace::Doctor do
         expect(e.message).not_to match(/edit lock hooks/)
       end
 
-      expect(output.string).to include("edit lock hooks missing in 1 worktree(s): #{worktree_path}")
+      expect(output.string).to include("edit lock hooks missing in 1 worktree(s): worktree-a")
       expect(output.string).to include("fix: run 'workspace init' from each worktree listed above")
+    end
+
+    it "falls back to full paths when worktree basenames collide" do
+      other_worktree_path = File.join(tmpdir, "nested", "worktree-a")
+      FileUtils.mkdir_p(other_worktree_path)
+
+      allow(git).to receive(:list_worktrees).with(repo: Dir.pwd).and_return([worktree_path, other_worktree_path])
+      allow(hook_installer).to receive(:installed?).with(anything, worktree_path, anything).and_return(false)
+      allow(hook_installer).to receive(:installed?).with(anything, other_worktree_path, anything).and_return(false)
+      allow(hook_installer).to receive(:installed?).with(anything, Dir.pwd, anything).and_return(true)
+
+      doctor = build_doctor(which: ->(exe) { exe == "claude" }, git: git)
+      begin
+        doctor.run
+      rescue Workspace::Error
+      end
+
+      expect(output.string).to include("edit lock hooks missing in 2 worktree(s): #{worktree_path}, #{other_worktree_path}")
     end
   end
 end
