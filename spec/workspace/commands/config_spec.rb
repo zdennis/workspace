@@ -95,6 +95,25 @@ RSpec.describe Workspace::Commands::Config do
       expect(project_settings.load(name)).to eq({"dev" => {"stop_timeout" => "20s"}})
     end
 
+    ["dev.startup_timeout", "dev.ready_timeout"].each do |key|
+      it "accepts a #{key} duration like 45s" do
+        command, project_settings = build_command
+        project_dir = Dir.mktmpdir("ws-config-project")
+        name = File.basename(project_dir)
+
+        command.set(key, "45s", cwd: project_dir)
+
+        expect(project_settings.load(name)).to eq({"dev" => {key.split(".").last => "45s"}})
+      end
+
+      it "rejects an invalid #{key} duration" do
+        command, = build_command
+        project_dir = Dir.mktmpdir("ws-config-project")
+
+        expect { command.set(key, "soon", cwd: project_dir) }.to raise_error(Workspace::UsageError, /Invalid #{Regexp.escape(key)}/)
+      end
+    end
+
     it "backs up the project config file before writing to it" do
       command, project_settings = build_command
       project_dir = Dir.mktmpdir("ws-config-project")

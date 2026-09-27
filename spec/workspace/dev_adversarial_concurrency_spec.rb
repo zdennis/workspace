@@ -135,7 +135,7 @@ RSpec.describe "devenv lock: adversarial concurrency" do
     let(:login) { File.join(tmpdir, "app-login") }
     let(:output) { StringIO.new }
     let(:error_output) { StringIO.new }
-    let(:dev_settings) { {"up" => "exec sleep 30", "stop_timeout" => 2} }
+    let(:dev_settings) { {"up" => "exec sleep 30", "stop_timeout" => 2, "startup_timeout" => 10} }
     let(:lock_namespace) { Struct.new(:dir) { def resolve(cwd:) = {key: dir, display: "app", dir: dir} }.new(lock_dir) }
     let(:dev_config) { Workspace::DevConfig.new(project_settings: Struct.new(:data) { def load(_name) = data }.new({"dev" => dev_settings})) }
     let(:lib_dir) { File.expand_path("../../lib", __dir__) }
@@ -179,7 +179,7 @@ RSpec.describe "devenv lock: adversarial concurrency" do
       described_class.new(lock_namespace: lock_namespace, lock_holder: Workspace::LockHolder.new,
         lineage: Workspace::WorkspaceLineage.new, dev_config: dev_config, dev_runner: nil,
         terminator: Workspace::ProcessGroupTerminator.new(poll_interval: 0.05), tmux: tmux, executable: "/ws/bin/workspace",
-        output: output, error_output: error_output, env: {"TMUX_PANE" => "%1"}, poll: 0.05, startup_timeout: 10)
+        output: output, error_output: error_output, env: {"TMUX_PANE" => "%1"}, poll: 0.05)
     end
 
     def real_store

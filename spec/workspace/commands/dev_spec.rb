@@ -13,7 +13,7 @@ RSpec.describe Workspace::Commands::Dev do
   let(:output) { StringIO.new }
   let(:error_output) { StringIO.new }
   let(:spawned) { [] }
-  let(:dev_settings) { {"up" => "exec sleep 30", "stop_timeout" => 2} }
+  let(:dev_settings) { {"up" => "exec sleep 30", "stop_timeout" => 2, "startup_timeout" => 10} }
   let(:lock_namespace) { Struct.new(:dir) { def resolve(cwd:) = {key: dir, display: "app", dir: dir} }.new(lock_dir) }
   let(:dev_config) { Workspace::DevConfig.new(project_settings: Struct.new(:data) { def load(_name) = data }.new({"dev" => dev_settings})) }
   let(:lib_dir) { File.expand_path("../../../lib", __dir__) }
@@ -57,7 +57,7 @@ RSpec.describe Workspace::Commands::Dev do
     described_class.new(lock_namespace: lock_namespace, lock_holder: Workspace::LockHolder.new,
       lineage: Workspace::WorkspaceLineage.new, dev_config: dev_config, dev_runner: nil,
       terminator: Workspace::ProcessGroupTerminator.new(poll_interval: 0.05), tmux: tmux, executable: "/ws/bin/workspace",
-      output: output, error_output: error_output, env: {"TMUX_PANE" => "%1"}, poll: 0.05, startup_timeout: 10, **opts)
+      output: output, error_output: error_output, env: {"TMUX_PANE" => "%1"}, poll: 0.05, **opts)
   end
 
   def holder
@@ -187,8 +187,9 @@ RSpec.describe Workspace::Commands::Dev do
 
       it "exits 6, stops the env, and releases the lock when the check times out" do
         dev_settings["ready"] = "port:#{free_port}"
+        dev_settings["ready_timeout"] = 0.5
 
-        result = dev(ready_timeout: 0.5).up(working_dir: login)
+        result = dev.up(working_dir: login)
 
         expect(result).to eq(exit_code: 6)
         expect(error_output.string).to include("did not pass within")
@@ -343,7 +344,7 @@ RSpec.describe Workspace::Commands::Dev, "with fake processes and clock" do
   let(:worktree) { tmpdir }
   let(:output) { StringIO.new }
   let(:error_output) { StringIO.new }
-  let(:settings) { {"up" => "run-dev", "stop_timeout" => 2} }
+  let(:settings) { {"up" => "run-dev", "stop_timeout" => 2, "startup_timeout" => 5, "ready_timeout" => 5} }
   let(:liveness) { FakeLockLiveness.new }
   let(:lock_namespace) { Struct.new(:dir) { def resolve(cwd:) = {key: dir, display: "app", dir: dir} }.new(lock_dir) }
   let(:dev_config) { Workspace::DevConfig.new(project_settings: Struct.new(:data) { def load(_name) = data }.new({"dev" => settings})) }
@@ -358,7 +359,7 @@ RSpec.describe Workspace::Commands::Dev, "with fake processes and clock" do
   def dev(**opts)
     described_class.new(lock_namespace: lock_namespace, lock_holder: liveness, lineage: lineage, dev_config: dev_config,
       dev_runner: nil, terminator: terminator, tmux: tmux, executable: "/ws/bin/workspace", output: output,
-      error_output: error_output, env: {"TMUX_PANE" => "%1"}, poll: 1, startup_timeout: 5, ready_timeout: 5,
+      error_output: error_output, env: {"TMUX_PANE" => "%1"}, poll: 1,
       clock: Struct.new(:now_ref) { def now = now_ref[0] }.new(now),
       sleeper: ->(seconds) {
         now[0] += seconds

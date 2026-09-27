@@ -9,7 +9,7 @@ module Workspace
     # unused config.
     class Config
       # Keys `set`/`get`/`unset` allow. Unlisted dotted keys are rejected.
-      ALLOWED_KEYS = %w[dev.up dev.ready dev.stop_timeout locks.idle_grace].freeze
+      ALLOWED_KEYS = %w[dev.up dev.ready dev.stop_timeout dev.startup_timeout dev.ready_timeout locks.idle_grace].freeze
 
       # @param project_settings [Workspace::ProjectSettings] reads/writes project YAML
       # @param lineage [Workspace::WorkspaceLineage] resolves a project from cwd (worktree -> parent)
@@ -117,7 +117,7 @@ module Workspace
 
       def validate_value!(key, value)
         case key
-        when "dev.stop_timeout" then Workspace::Duration.parse(value)
+        when "dev.stop_timeout", "dev.startup_timeout", "dev.ready_timeout" then Workspace::Duration.parse(value)
         when "locks.idle_grace" then Workspace::LockConfig.parse_idle_grace(value)
         end
       rescue ArgumentError => e
