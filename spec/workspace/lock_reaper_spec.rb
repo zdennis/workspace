@@ -177,6 +177,29 @@ RSpec.describe Workspace::LockReaper do
 
       expect(error_output.string).to include("could not resolve the lock namespace for #{app_cwd}", "git failed")
     end
+
+    it "forgets a failing cwd once it stops appearing, so a later reap starts its warning count over" do
+      allow(lock_namespace).to receive(:resolve).with(cwd: app_cwd).and_raise(Workspace::Error, "git failed")
+      r = reaper
+
+      2.times { r.reap([app_cwd]) }
+      r.reap([lib_cwd]) # app_cwd's pane closed; only lib_cwd's panes remain this tick
+      3.times { r.reap([app_cwd]) }
+
+      expect(error_output.string.lines.size).to eq(1)
+    end
+
+    it "forgets a failing namespace dir once its cwd stops appearing" do
+      FileUtils.mkdir_p(app_dir)
+      File.write(File.join(app_dir, "locks.json"), "{not json")
+      r = reaper
+
+      2.times { r.reap([app_cwd]) }
+      r.reap([lib_cwd])
+      3.times { r.reap([app_cwd]) }
+
+      expect(error_output.string.lines.size).to eq(1)
+    end
   end
 
   describe "#tick" do

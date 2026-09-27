@@ -57,16 +57,30 @@ module Workspace
     # reported once to +error_output+, and again only after a success resets
     # its count. Reaps are audited with `"source" => "daemon"`.
     #
+    # A cwd or namespace dir that fails and then stops appearing (its pane
+    # closed, the directory vanished) would otherwise leave its failure count
+    # in +@failures+ forever; both keys are pruned at the end of the tick to
+    # whatever was actually seen, so a long-running daemon doesn't accumulate
+    # stale entries.
+    #
     # @param cwds [Array<String, nil>] working directories of the workspace's panes
     # @return [Integer] how many holders and waiters were reaped
     def reap(cwds)
-      namespace_dirs(cwds).sum { |dir| reap_dir(dir) }
+      seen_cwds = cwds.compact.uniq
+      dirs = namespace_dirs(seen_cwds)
+      reaped = dirs.sum { |dir| reap_dir(dir) }
+      prune_failures(seen_cwds + dirs)
+      reaped
     end
 
     private
 
     def namespace_dirs(cwds)
-      cwds.compact.uniq.filter_map { |cwd| namespace_dir(cwd) }.uniq
+      cwds.filter_map { |cwd| namespace_dir(cwd) }.uniq
+    end
+
+    def prune_failures(seen_keys)
+      @failures.select! { |key, _| seen_keys.include?(key) }
     end
 
     def namespace_dir(cwd)
