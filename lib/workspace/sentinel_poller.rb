@@ -18,7 +18,9 @@ module Workspace
 
     # The placeholder the instruction text shows where the summary goes. A
     # line carrying it is the instruction itself, wrapped onto a line of its
-    # own by the pane's width, not the stage reporting back.
+    # own by the pane's width, not the stage reporting back. A wrap can fall
+    # anywhere after the marker, so a line holding nothing after the marker,
+    # or only the start of the placeholder, is the instruction too.
     SUMMARY_PLACEHOLDER = "<one-line summary>".freeze
 
     # @param token [String, nil] the dispatch token, or nil for a tokenless sentinel
@@ -124,9 +126,13 @@ module Workspace
         match = @pattern.match(line)
         next unless match
         summary = match[1].to_s.strip
-        return summary unless summary == SUMMARY_PLACEHOLDER
+        return summary unless echoed_instruction?(summary)
       end
       nil
+    end
+
+    def echoed_instruction?(summary)
+      SUMMARY_PLACEHOLDER.start_with?(summary)
     end
   end
 end

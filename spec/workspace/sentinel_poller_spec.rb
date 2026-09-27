@@ -66,8 +66,17 @@ RSpec.describe Workspace::SentinelPoller do
       expect(poll(["", "#{wrapped}\n"], token: "ab12")).to be_nil
     end
 
-    it "treats a bare sentinel with no summary as completion" do
-      expect(poll(["", "WORKSPACE_DONE:ab12\n"], token: "ab12")).to eq("")
+    it "ignores a bare sentinel, which is how the instruction reads when wrapped just after the marker" do
+      expect(poll(["", "WORKSPACE_DONE:ab12\n"], token: "ab12")).to be_nil
+    end
+
+    it "ignores a sentinel followed by only the start of the placeholder" do
+      expect(poll(["", "  WORKSPACE_DONE:ab12 <one-line\n  summary>\n"], token: "ab12")).to be_nil
+    end
+
+    it "still finds the stage's real sentinel below a wrapped echo of the instruction" do
+      expect(poll(["", "WORKSPACE_DONE:ab12\n<one-line summary>\nWORKSPACE_DONE:ab12 all done\n"], token: "ab12"))
+        .to eq("all done")
     end
   end
 
@@ -126,8 +135,8 @@ RSpec.describe Workspace::SentinelPoller do
     expect(poll([nil, nil, "WORKSPACE_DONE: recovered\n"])).to eq("recovered")
   end
 
-  it "treats a bare sentinel with no summary as completion" do
-    expect(poll(["", "WORKSPACE_DONE:\n"])).to eq("")
+  it "ignores a bare sentinel with no summary" do
+    expect(poll(["", "WORKSPACE_DONE:\n"])).to be_nil
   end
 
   it "reports to the error stream when polling dies unexpectedly" do
