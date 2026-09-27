@@ -205,7 +205,7 @@ RSpec.describe Workspace::SessionMonitor do
         "waiting_message" => "Claude is waiting for your input")
     end
 
-    %w[user_prompt tool_use subagent_start subagent_stop stop session_start session_end].each do |event|
+    %w[user_prompt tool_use subagent_start stop session_start session_end].each do |event|
       it "clears waiting on a #{event} event" do
         notify
 
@@ -214,6 +214,41 @@ RSpec.describe Workspace::SessionMonitor do
         expect(pane("%2")).to include("waiting_since" => nil, "waiting_message" => nil)
         expect(pane("%2")["state"]).not_to eq("waiting")
       end
+    end
+
+    it "keeps the main agent waiting when a sub-agent stops or uses a tool" do
+      notify
+
+      monitor.record("event" => "subagent_stop", "pane_id" => "%2")
+      monitor.record("event" => "tool_use", "pane_id" => "%2", "agent_id" => "sub-1")
+
+      expect(pane("%2")["state"]).to eq("waiting")
+    end
+
+    it "clears a sub-agent's wait on that sub-agent's next event, not the main agent's" do
+      monitor.record("event" => "notification", "pane_id" => "%2", "agent_id" => "sub-1")
+
+      monitor.record("event" => "tool_use", "pane_id" => "%2")
+      expect(pane("%2")["state"]).to eq("waiting")
+
+      monitor.record("event" => "tool_use", "pane_id" => "%2", "agent_id" => "sub-1")
+      expect(pane("%2")["state"]).not_to eq("waiting")
+    end
+
+    it "clears a sub-agent's wait when the turn ends" do
+      monitor.record("event" => "notification", "pane_id" => "%2", "agent_id" => "sub-1")
+
+      monitor.record("event" => "user_prompt", "pane_id" => "%2")
+
+      expect(pane("%2")["state"]).not_to eq("waiting")
+    end
+
+    it "collapses control characters and whitespace in the message and caps its length" do
+      notify("needs your\n\e[31mpermission\e[0m\a  now")
+      expect(pane("%2")["waiting_message"]).to eq("needs your [31mpermission [0m now")
+
+      notify("x" * 500)
+      expect(pane("%2")["waiting_message"].length).to eq(described_class::MAX_MESSAGE_LENGTH)
     end
 
     it "clears waiting once the pane no longer runs an agent" do
@@ -326,10 +361,10 @@ RSpec.describe Workspace::SessionMonitor do
       expect(monitor.send_alerts.map { |a| a["WORKSPACE_ALERT_PANE_ID"] }).to eq(["%2"])
     end
 
-    it "strips NUL bytes, which can't be passed in an environment variable" do
+    it "drops NUL bytes, which can't be passed in an environment variable" do
       monitor.record("event" => "notification", "pane_id" => "%2", "message" => "a\u0000b")
 
-      expect(monitor.send_alerts.first["WORKSPACE_ALERT_MESSAGE"]).to eq("ab")
+      expect(monitor.send_alerts.first["WORKSPACE_ALERT_MESSAGE"]).to eq("a b")
     end
 
     it "alerts only on waiting when no idle threshold is set" do

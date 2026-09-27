@@ -24,6 +24,21 @@ module Workspace
     # signal; changing output is.
     DEFAULT_IDLE_AFTER = 30
 
+    # Longest waiting message kept. A long one is cut rather than dropped.
+    MAX_MESSAGE_LENGTH = 200
+
+    # Makes an agent's message safe to print, log, or pass to a command:
+    # each run of whitespace and control characters (newlines, terminal
+    # escapes, bells) becomes one space, and the result is capped.
+    #
+    # @param message [String, nil] text from an agent's hook payload
+    # @return [String, nil] the cleaned message, or nil if nothing is left
+    def self.clean_message(message)
+      return nil unless message.is_a?(String)
+      cleaned = message.scrub.gsub(/[[:space:][:cntrl:]]+/, " ").strip[0, MAX_MESSAGE_LENGTH]
+      cleaned unless cleaned.empty?
+    end
+
     # @param tmux [Workspace::Tmux] pane listing and capture
     # @param process_tree [Workspace::ProcessTree] process table snapshots
     # @param session_name [String] tmux session to watch
@@ -288,15 +303,23 @@ module Workspace
       pane[:last_activity_at] ||= now
     end
 
-    # Any event but a notification means the agent is moving again: a prompt
-    # was submitted, a tool ran after a permission prompt, or the turn ended.
+    # Events that start, end, or restart a turn clear a wait whoever raised it.
+    TURN_EVENTS = ["user_prompt", "stop", "session_start", "session_end"].freeze
+    private_constant :TURN_EVENTS
+
+    # Any other event from the agent that is waiting means it is moving again:
+    # a tool ran after a permission prompt, say. One from a different agent
+    # doesn't: a sub-agent running in parallel keeps working while the main
+    # agent waits on a person, and vice versa. Hooks mark a sub-agent's events
+    # with its agent_id; SubagentStop always comes from one.
     def apply_event(pane, event)
       if event["event"] == "notification"
         # A repeat notification during one wait keeps the original start, so
         # the wait is timed (and alerted) once.
         pane[:waiting_since] ||= @clock.now
-        pane[:waiting_message] = event["message"]
-      else
+        pane[:waiting_message] = self.class.clean_message(event["message"])
+        pane[:waiting_agent_id] = event["agent_id"]
+      elsif TURN_EVENTS.include?(event["event"]) || event_agent_id(event) == pane[:waiting_agent_id]
         clear_waiting(pane)
       end
 
@@ -320,6 +343,13 @@ module Workspace
     def clear_waiting(pane)
       pane[:waiting_since] = nil
       pane[:waiting_message] = nil
+      pane[:waiting_agent_id] = nil
+    end
+
+    # nil is the main agent. A SubagentStop without an agent_id (older Claude
+    # Code) still came from some sub-agent, so it never matches the main one.
+    def event_agent_id(event)
+      event["agent_id"] || ((event["event"] == "subagent_stop") ? :sub_agent : nil)
     end
 
     def agent_name(event)

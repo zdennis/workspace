@@ -105,6 +105,9 @@ module Workspace
 
       def render(snapshot, json)
         panes = snapshot["panes"] || []
+        # The daemon cleans messages as they arrive, but one started before an
+        # upgrade may not, and --json output reaches terminals and scripts too.
+        panes.each { |pane| pane["waiting_message"] &&= SessionMonitor.clean_message(pane["waiting_message"]) }
         apply_lock_column(panes)
         if json
           payload = {"schema_version" => JSON_SCHEMA_VERSION}.merge(snapshot).merge("schema_version" => JSON_SCHEMA_VERSION)
@@ -135,7 +138,7 @@ module Workspace
       # Indented like a sub-agent row, so the reason reads as belonging to the
       # pane above it.
       def render_waiting(message)
-        @output.puts "#{" " * 16}└─ #{truncate(message.gsub(/[[:space:][:cntrl:]]+/, " "), 60)}"
+        @output.puts "#{" " * 16}└─ #{truncate(message, 60)}"
       end
 
       # Loads every lock in the project's namespace once per render — never
