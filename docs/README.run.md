@@ -28,6 +28,8 @@ workspace run [project] <command> [options]
 
 The command is pasted into the tmux pane in one piece (`tmux load-buffer` + `paste-buffer -p`), so special characters and newlines pass through unchanged, and Enter is pressed once the pane stops changing. `run` reads the pane back to check the text arrived. It fails with the reason if the screen never changes after the paste, or if Enter doesn't change it even on a second press. Enter is never pressed again once the screen has changed, so a command is not submitted twice.
 
+If the text landed but Enter didn't visibly submit it, the error tells you not to run `workspace run` again for that command — the text is already sitting in the pane, so resending it would type it a second time. Go to the pane and press Enter there instead.
+
 **Pane targeting** — by default the bottommost pane is used (highest pane index at invocation time). Use `--pane N` for a specific zero-based index, or `--pane bottom` / `--bottom` to be explicit.
 
 **Split panes** — `--split` creates a new horizontal pane below the bottommost pane, then sends the command there. `--split --vertical` splits side-by-side instead. The split uses `tmux split-window -P -F '#{pane_index}'` to capture the new pane index atomically.
