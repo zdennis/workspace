@@ -113,7 +113,13 @@ module Workspace
         delivery = @tmux.deliver(session_name, pane_spec, text, enter: enter)
         return if delivery.ok?
 
-        hint = delivery.landed? ? " Do not run it again -- it is already in the pane; press Enter there instead." : ""
+        hint = if delivery.status == :unsubmitted
+          " Do not run it again -- it is already in the pane; press Enter there instead."
+        elsif delivery.landed?
+          " Do not run it again -- it may already be in the pane; check before resending."
+        else
+          ""
+        end
         raise Workspace::Error, "#{failure}: #{delivery.message}.#{hint}"
       end
 

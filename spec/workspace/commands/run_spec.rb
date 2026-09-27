@@ -238,6 +238,26 @@ RSpec.describe Workspace::Commands::Run do
           Workspace::Error, /Failed to send command to pane 0.2 of .myproject.: nothing changed/
         )
       end
+
+      it "does not hint at resending, since the text never landed" do
+        allow(tmux).to receive(:deliver).and_return(Workspace::Tmux::Delivery.new(status: :not_landed, message: "nothing changed"))
+
+        expect { command.call("myproject", "echo hi") }.to raise_error(Workspace::Error) do |error|
+          expect(error.message.downcase).not_to include("do not run it again")
+        end
+      end
+    end
+
+    context "when delivery is unverified (may or may not have landed)" do
+      it "raises Workspace::Error with a hint to check before resending" do
+        allow(tmux).to receive(:deliver).and_return(
+          Workspace::Tmux::Delivery.new(status: :unverified, message: "pasted, but the pane could not be read back; it may not have arrived")
+        )
+
+        expect { command.call("myproject", "echo hi") }.to raise_error(Workspace::Error) do |error|
+          expect(error.message.downcase).to include("do not run it again")
+        end
+      end
     end
   end
 end
