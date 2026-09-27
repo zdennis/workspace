@@ -256,6 +256,27 @@ RSpec.describe Workspace::SessionMonitor do
       expect(pane("%2")["state"]).not_to eq("waiting")
     end
 
+    it "keeps two sub-agents' waits apart, so one moving on leaves the other waiting" do
+      monitor.record("event" => "notification", "pane_id" => "%2", "agent_id" => "sub-1", "message" => "first")
+      allow(clock).to receive(:now).and_return(now + 30)
+      monitor.record("event" => "notification", "pane_id" => "%2", "agent_id" => "sub-2", "message" => "second")
+
+      monitor.record("event" => "tool_use", "pane_id" => "%2", "agent_id" => "sub-1")
+
+      expect(pane("%2")).to include("state" => "waiting", "waiting_since" => (now + 30).iso8601,
+        "waiting_message" => "second")
+      monitor.record("event" => "subagent_stop", "pane_id" => "%2", "agent_id" => "sub-2")
+      expect(pane("%2")["state"]).not_to eq("waiting")
+    end
+
+    it "reports the oldest wait when several agents in the pane are waiting" do
+      notify("main")
+      allow(clock).to receive(:now).and_return(now + 30)
+      monitor.record("event" => "notification", "pane_id" => "%2", "agent_id" => "sub-1", "message" => "sub")
+
+      expect(pane("%2")).to include("waiting_since" => now.iso8601, "waiting_message" => "main")
+    end
+
     it "clears a sub-agent's wait when the turn ends" do
       monitor.record("event" => "notification", "pane_id" => "%2", "agent_id" => "sub-1")
 
@@ -330,6 +351,15 @@ RSpec.describe Workspace::SessionMonitor do
       monitor.send_alerts
 
       expect(notifier).to have_received(:notify).twice
+    end
+
+    it "alerts for a second agent's wait even while the pane is already waiting" do
+      monitor.record("event" => "notification", "pane_id" => "%2", "message" => "main")
+      monitor.send_alerts
+      monitor.record("event" => "notification", "pane_id" => "%2", "agent_id" => "sub-1", "message" => "sub")
+
+      expect(monitor.send_alerts.map { |a| a["WORKSPACE_ALERT_MESSAGE"] }).to eq(["sub"])
+      expect(monitor.send_alerts).to eq([])
     end
 
     it "alerts once when an agent pane stays idle past the threshold, not on every scan" do

@@ -204,10 +204,10 @@ module Workspace
     def send_alerts
       return [] unless @notifier
       now = @clock.now
-      due = @lock.synchronize { @panes.values.filter_map { |pane| due_alert(pane, now) } }
-      due.filter_map do |pane, mark, value, alert|
+      due = @lock.synchronize { @panes.values.flat_map { |pane| due_alerts(pane, now) } }
+      due.filter_map do |target, mark, value, alert|
         next unless @notifier.notify(alert)
-        @lock.synchronize { pane[mark] = value }
+        @lock.synchronize { target[mark] = value }
         alert
       rescue => e
         log_alert_failure(e)
@@ -223,20 +223,24 @@ module Workspace
     NOT_AGENTS = ["shell", "unknown"].freeze
     private_constant :NOT_AGENTS
 
-    # @return [Array, nil] the pane, the key and value that mark it alerted,
-    #   and the alert's environment; nil when no alert is due
-    def due_alert(pane, now)
-      return nil if NOT_AGENTS.include?(pane[:kind])
+    # Each wait alerts on its own, so a second agent in the pane starting to
+    # wait alerts even though the pane was already waiting.
+    #
+    # @return [Array<Array>] per alert due: the hash to mark alerted, the key
+    #   and value that mark it, and the alert's environment
+    def due_alerts(pane, now)
+      return [] if NOT_AGENTS.include?(pane[:kind])
 
-      if (since = pane[:waiting_since])
-        return nil if pane[:alerted_waiting_since] == since
-        return [pane, :alerted_waiting_since, since, alert_env(pane, "waiting", now - since, pane[:waiting_message])]
+      unless pane[:waits].empty?
+        return pane[:waits].values.reject { |wait| wait[:alerted] }.map do |wait|
+          [wait, :alerted, true, alert_env(pane, "waiting", now - wait[:since], wait[:message])]
+        end
       end
 
-      return nil if @activity_stale || !@idle_alert_after || !pane[:last_activity_at]
+      return [] if @activity_stale || !@idle_alert_after || !pane[:last_activity_at]
       idle_for = now - pane[:last_activity_at]
-      return nil if idle_for < @idle_alert_after || pane[:alerted_idle_since] == pane[:last_activity_at]
-      [pane, :alerted_idle_since, pane[:last_activity_at], alert_env(pane, "idle", idle_for, nil)]
+      return [] if idle_for < @idle_alert_after || pane[:alerted_idle_since] == pane[:last_activity_at]
+      [[pane, :alerted_idle_since, pane[:last_activity_at], alert_env(pane, "idle", idle_for, nil)]]
     end
 
     # Printed once per streak; a scan that succeeds starts a new one.
@@ -273,7 +277,7 @@ module Workspace
     end
 
     def new_pane(pane_id)
-      {pane_id: pane_id, agents: [], kind: "unknown", index: nil}
+      {pane_id: pane_id, agents: [], waits: {}, kind: "unknown", index: nil}
     end
 
     def refresh_pane(detail, tree, now)
@@ -325,20 +329,23 @@ module Workspace
     TURN_EVENTS = ["user_prompt", "stop", "session_start", "session_end"].freeze
     private_constant :TURN_EVENTS
 
-    # Any other event from the agent that is waiting means it is moving again:
-    # a tool ran after a permission prompt, say. One from a different agent
-    # doesn't: a sub-agent running in parallel keeps working while the main
-    # agent waits on a person, and vice versa. Hooks mark a sub-agent's events
-    # with its agent_id; SubagentStop always comes from one.
+    # Waits are kept per agent, since the main agent and parallel sub-agents
+    # can each be waiting on a person at once. Any other event from an agent
+    # ends that agent's wait: a tool ran after a permission prompt, say. It
+    # leaves the other agents' waits alone. Hooks mark a sub-agent's events
+    # with its agent_id; SubagentStop always comes from one. Claude Code's
+    # Notification payload carries no tool call id, so a wait can't be tied
+    # to one prompt more tightly than to the agent that raised it.
     def apply_event(pane, event)
       if event["event"] == "notification"
         # A repeat notification during one wait keeps the original start, so
         # the wait is timed (and alerted) once.
-        pane[:waiting_since] ||= @clock.now
-        pane[:waiting_message] = self.class.clean_message(event["message"])
-        pane[:waiting_agent_id] = event["agent_id"]
-      elsif TURN_EVENTS.include?(event["event"]) || event_agent_id(event) == pane[:waiting_agent_id]
+        wait = (pane[:waits][event["agent_id"]] ||= {since: @clock.now})
+        wait[:message] = self.class.clean_message(event["message"])
+      elsif TURN_EVENTS.include?(event["event"])
         clear_waiting(pane)
+      else
+        pane[:waits].delete(event_agent_id(event))
       end
 
       case event["event"]
@@ -359,9 +366,13 @@ module Workspace
     end
 
     def clear_waiting(pane)
-      pane[:waiting_since] = nil
-      pane[:waiting_message] = nil
-      pane[:waiting_agent_id] = nil
+      pane[:waits].clear
+    end
+
+    # The pane reports its longest wait, so the time shown is how long a
+    # person has been keeping some agent in it waiting.
+    def oldest_wait(pane)
+      pane[:waits].values.min_by { |wait| wait[:since] }
     end
 
     # nil is the main agent. A SubagentStop without an agent_id (older Claude
@@ -375,13 +386,14 @@ module Workspace
     end
 
     def state_of(pane, idle_for)
-      return "waiting" if pane[:waiting_since]
+      return "waiting" unless pane[:waits].empty?
       (idle_for < @idle_after) ? "working" : "idle"
     end
 
     def present(pane, now)
       idle_for = now - (pane[:last_activity_at] || now)
-      waiting_since = pane[:waiting_since]
+      wait = oldest_wait(pane)
+      waiting_since = wait&.dig(:since)
       {
         "pane_id" => pane[:pane_id],
         "index" => pane[:index],
@@ -393,7 +405,7 @@ module Workspace
         "idle_seconds" => idle_for.round,
         "waiting_since" => waiting_since&.utc&.iso8601,
         "waiting_seconds" => waiting_since && (now - waiting_since).round,
-        "waiting_message" => pane[:waiting_message],
+        "waiting_message" => wait&.dig(:message),
         "session_id" => pane[:session_id],
         "agents" => pane[:agents].map { |agent|
           {"name" => agent[:name], "state" => agent[:state],
