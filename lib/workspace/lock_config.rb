@@ -26,13 +26,19 @@ module Workspace
     # @return [Numeric] seconds an idle agent may keep a lock before the head
     #   waiter may take it over; {LockStore::DEFAULT_IDLE_GRACE} when unset or invalid
     def idle_grace_for(name)
+      setting(name, "idle_grace", LockStore::DEFAULT_IDLE_GRACE) { |value| self.class.parse_idle_grace(value) }
+    end
+
+    private
+
+    def setting(name, key, default)
       settings = @project_settings.load(name)
       locks = settings.is_a?(Hash) ? settings["locks"] : nil
-      return LockStore::DEFAULT_IDLE_GRACE unless locks.is_a?(Hash) && locks.key?("idle_grace")
-      self.class.parse_idle_grace(locks["idle_grace"])
+      return default unless locks.is_a?(Hash) && locks.key?(key)
+      yield locks[key]
     rescue ArgumentError => e
-      @error_output.puts "Warning: invalid locks.idle_grace for '#{name}' (#{e.message}); using #{LockStore::DEFAULT_IDLE_GRACE}s."
-      LockStore::DEFAULT_IDLE_GRACE
+      @error_output.puts "Warning: invalid locks.#{key} for '#{name}' (#{e.message}); using #{default}s."
+      default
     end
   end
 end

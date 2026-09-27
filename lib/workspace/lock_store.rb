@@ -68,7 +68,8 @@ module Workspace
     # @param wait [Boolean] enqueue instead of refusing when the lock is busy
     # @param priority [Boolean] go ahead of everyone already queued (`dev up
     #   --takeover`): take a free lock even with others waiting, or enqueue at
-    #   the head, in the same flocked step so no release can promote past it
+    #   the head, in the same flocked step so no release can promote past it;
+    #   the queue entry is marked "takeover", which {#clear} keeps
     # @return [Hash] :status is one of :acquired, :already_held, :held, :queued, :deadlock
     def acquire(name, identity:, waiter_pid:, waiter_started:, task: nil, wait: false, priority: false)
       with_lock do |data|
@@ -78,6 +79,7 @@ module Workspace
 
         if LockHolder.same_agent?(holder, identity)
           holder.delete("unclaimed")
+          holder.delete("takeover")
           holder["idle_since"] = nil
           next {status: :already_held}
         end
@@ -99,10 +101,11 @@ module Workspace
           waiter = entry["queue"].delete_at(existing_index)
           waiter["waiter_pid"] = waiter_pid
           waiter["waiter_started"] = waiter_started
+          waiter["takeover"] = true if priority
           entry["queue"].insert(priority ? 0 : existing_index, waiter)
           position = priority ? 1 : existing_index + 1
         elsif priority
-          entry["queue"].unshift(build_waiter(identity, waiter_pid, waiter_started, task))
+          entry["queue"].unshift(build_waiter(identity, waiter_pid, waiter_started, task).merge("takeover" => true))
           position = 1
         else
           entry["queue"] << build_waiter(identity, waiter_pid, waiter_started, task)
@@ -280,7 +283,10 @@ module Workspace
     # kind-specific side effect.
     #
     # With +keep_process_holder+, a `kind: "process"` holder is left in
-    # place and only the queue is removed: its process group has to be
+    # place and only the queue is removed, except for a live waiter queued by
+    # `dev up --takeover`: that one means to replace this holder, not wait
+    # on it, so it stays first in line and {#finish_clear} (or the holder's
+    # own release) promotes it. The holder's process group has to be
     # stopped outside the flock (the wrapper needs it to release), and the
     # lock must keep naming the holder until that has succeeded, or a second
     # dev environment could start beside one that is still running. The
@@ -293,7 +299,8 @@ module Workspace
     # @param keep_process_holder [Boolean] leave a `kind: "process"` holder in place
     # @yieldparam holder [Hash, nil] the holder being cleared
     # @return [Hash, nil] the removed {holder:, queue:}, with pending: true
-    #   when the holder was kept; nil if the lock had no entry
+    #   and the takeover waiters left queued (takeovers:) when the holder
+    #   was kept; nil if the lock had no entry
     def clear(name, cleared_by: nil, keep_process_holder: false)
       with_lock(lenient: true) do |data|
         entry = data[name]
@@ -301,11 +308,12 @@ module Workspace
         holder = entry["holder"]
         yield holder if block_given?
         if keep_process_holder && holder && holder["kind"] == "process"
-          queue = entry["queue"]
-          entry["queue"] = []
+          takeovers, queue = entry["queue"].partition { |w| w["takeover"] && waiter_alive?(w) }
+          entry["queue"] = takeovers
           @logger.debug { "lock: clearing #{name}#{" by #{cleared_by}" if cleared_by}, holder kept until stopped" }
-          audit(:clear, name, holder: holder_summary(holder), queue_size: queue.size, cleared_by: cleared_by, holder_kept: true)
-          next {holder: holder, queue: queue, pending: true}
+          audit(:clear, name, holder: holder_summary(holder), queue_size: queue.size, cleared_by: cleared_by, holder_kept: true,
+            takeovers_kept: takeovers.empty? ? nil : takeovers.size)
+          next {holder: holder, queue: queue, takeovers: takeovers, pending: true}
         end
         data.delete(name)
         @logger.debug { "lock: cleared #{name}#{" by #{cleared_by}" if cleared_by}" }
@@ -368,7 +376,7 @@ module Workspace
         end
         next current if current && !current["unclaimed"]
 
-        entry["holder"] = holder.except("unclaimed").merge("kept" => true)
+        entry["holder"] = holder.except("unclaimed", "takeover").merge("kept" => true)
         if current
           entry["queue"].unshift(waiter_from_holder(current))
           audit(:takeover, name, from: holder_summary(current), to: holder_summary(holder), cleared_by: cleared_by)
@@ -646,6 +654,7 @@ module Workspace
       return unless holder
       if holder["waiter_pid"] == waiter_pid
         holder.delete("unclaimed")
+        holder.delete("takeover")
         return {status: :acquired}
       end
       return unless entry["queue"].first&.dig("waiter_pid") == waiter_pid && idle_expired?(holder)
@@ -688,8 +697,11 @@ module Workspace
     # `locks.json` is committed (or a read-only block has returned), so the
     # audit log never records a transition that a failed block or write
     # rolled back, and still under the store flock, so lines land in the same
-    # order as the writes they describe. Lock order is always the store flock
-    # first, then {LockAuditLog}'s own flock, never the reverse.
+    # order as the writes they describe. A process killed between the commit
+    # and this flush loses those events; that is accepted, since an entry for
+    # a state that never committed would mislead an audit trail more than a
+    # rare missing one. Lock order is always the store flock first, then
+    # {LockAuditLog}'s own flock, never the reverse.
     def flush_audit_events
       @pending_events.each { |e| @audit_log.append(**e) }
     end
@@ -751,12 +763,14 @@ module Workspace
     # Promotes the queue head to holder while the lock is free and the head
     # is alive, dropping dead entries in front of a live one as it goes so
     # FIFO order is preserved for whoever is still around. The new holder is
-    # "unclaimed" until its waiter polls and learns of the promotion.
+    # "unclaimed" until its waiter polls and learns of the promotion, and
+    # keeps a takeover waiter's mark until then, so a promotion taken back
+    # by {#keep_process_holder} requeues it as a takeover.
     def promote!(entry, name = nil)
       while entry["holder"].nil? && !entry["queue"].empty?
         candidate = entry["queue"].shift
         next unless waiter_alive?(candidate)
-        entry["holder"] = holder_from_waiter(candidate).merge("unclaimed" => true)
+        entry["holder"] = holder_from_waiter(candidate).merge({"unclaimed" => true}, candidate.slice("takeover"))
         audit(:acquire, name, holder: holder_summary(entry["holder"])) if name
       end
     end
@@ -777,7 +791,7 @@ module Workspace
         "worktree" => holder["worktree"],
         "task" => holder["task"],
         "enqueued_at" => holder["acquired_at"]
-      }.merge(process_fields({kind: holder["kind"], pgid: holder["pgid"], branch: holder["branch"]}))
+      }.merge(process_fields({kind: holder["kind"], pgid: holder["pgid"], branch: holder["branch"]}), holder.slice("takeover"))
     end
 
     def holder_from_waiter(waiter)

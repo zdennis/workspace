@@ -35,9 +35,10 @@ Only an allowlisted set of keys can be written this way, so a typo doesn't silen
 | `dev.stop_timeout` | Grace period before force-stopping the dev environment, e.g. `20s` or `20` |
 | `dev.startup_timeout` | How long `dev up` waits for the wrapper to take a free lock, e.g. `30s` (default `30s`) |
 | `dev.ready_timeout` | How long `dev up` waits for the `dev.ready` check to pass, e.g. `2m` (default `120s`) |
+| `dev.kill_grace` | How long `lock clear devenv`, `dev down` and `dev up --takeover` wait for a SIGKILLed dev environment's process group to disappear before keeping its lock (default `2s`, capped at `60s`) |
 | `locks.idle_grace` | How long an idle agent keeps a lock before the first waiter may take it over (default `5m`; see [`workspace lock`](README.lock.md)) |
 
-`dev.stop_timeout`, `dev.startup_timeout`, `dev.ready_timeout`, and `locks.idle_grace` must parse as a duration: a plain number of seconds, or a number with an `s`, `m` or `h` suffix (`20`, `20s`, `5m`, `1h`). `dev.startup_timeout`, `dev.ready_timeout`, and `locks.idle_grace` must also be greater than 0. Anything else is rejected before it's written.
+`dev.stop_timeout`, `dev.startup_timeout`, `dev.ready_timeout`, `dev.kill_grace`, and `locks.idle_grace` must parse as a duration: a plain number of seconds, or a number with an `s`, `m` or `h` suffix (`20`, `20s`, `5m`, `1h`). `dev.startup_timeout`, `dev.ready_timeout`, `dev.kill_grace`, and `locks.idle_grace` must also be greater than 0. `dev.kill_grace` is also capped at 60s. Anything else is rejected before it's written.
 
 `dev.up` runs via `/bin/sh -c`, so it can carry inline environment variables and quoting, e.g.:
 
@@ -67,7 +68,7 @@ Before writing, `set` and `unset` back up the project's config file (via the sam
 | `hooks` | Project-specific hooks (e.g., `post_launch`) |
 | `layouts` | Project-specific tmux pane layouts |
 | `worktree_hooks` | Hooks seeded into new worktrees created from this project |
-| `dev.up`, `dev.ready`, `dev.stop_timeout`, `dev.startup_timeout`, `dev.ready_timeout` | Dev environment config; set via `workspace config set` (see above) |
+| `dev.up`, `dev.ready`, `dev.stop_timeout`, `dev.startup_timeout`, `dev.ready_timeout`, `dev.kill_grace` | Dev environment config; set via `workspace config set` (see above) |
 | `locks.idle_grace` | Idle takeover grace period for this project's locks; set via `workspace config set` (see above) |
 
 ## Examples
@@ -89,6 +90,9 @@ workspace config set dev.stop_timeout 20s
 
 # Let a waiter take over a lock after its holder has been idle for 10 minutes
 workspace config set locks.idle_grace 10m
+
+# Give a slow-to-die dev server 10s after SIGKILL before its lock is kept
+workspace config set dev.kill_grace 10s
 
 # Read a key back
 workspace config get dev.up

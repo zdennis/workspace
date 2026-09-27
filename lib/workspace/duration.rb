@@ -27,5 +27,19 @@ module Workspace
       raise ArgumentError, "must be greater than 0, got #{value.inspect}" unless seconds.positive?
       seconds
     end
+
+    # Parses a duration string or number into seconds, requiring it be
+    # greater than 0 and no more than +max+ seconds.
+    #
+    # @param value [String, Numeric] duration string or number
+    # @param max [Numeric] the largest number of seconds accepted
+    # @return [Numeric] seconds, always in (0, max]
+    # @raise [ArgumentError] if value isn't a recognized duration, isn't
+    #   positive, or exceeds +max+
+    def self.parse_capped(value, max:)
+      seconds = parse_positive(value)
+      raise ArgumentError, "must be greater than 0 and at most #{max}s, got #{value.inspect}" if seconds > max
+      seconds
+    end
   end
 end

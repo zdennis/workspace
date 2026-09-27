@@ -85,6 +85,28 @@ RSpec.describe Workspace::Commands::Config do
       end
     end
 
+    it "accepts dev.kill_grace as seconds or a duration, up to the 60s cap" do
+      command, project_settings = build_command
+      project_dir = Dir.mktmpdir("ws-config-project")
+
+      command.set("dev.kill_grace", "10s", cwd: project_dir)
+
+      expect(project_settings.load(File.basename(project_dir))).to eq({"dev" => {"kill_grace" => "10s"}})
+      command.set("dev.kill_grace", "60s", cwd: project_dir)
+      expect(project_settings.load(File.basename(project_dir))).to eq({"dev" => {"kill_grace" => "60s"}})
+    end
+
+    ["0", "0s", "-5", "soon", "61s", "2m"].each do |bad|
+      it "rejects dev.kill_grace #{bad.inspect} without writing it" do
+        command, project_settings = build_command
+        project_dir = Dir.mktmpdir("ws-config-project")
+
+        expect { command.set("dev.kill_grace", bad, cwd: project_dir) }
+          .to raise_error(Workspace::UsageError, /Invalid dev.kill_grace/)
+        expect(project_settings.load(File.basename(project_dir))).to eq({})
+      end
+    end
+
     it "accepts a dev.stop_timeout duration like 20s" do
       command, project_settings = build_command
       project_dir = Dir.mktmpdir("ws-config-project")

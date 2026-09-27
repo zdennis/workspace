@@ -5,13 +5,14 @@ module Workspace
   #
   # A group can't be stopped when it has live processes this user may not
   # signal (another user's, e.g. a server under `sudo`), when it is still
-  # running {KILL_GRACE_SECONDS} after SIGKILL, or when its wrapper is
-  # already gone but the group runs on (unless its id was reused). The
+  # running +kill_grace+ seconds after SIGKILL (`dev.kill_grace`, default
+  # {KILL_GRACE_SECONDS}), or when its wrapper is already gone but the group runs on (unless its id was reused). The
   # lock is then re-asserted with {LockStore#keep_process_holder}.
   #
   # Runs with the store unlocked: the wrapper needs the flock to release,
   # and would otherwise sit blocked until SIGKILL.
   class ProcessHolderStopper
+    # Default seconds a SIGKILLed group may take to disappear (`dev.kill_grace`).
     KILL_GRACE_SECONDS = 2
     KILL_POLL_SECONDS = 0.1
 
@@ -45,15 +46,16 @@ module Workspace
     # @param name [String] lock name
     # @param holder [Hash] the holder record
     # @param stop_timeout [Numeric] seconds between SIGTERM and SIGKILL
+    # @param kill_grace [Numeric] seconds the group may take to disappear after SIGKILL
     # @param retry_command [String] the command to run once the group is stopped by hand
     # @param cleared_by [String, nil] identity recorded in the audit log if the lock is kept
     # @return [Symbol] :terminated, :killed or :gone (nothing the holder
     #   started is known to be running, so its lock may go), or :kept (the
     #   reason and the kept lock were reported on +error_output+)
-    def stop(store, name, holder, stop_timeout:, retry_command:, cleared_by: nil)
+    def stop(store, name, holder, stop_timeout:, retry_command:, cleared_by: nil, kill_grace: KILL_GRACE_SECONDS)
       pid = holder["pid"]
       pgid = holder["pgid"] || pid
-      result, reason = attempt(holder, pgid, pid, stop_timeout)
+      result, reason = attempt(holder, pgid, pid, stop_timeout, kill_grace)
       return result unless reason
 
       @error_output.puts "Could not stop process group #{pgid} (pid #{pid}): #{reason}"
@@ -65,7 +67,7 @@ module Workspace
 
     # @return [Array(Symbol, String)] the stop's result, and why the group
     #   can't be stopped (nil when it was)
-    def attempt(holder, pgid, pid, stop_timeout)
+    def attempt(holder, pgid, pid, stop_timeout, kill_grace)
       result = @terminator.stop_holder(holder, liveness: @liveness, stop_timeout: stop_timeout)
     rescue Workspace::Error => e
       [nil, e.message]
@@ -78,7 +80,7 @@ module Workspace
         warn_reused_group(holder, pgid, pid)
         [:gone, nil]
       when :killed
-        [:killed, survives_kill?(pgid) ? "it was still running #{KILL_GRACE_SECONDS}s after SIGKILL" : nil]
+        [:killed, survives_kill?(pgid, kill_grace) ? "it was still running #{seconds_label(kill_grace)} after SIGKILL" : nil]
       else
         [result, nil]
       end
@@ -121,8 +123,8 @@ module Workspace
 
     # A SIGKILLed group can take a moment to disappear; one that outlives
     # the grace period (or can no longer be checked) counts as still running.
-    def survives_kill?(pgid)
-      deadline = @clock.now + KILL_GRACE_SECONDS
+    def survives_kill?(pgid, kill_grace)
+      deadline = @clock.now + kill_grace
       loop do
         return false unless @terminator.running?(pgid)
         return true if @clock.now >= deadline
@@ -130,6 +132,10 @@ module Workspace
       end
     rescue Workspace::Error
       true
+    end
+
+    def seconds_label(seconds)
+      "#{(seconds % 1).zero? ? seconds.to_i : seconds}s"
     end
   end
 end

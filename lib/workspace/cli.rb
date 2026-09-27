@@ -769,7 +769,9 @@ module Workspace
           release [<name>|--all]     Release a lock this agent holds
           status  [<name>]           Show holders and queues
           clear   [<name>|--all]     Force-remove a lock's holder and queue
-                                     (devenv: also stops the dev env's process group)
+                                     (devenv: also stops the dev env's process group).
+                                     Ordinary waiters are still removed; a queued
+                                     `dev up --takeover` is kept, not removed.
           instructions [<name>]      Print the prompt block that tells a coding
                                      agent how to use the lock (default: edit)
 
@@ -1628,7 +1630,8 @@ module Workspace
       project = args.first || @project_detector.detect(@working_dir)
       raise UsageError, parser.help unless project
 
-      @sessions_command.call(name: project, json: json, watch: watch, interval: interval)
+      result = @sessions_command.call(name: project, json: json, watch: watch, interval: interval)
+      @exit_handler.exit(result[:exit_code]) if result && !result[:exit_code].zero?
     end
 
     def cmd_session_event(args)
@@ -1834,7 +1837,8 @@ module Workspace
         opts.separator "  dev.up, dev.ready,             Set via 'workspace config set' (see"
         opts.separator "  dev.stop_timeout,              'workspace config set --help')"
         opts.separator "  dev.startup_timeout,"
-        opts.separator "  dev.ready_timeout:"
+        opts.separator "  dev.ready_timeout,"
+        opts.separator "  dev.kill_grace:"
         opts.separator "  locks.idle_grace:              How long an idle agent keeps a lock before"
         opts.separator "                                 the next waiter may take it (default: 5m)"
         opts.separator ""

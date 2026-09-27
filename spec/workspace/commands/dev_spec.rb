@@ -789,4 +789,21 @@ RSpec.describe Workspace::Commands::Dev, "with fake processes and clock" do
       expect(error_output.string).not_to include("sudo")
     end
   end
+
+  describe "`down` with dev.kill_grace set" do
+    let(:settings) { {"up" => "run-dev", "stop_timeout" => 2, "startup_timeout" => 5, "ready_timeout" => 5, "kill_grace" => 7} }
+
+    it "waits that long after SIGKILL before keeping the lock" do
+      hold(700)
+      allow(terminator).to receive(:stop_holder) do
+        liveness.kill(700)
+        :killed
+      end
+      allow(terminator).to receive(:running?).with(700).and_return(true)
+
+      expect(dev.down(working_dir: worktree)).to eq(exit_code: 1)
+      expect(now[0]).to be >= 7
+      expect(error_output.string).to include("still running 7s after SIGKILL", "Kept devenv lock")
+    end
+  end
 end

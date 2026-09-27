@@ -13,6 +13,11 @@ module Workspace
       # The lock this column shows; see {Workspace::LockEnforcer::LOCK_NAME}.
       LOCK_NAME = "edit"
 
+      # Bumped whenever the `--json` payload's shape changes in a
+      # backward-incompatible way; matches the convention in
+      # {Workspace::Commands::Lock} and {Workspace::Commands::Dev}.
+      JSON_SCHEMA_VERSION = 1
+
       # @param config [Workspace::Config] socket path lookups
       # @param lock_namespace [Workspace::LockNamespace, nil] resolves the edit
       #   lock's store directory; nil hides the LOCK column entirely
@@ -42,11 +47,18 @@ module Workspace
       # @param json [Boolean] emit the raw payload instead of a table
       # @param watch [Boolean] redraw until interrupted
       # @param interval [Numeric] seconds between redraws when watching
-      # @return [void]
-      # @raise [Workspace::Error] if no agent daemon is listening
+      # @return [Hash] {exit_code:} — 0 on success, 1 if `--json` was given
+      #   and no agent daemon answered (the error is then written to stdout
+      #   as `{"schema_version":1,"error":...}` instead of being raised,
+      #   matching `lock status --json` and `dev status --json`); this
+      #   applies on the non-watch path and also stops watch mode the same
+      #   way when the daemon disappears mid-watch. Watch mode otherwise
+      #   loops until interrupted and never returns.
+      # @raise [Workspace::Error] if no agent daemon is listening and `json`
+      #   is false
       def call(name:, json: false, watch: false, interval: 2)
         @name = name
-        return render(fetch(name), json) unless watch
+        return call_once(json) unless watch
 
         loop do
           snapshot = fetch(name)
@@ -56,9 +68,22 @@ module Workspace
         end
       rescue Interrupt
         @output.puts ""
+      rescue Workspace::Error => e
+        raise unless json
+        @output.puts JSON.generate({"schema_version" => JSON_SCHEMA_VERSION, "error" => e.message})
+        {exit_code: 1}
       end
 
       private
+
+      def call_once(json)
+        render(fetch(@name), json)
+        {exit_code: 0}
+      rescue Workspace::Error => e
+        raise unless json
+        @output.puts JSON.generate({"schema_version" => JSON_SCHEMA_VERSION, "error" => e.message})
+        {exit_code: 1}
+      end
 
       def fetch(name)
         path = @config.agent_socket_path(name)
@@ -66,7 +91,11 @@ module Workspace
           socket.puts(JSON.generate("type" => "sessions", "workspace" => name))
           reply = socket.gets
           raise Workspace::Error, "Agent for '#{name}' closed the connection." unless reply
-          JSON.parse(reply)
+          begin
+            JSON.parse(reply)
+          rescue JSON::ParserError
+            raise Workspace::Error, "Malformed reply from session monitor for '#{name}'."
+          end
         end
       rescue SystemCallError, IOError
         raise Workspace::Error,
@@ -76,7 +105,10 @@ module Workspace
       def render(snapshot, json)
         panes = snapshot["panes"] || []
         apply_lock_column(panes)
-        return @output.puts(JSON.pretty_generate(snapshot)) if json
+        if json
+          payload = {"schema_version" => JSON_SCHEMA_VERSION}.merge(snapshot).merge("schema_version" => JSON_SCHEMA_VERSION)
+          return @output.puts(JSON.pretty_generate(payload))
+        end
 
         @output.puts "workspace: #{snapshot["workspace"]}"
         @output.puts ""

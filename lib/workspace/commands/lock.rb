@@ -22,8 +22,8 @@ module Workspace
       NAME_PATTERN = /\A[A-Za-z0-9][A-Za-z0-9._-]*\z/
       # `workspace lock status --json`'s schema version (see docs/README.lock.md).
       JSON_SCHEMA_VERSION = 1
-      # Seconds `clear` waits for a SIGKILLed process group to disappear
-      # before treating it as unstoppable and keeping its lock.
+      # Default seconds `clear` waits for a SIGKILLed process group to disappear
+      # before treating it as unstoppable and keeping its lock (`dev.kill_grace`).
       KILL_GRACE_SECONDS = ProcessHolderStopper::KILL_GRACE_SECONDS
 
       # Seconds on a clock that never jumps backward or forward with wall-clock
@@ -49,7 +49,7 @@ module Workspace
       #   real process-wide signal state; called as `trap.call(signal, handler)`, exactly
       #   like `Signal.trap`, and must return the previous handler the same way
       # @param terminator [Workspace::ProcessGroupTerminator] stops a cleared `kind: "process"` holder
-      # @param dev_config [Workspace::DevConfig, nil] supplies that holder's dev.stop_timeout
+      # @param dev_config [Workspace::DevConfig, nil] supplies that holder's dev.stop_timeout and dev.kill_grace
       # @param lock_config [Workspace::LockConfig, nil] supplies the project's locks.idle_grace
       # @param wall_clock [#call] current epoch seconds, for idle tracking in the store
       def initialize(config:, lock_namespace:, lock_holder:, output: $stdout, error_output: $stderr,
@@ -363,14 +363,15 @@ module Workspace
       end
 
       # @return [Boolean] false when the lock was kept for a process group
-      #   that could not be stopped, or someone else holds it by the time
-      #   the group is stopped
+      #   that could not be stopped, or someone other than a takeover the
+      #   clear kept queued holds it by the time the group is stopped
       def clear_one(store, name, label, project, &on_holder)
         removed = store.clear(name, cleared_by: label, keep_process_holder: true, &on_holder)
         if removed&.dig(:pending)
           holder = removed[:holder]
           return false unless stop_process_holder(store, name, holder, label, project)
-          if (other = store.finish_clear(name, holder, cleared_by: label))
+          other = store.finish_clear(name, holder, cleared_by: label)
+          if other && !kept_takeover?(removed, other)
             @error_output.puts "Stopped process group #{holder["pgid"] || holder["pid"]} (pid #{holder["pid"]}), but the " \
               "#{name} lock is now held by #{describe_holder(other)} (pid #{other["pid"]}), so it was not cleared."
             return false
@@ -385,9 +386,10 @@ module Workspace
       def stop_process_holder(store, name, holder, label, project)
         pid = holder["pid"]
         pgid = holder["pgid"] || pid
-        timeout = stop_timeout_for(project)
+        settings = dev_settings_for(project)
+        timeout = settings[:stop_timeout]
         case @holder_stopper.stop(store, name, holder, stop_timeout: timeout, retry_command: "workspace lock clear #{name}",
-          cleared_by: label)
+          cleared_by: label, kill_grace: settings[:kill_grace])
         when :kept then return false
         when :killed then @output.puts "Killed process group #{pgid} (pid #{pid}) after #{timeout}s."
         when :terminated then @output.puts "Stopped process group #{pgid} (pid #{pid})."
@@ -395,11 +397,30 @@ module Workspace
         true
       end
 
-      def stop_timeout_for(project)
-        return DevConfig::DEFAULT_STOP_TIMEOUT unless @dev_config
-        @dev_config.for_project(project)[:stop_timeout]
+      # One `dev_config` read for both settings, so a `clear` looks up the
+      # project's dev config once rather than once per setting.
+      def dev_settings_for(project)
+        return {stop_timeout: DevConfig::DEFAULT_STOP_TIMEOUT, kill_grace: KILL_GRACE_SECONDS} unless @dev_config
+        @dev_config.for_project(project)
       rescue Workspace::Error
-        DevConfig::DEFAULT_STOP_TIMEOUT
+        {stop_timeout: DevConfig::DEFAULT_STOP_TIMEOUT, kill_grace: KILL_GRACE_SECONDS}
+      end
+
+      # The stopped holder's own release promotes a takeover this clear
+      # kept queued: that is the clear's intended successor, not someone
+      # who took the lock out from under it.
+      def kept_takeover?(removed, holder)
+        (removed[:takeovers] || []).any? { |w| w["waiter_pid"] == holder["waiter_pid"] && w["waiter_started"] == holder["waiter_started"] }
+      end
+
+      # A queued `dev up --takeover` is kept by the clear, not removed: it
+      # takes the lock next. At most one takeover can ever be queued for a
+      # lock (a second `dev up --takeover` refuses while one is already
+      # queued), so `.first` is always the one promoted.
+      def takeover_note(removed)
+        takeover = removed[:takeovers]&.first
+        return "" unless takeover
+        "; kept the queued takeover by #{describe_holder(takeover)}, which takes the lock next"
       end
 
       def describe_cleared(name, removed)
@@ -410,7 +431,7 @@ module Workspace
         holder = removed[:holder]
         queue_size = removed[:queue]&.size || 0
         if holder
-          @output.puts "Cleared #{name}: was held by #{describe_holder(holder)}, #{queue_size} waiter(s) removed."
+          @output.puts "Cleared #{name}: was held by #{describe_holder(holder)}, #{queue_size} waiter(s) removed#{takeover_note(removed)}."
         else
           @output.puts "Cleared #{name}: was free, #{queue_size} waiter(s) removed."
         end

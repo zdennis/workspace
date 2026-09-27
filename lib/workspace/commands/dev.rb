@@ -228,6 +228,7 @@ module Workspace
           worktree: worktree,
           branch: git(worktree, "rev-parse", "--abbrev-ref", "HEAD"),
           config_name: lineage.worktree || lineage.name,
+          project: lineage.name,
           settings: @dev_config.for_project(lineage.name),
           store: LockStore.new(dir: @lock_namespace.resolve(cwd: working_dir)[:dir], liveness: @lock_holder, terminator: @terminator)
         }
@@ -332,7 +333,7 @@ module Workspace
       # @return [Symbol] :terminated, :killed, :gone, or :kept (reported on stderr)
       def stop(ctx, holder)
         result = @holder_stopper.stop(ctx[:store], LOCK_NAME, holder, stop_timeout: ctx[:settings][:stop_timeout],
-          retry_command: "workspace dev down")
+          retry_command: "workspace dev down", kill_grace: kill_grace_for(ctx))
         return result if result == :kept
         deadline = @clock.now + RELEASE_MARGIN
         while @lock_holder.alive?(pid: holder["pid"], started: holder["started"]) && @clock.now < deadline
@@ -340,6 +341,10 @@ module Workspace
         end
         ctx[:store].release(LOCK_NAME, holder["pid"]) unless @lock_holder.alive?(pid: holder["pid"], started: holder["started"])
         result
+      end
+
+      def kill_grace_for(ctx)
+        ctx[:settings][:kill_grace]
       end
 
       def session_for(ctx)

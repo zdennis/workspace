@@ -313,10 +313,10 @@ RSpec.describe Workspace::Commands::Lock do
           waiter_pid: 4242, waiter_started: "start-4242")
       end
 
-      def clear_command
+      def clear_command(dev_config: nil)
         described_class.new(config: config, lock_namespace: lock_namespace, lock_holder: FakeLockIdentity.new(pid: 999), output: output,
           error_output: error_output, terminator: terminator, clock: mono_clock, trap: ->(*) {},
-          sleeper: ->(seconds) { mono[0] += seconds })
+          sleeper: ->(seconds) { mono[0] += seconds }, dev_config: dev_config)
       end
 
       def devenv_holder_pid
@@ -348,6 +348,20 @@ RSpec.describe Workspace::Commands::Lock do
         expect(result).to eq(exit_code: 1)
         expect(devenv_holder_pid).to eq(4242)
         expect(error_output.string).to include("still running #{described_class::KILL_GRACE_SECONDS}s after SIGKILL", "Kept devenv lock")
+      end
+
+      it "waits the project's dev.kill_grace after SIGKILL before keeping the lock" do
+        hold_devenv
+        allow(terminator).to receive(:stop_holder).and_return(:killed)
+        allow(terminator).to receive(:running?).with(4242).and_return(true)
+        dev_config = instance_double(Workspace::DevConfig, for_project: {stop_timeout: 2, kill_grace: 0.5})
+
+        result = clear_command(dev_config: dev_config).clear("devenv")
+
+        expect(result).to eq(exit_code: 1)
+        expect(mono[0]).to be >= 0.5
+        expect(mono[0]).to be < described_class::KILL_GRACE_SECONDS
+        expect(error_output.string).to include("still running 0.5s after SIGKILL", "Kept devenv lock")
       end
 
       it "clears the lock once a SIGKILLed group disappears within the grace period" do
@@ -415,6 +429,23 @@ RSpec.describe Workspace::Commands::Lock do
         expect(result).to eq(exit_code: 0)
         expect(devenv_holder_pid).to be_nil
         expect(output.string).to include("Cleared devenv")
+      end
+
+      it "hands the lock to a queued dev up --takeover and says so, while still removing other waiters" do
+        hold_devenv
+        enqueue_waiter(name: "devenv", identity: FakeLockIdentity.new(pid: 300), task: "next")
+        Workspace::LockStore.new(dir: tmpdir, liveness: FakeLockLiveness.new).acquire("devenv",
+          identity: {kind: "process", pid: 555, started: "start-555", pgid: 555, pane: "%5", worktree: "/w/signup", branch: "signup"},
+          waiter_pid: 555, waiter_started: "start-555", wait: true, priority: true)
+        allow(terminator).to receive(:stop_holder).and_return(:gone)
+        allow(terminator).to receive_messages(orphan_running?: false, pgid_reused?: false)
+
+        result = clear_command.clear("devenv")
+
+        expect(result).to eq(exit_code: 0)
+        expect(devenv_holder_pid).to eq(555)
+        expect(output.string).to include("Cleared devenv: was held by ? in /w/login, 1 waiter(s) removed; " \
+          "kept the queued takeover by %5 in /w/signup, which takes the lock next.")
       end
 
       it "with --all, clears every other lock and keeps only the one it could not stop" do

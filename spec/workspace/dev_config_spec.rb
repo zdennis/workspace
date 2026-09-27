@@ -16,19 +16,21 @@ RSpec.describe Workspace::DevConfig do
 
       expect(result).to eq(up: nil, ready: nil, stop_timeout: Workspace::DevConfig::DEFAULT_STOP_TIMEOUT,
         startup_timeout: Workspace::DevConfig::DEFAULT_STARTUP_TIMEOUT,
-        ready_timeout: Workspace::DevConfig::DEFAULT_READY_TIMEOUT)
+        ready_timeout: Workspace::DevConfig::DEFAULT_READY_TIMEOUT,
+        kill_grace: Workspace::ProcessHolderStopper::KILL_GRACE_SECONDS)
     end
 
     it "returns the configured up, ready, and timeouts" do
       dir = Dir.mktmpdir("ws-dev-config")
       project_settings = project_settings_with(dir: dir)
       project_settings.save("myapp", {"dev" => {"up" => "./start-dev", "ready" => "port:3000", "stop_timeout" => "30s",
-                                                "startup_timeout" => "45s", "ready_timeout" => "5m"}})
+                                                "startup_timeout" => "45s", "ready_timeout" => "5m", "kill_grace" => "10s"}})
       dev_config = described_class.new(project_settings: project_settings)
 
       result = dev_config.for_project("myapp")
 
-      expect(result).to eq(up: "./start-dev", ready: "port:3000", stop_timeout: 30.0, startup_timeout: 45.0, ready_timeout: 300.0)
+      expect(result).to eq(up: "./start-dev", ready: "port:3000", stop_timeout: 30.0, startup_timeout: 45.0,
+        ready_timeout: 300.0, kill_grace: 10.0)
     end
 
     it "raises Workspace::Error for an invalid stored stop_timeout" do
@@ -49,6 +51,24 @@ RSpec.describe Workspace::DevConfig do
 
         expect { dev_config.for_project("myapp") }.to raise_error(Workspace::Error, /Invalid dev.#{key}/)
       end
+    end
+
+    it "raises Workspace::Error for a stored kill_grace over the 60s cap" do
+      dir = Dir.mktmpdir("ws-dev-config")
+      project_settings = project_settings_with(dir: dir)
+      project_settings.save("myapp", {"dev" => {"kill_grace" => "61s"}})
+      dev_config = described_class.new(project_settings: project_settings)
+
+      expect { dev_config.for_project("myapp") }.to raise_error(Workspace::Error, /Invalid dev.kill_grace/)
+    end
+
+    it "raises Workspace::Error for a non-positive stored kill_grace" do
+      dir = Dir.mktmpdir("ws-dev-config")
+      project_settings = project_settings_with(dir: dir)
+      project_settings.save("myapp", {"dev" => {"kill_grace" => "0"}})
+      dev_config = described_class.new(project_settings: project_settings)
+
+      expect { dev_config.for_project("myapp") }.to raise_error(Workspace::Error, /Invalid dev.kill_grace/)
     end
   end
 end
