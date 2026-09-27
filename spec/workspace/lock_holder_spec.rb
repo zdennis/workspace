@@ -6,20 +6,30 @@ RSpec.describe Workspace::LockHolder do
   let(:provider) { Workspace::AgentProvider.find("claude") }
   let(:env) { {} }
 
-  subject(:holder) { described_class.new(process_tree: process_tree, provider: provider, env: env) }
+  subject(:holder) { described_class.new(process_tree: process_tree, providers: [provider], env: env) }
 
   before { allow(process_tree).to receive(:snapshot).and_return(snapshot) }
+
+  describe "#initialize" do
+    it "raises when two providers share an executable, rather than silently overwriting its markers" do
+      duplicate = Workspace::AgentProvider.new(key: "claude2", label: "Claude Code 2", executable: "claude")
+
+      expect { described_class.new(process_tree: process_tree, providers: [provider, duplicate], env: env) }
+        .to raise_error(Workspace::Error, /duplicate agent provider executable.*claude/)
+    end
+  end
 
   describe "#current" do
     context "inside tmux" do
       let(:env) { {"TMUX_PANE" => "%12"} }
 
-      it "finds the agent by walking down from the pane's process" do
+      it "falls back to walking down from the pane's process when no ancestor is an agent" do
+        allow(snapshot).to receive(:find_ancestor).and_return(nil)
         allow(Open3).to receive(:capture3)
           .with("tmux", "display-message", "-p", "-t", "%12", "#" + "{pane_pid}")
           .and_return(["4200\n", "", instance_double(Process::Status, success?: true)])
         allow(snapshot).to receive(:find_descendant)
-          .with(4200, ["claude"], exclude: provider.background_markers, include_root: true)
+          .with(4200, ["claude"], exclude: {"claude" => provider.background_markers}, include_root: true, exact_only: [])
           .and_return({pid: 4411, ppid: 4200, lstart: "Sat Sep 26 09:12:03 2026", command: "claude", args: "claude"})
 
         result = holder.current
@@ -27,15 +37,14 @@ RSpec.describe Workspace::LockHolder do
         expect(result).to eq(kind: "agent", pid: 4411, started: "Sat Sep 26 09:12:03 2026", pane: "%12", worktree: Dir.pwd)
       end
 
-      it "falls back to an ancestor walk when the pane pid can't be resolved" do
+      it "prefers the nearest agent ancestor without asking tmux for the pane" do
         allow(Open3).to receive(:capture3)
-          .with("tmux", "display-message", "-p", "-t", "%12", "#" + "{pane_pid}")
-          .and_return(["", "", instance_double(Process::Status, success?: false)])
         allow(snapshot).to receive(:find_ancestor)
-          .with(Process.pid, ["claude"], exclude: provider.background_markers)
+          .with(Process.pid, ["claude"], exclude: {"claude" => provider.background_markers}, exact_only: [])
           .and_return({pid: 999, ppid: 1, lstart: "start-999", command: "claude", args: "claude"})
 
         expect(holder.current).to include(pid: 999, started: "start-999")
+        expect(Open3).not_to have_received(:capture3)
       end
     end
 
@@ -44,7 +53,7 @@ RSpec.describe Workspace::LockHolder do
 
       it "walks ancestors to find the nearest matching agent process" do
         allow(snapshot).to receive(:find_ancestor)
-          .with(Process.pid, ["claude"], exclude: provider.background_markers)
+          .with(Process.pid, ["claude"], exclude: {"claude" => provider.background_markers}, exact_only: [])
           .and_return({pid: 555, ppid: 1, lstart: "start-555", command: "claude", args: "claude"})
 
         result = holder.current
@@ -56,6 +65,107 @@ RSpec.describe Workspace::LockHolder do
         allow(snapshot).to receive(:find_ancestor).and_return(nil)
 
         expect(holder.current).to be_nil
+      end
+    end
+  end
+
+  describe "#current with the default provider registry" do
+    subject(:holder) { described_class.new(process_tree: process_tree, env: env) }
+
+    let(:env) { {} }
+    let(:snapshot) { Workspace::ProcessTree::Snapshot.new(processes) }
+
+    def process(pid, ppid, args)
+      {pid: pid, ppid: ppid, lstart: "start-#{pid}", command: args.split.first, args: args}
+    end
+
+    context "when the calling agent is not Claude Code" do
+      let(:processes) do
+        [
+          process(1, 0, "launchd"),
+          process(700, 1, "codex"),
+          process(701, 700, "/bin/zsh -c workspace lock"),
+          process(Process.pid, 701, "ruby bin/workspace lock")
+        ]
+      end
+
+      it "resolves to that agent's process" do
+        expect(holder.current).to include(pid: 700, started: "start-700")
+      end
+    end
+
+    context "when the calling agent is Claude Code" do
+      let(:processes) do
+        [
+          process(1, 0, "launchd"),
+          process(800, 1, "claude"),
+          process(801, 800, "claude daemon run"),
+          process(Process.pid, 800, "ruby bin/workspace lock")
+        ]
+      end
+
+      it "still resolves to the claude process, skipping its background helpers" do
+        expect(holder.current).to include(pid: 800, started: "start-800")
+      end
+    end
+
+    context "when an unrelated tool lives under a /pi/ path segment" do
+      let(:processes) do
+        [
+          process(1, 0, "launchd"),
+          process(900, 1, "/opt/pi/bin/tool --flag"),
+          process(Process.pid, 900, "ruby bin/workspace lock")
+        ]
+      end
+
+      it "does not mistake it for the pi provider" do
+        expect(holder.current).to be_nil
+      end
+    end
+
+    context "when a second agent was launched from inside another in the same pane" do
+      let(:env) { {"TMUX_PANE" => "%12"} }
+      let(:processes) do
+        [
+          process(1, 0, "launchd"),
+          process(4200, 1, "-zsh"),
+          process(4300, 4200, "claude"),
+          process(4350, 4300, "/bin/zsh -c codex"),
+          process(4400, 4350, "codex"),
+          process(Process.pid, 4400, "ruby bin/workspace lock")
+        ]
+      end
+
+      before do
+        allow(Open3).to receive(:capture3)
+          .with("tmux", "display-message", "-p", "-t", "%12", "#" + "{pane_pid}")
+          .and_return(["4200\n", "", instance_double(Process::Status, success?: true)])
+      end
+
+      it "resolves to the nearest agent above the caller, not the outermost one in the pane" do
+        expect(holder.current).to include(pid: 4400, started: "start-4400", pane: "%12")
+      end
+    end
+
+    context "when the caller has no agent ancestor inside tmux" do
+      let(:env) { {"TMUX_PANE" => "%12"} }
+      let(:processes) do
+        [
+          process(1, 0, "launchd"),
+          process(4200, 1, "-zsh"),
+          process(4300, 4200, "claude"),
+          process(Process.pid, 1, "ruby bin/workspace lock")
+        ]
+      end
+
+      before do
+        allow(Open3).to receive(:capture3)
+          .with("tmux", "display-message", "-p", "-t", "%12", "#" + "{pane_pid}")
+          .and_return(["4200\n", "", instance_double(Process::Status, success?: true)])
+      end
+
+      it "falls back to the agent running in the pane" do
+        expect(holder.current).to include(pid: 4300, started: "start-4300")
       end
     end
   end

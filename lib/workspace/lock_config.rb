@@ -19,9 +19,7 @@ module Workspace
     # @return [Numeric] seconds, always greater than 0
     # @raise [ArgumentError] if value isn't a positive duration
     def self.parse_idle_grace(value)
-      seconds = Duration.parse(value)
-      raise ArgumentError, "must be greater than 0, got #{value.inspect}" unless seconds.positive?
-      seconds
+      Duration.parse_positive(value)
     end
 
     # @param name [String] project name (already resolved to its parent, if a worktree)

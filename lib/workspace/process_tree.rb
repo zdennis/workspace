@@ -85,25 +85,32 @@ module Workspace
       end
 
       # Finds the nearest process under pid that looks like one of the named
-      # executables, skipping any whose arguments match an excluded marker.
+      # executables, skipping any that is a background helper.
       #
       # The exclusions matter: an agent CLI often leaves long-lived background
       # helpers in the tree, and matching one of those would report a pane as
       # running an interactive session long after the session exited.
       #
+      # A marker names a helper's subcommand ("daemon run"), so it matches
+      # only the words immediately after the program, never text further
+      # along such as a prompt. Markers belong to one agent CLI, so pass a
+      # Hash to apply each executable's markers only to processes matched as
+      # that executable; an Array applies to every name.
+      #
       # @param pid [Integer] root process to search below
       # @param names [Array<String>] executable names to look for
-      # @param exclude [Array<String>] argument substrings that disqualify a match
+      # @param exclude [Array<String>, Hash{String => Array<String>}] helper
+      #   subcommands that disqualify a match, for every name or per name
       # @param include_root [Boolean] also consider pid itself. tmux reports a
       #   pane's command resolved through symlinks, so a pane running the agent
       #   directly is often only recognizable from its own process entry.
+      # @param exact_only [Array<String>] names that must match by exact
+      #   basename only, skipping the "/#{name}/" path-segment heuristic
       # @return [Hash, nil] the nearest matching process
-      def find_descendant(pid, names, exclude: [], include_root: false)
+      def find_descendant(pid, names, exclude: [], include_root: false, exact_only: [])
         candidates = descendants(pid)
         candidates = [find(pid), *candidates].compact if include_root
-        candidates.find do |process|
-          matches_name?(process, names) && !excluded?(process, exclude)
-        end
+        candidates.find { |process| agent?(process, names, exclude, exact_only) }
       end
 
       # @param pid [Integer]
@@ -134,17 +141,18 @@ module Workspace
       end
 
       # Finds the nearest ancestor of pid that looks like one of the named
-      # executables, skipping any whose arguments match an excluded marker.
-      # Used outside tmux, where there is no pane to search downward from.
+      # executables, skipping any that is a background helper (see
+      # {#find_descendant} for how exclude is matched).
       #
       # @param pid [Integer] process to walk up from
       # @param names [Array<String>] executable names to look for
-      # @param exclude [Array<String>] argument substrings that disqualify a match
+      # @param exclude [Array<String>, Hash{String => Array<String>}] helper
+      #   subcommands that disqualify a match, for every name or per name
+      # @param exact_only [Array<String>] names that must match by exact
+      #   basename only, skipping the "/#{name}/" path-segment heuristic
       # @return [Hash, nil] the nearest matching ancestor
-      def find_ancestor(pid, names, exclude: [])
-        ancestors(pid).find do |process|
-          matches_name?(process, names) && !excluded?(process, exclude)
-        end
+      def find_ancestor(pid, names, exclude: [], exact_only: [])
+        ancestors(pid).find { |process| agent?(process, names, exclude, exact_only) }
       end
 
       private
@@ -153,25 +161,42 @@ module Workspace
       # so argv[0] is the reliable source and `comm` only a fallback for a
       # process whose arguments are unreadable. A versioned install runs from a
       # path whose basename is the version, so the name is also looked for as a
-      # path segment.
-      def matches_name?(process, names)
-        wanted = names.map(&:downcase)
-        candidates = [argv0(process), process[:command].to_s.downcase]
+      # path segment — except for a name listed in exact_only, where that
+      # heuristic risks matching an unrelated tool (see AgentProvider#path_segment_matching?).
+      def agent?(process, names, exclude, exact_only = [])
+        # Only the first matching name's markers are applied; this is safe
+        # because provider executables are guaranteed unique (see
+        # Workspace::LockHolder's background_markers construction).
+        name = names.find { |candidate| matches_name?(process, candidate, exact_only) }
+        return false unless name
+        markers = exclude.is_a?(Hash) ? exclude.fetch(name, []) : exclude
+        !helper?(process, markers)
+      end
 
-        candidates.any? do |candidate|
+      def matches_name?(process, name, exact_only = [])
+        wanted = name.downcase
+        allow_path_segment = !exact_only.include?(name)
+        [argv0(process), process[:command].to_s.downcase].any? do |candidate|
           next false if candidate.empty?
-          wanted.include?(File.basename(candidate)) ||
-            wanted.any? { |name| candidate.include?("/#{name}/") }
+          File.basename(candidate) == wanted ||
+            (allow_path_segment && candidate.include?("/#{wanted}/"))
         end
       end
 
       def argv0(process)
-        process[:args].to_s.split(/\s+/).first.to_s.downcase
+        words(process).first.to_s
       end
 
-      def excluded?(process, exclude)
-        args = process[:args].to_s.downcase
-        exclude.any? { |marker| args.include?(marker.downcase) }
+      def helper?(process, markers)
+        subcommand = words(process).drop(1)
+        markers.any? do |marker|
+          marker_words = marker.downcase.split
+          subcommand.first(marker_words.size) == marker_words
+        end
+      end
+
+      def words(process)
+        process[:args].to_s.downcase.split
       end
     end
   end

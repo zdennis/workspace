@@ -18,6 +18,8 @@ The command comes from the parent project's config (`~/.config/workspace/project
 workspace config set dev.up "./start-dev"         # required
 workspace config set dev.ready "port:3000"        # optional readiness probe
 workspace config set dev.stop_timeout 20s         # SIGTERM → SIGKILL grace (default 20s)
+workspace config set dev.startup_timeout 30s      # wait for the wrapper to take a free lock (default 30s)
+workspace config set dev.ready_timeout 2m         # wait for the dev.ready check to pass (default 120s)
 ```
 
 `dev.ready` is either `port:N` (passes once `localhost:N` accepts a TCP connection) or a shell command run in the worktree (passes on exit 0).

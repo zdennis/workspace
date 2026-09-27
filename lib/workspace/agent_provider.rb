@@ -28,10 +28,11 @@ module Workspace
       "PreToolUse" => nil
     }.freeze
 
-    # Arguments that mark a background helper rather than an interactive
+    # Subcommands that mark a background helper rather than an interactive
     # session. Claude Code leaves a daemon and pty helpers in a pane's process
     # tree, and matching one would report the pane as busy long after the
-    # session it served has exited.
+    # session it served has exited. Each is matched against the words right
+    # after the program name, and only for this provider's own processes.
     CLAUDE_BACKGROUND = ["daemon run", "bg-pty-host", "bg-spare"].freeze
 
     # @return [Array<AgentProvider>] every known provider
@@ -58,7 +59,16 @@ module Workspace
         new(
           key: "pi",
           label: "Pi",
-          executable: "pi"
+          executable: "pi",
+          # "pi" is two letters: the versioned-install path-segment heuristic
+          # (matching "/pi/" anywhere in argv0 or comm) would also catch
+          # unrelated tools that happen to live under a "pi" directory (a
+          # Raspberry Pi toolchain, an "/opt/pi/bin/..." install). Exact
+          # basename matching still has a residual collision risk — any
+          # other binary literally named "pi" on PATH is indistinguishable
+          # from this provider — but that is a much narrower target than the
+          # path-segment heuristic.
+          path_segment_matching: false
         )
       ].freeze
     end
@@ -71,21 +81,32 @@ module Workspace
 
     attr_reader :key, :label, :executable, :settings_path, :events, :background_markers
 
+    # @return [Boolean] whether a versioned install of this executable may be
+    #   recognized by a "/#{executable}/" path segment, in addition to an
+    #   exact basename match
+    def path_segment_matching?
+      @path_segment_matching
+    end
+
     # @param key [String] stable identifier
     # @param label [String] human-readable name
     # @param executable [String] binary name to detect on PATH
     # @param settings_path [String, nil] hook settings file, relative to project root
     # @param events [Hash, nil] event name => matcher (nil matcher means "all")
-    # @param background_markers [Array<String>] argument substrings that mark a
-    #   background helper, not an interactive session
+    # @param background_markers [Array<String>] leading subcommands that mark
+    #   a background helper, not an interactive session
+    # @param path_segment_matching [Boolean] whether a "/#{executable}/" path
+    #   segment also counts as a match (off for a short/generic executable
+    #   name where that heuristic risks matching unrelated tools)
     def initialize(key:, label:, executable:, settings_path: nil, events: nil,
-      background_markers: [])
+      background_markers: [], path_segment_matching: true)
       @key = key
       @label = label
       @executable = executable
       @settings_path = settings_path
       @events = events
       @background_markers = background_markers
+      @path_segment_matching = path_segment_matching
     end
 
     # @return [Boolean] whether workspace can install hooks for this agent

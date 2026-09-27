@@ -956,6 +956,8 @@ module Workspace
           workspace config set dev.up "./start-dev"
           workspace config set dev.ready "port:3000"    (or a shell command)
           workspace config set dev.stop_timeout 20s
+          workspace config set dev.startup_timeout 30s  (default: 30s)
+          workspace config set dev.ready_timeout 2m      (default: 120s)
 
         Subcommands:
           up [options]      Start this worktree's dev env in a devenv tmux window
@@ -1825,7 +1827,9 @@ module Workspace
         opts.separator "  layouts:                       Project-specific tmux pane layouts"
         opts.separator "  worktree_hooks:                Hooks seeded into new worktrees"
         opts.separator "  dev.up, dev.ready,             Set via 'workspace config set' (see"
-        opts.separator "  dev.stop_timeout:              'workspace config set --help')"
+        opts.separator "  dev.stop_timeout,              'workspace config set --help')"
+        opts.separator "  dev.startup_timeout,"
+        opts.separator "  dev.ready_timeout:"
         opts.separator "  locks.idle_grace:              How long an idle agent keeps a lock before"
         opts.separator "                                 the next waiter may take it (default: 5m)"
         opts.separator ""

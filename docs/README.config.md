@@ -33,9 +33,11 @@ Only an allowlisted set of keys can be written this way, so a typo doesn't silen
 | `dev.up` | Command that starts the project's dev environment |
 | `dev.ready` | Readiness probe for the dev environment |
 | `dev.stop_timeout` | Grace period before force-stopping the dev environment, e.g. `20s` or `20` |
+| `dev.startup_timeout` | How long `dev up` waits for the wrapper to take a free lock, e.g. `30s` (default `30s`) |
+| `dev.ready_timeout` | How long `dev up` waits for the `dev.ready` check to pass, e.g. `2m` (default `120s`) |
 | `locks.idle_grace` | How long an idle agent keeps a lock before the first waiter may take it over (default `5m`; see [`workspace lock`](README.lock.md)) |
 
-`dev.stop_timeout` and `locks.idle_grace` must parse as a duration: a plain number of seconds, or a number with an `s`, `m` or `h` suffix (`20`, `20s`, `5m`, `1h`). `locks.idle_grace` must also be greater than 0. Anything else is rejected before it's written.
+`dev.stop_timeout`, `dev.startup_timeout`, `dev.ready_timeout`, and `locks.idle_grace` must parse as a duration: a plain number of seconds, or a number with an `s`, `m` or `h` suffix (`20`, `20s`, `5m`, `1h`). `dev.startup_timeout`, `dev.ready_timeout`, and `locks.idle_grace` must also be greater than 0. Anything else is rejected before it's written.
 
 `dev.up` runs via `/bin/sh -c`, so it can carry inline environment variables and quoting, e.g.:
 
@@ -65,7 +67,7 @@ Before writing, `set` and `unset` back up the project's config file (via the sam
 | `hooks` | Project-specific hooks (e.g., `post_launch`) |
 | `layouts` | Project-specific tmux pane layouts |
 | `worktree_hooks` | Hooks seeded into new worktrees created from this project |
-| `dev.up`, `dev.ready`, `dev.stop_timeout` | Dev environment config; set via `workspace config set` (see above) |
+| `dev.up`, `dev.ready`, `dev.stop_timeout`, `dev.startup_timeout`, `dev.ready_timeout` | Dev environment config; set via `workspace config set` (see above) |
 | `locks.idle_grace` | Idle takeover grace period for this project's locks; set via `workspace config set` (see above) |
 
 ## Examples

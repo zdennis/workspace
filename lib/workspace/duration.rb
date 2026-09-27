@@ -15,5 +15,17 @@ module Workspace
       raise ArgumentError, "expected a duration like \"20\", \"20s\", \"5m\" or \"1h\", got #{value.inspect}" unless match
       match[1].to_f * UNITS.fetch(match[2].downcase)
     end
+
+    # Parses a duration string or number into seconds, requiring it be
+    # greater than 0.
+    #
+    # @param value [String, Numeric] duration string or number
+    # @return [Numeric] seconds, always greater than 0
+    # @raise [ArgumentError] if value isn't a recognized duration, or isn't positive
+    def self.parse_positive(value)
+      seconds = parse(value)
+      raise ArgumentError, "must be greater than 0, got #{value.inspect}" unless seconds.positive?
+      seconds
+    end
   end
 end

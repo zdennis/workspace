@@ -155,8 +155,9 @@ module Workspace
       return {provider: direct, pid: detail[:pid]} if direct
 
       @providers.each do |provider|
+        exact_only = provider.path_segment_matching? ? [] : [provider.executable]
         match = tree.find_descendant(detail[:pid], [provider.executable],
-          exclude: provider.background_markers, include_root: true)
+          exclude: provider.background_markers, include_root: true, exact_only: exact_only)
         return {provider: provider, pid: match[:pid]} if match
       end
       nil

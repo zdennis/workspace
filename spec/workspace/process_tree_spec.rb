@@ -78,6 +78,36 @@ RSpec.describe Workspace::ProcessTree do
     it "returns nil when nothing matches" do
       expect(tree.snapshot.find_descendant(100, ["codex"])).to be_nil
     end
+
+    context "with exact_only" do
+      def snapshot_of(*entries)
+        Workspace::ProcessTree::Snapshot.new(entries.map do |pid, ppid, args|
+          {pid: pid, ppid: ppid, lstart: "start-#{pid}", command: args.split.first, args: args}
+        end)
+      end
+
+      it "does not match an unrelated tool under a same-named directory when exact_only" do
+        snapshot = snapshot_of([1, 0, "bash"], [10, 1, "/opt/pi/bin/tool --flag"])
+
+        expect(snapshot.find_descendant(1, ["pi"], exact_only: ["pi"])).to be_nil
+      end
+
+      it "matches the path segment heuristic when the name is not exact_only" do
+        snapshot = snapshot_of([1, 0, "bash"], [10, 1, "/opt/pi/bin/tool --flag"])
+
+        expect(snapshot.find_descendant(1, ["pi"])[:pid]).to eq(10)
+      end
+
+      it "still matches a real basename" do
+        snapshot = snapshot_of([1, 0, "bash"], [10, 1, "pi --session-id abc"])
+
+        expect(snapshot.find_descendant(1, ["pi"], exact_only: ["pi"])[:pid]).to eq(10)
+      end
+
+      it "still allows the path-segment heuristic for names not listed" do
+        expect(tree.snapshot.find_descendant(500, ["claude"], include_root: true, exact_only: ["pi"])[:pid]).to eq(500)
+      end
+    end
   end
 
   describe "#ancestors" do
@@ -105,6 +135,28 @@ RSpec.describe Workspace::ProcessTree do
 
     it "returns nil when no ancestor matches" do
       expect(tree.snapshot.find_ancestor(300, ["codex"])).to be_nil
+    end
+  end
+
+  describe "background-helper markers" do
+    def snapshot_of(*entries)
+      Workspace::ProcessTree::Snapshot.new(entries.map do |pid, ppid, args|
+        {pid: pid, ppid: ppid, lstart: "start-#{pid}", command: args.split.first, args: args}
+      end)
+    end
+
+    it "match only the leading subcommand, not the same words later in the arguments" do
+      snapshot = snapshot_of([10, 1, "claude -p clean up stale bg-spare helpers"], [11, 10, "bash"])
+
+      expect(snapshot.find_ancestor(11, ["claude"], exclude: ["bg-spare"])[:pid]).to eq(10)
+    end
+
+    it "apply a per-name Hash only to processes matched as that name" do
+      snapshot = snapshot_of([5, 1, "claude daemon run"], [10, 5, "codex daemon run"], [11, 10, "bash"])
+      exclude = {"claude" => ["daemon run"], "codex" => []}
+
+      expect(snapshot.find_ancestor(11, ["claude", "codex"], exclude: exclude)[:pid]).to eq(10)
+      expect(snapshot.find_ancestor(10, ["claude", "codex"], exclude: exclude)).to be_nil
     end
   end
 end

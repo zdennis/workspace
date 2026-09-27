@@ -20,8 +20,6 @@ module Workspace
       # `workspace dev status --json`'s schema version (see docs/README.dev.md).
       JSON_SCHEMA_VERSION = 1
       POLL_SECONDS = 0.2
-      STARTUP_TIMEOUT = 30
-      READY_TIMEOUT = 120
       RELEASE_MARGIN = 2
       PASSTHROUGH_ENV = %w[XDG_STATE_HOME WORKSPACE_DEBUG].freeze
       # Set in a takeover wrapper's window: its `dev __run` queues ahead of everyone.
@@ -31,7 +29,8 @@ module Workspace
       # @param lock_namespace [Workspace::LockNamespace] resolves the repo's lock store directory
       # @param lock_holder [Workspace::LockHolder] checks holder liveness (pid + start time)
       # @param lineage [Workspace::WorkspaceLineage] resolves the parent project for dev config
-      # @param dev_config [Workspace::DevConfig] reads `dev.up`, `dev.ready`, `dev.stop_timeout`
+      # @param dev_config [Workspace::DevConfig] reads `dev.up`, `dev.ready`, `dev.stop_timeout`,
+      #   `dev.startup_timeout`, `dev.ready_timeout`
       # @param dev_runner [Workspace::DevRunner] the wrapper behind `dev __run`
       # @param terminator [Workspace::ProcessGroupTerminator] stops a holder's process group
       # @param tmux [Workspace::Tmux] opens the devenv window
@@ -42,12 +41,10 @@ module Workspace
       # @param sleeper [#call] sleeps between polls
       # @param clock [#now] monotonic seconds, for timeouts
       # @param poll [Numeric] seconds between polls
-      # @param startup_timeout [Numeric] seconds to wait for the wrapper to take a free lock
-      # @param ready_timeout [Numeric] seconds to wait for the ready probe to pass
       # @param kill [#call] probes or signals a wrapper pid, called as `kill.call(signal, pid)` like `Process.kill`
       def initialize(lock_namespace:, lock_holder:, lineage:, dev_config:, dev_runner:, terminator:, tmux:, executable:,
         output: $stdout, error_output: $stderr, env: ENV, sleeper: ->(seconds) { sleep(seconds) }, clock: Lock::MonotonicClock,
-        poll: POLL_SECONDS, startup_timeout: STARTUP_TIMEOUT, ready_timeout: READY_TIMEOUT,
+        poll: POLL_SECONDS,
         kill: ->(signal, pid) { Process.kill(signal, pid) })
         @lock_namespace = lock_namespace
         @lock_holder = lock_holder
@@ -63,8 +60,6 @@ module Workspace
         @sleeper = sleeper
         @clock = clock
         @poll = poll
-        @startup_timeout = startup_timeout
-        @ready_timeout = ready_timeout
         @kill = kill
       end
 
@@ -95,7 +90,7 @@ module Workspace
 
         session = session_for(ctx)
         wrapper = open_wrapper(ctx, session, wait: wait)
-        code = await_wrapper(ctx[:store], wrapper, wait: wait, max_wait: max_wait)
+        code = await_wrapper(ctx, wrapper, wait: wait, max_wait: max_wait)
         finish_up(ctx, session, wrapper, code, ready: ready)
       end
 
@@ -176,13 +171,13 @@ module Workspace
       def take_over(ctx, holder, ready:)
         session = session_for(ctx)
         wrapper = open_wrapper(ctx, session, wait: true, takeover: true)
-        code = await_queued(ctx[:store], wrapper)
+        code = await_queued(ctx, wrapper)
         return {exit_code: code} unless code.zero?
 
         @output.puts "Taking over: stopping dev environment for #{describe(holder)}..."
         stop(ctx, holder)
         close_window(holder)
-        code = await_wrapper(ctx[:store], wrapper, wait: false, max_wait: nil)
+        code = await_wrapper(ctx, wrapper, wait: false, max_wait: nil)
         finish_up(ctx, session, wrapper, code, ready: ready)
       end
 
@@ -356,8 +351,9 @@ module Workspace
 
       # Polls until the wrapper in the new window holds the lock. The wrapper
       # does its own queueing; this only watches the store.
-      def await_wrapper(store, pid, wait:, max_wait:)
-        limit = wait ? max_wait : @startup_timeout
+      def await_wrapper(ctx, pid, wait:, max_wait:)
+        store = ctx[:store]
+        limit = wait ? max_wait : ctx[:settings][:startup_timeout]
         deadline = limit && @clock.now + limit
         seen_queued = false
 
@@ -387,8 +383,10 @@ module Workspace
 
       # Polls until the takeover wrapper is in the queue (or already holds
       # the lock, if the holder went away meanwhile).
-      def await_queued(store, pid)
-        deadline = @clock.now + @startup_timeout
+      def await_queued(ctx, pid)
+        store = ctx[:store]
+        startup_timeout = ctx[:settings][:startup_timeout]
+        deadline = @clock.now + startup_timeout
         loop do
           entry = entry(store)
           return 0 if entry.dig("holder", "pid") == pid
@@ -397,7 +395,7 @@ module Workspace
             @error_output.puts "The dev wrapper (pid #{pid}) exited before it queued for the #{LOCK_NAME} lock."
             return 1
           end
-          return give_up(pid, false, @startup_timeout) if @clock.now >= deadline
+          return give_up(pid, false, startup_timeout) if @clock.now >= deadline
           @sleeper.call(@poll)
         end
       end
@@ -429,7 +427,8 @@ module Workspace
 
       def await_ready(ctx, pid)
         spec = ctx[:settings][:ready]
-        deadline = @clock.now + @ready_timeout
+        ready_timeout = ctx[:settings][:ready_timeout]
+        deadline = @clock.now + ready_timeout
         loop do
           return 0 if ready?(spec, ctx[:worktree])
           holder = entry(ctx[:store])["holder"]
@@ -439,7 +438,7 @@ module Workspace
           end
           if @clock.now >= deadline
             stop(ctx, holder)
-            @error_output.puts "Ready check (#{spec}) did not pass within #{format_seconds(@ready_timeout)}; " \
+            @error_output.puts "Ready check (#{spec}) did not pass within #{format_seconds(ready_timeout)}; " \
               "stopped the dev environment and released the #{LOCK_NAME} lock."
             return 6
           end
