@@ -182,6 +182,27 @@ RSpec.describe Workspace::SessionMonitor do
       expect(reaping.reap_locks).to eq(0)
     end
 
+    it "logs a reaper failure at debug" do
+      out = StringIO.new
+      reaping = described_class.new(tmux: tmux, process_tree: process_tree, session_name: "proj",
+        clock: clock, lock_reaper: lock_reaper, logger: Workspace::Logger.new(output: out, enabled: true))
+      allow(lock_reaper).to receive(:tick).and_raise(IOError, "closed stream")
+
+      reaping.reap_locks
+
+      expect(out.string).to include("lock reap failed (IOError: closed stream)")
+    end
+
+    it "still returns zero when logging the reaper's failure raises too" do
+      logger = instance_double(Workspace::Logger)
+      allow(logger).to receive(:debug).and_raise(IOError, "log closed")
+      reaping = described_class.new(tmux: tmux, process_tree: process_tree, session_name: "proj",
+        clock: clock, lock_reaper: lock_reaper, logger: logger)
+      allow(lock_reaper).to receive(:tick).and_raise(IOError, "closed stream")
+
+      expect(reaping.reap_locks).to eq(0)
+    end
+
     it "does nothing without a reaper" do
       monitor.scan
 

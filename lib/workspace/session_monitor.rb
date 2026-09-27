@@ -134,15 +134,20 @@ module Workspace
     # the reaper is due. Runs on the scan thread, never the agent's accept
     # loop, so a slow `git` only delays the next scan. A lock store another
     # process holds is skipped rather than waited on, and retried next time.
-    # Anything the reaper raises is swallowed, so reaping can never end the
-    # scan thread; the reaper reports its own persistent failures.
+    # Anything the reaper raises is logged and swallowed, so reaping can never
+    # end the scan thread, not even when the logger itself raises.
     #
     # @return [Integer] how many holders and waiters were reaped
     def reap_locks
       return 0 unless @lock_reaper
       cwds = @lock.synchronize { @panes.values.map { |pane| pane[:cwd] } }
       @lock_reaper.tick(cwds)
-    rescue
+    rescue => e
+      begin
+        @logger.debug { "session monitor: lock reap failed (#{e.class}: #{e.message})" }
+      rescue
+        nil
+      end
       0
     end
 
