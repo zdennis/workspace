@@ -1,14 +1,21 @@
 require "time"
 
 module Workspace
-  # Gives a coding agent in one pane a fresh conversation: waits for the pane
-  # to go quiet, types `/clear`, waits for the pane's context usage to drop,
-  # then types the prompt. The daemon runs it on a worker thread for a
-  # `restart_agent` message.
+  # Gives a Claude Code agent in one pane a fresh conversation: waits for the
+  # pane to go quiet, types `/clear`, waits for a status-line reading from
+  # the new conversation, then types the prompt. The daemon runs it on a
+  # worker thread for a `restart_agent` message.
   #
-  # Every wait is bounded. The prompt is typed only after the drop is seen:
-  # a prompt typed into a conversation that was never cleared would land on
-  # top of the old context, which is what the restart exists to avoid.
+  # Every wait is bounded. The prompt is typed only after the clear is
+  # confirmed: a prompt typed into a conversation that was never cleared
+  # would land on top of the old context, which is what the restart exists
+  # to avoid.
+  #
+  # Claude re-renders its status line within a second of `/clear`, with a
+  # new session id and no usage yet (a null percentage). So a reading
+  # stamped after the `/clear` second that carries a different session id
+  # confirms it. Without a session id to compare, the reading must show no
+  # usage, or less than before.
   #
   # The pane is addressed by its tmux pane id, which stays with a pane for
   # its life. tmux can't paste to "session:%id", so the pane's current
@@ -20,10 +27,12 @@ module Workspace
     QUIET_TIMEOUT = 120
     # How long the pane's screen must stay unchanged to count as quiet.
     QUIET_FOR = 2.0
-    # Default longest wait for context usage to drop after /clear.
+    # Default longest wait for a reading that confirms the /clear.
     CONFIRM_TIMEOUT = 30
     # Seconds between reads while waiting.
     POLL_INTERVAL = 0.5
+    # Session monitor states in which /clear must not be typed.
+    BUSY_STATES = ["working", "waiting"].freeze
 
     # @param tmux [Workspace::Tmux] pane reads and deliveries
     # @param context_reader [Workspace::ContextReader] reads the pane's usage
@@ -63,13 +72,20 @@ module Workspace
       @quiet_for = quiet_for
       @poll_interval = poll_interval
       @logger = logger
+      @cleared = false
+    end
+
+    # @return [Boolean] whether /clear has been typed into the pane, so a
+    #   restart stopped part way can say what it left behind
+    def cleared?
+      @cleared
     end
 
     # @param pane_id [String] tmux pane id (e.g. "%18")
     # @param prompt [String] text typed once the conversation is cleared
-    # @param force [Boolean] type the prompt even when a pipeline stage has
+    # @param force [Boolean] type /clear and the prompt even when a pipeline stage has
     #   started on the pane
-    # @param confirm_timeout [Numeric] longest wait for usage to drop
+    # @param confirm_timeout [Numeric] longest wait for the clear to be confirmed
     # @return [Hash] the reply: "ok", then "status" or "error" and "message"
     def call(pane_id:, prompt:, force: false, confirm_timeout: CONFIRM_TIMEOUT)
       reply = {"pane_id" => pane_id}
@@ -85,16 +101,19 @@ module Workspace
       end
       reply["context_before"] = before[:pct]
 
-      cleared_at = @wall_clock.call
-      clear = deliver(pane_id, CLEAR_COMMAND)
+      cleared_at = nil
+      clear = deliver(pane_id, CLEAR_COMMAND, check_pipeline: !force) do
+        cleared_at = @wall_clock.call
+        @cleared = true
+      end
       return reply.merge(clear) if clear.key?("error")
 
-      after = wait_for_drop(pane_id, before[:pct], cleared_at, confirm_timeout)
+      after = wait_for_clear(pane_id, before, cleared_at, confirm_timeout)
       unless after
         last = @context_reader.read(pane_id: pane_id)
         return reply.merge(failure("clear_not_confirmed",
-          "typed /clear into pane #{pane_id}, but its context usage did not drop below #{before[:pct]}% " \
-          "within #{confirm_timeout}s (last reading: #{describe(last)}); the prompt was not sent"))
+          "typed /clear into pane #{pane_id}, but no status-line reading from a new conversation arrived " \
+          "within #{confirm_timeout}s (before: #{before[:pct]}%; last reading: #{describe(last)}); the prompt was not sent"))
       end
       reply["context_after"] = after[:pct]
 
@@ -110,9 +129,10 @@ module Workspace
       {"ok" => false, "error" => error, "message" => message}
     end
 
-    # Waits until the pane's screen has stopped changing for QUIET_FOR, and
-    # the agent isn't waiting on a person: /clear typed into a permission
-    # prompt would answer it instead.
+    # Waits until the pane has stopped changing for QUIET_FOR and the agent
+    # is neither working nor waiting on a person: /clear typed into a
+    # permission prompt would answer it, and one typed mid-turn would land in
+    # the middle of the work. With no monitor state, the screen alone decides.
     def wait_until_quiet(pane_id)
       deadline = @clock.call + @quiet_timeout
       screen = nil
@@ -122,55 +142,68 @@ module Workspace
         return failure("pane_gone", "pane #{pane_id} is gone; nothing was typed") if current.nil?
 
         now = @clock.call
+        state = @pane_state.call(pane_id)
         if current != screen
           screen = current
           quiet_since = now
-        elsif now - quiet_since >= @quiet_for && @pane_state.call(pane_id) != "waiting"
+        elsif now - quiet_since >= @quiet_for && !BUSY_STATES.include?(state)
           return {"ok" => true}
         end
 
         if now >= deadline
-          waiting = @pane_state.call(pane_id) == "waiting"
-          why = waiting ? "is waiting on a person" : "never stopped changing"
+          why = case state
+          when "waiting" then "is waiting on a person"
+          when "working" then "was still working"
+          else "never stopped changing"
+          end
           return failure("pane_busy", "pane #{pane_id} #{why} within #{@quiet_timeout}s; /clear was not typed")
         end
         @sleeper.call(@poll_interval)
       end
     end
 
-    # Polls until a reading taken after /clear shows lower usage. A reading
-    # recorded before the /clear can't confirm it, however low it is.
+    # Polls until a reading confirms the /clear took effect.
     #
     # @return [Hash, nil] the confirming reading, or nil at the deadline
-    def wait_for_drop(pane_id, before_pct, cleared_at, timeout)
+    def wait_for_clear(pane_id, before, cleared_at, timeout)
       deadline = @clock.call + timeout
       loop do
         reading = @context_reader.read(pane_id: pane_id)
-        return reading if dropped?(reading, before_pct, cleared_at)
+        return reading if clear_confirmed?(reading, before, cleared_at)
         return nil if @clock.call >= deadline
         @sleeper.call(@poll_interval)
       end
     end
 
-    def dropped?(reading, before_pct, cleared_at)
-      return false if reading[:pct].nil? || reading[:updated_at].nil?
-      # Readings are stamped to the second, so one taken in the same second
-      # as the /clear counts as after it.
-      return false if Time.iso8601(reading[:updated_at]) < Time.at(cleared_at.to_i)
-      reading[:pct] < before_pct || reading[:pct].zero?
+    # Readings are stamped to the second, so only one stamped in a later
+    # second than the /clear is known to come after it: one from the same
+    # second could be the old conversation's last render. A new session id
+    # is what shows the conversation changed; without one to compare, the
+    # reading must show no usage, or less than before.
+    def clear_confirmed?(reading, before, cleared_at)
+      return false if reading[:updated_at].nil?
+      return false unless Time.iso8601(reading[:updated_at]) > Time.at(cleared_at.to_i)
+
+      if before[:session_id]
+        !reading[:session_id].nil? && reading[:session_id] != before[:session_id]
+      else
+        reading[:pct].nil? || reading[:pct] < before[:pct]
+      end
     rescue ArgumentError
       false
     end
 
     def describe(reading)
-      return "none (#{reading[:error]})" if reading[:pct].nil?
-      "#{reading[:pct]}% at #{reading[:updated_at]}"
+      return "none (#{reading[:error]})" if reading[:updated_at].nil?
+      pct = reading[:pct].nil? ? "no usage yet" : "#{reading[:pct]}%"
+      session = reading[:session_id] ? ", session #{reading[:session_id]}" : ""
+      "#{pct} at #{reading[:updated_at]}#{session}"
     end
 
     # Types +text+ into the pane under the delivery lock. With
     # +check_pipeline+, refuses when a pipeline stage started on the pane
-    # while the restart was waiting, since the prompt would land in the
-    # middle of it.
+    # while the restart was waiting, since the text would land in the
+    # middle of it. Yields, under the lock, just before typing.
     #
     # @return [Hash] "delivery" (and "warning") on success, or a failure
     def deliver(pane_id, text, check_pipeline: false)
@@ -180,8 +213,10 @@ module Workspace
 
         if check_pipeline && detail[:window] == 0 && (ref = @pipeline_ref.call(detail[:index]))
           next failure("pane_in_pipeline",
-            "#{ref} started a pipeline stage on pane #{pane_id} during the restart; the prompt was not typed (pass --force to type it anyway)")
+            "#{ref} started a pipeline stage on pane #{pane_id} during the restart; #{describe_text(text)} was not typed (pass --force to type it anyway)")
         end
+
+        yield if block_given?
 
         target = "#{detail[:window]}.#{detail[:index]}"
         delivery = @tmux.deliver(@session_name, target, text)

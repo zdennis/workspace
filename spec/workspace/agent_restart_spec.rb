@@ -68,8 +68,8 @@ RSpec.describe Workspace::AgentRestart do
     )
   end
 
-  def reading(pct, at: nil)
-    ->(wall_now) { {pct: pct, error: nil, updated_at: (at || wall_now).utc.iso8601} }
+  def reading(pct, at: nil, session: nil)
+    ->(wall_now) { {pct: pct, error: nil, updated_at: (at || wall_now).utc.iso8601, session_id: session} }
   end
 
   def call(**opts)
@@ -95,7 +95,8 @@ RSpec.describe Workspace::AgentRestart do
     result = call(confirm_timeout: 3)
 
     expect(result).to include("ok" => false, "error" => "clear_not_confirmed")
-    expect(result["message"]).to include("did not drop below 42%", "within 3s", "the prompt was not sent")
+    expect(result["message"]).to include("no status-line reading from a new conversation", "within 3s",
+      "before: 42%", "the prompt was not sent")
     expect(tmux.delivered.map { |d| d[:text] }).to eq(["/clear"])
   end
 
@@ -109,10 +110,59 @@ RSpec.describe Workspace::AgentRestart do
     expect(result["message"]).to include("last reading: 1% at #{stale.iso8601}")
   end
 
-  it "counts a fresh reading of 0% as dropped even from a 0% baseline" do
-    readings.push(reading(0), reading(0))
+  context "when the readings carry a session id" do
+    it "confirms from a new session's reading with no usage yet, as Claude renders right after /clear" do
+      readings.push(reading(42, session: "old"), reading(nil, session: "new"))
 
-    expect(call).to include("ok" => true, "context_after" => 0)
+      result = call
+
+      expect(result).to include("ok" => true, "context_before" => 42, "context_after" => nil)
+      expect(tmux.delivered.map { |d| d[:text] }).to eq(["/clear", "Read HANDOFF.md"])
+    end
+
+    it "confirms from a new session even at the same usage" do
+      readings.push(reading(0, session: "old"), reading(0, session: "new"))
+
+      expect(call).to include("ok" => true, "context_after" => 0)
+    end
+
+    it "does not count a lower reading from the same session" do
+      readings.push(reading(42, session: "old"), reading(3, session: "old"))
+
+      result = call(confirm_timeout: 2)
+
+      expect(result["error"]).to eq("clear_not_confirmed")
+      expect(result["message"]).to include("session old")
+      expect(tmux.delivered.map { |d| d[:text] }).to eq(["/clear"])
+    end
+
+    it "does not count a new session's reading from the same second as the /clear" do
+      readings.push(reading(42, session: "old"),
+        ->(wall_now) { {pct: nil, error: nil, updated_at: Time.at(wall_now.to_i).utc.iso8601, session_id: "new"} })
+      frozen = wall[0]
+
+      result = described_class.new(
+        tmux: tmux, context_reader: context_reader, session_name: "workspace-wt-app",
+        delivery_lock: Mutex.new, pipeline_ref: ->(_) {}, pane_state: ->(_) {},
+        clock: -> { now[0] }, wall_clock: -> { frozen },
+        sleeper: ->(seconds) { now[0] += seconds },
+        quiet_timeout: 10, quiet_for: 1, poll_interval: 0.5
+      ).call(pane_id: "%18", prompt: "Read HANDOFF.md", confirm_timeout: 2)
+
+      expect(result["error"]).to eq("clear_not_confirmed")
+    end
+  end
+
+  it "without a session id, confirms from a fresh reading with no usage" do
+    readings.push(reading(0), reading(nil))
+
+    expect(call).to include("ok" => true, "context_after" => nil)
+  end
+
+  it "without a session id, does not count an unchanged 0%" do
+    readings.push(reading(0))
+
+    expect(call(confirm_timeout: 2)).to include("error" => "clear_not_confirmed")
   end
 
   it "refuses without typing anything when usage can't be read" do
@@ -194,24 +244,54 @@ RSpec.describe Workspace::AgentRestart do
     expect(result).to include("ok" => true, "delivery" => "unsubmitted", "warning" => "fake unsubmitted")
   end
 
-  context "when a pipeline stage starts on the pane during the restart" do
+  context "when a pipeline stage starts on the pane before /clear is typed" do
     before do
       readings.push(reading(42), reading(1))
       pipeline_refs[1] = "WC-7"
     end
 
-    it "does not type the prompt" do
+    it "types nothing" do
       result = call
 
       expect(result).to include("ok" => false, "error" => "pane_in_pipeline")
-      expect(result["message"]).to include("WC-7")
-      expect(tmux.delivered.map { |d| d[:text] }).to eq(["/clear"])
+      expect(result["message"]).to include("WC-7", "/clear was not typed")
+      expect(tmux.delivered).to be_empty
     end
 
-    it "types it anyway with force" do
+    it "types both anyway with force" do
       expect(call(force: true)).to include("ok" => true)
       expect(tmux.delivered.map { |d| d[:text] }).to eq(["/clear", "Read HANDOFF.md"])
     end
+  end
+
+  it "does not type the prompt when a pipeline stage starts after /clear" do
+    readings.push(reading(42), ->(wall_now) {
+      pipeline_refs[1] = "WC-7"
+      {pct: 1, error: nil, updated_at: wall_now.utc.iso8601}
+    })
+
+    result = call
+
+    expect(result).to include("ok" => false, "error" => "pane_in_pipeline")
+    expect(result["message"]).to include("WC-7", "the prompt was not typed")
+    expect(tmux.delivered.map { |d| d[:text] }).to eq(["/clear"])
+  end
+
+  it "does not type /clear while the session monitor says the agent is working" do
+    pane_states["%18"] = "working"
+    readings.push(reading(42))
+
+    result = call
+
+    expect(result).to include("ok" => false, "error" => "pane_busy")
+    expect(result["message"]).to include("was still working")
+    expect(tmux.delivered).to be_empty
+  end
+
+  it "reports whether /clear was typed" do
+    readings.push(reading(42), reading(1))
+
+    expect { call }.to change(restart, :cleared?).from(false).to(true)
   end
 
   it "reports a pane that closed between /clear and the prompt" do
