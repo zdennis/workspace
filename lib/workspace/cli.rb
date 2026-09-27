@@ -861,7 +861,7 @@ module Workspace
     # @param value [String] raw option value
     # @return [Numeric] seconds
     def parse_lock_duration(flag, value)
-      Workspace::DevConfig.parse_duration(value)
+      Workspace::Duration.parse(value)
     rescue ArgumentError => e
       raise UsageError, "#{flag}: #{e.message}"
     end
@@ -1716,7 +1716,11 @@ module Workspace
         opts.separator "  workspace config set locks.idle_grace 10m"
         opts.separator "  workspace config set --project myapp dev.up \"bin/dev\""
       end
-      parser.parse!(args)
+      begin
+        parser.parse!(args)
+      rescue OptionParser::InvalidOption => e
+        raise UsageError, "#{e.message} (durations must be positive; a negative value like \"-5m\" looks like a flag)"
+      end
       key = args.shift
       value = args.shift
       raise UsageError, parser.help if key.nil? || value.nil? || args.any?

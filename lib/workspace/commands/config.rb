@@ -117,7 +117,7 @@ module Workspace
 
       def validate_value!(key, value)
         case key
-        when "dev.stop_timeout" then Workspace::DevConfig.parse_duration(value)
+        when "dev.stop_timeout" then Workspace::Duration.parse(value)
         when "locks.idle_grace" then Workspace::LockConfig.parse_idle_grace(value)
         end
       rescue ArgumentError => e
