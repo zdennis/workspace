@@ -1501,6 +1501,56 @@ RSpec.describe Workspace::Commands::Agent do
       end
     end
 
+    it "warns, rather than errors, when a queued steer lands but shows :unsubmitted (unconfirmed)" do
+      use_pipeline
+
+      run_agent do
+        send_command
+        wait_until { pollers.any? }
+
+        send_message("type" => "inject", "workspace" => "myapp", "work_item_ref" => "WC-42",
+          "dispatch_id" => "d-7a1", "body" => "use Postgres", "interrupt" => false)
+
+        allow(tmux).to receive(:deliver) do |session, pane, text, enter: true|
+          status = (text == "use Postgres") ? :unsubmitted : :submitted
+          Workspace::Tmux::Delivery.new(status: status, message: "fake #{status}")
+        end
+
+        pollers.first.on_complete.call("research done")
+
+        wait_until { coordinator.status_messages.any? { |m| m["message"].to_s.include?("Warning: queued steer") } }
+        warning = coordinator.status_messages.find { |m| m["message"].to_s.include?("Warning: queued steer") }
+        expect(warning).to include("type" => "status_update")
+        expect(warning["message"]).to include("Warning: queued steer for pane 1: fake unsubmitted")
+        expect(error_output.string).to include("queued steer for WC-42 to pane 1: fake unsubmitted")
+      end
+    end
+
+    it "warns, rather than errors, when a queued steer lands but shows :unverified (unconfirmed)" do
+      use_pipeline
+
+      run_agent do
+        send_command
+        wait_until { pollers.any? }
+
+        send_message("type" => "inject", "workspace" => "myapp", "work_item_ref" => "WC-42",
+          "dispatch_id" => "d-7a1", "body" => "use Postgres", "interrupt" => false)
+
+        allow(tmux).to receive(:deliver) do |session, pane, text, enter: true|
+          status = (text == "use Postgres") ? :unverified : :submitted
+          Workspace::Tmux::Delivery.new(status: status, message: "fake #{status}")
+        end
+
+        pollers.first.on_complete.call("research done")
+
+        wait_until { coordinator.status_messages.any? { |m| m["message"].to_s.include?("Warning: queued steer") } }
+        warning = coordinator.status_messages.find { |m| m["message"].to_s.include?("Warning: queued steer") }
+        expect(warning).to include("type" => "status_update")
+        expect(warning["message"]).to include("Warning: queued steer for pane 1: fake unverified")
+        expect(error_output.string).to include("queued steer for WC-42 to pane 1: fake unverified")
+      end
+    end
+
     it "fails the work item when the next stage never gets its hand-off" do
       use_pipeline
 
