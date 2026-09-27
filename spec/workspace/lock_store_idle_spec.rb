@@ -94,6 +94,21 @@ RSpec.describe Workspace::LockStore, "idle takeover" do
 
       expect(store.idle_change_possible?(pane: nil, idle: true)).to be(false)
     end
+
+    it "is false rather than raising on a torn or garbage locks.json" do
+      [
+        "",
+        "null",
+        "[]",
+        "42",
+        '{"edit": "not-a-hash"}',
+        '{"edit": {"holder": "not-a-hash"}}',
+        '{"edit": {"holder": {"kind": "agent"}}}'
+      ].each do |contents|
+        File.write(File.join(tmpdir, "locks.json"), contents)
+        expect(store.idle_change_possible?(pane: "%1", idle: true)).to be(false)
+      end
+    end
   end
 
   describe "#poll takeover" do

@@ -497,6 +497,9 @@ module Workspace
         return {status: :acquired}
       end
       return unless entry["queue"].first&.dig("waiter_pid") == waiter_pid && idle_expired?(holder)
+      # The head waiter is the caller (the check above), so it is alive by
+      # construction: this is its own poll/claim call running right now.
+      # Liveness is deliberately not rechecked here.
       displace!(entry, holder)
       entry["holder"] = holder_from_waiter(entry["queue"].shift)
       {status: :acquired, took_over: holder}
