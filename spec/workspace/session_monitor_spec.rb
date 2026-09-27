@@ -691,6 +691,113 @@ RSpec.describe Workspace::SessionMonitor do
       end
     end
 
+    describe "waiting alerts across a restart" do
+      let(:notifier) { instance_double(Workspace::Notifier, notify: :started) }
+
+      def alerting_monitor
+        described_class.new(tmux: tmux, process_tree: process_tree, session_name: "proj-session",
+          idle_after: 30, clock: clock, notifier: notifier, event_log: event_log, project: "proj")
+      end
+
+      def at(seconds)
+        allow(clock).to receive(:now).and_return(now + seconds)
+      end
+
+      def ask(monitor, agent_id = nil)
+        monitor.record("event" => "notification", "pane_id" => "%2", "agent_id" => agent_id, "message" => "May I?")
+      end
+
+      def alert_events
+        event_log.events.select { |e| e["type"] == "agent_alert" }.map { |e| e["data"] }
+      end
+
+      let!(:first) do
+        alerting_monitor.tap do |monitor|
+          monitor.scan
+          at(5)
+          ask(monitor)
+          monitor.scan
+          monitor.send_alerts
+        end
+      end
+
+      it "logs each waiting alert with the agent and the wait it was for" do
+        expect(alert_events).to eq([
+          {"pane_id" => "%2", "pane_pid" => 200, "kind" => "waiting", "agent_id" => nil,
+           "waiting_since" => "2026-09-26T12:00:05.000Z"}
+        ])
+      end
+
+      it "does not alert again when the agent asks again during the same wait" do
+        at(60)
+        restarted = alerting_monitor
+        restarted.scan
+        ask(restarted)
+        restarted.scan
+
+        expect(restarted.send_alerts).to be_empty
+        expect(restarted.snapshot["panes"].find { |p| p["pane_id"] == "%2" })
+          .to include("state" => "waiting", "waiting_since" => "2026-09-26T12:00:05Z")
+      end
+
+      it "does not alert again when the agent asks before the first scan after the restart" do
+        at(60)
+        restarted = alerting_monitor
+        ask(restarted)
+        restarted.scan
+
+        expect(restarted.send_alerts).to be_empty
+      end
+
+      it "alerts for a wait that begins after the agent moved on" do
+        at(60)
+        restarted = alerting_monitor
+        restarted.scan
+        restarted.record("event" => "post_tool_use", "pane_id" => "%2")
+        ask(restarted)
+        restarted.scan
+
+        expect(restarted.send_alerts.size).to eq(1)
+      end
+
+      it "alerts for another agent's wait in the same pane" do
+        at(60)
+        restarted = alerting_monitor
+        restarted.scan
+        ask(restarted, "sub-1")
+        restarted.scan
+
+        expect(restarted.send_alerts.map { |env| env["WORKSPACE_ALERT"] }).to eq(["waiting"])
+      end
+
+      it "alerts for a new waiting stretch after the pane stopped waiting" do
+        first.record("event" => "stop", "pane_id" => "%2")
+        at(20)
+        first.scan
+        at(60)
+        restarted = alerting_monitor
+        restarted.scan
+        ask(restarted)
+        restarted.scan
+
+        expect(restarted.send_alerts.size).to eq(1)
+      end
+    end
+
+    it "passes a restored pane's agent pid to the context reader on the first scan" do
+      logging_monitor.scan
+      context_reader = instance_double(Workspace::ContextReader)
+      allow(context_reader).to receive(:read).and_return(pct: 10, error: nil, updated_at: nil)
+
+      allow(clock).to receive(:now).and_return(now + 10)
+      restarted = described_class.new(tmux: tmux, process_tree: process_tree, session_name: "proj-session",
+        idle_after: 30, clock: clock, event_log: event_log, project: "proj", context_reader: context_reader)
+      restarted.scan
+      restarted.snapshot
+
+      expect(context_reader).to have_received(:read).with(pane_id: "%2", agent_pid: 250, current_session_id: nil)
+    end
+
     it "keeps a restored working pane's start time" do
       logging_monitor.scan
 

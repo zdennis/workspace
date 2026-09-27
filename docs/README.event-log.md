@@ -46,6 +46,7 @@ The same log records what agents and pipelines do. `reconstruct` ignores these e
 | `stage_failed` | agent daemon, stage's watch died, its pane was lost, the hand-off failed, or the coordinator aborted it | `work_item_ref`, `pane`, `message` |
 | `pipeline_dropped` | agent daemon, coordinator has no record of the work item | `work_item_ref`, `message` |
 | `agent_state` | agent daemon's session monitor, on each change | `pane_id`, `pane_pid`, `index`, `kind`, `state` (`working`, `idle`, `waiting`, `exited`, `closed`), `since` |
+| `agent_alert` | agent daemon's session monitor, once the notify command accepts an alert | `pane_id`, `pane_pid`, `kind` (`idle` or `waiting`; missing means `idle`); for `idle`: `idle_since` (when the output went quiet); for `waiting`: `agent_id` (`null` for the main agent), `waiting_since` |
 | `lock_wait_started` | `lock acquire --wait`, `dev up` | `lock`, `pid`, `holder`; for `lock`: `task`, `position` |
 | `lock_acquired` | same, once a wait ends with the lock | `lock`, `pid`, `waited_seconds` |
 | `lock_takeover` | `lock acquire` taking over an idle holder; `dev up --takeover` | `lock`, `pid`, `from`; for `lock`: `waited_seconds`, `idle_since` |
@@ -55,11 +56,11 @@ The same log records what agents and pipelines do. `reconstruct` ignores these e
 
 An acquire that doesn't wait records nothing here; `locks.jsonl` in the lock store already audits every acquire and release.
 
-A restarted agent daemon reads each pane's last `agent_state` back, so `workspace sessions` keeps each pane's state and `state_since` instead of starting afresh. The pane's pid must match, so a pane id reused by a new tmux server starts fresh. A pending wait is not restored.
+A restarted agent daemon reads each pane's last `agent_state` back, so `workspace sessions` keeps each pane's state and `state_since` instead of starting afresh. The pane's pid must match, so a pane id reused by a new tmux server starts fresh. A pending wait is not restored. It also reads each pane's last `agent_alert` of each kind back, so a restart doesn't send an alert again: a pane still idle in the same quiet stretch isn't alerted again, and an agent that was waiting when the daemon stopped isn't alerted again when it asks again, as long as it sent no other hook event in between. A new quiet stretch or a new wait alerts as usual.
 
 Recording activity never fails the command doing it: if the log can't be written, one warning goes to stderr and the command carries on. Nothing is written to stdout, so `--json` output stays JSON-only.
 
-When the event log exceeds 1MB (`event_log_compact_threshold` in the global config), workspace warns you to compact it. Compaction replays the log and rewrites it with one `compacted` event per active project, plus the latest `agent_state` of each pane that still has an agent. All other activity history is dropped. There is no automatic rotation.
+When the event log exceeds 1MB (`event_log_compact_threshold` in the global config), workspace warns you to compact it. Compaction replays the log and rewrites it with one `compacted` event per active project, plus the latest `agent_state` of each pane that still has an agent (and changed within the last 7 days), that pane's latest idle `agent_alert`, and, while it is still waiting, its latest waiting `agent_alert` per agent. All other activity history is dropped. There is no automatic rotation.
 
 Existing users are automatically migrated on first run — the current state file is converted to `migrated` events in the log.
 

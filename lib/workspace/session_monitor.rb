@@ -25,6 +25,12 @@ module Workspace
   # so the state and when it began carry over rather than starting afresh.
   # A pending wait is not carried over: the hook event that would have ended
   # it may have arrived while no daemon was listening.
+  #
+  # Each alert sent is logged too, idle and waiting alike, so a restarted
+  # daemon doesn't alert again for a quiet stretch or a wait the last one
+  # already alerted for. A wait the last daemon alerted for counts as the
+  # same wait if the agent that raised it asks again before sending any
+  # other hook event; a wait that begins after that alerts as usual.
   class SessionMonitor
     # A pane whose output has not changed for this long is reported idle. Agents
     # spend most of a turn blocked on the network, so CPU is not a usable
@@ -230,10 +236,10 @@ module Workspace
       return [] unless @notifier
       now = @clock.now
       due = @lock.synchronize { @panes.values.flat_map { |pane| due_alerts(pane, now) } }
-      due.filter_map do |target, mark, value, alert|
+      due.filter_map do |target, mark, value, alert, logged|
         next unless @notifier.notify(alert)
         @lock.synchronize { target[mark] = value }
-        record_idle_alert(target, value) if mark == :alerted_idle_since
+        record_alert(logged)
         alert
       rescue => e
         log_alert_failure(e)
@@ -254,8 +260,8 @@ module Workspace
     private_constant :GONE_STATES
 
     # Each pane's last logged state, keyed on pane id, along with each
-    # pane's last idle alert. Read once, on the first scan; nothing in the
-    # log is worth failing a scan over.
+    # pane's last idle alert and last waiting alert per agent. Read once, on
+    # the first scan; nothing in the log is worth failing a scan over.
     def load_history
       return {} unless @event_log
       @alert_history = @event_log.latest_agent_alerts(@project)
@@ -268,39 +274,71 @@ module Workspace
     # Takes up a pane's logged state after a daemon restart. The pane's pid is
     # checked too, since a restarted tmux server hands out the same pane ids
     # again. An idle pane stays idle, and keeps the time it went idle, until
-    # its output changes. A quiet stretch the last daemon already alerted
-    # for counts as alerted, so a restart doesn't send its alert again.
+    # its output changes. A quiet stretch or a wait the last daemon already
+    # alerted for counts as alerted, so a restart doesn't send its alert again.
     def restore_state(pane, detail)
       logged = @history.delete(detail[:id])
+      alerts = @alert_history.delete(detail[:id]) || {}
       return unless logged["pane_pid"] == detail[:pid] && !GONE_STATES.include?(logged["state"])
       since = Time.iso8601(logged["since"].to_s)
       pane[:logged_state] = logged["state"]
       pane[:state_since] = since
-      return unless logged["state"] == "idle"
-      pane[:last_activity_at] = since - @idle_after
-      pane[:quiet_since_restore] = true
-      pane[:alerted_idle_since] = pane[:last_activity_at] if alerted_before_restart?(detail, pane[:last_activity_at])
+      case logged["state"]
+      when "idle" then restore_idle(pane, detail, since, alerts["idle"])
+      when "waiting" then restore_waits(pane, detail, since, alerts["waiting"] || {})
+      end
     rescue ArgumentError
       nil
     end
 
-    # Whether the pane's last logged idle alert was for the quiet stretch
-    # that began at +last_activity_at+. Times are logged to the millisecond.
-    def alerted_before_restart?(detail, last_activity_at)
-      alert = @alert_history.delete(detail[:id])
-      return false unless alert && alert["pane_pid"] == detail[:pid]
-      (Time.iso8601(alert["idle_since"].to_s) - last_activity_at).abs < 0.002
-    rescue ArgumentError
-      false
+    def restore_idle(pane, detail, since, alert)
+      pane[:last_activity_at] = since - @idle_after
+      pane[:quiet_since_restore] = true
+      at = alert_time(detail, alert, "idle_since")
+      pane[:alerted_idle_since] = pane[:last_activity_at] if at && (at - pane[:last_activity_at]).abs < 0.002
     end
 
-    # Logged so a restarted daemon knows this stretch already alerted.
-    # EventLog#record doesn't raise on a failed write.
-    def record_idle_alert(pane, idle_since)
+    # Remembers, per agent, each wait in the pane's logged waiting stretch
+    # that the last daemon alerted for. The agent's next notification takes
+    # that wait up again, already alerted, unless another hook event from
+    # the agent ends it first. A notification that arrived before this first
+    # scan is taken up here.
+    def restore_waits(pane, detail, stretch_since, alerts)
+      alerts.each do |agent_id, alert|
+        waiting_since = alert_time(detail, alert, "waiting_since")
+        next unless waiting_since && waiting_since - stretch_since > -0.002
+        if (wait = pane[:waits][agent_id])
+          wait.merge!(since: waiting_since, alerted: true) unless wait[:alerted]
+        else
+          (pane[:alerted_waits] ||= {})[agent_id] = waiting_since
+        end
+      end
+    end
+
+    # The time logged under +key+ (to the millisecond) of an alert sent for
+    # this pane process, or nil.
+    def alert_time(detail, alert, key)
+      return nil unless alert && alert["pane_pid"] == detail[:pid]
+      Time.iso8601(alert[key].to_s)
+    rescue ArgumentError
+      nil
+    end
+
+    def idle_alert_data(pane, idle_since)
+      {"pane_id" => pane[:pane_id], "pane_pid" => pane[:pid], "kind" => "idle",
+       "idle_since" => idle_since.utc.iso8601(3)}
+    end
+
+    def waiting_alert_data(pane, agent_id, wait)
+      {"pane_id" => pane[:pane_id], "pane_pid" => pane[:pid], "kind" => "waiting",
+       "agent_id" => agent_id, "waiting_since" => wait[:since].utc.iso8601(3)}
+    end
+
+    # Logged so a restarted daemon knows this stretch or wait already
+    # alerted. EventLog#record doesn't raise on a failed write.
+    def record_alert(data)
       return unless @event_log
-      @event_log.record(type: EventLog::AGENT_ALERT, project: @project,
-        data: {"pane_id" => pane[:pane_id], "pane_pid" => pane[:pid], "kind" => "idle",
-               "idle_since" => idle_since.utc.iso8601(3)})
+      @event_log.record(type: EventLog::AGENT_ALERT, project: @project, data: data)
     end
 
     # The change to record when an agent pane's state differs from the one
@@ -346,20 +384,23 @@ module Workspace
     # wait alerts even though the pane was already waiting.
     #
     # @return [Array<Array>] per alert due: the hash to mark alerted, the key
-    #   and value that mark it, and the alert's environment
+    #   and value that mark it, the alert's environment, and the event to log
+    #   once it is sent
     def due_alerts(pane, now)
       return [] if NOT_AGENTS.include?(pane[:kind])
 
       unless pane[:waits].empty?
-        return pane[:waits].values.reject { |wait| wait[:alerted] }.map do |wait|
-          [wait, :alerted, true, alert_env(pane, "waiting", now - wait[:since], wait[:message])]
+        return pane[:waits].reject { |_, wait| wait[:alerted] }.map do |agent_id, wait|
+          [wait, :alerted, true, alert_env(pane, "waiting", now - wait[:since], wait[:message]),
+            waiting_alert_data(pane, agent_id, wait)]
         end
       end
 
       return [] if @activity_stale || !@idle_alert_after || !pane[:last_activity_at]
       idle_for = now - pane[:last_activity_at]
       return [] if idle_for < @idle_alert_after || pane[:alerted_idle_since] == pane[:last_activity_at]
-      [[pane, :alerted_idle_since, pane[:last_activity_at], alert_env(pane, "idle", idle_for, nil)]]
+      [[pane, :alerted_idle_since, pane[:last_activity_at], alert_env(pane, "idle", idle_for, nil),
+        idle_alert_data(pane, pane[:last_activity_at])]]
     end
 
     # Printed once per streak; a scan that succeeds starts a new one.
@@ -450,13 +491,15 @@ module Workspace
     def apply_event(pane, event)
       if event["event"] == "notification"
         # A repeat notification during one wait keeps the original start, so
-        # the wait is timed (and alerted) once.
-        wait = (pane[:waits][event["agent_id"]] ||= {since: @clock.now})
+        # the wait is timed (and alerted) once. So does the first one after a
+        # restart, for a wait the last daemon alerted for.
+        wait = (pane[:waits][event["agent_id"]] ||= resumed_wait(pane, event["agent_id"]))
         wait[:message] = self.class.clean_message(event["message"])
       elsif TURN_EVENTS.include?(event["event"])
         clear_waiting(pane)
       else
         pane[:waits].delete(event_agent_id(event))
+        pane[:alerted_waits]&.delete(event_agent_id(event))
       end
 
       case event["event"]
@@ -478,6 +521,12 @@ module Workspace
 
     def clear_waiting(pane)
       pane[:waits].clear
+      pane.delete(:alerted_waits)
+    end
+
+    def resumed_wait(pane, agent_id)
+      since = pane[:alerted_waits]&.delete(agent_id)
+      since ? {since: since, alerted: true} : {since: @clock.now}
     end
 
     # The pane reports its longest wait, so the time shown is how long a

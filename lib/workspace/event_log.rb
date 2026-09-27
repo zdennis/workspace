@@ -24,7 +24,8 @@ module Workspace
     # Activity event type for a pane's agent changing state.
     AGENT_STATE = "agent_state"
 
-    # Activity event type for an idle alert sent for a pane.
+    # Activity event type for an alert sent for a pane. Its data's `kind`
+    # is "idle" or "waiting"; an event without one is an idle alert.
     AGENT_ALERT = "agent_alert"
 
     # Event types {#reconstruct} replays into state.
@@ -110,13 +111,25 @@ module Workspace
       latest_by_pane(AGENT_STATE, project)
     end
 
-    # The latest {AGENT_ALERT} event for each pane of a project, so a
-    # restarted agent daemon doesn't alert again for the same idle stretch.
+    # The latest idle {AGENT_ALERT} of each pane of a project, and its latest
+    # waiting one per agent, so a restarted agent daemon doesn't alert again
+    # for the same idle stretch or wait.
     #
     # @param project [String] project name
-    # @return [Hash{String => Hash}] pane id => that pane's last agent_alert data
+    # @return [Hash{String => Hash}] pane id => {"idle" => data,
+    #   "waiting" => {agent id (nil for the main agent) => data}}
     def latest_agent_alerts(project)
-      latest_by_pane(AGENT_ALERT, project)
+      events.each_with_object({}) do |event, latest|
+        next unless event["type"] == AGENT_ALERT && event["project"] == project
+        data = event["data"]
+        next unless data.is_a?(Hash) && data["pane_id"]
+        pane = (latest[data["pane_id"]] ||= {})
+        if data["kind"] == "waiting"
+          (pane["waiting"] ||= {})[data["agent_id"]] = data
+        else
+          pane["idle"] = data
+        end
+      end
     end
 
     # Reads all events from the log file. A log that can't be read warns
@@ -151,8 +164,10 @@ module Workspace
     # Compacts the log by rewriting it with one event per active project,
     # plus the latest {AGENT_STATE} of each pane whose agent is still there,
     # in a project that is still active, and that changed within
-    # {AGENT_STATE_MAX_AGE}, and the latest {AGENT_ALERT} of each of those
-    # panes. All other activity history is dropped.
+    # {AGENT_STATE_MAX_AGE}; the latest idle {AGENT_ALERT} of each of those
+    # panes; and, for each of those panes still waiting, the latest waiting
+    # alert per agent sent during that wait. All other activity history is
+    # dropped.
     #
     # @return [Hash] the compacted state
     # @raise [Workspace::Error] if the log is busy, or can't be read or rewritten
@@ -298,11 +313,14 @@ module Workspace
       states = {}
       alerts = {}
       all.each do |event|
-        next unless event["data"].is_a?(Hash)
-        key = [event["project"], event["data"]["pane_id"]]
+        data = event["data"]
+        next unless data.is_a?(Hash)
+        key = [event["project"], data["pane_id"]]
         case event["type"]
         when AGENT_STATE then states[key] = event
-        when AGENT_ALERT then alerts[key] = event
+        when AGENT_ALERT
+          alert_key = (data["kind"] == "waiting") ? ["waiting", data["agent_id"]] : ["idle"]
+          alerts[key + alert_key] = event
         end
       end
       cutoff = @clock.now - AGENT_STATE_MAX_AGE
@@ -310,7 +328,18 @@ module Workspace
         GONE_STATES.include?(event["data"]["state"]) || !state.key?(project) ||
           older_than?(event["data"]["since"], cutoff)
       end
-      states.values + alerts.select { |key, _| states.key?(key) }.values
+      states.values + alerts.select { |key, event| keep_alert?(states[key.first(2)], event) }.values
+    end
+
+    # An idle alert is kept for any kept pane; a waiting one only while the
+    # pane is still in the wait it was sent for.
+    def keep_alert?(pane_state, alert)
+      return false unless pane_state
+      return true unless alert["data"]["kind"] == "waiting"
+      pane_state["data"]["state"] == "waiting" &&
+        !older_than?(alert["data"]["waiting_since"], Time.iso8601(pane_state["data"]["since"].to_s) - 0.002)
+    rescue ArgumentError
+      true
     end
 
     # A time that can't be read is kept rather than guessed at.

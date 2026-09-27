@@ -230,7 +230,38 @@ RSpec.describe Workspace::EventLog do
 
       event_log.compact
 
-      expect(event_log.latest_agent_alerts("proj1").transform_values { |d| d["idle_since"] }).to eq({"%1" => "new"})
+      expect(event_log.latest_agent_alerts("proj1").transform_values { |d| d["idle"]["idle_since"] }).to eq({"%1" => "new"})
+    end
+
+    it "keeps a pane's waiting alerts per agent only while the pane is still in that wait" do
+      event_log.append(type: "launched", project: "proj1", data: {"unique_id" => "uid1"})
+      event_log.record(type: "agent_state", project: "proj1",
+        data: {"pane_id" => "%1", "state" => "waiting", "since" => (now - 60).utc.iso8601(3)})
+      event_log.record(type: "agent_state", project: "proj1",
+        data: {"pane_id" => "%2", "state" => "working", "since" => (now - 60).utc.iso8601(3)})
+      waiting = ->(pane_id, agent_id, since) {
+        event_log.record(type: "agent_alert", project: "proj1", data: {"pane_id" => pane_id, "kind" => "waiting",
+                                                                       "agent_id" => agent_id, "waiting_since" => since.utc.iso8601(3)})
+      }
+      waiting.call("%1", nil, now - 600)
+      waiting.call("%1", nil, now - 60)
+      waiting.call("%1", "sub-1", now - 30)
+      waiting.call("%1", "sub-2", now - 900)
+      waiting.call("%2", nil, now - 120)
+
+      event_log.compact
+
+      expect(event_log.latest_agent_alerts("proj1").transform_values { |pane|
+        pane["waiting"].transform_values { |d| d["waiting_since"] }
+      }).to eq({"%1" => {nil => "2026-09-27T11:59:00.000Z", "sub-1" => "2026-09-27T11:59:30.000Z"}})
+    end
+  end
+
+  describe "#latest_agent_alerts" do
+    it "reads an alert logged without a kind as an idle alert" do
+      event_log.record(type: "agent_alert", project: "proj1", data: {"pane_id" => "%1", "idle_since" => "t"})
+
+      expect(event_log.latest_agent_alerts("proj1")).to eq({"%1" => {"idle" => {"pane_id" => "%1", "idle_since" => "t"}}})
     end
 
     it "writes the rewrite owner-only and leaves no temp file behind" do
