@@ -147,7 +147,7 @@ RSpec.describe "T4 finish/kill/prune adversarial findings" do
 
   # --- FU3: a worktree-removal failure aborts the rest of `prune` ---------
   describe "Commands::Prune#call when one candidate's worktree removal fails (FU3)" do
-    it "still processes and reports the remaining candidates instead of raising" do
+    it "still processes and reports the remaining candidates before raising" do
       git_double = double("git")
       allow(git_double).to receive(:worktree_exists?).with("/path/a").and_return(true)
       allow(git_double).to receive(:worktree_exists?).with("/path/b").and_return(true)
@@ -166,6 +166,7 @@ RSpec.describe "T4 finish/kill/prune adversarial findings" do
       allow(project_settings).to receive(:remove)
 
       state = CLITestHelpers::FakeState.new
+      output = StringIO.new
 
       prune = Workspace::Commands::Prune.new(
         state: state,
@@ -173,7 +174,7 @@ RSpec.describe "T4 finish/kill/prune adversarial findings" do
         project_settings: project_settings,
         git: git_double,
         stop_command: double("stop_command"),
-        output: StringIO.new,
+        output: output,
         input: StringIO.new
       )
 
@@ -183,11 +184,13 @@ RSpec.describe "T4 finish/kill/prune adversarial findings" do
       ]
       allow(prune).to receive(:detect_candidates).and_return(candidates)
 
-      # FU3: Prune#remove_candidate does not rescue Workspace::Error from
-      # Git#remove_worktree. A single stuck/locked worktree aborts the whole
-      # `prune` run — proj-b (and its @state.save) never happens — instead
-      # of being reported as a skip like the unsaved-work path already is.
-      expect { prune.call(force: true) }.not_to raise_error
+      # FU3: Prune#remove_candidate rescues Workspace::Error from
+      # Git#remove_worktree, so a single stuck/locked worktree doesn't abort
+      # the whole `prune` run — proj-b still gets processed and @state.save
+      # still runs. Since something was skipped, `call` raises afterwards
+      # so the CLI exits nonzero.
+      expect { prune.call(force: true) }.to raise_error(Workspace::Error, /proj-a/)
+      expect(output.string).to include("Skipped proj-a")
     end
   end
 end

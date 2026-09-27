@@ -483,27 +483,25 @@ RSpec.describe Workspace::Commands::Prune do
         input.rewind
       end
 
-      it "skips it, reports why, and keeps pruning others (exit is still success)" do
+      it "skips it, reports why, keeps pruning others, and raises so the CLI exits nonzero" do
         unsaved = {changed_files: 1, unpushed_commits: 3, branch: "feature/unsaved"}
         allow(git).to receive(:remove_worktree).with(project_root, force: false)
           .and_raise(Workspace::UnsavedWorkError.new("unsaved", unsaved: unsaved))
         expect(project_config).not_to receive(:remove).with("wt-unsaved")
         expect(stop_command).not_to receive(:call)
 
-        result = command.call
-        expect(result).to eq([])
+        expect { command.call }.to raise_error(Workspace::Error, /1 project\(s\) were skipped: wt-unsaved/)
         expect(output.string).to include("Skipped wt-unsaved")
         expect(output.string).to include("1 changed file(s) and 3 unpushed commit(s) on feature/unsaved")
         expect(output.string).to include("Pruned 0 project(s).")
       end
 
-      it "skips a candidate whose removal git refuses, with git's reason, and still saves state" do
+      it "skips a candidate whose removal git refuses, with git's reason, still saves state, and raises" do
         allow(git).to receive(:remove_worktree).with(project_root, force: false)
           .and_raise(Workspace::Error, "Error removing worktree: cannot remove a locked working tree")
         expect(state).to receive(:save).and_call_original
 
-        result = command.call
-        expect(result).to eq([])
+        expect { command.call }.to raise_error(Workspace::Error, /1 project\(s\) were skipped/)
         expect(output.string).to include("Skipped wt-unsaved: Error removing worktree: cannot remove a locked working tree")
         expect(output.string).to include("Skipped 1: wt-unsaved.")
       end

@@ -35,9 +35,13 @@ Requires the `gh` CLI to be installed and authenticated. If `gh` is unavailable,
 
 ### Unsaved-work check
 
-Same check as `workspace kill`: a candidate with uncommitted changes to tracked files (untracked files don't count) or unpushed commits is **skipped**, not removed — one line is printed per skipped project naming the counts and branch. The check runs immediately before that candidate's worktree is removed, so an edit made while you answered the prompt still counts. A skipped candidate is left exactly as it was: its session keeps running and its config and state entry stay. The rest of the run keeps going, and `prune` still exits 0. `--force` removes those anyway, in addition to skipping the confirmation prompt.
+Same check as `workspace kill`: a candidate with uncommitted changes to tracked files (untracked files don't count) or unpushed commits is **skipped**, not removed — one line is printed per skipped project naming the counts and branch. The check runs immediately before that candidate's worktree is removed, so an edit made while you answered the prompt still counts. A skipped candidate is left exactly as it was: its session keeps running and its config and state entry stay. The rest of the run keeps going regardless. `--force` removes those anyway, in addition to skipping the confirmation prompt.
 
 If git can't answer the check for a candidate, it's skipped the same way (reported as such) rather than guessed about. If git refuses to remove a worktree (it's locked, for example), that candidate is skipped with git's message and the rest are still pruned. The final line counts every skipped candidate: `Pruned N project(s). Skipped M: a, b.`
+
+## Exit status
+
+`prune` exits 0 only if every eligible candidate was removed. If any candidate was skipped (unsaved work, or git refused to remove it), `prune` finishes processing and reporting the rest, saves state, then exits 1 — commit/push the skipped candidates' work and rerun, or rerun with `--force`.
 
 ## Examples
 

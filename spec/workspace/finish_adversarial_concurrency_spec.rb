@@ -179,7 +179,7 @@ RSpec.describe "T4 finish/kill/prune adversarial concurrency" do
     stop = T4ConcurrencyFakes::RecordingStop.new
     git = T4ConcurrencyFakes::GitWithWriteBeforeRemove.new(real_git) { File.write(tracked_file, "agent's late edit\n") }
 
-    build_prune(git: git, state: state, stop: stop).call
+    expect { build_prune(git: git, state: state, stop: stop).call }.to raise_error(Workspace::Error, /#{Regexp.escape(project)}/)
 
     expect(File.read(tracked_file)).to eq("agent's late edit\n")
     expect(stop.calls).to be_empty

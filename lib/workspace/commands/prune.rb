@@ -75,6 +75,13 @@ module Workspace
         summary = "Pruned #{removed.size} project(s)."
         summary += " Skipped #{skipped.size}: #{skipped.join(", ")}." if skipped.any?
         @output.puts summary
+
+        if skipped.any?
+          raise Workspace::Error,
+            "#{skipped.size} project(s) were skipped: #{skipped.join(", ")}.\n" \
+            "Commit/push their unsaved work, or rerun with --force."
+        end
+
         removed
       end
 
