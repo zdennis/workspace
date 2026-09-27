@@ -184,7 +184,7 @@ module Workspace
         @output.puts "Taking over: stopping dev environment for #{describe(holder)}..."
         if stop(ctx, holder) == :kept
           @error_output.puts "This worktree's dev environment stays queued first for the #{LOCK_NAME} lock in its #{WINDOW_NAME} window. " \
-            "Run `workspace dev status` to watch it, and `workspace dev down --force` to free the old process group."
+            "Run `workspace dev status` to watch it. Stop the old process group as its owner (e.g. sudo kill -TERM -#{holder["pgid"]})."
           return {exit_code: 1}
         end
         close_window(holder)
