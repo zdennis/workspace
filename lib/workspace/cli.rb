@@ -19,6 +19,7 @@ module Workspace
     # @param hook_runner [Workspace::HookRunner] lifecycle hook execution
     # @param launch_command [Workspace::Commands::Launch] pre-built launch command
     # @param kill_command [Workspace::Commands::Kill] pre-built kill command
+    # @param finish_command [Workspace::Commands::Finish] pre-built finish command
     # @param start_command [Workspace::Commands::Start] pre-built start command
     # @param stop_command [Workspace::Commands::Stop] pre-built stop command (session-only teardown)
     # @param focus_command [Workspace::Commands::Focus] pre-built focus command
@@ -41,7 +42,7 @@ module Workspace
     # @param parent_command [Workspace::Commands::Parent] pre-built parent command
     # @param dev_command [Workspace::Commands::Dev] pre-built dev command
     # @param clock [#call] returns the current Time, for relative deadline display
-    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now })
+    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now })
       @config = config
       @state = state
       @project_config = project_config
@@ -55,6 +56,7 @@ module Workspace
       @session_event_command = session_event_command
       @launch_command = launch_command
       @kill_command = kill_command
+      @finish_command = finish_command
       @start_command = start_command
       @stop_command = stop_command
       @focus_command = focus_command
@@ -111,6 +113,8 @@ module Workspace
         cmd_add(args)
       when "kill"
         cmd_kill(args)
+      when "finish"
+        cmd_finish(args)
       when "relaunch"
         cmd_relaunch(args)
       when "focus"
@@ -232,6 +236,7 @@ module Workspace
           dir             Print the root directory of a workspace project
           doctor          Check that all required dependencies are installed
           event-log       Manage the event log (compact)
+          finish          Verify a worktree is clean and pushed, then remove it (optionally opens a PR)
           focus           Bring a project's iTerm window to the front
           help            Show this help message
           init            Install tmuxinator templates and create config directory
@@ -387,8 +392,12 @@ module Workspace
         opts.separator "If no project is specified, detects the current worktree project"
         opts.separator "from a .workspace-project marker file in the working directory."
         opts.separator ""
+        opts.separator "Refuses to remove a worktree with uncommitted changes to tracked files"
+        opts.separator "or commits that haven't been pushed anywhere (untracked files don't"
+        opts.separator "count). --force skips this check along with the confirmation prompt."
+        opts.separator ""
         opts.separator "Options:"
-        opts.on("-f", "--force", "Skip confirmation and force worktree removal") do
+        opts.on("-f", "--force", "Skip confirmation, and skip the uncommitted/unpushed-work check") do
           force = true
         end
       end
@@ -396,6 +405,44 @@ module Workspace
 
       project = @kill_command.call(args.first, force: force, working_dir: @working_dir)
       @hook_runner.run(project, "post_kill") if project
+    end
+
+    def cmd_finish(args)
+      pr = false
+      json = false
+      parser = OptionParser.new do |opts|
+        opts.banner = "Usage: workspace finish [project]"
+        opts.separator ""
+        opts.separator "Verify a worktree project is clean and fully pushed, then remove it"
+        opts.separator "the same way 'workspace kill' does (session, worktree, config, state)."
+        opts.separator ""
+        opts.separator "If no project is specified, detects the current worktree project"
+        opts.separator "from a .workspace-project marker file in the working directory."
+        opts.separator ""
+        opts.separator "Refuses when the branch has uncommitted changes to tracked files"
+        opts.separator "(untracked files don't count), has no upstream, or is ahead of its"
+        opts.separator "upstream. There is no override; push or commit first."
+        opts.separator ""
+        opts.separator "Options:"
+        opts.on("--pr", "Open a PR with `gh pr create --fill` (or reuse an existing one) first;",
+          "skipped with a note if `gh` isn't installed") do
+          pr = true
+        end
+        opts.on("--json", "Emit the documented JSON schema instead of plain text (see docs/README.finish.md)") do
+          json = true
+        end
+      end
+      parser.parse!(args)
+
+      result = @finish_command.call(args.first, pr: pr, json: json, working_dir: @working_dir)
+      if json
+        @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
+        return
+      end
+      @hook_runner.run(result, "post_kill") if result
+    rescue OptionParser::ParseError, UsageError => e
+      raise unless json
+      emit_json_usage_error(Workspace::Commands::Finish::JSON_SCHEMA_VERSION, e.message.lines.first.strip)
     end
 
     def cmd_focus(args)
@@ -2159,13 +2206,18 @@ module Workspace
         opts.separator "For each eligible project, removes the git worktree, tmuxinator config,"
         opts.separator "project settings, and state entry."
         opts.separator ""
+        opts.separator "A candidate with uncommitted changes to tracked files or commits that"
+        opts.separator "haven't been pushed anywhere (untracked files don't count) is skipped"
+        opts.separator "(and reported) rather than removed; the rest are still pruned. --force"
+        opts.separator "removes those anyway, along with skipping the confirmation prompt."
+        opts.separator ""
         opts.separator "Requires the `gh` CLI to be installed and authenticated."
         opts.separator ""
         opts.separator "Options:"
         opts.on("--dry-run", "Show what would be removed without making changes") do
           dry_run = true
         end
-        opts.on("-f", "--force", "Skip confirmation and remove immediately") do
+        opts.on("-f", "--force", "Skip confirmation, and skip the uncommitted/unpushed-work check") do
           force = true
         end
       end

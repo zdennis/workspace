@@ -12,7 +12,7 @@ RSpec.describe "PR3 adversarial findings" do
       config: placeholder, state: placeholder, project_config: placeholder, git: placeholder,
       window_manager: placeholder, doctor: placeholder, project_settings: placeholder,
       hook_runner: placeholder, project_detector: placeholder, launch_command: placeholder,
-      kill_command: placeholder, start_command: placeholder, stop_command: placeholder,
+      kill_command: placeholder, finish_command: placeholder, start_command: placeholder, stop_command: placeholder,
       focus_command: placeholder, tile_command: placeholder, layout_command: placeholder,
       resize_command: placeholder, init_command: placeholder, repair_command: placeholder,
       cleanup_command: placeholder, prune_command: placeholder, claude_command: placeholder,
