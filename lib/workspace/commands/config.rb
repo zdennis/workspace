@@ -38,7 +38,8 @@ module Workspace
         validate_key!(key)
         validate_value!(key, value)
 
-        name = project || @lineage.resolve(cwd: cwd).name
+        lineage = @lineage.resolve(cwd: cwd)
+        name = project || lineage.name
         path = @project_settings.project_config_path(name)
         with_config_lock(path) do
           @file_backup.backup(path)
@@ -54,7 +55,8 @@ module Workspace
         end
         @output.puts "Set #{key} = #{value} for '#{name}'."
         if RESTART_REQUIRED_KEYS.include?(key)
-          @output.puts "Takes effect the next time the session monitor starts (workspace agent #{name} --force)."
+          daemon_name = (project.nil? && lineage.worktree) ? lineage.worktree : name
+          @output.puts "Takes effect the next time the session monitor starts (workspace agent #{daemon_name} --force, or relaunch)."
         end
       end
 
