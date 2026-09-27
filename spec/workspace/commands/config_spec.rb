@@ -85,6 +85,26 @@ RSpec.describe Workspace::Commands::Config do
       end
     end
 
+    it "accepts locks.kill_grace as seconds or a duration" do
+      command, project_settings = build_command
+      project_dir = Dir.mktmpdir("ws-config-project")
+
+      command.set("locks.kill_grace", "10s", cwd: project_dir)
+
+      expect(project_settings.load(File.basename(project_dir))).to eq({"locks" => {"kill_grace" => "10s"}})
+    end
+
+    ["0", "0s", "-5", "soon"].each do |bad|
+      it "rejects locks.kill_grace #{bad.inspect} without writing it" do
+        command, project_settings = build_command
+        project_dir = Dir.mktmpdir("ws-config-project")
+
+        expect { command.set("locks.kill_grace", bad, cwd: project_dir) }
+          .to raise_error(Workspace::UsageError, /Invalid locks.kill_grace/)
+        expect(project_settings.load(File.basename(project_dir))).to eq({})
+      end
+    end
+
     it "accepts a dev.stop_timeout duration like 20s" do
       command, project_settings = build_command
       project_dir = Dir.mktmpdir("ws-config-project")

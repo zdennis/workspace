@@ -22,8 +22,8 @@ module Workspace
       NAME_PATTERN = /\A[A-Za-z0-9][A-Za-z0-9._-]*\z/
       # `workspace lock status --json`'s schema version (see docs/README.lock.md).
       JSON_SCHEMA_VERSION = 1
-      # Seconds `clear` waits for a SIGKILLed process group to disappear
-      # before treating it as unstoppable and keeping its lock.
+      # Default seconds `clear` waits for a SIGKILLed process group to disappear
+      # before treating it as unstoppable and keeping its lock (`locks.kill_grace`).
       KILL_GRACE_SECONDS = ProcessHolderStopper::KILL_GRACE_SECONDS
 
       # Seconds on a clock that never jumps backward or forward with wall-clock
@@ -50,7 +50,7 @@ module Workspace
       #   like `Signal.trap`, and must return the previous handler the same way
       # @param terminator [Workspace::ProcessGroupTerminator] stops a cleared `kind: "process"` holder
       # @param dev_config [Workspace::DevConfig, nil] supplies that holder's dev.stop_timeout
-      # @param lock_config [Workspace::LockConfig, nil] supplies the project's locks.idle_grace
+      # @param lock_config [Workspace::LockConfig, nil] supplies the project's locks.idle_grace and locks.kill_grace
       # @param wall_clock [#call] current epoch seconds, for idle tracking in the store
       def initialize(config:, lock_namespace:, lock_holder:, output: $stdout, error_output: $stderr,
         sleeper: ->(seconds) { sleep(seconds) }, clock: MonotonicClock, pid_provider: -> { Process.pid },
@@ -387,12 +387,16 @@ module Workspace
         pgid = holder["pgid"] || pid
         timeout = stop_timeout_for(project)
         case @holder_stopper.stop(store, name, holder, stop_timeout: timeout, retry_command: "workspace lock clear #{name}",
-          cleared_by: label)
+          cleared_by: label, kill_grace: kill_grace_for(project))
         when :kept then return false
         when :killed then @output.puts "Killed process group #{pgid} (pid #{pid}) after #{timeout}s."
         when :terminated then @output.puts "Stopped process group #{pgid} (pid #{pid})."
         end
         true
+      end
+
+      def kill_grace_for(project)
+        @lock_config ? @lock_config.kill_grace_for(project) : KILL_GRACE_SECONDS
       end
 
       def stop_timeout_for(project)

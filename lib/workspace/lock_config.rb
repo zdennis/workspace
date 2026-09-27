@@ -1,6 +1,7 @@
 module Workspace
   # Reads the `locks:` block from a project's YAML config, as written by
-  # `workspace config set locks.idle_grace <duration>`.
+  # `workspace config set locks.idle_grace <duration>` and
+  # `workspace config set locks.kill_grace <duration>`.
   #
   # A bad stored value never stops a lock command: it falls back to the
   # default with a warning, since `config set` already rejects bad input and
@@ -22,17 +23,40 @@ module Workspace
       Duration.parse_positive(value)
     end
 
+    # Parses and validates a post-SIGKILL grace period.
+    #
+    # @param value [String, Numeric] seconds, or a duration like "10s"
+    # @return [Numeric] seconds, always greater than 0
+    # @raise [ArgumentError] if value isn't a positive duration
+    def self.parse_kill_grace(value)
+      Duration.parse_positive(value)
+    end
+
     # @param name [String] project name (already resolved to its parent, if a worktree)
     # @return [Numeric] seconds an idle agent may keep a lock before the head
     #   waiter may take it over; {LockStore::DEFAULT_IDLE_GRACE} when unset or invalid
     def idle_grace_for(name)
+      setting(name, "idle_grace", LockStore::DEFAULT_IDLE_GRACE) { |value| self.class.parse_idle_grace(value) }
+    end
+
+    # @param name [String] project name (already resolved to its parent, if a worktree)
+    # @return [Numeric] seconds a SIGKILLed lock holder's process group may
+    #   take to disappear before its lock is kept as unstoppable;
+    #   {ProcessHolderStopper::KILL_GRACE_SECONDS} when unset or invalid
+    def kill_grace_for(name)
+      setting(name, "kill_grace", ProcessHolderStopper::KILL_GRACE_SECONDS) { |value| self.class.parse_kill_grace(value) }
+    end
+
+    private
+
+    def setting(name, key, default)
       settings = @project_settings.load(name)
       locks = settings.is_a?(Hash) ? settings["locks"] : nil
-      return LockStore::DEFAULT_IDLE_GRACE unless locks.is_a?(Hash) && locks.key?("idle_grace")
-      self.class.parse_idle_grace(locks["idle_grace"])
+      return default unless locks.is_a?(Hash) && locks.key?(key)
+      yield locks[key]
     rescue ArgumentError => e
-      @error_output.puts "Warning: invalid locks.idle_grace for '#{name}' (#{e.message}); using #{LockStore::DEFAULT_IDLE_GRACE}s."
-      LockStore::DEFAULT_IDLE_GRACE
+      @error_output.puts "Warning: invalid locks.#{key} for '#{name}' (#{e.message}); using #{default}s."
+      default
     end
   end
 end

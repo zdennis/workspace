@@ -42,10 +42,11 @@ module Workspace
       # @param clock [#now] monotonic seconds, for timeouts
       # @param poll [Numeric] seconds between polls
       # @param kill [#call] probes or signals a wrapper pid, called as `kill.call(signal, pid)` like `Process.kill`
+      # @param lock_config [Workspace::LockConfig, nil] supplies the project's locks.kill_grace
       def initialize(lock_namespace:, lock_holder:, lineage:, dev_config:, dev_runner:, terminator:, tmux:, executable:,
         output: $stdout, error_output: $stderr, env: ENV, sleeper: ->(seconds) { sleep(seconds) }, clock: Lock::MonotonicClock,
         poll: POLL_SECONDS,
-        kill: ->(signal, pid) { Process.kill(signal, pid) })
+        kill: ->(signal, pid) { Process.kill(signal, pid) }, lock_config: nil)
         @lock_namespace = lock_namespace
         @lock_holder = lock_holder
         @lineage = lineage
@@ -61,6 +62,7 @@ module Workspace
         @clock = clock
         @poll = poll
         @kill = kill
+        @lock_config = lock_config
         @holder_stopper = ProcessHolderStopper.for(terminator: terminator, lock_holder: lock_holder, error_output: error_output,
           clock: clock, sleeper: sleeper)
       end
@@ -228,6 +230,7 @@ module Workspace
           worktree: worktree,
           branch: git(worktree, "rev-parse", "--abbrev-ref", "HEAD"),
           config_name: lineage.worktree || lineage.name,
+          project: lineage.name,
           settings: @dev_config.for_project(lineage.name),
           store: LockStore.new(dir: @lock_namespace.resolve(cwd: working_dir)[:dir], liveness: @lock_holder, terminator: @terminator)
         }
@@ -332,7 +335,7 @@ module Workspace
       # @return [Symbol] :terminated, :killed, :gone, or :kept (reported on stderr)
       def stop(ctx, holder)
         result = @holder_stopper.stop(ctx[:store], LOCK_NAME, holder, stop_timeout: ctx[:settings][:stop_timeout],
-          retry_command: "workspace dev down")
+          retry_command: "workspace dev down", kill_grace: kill_grace_for(ctx))
         return result if result == :kept
         deadline = @clock.now + RELEASE_MARGIN
         while @lock_holder.alive?(pid: holder["pid"], started: holder["started"]) && @clock.now < deadline
@@ -340,6 +343,10 @@ module Workspace
         end
         ctx[:store].release(LOCK_NAME, holder["pid"]) unless @lock_holder.alive?(pid: holder["pid"], started: holder["started"])
         result
+      end
+
+      def kill_grace_for(ctx)
+        @lock_config ? @lock_config.kill_grace_for(ctx[:project]) : ProcessHolderStopper::KILL_GRACE_SECONDS
       end
 
       def session_for(ctx)

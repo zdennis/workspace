@@ -157,6 +157,7 @@ module Workspace
       terminator: process_group_terminator,
       tmux: tmux,
       executable: File.expand_path("../bin/workspace", __dir__),
+      lock_config: lock_config,
       output: output,
       error_output: error_output
     )
