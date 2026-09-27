@@ -431,6 +431,17 @@ RSpec.describe Workspace::Commands::Dev, "with fake processes and clock" do
       expect(holder).to include("pid" => 555)
       expect(store.status("devenv").dig("devenv", "queue").map { |w| w["waiter_pid"] }).to eq([800])
     end
+
+    it "names the startup timeout, not --max-wait, when its queued wrapper never takes the lock and no --max-wait was given" do
+      hold(700)
+      wrapper_joins(555)
+      allow(terminator).to receive(:stop_holder).and_return(:terminated)
+
+      expect(dev.up(takeover: true, working_dir: worktree)).to eq(exit_code: 75)
+      expect(signals).to eq([["TERM", 555]])
+      expect(error_output.string).to include("Still queued for devenv lock after startup timeout; re-run to keep waiting.")
+      expect(error_output.string).not_to include("--max-wait")
+    end
   end
 
   describe "#up --takeover --max-wait" do

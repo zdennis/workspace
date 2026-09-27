@@ -97,7 +97,8 @@ module Workspace
         session = session_for(ctx)
         wrapper = open_wrapper(ctx, session, wait: wait)
         limit = wait ? max_wait : ctx[:settings][:startup_timeout]
-        code = await_wrapper(ctx, wrapper, limit: limit)
+        limit_name = wait ? "--max-wait" : "startup timeout"
+        code = await_wrapper(ctx, wrapper, limit: limit, limit_name: limit_name)
         finish_up(ctx, session, wrapper, code, ready: ready)
       end
 
@@ -190,7 +191,7 @@ module Workspace
         code = await_queued(ctx, wrapper, max_wait: max_wait, deadline: deadline)
         return {exit_code: code} unless code.zero?
         if deadline && @clock.now >= deadline && entry(ctx[:store]).dig("holder", "pid") != wrapper
-          return {exit_code: give_up(wrapper, true, max_wait)}
+          return {exit_code: give_up(wrapper, true, max_wait, limit_name: "--max-wait")}
         end
 
         @output.puts "Taking over: stopping dev environment for #{describe(holder)}..."
@@ -207,9 +208,9 @@ module Workspace
         end
         close_window(holder)
         code = if deadline
-          await_wrapper(ctx, wrapper, limit: max_wait, deadline: deadline)
+          await_wrapper(ctx, wrapper, limit: max_wait, limit_name: "--max-wait", deadline: deadline)
         else
-          await_wrapper(ctx, wrapper, limit: ctx[:settings][:startup_timeout])
+          await_wrapper(ctx, wrapper, limit: ctx[:settings][:startup_timeout], limit_name: "startup timeout")
         end
         finish_up(ctx, session, wrapper, code, ready: ready)
       end
@@ -409,8 +410,10 @@ module Workspace
       # does its own queueing; this only watches the store.
       #
       # @param limit [Numeric, nil] seconds to wait, reported on giving up; nil waits indefinitely
+      # @param limit_name [String] the name of the limit being applied ("--max-wait" or
+      #   "startup timeout"), reported on giving up
       # @param deadline [Numeric, nil] clock time to give up at
-      def await_wrapper(ctx, pid, limit:, deadline: limit && @clock.now + limit)
+      def await_wrapper(ctx, pid, limit:, limit_name:, deadline: limit && @clock.now + limit)
         store = ctx[:store]
         seen_queued = false
 
@@ -432,7 +435,7 @@ module Workspace
             @error_output.puts "The dev wrapper (pid #{pid}) exited before it acquired the #{LOCK_NAME} lock."
             return 1
           end
-          return give_up(pid, queued, limit) if deadline && @clock.now >= deadline
+          return give_up(pid, queued, limit, limit_name: limit_name) if deadline && @clock.now >= deadline
 
           @sleeper.call(@poll)
         end
@@ -444,11 +447,13 @@ module Workspace
       def await_queued(ctx, pid, max_wait:, deadline:)
         store = ctx[:store]
         limit = ctx[:settings][:startup_timeout]
+        limit_name = "startup timeout"
         startup_deadline = @clock.now + limit
         if deadline.nil? || startup_deadline <= deadline
           deadline = startup_deadline
         else
           limit = max_wait
+          limit_name = "--max-wait"
         end
         loop do
           entry = entry(store)
@@ -458,15 +463,15 @@ module Workspace
             @error_output.puts "The dev wrapper (pid #{pid}) exited before it queued for the #{LOCK_NAME} lock."
             return 1
           end
-          return give_up(pid, false, limit) if @clock.now >= deadline
+          return give_up(pid, false, limit, limit_name: limit_name) if @clock.now >= deadline
           @sleeper.call(@poll)
         end
       end
 
-      def give_up(pid, queued, limit)
+      def give_up(pid, queued, limit, limit_name:)
         signal_wrapper(pid)
         if queued
-          @error_output.puts "Still queued for #{LOCK_NAME} lock after --max-wait; re-run to keep waiting."
+          @error_output.puts "Still queued for #{LOCK_NAME} lock after #{limit_name}; re-run to keep waiting."
           return 75
         end
         @error_output.puts "The dev wrapper (pid #{pid}) did not acquire the #{LOCK_NAME} lock within #{format_seconds(limit)}; stopped it."
