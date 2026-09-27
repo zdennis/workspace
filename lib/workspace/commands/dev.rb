@@ -2,6 +2,7 @@ require "open3"
 require "rbconfig"
 require "socket"
 require "time"
+require "json"
 
 module Workspace
   module Commands
@@ -16,6 +17,8 @@ module Workspace
     class Dev
       LOCK_NAME = DevRunner::LOCK_NAME
       WINDOW_NAME = "devenv"
+      # `workspace dev status --json`'s schema version (see docs/dev.md).
+      JSON_SCHEMA_VERSION = 1
       POLL_SECONDS = 0.2
       STARTUP_TIMEOUT = 30
       READY_TIMEOUT = 120
@@ -122,8 +125,13 @@ module Workspace
       end
 
       # @param working_dir [String] any directory inside the repository
+      # @param json [Boolean] emit the documented `--json` schema (see docs/dev.md)
+      #   on stdout instead of the human-readable listing; a store error becomes
+      #   a `{"error":}` JSON object on stdout (exit 1) rather than a raised error
       # @return [Hash] {exit_code:}
-      def status(working_dir: Dir.pwd)
+      def status(working_dir: Dir.pwd, json: false)
+        return status_json(working_dir) if json
+
         ctx = context(working_dir)
         entry = entry(ctx[:store])
         holder = entry["holder"]
@@ -232,6 +240,26 @@ module Workspace
 
       def entry(store)
         store.status(LOCK_NAME)[LOCK_NAME] || {}
+      end
+
+      # @return [Hash] {exit_code:} — 0 on success, 1 if the store itself
+      #   could not be read (e.g. a corrupt `locks.json`)
+      def status_json(working_dir)
+        ctx = context(working_dir)
+        entry = entry(ctx[:store])
+        holder = entry["holder"]
+        payload = {
+          "schema_version" => JSON_SCHEMA_VERSION,
+          "running" => !holder.nil? && !holder["stale"],
+          "holder" => holder,
+          "ready" => (holder && !holder["stale"] && ctx[:settings][:ready]) ? ready?(ctx[:settings][:ready], ctx[:worktree]) : nil,
+          "queue" => entry["queue"] || []
+        }
+        @output.puts JSON.generate(payload)
+        {exit_code: 0}
+      rescue Workspace::Error => e
+        @output.puts JSON.generate({"schema_version" => JSON_SCHEMA_VERSION, "error" => e.message})
+        {exit_code: 1}
       end
 
       # @return [Hash, nil] an exit result if up must not proceed

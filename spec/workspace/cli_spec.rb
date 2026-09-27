@@ -1520,7 +1520,16 @@ RSpec.describe Workspace::CLI do
 
       cli.run(["lock", "status", "edit"])
 
-      expect(lock_command.calls).to eq([{action: :status, name: "edit"}])
+      expect(lock_command.calls).to eq([{action: :status, name: "edit", json: false}])
+    end
+
+    it "dispatches to lock_command#status with --json" do
+      lock_command = CLITestHelpers::FakeLockCommand.new
+      cli, _, _ = build_test_cli(lock_command: lock_command)
+
+      cli.run(["lock", "status", "edit", "--json"])
+
+      expect(lock_command.calls).to eq([{action: :status, name: "edit", json: true}])
     end
 
     it "dispatches to lock_command#clear" do
@@ -1605,7 +1614,17 @@ RSpec.describe Workspace::CLI do
         cli.run(["dev", "status"])
         cli.run(["dev", "__run", "--wait"])
 
-        expect(dev_command.calls).to eq([{action: :down, force: true}, {action: :status}, {action: :run, wait: true}])
+        expect(dev_command.calls).to eq(
+          [{action: :down, force: true}, {action: :status, json: false}, {action: :run, wait: true}]
+        )
+      end
+
+      it "dispatches status with --json" do
+        cli, _, _ = build_test_cli(dev_command: dev_command)
+
+        cli.run(["dev", "status", "--json"])
+
+        expect(dev_command.calls).to eq([{action: :status, json: true}])
       end
 
       it "prints dev help without a subcommand and rejects unknown ones" do

@@ -193,6 +193,42 @@ RSpec.describe Workspace::Commands::Lock do
       expect(output.string).to include("edit: held by %1 \"the-task\" in app (pid 100")
       expect(output.string).to include("1. %1 \"queued-task\" in app (pid 200)")
     end
+
+    describe "--json" do
+      it "emits an empty locks object for an empty store" do
+        command_for(FakeLockIdentity.new(pid: 100)).status(json: true)
+
+        expect(JSON.parse(output.string)).to eq("schema_version" => 1, "locks" => {})
+      end
+
+      it "emits the holder and queue for a held lock" do
+        holder = FakeLockIdentity.new(pid: 100)
+        command_for(holder).acquire("edit", task: "the-task")
+        enqueue_waiter(name: "edit", identity: FakeLockIdentity.new(pid: 200), task: "queued-task")
+
+        output.truncate(0)
+        output.rewind
+        command_for(holder).status("edit", json: true)
+
+        payload = JSON.parse(output.string)
+        expect(payload["schema_version"]).to eq(1)
+        expect(payload["locks"]["edit"]["holder"]).to include("pid" => 100, "task" => "the-task", "stale" => false)
+        expect(payload["locks"]["edit"]["queue"].first).to include("agent_pid" => 200, "task" => "queued-task")
+      end
+
+      it "emits a JSON error object on stdout, exit 1, for a corrupt locks.json" do
+        FileUtils.mkdir_p(tmpdir)
+        File.write(File.join(tmpdir, "locks.json"), "{not json")
+
+        result = command_for(FakeLockIdentity.new(pid: 100)).status(json: true)
+
+        expect(result).to eq(exit_code: 1)
+        payload = JSON.parse(output.string)
+        expect(payload["schema_version"]).to eq(1)
+        expect(payload["error"]).to include("corrupt")
+        expect(error_output.string).to eq("")
+      end
+    end
   end
 
   describe "#clear" do

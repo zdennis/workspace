@@ -271,6 +271,31 @@ RSpec.describe Workspace::Commands::Dev do
 
       expect(output.string).to eq("No dev environment is running.\n")
     end
+
+    describe "--json" do
+      it "reports not running for an empty store" do
+        dev.status(working_dir: main, json: true)
+
+        expect(JSON.parse(output.string)).to eq(
+          "schema_version" => 1, "running" => false, "holder" => nil, "ready" => nil, "queue" => []
+        )
+      end
+
+      it "reports the holder and readiness for a running environment" do
+        dev_settings["ready"] = "true"
+        dev.up(working_dir: login)
+        output.truncate(0)
+        output.rewind
+
+        dev.status(working_dir: main, json: true)
+
+        payload = JSON.parse(output.string)
+        expect(payload["schema_version"]).to eq(1)
+        expect(payload["running"]).to be true
+        expect(payload["holder"]).to include("pid" => spawned.last, "branch" => "feat/login")
+        expect(payload["ready"]).to be true
+      end
+    end
   end
 
   describe "#run" do

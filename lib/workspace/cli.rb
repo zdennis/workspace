@@ -888,15 +888,17 @@ module Workspace
     end
 
     def cmd_lock_status(args)
+      json = false
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace lock status [<name>]"
+        opts.banner = "Usage: workspace lock status [<name>] [--json]"
+        opts.on("--json", "Emit the documented JSON schema instead of a table (see docs/lock.md)") { json = true }
       end
       parser.parse!(args)
 
       name = args.shift
       raise UsageError, parser.help if args.any?
 
-      result = @lock_command.status(name, working_dir: @working_dir)
+      result = @lock_command.status(name, working_dir: @working_dir, json: json)
       @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
     end
 
@@ -1004,11 +1006,15 @@ module Workspace
     end
 
     def cmd_dev_status(args)
-      parser = OptionParser.new { |opts| opts.banner = "Usage: workspace dev status" }
+      json = false
+      parser = OptionParser.new do |opts|
+        opts.banner = "Usage: workspace dev status [--json]"
+        opts.on("--json", "Emit the documented JSON schema instead of a table (see docs/dev.md)") { json = true }
+      end
       parser.parse!(args)
       raise UsageError, parser.help if args.any?
 
-      result = @dev_command.status(working_dir: @working_dir)
+      result = @dev_command.status(working_dir: @working_dir, json: json)
       @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
     end
 

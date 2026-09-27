@@ -1,4 +1,5 @@
 require "time"
+require "json"
 
 module Workspace
   module Commands
@@ -19,6 +20,8 @@ module Workspace
       # Lock names end up in file keys and in commands an agent is told to run
       # verbatim, so they are limited to characters that need no shell quoting.
       NAME_PATTERN = /\A[A-Za-z0-9][A-Za-z0-9._-]*\z/
+      # `workspace lock status --json`'s schema version (see docs/lock.md).
+      JSON_SCHEMA_VERSION = 1
 
       # Seconds on a clock that never jumps backward or forward with wall-clock
       # changes, so a --max-wait deadline cannot be stretched or cut short.
@@ -145,9 +148,14 @@ module Workspace
 
       # @param name [String, nil] a single lock name, or nil for every lock
       # @param working_dir [String] directory to resolve the lock namespace from
+      # @param json [Boolean] emit the documented `--json` schema (see docs/lock.md)
+      #   on stdout instead of the human-readable listing; a store error becomes
+      #   a `{"error":}` JSON object on stdout (exit 1) rather than a raised error
       # @return [Hash] {exit_code:}
-      def status(name = nil, working_dir: Dir.pwd)
+      def status(name = nil, working_dir: Dir.pwd, json: false)
         validate_name!(name) unless name.nil?
+        return status_json(name, working_dir) if json
+
         store = store_for(working_dir)
         entries = store.status(name)
 
@@ -196,6 +204,18 @@ module Workspace
       end
 
       private
+
+      # @return [Hash] {exit_code:} — 0 on success, 1 if the store itself
+      #   could not be read (e.g. a corrupt `locks.json`)
+      def status_json(name, working_dir)
+        store = store_for(working_dir)
+        entries = store.status(name)
+        @output.puts JSON.generate({"schema_version" => JSON_SCHEMA_VERSION, "locks" => entries})
+        {exit_code: 0}
+      rescue Workspace::Error => e
+        @output.puts JSON.generate({"schema_version" => JSON_SCHEMA_VERSION, "error" => e.message})
+        {exit_code: 1}
+      end
 
       def validate_name!(name)
         raise Workspace::UsageError, "lock name must not be empty." if name.nil? || name.empty?

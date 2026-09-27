@@ -7,7 +7,7 @@ Run one dev environment per repository, guarded by the repo-wide `devenv` lock. 
 ```sh
 workspace dev up     [--wait] [--takeover] [--no-ready] [--max-wait DURATION]
 workspace dev down   [--force]
-workspace dev status
+workspace dev status [--json]
 ```
 
 ## Configuration
@@ -46,6 +46,31 @@ workspace config set dev.stop_timeout 20s         # SIGTERM → SIGKILL grace (d
 | 4 | The `devenv` lock was cleared while waiting |
 | 6 | Ready check failed; the env is stopped and the lock released |
 | 75 | Still queued after `--max-wait` |
+
+## `--json`
+
+`workspace dev status --json` emits one JSON object on stdout instead of the table:
+
+```json
+{
+  "schema_version": 1,
+  "running": true,
+  "holder": {
+    "kind": "process", "pid": 5211, "pgid": 5211, "branch": "feat/login",
+    "pane": "%9", "worktree": "/Users/z/src/app.worktree-login",
+    "acquired_at": "2026-09-26T09:12:00Z", "stale": false
+  },
+  "ready": true,
+  "queue": []
+}
+```
+
+- `schema_version` is bumped only on a breaking change to this shape.
+- No environment running: `{"schema_version": 1, "running": false, "holder": null, "ready": null, "queue": []}` — never an error.
+- `ready` is `true`/`false` when `dev.ready` is configured and the environment is running (not stale), otherwise `null` (not configured, or nothing to check).
+- `holder`'s `stale` marks a wrapper whose pid is gone (an orphaned process group may still be running — see "Crashes" below); `running` is `false` for a stale holder.
+- A corrupt `locks.json` becomes `{"schema_version": 1, "error": "<message>"}` on stdout, exit 1.
+- Exit codes: `0` on success (including no environment running), `1` for a store error.
 
 ## Details
 
