@@ -96,7 +96,8 @@ RSpec.describe Workspace::CLI do
       exit_handler: overrides[:exit_handler] || FakeExitHandler,
       input: input,
       working_dir: working_dir,
-      clock: overrides[:clock] || -> { Time.now }
+      clock: overrides[:clock] || -> { Time.now },
+      launch_mode: overrides[:launch_mode] || CLITestHelpers.launch_mode(headless: false)
     )
     [cli, output, error_output, hook_runner]
   end
@@ -124,7 +125,7 @@ RSpec.describe Workspace::CLI do
 
     it "exits 1 when a Workspace::Error is raised" do
       doctor = CLITestHelpers::FakeDoctor.new
-      doctor.define_singleton_method(:run) do
+      doctor.define_singleton_method(:run) do |headless: nil|
         raise Workspace::Error, "something broke"
       end
 
@@ -611,7 +612,7 @@ RSpec.describe Workspace::CLI do
     it "delegates to the doctor collaborator" do
       doctor = CLITestHelpers::FakeDoctor.new
       called = false
-      doctor.define_singleton_method(:run) { called = true }
+      doctor.define_singleton_method(:run) { |headless: nil| called = true }
 
       cli, _, _ = build_test_cli(doctor: doctor)
       cli.run(["doctor"])
@@ -2648,6 +2649,89 @@ RSpec.describe Workspace::CLI do
       expect { cli.run(["event-log", "show", "--limit", "0"]) }.to raise_error(FakeSystemExit)
 
       expect(error_output.string).to include("--limit must be greater than 0")
+    end
+  end
+
+  describe "headless launch" do
+    let(:launch_command) { double("launch", call: {exit_code: 0, prompt_failures: {}}) }
+    let(:start_command) { double("start", call: {exit_code: 0}) }
+
+    it "passes headless: true to launch with --headless" do
+      cli, = build_test_cli(launch_command: launch_command)
+
+      cli.run(["launch", "--headless", "myproject"])
+
+      expect(launch_command).to have_received(:call).with(["myproject"], reattach: false, prompts: {}, headless: true)
+    end
+
+    it "launches headless when the launch mode says so and no flag is given" do
+      cli, = build_test_cli(launch_command: launch_command, launch_mode: CLITestHelpers.launch_mode(headless: true))
+
+      cli.run(["launch", "myproject"])
+
+      expect(launch_command).to have_received(:call).with(["myproject"], reattach: false, prompts: {}, headless: true)
+    end
+
+    it "lets --no-headless override the launch mode" do
+      cli, = build_test_cli(launch_command: launch_command, launch_mode: CLITestHelpers.launch_mode(headless: true))
+
+      cli.run(["launch", "myproject", "--no-headless"])
+
+      expect(launch_command).to have_received(:call).with(["myproject"], reattach: false, prompts: {})
+    end
+
+    it "passes headless to start, with flags in any position" do
+      cli, = build_test_cli(start_command: start_command)
+
+      cli.run(["start", "--json", "PROJ-1", "--headless"])
+
+      expect(start_command).to have_received(:call).with("PROJ-1", prompt: nil, prompt_timeout: nil,
+        base: nil, yes: false, json: true, headless: true)
+    end
+
+    it "emits the JSON usage error on stdout for a bad flag next to --headless" do
+      output = StringIO.new
+      cli, = build_test_cli(output: output, start_command: start_command)
+
+      expect { cli.run(["start", "--headless", "--json", "--bogus", "PROJ-1"]) }.to raise_error(FakeSystemExit) { |e|
+        expect(e.status).to eq(1)
+      }
+      expect(JSON.parse(output.string)).to include("schema_version" => 1, "error" => a_string_including("--bogus"))
+    end
+
+    it "passes --headless and --no-headless to doctor, and nil without a flag" do
+      doctor = CLITestHelpers::FakeDoctor.new
+      cli, = build_test_cli(doctor: doctor)
+
+      cli.run(["doctor", "--headless"])
+      expect(doctor.headless).to be true
+      cli.run(["doctor", "--no-headless"])
+      expect(doctor.headless).to be false
+      cli.run(["doctor"])
+      expect(doctor.headless).to be_nil
+    end
+
+    it "relaunches headless projects headless and the rest in iTerm2" do
+      state = CLITestHelpers::FakeState.new
+      state["proj1"] = {"unique_id" => "uid1"}
+      state["proj2"] = {"headless" => true}
+      cli, = build_test_cli(state: state, launch_command: launch_command, stop_command: double("stop", call: []))
+      allow(cli).to receive(:sleep)
+
+      cli.run(["relaunch"])
+
+      expect(launch_command).to have_received(:call).with(["proj1"], reattach: false, prompts: {})
+      expect(launch_command).to have_received(:call).with(["proj2"], reattach: false, prompts: {}, headless: true)
+    end
+
+    it "labels headless projects in status" do
+      state = CLITestHelpers::FakeState.new
+      state["proj"] = {"headless" => true}
+      cli, output, = build_test_cli(state: state)
+
+      cli.run(["status"])
+
+      expect(output.string).to include("proj  headless  [alive]")
     end
   end
 end

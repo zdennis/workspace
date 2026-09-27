@@ -15,7 +15,7 @@ module Workspace
       # Keys `set`/`get`/`unset` allow, written to the global config
       # (~/.config/workspace/config.yml) instead of a project's — there's one
       # status line and one context source per machine, not per project.
-      GLOBAL_ALLOWED_KEYS = %w[statusline.command context.source context.pattern].freeze
+      GLOBAL_ALLOWED_KEYS = %w[statusline.command context.source context.pattern launch.headless].freeze
 
       # Keys the session-monitor daemon only reads once, at startup. Changing
       # one of these has no effect on an already-running daemon.
@@ -180,6 +180,7 @@ module Workspace
         when "locks.reap_interval" then Workspace::LockConfig.parse_reap_interval(value)
         when "alerts.notify" then Workspace::AlertConfig.parse_notify(value)
         when "alerts.idle_after" then Workspace::AlertConfig.parse_idle_after(value)
+        when "launch.headless" then Workspace::LaunchMode.parse_config(value)
         when "context.source"
           raise ArgumentError, "must be \"statusline\" or \"scrape\"" unless %w[statusline scrape].include?(value)
         when "context.pattern"

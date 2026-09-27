@@ -47,6 +47,7 @@ require_relative "workspace/event_log"
 require_relative "workspace/state"
 require_relative "workspace/git"
 require_relative "workspace/which"
+require_relative "workspace/launch_mode"
 require_relative "workspace/doctor"
 require_relative "workspace/tmux"
 require_relative "workspace/tmux_pane"
@@ -145,7 +146,8 @@ module Workspace
     file_backup = FileBackup.new(output: output)
     hook_installer = HookInstaller.new(backup: file_backup, output: output, input: input)
     pipeline_config = PipelineConfig.new(config: config)
-    doctor = Doctor.new(config: config, state: state, hook_installer: hook_installer, project_detector: project_detector, git: git, pipeline_config: pipeline_config, output: output)
+    launch_mode = LaunchMode.new(project_settings: project_settings)
+    doctor = Doctor.new(config: config, state: state, hook_installer: hook_installer, project_detector: project_detector, git: git, pipeline_config: pipeline_config, launch_mode: launch_mode, output: output)
 
     # Pre-build command objects so CLI delegates rather than constructs
     stop_command = Commands::Stop.new(state: state, iterm: iterm, window_manager: window_manager, tmux: tmux, output: output, error_output: error_output)
@@ -155,7 +157,7 @@ module Workspace
     start_command = Commands::Start.new(git: git, project_config: project_config, project_settings: project_settings, launch_command: launch_command, lineage: lineage, hook_installer: hook_installer, output: output, input: input)
     kill_command = Commands::Kill.new(git: git, project_config: project_config, project_settings: project_settings, stop_command: stop_command, project_detector: project_detector, output: output, input: input)
     finish_command = Commands::Finish.new(git: git, project_config: project_config, kill_command: kill_command, project_detector: project_detector, output: output, error_output: error_output, input: input)
-    focus_command = Commands::Focus.new(state: state, window_manager: window_manager, output: output)
+    focus_command = Commands::Focus.new(state: state, window_manager: window_manager, tmux: tmux, output: output)
     tile_command = Commands::Tile.new(state: state, window_manager: window_manager, window_layout: window_layout, output: output)
     layout_command = Commands::Layout.new(state: state, tmux: tmux, project_settings: project_settings, output: output)
     resize_command = Commands::Resize.new(tmux: tmux, layout_command: layout_command, output: output, error_output: error_output)
@@ -293,6 +295,7 @@ module Workspace
       config_command: config_command,
       statusline_command: statusline_command,
       ask_command: ask_command,
+      launch_mode: launch_mode,
       logger: logger,
       output: output,
       error_output: error_output,

@@ -103,4 +103,17 @@ RSpec.describe Workspace::WindowManager do
       expect(manager).to have_received(:system).with(config.window_tool, "move", "id=42", "100", "50", "800", "600")
     end
   end
+
+  describe "without window-tool" do
+    before { allow(Open3).to receive(:capture3).and_raise(Errno::ENOENT, "window-tool") }
+
+    it "reports no windows and a failed focus instead of raising" do
+      expect(manager.iterm_windows).to eq({})
+      expect(manager.focus_by_id(1)).to be false
+    end
+
+    it "raises a workspace error from live_window_ids" do
+      expect { manager.live_window_ids }.to raise_error(Workspace::Error, /window-tool list failed/)
+    end
+  end
 end

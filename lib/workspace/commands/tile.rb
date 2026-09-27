@@ -21,11 +21,16 @@ module Workspace
       # @raise [Workspace::Error] if no matching windows are found
       def call(project)
         @state.load
-        live_ids = @window_manager.live_window_ids
+        candidates = @state.keys.select { |key| key == project || key.start_with?("#{project}.") }
+        windowed = candidates.reject { |key| @state.dig(key, "headless") }
+        if candidates.any? && windowed.empty?
+          raise Workspace::Error,
+            "No windows to tile for '#{project}': its workspaces run headless (no iTerm windows).\n" \
+            "Attach to one with: tmux attach -t <session>"
+        end
+        live_ids = windowed.empty? ? Set.new : @window_manager.live_window_ids
 
-        matching = @state.keys.select { |key|
-          key == project || key.start_with?("#{project}.")
-        }.select { |key|
+        matching = windowed.select { |key|
           live_ids.include?(@state.dig(key, "iterm_window_id"))
         }.sort
 
@@ -45,15 +50,17 @@ module Workspace
       # @raise [Workspace::Error] if no active windows are found
       def call_all
         @state.load
-        live_ids = @window_manager.live_window_ids
+        windowed = @state.keys.reject { |key| @state.dig(key, "headless") }
+        live_ids = windowed.empty? ? Set.new : @window_manager.live_window_ids
 
-        matching = @state.keys.select { |key|
+        matching = windowed.select { |key|
           live_ids.include?(@state.dig(key, "iterm_window_id"))
         }.sort
 
         if matching.empty?
+          headless_note = (windowed.size < @state.keys.size) ? " (headless workspaces have no windows)" : ""
           raise Workspace::Error,
-            "No active workspace windows found.\n" \
+            "No active workspace windows found#{headless_note}.\n" \
             "Run 'workspace list' to see active projects."
         end
 

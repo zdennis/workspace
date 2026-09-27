@@ -175,4 +175,20 @@ RSpec.describe Workspace::Commands::Stop do
       end
     end
   end
+
+  describe "#call with headless projects" do
+    it "kills the tmux session without asking iTerm2 about windows" do
+      state["proj"] = {"headless" => true}
+      state.save
+      allow(tmux).to receive(:sessions).and_return(["proj"])
+      allow(tmux).to receive(:session_name_for).with("proj").and_return("proj")
+      allow(tmux).to receive(:kill_session)
+
+      expect(command.call(["proj"])).to eq(["proj"])
+
+      expect(tmux).to have_received(:kill_session).with("proj")
+      state.load
+      expect(state["proj"]).to be_nil
+    end
+  end
 end

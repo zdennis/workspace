@@ -10,10 +10,13 @@ module Workspace
     # @param which [#call] returns true when an executable is on PATH
     # @param git [Workspace::Git, nil] lists worktrees to check for lock hooks; nil skips that check
     # @param pipeline_config [Workspace::PipelineConfig, nil] validates the current project's pipeline config
+    # @param launch_mode [Workspace::LaunchMode, nil] decides whether iTerm2 and
+    #   window-tool are needed; nil builds one from +config+
     # @param working_dir [String] directory to detect the current project from
     # @param output [IO] output stream for results
     def initialize(config:, state:, hook_installer:, project_detector:, which: nil, git: nil,
-      pipeline_config: nil, working_dir: Dir.pwd, output: $stdout)
+      pipeline_config: nil, launch_mode: nil, working_dir: Dir.pwd, output: $stdout)
+      @launch_mode = launch_mode || LaunchMode.new(project_settings: ProjectSettings.new(config: config), which: which)
       @config = config
       @state = state
       @hook_installer = hook_installer
@@ -25,11 +28,15 @@ module Workspace
       @output = output
     end
 
+    # @param headless [Boolean, nil] the `--[no-]headless` flag; nil lets
+    #   {LaunchMode} decide. Headless skips the iTerm2 and window-tool checks.
     # @return [void]
     # @raise [Workspace::Error] if any issues are found
-    def run
+    def run(headless: nil)
+      mode = @launch_mode.resolve(headless)
       @output.puts "workspace doctor"
       @output.puts ""
+      @output.puts "  mode: #{mode.headless? ? "headless" : "iTerm2"} (#{mode.reason})"
 
       issues = 0
 
@@ -48,10 +55,12 @@ module Workspace
         },
         {
           name: "iTerm2",
+          gui: true,
           check: -> { check_app("iTerm2", bundle_id: "com.googlecode.iterm2", install_hint: "https://iterm2.com/") }
         },
         {
           name: "window-tool",
+          gui: true,
           check: -> { check_command("window-tool", version_flag: nil, install_hint: "https://github.com/zdennis/window-tool") }
         },
         {
@@ -69,6 +78,10 @@ module Workspace
       ]
 
       checks.each do |entry|
+        if entry[:gui] && mode.headless?
+          @output.puts "  ⊘  #{entry[:name]} (not needed headless, skipped)"
+          next
+        end
         result = entry[:check].call
         if result[:found]
           if result[:outdated]

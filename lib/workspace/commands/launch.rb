@@ -48,15 +48,21 @@ module Workspace
       # @param reattach [Boolean] whether to reattach to existing tmux sessions
       # @param prompts [Hash{String => String}] project name => prompt text to
       #   send to the coding agent (Claude Code first) in that project's session
+      # @param headless [Boolean] start each session in the background with
+      #   plain tmux (see #call_headless) instead of in iTerm2 windows
       # @param quiet [Boolean] suppress the progress messages normally written to
       #   +output+ (warnings still go to +error_output+); for callers building a
       #   machine-readable payload of their own, such as `start --json`
       # @return [Hash] +{exit_code:, prompt_failures:}+; exit_code is 1 when any
-      #   prompt was not sent, and prompt_failures maps each such project to why
+      #   prompt was not sent, and prompt_failures maps each such project to why.
+      #   A headless launch adds +headless: true+, +reused:+ (projects whose
+      #   session was already running) and +start_failures:+ (project => why
+      #   its session could not be started, which also makes exit_code 1).
       # @raise [Workspace::Error] if any project configs are missing
-      def call(projects, reattach: false, prompts: {}, prompt_timeout: @prompt_timeout, quiet: false)
+      def call(projects, reattach: false, prompts: {}, prompt_timeout: @prompt_timeout, headless: false, quiet: false)
         @quiet = quiet
         validate_configs(projects)
+        return call_headless(projects, prompts: prompts, prompt_timeout: prompt_timeout) if headless
 
         @tmux.start_server
 
@@ -96,6 +102,54 @@ module Workspace
       end
 
       private
+
+      # Starts each project's tmux session in the background with tmuxinator,
+      # never touching iTerm2, AppleScript or window-tool. A project whose
+      # session is already running is reused as it is rather than started
+      # again. State records the project as headless, so stop, kill, list and
+      # status find it, and focus/tile know it has no window.
+      def call_headless(projects, prompts:, prompt_timeout:)
+        @tmux.start_server
+        running = @tmux.sessions
+        @state.load
+
+        reused = []
+        start_failures = {}
+        projects.each do |project|
+          session = @tmux.session_name_for(project)
+          if running.include?(session)
+            log("Session #{session} is already running for #{project}; reusing it.")
+            reused << project
+          else
+            log("Starting #{project} headless (tmux session #{session})...")
+            failure = @tmux.start_headless(project)
+            if failure
+              @error_output.puts "Error: could not start #{project}: #{failure}"
+              start_failures[project] = failure
+              next
+            end
+          end
+          # A running session already tracked (say, one attached in iTerm2) keeps
+          # its entry, so focus and tile still find its window.
+          @state[project] = {"headless" => true} unless reused.include?(project) && @state[project]
+        end
+        @state.save
+
+        started = projects - start_failures.keys
+        session_names = started.empty? ? {} : wait_for_tmux_sessions(started)
+        start_session_monitors(session_names.keys)
+
+        prompts = prompts.reject { |project, _| start_failures.key?(project) }
+        prompt_failures = prompts.any? ? send_prompts(session_names, prompts, prompt_timeout) : {}
+
+        log("Done! Launched #{started.size} project(s) headless.")
+        session_names.each_value { |session| log("  Attach with: tmux attach -t #{session}") }
+        unless prompt_failures.empty?
+          @error_output.puts "Error: the prompt was not sent to: #{prompt_failures.keys.join(", ")}"
+        end
+        ok = prompt_failures.empty? && start_failures.empty?
+        {exit_code: ok ? 0 : 1, prompt_failures: prompt_failures, headless: true, reused: reused, start_failures: start_failures}
+      end
 
       def log(message)
         @output.puts message unless @quiet

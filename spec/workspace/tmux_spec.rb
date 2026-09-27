@@ -716,4 +716,54 @@ RSpec.describe Workspace::Tmux do
       expect(tmux.server_running?).to be(false)
     end
   end
+
+  describe "#start_headless" do
+    let(:tmux) { described_class.new(config: config) }
+    let(:source) { File.join(tmpdir, "workspace.proj.yml") }
+    let(:ok) { instance_double(Process::Status, success?: true, exitstatus: 0) }
+
+    before do
+      allow(config).to receive(:config_path_for).with("proj").and_return(source)
+      File.write(source, "name: proj\nroot: /tmp\ntmux_options: -CC -2\nattach: false\nwindows:\n  - main: echo hi\n")
+    end
+
+    it "runs tmuxinator detached on a copy of the config without control mode" do
+      seen = nil
+      allow(Open3).to receive(:capture3) do |*args|
+        seen = {args: args, content: File.read(args[3])}
+        ["", "", ok]
+      end
+
+      expect(tmux.start_headless("proj")).to be_nil
+      expect(seen[:args].values_at(0, 1, 2, 4)).to eq(["tmuxinator", "start", "-p", "--no-attach"])
+      expect(seen[:content]).to include("tmux_options: -2\n")
+      expect(seen[:content]).not_to include("-CC")
+      expect(seen[:content]).to include("windows:")
+      expect(File.exist?(seen[:args][3])).to be false
+      expect(File.read(source)).to include("tmux_options: -CC -2")
+    end
+
+    it "drops the tmux_options line when control mode was its only option" do
+      File.write(source, "name: proj\ntmux_options: -CC\nwindows: []\n")
+      content = nil
+      allow(Open3).to receive(:capture3) { |*args| content = File.read(args[3]) and ["", "", ok] }
+
+      tmux.start_headless("proj")
+
+      expect(content).not_to include("tmux_options")
+    end
+
+    it "reports why tmuxinator failed" do
+      failed = instance_double(Process::Status, success?: false, exitstatus: 1)
+      allow(Open3).to receive(:capture3).and_return(["", "warning\nsession exists\n", failed])
+
+      expect(tmux.start_headless("proj")).to eq("tmuxinator exited 1: session exists")
+    end
+
+    it "reports a missing tmuxinator instead of raising" do
+      allow(Open3).to receive(:capture3).and_raise(Errno::ENOENT, "tmuxinator")
+
+      expect(tmux.start_headless("proj")).to match(/could not run tmuxinator/)
+    end
+  end
 end

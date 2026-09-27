@@ -42,7 +42,9 @@ module Workspace
     # @param parent_command [Workspace::Commands::Parent] pre-built parent command
     # @param dev_command [Workspace::Commands::Dev] pre-built dev command
     # @param clock [#call] returns the current Time, for relative deadline display
-    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now })
+    # @param launch_mode [Workspace::LaunchMode, nil] decides whether launch/start
+    #   run headless when no --[no-]headless flag is given; nil builds one
+    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil)
       @config = config
       @state = state
       @project_config = project_config
@@ -88,6 +90,7 @@ module Workspace
       @input = input
       @working_dir = working_dir
       @clock = clock
+      @launch_mode = launch_mode || LaunchMode.new(project_settings: project_settings)
     end
 
     # Parses the subcommand from argv and dispatches to the appropriate method.
@@ -244,11 +247,11 @@ module Workspace
           doctor          Check that all required dependencies are installed
           event-log       Show or compact the event log (state changes and agent activity)
           finish          Verify a worktree is clean and pushed, then remove it (optionally opens a PR)
-          focus           Bring a project's iTerm window to the front
+          focus           Bring a project's iTerm window to the front (not for headless projects)
           help            Show this help message
           init            Install tmuxinator templates and create config directory
           kill            Kill a worktree project and remove its worktree (auto-detects from cwd)
-          launch          Launch tmuxinator projects in iTerm windows
+          launch          Launch tmuxinator projects in iTerm windows, or headless in plain tmux
           layout          Save/restore tmux pane layouts (auto-saved before resize)
           list            List currently active (launched) projects (--all for all available)
           lock            Acquire, release, inspect, or clear a shared repo-wide lock
@@ -285,6 +288,7 @@ module Workspace
 
     def cmd_launch(args)
       reattach = false
+      headless = nil
       prompt = nil
       prompt_timeout = nil
       parser = OptionParser.new do |opts|
@@ -298,6 +302,11 @@ module Workspace
         opts.on("--reattach", "Reattach to existing tmux sessions, preserving session state.") do
           reattach = true
         end
+        opts.on("--[no-]headless", "Start each session in the background with plain tmux: no iTerm2,",
+          "AppleScript or window-tool. Default: the launch.headless config key if set,",
+          "else headless when not on macOS, when osascript is missing, or when CI is set") do |v|
+          headless = v
+        end
         opts.on("--prompt PROMPT", "Send an initial prompt to the coding agent in each project, once it is",
           "ready (up to #{AgentReadiness::DEFAULT_TIMEOUT}s); exits 1 if it can't be sent") do |p|
           prompt = p
@@ -306,6 +315,9 @@ module Workspace
           "(e.g. \"90s\", or a plain number of seconds); default #{AgentReadiness::DEFAULT_TIMEOUT}s") do |v|
           prompt_timeout = parse_duration_option("--prompt-timeout", v, positive: true)
         end
+        opts.separator ""
+        opts.separator "Headless: a session already running is reused as it is; attach with"
+        opts.separator "'tmux attach -t <session>'. --reattach has no effect headless."
         opts.separator ""
         opts.separator "Note: --reattach uses tmux -CC attach which may trigger an iTerm dialog."
         opts.separator "To suppress it, set iTerm > Settings > General > tmux >"
@@ -328,6 +340,7 @@ module Workspace
 
       call_options = {reattach: reattach, prompts: prompts}
       call_options[:prompt_timeout] = prompt_timeout if prompt_timeout
+      call_options[:headless] = true if @launch_mode.resolve(headless).headless?
       result = @launch_command.call(projects, **call_options)
 
       projects.each do |p|
@@ -342,6 +355,7 @@ module Workspace
       prompt_timeout = nil
       base = nil
       yes = false
+      headless = nil
       json = false
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: workspace start [options] <jira-key|jira-url|pr-url|branch>"
@@ -370,6 +384,10 @@ module Workspace
         opts.on("--yes", "Accept every default instead of prompting (e.g. the default base branch)") do
           yes = true
         end
+        opts.on("--[no-]headless", "Start the session in the background with plain tmux: no iTerm2,",
+          "AppleScript or window-tool (see 'workspace launch --help' for the default)") do |v|
+          headless = v
+        end
         opts.on("--json", "Emit the documented JSON schema instead of plain text (see docs/README.start.md);",
           "never prompts (see --base/--yes). Only the JSON goes to stdout; progress/warnings",
           "go to stderr or the warnings field (docs/README.start.md)") do
@@ -387,8 +405,9 @@ module Workspace
         return emit_json_usage_error(Workspace::Commands::Start::JSON_SCHEMA_VERSION, parser.help.lines.first.strip)
       end
 
-      result = @start_command.call(args.first, prompt: prompt, prompt_timeout: prompt_timeout,
-        base: base, yes: yes, json: json)
+      start_options = {prompt: prompt, prompt_timeout: prompt_timeout, base: base, yes: yes, json: json}
+      start_options[:headless] = true if @launch_mode.resolve(headless).headless?
+      result = @start_command.call(args.first, **start_options)
       @exit_handler.exit(result[:exit_code]) if result && !result[:exit_code].zero?
       # post_start hook — project name not easily available here,
       # so hooks for start should use post_launch (which fires from Launch)
@@ -1943,14 +1962,21 @@ module Workspace
     end
 
     def cmd_doctor(args)
+      headless = nil
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace doctor"
+        opts.banner = "Usage: workspace doctor [options]"
         opts.separator ""
         opts.separator "Check that all required dependencies are installed and configured."
+        opts.separator ""
+        opts.separator "Options:"
+        opts.on("--[no-]headless", "Check for a headless setup (skips iTerm2 and window-tool), or not;",
+          "default follows the same rule as 'workspace launch'") do |v|
+          headless = v
+        end
       end
       parser.parse!(args)
 
-      @doctor.run
+      @doctor.run(headless: headless)
     end
 
     def cmd_relaunch(args)
@@ -1968,13 +1994,16 @@ module Workspace
       end
 
       projects = @state.keys.dup
+      headless, windowed = projects.partition { |p| @state.dig(p, "headless") }
       @output.puts "Will relaunch: #{projects.join(", ")}"
 
       cmd_stop([])
 
       sleep 2
 
-      cmd_launch(projects.dup)
+      # Each project comes back the way it was launched: headless ones stay headless.
+      cmd_launch(windowed.dup) if windowed.any?
+      cmd_launch(["--headless", *headless]) if headless.any?
     end
 
     def cmd_add(args)
@@ -2070,10 +2099,11 @@ module Workspace
         opts.separator "  workspace config set --project myapp dev.up \"bin/dev\""
         opts.separator "  workspace config set statusline.command \"~/bin/my-statusline\""
         opts.separator "  workspace config set context.source scrape"
-        opts.separator "  workspace config set context.pattern '(\\d+)% ctx'"
+        opts.separator "  workspace config set context.pattern '(\d+)% ctx'"
+        opts.separator "  workspace config set launch.headless true"
         opts.separator ""
-        opts.separator "statusline.command, context.source, and context.pattern are global"
-        opts.separator "(one status line and one context source per machine), not per project."
+        opts.separator "statusline.command, context.source, context.pattern, and launch.headless are"
+        opts.separator "global (one per machine), not per project."
       end
       begin
         parser.parse!(args)
@@ -2146,6 +2176,8 @@ module Workspace
         opts.separator "                                 'workspace config set'."
         opts.separator "  context.pattern:               Regex (one capture group) used when"
         opts.separator "                                 context.source is 'scrape'."
+        opts.separator "  launch.headless:               'true' or 'false': whether launch/start run"
+        opts.separator "                                 headless by default on this machine."
         opts.separator ""
         opts.separator "Project settings (in projects/<name>.yml):"
         opts.separator "  hooks:                         Project-specific hooks (post_launch, etc.)"
@@ -2320,7 +2352,11 @@ module Workspace
       else
         @state.each do |project, info|
           wid = info["iterm_window_id"]
-          wid_str = wid ? "  window_id=#{wid}" : ""
+          wid_str = if info["headless"]
+            "  headless"
+          else
+            wid ? "  window_id=#{wid}" : ""
+          end
           @output.puts "  #{project}#{wid_str}  [alive]"
         end
       end

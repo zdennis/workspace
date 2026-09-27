@@ -187,4 +187,28 @@ RSpec.describe Workspace::Commands::Cleanup do
       end
     end
   end
+
+  describe "headless projects" do
+    before do
+      allow(tmux).to receive(:session_name_for) { |project| project }
+    end
+
+    it "keeps a headless project whose tmux session is alive, without asking window-tool" do
+      state["proj"] = {"headless" => true}
+      state.save
+      allow(tmux).to receive(:sessions).and_return(["proj"])
+
+      expect(command.call(force: true)).to eq([])
+      expect(output.string).to include("No zombie sessions detected")
+    end
+
+    it "removes a headless project whose tmux session is gone" do
+      state["proj"] = {"headless" => true}
+      state.save
+      allow(tmux).to receive(:sessions).and_return([])
+
+      expect(command.call(force: true)).to eq(["proj"])
+      expect(output.string).to include("iTerm window: none (headless)")
+    end
+  end
 end

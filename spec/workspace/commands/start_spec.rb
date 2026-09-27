@@ -475,6 +475,39 @@ RSpec.describe Workspace::Commands::Start do
         expect(launch_command).to have_received(:call).with(["myproject.worktree-PROJ-123"], prompts: {}, quiet: true)
       end
 
+      it "reports headless: false in the JSON by default" do
+        allow(launch_command).to receive(:call).and_return({exit_code: 0, prompt_failures: {}})
+
+        command.call("PROJ-123", json: true)
+
+        payload = JSON.parse(output.string)
+        expect(payload["headless"]).to be false
+        expect(payload).not_to have_key("session_reused")
+      end
+
+      it "launches headless and reports whether the session was already running" do
+        allow(launch_command).to receive(:call)
+          .and_return({exit_code: 0, prompt_failures: {}, headless: true, reused: ["myproject.worktree-PROJ-123"], start_failures: {}})
+
+        command.call("PROJ-123", json: true, headless: true)
+
+        expect(launch_command).to have_received(:call).with(["myproject.worktree-PROJ-123"], prompts: {}, headless: true, quiet: true)
+        payload = JSON.parse(output.string)
+        expect(payload).to include("headless" => true, "session_reused" => true)
+      end
+
+      it "reports a session that could not be started as the JSON error" do
+        allow(launch_command).to receive(:call).and_return({exit_code: 1, prompt_failures: {}, headless: true,
+          reused: [], start_failures: {"myproject.worktree-PROJ-123" => "tmuxinator exited 1"}})
+
+        result = command.call("PROJ-123", json: true, headless: true)
+
+        expect(result).to eq({exit_code: 1})
+        payload = JSON.parse(output.string)
+        expect(payload["error"]).to eq("Could not start the workspace session: tmuxinator exited 1")
+        expect(payload).not_to have_key("prompt_failures")
+      end
+
       it "emits a JSON error and exit_code 1 on failure, instead of raising" do
         allow(git).to receive(:root).and_return(nil)
 

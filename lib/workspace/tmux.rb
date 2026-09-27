@@ -1,5 +1,6 @@
 require "open3"
 require "securerandom"
+require "tmpdir"
 
 module Workspace
   # Manages tmux session operations for the workspace CLI.
@@ -505,6 +506,33 @@ module Workspace
       end
       tmuxinator_name = File.basename(@config.config_path_for(project), ".yml")
       "tmuxinator start #{tmuxinator_name} --attach"
+    end
+
+    # Starts a project's tmux session in the background with tmuxinator,
+    # without attaching any terminal to it. The project's config asks tmux for
+    # iTerm2's control mode (`tmux_options: -CC`), which needs a terminal, so
+    # tmuxinator is run on a copy of the config with the -C/-CC options left
+    # out; every other option, window and pane is kept.
+    #
+    # @param config_name [String] tmuxinator config name (without .yml)
+    # @return [String, nil] nil once tmuxinator succeeded, or why it didn't
+    def start_headless(config_name)
+      source = @config.config_path_for(config_name)
+      content = File.read(source).gsub(/^tmux_options:(.*)$/) do
+        kept = Regexp.last_match(1).split.reject { |option| option.match?(/\A-C+\z/) }
+        kept.empty? ? "" : "tmux_options: #{kept.join(" ")}"
+      end
+      Dir.mktmpdir("workspace-headless") do |dir|
+        path = File.join(dir, File.basename(source))
+        File.write(path, content)
+        @logger.debug { "tmux: tmuxinator start -p #{path} --no-attach" }
+        _, stderr, status = Open3.capture3("tmuxinator", "start", "-p", path, "--no-attach")
+        return nil if status.success?
+        detail = stderr.strip.lines.last&.strip
+        "tmuxinator exited #{status.exitstatus}#{": #{detail}" if detail && !detail.empty?}"
+      end
+    rescue SystemCallError => e
+      "could not run tmuxinator (#{e.message})"
     end
 
     # @param config_name [String] tmuxinator config file name (without .yml)
