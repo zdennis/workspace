@@ -770,6 +770,14 @@ RSpec.describe Workspace::CLI do
       expect(config_command.calls).to eq([{action: :unset, key: "dev.ready", project: nil, cwd: "/tmp/some-project"}])
     end
 
+    it "exits 1 with a clean usage error instead of a backtrace when the value looks like a flag" do
+      cli, _, error_output = build_test_cli
+      expect { cli.run(["config", "set", "locks.idle_grace", "-5m"]) }.to raise_error(FakeSystemExit) { |e|
+        expect(e.status).to eq(1)
+      }
+      expect(error_output.string).to include("durations must be positive")
+    end
+
     it "exits 1 with usage when set is missing a key or value" do
       cli, _, error_output = build_test_cli
       expect { cli.run(["config", "set", "dev.up"]) }.to raise_error(FakeSystemExit) { |e|
