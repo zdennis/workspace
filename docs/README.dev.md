@@ -31,7 +31,7 @@ workspace config set dev.ready_timeout 2m         # wait for the dev.ready check
 | `--wait` | Queue FIFO behind another worktree's dev env instead of refusing |
 | `--takeover` | Stop another worktree's dev env, then start this one |
 | `--no-ready` | Don't wait for the `dev.ready` check |
-| `--max-wait DURATION` | With `--wait`, give up after `DURATION` seconds (exit 75) |
+| `--max-wait DURATION` | Give up after `DURATION` seconds (exit 75); implies `--wait` |
 
 ## Options (down)
 

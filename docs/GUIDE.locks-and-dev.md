@@ -207,8 +207,9 @@ workspace dev up --takeover          # stop the other worktree's env, then start
 
 `--wait` queues FIFO behind whoever's running; `--takeover` stops the
 current holder's dev environment first and hands the lock straight to you,
-ahead of anyone already waiting. Add `--max-wait DURATION` with `--wait` to
-give up after a while instead of waiting forever (exit 75).
+ahead of anyone already waiting. Add `--max-wait DURATION` to give up after
+a while instead of waiting forever (exit 75); it implies `--wait`, so you
+don't need to pass both.
 
 ## 6. Locks directly
 
@@ -224,7 +225,7 @@ workspace lock release edit
 
 Acquiring a lock someone else holds fails immediately unless you pass
 `--wait` (queue and poll). Add `--max-wait DURATION` to give up after a
-while instead of waiting forever (exit 75). An agent can hold or wait for
+while instead of waiting forever (exit 75); it implies `--wait`. An agent can hold or wait for
 only one lock at a time — trying to acquire a second while already holding
 or waiting for one exits 5 and names the other lock.
 
