@@ -45,6 +45,8 @@ module Workspace
       # @param json [Boolean] emit the documented JSON schema instead of a message
       # @return [Hash] {exit_code:}
       def call(question:, default:, context: nil, working_dir: Dir.pwd, json: false)
+        raise Workspace::Error, "The question can't be blank." if question.strip.empty?
+        raise Workspace::Error, "The default can't be blank." if default.strip.empty?
         name = workspace_for(working_dir)
         record = store_for(name).add(question: question, default: default, context: context,
           pane: @env["TMUX_PANE"], worktree: working_dir)

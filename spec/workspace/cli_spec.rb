@@ -878,6 +878,26 @@ RSpec.describe Workspace::CLI do
     end
   end
 
+  describe "#run with ask" do
+    it "treats a first word of list as the subcommand when --default is absent" do
+      ask_command = CLITestHelpers::FakeAskCommand.new
+      cli, _, _ = build_test_cli(ask_command: ask_command)
+
+      cli.run(["ask", "list", "--json"])
+
+      expect(ask_command.calls).to contain_exactly(a_hash_including(action: :list, json: true))
+    end
+
+    it "records a question named after a subcommand when --default= is given inline" do
+      ask_command = CLITestHelpers::FakeAskCommand.new
+      cli, _, _ = build_test_cli(ask_command: ask_command)
+
+      cli.run(["ask", "resolve", "--default=x"])
+
+      expect(ask_command.calls).to contain_exactly(a_hash_including(action: :call, question: "resolve", default: "x"))
+    end
+  end
+
   describe "#run with config set/get/unset" do
     it "dispatches set to config_command with key, value, and cwd" do
       config_command = CLITestHelpers::FakeConfigCommand.new

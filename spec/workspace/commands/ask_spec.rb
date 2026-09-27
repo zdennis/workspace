@@ -51,6 +51,14 @@ RSpec.describe Workspace::Commands::Ask do
       expect(JSON.parse(output.string)).to include("schema_version" => 1, "error" => a_string_matching(/could not detect/i))
     end
 
+    it "emits a JSON error for a blank default and records nothing" do
+      result = command.call(question: "q", default: " ", working_dir: "/app", json: true)
+
+      expect(result).to eq(exit_code: 1)
+      expect(JSON.parse(output.string)).to include("error" => "The default can't be blank.")
+      expect(File.exist?(File.join(tmpdir, "asks.json"))).to be(false)
+    end
+
     context "when the project has alerts.notify configured" do
       let(:alert_config) { instance_double(Workspace::AlertConfig) }
 

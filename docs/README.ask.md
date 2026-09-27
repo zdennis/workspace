@@ -22,6 +22,10 @@ workspace ask answer <id> "<answer>" [--json]
 
 **Never blocks on a person** — `ask` never reads stdin. It writes the question to disk and returns; the calling agent keeps going with the default it already stated. When `alerts.notify` is configured, `ask` waits for the notify command before returning, so the command actually runs; one still going after 10 seconds is stopped.
 
+**Subcommand words** — `list`, `answer`, `resolve` and `help` as the first word are subcommands only when `--default` is absent. Recording always takes `--default`, so `workspace ask list --default "x"` records the question "list".
+
+**Blank input** — a question or default that is empty or only whitespace is rejected (exit 1; with `--json`, an `error` payload).
+
 **Workspace detection** — same as other commands: the marker file, then the active project for the current directory. `ask`, `ask list`, and `ask answer` all act on the workspace detected from the current directory.
 
 **Storage** — questions are appended to `~/.local/state/workspace/<workspace>/asks.json`, guarded by `flock` so concurrent invocations (multiple panes or agents in the same workspace) never clobber each other's writes. The file survives an agent-daemon restart; it isn't daemon state. If the file can't be parsed, `ask` and `ask answer` fail without recording anything and leave the file unchanged, while `ask list` and `sessions` warn on stderr and show no questions.

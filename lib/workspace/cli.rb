@@ -848,6 +848,10 @@ module Workspace
     end
 
     def cmd_ask(args)
+      # Recording always takes --default, so with it a first word like
+      # "list" or "help" is the question text, not a subcommand.
+      return cmd_ask_record(args) if args.any? { |a| a == "--default" || a.start_with?("--default=") }
+
       case args.first
       when "list" then cmd_ask_list(args.drop(1))
       when "answer", "resolve" then cmd_ask_answer(args.drop(1))
@@ -860,7 +864,7 @@ module Workspace
       <<~HELP
         Usage: workspace ask "<question>" --default "<default taken>" [options]
                workspace ask list [--json]
-               workspace ask answer <id> "<answer>"
+               workspace ask answer <id> "<answer>" [--json]
 
         Records a question an unattended agent hit, with the default it took,
         so the agent can keep going instead of blocking on a person. Never
@@ -870,6 +874,9 @@ module Workspace
         Subcommands:
           list                    Show open questions for this workspace
           answer <id> <answer>    Resolve an open question (alias: resolve)
+
+        A first word of list, answer, resolve or help is a subcommand only
+        without --default; `workspace ask list --default x` records "list".
 
         Options (recording a question):
           --default TEXT    The default the agent took (required)
@@ -932,7 +939,7 @@ module Workspace
     def cmd_ask_answer(args)
       json = false
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace ask answer <id> \"<answer>\""
+        opts.banner = "Usage: workspace ask answer <id> \"<answer>\" [--json]"
         opts.on("--json", "Emit the documented JSON schema instead of a message") { json = true }
       end
       parser.parse!(args)
