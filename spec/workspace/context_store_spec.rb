@@ -28,6 +28,11 @@ RSpec.describe Workspace::ContextStore do
     expect(store.reading_for_pid("4321")["pct"]).to eq(7)
   end
 
+  it "records the pid's start time so a reused pid can be told apart" do
+    store.record(pct: 7, pid: 4321, started: "Sun Sep 27 10:00:00 2026")
+    expect(store.reading_for_pid(4321)["started"]).to eq("Sun Sep 27 10:00:00 2026")
+  end
+
   it "does nothing when both pane_id and pid are nil" do
     store.record(pct: 7)
     expect(File.exist?(path)).to be(false)

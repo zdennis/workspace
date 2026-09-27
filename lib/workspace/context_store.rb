@@ -33,11 +33,15 @@ module Workspace
     #   rather than recorded as a guess
     # @param pane_id [String, nil] tmux pane id ("%23"), when TMUX_PANE was set
     # @param pid [String, Integer, nil] CLAUDE_PID, used when pane_id is nil
+    # @param started [String, nil] CLAUDE_PID's `ps` start time (`lstart`);
+    #   without it a pid-keyed reading is never trusted on read, since a
+    #   reused pid could otherwise report another session's percentage
     # @param session_id [String, nil] Claude Code session id
     # @param cwd [String, nil] the agent's working directory
     # @param recorded_at [Time] when the reading was taken
     # @return [void]
-    def record(pct:, pane_id: nil, pid: nil, session_id: nil, cwd: nil, recorded_at: Time.now)
+    def record(pct:, pane_id: nil, pid: nil, started: nil, session_id: nil, cwd: nil,
+      recorded_at: Time.now)
       return if pane_id.nil? && pid.nil?
       return unless pct.is_a?(Numeric) && (0..100).cover?(pct)
 
@@ -45,7 +49,8 @@ module Workspace
         "pct" => pct.round,
         "recorded_at" => recorded_at.utc.iso8601,
         "session_id" => session_id,
-        "cwd" => cwd
+        "cwd" => cwd,
+        "started" => started
       }
 
       with_lock do
@@ -61,7 +66,7 @@ module Workspace
     end
 
     # @param pane_id [String] tmux pane id
-    # @return [Hash, nil] {"pct"=>, "recorded_at"=>, "session_id"=>, "cwd"=>}, or nil
+    # @return [Hash, nil] {"pct"=>, "recorded_at"=>, "session_id"=>, "cwd"=>, "started"=>}, or nil
     def reading_for_pane(pane_id)
       return nil unless pane_id
       read_data.dig("panes", pane_id)

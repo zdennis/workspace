@@ -18,8 +18,12 @@ module Workspace
     # @param project_settings [Workspace::ProjectSettings] reads the global config
     # @param tmux [Workspace::Tmux, nil] required for scrape mode
     # @param logger [Workspace::Logger] debug logger
-    def initialize(context_store:, project_settings:, tmux: nil, logger: Workspace::Logger.new)
+    # @param lock_holder [Workspace::LockHolder] checks a pid-keyed reading's
+    #   pid and start time against the process table
+    def initialize(context_store:, project_settings:, tmux: nil, logger: Workspace::Logger.new,
+      lock_holder: Workspace::LockHolder.new)
       @context_store = context_store
+      @lock_holder = lock_holder
       @project_settings = project_settings
       @tmux = tmux
       @logger = logger
@@ -42,16 +46,27 @@ module Workspace
     private
 
     def read_statusline(pane_id, agent_pid, current_session_id)
-      if pane_id.nil?
-        reading = agent_pid && @context_store.reading_for_pid(agent_pid)
-        return present(reading, current_session_id) if reading
-        return absent(ContextReasons::NO_PANE_ID)
-      end
-
-      reading = @context_store.reading_for_pane(pane_id)
-      reading ||= @context_store.reading_for_pid(agent_pid) if agent_pid
+      reading = pane_id && @context_store.reading_for_pane(pane_id)
       return present(reading, current_session_id) if reading
-      absent(ContextReasons::NO_READING)
+
+      reading = agent_pid && @context_store.reading_for_pid(agent_pid)
+      if reading
+        return absent(ContextReasons::STALE_SESSION) unless same_process?(agent_pid, reading)
+        return present(reading, current_session_id)
+      end
+      absent(pane_id.nil? ? ContextReasons::NO_PANE_ID : ContextReasons::NO_READING)
+    end
+
+    # A reading stored without a start time can't be tied to this process,
+    # and a process table we can't read leaves liveness unknown: either way
+    # the reading isn't trusted.
+    def same_process?(pid, reading)
+      started = reading["started"]
+      return false if started.nil? || started.empty?
+      @lock_holder.alive?(pid: pid, started: started)
+    rescue Workspace::Error => e
+      @logger.debug { "context_reader: could not verify pid #{pid} (#{e.message})" }
+      false
     end
 
     def read_scrape(pane_id, global)
