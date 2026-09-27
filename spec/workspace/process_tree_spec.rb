@@ -16,13 +16,7 @@ RSpec.describe Workspace::ProcessTree do
     PS
   end
 
-  subject(:tree) { described_class.new }
-
-  before do
-    allow(Open3).to receive(:capture3)
-      .with({"LC_ALL" => "C", "TZ" => "UTC"}, "ps", "-axo", "pid=,ppid=,lstart=,comm=,args=")
-      .and_return([ps_output, "", instance_double(Process::Status, success?: true)])
-  end
+  subject(:tree) { described_class.new(command: ["/usr/bin/printf", "%s", ps_output]) }
 
   describe "lstart parsing" do
     it "captures the five-token start time alongside the other columns" do
@@ -32,10 +26,44 @@ RSpec.describe Workspace::ProcessTree do
 
   describe "#snapshot" do
     it "raises when ps fails, rather than reporting every process as exited" do
-      allow(Open3).to receive(:capture3)
-        .and_return(["", "ps: fork failed", instance_double(Process::Status, success?: false)])
+      failing = described_class.new(command: ["/bin/sh", "-c", "echo 'ps: fork failed' >&2; exit 1"])
 
-      expect { tree.snapshot }.to raise_error(Workspace::Error, /ps failed/)
+      expect { failing.snapshot }.to raise_error(Workspace::Error, /ps failed: ps: fork failed/)
+    end
+
+    it "runs ps under a fixed locale and time zone" do
+      env_probe = described_class.new(command: ["/bin/sh", "-c", "echo \"$LC_ALL $TZ\" >&2; exit 1"])
+
+      expect { env_probe.snapshot }.to raise_error(Workspace::Error, /ps failed: C UTC/)
+    end
+
+    it "kills and reaps a ps that outlives the timeout, then raises" do
+      spawned = nil
+      allow(Process).to receive(:spawn).and_wrap_original { |original, *args, **opts| spawned = original.call(*args, **opts) }
+      hung = described_class.new(timeout: 0.2, command: ["/bin/sleep", "30"])
+
+      started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      expect { hung.snapshot }.to raise_error(Workspace::Error, /ps timed out after 0.2s/)
+      elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started
+
+      expect(elapsed).to be < 5
+      expect { Process.kill(0, spawned) }.to raise_error(Errno::ESRCH)
+    ensure
+      # Only a child the implementation failed to reap is still ours to kill.
+      begin
+        if spawned && Process.wait(spawned, Process::WNOHANG).nil?
+          Process.kill(:KILL, spawned)
+          Process.wait(spawned)
+        end
+      rescue Errno::ECHILD
+        nil
+      end
+    end
+
+    it "raises a Workspace::Error when ps cannot be spawned" do
+      missing = described_class.new(command: ["/nonexistent/ps"])
+
+      expect { missing.snapshot }.to raise_error(Workspace::Error, /could not read the process table \(Errno::ENOENT/)
     end
   end
 

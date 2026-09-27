@@ -55,6 +55,18 @@ RSpec.describe Workspace::SessionMonitor do
       expect(pane("%2")["kind"]).to eq("claude")
     end
 
+    it "skips the tick instead of stalling when ps hangs" do
+      monitor.scan
+      hung_tree = Workspace::ProcessTree.new(timeout: 0.1, command: ["/bin/sleep", "30"])
+      allow(process_tree).to receive(:snapshot) { hung_tree.snapshot }
+
+      started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      monitor.scan
+
+      expect(Process.clock_gettime(Process::CLOCK_MONOTONIC) - started).to be < 5
+      expect(pane("%2")["kind"]).to eq("claude")
+    end
+
     it "drops panes that have closed, along with their history" do
       monitor.scan
       allow(tmux).to receive(:pane_details).with("proj").and_return([panes.first])

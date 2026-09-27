@@ -1,5 +1,3 @@
-require "open3"
-
 module Workspace
   # Answers "what is running under this pane?" from a single snapshot of the
   # process table.
@@ -8,9 +6,18 @@ module Workspace
   # a pane running a coding agent can have a deep tree, and forking once per
   # level makes the monitor's poll interval the bottleneck.
   class ProcessTree
+    PS_ENV = {"LC_ALL" => "C", "TZ" => "UTC"}.freeze
+    PS_COMMAND = ["ps", "-axo", "pid=,ppid=,lstart=,comm=,args="].freeze
+    DEFAULT_TIMEOUT = 5
+    private_constant :PS_ENV, :PS_COMMAND
+
     # @param logger [Workspace::Logger] debug logger
-    def initialize(logger: Workspace::Logger.new)
+    # @param timeout [Numeric] seconds to wait for `ps` before killing it
+    # @param command [Array<String>] the `ps` argv; injectable for tests
+    def initialize(logger: Workspace::Logger.new, timeout: DEFAULT_TIMEOUT, command: PS_COMMAND)
       @logger = logger
+      @timeout = timeout
+      @command = command
     end
 
     # Reads the process table once. Hold the result for the length of one scan
@@ -20,10 +27,10 @@ module Workspace
     # from every caller: it is stored and compared as a process identity.
     #
     # @return [ProcessTree::Snapshot]
-    # @raise [Workspace::Error] if `ps` fails; an empty table would read as
-    #   every process having exited
+    # @raise [Workspace::Error] if `ps` fails or outlives the timeout; an
+    #   empty table would read as every process having exited
     def snapshot
-      stdout, stderr, status = Open3.capture3(PS_ENV, "ps", "-axo", "pid=,ppid=,lstart=,comm=,args=")
+      stdout, stderr, status = run_ps
       unless status.success?
         @logger.debug { "process_tree: ps failed: #{stderr.strip}" }
         raise Workspace::Error, "could not read the process table (ps failed: #{stderr.strip})"
@@ -31,10 +38,39 @@ module Workspace
       Snapshot.new(parse(stdout))
     end
 
-    PS_ENV = {"LC_ALL" => "C", "TZ" => "UTC"}.freeze
-    private_constant :PS_ENV
-
     private
+
+    # Spawns `ps` and waits at most @timeout for it, so a wedged process
+    # table read can't stall the session monitor's scan thread for good. On
+    # timeout the child is killed and reaped before raising.
+    def run_ps
+      out_r, out_w = IO.pipe
+      err_r, err_w = IO.pipe
+      pid = Process.spawn(PS_ENV, *@command, in: File::NULL, out: out_w, err: err_w)
+      out_w.close
+      err_w.close
+      readers = [out_r, err_r].map { |io| Thread.new { io.read } }
+      waiter = Process.detach(pid)
+      unless waiter.join(@timeout)
+        kill_and_reap(pid, waiter)
+        readers.each(&:kill)
+        @logger.debug { "process_tree: ps timed out after #{@timeout}s" }
+        raise Workspace::Error, "could not read the process table (ps timed out after #{@timeout}s)"
+      end
+      [readers[0].value, readers[1].value, waiter.value]
+    rescue SystemCallError => e
+      raise Workspace::Error, "could not read the process table (#{e.class}: #{e.message})"
+    ensure
+      [out_r, out_w, err_r, err_w].each { |io| io.close if io && !io.closed? }
+    end
+
+    def kill_and_reap(pid, waiter)
+      Process.kill(:KILL, pid)
+    rescue Errno::ESRCH
+      nil
+    ensure
+      waiter.join
+    end
 
     # Under PS_ENV, `lstart` is always five whitespace-separated tokens
     # ("Thu Sep 26 09:12:03 2026"), so it can be split out even though `comm`
