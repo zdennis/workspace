@@ -5,16 +5,25 @@ require "tmpdir"
 module Workspace
   # Manages tmux session operations for the workspace CLI.
   class Tmux
+    # Seconds a headless tmuxinator start may take before it is stopped.
+    DEFAULT_START_TIMEOUT = 60
+    # Seconds a timed-out tmuxinator gets to exit after SIGTERM before SIGKILL.
+    STOP_GRACE = 2
+
     # @param config [Workspace::Config] configuration for path lookups
     # @param logger [Workspace::Logger] debug logger
     # @param clock [#call] monotonic seconds, injected so specs don't wait
     # @param sleeper [#call] sleeps the given seconds, injected likewise
+    # @param start_timeout [Numeric] seconds {#start_headless} gives tmuxinator
+    #   before stopping it and reporting the start as failed
     def initialize(config:, logger: Workspace::Logger.new,
-      clock: -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) }, sleeper: ->(seconds) { sleep(seconds) })
+      clock: -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) }, sleeper: ->(seconds) { sleep(seconds) },
+      start_timeout: DEFAULT_START_TIMEOUT)
       @config = config
       @logger = logger
       @clock = clock
       @sleeper = sleeper
+      @start_timeout = start_timeout
     end
 
     # @return [Array<String>] list of active tmux session names
@@ -528,24 +537,22 @@ module Workspace
     # without attaching any terminal to it. The project's config asks tmux for
     # iTerm2's control mode (`tmux_options: -CC`), which needs a terminal, so
     # tmuxinator is run on a copy of the config with the -C/-CC options left
-    # out; every other option, window and pane is kept.
+    # out (quoted or not); every other option, window and pane is kept.
+    #
+    # tmuxinator runs in its own process group, so one that is still running
+    # after +start_timeout+ seconds is stopped along with anything it started
+    # there (SIGTERM, then SIGKILL) rather than blocking the launch forever.
     #
     # @param config_name [String] tmuxinator config name (without .yml)
     # @return [String, nil] nil once tmuxinator succeeded, or why it didn't
     def start_headless(config_name)
       source = @config.config_path_for(config_name)
-      content = File.read(source).gsub(/^tmux_options:(.*)$/) do
-        kept = Regexp.last_match(1).split.reject { |option| option.match?(/\A-C+\z/) }
-        kept.empty? ? "" : "tmux_options: #{kept.join(" ")}"
-      end
+      content = File.read(source).gsub(/^tmux_options:(.*)$/) { without_control_mode(Regexp.last_match(1)) }
       Dir.mktmpdir("workspace-headless") do |dir|
         path = File.join(dir, File.basename(source))
         File.write(path, content)
         @logger.debug { "tmux: tmuxinator start -p #{path} --no-attach" }
-        _, stderr, status = Open3.capture3("tmuxinator", "start", "-p", path, "--no-attach")
-        return nil if status.success?
-        detail = stderr.strip.lines.last&.strip
-        "tmuxinator exited #{status.exitstatus}#{": #{detail}" if detail && !detail.empty?}"
+        run_tmuxinator("tmuxinator", "start", "-p", path, "--no-attach")
       end
     rescue SystemCallError => e
       "could not run tmuxinator (#{e.message})"
@@ -560,6 +567,58 @@ module Workspace
         return line.split(/\s+/, 2).last.strip if line.match?(/^name:\s/)
       end
       config_name
+    end
+
+    private
+
+    # Rewrites a `tmux_options:` value without -C/-CC, keeping any quotes
+    # around the value; returns "" when nothing else was left.
+    def without_control_mode(value)
+      quoted = value.strip.match(/\A(["'])(.*)\1\z/)
+      options = quoted ? quoted[2] : value
+      kept = options.split.reject { |option| option.match?(/\A-C+\z/) }
+      return "" if kept.empty?
+      quoted ? "tmux_options: #{quoted[1]}#{kept.join(" ")}#{quoted[1]}" : "tmux_options: #{kept.join(" ")}"
+    end
+
+    # Runs tmuxinator in its own process group, stopping the group if it is
+    # still running after +start_timeout+ seconds.
+    #
+    # @return [String, nil] nil once it exited 0, or why it didn't
+    def run_tmuxinator(*command)
+      reader, writer = IO.pipe
+      pid = Process.spawn(*command, in: File::NULL, out: File::NULL, err: writer, pgroup: true)
+      writer.close
+      stderr = Thread.new { reader.read }
+      waiter = Process.detach(pid)
+      unless waiter.join(@start_timeout)
+        stop_group(pid, waiter)
+        return "tmuxinator timed out after #{@start_timeout}s"
+      end
+      status = waiter.value
+      return nil if status.success?
+      detail = (stderr.join(STOP_GRACE) && stderr.value).to_s.strip.lines.last&.strip
+      "tmuxinator exited #{status.exitstatus}#{": #{detail}" if detail && !detail.empty?}"
+    ensure
+      writer&.close unless writer&.closed?
+      stderr&.kill
+      reader&.close
+    end
+
+    # SIGTERM to tmuxinator's group, then SIGKILL to whatever is left in it.
+    # The group was created for tmuxinator by spawn, so it is never ours.
+    def stop_group(pgid, waiter)
+      signal_group("TERM", pgid)
+      waiter.join(STOP_GRACE)
+      signal_group("KILL", pgid)
+      waiter.join(STOP_GRACE)
+    end
+
+    def signal_group(signal, pgid)
+      return if pgid <= 1 || pgid == Process.getpgrp
+      Process.kill(signal, -pgid)
+    rescue Errno::ESRCH, Errno::EPERM
+      nil
     end
   end
 end

@@ -4,6 +4,8 @@ RSpec.describe Workspace::Tmux do
   let(:tmpdir) { Dir.mktmpdir }
   let(:config) { Workspace::Config.new(workspace_dir: tmpdir) }
 
+  before { allow(config).to receive(:tmuxinator_dir).and_return(File.join(tmpdir, "tmuxinator")) }
+
   after { FileUtils.remove_entry(tmpdir) }
 
   describe "#command_for" do
@@ -743,22 +745,31 @@ RSpec.describe Workspace::Tmux do
   describe "#start_headless" do
     let(:tmux) { described_class.new(config: config) }
     let(:source) { File.join(tmpdir, "workspace.proj.yml") }
-    let(:ok) { instance_double(Process::Status, success?: true, exitstatus: 0) }
 
     before do
       allow(config).to receive(:config_path_for).with("proj").and_return(source)
       File.write(source, "name: proj\nroot: /tmp\ntmux_options: -CC -2\nattach: false\nwindows:\n  - main: echo hi\n")
     end
 
-    it "runs tmuxinator detached on a copy of the config without control mode" do
-      seen = nil
-      allow(Open3).to receive(:capture3) do |*args|
-        seen = {args: args, content: File.read(args[3])}
-        ["", "", ok]
+    # Runs +script+ with sh in place of tmuxinator, keeping the spawn options,
+    # and records tmuxinator's arguments and the config it was given.
+    def fake_tmuxinator(script = "exit 0")
+      seen = {}
+      allow(Process).to receive(:spawn).and_wrap_original do |original, *args, **opts|
+        seen[:args] = args
+        seen[:opts] = opts
+        seen[:content] = File.read(args[3])
+        original.call("sh", "-c", script, **opts)
       end
+      seen
+    end
+
+    it "runs tmuxinator detached, in its own process group, on a copy of the config without control mode" do
+      seen = fake_tmuxinator
 
       expect(tmux.start_headless("proj")).to be_nil
       expect(seen[:args].values_at(0, 1, 2, 4)).to eq(["tmuxinator", "start", "-p", "--no-attach"])
+      expect(seen[:opts]).to include(pgroup: true)
       expect(seen[:content]).to include("tmux_options: -2\n")
       expect(seen[:content]).not_to include("-CC")
       expect(seen[:content]).to include("windows:")
@@ -768,25 +779,53 @@ RSpec.describe Workspace::Tmux do
 
     it "drops the tmux_options line when control mode was its only option" do
       File.write(source, "name: proj\ntmux_options: -CC\nwindows: []\n")
-      content = nil
-      allow(Open3).to receive(:capture3) { |*args| content = File.read(args[3]) and ["", "", ok] }
+      seen = fake_tmuxinator
 
       tmux.start_headless("proj")
 
-      expect(content).not_to include("tmux_options")
+      expect(seen[:content]).not_to include("tmux_options")
+    end
+
+    it "strips control mode from a quoted tmux_options value, keeping the quotes" do
+      File.write(source, "name: proj\ntmux_options: \"-CC -2\"\nwindows: []\n")
+      seen = fake_tmuxinator
+
+      tmux.start_headless("proj")
+
+      expect(seen[:content]).to include("tmux_options: \"-2\"\n")
+    end
+
+    it "drops a quoted tmux_options line holding only control mode" do
+      File.write(source, "name: proj\ntmux_options: '-CC'\nwindows: []\n")
+      seen = fake_tmuxinator
+
+      tmux.start_headless("proj")
+
+      expect(seen[:content]).not_to include("tmux_options")
     end
 
     it "reports why tmuxinator failed" do
-      failed = instance_double(Process::Status, success?: false, exitstatus: 1)
-      allow(Open3).to receive(:capture3).and_return(["", "warning\nsession exists\n", failed])
+      fake_tmuxinator("printf 'warning\\nsession exists\\n' >&2; exit 1")
 
       expect(tmux.start_headless("proj")).to eq("tmuxinator exited 1: session exists")
     end
 
     it "reports a missing tmuxinator instead of raising" do
-      allow(Open3).to receive(:capture3).and_raise(Errno::ENOENT, "tmuxinator")
+      allow(Process).to receive(:spawn).and_raise(Errno::ENOENT, "tmuxinator")
 
       expect(tmux.start_headless("proj")).to match(/could not run tmuxinator/)
+    end
+
+    it "stops a tmuxinator that outlives start_timeout and reports the timeout" do
+      tmux = described_class.new(config: config, start_timeout: 0.2)
+      pid_file = File.join(tmpdir, "tmuxinator.pid")
+      fake_tmuxinator("echo $$ > '#{pid_file}'; exec sleep 30")
+
+      started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      expect(tmux.start_headless("proj")).to eq("tmuxinator timed out after 0.2s")
+      expect(Process.clock_gettime(Process::CLOCK_MONOTONIC) - started).to be < 3
+      pid = File.read(pid_file).to_i
+      expect { Process.kill(0, pid) }.to raise_error(Errno::ESRCH)
     end
   end
 end
