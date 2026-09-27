@@ -256,7 +256,6 @@ Every hand-off in the human-in-the-loop table runs through files and conventions
 
 ### Docs drift
 
-- **[Improve]** `docs/README.dev.md:113` still says the ready and startup timeouts are fixed; they are configurable as `dev.ready_timeout` and `dev.startup_timeout`.
 
 ## Open questions
 

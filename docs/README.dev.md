@@ -110,7 +110,7 @@ workspace config set dev.ready_timeout 2m         # wait for the dev.ready check
 
 ## Known limitations
 
-- The 120s ready timeout and the 30s wrapper startup timeout are fixed and not yet configurable.
+- The dev timeouts are configurable with `workspace config set`: `dev.startup_timeout` (default 30s), `dev.ready_timeout` (default 120s), `dev.stop_timeout` (default 20s), and `dev.kill_grace` (max 60s). See [config guide](README.config.md) for details.
 - Only one dev service is supported per project, guarded by the single `devenv` lock.
 
 ## Examples
