@@ -1548,7 +1548,26 @@ RSpec.describe Workspace::CLI do
 
       cli.run(["lock", "clear", "edit"])
 
-      expect(lock_command.calls).to eq([{action: :clear, name: "edit", all: false}])
+      expect(lock_command.calls).to eq([{action: :clear, name: "edit", all: false, json: false}])
+    end
+
+    it "dispatches to lock_command#clear with --json" do
+      lock_command = CLITestHelpers::FakeLockCommand.new
+      cli, _, _ = build_test_cli(lock_command: lock_command)
+
+      cli.run(["lock", "clear", "edit", "--json"])
+
+      expect(lock_command.calls).to eq([{action: :clear, name: "edit", all: false, json: true}])
+    end
+
+    it "emits the JSON error contract for `lock clear` when --json appears after a bad flag" do
+      cli, output, _ = build_test_cli(lock_command: CLITestHelpers::FakeLockCommand.new)
+
+      expect { cli.run(["lock", "clear", "--bogus", "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+
+      parsed = JSON.parse(output.string)
+      expect(parsed["schema_version"]).to eq(Workspace::Commands::Lock::JSON_SCHEMA_VERSION)
+      expect(parsed["error"]).to be_a(String)
     end
 
     it "dispatches to lock_command#instructions, defaulting to the edit lock" do

@@ -360,8 +360,8 @@ module CLITestHelpers
       @result
     end
 
-    def clear(name, all: false, working_dir: nil)
-      @calls << {action: :clear, name: name, all: all}
+    def clear(name, all: false, working_dir: nil, json: false)
+      @calls << {action: :clear, name: name, all: all, json: json}
       @result
     end
 

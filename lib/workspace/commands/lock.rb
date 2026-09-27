@@ -197,26 +197,50 @@ module Workspace
       # @param all [Boolean] clear every lock in this namespace; one that has
       #   to be kept does not stop the rest from being cleared
       # @param working_dir [String] directory to resolve the lock namespace from
+      # @param json [Boolean] emit the documented `--json` schema (see
+      #   docs/README.lock.md) on stdout instead of the human-readable
+      #   messages, for every outcome (cleared, kept, already being cleared,
+      #   not held); a store error becomes a `{"error":}` JSON object on
+      #   stdout (exit 1) rather than a raised error
       # @yieldparam holder [Hash, nil] the holder record being cleared
       # @return [Hash] {exit_code:} — 0 once everything named was cleared, 1
       #   if any lock was kept because its process group could not be stopped,
       #   was taken by someone else while it was being stopped, or was
       #   already being cleared by another `clear`
-      def clear(name, all: false, working_dir: Dir.pwd, &on_holder)
+      def clear(name, all: false, working_dir: Dir.pwd, json: false, &on_holder)
         validate_name!(name) unless name.nil?
         namespace = @lock_namespace.resolve(cwd: working_dir)
         store = LockStore.new(dir: namespace[:dir], liveness: @lock_holder, terminator: @terminator)
         names = (all && name.nil?) ? store.names : [name]
 
         if names.empty?
-          @output.puts "No locks to clear."
+          if json
+            @output.puts JSON.generate({"schema_version" => JSON_SCHEMA_VERSION, "results" => []})
+          else
+            @output.puts "No locks to clear."
+          end
           return {exit_code: 0}
         end
 
         label = cleared_by_label
         clearer = @holder_stopper.clearer(@pid_provider.call)
-        kept = names.reject { |lock_name| clear_one(store, lock_name, label, clearer, namespace[:display], &on_holder) }
+        results = names.map { |lock_name| clear_one(store, lock_name, label, clearer, namespace[:display], json: json, &on_holder) }
+        kept = results.reject { |r| r[:cleared] }
+
+        if json
+          payload = if all
+            {"schema_version" => JSON_SCHEMA_VERSION, "results" => results.map { |r| r[:json] }}
+          else
+            {"schema_version" => JSON_SCHEMA_VERSION}.merge(results.first[:json])
+          end
+          @output.puts JSON.generate(payload)
+        end
+
         {exit_code: kept.empty? ? 0 : 1}
+      rescue Workspace::Error => e
+        raise unless json
+        @output.puts JSON.generate({"schema_version" => JSON_SCHEMA_VERSION, "error" => e.message})
+        {exit_code: 1}
       end
 
       private
@@ -351,6 +375,15 @@ module Workspace
         task ? "#{pane} \"#{task}\" in #{worktree}" : "#{pane} in #{worktree}"
       end
 
+      # @return [String] " CLEARING by pid N" when +holder+ carries a live
+      #   `clearing` marker (another process is stopping it), else ""
+      def clearing_tag(holder)
+        marker = holder["clearing"]
+        return "" unless marker.is_a?(Hash) && marker["pid"]
+        return "" unless @lock_holder.alive?(pid: marker["pid"], started: marker["started"])
+        " CLEARING by pid #{marker["pid"]}"
+      end
+
       def print_status_entry(name, entry)
         holder = entry["holder"]
         queue = entry["queue"] || []
@@ -358,7 +391,8 @@ module Workspace
         if holder
           stale = holder["stale"] ? " STALE" : ""
           idle = holder["idle_since"] ? " IDLE since #{format_epoch(holder["idle_since"])}" : ""
-          @output.puts "#{name}: held by #{describe_holder(holder)} (pid #{holder["pid"]}, since #{holder["acquired_at"]})#{idle}#{stale}"
+          clearing = clearing_tag(holder)
+          @output.puts "#{name}: held by #{describe_holder(holder)} (pid #{holder["pid"]}, since #{holder["acquired_at"]})#{idle}#{stale}#{clearing}"
         else
           @output.puts "#{name}: free"
         end
@@ -369,38 +403,46 @@ module Workspace
         end
       end
 
-      # @return [Boolean] false when the lock was kept for a process group
-      #   that could not be stopped, or someone other than a takeover the
+      # @return [Hash] {cleared:, json:} — cleared is false when the lock was
+      #   kept for a process group that could not be stopped, was left to
+      #   another in-progress clear, or someone other than a takeover the
       #   clear kept queued holds it by the time the group is stopped
-      def clear_one(store, name, label, clearer, project, &on_holder)
+      def clear_one(store, name, label, clearer, project, json: false, &on_holder)
         removed = store.clear(name, cleared_by: label, keep_process_holder: true, clearer: clearer, &on_holder)
-        return report_clear_in_progress(name, removed) if removed&.dig(:in_progress)
+        return report_clear_in_progress(name, removed, json: json) if removed&.dig(:in_progress)
         if removed&.dig(:pending)
           holder = removed[:holder]
-          return false unless stop_process_holder(store, name, holder, label, project, clearer)
+          unless stop_process_holder(store, name, holder, label, project, clearer, json: json)
+            return {cleared: false, json: {"name" => name, "result" => "kept", "reason" => "process_group_not_stopped", "holder" => json_holder(holder)}}
+          end
           other = store.finish_clear(name, holder, cleared_by: label, clearer: clearer)
           if other && !kept_takeover?(removed, other)
-            @error_output.puts "Stopped process group #{holder["pgid"] || holder["pid"]} (pid #{holder["pid"]}), but the " \
-              "#{name} lock is now held by #{describe_holder(other)} (pid #{other["pid"]}), so it was not cleared."
-            return false
+            unless json
+              @error_output.puts "Stopped process group #{holder["pgid"] || holder["pid"]} (pid #{holder["pid"]}), but the " \
+                "#{name} lock is now held by #{describe_holder(other)} (pid #{other["pid"]}), so it was not cleared."
+            end
+            return {cleared: false, json: {"name" => name, "result" => "kept", "reason" => "taken_by_other", "holder" => json_holder(other)}}
           end
         end
-        describe_cleared(name, removed)
-        true
+        describe_cleared(name, removed) unless json
+        {cleared: true, json: cleared_json(name, removed)}
       end
 
-      # @return [false] the lock was not cleared by this invocation
-      def report_clear_in_progress(name, removed)
+      # @return [Hash] {cleared: false, json:} — the lock was not cleared by
+      #   this invocation because another live `clear` is already stopping it
+      def report_clear_in_progress(name, removed, json: false)
         holder = removed[:holder]
-        @error_output.puts "#{name} lock is already being cleared by pid #{removed[:clearing]["pid"]}, which is stopping process " \
-          "group #{holder["pgid"] || holder["pid"]} (pid #{holder["pid"]}); left it to that clear. " \
-          "Check the result with: workspace lock status #{name}"
-        false
+        unless json
+          @error_output.puts "#{name} lock is already being cleared by pid #{removed[:clearing]["pid"]}, which is stopping process " \
+            "group #{holder["pgid"] || holder["pid"]} (pid #{holder["pid"]}); left it to that clear. " \
+            "Check the result with: workspace lock status #{name}"
+        end
+        {cleared: false, json: {"name" => name, "result" => "in_progress", "clearer_pid" => removed[:clearing]["pid"], "holder" => json_holder(holder)}}
       end
 
       # @return [Boolean] true once nothing the holder started is known to be
       #   running, so its lock may go; false when its lock was kept
-      def stop_process_holder(store, name, holder, label, project, clearer)
+      def stop_process_holder(store, name, holder, label, project, clearer, json: false)
         pid = holder["pid"]
         pgid = holder["pgid"] || pid
         settings = dev_settings_for(project)
@@ -408,8 +450,8 @@ module Workspace
         case @holder_stopper.stop(store, name, holder, stop_timeout: timeout, retry_command: "workspace lock clear #{name}",
           cleared_by: label, kill_grace: settings[:kill_grace], clearer: clearer)
         when :kept then return false
-        when :killed then @output.puts "Killed process group #{pgid} (pid #{pid}) after #{timeout}s."
-        when :terminated then @output.puts "Stopped process group #{pgid} (pid #{pid})."
+        when :killed then @output.puts "Killed process group #{pgid} (pid #{pid}) after #{timeout}s." unless json
+        when :terminated then @output.puts "Stopped process group #{pgid} (pid #{pid})." unless json
         end
         true
       end
@@ -452,6 +494,24 @@ module Workspace
         else
           @output.puts "Cleared #{name}: was free, #{queue_size} waiter(s) removed."
         end
+      end
+
+      # @return [Hash] the `--json` result fields for a lock this invocation
+      #   actually cleared (whether or not it was held)
+      def cleared_json(name, removed)
+        return {"name" => name, "result" => "not_held"} if removed.nil?
+
+        result = {"name" => name, "result" => "cleared", "queue_size" => removed[:queue]&.size || 0}
+        result["holder"] = json_holder(removed[:holder]) if removed[:holder]
+        takeover = removed[:takeovers]&.first
+        result["kept_takeover"] = json_holder(takeover) if takeover
+        result
+      end
+
+      # @return [Hash, nil] a trimmed holder/waiter record safe for `--json`
+      def json_holder(holder)
+        return nil unless holder
+        holder.slice("kind", "pid", "pgid", "pane", "worktree", "task", "acquired_at", "waiter_pid")
       end
     end
   end

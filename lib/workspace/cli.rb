@@ -927,17 +927,22 @@ module Workspace
 
     def cmd_lock_clear(args)
       all = false
+      json = false
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace lock clear [<name>|--all]"
+        opts.banner = "Usage: workspace lock clear [<name>|--all] [--json]"
         opts.on("--all", "Clear every lock in this namespace") { all = true }
+        opts.on("--json", "Emit the documented JSON schema instead of text (see docs/README.lock.md)") { json = true }
       end
       parser.parse!(args)
 
       name = args.shift
       raise UsageError, parser.help if (!all && name.nil?) || (all && name) || args.any?
 
-      result = @lock_command.clear(name, all: all, working_dir: @working_dir)
+      result = @lock_command.clear(name, all: all, working_dir: @working_dir, json: json)
       @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
+    rescue OptionParser::ParseError, UsageError => e
+      raise unless json || args.include?("--json")
+      emit_json_usage_error(Commands::Lock::JSON_SCHEMA_VERSION, e.message)
     end
 
     def cmd_dev(args)
