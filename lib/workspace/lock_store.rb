@@ -185,16 +185,19 @@ module Workspace
 
     # Runs the reap pass every mutating op starts with, on its own, so a
     # caller with no lock op to run (the session-monitor daemon) can keep
-    # `locks.json` current. Reaps are audited exactly as an op-time reap.
+    # `locks.json` current. Reaps are audited as an op-time reap is, plus
+    # +source+ when given.
     # Unlike an op, it never waits for the store flock: while another process
     # holds it, this returns 0 at once and the caller retries on its next
     # pass. A pass that changes nothing leaves `locks.json` untouched, so a
     # long-running caller on older code never rewrites fields newer code added.
     #
+    # @param source [String, nil] recorded as the `source` field of each reap
+    #   audit event, so these reaps can be told apart from an op-time reap
     # @return [Integer] how many holders and waiters were reaped
-    def reap
+    def reap(source: nil)
       reaped = with_lock(nonblocking: true, write_unchanged: false) do |data|
-        reap!(data)
+        reap!(data, source: source)
         @pending_events.count { |e| e[:event] == "reap" }
       end
       reaped || 0
@@ -801,14 +804,14 @@ module Workspace
       }
     end
 
-    def reap!(data)
+    def reap!(data, source: nil)
       data.each do |name, entry|
         if entry["holder"] && !holder_alive?(entry["holder"])
-          audit(:reap, name, holder: holder_summary(entry["holder"]))
+          audit(:reap, name, holder: holder_summary(entry["holder"]), source: source)
           entry["holder"] = nil
         end
         dead, alive = entry["queue"].partition { |w| !waiter_alive?(w) }
-        dead.each { |w| audit(:reap, name, waiter: waiter_summary(w)) }
+        dead.each { |w| audit(:reap, name, waiter: waiter_summary(w), source: source) }
         entry["queue"] = alive
         if entry["displaced"]
           entry["displaced"].select! { |r| alive_or_unknown?(r["pid"], r["started"]) }

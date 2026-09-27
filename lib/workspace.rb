@@ -177,7 +177,7 @@ module Workspace
       # Its own LockHolder: the reaper runs on the monitor thread, and a
       # LockHolder's snapshot scope is per-instance, not per-thread.
       lock_reaper: LockReaper.new(lock_namespace: lock_namespace, lock_holder: LockHolder.new,
-        terminator: process_group_terminator, logger: logger),
+        terminator: process_group_terminator, logger: logger, error_output: error_output),
       logger: logger,
       output: output,
       error_output: error_output

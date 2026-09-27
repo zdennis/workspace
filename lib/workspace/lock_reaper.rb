@@ -12,6 +12,11 @@ module Workspace
     # per namespace, so it runs far less often than the pane scan.
     DEFAULT_INTERVAL = 30
 
+    # Consecutive failed reaps of the same directory before a warning goes to
+    # +error_output+. Earlier failures are debug-only, so a one-off error (a
+    # directory removed mid-scan) stays quiet.
+    FAILURE_WARNING_THRESHOLD = 3
+
     # @param lock_namespace [Workspace::LockNamespace] resolves a directory's lock store
     # @param lock_holder [Workspace::LockHolder] checks whether a recorded pid is still alive
     # @param terminator [Workspace::ProcessGroupTerminator, nil] checks whether a
@@ -19,15 +24,18 @@ module Workspace
     # @param interval [Numeric] seconds between reaps
     # @param clock [#call] returns monotonic seconds
     # @param logger [Workspace::Logger] debug logger
+    # @param error_output [IO] where a persistently failing directory is reported
     def initialize(lock_namespace:, lock_holder:, terminator: nil, interval: DEFAULT_INTERVAL,
-      clock: -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) }, logger: Workspace::Logger.new)
+      clock: -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) }, logger: Workspace::Logger.new, error_output: $stderr)
       @lock_namespace = lock_namespace
       @lock_holder = lock_holder
       @terminator = terminator
       @interval = interval
       @clock = clock
       @logger = logger
+      @error_output = error_output
       @last_reap = nil
+      @failures = Hash.new(0)
     end
 
     # Reaps on the first call and then once every +interval+ seconds; any
@@ -44,7 +52,10 @@ module Workspace
 
     # Reaps every namespace the given directories resolve to, once each. A
     # namespace that cannot be read is skipped, never raised: a corrupt
-    # `locks.json` is the user's to clear, and must not stop the daemon.
+    # `locks.json` is the user's to clear, and must not stop the daemon. A
+    # directory that fails {FAILURE_WARNING_THRESHOLD} times in a row is
+    # reported once to +error_output+, and again only after a success resets
+    # its count. Reaps are audited with `"source" => "daemon"`.
     #
     # @param cwds [Array<String, nil>] working directories of the workspace's panes
     # @return [Integer] how many holders and waiters were reaped
@@ -60,9 +71,12 @@ module Workspace
 
     def namespace_dir(cwd)
       return unless File.directory?(cwd)
-      @lock_namespace.resolve(cwd: cwd)[:dir]
+      dir = @lock_namespace.resolve(cwd: cwd)[:dir]
+      succeeded(cwd)
+      dir
     rescue => e
       @logger.debug { "lock reaper: no namespace for #{cwd} (#{e.class}: #{e.message})" }
+      failed(cwd, "could not resolve the lock namespace for #{cwd}", e)
       nil
     end
 
@@ -70,12 +84,25 @@ module Workspace
     # rather than having its directory created just to reap nothing.
     def reap_dir(dir)
       return 0 unless File.exist?(File.join(dir, "locks.json"))
-      reaped = LockStore.new(dir: dir, liveness: @lock_holder, terminator: @terminator, logger: @logger).reap
+      reaped = LockStore.new(dir: dir, liveness: @lock_holder, terminator: @terminator, logger: @logger).reap(source: "daemon")
       @logger.debug { "lock reaper: reaped #{reaped} from #{dir}" } if reaped > 0
+      succeeded(dir)
       reaped
     rescue => e
       @logger.debug { "lock reaper: skipped #{dir} (#{e.class}: #{e.message})" }
+      failed(dir, "could not reap stale locks in #{dir}", e)
       0
+    end
+
+    def succeeded(key)
+      @failures.delete(key)
+    end
+
+    def failed(key, what, error)
+      @failures[key] += 1
+      return unless @failures[key] == FAILURE_WARNING_THRESHOLD
+      @error_output.puts "Warning: lock reaper #{what} #{FAILURE_WARNING_THRESHOLD} times in a row " \
+        "(#{error.class}: #{error.message}); until fixed, stale holders there are only reaped by the next lock op"
     end
   end
 end

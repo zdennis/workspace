@@ -1,5 +1,6 @@
 require "spec_helper"
 require "tmpdir"
+require "stringio"
 
 RSpec.describe Workspace::LockReaper do
   let(:state_dir) { Dir.mktmpdir("ws-lock-reaper") }
@@ -10,6 +11,7 @@ RSpec.describe Workspace::LockReaper do
   let(:lock_namespace) { instance_double(Workspace::LockNamespace) }
   let(:liveness) { FakeLockLiveness.new }
   let(:now) { [100.0] }
+  let(:error_output) { StringIO.new }
 
   after { FileUtils.remove_entry(state_dir) }
 
@@ -20,7 +22,7 @@ RSpec.describe Workspace::LockReaper do
 
   def reaper(terminator: nil, interval: 30)
     described_class.new(lock_namespace: lock_namespace, lock_holder: liveness, terminator: terminator,
-      interval: interval, clock: -> { now[0] })
+      interval: interval, clock: -> { now[0] }, error_output: error_output)
   end
 
   def store(dir = app_dir, terminator: nil)
@@ -136,6 +138,44 @@ RSpec.describe Workspace::LockReaper do
       liveness.kill(100)
 
       expect(reaper.reap([app_cwd, lib_cwd])).to eq(1)
+    end
+
+    it "tags its reaps as daemon reaps in the audit log" do
+      hold("edit", 100)
+      liveness.kill(100)
+
+      reaper.reap([app_cwd])
+
+      expect(audit_events.find { |e| e["event"] == "reap" }).to include("source" => "daemon")
+    end
+
+    it "warns once when a namespace fails to reap three times in a row, and again only after a success" do
+      FileUtils.mkdir_p(app_dir)
+      data_path = File.join(app_dir, "locks.json")
+      File.write(data_path, "{not json")
+      r = reaper
+
+      2.times { r.reap([app_cwd]) }
+      expect(error_output.string).to be_empty
+
+      4.times { r.reap([app_cwd]) }
+      expect(error_output.string.lines.size).to eq(1)
+      expect(error_output.string).to include("Warning: lock reaper could not reap stale locks in #{app_dir} 3 times in a row")
+
+      File.write(data_path, "{}")
+      r.reap([app_cwd])
+      File.write(data_path, "{not json")
+      3.times { r.reap([app_cwd]) }
+      expect(error_output.string.lines.size).to eq(2)
+    end
+
+    it "warns when a directory's namespace keeps failing to resolve" do
+      allow(lock_namespace).to receive(:resolve).with(cwd: app_cwd).and_raise(Workspace::Error, "git failed")
+      r = reaper
+
+      3.times { r.reap([app_cwd]) }
+
+      expect(error_output.string).to include("could not resolve the lock namespace for #{app_cwd}", "git failed")
     end
   end
 
