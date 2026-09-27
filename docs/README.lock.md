@@ -75,6 +75,10 @@ Acquired edit lock. Release with: workspace lock release edit
 
 The displaced agent is told once, the next time it runs `acquire` or `release` for that lock (or `release --all`): stderr gets `Your edit lock was taken over by %13 "PROJ-13 ..." in <worktree> at <time>, after this agent had been idle for 312s.` An `acquire` then carries on as usual: it takes the lock if it is free, or with `--wait` queues for it, and exits with its normal code (0 once acquired). A `release` has nothing left to release, so it exits 3. Idle takeover never applies to the dev environment (`devenv`, a `kind: "process"` holder).
 
+**Enforcement** — once [`workspace session-event`](README.session-event.md) hooks are installed (by `workspace init`, `workspace start`, or an upgraded `workspace doctor`), the `edit` lock is enforced, not just advisory: a `PreToolUse` for `Edit`, `Write`, `MultiEdit` or `NotebookEdit` is denied (hook exit 2, with a message on stderr) unless the calling agent is the `edit` lock's current holder. A Bash-based edit (`sed`, `git apply`, codegen) isn't a gated tool, so it stays advisory — the hook only sees named tool calls. The check costs a `git` subprocess only when some namespace actually holds the `edit` lock; otherwise it's a plain file read, same as idle tracking. If this agent was itself displaced by an idle takeover, its next denied edit also carries the one-time takeover notice, exactly as `acquire`/`release` do.
+
+The `edit` lock (and every other lock this agent holds) is released automatically: on `SessionEnd`, and on a `SessionStart` whose `source` is `clear` (i.e. `/clear`). Neither depends on the agent calling `workspace lock release` itself.
+
 Set the grace period per project, in seconds or with an `s`, `m` or `h` suffix:
 
 ```sh

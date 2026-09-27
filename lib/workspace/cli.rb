@@ -808,6 +808,12 @@ module Workspace
         held/cleared, except that `release` exits 3 when it reports an idle
         takeover. `acquire` has its own exit codes above.
 
+        Enforcement: once hooks are installed (see `workspace init`/`doctor`),
+        Edit/Write/MultiEdit/NotebookEdit are denied (exit 2) for any agent
+        that isn't the edit lock's holder. Bash-based edits (sed, git apply,
+        codegen) aren't covered and stay advisory. The edit lock is released
+        automatically on SessionEnd and on a `/clear`'d SessionStart.
+
         Examples:
           workspace lock acquire edit --wait --task "PROJ-12 fix login"
           workspace lock release edit

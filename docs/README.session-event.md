@@ -22,7 +22,9 @@ Reads a coding agent's hook payload from stdin, translates it into workspace's e
 
 It also keeps [`workspace lock`](README.lock.md)'s idle tracking current: `Stop` marks any lock the calling agent holds as idle, and `UserPromptSubmit` or any `PreToolUse` marks it active again, so a waiter can take over a lock whose agent has been idle for `locks.idle_grace`. Only the calling agent's own hold is changed. When there is no lock store, or no lock anywhere is held from this pane, this costs only file reads across the (few, small) namespace directories under the lock store — no subprocess. Only once a matching hold is found does it resolve which project's namespace it belongs to (shelling out to `git`) to act on it.
 
-Always exits 0, whether or not a daemon is listening, so a missing daemon never fails an agent's turn. Currently understands Claude Code's hook events (`SessionStart`, `SessionEnd`, `UserPromptSubmit`, `Stop`, `SubagentStop`, and `PreToolUse` for the `Task` tool, which marks a sub-agent starting).
+It also enforces the `edit` lock: a `PreToolUse` for `Edit`, `Write`, `MultiEdit` or `NotebookEdit` is denied when this namespace's `edit` lock is held by another agent — see [`workspace lock`](README.lock.md#details) for the message and cost. `SessionEnd`, and a `SessionStart` whose `source` is `clear`, release every lock the calling agent holds.
+
+Exits 2, with the deny message on stderr, when an edit is denied. Otherwise always exits 0, whether or not a daemon is listening, so a missing daemon never fails an agent's turn. Currently understands Claude Code's hook events (`SessionStart`, `SessionEnd`, `UserPromptSubmit`, `Stop`, `SubagentStop`, and `PreToolUse` for every tool — the `Task` tool marks a sub-agent starting; `Edit`/`Write`/`MultiEdit`/`NotebookEdit` are checked against the edit lock).
 
 ## Examples
 
