@@ -15,6 +15,22 @@ RSpec.describe Workspace::AgentProvider do
     it "returns nil for an unknown key" do
       expect(described_class.find("nope")).to be_nil
     end
+
+    it "opts pi out of the path-segment matching heuristic" do
+      expect(described_class.find("pi").path_segment_matching?).to be false
+    end
+
+    it "leaves path-segment matching on for the other providers" do
+      expect(described_class.find("claude").path_segment_matching?).to be true
+      expect(described_class.find("codex").path_segment_matching?).to be true
+      expect(described_class.find("opencode").path_segment_matching?).to be true
+    end
+
+    it "has a unique executable per provider" do
+      executables = described_class.all.map(&:executable)
+
+      expect(executables.uniq).to eq(executables)
+    end
   end
 
   describe "#hook_settings" do

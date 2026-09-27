@@ -10,6 +10,15 @@ RSpec.describe Workspace::LockHolder do
 
   before { allow(process_tree).to receive(:snapshot).and_return(snapshot) }
 
+  describe "#initialize" do
+    it "raises when two providers share an executable, rather than silently overwriting its markers" do
+      duplicate = Workspace::AgentProvider.new(key: "claude2", label: "Claude Code 2", executable: "claude")
+
+      expect { described_class.new(process_tree: process_tree, providers: [provider, duplicate], env: env) }
+        .to raise_error(Workspace::Error, /duplicate agent provider executable.*claude/)
+    end
+  end
+
   describe "#current" do
     context "inside tmux" do
       let(:env) { {"TMUX_PANE" => "%12"} }
@@ -20,7 +29,7 @@ RSpec.describe Workspace::LockHolder do
           .with("tmux", "display-message", "-p", "-t", "%12", "#" + "{pane_pid}")
           .and_return(["4200\n", "", instance_double(Process::Status, success?: true)])
         allow(snapshot).to receive(:find_descendant)
-          .with(4200, ["claude"], exclude: {"claude" => provider.background_markers}, include_root: true)
+          .with(4200, ["claude"], exclude: {"claude" => provider.background_markers}, include_root: true, exact_only: [])
           .and_return({pid: 4411, ppid: 4200, lstart: "Sat Sep 26 09:12:03 2026", command: "claude", args: "claude"})
 
         result = holder.current
@@ -31,7 +40,7 @@ RSpec.describe Workspace::LockHolder do
       it "prefers the nearest agent ancestor without asking tmux for the pane" do
         allow(Open3).to receive(:capture3)
         allow(snapshot).to receive(:find_ancestor)
-          .with(Process.pid, ["claude"], exclude: {"claude" => provider.background_markers})
+          .with(Process.pid, ["claude"], exclude: {"claude" => provider.background_markers}, exact_only: [])
           .and_return({pid: 999, ppid: 1, lstart: "start-999", command: "claude", args: "claude"})
 
         expect(holder.current).to include(pid: 999, started: "start-999")
@@ -44,7 +53,7 @@ RSpec.describe Workspace::LockHolder do
 
       it "walks ancestors to find the nearest matching agent process" do
         allow(snapshot).to receive(:find_ancestor)
-          .with(Process.pid, ["claude"], exclude: {"claude" => provider.background_markers})
+          .with(Process.pid, ["claude"], exclude: {"claude" => provider.background_markers}, exact_only: [])
           .and_return({pid: 555, ppid: 1, lstart: "start-555", command: "claude", args: "claude"})
 
         result = holder.current
@@ -97,6 +106,20 @@ RSpec.describe Workspace::LockHolder do
 
       it "still resolves to the claude process, skipping its background helpers" do
         expect(holder.current).to include(pid: 800, started: "start-800")
+      end
+    end
+
+    context "when an unrelated tool lives under a /pi/ path segment" do
+      let(:processes) do
+        [
+          process(1, 0, "launchd"),
+          process(900, 1, "/opt/pi/bin/tool --flag"),
+          process(Process.pid, 900, "ruby bin/workspace lock")
+        ]
+      end
+
+      it "does not mistake it for the pi provider" do
+        expect(holder.current).to be_nil
       end
     end
 

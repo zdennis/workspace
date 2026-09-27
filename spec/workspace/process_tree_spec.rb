@@ -78,6 +78,36 @@ RSpec.describe Workspace::ProcessTree do
     it "returns nil when nothing matches" do
       expect(tree.snapshot.find_descendant(100, ["codex"])).to be_nil
     end
+
+    context "with exact_only" do
+      def snapshot_of(*entries)
+        Workspace::ProcessTree::Snapshot.new(entries.map do |pid, ppid, args|
+          {pid: pid, ppid: ppid, lstart: "start-#{pid}", command: args.split.first, args: args}
+        end)
+      end
+
+      it "does not match an unrelated tool under a same-named directory when exact_only" do
+        snapshot = snapshot_of([1, 0, "bash"], [10, 1, "/opt/pi/bin/tool --flag"])
+
+        expect(snapshot.find_descendant(1, ["pi"], exact_only: ["pi"])).to be_nil
+      end
+
+      it "matches the path segment heuristic when the name is not exact_only" do
+        snapshot = snapshot_of([1, 0, "bash"], [10, 1, "/opt/pi/bin/tool --flag"])
+
+        expect(snapshot.find_descendant(1, ["pi"])[:pid]).to eq(10)
+      end
+
+      it "still matches a real basename" do
+        snapshot = snapshot_of([1, 0, "bash"], [10, 1, "pi --session-id abc"])
+
+        expect(snapshot.find_descendant(1, ["pi"], exact_only: ["pi"])[:pid]).to eq(10)
+      end
+
+      it "still allows the path-segment heuristic for names not listed" do
+        expect(tree.snapshot.find_descendant(500, ["claude"], include_root: true, exact_only: ["pi"])[:pid]).to eq(500)
+      end
+    end
   end
 
   describe "#ancestors" do

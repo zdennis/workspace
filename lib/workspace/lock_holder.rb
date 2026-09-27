@@ -30,7 +30,12 @@ module Workspace
     def initialize(process_tree: Workspace::ProcessTree.new, providers: AgentProvider.all, env: ENV)
       @process_tree = process_tree
       @executables = providers.map(&:executable)
+      duplicates = @executables.tally.select { |_, count| count > 1 }.keys
+      if duplicates.any?
+        raise Workspace::Error, "duplicate agent provider executable(s): #{duplicates.join(", ")}"
+      end
       @background_markers = providers.to_h { |provider| [provider.executable, provider.background_markers] }
+      @exact_only = providers.reject(&:path_segment_matching?).map(&:executable)
       @env = env
     end
 
@@ -104,11 +109,11 @@ module Workspace
       return nil if pane.nil? || pane.empty?
       pane_pid = pane_pid_for(pane)
       return nil unless pane_pid
-      snapshot.find_descendant(pane_pid, @executables, exclude: @background_markers, include_root: true)
+      snapshot.find_descendant(pane_pid, @executables, exclude: @background_markers, include_root: true, exact_only: @exact_only)
     end
 
     def ancestor_process(snapshot)
-      snapshot.find_ancestor(Process.pid, @executables, exclude: @background_markers)
+      snapshot.find_ancestor(Process.pid, @executables, exclude: @background_markers, exact_only: @exact_only)
     end
 
     PANE_PID_FORMAT = "#" + "{pane_pid}"
