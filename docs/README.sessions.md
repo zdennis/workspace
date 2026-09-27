@@ -69,7 +69,7 @@ When the LOCK column is hidden (project root unresolved), all five fields (`lock
 | `pattern didn't match (scrape mode)` | `context.source` is `scrape` and `context.pattern` didn't match the pane's text |
 | `the last reading is from an earlier Claude session in this pane` | The pane was reused (e.g. Claude restarted in it) and the only reading on record predates the current session |
 
-The fix is always one of: run `workspace doctor --fix`, switch to scrape mode (`workspace config set context.source scrape` and `workspace config set context.pattern '(\d+)% ctx'`), or pass `--context-pct N` to whatever command needs the number. `context_pct` is never guessed — a stale reading is reported as-is, with `context_updated_at` showing its age, since renders are event-driven and none happen during a long tool call.
+The fix is always one of: add a `statusLine` entry to `~/.claude/settings.json` (`"statusLine": {"type": "command", "command": "workspace statusline"}`), switch to scrape mode (`workspace config set context.source scrape` and `workspace config set context.pattern '(\d+)% ctx'`), or pass `--context-pct N` to whatever command needs the number. `context_pct` is never guessed — a stale reading is reported as-is, with `context_updated_at` showing its age, since renders are event-driven and none happen during a long tool call.
 
 ## Alerts
 
