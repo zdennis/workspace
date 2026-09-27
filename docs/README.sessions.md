@@ -36,7 +36,7 @@ Each pane shows its index, kind, title, state, how long it's been idle, and a LO
 | `idle` | The pane's output has not changed for 30 seconds or more |
 | `waiting` | The agent asked for permission or for input (Claude Code's `Notification` hook) and nothing has happened since. The agent's message is shown on the line below the pane |
 
-A pane leaves `waiting` on the agent's next hook event: a submitted prompt, a finished tool (`PostToolUse`, which follows an approved permission prompt), or the turn or session ending. It also leaves `waiting` when the pane no longer runs an agent. A sub-agent's activity doesn't clear the main agent's waiting state, and vice versa: a sub-agent running in parallel keeps working while the main agent waits on a person, and the main agent keeps working while a sub-agent waits. The wait clears when the waiting agent itself acts, or on a new prompt, stop, or session start/end. `waiting` needs the `Notification` and `PostToolUse` hooks, which `workspace init` installs; a project whose hooks predate them shows only `working`/`idle` until `workspace init` is re-run (`workspace doctor` reports the hooks as not installed until then).
+A pane leaves `waiting` on the agent's next hook event: a submitted prompt, a finished tool (`PostToolUse`, which follows an approved permission prompt), or the turn or session ending. It also leaves `waiting` when the pane no longer runs an agent. The main agent and each sub-agent keep their own wait: two sub-agents can wait on a person at once, each alerting once, and an event from one agent (main or sub-agent) ends only that agent's wait, never another's. A new prompt, stop, or session start/end clears all of a pane's waits at once. `sessions` shows the pane's oldest wait (its time and message) when more than one is active. `waiting` needs the `Notification` and `PostToolUse` hooks, which `workspace init` installs; a project whose hooks predate them shows only `working`/`idle` until `workspace init` is re-run (`workspace doctor` reports the hooks as not installed until then).
 
 `waiting` is detected for Claude Code only. Other agents (Codex, OpenCode, Pi) have no equivalent hook wired up, so their panes only ever show `working` or `idle`, never `waiting`.
 
@@ -85,7 +85,9 @@ The command runs through `/bin/sh -c`, in its own process group, with stdin and 
 | `WORKSPACE_ALERT_MESSAGE` | The agent's notification message (empty for `idle`) |
 | `WORKSPACE_ALERT_TEXT` | One-line summary, e.g. `myapp pane 0.1 (Claude Code) is waiting: Claude needs your permission to use Bash` |
 
-The daemon never waits on the command. One still running after 10 seconds gets SIGTERM, then SIGKILL 2 seconds later, sent to its process group; a command that exits non-zero, can't start, or is stopped is reported in the daemon's log. At most 4 runs go at once; an alert raised while 4 are still running is skipped, with a line in the log. Stopping the agent daemon stops any notify command still running the same way (SIGTERM, then SIGKILL after 2s).
+The daemon never waits on the command. One still running after 10 seconds gets SIGTERM, then SIGKILL 2 seconds later, sent to its process group; a command that exits non-zero, can't start, or is stopped is reported in the daemon's log. At most 4 runs go at once; an alert raised while 4 are still running isn't lost, it goes out on a later scan once one of those finishes, and the daemon logs "skipped notify command for … (N earlier runs still going)" each time. Stopping the agent daemon stops any notify command still running the same way (SIGTERM, then SIGKILL after 2s).
+
+If the daemon can't read the process table for 5 scans in a row (needed to tell working/idle/waiting apart), it prints one line to stderr — `workspace agent: can't read the process table for <workspace> (5 scans in a row: <error>); idle alerts are paused until it can` — once per streak; a scan that succeeds resets the count.
 
 ## Examples
 
