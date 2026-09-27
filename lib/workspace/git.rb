@@ -111,7 +111,7 @@ module Workspace
     # @return [Boolean] true if a worktree exists at the given path
     def worktree_exists?(path)
       stdout, _ = Open3.capture3("git", "-C", path, "worktree", "list", "--porcelain")
-      stdout.include?("worktree #{path}")
+      stdout.each_line.any? { |line| line.chomp == "worktree #{path}" }
     end
 
     # Lists every worktree of the repository containing +repo+, including the
@@ -266,16 +266,16 @@ module Workspace
       return nil if has_remotes.nil?
 
       if has_remotes
-        stdout, _, status = Open3.capture3("git", "-C", path, "rev-list", "HEAD", "--not", "--remotes")
+        stdout, _, status = Open3.capture3("git", "-C", path, "rev-list", "--count", "HEAD", "--not", "--remotes")
       else
-        branch = worktree_branch(path)
-        refs_stdout, _, refs_status = Open3.capture3("git", "-C", path, "for-each-ref", "--format=%(refname)", "refs/heads")
-        return nil unless refs_status.success?
-        other_refs = refs_stdout.lines.map(&:strip).reject { |r| branch && r == "refs/heads/#{branch}" }
-        stdout, _, status = Open3.capture3("git", "-C", path, "rev-list", "HEAD", "--not", *other_refs)
+        # --exclude takes the name without refs/heads/ when it applies to --branches.
+        exclude = (branch = worktree_branch(path)) ? ["--exclude=#{branch}"] : []
+        stdout, _, status = Open3.capture3("git", "-C", path, "rev-list", "--count", "HEAD", "--not", *exclude, "--branches")
       end
       return nil unless status.success?
-      stdout.lines.count { |l| !l.strip.empty? }
+      stdout.strip.to_i
+    rescue SystemCallError
+      nil
     end
 
     # Checks whether a worktree has unsaved work: uncommitted changes to

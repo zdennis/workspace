@@ -147,6 +147,15 @@ RSpec.describe Workspace::Git do
       expect(git.worktree_exists?(worktree_path)).to be false
     end
 
+    it "does not match a worktree whose path merely starts with the given path" do
+      porcelain = "worktree #{worktree_path}-bar\nHEAD def456\nbranch refs/heads/feature-x-bar\n\n"
+      allow(Open3).to receive(:capture3)
+        .with("git", "-C", worktree_path, "worktree", "list", "--porcelain")
+        .and_return([porcelain, "", double(success?: true)])
+
+      expect(git.worktree_exists?(worktree_path)).to be false
+    end
+
     it "returns false when git errors (e.g. path does not exist)" do
       allow(Open3).to receive(:capture3)
         .with("git", "-C", worktree_path, "worktree", "list", "--porcelain")
@@ -257,6 +266,22 @@ RSpec.describe Workspace::Git do
         run!("git", "commit", "--allow-empty", "-m", "on main only", chdir: @repo_dir)
 
         expect(git.unpushed_commit_count(@repo_dir)).to eq(1)
+      end
+
+      it "compares a detached HEAD with every local branch when the repo has no remotes" do
+        run!("git", "remote", "remove", "origin", chdir: @repo_dir)
+        run!("git", "commit", "--allow-empty", "-m", "on main", chdir: @repo_dir)
+        run!("git", "checkout", "-q", "--detach", chdir: @repo_dir)
+        run!("git", "commit", "--allow-empty", "-m", "detached only", chdir: @repo_dir)
+
+        expect(git.unpushed_commit_count(@repo_dir)).to eq(1)
+      end
+
+      it "returns nil when git can't be started" do
+        allow(Open3).to receive(:capture3).and_call_original
+        allow(Open3).to receive(:capture3).with("git", "-C", @repo_dir, "rev-list", any_args).and_raise(Errno::E2BIG)
+
+        expect(git.unpushed_commit_count(@repo_dir)).to be_nil
       end
     end
 
