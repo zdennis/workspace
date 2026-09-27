@@ -323,8 +323,15 @@ RSpec.describe Workspace::Git do
         expect(git.unsaved_work(@repo_dir)).to be_nil
       end
 
-      it "returns :unknown when git cannot answer" do
-        expect(git.unsaved_work(File.join(@repo_dir, "does-not-exist"))).to eq(:unknown)
+      it "returns nil when the worktree directory no longer exists" do
+        expect(git.unsaved_work(File.join(@repo_dir, "does-not-exist"))).to be_nil
+      end
+
+      it "returns :unknown when git cannot answer for an existing directory" do
+        allow(Open3).to receive(:capture3).and_call_original
+        allow(Open3).to receive(:capture3).with("git", "-C", @repo_dir, "status", any_args).and_return(["", "", instance_double(Process::Status, success?: false)])
+
+        expect(git.unsaved_work(@repo_dir)).to eq(:unknown)
       end
     end
 

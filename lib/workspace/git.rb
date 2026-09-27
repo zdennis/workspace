@@ -280,12 +280,17 @@ module Workspace
 
     # Checks whether a worktree has unsaved work: uncommitted changes to
     # tracked files (untracked files don't count), or commits not pushed anywhere.
+    # A worktree whose directory no longer exists has nothing to check for
+    # (git can't answer for a path that isn't there) and is treated as having
+    # no unsaved work.
     #
     # @param path [String] worktree directory path
     # @return [Hash, Symbol, nil] nil if there is nothing unsaved, :unknown if
     #   git could not answer, or a hash with :changed_files, :unpushed_commits,
     #   and :branch when there is unsaved work
     def unsaved_work(path)
+      return nil unless File.directory?(path)
+
       changed = changed_files_count(path)
       return :unknown if changed.nil?
 
@@ -318,7 +323,8 @@ module Workspace
     # check sits right next to the removal rather than minutes before it.
     #
     # @param path [String] worktree path
-    # @param force [Boolean] skip the unsaved-work check
+    # @param force [Boolean] skip workspace's own unsaved-work re-check; git's
+    #   own `--force` is passed to `worktree remove` either way
     # @return [void]
     # @raise [Workspace::UnsavedWorkError] if force is false and the worktree has
     #   unsaved work, or git couldn't tell
