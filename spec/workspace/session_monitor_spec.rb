@@ -18,7 +18,7 @@ RSpec.describe Workspace::SessionMonitor do
   end
 
   before do
-    allow(tmux).to receive(:pane_details).with("proj").and_return(panes)
+    allow(tmux).to receive(:pane_details).and_return(panes)
     allow(process_tree).to receive(:snapshot).and_return(snapshot)
     allow(snapshot).to receive(:find_descendant).and_return(nil)
     allow(snapshot).to receive(:find_descendant)
@@ -556,6 +556,118 @@ RSpec.describe Workspace::SessionMonitor do
 
     it "names the workspace and when it was taken" do
       expect(monitor.snapshot).to include("workspace" => "proj", "updated_at" => now.iso8601)
+    end
+  end
+
+  describe "state history in the event log" do
+    let(:tmpdir) { Dir.mktmpdir }
+    let(:log_config) do
+      Workspace::Config.new(workspace_dir: tmpdir).tap do |c|
+        allow(c).to receive(:event_log_file).and_return(File.join(tmpdir, "events.jsonl"))
+      end
+    end
+    let(:log_errors) { StringIO.new }
+    let(:event_log) { Workspace::EventLog.new(config: log_config, error_output: log_errors) }
+
+    after { FileUtils.remove_entry(tmpdir) }
+
+    def logging_monitor
+      described_class.new(tmux: tmux, process_tree: process_tree, session_name: "proj-session",
+        idle_after: 30, clock: clock, event_log: event_log, project: "proj")
+    end
+
+    def logged_states
+      event_log.events.select { |e| e["type"] == "agent_state" }.map { |e| [e["data"]["pane_id"], e["data"]["state"], e["data"]["since"]] }
+    end
+
+    it "records each agent pane's state changes, and none for shell panes" do
+      monitor = logging_monitor
+      monitor.scan
+      allow(clock).to receive(:now).and_return(now + 31)
+      monitor.scan
+      monitor.scan
+
+      expect(logged_states).to eq([
+        ["%2", "working", "2026-09-26T12:00:00.000Z"],
+        ["%2", "idle", "2026-09-26T12:00:30.000Z"]
+      ])
+      expect(event_log.events.map { |e| e["project"] }.uniq).to eq(["proj"])
+      expect(event_log.events.last["data"]).to include("pane_pid" => 200, "index" => 1, "kind" => "claude")
+    end
+
+    it "records waiting from when the agent asked, and closed when the pane goes" do
+      monitor = logging_monitor
+      monitor.scan
+      allow(clock).to receive(:now).and_return(now + 5)
+      monitor.record("event" => "notification", "pane_id" => "%2", "message" => "May I?")
+      allow(clock).to receive(:now).and_return(now + 7)
+      monitor.scan
+      allow(tmux).to receive(:pane_details).with("proj-session").and_return([panes.first])
+      monitor.scan
+
+      expect(logged_states.map { |_, state, since| [state, since] }).to eq([
+        ["working", "2026-09-26T12:00:00.000Z"],
+        ["waiting", "2026-09-26T12:00:05.000Z"],
+        ["closed", "2026-09-26T12:00:07.000Z"]
+      ])
+    end
+
+    it "records exited when the agent leaves a pane that stays open" do
+      monitor = logging_monitor
+      monitor.scan
+      allow(snapshot).to receive(:find_descendant).and_return(nil)
+      monitor.scan
+
+      expect(logged_states.map { |_, state, _| state }).to eq(["working", "exited"])
+    end
+
+    it "picks up an idle pane's state and start time after a restart, without logging it again" do
+      first = logging_monitor
+      first.scan
+      allow(clock).to receive(:now).and_return(now + 31)
+      first.scan
+
+      allow(clock).to receive(:now).and_return(now + 100)
+      restarted = logging_monitor
+      restarted.scan
+      pane = restarted.snapshot["panes"].find { |p| p["pane_id"] == "%2" }
+
+      expect(pane).to include("state" => "idle", "state_since" => "2026-09-26T12:00:30Z", "idle_seconds" => 100)
+      expect(logged_states.size).to eq(2)
+    end
+
+    it "keeps a restored working pane's start time" do
+      logging_monitor.scan
+
+      allow(clock).to receive(:now).and_return(now + 10)
+      restarted = logging_monitor
+      restarted.scan
+
+      expect(restarted.snapshot["panes"].find { |p| p["pane_id"] == "%2" }["state_since"]).to eq("2026-09-26T12:00:00Z")
+      expect(logged_states.size).to eq(1)
+    end
+
+    it "does not restore a pane id that now belongs to a different pane process" do
+      logging_monitor.scan
+      allow(tmux).to receive(:pane_details).with("proj-session").and_return([panes.last.merge(pid: 999)])
+      allow(snapshot).to receive(:find_descendant).with(999, ["claude"], hash_including(include_root: true))
+        .and_return({pid: 1000, command: "claude", args: "claude"})
+
+      allow(clock).to receive(:now).and_return(now + 10)
+      logging_monitor.scan
+
+      expect(logged_states.last).to eq(["%2", "working", "2026-09-26T12:00:10.000Z"])
+    end
+
+    it "keeps scanning when the log can't be written, warning once" do
+      allow(log_config).to receive(:event_log_file).and_return(File.join(tmpdir, "gone", "events.jsonl"))
+      monitor = logging_monitor
+      monitor.scan
+      allow(clock).to receive(:now).and_return(now + 31)
+      monitor.scan
+
+      expect(monitor.snapshot["panes"].find { |p| p["pane_id"] == "%2" }["state"]).to eq("idle")
+      expect(log_errors.string.lines.size).to eq(1)
     end
   end
 end

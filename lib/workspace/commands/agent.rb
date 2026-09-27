@@ -823,7 +823,9 @@ module Workspace
           error_output: @error_output,
           lock_reaper: @lock_reaper,
           notifier: notifier,
-          idle_alert_after: alerts[:idle_after]
+          idle_alert_after: alerts[:idle_after],
+          event_log: @event_log,
+          project: name
         )
       end
 

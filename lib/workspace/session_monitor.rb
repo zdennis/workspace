@@ -18,6 +18,13 @@ module Workspace
   # Everything is keyed on the tmux pane id, which stays with a pane for its
   # whole life. Pane indices shift as panes are split and closed, so an entry
   # keyed on one would silently follow the wrong pane.
+  #
+  # Each agent pane's state changes (working, idle, waiting, and exited or
+  # closed once its agent goes) are appended to the event log. A monitor
+  # started after a daemon restart reads each pane's last logged state back,
+  # so the state and when it began carry over rather than starting afresh.
+  # A pending wait is not carried over: the hook event that would have ended
+  # it may have arrived while no daemon was listening.
   class SessionMonitor
     # A pane whose output has not changed for this long is reported idle. Agents
     # spend most of a turn blocked on the network, so CPU is not a usable
@@ -59,10 +66,14 @@ module Workspace
     #   agent pane starts waiting or stays idle too long; nil sends no alerts
     # @param idle_alert_after [Numeric, nil] seconds of idle before an agent
     #   pane alerts; nil alerts only on waiting
+    # @param event_log [Workspace::EventLog, nil] where agent state changes are
+    #   recorded and read back after a restart; nil keeps history in memory only
+    # @param project [String, nil] the name events are recorded under;
+    #   defaults to +session_name+
     def initialize(tmux:, process_tree:, session_name:,
       providers: AgentProvider.all, poll_interval: 2, idle_after: DEFAULT_IDLE_AFTER,
       clock: Time, logger: Workspace::Logger.new, error_output: $stderr, lock_reaper: nil,
-      notifier: nil, idle_alert_after: nil)
+      notifier: nil, idle_alert_after: nil, event_log: nil, project: nil)
       @tmux = tmux
       @process_tree = process_tree
       @session_name = session_name
@@ -75,6 +86,9 @@ module Workspace
       @lock_reaper = lock_reaper
       @notifier = notifier
       @idle_alert_after = idle_alert_after
+      @event_log = event_log
+      @project = project || session_name
+      @history = nil
       @panes = {}
       @failed_scans = 0
       @lock = Mutex.new
@@ -131,15 +145,20 @@ module Workspace
       @activity_stale = false
       @failed_scans = 0
       now = @clock.now
+      @history ||= load_history
 
-      @lock.synchronize do
+      changes = @lock.synchronize do
         seen = details.map { |d| d[:id] }
         # A closed pane takes its sub-agent history with it; keeping the entry
         # would leave a row that can never update again.
-        @panes.delete_if { |id, _| !seen.include?(id) }
+        closed = @panes.except(*seen)
+        closed.each_key { |id| @panes.delete(id) }
 
         details.each { |detail| refresh_pane(detail, tree, now) }
+        closed.values.filter_map { |pane| gone_change(pane, "closed", now) } +
+          @panes.values.filter_map { |pane| state_change(pane, now) }
       end
+      record_changes(changes)
     end
 
     # Records a hook event reported by an agent.
@@ -223,6 +242,76 @@ module Workspace
     NOT_AGENTS = ["shell", "unknown"].freeze
     private_constant :NOT_AGENTS
 
+    # Logged states that mean the pane no longer has an agent.
+    GONE_STATES = ["closed", "exited"].freeze
+    private_constant :GONE_STATES
+
+    # Each pane's last logged state, keyed on pane id. Read once, on the
+    # first scan; nothing in the log is worth failing a scan over.
+    def load_history
+      return {} unless @event_log
+      @event_log.latest_agent_states(@project)
+    rescue => e
+      @logger.debug { "session monitor: could not read state history (#{e.class}: #{e.message})" }
+      {}
+    end
+
+    # Takes up a pane's logged state after a daemon restart. The pane's pid is
+    # checked too, since a restarted tmux server hands out the same pane ids
+    # again. An idle pane stays idle, and keeps the time it went idle, until
+    # its output changes.
+    def restore_state(pane, detail)
+      logged = @history.delete(detail[:id])
+      return unless logged["pane_pid"] == detail[:pid] && !GONE_STATES.include?(logged["state"])
+      since = Time.iso8601(logged["since"].to_s)
+      pane[:logged_state] = logged["state"]
+      pane[:state_since] = since
+      return unless logged["state"] == "idle"
+      pane[:last_activity_at] = since - @idle_after
+      pane[:quiet_since_restore] = true
+    rescue ArgumentError
+      nil
+    end
+
+    # The change to record when an agent pane's state differs from the one
+    # last recorded, or nil. Keeps the pane's record up to date as it goes.
+    def state_change(pane, now)
+      return nil if pane[:kind] == "unknown"
+      return gone_change(pane, "exited", now) if pane[:kind] == "shell"
+      state = state_of(pane, now - (pane[:last_activity_at] || now))
+      return nil if state == pane[:logged_state]
+      mark_state(pane, state, since_for(pane, state, now))
+    end
+
+    def gone_change(pane, state, now)
+      return nil if pane[:logged_state].nil? || GONE_STATES.include?(pane[:logged_state])
+      mark_state(pane, state, now)
+    end
+
+    def mark_state(pane, state, since)
+      pane[:logged_state] = state
+      pane[:state_since] = since
+      {"pane_id" => pane[:pane_id], "pane_pid" => pane[:pid], "index" => pane[:index],
+       "kind" => pane[:kind], "state" => state, "since" => since.utc.iso8601(3)}
+    end
+
+    # When the pane entered +state+: a wait from when it was raised, idle from
+    # when the output had been quiet long enough, working from its last change.
+    def since_for(pane, state, now)
+      case state
+      when "waiting" then oldest_wait(pane)[:since]
+      when "idle" then pane[:last_activity_at] + @idle_after
+      else pane[:last_activity_at] || now
+      end
+    end
+
+    # Written outside the monitor's lock, so a slow disk never holds up hook
+    # events or `sessions`. EventLog#record doesn't raise on a failed write.
+    def record_changes(changes)
+      return unless @event_log
+      changes.each { |data| @event_log.record(type: EventLog::AGENT_STATE, project: @project, data: data) }
+    end
+
     # Each wait alerts on its own, so a second agent in the pane starting to
     # wait alerts even though the pane was already waiting.
     #
@@ -282,6 +371,7 @@ module Workspace
 
     def refresh_pane(detail, tree, now)
       pane = (@panes[detail[:id]] ||= new_pane(detail[:id]))
+      restore_state(pane, detail) if @history.key?(detail[:id])
       pane[:index] = detail[:index]
       pane[:title] = detail[:title]
       pane[:cwd] = detail[:cwd]
@@ -307,8 +397,11 @@ module Workspace
       digest = Digest::SHA256.hexdigest(@tmux.capture_pane(@session_name, pane[:index]).to_s)
 
       if pane[:digest] != digest
+        # The first capture after a restart is new to this monitor, not to the
+        # pane: a pane restored as idle stays idle until its output changes.
+        first_since_restore = pane[:digest].nil? && pane.delete(:quiet_since_restore)
         pane[:digest] = digest
-        pane[:last_activity_at] = now
+        pane[:last_activity_at] = now unless first_since_restore
       end
       pane[:last_activity_at] ||= now
     end
@@ -382,6 +475,8 @@ module Workspace
       idle_for = now - (pane[:last_activity_at] || now)
       wait = oldest_wait(pane)
       waiting_since = wait&.dig(:since)
+      state = state_of(pane, idle_for)
+      state_since = (state == pane[:logged_state]) ? pane[:state_since] : since_for(pane, state, now)
       {
         "pane_id" => pane[:pane_id],
         "index" => pane[:index],
@@ -389,7 +484,8 @@ module Workspace
         "label" => pane[:label],
         "title" => pane[:title],
         "cwd" => pane[:cwd],
-        "state" => state_of(pane, idle_for),
+        "state" => state,
+        "state_since" => state_since&.utc&.iso8601,
         "idle_seconds" => idle_for.round,
         "waiting_since" => waiting_since&.utc&.iso8601,
         "waiting_seconds" => waiting_since && (now - waiting_since).round,
