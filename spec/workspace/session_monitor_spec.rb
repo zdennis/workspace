@@ -160,6 +160,26 @@ RSpec.describe Workspace::SessionMonitor do
     end
   end
 
+  describe "#reap_locks" do
+    let(:lock_reaper) { instance_double(Workspace::LockReaper) }
+
+    it "ticks the reaper with the working directory of every pane it has seen" do
+      reaping = described_class.new(tmux: tmux, process_tree: process_tree, session_name: "proj",
+        clock: clock, lock_reaper: lock_reaper)
+      allow(lock_reaper).to receive(:tick).and_return(2)
+      reaping.scan
+
+      expect(reaping.reap_locks).to eq(2)
+      expect(lock_reaper).to have_received(:tick).with(["/project", "/project"])
+    end
+
+    it "does nothing without a reaper" do
+      monitor.scan
+
+      expect(monitor.reap_locks).to eq(0)
+    end
+  end
+
   describe "#snapshot" do
     it "orders panes by index" do
       monitor.scan

@@ -183,6 +183,18 @@ module Workspace
       end
     end
 
+    # Runs the reap pass every mutating op starts with, on its own, so a
+    # caller with no lock op to run (the session-monitor daemon) can keep
+    # `locks.json` current. Reaps are audited exactly as an op-time reap.
+    #
+    # @return [Integer] how many holders and waiters were reaped
+    def reap
+      with_lock do |data|
+        reap!(data)
+        @pending_events.count { |e| e[:event] == "reap" }
+      end
+    end
+
     # Reaps dead holders and waiters, promoting the next live waiter, and
     # returns +name+'s holder afterwards. Unlike {#status}, a crashed holder's
     # record is removed rather than just flagged stale.
