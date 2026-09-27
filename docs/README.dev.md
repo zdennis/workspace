@@ -91,7 +91,7 @@ workspace config set dev.ready_timeout 2m         # wait for the dev.ready check
 
 **No tmux server running** — `up` fails fast: `tmux server not running; start the workspace with 'workspace launch', then run 'workspace dev up' again.`
 
-**A foreign pgid** — when a stale (wrapper-gone) holder's recorded process group has live processes this user isn't permitted to signal (its id was likely reused by another user), `down` (with or without `--force`) and `up --takeover` refuse and leave the lock in place, printing a `ps -axo pid,pgid,user,stat,command | awk '$2 == N'` inspection hint; `status` shows the same note. `workspace lock clear devenv` still clears the lock unconditionally, but prints `Could not stop process group N (pid P): ... not permitted ...` instead of stopping it.
+**A foreign pgid** — when a stale (wrapper-gone) holder's recorded process group has live processes this user isn't permitted to signal (its id was likely reused by another user), `down` (with or without `--force`) and `up --takeover` refuse and leave the lock in place, printing a `ps -axo pid,pgid,user,stat,command | awk '$2 == N'` inspection hint; `status` shows the same note. `workspace lock clear devenv` then clears the lock (its wrapper is gone) and reports the group without signalling it. While the wrapper is still alive, a group `lock clear devenv` can't stop (another user's processes, or still running after SIGKILL) keeps its lock and exits 1; see [`workspace lock`](README.lock.md).
 
 **`--takeover` jumps the queue** — it stops the current holder and hands the lock straight to this worktree, ahead of anyone already waiting with `--wait`.
 

@@ -253,23 +253,65 @@ module Workspace
 
     # Removes a lock's holder and queue unconditionally, with no liveness
     # check. Yields the holder record first (if any), so a caller can run a
-    # kind-specific side effect — a `kind: "process"` holder's caller is
-    # expected to terminate its recorded pgid before the record disappears.
+    # kind-specific side effect.
+    #
+    # With +keep_process_holder+, a `kind: "process"` holder is left in
+    # place and only the queue is removed: its process group has to be
+    # stopped outside the flock (the wrapper needs it to release), and the
+    # lock must keep naming the holder until that has succeeded, or a second
+    # dev environment could start beside one that is still running. The
+    # caller then removes it with {#finish_clear}, or leaves it held.
     #
     # @param name [String] lock name
     # @param cleared_by [String, nil] identity recorded for logging
+    # @param keep_process_holder [Boolean] leave a `kind: "process"` holder in place
     # @yieldparam holder [Hash, nil] the holder being cleared
-    # @return [Hash, nil] the removed {holder:, queue:}, or nil if the lock had no entry
-    def clear(name, cleared_by: nil)
+    # @return [Hash, nil] the removed {holder:, queue:}, with pending: true
+    #   when the holder was kept; nil if the lock had no entry
+    def clear(name, cleared_by: nil, keep_process_holder: false)
       with_lock(lenient: true) do |data|
         entry = data[name]
         next nil unless entry
         holder = entry["holder"]
         yield holder if block_given?
+        if keep_process_holder && holder && holder["kind"] == "process"
+          queue = entry["queue"]
+          entry["queue"] = []
+          @logger.debug { "lock: clearing #{name}#{" by #{cleared_by}" if cleared_by}, holder kept until stopped" }
+          next {holder: holder, queue: queue, pending: true}
+        end
         data.delete(name)
         @logger.debug { "lock: cleared #{name}#{" by #{cleared_by}" if cleared_by}" }
         audit(:clear, name, holder: holder_summary(holder), queue_size: entry["queue"].size, cleared_by: cleared_by)
         {holder: holder, queue: entry["queue"]}
+      end
+    end
+
+    # Completes a {#clear} that kept a `kind: "process"` holder, once its
+    # process group is stopped: removes that holder if the lock still names
+    # it (same pid and start time), then promotes anyone who queued since.
+    # A holder that already released or was reaped is left as it is, and so
+    # is whoever holds the lock now.
+    #
+    # @param name [String] lock name
+    # @param holder [Hash] the holder record {#clear} returned
+    # @param cleared_by [String, nil] identity recorded for logging
+    # @param queue_size [Integer] waiters {#clear} removed, for the audit log
+    # @return [Boolean] whether the holder was removed here
+    def finish_clear(name, holder, cleared_by: nil, queue_size: 0)
+      with_lock(lenient: true) do |data|
+        entry = data[name]
+        next false unless entry
+        current = entry["holder"]
+        removed = !current.nil? && current["pid"] == holder["pid"] && current["started"] == holder["started"]
+        if removed
+          entry["holder"] = nil
+          @logger.debug { "lock: cleared #{name}#{" by #{cleared_by}" if cleared_by}" }
+          audit(:clear, name, holder: holder_summary(holder), queue_size: queue_size, cleared_by: cleared_by)
+          promote!(entry, name)
+        end
+        data.delete(name) if entry["holder"].nil? && entry["queue"].empty? && !entry["displaced"]
+        removed
       end
     end
 

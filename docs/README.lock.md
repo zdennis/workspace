@@ -44,6 +44,13 @@ workspace lock instructions [<name>]
 | 0 | Released (or idempotently, nothing to release) |
 | 3 | This agent's hold was taken over idle; applies only to `release`, not `acquire` — a displaced agent's `acquire` prints a notice and carries on as usual (see Idle takeover below) |
 
+## Exit codes (clear)
+
+| Code | Meaning |
+|------|---------|
+| 0 | Cleared (or idempotently, nothing to clear) |
+| 1 | A `devenv` lock was kept because its dev environment's process group could not be stopped — see `clear` below. With `--all`, every other lock was still cleared |
+
 ## Details
 
 **Lock names** — letters, digits, `.`, `_` and `-`, starting with a letter or digit (for example `edit`, `devenv`, `db-migrate`). Every subcommand rejects any other name with a usage error, because names are pasted into the commands `instructions` tells an agent to run.
@@ -95,7 +102,7 @@ An invalid stored value (for example one hand-edited to `0`) falls back to the d
 Before editing files, run `workspace lock acquire edit --wait --task "<your task>"` using Bash with run_in_background. Do not edit anything until it reports "Acquired". When your edits are complete, run `workspace lock release edit`. Never run `workspace lock clear`.
 ```
 
-**`release`/`clear` are idempotent** — both exit 0 even when there was nothing to release or clear, except that `release` exits 3 when it reports an idle takeover (releasing a lock this agent doesn't hold, or clearing a name with no entry), and say so in their output rather than treating it as an error.
+**`release`/`clear` are idempotent** — both exit 0 even when there was nothing to release or clear, except that `release` exits 3 when it reports an idle takeover and `clear` exits 1 when it keeps a `devenv` lock it could not stop (releasing a lock this agent doesn't hold, or clearing a name with no entry), and say so in their output rather than treating it as an error.
 
 ### `--json`
 
@@ -128,7 +135,7 @@ Before editing files, run `workspace lock acquire edit --wait --task "<your task
 - Usage/validation errors (a bad lock name, an unknown flag, extra arguments) get the same treatment: `{"schema_version": 1, "error": "<message>"}` on stdout, exit 1 — never plain text on stderr — as long as `--json` was present on the command line. A caller that always passes `--json` and always reads stdout never needs to special-case argument mistakes.
 - Exit codes: `0` on success (including an empty store or a free lock), `1` for a store error or a usage/validation error.
 
-**`clear`** — removes a lock's holder and queue unconditionally, with no liveness check and no confirmation prompt. Use it to recover from a stuck lock. Clearing `devenv` also stops the dev environment: SIGTERM to its wrapper, then SIGKILL to its process group after `dev.stop_timeout` — but only while the wrapper's pid still matches its recorded start time, so a reused process group is never signalled (see [`workspace dev`](README.dev.md)). The lock is cleared either way; if the process group has live processes this user isn't permitted to signal (its id was likely reused by another user), `clear` prints `Could not stop process group N (pid P): ... not permitted ...` instead of stopping it.
+**`clear`** — removes a lock's holder and queue unconditionally, with no liveness check and no confirmation prompt. Use it to recover from a stuck lock. Clearing `devenv` also stops the dev environment first: SIGTERM to its wrapper, then SIGKILL to its process group after `dev.stop_timeout` — but only while the wrapper's pid still matches its recorded start time, so a reused process group is never signalled (see [`workspace dev`](README.dev.md)). The lock keeps naming the dev environment until its process group is gone, so no second dev environment can start beside one that is still running. If the group can't be stopped — it has live processes this user isn't permitted to signal (for example a dev server started under `sudo` or by another user), or it is still running 2s after SIGKILL — `clear` keeps the `devenv` lock, prints `Could not stop process group N (pid P): ...` (naming the owning user when `ps` shows one) and `Kept devenv lock: ...` on stderr, and exits 1. Its waiters are removed either way. Stop the group as its owner (`sudo kill -TERM -N`), then run `workspace lock clear devenv` again. With `--all`, every other lock is still cleared. A wrapper that is already gone is cleared as before: if its process group is still running, `clear` names it on stderr (`kill -TERM -N`) without signalling it, since the id may have been reused.
 
 ## Examples
 

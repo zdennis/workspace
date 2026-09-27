@@ -297,6 +297,95 @@ RSpec.describe Workspace::Commands::Lock do
           "kill -TERM -#{group}")
       end
     end
+
+    context "when the process holder's group cannot be stopped" do
+      let(:terminator) { instance_double(Workspace::ProcessGroupTerminator) }
+      let(:mono) { [0] }
+      let(:mono_clock) { double("clock").tap { |c| allow(c).to receive(:now) { mono[0] } } }
+      let(:not_permitted) do
+        Workspace::Error.new("process group 4242 has running processes this user is not permitted to signal (owned by alice: ...)")
+      end
+
+      def hold_devenv
+        store = Workspace::LockStore.new(dir: tmpdir, liveness: FakeLockLiveness.new)
+        store.acquire("devenv", identity: {kind: "process", pid: 4242, started: "start-4242", pgid: 4242, worktree: "/w/login", branch: "login"},
+          waiter_pid: 4242, waiter_started: "start-4242")
+      end
+
+      def clear_command
+        described_class.new(config: config, lock_namespace: lock_namespace, lock_holder: FakeLockIdentity.new(pid: 999), output: output,
+          error_output: error_output, terminator: terminator, clock: mono_clock, trap: ->(*) {},
+          sleeper: ->(seconds) { mono[0] += seconds })
+      end
+
+      def devenv_holder_pid
+        Workspace::LockStore.new(dir: tmpdir, liveness: FakeLockLiveness.new).status("devenv").dig("devenv", "holder", "pid")
+      end
+
+      it "keeps the lock and exits 1 when the group belongs to another user" do
+        hold_devenv
+        enqueue_waiter(name: "devenv", identity: FakeLockIdentity.new(pid: 300), task: "next")
+        allow(terminator).to receive(:stop_holder).and_raise(not_permitted)
+
+        result = clear_command.clear("devenv")
+
+        expect(result).to eq(exit_code: 1)
+        expect(devenv_holder_pid).to eq(4242)
+        expect(Workspace::LockStore.new(dir: tmpdir, liveness: FakeLockLiveness.new).status("devenv")["devenv"]["queue"]).to be_empty
+        expect(error_output.string).to include("Could not stop process group 4242 (pid 4242): process group 4242",
+          "owned by alice", "Kept devenv lock", "sudo kill -TERM -4242", "workspace lock clear devenv")
+        expect(output.string).not_to include("Cleared devenv")
+      end
+
+      it "keeps the lock when the group is still running after SIGKILL" do
+        hold_devenv
+        allow(terminator).to receive(:stop_holder).and_return(:killed)
+        allow(terminator).to receive(:running?).with(4242).and_return(true)
+
+        result = clear_command.clear("devenv")
+
+        expect(result).to eq(exit_code: 1)
+        expect(devenv_holder_pid).to eq(4242)
+        expect(error_output.string).to include("still running #{described_class::KILL_GRACE_SECONDS}s after SIGKILL", "Kept devenv lock")
+      end
+
+      it "clears the lock once a SIGKILLed group disappears within the grace period" do
+        hold_devenv
+        allow(terminator).to receive(:stop_holder).and_return(:killed)
+        allow(terminator).to receive(:running?).with(4242).and_return(true, false)
+
+        result = clear_command.clear("devenv")
+
+        expect(result).to eq(exit_code: 0)
+        expect(devenv_holder_pid).to be_nil
+        expect(output.string).to include("Killed process group 4242", "Cleared devenv")
+      end
+
+      it "clears the lock when the holder is already gone and its group can't be inspected" do
+        hold_devenv
+        allow(terminator).to receive(:stop_holder).and_return(:gone)
+        allow(terminator).to receive(:running?).with(4242).and_raise(not_permitted)
+
+        result = clear_command.clear("devenv")
+
+        expect(result).to eq(exit_code: 0)
+        expect(devenv_holder_pid).to be_nil
+        expect(error_output.string).to include("Process group 4242 was not signalled (its holder pid 4242 is gone)")
+      end
+
+      it "with --all, clears every other lock and keeps only the one it could not stop" do
+        hold_devenv
+        command_for(FakeLockIdentity.new(pid: 100)).acquire("edit")
+        allow(terminator).to receive(:stop_holder).and_raise(not_permitted)
+
+        result = clear_command.clear(nil, all: true)
+
+        expect(result).to eq(exit_code: 1)
+        expect(output.string).to include("Cleared edit")
+        expect(devenv_holder_pid).to eq(4242)
+        expect(Workspace::LockStore.new(dir: tmpdir, liveness: FakeLockLiveness.new).status("edit")).to be_empty
+      end
+    end
   end
 
   describe "lock name validation" do

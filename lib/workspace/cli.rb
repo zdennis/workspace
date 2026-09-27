@@ -807,7 +807,10 @@ module Workspace
 
         Note: `lock release`/`lock clear` exit 0 even when nothing was
         held/cleared, except that `release` exits 3 when it reports an idle
-        takeover. `acquire` has its own exit codes above.
+        takeover, and `clear` exits 1 when it keeps the devenv lock because
+        the dev environment's process group could not be stopped (owned by
+        another user, or still running after SIGKILL). `acquire` has its own
+        exit codes above.
 
         Enforcement: once hooks are installed (see `workspace init`/`doctor`),
         Edit/Write/MultiEdit/NotebookEdit are denied (exit 2) for any agent

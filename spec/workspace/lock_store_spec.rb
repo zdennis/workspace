@@ -379,6 +379,71 @@ RSpec.describe Workspace::LockStore do
     it "returns nil for a name with no entry" do
       expect(store.clear("nothing")).to be_nil
     end
+
+    context "with keep_process_holder" do
+      def process_identity(pid:)
+        identity(pid: pid).merge(kind: "process", pgid: pid, branch: "main")
+      end
+
+      it "removes the queue but keeps a process holder until finish_clear" do
+        s = store
+        s.acquire("devenv", identity: process_identity(pid: 100), waiter_pid: 100, waiter_started: "start-100")
+        s.acquire("devenv", identity: process_identity(pid: 200), waiter_pid: 200, waiter_started: "start-200", wait: true)
+
+        removed = s.clear("devenv", keep_process_holder: true)
+
+        expect(removed).to include(pending: true)
+        expect(removed[:queue].size).to eq(1)
+        expect(s.status("devenv")["devenv"]["holder"]["pid"]).to eq(100)
+        expect(s.status("devenv")["devenv"]["queue"]).to be_empty
+        expect(s.poll("devenv", 200)).to eq(status: :cleared)
+
+        expect(s.finish_clear("devenv", removed[:holder], queue_size: 1)).to be(true)
+        expect(s.status("devenv")).to be_empty
+        audit = File.readlines(File.join(tmpdir, "locks.jsonl")).map { |l| JSON.parse(l) }.last
+        expect(audit).to include("event" => "clear", "lock" => "devenv", "queue_size" => 1)
+      end
+
+      it "clears an agent holder in one step as usual" do
+        s = store
+        s.acquire("edit", identity: identity(pid: 100), waiter_pid: 100, waiter_started: "start-100")
+
+        removed = s.clear("edit", keep_process_holder: true)
+
+        expect(removed).not_to have_key(:pending)
+        expect(s.status("edit")).to be_empty
+      end
+
+      it "leaves a newer holder alone when the stopped one already released" do
+        s = store
+        s.acquire("devenv", identity: process_identity(pid: 100), waiter_pid: 100, waiter_started: "start-100")
+        removed = s.clear("devenv", keep_process_holder: true)
+        s.acquire("devenv", identity: process_identity(pid: 300), waiter_pid: 300, waiter_started: "start-300", wait: true)
+        s.release("devenv", 100)
+
+        expect(s.finish_clear("devenv", removed[:holder])).to be(false)
+        expect(s.status("devenv")["devenv"]["holder"]["pid"]).to eq(300)
+      end
+
+      it "promotes a waiter that queued while the holder was being stopped" do
+        s = store
+        s.acquire("devenv", identity: process_identity(pid: 100), waiter_pid: 100, waiter_started: "start-100")
+        removed = s.clear("devenv", keep_process_holder: true)
+        s.acquire("devenv", identity: process_identity(pid: 300), waiter_pid: 300, waiter_started: "start-300", wait: true)
+
+        expect(s.finish_clear("devenv", removed[:holder])).to be(true)
+        expect(s.status("devenv")["devenv"]["holder"]["pid"]).to eq(300)
+      end
+
+      it "does not remove a holder that reused the pid with a different start time" do
+        s = store
+        s.acquire("devenv", identity: process_identity(pid: 100), waiter_pid: 100, waiter_started: "start-100")
+        removed = s.clear("devenv", keep_process_holder: true)
+
+        expect(s.finish_clear("devenv", removed[:holder].merge("started" => "other"))).to be(false)
+        expect(s.status("devenv")["devenv"]["holder"]["pid"]).to eq(100)
+      end
+    end
   end
 
   describe "persistence" do

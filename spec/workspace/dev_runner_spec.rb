@@ -590,6 +590,22 @@ RSpec.describe Workspace::ProcessGroupTerminator do
       expect { terminator.terminate(4242, stop_timeout: 0) }.to raise_error(Workspace::Error, /not permitted/)
     end
 
+    it "names the users owning the group's live processes in the error" do
+      kill, _sent = eperm_kill
+      terminator = described_class.new(kill: kill, member_states: ->(_pgid) { ["S"] }, member_owners: ->(_pgid) { ["alice", "root"] },
+        own_pgid: 1)
+
+      expect { terminator.running?(4242) }.to raise_error(Workspace::Error, /not permitted to signal \(owned by alice, root: /)
+    end
+
+    it "still raises the not-permitted error when the owners cannot be looked up" do
+      kill, _sent = eperm_kill
+      terminator = described_class.new(kill: kill, member_states: ->(_pgid) { ["S"] },
+        member_owners: ->(_pgid) { raise Workspace::Error, "ps failed" }, own_pgid: 1)
+
+      expect { terminator.running?(4242) }.to raise_error(Workspace::Error, /not permitted to signal \(another user's/)
+    end
+
     it "raises from stop_holder rather than returning a stop that never happened" do
       kill, _sent = eperm_kill
       terminator = described_class.new(kill: kill, member_states: ->(_pgid) { ["S"] }, own_pgid: 1)

@@ -22,15 +22,19 @@ module Workspace
     # @param kill [#call] sends a signal, called as `kill.call(signal, target)` like `Process.kill`
     # @param member_states [#call] called with a pgid, returns the `ps` state
     #   (e.g. "S", "Z+") of every process in that group
+    # @param member_owners [#call] called with a pgid, returns the user names
+    #   owning that group's live processes, named in the not-permitted error
     def initialize(clock: -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) },
       sleeper: ->(seconds) { sleep(seconds) }, poll_interval: 0.1, own_pgid: Process.getpgrp,
-      kill: ->(signal, target) { Process.kill(signal, target) }, member_states: method(:ps_member_states))
+      kill: ->(signal, target) { Process.kill(signal, target) }, member_states: method(:ps_member_states),
+      member_owners: method(:ps_member_owners))
       @clock = clock
       @sleeper = sleeper
       @poll_interval = poll_interval
       @own_pgid = own_pgid
       @kill = kill
       @member_states = member_states
+      @member_owners = member_owners
     end
 
     # Stops a `kind: "process"` lock holder (the dev wrapper): SIGTERM to the
@@ -106,17 +110,35 @@ module Workspace
     end
 
     def not_permitted(pgid)
+      owners = owners_of(pgid)
+      owned_by = owners.empty? ? "" : "owned by #{owners.join(", ")}: "
       Workspace::Error.new("process group #{pgid} has running processes this user is not permitted to signal " \
-        "(its id was likely reused by another user's processes), so it was not signalled. " \
+        "(#{owned_by}another user's processes, or its id was reused by them), so it was not signalled. " \
         "Inspect it with: ps -axo pid,pgid,user,stat,command | awk '$2 == #{pgid}'")
     end
 
+    # The owners only enrich the error, so a failed lookup just leaves them out.
+    def owners_of(pgid)
+      @member_owners.call(pgid)
+    rescue Workspace::Error
+      []
+    end
+
     def ps_member_states(pgid)
-      stdout, stderr, status = Open3.capture3({"LC_ALL" => "C"}, "ps", "-axo", "pgid=,stat=")
+      ps_members(pgid).map(&:first)
+    end
+
+    def ps_member_owners(pgid)
+      ps_members(pgid).filter_map { |state, user| user unless state.start_with?("Z") }.uniq
+    end
+
+    # @return [Array<Array(String, String)>] [state, user] for each process in the group
+    def ps_members(pgid)
+      stdout, stderr, status = Open3.capture3({"LC_ALL" => "C"}, "ps", "-axo", "pgid=,stat=,user=")
       raise Workspace::Error, "could not read the process table (ps failed: #{stderr.strip})" unless status.success?
       stdout.lines.filter_map do |line|
-        group, state = line.split
-        state if group.to_i == pgid && state
+        group, state, user = line.split
+        [state, user] if group.to_i == pgid && state
       end
     end
   end
