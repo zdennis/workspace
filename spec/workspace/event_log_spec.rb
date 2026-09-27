@@ -128,6 +128,76 @@ RSpec.describe Workspace::EventLog do
     end
   end
 
+  describe "#record" do
+    it "appends an activity event that reconstruct ignores" do
+      event_log.append(type: "launched", project: "proj1", data: {"unique_id" => "uid1"})
+      expect(event_log.record(type: "dispatched", project: "proj1", data: {"work_item_ref" => "W-1"})).to be true
+
+      expect(event_log.events.map { |e| e["type"] }).to eq(["launched", "dispatched"])
+      expect(event_log.reconstruct).to eq({"proj1" => {"unique_id" => "uid1"}})
+    end
+
+    it "warns once on the error stream and carries on when the log can't be written" do
+      allow(config).to receive(:event_log_file).and_return(File.join(tmpdir, "missing-dir", "events.jsonl"))
+
+      expect(event_log.record(type: "dispatched", project: "proj1")).to be false
+      expect(event_log.record(type: "dispatched", project: "proj1")).to be false
+
+      expect(output.string.scan("could not write to the event log").size).to eq(1)
+    end
+
+    it "writes each event as one whole line when several processes append at once" do
+      payload = "x" * 6_000
+      pids = 4.times.map do |n|
+        fork do
+          log = described_class.new(config: config, error_output: StringIO.new)
+          50.times { |i| log.record(type: "dispatched", project: "p#{n}", data: {"i" => i, "pad" => payload}) }
+          exit!(0)
+        end
+      end
+      pids.each { |pid| Process.wait(pid) }
+
+      lines = File.readlines(event_log_file)
+      expect(lines.size).to eq(200)
+      expect(lines.map { |line| JSON.parse(line)["data"]["pad"].size }.uniq).to eq([6_000])
+    end
+  end
+
+  describe "#latest_agent_states" do
+    it "returns the last agent_state per pane for the project" do
+      event_log.record(type: "agent_state", project: "proj1", data: {"pane_id" => "%1", "state" => "working"})
+      event_log.record(type: "agent_state", project: "proj1", data: {"pane_id" => "%1", "state" => "idle"})
+      event_log.record(type: "agent_state", project: "proj1", data: {"pane_id" => "%2", "state" => "waiting"})
+      event_log.record(type: "agent_state", project: "other", data: {"pane_id" => "%1", "state" => "working"})
+
+      states = event_log.latest_agent_states("proj1")
+      expect(states.transform_values { |d| d["state"] }).to eq({"%1" => "idle", "%2" => "waiting"})
+    end
+
+    it "skips lines that are not event objects" do
+      File.write(event_log_file, "3\n[1]\n")
+      event_log.record(type: "agent_state", project: "proj1", data: {"pane_id" => "%1", "state" => "idle"})
+
+      expect(event_log.latest_agent_states("proj1").keys).to eq(["%1"])
+    end
+  end
+
+  describe "#compact with activity" do
+    it "keeps each live pane's latest agent_state and drops other activity" do
+      event_log.append(type: "launched", project: "proj1", data: {"unique_id" => "uid1"})
+      event_log.record(type: "dispatched", project: "proj1")
+      event_log.record(type: "agent_state", project: "proj1", data: {"pane_id" => "%1", "state" => "working"})
+      event_log.record(type: "agent_state", project: "proj1", data: {"pane_id" => "%1", "state" => "idle"})
+      event_log.record(type: "agent_state", project: "proj1", data: {"pane_id" => "%2", "state" => "closed"})
+
+      event_log.compact
+
+      expect(event_log.events.map { |e| [e["type"], e.dig("data", "state")] })
+        .to eq([["compacted", nil], ["agent_state", "idle"]])
+      expect(event_log.latest_agent_states("proj1")["%1"]["state"]).to eq("idle")
+    end
+  end
+
   describe "#size" do
     it "returns 0 when file does not exist" do
       expect(event_log.size).to eq(0)
@@ -141,7 +211,7 @@ RSpec.describe Workspace::EventLog do
 
   describe "#warn_if_large" do
     it "warns when file exceeds threshold" do
-      File.write(event_log_file, "x" * 11_000)
+      File.write(event_log_file, "x" * 1_100_000)
       event_log.warn_if_large
       expect(output.string).to include("event-log compact")
     end
