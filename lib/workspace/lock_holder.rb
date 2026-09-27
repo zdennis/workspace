@@ -6,10 +6,11 @@ module Workspace
   #
   # Identity is the agent process's pid plus its `ps` start time (`lstart`),
   # never a heartbeat: the start time guards against PID reuse without
-  # costing the agent any tokens. Inside tmux the agent is found by walking
-  # down from the pane's own process with {ProcessTree::Snapshot#find_descendant};
-  # outside tmux (or when the pane's process cannot be resolved), the nearest
-  # matching ancestor of this process is used instead.
+  # costing the agent any tokens. Any registered {AgentProvider} counts as an
+  # agent. Inside tmux the agent is found by walking down from the pane's own
+  # process with {ProcessTree::Snapshot#find_descendant}; outside tmux (or when
+  # the pane's process cannot be resolved), the nearest matching ancestor of
+  # this process is used instead.
   class LockHolder
     # @param holder [Hash, nil] a stored holder/waiter record with "pid" and "started"
     # @param identity [Hash] an identity from {#current}, with :pid and :started
@@ -19,11 +20,13 @@ module Workspace
     end
 
     # @param process_tree [Workspace::ProcessTree] process table snapshots
-    # @param provider [Workspace::AgentProvider] agent CLI to look for (defaults to Claude Code)
+    # @param providers [Array<Workspace::AgentProvider>] agent CLIs to look for
+    #   (defaults to every registered provider)
     # @param env [Hash] environment lookup, injectable for tests
-    def initialize(process_tree: Workspace::ProcessTree.new, provider: AgentProvider.find("claude"), env: ENV)
+    def initialize(process_tree: Workspace::ProcessTree.new, providers: AgentProvider.all, env: ENV)
       @process_tree = process_tree
-      @provider = provider
+      @executables = providers.map(&:executable)
+      @background_markers = providers.flat_map(&:background_markers)
       @env = env
     end
 
@@ -97,11 +100,11 @@ module Workspace
       return nil if pane.nil? || pane.empty?
       pane_pid = pane_pid_for(pane)
       return nil unless pane_pid
-      snapshot.find_descendant(pane_pid, [@provider.executable], exclude: @provider.background_markers, include_root: true)
+      snapshot.find_descendant(pane_pid, @executables, exclude: @background_markers, include_root: true)
     end
 
     def ancestor_process(snapshot)
-      snapshot.find_ancestor(Process.pid, [@provider.executable], exclude: @provider.background_markers)
+      snapshot.find_ancestor(Process.pid, @executables, exclude: @background_markers)
     end
 
     PANE_PID_FORMAT = "#" + "{pane_pid}"

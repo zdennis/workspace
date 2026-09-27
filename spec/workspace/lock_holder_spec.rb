@@ -6,7 +6,7 @@ RSpec.describe Workspace::LockHolder do
   let(:provider) { Workspace::AgentProvider.find("claude") }
   let(:env) { {} }
 
-  subject(:holder) { described_class.new(process_tree: process_tree, provider: provider, env: env) }
+  subject(:holder) { described_class.new(process_tree: process_tree, providers: [provider], env: env) }
 
   before { allow(process_tree).to receive(:snapshot).and_return(snapshot) }
 
@@ -56,6 +56,47 @@ RSpec.describe Workspace::LockHolder do
         allow(snapshot).to receive(:find_ancestor).and_return(nil)
 
         expect(holder.current).to be_nil
+      end
+    end
+  end
+
+  describe "#current with the default provider registry" do
+    subject(:holder) { described_class.new(process_tree: process_tree, env: env) }
+
+    let(:env) { {} }
+    let(:snapshot) { Workspace::ProcessTree::Snapshot.new(processes) }
+
+    def process(pid, ppid, args)
+      {pid: pid, ppid: ppid, lstart: "start-#{pid}", command: args.split.first, args: args}
+    end
+
+    context "when the calling agent is not Claude Code" do
+      let(:processes) do
+        [
+          process(1, 0, "launchd"),
+          process(700, 1, "codex"),
+          process(701, 700, "/bin/zsh -c workspace lock"),
+          process(Process.pid, 701, "ruby bin/workspace lock")
+        ]
+      end
+
+      it "resolves to that agent's process" do
+        expect(holder.current).to include(pid: 700, started: "start-700")
+      end
+    end
+
+    context "when the calling agent is Claude Code" do
+      let(:processes) do
+        [
+          process(1, 0, "launchd"),
+          process(800, 1, "claude"),
+          process(801, 800, "claude daemon run"),
+          process(Process.pid, 800, "ruby bin/workspace lock")
+        ]
+      end
+
+      it "still resolves to the claude process, skipping its background helpers" do
+        expect(holder.current).to include(pid: 800, started: "start-800")
       end
     end
   end
