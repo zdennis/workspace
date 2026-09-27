@@ -441,7 +441,12 @@ module Workspace
 
         # The usage needn't be known, only confirmable: a pane that has no
         # reading at all is let through once the monitor knows it's Claude,
-        # whose first status-line render after /clear confirms it.
+        # whose first status-line render after /clear confirms it. A
+        # freshly launched Claude pane may not have rendered its status
+        # line yet, so NO_READING is expected there; an unknown-kind pane
+        # with no reading is refused with FIX_HINT instead of guessed at.
+        # Mirrors AgentRestart.confirmable? (lib/workspace/agent_restart.rb) —
+        # keep both in sync if this changes.
         reading = @context_reader.read(pane_id: pane_id)
         confirmable = AgentRestart.confirmable?(reading) &&
           (reading[:error] != ContextReasons::NO_READING || kind == "claude")
