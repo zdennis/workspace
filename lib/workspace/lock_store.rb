@@ -283,7 +283,7 @@ module Workspace
     # kind-specific side effect.
     #
     # With +keep_process_holder+, a `kind: "process"` holder is left in
-    # place and only the queue is removed, except for a waiter queued by
+    # place and only the queue is removed, except for a live waiter queued by
     # `dev up --takeover`: that one means to replace this holder, not wait
     # on it, so it stays first in line and {#finish_clear} (or the holder's
     # own release) promotes it. The holder's process group has to be
@@ -308,7 +308,7 @@ module Workspace
         holder = entry["holder"]
         yield holder if block_given?
         if keep_process_holder && holder && holder["kind"] == "process"
-          takeovers, queue = entry["queue"].partition { |w| w["takeover"] }
+          takeovers, queue = entry["queue"].partition { |w| w["takeover"] && waiter_alive?(w) }
           entry["queue"] = takeovers
           @logger.debug { "lock: clearing #{name}#{" by #{cleared_by}" if cleared_by}, holder kept until stopped" }
           audit(:clear, name, holder: holder_summary(holder), queue_size: queue.size, cleared_by: cleared_by, holder_kept: true,

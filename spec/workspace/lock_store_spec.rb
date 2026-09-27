@@ -470,6 +470,37 @@ RSpec.describe Workspace::LockStore do
         expect(s.status("devenv")["devenv"]["holder"]).to include("pid" => 300)
       end
 
+      it "drops a dead takeover waiter instead of keeping or counting it" do
+        s = store
+        s.acquire("devenv", identity: process_identity(pid: 100), waiter_pid: 100, waiter_started: "start-100")
+        s.acquire("devenv", identity: process_identity(pid: 300), waiter_pid: 300, waiter_started: "start-300", wait: true, priority: true)
+        s.acquire("devenv", identity: process_identity(pid: 400), waiter_pid: 400, waiter_started: "start-400", wait: true, priority: true)
+        liveness.kill(300)
+
+        removed = s.clear("devenv", keep_process_holder: true)
+
+        expect(removed[:takeovers].map { |w| w["waiter_pid"] }).to eq([400])
+        expect(removed[:queue].map { |w| w["waiter_pid"] }).to eq([300])
+        expect(s.status("devenv")["devenv"]["queue"].map { |w| w["waiter_pid"] }).to eq([400])
+        event = File.readlines(File.join(tmpdir, "locks.jsonl")).map { |l| JSON.parse(l) }.last
+        expect(event).to include("event" => "clear", "queue_size" => 1, "takeovers_kept" => 1)
+      end
+
+      it "omits takeovers_kept when every takeover waiter is dead" do
+        s = store
+        s.acquire("devenv", identity: process_identity(pid: 100), waiter_pid: 100, waiter_started: "start-100")
+        s.acquire("devenv", identity: process_identity(pid: 300), waiter_pid: 300, waiter_started: "start-300", wait: true, priority: true)
+        liveness.kill(300)
+
+        removed = s.clear("devenv", keep_process_holder: true)
+
+        expect(removed[:takeovers]).to eq([])
+        expect(s.status("devenv")["devenv"]["queue"]).to be_empty
+        event = File.readlines(File.join(tmpdir, "locks.jsonl")).map { |l| JSON.parse(l) }.last
+        expect(event).to include("event" => "clear", "holder_kept" => true)
+        expect(event).not_to have_key("takeovers_kept")
+      end
+
       it "marks a waiter that re-queues with priority as a takeover" do
         s = store
         s.acquire("devenv", identity: process_identity(pid: 100), waiter_pid: 100, waiter_started: "start-100")
