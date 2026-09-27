@@ -368,13 +368,20 @@ module Workspace
       end
 
       # Records one waiter's lock wait events in the event log, under the lock
-      # namespace's project name. Resolved only once a wait starts, so an
-      # uncontended acquire costs nothing extra.
+      # namespace's project name (the parent/main workspace). Also carries
+      # the originating worktree's own workspace name in "workspace", when
+      # the waiter is running from a worktree, so `event-log show --project
+      # <worktree name>` can still find its lock events (CLI matches either
+      # field). Resolved only once a wait starts, so an uncontended acquire
+      # costs nothing extra.
       def wait_logger(working_dir, name, waiter_pid)
         return ->(*) {} unless @event_log
         project = @lock_namespace.resolve(cwd: working_dir)[:display]
+        workspace = WorkspaceLineage.new.resolve(cwd: working_dir).worktree
         lambda do |type, data|
-          @event_log.record(type: type, project: project, data: {"lock" => name, "pid" => waiter_pid}.merge(data))
+          entry_data = {"lock" => name, "pid" => waiter_pid}.merge(data)
+          entry_data["workspace"] = workspace if workspace
+          @event_log.record(type: type, project: project, data: entry_data)
         end
       rescue Workspace::Error
         ->(*) {}

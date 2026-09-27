@@ -255,6 +255,7 @@ module Workspace
           branch: git(worktree, "rev-parse", "--abbrev-ref", "HEAD"),
           config_name: lineage.worktree || lineage.name,
           project: lineage.name,
+          workspace: lineage.worktree,
           settings: @dev_config.for_project(lineage.name),
           store: LockStore.new(dir: @lock_namespace.resolve(cwd: working_dir)[:dir], liveness: @lock_holder, terminator: @terminator)
         }
@@ -456,9 +457,14 @@ module Workspace
       end
 
       # Records a devenv lock event for the wrapper +pid+ under the project's
-      # name. EventLog#record never raises.
+      # name. Also carries the originating worktree's own workspace name in
+      # "workspace" (data), when running from a worktree, so `event-log show
+      # --project <worktree name>` still finds its devenv lock events.
+      # EventLog#record never raises.
       def log_activity(ctx, type, pid, data)
-        @event_log&.record(type: type, project: ctx[:project], data: {"lock" => LOCK_NAME, "pid" => pid}.merge(data))
+        entry_data = {"lock" => LOCK_NAME, "pid" => pid}.merge(data)
+        entry_data["workspace"] = ctx[:workspace] if ctx[:workspace]
+        @event_log&.record(type: type, project: ctx[:project], data: entry_data)
       end
 
       # Polls until the takeover wrapper is in the queue (or already holds
