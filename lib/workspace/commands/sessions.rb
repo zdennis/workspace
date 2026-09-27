@@ -98,21 +98,29 @@ module Workspace
         Array(pane["agents"]).each { |agent| render_agent(agent) }
       end
 
-      # Loads the `edit` lock's holder and queue once per render — never per
-      # pane — and stamps each pane with both the human `"lock"` string
-      # ("edit ✓", "edit #2", or "" for no lock) and structured fields for
-      # `--json` consumers: `"lock_state"` ("held", "queued", or nil),
-      # `"lock_position"` (1-based live-queue position, or nil), and
-      # `"lock_name"` (the lock's name, or nil). A holder or waiter flagged
-      # `"stale"` (its pid is no longer alive) is treated as absent: it never
-      # renders "✓" or "held", and it is skipped when numbering the queue, so
-      # `#1`/position 1 always refers to the next live waiter.
+      # Loads every lock in the project's namespace once per render — never
+      # per pane — and stamps each pane with both the human `"lock"` string
+      # (each held/queued lock the pane is party to, joined with a space,
+      # e.g. `"edit ✓ devenv #2"`) and structured fields for `--json`
+      # consumers: `"lock_state"` ("held", "queued", or nil), `"lock_position"`
+      # (1-based live-queue position, or nil), and `"lock_name"` (the lock's
+      # name, or nil) describe the {LOCK_NAME} lock when the pane holds or
+      # queues for it, else the pane's first lock (by the same edit-first,
+      # alphabetical ordering as the label), for backward compatibility with
+      # consumers written before multi-lock support. A `"locks"` array of
+      # `{"name" => ..., "state" => ..., "position" => ...}` carries every
+      # lock the pane is party to, in that same order.
+      #
+      # A holder or waiter flagged `"stale"` (its pid is no longer alive) is
+      # treated as absent: it never renders "✓" or "held", and it is skipped
+      # when numbering the queue, so `#1`/position 1 always refers to the
+      # next live waiter.
       #
       # Hides the whole column — leaving `"lock"`, `"lock_state"`,
-      # `"lock_position"`, and `"lock_name"` all unset — when the rendered
-      # workspace's project root can't be resolved, rather than guessing at
-      # some other project's lock state via the command's own working
-      # directory.
+      # `"lock_position"`, `"lock_name"`, and `"locks"` all unset — when the
+      # rendered workspace's project root can't be resolved, rather than
+      # guessing at some other project's lock state via the command's own
+      # working directory.
       def apply_lock_column(panes)
         return unless @lock_namespace && @lock_holder
 
@@ -121,11 +129,13 @@ module Workspace
 
         positions = lock_positions(root)
         panes.each do |pane|
-          info = positions[pane["pane_id"]]
-          pane["lock"] = info ? info[:label] : ""
-          pane["lock_state"] = info ? info[:state] : nil
-          pane["lock_position"] = info ? info[:position] : nil
-          pane["lock_name"] = info ? info[:name] : nil
+          entries = positions[pane["pane_id"]] || []
+          pane["lock"] = entries.map { |e| e[:label] }.join(" ")
+          pane["locks"] = entries.map { |e| {"name" => e[:name], "state" => e[:state], "position" => e[:position]} }
+          primary = entries.find { |e| e[:name] == LOCK_NAME } || entries.first
+          pane["lock_state"] = primary ? primary[:state] : nil
+          pane["lock_position"] = primary ? primary[:position] : nil
+          pane["lock_name"] = primary ? primary[:name] : nil
         end
       end
 
@@ -134,23 +144,32 @@ module Workspace
         @project_config.project_root_for(@name)
       end
 
+      # Returns pane_id => ordered array of lock-entry hashes (`:label`,
+      # `:state`, `:position`, `:name`), ordered {LOCK_NAME} first, then every
+      # other lock name alphabetically, so the label and the primary
+      # `--json` fields stay deterministic across renders.
       def lock_positions(root)
         namespace = @lock_namespace.resolve(cwd: root)
         store = LockStore.new(dir: namespace[:dir], liveness: @lock_holder)
-        entry = store.status(LOCK_NAME)[LOCK_NAME] || {}
-        positions = {}
-        holder = entry["holder"]
-        if holder && holder["pane"] && !holder["stale"]
-          positions[holder["pane"]] = {label: "#{LOCK_NAME} ✓", state: "held", position: nil, name: LOCK_NAME}
-        end
-        live_waiters = (entry["queue"] || []).reject { |waiter| waiter["stale"] }
-        live_waiters.each_with_index do |waiter, i|
-          next unless waiter["pane"]
-          positions[waiter["pane"]] ||= {label: "#{LOCK_NAME} ##{i + 1}", state: "queued", position: i + 1, name: LOCK_NAME}
+        statuses = store.status
+        names = statuses.keys.sort_by { |name| [(name == LOCK_NAME) ? 0 : 1, name] }
+
+        positions = Hash.new { |h, k| h[k] = [] }
+        names.each do |name|
+          entry = statuses[name] || {}
+          holder = entry["holder"]
+          if holder && holder["pane"] && !holder["stale"]
+            positions[holder["pane"]] << {label: "#{name} ✓", state: "held", position: nil, name: name}
+          end
+          live_waiters = (entry["queue"] || []).reject { |waiter| waiter["stale"] }
+          live_waiters.each_with_index do |waiter, i|
+            next unless waiter["pane"]
+            positions[waiter["pane"]] << {label: "#{name} ##{i + 1}", state: "queued", position: i + 1, name: name}
+          end
         end
         positions
       rescue Workspace::Error
-        {}
+        Hash.new { |h, k| h[k] = [] }
       end
 
       # Indented to start under the TITLE column so a sub-agent reads as

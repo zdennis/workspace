@@ -26,17 +26,20 @@ The daemon holds the session state; this command only asks for it, over the agen
 
 Each pane shows its index, kind, title, state (`working`/`idle`), how long it's been idle, and a LOCK column. Sub-agents started within a pane (Claude Code's `Task` tool invocations) are listed indented underneath their parent pane.
 
-**LOCK column** — shows this pane's relationship to the `edit` lock ([`workspace lock`](README.lock.md)): `edit ✓` for the pane currently holding it, `edit #N` for a pane queued at position `N`, or blank for every other pane, including one with no agent at all. A dead holder or waiter (its process no longer alive) never shows `✓`, and is skipped when numbering the queue, so `#1` always refers to the next live waiter. The namespace is resolved from the *rendered workspace's* project root (its tmuxinator config), not the command's own working directory, so `workspace sessions other-project` always shows `other-project`'s lock state, never whatever project happens to be in front of it. If that project's root can't be resolved, the column is hidden rather than guessed. The lock store is loaded once per render (never once per pane), so the column costs one extra file read, not a `git`/`ps` call per row.
+**LOCK column** — shows this pane's relationship to every lock in the project's namespace ([`workspace lock`](README.lock.md)), not just `edit`: a pane holding or queued for more than one lock (e.g. `edit` plus a `devenv` process lock) shows all of them, space-joined, `edit` first and any others alphabetical after it — `edit ✓ devenv #2`. A pane with no lock relationship shows blank, including one with no agent at all. A dead holder or waiter (its process no longer alive) never shows `✓`, and is skipped when numbering each lock's queue, so `#1` always refers to the next live waiter. The namespace is resolved from the *rendered workspace's* project root (its tmuxinator config), not the command's own working directory, so `workspace sessions other-project` always shows `other-project`'s lock state, never whatever project happens to be in front of it. If that project's root can't be resolved, the column is hidden rather than guessed. The lock store is loaded once per render (never once per pane), so the column costs one extra file read, not a `git`/`ps` call per row.
 
 **`--json` lock fields** — alongside the human `"lock"` string described above, each pane in `--json` carries structured fields for scripting:
 
 | Field | Values | Meaning |
 |-------|--------|---------|
-| `lock_state` | `"held"`, `"queued"`, or `null` | This pane's relationship to the lock |
+| `lock_state` | `"held"`, `"queued"`, or `null` | This pane's relationship to the `edit` lock, or to its first lock if it doesn't hold or queue for `edit` |
 | `lock_position` | integer (1-based) or `null` | Live-queue position when `lock_state` is `"queued"`; `null` otherwise |
-| `lock_name` | `"edit"` or `null` | The lock's name when this pane holds or queues for it; `null` otherwise |
+| `lock_name` | lock name or `null` | The lock these three fields describe; `null` if the pane holds or queues for no lock |
+| `locks` | array | Every lock the pane holds or queues for, each `{"name", "state", "position"}` with the same meanings as above, in the same `edit`-first order as the `lock` label |
 
-When the LOCK column is hidden (project root unresolved), all four fields (`lock`, `lock_state`, `lock_position`, `lock_name`) are absent from each pane's JSON, not merely `null` — a consumer should treat a missing `lock_state` key the same as a `null` one.
+`lock_state`/`lock_position`/`lock_name` are kept for scripts written before multi-lock support: they always describe the `edit` lock when the pane has one, falling back to the pane's first lock (by the label's ordering) otherwise. A script that needs every lock a pane holds should read `locks` instead.
+
+When the LOCK column is hidden (project root unresolved), all five fields (`lock`, `lock_state`, `lock_position`, `lock_name`, `locks`) are absent from each pane's JSON, not merely `null` — a consumer should treat a missing `lock_state` key the same as a `null` one.
 
 ## Examples
 
