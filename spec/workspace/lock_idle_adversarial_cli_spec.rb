@@ -5,7 +5,7 @@ require "stringio"
 # locks.idle_grace config, `workspace lock instructions`). Each `it` is a
 # regression guard pinning a defect that has since been fixed.
 RSpec.describe "PR3 adversarial findings" do
-  def build_cli(output:, error_output:, lock_command: nil)
+  def build_cli(output:, error_output:, lock_command: nil, statusline_command: nil)
     placeholder = Object.new
 
     Workspace::CLI.new(
@@ -20,7 +20,7 @@ RSpec.describe "PR3 adversarial findings" do
       run_result_store: placeholder, run_and_report_command: placeholder, capture_command: placeholder,
       lock_command: lock_command || placeholder, dev_command: placeholder, parent_command: placeholder,
       agent_command: placeholder, sessions_command: placeholder, session_event_command: placeholder,
-      config_command: placeholder, exit_handler: FakeExitHandler, output: output, error_output: error_output,
+      config_command: placeholder, statusline_command: statusline_command || placeholder, exit_handler: FakeExitHandler, output: output, error_output: error_output,
       working_dir: Dir.pwd
     )
   end

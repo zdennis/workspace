@@ -59,10 +59,13 @@ module Workspace
     #   agent pane starts waiting or stays idle too long; nil sends no alerts
     # @param idle_alert_after [Numeric, nil] seconds of idle before an agent
     #   pane alerts; nil alerts only on waiting
+    # @param context_reader [Workspace::ContextReader, nil] resolves each
+    #   coding-agent pane's context-window usage; nil omits `context_pct`,
+    #   `context_error`, and `context_updated_at` from {#present}
     def initialize(tmux:, process_tree:, session_name:,
       providers: AgentProvider.all, poll_interval: 2, idle_after: DEFAULT_IDLE_AFTER,
       clock: Time, logger: Workspace::Logger.new, error_output: $stderr, lock_reaper: nil,
-      notifier: nil, idle_alert_after: nil)
+      notifier: nil, idle_alert_after: nil, context_reader: nil)
       @tmux = tmux
       @process_tree = process_tree
       @session_name = session_name
@@ -75,6 +78,7 @@ module Workspace
       @lock_reaper = lock_reaper
       @notifier = notifier
       @idle_alert_after = idle_alert_after
+      @context_reader = context_reader
       @panes = {}
       @failed_scans = 0
       @lock = Mutex.new
@@ -382,7 +386,7 @@ module Workspace
       idle_for = now - (pane[:last_activity_at] || now)
       wait = oldest_wait(pane)
       waiting_since = wait&.dig(:since)
-      {
+      result = {
         "pane_id" => pane[:pane_id],
         "index" => pane[:index],
         "kind" => pane[:kind],
@@ -401,6 +405,26 @@ module Workspace
            "ended_at" => agent[:ended_at]&.utc&.iso8601}
         }
       }
+      apply_context(result, pane) unless pane[:kind] == "shell"
+      result
+    end
+
+    # Stamps `context_pct`/`context_error`/`context_updated_at` onto a
+    # coding-agent pane's presented hash. A pane whose kind is "shell" never
+    # gets these fields at all — never guessed, and never confused with a
+    # pane that legitimately has no coding agent to report on.
+    def apply_context(result, pane)
+      return unless @context_reader
+
+      reading = @context_reader.read(pane_id: pane[:pane_id], agent_pid: pane[:agent_pid], current_session_id: pane[:session_id])
+      result["context_pct"] = reading[:pct]
+      result["context_error"] = reading[:error]
+      result["context_updated_at"] = reading[:updated_at]
+    rescue => e
+      @logger.debug { "session monitor: context read failed (#{e.class}: #{e.message})" }
+      result["context_pct"] = nil
+      result["context_error"] = ContextReasons::NO_READING
+      result["context_updated_at"] = nil
     end
   end
 end

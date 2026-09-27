@@ -59,6 +59,18 @@ The waiting message is cleaned before it is shown or passed on: each run of whit
 
 When the LOCK column is hidden (project root unresolved), all five fields (`lock`, `lock_state`, `lock_position`, `lock_name`, `locks`) are absent from each pane's JSON, not merely `null` — a consumer should treat a missing `lock_state` key the same as a `null` one.
 
+**Context usage fields** — a coding-agent pane (any pane whose `kind` isn't `"shell"`) carries `context_pct` (integer 0-100, or `null`), `context_error` (`null`, or a reason it couldn't be determined), and `context_updated_at` (ISO 8601 UTC, or `null`). A shell pane never carries these fields at all. See [`workspace statusline`](README.statusline.md) for how the reading gets there. When `context_pct` is `null`, `context_error` is one of:
+
+| Reason | Meaning |
+|--------|---------|
+| `no reading recorded (status line not routed through workspace, or not rendered yet)` | Claude's `statusLine` isn't set to `workspace statusline`, or it hasn't rendered yet this session |
+| `no pane id (status-line process lacked $TMUX_PANE)` | The status-line process ran without `$TMUX_PANE` set; usually resolved automatically via the pane's agent process id |
+| `no context.pattern configured (scrape mode)` | `context.source` is `scrape` but `context.pattern` isn't set |
+| `pattern didn't match (scrape mode)` | `context.source` is `scrape` and `context.pattern` didn't match the pane's text |
+| `the last reading is from an earlier Claude session in this pane` | The pane was reused (e.g. Claude restarted in it) and the only reading on record predates the current session |
+
+The fix is always one of: add a `statusLine` entry to `~/.claude/settings.json` (`"statusLine": {"type": "command", "command": "workspace statusline"}`), switch to scrape mode (`workspace config set context.source scrape` and `workspace config set context.pattern '(\d+)% ctx'`), or pass `--context-pct N` to whatever command needs the number. `context_pct` is never guessed — a stale reading is reported as-is, with `context_updated_at` showing its age, since renders are event-driven and none happen during a long tool call.
+
 ## Alerts
 
 The session-monitor daemon can run a command of your choosing when an agent pane starts `waiting`, or when an agent pane's output stays unchanged for longer than `alerts.idle_after` (default `10m`). Set it with [`workspace config`](README.config.md):

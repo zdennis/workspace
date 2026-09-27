@@ -38,6 +38,9 @@ module Workspace
       # @param ps_timeout [Numeric] seconds to wait for `ps` before killing it, for
       #   the session monitor's {Workspace::ProcessTree}
       # @param retry_backoff [Float] seconds to wait between status report retries
+      # @param context_reader [Workspace::ContextReader, nil] resolves each
+      #   coding-agent pane's context usage for `sessions --json`; nil omits
+      #   context fields
       # @param logger [Workspace::Logger] debug logger
       # @param output [IO] output stream for user-facing messages
       # @param error_output [IO] error output stream for errors
@@ -53,6 +56,7 @@ module Workspace
         notifier_factory: nil,
         ps_timeout: Workspace::ProcessTree::DEFAULT_TIMEOUT,
         retry_backoff: 0.5,
+        context_reader: nil,
         logger: Workspace::Logger.new, output: $stdout, error_output: $stderr)
         @config = config
         @tmux = tmux
@@ -68,6 +72,7 @@ module Workspace
         @session_monitor = nil
         @lock_reaper = lock_reaper
         @alert_config = alert_config
+        @context_reader = context_reader
         @notifier_factory = notifier_factory || ->(command) { Notifier.new(command: command, error_output: @error_output) }
         @ps_timeout = ps_timeout
         @retry_backoff = retry_backoff
@@ -800,7 +805,8 @@ module Workspace
           error_output: @error_output,
           lock_reaper: @lock_reaper,
           notifier: notifier,
-          idle_alert_after: alerts[:idle_after]
+          idle_alert_after: alerts[:idle_after],
+          context_reader: @context_reader
         )
       end
 

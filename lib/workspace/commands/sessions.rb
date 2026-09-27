@@ -110,7 +110,8 @@ module Workspace
         panes.each { |pane| pane["waiting_message"] &&= SessionMonitor.clean_message(pane["waiting_message"]) }
         apply_lock_column(panes)
         if json
-          payload = {"schema_version" => JSON_SCHEMA_VERSION}.merge(snapshot).merge("schema_version" => JSON_SCHEMA_VERSION)
+          payload = {"schema_version" => JSON_SCHEMA_VERSION}.merge(snapshot)
+          payload["schema_version"] = JSON_SCHEMA_VERSION
           return @output.puts(JSON.pretty_generate(payload))
         end
 
