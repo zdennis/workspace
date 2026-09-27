@@ -532,6 +532,9 @@ module Workspace
         if next_stage
           token = @token_generator.call
           deadline = stage_deadline(next_stage)
+          # The old stage's poller is still keyed in @pollers here; it is left
+          # alone until the caller's arm_watch replaces it for the new stage,
+          # and its own thread exits on its own once its token no longer matches.
           @tmux.send_keys(entry[:workspace_name], pane_target(next_stage[:pane_index]),
             handoff_instructions(next_stage[:role], handoff_path, token))
           deliver_queued_steers(entry[:workspace_name], work_item_ref, next_stage[:pane_index])
