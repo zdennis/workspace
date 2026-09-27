@@ -103,6 +103,7 @@ workspace <subcommand> [options]
 | sessions | [README](docs/README.sessions.md) | Show coding-agent sessions and sub-agents running in a project's panes |
 | start | [README](docs/README.start.md) | Create a git worktree and launch it (from JIRA key, PR/issue URL, or branch) |
 | status | [README](docs/README.status.md) | Show detailed state of tracked launcher sessions |
+| statusline | [README](docs/README.statusline.md) | Render Claude Code's status line (install as its statusLine command) |
 | stop | [README](docs/README.stop.md) | Stop active workspace projects and their tmux sessions |
 | tile | [README](docs/README.tile.md) | Tile windows across the screen (`--all` for all projects) |
 | version | [README](docs/README.version.md) | Print the workspace version |
