@@ -82,6 +82,7 @@ workspace <subcommand> [options]
 | event-log | [README](docs/README.event-log.md) | Show or compact the append-only event log of state changes and agent activity |
 | finish | [README](docs/README.finish.md) | Verify a worktree is clean and pushed, then remove it (optionally opens a PR) |
 | focus | [README](docs/README.focus.md) | Bring a project's iTerm window to the front |
+| handoff | [README](docs/README.handoff.md) | Check context usage and hand off to a fresh conversation |
 | init | [README](docs/README.init.md) | Install tmuxinator templates and create workspace config directory |
 | kill | [README](docs/README.kill.md) | Kill a worktree project and remove its worktree |
 | launch | [README](docs/README.launch.md) | Launch tmuxinator projects in iTerm2 windows |
