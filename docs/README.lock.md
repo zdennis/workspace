@@ -18,8 +18,8 @@ workspace lock instructions [<name>]
 |--------|-------------|
 | `--task TEXT` | Free-text description shown to other waiters (e.g. `"PROJ-12 fix login"`) |
 | `--wait` | Enqueue and poll instead of refusing immediately when the lock is busy |
-| `--poll SECS` | Seconds between polls while waiting (default: 5) |
-| `--max-wait DURATION` | Stop waiting after `DURATION` seconds (exit 75); re-run to keep waiting |
+| `--poll DURATION` | Time between polls while waiting: `30s`, `5m`, `1h`, or a plain number of seconds (default: 5) |
+| `--max-wait DURATION` | Give up after `DURATION`: `30s`, `5m`, `1h`, or a plain number of seconds (exit 75); re-run to keep waiting |
 
 ## Options (release / clear)
 
@@ -36,6 +36,13 @@ workspace lock instructions [<name>]
 | 4 | Cleared by someone else while waiting |
 | 5 | This agent already holds or waits for a different lock (the deadlock rule) — release it first |
 | 75 | Still queued after `--max-wait`; re-run to keep waiting |
+
+## Exit codes (release)
+
+| Code | Meaning |
+|------|---------|
+| 0 | Released (or idempotently, nothing to release) |
+| 3 | This agent's hold was taken over idle; applies only to `release`, not `acquire` — a displaced agent's `acquire` prints a notice and carries on as usual (see Idle takeover below) |
 
 ## Details
 
@@ -64,7 +71,7 @@ Acquired edit lock. Release with: workspace lock release edit
 
 **SIGINT/SIGTERM** — interrupting a queued `acquire --wait` removes its queue entry and exits 130 (SIGINT) or 143 (SIGTERM). If the poll that notices the signal also acquires the lock, by promotion or idle takeover, `acquire` keeps it and exits 0, like `--max-wait`.
 
-**Idle takeover** — a lock held by an agent that has stopped working doesn't block everyone else forever. The `workspace session-event` hook (installed by [`workspace init`](README.init.md)) marks the agent's hold idle when its turn ends (`Stop`), recording `idle_since`, and marks it active again on its next prompt (`UserPromptSubmit`) or tool use (`PreToolUse`), or when it re-runs `acquire` for the lock it holds. Only the calling agent's own hold is touched, matched by pid and start time. Once a hold has been idle for `locks.idle_grace` (default `5m`), the waiter at the head of the queue takes it over on its next poll; waiters further back never do, and a hold whose agent has resumed is never taken. If the wall clock steps backward past `idle_since`, the grace period restarts from the corrected time. The new holder's `acquire` prints `Took over edit lock from %12 ... idle since <time>.` on stderr before its usual `Acquired` line. `status` shows an idle hold as `IDLE since <time>`.
+**Idle takeover** — a lock held by an agent that has stopped working doesn't block everyone else forever. The `workspace session-event` hook (installed by [`workspace init`](README.init.md)) marks the agent's hold idle when its turn ends (`Stop`), recording `idle_since`, and marks it active again on its next prompt (`UserPromptSubmit`) or tool use (`PreToolUse`), or when it re-runs `acquire` for the lock it holds. Only the calling agent's own hold is touched, matched by pid and start time. Once a hold has been idle for `locks.idle_grace` (default `5m`), the waiter at the head of the queue takes it over on its next poll; waiters further back never do, and a hold whose agent has resumed is never taken. If the wall clock steps backward past `idle_since`, the grace period restarts from the corrected time. The new holder's `acquire` prints `Took over edit lock from %12 ... idle since <time>.` on stderr before its usual `Acquired` line. `status` shows an idle hold as `IDLE since <time>`. A hold acquired outside tmux (no pane to attach the hook to) is never marked idle, so it can't be taken over by idle release; only holds acquired from inside a tmux pane are eligible.
 
 The displaced agent is told once, the next time it runs `acquire` or `release` for that lock (or `release --all`): stderr gets `Your edit lock was taken over by %13 "PROJ-13 ..." in <worktree> at <time>, after this agent had been idle for 312s.` An `acquire` then carries on as usual: it takes the lock if it is free, or with `--wait` queues for it, and exits with its normal code (0 once acquired). A `release` has nothing left to release, so it exits 3. Idle takeover never applies to the dev environment (`devenv`, a `kind: "process"` holder).
 
