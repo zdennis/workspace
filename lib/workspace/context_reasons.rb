@@ -15,6 +15,16 @@ module Workspace
     # scrape mode is configured but `context.pattern` isn't set.
     NO_PATTERN = "no context.pattern configured (scrape mode)"
 
+    # No pane id was available to look the reading up with (the status-line
+    # process ran without $TMUX_PANE set), and no agent pid fallback found a
+    # reading either.
+    NO_PANE_ID = "no pane id (status-line process lacked $TMUX_PANE)"
+
+    # The only reading on record for this pane was recorded under a
+    # different Claude session id -- the pane was reused (e.g. a `claude`
+    # restart) and the old reading is no longer current.
+    STALE_SESSION = "the last reading is from an earlier Claude session in this pane"
+
     # One line of fix instructions, printed alongside any of the reasons
     # above. Never suggests sudo.
     FIX_HINT = <<~HINT.strip

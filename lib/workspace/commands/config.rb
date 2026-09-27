@@ -190,12 +190,47 @@ module Workspace
         raise Workspace::UsageError, "Invalid #{key}: #{e.message}"
       end
 
-      # Counts capturing groups in a regex source by stripping escaped and
-      # non-capturing constructs before counting bare "(". Good enough for
-      # validating a config value; not a full regex parser.
+      # Counts capturing groups (named and unnamed) in a regex source by
+      # walking it character by character, skipping escaped characters and
+      # character-class bodies (`[(]` isn't a group), and recognizing named
+      # groups (`(?<name>`, `(?'name'`) while excluding lookaround
+      # (`(?=`, `(?!`, `(?<=`, `(?<!`) and non-capturing groups (`(?:`).
+      # Good enough for validating a config value; not a full regex parser.
       def capture_group_count(pattern)
-        stripped = pattern.gsub(/\\./, "").gsub(/\(\?[:=!<]/, "")
-        stripped.count("(") - stripped.scan("(?<").size
+        count = 0
+        in_class = false
+        i = 0
+        chars = pattern.chars
+        while i < chars.size
+          c = chars[i]
+          if c == "\\"
+            i += 2
+            next
+          end
+          if in_class
+            in_class = false if c == "]"
+            i += 1
+            next
+          end
+          case c
+          when "["
+            in_class = true
+          when "("
+            if chars[i + 1] == "?"
+              nxt = chars[i + 2]
+              if nxt == "<" && !["=", "!"].include?(chars[i + 3])
+                count += 1 # named group (?<name>...)
+              elsif nxt == "'"
+                count += 1 # named group (?'name'...)
+              end
+              # else: non-capturing (?:...) or lookaround (?=/?!/?<=/?<!), not counted
+            else
+              count += 1 # unnamed capturing group
+            end
+          end
+          i += 1
+        end
+        count
       end
 
       def write(path, data)

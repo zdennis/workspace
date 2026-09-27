@@ -29,16 +29,17 @@ module Workspace
       model = payload.dig("model", "display_name") || "unknown"
       dir = payload["cwd"] || payload.dig("workspace", "project_dir") || cwd
       cost = (payload.dig("cost", "total_cost_usd") || 0).to_f
-      pct = (payload.dig("context_window", "used_percentage") || 0).to_i
+      pct = valid_pct(payload.dig("context_window", "used_percentage"))
       duration_ms = (payload.dig("cost", "total_duration_ms") || 0).to_i
 
       branch = git_branch(dir)
       bar = context_bar(pct)
+      pct_label = pct.nil? ? "?" : pct.to_s
       mins, secs = duration_ms.divmod(60_000).then { |m, r| [m, r / 1000] }
 
       lines = []
       lines << "#{CYAN}[#{model}]#{RESET} #{File.basename(dir)}#{" | #{branch}" if branch}"
-      lines << "#{bar_color(pct)}#{bar}#{RESET} #{pct}% ctx | #{YELLOW}#{format("$%.2f", cost)}#{RESET} | #{mins}m #{secs}s"
+      lines << "#{bar_color(pct)}#{bar}#{RESET} #{pct_label}% ctx | #{YELLOW}#{format("$%.2f", cost)}#{RESET} | #{mins}m #{secs}s"
       lines.join("\n")
     rescue => e
       @logger.debug { "statusline_renderer: render failed (#{e.class}: #{e.message})" }
@@ -47,13 +48,23 @@ module Workspace
 
     private
 
+    # Coerces a raw `used_percentage` value into a sane 0..100 integer, or
+    # nil when it isn't one (a string like "N/A", NaN, or an out-of-range
+    # number) -- never guessed, and never rendered as a fabricated reading.
+    def valid_pct(raw)
+      return nil unless raw.is_a?(Numeric) && (0..100).cover?(raw)
+      raw.round
+    end
+
     def bar_color(pct)
+      return GREEN if pct.nil?
       return RED if pct >= 90
       return YELLOW if pct >= 70
       GREEN
     end
 
     def context_bar(pct)
+      return "░" * 10 if pct.nil?
       filled = (pct / 10).clamp(0, 10)
       empty = 10 - filled
       ("█" * filled) + ("░" * empty)

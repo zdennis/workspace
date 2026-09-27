@@ -568,7 +568,7 @@ RSpec.describe Workspace::SessionMonitor do
     end
 
     it "stamps a coding-agent pane with context_pct/context_error/context_updated_at" do
-      allow(context_reader).to receive(:read).with(pane_id: "%2", agent_pid: 250)
+      allow(context_reader).to receive(:read).with(pane_id: "%2", agent_pid: 250, current_session_id: nil)
         .and_return(pct: 55, error: nil, updated_at: "2026-09-27T00:00:00Z")
 
       monitor.scan

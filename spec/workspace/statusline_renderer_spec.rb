@@ -27,7 +27,7 @@ RSpec.describe Workspace::StatuslineRenderer do
 
   it "defaults missing fields instead of raising" do
     expect { renderer.render({}) }.not_to raise_error
-    expect(renderer.render({})).to include("0% ctx")
+    expect(renderer.render({})).to include("?% ctx")
   end
 
   it "shows the git branch when cwd is a git repo" do

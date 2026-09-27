@@ -28,7 +28,9 @@ module Workspace
 
     # Records a context-window reading.
     #
-    # @param pct [Integer] used_percentage, rounded down
+    # @param pct [Numeric] used_percentage, 0..100; anything else (a string
+    #   like "N/A", a negative number, or a number over 100) is dropped
+    #   rather than recorded as a guess
     # @param pane_id [String, nil] tmux pane id ("%23"), when TMUX_PANE was set
     # @param pid [String, Integer, nil] CLAUDE_PID, used when pane_id is nil
     # @param session_id [String, nil] Claude Code session id
@@ -37,9 +39,10 @@ module Workspace
     # @return [void]
     def record(pct:, pane_id: nil, pid: nil, session_id: nil, cwd: nil, recorded_at: Time.now)
       return if pane_id.nil? && pid.nil?
+      return unless pct.is_a?(Numeric) && (0..100).cover?(pct)
 
       entry = {
-        "pct" => pct.to_i,
+        "pct" => pct.round,
         "recorded_at" => recorded_at.utc.iso8601,
         "session_id" => session_id,
         "cwd" => cwd

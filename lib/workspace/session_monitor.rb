@@ -416,7 +416,7 @@ module Workspace
     def apply_context(result, pane)
       return unless @context_reader
 
-      reading = @context_reader.read(pane_id: pane[:pane_id], agent_pid: pane[:agent_pid])
+      reading = @context_reader.read(pane_id: pane[:pane_id], agent_pid: pane[:agent_pid], current_session_id: pane[:session_id])
       result["context_pct"] = reading[:pct]
       result["context_error"] = reading[:error]
       result["context_updated_at"] = reading[:updated_at]

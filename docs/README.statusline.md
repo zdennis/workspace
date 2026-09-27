@@ -50,7 +50,9 @@ If you'd rather not route Claude's status line through `workspace statusline` (o
 
 - no reading recorded (status line not routed through workspace, or not rendered yet)
 - no pane id (status-line process lacked `$TMUX_PANE`) — usually resolved automatically via `$CLAUDE_PID`
+- no context.pattern configured (scrape mode)
 - pattern didn't match (scrape mode)
+- the last reading is from an earlier Claude session in this pane
 
 Every one of these comes with the same fix: run `workspace doctor --fix`, switch to scrape mode (`workspace config set context.source scrape` and `context.pattern`), or pass `--context-pct N` to whatever command needs the number.
 

@@ -25,23 +25,32 @@ module Workspace
       @logger = logger
     end
 
-    # @param pane_id [String] tmux pane id
+    # @param pane_id [String, nil] tmux pane id
     # @param agent_pid [String, Integer, nil] the pane's coding-agent pid,
     #   used as a fallback lookup when no reading was recorded for pane_id
+    # @param current_session_id [String, nil] the pane's current Claude
+    #   session id; when given and it doesn't match the stored reading's
+    #   session_id, the reading is treated as stale rather than current
     # @return [Hash] pct: [Integer, nil], error: [String, nil],
     #   updated_at: [String, nil] (ISO8601)
-    def read(pane_id:, agent_pid: nil)
+    def read(pane_id:, agent_pid: nil, current_session_id: nil)
       global = safe_load_global
       source = global.dig("context", "source") || "statusline"
-      (source == "scrape") ? read_scrape(pane_id, global) : read_statusline(pane_id, agent_pid)
+      (source == "scrape") ? read_scrape(pane_id, global) : read_statusline(pane_id, agent_pid, current_session_id)
     end
 
     private
 
-    def read_statusline(pane_id, agent_pid)
+    def read_statusline(pane_id, agent_pid, current_session_id)
+      if pane_id.nil?
+        reading = agent_pid && @context_store.reading_for_pid(agent_pid)
+        return present(reading, current_session_id) if reading
+        return absent(ContextReasons::NO_PANE_ID)
+      end
+
       reading = @context_store.reading_for_pane(pane_id)
       reading ||= @context_store.reading_for_pid(agent_pid) if agent_pid
-      return present(reading) if reading
+      return present(reading, current_session_id) if reading
       absent(ContextReasons::NO_READING)
     end
 
@@ -60,7 +69,11 @@ module Workspace
       absent(ContextReasons::PATTERN_NO_MATCH)
     end
 
-    def present(reading)
+    def present(reading, current_session_id = nil)
+      stored_session_id = reading["session_id"]
+      if current_session_id && stored_session_id && stored_session_id != current_session_id
+        return absent(ContextReasons::STALE_SESSION)
+      end
       {pct: reading["pct"], error: nil, updated_at: reading["recorded_at"]}
     end
 
