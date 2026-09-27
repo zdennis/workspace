@@ -904,7 +904,7 @@ module Workspace
       json = false
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: workspace lock status [<name>] [--json]"
-        opts.on("--json", "Emit the documented JSON schema instead of a table (see docs/lock.md)") { json = true }
+        opts.on("--json", "Emit the documented JSON schema instead of a table (see docs/README.lock.md)") { json = true }
       end
       parser.parse!(args)
 
@@ -1025,7 +1025,7 @@ module Workspace
       json = false
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: workspace dev status [--json]"
-        opts.on("--json", "Emit the documented JSON schema instead of a table (see docs/dev.md)") { json = true }
+        opts.on("--json", "Emit the documented JSON schema instead of a table (see docs/README.dev.md)") { json = true }
       end
       parser.parse!(args)
       raise UsageError, parser.help if args.any?

@@ -17,7 +17,7 @@ module Workspace
     class Dev
       LOCK_NAME = DevRunner::LOCK_NAME
       WINDOW_NAME = "devenv"
-      # `workspace dev status --json`'s schema version (see docs/dev.md).
+      # `workspace dev status --json`'s schema version (see docs/README.dev.md).
       JSON_SCHEMA_VERSION = 1
       POLL_SECONDS = 0.2
       STARTUP_TIMEOUT = 30
@@ -125,7 +125,7 @@ module Workspace
       end
 
       # @param working_dir [String] any directory inside the repository
-      # @param json [Boolean] emit the documented `--json` schema (see docs/dev.md)
+      # @param json [Boolean] emit the documented `--json` schema (see docs/README.dev.md)
       #   on stdout instead of the human-readable listing; a store error becomes
       #   a `{"error":}` JSON object on stdout (exit 1) rather than a raised error
       # @return [Hash] {exit_code:}

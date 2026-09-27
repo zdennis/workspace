@@ -20,7 +20,7 @@ module Workspace
       # Lock names end up in file keys and in commands an agent is told to run
       # verbatim, so they are limited to characters that need no shell quoting.
       NAME_PATTERN = /\A[A-Za-z0-9][A-Za-z0-9._-]*\z/
-      # `workspace lock status --json`'s schema version (see docs/lock.md).
+      # `workspace lock status --json`'s schema version (see docs/README.lock.md).
       JSON_SCHEMA_VERSION = 1
 
       # Seconds on a clock that never jumps backward or forward with wall-clock
@@ -148,7 +148,7 @@ module Workspace
 
       # @param name [String, nil] a single lock name, or nil for every lock
       # @param working_dir [String] directory to resolve the lock namespace from
-      # @param json [Boolean] emit the documented `--json` schema (see docs/lock.md)
+      # @param json [Boolean] emit the documented `--json` schema (see docs/README.lock.md)
       #   on stdout instead of the human-readable listing; a store error becomes
       #   a `{"error":}` JSON object on stdout (exit 1) rather than a raised error
       # @return [Hash] {exit_code:}
