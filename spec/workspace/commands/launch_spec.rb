@@ -81,6 +81,18 @@ RSpec.describe Workspace::Commands::Launch do
         expect(output.string).not_to include("Creating")
       end
 
+      it "drops a saved window id whose window can't be found, keeping the rest of the entry" do
+        state["proj1"] = {"unique_id" => "uid-1", "iterm_window_id" => 7}
+        state.save
+        allow(window_manager).to receive(:iterm_windows).and_return({})
+
+        command.call(["proj1"])
+
+        expect(error_output.string).to include("Could not find windows for: proj1")
+        state.load
+        expect(state["proj1"]).to eq("unique_id" => "uid-1")
+      end
+
       it "suppresses progress output when quiet: true" do
         command.call(["proj1"], quiet: true)
 

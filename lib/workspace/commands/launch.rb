@@ -192,10 +192,14 @@ module Workspace
       # window this session no longer has.
       def record_headless(project)
         current = @state[project]
-        entry = (current || {}).except("unique_id", "iterm_window_id").merge("headless" => true)
+        replace_state(project, (current || {}).except("unique_id", "iterm_window_id").merge("headless" => true))
+      end
+
+      # Sets the project's state entry to exactly +entry+. A state_set event
+      # merges into the entry, so dropping keys means removing it first.
+      def replace_state(project, entry)
+        current = @state[project]
         return if current == entry
-        # A state_set event merges into the entry, so dropping keys means
-        # removing the entry first.
         @state.delete(project) if current && (current.keys - entry.keys).any?
         @state[project] = entry
       end
@@ -364,11 +368,7 @@ module Workspace
           # Clear stale window IDs so focus/other commands don't use invalid IDs
           missing_windows.each do |project|
             info = @state[project]
-            if info
-              info = info.dup
-              info.delete("iterm_window_id")
-              @state[project] = info
-            end
+            replace_state(project, info.except("iterm_window_id")) if info
           end
         end
       end
