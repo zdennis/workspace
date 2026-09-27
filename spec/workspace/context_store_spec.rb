@@ -44,6 +44,29 @@ RSpec.describe Workspace::ContextStore do
     expect(store.reading_for_pane("%1")["pct"]).to eq(90)
   end
 
+  it "records a nil pct as a reading (Claude's JSON null right after start/clear)" do
+    store.record(pct: nil, pane_id: "%1", session_id: "sess-2")
+    reading = store.reading_for_pane("%1")
+    expect(reading["pct"]).to be_nil
+    expect(reading["session_id"]).to eq("sess-2")
+  end
+
+  it "a nil pct overwrites a prior numeric reading for the same pane" do
+    store.record(pct: 90, pane_id: "%1", session_id: "sess-1")
+    store.record(pct: nil, pane_id: "%1", session_id: "sess-2")
+    reading = store.reading_for_pane("%1")
+    expect(reading["pct"]).to be_nil
+    expect(reading["session_id"]).to eq("sess-2")
+  end
+
+  it "still drops an invalid non-nil pct (string, negative, over 100)" do
+    store.record(pct: 90, pane_id: "%1")
+    store.record(pct: "N/A", pane_id: "%1")
+    store.record(pct: -1, pane_id: "%1")
+    store.record(pct: 101, pane_id: "%1")
+    expect(store.reading_for_pane("%1")["pct"]).to eq(90)
+  end
+
   it "keeps separate readings for different panes" do
     store.record(pct: 10, pane_id: "%1")
     store.record(pct: 20, pane_id: "%2")
