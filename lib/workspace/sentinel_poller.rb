@@ -23,6 +23,16 @@ module Workspace
     # placeholder is the instruction when the next line carries the rest.
     SUMMARY_PLACEHOLDER = "<one-line summary>".freeze
 
+    # How many lines of history above the visible pane an ordinary poll
+    # reads. Reading the whole history every poll costs more the longer a
+    # stage runs, so only some polls do.
+    RECENT_LINES = 500
+
+    # Every this many polls, and once more before giving up, a tokened poller
+    # reads the pane's whole history, so a sentinel that scrolled past the
+    # recent window between two polls is still found.
+    FULL_SCAN_EVERY = 30
+
     # @param token [String, nil] the dispatch token, or nil for a tokenless sentinel
     # @return [String] the text a stage prints to start its completion line
     def self.marker(token)
@@ -74,17 +84,24 @@ module Workspace
       @thread = Thread.new do
         # Taken inside the thread so a failing capture is reported here rather
         # than raised into whoever started the poller.
-        @baseline = @token ? 0 : capture.to_s.lines.size
+        @baseline = @token ? 0 : capture(full: true).to_s.lines.size
+        polls = 0
         while @running
-          summary = scan
+          # The first pass reads the whole history, to find a sentinel
+          # printed while no one was watching.
+          full = (polls % FULL_SCAN_EVERY).zero?
+          summary = scan(full: full)
+          timed_out = @deadline && @clock.call >= @deadline
+          summary ||= scan(full: true) if timed_out && !full
           if summary
             on_complete.call(summary)
             break
           end
-          if @deadline && @clock.call >= @deadline
+          if timed_out
             on_timeout&.call
             break
           end
+          polls += 1
           sleep @poll_interval
         end
       rescue => e
@@ -110,13 +127,19 @@ module Workspace
 
     private
 
-    def capture
-      @tmux.capture_pane(@session_name, @pane, all: true)
+    # The legacy tokenless mode counts lines from the start of history, so it
+    # always reads all of it.
+    def capture(full:)
+      if full || !@token
+        @tmux.capture_pane(@session_name, @pane, all: true)
+      else
+        @tmux.capture_pane(@session_name, @pane, lines: RECENT_LINES)
+      end
     end
 
     # @return [String, nil] the summary from the newest matching sentinel
-    def scan
-      output = capture
+    def scan(full:)
+      output = capture(full: full)
       return nil unless output
 
       lines = output.lines.drop(@baseline)

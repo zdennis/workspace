@@ -38,6 +38,10 @@ workspace pipeline <subcommand> [options]
 
 **`reset`** deletes the state file. It refuses while the agent is running, because the agent holds that state in memory and clearing the file under it would only put the two out of step. Stop the agent first.
 
+## Limits
+
+**A sentinel buried under a lot of output is seen late.** Most polls read only the last 500 lines of the pane; about once a minute, and once more before a stage times out, the agent reads the whole history. A sentinel followed by more than 500 lines of output within one poll is still found, up to a minute later.
+
 ## Examples
 
 ```sh

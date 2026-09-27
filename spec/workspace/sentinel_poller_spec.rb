@@ -124,6 +124,81 @@ RSpec.describe Workspace::SentinelPoller do
     end
   end
 
+  describe "how much history it reads" do
+    # Records whether each capture asked for the whole history or a recent
+    # window, and answers from the block given the kind and the call number.
+    let(:tmux_class) do
+      Class.new do
+        attr_reader :calls
+
+        def initialize(&respond)
+          @respond = respond
+          @calls = []
+        end
+
+        def capture_pane(_session, _pane, lines: 100, all: false)
+          @calls << (all ? :full : lines)
+          @respond.call(@calls.last, @calls.size)
+        end
+      end
+    end
+    let(:recent) { described_class::RECENT_LINES }
+    let(:deadline) { Time.utc(2026, 9, 27, 12) }
+
+    # Runs one poller to its end; the clock reaches the deadline on its
+    # +expire_on+th read.
+    def watch(tmux, token: "ab12", expire_on: 100)
+      clock_reads = 0
+      poller = described_class.new(
+        tmux: tmux, session_name: "myapp", pane: 0, token: token, deadline: deadline,
+        clock: -> { ((clock_reads += 1) >= expire_on) ? deadline : deadline - 1 },
+        poll_interval: 0.001, error_output: error_output
+      )
+      result = Queue.new
+      thread = poller.start(on_timeout: -> { result << :timed_out }) { |summary| result << summary }
+      result.pop(timeout: 1)
+    ensure
+      poller.stop
+      thread&.join(1)
+    end
+
+    it "reads the whole history on its first poll, then only a recent window" do
+      tmux = tmux_class.new { |_kind, n| (n == 3) ? "WORKSPACE_DONE:ab12 done\n" : "" }
+
+      expect(watch(tmux)).to eq("done")
+      expect(tmux.calls).to eq([:full, recent, recent])
+    end
+
+    it "finds a sentinel that scrolled out of the recent window on its periodic full read" do
+      stub_const("#{described_class}::FULL_SCAN_EVERY", 3)
+      tmux = tmux_class.new { |kind, n| (kind == :full && n > 1) ? "WORKSPACE_DONE:ab12 scrolled away\n" : "later\n" }
+
+      expect(watch(tmux)).to eq("scrolled away")
+      expect(tmux.calls).to eq([:full, recent, recent, :full])
+    end
+
+    it "reads the whole history once more before giving up" do
+      tmux = tmux_class.new { |kind, n| (kind == :full && n > 1) ? "WORKSPACE_DONE:ab12 just made it\n" : "later\n" }
+
+      expect(watch(tmux, expire_on: 2)).to eq("just made it")
+      expect(tmux.calls).to eq([:full, recent, :full])
+    end
+
+    it "gives up after that last full read finds nothing" do
+      tmux = tmux_class.new { |_kind, _n| "later\n" }
+
+      expect(watch(tmux, expire_on: 2)).to eq(:timed_out)
+      expect(tmux.calls).to eq([:full, recent, :full])
+    end
+
+    it "always reads the whole history without a token, since it counts lines from the top" do
+      tmux = tmux_class.new { |_kind, _n| "" }
+
+      expect(watch(tmux, token: nil, expire_on: 3)).to eq(:timed_out)
+      expect(tmux.calls).to all(eq(:full))
+    end
+  end
+
   describe ".instruction" do
     it "tells the stage the exact line to print" do
       expect(described_class.instruction("ab12"))
