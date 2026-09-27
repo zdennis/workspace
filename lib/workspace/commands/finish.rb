@@ -167,7 +167,7 @@ module Workspace
       def read_worktree_path(config_path)
         config = YAML.safe_load_file(config_path)
         config&.dig("root")
-      rescue Psych::SyntaxError
+      rescue Psych::Exception
         raise Workspace::Error, "Corrupt config file: #{config_path}"
       end
     end

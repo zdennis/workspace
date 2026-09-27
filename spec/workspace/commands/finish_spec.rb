@@ -250,6 +250,16 @@ RSpec.describe Workspace::Commands::Finish do
       end
     end
 
+    context "with a config containing a disallowed YAML class" do
+      before { File.write(config_path, "root: !ruby/object {}\n") }
+
+      it "raises a friendly error instead of Psych::DisallowedClass" do
+        expect { command.call("myproject.worktree-PROJ-123") }.to raise_error(
+          Workspace::Error, /Corrupt config file/
+        )
+      end
+    end
+
     context "with --json" do
       before do
         File.write(config_path, YAML.dump("name" => "myproject-wt-PROJ-123", "root" => worktree_path))
