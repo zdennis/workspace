@@ -259,7 +259,9 @@ module Workspace
     # Takes up a pane's logged state after a daemon restart. The pane's pid is
     # checked too, since a restarted tmux server hands out the same pane ids
     # again. An idle pane stays idle, and keeps the time it went idle, until
-    # its output changes.
+    # its output changes. A quiet stretch that had already run past the idle
+    # alert threshold when it was logged counts as alerted, so a restart
+    # doesn't send its alert again.
     def restore_state(pane, detail)
       logged = @history.delete(detail[:id])
       return unless logged["pane_pid"] == detail[:pid] && !GONE_STATES.include?(logged["state"])
@@ -269,8 +271,16 @@ module Workspace
       return unless logged["state"] == "idle"
       pane[:last_activity_at] = since - @idle_after
       pane[:quiet_since_restore] = true
+      pane[:alerted_idle_since] = pane[:last_activity_at] if alerted_before_restart?(logged, pane[:last_activity_at])
     rescue ArgumentError
       nil
+    end
+
+    def alerted_before_restart?(logged, last_activity_at)
+      return false unless @idle_alert_after && logged["logged_at"]
+      Time.iso8601(logged["logged_at"].to_s) - last_activity_at >= @idle_alert_after
+    rescue ArgumentError
+      false
     end
 
     # The change to record when an agent pane's state differs from the one

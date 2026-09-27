@@ -567,7 +567,7 @@ RSpec.describe Workspace::SessionMonitor do
       end
     end
     let(:log_errors) { StringIO.new }
-    let(:event_log) { Workspace::EventLog.new(config: log_config, error_output: log_errors) }
+    let(:event_log) { Workspace::EventLog.new(config: log_config, error_output: log_errors, clock: clock) }
 
     after { FileUtils.remove_entry(tmpdir) }
 
@@ -634,6 +634,24 @@ RSpec.describe Workspace::SessionMonitor do
 
       expect(pane).to include("state" => "idle", "state_since" => "2026-09-26T12:00:30Z", "idle_seconds" => 100)
       expect(logged_states.size).to eq(2)
+    end
+
+    it "alerts after a restart for an idle stretch logged before it reached the alert threshold" do
+      notifier = instance_double(Workspace::Notifier, notify: :started)
+      alerting = -> {
+        described_class.new(tmux: tmux, process_tree: process_tree, session_name: "proj-session",
+          idle_after: 30, idle_alert_after: 60, clock: clock, notifier: notifier, event_log: event_log, project: "proj")
+      }
+      first = alerting.call
+      first.scan
+      allow(clock).to receive(:now).and_return(now + 31)
+      first.scan
+
+      allow(clock).to receive(:now).and_return(now + 120)
+      restarted = alerting.call
+      restarted.scan
+
+      expect(restarted.send_alerts.size).to eq(1)
     end
 
     it "keeps a restored working pane's start time" do

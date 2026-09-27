@@ -38,6 +38,26 @@ RSpec.describe Workspace::State do
       state = new_state.load
       expect(state["proj1"]).to eq({"unique_id" => "uid1"})
     end
+
+    it "migrates from the state file once, even when load runs again" do
+      File.write(state_file, '{"project1": {"unique_id": "abc"}}')
+      Workspace::EventLog.new(config: config).record(type: "lock_wait_started", project: "project1")
+
+      new_state.load
+      new_state.load
+
+      types = Workspace::EventLog.new(config: config).events.map { |e| e["type"] }
+      expect(types).to eq(["lock_wait_started", "migrated"])
+    end
+
+    it "does not migrate over a log that already holds state events" do
+      File.write(state_file, '{"stale": {"unique_id": "old"}}')
+      event_log = Workspace::EventLog.new(config: config)
+      event_log.append(type: "launched", project: "proj1", data: {"unique_id" => "uid1"})
+      event_log.append(type: "killed", project: "proj1")
+
+      expect(new_state.load).to be_empty
+    end
   end
 
   describe "round-trip save and load" do
