@@ -64,4 +64,21 @@ RSpec.describe Workspace::Duration do
       end
     end
   end
+
+  describe ".humanize" do
+    it "renders sub-minute durations in seconds" do
+      expect(described_class.humanize(45)).to eq("45s")
+      expect(described_class.humanize(0)).to eq("0s")
+    end
+
+    it "renders minute-scale durations in minutes" do
+      expect(described_class.humanize(60)).to eq("1m")
+      expect(described_class.humanize(720)).to eq("12m")
+    end
+
+    it "renders hour-scale durations as hours and minutes" do
+      expect(described_class.humanize(5400)).to eq("1h 30m")
+      expect(described_class.humanize(3600)).to eq("1h 0m")
+    end
+  end
 end

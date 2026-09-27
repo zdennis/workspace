@@ -96,7 +96,8 @@ RSpec.describe "pipeline reliability adversarial CLI specs" do
       error_output: error_output,
       exit_handler: overrides[:exit_handler] || FakeExitHandler,
       input: input,
-      working_dir: working_dir
+      working_dir: working_dir,
+      clock: overrides[:clock] || -> { Time.now }
     )
     [cli, output, error_output]
   end
@@ -127,14 +128,15 @@ RSpec.describe "pipeline reliability adversarial CLI specs" do
   # covers the --json path silently keeping deadline_at (so at least scripts
   # can see it) while the human-facing table drops it on the floor.
   it "PU1 | medium | pipeline status hides an in-flight stage's deadline from the human-readable table | lib/workspace/cli.rb:1385 | print a DEADLINE column (or the ISO deadline_at) alongside pane/stage" do
-    cli, output, = build_test_cli(config: config)
+    now = Time.utc(2026, 9, 27, 12, 0, 0)
+    cli, output, = build_test_cli(config: config, clock: -> { now })
     write_state("myapp",
       "WC-42" => {"work_item_ref" => "WC-42", "pane_index" => 1, "phase" => "implementer",
                   "deadline_at" => "2026-09-27T12:30:00.000Z"})
 
     cli.run(["pipeline", "status", "myapp"])
 
-    expect(output.string).to include("2026-09-27T12:30:00")
+    expect(output.string).to include("(in 30m)")
   end
 
   # PU2: the timeout failure message reported to the coordinator/operator is

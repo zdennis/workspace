@@ -90,7 +90,8 @@ RSpec.describe Workspace::CLI do
       error_output: error_output,
       exit_handler: overrides[:exit_handler] || FakeExitHandler,
       input: input,
-      working_dir: working_dir
+      working_dir: working_dir,
+      clock: overrides[:clock] || -> { Time.now }
     )
     [cli, output, error_output, hook_runner]
   end
@@ -2049,6 +2050,55 @@ RSpec.describe Workspace::CLI do
         cli, _, error_output = build_test_cli(config: config)
         expect { cli.run(["pipeline", "status"]) }.to raise_error(FakeSystemExit)
         expect(error_output.string).to include("Usage: workspace pipeline status")
+      end
+
+      it "shows a stage's deadline in local time plus how long remains" do
+        now = Time.utc(2026, 9, 27, 12, 0, 0)
+        deadline = Time.utc(2026, 9, 27, 12, 12, 0)
+        cli, output, = build_test_cli(config: config, clock: -> { now })
+        write_state("myapp",
+          "WC-42" => {"work_item_ref" => "WC-42", "pane_index" => 1, "phase" => "implementer",
+                      "deadline_at" => deadline.iso8601(3)})
+
+        cli.run(["pipeline", "status", "myapp"])
+
+        expect(output.string).to include("(in 12m)")
+        expect(output.string).to include(deadline.localtime.strftime("%H:%M"))
+      end
+
+      it "shows an overdue stage's deadline as overdue" do
+        now = Time.utc(2026, 9, 27, 12, 15, 0)
+        deadline = Time.utc(2026, 9, 27, 12, 12, 0)
+        cli, output, = build_test_cli(config: config, clock: -> { now })
+        write_state("myapp",
+          "WC-42" => {"work_item_ref" => "WC-42", "pane_index" => 1, "phase" => "implementer",
+                      "deadline_at" => deadline.iso8601(3)})
+
+        cli.run(["pipeline", "status", "myapp"])
+
+        expect(output.string).to include("(overdue 3m)")
+      end
+
+      it "shows '-' when the stage has no deadline" do
+        cli, output, = build_test_cli(config: config)
+        write_state("myapp",
+          "WC-42" => {"work_item_ref" => "WC-42", "pane_index" => 1, "phase" => "implementer"})
+
+        cli.run(["pipeline", "status", "myapp"])
+
+        expect(output.string).to include("WC-42  pane 1  implementer  -")
+      end
+
+      it "leaves --json's deadline_at as raw ISO 8601 UTC" do
+        deadline = Time.utc(2026, 9, 27, 12, 12, 0)
+        cli, output, = build_test_cli(config: config)
+        write_state("myapp",
+          "WC-42" => {"work_item_ref" => "WC-42", "pane_index" => 1, "phase" => "implementer",
+                      "deadline_at" => deadline.iso8601(3)})
+
+        cli.run(["pipeline", "status", "myapp", "--json"])
+
+        expect(JSON.parse(output.string).first["deadline_at"]).to eq(deadline.iso8601(3))
       end
 
       it "treats an unreadable state file as empty rather than dying on it" do
