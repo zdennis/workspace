@@ -18,9 +18,9 @@ RSpec.describe Workspace::SentinelPoller do
 
   # Runs the poller against a canned sequence of pane captures. The first entry
   # is what the pane held when the poller started.
-  def poll(captures, timeout: 0.5)
+  def poll(captures, timeout: 0.5, token: nil)
     poller = described_class.new(
-      tmux: ScriptedTmux.new(captures), session_name: "myapp", pane: 0,
+      tmux: ScriptedTmux.new(captures), session_name: "myapp", pane: 0, token: token,
       poll_interval: 0.01, error_output: error_output
     )
     summary = Queue.new
@@ -31,6 +31,50 @@ RSpec.describe Workspace::SentinelPoller do
       nil
     ensure
       poller.stop
+    end
+  end
+
+  describe "with a dispatch token" do
+    it "reports the summary once the sentinel carrying its token appears" do
+      expect(poll(["still working\n", "still working\nWORKSPACE_DONE:ab12 PR #123 opened\n"], token: "ab12"))
+        .to eq("PR #123 opened")
+    end
+
+    it "ignores a sentinel without its token, whatever printed it" do
+      expect(poll(["", "WORKSPACE_DONE: a test's output\nWORKSPACE_DONE:zz99 another stage\n"], token: "ab12"))
+        .to be_nil
+    end
+
+    it "does not take a longer token that merely starts with its own" do
+      expect(poll(["", "WORKSPACE_DONE:ab123 not mine\n"], token: "ab12")).to be_nil
+    end
+
+    it "sees its sentinel once the pane's history is full and the line count stops growing" do
+      full = Array.new(50) { |i| "line #{i}\n" }.join
+      scrolled = Array.new(49) { |i| "line #{i + 1}\n" }.join + "WORKSPACE_DONE:ab12 done\n"
+
+      expect(poll([full, full, scrolled], token: "ab12")).to eq("done")
+    end
+
+    it "sees a sentinel the pane already held, since only this dispatch can have printed it" do
+      expect(poll(["WORKSPACE_DONE:ab12 finished while the agent was down\n"], token: "ab12"))
+        .to eq("finished while the agent was down")
+    end
+
+    it "does not mistake its own instruction, wrapped onto a line of its own, for the sentinel" do
+      wrapped = described_class.instruction("ab12").delete_prefix("When you are done, print a single line: ")
+      expect(poll(["", "#{wrapped}\n"], token: "ab12")).to be_nil
+    end
+
+    it "treats a bare sentinel with no summary as completion" do
+      expect(poll(["", "WORKSPACE_DONE:ab12\n"], token: "ab12")).to eq("")
+    end
+  end
+
+  describe ".instruction" do
+    it "tells the stage the exact line to print" do
+      expect(described_class.instruction("ab12"))
+        .to eq("When you are done, print a single line: WORKSPACE_DONE:ab12 <one-line summary>")
     end
   end
 

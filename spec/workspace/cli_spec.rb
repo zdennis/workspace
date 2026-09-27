@@ -2176,6 +2176,28 @@ RSpec.describe Workspace::CLI do
         expect(output.string).to include("Nudged myapp/WC-42 to advance")
       end
 
+      it "carries the running stage's token so the agent's watch accepts it" do
+        cli, = build_test_cli(config: config)
+        write_state("myapp", "WC-42" => {"work_item_ref" => "WC-42", "sentinel_token" => "a1b2c3d4"})
+
+        received = with_fake_agent("myapp", {"ok" => true, "queued_for_pane" => 1}) do
+          cli.run(["pipeline", "advance", "myapp", "--work-item", "WC-42"])
+        end
+
+        expect(Shellwords.split(received.first["body"])).to eq(["echo", "WORKSPACE_DONE:a1b2c3d4 manual advance"])
+      end
+
+      it "sends a tokenless sentinel for a stage recorded before stages had tokens" do
+        cli, = build_test_cli(config: config)
+        write_state("myapp", "WC-42" => {"work_item_ref" => "WC-42", "pane_index" => 1})
+
+        received = with_fake_agent("myapp", {"ok" => true, "queued_for_pane" => 1}) do
+          cli.run(["pipeline", "advance", "myapp", "--work-item", "WC-42"])
+        end
+
+        expect(Shellwords.split(received.first["body"])).to eq(["echo", "WORKSPACE_DONE: manual advance"])
+      end
+
       it "escapes the body so it cannot break out of the echo it is typed into" do
         cli, _, = build_test_cli(config: config)
 

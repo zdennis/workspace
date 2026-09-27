@@ -1362,12 +1362,17 @@ module Workspace
 
     # Types the completion sentinel into the running stage's pane, which is
     # exactly what a finished stage would print, so the agent advances normally.
+    #
+    # The stage's token comes from the persisted state. If the stage moves on
+    # between that read and the inject, the sentinel carries the old stage's
+    # token and the new stage ignores it, rather than being ended unasked.
     def cmd_pipeline_advance(args)
       project, work_item, body = parse_pipeline_args(args, "advance")
       raise UsageError, "Missing project or --work-item.\n\n#{pipeline_help}" if project.nil? || work_item.nil?
 
+      token = read_pipeline_state(project).dig(work_item, "sentinel_token")
       # The body reaches a live shell, so it is escaped rather than interpolated.
-      sentinel = "#{SentinelPoller::SENTINEL} #{body || "manual advance"}"
+      sentinel = "#{SentinelPoller.marker(token)} #{body || "manual advance"}"
       reply = send_to_agent(project,
         "type" => "inject", "workspace" => project, "work_item_ref" => work_item,
         "interrupt" => true, "body" => "echo #{Shellwords.escape(sentinel)}")

@@ -5,11 +5,12 @@ require "delegate"
 # Captures the completion callback instead of polling tmux on a thread, so
 # specs can decide exactly when a stage finishes.
 class FakeSentinelPoller
-  attr_reader :session_name, :pane, :on_complete, :on_error
+  attr_reader :session_name, :pane, :token, :on_complete, :on_error
 
-  def initialize(session_name:, pane:)
+  def initialize(session_name:, pane:, token: nil)
     @session_name = session_name
     @pane = pane
+    @token = token
   end
 
   def start(on_error: nil, &block)
@@ -96,7 +97,15 @@ RSpec.describe Workspace::Commands::Agent do
 
   let(:pollers) { [] }
   let(:sentinel_poller_factory) do
-    ->(session_name:, pane:) { FakeSentinelPoller.new(session_name: session_name, pane: pane).tap { |p| pollers << p } }
+    lambda do |session_name:, pane:, token:|
+      FakeSentinelPoller.new(session_name: session_name, pane: pane, token: token).tap { |p| pollers << p }
+    end
+  end
+
+  # Predictable per-stage tokens: tok-1 for the first dispatch, tok-2 for the next.
+  let(:token_generator) do
+    count = 0
+    -> { "tok-#{count += 1}" }
   end
 
   subject(:agent) do
@@ -109,6 +118,7 @@ RSpec.describe Workspace::Commands::Agent do
       epoch_generator: -> { "wa-TESTEPOCH" },
       signal_trapper: signal_trapper,
       sentinel_poller_factory: sentinel_poller_factory,
+      token_generator: token_generator,
       retry_backoff: 0,
       output: output,
       error_output: error_output
@@ -241,12 +251,39 @@ RSpec.describe Workspace::Commands::Agent do
         send_command
         wait_until { tmux.sent_keys.any? }
 
-        expect(tmux.sent_keys.last).to include(
-          session: "myapp", pane: "0.0", text: "/build add OAuth support"
-        )
+        expect(tmux.sent_keys.last).to include(session: "myapp", pane: "0.0")
+        expect(tmux.sent_keys.last[:text]).to start_with("/build add OAuth support\n\n")
         expect(pipeline_state.current("WC-42")).to include(
-          dispatch_id: "d-7a1", pane_index: 0, phase: "researcher"
+          dispatch_id: "d-7a1", pane_index: 0, phase: "researcher", sentinel_token: "tok-1"
         )
+      end
+    end
+
+    it "tells the first stage how to signal it is done, with a token only it carries" do
+      File.write(project_config_path, <<~YAML)
+        pipeline:
+          panes:
+            - role: researcher
+            - role: implementer
+      YAML
+
+      run_agent do
+        send_command
+        wait_until { pollers.any? }
+
+        expect(tmux.sent_keys.last[:text]).to eq(
+          "/build add OAuth support\n\nWhen you are done, print a single line: WORKSPACE_DONE:tok-1 <one-line summary>"
+        )
+        expect(pollers.first.token).to eq("tok-1")
+      end
+    end
+
+    it "does not add a completion instruction when there is no pipeline to watch it" do
+      run_agent do
+        send_command
+        wait_until { tmux.sent_keys.any? }
+
+        expect(tmux.sent_keys.last[:text]).not_to include("WORKSPACE_DONE")
       end
     end
 
@@ -304,7 +341,9 @@ RSpec.describe Workspace::Commands::Agent do
         run_agent do
           send_command("body" => "do the thing")
           wait_until { tmux.sent_keys.any? }
-          expect(tmux.sent_keys.last).to include(pane: "0.0", text: "do the thing")
+          expect(tmux.sent_keys.last).to include(pane: "0.0")
+          expect(tmux.sent_keys.last[:text]).to start_with("do the thing\n\nWhen you are done")
+          expect(tmux.sent_keys.last[:text]).not_to include("Status reporting")
         end
       end
 
@@ -362,10 +401,8 @@ RSpec.describe Workspace::Commands::Agent do
         run_agent do
           send_command("body" => "do the thing", "reporting_instructions" => "run report --ref WC-1")
           wait_until { tmux.sent_keys.any? }
-          expect(tmux.sent_keys.last).to include(
-            pane: "0.0",
-            text: "do the thing\n\nStatus reporting:\nrun report --ref WC-1"
-          )
+          expect(tmux.sent_keys.last).to include(pane: "0.0")
+          expect(tmux.sent_keys.last[:text]).to start_with("do the thing\n\nStatus reporting:\nrun report --ref WC-1\n\n")
         end
       end
 
@@ -394,7 +431,8 @@ RSpec.describe Workspace::Commands::Agent do
         send_command
 
         wait_until { tmux.sent_keys.any? }
-        expect(tmux.sent_keys.last).to include(pane: "0.0", text: "/build add OAuth support")
+        expect(tmux.sent_keys.last).to include(pane: "0.0")
+        expect(tmux.sent_keys.last[:text]).to start_with("/build add OAuth support")
         expect(pipeline_state.current("WC-42")).to include(pane_index: 0, phase: "researcher")
       end
     end
@@ -438,7 +476,9 @@ RSpec.describe Workspace::Commands::Agent do
         expect(File.read(handoff)).to include("research notes")
         expect(tmux.sent_keys.last).to include(session: "myapp", pane: "0.1")
         expect(tmux.sent_keys.last[:text]).to include(handoff)
-        expect(tmux.sent_keys.last[:text]).to include("WORKSPACE_DONE:")
+        expect(tmux.sent_keys.last[:text]).to include("print a single line: WORKSPACE_DONE:tok-2 <one-line summary>")
+        expect(pollers.last.token).to eq("tok-2")
+        expect(pipeline_state.current("WC-42")).to include(sentinel_token: "tok-2")
         expect(pollers.first).to be_stopped
         expect(pipeline_state.current("WC-42")).to include(pane_index: 1, phase: "implementer")
         expect(pollers.last.pane).to eq(1)
@@ -527,6 +567,21 @@ RSpec.describe Workspace::Commands::Agent do
 
         expect(pipeline_state.current("WC-42")).to include(pane_index: 1, phase: "implementer")
         expect(pipeline_state.current("WC-43")).to include(pane_index: 0, phase: "researcher")
+      end
+    end
+
+    it "ignores a completion from a watch that has since been replaced" do
+      run_agent do
+        send_command
+        wait_until { pollers.size == 1 }
+        # The coordinator re-sends the same work item; the first watch is retired.
+        send_command("dispatch_id" => "d-7a2")
+        wait_until { pollers.size == 2 }
+
+        pollers.first.on_complete.call("late news from the old dispatch")
+
+        expect(pipeline_state.current("WC-42")).to include(pane_index: 0, sentinel_token: "tok-2")
+        expect(pollers.size).to eq(2)
       end
     end
   end
@@ -922,13 +977,36 @@ RSpec.describe Workspace::Commands::Agent do
     end
 
     # What the previous agent process would have left on disk mid-stage.
-    def write_persisted_state(pane_index: 1)
+    def write_persisted_state(pane_index: 1, **extra)
       File.write(state_path, JSON.pretty_generate(
         "WC-42" => {
           work_item_ref: "WC-42", workspace_name: "myapp",
           dispatch_id: "d-7a1", pane_index: pane_index, phase: "implementer"
-        }
+        }.merge(extra)
       ))
+    end
+
+    it "re-arms the watch with the stage's persisted token so a sentinel printed while it was down still counts" do
+      coordinator.start
+      write_pipeline_config
+      write_persisted_state(pane_index: 1, sentinel_token: "persisted-tok")
+      tmux.pane_indexes = [0, 1]
+
+      run_agent do
+        expect(pollers.map(&:token)).to eq(["persisted-tok"])
+      end
+    end
+
+    it "watches for a tokenless sentinel when the state predates tokens" do
+      coordinator.start
+      write_pipeline_config
+      write_persisted_state(pane_index: 1)
+      tmux.pane_indexes = [0, 1]
+
+      run_agent do
+        expect(pollers.map(&:token)).to eq([nil])
+        expect(pollers.first.pane).to eq(1)
+      end
     end
 
     it "re-registers with its in-flight work when the coordinator restarted under it" do

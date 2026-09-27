@@ -19,15 +19,17 @@ module Workspace
     # @param work_item_ref [String] the coordinator's work item reference
     # @param workspace_name [String] workspace the item belongs to
     # @param dispatch_id [String] the coordinator's dispatch identifier
+    # @param sentinel_token [String, nil] the token the first stage's sentinel must carry
     # @return [Hash] the new state entry
-    def start(work_item_ref:, workspace_name:, dispatch_id:)
+    def start(work_item_ref:, workspace_name:, dispatch_id:, sentinel_token: nil)
       stage = @pipeline_config.stages_for(workspace_name)&.first
       entry = @entries[work_item_ref] = {
         work_item_ref: work_item_ref,
         workspace_name: workspace_name,
         dispatch_id: dispatch_id,
         pane_index: stage ? stage[:pane_index] : 0,
-        phase: stage && stage[:role]
+        phase: stage && stage[:role],
+        sentinel_token: sentinel_token
       }
       persist
       entry
@@ -43,12 +45,14 @@ module Workspace
     #
     # @param work_item_ref [String]
     # @param to_stage [Hash] the stage hash to move to, with :pane_index and :role
+    # @param sentinel_token [String, nil] the token the new stage's sentinel must carry
     # @return [Hash, nil] the updated entry, or nil when untracked
-    def advance(work_item_ref:, to_stage:)
+    def advance(work_item_ref:, to_stage:, sentinel_token: nil)
       entry = @entries[work_item_ref]
       return nil unless entry
       entry[:pane_index] = to_stage[:pane_index]
       entry[:phase] = to_stage[:role]
+      entry[:sentinel_token] = sentinel_token
       persist
       entry
     end

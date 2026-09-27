@@ -78,9 +78,26 @@ RSpec.describe Workspace::PipelineState do
       expect(persisted).to eq(
         "WC-42" => {
           "work_item_ref" => "WC-42", "workspace_name" => "myapp",
-          "dispatch_id" => "d-1", "pane_index" => 0, "phase" => "researcher"
+          "dispatch_id" => "d-1", "pane_index" => 0, "phase" => "researcher",
+          "sentinel_token" => nil
         }
       )
+    end
+
+    it "records the stage's sentinel token so a restarted agent watches for the same one" do
+      state.start(work_item_ref: "WC-42", workspace_name: "myapp", dispatch_id: "d-1", sentinel_token: "tok-1")
+      expect(persisted["WC-42"]).to include("sentinel_token" => "tok-1")
+
+      state.advance(work_item_ref: "WC-42", to_stage: stages[1], sentinel_token: "tok-2")
+      expect(persisted["WC-42"]).to include("sentinel_token" => "tok-2")
+      expect(reloaded.current("WC-42")).to include(sentinel_token: "tok-2")
+    end
+
+    it "loads an entry written before tokens existed without one" do
+      FileUtils.mkdir_p(File.dirname(state_path))
+      File.write(state_path, JSON.generate("WC-42" => {"work_item_ref" => "WC-42", "pane_index" => 1}))
+
+      expect(reloaded.current("WC-42")[:sentinel_token]).to be_nil
     end
 
     it "records the new stage when the item advances" do
@@ -110,7 +127,7 @@ RSpec.describe Workspace::PipelineState do
 
       expect(reloaded.current("WC-42")).to eq(
         work_item_ref: "WC-42", workspace_name: "myapp",
-        dispatch_id: "d-1", pane_index: 1, phase: "implementer"
+        dispatch_id: "d-1", pane_index: 1, phase: "implementer", sentinel_token: nil
       )
     end
 
