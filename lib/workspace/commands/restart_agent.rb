@@ -14,6 +14,20 @@ module Workspace
       # Bumped whenever the `--json` payload's shape changes incompatibly.
       JSON_SCHEMA_VERSION = 1
 
+      # A failure to reach the daemon or read its reply, with the stable
+      # `--json` "code" for it.
+      class ConnectionError < Workspace::Error
+        # @return [String] "no_daemon", "connection_failed" or "unreadable_reply"
+        attr_reader :code
+
+        # @param message [String]
+        # @param code [String] see {#code}
+        def initialize(message, code)
+          super(message)
+          @code = code
+        end
+      end
+
       # @param config [Workspace::Config] socket path lookups
       # @param output [IO] stream for the result (and `--json` errors)
       def initialize(config:, output: $stdout)
@@ -30,7 +44,9 @@ module Workspace
       # @param json [Boolean] print the daemon's reply as JSON
       # @return [Hash] {exit_code:} — 0 when the restart started (or, with
       #   +wait+, finished), 1 when it was refused or failed. With +json+,
-      #   errors go to stdout as `{"schema_version":1,"error":...}`.
+      #   errors go to stdout as `{"schema_version":1,"error":...,"code":...}`,
+      #   where "code" is the daemon's error code, or "no_daemon",
+      #   "connection_failed" or "unreadable_reply" when it couldn't answer.
       # @raise [Workspace::Error] when it was refused or failed and +json+ is false
       def call(name:, pane:, prompt:, force: false, wait: false, timeout: nil, json: false)
         message = {"type" => "restart_agent", "workspace" => name, "pane" => pane, "prompt" => prompt,
@@ -47,7 +63,8 @@ module Workspace
         {exit_code: 0}
       rescue Workspace::Error => e
         raise unless json
-        @output.puts JSON.generate({"schema_version" => JSON_SCHEMA_VERSION, "error" => e.message})
+        code = e.respond_to?(:code) ? e.code : "error"
+        @output.puts JSON.generate({"schema_version" => JSON_SCHEMA_VERSION, "error" => e.message, "code" => code})
         {exit_code: 1}
       end
 
@@ -67,26 +84,34 @@ module Workspace
       def render(reply)
         where = "pane #{reply["pane"]} (#{reply["pane_id"]})"
         if reply["status"] == "restarted"
-          @output.puts "Restarted #{where}: context #{reply["context_before"]}% -> #{reply["context_after"]}%; prompt #{reply["delivery"]}."
+          after = reply["context_after"].nil? ? "a new conversation" : "#{reply["context_after"]}%"
+          @output.puts "Restarted #{where}: context #{reply["context_before"]}% -> #{after}; prompt #{reply["delivery"]}."
         else
           @output.puts "Restart started on #{where} at #{reply["context_pct"]}% context."
-          @output.puts "The agent daemon waits for the pane to go quiet, types /clear, and types the prompt once usage drops."
+          @output.puts "The agent daemon waits for the pane to go quiet, types /clear, and types the prompt once a new conversation shows up."
           @output.puts "A failure is reported on the daemon's stderr; pass --wait to see it here."
         end
         @output.puts "Warning: #{reply["warning"]}" if reply["warning"]
       end
 
       def send_message(name, message)
-        UNIXSocket.open(@config.agent_socket_path(name)) do |socket|
+        socket = begin
+          UNIXSocket.open(@config.agent_socket_path(name))
+        rescue SystemCallError, IOError
+          raise ConnectionError.new("No agent daemon for '#{name}'. Start one with: workspace agent --name #{name}", "no_daemon")
+        end
+        begin
           socket.puts(JSON.generate(message))
           reply = socket.gets
-          raise Workspace::Error, "The agent for #{name} closed the connection without replying" unless reply
-          JSON.parse(reply)
+        rescue SystemCallError, IOError => e
+          raise ConnectionError.new("Lost the connection to the agent for #{name}: #{e.message}", "connection_failed")
+        ensure
+          socket.close
         end
-      rescue SystemCallError, IOError
-        raise Workspace::Error, "No agent daemon for '#{name}'. Start one with: workspace agent --name #{name}"
+        raise ConnectionError.new("The agent for #{name} closed the connection without replying", "connection_failed") unless reply
+        JSON.parse(reply)
       rescue JSON::ParserError
-        raise Workspace::Error, "Unreadable reply from the agent for #{name}"
+        raise ConnectionError.new("Unreadable reply from the agent for #{name}", "unreadable_reply")
       end
     end
   end

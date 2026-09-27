@@ -66,6 +66,14 @@ RSpec.describe Workspace::Commands::RestartAgent do
     expect(output.string).to include("Restarted pane 0.1 (%18): context 42% -> 3%; prompt submitted.")
   end
 
+  it "reports a new conversation that has no usage reading yet" do
+    reply = {"ok" => true, "status" => "restarted", "pane" => "0.1", "pane_id" => "%18",
+             "context_before" => 42, "context_after" => nil, "delivery" => "submitted"}
+    with_daemon(reply) { call(wait: true) }
+
+    expect(output.string).to include("context 42% -> a new conversation; prompt submitted.")
+  end
+
   it "prints the daemon's warning" do
     with_daemon(started.merge("warning" => "WC-7 has a pipeline stage running on this pane")) { call(force: true) }
 
@@ -108,7 +116,8 @@ RSpec.describe Workspace::Commands::RestartAgent do
 
     it "prints the JSON error contract with --json" do
       expect(call(json: true)).to eq(exit_code: 1)
-      expect(JSON.parse(output.string)).to include("schema_version" => 1, "error" => a_string_including("No agent daemon"))
+      expect(JSON.parse(output.string)).to include("schema_version" => 1, "error" => a_string_including("No agent daemon"),
+        "code" => "no_daemon")
     end
   end
 end
