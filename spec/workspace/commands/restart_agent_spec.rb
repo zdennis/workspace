@@ -74,6 +74,13 @@ RSpec.describe Workspace::Commands::RestartAgent do
     expect(output.string).to include("context 42% -> a new conversation; prompt submitted.")
   end
 
+  it "says context usage isn't known yet instead of a blank percentage" do
+    reply = started.merge("context_pct" => nil)
+    with_daemon(reply) { call }
+
+    expect(output.string).to include("Restart started on pane 0.1 (%18); context usage isn't known yet.")
+  end
+
   it "prints the daemon's warning" do
     with_daemon(started.merge("warning" => "WC-7 has a pipeline stage running on this pane")) { call(force: true) }
 

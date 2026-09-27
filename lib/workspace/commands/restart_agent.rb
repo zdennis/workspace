@@ -87,7 +87,11 @@ module Workspace
           after = reply["context_after"].nil? ? "a new conversation" : "#{reply["context_after"]}%"
           @output.puts "Restarted #{where}: context #{reply["context_before"]}% -> #{after}; prompt #{reply["delivery"]}."
         else
-          @output.puts "Restart started on #{where} at #{reply["context_pct"]}% context."
+          if reply["context_pct"].nil?
+            @output.puts "Restart started on #{where}; context usage isn't known yet."
+          else
+            @output.puts "Restart started on #{where} at #{reply["context_pct"]}% context."
+          end
           @output.puts "The agent daemon waits for the pane to go quiet, types /clear, and types the prompt once a new conversation shows up."
           @output.puts "A failure is reported on the daemon's stderr; pass --wait to see it here."
         end
