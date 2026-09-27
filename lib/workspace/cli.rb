@@ -1628,7 +1628,8 @@ module Workspace
       project = args.first || @project_detector.detect(@working_dir)
       raise UsageError, parser.help unless project
 
-      @sessions_command.call(name: project, json: json, watch: watch, interval: interval)
+      result = @sessions_command.call(name: project, json: json, watch: watch, interval: interval)
+      @exit_handler.exit(result[:exit_code]) if result && !result[:exit_code].zero?
     end
 
     def cmd_session_event(args)
@@ -1837,6 +1838,8 @@ module Workspace
         opts.separator "  dev.ready_timeout:"
         opts.separator "  locks.idle_grace:              How long an idle agent keeps a lock before"
         opts.separator "                                 the next waiter may take it (default: 5m)"
+        opts.separator "  locks.kill_grace:              How long a SIGKILLed dev environment may take"
+        opts.separator "                                 to exit before its lock is kept (default: 2s)"
         opts.separator ""
         opts.separator "Note: 'set', 'get', and 'unset' are reserved as the first argument"
         opts.separator "here and are always treated as subcommands, so a project literally"

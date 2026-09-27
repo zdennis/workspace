@@ -63,10 +63,33 @@ RSpec.describe Workspace::Commands::Sessions do
       expect(output.string).to include("└─ eval-baseline")
     end
 
-    it "emits the payload unchanged with --json" do
+    it "emits the payload with a leading schema_version with --json" do
       with_daemon { command.call(name: "proj", json: true) }
 
-      expect(JSON.parse(output.string)).to eq(payload)
+      expect(JSON.parse(output.string)).to eq({"schema_version" => 1}.merge(payload))
+    end
+
+    it "puts schema_version as the first key of the --json payload" do
+      with_daemon { command.call(name: "proj", json: true) }
+
+      expect(JSON.parse(output.string).keys.first).to eq("schema_version")
+    end
+
+    it "returns exit_code 0 on success" do
+      result = nil
+      with_daemon { result = command.call(name: "proj") }
+
+      expect(result).to eq({exit_code: 0})
+    end
+
+    it "writes a schema_version error to stdout and returns exit_code 1 when --json and no daemon is listening" do
+      result = command.call(name: "proj", json: true)
+
+      expect(JSON.parse(output.string)).to eq(
+        "schema_version" => 1,
+        "error" => "No agent daemon for 'proj'.\nStart one with:  workspace agent proj"
+      )
+      expect(result).to eq({exit_code: 1})
     end
 
     it "says so when the workspace has no panes" do

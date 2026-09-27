@@ -2187,5 +2187,14 @@ RSpec.describe Workspace::CLI do
 
       expect(error_output.string).to include("every lock", "locks array")
     end
+
+    it "exits 1 without raising when --json and no agent daemon is listening" do
+      config = instance_double(Workspace::Config, agent_socket_path: "/nonexistent/socket")
+      cli, output, = build_test_cli(config: config, project_detector: instance_double(Workspace::ProjectDetector, detect: "proj"))
+
+      expect { cli.run(["sessions", "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+
+      expect(JSON.parse(output.string)).to eq("schema_version" => 1, "error" => "No agent daemon for 'proj'.\nStart one with:  workspace agent proj")
+    end
   end
 end
