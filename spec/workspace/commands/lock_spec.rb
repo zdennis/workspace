@@ -293,8 +293,9 @@ RSpec.describe Workspace::Commands::Lock do
         clear_command.clear("devenv")
 
         expect(terminator.running?(group)).to be(true)
-        expect(error_output.string).to include("Process group #{group} is still running, but its holder pid #{group} is gone",
-          "kill -TERM -#{group}")
+        expect(error_output.string).to include("Process group #{group} was not signalled: its holder pid #{group} is gone, " \
+          "and the id now belongs to an unrelated process.")
+        expect(error_output.string).not_to include("kill -TERM")
       end
     end
 
@@ -378,14 +379,14 @@ RSpec.describe Workspace::Commands::Lock do
       it "clears the lock when the holder is already gone and its group id was reused" do
         hold_devenv
         allow(terminator).to receive(:stop_holder).and_return(:gone)
-        allow(terminator).to receive(:orphan_running?).and_return(false)
-        allow(terminator).to receive(:running?).with(4242).and_raise(not_permitted)
+        allow(terminator).to receive_messages(orphan_running?: false, pgid_reused?: true)
 
         result = clear_command.clear("devenv")
 
         expect(result).to eq(exit_code: 0)
         expect(devenv_holder_pid).to be_nil
-        expect(error_output.string).to include("Process group 4242 was not signalled (its holder pid 4242 is gone)")
+        expect(error_output.string).to include("Process group 4242 was not signalled: its holder pid 4242 is gone, and the id now belongs to an unrelated process.")
+        expect(error_output.string).not_to include("kill -TERM")
       end
 
       it "on a later clear, keeps a lock whose wrapper is gone while its group still runs" do
@@ -407,7 +408,7 @@ RSpec.describe Workspace::Commands::Lock do
         allow(terminator).to receive(:stop_holder).and_raise(not_permitted)
         clear_command.clear("devenv")
         allow(terminator).to receive(:stop_holder).and_return(:gone)
-        allow(terminator).to receive_messages(orphan_running?: false, running?: false)
+        allow(terminator).to receive_messages(orphan_running?: false, pgid_reused?: false)
 
         result = clear_command.clear("devenv")
 

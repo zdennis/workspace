@@ -129,11 +129,14 @@ RSpec.describe "lock clear on a process holder, under concurrency" do
         identity.kill(4242)
         raise Errno::ESRCH
       end
+      raise Errno::ESRCH if target == 4242 && !identity.alive?(pid: 4242, started: "start-4242")
     }
 
-    command.clear("devenv")
+    result = command.clear("devenv")
 
+    expect(result).to eq(exit_code: 1)
     expect(output.string).not_to include("Stopped process group 4242")
-    expect(error_output.string).to include("Process group 4242 is still running")
+    expect(error_output.string).to include("its wrapper pid 4242 is gone, but the group is still running", "Kept devenv lock")
+    expect(devenv_holder_pid).to eq(4242)
   end
 end

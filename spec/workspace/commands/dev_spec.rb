@@ -710,12 +710,72 @@ RSpec.describe Workspace::Commands::Dev, "with fake processes and clock" do
       expect(File.read(File.join(lock_dir, "locks.json"))).to include('"pid": 700')
     end
 
-    it "`down` of a live holder raises and keeps its lock" do
+    it "`down` of a live holder keeps its lock, exits 1 and says how to stop the group" do
       hold(700)
       allow(terminator).to receive(:stop_holder).and_raise(foreign)
 
-      expect { dev.down(working_dir: worktree) }.to raise_error(Workspace::Error, /not permitted/)
+      expect(dev.down(working_dir: worktree)).to eq(exit_code: 1)
       expect(holder).to include("pid" => 700)
+      expect(error_output.string).to include("Could not stop process group 700 (pid 700): process group 700 has running processes",
+        "Kept devenv lock", "sudo kill -TERM -700", "then run: workspace dev down")
+      expect(output.string).not_to include("Stopped dev environment")
+      expect(tmux).not_to have_received(:close_dead_pane)
+    end
+
+    it "`down` keeps the lock when a member outlives SIGKILL and its wrapper, so it is not reaped" do
+      hold(700)
+      allow(terminator).to receive(:stop_holder) do
+        liveness.kill(700)
+        :killed
+      end
+      allow(terminator).to receive(:running?).with(700).and_raise(foreign)
+      allow(terminator).to receive(:orphan_running?).and_raise(foreign)
+
+      expect(dev.down(working_dir: worktree)).to eq(exit_code: 1)
+      expect(error_output.string).to include("still running 2s after SIGKILL", "Kept devenv lock")
+      expect(holder).to include("pid" => 700, "kept" => true)
+      expect(store.acquire("devenv", identity: process_identity(555), waiter_pid: 555, waiter_started: "s-555")[:status]).to eq(:held)
+    end
+  end
+
+  describe "#down when the wrapper exits just before its SIGTERM" do
+    before do
+      hold(700)
+      allow(terminator).to receive(:stop_holder) do
+        liveness.kill(700)
+        :not_running
+      end
+    end
+
+    it "keeps the lock while its group still runs" do
+      allow(terminator).to receive(:orphan_running?).and_return(true)
+
+      expect(dev.down(working_dir: worktree)).to eq(exit_code: 1)
+      expect(error_output.string).to include("its wrapper pid 700 is gone, but the group is still running", "Kept devenv lock")
+      expect(output.string).not_to include("Stopped")
+      expect(holder).to include("pid" => 700)
+    end
+
+    it "removes the lock without claiming to have stopped anything once the group is gone" do
+      allow(terminator).to receive_messages(orphan_running?: false, pgid_reused?: false)
+
+      expect(dev.down(working_dir: worktree)).to eq(exit_code: 0)
+      expect(output.string).to include("was not running; removed its stale lock")
+      expect(output.string).not_to include("Stopped")
+      expect(holder).to be_nil
+    end
+  end
+
+  describe "#up --takeover of a group that can't be stopped" do
+    it "keeps the holder's lock, exits 1 and leaves its own wrapper queued first" do
+      hold(700)
+      wrapper_joins(555)
+      allow(terminator).to receive(:stop_holder).and_raise(Workspace::Error, "process group 700 has running processes this user is not permitted to signal")
+
+      expect(dev.up(takeover: true, working_dir: worktree)).to eq(exit_code: 1)
+      expect(holder).to include("pid" => 700)
+      expect(store.status("devenv").dig("devenv", "queue").map { |w| w["waiter_pid"] }).to eq([555])
+      expect(error_output.string).to include("Kept devenv lock", "stays queued first for the devenv lock")
     end
   end
 end
