@@ -503,6 +503,28 @@ RSpec.describe Workspace::LockStore do
       expect(audit_events.map { |e| e["event"] }).to eq(["acquire"])
     end
 
+    it "records nothing when the locks.json write fails" do
+      allow(File).to receive(:rename).and_call_original
+      allow(File).to receive(:rename).with(/locks\.json\.\d+\.tmp\z/, anything).and_raise(Errno::ENOSPC)
+
+      expect {
+        store.acquire("edit", identity: identity(pid: 100), waiter_pid: 100, waiter_started: "start-100")
+      }.to raise_error(Workspace::Error)
+
+      expect(audit_events).to eq([])
+    end
+
+    it "drops events buffered before the block raises" do
+      s = store
+      s.acquire("edit", identity: identity(pid: 100), waiter_pid: 100, waiter_started: "start-100")
+      liveness.kill(100)
+      allow(s).to receive(:promote!).and_raise(Workspace::Error, "boom")
+
+      expect { s.release("edit", 100) }.to raise_error(Workspace::Error, "boom")
+
+      expect(audit_events.map { |e| e["event"] }).to eq(["acquire"])
+    end
+
     it "records a release event, then an acquire event for the promoted waiter" do
       s = store
       s.acquire("edit", identity: identity(pid: 100), waiter_pid: 100, waiter_started: "start-100")

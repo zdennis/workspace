@@ -368,13 +368,17 @@ module Workspace
       lock_mode = readonly ? File::RDONLY : (File::RDWR | File::CREAT)
       File.open(@lockfile_path, lock_mode | File::CREAT, 0o600) do |f|
         f.flock(readonly ? File::LOCK_SH : File::LOCK_EX)
+        @pending_events = []
         data = lenient ? read_data_lenient : read_data
         result = within_liveness_snapshot { yield data }
         write_data(data) unless readonly
+        flush_audit_events
       end
       result
     rescue SystemCallError => e
       raise Workspace::Error, "Could not access lock store at #{@dir} (#{e.class}: errno #{e.errno})"
+    ensure
+      @pending_events = nil
     end
 
     def read_data
@@ -556,14 +560,24 @@ module Workspace
       @logger.debug { "lock: waiter #{head["waiter_pid"]} took over from idle pid #{holder["pid"]}" }
     end
 
-    # Appends one audit event, unless +name+ is nil (a caller with no lock
+    # Buffers one audit event, unless +name+ is nil (a caller with no lock
     # name to attribute the event to, which should not happen in practice).
-    # Appends one audit event. Every caller is expected to pass already-
+    # Every caller runs inside {#with_lock} and is expected to pass already-
     # trimmed data (see {#holder_summary}/{#waiter_summary}/{#identity_summary}),
-    # so this only serializes and drops nils.
+    # so this only drops nils.
     def audit(event, name, **data)
       return unless name
-      @audit_log.append(event: event.to_s, name: name, data: data.compact)
+      @pending_events << {event: event.to_s, name: name, data: data.compact}
+    end
+
+    # Appends the events buffered during a {#with_lock} block. Runs only once
+    # `locks.json` is committed (or a read-only block has returned), so the
+    # audit log never records a transition that a failed block or write
+    # rolled back, and still under the store flock, so lines land in the same
+    # order as the writes they describe. Lock order is always the store flock
+    # first, then {LockAuditLog}'s own flock, never the reverse.
+    def flush_audit_events
+      @pending_events.each { |e| @audit_log.append(**e) }
     end
 
     def holder_summary(holder)
