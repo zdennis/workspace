@@ -2,52 +2,106 @@ module Workspace
   # Polls a tmux pane for the WORKSPACE_DONE sentinel and invokes a callback
   # with the summary text that follows it.
   #
-  # Panes outlive the work items that run in them, so a pane's scrollback often
-  # already holds sentinels from earlier stages or earlier work items. The
-  # poller records how many lines the pane held when it started and only ever
-  # considers output written after that point.
+  # Each stage dispatch gets its own token, and only a sentinel carrying that
+  # token ends the stage. Panes outlive the work items that run in them, so a
+  # pane's scrollback often already holds sentinels from earlier stages or
+  # earlier work items; the token is what tells this stage's sentinel apart
+  # from those, and from a test or script that happens to print the prefix.
+  # Because a match needs nothing but the token, it still works once the
+  # pane's history is full, and after the agent restarts mid-stage.
+  #
+  # A poller without a token is the legacy mode for work dispatched before
+  # tokens existed: it records how many lines the pane held when it started
+  # and accepts any sentinel written after that point.
   class SentinelPoller
     SENTINEL = "WORKSPACE_DONE:".freeze
 
-    # A sentinel at the start of its own line, and everything after it. Anchoring
-    # keeps an instruction or shell command that merely mentions the sentinel
-    # from being read as the sentinel itself.
-    SUMMARY_PATTERN = /^\s*#{Regexp.escape(SENTINEL)}\s*(.*)$/
+    # The placeholder the instruction text shows where the summary goes. A
+    # line carrying it is the instruction itself, wrapped onto a line of its
+    # own by the pane's width, not the stage reporting back. A wrap can fall
+    # anywhere after the marker: a line holding only the start of the
+    # placeholder is the instruction when the next line carries the rest.
+    SUMMARY_PLACEHOLDER = "<one-line summary>".freeze
+
+    # How many lines of history above the visible pane an ordinary poll
+    # reads. Reading the whole history every poll costs more the longer a
+    # stage runs, so only some polls do.
+    RECENT_LINES = 500
+
+    # Every this many polls, and once more before giving up, a tokened poller
+    # reads the pane's whole history, so a sentinel that scrolled past the
+    # recent window between two polls is still found.
+    FULL_SCAN_EVERY = 30
+
+    # @param token [String, nil] the dispatch token, or nil for a tokenless sentinel
+    # @return [String] the text a stage prints to start its completion line
+    def self.marker(token)
+      token ? "#{SENTINEL}#{token}" : SENTINEL
+    end
+
+    # @param token [String, nil] the dispatch token the stage must print
+    # @return [String] the instruction telling a stage how to report it is done
+    def self.instruction(token)
+      "When you are done, print a single line: #{marker(token)} #{SUMMARY_PLACEHOLDER}"
+    end
 
     # @param tmux [Workspace::Tmux] tmux session operations
     # @param session_name [String] tmux session to capture from
     # @param pane [Integer] zero-based pane index within window 0
+    # @param token [String, nil] the dispatch token to wait for; nil accepts any
+    #   sentinel written after the poller started
+    # @param deadline [Time, nil] when to give up on the stage; nil waits forever
+    # @param clock [#call] returns the current Time
     # @param poll_interval [Numeric] seconds to wait between captures
     # @param logger [Workspace::Logger] debug logger
     # @param error_output [IO] stream for reporting an unexpected poller death
-    def initialize(tmux:, session_name:, pane:, poll_interval: 2,
+    def initialize(tmux:, session_name:, pane:, token: nil, deadline: nil,
+      clock: -> { Time.now }, poll_interval: 2,
       logger: Workspace::Logger.new, error_output: $stderr)
       @tmux = tmux
       @session_name = session_name
       @pane = pane
+      @pattern = /^\s*#{Regexp.escape(self.class.marker(token))}(?:\s+(.*))?$/
+      @token = token
+      @deadline = deadline
+      @clock = clock
       @poll_interval = poll_interval
       @logger = logger
       @error_output = error_output
       @running = false
     end
 
-    # Polls the pane in a background thread until the sentinel appears.
+    # Polls the pane in a background thread until the sentinel appears or the
+    # deadline passes. Each pass checks for the sentinel before the deadline,
+    # so a stage that finished just in time is never failed.
     #
     # @param on_error [#call, nil] called with the message when polling dies
+    # @param on_timeout [#call, nil] called with no arguments once the deadline passes
     # @yieldparam summary [String] the text following the sentinel
     # @return [Thread] the polling thread
-    def start(on_error: nil, &on_complete)
+    def start(on_error: nil, on_timeout: nil, &on_complete)
       @running = true
       @thread = Thread.new do
         # Taken inside the thread so a failing capture is reported here rather
         # than raised into whoever started the poller.
-        @baseline = capture.to_s.lines.size
+        @baseline = @token ? 0 : capture(full: true).to_s.lines.size
+        polls = 0
         while @running
-          summary = scan
+          # The first pass reads the whole history, to find a sentinel
+          # printed while no one was watching.
+          full = (polls % FULL_SCAN_EVERY).zero?
+          summary = scan(full: full)
+          timed_out = @deadline && @clock.call >= @deadline
+          summary ||= scan(full: true) if timed_out && !full
           if summary
             on_complete.call(summary)
             break
           end
+          if timed_out
+            on_timeout&.call
+            break
+          end
+          polls += 1
           sleep @poll_interval
         end
       rescue => e
@@ -73,23 +127,42 @@ module Workspace
 
     private
 
-    def capture
-      @tmux.capture_pane(@session_name, @pane, all: true)
+    # The legacy tokenless mode counts lines from the start of history, so it
+    # always reads all of it.
+    def capture(full:)
+      if full || !@token
+        @tmux.capture_pane(@session_name, @pane, all: true)
+      else
+        @tmux.capture_pane(@session_name, @pane, lines: RECENT_LINES)
+      end
     end
 
-    # @return [String, nil] the summary from the newest sentinel written since start
-    def scan
-      output = capture
+    # @return [String, nil] the summary from the newest matching sentinel
+    def scan(full:)
+      output = capture(full: full)
       return nil unless output
 
-      lines = output.lines
-      return nil if lines.size <= @baseline
-
-      lines.drop(@baseline).reverse_each do |line|
-        match = SUMMARY_PATTERN.match(line)
-        return match[1].strip if match
+      lines = output.lines.drop(@baseline)
+      (lines.size - 1).downto(0) do |i|
+        match = @pattern.match(lines[i])
+        next unless match
+        summary = match[1].to_s.strip
+        return summary unless echoed_instruction?(summary, lines[i + 1])
       end
       nil
+    end
+
+    # A bare marker is always taken for the instruction wrapped just after
+    # it, never a stage reporting back. This is deliberate: the instruction
+    # asks for a summary, and a narrow pane leaves no other way to tell the
+    # two apart.
+    def echoed_instruction?(summary, next_line)
+      return true if summary.empty? || summary == SUMMARY_PLACEHOLDER
+      return false unless SUMMARY_PLACEHOLDER.start_with?(summary)
+
+      rest = SUMMARY_PLACEHOLDER.delete_prefix(summary).strip
+      continued = next_line.to_s.strip
+      !continued.empty? && (rest.start_with?(continued) || continued.start_with?(rest))
     end
   end
 end

@@ -9,16 +9,18 @@ module Workspace
     # @param project_detector [Workspace::ProjectDetector] detects the current project
     # @param which [#call] returns true when an executable is on PATH
     # @param git [Workspace::Git, nil] lists worktrees to check for lock hooks; nil skips that check
+    # @param pipeline_config [Workspace::PipelineConfig, nil] validates the current project's pipeline config
     # @param working_dir [String] directory to detect the current project from
     # @param output [IO] output stream for results
     def initialize(config:, state:, hook_installer:, project_detector:, which: nil, git: nil,
-      working_dir: Dir.pwd, output: $stdout)
+      pipeline_config: nil, working_dir: Dir.pwd, output: $stdout)
       @config = config
       @state = state
       @hook_installer = hook_installer
       @project_detector = project_detector
       @which = which || Workspace::Which
       @git = git
+      @pipeline_config = pipeline_config || PipelineConfig.new(config: config)
       @working_dir = working_dir
       @output = output
     end
@@ -163,8 +165,30 @@ module Workspace
       end
 
       check_worktree_lock_hooks(capable) unless capable.empty?
+      issues += check_pipeline_config(project)
 
       issues
+    end
+
+    # A bad `timeout:` in the project's pipeline config would otherwise only
+    # surface as the agent daemon silently exiting at startup (launch already
+    # warns about that); doctor gives an operator a standing check for it.
+    def check_pipeline_config(project)
+      path = @config.project_config_path(project)
+      return 0 unless File.exist?(path)
+
+      stages = @pipeline_config.stages_for(project)
+      if stages
+        @output.puts "  ✓  pipeline config valid for #{project}"
+      elsif @pipeline_config.declared_but_empty?(project)
+        @output.puts "  ⚠  pipeline config for #{project} has no panes; it won't start a pipeline"
+      end
+      @pipeline_config.literal_sentinel_warnings(project).each { |warning| @output.puts "  ⚠  #{warning}" }
+      0
+    rescue Workspace::Error => e
+      @output.puts "  ✗  pipeline config invalid for #{project}"
+      @output.puts "     ↳ #{e.message}"
+      1
     end
 
     # A worktree without hooks only loses edit-lock enforcement (advisory

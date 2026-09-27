@@ -56,5 +56,20 @@ module Workspace
       raise ArgumentError, "must be at least #{min}s and at most #{max}s, got #{value.inspect}" if seconds < min || seconds > max
       seconds
     end
+
+    # Renders a non-negative number of seconds as a short, human-scale
+    # duration: "45s", "12m", or "1h 30m". Rounds down to the minute once a
+    # duration reaches a minute, since sub-minute precision doesn't matter at
+    # that scale.
+    #
+    # @param seconds [Numeric] a non-negative number of seconds
+    # @return [String] the rendered duration
+    def self.humanize(seconds)
+      total_minutes = (seconds / 60).to_i
+      return "#{seconds.round}s" if total_minutes.zero?
+
+      hours, minutes = total_minutes.divmod(60)
+      hours.positive? ? "#{hours}h #{minutes}m" : "#{minutes}m"
+    end
   end
 end

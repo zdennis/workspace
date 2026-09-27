@@ -30,21 +30,29 @@ workspace pipeline <subcommand> [options]
 
 **`start`** sends a synthetic command with a `manual-` dispatch id. The agent handles it exactly as it would one from the coordinator: the body is typed into the first stage's pane and the work item starts being tracked. Without `--body` it sends `Begin work on <REF>.`
 
-**`advance`** interrupts the running stage and types the completion sentinel into its pane — the same line a finished stage prints. The agent's watch sees it and advances normally, capturing the handoff and starting the next stage. It does not wait for the stage to actually be done: an advance marks it complete whether it is or not. `--body` becomes the one-line summary after the sentinel, and defaults to `manual advance`; it is escaped before it reaches the pane's shell.
+**`advance`** interrupts the running stage and types the completion sentinel into its pane — the same line a finished stage prints, including the stage's token, which it reads from the state file. The agent's watch sees it and advances normally, capturing the handoff and starting the next stage. It does not wait for the stage to actually be done: an advance marks it complete whether it is or not. `--body` becomes the one-line summary after the sentinel, and defaults to `manual advance`; it is escaped before it reaches the pane's shell. The request also carries the token as `expected_token`; if the stage has already moved on by the time the agent handles it, the agent leaves the pane alone and replies with a `stale_token` error, and the CLI exits 1 with "The stage moved on before the advance landed; run 'workspace pipeline advance' again" rather than reporting a success that did nothing. Run it again to advance the new stage.
 
-**`status`** reads the persisted state file at `$XDG_STATE_HOME/workspace/<project>/pipeline.json` (`~/.local/state/...` by default), so it works whether or not the agent is running. It prints one line per in-flight work item with its pane index and phase. Because it reads the file rather than asking the agent, a poll landing mid-transition can show a stage the agent has just moved past.
+**`status`** reads the persisted state file at `$XDG_STATE_HOME/workspace/<project>/pipeline.json` (`~/.local/state/...` by default), so it works whether or not the agent is running. It prints one line per in-flight work item with its pane index, phase, and a DEADLINE column: the stage's deadline in local time with how far off it is, such as `14:03 (in 12m)` or `14:03 (overdue 3m)`, or `-` when the stage has no `timeout:` or was started by an older agent. The time carries no date, so for a deadline more than a day off go by the part in parentheses, or use `--json` for the exact time. Because it reads the file rather than asking the agent, a poll landing mid-transition can show a stage the agent has just moved past.
 
-**`--json`** prints the in-flight entries as a JSON array, including the `dispatch_id` the table leaves out, for scripts that need to correlate their own dispatches. An idle project prints `[]`.
+**`--json`** prints the in-flight entries as a JSON array, including fields the table leaves out: `dispatch_id`, for scripts that need to correlate their own dispatches; `sentinel_token`, the token the running stage must print; and `deadline_at`, when the stage times out (ISO 8601 UTC, or `null` when its stage has no `timeout:`). Entries written by an older agent have neither of the last two. An idle project prints `[]`.
 
 **`reset`** deletes the state file. It refuses while the agent is running, because the agent holds that state in memory and clearing the file under it would only put the two out of step. Stop the agent first.
+
+## Limits
+
+**A sentinel the agent never saw can be lost.** The agent finds a stage's sentinel by reading the pane's scrollback. If `tmux clear-history` runs, or the pane is respawned, after the stage printed its sentinel but before the agent read it, the line is gone and the watch waits until the stage's deadline, or forever when the stage has no `timeout:`. Run `workspace pipeline advance <project> --work-item REF` to move it on by hand, and give stages a `timeout:` so a lost sentinel ends in a failure rather than a hang.
+
+**A sentinel buried under a lot of output is seen late.** Most polls read only the last 500 lines of the pane; about once a minute, and once more before a stage times out, the agent reads the whole history. A sentinel followed by more than 500 lines of output within one poll is still found, up to a minute later.
+
+**Deadlines use wall-clock time.** Time the machine spends asleep counts toward a stage's timeout, so a stage can time out right after the machine wakes, and changing the system clock moves the deadline with it.
 
 ## Examples
 
 ```sh
 # What is myapp working on?
 workspace pipeline status myapp
-# WORK ITEM  PANE  STAGE
-# WC-42  pane 1  implementer
+# WORK ITEM  PANE  STAGE  DEADLINE
+# WC-42  pane 1  implementer  14:03 (in 12m)
 
 # Same, for a script
 workspace pipeline status myapp --json

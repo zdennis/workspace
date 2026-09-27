@@ -40,7 +40,8 @@ module Workspace
     # @param exit_handler [#exit] callable for process exit (Kernel in production, FakeExitHandler in tests)
     # @param parent_command [Workspace::Commands::Parent] pre-built parent command
     # @param dev_command [Workspace::Commands::Dev] pre-built dev command
-    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd)
+    # @param clock [#call] returns the current Time, for relative deadline display
+    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now })
       @config = config
       @state = state
       @project_config = project_config
@@ -82,6 +83,7 @@ module Workspace
       @error_output = error_output
       @input = input
       @working_dir = working_dir
+      @clock = clock
     end
 
     # Parses the subcommand from argv and dispatches to the appropriate method.
@@ -1362,16 +1364,24 @@ module Workspace
 
     # Types the completion sentinel into the running stage's pane, which is
     # exactly what a finished stage would print, so the agent advances normally.
+    #
+    # The stage's token comes from the persisted state. If the stage moves on
+    # between that read and the inject, the sentinel carries the old stage's
+    # token and the new stage ignores it, rather than being ended unasked.
     def cmd_pipeline_advance(args)
       project, work_item, body = parse_pipeline_args(args, "advance")
       raise UsageError, "Missing project or --work-item.\n\n#{pipeline_help}" if project.nil? || work_item.nil?
 
+      token = read_pipeline_state(project).dig(work_item, "sentinel_token")
       # The body reaches a live shell, so it is escaped rather than interpolated.
-      sentinel = "#{SentinelPoller::SENTINEL} #{body || "manual advance"}"
+      sentinel = "#{SentinelPoller.marker(token)} #{body || "manual advance"}"
       reply = send_to_agent(project,
         "type" => "inject", "workspace" => project, "work_item_ref" => work_item,
-        "interrupt" => true, "body" => "echo #{Shellwords.escape(sentinel)}")
-      raise Error, "The agent for #{project} refused the advance: #{reply["error"]}" unless reply["ok"]
+        "interrupt" => true, "expected_token" => token, "body" => "echo #{Shellwords.escape(sentinel)}")
+      unless reply["ok"]
+        raise Error, "The stage moved on before the advance landed; run 'workspace pipeline advance' again" if reply["error"] == "stale_token"
+        raise Error, "The agent for #{project} refused the advance: #{reply["error"]}"
+      end
       @output.puts "Nudged #{project}/#{work_item} to advance"
     end
 
@@ -1393,10 +1403,23 @@ module Workspace
         return
       end
 
-      @output.puts "WORK ITEM  PANE  STAGE"
+      @output.puts "WORK ITEM  PANE  STAGE  DEADLINE"
       entries.each_value do |entry|
-        @output.puts "#{entry["work_item_ref"]}  pane #{entry["pane_index"]}  #{entry["phase"] || "(no pipeline)"}"
+        deadline = format_deadline(entry["deadline_at"])
+        @output.puts "#{entry["work_item_ref"]}  pane #{entry["pane_index"]}  #{entry["phase"] || "(no pipeline)"}  #{deadline}"
       end
+    end
+
+    # Renders a stage's deadline in local time plus how far off it is, so an
+    # operator scanning the table doesn't have to convert UTC in their head.
+    # `--json` keeps the raw ISO 8601 UTC string this formats.
+    def format_deadline(deadline_at)
+      return "-" if deadline_at.nil?
+
+      deadline = Time.parse(deadline_at)
+      remaining = deadline - @clock.call
+      relative = (remaining >= 0) ? "in #{Duration.humanize(remaining)}" : "overdue #{Duration.humanize(-remaining)}"
+      "#{deadline.localtime.strftime("%H:%M")} (#{relative})"
     end
 
     # Tolerates an unreadable state file the way the agent does, so the command

@@ -10,7 +10,7 @@ Ordered by value. Effort: S (a day or less), M (a few days), L (a week or more).
 
 1. **Detect and announce "needs a human"**: add a `waiting` session state from the agent's notification hook, plus a notify command hook when a pane waits or goes idle too long. (M)
 2. **Make `start` non-interactive**: add `--base`, `--yes` and `--json`, and send `--prompt` only after the agent is ready. (S)
-3. **Add a stage timeout and reliable completion to pipelines**: a per-stage deadline that reports failure, the sentinel instruction for stage 1, and detection that still works once scrollback is full. (M)
+3. **Add a stage timeout and reliable completion to pipelines**: a per-stage deadline that reports failure, the sentinel instruction for stage 1, and detection that still works once scrollback is full. (M) Done: see the [Fixed] items under "Coordinating agents".
 4. **Add a `finish` command**: check the worktree is clean and pushed, open a PR with `gh`, then remove the worktree; make `kill` and `prune` refuse unpushed or dirty work. (M)
 5. **Add a way to request and record human input**: `workspace ask` writes a question with the default taken, shows it in `sessions`, and notifies. (M)
 6. **Pull the task in from its source**: `start PROJ-123` and GitHub issue URLs should fetch the ticket text and acceptance criteria into the initial prompt. (M)
@@ -122,25 +122,24 @@ Use this when each work item passes through fixed roles, such as researcher → 
 pipeline:
   panes:
     - role: researcher
+      timeout: 30m
     - role: implementer
     - role: reviewer
 ```
 
 ```sh
 workspace agent myapp                                    # the daemon (launch starts one too)
-workspace pipeline start myapp --work-item PROJ-482 --body "Research PROJ-482: … When done print: WORKSPACE_DONE: <summary>"
+workspace pipeline start myapp --work-item PROJ-482 --body "Research PROJ-482: …"
 workspace pipeline status myapp --json
 workspace pipeline advance myapp --work-item PROJ-482    # force a stage complete
 ```
 
-The daemon types the body into stage 1's pane (`lib/workspace/commands/agent.rb:312-341`). It then polls the pane every 2s for a line starting `WORKSPACE_DONE:` (`lib/workspace/sentinel_poller.rb:10-15`), saves the pane's output as a handoff file, and tells the next stage its role, the file, and to print the sentinel when done (`lib/workspace/commands/agent.rb:450-453`). State survives a daemon restart (`lib/workspace/pipeline_state.rb:88-94`).
+The daemon types the body into stage 1's pane, followed by the line to print when done: `WORKSPACE_DONE:<token> <one-line summary>`, with a random token new to each stage (`lib/workspace/commands/agent.rb:336-370`, `lib/workspace/sentinel_poller.rb:32-34`). It then polls the pane every 2s for a line starting with that token (`lib/workspace/sentinel_poller.rb:116-130`), saves the pane's output as a handoff file, and tells the next stage its role, the file, and its own token (`lib/workspace/commands/agent.rb:502-505`). A stage with `timeout:` that is still running at its deadline fails the work item (`lib/workspace/commands/agent.rb:420-433`). State, including each stage's token and deadline, survives a daemon restart (`lib/workspace/pipeline_state.rb:110-116`).
 
 What needs babysitting:
 
-- Stage 1 is not told to print the sentinel. Only later stages get that instruction (`lib/workspace/commands/agent.rb:450-453`), so the body must say it, or the coordinator's reporting text must.
-- A stage that never prints the sentinel waits forever. The poller has no deadline (`lib/workspace/sentinel_poller.rb:23-24`).
-- Stage N runs in pane N of window 0 (`lib/workspace/pipeline_config.rb:21-23`). The stock worktree template puts a banner in pane 0 and Claude in pane 1 (`lib/templates/workspace.project-worktree-template.yml:17-25`), so pipelines need a custom layout.
-- Any line in the pane that starts with `WORKSPACE_DONE:` ends the stage, including a test's or script's output.
+- Stage N runs in pane N of window 0 (`lib/workspace/pipeline_config.rb:27-29`). The stock worktree template puts a banner in pane 0 and Claude in pane 1 (`lib/templates/workspace.project-worktree-template.yml:17-25`), so pipelines need a custom layout.
+- A stage without `timeout:` still waits forever for its sentinel.
 
 ### 4. Sharing one dev environment through locks
 
@@ -208,12 +207,12 @@ Tags: **[Missing]** is a feature that does not exist. **[Improve]** is a change 
 
 Work reaches a pane reliably; knowing it finished, or failed, does not.
 
-- **[Missing] Stage timeout.** `SentinelPoller` has a poll interval and no deadline (`lib/workspace/sentinel_poller.rb:23-24`). A wedged stage holds the work item until someone runs `pipeline advance`. Fix: per-stage `timeout:` in the pipeline config that reports an `error` through the existing failure path (`lib/workspace/commands/agent.rb:176-188`).
-- **[Improve] Missed completions once scrollback is full.** The poller ignores the pane until its line count grows past the starting count (`lib/workspace/sentinel_poller.rb:44,85`). Once a pane hits tmux's history limit, the count stops growing and a new sentinel is never seen. Fix: compare against a marker line or the tail, not a line count.
-- **[Improve] Stage 1 is not told the sentinel.** Only later stages get the "print WORKSPACE_DONE:" instruction (`lib/workspace/commands/agent.rb:315,450-453`). Fix: append the same instruction to stage 1's body.
-- **[Improve] Sentinel after a daemon restart.** Recovery re-arms the poller with a fresh starting count (`lib/workspace/commands/agent.rb:196-211`), so a sentinel printed while the daemon was down is missed and the item waits forever. Fix: persist the starting count, or scan the tail on recovery.
-- **[Improve] Anything can end a stage.** Any pane line starting `WORKSPACE_DONE:` counts (`lib/workspace/sentinel_poller.rb:15`), including program output. Fix: include a per-dispatch token in the sentinel (`WORKSPACE_DONE:<dispatch_id>:`).
-- **[Improve] Fixed pane mapping.** Stage N is pane N of window 0 (`lib/workspace/pipeline_config.rb:21-23`), which does not match the stock template's layout. Fix: an optional `pane:` per stage, or match by pane title the way `run --pane` does.
+- **[Fixed] Stage timeout.** A stage can set `timeout:` in the pipeline config (`lib/workspace/pipeline_config.rb:40-45`). A stage still running at its deadline fails the work item through the existing failure path, which reports an `error` to the coordinator and prints it on the agent's stderr (`lib/workspace/commands/agent.rb:420-433`). Stages without `timeout:` still wait forever.
+- **[Fixed] Missed completions once scrollback is full.** The poller matches the stage's token anywhere in the pane's history instead of counting lines (`lib/workspace/sentinel_poller.rb:116-130`), so a full history no longer hides a new sentinel.
+- **[Fixed] Stage 1 is not told the sentinel.** Stage 1's body now ends with the same completion instruction later stages get (`lib/workspace/commands/agent.rb:343-347`).
+- **[Fixed] Sentinel after a daemon restart.** Each stage's token and deadline are persisted, and recovery watches for the saved token (`lib/workspace/commands/agent.rb:217-234`), so a sentinel printed while the daemon was down is seen at once. Items saved by an older agent have no token and keep the old behavior.
+- **[Fixed] Anything can end a stage.** Each stage dispatch gets a random token, and only `WORKSPACE_DONE:<token>` ends that stage (`lib/workspace/sentinel_poller.rb:52`). `pipeline advance` reads the running stage's token from the state file.
+- **[Improve] Fixed pane mapping.** Stage N is pane N of window 0 (`lib/workspace/pipeline_config.rb:27-29`), which does not match the stock template's layout. Fix: an optional `pane:` per stage, or match by pane title the way `run --pane` does.
 - **[Missing] Reliable send-to-agent.** `run --pane "Claude Code"` and `agent-run` both type through `Tmux#send_keys`, which only double-submits pastes over 1,000 bytes (`lib/workspace/tmux.rb:67-70`). Short multi-line text can sit unsubmitted, and repeated sends pile up (open feature request). Fix: a `workspace send` that submits multi-line text and checks it landed.
 - **[Improve] Reports dropped quietly.** Past 500 buffered status reports the oldest are dropped with only a debug log (`lib/workspace/commands/agent.rb:17`). Fix: warn on stderr and report the count once the coordinator is back.
 

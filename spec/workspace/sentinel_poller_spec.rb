@@ -18,9 +18,9 @@ RSpec.describe Workspace::SentinelPoller do
 
   # Runs the poller against a canned sequence of pane captures. The first entry
   # is what the pane held when the poller started.
-  def poll(captures, timeout: 0.5)
+  def poll(captures, timeout: 0.5, token: nil)
     poller = described_class.new(
-      tmux: ScriptedTmux.new(captures), session_name: "myapp", pane: 0,
+      tmux: ScriptedTmux.new(captures), session_name: "myapp", pane: 0, token: token,
       poll_interval: 0.01, error_output: error_output
     )
     summary = Queue.new
@@ -31,6 +31,178 @@ RSpec.describe Workspace::SentinelPoller do
       nil
     ensure
       poller.stop
+    end
+  end
+
+  describe "with a dispatch token" do
+    it "reports the summary once the sentinel carrying its token appears" do
+      expect(poll(["still working\n", "still working\nWORKSPACE_DONE:ab12 PR #123 opened\n"], token: "ab12"))
+        .to eq("PR #123 opened")
+    end
+
+    it "ignores a sentinel without its token, whatever printed it" do
+      expect(poll(["", "WORKSPACE_DONE: a test's output\nWORKSPACE_DONE:zz99 another stage\n"], token: "ab12"))
+        .to be_nil
+    end
+
+    it "does not take a longer token that merely starts with its own" do
+      expect(poll(["", "WORKSPACE_DONE:ab123 not mine\n"], token: "ab12")).to be_nil
+    end
+
+    it "sees its sentinel once the pane's history is full and the line count stops growing" do
+      full = Array.new(50) { |i| "line #{i}\n" }.join
+      scrolled = Array.new(49) { |i| "line #{i + 1}\n" }.join + "WORKSPACE_DONE:ab12 done\n"
+
+      expect(poll([full, full, scrolled], token: "ab12")).to eq("done")
+    end
+
+    it "sees a sentinel the pane already held, since only this dispatch can have printed it" do
+      expect(poll(["WORKSPACE_DONE:ab12 finished while the agent was down\n"], token: "ab12"))
+        .to eq("finished while the agent was down")
+    end
+
+    it "does not mistake its own instruction, wrapped onto a line of its own, for the sentinel" do
+      wrapped = described_class.instruction("ab12").delete_prefix("When you are done, print a single line: ")
+      expect(poll(["", "#{wrapped}\n"], token: "ab12")).to be_nil
+    end
+
+    it "ignores a bare sentinel, which is how the instruction reads when wrapped just after the marker" do
+      expect(poll(["", "WORKSPACE_DONE:ab12\n"], token: "ab12")).to be_nil
+    end
+
+    it "ignores a sentinel followed by only the start of the placeholder" do
+      expect(poll(["", "  WORKSPACE_DONE:ab12 <one-line\n  summary>\n"], token: "ab12")).to be_nil
+    end
+
+    it "ignores the instruction wrapped mid-word inside the placeholder" do
+      expect(poll(["", "WORKSPACE_DONE:ab12 <one-li\nne summary>\n"], token: "ab12")).to be_nil
+    end
+
+    it "counts a real summary that starts with an angle bracket" do
+      expect(poll(["", "WORKSPACE_DONE:ab12 <b>fixed</b>\n"], token: "ab12")).to eq("<b>fixed</b>")
+      expect(poll(["", "WORKSPACE_DONE:ab12 <none>\n"], token: "ab12")).to eq("<none>")
+    end
+
+    it "counts a real summary that happens to start like the placeholder" do
+      expect(poll(["", "WORKSPACE_DONE:ab12 <one\nmore thing\n"], token: "ab12")).to eq("<one")
+    end
+
+    it "still finds the stage's real sentinel below a wrapped echo of the instruction" do
+      expect(poll(["", "WORKSPACE_DONE:ab12\n<one-line summary>\nWORKSPACE_DONE:ab12 all done\n"], token: "ab12"))
+        .to eq("all done")
+    end
+  end
+
+  describe "with a deadline" do
+    let(:deadline) { Time.utc(2026, 9, 27, 12, 0, 0) }
+
+    # Runs one poller to its end and says which way it ended.
+    def outcome(captures, now:)
+      poller = described_class.new(
+        tmux: ScriptedTmux.new(captures), session_name: "myapp", pane: 0, token: "ab12",
+        deadline: deadline, clock: -> { now }, poll_interval: 0.01, error_output: error_output
+      )
+      result = Queue.new
+      poller.start(on_timeout: -> { result << :timed_out }) { |summary| result << [:done, summary] }
+      Timeout.timeout(1) { result.pop }
+    ensure
+      poller.stop
+    end
+
+    it "gives up once the deadline passes without a sentinel" do
+      expect(outcome(["still working\n"], now: deadline)).to eq(:timed_out)
+    end
+
+    it "keeps waiting while the deadline is still ahead" do
+      captures = ["", "", "WORKSPACE_DONE:ab12 made it\n"]
+      expect(outcome(captures, now: deadline - 1)).to eq([:done, "made it"])
+    end
+
+    it "counts a sentinel already printed when it finds the deadline has passed" do
+      expect(outcome(["WORKSPACE_DONE:ab12 finished while no one watched\n"], now: deadline + 60))
+        .to eq([:done, "finished while no one watched"])
+    end
+  end
+
+  describe "how much history it reads" do
+    # Records whether each capture asked for the whole history or a recent
+    # window, and answers from the block given the kind and the call number.
+    let(:tmux_class) do
+      Class.new do
+        attr_reader :calls
+
+        def initialize(&respond)
+          @respond = respond
+          @calls = []
+        end
+
+        def capture_pane(_session, _pane, lines: 100, all: false)
+          @calls << (all ? :full : lines)
+          @respond.call(@calls.last, @calls.size)
+        end
+      end
+    end
+    let(:recent) { described_class::RECENT_LINES }
+    let(:deadline) { Time.utc(2026, 9, 27, 12) }
+
+    # Runs one poller to its end; the clock reaches the deadline on its
+    # +expire_on+th read.
+    def watch(tmux, token: "ab12", expire_on: 100)
+      clock_reads = 0
+      poller = described_class.new(
+        tmux: tmux, session_name: "myapp", pane: 0, token: token, deadline: deadline,
+        clock: -> { ((clock_reads += 1) >= expire_on) ? deadline : deadline - 1 },
+        poll_interval: 0.001, error_output: error_output
+      )
+      result = Queue.new
+      thread = poller.start(on_timeout: -> { result << :timed_out }) { |summary| result << summary }
+      result.pop(timeout: 1)
+    ensure
+      poller.stop
+      thread&.join(1)
+    end
+
+    it "reads the whole history on its first poll, then only a recent window" do
+      tmux = tmux_class.new { |_kind, n| (n == 3) ? "WORKSPACE_DONE:ab12 done\n" : "" }
+
+      expect(watch(tmux)).to eq("done")
+      expect(tmux.calls).to eq([:full, recent, recent])
+    end
+
+    it "finds a sentinel that scrolled out of the recent window on its periodic full read" do
+      stub_const("#{described_class}::FULL_SCAN_EVERY", 3)
+      tmux = tmux_class.new { |kind, n| (kind == :full && n > 1) ? "WORKSPACE_DONE:ab12 scrolled away\n" : "later\n" }
+
+      expect(watch(tmux)).to eq("scrolled away")
+      expect(tmux.calls).to eq([:full, recent, recent, :full])
+    end
+
+    it "reads the whole history once more before giving up" do
+      tmux = tmux_class.new { |kind, n| (kind == :full && n > 1) ? "WORKSPACE_DONE:ab12 just made it\n" : "later\n" }
+
+      expect(watch(tmux, expire_on: 2)).to eq("just made it")
+      expect(tmux.calls).to eq([:full, recent, :full])
+    end
+
+    it "gives up after that last full read finds nothing" do
+      tmux = tmux_class.new { |_kind, _n| "later\n" }
+
+      expect(watch(tmux, expire_on: 2)).to eq(:timed_out)
+      expect(tmux.calls).to eq([:full, recent, :full])
+    end
+
+    it "always reads the whole history without a token, since it counts lines from the top" do
+      tmux = tmux_class.new { |_kind, _n| "" }
+
+      expect(watch(tmux, token: nil, expire_on: 3)).to eq(:timed_out)
+      expect(tmux.calls).to all(eq(:full))
+    end
+  end
+
+  describe ".instruction" do
+    it "tells the stage the exact line to print" do
+      expect(described_class.instruction("ab12"))
+        .to eq("When you are done, print a single line: WORKSPACE_DONE:ab12 <one-line summary>")
     end
   end
 
@@ -51,8 +223,8 @@ RSpec.describe Workspace::SentinelPoller do
     expect(poll([nil, nil, "WORKSPACE_DONE: recovered\n"])).to eq("recovered")
   end
 
-  it "treats a bare sentinel with no summary as completion" do
-    expect(poll(["", "WORKSPACE_DONE:\n"])).to eq("")
+  it "ignores a bare sentinel with no summary" do
+    expect(poll(["", "WORKSPACE_DONE:\n"])).to be_nil
   end
 
   it "reports to the error stream when polling dies unexpectedly" do

@@ -1,5 +1,7 @@
 require "json"
 require "fileutils"
+require "time"
+require "securerandom"
 
 module Workspace
   # Tracks in-flight pipeline state per work item, optionally persisting it so an
@@ -19,15 +21,19 @@ module Workspace
     # @param work_item_ref [String] the coordinator's work item reference
     # @param workspace_name [String] workspace the item belongs to
     # @param dispatch_id [String] the coordinator's dispatch identifier
+    # @param sentinel_token [String, nil] the token the first stage's sentinel must carry
+    # @param deadline [Time, nil] when the first stage is given up on, or nil for never
     # @return [Hash] the new state entry
-    def start(work_item_ref:, workspace_name:, dispatch_id:)
+    def start(work_item_ref:, workspace_name:, dispatch_id:, sentinel_token: nil, deadline: nil)
       stage = @pipeline_config.stages_for(workspace_name)&.first
       entry = @entries[work_item_ref] = {
         work_item_ref: work_item_ref,
         workspace_name: workspace_name,
         dispatch_id: dispatch_id,
         pane_index: stage ? stage[:pane_index] : 0,
-        phase: stage && stage[:role]
+        phase: stage && stage[:role],
+        sentinel_token: sentinel_token,
+        deadline_at: deadline&.utc&.iso8601(3)
       }
       persist
       entry
@@ -43,14 +49,31 @@ module Workspace
     #
     # @param work_item_ref [String]
     # @param to_stage [Hash] the stage hash to move to, with :pane_index and :role
+    # @param sentinel_token [String, nil] the token the new stage's sentinel must carry
+    # @param deadline [Time, nil] when the new stage is given up on, or nil for never
     # @return [Hash, nil] the updated entry, or nil when untracked
-    def advance(work_item_ref:, to_stage:)
+    def advance(work_item_ref:, to_stage:, sentinel_token: nil, deadline: nil)
       entry = @entries[work_item_ref]
       return nil unless entry
       entry[:pane_index] = to_stage[:pane_index]
       entry[:phase] = to_stage[:role]
+      entry[:sentinel_token] = sentinel_token
+      entry[:deadline_at] = deadline&.utc&.iso8601(3)
       persist
       entry
+    end
+
+    # Entries written before stages had deadlines carry none, and a deadline
+    # that no longer parses is treated the same way: better a stage that can
+    # still finish than one failed on a value nobody can read.
+    #
+    # @param work_item_ref [String]
+    # @return [Time, nil] when the item's current stage is given up on, or nil for never
+    def deadline(work_item_ref)
+      value = @entries.dig(work_item_ref, :deadline_at)
+      value.is_a?(String) ? Time.iso8601(value) : nil
+    rescue ArgumentError
+      nil
     end
 
     # Stops tracking a work item.
@@ -84,11 +107,12 @@ module Workspace
     # Written under the user's own state directory, so the file carries no
     # permissions a passer-by on a shared box could use. Written to a temp file
     # and renamed, because being killed mid-write is exactly the case this file
-    # exists for and a half-written one would lose every in-flight item.
+    # exists for and a half-written one would lose every in-flight item. The
+    # temp name is unique per write so two writers never share one.
     def persist
       return unless @state_path
       FileUtils.mkdir_p(File.dirname(@state_path), mode: 0o700)
-      temp_path = "#{@state_path}.#{Process.pid}.tmp"
+      temp_path = "#{@state_path}.#{Process.pid}.#{SecureRandom.hex(6)}.tmp"
       File.write(temp_path, JSON.pretty_generate(@entries), perm: 0o600)
       File.rename(temp_path, @state_path)
     end

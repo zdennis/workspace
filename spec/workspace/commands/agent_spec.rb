@@ -5,16 +5,19 @@ require "delegate"
 # Captures the completion callback instead of polling tmux on a thread, so
 # specs can decide exactly when a stage finishes.
 class FakeSentinelPoller
-  attr_reader :session_name, :pane, :on_complete, :on_error
+  attr_reader :session_name, :pane, :token, :deadline, :on_complete, :on_error, :on_timeout
 
-  def initialize(session_name:, pane:)
+  def initialize(session_name:, pane:, token: nil, deadline: nil)
     @session_name = session_name
     @pane = pane
+    @token = token
+    @deadline = deadline
   end
 
-  def start(on_error: nil, &block)
+  def start(on_error: nil, on_timeout: nil, &block)
     @on_complete = block
     @on_error = on_error
+    @on_timeout = on_timeout
     self
   end
 
@@ -96,7 +99,18 @@ RSpec.describe Workspace::Commands::Agent do
 
   let(:pollers) { [] }
   let(:sentinel_poller_factory) do
-    ->(session_name:, pane:) { FakeSentinelPoller.new(session_name: session_name, pane: pane).tap { |p| pollers << p } }
+    lambda do |session_name:, pane:, token:, deadline:|
+      FakeSentinelPoller.new(session_name: session_name, pane: pane, token: token, deadline: deadline)
+        .tap { |p| pollers << p }
+    end
+  end
+
+  let(:now) { Time.utc(2026, 9, 27, 12, 0, 0) }
+
+  # Predictable per-stage tokens: tok-1 for the first dispatch, tok-2 for the next.
+  let(:token_generator) do
+    count = 0
+    -> { "tok-#{count += 1}" }
   end
 
   subject(:agent) do
@@ -109,6 +123,8 @@ RSpec.describe Workspace::Commands::Agent do
       epoch_generator: -> { "wa-TESTEPOCH" },
       signal_trapper: signal_trapper,
       sentinel_poller_factory: sentinel_poller_factory,
+      token_generator: token_generator,
+      clock: -> { now },
       retry_backoff: 0,
       output: output,
       error_output: error_output
@@ -241,12 +257,39 @@ RSpec.describe Workspace::Commands::Agent do
         send_command
         wait_until { tmux.sent_keys.any? }
 
-        expect(tmux.sent_keys.last).to include(
-          session: "myapp", pane: "0.0", text: "/build add OAuth support"
-        )
+        expect(tmux.sent_keys.last).to include(session: "myapp", pane: "0.0")
+        expect(tmux.sent_keys.last[:text]).to start_with("/build add OAuth support\n\n")
         expect(pipeline_state.current("WC-42")).to include(
-          dispatch_id: "d-7a1", pane_index: 0, phase: "researcher"
+          dispatch_id: "d-7a1", pane_index: 0, phase: "researcher", sentinel_token: "tok-1"
         )
+      end
+    end
+
+    it "tells the first stage how to signal it is done, with a token only it carries" do
+      File.write(project_config_path, <<~YAML)
+        pipeline:
+          panes:
+            - role: researcher
+            - role: implementer
+      YAML
+
+      run_agent do
+        send_command
+        wait_until { pollers.any? }
+
+        expect(tmux.sent_keys.last[:text]).to eq(
+          "/build add OAuth support\n\nWhen you are done, print a single line: WORKSPACE_DONE:tok-1 <one-line summary>"
+        )
+        expect(pollers.first.token).to eq("tok-1")
+      end
+    end
+
+    it "does not add a completion instruction when there is no pipeline to watch it" do
+      run_agent do
+        send_command
+        wait_until { tmux.sent_keys.any? }
+
+        expect(tmux.sent_keys.last[:text]).not_to include("WORKSPACE_DONE")
       end
     end
 
@@ -304,7 +347,9 @@ RSpec.describe Workspace::Commands::Agent do
         run_agent do
           send_command("body" => "do the thing")
           wait_until { tmux.sent_keys.any? }
-          expect(tmux.sent_keys.last).to include(pane: "0.0", text: "do the thing")
+          expect(tmux.sent_keys.last).to include(pane: "0.0")
+          expect(tmux.sent_keys.last[:text]).to start_with("do the thing\n\nWhen you are done")
+          expect(tmux.sent_keys.last[:text]).not_to include("Status reporting")
         end
       end
 
@@ -362,10 +407,8 @@ RSpec.describe Workspace::Commands::Agent do
         run_agent do
           send_command("body" => "do the thing", "reporting_instructions" => "run report --ref WC-1")
           wait_until { tmux.sent_keys.any? }
-          expect(tmux.sent_keys.last).to include(
-            pane: "0.0",
-            text: "do the thing\n\nStatus reporting:\nrun report --ref WC-1"
-          )
+          expect(tmux.sent_keys.last).to include(pane: "0.0")
+          expect(tmux.sent_keys.last[:text]).to start_with("do the thing\n\nStatus reporting:\nrun report --ref WC-1\n\n")
         end
       end
 
@@ -394,7 +437,8 @@ RSpec.describe Workspace::Commands::Agent do
         send_command
 
         wait_until { tmux.sent_keys.any? }
-        expect(tmux.sent_keys.last).to include(pane: "0.0", text: "/build add OAuth support")
+        expect(tmux.sent_keys.last).to include(pane: "0.0")
+        expect(tmux.sent_keys.last[:text]).to start_with("/build add OAuth support")
         expect(pipeline_state.current("WC-42")).to include(pane_index: 0, phase: "researcher")
       end
     end
@@ -438,7 +482,9 @@ RSpec.describe Workspace::Commands::Agent do
         expect(File.read(handoff)).to include("research notes")
         expect(tmux.sent_keys.last).to include(session: "myapp", pane: "0.1")
         expect(tmux.sent_keys.last[:text]).to include(handoff)
-        expect(tmux.sent_keys.last[:text]).to include("WORKSPACE_DONE:")
+        expect(tmux.sent_keys.last[:text]).to include("print a single line: WORKSPACE_DONE:tok-2 <one-line summary>")
+        expect(pollers.last.token).to eq("tok-2")
+        expect(pipeline_state.current("WC-42")).to include(sentinel_token: "tok-2")
         expect(pollers.first).to be_stopped
         expect(pipeline_state.current("WC-42")).to include(pane_index: 1, phase: "implementer")
         expect(pollers.last.pane).to eq(1)
@@ -527,6 +573,83 @@ RSpec.describe Workspace::Commands::Agent do
 
         expect(pipeline_state.current("WC-42")).to include(pane_index: 1, phase: "implementer")
         expect(pipeline_state.current("WC-43")).to include(pane_index: 0, phase: "researcher")
+      end
+    end
+
+    describe "with stage timeouts configured" do
+      before do
+        File.write(project_config_path, <<~YAML)
+          pipeline:
+            panes:
+              - role: researcher
+                timeout: 30m
+              - role: implementer
+              - role: reviewer
+                timeout: 10m
+        YAML
+      end
+
+      it "gives each stage the deadline its own config sets, and none where it sets none" do
+        run_agent do
+          send_command
+          wait_until { pollers.any? }
+          expect(pollers.first.deadline).to eq(now + 1800)
+          expect(pipeline_state.current("WC-42")).to include(deadline_at: "2026-09-27T12:30:00.000Z")
+
+          pollers.first.on_complete.call("research done")
+          expect(pollers.last.deadline).to be_nil
+          expect(pipeline_state.current("WC-42")).to include(deadline_at: nil)
+
+          pollers.last.on_complete.call("implementation done")
+          expect(pollers.last.deadline).to eq(now + 600)
+        end
+      end
+
+      it "fails the work item and says so when a stage runs past its deadline" do
+        run_agent do
+          send_command
+          wait_until { pollers.any? }
+
+          pollers.first.on_timeout.call
+
+          wait_until { coordinator.status_messages.any? { |m| m["type"] == "error" } }
+          expect(coordinator.status_messages.last).to include(
+            "type" => "error", "work_item_ref" => "WC-42",
+            "message" => "timed out after 30m (deadline 2026-09-27T12:30:00Z): no WORKSPACE_DONE:tok-1 line"
+          )
+          expect(error_output.string).to include("WC-42 failed at pane 0: timed out")
+          expect(pipeline_state.current("WC-42")).to be_nil
+          expect(pollers.first).to be_stopped
+        end
+      end
+
+      it "ignores a timeout from a watch that has since been replaced" do
+        run_agent do
+          send_command
+          wait_until { pollers.size == 1 }
+          send_command("dispatch_id" => "d-7a2")
+          wait_until { pollers.size == 2 }
+
+          pollers.first.on_timeout.call
+
+          expect(pipeline_state.current("WC-42")).to include(sentinel_token: "tok-2")
+          expect(coordinator.status_messages.map { |m| m["type"] }).not_to include("error")
+        end
+      end
+    end
+
+    it "ignores a completion from a watch that has since been replaced" do
+      run_agent do
+        send_command
+        wait_until { pollers.size == 1 }
+        # The coordinator re-sends the same work item; the first watch is retired.
+        send_command("dispatch_id" => "d-7a2")
+        wait_until { pollers.size == 2 }
+
+        pollers.first.on_complete.call("late news from the old dispatch")
+
+        expect(pipeline_state.current("WC-42")).to include(pane_index: 0, sentinel_token: "tok-2")
+        expect(pollers.size).to eq(2)
       end
     end
   end
@@ -859,6 +982,32 @@ RSpec.describe Workspace::Commands::Agent do
       end
     end
 
+    it "refuses a steer aimed at a stage that has already finished" do
+      run_agent do
+        send_command
+        wait_until { pollers.any? }
+        old_token = pipeline_state.current("WC-42")[:sentinel_token]
+        pollers.first.on_complete.call("research done")
+        wait_until { pipeline_state.current("WC-42")&.[](:pane_index) == 1 }
+        sent_before = tmux.sent_keys.size
+
+        expect(send_inject("interrupt" => true, "expected_token" => old_token))
+          .to eq("ok" => false, "error" => "stale_token")
+        expect(tmux.sent_keys.size).to eq(sent_before)
+      end
+    end
+
+    it "accepts a steer naming the running stage's token" do
+      run_agent do
+        send_command
+        wait_until { pollers.any? }
+        token = pipeline_state.current("WC-42")[:sentinel_token]
+
+        expect(send_inject("interrupt" => true, "expected_token" => token))
+          .to eq("ok" => true, "queued_for_pane" => 0)
+      end
+    end
+
     it "refuses a steer for a work item that is not running" do
       run_agent do
         send_command("work_item_ref" => "WC-43", "dispatch_id" => "d-7a2")
@@ -922,13 +1071,48 @@ RSpec.describe Workspace::Commands::Agent do
     end
 
     # What the previous agent process would have left on disk mid-stage.
-    def write_persisted_state(pane_index: 1)
+    def write_persisted_state(pane_index: 1, **extra)
       File.write(state_path, JSON.pretty_generate(
         "WC-42" => {
           work_item_ref: "WC-42", workspace_name: "myapp",
           dispatch_id: "d-7a1", pane_index: pane_index, phase: "implementer"
-        }
+        }.merge(extra)
       ))
+    end
+
+    it "re-arms the watch with the stage's persisted token so a sentinel printed while it was down still counts" do
+      coordinator.start
+      write_pipeline_config
+      write_persisted_state(pane_index: 1, sentinel_token: "persisted-tok")
+      tmux.pane_indexes = [0, 1]
+
+      run_agent do
+        expect(pollers.map(&:token)).to eq(["persisted-tok"])
+      end
+    end
+
+    it "keeps the stage's persisted deadline rather than starting a new one" do
+      coordinator.start
+      write_pipeline_config
+      write_persisted_state(pane_index: 1, sentinel_token: "persisted-tok", deadline_at: "2026-09-27T11:00:00.000Z")
+      tmux.pane_indexes = [0, 1]
+
+      run_agent do
+        expect(pollers.first.deadline).to eq(Time.utc(2026, 9, 27, 11, 0, 0))
+      end
+    end
+
+    it "watches for a tokenless sentinel when the state predates tokens" do
+      coordinator.start
+      write_pipeline_config
+      write_persisted_state(pane_index: 1)
+      tmux.pane_indexes = [0, 1]
+
+      run_agent do
+        expect(pollers.map(&:token)).to eq([nil])
+        expect(pollers.first.deadline).to be_nil
+        expect(pollers.first.pane).to eq(1)
+      end
     end
 
     it "re-registers with its in-flight work when the coordinator restarted under it" do
@@ -996,6 +1180,23 @@ RSpec.describe Workspace::Commands::Agent do
         )
         expect(pollers.map(&:pane)).to eq([1])
         expect(pipeline_state.current("WC-42")).to include(pane_index: 1)
+      end
+    end
+
+    it "names only the deadline when a recovered stage times out, since its budget is not persisted" do
+      coordinator.start
+      write_pipeline_config
+      write_persisted_state(pane_index: 1, sentinel_token: "persisted-tok", deadline_at: "2026-09-27T12:30:00.000Z")
+      tmux.pane_indexes = [0, 1]
+
+      run_agent do
+        wait_until { pollers.any? }
+        pollers.first.on_timeout.call
+
+        wait_until { coordinator.status_messages.any? { |m| m["type"] == "error" } }
+        expect(coordinator.status_messages.last).to include(
+          "message" => "timed out (deadline 2026-09-27T12:30:00Z): no WORKSPACE_DONE:persisted-tok line"
+        )
       end
     end
 
@@ -1113,6 +1314,21 @@ RSpec.describe Workspace::Commands::Agent do
 
       running.close
       accepter.kill
+    end
+  end
+
+  describe "starting with a stage timeout it cannot read" do
+    it "refuses to start, naming the bad setting" do
+      File.write(project_config_path, <<~YAML)
+        pipeline:
+          panes:
+            - role: researcher
+              timeout: whenever
+      YAML
+
+      expect { agent.call(name: "myapp") }
+        .to raise_error(Workspace::Error, /pipeline\.panes\[0\]\.timeout/)
+      expect(File.exist?(agent_socket_path)).to be(false)
     end
   end
 

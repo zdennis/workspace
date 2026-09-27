@@ -117,6 +117,95 @@ RSpec.describe Workspace::Doctor do
     end
   end
 
+  describe "pipeline config check" do
+    let(:tmpdir) { Dir.mktmpdir }
+    let(:project_yml) { File.join(tmpdir, "myapp.yml") }
+
+    before do
+      FileUtils.touch(project_yml)
+      allow(project_detector).to receive(:detect).and_return("myapp")
+      allow(config).to receive(:agent_socket_path).with("myapp").and_return("/tmp/does-not-exist-workspace-myapp.sock")
+      allow(config).to receive(:project_config_path).with("myapp").and_return(project_yml)
+    end
+
+    after { FileUtils.remove_entry(tmpdir) }
+
+    it "reports an invalid pipeline config for the detected project" do
+      pipeline_config = double("pipeline_config")
+      allow(pipeline_config).to receive(:stages_for).with("myapp")
+        .and_raise(Workspace::Error, "Invalid pipeline.panes[0].timeout in #{project_yml}: must be greater than 0")
+
+      doctor = build_doctor(which: ->(_exe) { false }, pipeline_config: pipeline_config)
+
+      expect { doctor.run }.to raise_error(Workspace::Error)
+      expect(output.string).to include("pipeline config invalid for myapp")
+      expect(output.string).to include("must be greater than 0")
+    end
+
+    it "is silent when the pipeline config is valid" do
+      pipeline_config = double("pipeline_config")
+      allow(pipeline_config).to receive(:stages_for).with("myapp").and_return([{role: "researcher", pane_index: 0, timeout: nil}])
+      allow(pipeline_config).to receive(:literal_sentinel_warnings).with("myapp").and_return([])
+
+      doctor = build_doctor(which: ->(_exe) { false }, pipeline_config: pipeline_config)
+      begin
+        doctor.run
+      rescue Workspace::Error
+        # Expected from the unrelated hooks/agent checks in this scenario
+      end
+
+      expect(output.string).to include("pipeline config valid for myapp")
+    end
+
+    it "warns when the pipeline block has no panes" do
+      pipeline_config = double("pipeline_config")
+      allow(pipeline_config).to receive(:stages_for).with("myapp").and_return(nil)
+      allow(pipeline_config).to receive(:declared_but_empty?).with("myapp").and_return(true)
+      allow(pipeline_config).to receive(:literal_sentinel_warnings).with("myapp").and_return([])
+
+      doctor = build_doctor(which: ->(_exe) { false }, pipeline_config: pipeline_config)
+      begin
+        doctor.run
+      rescue Workspace::Error
+        # Expected from the unrelated hooks/agent checks in this scenario
+      end
+
+      expect(output.string).to include("pipeline config for myapp has no panes")
+    end
+
+    it "warns about a stage that names the bare completion sentinel, without failing the check" do
+      pipeline_config = double("pipeline_config")
+      allow(pipeline_config).to receive(:stages_for).with("myapp").and_return([{role: "implementer", pane_index: 0, timeout: nil}])
+      allow(pipeline_config).to receive(:literal_sentinel_warnings).with("myapp")
+        .and_return(["myapp's pipeline stage implementer (pane 0) names the bare WORKSPACE_DONE: marker"])
+
+      doctor = build_doctor(which: ->(_exe) { false }, pipeline_config: pipeline_config)
+      begin
+        doctor.run
+      rescue Workspace::Error
+        # Expected from the unrelated hooks/agent checks in this scenario
+      end
+
+      expect(output.string).to include("pipeline config valid for myapp")
+      expect(output.string).to include("names the bare WORKSPACE_DONE: marker")
+    end
+
+    it "skips the check when the project has no pipeline config file" do
+      FileUtils.rm_f(project_yml)
+      pipeline_config = double("pipeline_config")
+      allow(pipeline_config).to receive(:stages_for)
+
+      doctor = build_doctor(which: ->(_exe) { false }, pipeline_config: pipeline_config)
+      begin
+        doctor.run
+      rescue Workspace::Error
+        # Expected from the unrelated hooks/agent checks in this scenario
+      end
+
+      expect(pipeline_config).not_to have_received(:stages_for)
+    end
+  end
+
   describe "worktree lock hook check" do
     let(:git) { double("git") }
     let(:tmpdir) { Dir.mktmpdir }
