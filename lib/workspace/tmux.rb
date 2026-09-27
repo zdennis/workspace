@@ -475,10 +475,13 @@ module Workspace
     def capture_pane(session_name, pane, lines: 100, all: false)
       target = "#{session_name}:0.#{pane}"
       @logger.debug { "tmux: capture-pane -t #{target} (all=#{all}, lines=#{lines})" }
-      args = ["tmux", "capture-pane", "-t", target, "-p"]
-      args += all ? ["-S", "-"] : ["-S", "-#{lines}"]
+      args = ["tmux", "capture-pane", "-t", target, "-p", "-S", "-"]
       stdout, _, status = Open3.capture3(*args)
-      status.success? ? stdout : nil
+      return nil unless status.success?
+
+      return stdout if all
+
+      stdout.lines.last(lines).join
     end
 
     # @param session_name [String] tmux session name
