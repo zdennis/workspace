@@ -77,6 +77,8 @@ The displaced agent is told once, the next time it runs `acquire` or `release` f
 
 **Enforcement** — once [`workspace session-event`](README.session-event.md) hooks are installed (by `workspace init`, `workspace start`, or an upgraded `workspace doctor`), the `edit` lock is enforced, not just advisory: a `PreToolUse` for `Edit`, `Write`, `MultiEdit` or `NotebookEdit` is denied (hook exit 2, with a message on stderr) unless the calling agent is the `edit` lock's current holder. A Bash-based edit (`sed`, `git apply`, codegen) isn't a gated tool, so it stays advisory — the hook only sees named tool calls. The check costs a `git` subprocess only when some namespace actually holds the `edit` lock; otherwise it's a plain file read, same as idle tracking. If this agent was itself displaced by an idle takeover, its next denied edit also carries the one-time takeover notice, exactly as `acquire`/`release` do.
 
+A worktree created before this feature shipped, or with plain `git worktree add` rather than `workspace start`, has no hooks installed until `workspace init` is run there — worktrees created by `workspace start` get them automatically. `workspace doctor` lists which worktrees are missing hooks.
+
 The `edit` lock (and every other lock this agent holds) is released automatically: on `SessionEnd`, and on a `SessionStart` whose `source` is `clear` (i.e. `/clear`). Neither depends on the agent calling `workspace lock release` itself.
 
 Set the grace period per project, in seconds or with an `s`, `m` or `h` suffix:
