@@ -563,5 +563,36 @@ RSpec.describe Workspace::LockStore do
 
       expect(audit_events.size).to eq(before)
     end
+
+    it "appends a deny event to the audit log when a lock is denied" do
+      s = store
+      denier = identity(pid: 200, pane: "%2", worktree: "web")
+      s.acquire("edit", identity: identity(pid: 100), waiter_pid: 100, waiter_started: "start-100")
+      holder_record = s.current_holder("edit")
+
+      s.record_deny("edit", denier: denier, holder: holder_record)
+
+      deny_events = audit_events.select { |e| e["event"] == "deny" }
+      expect(deny_events.size).to eq(1)
+      expect(deny_events[0]).to include(
+        "event" => "deny",
+        "lock" => "edit",
+        "agent" => {"pid" => 200, "pane" => "%2", "worktree" => "web"},
+        "holder" => {"pid" => 100, "pane" => "%1", "worktree" => "app", "task" => nil, "kind" => "agent"}
+      )
+    end
+
+    it "does not mutate locks.json when recording a deny event" do
+      s = store
+      s.acquire("edit", identity: identity(pid: 100), waiter_pid: 100, waiter_started: "start-100")
+      holder_record = s.current_holder("edit")
+
+      locks_json_before = File.read(File.join(tmpdir, "locks.json"))
+
+      s.record_deny("edit", denier: identity(pid: 200), holder: holder_record)
+
+      locks_json_after = File.read(File.join(tmpdir, "locks.json"))
+      expect(locks_json_after).to eq(locks_json_before)
+    end
   end
 end
