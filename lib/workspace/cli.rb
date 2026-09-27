@@ -363,7 +363,8 @@ module Workspace
           yes = true
         end
         opts.on("--json", "Emit the documented JSON schema instead of plain text (see docs/README.start.md);",
-          "never prompts (see --base/--yes)") do
+          "never prompts (see --base/--yes). Only the JSON goes to stdout; progress/warnings",
+          "go to stderr or the warnings field (docs/README.start.md)") do
           json = true
         end
         opts.separator ""
