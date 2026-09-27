@@ -23,7 +23,7 @@ module Workspace
       # `workspace lock status --json`'s schema version (see docs/README.lock.md).
       JSON_SCHEMA_VERSION = 1
       # Default seconds `clear` waits for a SIGKILLed process group to disappear
-      # before treating it as unstoppable and keeping its lock (`locks.kill_grace`).
+      # before treating it as unstoppable and keeping its lock (`dev.kill_grace`).
       KILL_GRACE_SECONDS = ProcessHolderStopper::KILL_GRACE_SECONDS
 
       # Seconds on a clock that never jumps backward or forward with wall-clock
@@ -49,8 +49,8 @@ module Workspace
       #   real process-wide signal state; called as `trap.call(signal, handler)`, exactly
       #   like `Signal.trap`, and must return the previous handler the same way
       # @param terminator [Workspace::ProcessGroupTerminator] stops a cleared `kind: "process"` holder
-      # @param dev_config [Workspace::DevConfig, nil] supplies that holder's dev.stop_timeout
-      # @param lock_config [Workspace::LockConfig, nil] supplies the project's locks.idle_grace and locks.kill_grace
+      # @param dev_config [Workspace::DevConfig, nil] supplies that holder's dev.stop_timeout and dev.kill_grace
+      # @param lock_config [Workspace::LockConfig, nil] supplies the project's locks.idle_grace
       # @param wall_clock [#call] current epoch seconds, for idle tracking in the store
       def initialize(config:, lock_namespace:, lock_holder:, output: $stdout, error_output: $stderr,
         sleeper: ->(seconds) { sleep(seconds) }, clock: MonotonicClock, pid_provider: -> { Process.pid },
@@ -386,9 +386,10 @@ module Workspace
       def stop_process_holder(store, name, holder, label, project)
         pid = holder["pid"]
         pgid = holder["pgid"] || pid
-        timeout = stop_timeout_for(project)
+        settings = dev_settings_for(project)
+        timeout = settings[:stop_timeout]
         case @holder_stopper.stop(store, name, holder, stop_timeout: timeout, retry_command: "workspace lock clear #{name}",
-          cleared_by: label, kill_grace: kill_grace_for(project))
+          cleared_by: label, kill_grace: settings[:kill_grace])
         when :kept then return false
         when :killed then @output.puts "Killed process group #{pgid} (pid #{pid}) after #{timeout}s."
         when :terminated then @output.puts "Stopped process group #{pgid} (pid #{pid})."
@@ -396,15 +397,13 @@ module Workspace
         true
       end
 
-      def kill_grace_for(project)
-        @lock_config ? @lock_config.kill_grace_for(project) : KILL_GRACE_SECONDS
-      end
-
-      def stop_timeout_for(project)
-        return DevConfig::DEFAULT_STOP_TIMEOUT unless @dev_config
-        @dev_config.for_project(project)[:stop_timeout]
+      # One `dev_config` read for both settings, so a `clear` looks up the
+      # project's dev config once rather than once per setting.
+      def dev_settings_for(project)
+        return {stop_timeout: DevConfig::DEFAULT_STOP_TIMEOUT, kill_grace: KILL_GRACE_SECONDS} unless @dev_config
+        @dev_config.for_project(project)
       rescue Workspace::Error
-        DevConfig::DEFAULT_STOP_TIMEOUT
+        {stop_timeout: DevConfig::DEFAULT_STOP_TIMEOUT, kill_grace: KILL_GRACE_SECONDS}
       end
 
       # The stopped holder's own release promotes a takeover this clear
@@ -415,7 +414,9 @@ module Workspace
       end
 
       # A queued `dev up --takeover` is kept by the clear, not removed: it
-      # takes the lock next.
+      # takes the lock next. At most one takeover can ever be queued for a
+      # lock (a second `dev up --takeover` refuses while one is already
+      # queued), so `.first` is always the one promoted.
       def takeover_note(removed)
         takeover = removed[:takeovers]&.first
         return "" unless takeover

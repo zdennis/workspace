@@ -5,14 +5,14 @@ module Workspace
   #
   # A group can't be stopped when it has live processes this user may not
   # signal (another user's, e.g. a server under `sudo`), when it is still
-  # running +kill_grace+ seconds after SIGKILL (`locks.kill_grace`, default
+  # running +kill_grace+ seconds after SIGKILL (`dev.kill_grace`, default
   # {KILL_GRACE_SECONDS}), or when its wrapper is already gone but the group runs on (unless its id was reused). The
   # lock is then re-asserted with {LockStore#keep_process_holder}.
   #
   # Runs with the store unlocked: the wrapper needs the flock to release,
   # and would otherwise sit blocked until SIGKILL.
   class ProcessHolderStopper
-    # Default seconds a SIGKILLed group may take to disappear (`locks.kill_grace`).
+    # Default seconds a SIGKILLed group may take to disappear (`dev.kill_grace`).
     KILL_GRACE_SECONDS = 2
     KILL_POLL_SECONDS = 0.1
 

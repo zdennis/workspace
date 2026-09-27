@@ -313,10 +313,10 @@ RSpec.describe Workspace::Commands::Lock do
           waiter_pid: 4242, waiter_started: "start-4242")
       end
 
-      def clear_command(lock_config: nil)
+      def clear_command(dev_config: nil)
         described_class.new(config: config, lock_namespace: lock_namespace, lock_holder: FakeLockIdentity.new(pid: 999), output: output,
           error_output: error_output, terminator: terminator, clock: mono_clock, trap: ->(*) {},
-          sleeper: ->(seconds) { mono[0] += seconds }, lock_config: lock_config)
+          sleeper: ->(seconds) { mono[0] += seconds }, dev_config: dev_config)
       end
 
       def devenv_holder_pid
@@ -350,14 +350,13 @@ RSpec.describe Workspace::Commands::Lock do
         expect(error_output.string).to include("still running #{described_class::KILL_GRACE_SECONDS}s after SIGKILL", "Kept devenv lock")
       end
 
-      it "waits the project's locks.kill_grace after SIGKILL before keeping the lock" do
+      it "waits the project's dev.kill_grace after SIGKILL before keeping the lock" do
         hold_devenv
         allow(terminator).to receive(:stop_holder).and_return(:killed)
         allow(terminator).to receive(:running?).with(4242).and_return(true)
-        lock_config = instance_double(Workspace::LockConfig, idle_grace_for: 300)
-        allow(lock_config).to receive(:kill_grace_for).with("app").and_return(0.5)
+        dev_config = instance_double(Workspace::DevConfig, for_project: {stop_timeout: 2, kill_grace: 0.5})
 
-        result = clear_command(lock_config: lock_config).clear("devenv")
+        result = clear_command(dev_config: dev_config).clear("devenv")
 
         expect(result).to eq(exit_code: 1)
         expect(mono[0]).to be >= 0.5

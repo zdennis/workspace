@@ -790,7 +790,9 @@ RSpec.describe Workspace::Commands::Dev, "with fake processes and clock" do
     end
   end
 
-  describe "`down` with locks.kill_grace set" do
+  describe "`down` with dev.kill_grace set" do
+    let(:settings) { {"up" => "run-dev", "stop_timeout" => 2, "startup_timeout" => 5, "ready_timeout" => 5, "kill_grace" => 7} }
+
     it "waits that long after SIGKILL before keeping the lock" do
       hold(700)
       allow(terminator).to receive(:stop_holder) do
@@ -798,10 +800,8 @@ RSpec.describe Workspace::Commands::Dev, "with fake processes and clock" do
         :killed
       end
       allow(terminator).to receive(:running?).with(700).and_return(true)
-      lock_config = instance_double(Workspace::LockConfig)
-      allow(lock_config).to receive(:kill_grace_for).with("app").and_return(7)
 
-      expect(dev(lock_config: lock_config).down(working_dir: worktree)).to eq(exit_code: 1)
+      expect(dev.down(working_dir: worktree)).to eq(exit_code: 1)
       expect(now[0]).to be >= 7
       expect(error_output.string).to include("still running 7s after SIGKILL", "Kept devenv lock")
     end
