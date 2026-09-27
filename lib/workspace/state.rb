@@ -1,5 +1,6 @@
 require "fileutils"
 require "json"
+require "securerandom"
 
 module Workspace
   # Wraps JSON-persisted workspace state for tracked sessions.
@@ -60,9 +61,14 @@ module Workspace
       @data = @event_log.reconstruct(strict: true)
       @logger.debug { "state: saving #{@data.keys.size} project(s) to #{@config.state_file}" }
       backup_state_file
-      tmp = "#{@config.state_file}.tmp"
+      # Each save writes its own temp file, so two processes saving at once
+      # never rename one another's file out from under them.
+      tmp = "#{@config.state_file}.#{Process.pid}.#{SecureRandom.hex(4)}.tmp"
       File.write(tmp, JSON.pretty_generate(@data))
       File.rename(tmp, @config.state_file)
+    rescue
+      File.delete(tmp) if tmp && File.exist?(tmp)
+      raise
     end
 
     # @param key [String]

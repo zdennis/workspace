@@ -192,6 +192,21 @@ RSpec.describe Workspace::State do
       loaded = new_state.load
       expect(loaded.keys).to contain_exactly("proj2", "proj3")
     end
+
+    it "writes each save through its own temp file and leaves none behind" do
+      temp_files = []
+      allow(File).to receive(:rename).and_wrap_original do |original, from, to|
+        temp_files << from
+        original.call(from, to)
+      end
+      first = new_state.load
+      first["proj1"] = {"headless" => true}
+      first.save
+      first.save
+
+      expect(temp_files.uniq.size).to eq(2)
+      expect(Dir.children(tmpdir).grep(/\.tmp\z/)).to be_empty
+    end
   end
 
   describe "#prune" do
