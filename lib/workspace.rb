@@ -135,7 +135,7 @@ module Workspace
     lock_namespace = LockNamespace.new(config: config, lineage: lineage)
     lock_holder = LockHolder.new
     sessions_command = Commands::Sessions.new(config: config, lock_namespace: lock_namespace, lock_holder: lock_holder,
-      output: output, error_output: error_output)
+      project_config: project_config, output: output, error_output: error_output)
     dev_config = DevConfig.new(project_settings: project_settings)
     lock_config = LockConfig.new(project_settings: project_settings, error_output: error_output)
     lock_idle_tracker = LockIdleTracker.new(config: config, lock_namespace: lock_namespace, lock_holder: lock_holder, logger: logger)

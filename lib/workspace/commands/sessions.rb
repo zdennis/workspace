@@ -18,15 +18,20 @@ module Workspace
       #   lock's store directory; nil hides the LOCK column entirely
       # @param lock_holder [Workspace::LockHolder, nil] checks holder/waiter
       #   liveness for the lock store; required together with +lock_namespace+
+      # @param project_config [Workspace::ProjectConfig, nil] resolves the
+      #   rendered workspace's project root, so the lock namespace matches the
+      #   workspace being shown rather than the command's own Dir.pwd;
+      #   required together with +lock_namespace+/+lock_holder+
       # @param output [IO] stream for the rendered table or JSON
       # @param error_output [IO] stream for the no-daemon message
       # @param clock [#now] time source, injected for deterministic tests
       # @param sleeper [#call] delay between refreshes, injected for tests
-      def initialize(config:, lock_namespace: nil, lock_holder: nil, output: $stdout, error_output: $stderr,
-        clock: Time, sleeper: ->(seconds) { sleep(seconds) })
+      def initialize(config:, lock_namespace: nil, lock_holder: nil, project_config: nil, output: $stdout,
+        error_output: $stderr, clock: Time, sleeper: ->(seconds) { sleep(seconds) })
         @config = config
         @lock_namespace = lock_namespace
         @lock_holder = lock_holder
+        @project_config = project_config
         @output = output
         @error_output = error_output
         @clock = clock
@@ -40,6 +45,7 @@ module Workspace
       # @return [void]
       # @raise [Workspace::Error] if no agent daemon is listening
       def call(name:, json: false, watch: false, interval: 2)
+        @name = name
         return render(fetch(name), json) unless watch
 
         loop do
@@ -95,22 +101,39 @@ module Workspace
       # Loads the `edit` lock's holder and queue once per render — never per
       # pane — and stamps each pane's `"lock"` field: "edit ✓" for the
       # holder's pane, "edit #N" for a queued waiter's pane, or "" (blank) for
-      # every other pane, including one with no agent at all.
+      # every other pane, including one with no agent at all. A holder or
+      # waiter flagged `"stale"` (its pid is no longer alive) is treated as
+      # absent: it never renders "✓", and it is skipped when numbering the
+      # queue, so `#1` always refers to the next live waiter.
+      #
+      # Hides the whole column (leaves `"lock"` unset) when the rendered
+      # workspace's project root can't be resolved, rather than guessing at
+      # some other project's lock state via the command's own working
+      # directory.
       def apply_lock_column(panes)
         return unless @lock_namespace && @lock_holder
 
-        positions = lock_positions
+        root = project_root
+        return unless root
+
+        positions = lock_positions(root)
         panes.each { |pane| pane["lock"] = positions[pane["pane_id"]] || "" }
       end
 
-      def lock_positions
-        namespace = @lock_namespace.resolve(cwd: Dir.pwd)
+      def project_root
+        return nil unless @project_config && @name
+        @project_config.project_root_for(@name)
+      end
+
+      def lock_positions(root)
+        namespace = @lock_namespace.resolve(cwd: root)
         store = LockStore.new(dir: namespace[:dir], liveness: @lock_holder)
         entry = store.status(LOCK_NAME)[LOCK_NAME] || {}
         positions = {}
         holder = entry["holder"]
-        positions[holder["pane"]] = "#{LOCK_NAME} ✓" if holder && holder["pane"]
-        (entry["queue"] || []).each_with_index do |waiter, i|
+        positions[holder["pane"]] = "#{LOCK_NAME} ✓" if holder && holder["pane"] && !holder["stale"]
+        live_waiters = (entry["queue"] || []).reject { |waiter| waiter["stale"] }
+        live_waiters.each_with_index do |waiter, i|
           positions[waiter["pane"]] ||= "#{LOCK_NAME} ##{i + 1}" if waiter["pane"]
         end
         positions

@@ -26,7 +26,7 @@ The daemon holds the session state; this command only asks for it, over the agen
 
 Each pane shows its index, kind, title, state (`working`/`idle`), how long it's been idle, and a LOCK column. Sub-agents started within a pane (Claude Code's `Task` tool invocations) are listed indented underneath their parent pane.
 
-**LOCK column** — shows this pane's relationship to the `edit` lock ([`workspace lock`](README.lock.md)): `edit ✓` for the pane currently holding it, `edit #N` for a pane queued at position `N`, or blank for every other pane, including one with no agent at all. The lock store for the current directory's namespace is loaded once per render (never once per pane), so the column costs one extra file read, not a `git`/`ps` call per row.
+**LOCK column** — shows this pane's relationship to the `edit` lock ([`workspace lock`](README.lock.md)): `edit ✓` for the pane currently holding it, `edit #N` for a pane queued at position `N`, or blank for every other pane, including one with no agent at all. A dead holder or waiter (its process no longer alive) never shows `✓`, and is skipped when numbering the queue, so `#1` always refers to the next live waiter. The namespace is resolved from the *rendered workspace's* project root (its tmuxinator config), not the command's own working directory, so `workspace sessions other-project` always shows `other-project`'s lock state, never whatever project happens to be in front of it. If that project's root can't be resolved, the column is hidden rather than guessed. The lock store is loaded once per render (never once per pane), so the column costs one extra file read, not a `git`/`ps` call per row.
 
 ## Examples
 

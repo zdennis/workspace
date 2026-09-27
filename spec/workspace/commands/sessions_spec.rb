@@ -91,9 +91,10 @@ RSpec.describe Workspace::Commands::Sessions do
     let(:lock_dir) { File.join(tmpdir, "locks") }
     let(:lock_namespace) { instance_double(Workspace::LockNamespace, resolve: {key: "ns", display: "app", dir: lock_dir}) }
     let(:lock_holder) { FakeLockLiveness.new }
+    let(:project_config) { instance_double(Workspace::ProjectConfig, project_root_for: "/projects/proj") }
     let(:command) do
       described_class.new(config: config, lock_namespace: lock_namespace, lock_holder: lock_holder,
-        output: output, error_output: error_output)
+        project_config: project_config, output: output, error_output: error_output)
     end
 
     def acquire(pid:, pane:, wait: false)
@@ -122,7 +123,7 @@ RSpec.describe Workspace::Commands::Sessions do
         {key: "ns", display: "app", dir: dir}
       end
       command = described_class.new(config: config, lock_namespace: counting_namespace, lock_holder: lock_holder,
-        output: output, error_output: error_output)
+        project_config: project_config, output: output, error_output: error_output)
 
       with_daemon { command.call(name: "proj") }
 
@@ -143,6 +144,26 @@ RSpec.describe Workspace::Commands::Sessions do
       panes = JSON.parse(output.string)["panes"]
       expect(panes.find { |p| p["pane_id"] == "%1" }["lock"]).to eq("edit ✓")
       expect(panes.find { |p| p["pane_id"] == "%2" }["lock"]).to eq("")
+    end
+
+    it "skips a stale holder and numbers the queue over live waiters only" do
+      acquire(pid: 100, pane: "%1")
+      acquire(pid: 200, pane: "%2", wait: true)
+      lock_holder.kill(100)
+
+      with_daemon { command.call(name: "proj") }
+
+      expect(output.string).not_to match(/0\.0.*edit ✓/)
+      expect(output.string).to match(/0\.1\s+shell\s+zsh\s+idle\s+\S+\s+edit #1/)
+    end
+
+    it "hides the column when the workspace's project root can't be resolved" do
+      acquire(pid: 100, pane: "%1")
+      allow(project_config).to receive(:project_root_for).with("proj").and_return(nil)
+
+      with_daemon { command.call(name: "proj") }
+
+      expect(output.string).not_to include("edit")
     end
   end
 
