@@ -431,6 +431,59 @@ RSpec.describe Workspace::Commands::Dev, "with fake processes and clock" do
       expect(holder).to include("pid" => 555)
       expect(store.status("devenv").dig("devenv", "queue").map { |w| w["waiter_pid"] }).to eq([800])
     end
+
+    it "names the startup timeout, not --max-wait, when its queued wrapper never takes the lock and no --max-wait was given" do
+      hold(700)
+      wrapper_joins(555)
+      allow(terminator).to receive(:stop_holder).and_return(:terminated)
+
+      expect(dev.up(takeover: true, working_dir: worktree)).to eq(exit_code: 75)
+      expect(signals).to eq([["TERM", 555]])
+      expect(error_output.string).to include("Still queued for devenv lock after startup timeout; re-run to keep waiting.")
+      expect(error_output.string).not_to include("--max-wait")
+    end
+  end
+
+  describe "#up --takeover --max-wait" do
+    before { hold(700) }
+
+    it "exits 75 and stops its queued wrapper when the stopped holder hasn't let go by the deadline" do
+      wrapper_joins(555)
+      allow(terminator).to receive(:stop_holder) do
+        now[0] += 2
+        :terminated
+      end
+
+      expect(dev.up(takeover: true, max_wait: 3, working_dir: worktree)).to eq(exit_code: 75)
+      expect(now[0]).to eq(4)
+      expect(signals).to eq([["TERM", 555]])
+      expect(error_output.string).to include("Still queued for devenv lock after --max-wait; re-run to keep waiting.")
+    end
+
+    it "leaves the holder running when the deadline passes before it is stopped" do
+      allow(tmux).to receive(:new_window).and_return(555)
+      on_sleep << -> {} << -> {
+        store.acquire("devenv", identity: process_identity(555, worktree: worktree, branch: nil), waiter_pid: 555,
+          waiter_started: "s-555", wait: true, priority: true)
+      }
+      allow(terminator).to receive(:stop_holder)
+
+      expect(dev.up(takeover: true, max_wait: 2, working_dir: worktree)).to eq(exit_code: 75)
+      expect(terminator).not_to have_received(:stop_holder)
+      expect(signals).to eq([["TERM", 555]])
+      expect(holder).to include("pid" => 700)
+    end
+
+    it "stops a wrapper that hasn't queued by the deadline, before the startup timeout" do
+      allow(tmux).to receive(:new_window).and_return(555)
+      allow(terminator).to receive(:stop_holder)
+
+      expect(dev.up(takeover: true, max_wait: 2, working_dir: worktree)).to eq(exit_code: 1)
+      expect(now[0]).to eq(2)
+      expect(signals).to eq([["TERM", 555]])
+      expect(terminator).not_to have_received(:stop_holder)
+      expect(error_output.string).to include("did not acquire the devenv lock within 2s; stopped it.")
+    end
   end
 
   describe "the devenv window" do
@@ -621,6 +674,15 @@ RSpec.describe Workspace::Commands::Dev, "with fake processes and clock" do
       expect(signals).to eq([["TERM", 555]])
       expect(now[0]).to eq(3)
       expect(error_output.string).to include("Still queued for devenv lock after --max-wait; re-run to keep waiting.")
+    end
+
+    it "queues instead of refusing when given max_wait with wait: false" do
+      hold(700)
+      wrapper_joins(555)
+
+      expect(dev.up(wait: false, max_wait: 3, working_dir: worktree)).to eq(exit_code: 75)
+      expect(tmux).to have_received(:new_window).with("app", hash_including(command: end_with("__run", "--wait")))
+      expect(error_output.string).to include("Still queued for devenv lock after --max-wait")
     end
   end
 

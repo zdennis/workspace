@@ -26,10 +26,10 @@ RSpec.describe "workspace lock observability adversarial findings" do
       git = Workspace::Git.new(output: output, input: StringIO.new)
       project_detector = Workspace::ProjectDetector.new(state: state, project_config: project_config)
 
-      kill_command = Workspace::Commands::Kill.new(state: state, iterm: iterm, window_manager: window_manager, tmux: tmux, output: output, error_output: error_output)
+      stop_command = Workspace::Commands::Stop.new(state: state, iterm: iterm, window_manager: window_manager, tmux: tmux, output: output, error_output: error_output)
       launch_command = Workspace::Commands::Launch.new(state: state, iterm: iterm, window_manager: window_manager, tmux: tmux, project_config: project_config, window_layout: window_layout, config: config, output: output, error_output: error_output)
       start_command = Workspace::Commands::Start.new(git: git, project_config: project_config, project_settings: project_settings, launch_command: launch_command, output: output, input: StringIO.new)
-      stop_command = Workspace::Commands::Stop.new(git: git, project_config: project_config, project_settings: project_settings, kill_command: kill_command, project_detector: project_detector, output: output, input: StringIO.new)
+      kill_command = Workspace::Commands::Kill.new(git: git, project_config: project_config, project_settings: project_settings, stop_command: stop_command, project_detector: project_detector, output: output, input: StringIO.new)
       focus_command = Workspace::Commands::Focus.new(state: state, window_manager: window_manager, output: output)
       tile_command = Workspace::Commands::Tile.new(state: state, window_manager: window_manager, window_layout: window_layout, output: output)
       layout_command = Workspace::Commands::Layout.new(state: state, tmux: tmux, project_settings: project_settings, output: output)
@@ -39,7 +39,7 @@ RSpec.describe "workspace lock observability adversarial findings" do
       hook_installer = Workspace::HookInstaller.new(backup: Workspace::FileBackup.new(output: output), output: output, input: StringIO.new)
       init_command = Workspace::Commands::Init.new(config: config, hook_installer: hook_installer, which: ->(_exe) { false }, output: output, error_output: error_output, input: StringIO.new)
       cleanup_command = Workspace::Commands::Cleanup.new(state: state, window_manager: window_manager, tmux: tmux, output: output, input: StringIO.new)
-      prune_command = Workspace::Commands::Prune.new(state: state, project_config: project_config, project_settings: project_settings, git: git, kill_command: instance_double(Workspace::Commands::Kill), output: output, input: StringIO.new)
+      prune_command = Workspace::Commands::Prune.new(state: state, project_config: project_config, project_settings: project_settings, git: git, stop_command: instance_double(Workspace::Commands::Stop), output: output, input: StringIO.new)
       lookup_command = Workspace::Commands::Lookup.new(project_config: project_config, output: output)
 
       lock_namespace = instance_double(Workspace::LockNamespace,

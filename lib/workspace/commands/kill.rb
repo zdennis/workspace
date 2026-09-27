@@ -1,114 +1,88 @@
+require "yaml"
+
 module Workspace
   module Commands
-    # Kills workspace projects and their tmux sessions.
-    # Handles launcher window cleanup, only closing windows when
-    # all tracked projects within them are being killed.
+    # Kills a worktree-based workspace project by stopping its session,
+    # removing its git worktree, and cleaning up its tmuxinator config.
+    # The inverse of Commands::Start.
     class Kill
-      # @param state [Workspace::State] state persistence
-      # @param iterm [Workspace::ITerm] iTerm session/pane automation
-      # @param window_manager [Workspace::WindowManager] iTerm window operations
-      # @param tmux [Workspace::Tmux] tmux session operations
+      # @param git [Workspace::Git] git operations
+      # @param project_config [Workspace::ProjectConfig] config management
+      # @param stop_command [Commands::Stop] stop command for session teardown
       # @param output [IO] output stream for user-facing messages
-      # @param error_output [IO] error output stream for warnings
-      def initialize(state:, iterm:, window_manager:, tmux:, output: $stdout, error_output: $stderr)
-        @state = state
-        @iterm = iterm
-        @window_manager = window_manager
-        @tmux = tmux
+      # @param input [IO] input stream for interactive prompts
+      def initialize(git:, project_config:, project_settings:, stop_command:, project_detector:, output: $stdout, input: $stdin)
+        @git = git
+        @project_config = project_config
+        @project_settings = project_settings
+        @stop_command = stop_command
+        @project_detector = project_detector
         @output = output
-        @error_output = error_output
+        @input = input
       end
 
-      # Kills the specified projects (or all active projects if none specified).
+      MARKER_FILE = ".workspace-project"
+
+      # Kills a worktree project: stops the session, removes the worktree, and cleans up config.
       #
-      # @param projects [Array<String>] project names to kill (empty = all)
-      # @return [Array<String>] names of killed projects
-      def call(projects = [])
-        @state.load
-
-        if @state.empty?
-          @output.puts "No active workspace projects."
-          return []
+      # @param project [String, nil] project/config name, or nil to detect from cwd
+      # @param force [Boolean] force worktree removal even with uncommitted changes
+      # @return [void]
+      # @raise [Workspace::Error] if the project config is not a worktree project
+      def call(project = nil, force: false, working_dir: Dir.pwd)
+        project ||= @project_detector.detect_from_marker(working_dir)
+        unless project
+          raise Workspace::Error,
+            "No project specified and no #{MARKER_FILE} found in current directory.\n" \
+            "Run from inside a worktree, or specify the project name."
+        end
+        config_path = @project_config.config_path_for(project)
+        unless File.exist?(config_path)
+          raise Workspace::Error, "No config found for '#{project}'.\nRun 'workspace list' to see active projects."
         end
 
-        targets = resolve_targets(projects)
-
-        if targets.empty?
-          @output.puts "No matching workspace projects to stop."
-          return []
+        worktree_path = read_worktree_path(config_path)
+        unless worktree_path && @git.worktree_exists?(worktree_path)
+          raise Workspace::Error, "'#{project}' does not appear to be a worktree project.\nUse 'workspace stop #{project}' to stop non-worktree projects."
         end
 
-        killed_projects = targets.dup
+        @output.puts "Stopping #{project}..."
+        @output.puts "  Worktree: #{worktree_path}"
 
-        launcher_window_ids_to_close = find_launcher_windows_to_close(targets)
-        kill_tmux_sessions(targets)
-        close_launcher_windows(launcher_window_ids_to_close)
-        remove_from_state(targets)
+        unless force
+          @output.print "Remove worktree and kill session? [y/N] "
+          answer = @input.gets&.strip
+          unless answer&.match?(/\Ay(es)?\z/i)
+            @output.puts "Cancelled."
+            return
+          end
+        end
 
-        @state.save
+        remove_marker_file(worktree_path)
 
-        @output.puts "Stopped #{killed_projects.size} project(s): #{killed_projects.join(", ")}"
-        killed_projects
+        @output.puts "Removing worktree..."
+        @git.remove_worktree(worktree_path, force: force)
+
+        @stop_command.call([project])
+        @project_config.remove(project)
+        @project_settings.remove(project)
+
+        @output.puts "Stopped #{project}."
+        project
       end
 
       private
 
-      def resolve_targets(projects)
-        if projects.empty?
-          @state.keys
-        else
-          projects.select { |p| @state[p] }.tap do |found|
-            not_found = projects - found
-            not_found.each { |p| @error_output.puts "Warning: '#{p}' is not an active workspace project" }
-          end
-        end
+      def remove_marker_file(worktree_path)
+        marker = File.join(worktree_path, MARKER_FILE)
+        File.delete(marker) if File.exist?(marker)
       end
 
-      def find_launcher_windows_to_close(targets)
-        existing = @iterm.find_existing_sessions(@state)
-        launcher_uids = targets.filter_map { |p| existing[p] }
-        windows_to_close = []
-
-        if launcher_uids.any?
-          live_sessions = @iterm.session_map
-          candidate_window_ids = launcher_uids.filter_map { |uid| live_sessions[uid] }.uniq
-          candidate_window_ids.each do |wid|
-            sessions_in_window = live_sessions.select { |_, w| w == wid }.keys
-            tracked_project_names = []
-            @state.each do |project, info|
-              tracked_project_names << project if sessions_in_window.include?(info["unique_id"])
-            end
-            if (tracked_project_names - targets).empty?
-              windows_to_close << wid
-            end
-          end
-        end
-
-        windows_to_close
-      end
-
-      def kill_tmux_sessions(targets)
-        active_sessions = @tmux.sessions
-        targets.each do |project|
-          session_name = @tmux.session_name_for(project)
-          if active_sessions.include?(session_name)
-            @output.puts "Killing tmux session: #{session_name}"
-            @tmux.kill_session(session_name)
-          end
-        end
-      end
-
-      def close_launcher_windows(window_ids)
-        window_ids.each do |wid|
-          @output.puts "Closing launcher window #{wid}"
-          @window_manager.close_window(wid)
-        end
-      end
-
-      def remove_from_state(targets)
-        targets.each do |p|
-          @state.delete(p)
-        end
+      def read_worktree_path(config_path)
+        config = YAML.safe_load_file(config_path)
+        config&.dig("root")
+      rescue Psych::SyntaxError
+        raise Workspace::Error, "Corrupt config file: #{config_path}"
       end
     end
   end

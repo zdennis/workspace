@@ -106,11 +106,11 @@ module Workspace
     doctor = Doctor.new(config: config, state: state, hook_installer: hook_installer, project_detector: project_detector, git: git, output: output)
 
     # Pre-build command objects so CLI delegates rather than constructs
-    kill_command = Commands::Kill.new(state: state, iterm: iterm, window_manager: window_manager, tmux: tmux, output: output, error_output: error_output)
+    stop_command = Commands::Stop.new(state: state, iterm: iterm, window_manager: window_manager, tmux: tmux, output: output, error_output: error_output)
     launch_command = Commands::Launch.new(state: state, iterm: iterm, window_manager: window_manager, tmux: tmux, project_config: project_config, window_layout: window_layout, config: config, output: output, error_output: error_output)
     lineage = WorkspaceLineage.new
     start_command = Commands::Start.new(git: git, project_config: project_config, project_settings: project_settings, launch_command: launch_command, lineage: lineage, hook_installer: hook_installer, output: output, input: input)
-    stop_command = Commands::Stop.new(git: git, project_config: project_config, project_settings: project_settings, kill_command: kill_command, project_detector: project_detector, output: output, input: input)
+    kill_command = Commands::Kill.new(git: git, project_config: project_config, project_settings: project_settings, stop_command: stop_command, project_detector: project_detector, output: output, input: input)
     focus_command = Commands::Focus.new(state: state, window_manager: window_manager, output: output)
     tile_command = Commands::Tile.new(state: state, window_manager: window_manager, window_layout: window_layout, output: output)
     layout_command = Commands::Layout.new(state: state, tmux: tmux, project_settings: project_settings, output: output)
@@ -118,7 +118,7 @@ module Workspace
     init_command = Commands::Init.new(config: config, hook_installer: hook_installer, output: output, error_output: error_output, input: input)
     repair_command = Commands::Repair.new(state: state, iterm: iterm, window_manager: window_manager, output: output)
     cleanup_command = Commands::Cleanup.new(state: state, window_manager: window_manager, tmux: tmux, output: output, input: input)
-    prune_command = Commands::Prune.new(state: state, project_config: project_config, project_settings: project_settings, git: git, kill_command: kill_command, output: output, input: input)
+    prune_command = Commands::Prune.new(state: state, project_config: project_config, project_settings: project_settings, git: git, stop_command: stop_command, output: output, input: input)
     claude_command = Commands::Claude.new(state: state, tmux: tmux, output: output, error_output: error_output)
     lookup_command = Commands::Lookup.new(project_config: project_config, output: output)
     update_pane_command = Commands::UpdatePaneCommand.new(config: config, project_config: project_config, output: output, input: input)

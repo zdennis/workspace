@@ -21,10 +21,10 @@ RSpec.describe Workspace::CLI do
 
     project_detector = overrides[:project_detector] || Workspace::ProjectDetector.new(state: state, project_config: project_config)
 
-    kill_command = overrides[:kill_command] || Workspace::Commands::Kill.new(state: state, iterm: iterm, window_manager: window_manager, tmux: tmux, output: output, error_output: error_output)
+    stop_command = overrides[:stop_command] || Workspace::Commands::Stop.new(state: state, iterm: iterm, window_manager: window_manager, tmux: tmux, output: output, error_output: error_output)
     launch_command = overrides[:launch_command] || Workspace::Commands::Launch.new(state: state, iterm: iterm, window_manager: window_manager, tmux: tmux, project_config: project_config, window_layout: window_layout, config: config, output: output, error_output: error_output)
     start_command = overrides[:start_command] || Workspace::Commands::Start.new(git: git, project_config: project_config, project_settings: project_settings, launch_command: launch_command, output: output, input: input)
-    stop_command = overrides[:stop_command] || Workspace::Commands::Stop.new(git: git, project_config: project_config, project_settings: project_settings, kill_command: kill_command, project_detector: project_detector, output: output, input: input)
+    kill_command = overrides[:kill_command] || Workspace::Commands::Kill.new(git: git, project_config: project_config, project_settings: project_settings, stop_command: stop_command, project_detector: project_detector, output: output, input: input)
     focus_command = overrides[:focus_command] || Workspace::Commands::Focus.new(state: state, window_manager: window_manager, output: output)
     tile_command = overrides[:tile_command] || Workspace::Commands::Tile.new(state: state, window_manager: window_manager, window_layout: window_layout, output: output)
     layout_command = overrides[:layout_command] || Workspace::Commands::Layout.new(state: state, tmux: tmux, project_settings: project_settings, output: output)
@@ -35,8 +35,8 @@ RSpec.describe Workspace::CLI do
     init_command = overrides[:init_command] || Workspace::Commands::Init.new(config: config, hook_installer: hook_installer, which: ->(_exe) { false }, output: output, error_output: error_output, input: input)
     repair_command = overrides[:repair_command] || CLITestHelpers::FakeRepairCommand.new
     cleanup_command = overrides[:cleanup_command] || Workspace::Commands::Cleanup.new(state: state, window_manager: window_manager, tmux: tmux, output: output, input: input)
-    kill_command_for_prune = instance_double(Workspace::Commands::Kill)
-    prune_command = overrides[:prune_command] || Workspace::Commands::Prune.new(state: state, project_config: project_config, project_settings: project_settings, git: git, kill_command: kill_command_for_prune, output: output, input: input)
+    stop_command_for_prune = instance_double(Workspace::Commands::Stop)
+    prune_command = overrides[:prune_command] || Workspace::Commands::Prune.new(state: state, project_config: project_config, project_settings: project_settings, git: git, stop_command: stop_command_for_prune, output: output, input: input)
     claude_command = overrides[:claude_command] || CLITestHelpers::FakeClaudeCommand.new
     lookup_command = overrides[:lookup_command] || Workspace::Commands::Lookup.new(project_config: project_config, output: output)
     update_pane_command = overrides[:update_pane_command] || CLITestHelpers::FakeUpdatePaneCommand.new
@@ -1470,6 +1470,17 @@ RSpec.describe Workspace::CLI do
       )
     end
 
+    it "passes --max-wait alone through as given, leaving the command to imply --wait" do
+      lock_command = CLITestHelpers::FakeLockCommand.new
+      cli, _, _ = build_test_cli(lock_command: lock_command)
+
+      cli.run(["lock", "acquire", "edit", "--max-wait", "9"])
+
+      expect(lock_command.calls).to eq(
+        [{action: :acquire, name: "edit", task: nil, wait: false, poll: Workspace::Commands::Lock::DEFAULT_POLL_SECONDS, max_wait: 9.0}]
+      )
+    end
+
     it "raises a usage error instead of a backtrace for an unparsable --max-wait" do
       lock_command = CLITestHelpers::FakeLockCommand.new
       cli, _, error_output = build_test_cli(lock_command: lock_command)
@@ -1648,11 +1659,28 @@ RSpec.describe Workspace::CLI do
         expect(dev_command.calls).to eq([{action: :up, wait: false, takeover: false, ready: true, max_wait: nil}])
       end
 
-      it "rejects --max-wait without --wait" do
+      it "passes --max-wait alone through as given, leaving the command to imply --wait" do
+        cli, _, _ = build_test_cli(dev_command: dev_command)
+
+        cli.run(["dev", "up", "--max-wait", "5"])
+
+        expect(dev_command.calls).to eq([{action: :up, wait: false, takeover: false, ready: true, max_wait: 5.0}])
+      end
+
+      it "accepts durations like '9m' for up --max-wait" do
+        cli, _, _ = build_test_cli(dev_command: dev_command)
+
+        cli.run(["dev", "up", "--max-wait", "9m"])
+
+        expect(dev_command.calls).to eq([{action: :up, wait: false, takeover: false, ready: true, max_wait: 540.0}])
+      end
+
+      it "raises a usage error naming --max-wait for an unparsable up --max-wait" do
         cli, _, error_output = build_test_cli(dev_command: dev_command)
 
-        expect { cli.run(["dev", "up", "--max-wait", "5"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
-        expect(error_output.string).to include("--max-wait requires --wait")
+        expect { cli.run(["dev", "up", "--max-wait", "nonsense"]) }
+          .to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+        expect(error_output.string).to include("--max-wait")
         expect(dev_command.calls).to be_empty
       end
 

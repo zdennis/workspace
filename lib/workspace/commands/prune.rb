@@ -15,15 +15,15 @@ module Workspace
       # @param project_config [Workspace::ProjectConfig] tmuxinator config management
       # @param project_settings [Workspace::ProjectSettings] per-project settings management
       # @param git [Workspace::Git] git operations
-      # @param kill_command [Workspace::Commands::Kill] pre-built kill command for session teardown
+      # @param stop_command [Workspace::Commands::Stop] pre-built stop command for session teardown
       # @param output [IO] output stream for user-facing messages
       # @param input [IO] input stream for interactive prompts
-      def initialize(state:, project_config:, project_settings:, git:, kill_command:, output: $stdout, input: $stdin)
+      def initialize(state:, project_config:, project_settings:, git:, stop_command:, output: $stdout, input: $stdin)
         @state = state
         @project_config = project_config
         @project_settings = project_settings
         @git = git
-        @kill_command = kill_command
+        @stop_command = stop_command
         @output = output
         @input = input
       end
@@ -227,7 +227,7 @@ module Workspace
         path = candidate[:worktree_path]
         project = candidate[:project]
 
-        @kill_command.call([project]) if @state[project]
+        @stop_command.call([project]) if @state[project]
         @git.remove_worktree(path, force: true) if @git.worktree_exists?(path)
         @project_config.remove(project)
         @project_settings.remove(project)

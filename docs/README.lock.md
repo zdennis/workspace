@@ -19,7 +19,7 @@ workspace lock instructions [<name>]
 | `--task TEXT` | Free-text description shown to other waiters (e.g. `"PROJ-12 fix login"`) |
 | `--wait` | Enqueue and poll instead of refusing immediately when the lock is busy |
 | `--poll DURATION` | Time between polls while waiting: `30s`, `5m`, `1h`, or a plain number of seconds (default: 5) |
-| `--max-wait DURATION` | Give up after `DURATION`: `30s`, `5m`, `1h`, or a plain number of seconds (exit 75); re-run to keep waiting |
+| `--max-wait DURATION` | Give up after `DURATION`: `30s`, `5m`, `1h`, or a plain number of seconds (exit 75); re-run to keep waiting; implies `--wait` |
 
 ## Options (release / clear)
 
