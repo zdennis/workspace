@@ -1008,6 +1008,17 @@ RSpec.describe Workspace::CLI do
       expect(error_output.string).to include("Usage: workspace run")
     end
 
+    it "exits 2, not 1, when the text landed but wasn't confirmed submitted" do
+      run_command = CLITestHelpers::FakeRunCommand.new
+      run_command.raise_on_call(Workspace::Commands::Run::NotSubmittedError.new("pasted, but Enter didn't visibly take"))
+      cli, _, error_output = build_test_cli(run_command: run_command)
+
+      expect { cli.run(["run", "myproject", "echo hi"]) }.to raise_error(FakeSystemExit) { |e|
+        expect(e.status).to eq(2)
+      }
+      expect(error_output.string).to include("Error: pasted, but Enter didn't visibly take")
+    end
+
     it "passes --pane N as a string to run_command (TmuxPane resolves at runtime)" do
       run_command = CLITestHelpers::FakeRunCommand.new
       cli, _, _ = build_test_cli(run_command: run_command)

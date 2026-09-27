@@ -253,11 +253,17 @@ module CLITestHelpers
     attr_reader :calls
 
     def initialize
+      @error = nil
       @calls = []
+    end
+
+    def raise_on_call(error)
+      @error = error
     end
 
     def call(project, command, **opts)
       @calls << {project: project, command: command, **opts}
+      raise @error if @error
     end
   end
 

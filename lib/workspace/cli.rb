@@ -193,6 +193,9 @@ module Workspace
     rescue OptionParser::ParseError => e
       @error_output.puts e.message
       @exit_handler.exit(1)
+    rescue Workspace::Commands::Run::NotSubmittedError => e
+      @error_output.puts "Error: #{e.message}"
+      @exit_handler.exit(Workspace::Commands::Run::NotSubmittedError::EXIT_CODE)
     rescue Error => e
       @error_output.puts "Error: #{e.message}"
       @exit_handler.exit(1)
@@ -550,6 +553,9 @@ module Workspace
           "Pipe command output into CMD (repeatable for multi-stage pipelines)") do |cmd|
           pipe_commands << cmd
         end
+        opts.separator ""
+        opts.separator "Exit codes: 0 delivered; 1 not delivered, safe to run again; 2 text"
+        opts.separator "  landed but wasn't confirmed submitted — do not resend, check the pane first."
       end
       parser.parse!(args)
 
