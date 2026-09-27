@@ -101,26 +101,7 @@ RSpec.describe Workspace::Commands::Kill do
           expect(stop_command).to have_received(:call).with(["myproject.worktree-PROJ-123"], quiet: false)
           expect(project_config).to have_received(:remove).with("myproject.worktree-PROJ-123")
           expect(project_settings).to have_received(:remove).with("myproject.worktree-PROJ-123")
-          expect(output.string).to include("Stopped myproject.worktree-PROJ-123")
-        end
-
-        it "removes a leftover marker file after the worktree removal succeeds" do
-          worktree_dir = File.join(tmpdir, "worktree")
-          Dir.mkdir(worktree_dir)
-          marker = File.join(worktree_dir, ".workspace-project")
-          File.write(marker, "myproject.worktree-PROJ-123")
-
-          File.write(config_path, YAML.dump("name" => "myproject-wt-PROJ-123", "root" => worktree_dir))
-          allow(git).to receive(:worktree_exists?).with(worktree_dir).and_return(true)
-          allow(git).to receive(:unsaved_work).with(worktree_dir).and_return(nil)
-          allow(git).to receive(:remove_worktree)
-          allow(stop_command).to receive(:call).and_return([])
-          allow(project_config).to receive(:remove)
-          allow(project_settings).to receive(:remove)
-
-          command.call("myproject.worktree-PROJ-123", force: true)
-
-          expect(File.exist?(marker)).to be false
+          expect(output.string).to include("Killing session...")
         end
 
         it "removes worktree before killing session" do
@@ -151,7 +132,7 @@ RSpec.describe Workspace::Commands::Kill do
 
           expect(output.string).not_to include("[y/N]")
           expect(git).to have_received(:remove_worktree).with("/path/to/worktree", force: true)
-          expect(output.string).to include("Stopped")
+          expect(output.string).to include("Killing session")
         end
 
         it "with confirm: false, skips the prompt but still has git re-check before removing" do
@@ -238,7 +219,7 @@ RSpec.describe Workspace::Commands::Kill do
         cmd.call(nil, force: true, working_dir: marker_dir)
 
         expect(stop_command).to have_received(:call).with(["myproject.worktree-PROJ-123"], quiet: false)
-        expect(output.string).to include("Stopped myproject.worktree-PROJ-123")
+        expect(output.string).to include("Killing session...")
       end
 
       it "walks up directories to find .workspace-project" do
@@ -331,6 +312,18 @@ RSpec.describe Workspace::Commands::Kill do
       end
 
       it "raises a friendly error" do
+        expect { command.call("myproject.worktree-PROJ-123") }.to raise_error(
+          Workspace::Error, /Corrupt config file/
+        )
+      end
+    end
+
+    context "with a config containing a disallowed YAML class" do
+      before do
+        File.write(config_path, "root: !ruby/object {}\n")
+      end
+
+      it "raises a friendly error instead of Psych::DisallowedClass" do
         expect { command.call("myproject.worktree-PROJ-123") }.to raise_error(
           Workspace::Error, /Corrupt config file/
         )

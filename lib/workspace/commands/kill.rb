@@ -89,13 +89,12 @@ module Workspace
         rescue Workspace::UnsavedWorkError => e
           raise_unsaved_work!(project, worktree_path, e.unsaved)
         end
-        remove_marker_file(worktree_path)
 
         yield project if block_given?
         @project_config.remove(project)
         @project_settings.remove(project)
 
-        out.puts "Stopped #{project}."
+        out.puts "Killing session..."
         @stop_command.call([project], quiet: quiet)
         project
       end
@@ -112,17 +111,10 @@ module Workspace
         raise Workspace::UnsavedWorkError.new("#{message}Commit/push, or rerun with --force.", unsaved: unsaved)
       end
 
-      # The worktree directory is normally gone after removal; this only
-      # matters if something recreated it.
-      def remove_marker_file(worktree_path)
-        marker = File.join(worktree_path, MARKER_FILE)
-        File.delete(marker) if File.exist?(marker)
-      end
-
       def read_worktree_path(config_path)
         config = YAML.safe_load_file(config_path)
         config&.dig("root")
-      rescue Psych::SyntaxError
+      rescue Psych::Exception
         raise Workspace::Error, "Corrupt config file: #{config_path}"
       end
     end
