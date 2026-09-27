@@ -51,5 +51,21 @@ RSpec.describe Workspace do
         ENV.delete("WORKSPACE_DEBUG")
       end
     end
+
+    it "wires a real LockReaper into the agent command's session monitor" do
+      cli = Workspace.build_cli(
+        output: StringIO.new,
+        error_output: StringIO.new,
+        input: StringIO.new
+      )
+
+      agent_command = cli.instance_variable_get(:@agent_command)
+      lock_reaper = agent_command.instance_variable_get(:@lock_reaper)
+
+      expect(lock_reaper).to be_a(Workspace::LockReaper)
+      # Ticking with no cwds touches nothing on disk; this only confirms the
+      # dependency reaches the command, not stubbing it out.
+      expect(lock_reaper.tick([])).to eq(0)
+    end
   end
 end
