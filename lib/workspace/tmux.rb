@@ -135,7 +135,8 @@ module Workspace
       buf = "ws_send_#{Process.pid}_#{SecureRandom.hex(8)}"
       begin
         return failed("tmux could not load the text into a paste buffer") unless tmux_load_buffer(buf, text)
-        return failed("tmux could not paste into #{target}") unless system("tmux", "paste-buffer", "-p", "-b", buf, "-t", target)
+        pasted, reason = tmux_paste_buffer(buf, target)
+        return failed(["tmux could not paste into #{target}", reason].compact.join(": ")) unless pasted
       ensure
         begin
           system("tmux", "delete-buffer", "-b", buf)
@@ -271,6 +272,21 @@ module Workspace
         return screen if current.nil? || current == screen
         screen = current
       end
+    end
+
+    # Pastes a named buffer into a pane as a bracketed paste. tmux's own
+    # error is kept: "can't find session: X" names the cause, where a bare
+    # "could not paste" made a wrong session name look like a busy pane.
+    # Extracted for testability.
+    #
+    # @param buf [String] buffer name
+    # @param target [String] tmux target
+    # @return [Array(Boolean, String)] whether tmux pasted, and its error
+    #   text (nil when it printed none)
+    def tmux_paste_buffer(buf, target)
+      _, stderr, status = Open3.capture3("tmux", "paste-buffer", "-p", "-b", buf, "-t", target)
+      reason = stderr.strip
+      [status.success?, reason.empty? ? nil : reason]
     end
 
     # Loads text into a named tmux buffer via stdin.

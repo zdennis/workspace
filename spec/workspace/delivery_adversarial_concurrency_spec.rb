@@ -114,6 +114,7 @@ RSpec.describe "T3 delivery: concurrency and liveness defects" do
     # every read differs, and "fix the bug" is never on screen.
     allow(tmux).to receive(:capture_screen) { "working #{frame += 1}" }
     allow(tmux).to receive(:tmux_load_buffer).and_return(true)
+    allow(tmux).to receive(:tmux_paste_buffer).and_return([true, nil])
     allow(tmux).to receive(:system).and_return(true)
 
     result = tmux.deliver("myapp", "0.1", "fix the bug")
