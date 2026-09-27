@@ -18,7 +18,13 @@ RSpec.describe Workspace::ContextStore do
     expect(reading["pct"]).to eq(42)
     expect(reading["session_id"]).to eq("sess-1")
     expect(reading["cwd"]).to eq("/tmp/proj")
-    expect(reading["recorded_at"]).to eq(Time.at(1_700_000_000).utc.iso8601)
+    expect(reading["recorded_at"]).to eq("2023-11-14T22:13:20.000000Z")
+  end
+
+  it "records the time to the microsecond" do
+    store.record(pct: 1, pane_id: "%1", recorded_at: Time.at(1_700_000_000, 250_000, :usec))
+
+    expect(store.reading_for_pane("%1")["recorded_at"]).to eq("2023-11-14T22:13:20.250000Z")
   end
 
   it "records by pid when pane_id is nil" do
@@ -41,6 +47,29 @@ RSpec.describe Workspace::ContextStore do
   it "overwrites a pane's previous reading" do
     store.record(pct: 10, pane_id: "%1")
     store.record(pct: 90, pane_id: "%1")
+    expect(store.reading_for_pane("%1")["pct"]).to eq(90)
+  end
+
+  it "records a nil pct as a reading (Claude's JSON null right after start/clear)" do
+    store.record(pct: nil, pane_id: "%1", session_id: "sess-2")
+    reading = store.reading_for_pane("%1")
+    expect(reading["pct"]).to be_nil
+    expect(reading["session_id"]).to eq("sess-2")
+  end
+
+  it "a nil pct overwrites a prior numeric reading for the same pane" do
+    store.record(pct: 90, pane_id: "%1", session_id: "sess-1")
+    store.record(pct: nil, pane_id: "%1", session_id: "sess-2")
+    reading = store.reading_for_pane("%1")
+    expect(reading["pct"]).to be_nil
+    expect(reading["session_id"]).to eq("sess-2")
+  end
+
+  it "still drops an invalid non-nil pct (string, negative, over 100)" do
+    store.record(pct: 90, pane_id: "%1")
+    store.record(pct: "N/A", pane_id: "%1")
+    store.record(pct: -1, pane_id: "%1")
+    store.record(pct: 101, pane_id: "%1")
     expect(store.reading_for_pane("%1")["pct"]).to eq(90)
   end
 

@@ -72,9 +72,15 @@ RSpec.describe Workspace::Commands::Statusline do
     expect(output.string).not_to be_empty
   end
 
-  it "never records a reading when used_percentage is absent" do
-    expect(context_store).not_to receive(:record)
+  it "records a nil-pct reading when used_percentage is absent (right after /clear)" do
+    expect(context_store).to receive(:record).with(hash_including(pct: nil))
     build(JSON.generate({"model" => {"display_name" => "x"}})).call
+  end
+
+  it "records a nil-pct reading when used_percentage is JSON null" do
+    expect(context_store).to receive(:record).with(hash_including(pct: nil))
+    payload = {"context_window" => {"used_percentage" => nil}, "session_id" => "sess-1"}
+    build(JSON.generate(payload)).call
   end
 
   it "swallows a storage error and still renders" do

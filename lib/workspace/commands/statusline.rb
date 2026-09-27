@@ -13,6 +13,11 @@ module Workspace
     #    `$TMUX_PANE` (falling back to `$CLAUDE_PID` when TMUX_PANE isn't
     #    set), so `sessions --json` can see it later without Claude having
     #    to render again. Recorded even if rendering itself then fails.
+    #    Right after `/clear`, Claude renders with `used_percentage` as JSON
+    #    null (and a new `session_id`); that's still recorded, as a reading
+    #    with a nil pct, so the new session is visible to readers even
+    #    before Claude reports a real percentage. Only a present-but-invalid
+    #    value (a string, a negative number, one over 100) is dropped.
     # 2. Print a line: a `statusline.command` in the global config gets the
     #    same stdin and its stdout is printed as-is, time-bounded so a slow
     #    or hung delegate can't freeze Claude's status bar; otherwise (or on
@@ -89,7 +94,6 @@ module Workspace
 
       def record_reading(payload)
         pct = payload.dig("context_window", "used_percentage")
-        return if pct.nil?
 
         pane_id = presence(@env["TMUX_PANE"])
         pid = presence(@env["CLAUDE_PID"])

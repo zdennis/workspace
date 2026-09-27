@@ -9,6 +9,12 @@ module Workspace
     # the status line yet this session.
     NO_READING = "no reading recorded (status line not routed through workspace, or not rendered yet)"
 
+    # A reading was recorded for this session, but Claude hasn't yet reported
+    # a real percentage in it -- the JSON null `used_percentage` Claude sends
+    # on its very first render after start or `/clear`, before it has
+    # anything to report.
+    NO_READING_YET = "Claude hasn't reported context usage for this session yet (it was just started or cleared)"
+
     # scrape mode: `context.pattern` didn't match the pane's captured text.
     PATTERN_NO_MATCH = "pattern didn't match (scrape mode)"
 

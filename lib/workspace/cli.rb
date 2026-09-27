@@ -34,6 +34,8 @@ module Workspace
     # @param lookup_command [Workspace::Commands::Lookup] pre-built lookup command
     # @param update_pane_command [Workspace::Commands::UpdatePaneCommand] pre-built set-command command
     # @param agent_command [Workspace::Commands::Agent] pre-built agent command
+    # @param restart_agent_command [Workspace::Commands::RestartAgent, nil] pre-built
+    #   `agent-run restart` command; optional so test builders need not wire it
     # @param logger [Workspace::Logger] debug logger
     # @param output [IO] output stream for user-facing messages
     # @param error_output [IO] error output stream for warnings and errors
@@ -44,7 +46,7 @@ module Workspace
     # @param clock [#call] returns the current Time, for relative deadline display
     # @param launch_mode [Workspace::LaunchMode, nil] decides whether launch/start
     #   run headless when no --[no-]headless flag is given; nil builds one
-    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil)
+    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, restart_agent_command: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil)
       @config = config
       @state = state
       @project_config = project_config
@@ -83,6 +85,7 @@ module Workspace
       @config_command = config_command
       @statusline_command = statusline_command
       @ask_command = ask_command
+      @restart_agent_command = restart_agent_command
       @exit_handler = exit_handler
       @logger = logger
       @output = output
@@ -234,7 +237,7 @@ module Workspace
         Subcommands:
           add             Add a tmuxinator config for a project directory
           agent           Run the workspace agent for a project (long-lived)
-          agent-run       Send a raw message to a running agent socket (debugging)
+          agent-run       Send a message to a running agent (command, inject, restart a pane)
           alfred          Manage the Alfred workflow for workspace focus
           ask             Record a question an unattended agent hit, with its default
           capture         Print a tmux pane's scrollback buffer to stdout
@@ -1363,6 +1366,7 @@ module Workspace
       case subcommand
       when "command" then cmd_agent_run_command(args)
       when "inject" then cmd_agent_run_inject(args)
+      when "restart" then cmd_agent_run_restart(args)
       when "examples" then cmd_agent_run_examples
       else
         raise UsageError, agent_run_help
@@ -1396,6 +1400,7 @@ module Workspace
         Subcommands:
           command    Send a "command" message (delivers work to the first pipeline stage)
           inject     Send an "inject" message (steers a running work item)
+          restart    Clear the coding agent in one pane and type a fresh prompt into it
           examples   Print all stock example messages without sending anything
 
         Raw mode (paste a full message directly):
@@ -1414,6 +1419,10 @@ module Workspace
           --body TEXT         Text to inject into the pane  (required)
           --interrupt         Interrupt the running stage first (sends Ctrl-C)
           --dry-run           Print the message without sending it
+
+        Options (restart; see `workspace agent-run restart --help`):
+          --pane PANE         Pane to restart: %12, 0.1, session:0.1, or a pane index  (required)
+          --prompt TEXT       Text typed once /clear is confirmed  (required)
       HELP
     end
 
@@ -1476,6 +1485,63 @@ module Workspace
         "body" => jsonl_body(body)
       }
       agent_run_send(name, message, dry_run: dry_run)
+    end
+
+    # Asks the agent daemon to /clear the coding agent in one named pane and,
+    # once its context usage has dropped, type a prompt into it.
+    def cmd_agent_run_restart(args)
+      name = nil
+      pane = nil
+      prompt = nil
+      force = false
+      wait = false
+      timeout = nil
+      json = false
+
+      parser = OptionParser.new do |opts|
+        opts.banner = "Usage: workspace agent-run restart --pane PANE --prompt TEXT [options]"
+        opts.separator ""
+        opts.separator "Clear the coding agent in one pane and give it a fresh prompt. The agent daemon"
+        opts.separator "first waits up to #{AgentRestart::QUIET_TIMEOUT}s (fixed, not bounded by --timeout) for the pane to go"
+        opts.separator "quiet, types /clear, then waits until the new session's first status-line render"
+        opts.separator "confirms the clear, then types the prompt. --timeout only bounds that confirm step."
+        opts.separator "If the clear can't be confirmed, the prompt is not typed. An agent can run this on"
+        opts.separator "its own pane and end its turn: the daemon types from outside the pane. Only Claude"
+        opts.separator "panes are accepted (other agents fail with code unsupported_agent). Needs context"
+        opts.separator "readings, so `workspace statusline` must be installed as Claude's statusLine."
+        opts.separator ""
+        opts.separator "Options:"
+        opts.on("--name NAME", "Workspace name (default: detected from cwd)") { |v| name = v }
+        opts.on("--pane PANE", "Pane to restart: a pane id (%12), window.pane (0.1),",
+          "session:window.pane, or a pane index in window 0 (required)") { |v| pane = v }
+        opts.on("--prompt TEXT", "Text typed once /clear is confirmed (required)") { |v| prompt = v }
+        opts.on("--force", "Restart even when a pipeline stage is running on the pane") { force = true }
+        opts.on("--wait", "Wait for the restart to finish and report how it went") { wait = true }
+        opts.on("--timeout DURATION", "Longest wait for context usage to drop after /clear",
+          "(e.g. \"45s\", or seconds); default #{AgentRestart::CONFIRM_TIMEOUT}s, at most " \
+          "#{Commands::Agent::MAX_RESTART_TIMEOUT}s") do |v|
+          timeout = parse_duration_option("--timeout", v, positive: true)
+        end
+        opts.on("--json", "Print the result as JSON; errors as {\"schema_version\":1,\"error\":...}") { json = true }
+      end
+      parser.parse!(args)
+      raise UsageError, "Unexpected argument: #{args.first}\n\n#{parser.help}" if args.any?
+
+      name ||= @project_detector.detect(@working_dir)
+      raise UsageError, "Missing workspace name (pass --name).\n\n#{parser.help}" if name.nil?
+      raise UsageError, "Missing --pane.\n\n#{parser.help}" if pane.nil? || pane.strip.empty?
+      raise UsageError, "Missing --prompt.\n\n#{parser.help}" if prompt.nil? || prompt.strip.empty?
+      if timeout && timeout > Commands::Agent::MAX_RESTART_TIMEOUT
+        raise UsageError, "--timeout: at most #{Commands::Agent::MAX_RESTART_TIMEOUT}s"
+      end
+      raise Error, "workspace agent-run restart is not available in this build" unless @restart_agent_command
+
+      result = @restart_agent_command.call(name: name, pane: pane, prompt: prompt, force: force, wait: wait,
+        timeout: timeout, json: json)
+      @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
+    rescue OptionParser::ParseError, UsageError => e
+      raise unless json_requested?(json, args)
+      emit_json_usage_error(Commands::RestartAgent::JSON_SCHEMA_VERSION, e.message.lines.first.strip)
     end
 
     def cmd_agent_run_examples
@@ -1719,14 +1785,21 @@ module Workspace
     end
 
     def send_to_agent(project, message)
-      reply = UNIXSocket.open(@config.agent_socket_path(project)) do |socket|
+      socket = begin
+        UNIXSocket.open(@config.agent_socket_path(project))
+      rescue SystemCallError, IOError
+        raise Error, "No agent is running for #{project}. Start one with: workspace agent --name #{project}"
+      end
+      reply = begin
         socket.puts(message.to_json)
         socket.gets
+      rescue SystemCallError, IOError
+        raise Error, "The agent for #{project} closed the connection without replying"
+      ensure
+        socket.close
       end
       raise Error, "The agent for #{project} closed the connection without replying" if reply.nil?
       JSON.parse(reply)
-    rescue SystemCallError, IOError
-      raise Error, "No agent is running for #{project}. Start one with: workspace agent --name #{project}"
     rescue JSON::ParserError
       raise Error, "Unreadable reply from the agent for #{project}"
     end
