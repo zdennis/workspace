@@ -20,7 +20,7 @@ Claude Code runs this on every render, piping one JSON payload on stdin (model, 
 ## What it does
 
 1. **Records the reading.** `context_window.used_percentage` is stored keyed on `$TMUX_PANE`, the same pane identity `workspace session-event` and `workspace sessions` use. If `$TMUX_PANE` isn't set (rare, but the environment a status-line process runs in isn't guaranteed to have it), the reading is stored under `$CLAUDE_PID` instead, so [`workspace sessions --json`](README.sessions.md) can still find it via the pane's process tree. Nothing is ever guessed: if no reading was recorded, `sessions --json` says so and gives a reason.
-2. **Prints a line.** By default this is workspace's own renderer: model, directory, git branch, a context usage bar, session cost, and turn duration — no network calls, ever. Set `statusline.command` in the global config to delegate rendering to another command instead; the same stdin JSON is piped to it, and its stdout is printed as-is. A delegate is given about 5 seconds; if it times out, exits non-zero, or fails to start, the built-in line is printed instead.
+2. **Prints a line.** By default this is workspace's own renderer: model, directory, git branch, a context usage bar, session cost, and turn duration — no network calls, ever. Set `statusline.command` in the global config to delegate rendering to another command instead; the same stdin JSON is piped to it, and its stdout is printed as-is. A delegate is given about 3 seconds; if it times out, exits non-zero, or fails to start, the built-in line is printed instead.
 
 This command is designed to never break Claude's status bar: bad or empty input, or a storage failure, still prints something and exits 0.
 
@@ -54,6 +54,6 @@ If you'd rather not route Claude's status line through `workspace statusline` (o
 - pattern didn't match (scrape mode)
 - the last reading is from an earlier Claude session in this pane
 
-Every one of these comes with the same fix: run `workspace doctor --fix`, switch to scrape mode (`workspace config set context.source scrape` and `context.pattern`), or pass `--context-pct N` to whatever command needs the number.
+Every one of these comes with the same fix: add a `statusLine` entry to `~/.claude/settings.json` (`"statusLine": {"type": "command", "command": "workspace statusline"}`), switch to scrape mode (`workspace config set context.source scrape` and `context.pattern`), or pass `--context-pct N` to whatever command needs the number.
 
 A stale reading is still reported, with its timestamp — Claude's status line only renders between turns, so a long-running tool call means no fresher reading exists yet. `workspace` never estimates a percentage it hasn't actually read.

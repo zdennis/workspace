@@ -25,11 +25,18 @@ module Workspace
     # restart) and the old reading is no longer current.
     STALE_SESSION = "the last reading is from an earlier Claude session in this pane"
 
+    # A pid-keyed reading's pid/start time couldn't be confirmed against the
+    # process table -- the process table couldn't be read, no start time was
+    # recorded, or the pid no longer matches -- so it may belong to an
+    # unrelated, reused pid rather than the current agent.
+    PID_UNVERIFIED = "couldn't confirm the Claude process that recorded this reading is still running"
+
     # One line of fix instructions, printed alongside any of the reasons
     # above. Never suggests sudo.
     FIX_HINT = <<~HINT.strip
-      Fix: run `workspace doctor --fix`, or set a scrape pattern with
-      `workspace config set context.source scrape` and
+      Fix: add a statusLine entry to ~/.claude/settings.json:
+      "statusLine": {"type": "command", "command": "workspace statusline"},
+      or set a scrape pattern with `workspace config set context.source scrape` and
       `workspace config set context.pattern '(\\d+)% ctx'`, or pass --context-pct N.
     HINT
   end

@@ -51,7 +51,7 @@ module Workspace
 
       reading = agent_pid && @context_store.reading_for_pid(agent_pid)
       if reading
-        return absent(ContextReasons::STALE_SESSION) unless same_process?(agent_pid, reading)
+        return absent(ContextReasons::PID_UNVERIFIED) unless same_process?(agent_pid, reading)
         return present(reading, current_session_id)
       end
       absent(pane_id.nil? ? ContextReasons::NO_PANE_ID : ContextReasons::NO_READING)

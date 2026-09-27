@@ -216,9 +216,11 @@ module Workspace
     config_command = Commands::Config.new(project_settings: project_settings, lineage: lineage, file_backup: file_backup, output: output)
 
     context_store = ContextStore.new(path: config.context_store_path, logger: logger)
-    context_reader = ContextReader.new(context_store: context_store, project_settings: project_settings, tmux: tmux, logger: logger)
+    context_reader = ContextReader.new(context_store: context_store, project_settings: project_settings, tmux: tmux, logger: logger,
+      lock_holder: lock_holder)
     statusline_command = Commands::Statusline.new(context_store: context_store, renderer: StatuslineRenderer.new(logger: logger),
-      project_settings: project_settings, logger: logger, output: output, input: input)
+      project_settings: project_settings, logger: logger, output: output, input: input, terminator: process_group_terminator,
+      lock_holder: lock_holder)
 
     work_coordinator_client = WorkCoordinatorClient.new(
       socket_path: config.work_coordinator_socket,

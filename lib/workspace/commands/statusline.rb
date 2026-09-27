@@ -11,9 +11,8 @@ module Workspace
     #
     # 1. Record the reading: `context_window.used_percentage`, keyed on
     #    `$TMUX_PANE` (falling back to `$CLAUDE_PID` when TMUX_PANE isn't
-    #    set), so `sessions --json` and `workspace handoff check` can see it
-    #    later without Claude having to render again. Recorded even if
-    #    rendering itself then fails.
+    #    set), so `sessions --json` can see it later without Claude having
+    #    to render again. Recorded even if rendering itself then fails.
     # 2. Print a line: a `statusline.command` in the global config gets the
     #    same stdin and its stdout is printed as-is, time-bounded so a slow
     #    or hung delegate can't freeze Claude's status bar; otherwise (or on
@@ -24,9 +23,10 @@ module Workspace
     # status bar: bad or empty JSON, a storage error, or a delegate failure
     # all still print *something* and exit 0.
     class Statusline
-      DEFAULT_DELEGATE_TIMEOUT = 5
+      DEFAULT_DELEGATE_TIMEOUT = 3
       KILL_GRACE = 0.5
       THREAD_JOIN_GRACE = 1
+      MAX_DELEGATE_OUTPUT_BYTES = 64 * 1024
 
       # @param context_store [Workspace::ContextStore] records the reading
       # @param renderer [Workspace::StatuslineRenderer] built-in fallback renderer
@@ -37,9 +37,12 @@ module Workspace
       # @param logger [Workspace::Logger] debug logger
       # @param delegate_timeout [Numeric] seconds to wait for `statusline.command`
       # @param terminator [Workspace::ProcessGroupTerminator] stops a timed-out delegate's process group
+      # @param lock_holder [Workspace::LockHolder] looks up CLAUDE_PID's `ps`
+      #   start time, so a pid-keyed reading can later be verified rather
+      #   than trusted on a possibly-reused pid
       def initialize(context_store:, renderer:, project_settings:, env: ENV, input: $stdin, output: $stdout,
         logger: Workspace::Logger.new, delegate_timeout: DEFAULT_DELEGATE_TIMEOUT,
-        terminator: Workspace::ProcessGroupTerminator.new)
+        terminator: Workspace::ProcessGroupTerminator.new, lock_holder: Workspace::LockHolder.new)
         @context_store = context_store
         @renderer = renderer
         @project_settings = project_settings
@@ -49,6 +52,7 @@ module Workspace
         @logger = logger
         @delegate_timeout = delegate_timeout
         @terminator = terminator
+        @lock_holder = lock_holder
       end
 
       # @return [Hash] {exit_code: 0} — always; see class docs
@@ -93,11 +97,19 @@ module Workspace
           pct: pct,
           pane_id: pane_id,
           pid: pid,
+          started: pid && pid_started(pid),
           session_id: payload["session_id"],
           cwd: payload["cwd"]
         )
       rescue => e
         @logger.debug { "statusline: recording reading failed (#{e.class}: #{e.message})" }
+      end
+
+      def pid_started(pid)
+        @lock_holder.start_time(pid.to_i)
+      rescue Workspace::Error => e
+        @logger.debug { "statusline: could not look up start time for pid #{pid} (#{e.message})" }
+        nil
       end
 
       def rendered_line(raw, payload)
@@ -145,7 +157,7 @@ module Workspace
           in_w.close unless in_w.closed?
         end
         reader = Thread.new do
-          out_r.read
+          read_capped(out_r)
         rescue IOError
           nil
         end
@@ -164,6 +176,19 @@ module Workspace
       ensure
         [in_w, out_r].each { |io| io.close if io && !io.closed? }
         [writer, reader].each { |t| t&.join(THREAD_JOIN_GRACE) }
+      end
+
+      # Reads at most MAX_DELEGATE_OUTPUT_BYTES from the delegate's stdout,
+      # then keeps draining (and discarding) whatever comes after so the
+      # delegate never blocks on a full pipe buffer.
+      def read_capped(io)
+        kept = "".b
+        loop do
+          chunk = io.readpartial(64 * 1024)
+          kept << chunk if kept.bytesize < MAX_DELEGATE_OUTPUT_BYTES
+        end
+      rescue EOFError
+        kept.byteslice(0, MAX_DELEGATE_OUTPUT_BYTES)
       end
 
       def stop_group(pid, waiter)

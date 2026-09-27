@@ -45,7 +45,7 @@ RSpec.describe Workspace::ContextReader do
         allow(lock_holder).to receive(:alive?).with(pid: 999, started: started).and_return(false)
 
         result = reader.read(pane_id: "%1", agent_pid: 999)
-        expect(result).to eq(pct: nil, error: Workspace::ContextReasons::STALE_SESSION, updated_at: nil)
+        expect(result).to eq(pct: nil, error: Workspace::ContextReasons::PID_UNVERIFIED, updated_at: nil)
       end
 
       it "reports undetermined when the pid is alive but was started at a different time" do
@@ -56,7 +56,7 @@ RSpec.describe Workspace::ContextReader do
           lock_holder: Workspace::LockHolder.new(process_tree: process_tree, env: {}))
 
         result = real_reader.read(pane_id: "%1", agent_pid: 999)
-        expect(result).to eq(pct: nil, error: Workspace::ContextReasons::STALE_SESSION, updated_at: nil)
+        expect(result).to eq(pct: nil, error: Workspace::ContextReasons::PID_UNVERIFIED, updated_at: nil)
       end
 
       it "trusts a live pid whose start time matches, checked against the process table" do
@@ -77,7 +77,7 @@ RSpec.describe Workspace::ContextReader do
           lock_holder: Workspace::LockHolder.new(process_tree: process_tree, env: {}))
 
         result = real_reader.read(pane_id: "%1", agent_pid: 999)
-        expect(result).to eq(pct: nil, error: Workspace::ContextReasons::STALE_SESSION, updated_at: nil)
+        expect(result).to eq(pct: nil, error: Workspace::ContextReasons::PID_UNVERIFIED, updated_at: nil)
       end
 
       it "never trusts a pid reading stored without a start time" do
@@ -87,7 +87,7 @@ RSpec.describe Workspace::ContextReader do
         expect(lock_holder).not_to receive(:alive?)
 
         result = reader.read(pane_id: "%1", agent_pid: 999)
-        expect(result).to eq(pct: nil, error: Workspace::ContextReasons::STALE_SESSION, updated_at: nil)
+        expect(result).to eq(pct: nil, error: Workspace::ContextReasons::PID_UNVERIFIED, updated_at: nil)
       end
     end
 

@@ -8,6 +8,7 @@ RSpec.describe Workspace::Commands::Statusline do
   let(:project_settings) { instance_double(Workspace::ProjectSettings, load_global: global_config) }
   let(:output) { StringIO.new }
   let(:env) { {} }
+  let(:lock_holder) { instance_double(Workspace::LockHolder, start_time: "Thu Sep 26 09:12:03 2026") }
 
   def build(input_data, **overrides)
     described_class.new(
@@ -18,6 +19,7 @@ RSpec.describe Workspace::Commands::Statusline do
       input: StringIO.new(input_data),
       output: output,
       delegate_timeout: 1,
+      lock_holder: lock_holder,
       **overrides
     )
   end
@@ -27,19 +29,32 @@ RSpec.describe Workspace::Commands::Statusline do
     payload = {"context_window" => {"used_percentage" => 42}, "session_id" => "s1", "cwd" => "/tmp/proj"}
 
     expect(context_store).to receive(:record).with(
-      pct: 42, pane_id: "%1", pid: nil, session_id: "s1", cwd: "/tmp/proj"
+      pct: 42, pane_id: "%1", pid: nil, started: nil, session_id: "s1", cwd: "/tmp/proj"
     )
 
     build(JSON.generate(payload)).call
     expect(output.string).to eq("built-in line")
   end
 
-  it "records by CLAUDE_PID when TMUX_PANE isn't set" do
+  it "records by CLAUDE_PID when TMUX_PANE isn't set, with its process start time" do
     env["CLAUDE_PID"] = "555"
     payload = {"context_window" => {"used_percentage" => 10}}
 
+    expect(lock_holder).to receive(:start_time).with(555).and_return("Thu Sep 26 09:12:03 2026")
     expect(context_store).to receive(:record).with(
-      pct: 10, pane_id: nil, pid: "555", session_id: nil, cwd: nil
+      pct: 10, pane_id: nil, pid: "555", started: "Thu Sep 26 09:12:03 2026", session_id: nil, cwd: nil
+    )
+
+    build(JSON.generate(payload)).call
+  end
+
+  it "records a nil start time when the process table can't be read" do
+    env["CLAUDE_PID"] = "555"
+    payload = {"context_window" => {"used_percentage" => 10}}
+    allow(lock_holder).to receive(:start_time).and_raise(Workspace::Error, "ps failed")
+
+    expect(context_store).to receive(:record).with(
+      pct: 10, pane_id: nil, pid: "555", started: nil, session_id: nil, cwd: nil
     )
 
     build(JSON.generate(payload)).call
@@ -100,6 +115,15 @@ RSpec.describe Workspace::Commands::Statusline do
     it "falls back to the built-in renderer" do
       build(JSON.generate({})).call
       expect(output.string).to eq("built-in line")
+    end
+  end
+
+  context "when the delegate prints more than the output cap" do
+    let(:global_config) { {"statusline" => {"command" => "yes | head -c 200000"}} }
+
+    it "truncates the delegate's stdout to the cap" do
+      build(JSON.generate({})).call
+      expect(output.string.bytesize).to eq(described_class::MAX_DELEGATE_OUTPUT_BYTES)
     end
   end
 
