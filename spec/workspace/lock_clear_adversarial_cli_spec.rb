@@ -44,7 +44,7 @@ RSpec.describe "workspace lock clear (adversarial)" do
       File.write(File.join(tmpdir, "locks.json"), JSON.generate(raw))
       :gone
     end
-    allow(terminator).to receive(:running?).and_return(false)
+    allow(terminator).to receive_messages(running?: false, orphan_running?: false)
 
     result = clear_command(terminator: terminator).clear("devenv")
 

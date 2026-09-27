@@ -182,10 +182,10 @@ module Workspace
       # keeps naming that holder until its group is stopped; a group this
       # user may not signal, or one still running after SIGKILL, keeps its
       # lock (its waiters are still removed) and makes `clear` exit 1, since
-      # freeing it would let a second dev environment start beside it. A
-      # holder whose pid is already gone is cleared as before, unless an
-      # earlier `clear` kept it and its group still runs. The holder is also
-      # yielded while the store is still locked.
+      # freeing it would let a second dev environment start beside it. So
+      # does a holder whose pid is already gone while its group still has
+      # members (and its id was not reused); otherwise a gone holder is
+      # cleared. The holder is also yielded while the store is still locked.
       #
       # @param name [String, nil] lock name, or nil with all: true
       # @param all [Boolean] clear every lock in this namespace; one that has
@@ -416,7 +416,7 @@ module Workspace
         when :gone, :not_running
           # :not_running means the wrapper exited just before its SIGTERM,
           # so nothing was signalled: its group may still be running.
-          return cannot_stop(pgid, pid, "its wrapper pid #{pid} is gone, but the group is still running") if kept_group_running?(holder)
+          return cannot_stop(pgid, pid, "its wrapper pid #{pid} is gone, but the group is still running") if orphan_group_running?(holder)
           warn_orphaned_group(pgid, pid)
         when :killed
           return cannot_stop(pgid, pid, "it was still running #{KILL_GRACE_SECONDS}s after SIGKILL") if survives_kill?(pgid)
@@ -432,17 +432,18 @@ module Workspace
         false
       end
 
-      # Only a holder an earlier `clear` kept: its lock goes on naming it
-      # after its wrapper is gone, until the group itself has stopped.
-      def kept_group_running?(holder)
-        return false unless holder["kept"]
+      # A wrapper that is gone (killed, or exited on its own) can leave its
+      # group running, e.g. another user's server; its lock goes on naming
+      # it until the group itself has stopped. One that can't be checked
+      # counts as running.
+      def orphan_group_running?(holder)
         @terminator.orphan_running?(holder)
       rescue Workspace::Error
         true
       end
 
       # The holder's pid is gone, so the group id may name someone else by
-      # now: it is reported, never signalled, and the lock is cleared as before.
+      # now: it is reported, never signalled, and the lock is cleared.
       def warn_orphaned_group(pgid, pid)
         return unless @terminator.running?(pgid)
         @error_output.puts "Process group #{pgid} is still running, but its holder pid #{pid} is gone, so it was not signalled. " \

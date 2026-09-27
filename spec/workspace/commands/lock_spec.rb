@@ -361,9 +361,24 @@ RSpec.describe Workspace::Commands::Lock do
         expect(output.string).to include("Killed process group 4242", "Cleared devenv")
       end
 
-      it "clears the lock when the holder is already gone and its group can't be inspected" do
+      it "keeps the lock when the holder is already gone but its group has members it may not signal" do
         hold_devenv
         allow(terminator).to receive(:stop_holder).and_return(:gone)
+        allow(terminator).to receive(:orphan_running?).and_raise(not_permitted)
+
+        result = clear_command.clear("devenv")
+
+        expect(result).to eq(exit_code: 1)
+        expect(devenv_holder_pid).to eq(4242)
+        expect(error_output.string).to include("Could not stop process group 4242 (pid 4242): its wrapper pid 4242 is gone",
+          "Kept devenv lock")
+        expect(output.string).not_to include("Cleared devenv")
+      end
+
+      it "clears the lock when the holder is already gone and its group id was reused" do
+        hold_devenv
+        allow(terminator).to receive(:stop_holder).and_return(:gone)
+        allow(terminator).to receive(:orphan_running?).and_return(false)
         allow(terminator).to receive(:running?).with(4242).and_raise(not_permitted)
 
         result = clear_command.clear("devenv")
@@ -373,7 +388,7 @@ RSpec.describe Workspace::Commands::Lock do
         expect(error_output.string).to include("Process group 4242 was not signalled (its holder pid 4242 is gone)")
       end
 
-      it "on a later clear, keeps a kept lock whose wrapper is gone while its group still runs" do
+      it "on a later clear, keeps a lock whose wrapper is gone while its group still runs" do
         hold_devenv
         allow(terminator).to receive(:stop_holder).and_raise(not_permitted)
         clear_command.clear("devenv")
@@ -387,7 +402,7 @@ RSpec.describe Workspace::Commands::Lock do
         expect(error_output.string).to include("its wrapper pid 4242 is gone, but the group is still running")
       end
 
-      it "on a later clear, clears a kept lock once its group has stopped" do
+      it "on a later clear, clears the lock once its group has stopped" do
         hold_devenv
         allow(terminator).to receive(:stop_holder).and_raise(not_permitted)
         clear_command.clear("devenv")
