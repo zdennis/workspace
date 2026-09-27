@@ -384,7 +384,7 @@ module Workspace
       # post_start hook — project name not easily available here,
       # so hooks for start should use post_launch (which fires from Launch)
     rescue OptionParser::ParseError, UsageError => e
-      raise unless json
+      raise unless json_requested?(json, args)
       emit_json_usage_error(Workspace::Commands::Start::JSON_SCHEMA_VERSION, e.message.lines.first.strip)
     end
 
@@ -469,7 +469,7 @@ module Workspace
         @hook_runner.run(project, "post_kill")
       end
     rescue OptionParser::ParseError, UsageError => e
-      raise unless json
+      raise unless json_requested?(json, args)
       emit_json_usage_error(Workspace::Commands::Finish::JSON_SCHEMA_VERSION, e.message.lines.first.strip)
     end
 
@@ -994,6 +994,17 @@ module Workspace
       @exit_handler.exit(1)
     end
 
+    # Whether --json was requested, even when the parse error happened before
+    # OptionParser reached the --json flag (e.g. an unknown option listed
+    # first). The JSON error contract must not depend on flag order.
+    #
+    # @param json [Boolean] the flag as set by OptionParser so far
+    # @param args [Array<String>] the raw, unparsed argv for this subcommand
+    # @return [Boolean]
+    def json_requested?(json, args)
+      json || args.include?("--json")
+    end
+
     def cmd_lock_release(args)
       all = false
       parser = OptionParser.new do |opts|
@@ -1025,7 +1036,7 @@ module Workspace
       result = @lock_command.status(name, working_dir: @working_dir, json: json)
       @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
     rescue OptionParser::ParseError, UsageError => e
-      raise unless json || args.include?("--json")
+      raise unless json_requested?(json, args)
       emit_json_usage_error(Commands::Lock::JSON_SCHEMA_VERSION, e.message)
     end
 
@@ -1046,7 +1057,7 @@ module Workspace
       result = @lock_command.clear(name, all: all, working_dir: @working_dir, json: json)
       @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
     rescue OptionParser::ParseError, UsageError => e
-      raise unless json || args.include?("--json")
+      raise unless json_requested?(json, args)
       emit_json_usage_error(Commands::Lock::JSON_SCHEMA_VERSION, e.message.lines.first.strip)
     end
 
@@ -1160,7 +1171,7 @@ module Workspace
       result = @dev_command.status(working_dir: @working_dir, json: json)
       @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
     rescue OptionParser::ParseError, UsageError => e
-      raise unless json || args.include?("--json")
+      raise unless json_requested?(json, args)
       emit_json_usage_error(Commands::Dev::JSON_SCHEMA_VERSION, e.message)
     end
 
