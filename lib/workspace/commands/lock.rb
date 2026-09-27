@@ -69,7 +69,7 @@ module Workspace
         @dev_config = dev_config
         @lock_config = lock_config
         @wall_clock = wall_clock
-        @holder_stopper = ProcessHolderStopper.new(terminator: terminator, liveness: lock_holder, error_output: error_output,
+        @holder_stopper = ProcessHolderStopper.for(terminator: terminator, lock_holder: lock_holder, error_output: error_output,
           clock: clock, sleeper: sleeper)
       end
 

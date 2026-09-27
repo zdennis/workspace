@@ -15,6 +15,19 @@ module Workspace
     KILL_GRACE_SECONDS = 2
     KILL_POLL_SECONDS = 0.1
 
+    # Builds a stopper wired from a caller's own collaborators of the same
+    # names, so `Dev` and `Lock` need not repeat the five-argument list.
+    #
+    # @param terminator [Workspace::ProcessGroupTerminator]
+    # @param lock_holder [Workspace::LockHolder] checks the holder's pid + start time
+    # @param error_output [IO]
+    # @param clock [#now]
+    # @param sleeper [#call]
+    # @return [Workspace::ProcessHolderStopper]
+    def self.for(terminator:, lock_holder:, error_output:, clock:, sleeper:)
+      new(terminator: terminator, liveness: lock_holder, error_output: error_output, clock: clock, sleeper: sleeper)
+    end
+
     # @param terminator [Workspace::ProcessGroupTerminator]
     # @param liveness [Workspace::LockHolder] checks the holder's pid + start time
     # @param error_output [IO] receives why a group could not be stopped and that its lock was kept
