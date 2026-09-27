@@ -178,7 +178,11 @@ module Workspace
       return 0 unless File.exist?(path)
 
       stages = @pipeline_config.stages_for(project)
-      @output.puts "  ✓  pipeline config valid for #{project}" if stages
+      if stages
+        @output.puts "  ✓  pipeline config valid for #{project}"
+      elsif @pipeline_config.declared_but_empty?(project)
+        @output.puts "  ⚠  pipeline config for #{project} has no panes; it won't start a pipeline"
+      end
       0
     rescue Workspace::Error => e
       @output.puts "  ✗  pipeline config invalid for #{project}"

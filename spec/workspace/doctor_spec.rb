@@ -156,6 +156,21 @@ RSpec.describe Workspace::Doctor do
       expect(output.string).to include("pipeline config valid for myapp")
     end
 
+    it "warns when the pipeline block has no panes" do
+      pipeline_config = double("pipeline_config")
+      allow(pipeline_config).to receive(:stages_for).with("myapp").and_return(nil)
+      allow(pipeline_config).to receive(:declared_but_empty?).with("myapp").and_return(true)
+
+      doctor = build_doctor(which: ->(_exe) { false }, pipeline_config: pipeline_config)
+      begin
+        doctor.run
+      rescue Workspace::Error
+        # Expected from the unrelated hooks/agent checks in this scenario
+      end
+
+      expect(output.string).to include("pipeline config for myapp has no panes")
+    end
+
     it "skips the check when the project has no pipeline config file" do
       FileUtils.rm_f(project_yml)
       pipeline_config = double("pipeline_config")
