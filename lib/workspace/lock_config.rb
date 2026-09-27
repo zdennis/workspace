@@ -45,6 +45,22 @@ module Workspace
       setting(name, "ps_timeout", ProcessTree::DEFAULT_TIMEOUT) { |value| self.class.parse_ps_timeout(value) }
     end
 
+    # Parses and validates a stale-lock reap interval.
+    #
+    # @param value [String, Numeric] seconds, or a duration like "5m"
+    # @return [Numeric] seconds, always greater than 0
+    # @raise [ArgumentError] if value isn't a positive duration
+    def self.parse_reap_interval(value)
+      Duration.parse_positive(value)
+    end
+
+    # @param name [String] project name (already resolved to its parent, if a worktree)
+    # @return [Numeric] seconds between the session-monitor daemon's stale-lock
+    #   sweeps; {LockReaper::DEFAULT_INTERVAL} when unset or invalid
+    def reap_interval_for(name)
+      setting(name, "reap_interval", LockReaper::DEFAULT_INTERVAL) { |value| self.class.parse_reap_interval(value) }
+    end
+
     private
 
     def setting(name, key, default)

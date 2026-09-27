@@ -84,4 +84,42 @@ RSpec.describe Workspace::LockConfig do
       expect(lock_config.ps_timeout_for("app")).to eq(Workspace::ProcessTree::DEFAULT_TIMEOUT)
     end
   end
+
+  describe ".parse_reap_interval" do
+    it "parses seconds and durations" do
+      expect(described_class.parse_reap_interval("60")).to eq(60.0)
+      expect(described_class.parse_reap_interval("2m")).to eq(120.0)
+    end
+
+    it "rejects zero, negative and malformed values" do
+      ["0", "0m", "-1", "later"].each do |bad|
+        expect { described_class.parse_reap_interval(bad) }.to raise_error(ArgumentError)
+      end
+    end
+  end
+
+  describe "#reap_interval_for" do
+    it "defaults to 30 seconds when unset" do
+      expect(lock_config.reap_interval_for("app")).to eq(Workspace::LockReaper::DEFAULT_INTERVAL)
+    end
+
+    it "reads locks.reap_interval from the project config" do
+      project_settings.save("app", {"locks" => {"reap_interval" => "2m"}})
+
+      expect(lock_config.reap_interval_for("app")).to eq(120.0)
+    end
+
+    it "warns and falls back to the default on an invalid stored value" do
+      project_settings.save("app", {"locks" => {"reap_interval" => "0"}})
+
+      expect(lock_config.reap_interval_for("app")).to eq(Workspace::LockReaper::DEFAULT_INTERVAL)
+      expect(error_output.string).to include("Warning: invalid locks.reap_interval for 'app'", "using #{Workspace::LockReaper::DEFAULT_INTERVAL}s")
+    end
+
+    it "ignores a locks key that is not a mapping" do
+      project_settings.save("app", {"locks" => "nope"})
+
+      expect(lock_config.reap_interval_for("app")).to eq(Workspace::LockReaper::DEFAULT_INTERVAL)
+    end
+  end
 end

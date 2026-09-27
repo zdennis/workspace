@@ -108,6 +108,29 @@ RSpec.describe Workspace::Commands::Config do
       end
     end
 
+    it "accepts locks.reap_interval as seconds or a duration" do
+      command, project_settings = build_command
+      project_dir = Dir.mktmpdir("ws-config-project")
+      name = File.basename(project_dir)
+
+      command.set("locks.reap_interval", "1m", cwd: project_dir)
+
+      expect(project_settings.load(name)).to eq({"locks" => {"reap_interval" => "1m"}})
+      command.set("locks.reap_interval", "45", cwd: project_dir)
+      expect(project_settings.load(name)).to eq({"locks" => {"reap_interval" => "45"}})
+    end
+
+    ["0", "0s", "-5", "soon", "5d", ""].each do |bad|
+      it "rejects locks.reap_interval #{bad.inspect} without writing it" do
+        command, project_settings = build_command
+        project_dir = Dir.mktmpdir("ws-config-project")
+
+        expect { command.set("locks.reap_interval", bad, cwd: project_dir) }
+          .to raise_error(Workspace::UsageError, /Invalid locks.reap_interval/)
+        expect(project_settings.load(File.basename(project_dir))).to eq({})
+      end
+    end
+
     it "accepts dev.kill_grace as seconds or a duration, up to the 60s cap" do
       command, project_settings = build_command
       project_dir = Dir.mktmpdir("ws-config-project")

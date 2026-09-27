@@ -9,7 +9,7 @@ module Workspace
     # unused config.
     class Config
       # Keys `set`/`get`/`unset` allow. Unlisted dotted keys are rejected.
-      ALLOWED_KEYS = %w[dev.up dev.ready dev.stop_timeout dev.startup_timeout dev.ready_timeout dev.kill_grace locks.idle_grace locks.ps_timeout].freeze
+      ALLOWED_KEYS = %w[dev.up dev.ready dev.stop_timeout dev.startup_timeout dev.ready_timeout dev.kill_grace locks.idle_grace locks.ps_timeout locks.reap_interval].freeze
 
       # @param project_settings [Workspace::ProjectSettings] reads/writes project YAML
       # @param lineage [Workspace::WorkspaceLineage] resolves a project from cwd (worktree -> parent)
@@ -122,6 +122,7 @@ module Workspace
         when "dev.kill_grace" then Workspace::Duration.parse_capped(value, max: Workspace::DevConfig::MAX_KILL_GRACE)
         when "locks.idle_grace" then Workspace::LockConfig.parse_idle_grace(value)
         when "locks.ps_timeout" then Workspace::LockConfig.parse_ps_timeout(value)
+        when "locks.reap_interval" then Workspace::LockConfig.parse_reap_interval(value)
         end
       rescue ArgumentError => e
         raise Workspace::UsageError, "Invalid #{key}: #{e.message}"

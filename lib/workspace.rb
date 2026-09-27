@@ -139,11 +139,13 @@ module Workspace
     lock_config = LockConfig.new(project_settings: project_settings, error_output: error_output)
     # Resolved once, from cwd's project, since a CLI run and the long-lived
     # `agent` daemon it may spawn both belong to a single project.
-    ps_timeout = begin
-      lock_config.ps_timeout_for(lineage.resolve(cwd: Dir.pwd).name)
+    cwd_project_name = begin
+      lineage.resolve(cwd: Dir.pwd).name
     rescue Workspace::Error
-      ProcessTree::DEFAULT_TIMEOUT
+      nil
     end
+    ps_timeout = cwd_project_name ? lock_config.ps_timeout_for(cwd_project_name) : ProcessTree::DEFAULT_TIMEOUT
+    reap_interval = cwd_project_name ? lock_config.reap_interval_for(cwd_project_name) : LockReaper::DEFAULT_INTERVAL
     process_tree = ProcessTree.new(logger: logger, timeout: ps_timeout)
     lock_holder = LockHolder.new(process_tree: process_tree)
     sessions_command = Commands::Sessions.new(config: config, lock_namespace: lock_namespace, lock_holder: lock_holder,
@@ -185,7 +187,7 @@ module Workspace
       # Its own LockHolder: the reaper runs on the monitor thread, and a
       # LockHolder's snapshot scope is per-instance, not per-thread.
       lock_reaper: LockReaper.new(lock_namespace: lock_namespace, lock_holder: LockHolder.new(process_tree: process_tree),
-        terminator: process_group_terminator, logger: logger, error_output: error_output),
+        terminator: process_group_terminator, interval: reap_interval, logger: logger, error_output: error_output),
       ps_timeout: ps_timeout,
       logger: logger,
       output: output,
