@@ -12,6 +12,13 @@ module Workspace
     class Lock
       DEFAULT_POLL_SECONDS = 5
       SIGNAL_CHECK_SECONDS = 0.25
+      # Exit code from `release` when this agent's hold was taken over by the
+      # head waiter while the agent sat idle, leaving nothing to release.
+      # `acquire` reports such a takeover too, then carries on as usual.
+      EXIT_DISPLACED = 3
+      # Lock names end up in file keys and in commands an agent is told to run
+      # verbatim, so they are limited to characters that need no shell quoting.
+      NAME_PATTERN = /\A[A-Za-z0-9][A-Za-z0-9._-]*\z/
 
       # Seconds on a clock that never jumps backward or forward with wall-clock
       # changes, so a --max-wait deadline cannot be stretched or cut short.
@@ -37,9 +44,12 @@ module Workspace
       #   like `Signal.trap`, and must return the previous handler the same way
       # @param terminator [Workspace::ProcessGroupTerminator] stops a cleared `kind: "process"` holder
       # @param dev_config [Workspace::DevConfig, nil] supplies that holder's dev.stop_timeout
+      # @param lock_config [Workspace::LockConfig, nil] supplies the project's locks.idle_grace
+      # @param wall_clock [#call] current epoch seconds, for idle tracking in the store
       def initialize(config:, lock_namespace:, lock_holder:, output: $stdout, error_output: $stderr,
         sleeper: ->(seconds) { sleep(seconds) }, clock: MonotonicClock, pid_provider: -> { Process.pid },
-        trap: ->(signal, handler) { Signal.trap(signal, handler) }, terminator: ProcessGroupTerminator.new, dev_config: nil)
+        trap: ->(signal, handler) { Signal.trap(signal, handler) }, terminator: ProcessGroupTerminator.new, dev_config: nil,
+        lock_config: nil, wall_clock: -> { Time.now.to_i })
         @config = config
         @lock_namespace = lock_namespace
         @lock_holder = lock_holder
@@ -51,6 +61,8 @@ module Workspace
         @trap = trap
         @terminator = terminator
         @dev_config = dev_config
+        @lock_config = lock_config
+        @wall_clock = wall_clock
       end
 
       # @param name [String] lock name
@@ -61,7 +73,7 @@ module Workspace
       # @param working_dir [String] directory to resolve the lock namespace from
       # @return [Hash] {exit_code:}
       def acquire(name, task: nil, wait: false, poll: DEFAULT_POLL_SECONDS, max_wait: nil, working_dir: Dir.pwd)
-        raise Workspace::UsageError, "lock name must not be empty." if name.nil? || name.empty?
+        validate_name!(name)
         raise Workspace::UsageError, "--poll must be greater than 0." if poll.to_f <= 0
         raise Workspace::UsageError, "--max-wait must be greater than 0." if max_wait && max_wait.to_f <= 0
         store = store_for(working_dir)
@@ -69,6 +81,8 @@ module Workspace
         waiter_pid = @pid_provider.call
         waiter_started = @lock_holder.start_time(waiter_pid)
         raise Workspace::Error, "Could not read the start time of this process (pid #{waiter_pid}) to track its place in the queue." unless waiter_started
+
+        report_displaced(store.pop_displaced(identity, name: name), "Trying to acquire it again.")
 
         result = store.acquire(name, identity: identity, waiter_pid: waiter_pid,
           waiter_started: waiter_started, task: task, wait: wait)
@@ -94,8 +108,11 @@ module Workspace
       # @param working_dir [String] directory to resolve the lock namespace from
       # @return [Hash] {exit_code:}
       def release(name, all: false, working_dir: Dir.pwd)
+        validate_name!(name) unless name.nil?
         store = store_for(working_dir)
         identity = require_identity!
+        displaced = store.pop_displaced(identity, name: all ? nil : name)
+        report_displaced(displaced, "There is nothing to release.")
 
         if all && name.nil?
           released = store.release_all(identity[:pid])
@@ -106,10 +123,23 @@ module Workspace
           end
         elsif store.release(name, identity[:pid])
           @output.puts "Released #{name} lock."
-        else
+        elsif displaced.empty?
           @output.puts "#{name} lock is not held by this agent."
         end
 
+        {exit_code: displaced.empty? ? 0 : EXIT_DISPLACED}
+      end
+
+      # Prints the agent prompt block that tells a coding agent how to use a
+      # lock, versioned with the CLI so it always matches its commands.
+      #
+      # @param name [String] lock name substituted into the commands
+      # @return [Hash] {exit_code:}
+      def instructions(name = "edit")
+        validate_name!(name)
+        @output.puts "Before editing files, run `workspace lock acquire #{name} --wait --task \"<your task>\"` " \
+          "using Bash with run_in_background. Do not edit anything until it reports \"Acquired\". " \
+          "When your edits are complete, run `workspace lock release #{name}`. Never run `workspace lock clear`."
         {exit_code: 0}
       end
 
@@ -117,6 +147,7 @@ module Workspace
       # @param working_dir [String] directory to resolve the lock namespace from
       # @return [Hash] {exit_code:}
       def status(name = nil, working_dir: Dir.pwd)
+        validate_name!(name) unless name.nil?
         store = store_for(working_dir)
         entries = store.status(name)
 
@@ -144,6 +175,7 @@ module Workspace
       # @yieldparam holder [Hash, nil] the holder record being cleared
       # @return [Hash] {exit_code:}
       def clear(name, all: false, working_dir: Dir.pwd, &on_holder)
+        validate_name!(name) unless name.nil?
         namespace = @lock_namespace.resolve(cwd: working_dir)
         store = LockStore.new(dir: namespace[:dir], liveness: @lock_holder)
         names = (all && name.nil?) ? store.names : [name]
@@ -165,9 +197,29 @@ module Workspace
 
       private
 
+      def validate_name!(name)
+        raise Workspace::UsageError, "lock name must not be empty." if name.nil? || name.empty?
+        return if NAME_PATTERN.match?(name)
+        raise Workspace::UsageError, "invalid lock name #{name.inspect}: use letters, digits, '.', '_' and '-', starting with a letter or digit."
+      end
+
       def store_for(working_dir)
         namespace = @lock_namespace.resolve(cwd: working_dir)
-        LockStore.new(dir: namespace[:dir], liveness: @lock_holder)
+        idle_grace = @lock_config ? @lock_config.idle_grace_for(namespace[:display]) : LockStore::DEFAULT_IDLE_GRACE
+        LockStore.new(dir: namespace[:dir], liveness: @lock_holder, clock: @wall_clock, idle_grace: idle_grace)
+      end
+
+      def report_displaced(records, advice)
+        records.each do |record|
+          by = record["by"] || {}
+          idle_for = record["at"].to_i - record["idle_since"].to_i
+          @error_output.puts "Your #{record["name"]} lock was taken over by #{describe_holder(by)} at #{format_epoch(record["at"])}, " \
+            "after this agent had been idle for #{idle_for}s. #{advice}"
+        end
+      end
+
+      def format_epoch(seconds)
+        Time.at(seconds.to_i).utc.iso8601
       end
 
       def require_identity!
@@ -191,11 +243,9 @@ module Workspace
 
         loop do
           result = store.poll(name, waiter_pid)
+          return claimed(name, result) if result[:status] == :acquired
           return abandon_wait(store, name, waiter_pid, interrupted) if interrupted
-          case result[:status]
-          when :acquired
-            return acquired(name)
-          when :cleared
+          if result[:status] == :cleared
             @error_output.puts "#{name} lock was cleared while waiting."
             return {exit_code: 4}
           end
@@ -210,15 +260,28 @@ module Workspace
         @trap.call("TERM", old_term) if old_term
       end
 
+      # A claimed lock is kept even when a signal arrived during the same
+      # poll: the agent is told it holds the lock, and a takeover is never
+      # undone after displacing the idle holder.
+      def claimed(name, result)
+        holder = result[:took_over]
+        if holder
+          @error_output.puts "Took over #{name} lock from #{describe_holder(holder)}, idle since #{format_epoch(holder["idle_since"])}."
+        end
+        acquired(name)
+      end
+
       def acquired(name)
         @output.puts "Acquired #{name} lock. Release with: workspace lock release #{name}"
         {exit_code: 0}
       end
 
-      # A promotion can land between the last poll and the deadline check, so
-      # the claim-or-dequeue decision is made in one step under the flock.
+      # A promotion or an idle takeover can come due between the last poll and
+      # the deadline check, so the claim-or-dequeue decision is made in one
+      # step under the flock.
       def give_up_waiting(store, name, waiter_pid)
-        return acquired(name) if store.claim_or_dequeue(name, waiter_pid) == :acquired
+        result = store.claim_or_dequeue(name, waiter_pid)
+        return claimed(name, result) if result[:status] == :acquired
         @error_output.puts "Still queued for #{name} lock after --max-wait; re-run to keep waiting."
         {exit_code: 75}
       end
@@ -258,7 +321,8 @@ module Workspace
 
         if holder
           stale = holder["stale"] ? " STALE" : ""
-          @output.puts "#{name}: held by #{describe_holder(holder)} (pid #{holder["pid"]}, since #{holder["acquired_at"]})#{stale}"
+          idle = holder["idle_since"] ? " IDLE since #{format_epoch(holder["idle_since"])}" : ""
+          @output.puts "#{name}: held by #{describe_holder(holder)} (pid #{holder["pid"]}, since #{holder["acquired_at"]})#{idle}#{stale}"
         else
           @output.puts "#{name}: free"
         end

@@ -27,25 +27,31 @@ module Workspace
       # @param input [IO] stream the hook payload arrives on
       # @param env [Hash] process environment, for TMUX_PANE
       # @param logger [Workspace::Logger] debug logger
-      def initialize(config:, tmux:, input: $stdin, env: ENV, logger: Workspace::Logger.new)
+      # @param lock_idle_tracker [Workspace::LockIdleTracker, nil] marks the
+      #   agent's locks idle/active; nil skips lock tracking
+      def initialize(config:, tmux:, input: $stdin, env: ENV, logger: Workspace::Logger.new, lock_idle_tracker: nil)
         @config = config
         @tmux = tmux
         @input = input
         @env = env
         @logger = logger
+        @lock_idle_tracker = lock_idle_tracker
       end
 
-      # Reads a hook payload and forwards it. Always succeeds.
+      # Reads a hook payload, updates the agent's lock idle state, and
+      # forwards it. Always succeeds.
       #
       # @param workspace [String, nil] overrides the workspace the event is sent
       #   to; normally derived from the pane the hook is running in
       # @return [void]
       def call(workspace: nil)
+        payload = parse(@input.read)
+        return unless payload.is_a?(Hash)
+
+        @lock_idle_tracker&.update(payload["hook_event_name"], cwd: payload["cwd"])
+
         pane_id = @env["TMUX_PANE"]
         return @logger.debug { "session-event: not inside tmux, dropped" } unless pane_id
-
-        payload = parse(@input.read)
-        return unless payload
 
         name = workspace || @tmux.session_name_for_pane(pane_id)
         return @logger.debug { "session-event: no session for #{pane_id}, dropped" } unless name

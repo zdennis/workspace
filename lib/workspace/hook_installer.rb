@@ -98,6 +98,14 @@ module Workspace
 
     # Appends our entries to each event's list, matched on the command string so
     # a re-run is a no-op and the user's own hooks for the same event survive.
+    #
+    # An entry is identified by its command and matcher, so a second matcher
+    # group for the same event and command (e.g. a future narrower
+    # `PreToolUse` group alongside the wildcard one) stays distinct. But a
+    # wildcard entry (nil matcher) subsumes any narrower entry we previously
+    # installed for the same command, so upgrading `PreToolUse` from `Task`
+    # to "all tools" replaces the old entry in place instead of leaving a
+    # stale duplicate behind.
     def merge(existing, fragment)
       result = deep_dup(existing)
       hooks = result["hooks"] ||= {}
@@ -105,15 +113,21 @@ module Workspace
       fragment["hooks"].each do |event, entries|
         current = hooks[event] ||= []
         entries.each do |entry|
-          current << entry unless current.any? { |e| same_command?(e, entry) }
+          if entry["matcher"].nil?
+            current.reject! { |e| commands_in(e) == commands_in(entry) }
+            current << entry
+          else
+            index = current.find_index { |e| same_command?(e, entry) }
+            current[index] = entry if index
+            current << entry unless index
+          end
         end
       end
       result
     end
 
     def same_command?(a, b)
-      a["matcher"] == b["matcher"] &&
-        commands_in(a) == commands_in(b)
+      a["matcher"] == b["matcher"] && commands_in(a) == commands_in(b)
     end
 
     def commands_in(entry)

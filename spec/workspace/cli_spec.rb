@@ -770,6 +770,14 @@ RSpec.describe Workspace::CLI do
       expect(config_command.calls).to eq([{action: :unset, key: "dev.ready", project: nil, cwd: "/tmp/some-project"}])
     end
 
+    it "exits 1 with a clean usage error instead of a backtrace when the value looks like a flag" do
+      cli, _, error_output = build_test_cli
+      expect { cli.run(["config", "set", "locks.idle_grace", "-5m"]) }.to raise_error(FakeSystemExit) { |e|
+        expect(e.status).to eq(1)
+      }
+      expect(error_output.string).to include("durations must be positive")
+    end
+
     it "exits 1 with usage when set is missing a key or value" do
       cli, _, error_output = build_test_cli
       expect { cli.run(["config", "set", "dev.up"]) }.to raise_error(FakeSystemExit) { |e|
@@ -1451,6 +1459,26 @@ RSpec.describe Workspace::CLI do
       )
     end
 
+    it "accepts durations like '9m' and '5s' for --max-wait and --poll" do
+      lock_command = CLITestHelpers::FakeLockCommand.new
+      cli, _, _ = build_test_cli(lock_command: lock_command)
+
+      cli.run(["lock", "acquire", "edit", "--wait", "--poll", "5s", "--max-wait", "9m"])
+
+      expect(lock_command.calls).to eq(
+        [{action: :acquire, name: "edit", task: nil, wait: true, poll: 5.0, max_wait: 540.0}]
+      )
+    end
+
+    it "raises a usage error instead of a backtrace for an unparsable --max-wait" do
+      lock_command = CLITestHelpers::FakeLockCommand.new
+      cli, _, error_output = build_test_cli(lock_command: lock_command)
+
+      expect { cli.run(["lock", "acquire", "edit", "--wait", "--max-wait", "nonsense"]) }
+        .to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+      expect(error_output.string).to include("--max-wait")
+    end
+
     it "exits with the acquire result's exit_code" do
       lock_command = CLITestHelpers::FakeLockCommand.new
       lock_command.result = {exit_code: 5}
@@ -1502,6 +1530,38 @@ RSpec.describe Workspace::CLI do
       cli.run(["lock", "clear", "edit"])
 
       expect(lock_command.calls).to eq([{action: :clear, name: "edit", all: false}])
+    end
+
+    it "dispatches to lock_command#instructions, defaulting to the edit lock" do
+      lock_command = CLITestHelpers::FakeLockCommand.new
+      cli, _, _ = build_test_cli(lock_command: lock_command)
+
+      cli.run(["lock", "instructions"])
+      cli.run(["lock", "instructions", "test"])
+
+      expect(lock_command.calls).to eq([{action: :instructions, name: "edit"}, {action: :instructions, name: "test"}])
+    end
+
+    it "rejects extra arguments to lock instructions" do
+      cli, _, _ = build_test_cli(lock_command: CLITestHelpers::FakeLockCommand.new)
+
+      expect { cli.run(["lock", "instructions", "a", "b"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+    end
+
+    it "exits 3 when release reports an idle takeover" do
+      lock_command = CLITestHelpers::FakeLockCommand.new
+      lock_command.result = {exit_code: 3}
+      cli, _, _ = build_test_cli(lock_command: lock_command)
+
+      expect { cli.run(["lock", "release", "edit"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(3) }
+    end
+
+    it "lists instructions and idle takeover in lock help" do
+      cli, output, _ = build_test_cli(lock_command: CLITestHelpers::FakeLockCommand.new)
+
+      cli.run(["lock", "help"])
+
+      expect(output.string).to include("instructions [<name>]", "locks.idle_grace", "3   this agent's hold was taken over")
     end
 
     describe "dev" do

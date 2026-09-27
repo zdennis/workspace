@@ -262,4 +262,32 @@ RSpec.describe Workspace::Commands::Lock do
       end
     end
   end
+
+  describe "lock name validation" do
+    let(:command) { command_for(FakeLockIdentity.new(pid: 100)) }
+
+    it "accepts plain names" do
+      %w[edit devenv test a.b_c-1 9x].each do |name|
+        expect { command.status(name) }.not_to raise_error
+      end
+    end
+
+    it "rejects shell metacharacters in every subcommand before touching the store" do
+      name = 'edit"; touch /tmp/pwned; echo "'
+
+      expect { command.acquire(name) }.to raise_error(Workspace::UsageError, /invalid lock name/)
+      expect { command.release(name) }.to raise_error(Workspace::UsageError, /invalid lock name/)
+      expect { command.status(name) }.to raise_error(Workspace::UsageError, /invalid lock name/)
+      expect { command.clear(name) }.to raise_error(Workspace::UsageError, /invalid lock name/)
+      expect { command.instructions(name) }.to raise_error(Workspace::UsageError, /invalid lock name/)
+      expect(lock_namespace).not_to have_received(:resolve)
+      expect(output.string).to be_empty
+    end
+
+    it "rejects names that start with punctuation or contain slashes or spaces" do
+      ["-edit", ".edit", "a/b", "a b", "édit"].each do |name|
+        expect { command.acquire(name) }.to raise_error(Workspace::UsageError), name
+      end
+    end
+  end
 end

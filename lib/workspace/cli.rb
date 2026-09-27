@@ -748,6 +748,7 @@ module Workspace
       when "release" then cmd_lock_release(args)
       when "status" then cmd_lock_status(args)
       when "clear" then cmd_lock_clear(args)
+      when "instructions" then cmd_lock_instructions(args)
       when "help", "--help", "-h", nil then @output.puts lock_help
       else
         raise UsageError, lock_help
@@ -768,12 +769,16 @@ module Workspace
           status  [<name>]           Show holders and queues
           clear   [<name>|--all]     Force-remove a lock's holder and queue
                                      (devenv: also stops the dev env's process group)
+          instructions [<name>]      Print the prompt block that tells a coding
+                                     agent how to use the lock (default: edit)
 
         Options (acquire):
           --task TEXT       Free-text description shown to other waiters
           --wait            Enqueue and poll instead of refusing when busy
-          --poll SECS       Seconds between polls while waiting (default: #{Commands::Lock::DEFAULT_POLL_SECONDS})
-          --max-wait DUR    Stop waiting after DUR seconds (exit 75; re-run to keep
+          --poll DURATION   Time between polls while waiting, e.g. "5s" (a plain
+                            number is seconds; default: #{Commands::Lock::DEFAULT_POLL_SECONDS})
+          --max-wait DUR    Stop waiting after DUR, e.g. "9m" (a plain number is
+                            seconds; exit 75; re-run to keep
                             waiting). This is when to give up polling, not a hard
                             deadline: if promoted to holder at the instant DUR
                             elapses, acquire still exits 0 holding the lock. Run
@@ -784,21 +789,47 @@ module Workspace
         Exit codes (acquire):
           0   acquired
           1   held by someone else (no --wait)
+          3   this agent's hold was taken over while it was idle (see below);
+              re-run to queue again
           4   cleared by someone else while waiting
           5   this agent already holds or waits for a different lock
               (release it first)
           75  still queued after --max-wait
 
+        Idle takeover: when a holding agent finishes its turn, the
+        session-event hook marks its lock idle; any prompt or tool use marks
+        it active again. Once idle for locks.idle_grace (default 5m; set with
+        `workspace config set locks.idle_grace 10m`), the first waiter in the
+        queue takes the lock over. The displaced agent is told once, on its
+        next acquire or release; acquire then carries on as usual, while
+        release exits 3. The dev environment lock is never taken over this way.
+
         Note: `lock release`/`lock clear` exit 0 even when nothing was
-        held/cleared. This is scoped to those two subcommands; `acquire`
-        has its own exit codes above.
+        held/cleared, except that `release` exits 3 when it reports an idle
+        takeover. `acquire` has its own exit codes above.
 
         Examples:
           workspace lock acquire edit --wait --task "PROJ-12 fix login"
           workspace lock release edit
           workspace lock status
           workspace lock clear edit
+          workspace lock instructions edit
       HELP
+    end
+
+    def cmd_lock_instructions(args)
+      parser = OptionParser.new do |opts|
+        opts.banner = "Usage: workspace lock instructions [<name>]"
+        opts.separator ""
+        opts.separator "Prints the prompt block that tells a coding agent how to use"
+        opts.separator "lock <name> (default: edit), for pasting into its instructions."
+      end
+      parser.parse!(args)
+
+      name = args.shift || "edit"
+      raise UsageError, parser.help if args.any?
+
+      @lock_command.instructions(name)
     end
 
     def cmd_lock_acquire(args)
@@ -810,8 +841,8 @@ module Workspace
         opts.banner = "Usage: workspace lock acquire <name> [options]"
         opts.on("--task TEXT", "Free-text description shown to other waiters") { |v| task = v }
         opts.on("--wait", "Enqueue and poll instead of refusing when busy") { wait = true }
-        opts.on("--poll SECS", Float, "Seconds between polls while waiting") { |v| poll = v }
-        opts.on("--max-wait DURATION", Float, "Give up after DURATION seconds (exit 75)") { |v| max_wait = v }
+        opts.on("--poll DURATION", "Time between polls while waiting (e.g. \"5s\", or a plain number of seconds)") { |v| poll = parse_lock_duration("--poll", v) }
+        opts.on("--max-wait DURATION", "Give up after DURATION (e.g. \"9m\", or a plain number of seconds); exits 75") { |v| max_wait = parse_lock_duration("--max-wait", v) }
       end
       parser.parse!(args)
 
@@ -820,6 +851,19 @@ module Workspace
 
       result = @lock_command.acquire(name, task: task, wait: wait, poll: poll, max_wait: max_wait, working_dir: @working_dir)
       @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
+    end
+
+    # Parses a `--poll`/`--max-wait` value as a duration (e.g. "9m", "5s", or
+    # a plain number of seconds), raising a usage error instead of a
+    # backtrace on unparsable input.
+    #
+    # @param flag [String] option name, for the error message
+    # @param value [String] raw option value
+    # @return [Numeric] seconds
+    def parse_lock_duration(flag, value)
+      Workspace::Duration.parse(value)
+    rescue ArgumentError => e
+      raise UsageError, "#{flag}: #{e.message}"
     end
 
     def cmd_lock_release(args)
@@ -1669,9 +1713,14 @@ module Workspace
         opts.separator "Examples:"
         opts.separator "  workspace config set dev.up \"./start-dev\""
         opts.separator "  workspace config set dev.stop_timeout 20s"
+        opts.separator "  workspace config set locks.idle_grace 10m"
         opts.separator "  workspace config set --project myapp dev.up \"bin/dev\""
       end
-      parser.parse!(args)
+      begin
+        parser.parse!(args)
+      rescue OptionParser::InvalidOption => e
+        raise UsageError, "#{e.message} (durations must be positive; a negative value like \"-5m\" looks like a flag)"
+      end
       key = args.shift
       value = args.shift
       raise UsageError, parser.help if key.nil? || value.nil? || args.any?
@@ -1739,6 +1788,8 @@ module Workspace
         opts.separator "  worktree_hooks:                Hooks seeded into new worktrees"
         opts.separator "  dev.up, dev.ready,             Set via 'workspace config set' (see"
         opts.separator "  dev.stop_timeout:              'workspace config set --help')"
+        opts.separator "  locks.idle_grace:              How long an idle agent keeps a lock before"
+        opts.separator "                                 the next waiter may take it (default: 5m)"
         opts.separator ""
         opts.separator "Note: 'set', 'get', and 'unset' are reserved as the first argument"
         opts.separator "here and are always treated as subcommands, so a project literally"

@@ -270,7 +270,7 @@ RSpec.describe Workspace::LockStore do
       s.acquire("edit", identity: identity(pid: 200), waiter_pid: 2001, waiter_started: "start-2001", wait: true)
       s.release("edit", 100)
 
-      expect(s.claim_or_dequeue("edit", 2001)).to eq(:acquired)
+      expect(s.claim_or_dequeue("edit", 2001)).to eq(status: :acquired)
       expect(s.status("edit")["edit"]["holder"]).not_to have_key("unclaimed")
     end
 
@@ -279,7 +279,7 @@ RSpec.describe Workspace::LockStore do
       s.acquire("edit", identity: identity(pid: 100), waiter_pid: 100, waiter_started: "start-100")
       s.acquire("edit", identity: identity(pid: 200), waiter_pid: 2001, waiter_started: "start-2001", wait: true)
 
-      expect(s.claim_or_dequeue("edit", 2001)).to eq(:dequeued)
+      expect(s.claim_or_dequeue("edit", 2001)).to eq(status: :dequeued)
       expect(s.status("edit")["edit"]["queue"]).to be_empty
     end
   end

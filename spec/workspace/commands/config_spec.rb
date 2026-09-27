@@ -62,6 +62,29 @@ RSpec.describe Workspace::Commands::Config do
       expect { command.set("dev.stop_timeout", "soon", cwd: project_dir) }.to raise_error(Workspace::UsageError, /Invalid dev.stop_timeout/)
     end
 
+    it "accepts locks.idle_grace as seconds or a duration" do
+      command, project_settings = build_command
+      project_dir = Dir.mktmpdir("ws-config-project")
+      name = File.basename(project_dir)
+
+      command.set("locks.idle_grace", "10m", cwd: project_dir)
+
+      expect(project_settings.load(name)).to eq({"locks" => {"idle_grace" => "10m"}})
+      command.set("locks.idle_grace", "90", cwd: project_dir)
+      expect(project_settings.load(name)).to eq({"locks" => {"idle_grace" => "90"}})
+    end
+
+    ["0", "0s", "-5", "soon", "5d", ""].each do |bad|
+      it "rejects locks.idle_grace #{bad.inspect} without writing it" do
+        command, project_settings = build_command
+        project_dir = Dir.mktmpdir("ws-config-project")
+
+        expect { command.set("locks.idle_grace", bad, cwd: project_dir) }
+          .to raise_error(Workspace::UsageError, /Invalid locks.idle_grace/)
+        expect(project_settings.load(File.basename(project_dir))).to eq({})
+      end
+    end
+
     it "accepts a dev.stop_timeout duration like 20s" do
       command, project_settings = build_command
       project_dir = Dir.mktmpdir("ws-config-project")

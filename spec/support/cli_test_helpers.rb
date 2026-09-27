@@ -364,6 +364,11 @@ module CLITestHelpers
       @calls << {action: :clear, name: name, all: all}
       @result
     end
+
+    def instructions(name = "edit")
+      @calls << {action: :instructions, name: name}
+      @result
+    end
   end
 
   class FakeDevCommand

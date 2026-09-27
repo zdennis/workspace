@@ -99,6 +99,41 @@ RSpec.describe Workspace::Commands::SessionEvent do
       end
     end
 
+    context "with a lock idle tracker" do
+      let(:tracker) { instance_double(Workspace::LockIdleTracker, update: []) }
+
+      def invoke_tracked(payload)
+        described_class.new(config: config, tmux: tmux, input: StringIO.new(JSON.generate(payload)),
+          env: env, lock_idle_tracker: tracker).call
+      end
+
+      it "passes the hook event and cwd to the tracker before delivering" do
+        invoke_tracked("hook_event_name" => "Stop", "cwd" => "/project")
+
+        expect(tracker).to have_received(:update).with("Stop", cwd: "/project")
+      end
+
+      it "updates lock idle state for every tool use, not only Task" do
+        invoke_tracked("hook_event_name" => "PreToolUse", "tool_name" => "Edit")
+
+        expect(tracker).to have_received(:update).with("PreToolUse", cwd: nil)
+      end
+
+      it "updates lock idle state outside tmux too" do
+        env.delete("TMUX_PANE")
+
+        invoke_tracked("hook_event_name" => "UserPromptSubmit")
+
+        expect(tracker).to have_received(:update).with("UserPromptSubmit", cwd: nil)
+      end
+
+      it "skips the tracker on a payload that is not a JSON object" do
+        described_class.new(config: config, tmux: tmux, input: StringIO.new("[1]"), env: env, lock_idle_tracker: tracker).call
+
+        expect(tracker).not_to have_received(:update)
+      end
+    end
+
     # A hook runs inside the agent's turn: anything that raises here surfaces
     # as a failure in the user's session.
     context "when something is wrong" do

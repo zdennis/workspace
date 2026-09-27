@@ -26,8 +26,8 @@ RSpec.describe Workspace::AgentProvider do
       expect(commands.uniq).to eq(["workspace session-event"])
     end
 
-    it "matches the Task tool for sub-agent starts" do
-      expect(settings["hooks"]["PreToolUse"].first["matcher"]).to eq("Task")
+    it "matches every tool, not just Task, so any tool use marks a lock holder active" do
+      expect(settings["hooks"]["PreToolUse"].first).not_to have_key("matcher")
     end
 
     it "omits the matcher for events that are not tool-scoped" do

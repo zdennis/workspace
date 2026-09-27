@@ -21,28 +21,10 @@ module Workspace
       {
         up: dev["up"],
         ready: dev["ready"],
-        stop_timeout: dev.key?("stop_timeout") ? self.class.parse_duration(dev["stop_timeout"]) : DEFAULT_STOP_TIMEOUT
+        stop_timeout: dev.key?("stop_timeout") ? Duration.parse(dev["stop_timeout"]) : DEFAULT_STOP_TIMEOUT
       }
     rescue ArgumentError => e
       raise Workspace::Error, "Invalid dev.stop_timeout for '#{name}': #{e.message}"
-    end
-
-    # Parses a duration string or number into seconds.
-    # Supports: "20s", "20" (plain number = seconds).
-    #
-    # @param value [String, Numeric] duration string or number
-    # @return [Numeric] seconds
-    # @raise [ArgumentError] if value isn't a recognized duration
-    def self.parse_duration(value)
-      str = value.to_s.strip
-      case str
-      when /\A(\d+(?:\.\d+)?)\s*s\z/i
-        $1.to_f
-      when /\A(\d+(?:\.\d+)?)\z/
-        $1.to_f
-      else
-        raise ArgumentError, "expected a duration like \"20s\" or \"20\", got #{value.inspect}"
-      end
     end
   end
 end
