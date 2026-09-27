@@ -10,6 +10,7 @@ A macOS CLI (Ruby) for managing tmuxinator-based development workspaces in iTerm
 - `lib/workspace/config.rb` — Path constants and configuration
 - `lib/workspace/state.rb` — JSON-persisted session state
 - `lib/workspace/git.rb` — Git and worktree operations
+- `lib/workspace/which.rb` — Shared default PATH lookup for injectable `which:` collaborators
 - `lib/workspace/doctor.rb` — Dependency checking
 - `lib/workspace/tmux.rb` — Tmux session management
 - `lib/workspace/project_config.rb` — Tmuxinator config generation
