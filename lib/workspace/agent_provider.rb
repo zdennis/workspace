@@ -28,10 +28,11 @@ module Workspace
       "PreToolUse" => nil
     }.freeze
 
-    # Arguments that mark a background helper rather than an interactive
+    # Subcommands that mark a background helper rather than an interactive
     # session. Claude Code leaves a daemon and pty helpers in a pane's process
     # tree, and matching one would report the pane as busy long after the
-    # session it served has exited.
+    # session it served has exited. Each is matched against the words right
+    # after the program name, and only for this provider's own processes.
     CLAUDE_BACKGROUND = ["daemon run", "bg-pty-host", "bg-spare"].freeze
 
     # @return [Array<AgentProvider>] every known provider
@@ -76,8 +77,8 @@ module Workspace
     # @param executable [String] binary name to detect on PATH
     # @param settings_path [String, nil] hook settings file, relative to project root
     # @param events [Hash, nil] event name => matcher (nil matcher means "all")
-    # @param background_markers [Array<String>] argument substrings that mark a
-    #   background helper, not an interactive session
+    # @param background_markers [Array<String>] leading subcommands that mark
+    #   a background helper, not an interactive session
     def initialize(key:, label:, executable:, settings_path: nil, events: nil,
       background_markers: [])
       @key = key

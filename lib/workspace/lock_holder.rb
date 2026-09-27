@@ -30,7 +30,7 @@ module Workspace
     def initialize(process_tree: Workspace::ProcessTree.new, providers: AgentProvider.all, env: ENV)
       @process_tree = process_tree
       @executables = providers.map(&:executable)
-      @background_markers = providers.flat_map(&:background_markers)
+      @background_markers = providers.to_h { |provider| [provider.executable, provider.background_markers] }
       @env = env
     end
 

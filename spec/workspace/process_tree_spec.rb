@@ -107,4 +107,26 @@ RSpec.describe Workspace::ProcessTree do
       expect(tree.snapshot.find_ancestor(300, ["codex"])).to be_nil
     end
   end
+
+  describe "background-helper markers" do
+    def snapshot_of(*entries)
+      Workspace::ProcessTree::Snapshot.new(entries.map do |pid, ppid, args|
+        {pid: pid, ppid: ppid, lstart: "start-#{pid}", command: args.split.first, args: args}
+      end)
+    end
+
+    it "match only the leading subcommand, not the same words later in the arguments" do
+      snapshot = snapshot_of([10, 1, "claude -p clean up stale bg-spare helpers"], [11, 10, "bash"])
+
+      expect(snapshot.find_ancestor(11, ["claude"], exclude: ["bg-spare"])[:pid]).to eq(10)
+    end
+
+    it "apply a per-name Hash only to processes matched as that name" do
+      snapshot = snapshot_of([5, 1, "claude daemon run"], [10, 5, "codex daemon run"], [11, 10, "bash"])
+      exclude = {"claude" => ["daemon run"], "codex" => []}
+
+      expect(snapshot.find_ancestor(11, ["claude", "codex"], exclude: exclude)[:pid]).to eq(10)
+      expect(snapshot.find_ancestor(10, ["claude", "codex"], exclude: exclude)).to be_nil
+    end
+  end
 end
