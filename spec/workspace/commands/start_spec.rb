@@ -232,7 +232,7 @@ RSpec.describe Workspace::Commands::Start do
         expect(git).not_to have_received(:create_worktree) if git.respond_to?(:create_worktree)
         expect(output.string).to include("Adopting existing worktree at: #{external_path}")
         expect(project_config).to have_received(:create_worktree).with(
-          anything, "feature-branch", external_path, "feature-branch"
+          anything, "feature-branch", external_path, "feature-branch", quiet: false
         )
         expect(launch_command).to have_received(:call).with(["myproject.worktree-feature-branch"], prompts: {})
 
@@ -368,7 +368,7 @@ RSpec.describe Workspace::Commands::Start do
 
         command.call("feature-x", base: "develop")
 
-        expect(git).to have_received(:create_worktree).with(anything, "feature-x", base: "develop")
+        expect(git).to have_received(:create_worktree).with(anything, "feature-x", base: "develop", quiet: false)
       end
 
       it "uses the default branch with --yes and no --base" do
@@ -376,7 +376,7 @@ RSpec.describe Workspace::Commands::Start do
 
         command.call("feature-x", yes: true)
 
-        expect(git).to have_received(:create_worktree).with(anything, "feature-x", base: "main")
+        expect(git).to have_received(:create_worktree).with(anything, "feature-x", base: "main", quiet: false)
       end
 
       it "raises a usage error instead of blocking on a non-TTY stdin with no --base/--yes" do
@@ -392,7 +392,7 @@ RSpec.describe Workspace::Commands::Start do
         command.call("feature-x")
 
         expect(git).to have_received(:prompt_base_branch)
-        expect(git).to have_received(:create_worktree).with(anything, "feature-x", base: "main")
+        expect(git).to have_received(:create_worktree).with(anything, "feature-x", base: "main", quiet: false)
       end
     end
 
@@ -420,13 +420,13 @@ RSpec.describe Workspace::Commands::Start do
 
         command.call("feature-x", yes: true)
 
-        expect(git).to have_received(:create_worktree).with(anything, "feature-x", base: "main")
+        expect(git).to have_received(:create_worktree).with(anything, "feature-x", base: "main", quiet: false)
       end
 
       it "falls through to creating a new branch with --base" do
         command.call("feature-x", base: "develop")
 
-        expect(git).to have_received(:create_worktree).with(anything, "feature-x", base: "develop")
+        expect(git).to have_received(:create_worktree).with(anything, "feature-x", base: "develop", quiet: false)
       end
     end
 

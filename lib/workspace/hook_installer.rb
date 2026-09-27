@@ -63,24 +63,25 @@ module Workspace
     # @param project_root [String]
     # @param command [String]
     # @param dry_run [Boolean] report without writing
+    # @param quiet [Boolean] suppress the "skip"/"update"/"create"/"backup" progress lines
     # @return [void]
-    def install(provider, project_root, command, dry_run: false)
+    def install(provider, project_root, command, dry_run: false, quiet: false)
       path = settings_path_for(provider, project_root)
       existed = File.exist?(path)
       existing = read_settings(path)
       merged = merge(existing, provider.hook_settings(command))
 
       if merged == existing
-        @output.puts "  skip    #{path} (hooks already installed)"
+        @output.puts "  skip    #{path} (hooks already installed)" unless quiet
         return
       end
 
-      @backup.backup(path, dry_run: dry_run)
+      @backup.backup(path, dry_run: dry_run, quiet: quiet)
       unless dry_run
         FileUtils.mkdir_p(File.dirname(path))
         File.write(path, JSON.pretty_generate(merged) + "\n")
       end
-      @output.puts "  #{existed ? "update" : "create"}  #{path}"
+      @output.puts "  #{existed ? "update" : "create"}  #{path}" unless quiet
     end
 
     private

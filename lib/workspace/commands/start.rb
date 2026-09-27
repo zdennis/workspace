@@ -1,4 +1,5 @@
 require "json"
+require "fileutils"
 
 module Workspace
   module Commands
@@ -18,7 +19,7 @@ module Workspace
       #   (edit lock enforcement, session monitoring) into the new worktree; nil skips it
       # @param which [#call] returns true when an executable is on PATH
       def initialize(git:, project_config:, project_settings:, launch_command:, lineage: WorkspaceLineage.new,
-        hook_installer: nil, which: nil, output: $stdout, input: $stdin)
+        hook_installer: nil, which: nil, output: $stdout, input: $stdin, error_output: $stderr)
         @git = git
         @project_config = project_config
         @project_settings = project_settings
@@ -28,6 +29,7 @@ module Workspace
         @which = which || Workspace::Which
         @output = output
         @input = input
+        @error_output = error_output
       end
 
       # Creates a worktree from the given input and launches it.
@@ -60,7 +62,7 @@ module Workspace
         payload = start!(input_string, prompt: prompt, prompt_timeout: prompt_timeout, base: base, yes: yes, quiet: true)
         @output.puts JSON.generate(payload[:json])
         {exit_code: payload[:exit_code]}
-      rescue Workspace::Error => e
+      rescue Workspace::Error, SystemCallError => e
         @output.puts JSON.generate({"schema_version" => JSON_SCHEMA_VERSION, "error" => e.message})
         {exit_code: 1}
       end
@@ -71,7 +73,8 @@ module Workspace
         root = @git.root
         raise Workspace::Error, "Not inside a git repository." unless root
 
-        interactive = !quiet && !yes && @input.respond_to?(:tty?) && @input.tty?
+        interactive = !quiet && !yes && stdin_tty?
+        @warnings = []
 
         project_name = WorkspaceLineage.name_from_path(root)
         parsed = @git.parse_start_input(input_string)
@@ -85,7 +88,7 @@ module Workspace
             base: nil, created: false, prompt: prompt, prompt_timeout: prompt_timeout, quiet: quiet, already_exists: true)
         end
 
-        result = resolve_or_create_branch(branch_name, base: base, yes: yes, interactive: interactive)
+        result = resolve_or_create_branch(branch_name, base: base, yes: yes, interactive: interactive, quiet: quiet)
         return if result == :cancelled
 
         branch_name = result[:branch_name]
@@ -100,7 +103,11 @@ module Workspace
         end
 
         create_worktree_directory(root)
-        @git.create_worktree(worktree_path, branch_name, base: result[:base_branch])
+        begin
+          @git.create_worktree(worktree_path, branch_name, base: result[:base_branch], quiet: quiet)
+        rescue Errno::EEXIST
+          # A concurrent `start` finished creating .worktrees/ at the same moment; harmless.
+        end
         log(quiet, "Worktree created at: #{worktree_path}")
 
         ensure_gitignore(root, quiet: quiet)
@@ -116,10 +123,10 @@ module Workspace
         log(quiet, "Worktree already exists at: #{worktree_path}") if already_exists
         log(quiet, "Adopting existing worktree at: #{worktree_path}") if adopted
 
-        config_name = @project_config.create_worktree(project_name, worktree_dir_name, worktree_path, branch_name)
+        config_name = @project_config.create_worktree(project_name, worktree_dir_name, worktree_path, branch_name, quiet: quiet)
         @project_settings.ensure_exists(project_name)
         seed_worktree_hooks(project_name, config_name)
-        install_agent_hooks(worktree_path)
+        install_agent_hooks(worktree_path, quiet: quiet)
         write_project_marker(worktree_path, config_name)
         log(quiet, "Launching #{config_name}...")
         prompts = prompt ? {config_name => prompt} : {}
@@ -128,18 +135,41 @@ module Workspace
 
         return result unless quiet
 
-        {
-          exit_code: result ? result[:exit_code] : 0,
-          json: {
-            "schema_version" => JSON_SCHEMA_VERSION,
-            "project" => project_name,
-            "workspace" => config_name,
-            "path" => worktree_path,
-            "branch" => branch_name,
-            "base" => base,
-            "created" => created
-          }
+        exit_code = result ? result[:exit_code] : 0
+        json = {
+          "schema_version" => JSON_SCHEMA_VERSION,
+          "project" => project_name,
+          "workspace" => config_name,
+          "path" => worktree_path,
+          "branch" => branch_name,
+          "base" => base,
+          "created" => created
         }
+        if exit_code != 0
+          prompt_failures = result && result[:prompt_failures]
+          json["error"] = "Prompt was not sent to every workspace."
+          json["prompt_failures"] = prompt_failures || {}
+        end
+        json["warnings"] = @warnings if @warnings&.any?
+
+        {exit_code: exit_code, json: json}
+      end
+
+      def note_base_ignored(branch_name, quiet:)
+        message = "Note: --base ignored; branch '#{branch_name}' already exists."
+        if quiet
+          @warnings << message
+        else
+          @error_output.puts message
+        end
+      end
+
+      # @return [Boolean] false (never blocks on a prompt) for a non-TTY, or a
+      #   closed, stdin -- rather than raising IOError from a closed stream.
+      def stdin_tty?
+        @input.respond_to?(:tty?) && @input.tty?
+      rescue IOError
+        false
       end
 
       def log(quiet, message)
@@ -166,8 +196,9 @@ module Workspace
         end
       end
 
-      def resolve_or_create_branch(branch_name, base:, yes:, interactive:)
+      def resolve_or_create_branch(branch_name, base:, yes:, interactive:, quiet:)
         if @git.branch_exists?(branch_name)
+          note_base_ignored(branch_name, quiet: quiet) if base
           return {branch_name: branch_name, base_branch: nil}
         end
 
@@ -226,11 +257,11 @@ module Workspace
       # `workspace init` does for the parent project. Silent, no prompt: a
       # worktree an agent will immediately be launched into should already be
       # enforcing the edit lock.
-      def install_agent_hooks(worktree_path)
+      def install_agent_hooks(worktree_path, quiet:)
         return unless @hook_installer
 
         AgentProvider.all.select { |p| p.supports_hooks? && @which.call(p.executable) }.each do |provider|
-          @hook_installer.install(provider, worktree_path, Commands::Init::HOOK_COMMAND)
+          @hook_installer.install(provider, worktree_path, Commands::Init::HOOK_COMMAND, quiet: quiet)
         end
       end
 
@@ -239,8 +270,9 @@ module Workspace
       end
 
       def create_worktree_directory(root)
-        worktrees_dir = File.join(root, ".worktrees")
-        Dir.mkdir(worktrees_dir) unless File.directory?(worktrees_dir)
+        FileUtils.mkdir_p(File.join(root, ".worktrees"))
+      rescue Errno::EEXIST
+        # Another concurrent `start` created it between our check and mkdir; fine.
       end
 
       def ensure_gitignore(root, quiet:)

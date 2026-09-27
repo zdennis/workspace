@@ -19,13 +19,14 @@ module Workspace
     #
     # @param path [String] file to back up
     # @param dry_run [Boolean] report the backup path without writing it
+    # @param quiet [Boolean] suppress the "backup ..." progress line
     # @return [String, nil] the backup path, or nil if there was nothing to back up
-    def backup(path, dry_run: false)
+    def backup(path, dry_run: false, quiet: false)
       return nil unless File.exist?(path)
 
       destination = backup_path(path)
       FileUtils.cp(path, destination) unless dry_run
-      @output.puts "  backup  #{destination}"
+      @output.puts "  backup  #{destination}" unless quiet
       destination
     end
 

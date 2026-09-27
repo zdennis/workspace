@@ -316,7 +316,7 @@ module Workspace
           window_id = @found_windows[project]
           {project: project, window_id: window_id} if window_id
         end
-        @window_layout.arrange(project_window_ids)
+        @window_layout.arrange(project_window_ids, quiet: @quiet)
       end
     end
   end
