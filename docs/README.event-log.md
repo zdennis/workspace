@@ -33,7 +33,33 @@ Workspace tracks all state changes (launches, kills, window discoveries, repairs
 
 This append-only approach eliminates race conditions from concurrent launches — multiple processes can safely append events without clobbering each other. Each event is written with a single `write` to a file opened for appending, so lines from different processes never interleave.
 
-When the event log exceeds 1MB (`event_log_compact_threshold` in the global config), workspace warns you to compact it. Compaction replays the log and rewrites it with one `compacted` event per active project.
+### Agent activity
+
+The same log records what agents and pipelines do. `reconstruct` ignores these events, so they never change state. Each is `{timestamp, type, project, data}`; `project` is the workspace (or, for locks, the lock namespace's project) name.
+
+| Type | Written by | `data` |
+|------|-----------|--------|
+| `dispatched` | agent daemon, command delivered | `work_item_ref`, `dispatch_id`, `stage` and `pane` (pipeline only), `delivery` (`submitted` or `not_submitted`) |
+| `dispatch_failed` | agent daemon, command never reached its pane | `work_item_ref`, `dispatch_id`, `message` |
+| `stage_completed` | agent daemon, stage printed its sentinel | `work_item_ref`, `pane`, `next_stage`, `next_pane` (both `null` after the last stage), `summary` (first 500 characters) |
+| `stage_timed_out` | agent daemon, stage ran past its `timeout` | `work_item_ref`, `pane`, `message` |
+| `stage_failed` | agent daemon, stage's watch died, its pane was lost, the hand-off failed, or the coordinator aborted it | `work_item_ref`, `pane`, `message` |
+| `pipeline_dropped` | agent daemon, coordinator has no record of the work item | `work_item_ref`, `message` |
+| `agent_state` | agent daemon's session monitor, on each change | `pane_id`, `pane_pid`, `index`, `kind`, `state` (`working`, `idle`, `waiting`, `exited`, `closed`), `since` |
+| `lock_wait_started` | `lock acquire --wait`, `dev up` | `lock`, `pid`, `holder`; for `lock`: `task`, `position` |
+| `lock_acquired` | same, once a wait ends with the lock | `lock`, `pid`, `waited_seconds` |
+| `lock_takeover` | `lock acquire` taking over an idle holder; `dev up --takeover` | `lock`, `pid`, `from`; for `lock`: `waited_seconds`, `idle_since` |
+| `lock_wait_gave_up` | `--max-wait` or the startup timeout passed while queued | `lock`, `pid`, `waited_seconds` |
+| `lock_wait_cleared` | `lock clear` removed the waiter | `lock`, `pid`, `waited_seconds` |
+| `lock_wait_abandoned` | `lock acquire --wait` interrupted | `lock`, `pid`, `waited_seconds`, `exit_code` |
+
+An acquire that doesn't wait records nothing here; `locks.jsonl` in the lock store already audits every acquire and release.
+
+A restarted agent daemon reads each pane's last `agent_state` back, so `workspace sessions` keeps each pane's state and `state_since` instead of starting afresh. The pane's pid must match, so a pane id reused by a new tmux server starts fresh. A pending wait is not restored.
+
+Recording activity never fails the command doing it: if the log can't be written, one warning goes to stderr and the command carries on. Nothing is written to stdout, so `--json` output stays JSON-only.
+
+When the event log exceeds 1MB (`event_log_compact_threshold` in the global config), workspace warns you to compact it. Compaction replays the log and rewrites it with one `compacted` event per active project, plus the latest `agent_state` of each pane that still has an agent. All other activity history is dropped. There is no automatic rotation.
 
 Existing users are automatically migrated on first run — the current state file is converted to `migrated` events in the log.
 
