@@ -13,7 +13,7 @@ workspace launch [options] <project1> [project2] ...
 | Option | Description |
 |--------|-------------|
 | `--reattach` | Reattach to existing tmux sessions, preserving session state |
-| `--prompt PROMPT` | Send an initial prompt to Claude in each project |
+| `--prompt PROMPT` | Send an initial prompt to the coding agent in each project, once it is ready (up to 60s); exits 1 if it can't be sent |
 
 ## Details
 
@@ -26,6 +26,10 @@ You can pass either a project name (matching an existing tmuxinator config) or a
 Also starts the [session-monitoring agent daemon](README.agent.md) for each launched project, unless one is already running for it. This is what powers [`workspace sessions`](README.sessions.md); run `workspace doctor` to check whether it's set up correctly for the current project.
 
 If a project's [pipeline config](README.pipeline.md) has an invalid `timeout:`, the daemon would otherwise exit right after starting with nothing visible on your screen. `launch` checks the config first and, if it's invalid, skips starting that project's daemon and prints a warning on stderr naming the bad key and the daemon's log path, without aborting the rest of the launch. Once the config is fixed, start the daemon with `workspace agent --name <project>` rather than relaunching the whole window.
+
+**Prompts** — with `--prompt`, `launch` waits for each project's coding agent before typing anything. An agent counts as ready once its process is running in one of the session's panes (Claude Code first, then Codex, OpenCode and Pi, then the lowest pane) and its screen has stayed the same for 2 seconds. All projects share one 60-second wait, since their agents start at the same time. The prompt is then pasted and submitted, and `launch` reads the pane back to check it arrived (see [`workspace run`](README.run.md) for how). A paste that never shows up in the pane is tried again, up to three times in all. A paste that shows up but may not have been submitted is not sent again, so it can't be typed twice.
+
+If a prompt can't be sent, `launch` still finishes the launch and runs `post_launch` hooks. It then prints `Error: prompt not sent to <project>: <reason>` on stderr for each project and exits 1. The reason says what it was waiting for: no agent running yet, the agent still starting up, or what tmux reported.
 
 ## Notes
 
@@ -46,6 +50,6 @@ workspace launch --reattach my-project
 # Launch from a directory path
 workspace launch ~/Code/my-project
 
-# Launch with a prompt for Claude
+# Launch with a prompt for the coding agent
 workspace launch --prompt "Review the README" my-project
 ```

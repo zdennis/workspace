@@ -29,8 +29,9 @@ module Workspace
       # Creates a worktree from the given input and launches it.
       #
       # @param input_string [String] JIRA key, PR URL, or branch name
-      # @param prompt [String, nil] optional prompt to send to Claude after launching
-      # @return [void]
+      # @param prompt [String, nil] optional prompt to send to the coding agent after launching
+      # @return [Hash, nil] the launch result (+{exit_code:, prompt_failures:}+),
+      #   or nil if branch selection was cancelled
       # @raise [Workspace::Error] if not in a git repository
       def call(input_string, prompt: nil)
         root = @git.root
@@ -52,9 +53,9 @@ module Workspace
           write_project_marker(worktree_path, config_name)
           @output.puts "Launching #{config_name}..."
           prompts = prompt ? {config_name => prompt} : {}
-          @launch_command.call([config_name], prompts: prompts)
+          result = @launch_command.call([config_name], prompts: prompts)
           @project_settings.ensure_exists(config_name)
-          return
+          return result
         end
 
         result = resolve_or_create_branch(branch_name)
@@ -76,9 +77,9 @@ module Workspace
           write_project_marker(existing_path, config_name)
           @output.puts "Launching #{config_name}..."
           prompts = prompt ? {config_name => prompt} : {}
-          @launch_command.call([config_name], prompts: prompts)
+          result = @launch_command.call([config_name], prompts: prompts)
           @project_settings.ensure_exists(config_name)
-          return
+          return result
         end
 
         create_worktree_directory(root)
@@ -94,8 +95,9 @@ module Workspace
         write_project_marker(worktree_path, config_name)
         @output.puts "Launching #{config_name}..."
         prompts = prompt ? {config_name => prompt} : {}
-        @launch_command.call([config_name], prompts: prompts)
+        result = @launch_command.call([config_name], prompts: prompts)
         @project_settings.ensure_exists(config_name)
+        result
       end
 
       private

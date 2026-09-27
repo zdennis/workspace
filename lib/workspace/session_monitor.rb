@@ -297,20 +297,8 @@ module Workspace
       refresh_activity(pane, now)
     end
 
-    # The agent may be the pane's foreground command or buried under a shell
-    # wrapper, so the pane's own command is checked before the tree is walked.
     def detect_agent(detail, tree)
-      basename = File.basename(detail[:command].to_s).downcase
-      direct = @providers.find { |p| p.executable == basename }
-      return {provider: direct, pid: detail[:pid]} if direct
-
-      @providers.each do |provider|
-        exact_only = provider.path_segment_matching? ? [] : [provider.executable]
-        match = tree.find_descendant(detail[:pid], [provider.executable],
-          exclude: provider.background_markers, include_root: true, exact_only: exact_only)
-        return {provider: provider, pid: match[:pid]} if match
-      end
-      nil
+      AgentProvider.detect(command: detail[:command], pid: detail[:pid], tree: tree, providers: @providers)
     end
 
     # Output is hashed rather than compared: a pane's scrollback is large, and

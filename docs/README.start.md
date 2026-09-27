@@ -12,7 +12,7 @@ workspace start [options] <jira-key|jira-url|pr-url|issue-url|branch>
 
 | Option | Description |
 |--------|-------------|
-| `--prompt PROMPT` | Send an initial prompt to Claude after launching |
+| `--prompt PROMPT` | Send an initial prompt to the coding agent once it is ready (up to 60s); exits 1 if it can't be sent. See [`launch`](README.launch.md#details) |
 
 ## Accepted Inputs
 

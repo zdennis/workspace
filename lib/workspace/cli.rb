@@ -281,7 +281,8 @@ module Workspace
         opts.on("--reattach", "Reattach to existing tmux sessions, preserving session state.") do
           reattach = true
         end
-        opts.on("--prompt PROMPT", "Send an initial prompt to Claude in each project") do |p|
+        opts.on("--prompt PROMPT", "Send an initial prompt to the coding agent in each project, once it is",
+          "ready (up to #{AgentReadiness::DEFAULT_TIMEOUT}s); exits 1 if it can't be sent") do |p|
           prompt = p
         end
         opts.separator ""
@@ -304,12 +305,13 @@ module Workspace
 
       prompts = prompt ? projects.each_with_object({}) { |p, h| h[p] = prompt } : {}
 
-      @launch_command.call(projects, reattach: reattach, prompts: prompts)
+      result = @launch_command.call(projects, reattach: reattach, prompts: prompts)
 
       projects.each do |p|
         @project_settings.ensure_exists(p)
         @hook_runner.run(p, "post_launch")
       end
+      @exit_handler.exit(result[:exit_code]) if result && !result[:exit_code].zero?
     end
 
     def cmd_start(args)
@@ -327,7 +329,8 @@ module Workspace
         opts.separator "  user/PROJ-123                             Branch name (used as-is)"
         opts.separator ""
         opts.separator "Options:"
-        opts.on("--prompt PROMPT", "Send an initial prompt to Claude after launching") do |p|
+        opts.on("--prompt PROMPT", "Send an initial prompt to the coding agent once it is ready",
+          "(up to #{AgentReadiness::DEFAULT_TIMEOUT}s); exits 1 if it can't be sent") do |p|
           prompt = p
         end
         opts.separator ""
@@ -337,7 +340,8 @@ module Workspace
 
       raise UsageError, parser.help if args.empty?
 
-      @start_command.call(args.first, prompt: prompt)
+      result = @start_command.call(args.first, prompt: prompt)
+      @exit_handler.exit(result[:exit_code]) if result && !result[:exit_code].zero?
       # post_start hook — project name not easily available here,
       # so hooks for start should use post_launch (which fires from Launch)
     end

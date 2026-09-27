@@ -155,7 +155,7 @@ RSpec.describe Workspace::Commands::Start do
     end
 
     context "with a prompt" do
-      it "passes prompt through to launch command" do
+      it "passes prompt through to launch command and returns its result" do
         allow(git).to receive(:root).and_return(tmpdir)
         allow(git).to receive(:parse_start_input).with("PROJ-123").and_return({type: :jira_key, value: "PROJ-123"})
         allow(git).to receive(:sanitize_for_filesystem).with("PROJ-123").and_return("PROJ-123")
@@ -164,14 +164,16 @@ RSpec.describe Workspace::Commands::Start do
         allow(git).to receive(:branch_exists?).with("PROJ-123").and_return(true)
         allow(git).to receive(:create_worktree)
         allow(project_config).to receive(:create_worktree).and_return("myproject.worktree-PROJ-123")
-        allow(launch_command).to receive(:call)
+        launch_result = {exit_code: 1, prompt_failures: {"myproject.worktree-PROJ-123" => "no coding agent"}}
+        allow(launch_command).to receive(:call).and_return(launch_result)
 
-        command.call("PROJ-123", prompt: "Fix the bug")
+        result = command.call("PROJ-123", prompt: "Fix the bug")
 
         expect(launch_command).to have_received(:call).with(
           ["myproject.worktree-PROJ-123"],
           prompts: {"myproject.worktree-PROJ-123" => "Fix the bug"}
         )
+        expect(result).to eq(launch_result)
       end
     end
 

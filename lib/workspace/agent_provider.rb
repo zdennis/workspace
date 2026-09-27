@@ -85,6 +85,29 @@ module Workspace
       all.find { |provider| provider.key == key }
     end
 
+    # Finds the coding agent running in a pane. The agent may be the pane's
+    # foreground command or buried under a shell wrapper, so the pane's own
+    # command is checked before its process tree is walked.
+    #
+    # @param command [String] the pane's current command (tmux pane_current_command)
+    # @param pid [Integer] the pane's process id
+    # @param tree [Workspace::ProcessTree::Snapshot] process table snapshot
+    # @param providers [Array<AgentProvider>] agents to recognize
+    # @return [Hash, nil] +{provider:, pid:}+ for the agent found, or nil
+    def self.detect(command:, pid:, tree:, providers: all)
+      basename = File.basename(command.to_s).downcase
+      direct = providers.find { |p| p.executable == basename }
+      return {provider: direct, pid: pid} if direct
+
+      providers.each do |provider|
+        exact_only = provider.path_segment_matching? ? [] : [provider.executable]
+        match = tree.find_descendant(pid, [provider.executable],
+          exclude: provider.background_markers, include_root: true, exact_only: exact_only)
+        return {provider: provider, pid: match[:pid]} if match
+      end
+      nil
+    end
+
     attr_reader :key, :label, :executable, :settings_path, :events, :background_markers
 
     # @return [Boolean] whether a versioned install of this executable may be

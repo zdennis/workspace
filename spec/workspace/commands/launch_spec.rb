@@ -199,5 +199,102 @@ RSpec.describe Workspace::Commands::Launch do
         expect(error_output.string).to include("disappeared")
       end
     end
+    context "with prompts" do
+      let(:agent_readiness) { instance_double(Workspace::AgentReadiness, deadline_in: 60.0) }
+      let(:ready) { Workspace::AgentReadiness::Result.new(ready: true, pane: "0.1", label: "Claude Code") }
+
+      subject(:command) do
+        described_class.new(
+          state: state, iterm: iterm, window_manager: window_manager, tmux: tmux,
+          project_config: project_config, window_layout: window_layout, config: config,
+          pipeline_config: pipeline_config, agent_readiness: agent_readiness, prompt_timeout: 60,
+          output: output, error_output: error_output
+        )
+      end
+
+      def delivery(status)
+        Workspace::Tmux::Delivery.new(status: status, message: "tmux says #{status}")
+      end
+
+      before do
+        allow(project_config).to receive(:exists?).and_return(true)
+        allow(tmux).to receive(:start_server)
+        allow(tmux).to receive(:command_for).and_return("tmuxinator start --attach")
+        allow(tmux).to receive(:session_name_for) { |name| "tmux-#{name}" }
+        allow(tmux).to receive(:sessions).and_return(["tmux-proj1", "tmux-proj2"])
+        allow(tmux).to receive(:rename_window)
+        allow(iterm).to receive(:session_map).and_return({})
+        allow(iterm).to receive(:find_existing_sessions).and_return({"proj1" => "uid-1", "proj2" => "uid-2"})
+        allow(iterm).to receive(:relaunch_in_session).and_return("ok")
+        allow(window_manager).to receive(:iterm_windows).and_return({1 => "workspace-tmux-proj1", 2 => "workspace-tmux-proj2"})
+        allow(window_layout).to receive(:arrange)
+        allow(config).to receive(:agent_running?).and_return(true)
+        allow(command).to receive(:sleep)
+        allow(agent_readiness).to receive(:wait).and_return(ready)
+        allow(tmux).to receive(:deliver).and_return(delivery(:submitted))
+      end
+
+      it "waits for each agent, sends its prompt to the agent's pane, and exits 0" do
+        result = command.call(["proj1", "proj2"], prompts: {"proj1" => "fix it", "proj2" => "test it"})
+
+        expect(agent_readiness).to have_received(:deadline_in).with(60).once
+        expect(agent_readiness).to have_received(:wait).with("tmux-proj1", deadline: 60.0)
+        expect(agent_readiness).to have_received(:wait).with("tmux-proj2", deadline: 60.0)
+        expect(tmux).to have_received(:deliver).with("tmux-proj1", "0.1", "fix it")
+        expect(tmux).to have_received(:deliver).with("tmux-proj2", "0.1", "test it")
+        expect(result).to eq(exit_code: 0, prompt_failures: {})
+        expect(output.string).to include("Sending prompt to proj1 (Claude Code, pane 0.1)")
+        expect(error_output.string).to be_empty
+      end
+
+      it "sends nothing and exits 1 when the agent is never ready" do
+        allow(agent_readiness).to receive(:wait).with("tmux-proj1", deadline: 60.0)
+          .and_return(Workspace::AgentReadiness::Result.new(ready: false, reason: "no coding agent is running in tmux session 'tmux-proj1' yet"))
+
+        result = command.call(["proj1", "proj2"], prompts: {"proj1" => "fix it", "proj2" => "test it"})
+
+        expect(tmux).not_to have_received(:deliver).with("tmux-proj1", anything, anything)
+        expect(tmux).to have_received(:deliver).with("tmux-proj2", "0.1", "test it")
+        expect(result[:exit_code]).to eq(1)
+        expect(result[:prompt_failures].keys).to eq(["proj1"])
+        expect(error_output.string).to include("Error: prompt not sent to proj1: no coding agent is running in tmux session 'tmux-proj1' yet (waited up to 60s)")
+        expect(error_output.string).to include("Error: the prompt was not sent to: proj1")
+      end
+
+      it "tries again when the prompt never shows up in the pane, up to three times" do
+        allow(tmux).to receive(:deliver).and_return(delivery(:not_landed), delivery(:submitted))
+
+        result = command.call(["proj1"], prompts: {"proj1" => "fix it"})
+
+        expect(tmux).to have_received(:deliver).twice
+        expect(agent_readiness).to have_received(:wait).twice
+        expect(result[:exit_code]).to eq(0)
+        expect(error_output.string).to include("did not arrive (tmux says not_landed); trying again")
+      end
+
+      it "gives up after three attempts that never show up" do
+        allow(tmux).to receive(:deliver).and_return(delivery(:failed))
+
+        result = command.call(["proj1"], prompts: {"proj1" => "fix it"})
+
+        expect(tmux).to have_received(:deliver).exactly(3).times
+        expect(result[:prompt_failures]).to eq("proj1" => "tmux says failed")
+      end
+
+      it "does not send again, and exits 1, when the prompt landed but may not have been submitted" do
+        allow(tmux).to receive(:deliver).and_return(delivery(:unsubmitted))
+
+        result = command.call(["proj1"], prompts: {"proj1" => "fix it"})
+
+        expect(tmux).to have_received(:deliver).once
+        expect(result[:exit_code]).to eq(1)
+        expect(error_output.string).to include("Error: prompt not sent to proj1: tmux says unsubmitted")
+      end
+
+      it "does not wait for agents when there are no prompts" do
+        expect(command.call(["proj1"])).to eq(exit_code: 0, prompt_failures: {})
+        expect(agent_readiness).not_to have_received(:wait)
+      end
+    end
   end
 end
