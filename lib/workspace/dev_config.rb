@@ -26,16 +26,20 @@ module Workspace
         up: dev["up"],
         ready: dev["ready"],
         stop_timeout: duration(dev, "stop_timeout", DEFAULT_STOP_TIMEOUT, name),
-        startup_timeout: duration(dev, "startup_timeout", DEFAULT_STARTUP_TIMEOUT, name),
-        ready_timeout: duration(dev, "ready_timeout", DEFAULT_READY_TIMEOUT, name)
+        startup_timeout: duration(dev, "startup_timeout", DEFAULT_STARTUP_TIMEOUT, name, require_positive: true),
+        ready_timeout: duration(dev, "ready_timeout", DEFAULT_READY_TIMEOUT, name, require_positive: true)
       }
     end
 
     private
 
-    def duration(dev, key, default, name)
+    def duration(dev, key, default, name, require_positive: false)
       return default unless dev.key?(key)
-      Duration.parse(dev[key])
+      seconds = Duration.parse(dev[key])
+      if require_positive && !seconds.positive?
+        raise ArgumentError, "must be greater than 0, got #{dev[key].inspect}"
+      end
+      seconds
     rescue ArgumentError => e
       raise Workspace::Error, "Invalid dev.#{key} for '#{name}': #{e.message}"
     end

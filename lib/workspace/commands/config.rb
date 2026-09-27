@@ -117,11 +117,18 @@ module Workspace
 
       def validate_value!(key, value)
         case key
-        when "dev.stop_timeout", "dev.startup_timeout", "dev.ready_timeout" then Workspace::Duration.parse(value)
+        when "dev.stop_timeout" then Workspace::Duration.parse(value)
+        when "dev.startup_timeout", "dev.ready_timeout" then validate_positive_duration!(value)
         when "locks.idle_grace" then Workspace::LockConfig.parse_idle_grace(value)
         end
       rescue ArgumentError => e
         raise Workspace::UsageError, "Invalid #{key}: #{e.message}"
+      end
+
+      def validate_positive_duration!(value)
+        seconds = Workspace::Duration.parse(value)
+        raise ArgumentError, "must be greater than 0, got #{value.inspect}" unless seconds.positive?
+        seconds
       end
 
       def write(path, data)
