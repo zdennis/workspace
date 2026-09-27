@@ -108,6 +108,56 @@ RSpec.describe Workspace::Commands::Sessions do
         with_daemon(reply: nil) { command.call(name: "proj") }
       }.to raise_error(Workspace::Error, /closed the connection/)
     end
+
+    def with_raw_daemon(raw_reply)
+      server = UNIXServer.new(socket_path)
+      listener = Thread.new do
+        client = server.accept
+        client.gets
+        client.puts(raw_reply)
+        client.close
+      end
+      yield
+      listener.join(2)
+    ensure
+      server&.close
+    end
+
+    it "raises a clear error when the daemon sends a malformed reply" do
+      expect {
+        with_raw_daemon("not json") { command.call(name: "proj") }
+      }.to raise_error(Workspace::Error, /malformed reply from session monitor/i)
+    end
+
+    it "writes a schema_version error to stdout for a malformed reply with --json" do
+      result = nil
+      with_raw_daemon("not json") { result = command.call(name: "proj", json: true) }
+
+      expect(JSON.parse(output.string)).to eq(
+        "schema_version" => 1,
+        "error" => "Malformed reply from session monitor for 'proj'."
+      )
+      expect(result).to eq({exit_code: 1})
+    end
+
+    it "stops --watch and reports a schema_version error on a malformed reply" do
+      watcher = described_class.new(config: config, output: output, error_output: error_output)
+
+      with_raw_daemon("not json") { watcher.call(name: "proj", watch: true, json: true) }
+
+      expect(JSON.parse(output.string)).to eq(
+        "schema_version" => 1,
+        "error" => "Malformed reply from session monitor for 'proj'."
+      )
+    end
+
+    it "keeps the command's own schema_version even if the daemon supplies one" do
+      with_daemon(reply: payload.merge("schema_version" => 999)) { command.call(name: "proj", json: true) }
+
+      parsed = JSON.parse(output.string)
+      expect(parsed["schema_version"]).to eq(1)
+      expect(parsed.keys.first).to eq("schema_version")
+    end
   end
 
   describe "lock column" do

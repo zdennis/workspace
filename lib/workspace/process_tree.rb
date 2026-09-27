@@ -66,6 +66,8 @@ module Workspace
     rescue SystemCallError => e
       raise Workspace::Error, "could not read the process table (#{e.class}: #{e.message})"
     ensure
+      # pid/waiter/readers are nil-safe here intentionally: if Process.spawn
+      # itself raises, none of them were ever assigned.
       kill_and_reap(pid, waiter) if waiter&.alive?
       readers&.each { |t| t.kill.join }
       [out_r, out_w, err_r, err_w].each { |io| io.close if io && !io.closed? }

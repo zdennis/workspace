@@ -91,7 +91,11 @@ module Workspace
           socket.puts(JSON.generate("type" => "sessions", "workspace" => name))
           reply = socket.gets
           raise Workspace::Error, "Agent for '#{name}' closed the connection." unless reply
-          JSON.parse(reply)
+          begin
+            JSON.parse(reply)
+          rescue JSON::ParserError
+            raise Workspace::Error, "Malformed reply from session monitor for '#{name}'."
+          end
         end
       rescue SystemCallError, IOError
         raise Workspace::Error,
@@ -101,7 +105,10 @@ module Workspace
       def render(snapshot, json)
         panes = snapshot["panes"] || []
         apply_lock_column(panes)
-        return @output.puts(JSON.pretty_generate({"schema_version" => JSON_SCHEMA_VERSION}.merge(snapshot))) if json
+        if json
+          payload = {"schema_version" => JSON_SCHEMA_VERSION}.merge(snapshot).merge("schema_version" => JSON_SCHEMA_VERSION)
+          return @output.puts(JSON.pretty_generate(payload))
+        end
 
         @output.puts "workspace: #{snapshot["workspace"]}"
         @output.puts ""
