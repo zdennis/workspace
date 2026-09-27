@@ -48,10 +48,14 @@ module Workspace
       # @param reattach [Boolean] whether to reattach to existing tmux sessions
       # @param prompts [Hash{String => String}] project name => prompt text to
       #   send to the coding agent (Claude Code first) in that project's session
+      # @param quiet [Boolean] suppress the progress messages normally written to
+      #   +output+ (warnings still go to +error_output+); for callers building a
+      #   machine-readable payload of their own, such as `start --json`
       # @return [Hash] +{exit_code:, prompt_failures:}+; exit_code is 1 when any
       #   prompt was not sent, and prompt_failures maps each such project to why
       # @raise [Workspace::Error] if any project configs are missing
-      def call(projects, reattach: false, prompts: {}, prompt_timeout: @prompt_timeout)
+      def call(projects, reattach: false, prompts: {}, prompt_timeout: @prompt_timeout, quiet: false)
+        @quiet = quiet
         validate_configs(projects)
 
         @tmux.start_server
@@ -84,7 +88,7 @@ module Workspace
 
         failures = prompts.any? ? send_prompts(session_names, prompts, prompt_timeout) : {}
 
-        @output.puts "Done! Launched #{projects.size} project(s)."
+        log("Done! Launched #{projects.size} project(s).")
         unless failures.empty?
           @error_output.puts "Error: the prompt was not sent to: #{failures.keys.join(", ")}"
         end
@@ -92,6 +96,10 @@ module Workspace
       end
 
       private
+
+      def log(message)
+        @output.puts message unless @quiet
+      end
 
       def validate_configs(projects)
         missing = projects.reject { |p| @project_config.exists?(p) }
@@ -103,7 +111,7 @@ module Workspace
       def relaunch_existing(reuse_projects, existing, new_projects, reattach:)
         reuse_projects.each do |project|
           uid = existing[project]
-          @output.puts "Reusing existing pane for #{project}..."
+          log("Reusing existing pane for #{project}...")
           cmd = @tmux.command_for(project, reattach: reattach)
           result = @iterm.relaunch_in_session(uid, cmd)
           if result != "ok"
@@ -117,14 +125,14 @@ module Workspace
       def create_new_panes(new_projects, reattach:, live_sessions: nil)
         return if new_projects.empty?
 
-        @output.puts "Creating #{new_projects.size} new launcher pane(s)..."
+        log("Creating #{new_projects.size} new launcher pane(s)...")
         commands = new_projects.map { |p| [p, @tmux.command_for(p, reattach: reattach)] }.to_h
         launcher_wid = @iterm.find_launcher_window_id(@state, live_sessions: live_sessions)
         new_session_ids = @iterm.create_launcher_panes(new_projects, commands, launcher_wid: launcher_wid)
 
         new_session_ids.each do |project, uid|
           @state[project] = {"unique_id" => uid}
-          @output.puts "  Created pane for #{project} (#{uid})"
+          log("  Created pane for #{project} (#{uid})")
         end
 
         missing_panes = new_projects - new_session_ids.keys
@@ -137,7 +145,7 @@ module Workspace
       # starts sessions asynchronously via iTerm's "write text" command, so
       # we need to wait for them to register with the tmux server.
       def wait_for_tmux_sessions(projects)
-        @output.puts "Waiting for tmux sessions..."
+        log("Waiting for tmux sessions...")
         window_prefix = "workspace"
         max_wait = 30
         elapsed = 0
@@ -154,7 +162,7 @@ module Workspace
             if existing_tmux.include?(tmux_name)
               @tmux.rename_window(tmux_name, 0, "#{window_prefix}-#{tmux_name}")
               sessions_ready << project
-              @output.puts "  Session ready: #{project} (tmux: #{tmux_name})"
+              log("  Session ready: #{project} (tmux: #{tmux_name})")
             end
           end
         end
@@ -198,7 +206,7 @@ module Workspace
       # appear after tmux-CC creates them, which takes a variable amount of time.
       # First checks saved window IDs, then falls back to title-based search.
       def find_iterm_windows(projects, session_names)
-        @output.puts "Waiting for project windows to appear..."
+        log("Waiting for project windows to appear...")
         window_prefix = "workspace"
         @found_windows = {}
 
@@ -217,7 +225,7 @@ module Workspace
             saved_id = @state.dig(project, "iterm_window_id")
             if saved_id && all_windows.key?(saved_id.to_i)
               @found_windows[project] = saved_id.to_s
-              @output.puts "  Found window for #{project} (saved ID)"
+              log("  Found window for #{project} (saved ID)")
               next
             end
 
@@ -237,7 +245,7 @@ module Workspace
             if best_id
               @found_windows[project] = best_id
               @state[project] = (@state[project] || {}).merge("iterm_window_id" => best_id.to_i)
-              @output.puts "  Found window for #{project}"
+              log("  Found window for #{project}")
             end
           end
         end
@@ -265,7 +273,7 @@ module Workspace
       def send_prompts(session_names, prompts, prompt_timeout)
         deadline = @agent_readiness.deadline_in(prompt_timeout)
         prompts.each_with_object({}) do |(project, prompt_text), failures|
-          @output.puts "Waiting for the coding agent in #{project} to be ready (up to #{prompt_timeout}s)..."
+          log("Waiting for the coding agent in #{project} to be ready (up to #{prompt_timeout}s)...")
           failure = deliver_prompt(project, session_names.fetch(project, project), prompt_text, deadline, prompt_timeout)
           next unless failure
           @error_output.puts "Error: prompt not sent to #{project}: #{failure}"
@@ -289,10 +297,10 @@ module Workspace
           return last&.message || "#{ready.reason} (waited up to #{prompt_timeout}s)" unless ready.ready?
 
           if last && @tmux.shows_text?(tmux_name, ready.pane, prompt_text)
-            @output.puts "The prompt to #{project} arrived late; submitting it..."
+            log("The prompt to #{project} arrived late; submitting it...")
             delivery = @tmux.deliver(tmux_name, ready.pane, "")
           else
-            @output.puts "Sending prompt to #{project} (#{ready.label}, pane #{ready.pane})..."
+            log("Sending prompt to #{project} (#{ready.label}, pane #{ready.pane})...")
             delivery = @tmux.deliver(tmux_name, ready.pane, prompt_text)
           end
           return nil if delivery.ok?
@@ -303,12 +311,12 @@ module Workspace
       end
 
       def arrange_windows(projects)
-        @output.puts "Arranging windows..."
+        log("Arranging windows...")
         project_window_ids = projects.filter_map do |project|
           window_id = @found_windows[project]
           {project: project, window_id: window_id} if window_id
         end
-        @window_layout.arrange(project_window_ids)
+        @window_layout.arrange(project_window_ids, quiet: @quiet)
       end
     end
   end

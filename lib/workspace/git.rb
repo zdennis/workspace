@@ -183,7 +183,12 @@ module Workspace
       pr_number = match[2]
 
       @logger.debug { "git: fetching PR ##{pr_number} from #{repo} via gh" }
-      stdout, _, status = Open3.capture3("gh", "pr", "view", pr_number, "--repo", repo, "--json", "headRefName", "--jq", ".headRefName")
+      begin
+        stdout, _, status = Open3.capture3("gh", "pr", "view", pr_number, "--repo", repo, "--json", "headRefName", "--jq", ".headRefName")
+      rescue Errno::ENOENT
+        raise Workspace::Error, "`gh` is not installed, but is required to resolve a PR URL. " \
+          "Install it, or pass the branch name directly instead of the PR URL."
+      end
       output = status.success? ? stdout.strip : ""
       if output.empty?
         raise Workspace::Error, "Could not fetch PR ##{pr_number} from #{repo}\nMake sure you have access and `gh` is authenticated."
@@ -351,7 +356,7 @@ module Workspace
     # @param base [String, nil] base branch for new branch creation
     # @return [void]
     # @raise [Workspace::Error] if worktree creation fails
-    def create_worktree(path, branch, base: nil)
+    def create_worktree(path, branch, base: nil, quiet: false)
       cmd = ["git", "worktree", "add"]
       if branch_exists?(branch)
         cmd += [path, branch]
@@ -361,7 +366,7 @@ module Workspace
       end
 
       @logger.debug { "git: #{cmd.join(" ")}" }
-      @output.puts "Running: #{cmd.join(" ")}"
+      @output.puts "Running: #{cmd.join(" ")}" unless quiet
       _, stderr, status = Open3.capture3(*cmd)
       unless status.success?
         raise Workspace::Error, "Error creating worktree: #{stderr}"

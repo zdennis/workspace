@@ -214,7 +214,7 @@ module CLITestHelpers
   end
 
   class FakeWindowLayout
-    def arrange(_ids) = nil
+    def arrange(_ids, quiet: false) = nil
     def tile(_ids) = nil
     def calculate_positions(**_opts) = []
   end

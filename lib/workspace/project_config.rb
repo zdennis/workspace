@@ -54,14 +54,14 @@ module Workspace
     # @param branch_name [String] git branch name
     # @return [String] the config name
     # @raise [Workspace::Error] if the worktree template is missing
-    def create_worktree(project_name, worktree_name, worktree_path, branch_name)
+    def create_worktree(project_name, worktree_name, worktree_path, branch_name, quiet: false)
       tmux_session_name = "#{project_name}.wt-#{@git.sanitize_for_filesystem(worktree_name)}"
         .tr(".", "-")
       config_name = "#{project_name}.worktree-#{@git.sanitize_for_filesystem(worktree_name)}"
       config_path = @config.config_path_for(config_name)
 
       if File.exist?(config_path)
-        @output.puts "Config already exists: #{config_path}"
+        @output.puts "Config already exists: #{config_path}" unless quiet
         return config_name
       end
 
@@ -79,7 +79,7 @@ module Workspace
         .gsub("{{CONFIG_PATH}}", config_path)
 
       File.write(config_path, content)
-      @output.puts "Created config: #{config_path}"
+      @output.puts "Created config: #{config_path}" unless quiet
       config_name
     end
 

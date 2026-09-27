@@ -14,6 +14,9 @@ workspace start [options] <jira-key|jira-url|pr-url|issue-url|branch>
 |--------|-------------|
 | `--prompt PROMPT` | Send an initial prompt to the coding agent once it is ready (up to 60s); exits 1 if it can't be sent. See [`launch`](README.launch.md#details) |
 | `--prompt-timeout DURATION` | How long to wait for the coding agent to be ready for `--prompt` (e.g. `90s`, `2m`, or a plain number of seconds); default 60s |
+| `--base REF` | Branch/ref a new branch is created from, instead of prompting |
+| `--yes` | Accept every default instead of prompting (e.g. the default base branch) |
+| `--json` | Emit the JSON schema below instead of plain text; never prompts. Only the JSON document goes to stdout — progress and warnings go to stderr or the `warnings` field (see [`--json` output](#--json-output)) |
 
 ## Accepted Inputs
 
@@ -35,6 +38,62 @@ If multiple remote branches match your input, you'll be prompted to select one o
 
 If a worktree for the branch already exists at a non-standard location (created outside of workspace via `git worktree add`), it is automatically adopted — a tmuxinator config and project marker are created, and the worktree is launched without being recreated.
 
+### Non-interactive use (scripts, agents)
+
+`start` never blocks on stdin when stdin isn't a TTY. Whenever it would otherwise
+prompt, it instead:
+
+- uses `--base` if given, for the base-branch choice;
+- uses `--yes`'s default if given (the default branch, for the base-branch choice;
+  "create a new branch" for an ambiguous match);
+- otherwise raises a usage error naming `--base`/`--yes` rather than guessing.
+
+`--json` never prompts either, regardless of whether stdin is a TTY — pass `--base`
+and/or `--yes` alongside it when the branch might need to be created.
+
+### `--json` output
+
+On success, one line of JSON on stdout (nothing else is written to stdout under
+`--json`):
+
+```json
+{"schema_version":1,"project":"myproject","workspace":"myproject.worktree-PROJ-123","path":"/path/to/.worktrees/PROJ-123","branch":"PROJ-123","base":null,"created":true}
+```
+
+- `project` — the parent project name
+- `workspace` — the generated tmuxinator config name
+- `path` — the worktree's filesystem path
+- `branch` — the branch checked out in the worktree
+- `base` — the ref the branch was created from, or `null` when the branch (or
+  worktree) already existed
+- `created` — whether the worktree was created by this run, as opposed to reused
+  or adopted
+- `warnings` — present only when non-empty; notes about a flag that was silently
+  adjusted, e.g. `--base` ignored because the branch already existed
+
+On a hard error (bad input, `--base`/`--yes` needed, git failure), exits 1 with
+the error on stdout instead of the success doc:
+
+```json
+{"schema_version":1,"error":"..."}
+```
+
+The worktree can also be created successfully but the `--prompt` fail to reach
+the coding agent. In that case the success doc above is still emitted, but with
+`error` and `prompt_failures` added and exit code 1:
+
+```json
+{"schema_version":1,"project":"myproject","workspace":"myproject.worktree-PROJ-123","path":"/path/to/.worktrees/PROJ-123","branch":"PROJ-123","base":null,"created":true,"error":"Prompt was not sent to every workspace.","prompt_failures":{"myproject.worktree-PROJ-123":"agent never became ready"}}
+```
+
+If a flag was silently adjusted — e.g. `--base` passed for a branch/worktree that
+already existed — the success doc includes a `warnings` array instead of printing
+to stderr:
+
+```json
+{"schema_version":1,"project":"myproject","workspace":"myproject.worktree-PROJ-123","path":"/path/to/.worktrees/PROJ-123","branch":"PROJ-123","base":null,"created":false,"warnings":["Note: --base ignored; branch 'PROJ-123' already exists."]}
+```
+
 ## Examples
 
 ```sh
@@ -52,4 +111,7 @@ workspace start feature/my-feature
 
 # Start with an initial prompt for Claude
 workspace start PROJ-123 --prompt "Fix the login bug"
+
+# Non-interactive, from a script or agent
+workspace start PROJ-123 --base main --yes --json
 ```

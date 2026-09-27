@@ -19,9 +19,10 @@ module Workspace
     # Arranges project windows left-to-right on the active screen.
     #
     # @param project_window_ids [Array<Hash>] array of {project:, window_id:} hashes
+    # @param quiet [Boolean] suppress the "Positioned ..." progress line
     # @return [void]
-    def arrange(project_window_ids)
-      apply_layout(project_window_ids, method(:calculate_positions), "Positioned")
+    def arrange(project_window_ids, quiet: false)
+      apply_layout(project_window_ids, method(:calculate_positions), "Positioned", quiet: quiet)
     end
 
     # Tiles project windows side-by-side, preserving current sizes.
@@ -137,7 +138,7 @@ module Workspace
 
     private
 
-    def apply_layout(project_window_ids, calculator, verb)
+    def apply_layout(project_window_ids, calculator, verb, quiet: false)
       return if project_window_ids.empty?
 
       @logger.debug { "window_layout: fetching active screen geometry" }
@@ -158,7 +159,7 @@ module Workspace
       project_window_ids.each_with_index do |entry, i|
         pos = positions[i]
         @window_manager.set_window_bounds(entry[:window_id], pos[:x], pos[:y], pos[:width], pos[:height])
-        @output.puts "  #{verb} #{entry[:project]} at #{pos[:x]},#{pos[:y]} (#{pos[:width]}x#{pos[:height]})"
+        @output.puts "  #{verb} #{entry[:project]} at #{pos[:x]},#{pos[:y]} (#{pos[:width]}x#{pos[:height]})" unless quiet
       end
     end
   end
