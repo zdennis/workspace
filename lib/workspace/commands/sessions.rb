@@ -47,12 +47,13 @@ module Workspace
       # @param json [Boolean] emit the raw payload instead of a table
       # @param watch [Boolean] redraw until interrupted
       # @param interval [Numeric] seconds between redraws when watching
-      # @return [Hash] {exit_code:} for the non-watch path — 0 on success, 1
-      #   if `--json` was given and no agent daemon answered (the error is
-      #   then written to stdout as `{"schema_version":1,"error":...}`
-      #   instead of being raised, matching `lock status --json` and
-      #   `dev status --json`); watch mode loops until interrupted and never
-      #   returns
+      # @return [Hash] {exit_code:} — 0 on success, 1 if `--json` was given
+      #   and no agent daemon answered (the error is then written to stdout
+      #   as `{"schema_version":1,"error":...}` instead of being raised,
+      #   matching `lock status --json` and `dev status --json`); this
+      #   applies on the non-watch path and also stops watch mode the same
+      #   way when the daemon disappears mid-watch. Watch mode otherwise
+      #   loops until interrupted and never returns.
       # @raise [Workspace::Error] if no agent daemon is listening and `json`
       #   is false
       def call(name:, json: false, watch: false, interval: 2)
@@ -67,6 +68,10 @@ module Workspace
         end
       rescue Interrupt
         @output.puts ""
+      rescue Workspace::Error => e
+        raise unless json
+        @output.puts JSON.generate({"schema_version" => JSON_SCHEMA_VERSION, "error" => e.message})
+        {exit_code: 1}
       end
 
       private
