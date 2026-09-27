@@ -42,6 +42,33 @@ Wrap all --json output in a standard envelope object (e.g. {"data": ..., "warnin
 
 The current approach builds all panes in one AppleScript that concatenates uid/project output. If the output is truncated with many panes, some projects silently fail to register. Creating panes one at a time (or in smaller batches) would be more reliable, though slower. Consider a hybrid approach: batch creation with per-pane verification and retry.
 
+### `agent-run`/`send_keys` doesn't reliably submit multi-line text into Claude Code
+
+`Tmux#send_keys` (`lib/workspace/tmux.rb:49`) only sends a second Enter when
+the pasted text exceeds 1000 bytes (the `large_paste` heuristic), on the
+assumption that only large pastes collapse into Claude Code's
+`pasted_content` widget. In practice, a multi-line body well under 1000
+bytes can still collapse into that widget, and the single Enter then just
+dismisses the widget instead of submitting — the text is left sitting,
+unsubmitted, at the prompt. Repeated `workspace agent-run command` calls in
+that state each append another pasted block instead of one being submitted,
+compounding the problem.
+
+Reproduced via `workspace agent-run command --work-item <ref> --body "<3-4
+line sentence, ~300 bytes>"`: the text appeared at the prompt but never
+submitted until a manual `tmux send-keys -t <target> Enter` was sent
+outside of workspace.
+
+Ideas:
+- Detect multi-line text (not just byte size) and always send the
+  dismiss-then-submit double Enter for it.
+- Expose a CLI primitive for sending a bare Enter/newline to a pane (there
+  currently isn't one — recovering the stuck pane required raw `tmux
+  send-keys ... Enter`, bypassing `workspace` entirely).
+- Consider clearing any stray unsubmitted input before pasting a new
+  command, so a missed submission doesn't silently concatenate with the
+  next one.
+
 ## Completed
 
 ### Claude MCP servers config setting
