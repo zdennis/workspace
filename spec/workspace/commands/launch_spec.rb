@@ -36,6 +36,7 @@ RSpec.describe Workspace::Commands::Launch do
       window_layout: window_layout,
       config: config,
       pipeline_config: pipeline_config,
+      sleeper: ->(_seconds) {},
       output: output,
       error_output: error_output
     )

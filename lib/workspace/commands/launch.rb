@@ -21,10 +21,12 @@ module Workspace
       #   agent in a pane to be ready before a prompt is sent
       # @param prompt_timeout [Numeric] seconds to wait for the agents to be
       #   ready, shared by every project in one launch
+      # @param sleeper [#call] sleeps the given seconds, injected for fast tests
       # @param output [IO] output stream for user-facing messages
       # @param error_output [IO] error output stream for warnings
       def initialize(state:, iterm:, window_manager:, tmux:, project_config:, window_layout:, config:, pipeline_config: nil,
-        agent_readiness: nil, prompt_timeout: AgentReadiness::DEFAULT_TIMEOUT, output: $stdout, error_output: $stderr)
+        agent_readiness: nil, prompt_timeout: AgentReadiness::DEFAULT_TIMEOUT, sleeper: ->(seconds) { sleep(seconds) },
+        output: $stdout, error_output: $stderr)
         @state = state
         @iterm = iterm
         @window_manager = window_manager
@@ -35,6 +37,7 @@ module Workspace
         @pipeline_config = pipeline_config || PipelineConfig.new(config: config)
         @agent_readiness = agent_readiness || AgentReadiness.new(tmux: tmux, process_tree: ProcessTree.new)
         @prompt_timeout = prompt_timeout
+        @sleeper = sleeper
         @output = output
         @error_output = error_output
       end
@@ -48,7 +51,7 @@ module Workspace
       # @return [Hash] +{exit_code:, prompt_failures:}+; exit_code is 1 when any
       #   prompt was not sent, and prompt_failures maps each such project to why
       # @raise [Workspace::Error] if any project configs are missing
-      def call(projects, reattach: false, prompts: {})
+      def call(projects, reattach: false, prompts: {}, prompt_timeout: @prompt_timeout)
         validate_configs(projects)
 
         @tmux.start_server
@@ -71,7 +74,7 @@ module Workspace
 
         # Brief pause after tmux sessions are found but before searching for
         # iTerm windows — iTerm needs a moment to create windows for new sessions.
-        sleep 1
+        @sleeper.call(1)
 
         find_iterm_windows(projects, session_names)
 
@@ -79,7 +82,7 @@ module Workspace
 
         arrange_windows(projects)
 
-        failures = prompts.any? ? send_prompts(session_names, prompts) : {}
+        failures = prompts.any? ? send_prompts(session_names, prompts, prompt_timeout) : {}
 
         @output.puts "Done! Launched #{projects.size} project(s)."
         unless failures.empty?
@@ -142,7 +145,7 @@ module Workspace
         session_names = projects.map { |p| [p, @tmux.session_name_for(p)] }.to_h
 
         while sessions_ready.size < projects.size && elapsed < max_wait
-          sleep 1
+          @sleeper.call(1)
           elapsed += 1
           existing_tmux = @tmux.sessions
           projects.each do |project|
@@ -203,7 +206,7 @@ module Workspace
         max_window_wait = 30
         window_elapsed = 0
         while @found_windows.size < projects.size && window_elapsed < max_window_wait
-          sleep 1 if window_elapsed > 0
+          @sleeper.call(1) if window_elapsed > 0
           window_elapsed += 1
           all_windows = @window_manager.iterm_windows
 
@@ -259,11 +262,11 @@ module Workspace
       # the full timeout in turn.
       #
       # @return [Hash{String => String}] project => why its prompt was not sent
-      def send_prompts(session_names, prompts)
-        deadline = @agent_readiness.deadline_in(@prompt_timeout)
+      def send_prompts(session_names, prompts, prompt_timeout)
+        deadline = @agent_readiness.deadline_in(prompt_timeout)
         prompts.each_with_object({}) do |(project, prompt_text), failures|
-          @output.puts "Waiting for the coding agent in #{project} to be ready (up to #{@prompt_timeout}s)..."
-          failure = deliver_prompt(project, session_names.fetch(project, project), prompt_text, deadline)
+          @output.puts "Waiting for the coding agent in #{project} to be ready (up to #{prompt_timeout}s)..."
+          failure = deliver_prompt(project, session_names.fetch(project, project), prompt_text, deadline, prompt_timeout)
           next unless failure
           @error_output.puts "Error: prompt not sent to #{project}: #{failure}"
           failures[project] = failure
@@ -277,13 +280,13 @@ module Workspace
       # check gave up is submitted with Enter rather than pasted again.
       #
       # @return [String, nil] why the prompt was not sent, or nil once it was
-      def deliver_prompt(project, tmux_name, prompt_text, deadline)
+      def deliver_prompt(project, tmux_name, prompt_text, deadline, prompt_timeout)
         last = nil
         MAX_PROMPT_ATTEMPTS.times do |attempt|
           ready = @agent_readiness.wait(tmux_name, deadline: deadline)
           # A retry that runs out of time reports why the paste failed, not
           # that the agent is still busy redrawing after it.
-          return last&.message || "#{ready.reason} (waited up to #{@prompt_timeout}s)" unless ready.ready?
+          return last&.message || "#{ready.reason} (waited up to #{prompt_timeout}s)" unless ready.ready?
 
           if last && @tmux.shows_text?(tmux_name, ready.pane, prompt_text)
             @output.puts "The prompt to #{project} arrived late; submitting it..."

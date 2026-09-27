@@ -712,6 +712,32 @@ RSpec.describe Workspace::CLI do
       expect { cli.run(["launch"]) }.to raise_error(FakeSystemExit)
       expect(error_output.string).to include("ready (up to #{Workspace::AgentReadiness::DEFAULT_TIMEOUT}s); exits 1 if it can't be sent")
     end
+
+    it "passes --prompt-timeout through to launch" do
+      launch_command = double("launch", call: {exit_code: 0, prompt_failures: {}})
+      cli, = build_test_cli(launch_command: launch_command)
+
+      cli.run(["launch", "--prompt", "go", "--prompt-timeout", "90s", "myproject"])
+
+      expect(launch_command).to have_received(:call).with(["myproject"], reattach: false, prompts: {"myproject" => "go"}, prompt_timeout: 90.0)
+    end
+
+    it "passes --prompt-timeout through to start" do
+      start_command = double("start", call: {exit_code: 0, prompt_failures: {}})
+      cli, = build_test_cli(start_command: start_command)
+
+      cli.run(["start", "--prompt", "go", "--prompt-timeout", "2m", "PROJ-1"])
+
+      expect(start_command).to have_received(:call).with("PROJ-1", prompt: "go", prompt_timeout: 120.0)
+    end
+
+    it "rejects a non-positive --prompt-timeout" do
+      cli, _, error_output = build_test_cli
+      expect { cli.run(["launch", "--prompt-timeout", "0", "myproject"]) }.to raise_error(FakeSystemExit) { |e|
+        expect(e.status).to eq(1)
+      }
+      expect(error_output.string).to include("--prompt-timeout")
+    end
   end
 
   describe "#run with config" do

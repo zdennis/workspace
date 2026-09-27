@@ -270,6 +270,7 @@ module Workspace
     def cmd_launch(args)
       reattach = false
       prompt = nil
+      prompt_timeout = nil
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: workspace launch [options] <project1> [project2] ..."
         opts.separator ""
@@ -284,6 +285,10 @@ module Workspace
         opts.on("--prompt PROMPT", "Send an initial prompt to the coding agent in each project, once it is",
           "ready (up to #{AgentReadiness::DEFAULT_TIMEOUT}s); exits 1 if it can't be sent") do |p|
           prompt = p
+        end
+        opts.on("--prompt-timeout DURATION", "How long to wait for the coding agent to be ready for --prompt",
+          "(e.g. \"90s\", or a plain number of seconds); default #{AgentReadiness::DEFAULT_TIMEOUT}s") do |v|
+          prompt_timeout = parse_duration_option("--prompt-timeout", v, positive: true)
         end
         opts.separator ""
         opts.separator "Note: --reattach uses tmux -CC attach which may trigger an iTerm dialog."
@@ -305,7 +310,9 @@ module Workspace
 
       prompts = prompt ? projects.each_with_object({}) { |p, h| h[p] = prompt } : {}
 
-      result = @launch_command.call(projects, reattach: reattach, prompts: prompts)
+      call_options = {reattach: reattach, prompts: prompts}
+      call_options[:prompt_timeout] = prompt_timeout if prompt_timeout
+      result = @launch_command.call(projects, **call_options)
 
       projects.each do |p|
         @project_settings.ensure_exists(p)
@@ -316,6 +323,7 @@ module Workspace
 
     def cmd_start(args)
       prompt = nil
+      prompt_timeout = nil
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: workspace start [options] <jira-key|jira-url|pr-url|branch>"
         opts.separator ""
@@ -333,6 +341,10 @@ module Workspace
           "(up to #{AgentReadiness::DEFAULT_TIMEOUT}s); exits 1 if it can't be sent") do |p|
           prompt = p
         end
+        opts.on("--prompt-timeout DURATION", "How long to wait for the coding agent to be ready for --prompt",
+          "(e.g. \"90s\", or a plain number of seconds); default #{AgentReadiness::DEFAULT_TIMEOUT}s") do |v|
+          prompt_timeout = parse_duration_option("--prompt-timeout", v, positive: true)
+        end
         opts.separator ""
         opts.separator "The worktree is created in .worktrees/ under the project root."
       end
@@ -340,7 +352,7 @@ module Workspace
 
       raise UsageError, parser.help if args.empty?
 
-      result = @start_command.call(args.first, prompt: prompt)
+      result = @start_command.call(args.first, prompt: prompt, prompt_timeout: prompt_timeout)
       @exit_handler.exit(result[:exit_code]) if result && !result[:exit_code].zero?
       # post_start hook — project name not easily available here,
       # so hooks for start should use post_launch (which fires from Launch)
@@ -881,9 +893,10 @@ module Workspace
     #
     # @param flag [String] option name, for the error message
     # @param value [String] raw option value
+    # @param positive [Boolean] require the duration be greater than 0
     # @return [Numeric] seconds
-    def parse_duration_option(flag, value)
-      Workspace::Duration.parse(value)
+    def parse_duration_option(flag, value, positive: false)
+      positive ? Workspace::Duration.parse_positive(value) : Workspace::Duration.parse(value)
     rescue ArgumentError => e
       raise UsageError, "#{flag}: #{e.message}"
     end

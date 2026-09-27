@@ -144,7 +144,7 @@ RSpec.describe "T3 delivery: concurrency and liveness defects" do
     now = [0.0]
     tmux = instance_double(Workspace::Tmux)
     allow(tmux).to receive(:pane_details).and_return([{id: "%2", window: 0, index: 1, pid: 200, command: "claude"}])
-    allow(tmux).to receive(:capture_screen).and_return("> ")
+    allow(tmux).to receive(:capture_screen).and_return("│ > │")
     process_tree = instance_double(Workspace::ProcessTree, snapshot: Workspace::ProcessTree::Snapshot.new([]))
     readiness = Workspace::AgentReadiness.new(tmux: tmux, process_tree: process_tree,
       clock: -> { now[0] }, sleeper: ->(s) { now[0] += s })
@@ -156,7 +156,7 @@ RSpec.describe "T3 delivery: concurrency and liveness defects" do
       project_config: double, window_layout: double, config: double, pipeline_config: double,
       agent_readiness: readiness, prompt_timeout: 3, output: StringIO.new, error_output: error_output)
 
-    failure = launch.send(:deliver_prompt, "proj", "proj", "do it", readiness.deadline_in(3))
+    failure = launch.send(:deliver_prompt, "proj", "proj", "do it", readiness.deadline_in(3), 3)
 
     expect(failure).to include("nothing changed"), "reported #{failure.inspect}"
   end
