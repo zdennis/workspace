@@ -27,6 +27,11 @@ module Workspace
     # Longest waiting message kept. A long one is cut rather than dropped.
     MAX_MESSAGE_LENGTH = 200
 
+    # Scans in a row that can't read the process table before a warning is
+    # printed. One or two failures are routine (a slow `ps`); a streak means
+    # idle alerts have quietly stopped.
+    FAILED_SCANS_WARNING = 5
+
     # Makes an agent's message safe to print, log, or pass to a command:
     # each run of whitespace and control characters (newlines, terminal
     # escapes, bells) becomes one space, and the result is capped.
@@ -71,6 +76,7 @@ module Workspace
       @notifier = notifier
       @idle_alert_after = idle_alert_after
       @panes = {}
+      @failed_scans = 0
       @lock = Mutex.new
       @running = false
     end
@@ -118,9 +124,12 @@ module Workspace
         # The panes' output was not captured this time, so their activity is
         # stale; idle alerts wait for a scan that succeeds.
         @activity_stale = true
+        @failed_scans += 1
+        warn_failed_scans(e) if @failed_scans == FAILED_SCANS_WARNING
         return @logger.debug { "session monitor: skipping scan: #{e.message}" }
       end
       @activity_stale = false
+      @failed_scans = 0
       now = @clock.now
 
       @lock.synchronize do
@@ -228,6 +237,14 @@ module Workspace
       idle_for = now - pane[:last_activity_at]
       return nil if idle_for < @idle_alert_after || pane[:alerted_idle_since] == pane[:last_activity_at]
       [pane, :alerted_idle_since, pane[:last_activity_at], alert_env(pane, "idle", idle_for, nil)]
+    end
+
+    # Printed once per streak; a scan that succeeds starts a new one.
+    def warn_failed_scans(error)
+      @error_output.puts "workspace agent: can't read the process table for #{@session_name} " \
+        "(#{FAILED_SCANS_WARNING} scans in a row: #{error.message}); idle alerts are paused until it can"
+    rescue
+      nil
     end
 
     def log_alert_failure(error)

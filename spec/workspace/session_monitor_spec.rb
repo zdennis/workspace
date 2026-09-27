@@ -55,6 +55,27 @@ RSpec.describe Workspace::SessionMonitor do
       expect(pane("%2")["kind"]).to eq("claude")
     end
 
+    it "warns once when the process table can't be read five scans in a row, and again after a new streak" do
+      err = StringIO.new
+      warned = described_class.new(tmux: tmux, process_tree: process_tree, session_name: "proj",
+        clock: clock, error_output: err)
+      allow(process_tree).to receive(:snapshot).and_raise(Workspace::Error, "ps timed out")
+
+      4.times { warned.scan }
+      expect(err.string).to eq("")
+      6.times { warned.scan }
+      expect(err.string.lines).to eq(["workspace agent: can't read the process table for proj " \
+        "(5 scans in a row: ps timed out); idle alerts are paused until it can\n"])
+
+      allow(process_tree).to receive(:snapshot).and_return(snapshot)
+      warned.scan
+      allow(process_tree).to receive(:snapshot).and_raise(Workspace::Error, "ps timed out")
+      4.times { warned.scan }
+      expect(err.string.lines.size).to eq(1)
+      warned.scan
+      expect(err.string.lines.size).to eq(2)
+    end
+
     it "skips the tick instead of stalling when ps hangs" do
       monitor.scan
       hung_tree = Workspace::ProcessTree.new(timeout: 0.1, command: ["/bin/sleep", "30"])
