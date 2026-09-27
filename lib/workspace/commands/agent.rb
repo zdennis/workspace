@@ -354,6 +354,11 @@ module Workspace
       # Longest confirm wait a restart_agent message may ask for, in seconds.
       MAX_RESTART_TIMEOUT = 600
 
+      # Session monitor pane kinds restart_agent will type /clear into: the
+      # Claude provider, and a pane not identified yet.
+      RESTARTABLE_KINDS = ["claude", "unknown"].freeze
+      private_constant :RESTARTABLE_KINDS
+
       # Clears the coding agent in one explicitly named pane and types a
       # fresh prompt into it. Nothing here guesses the pane: a caller that
       # could only say "the Claude pane" could clear the wrong agent in a
@@ -373,15 +378,23 @@ module Workspace
         started, error = start_restart(message)
         return reply_to(client, error) if error
 
-        timeout = started.delete("confirm_timeout")
-        wait = message["wait"] == true
-        reply_to(client, started) unless wait
         pane_id = started["pane_id"]
-        @state_lock.synchronize do
-          @restarts[pane_id] = Thread.new do
-            run_restart(started, message["prompt"], message["force"] == true,
-              timeout, wait ? client : nil)
+        spawned = false
+        begin
+          timeout = started.delete("confirm_timeout")
+          wait = message["wait"] == true
+          reply_to(client, started) unless wait
+          @state_lock.synchronize do
+            @restarts[pane_id] = Thread.new do
+              run_restart(started, message["prompt"], message["force"] == true,
+                timeout, wait ? client : nil)
+            end
           end
+          spawned = true
+        ensure
+          # A pane left claimed with no worker would refuse every later
+          # restart on it until the daemon restarts.
+          @state_lock.synchronize { @restarts.delete(pane_id) if @restarts[pane_id] == :starting } unless spawned
         end
         wait ? :handed_off : nil
       end
@@ -407,8 +420,16 @@ module Workspace
         pane_id = detail[:id]
         target = "#{detail[:window]}.#{detail[:index]}"
 
-        if @session_monitor&.pane_kind(pane_id) == "shell"
+        kind = @session_monitor&.pane_kind(pane_id)
+        if kind == "shell"
           return [nil, restart_error("not_an_agent", "pane #{target} (#{pane_id}) is running a shell, not a coding agent", target)]
+        end
+        # /clear is Claude Code's own command; another agent would take it
+        # as a prompt. A pane the monitor hasn't identified yet is let through.
+        if kind && !RESTARTABLE_KINDS.include?(kind)
+          label = AgentProvider.find(kind)&.label || kind
+          return [nil, restart_error("unsupported_agent",
+            "pane #{target} (#{pane_id}) is running #{label}; restart_agent only restarts Claude Code, whose /clear it types", target)]
         end
 
         ref = (detail[:window] == 0) ? pipeline_ref_on(detail[:index]) : nil
@@ -493,8 +514,14 @@ module Workspace
       # the caller's connection when it waited, and on the daemon's stderr
       # when it failed, since a caller that didn't wait has nowhere else to
       # hear about it.
+      #
+      # A worker killed by {#stop_restarts} says so on stderr and to a
+      # waiting caller, including whether /clear was already typed, since
+      # that leaves the pane cleared with no prompt.
       def run_restart(started, prompt, force, timeout, client)
         pane_id = started["pane_id"]
+        restart = nil
+        finished = false
         result = begin
           restart = @agent_restart_factory.call(
             session_name: @tmux_session,
@@ -506,16 +533,33 @@ module Workspace
         rescue => e
           {"ok" => false, "error" => "internal_error", "message" => e.message}
         end
+        finished = true
         result = {"pane" => started["pane"]}.merge(result)
         @error_output.puts "workspace agent: restart_agent for pane #{started["pane"]}: #{result["message"]}" unless result["ok"]
+        # Released before the caller hears the outcome, so a follow-up sent
+        # the moment it does isn't refused as already running.
+        release_restart(pane_id)
         reply_to(client, result)
       ensure
+        report_stopped(started, restart, client) unless finished
         begin
           client&.close
         rescue IOError, SystemCallError
           nil
         end
+        release_restart(pane_id)
+      end
+
+      def release_restart(pane_id)
         @state_lock.synchronize { @restarts.delete(pane_id) if @restarts[pane_id].equal?(Thread.current) }
+      end
+
+      def report_stopped(started, restart, client)
+        typed = (restart.respond_to?(:cleared?) && restart.cleared?) ?
+          "/clear was typed but the prompt may not have been" : "nothing was typed"
+        message = "stopped by shutdown; #{typed}"
+        @error_output.puts "workspace agent: restart_agent for pane #{started["pane"]}: #{message}"
+        reply_to(client, restart_error("agent_stopped", message, started["pane"]).merge("pane_id" => started["pane_id"]))
       end
 
       # Stops restart workers on shutdown; one mid-wait would otherwise keep

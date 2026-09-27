@@ -183,7 +183,7 @@ RSpec.describe Workspace::Commands::Agent, "restart_agent" do
     thread&.kill
   end
 
-  it "stops a restart still running when the daemon shuts down, closing a waiting caller" do
+  it "stops a restart still running when the daemon shuts down, telling a waiting caller and stderr" do
     thread = Thread.new { agent.call(name: "myapp") }
     deadline = Time.now + 2
     sleep(0.01) until output.string.include?("ready") || Time.now > deadline
@@ -198,7 +198,10 @@ RSpec.describe Workspace::Commands::Agent, "restart_agent" do
 
     signal_trapper.handlers["TERM"].call
     expect(thread.join(3)).to be_truthy
-    expect(waiter.join(2)&.value).to be_nil
+    reply = JSON.parse(waiter.join(2)&.value.to_s)
+    expect(reply).to include("ok" => false, "error" => "agent_stopped", "pane" => "0.1", "pane_id" => "%18")
+    expect(reply["message"]).to include("stopped by shutdown", "nothing was typed")
+    expect(error_output.string).to include("restart_agent for pane 0.1: stopped by shutdown")
   ensure
     thread&.kill
     waiter&.kill
@@ -258,6 +261,23 @@ RSpec.describe Workspace::Commands::Agent, "restart_agent" do
   it "refuses a pane running a shell" do
     run_agent do
       expect(send_restart("pane" => "0.0")).to include("ok" => false, "error" => "not_an_agent", "pane" => "0.0")
+    end
+  end
+
+  it "refuses a pane running an agent other than Claude Code" do
+    monitor.kinds["%18"] = "codex"
+    run_agent do
+      reply = send_restart
+      expect(reply).to include("ok" => false, "error" => "unsupported_agent", "pane" => "0.1")
+      expect(reply["message"]).to include("Codex")
+      expect(restart.calls).to be_empty
+    end
+  end
+
+  it "lets through a pane the session monitor hasn't identified yet" do
+    monitor.kinds["%18"] = "unknown"
+    run_agent do
+      expect(send_restart).to include("ok" => true, "status" => "started")
     end
   end
 
