@@ -725,14 +725,41 @@ RSpec.describe Workspace::LockStore do
     end
 
     it "records nothing when the locks.json write fails" do
-      allow(File).to receive(:rename).and_call_original
-      allow(File).to receive(:rename).with(/locks\.json\.\d+\.tmp\z/, anything).and_raise(Errno::ENOSPC)
+      allow(File).to receive(:open).and_call_original
+      allow(File).to receive(:open).with(/locks\.json\.\d+\.tmp\z/, "w", 0o600).and_raise(Errno::ENOSPC)
 
       expect {
         store.acquire("edit", identity: identity(pid: 100), waiter_pid: 100, waiter_started: "start-100")
       }.to raise_error(Workspace::Error)
 
       expect(audit_events).to eq([])
+    end
+
+    it "flushes audit events before the rename that commits locks.json" do
+      events_at_commit = nil
+      rename = File.method(:rename)
+      allow(File).to receive(:rename).and_call_original
+      allow(File).to receive(:rename).with(/locks\.json\.\d+\.tmp\z/, anything) do |*args|
+        events_at_commit = audit_events.map { |e| e["event"] }
+        rename.call(*args)
+      end
+
+      store.acquire("edit", identity: identity(pid: 100), waiter_pid: 100, waiter_started: "start-100")
+
+      expect(events_at_commit).to eq(["acquire"])
+    end
+
+    it "keeps the audit event but leaves locks.json untouched when killed before the commit" do
+      killed = Class.new(RuntimeError)
+      allow(File).to receive(:rename).and_call_original
+      allow(File).to receive(:rename).with(/locks\.json\.\d+\.tmp\z/, anything).and_raise(killed)
+
+      expect {
+        store.acquire("edit", identity: identity(pid: 100), waiter_pid: 100, waiter_started: "start-100")
+      }.to raise_error(killed)
+
+      expect(audit_events.map { |e| e["event"] }).to eq(["acquire"])
+      expect(File.exist?(File.join(tmpdir, "locks.json"))).to be(false)
     end
 
     it "drops events buffered before the block raises" do

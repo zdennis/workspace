@@ -485,8 +485,9 @@ module Workspace
         original = Marshal.load(Marshal.dump(data)) unless write_unchanged
         result = within_liveness_snapshot { yield data }
         unchanged = !write_unchanged && data == original
-        write_data(data) unless readonly || unchanged
+        staged = stage_data(data) unless readonly || unchanged
         flush_audit_events
+        commit_data(staged) if staged
       end
       result
     rescue SystemCallError => e
@@ -557,13 +558,22 @@ module Workspace
       {"holder" => nil, "queue" => []}
     end
 
-    def write_data(data)
+    # Writes and fsyncs +data+ to a temp file beside `locks.json` without
+    # replacing it, so every likely write failure (ENOSPC, EIO) surfaces
+    # before any audit event is flushed. {#commit_data} is the commit point.
+    #
+    # @return [String] the staged temp file path
+    def stage_data(data)
       tmp = "#{@data_path}.#{Process.pid}.tmp"
       File.open(tmp, "w", 0o600) do |f|
         f.write(JSON.pretty_generate(data))
         f.flush
         f.fsync
       end
+      tmp
+    end
+
+    def commit_data(tmp)
       File.rename(tmp, @data_path)
     end
 
@@ -684,12 +694,14 @@ module Workspace
       @pending_events << {event: event.to_s, name: name, data: data.compact}
     end
 
-    # Appends the events buffered during a {#with_lock} block. Runs only once
-    # `locks.json` is committed (or a read-only block has returned), so the
-    # audit log never records a transition that a failed block or write
-    # rolled back, and still under the store flock, so lines land in the same
-    # order as the writes they describe. Lock order is always the store flock
-    # first, then {LockAuditLog}'s own flock, never the reverse.
+    # Appends the events buffered during a {#with_lock} block. Runs after the
+    # block returns and the new `locks.json` is staged and fsynced, but just
+    # before the rename that commits it, so a raising block or failed write
+    # never leaves an audit entry, and a process killed mid-commit can leave
+    # at worst an entry for a transition that never landed, never a landed
+    # transition with no entry. Runs under the store flock, so lines land in
+    # the same order as the writes they describe. Lock order is always the
+    # store flock first, then {LockAuditLog}'s own flock, never the reverse.
     def flush_audit_events
       @pending_events.each { |e| @audit_log.append(**e) }
     end

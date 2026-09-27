@@ -5,9 +5,10 @@ module Workspace
   # Append-only audit log for one lock namespace, written to `locks.jsonl`
   # next to that namespace's `locks.json`.
   #
-  # {LockStore} calls {#append} only after it has committed the
-  # `locks.json` write an event describes, while still holding its own
-  # flock, so lines land in the same order as those writes.
+  # {LockStore} calls {#append} only once it has staged and fsynced the
+  # `locks.json` write an event describes, just before renaming it into
+  # place, while still holding its own flock, so lines land in the same
+  # order as those writes.
   #
   # Growth is bounded by simple size-based rotation: once the file would
   # exceed +rotate_bytes+, it's renamed to `locks.jsonl.1` (replacing any
