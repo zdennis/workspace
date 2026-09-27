@@ -232,6 +232,7 @@ RSpec.describe Workspace::Commands::Launch do
         allow(command).to receive(:sleep)
         allow(agent_readiness).to receive(:wait).and_return(ready)
         allow(tmux).to receive(:deliver).and_return(delivery(:submitted))
+        allow(tmux).to receive(:shows_text?).and_return(false)
       end
 
       it "waits for each agent, sends its prompt to the agent's pane, and exits 0" do
@@ -270,6 +271,18 @@ RSpec.describe Workspace::Commands::Launch do
         expect(agent_readiness).to have_received(:wait).twice
         expect(result[:exit_code]).to eq(0)
         expect(error_output.string).to include("did not arrive (tmux says not_landed); trying again")
+      end
+
+      it "presses Enter instead of pasting again when the first paste shows up late" do
+        allow(tmux).to receive(:deliver).and_return(delivery(:not_landed), delivery(:submitted))
+        allow(tmux).to receive(:shows_text?).with("tmux-proj1", "0.1", "fix it").and_return(true)
+
+        result = command.call(["proj1"], prompts: {"proj1" => "fix it"})
+
+        expect(tmux).to have_received(:deliver).with("tmux-proj1", "0.1", "fix it").once
+        expect(tmux).to have_received(:deliver).with("tmux-proj1", "0.1", "")
+        expect(result[:exit_code]).to eq(0)
+        expect(output.string).to include("The prompt to proj1 arrived late; submitting it")
       end
 
       it "gives up after three attempts that never show up" do

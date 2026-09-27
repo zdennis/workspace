@@ -273,18 +273,28 @@ module Workspace
       # Waits for the agent, then pastes the prompt. A paste that never shows
       # up in the pane is tried again, up to MAX_PROMPT_ATTEMPTS; one that did
       # show up is not, even if it may not have been submitted, since sending
-      # it again would type it twice.
+      # it again would type it twice. A paste that turns up only after the
+      # check gave up is submitted with Enter rather than pasted again.
       #
       # @return [String, nil] why the prompt was not sent, or nil once it was
       def deliver_prompt(project, tmux_name, prompt_text, deadline)
+        last = nil
         MAX_PROMPT_ATTEMPTS.times do |attempt|
           ready = @agent_readiness.wait(tmux_name, deadline: deadline)
-          return "#{ready.reason} (waited up to #{@prompt_timeout}s)" unless ready.ready?
+          # A retry that runs out of time reports why the paste failed, not
+          # that the agent is still busy redrawing after it.
+          return last&.message || "#{ready.reason} (waited up to #{@prompt_timeout}s)" unless ready.ready?
 
-          @output.puts "Sending prompt to #{project} (#{ready.label}, pane #{ready.pane})..."
-          delivery = @tmux.deliver(tmux_name, ready.pane, prompt_text)
+          if last && @tmux.shows_text?(tmux_name, ready.pane, prompt_text)
+            @output.puts "The prompt to #{project} arrived late; submitting it..."
+            delivery = @tmux.deliver(tmux_name, ready.pane, "")
+          else
+            @output.puts "Sending prompt to #{project} (#{ready.label}, pane #{ready.pane})..."
+            delivery = @tmux.deliver(tmux_name, ready.pane, prompt_text)
+          end
           return nil if delivery.ok?
           return delivery.message if delivery.landed? || attempt == MAX_PROMPT_ATTEMPTS - 1
+          last = delivery
           @error_output.puts "Warning: prompt to #{project} did not arrive (#{delivery.message}); trying again"
         end
       end

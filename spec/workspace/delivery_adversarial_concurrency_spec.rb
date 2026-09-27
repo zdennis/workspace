@@ -81,4 +81,25 @@ RSpec.describe "T3 delivery: concurrency and liveness defects" do
     expect(names.first).to start_with("ws_send_")
     expect(names.uniq.size).to eq(2), "both processes loaded tmux buffer #{names.first.inspect}"
   end
+
+  it "DC4: a prompt that didn't land near the shared deadline is reported as 'still starting up', hiding the paste failure" do
+    now = [0.0]
+    tmux = instance_double(Workspace::Tmux)
+    allow(tmux).to receive(:pane_details).and_return([{id: "%2", index: 1, pid: 200, command: "claude"}])
+    allow(tmux).to receive(:capture_screen).and_return("> ")
+    process_tree = instance_double(Workspace::ProcessTree, snapshot: Workspace::ProcessTree::Snapshot.new([]))
+    readiness = Workspace::AgentReadiness.new(tmux: tmux, process_tree: process_tree,
+      clock: -> { now[0] }, sleeper: ->(s) { now[0] += s })
+    allow(tmux).to receive(:deliver) do
+      now[0] += Workspace::Tmux::LAND_TIMEOUT
+      delivery(:not_landed, "pasted, but nothing changed in proj:0.1 within 2.0s")
+    end
+    launch = Workspace::Commands::Launch.new(state: double, iterm: double, window_manager: double, tmux: tmux,
+      project_config: double, window_layout: double, config: double, pipeline_config: double,
+      agent_readiness: readiness, prompt_timeout: 3, output: StringIO.new, error_output: error_output)
+
+    failure = launch.send(:deliver_prompt, "proj", "proj", "do it", readiness.deadline_in(3))
+
+    expect(failure).to include("nothing changed"), "reported #{failure.inspect}"
+  end
 end
