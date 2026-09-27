@@ -433,6 +433,48 @@ RSpec.describe Workspace::Commands::Dev, "with fake processes and clock" do
     end
   end
 
+  describe "#up --takeover --max-wait" do
+    before { hold(700) }
+
+    it "exits 75 and stops its queued wrapper when the stopped holder hasn't let go by the deadline" do
+      wrapper_joins(555)
+      allow(terminator).to receive(:stop_holder) do
+        now[0] += 2
+        :terminated
+      end
+
+      expect(dev.up(takeover: true, max_wait: 3, working_dir: worktree)).to eq(exit_code: 75)
+      expect(now[0]).to eq(4)
+      expect(signals).to eq([["TERM", 555]])
+      expect(error_output.string).to include("Still queued for devenv lock after --max-wait; re-run to keep waiting.")
+    end
+
+    it "leaves the holder running when the deadline passes before it is stopped" do
+      allow(tmux).to receive(:new_window).and_return(555)
+      on_sleep << -> {} << -> {
+        store.acquire("devenv", identity: process_identity(555, worktree: worktree, branch: nil), waiter_pid: 555,
+          waiter_started: "s-555", wait: true, priority: true)
+      }
+      allow(terminator).to receive(:stop_holder)
+
+      expect(dev.up(takeover: true, max_wait: 2, working_dir: worktree)).to eq(exit_code: 75)
+      expect(terminator).not_to have_received(:stop_holder)
+      expect(signals).to eq([["TERM", 555]])
+      expect(holder).to include("pid" => 700)
+    end
+
+    it "stops a wrapper that hasn't queued by the deadline, before the startup timeout" do
+      allow(tmux).to receive(:new_window).and_return(555)
+      allow(terminator).to receive(:stop_holder)
+
+      expect(dev.up(takeover: true, max_wait: 2, working_dir: worktree)).to eq(exit_code: 1)
+      expect(now[0]).to eq(2)
+      expect(signals).to eq([["TERM", 555]])
+      expect(terminator).not_to have_received(:stop_holder)
+      expect(error_output.string).to include("did not acquire the devenv lock within 2s; stopped it.")
+    end
+  end
+
   describe "the devenv window" do
     it "is opened with remain-on-exit so a crash stays readable" do
       wrapper_joins(555, wait: false)

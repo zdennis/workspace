@@ -70,8 +70,8 @@ module Workspace
       # @param wait [Boolean] queue FIFO behind another worktree's env instead of refusing
       # @param takeover [Boolean] stop another worktree's env first
       # @param ready [Boolean] run the `dev.ready` probe before returning
-      # @param max_wait [Numeric, nil] give up (exit 75) after this many seconds; the CLI
-      #   forces +wait+ true whenever this is set
+      # @param max_wait [Numeric, nil] give up (exit 75) after this many seconds; implies +wait+,
+      #   and with +takeover+ bounds the whole takeover
       # @param working_dir [String] directory inside the worktree to start
       # @return [Hash] {exit_code:} — 0, 1 (refused/failed), 4 (cleared while
       #   queued), 6 (ready check failed), or 75 (still queued after max_wait)
@@ -88,14 +88,15 @@ module Workspace
           return {exit_code: 0}
         end
 
-        return take_over(ctx, holder, ready: ready) if takeover && holder && !holder["stale"]
+        return take_over(ctx, holder, ready: ready, max_wait: max_wait) if takeover && holder && !holder["stale"]
 
         refused = clear_the_way(ctx, entry, wait: wait, takeover: takeover)
         return refused if refused
 
         session = session_for(ctx)
         wrapper = open_wrapper(ctx, session, wait: wait)
-        code = await_wrapper(ctx, wrapper, wait: wait, max_wait: max_wait)
+        limit = wait ? max_wait : ctx[:settings][:startup_timeout]
+        code = await_wrapper(ctx, wrapper, limit: limit)
         finish_up(ctx, session, wrapper, code, ready: ready)
       end
 
@@ -178,11 +179,18 @@ module Workspace
       # Stops another worktree's env and hands its lock straight to this one,
       # ahead of anyone already queued: the new wrapper joins the queue at its
       # head in one flocked step, so the stopped holder's release promotes it.
-      def take_over(ctx, holder, ready:)
+      # A +max_wait+ deadline covers the whole takeover. Once it passes, the
+      # queued wrapper is stopped (so it leaves the queue) and up exits 75,
+      # as with `--wait --max-wait`; a holder not yet stopped is left running.
+      def take_over(ctx, holder, ready:, max_wait:)
+        deadline = max_wait && @clock.now + max_wait
         session = session_for(ctx)
         wrapper = open_wrapper(ctx, session, wait: true, takeover: true)
-        code = await_queued(ctx, wrapper)
+        code = await_queued(ctx, wrapper, max_wait: max_wait, deadline: deadline)
         return {exit_code: code} unless code.zero?
+        if deadline && @clock.now >= deadline && entry(ctx[:store]).dig("holder", "pid") != wrapper
+          return {exit_code: give_up(wrapper, true, max_wait)}
+        end
 
         @output.puts "Taking over: stopping dev environment for #{describe(holder)}..."
         case stop(ctx, holder)
@@ -197,7 +205,11 @@ module Workspace
           return {exit_code: 1}
         end
         close_window(holder)
-        code = await_wrapper(ctx, wrapper, wait: false, max_wait: nil)
+        code = if deadline
+          await_wrapper(ctx, wrapper, limit: max_wait, deadline: deadline)
+        else
+          await_wrapper(ctx, wrapper, limit: ctx[:settings][:startup_timeout])
+        end
         finish_up(ctx, session, wrapper, code, ready: ready)
       end
 
@@ -394,10 +406,11 @@ module Workspace
 
       # Polls until the wrapper in the new window holds the lock. The wrapper
       # does its own queueing; this only watches the store.
-      def await_wrapper(ctx, pid, wait:, max_wait:)
+      #
+      # @param limit [Numeric, nil] seconds to wait, reported on giving up; nil waits indefinitely
+      # @param deadline [Numeric, nil] clock time to give up at
+      def await_wrapper(ctx, pid, limit:, deadline: limit && @clock.now + limit)
         store = ctx[:store]
-        limit = wait ? max_wait : ctx[:settings][:startup_timeout]
-        deadline = limit && @clock.now + limit
         seen_queued = false
 
         loop do
@@ -425,11 +438,17 @@ module Workspace
       end
 
       # Polls until the takeover wrapper is in the queue (or already holds
-      # the lock, if the holder went away meanwhile).
-      def await_queued(ctx, pid)
+      # the lock, if the holder went away meanwhile), giving up at the
+      # startup timeout or the takeover's --max-wait deadline, whichever is first.
+      def await_queued(ctx, pid, max_wait:, deadline:)
         store = ctx[:store]
-        startup_timeout = ctx[:settings][:startup_timeout]
-        deadline = @clock.now + startup_timeout
+        limit = ctx[:settings][:startup_timeout]
+        startup_deadline = @clock.now + limit
+        if deadline.nil? || startup_deadline <= deadline
+          deadline = startup_deadline
+        else
+          limit = max_wait
+        end
         loop do
           entry = entry(store)
           return 0 if entry.dig("holder", "pid") == pid
@@ -438,7 +457,7 @@ module Workspace
             @error_output.puts "The dev wrapper (pid #{pid}) exited before it queued for the #{LOCK_NAME} lock."
             return 1
           end
-          return give_up(pid, false, startup_timeout) if @clock.now >= deadline
+          return give_up(pid, false, limit) if @clock.now >= deadline
           @sleeper.call(@poll)
         end
       end
