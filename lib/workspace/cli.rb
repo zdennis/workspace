@@ -984,7 +984,8 @@ module Workspace
           --takeover        Stop another worktree's dev env, then start this one
           --no-ready        Don't wait for the dev.ready check
           --max-wait DUR    Give up after DUR, e.g. "9m" (a plain number is seconds;
-                            exit 75; implies --wait)
+                            exit 75; implies --wait). With --takeover, it limits
+                            the whole takeover.
 
         Options (down):
           --force           Also kill a process group left behind by a dead wrapper

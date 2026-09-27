@@ -207,9 +207,12 @@ workspace dev up --takeover          # stop the other worktree's env, then start
 
 `--wait` queues FIFO behind whoever's running; `--takeover` stops the
 current holder's dev environment first and hands the lock straight to you,
-ahead of anyone already waiting. Add `--max-wait DURATION` to give up after
-a while instead of waiting forever (exit 75); it implies `--wait`, so you
-don't need to pass both.
+ahead of anyone already waiting. Add `--max-wait DURATION` (such as `10m`,
+or a plain number of seconds) to give up after a while instead of waiting
+forever (exit 75); it implies `--wait`, so you don't need to pass both.
+With `--takeover`, `--max-wait` limits the whole switch: if your env isn't
+running by then, `up` exits 75 and, if it hadn't stopped the other
+worktree's env yet, leaves that env running.
 
 ## 6. Locks directly
 

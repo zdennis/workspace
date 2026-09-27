@@ -31,7 +31,7 @@ workspace config set dev.ready_timeout 2m         # wait for the dev.ready check
 | `--wait` | Queue FIFO behind another worktree's dev env instead of refusing |
 | `--takeover` | Stop another worktree's dev env, then start this one |
 | `--no-ready` | Don't wait for the `dev.ready` check |
-| `--max-wait DURATION` | Give up after `DURATION` seconds (exit 75); implies `--wait` |
+| `--max-wait DURATION` | Give up after `DURATION`: `30s`, `9m`, `1h`, or a plain number of seconds (exit 75); implies `--wait`. With `--takeover`, it limits the whole takeover |
 
 ## Options (down)
 
@@ -106,6 +106,8 @@ workspace config set dev.ready_timeout 2m         # wait for the dev.ready check
 
 **`--takeover` jumps the queue** — it stops the current holder and hands the lock straight to this worktree, ahead of anyone already waiting with `--wait`. A `workspace lock clear devenv` run at the same time still removes those `--wait` waiters once the holder is stopped (they exit 4; if it can't be stopped they stay queued), but keeps the takeover's queued wrapper, which starts once the holder is stopped.
 
+**`--takeover --max-wait DURATION`** gives up if this worktree's dev env isn't running by then: `up` stops its queued wrapper, which leaves the queue, and exits 75, the same as `--wait --max-wait`. If the time runs out before the current holder is stopped, the holder keeps running. `DURATION` doesn't cut short a stop already under way; `up` checks it again once that stop finishes.
+
 **`status`** shows the holder's worktree and branch, pid/pgid, pane, uptime, whether `dev.ready` currently passes, and the queue.
 
 ## Known limitations
@@ -120,10 +122,13 @@ workspace config set dev.ready_timeout 2m         # wait for the dev.ready check
 workspace dev up
 
 # An agent queueing in the background, giving up after 10 minutes
-workspace dev up --wait --max-wait 600
+workspace dev up --wait --max-wait 10m
 
 # Switch the running env to this worktree
 workspace dev up --takeover
+
+# Switch, but give up if it isn't running within 2 minutes
+workspace dev up --takeover --max-wait 2m
 
 # Inspect and stop
 workspace dev status
