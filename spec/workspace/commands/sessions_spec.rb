@@ -395,6 +395,34 @@ RSpec.describe Workspace::Commands::Sessions do
       expect(panes.find { |p| p["pane_id"] == "%1" }["open_questions"]).to eq(1)
       expect(panes.find { |p| p["pane_id"] == "%2" }["open_questions"]).to eq(0)
     end
+
+    it "still lists sessions, with a warning, when asks.json is unparseable" do
+      File.write(ask_path, "not json")
+
+      with_daemon { command.call(name: "proj", json: true) }
+
+      panes = JSON.parse(output.string)["panes"]
+      expect(panes.map { |p| p["open_questions"] }).to eq([0, 0])
+      expect(error_output.string).to include("ignoring question store")
+    end
+
+    it "still lists sessions when asks.json holds entries that aren't objects" do
+      File.write(ask_path, JSON.generate([nil, {"id" => "abc123", "status" => "open", "pane" => "%1"}]))
+
+      with_daemon { command.call(name: "proj") }
+
+      expect(output.string).to match(/0\.0.*1 asked/)
+    end
+
+    it "leaves the ASK counts off, with a warning, when the store can't be read at all" do
+      FileUtils.mkdir_p(ask_path)
+
+      with_daemon { command.call(name: "proj", json: true) }
+
+      panes = JSON.parse(output.string)["panes"]
+      expect(panes).to all(satisfy { |p| !p.key?("open_questions") })
+      expect(error_output.string).to include("workspace sessions: not showing open questions")
+    end
   end
 
   describe "--watch" do

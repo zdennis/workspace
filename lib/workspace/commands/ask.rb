@@ -120,7 +120,7 @@ module Workspace
       end
 
       def store_for(name)
-        AskStore.new(path: @config.ask_state_path(name))
+        AskStore.new(path: @config.ask_state_path(name), error_output: @error_output)
       end
 
       # Runs the notify command, when the project has one configured, so a

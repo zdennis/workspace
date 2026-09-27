@@ -14,8 +14,10 @@ module Workspace
   # of records a human resolves later with `workspace ask answer`.
   class AskStore
     # @param path [String] path to this workspace's `asks.json`
-    def initialize(path:)
+    # @param error_output [IO] where a read that skips an unreadable file warns
+    def initialize(path:, error_output: $stderr)
       @path = path
+      @error_output = error_output
       @lockfile_path = "#{path}.lock"
     end
 
@@ -31,7 +33,7 @@ module Workspace
     def add(question:, default:, context: nil, pane: nil, worktree: nil)
       with_lock do |data|
         record = {
-          "id" => SecureRandom.hex(3),
+          "id" => unused_id(data),
           "question" => question,
           "default" => default,
           "context" => context,
@@ -47,10 +49,15 @@ module Workspace
       end
     end
 
+    # Never creates the store: nothing recorded yet reads as empty. An
+    # unreadable file also reads as empty, with a warning, since nothing is
+    # written back.
+    #
     # @param open_only [Boolean] only unanswered questions
     # @return [Array<Hash>] records, oldest first
     def list(open_only: false)
-      records = with_lock(readonly: true) { |data| data }
+      return [] unless File.exist?(@path)
+      records = with_lock(readonly: true) { |data| records_in(data) }
       records = records.select { |r| r["status"] == "open" } if open_only
       records
     end
@@ -62,7 +69,7 @@ module Workspace
     # @return [Hash, nil] the updated record, or nil when no open question has this id
     def answer(id, answer)
       with_lock do |data|
-        record = data.find { |r| r["id"] == id && r["status"] == "open" }
+        record = records_in(data).find { |r| r["id"] == id && r["status"] == "open" }
         next nil unless record
         record["answer"] = answer
         record["status"] = "answered"
@@ -73,13 +80,15 @@ module Workspace
 
     private
 
-    # @param readonly [Boolean] shared lock, and never rewrites the file
+    # @param readonly [Boolean] shared lock, and never rewrites the file. A
+    #   write raises rather than replace a file it couldn't read, since that
+    #   would drop every question in it.
     def with_lock(readonly: false)
       FileUtils.mkdir_p(File.dirname(@path), mode: 0o700)
       result = nil
       File.open(@lockfile_path, File::RDWR | File::CREAT, 0o600) do |f|
         f.flock(readonly ? File::LOCK_SH : File::LOCK_EX)
-        data = read_data
+        data = read_data(readonly: readonly)
         result = yield data
         write_data(data) unless readonly
       end
@@ -88,14 +97,37 @@ module Workspace
       raise Workspace::Error, "Could not access question store at #{@path} (#{e.class}: errno #{e.errno})"
     end
 
-    def read_data
+    def read_data(readonly:)
       return [] unless File.exist?(@path)
       content = File.read(@path)
       return [] if content.strip.empty?
       parsed = JSON.parse(content)
-      parsed.is_a?(Array) ? parsed : []
+      return parsed if parsed.is_a?(Array)
+      unreadable("it is not a JSON list", readonly)
     rescue JSON::ParserError
+      unreadable("it is not valid JSON", readonly)
+    end
+
+    def unreadable(reason, readonly)
+      unless readonly
+        raise Workspace::Error, "Question store #{@path} can't be read (#{reason}); " \
+          "nothing was recorded and the file was left unchanged. Fix or move it aside and retry."
+      end
+      @error_output.puts "workspace: ignoring question store #{@path} (#{reason})"
       []
+    end
+
+    # Entries that aren't JSON objects are kept on disk but never matched or listed.
+    def records_in(data)
+      data.grep(Hash)
+    end
+
+    def unused_id(data)
+      taken = records_in(data).map { |r| r["id"] }
+      loop do
+        id = SecureRandom.hex(3)
+        return id unless taken.include?(id)
+      end
     end
 
     def write_data(data)

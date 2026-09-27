@@ -192,14 +192,16 @@ module Workspace
       # Stamps each pane with `"open_questions"`, the count of unanswered
       # `workspace ask` questions recorded against that pane. A question
       # recorded outside tmux carries no pane id, so it is not counted
-      # against any row here; `workspace ask list` still shows it.
+      # against any row here; `workspace ask list` still shows it. A store
+      # that can't be read leaves the column off with a warning, so the rest
+      # of `sessions` still works.
       def apply_ask_column(panes)
         return unless @name
-        records = AskStore.new(path: @config.ask_state_path(@name)).list(open_only: true)
+        records = AskStore.new(path: @config.ask_state_path(@name), error_output: @error_output).list(open_only: true)
         by_pane = records.group_by { |r| r["pane"] }
         panes.each { |pane| pane["open_questions"] = by_pane[pane["pane_id"]]&.size || 0 }
-      rescue Workspace::Error
-        nil
+      rescue Workspace::Error => e
+        @error_output.puts "workspace sessions: not showing open questions: #{e.message}"
       end
 
       # Returns pane_id => ordered array of lock-entry hashes (`:label`,

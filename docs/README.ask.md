@@ -24,7 +24,7 @@ workspace ask answer <id> "<answer>" [--json]
 
 **Workspace detection** — same as other commands: the marker file, then the active project for the current directory. `ask`, `ask list`, and `ask answer` all act on the workspace detected from the current directory.
 
-**Storage** — questions are appended to `~/.local/state/workspace/<workspace>/asks.json`, guarded by `flock` so concurrent invocations (multiple panes or agents in the same workspace) never clobber each other's writes. The file survives an agent-daemon restart; it isn't daemon state.
+**Storage** — questions are appended to `~/.local/state/workspace/<workspace>/asks.json`, guarded by `flock` so concurrent invocations (multiple panes or agents in the same workspace) never clobber each other's writes. The file survives an agent-daemon restart; it isn't daemon state. If the file can't be parsed, `ask` and `ask answer` fail without recording anything and leave the file unchanged, while `ask list` and `sessions` warn on stderr and show no questions.
 
 **Pane** — when run inside tmux, the question is tagged with `$TMUX_PANE`, which is how [`sessions`](README.sessions.md) attributes it to a pane. Outside tmux, the question is still recorded (with no pane), and still shown by `ask list`.
 
