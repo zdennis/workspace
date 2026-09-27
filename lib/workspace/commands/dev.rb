@@ -61,6 +61,8 @@ module Workspace
         @clock = clock
         @poll = poll
         @kill = kill
+        @holder_stopper = ProcessHolderStopper.for(terminator: terminator, lock_holder: lock_holder, error_output: error_output,
+          clock: clock, sleeper: sleeper)
       end
 
       # @param wait [Boolean] queue FIFO behind another worktree's env instead of refusing
@@ -114,8 +116,13 @@ module Workspace
         end
 
         result = stop(ctx, holder)
+        return {exit_code: 1} if result == :kept
         close_window(holder)
-        @output.puts "Stopped dev environment for #{describe(holder)}#{" (SIGKILL after #{format_seconds(ctx[:settings][:stop_timeout])})" if result == :killed}."
+        if result == :gone
+          @output.puts "Dev environment for #{describe(holder)} was not running; removed its stale lock."
+        else
+          @output.puts "Stopped dev environment for #{describe(holder)}#{" (SIGKILL after #{format_seconds(ctx[:settings][:stop_timeout])})" if result == :killed}."
+        end
         {exit_code: 0}
       end
 
@@ -175,7 +182,11 @@ module Workspace
         return {exit_code: code} unless code.zero?
 
         @output.puts "Taking over: stopping dev environment for #{describe(holder)}..."
-        stop(ctx, holder)
+        if stop(ctx, holder) == :kept
+          @error_output.puts "This worktree's dev environment stays queued first for the #{LOCK_NAME} lock in its #{WINDOW_NAME} window. " \
+            "Run `workspace dev status` to watch it, and `workspace dev down --force` to free the old process group."
+          return {exit_code: 1}
+        end
         close_window(holder)
         code = await_wrapper(ctx, wrapper, wait: false, max_wait: nil)
         finish_up(ctx, session, wrapper, code, ready: ready)
@@ -217,7 +228,7 @@ module Workspace
           branch: git(worktree, "rev-parse", "--abbrev-ref", "HEAD"),
           config_name: lineage.worktree || lineage.name,
           settings: @dev_config.for_project(lineage.name),
-          store: LockStore.new(dir: @lock_namespace.resolve(cwd: working_dir)[:dir], liveness: @lock_holder)
+          store: LockStore.new(dir: @lock_namespace.resolve(cwd: working_dir)[:dir], liveness: @lock_holder, terminator: @terminator)
         }
       end
 
@@ -285,15 +296,11 @@ module Workspace
       end
 
       def orphan_running?(holder)
-        !!holder["pgid"] && !pgid_reused?(holder) && @terminator.running?(holder["pgid"])
+        @terminator.orphan_running?(holder, pid_alive: method(:process_alive?))
       end
 
-      # The wrapper led its group, so its pgid is its pid. A live process
-      # with that pid is not the dead wrapper, and the kernel only hands out a
-      # pid once no group uses it: the recorded group is gone and the id now
-      # names an unrelated process (group) that must never be signalled.
       def pgid_reused?(holder)
-        holder["pgid"] == holder["pid"] && process_alive?(holder["pid"])
+        @terminator.pgid_reused?(holder, pid_alive: method(:process_alive?))
       end
 
       def stop_orphan(ctx, holder, force:)
@@ -318,8 +325,14 @@ module Workspace
 
       # SIGTERM to the wrapper, which forwards it once to its group; SIGKILL to
       # the group after stop_timeout. Then waits briefly for the lock to free.
+      # A group that can't be stopped keeps its lock, exactly as `lock clear`
+      # would (see {ProcessHolderStopper}).
+      #
+      # @return [Symbol] :terminated, :killed, :gone, or :kept (reported on stderr)
       def stop(ctx, holder)
-        result = @terminator.stop_holder(holder, liveness: @lock_holder, stop_timeout: ctx[:settings][:stop_timeout])
+        result = @holder_stopper.stop(ctx[:store], LOCK_NAME, holder, stop_timeout: ctx[:settings][:stop_timeout],
+          retry_command: "workspace dev down")
+        return result if result == :kept
         deadline = @clock.now + RELEASE_MARGIN
         while @lock_holder.alive?(pid: holder["pid"], started: holder["started"]) && @clock.now < deadline
           @sleeper.call(@poll)
@@ -437,9 +450,9 @@ module Workspace
             return 6
           end
           if @clock.now >= deadline
-            stop(ctx, holder)
-            @error_output.puts "Ready check (#{spec}) did not pass within #{format_seconds(ready_timeout)}; " \
-              "stopped the dev environment and released the #{LOCK_NAME} lock."
+            outcome = (stop(ctx, holder) == :kept) ? "its process group could not be stopped (see above)" :
+              "stopped the dev environment and released the #{LOCK_NAME} lock"
+            @error_output.puts "Ready check (#{spec}) did not pass within #{format_seconds(ready_timeout)}; #{outcome}."
             return 6
           end
           @sleeper.call(@poll)

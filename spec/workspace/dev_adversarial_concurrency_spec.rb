@@ -71,7 +71,7 @@ RSpec.describe "devenv lock: adversarial concurrency" do
     def runner(spawner:)
       Workspace::DevRunner.new(liveness: adv_liveness, output: output, env: {}, trap: trap,
         spawner: spawner, kill: ->(sig, target) { kills << [sig, target] }, pgrp: -> { Process.pid },
-        sleeper: ->(_) {}, poll: 0)
+        sleeper: ->(_) {}, poll: 0, group_members: ->(_pgid) { [] })
     end
 
     it "D-C1: a SIGTERM that lands while the queued poll promotes the wrapper is dropped, so the dev command runs anyway" do

@@ -379,6 +379,181 @@ RSpec.describe Workspace::LockStore do
     it "returns nil for a name with no entry" do
       expect(store.clear("nothing")).to be_nil
     end
+
+    context "with keep_process_holder" do
+      def process_identity(pid:)
+        identity(pid: pid).merge(kind: "process", pgid: pid, branch: "main")
+      end
+
+      it "removes the queue but keeps a process holder until finish_clear" do
+        s = store
+        s.acquire("devenv", identity: process_identity(pid: 100), waiter_pid: 100, waiter_started: "start-100")
+        s.acquire("devenv", identity: process_identity(pid: 200), waiter_pid: 200, waiter_started: "start-200", wait: true)
+
+        removed = s.clear("devenv", keep_process_holder: true)
+
+        expect(removed).to include(pending: true)
+        expect(removed[:queue].size).to eq(1)
+        expect(s.status("devenv")["devenv"]["holder"]["pid"]).to eq(100)
+        expect(s.status("devenv")["devenv"]["queue"]).to be_empty
+        expect(s.poll("devenv", 200)).to eq(status: :cleared)
+
+        expect(s.finish_clear("devenv", removed[:holder], cleared_by: "pid 9")).to be_nil
+        expect(s.status("devenv")).to be_empty
+        events = File.readlines(File.join(tmpdir, "locks.jsonl")).map { |l| JSON.parse(l) }.last(2)
+        expect(events[0]).to include("event" => "clear", "lock" => "devenv", "queue_size" => 1, "holder_kept" => true)
+        expect(events[1]).to include("event" => "release", "lock" => "devenv", "cleared_by" => "pid 9")
+      end
+
+      it "clears an agent holder in one step as usual" do
+        s = store
+        s.acquire("edit", identity: identity(pid: 100), waiter_pid: 100, waiter_started: "start-100")
+
+        removed = s.clear("edit", keep_process_holder: true)
+
+        expect(removed).not_to have_key(:pending)
+        expect(s.status("edit")).to be_empty
+      end
+
+      it "leaves a newer holder alone when the stopped one already released" do
+        s = store
+        s.acquire("devenv", identity: process_identity(pid: 100), waiter_pid: 100, waiter_started: "start-100")
+        removed = s.clear("devenv", keep_process_holder: true)
+        s.acquire("devenv", identity: process_identity(pid: 300), waiter_pid: 300, waiter_started: "start-300", wait: true)
+        s.release("devenv", 100)
+
+        expect(s.finish_clear("devenv", removed[:holder])).to include("pid" => 300)
+        expect(s.status("devenv")["devenv"]["holder"]["pid"]).to eq(300)
+      end
+
+      it "reports the lock as no longer named when the stopped holder released it and nobody took it" do
+        s = store
+        s.acquire("devenv", identity: process_identity(pid: 100), waiter_pid: 100, waiter_started: "start-100")
+        removed = s.clear("devenv", keep_process_holder: true)
+        s.release("devenv", 100)
+
+        expect(s.finish_clear("devenv", removed[:holder])).to be_nil
+      end
+
+      it "promotes a waiter that queued while the holder was being stopped" do
+        s = store
+        s.acquire("devenv", identity: process_identity(pid: 100), waiter_pid: 100, waiter_started: "start-100")
+        removed = s.clear("devenv", keep_process_holder: true)
+        s.acquire("devenv", identity: process_identity(pid: 300), waiter_pid: 300, waiter_started: "start-300", wait: true)
+
+        expect(s.finish_clear("devenv", removed[:holder])).to be_nil
+        expect(s.status("devenv")["devenv"]["holder"]["pid"]).to eq(300)
+      end
+
+      it "does not remove a holder that reused the pid with a different start time" do
+        s = store
+        s.acquire("devenv", identity: process_identity(pid: 100), waiter_pid: 100, waiter_started: "start-100")
+        removed = s.clear("devenv", keep_process_holder: true)
+
+        expect(s.finish_clear("devenv", removed[:holder].merge("started" => "other"))).to include("pid" => 100)
+        expect(s.status("devenv")["devenv"]["holder"]["pid"]).to eq(100)
+      end
+    end
+
+    describe "#keep_process_holder" do
+      def process_identity(pid:)
+        identity(pid: pid).merge(kind: "process", pgid: pid, branch: "main")
+      end
+
+      def hold_and_clear(s)
+        s.acquire("devenv", identity: process_identity(pid: 100), waiter_pid: 100, waiter_started: "start-100")
+        s.clear("devenv", keep_process_holder: true)[:holder]
+      end
+
+      it "marks a holder the lock still names as kept" do
+        s = store
+        holder = hold_and_clear(s)
+
+        expect(s.keep_process_holder("devenv", holder)).to be_nil
+        expect(s.status("devenv")["devenv"]["holder"]).to include("pid" => 100, "kept" => true)
+      end
+
+      it "restores a holder that released meanwhile" do
+        s = store
+        holder = hold_and_clear(s)
+        s.release("devenv", 100)
+
+        expect(s.keep_process_holder("devenv", holder, cleared_by: "pid 9")).to be_nil
+        expect(s.status("devenv")["devenv"]["holder"]).to include("pid" => 100, "kept" => true)
+        audit = File.readlines(File.join(tmpdir, "locks.jsonl")).map { |l| JSON.parse(l) }.last
+        expect(audit).to include("event" => "acquire", "cleared_by" => "pid 9")
+      end
+
+      it "takes back a promotion its waiter has not learned of, requeueing that waiter at the head" do
+        s = store
+        holder = hold_and_clear(s)
+        s.acquire("devenv", identity: process_identity(pid: 300), waiter_pid: 300, waiter_started: "start-300", wait: true)
+        s.acquire("devenv", identity: process_identity(pid: 400), waiter_pid: 400, waiter_started: "start-400", wait: true)
+        s.release("devenv", 100)
+
+        expect(s.keep_process_holder("devenv", holder)).to be_nil
+        entry = s.status("devenv")["devenv"]
+        expect(entry["holder"]).to include("pid" => 100, "kept" => true)
+        expect(entry["queue"].map { |w| w["agent_pid"] }).to eq([300, 400])
+        expect(entry["queue"].first).to include("waiter_pid" => 300, "waiter_started" => "start-300", "kind" => "process", "pgid" => 300)
+        expect(s.poll("devenv", 300)).to include(status: :queued, position: 1)
+      end
+
+      it "leaves a hold its new holder already claimed, and returns it" do
+        s = store
+        holder = hold_and_clear(s)
+        s.acquire("devenv", identity: process_identity(pid: 300), waiter_pid: 300, waiter_started: "start-300", wait: true)
+        s.release("devenv", 100)
+        s.poll("devenv", 300)
+
+        expect(s.keep_process_holder("devenv", holder)).to include("pid" => 300)
+        expect(s.status("devenv")["devenv"]["holder"]["pid"]).to eq(300)
+      end
+    end
+
+    describe "reaping a kept holder" do
+      let(:terminator) { instance_double(Workspace::ProcessGroupTerminator) }
+
+      def kept_holder(s)
+        s.acquire("devenv", identity: identity(pid: 100).merge(kind: "process", pgid: 100, branch: "main"),
+          waiter_pid: 100, waiter_started: "start-100")
+        s.keep_process_holder("devenv", s.clear("devenv", keep_process_holder: true)[:holder])
+        s.acquire("devenv", identity: identity(pid: 200), waiter_pid: 200, waiter_started: "start-200", wait: true)
+        liveness.kill(100)
+      end
+
+      def with_terminator
+        described_class.new(dir: tmpdir, liveness: liveness, terminator: terminator)
+      end
+
+      it "keeps it past its wrapper while its process group runs, but marks it stale" do
+        kept_holder(store)
+        allow(terminator).to receive(:orphan_running?).and_return(true)
+
+        expect(with_terminator.poll("devenv", 200)[:status]).to eq(:queued)
+        expect(with_terminator.status("devenv")["devenv"]["holder"]).to include("pid" => 100, "stale" => true)
+      end
+
+      it "counts a group it may not signal as running" do
+        kept_holder(store)
+        allow(terminator).to receive(:orphan_running?).and_raise(Workspace::Error, "not permitted")
+
+        expect(with_terminator.poll("devenv", 200)[:status]).to eq(:queued)
+      end
+
+      it "counts the group as running when there is no terminator to check it" do
+        kept_holder(store)
+
+        expect(store.poll("devenv", 200)[:status]).to eq(:queued)
+      end
+
+      it "reaps it once its process group is gone" do
+        kept_holder(store)
+        allow(terminator).to receive(:orphan_running?).and_return(false)
+
+        expect(with_terminator.poll("devenv", 200)[:status]).to eq(:acquired)
+      end
+    end
   end
 
   describe "persistence" do

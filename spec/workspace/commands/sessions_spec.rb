@@ -212,6 +212,45 @@ RSpec.describe Workspace::Commands::Sessions do
 
       expect(output.string).not_to include("edit")
     end
+
+    def acquire_lock(name, pid:, pane:, wait: false)
+      store = Workspace::LockStore.new(dir: lock_dir, liveness: lock_holder)
+      identity = {kind: "agent", pid: pid, started: "start-#{pid}", pane: pane, worktree: "app"}
+      store.acquire(name, identity: identity, waiter_pid: pid, waiter_started: "start-#{pid}", wait: wait)
+    end
+
+    it "shows every lock a pane holds or waits on, edit first then alphabetical" do
+      acquire_lock("devenv", pid: 300, pane: "%1")
+      acquire(pid: 100, pane: "%1")
+
+      with_daemon { command.call(name: "proj") }
+
+      expect(output.string).to match(/0\.0.*edit ✓ devenv ✓/)
+    end
+
+    it "includes a locks array with every lock the pane is party to, in --json" do
+      acquire_lock("devenv", pid: 300, pane: "%2")
+      acquire_lock("devenv", pid: 301, pane: "%1", wait: true)
+      acquire(pid: 100, pane: "%1")
+
+      with_daemon { command.call(name: "proj", json: true) }
+
+      pane1 = JSON.parse(output.string)["panes"].find { |p| p["pane_id"] == "%1" }
+      expect(pane1["locks"]).to eq(
+        [{"name" => "edit", "state" => "held", "position" => nil},
+          {"name" => "devenv", "state" => "queued", "position" => 1}]
+      )
+    end
+
+    it "falls back to the pane's first lock for the legacy fields when it doesn't hold edit" do
+      acquire_lock("devenv", pid: 300, pane: "%2")
+
+      with_daemon { command.call(name: "proj", json: true) }
+
+      pane2 = JSON.parse(output.string)["panes"].find { |p| p["pane_id"] == "%2" }
+      expect(pane2["lock_name"]).to eq("devenv")
+      expect(pane2["lock_state"]).to eq("held")
+    end
   end
 
   describe "--watch" do
