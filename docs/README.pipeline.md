@@ -40,7 +40,11 @@ workspace pipeline <subcommand> [options]
 
 ## Limits
 
+**A sentinel the agent never saw can be lost.** The agent finds a stage's sentinel by reading the pane's scrollback. If `tmux clear-history` runs, or the pane is respawned, after the stage printed its sentinel but before the agent read it, the line is gone and the watch waits until the stage's deadline, or forever when the stage has no `timeout:`. Run `workspace pipeline advance <project> --work-item REF` to move it on by hand, and give stages a `timeout:` so a lost sentinel ends in a failure rather than a hang.
+
 **A sentinel buried under a lot of output is seen late.** Most polls read only the last 500 lines of the pane; about once a minute, and once more before a stage times out, the agent reads the whole history. A sentinel followed by more than 500 lines of output within one poll is still found, up to a minute later.
+
+**Deadlines use wall-clock time.** Time the machine spends asleep counts toward a stage's timeout, so a stage can time out right after the machine wakes, and changing the system clock moves the deadline with it.
 
 ## Examples
 
