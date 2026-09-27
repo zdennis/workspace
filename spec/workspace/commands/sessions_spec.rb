@@ -26,7 +26,10 @@ RSpec.describe Workspace::Commands::Sessions do
     described_class.new(config: config, output: output, error_output: error_output)
   end
 
-  before { allow(config).to receive(:agent_socket_path).with("proj").and_return(socket_path) }
+  before do
+    allow(config).to receive(:agent_socket_path).with("proj").and_return(socket_path)
+    allow(config).to receive(:ask_state_path).with("proj").and_return(File.join(tmpdir, "asks.json"))
+  end
 
   after { FileUtils.remove_entry(tmpdir) }
 
@@ -66,7 +69,8 @@ RSpec.describe Workspace::Commands::Sessions do
     it "emits the payload with a leading schema_version with --json" do
       with_daemon { command.call(name: "proj", json: true) }
 
-      expect(JSON.parse(output.string)).to eq({"schema_version" => 1}.merge(payload))
+      expected = payload.merge("panes" => payload["panes"].map { |pane| pane.merge("open_questions" => 0) })
+      expect(JSON.parse(output.string)).to eq({"schema_version" => 1}.merge(expected))
     end
 
     it "puts schema_version as the first key of the --json payload" do
@@ -345,6 +349,79 @@ RSpec.describe Workspace::Commands::Sessions do
       pane2 = JSON.parse(output.string)["panes"].find { |p| p["pane_id"] == "%2" }
       expect(pane2["lock_name"]).to eq("devenv")
       expect(pane2["lock_state"]).to eq("held")
+    end
+  end
+
+  describe "ask column" do
+    let(:ask_path) { File.join(tmpdir, "asks.json") }
+
+    before { allow(config).to receive(:ask_state_path).with("proj").and_return(ask_path) }
+
+    it "counts a pane's open questions and leaves panes with none blank" do
+      Workspace::AskStore.new(path: ask_path).add(question: "q1", default: "d1", pane: "%1")
+
+      with_daemon { command.call(name: "proj") }
+
+      expect(output.string).to match(/0\.0\s+claude\s+Claude Code\s+working.*1 asked/)
+      expect(output.string).not_to match(/0\.1.*asked/)
+    end
+
+    it "counts more than one open question for the same pane" do
+      store = Workspace::AskStore.new(path: ask_path)
+      store.add(question: "q1", default: "d1", pane: "%1")
+      store.add(question: "q2", default: "d2", pane: "%1")
+
+      with_daemon { command.call(name: "proj") }
+
+      expect(output.string).to match(/0\.0.*2 asked/)
+    end
+
+    it "does not count an answered question" do
+      store = Workspace::AskStore.new(path: ask_path)
+      record = store.add(question: "q1", default: "d1", pane: "%1")
+      store.answer(record["id"], "resolved")
+
+      with_daemon { command.call(name: "proj") }
+
+      expect(output.string).not_to match(/asked/)
+    end
+
+    it "includes open_questions per pane in --json" do
+      Workspace::AskStore.new(path: ask_path).add(question: "q1", default: "d1", pane: "%1")
+
+      with_daemon { command.call(name: "proj", json: true) }
+
+      panes = JSON.parse(output.string)["panes"]
+      expect(panes.find { |p| p["pane_id"] == "%1" }["open_questions"]).to eq(1)
+      expect(panes.find { |p| p["pane_id"] == "%2" }["open_questions"]).to eq(0)
+    end
+
+    it "still lists sessions, with a warning, when asks.json is unparseable" do
+      File.write(ask_path, "not json")
+
+      with_daemon { command.call(name: "proj", json: true) }
+
+      panes = JSON.parse(output.string)["panes"]
+      expect(panes.map { |p| p["open_questions"] }).to eq([0, 0])
+      expect(error_output.string).to include("ignoring question store")
+    end
+
+    it "still lists sessions when asks.json holds entries that aren't objects" do
+      File.write(ask_path, JSON.generate([nil, {"id" => "abc123", "status" => "open", "pane" => "%1"}]))
+
+      with_daemon { command.call(name: "proj") }
+
+      expect(output.string).to match(/0\.0.*1 asked/)
+    end
+
+    it "leaves the ASK counts off, with a warning, when the store can't be read at all" do
+      FileUtils.mkdir_p(ask_path)
+
+      with_daemon { command.call(name: "proj", json: true) }
+
+      panes = JSON.parse(output.string)["panes"]
+      expect(panes).to all(satisfy { |p| !p.key?("open_questions") })
+      expect(error_output.string).to include("workspace sessions: not showing open questions")
     end
   end
 

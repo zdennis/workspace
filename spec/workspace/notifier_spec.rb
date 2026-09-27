@@ -73,6 +73,14 @@ RSpec.describe Workspace::Notifier do
     expect(error_output.string).to include("notify command failed", "exit 3")
   end
 
+  it "prefixes its reports with the given label" do
+    n = notifier("exit 3", label: "workspace ask")
+
+    n.notify(env).join(5)
+
+    expect(error_output.string).to start_with("workspace ask: notify command failed")
+  end
+
   it "reports a command that can't start instead of raising" do
     notifier("/nonexistent/notify-command").notify(env).join(5)
 

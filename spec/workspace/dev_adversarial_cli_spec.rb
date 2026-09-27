@@ -142,6 +142,7 @@ RSpec.describe "PR2 adversarial findings" do
         lock_command: placeholder, dev_command: placeholder, parent_command: placeholder,
         agent_command: placeholder, sessions_command: placeholder, session_event_command: placeholder,
         config_command: config_command, statusline_command: CLITestHelpers::FakeStatuslineCommand.new,
+        ask_command: CLITestHelpers::FakeAskCommand.new,
         exit_handler: exit_handler, output: output, error_output: error_output,
         working_dir: working_dir
       )

@@ -109,6 +109,7 @@ module Workspace
         # upgrade may not, and --json output reaches terminals and scripts too.
         panes.each { |pane| pane["waiting_message"] &&= SessionMonitor.clean_message(pane["waiting_message"]) }
         apply_lock_column(panes)
+        apply_ask_column(panes)
         if json
           payload = {"schema_version" => JSON_SCHEMA_VERSION}.merge(snapshot)
           payload["schema_version"] = JSON_SCHEMA_VERSION
@@ -119,7 +120,7 @@ module Workspace
         @output.puts ""
         return @output.puts "  no panes" if panes.empty?
 
-        @output.puts format_row("PANE", "KIND", "TITLE", "STATE", "IDLE", "LOCK")
+        @output.puts format_row("PANE", "KIND", "TITLE", "STATE", "IDLE", "LOCK", "ASK")
         panes.each { |pane| render_pane(pane) }
       end
 
@@ -130,7 +131,8 @@ module Workspace
           truncate(pane["label"] || pane["title"], 22),
           pane["state"],
           duration(pane["idle_seconds"]),
-          pane["lock"]
+          pane["lock"],
+          pane["open_questions"].to_i.positive? ? "#{pane["open_questions"]} asked" : ""
         )
         render_waiting(pane["waiting_message"]) if pane["state"] == "waiting" && pane["waiting_message"]
         Array(pane["agents"]).each { |agent| render_agent(agent) }
@@ -188,6 +190,21 @@ module Workspace
         @project_config.project_root_for(@name)
       end
 
+      # Stamps each pane with `"open_questions"`, the count of unanswered
+      # `workspace ask` questions recorded against that pane. A question
+      # recorded outside tmux carries no pane id, so it is not counted
+      # against any row here; `workspace ask list` still shows it. A store
+      # that can't be read leaves the column off with a warning, so the rest
+      # of `sessions` still works.
+      def apply_ask_column(panes)
+        return unless @name
+        records = AskStore.new(path: @config.ask_state_path(@name), error_output: @error_output).list(open_only: true)
+        by_pane = records.group_by { |r| r["pane"] }
+        panes.each { |pane| pane["open_questions"] = by_pane[pane["pane_id"]]&.size || 0 }
+      rescue Workspace::Error => e
+        @error_output.puts "workspace sessions: not showing open questions: #{e.message}"
+      end
+
       # Returns pane_id => ordered array of lock-entry hashes (`:label`,
       # `:state`, `:position`, `:name`), ordered {LOCK_NAME} first, then every
       # other lock name alphabetically, so the label and the primary
@@ -238,8 +255,8 @@ module Workspace
           "└─ #{truncate(agent["name"], 20)}", agent["state"]).rstrip
       end
 
-      def format_row(pane, kind, title, state, idle, lock = "")
-        format("%-6s%-10s%-24s%-10s%-8s%s", pane, kind, title, state, idle, lock).rstrip
+      def format_row(pane, kind, title, state, idle, lock = "", ask = "")
+        format("%-6s%-10s%-24s%-10s%-8s%-10s%s", pane, kind, title, state, idle, lock, ask).rstrip
       end
 
       def truncate(value, width)

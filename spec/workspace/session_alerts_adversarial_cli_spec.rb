@@ -129,14 +129,14 @@ RSpec.describe "session alerts CLI/UX" do
       json_socket = File.join(tmpdir, "json.sock")
 
       table_command = Workspace::Commands::Sessions.new(
-        config: instance_double(Workspace::Config, agent_socket_path: table_socket),
+        config: instance_double(Workspace::Config, agent_socket_path: table_socket, ask_state_path: File.join(tmpdir, "table-asks.json")),
         output: table_output, error_output: StringIO.new
       )
       with_daemon(table_socket, payload) { table_command.call(name: "proj") }
       expect(table_output.string).not_to match(/\e\[31m/)
 
       json_command = Workspace::Commands::Sessions.new(
-        config: instance_double(Workspace::Config, agent_socket_path: json_socket),
+        config: instance_double(Workspace::Config, agent_socket_path: json_socket, ask_state_path: File.join(tmpdir, "json-asks.json")),
         output: json_output, error_output: StringIO.new
       )
       with_daemon(json_socket, payload) { json_command.call(name: "proj", json: true) }

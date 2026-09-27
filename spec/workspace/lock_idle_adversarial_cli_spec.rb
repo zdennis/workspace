@@ -20,7 +20,7 @@ RSpec.describe "PR3 adversarial findings" do
       run_result_store: placeholder, run_and_report_command: placeholder, capture_command: placeholder,
       lock_command: lock_command || placeholder, dev_command: placeholder, parent_command: placeholder,
       agent_command: placeholder, sessions_command: placeholder, session_event_command: placeholder,
-      config_command: placeholder, statusline_command: statusline_command || placeholder, exit_handler: FakeExitHandler, output: output, error_output: error_output,
+      config_command: placeholder, statusline_command: statusline_command || placeholder, ask_command: placeholder, exit_handler: FakeExitHandler, output: output, error_output: error_output,
       working_dir: Dir.pwd
     )
   end

@@ -29,14 +29,16 @@ module Workspace
     # @param max_in_flight [Integer] runs allowed at once
     # @param spawner [#call] Process.spawn-compatible, injected for tests
     # @param error_output [IO] where failures and skipped alerts are reported
+    # @param label [String] prefix for those reports, naming the command that notified
     def initialize(command:, timeout: DEFAULT_TIMEOUT, kill_grace: KILL_GRACE, max_in_flight: MAX_IN_FLIGHT,
-      spawner: Process.method(:spawn), error_output: $stderr)
+      spawner: Process.method(:spawn), error_output: $stderr, label: "workspace agent")
       @command = command
       @timeout = timeout
       @kill_grace = kill_grace
       @max_in_flight = max_in_flight
       @spawner = spawner
       @error_output = error_output
+      @label = label
       @threads = []
       @pids = []
       @stopped = false
@@ -52,7 +54,7 @@ module Workspace
         return nil if @stopped
         @threads.select!(&:alive?)
         if @threads.size >= @max_in_flight
-          report "workspace agent: skipped notify command for #{env["WORKSPACE_ALERT_TEXT"]} " \
+          report "#{@label}: skipped notify command for #{env["WORKSPACE_ALERT_TEXT"]} " \
             "(#{@threads.size} earlier runs still going)"
           return nil
         end
@@ -100,15 +102,15 @@ module Workspace
 
       if waiter.join(@timeout)
         status = waiter.value
-        report "workspace agent: notify command failed (#{status})" if status && !status.success? && !@stopped
+        report "#{@label}: notify command failed (#{status})" if status && !status.success? && !@stopped
         return
       end
       return if @stopped
 
-      report "workspace agent: notify command still running after #{@timeout}s; stopping it"
+      report "#{@label}: notify command still running after #{@timeout}s; stopping it"
       terminate([pid], waiter)
     rescue => e
-      report "workspace agent: notify command failed to start: #{e.message}"
+      report "#{@label}: notify command failed to start: #{e.message}"
     ensure
       @lock.synchronize { @pids.delete(pid) } if pid
     end

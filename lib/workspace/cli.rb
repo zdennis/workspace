@@ -42,7 +42,7 @@ module Workspace
     # @param parent_command [Workspace::Commands::Parent] pre-built parent command
     # @param dev_command [Workspace::Commands::Dev] pre-built dev command
     # @param clock [#call] returns the current Time, for relative deadline display
-    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now })
+    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now })
       @config = config
       @state = state
       @project_config = project_config
@@ -80,6 +80,7 @@ module Workspace
       @agent_command = agent_command
       @config_command = config_command
       @statusline_command = statusline_command
+      @ask_command = ask_command
       @exit_handler = exit_handler
       @logger = logger
       @output = output
@@ -140,6 +141,8 @@ module Workspace
         cmd_parent(args)
       when "sessions"
         cmd_sessions(args)
+      when "ask"
+        cmd_ask(args)
       when "session-event"
         cmd_session_event(args)
       when "agent-run"
@@ -230,6 +233,7 @@ module Workspace
           agent           Run the workspace agent for a project (long-lived)
           agent-run       Send a raw message to a running agent socket (debugging)
           alfred          Manage the Alfred workflow for workspace focus
+          ask             Record a question an unattended agent hit, with its default
           capture         Print a tmux pane's scrollback buffer to stdout
           cleanup         Detect and remove zombie sessions from state
           config          Show project or global configuration
@@ -845,6 +849,123 @@ module Workspace
       raise UsageError, parser.help if name.nil?
 
       @exit_handler.exit(1) unless @agent_command.call(name: name, wc_socket: wc_socket, force: force)
+    end
+
+    def cmd_ask(args)
+      # Recording always takes --default, so with it a first word like
+      # "list" or "help" is the question text, not a subcommand.
+      return cmd_ask_record(args) if args.any? { |a| a == "--default" || a.start_with?("--default=") }
+
+      # The subcommand is the first non-option argument, so a leading flag
+      # (e.g. `ask --json list`) doesn't get mistaken for the question text.
+      index = args.index { |a| !a.start_with?("-") }
+      subcommand = index && args[index]
+      rest = index ? args[0...index] + args[(index + 1)..] : args
+
+      case subcommand
+      when "list" then cmd_ask_list(rest)
+      when "answer", "resolve" then cmd_ask_answer(rest)
+      when "help", "--help", "-h", nil then @output.puts ask_help
+      else cmd_ask_record(args)
+      end
+    end
+
+    def ask_help
+      <<~HELP
+        Usage: workspace ask "<question>" --default "<default taken>" [options]
+               workspace ask list [--json]
+               workspace ask answer <id> "<answer>" [--json]
+
+        Records a question an unattended agent hit, with the default it took,
+        so the agent can keep going instead of blocking on a person. Never
+        reads stdin; returns once the question is recorded and any notify
+        command has finished (it is stopped after 10 seconds).
+
+        Subcommands:
+          list                    Show open questions for this workspace
+          answer <id> <answer>    Resolve an open question (alias: resolve)
+
+        A first word of list, answer, resolve or help is a subcommand only
+        without --default; `workspace ask list --default x` records "list".
+
+        Options (recording a question):
+          --default TEXT    The default the agent took (required)
+          --context TEXT    Free-text pointer to the code in question, e.g. "file.rb:42"
+          --json             Emit the documented JSON schema instead of a message
+
+        When the project has `alerts.notify` configured (see
+        `workspace config set alerts.notify <command>`), it runs with
+        WORKSPACE_ALERT=question and the question/default in
+        WORKSPACE_ALERT_* env vars. Without it, the question is just recorded.
+
+        Examples:
+          workspace ask "Use pg or sqlite for the cache?" --default "sqlite" --context "lib/cache.rb:12"
+          workspace ask list
+          workspace ask answer a1b2c3 "Use postgres instead"
+      HELP
+    end
+
+    def cmd_ask_record(args)
+      default = nil
+      context = nil
+      json = false
+      parser = OptionParser.new do |opts|
+        opts.banner = "Usage: workspace ask \"<question>\" --default \"<default taken>\" [options]"
+        opts.on("--default TEXT", "The default the agent took (required)") { |v| default = v }
+        opts.on("--context TEXT", "Free-text pointer to the code in question, e.g. \"file.rb:42\"") { |v| context = v }
+        opts.on("--json", "Emit the documented JSON schema instead of a message") { json = true }
+      end
+      parser.parse!(args)
+
+      question = args.shift
+      if question.nil? || args.any? || default.nil?
+        raise UsageError, parser.help unless json_requested?(json, args)
+        return emit_json_usage_error(Commands::Ask::JSON_SCHEMA_VERSION, "workspace ask: a question and --default are required.")
+      end
+
+      result = @ask_command.call(question: question, default: default, context: context, working_dir: @working_dir, json: json)
+      @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
+    rescue OptionParser::ParseError => e
+      raise unless json_requested?(json, args)
+      emit_json_usage_error(Commands::Ask::JSON_SCHEMA_VERSION, e.message)
+    end
+
+    def cmd_ask_list(args)
+      json = false
+      parser = OptionParser.new do |opts|
+        opts.banner = "Usage: workspace ask list [--json]"
+        opts.on("--json", "Emit the documented JSON schema instead of a table") { json = true }
+      end
+      parser.parse!(args)
+      raise UsageError, parser.help if args.any?
+
+      result = @ask_command.list(working_dir: @working_dir, json: json)
+      @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
+    rescue OptionParser::ParseError => e
+      raise unless json_requested?(json, args)
+      emit_json_usage_error(Commands::Ask::JSON_SCHEMA_VERSION, e.message)
+    end
+
+    def cmd_ask_answer(args)
+      json = false
+      parser = OptionParser.new do |opts|
+        opts.banner = "Usage: workspace ask answer <id> \"<answer>\" [--json]"
+        opts.on("--json", "Emit the documented JSON schema instead of a message") { json = true }
+      end
+      parser.parse!(args)
+
+      id = args.shift
+      answer = args.shift
+      if id.nil? || answer.nil? || args.any?
+        raise UsageError, parser.help unless json_requested?(json, args)
+        return emit_json_usage_error(Commands::Ask::JSON_SCHEMA_VERSION, "workspace ask answer: an id and an answer are required.")
+      end
+
+      result = @ask_command.answer(id, answer, working_dir: @working_dir, json: json)
+      @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
+    rescue OptionParser::ParseError => e
+      raise unless json_requested?(json, args)
+      emit_json_usage_error(Commands::Ask::JSON_SCHEMA_VERSION, e.message)
     end
 
     def cmd_lock(args)

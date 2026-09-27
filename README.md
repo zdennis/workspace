@@ -70,6 +70,7 @@ workspace <subcommand> [options]
 | agent | [README](docs/README.agent.md) | Run the long-lived workspace agent for a project |
 | agent-run | [README](docs/README.agent-run.md) | Send a raw JSONL message to a running agent socket |
 | alfred | [README](docs/README.alfred.md) | Manage the Alfred workflow for workspace focus |
+| ask | [README](docs/README.ask.md) | Record a question an unattended agent hit, with its default; list/answer them |
 | capture | [README](docs/README.capture.md) | Print a tmux pane's scrollback buffer to stdout |
 | cleanup | [README](docs/README.cleanup.md) | Detect and remove zombie sessions from state |
 | config | [README](docs/README.config.md) | Show, set, get, or unset project or global configuration |
