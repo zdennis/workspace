@@ -366,8 +366,8 @@ module Workspace
       #
       # Everything that can be checked at once is checked before replying:
       # the pane exists and runs an agent, no pipeline stage is running on
-      # it (unless "force"), its context usage can be read (or the /clear
-      # could never be confirmed), and no other restart is running on it.
+      # it (unless "force"), a /clear on it could be confirmed from its
+      # status-line readings, and no other restart is running on it.
       # The waiting and typing then happen on a worker thread, so the accept
       # loop keeps serving hook events meanwhile. With "wait", the worker
       # sends the outcome on this connection instead of an immediate
@@ -439,8 +439,13 @@ module Workspace
             "Pass --force to restart it anyway", target).merge("work_item_ref" => ref)]
         end
 
+        # The usage needn't be known, only confirmable: a pane that has no
+        # reading at all is let through once the monitor knows it's Claude,
+        # whose first status-line render after /clear confirms it.
         reading = @context_reader.read(pane_id: pane_id)
-        if reading[:pct].nil?
+        confirmable = AgentRestart.confirmable?(reading) &&
+          (reading[:error] != ContextReasons::NO_READING || kind == "claude")
+        unless confirmable
           return [nil, restart_error("context_unknown",
             "can't read context usage for pane #{target} (#{reading[:error]}), so a /clear couldn't be confirmed; " \
             "nothing was typed", target).merge("reason" => reading[:error], "fix" => ContextReasons::FIX_HINT)]

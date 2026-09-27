@@ -13,9 +13,11 @@ module Workspace
   #
   # Claude re-renders its status line within a second of `/clear`, with a
   # new session id and no usage yet (a null percentage). So a reading
-  # stamped after the `/clear` second that carries a different session id
-  # confirms it. Without a session id to compare, the reading must show no
-  # usage, or less than before.
+  # stamped after the moment `/clear` was typed that carries a different
+  # session id confirms it. Without a session id to compare, the reading
+  # must show no usage, or less than before. The pane's usage needn't be
+  # known beforehand: a pane just started or cleared, or one with no reading
+  # yet, is restarted all the same, and still confirmed this way.
   #
   # The pane is addressed by its tmux pane id, which stays with a pane for
   # its life. tmux can't paste to "session:%id", so the pane's current
@@ -94,7 +96,7 @@ module Workspace
       return reply.merge(quiet) unless quiet["ok"]
 
       before = @context_reader.read(pane_id: pane_id)
-      if before[:pct].nil?
+      unless self.class.confirmable?(before)
         return reply.merge(failure("context_unknown",
           "can't read context usage for pane #{pane_id} (#{before[:error]}), so a /clear couldn't be confirmed; " \
           "nothing was typed. #{ContextReasons::FIX_HINT}"))
@@ -113,7 +115,7 @@ module Workspace
         last = @context_reader.read(pane_id: pane_id)
         return reply.merge(failure("clear_not_confirmed",
           "typed /clear into pane #{pane_id}, but no status-line reading from a new conversation arrived " \
-          "within #{confirm_timeout}s (before: #{before[:pct]}%; last reading: #{describe(last)}); the prompt was not sent"))
+          "within #{confirm_timeout}s (before: #{describe(before)}; last reading: #{describe(last)}); the prompt was not sent"))
       end
       reply["context_after"] = after[:pct]
 
@@ -121,6 +123,18 @@ module Workspace
       return reply.merge(sent) if sent.key?("error")
 
       reply.merge("ok" => true, "status" => "restarted").merge(sent)
+    end
+
+    # Whether a /clear could be confirmed from this pane's readings, judged
+    # by the reading taken before it: one with a percentage or from a stored
+    # status-line reading can be compared with what follows, and a pane with
+    # no reading yet can be confirmed by the new conversation's first one.
+    # Scrape mode with no pattern, or one that doesn't match, never could.
+    #
+    # @param reading [Hash] a {Workspace::ContextReader#read} result
+    # @return [Boolean]
+    def self.confirmable?(reading)
+      !reading[:pct].nil? || !reading[:updated_at].nil? || reading[:error] == ContextReasons::NO_READING
     end
 
     private
@@ -175,19 +189,20 @@ module Workspace
       end
     end
 
-    # Readings are stamped to the second, so only one stamped in a later
-    # second than the /clear is known to come after it: one from the same
-    # second could be the old conversation's last render. A new session id
-    # is what shows the conversation changed; without one to compare, the
-    # reading must show no usage, or less than before.
+    # Only a reading stamped after the moment /clear was typed can confirm
+    # it; the old conversation's last render never can. A reading stamped to
+    # the whole second (recorded before sub-second stamps) is taken as the
+    # start of its second, so one from the /clear's own second never counts.
+    # A new session id is what shows the conversation changed; without one
+    # to compare, the reading must show no usage, or less than before.
     def clear_confirmed?(reading, before, cleared_at)
-      return false if reading[:updated_at].nil?
-      return false unless Time.iso8601(reading[:updated_at]) > Time.at(cleared_at.to_i)
+      recorded_at = reading[:recorded_at] || (reading[:updated_at] && Time.iso8601(reading[:updated_at]))
+      return false unless recorded_at && recorded_at > cleared_at
 
       if before[:session_id]
         !reading[:session_id].nil? && reading[:session_id] != before[:session_id]
       else
-        reading[:pct].nil? || reading[:pct] < before[:pct]
+        reading[:pct].nil? || (!before[:pct].nil? && reading[:pct] < before[:pct])
       end
     rescue ArgumentError
       false

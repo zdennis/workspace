@@ -41,7 +41,9 @@ module Workspace
     #   reused pid could otherwise report another session's percentage
     # @param session_id [String, nil] Claude Code session id
     # @param cwd [String, nil] the agent's working directory
-    # @param recorded_at [Time] when the reading was taken
+    # @param recorded_at [Time] when the reading was taken; stored to the
+    #   microsecond, so a reading can be ordered against a moment in the same
+    #   second (restart_agent's /clear)
     # @return [void]
     def record(pct:, pane_id: nil, pid: nil, started: nil, session_id: nil, cwd: nil,
       recorded_at: Time.now)
@@ -51,7 +53,7 @@ module Workspace
 
       entry = {
         "pct" => pct&.round,
-        "recorded_at" => recorded_at.utc.iso8601,
+        "recorded_at" => recorded_at.utc.iso8601(6),
         "session_id" => session_id,
         "cwd" => cwd,
         "started" => started

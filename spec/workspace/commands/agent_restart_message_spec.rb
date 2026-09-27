@@ -295,7 +295,8 @@ RSpec.describe Workspace::Commands::Agent, "restart_agent" do
     end
   end
 
-  it "refuses when the pane's context usage can't be read, with the reason and fix" do
+  it "refuses a pane with no reading that the monitor hasn't identified as Claude, with the reason and fix" do
+    monitor.kinds.delete("%18")
     allow(context_reader).to receive(:read).and_return({pct: nil, error: Workspace::ContextReasons::NO_READING, updated_at: nil})
 
     run_agent do
@@ -304,6 +305,35 @@ RSpec.describe Workspace::Commands::Agent, "restart_agent" do
       expect(reply).to include("ok" => false, "error" => "context_unknown",
         "reason" => Workspace::ContextReasons::NO_READING, "fix" => Workspace::ContextReasons::FIX_HINT)
       expect(restart.calls).to be_empty
+    end
+  end
+
+  it "refuses when scrape mode can never confirm the /clear" do
+    allow(context_reader).to receive(:read).and_return({pct: nil, error: Workspace::ContextReasons::NO_PATTERN, updated_at: nil})
+
+    run_agent do
+      expect(send_restart).to include("ok" => false, "error" => "context_unknown",
+        "reason" => Workspace::ContextReasons::NO_PATTERN)
+      expect(restart.calls).to be_empty
+    end
+  end
+
+  it "accepts a Claude pane with no reading yet, since the new conversation's first render confirms the /clear" do
+    allow(context_reader).to receive(:read).and_return({pct: nil, error: Workspace::ContextReasons::NO_READING, updated_at: nil})
+
+    run_agent do
+      expect(send_restart).to include("ok" => true, "status" => "started", "context_pct" => nil)
+      restart.finish
+    end
+  end
+
+  it "accepts a freshly cleared pane whose session hasn't reported usage yet" do
+    allow(context_reader).to receive(:read).and_return({pct: nil, error: Workspace::ContextReasons::NO_READING_YET,
+      updated_at: "2026-09-27T12:00:00Z", session_id: "s-1"})
+
+    run_agent do
+      expect(send_restart).to include("ok" => true, "status" => "started", "context_pct" => nil)
+      restart.finish
     end
   end
 

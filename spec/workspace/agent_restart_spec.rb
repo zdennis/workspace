@@ -165,14 +165,46 @@ RSpec.describe Workspace::AgentRestart do
     expect(call(confirm_timeout: 2)).to include("error" => "clear_not_confirmed")
   end
 
-  it "refuses without typing anything when usage can't be read" do
-    readings.push({pct: nil, error: Workspace::ContextReasons::NO_READING, updated_at: nil})
+  it "refuses without typing anything when no reading could ever confirm the /clear" do
+    readings.push({pct: nil, error: Workspace::ContextReasons::NO_PATTERN, updated_at: nil})
 
     result = call
 
     expect(result).to include("ok" => false, "error" => "context_unknown")
-    expect(result["message"]).to include(Workspace::ContextReasons::NO_READING, "nothing was typed")
+    expect(result["message"]).to include(Workspace::ContextReasons::NO_PATTERN, "nothing was typed")
     expect(tmux.delivered).to be_empty
+  end
+
+  context "when the pane's usage isn't known before the /clear" do
+    it "restarts a freshly cleared pane once a different session reports" do
+      readings.push(->(w) { {pct: nil, error: Workspace::ContextReasons::NO_READING_YET, updated_at: w.utc.iso8601, session_id: "s-1"} },
+        reading(nil, session: "s-1"), reading(nil, session: "s-2"))
+
+      expect(call).to include("ok" => true, "context_before" => nil, "context_after" => nil)
+      expect(tmux.delivered.map { |d| d[:text] }).to eq(["/clear", "Read HANDOFF.md"])
+    end
+
+    it "does not confirm from the same session's later render" do
+      readings.push(->(w) { {pct: nil, error: Workspace::ContextReasons::NO_READING_YET, updated_at: w.utc.iso8601, session_id: "s-1"} },
+        reading(nil, session: "s-1"))
+
+      expect(call(confirm_timeout: 2)).to include("error" => "clear_not_confirmed")
+      expect(tmux.delivered.map { |d| d[:text] }).to eq(["/clear"])
+    end
+
+    it "with no reading at all, confirms from the first reading with no usage recorded after the /clear" do
+      readings.push({pct: nil, error: Workspace::ContextReasons::NO_READING, updated_at: nil},
+        {pct: nil, error: Workspace::ContextReasons::NO_READING, updated_at: nil}, reading(nil, session: "s-2"))
+
+      expect(call).to include("ok" => true, "context_before" => nil, "context_after" => nil)
+    end
+
+    it "with no reading at all, does not confirm from a reading that shows usage" do
+      readings.push({pct: nil, error: Workspace::ContextReasons::NO_READING, updated_at: nil}, reading(40, session: "s-2"))
+
+      expect(call(confirm_timeout: 2)).to include("error" => "clear_not_confirmed")
+      expect(tmux.delivered.map { |d| d[:text] }).to eq(["/clear"])
+    end
   end
 
   it "waits for the screen to stop changing before typing /clear" do

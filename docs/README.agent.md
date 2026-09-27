@@ -97,24 +97,24 @@ A `restart_agent` message gives the coding agent in one pane a fresh conversatio
 
 `pane` is required and is never guessed: a pane id (`%18`), `window.pane` (`0.1`), `session:window.pane`, or a pane index in window 0. The session may be the tmux session name or the workspace name.
 
-Before replying, the agent checks that the pane exists and isn't running a shell, that no pipeline stage is running on it (unless `force`), that its context usage can be read, and that no other restart is running on it. Then a worker thread:
+Before replying, the agent checks that the pane exists and isn't running a shell, that no pipeline stage is running on it (unless `force`), that a `/clear` on it could be confirmed from its status-line readings, and that no other restart is running on it. Then a worker thread:
 
 1. waits (up to 120s) for the pane's screen to stop changing and for the agent to stop waiting on a person,
 2. types `/clear`,
-3. waits (up to `timeout` seconds, default 30, at most 600) for a context reading taken after the `/clear` that is lower than the one before it (or 0%),
+3. waits (up to `timeout` seconds, default 30, at most 600) for a status-line reading recorded after the moment `/clear` was typed that comes from a new Claude session (a different `session_id`); a reading with no session id must instead show no usage yet, or less than before,
 4. types the prompt, unless a pipeline stage started on the pane meanwhile (skipped with `force`).
 
 If step 3 times out, the prompt is not typed. Without `wait`, the reply comes at once and a failure later is printed on the agent's stderr. With `wait`, the reply comes when the worker finishes; if the agent shuts down first, the connection closes with no reply.
 
 | Reply | Meaning |
 |-------|---------|
-| `{"ok": true, "status": "started", "pane", "pane_id", "context_pct"}` | Checks passed; the worker is running (no `wait`) |
+| `{"ok": true, "status": "started", "pane", "pane_id", "context_pct"}` | Checks passed; the worker is running (no `wait`). `context_pct` is `null` for a pane that hasn't reported usage yet |
 | `{"ok": true, "status": "restarted", "context_before", "context_after", "delivery"}` | Done (`wait`); `warning` is set when the prompt may not have been submitted |
 | `warning` on a started reply | `force` restarted a pane with a pipeline stage on it; that stage finishes only if the new conversation prints its sentinel |
 | `error: "missing_pane"` / `"bad_pane"` / `"no_such_pane"` / `"wrong_session"` | The pane was missing, unreadable, not found, or in another tmux session |
 | `error: "not_an_agent"` | The pane is running a shell |
 | `error: "pane_in_pipeline"`, `work_item_ref` | A pipeline stage is running on the pane; pass `force` to restart it anyway |
-| `error: "context_unknown"`, `reason`, `fix` | The pane's context usage can't be read, so the `/clear` couldn't be confirmed; nothing was typed |
+| `error: "context_unknown"`, `reason`, `fix` | No reading could confirm the `/clear` (scrape mode with no matching pattern, or no reading at all on a pane the monitor hasn't identified as Claude Code); nothing was typed |
 | `error: "restart_in_progress"` | Another restart is running on this pane |
 | `error: "missing_prompt"` / `"bad_timeout"` | The prompt was empty, or `timeout` wasn't 1–600 seconds |
 | `error: "pane_busy"` / `"pane_gone"` | (`wait`) The pane never went quiet, or closed; see `message` for what was typed |

@@ -36,7 +36,11 @@ module Workspace
     #   session id; when given and it doesn't match the stored reading's
     #   session_id, the reading is treated as stale rather than current
     # @return [Hash] pct: [Integer, nil], error: [String, nil],
-    #   updated_at: [String, nil] (ISO8601)
+    #   updated_at: [String, nil] (ISO8601, whole seconds), and for a result
+    #   taken from a stored or scraped reading, recorded_at: [Time, nil]
+    #   (full precision, for ordering against another moment) and
+    #   session_id: [String, nil]. A reading from a session that hasn't
+    #   reported usage yet keeps its updated_at and session_id, with pct nil.
     def read(pane_id:, agent_pid: nil, current_session_id: nil)
       global = safe_load_global
       source = global.dig("context", "source") || "statusline"
@@ -78,7 +82,8 @@ module Workspace
       match = text && Regexp.new(pattern).match(text)
       return absent(ContextReasons::PATTERN_NO_MATCH) unless match && match[1]
 
-      {pct: match[1].to_i, error: nil, updated_at: Time.now.utc.iso8601}
+      now = Time.now.utc
+      {pct: match[1].to_i, error: nil, updated_at: now.iso8601, recorded_at: now, session_id: nil}
     rescue RegexpError => e
       @logger.debug { "context_reader: invalid context.pattern (#{e.message})" }
       absent(ContextReasons::PATTERN_NO_MATCH)
@@ -89,8 +94,22 @@ module Workspace
       if current_session_id && stored_session_id && stored_session_id != current_session_id
         return absent(ContextReasons::STALE_SESSION)
       end
-      return absent(ContextReasons::NO_READING_YET) if reading["pct"].nil?
-      {pct: reading["pct"], error: nil, updated_at: reading["recorded_at"]}
+      recorded_at = parse_time(reading["recorded_at"])
+      {
+        pct: reading["pct"],
+        error: reading["pct"].nil? ? ContextReasons::NO_READING_YET : nil,
+        updated_at: recorded_at&.utc&.iso8601 || reading["recorded_at"],
+        recorded_at: recorded_at,
+        session_id: stored_session_id
+      }
+    end
+
+    # Readings recorded before sub-second stamps were added carry whole
+    # seconds; both forms parse.
+    def parse_time(value)
+      value.is_a?(String) ? Time.iso8601(value) : nil
+    rescue ArgumentError
+      nil
     end
 
     def absent(reason)
