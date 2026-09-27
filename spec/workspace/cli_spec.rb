@@ -1570,6 +1570,25 @@ RSpec.describe Workspace::CLI do
       expect(parsed["error"]).to be_a(String)
     end
 
+    it "emits a short one-line JSON error for extra arguments to `lock clear`, not the full usage text" do
+      cli, output, _ = build_test_cli(lock_command: CLITestHelpers::FakeLockCommand.new)
+
+      expect { cli.run(["lock", "clear", "foo", "bar", "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+
+      parsed = JSON.parse(output.string)
+      expect(parsed["error"]).to eq("workspace lock clear: too many arguments.")
+      expect(parsed["error"]).not_to include("\n")
+    end
+
+    it "still prints full usage on stderr for extra arguments to `lock clear` in text mode" do
+      cli, _, error_output = build_test_cli(lock_command: CLITestHelpers::FakeLockCommand.new)
+
+      expect { cli.run(["lock", "clear", "foo", "bar"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+
+      expect(error_output.string).to include("workspace lock clear: too many arguments.")
+      expect(error_output.string).to include("Usage: workspace lock clear")
+    end
+
     it "dispatches to lock_command#instructions, defaulting to the edit lock" do
       lock_command = CLITestHelpers::FakeLockCommand.new
       cli, _, _ = build_test_cli(lock_command: lock_command)

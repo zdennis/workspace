@@ -940,13 +940,14 @@ module Workspace
       parser.parse!(args)
 
       name = args.shift
-      raise UsageError, parser.help if (!all && name.nil?) || (all && name) || args.any?
+      raise UsageError, parser.help if (!all && name.nil?) || (all && name)
+      raise UsageError, "workspace lock clear: too many arguments.\n\n#{parser.help}" if args.any?
 
       result = @lock_command.clear(name, all: all, working_dir: @working_dir, json: json)
       @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
     rescue OptionParser::ParseError, UsageError => e
       raise unless json || args.include?("--json")
-      emit_json_usage_error(Commands::Lock::JSON_SCHEMA_VERSION, e.message)
+      emit_json_usage_error(Commands::Lock::JSON_SCHEMA_VERSION, e.message.lines.first.strip)
     end
 
     def cmd_dev(args)
@@ -992,10 +993,17 @@ module Workspace
 
         Exit codes (up):
           0   running (or already running for this worktree)
-          1   running for another worktree (without --wait/--takeover), or failed to start
+          1   running for another worktree (without --wait/--takeover), or failed to start;
+              also a --takeover whose target is already being stopped by another
+              `lock clear`/`dev down`/`dev up --takeover`
           4   devenv lock cleared while waiting
           6   ready check failed (the env is stopped and the lock released)
           75  still queued after --max-wait
+
+        Exit codes (down):
+          0   stopped (or nothing was running)
+          1   could not stop the process group, or it's already being stopped by
+              another `lock clear`/`dev down`/`dev up --takeover`
 
         Examples:
           workspace dev up
