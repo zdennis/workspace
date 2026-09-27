@@ -865,7 +865,6 @@ module Workspace
       name = args.shift
       raise UsageError, parser.help if name.nil? || args.any?
 
-      wait ||= !max_wait.nil?
       result = @lock_command.acquire(name, task: task, wait: wait, poll: poll, max_wait: max_wait, working_dir: @working_dir)
       @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
     end
@@ -1030,7 +1029,6 @@ module Workspace
       parser.parse!(args)
       raise UsageError, parser.help if args.any?
 
-      wait ||= !max_wait.nil?
       result = @dev_command.up(wait: wait, takeover: takeover, ready: ready, max_wait: max_wait, working_dir: @working_dir)
       @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
     end

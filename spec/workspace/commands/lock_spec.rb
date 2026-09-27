@@ -125,6 +125,19 @@ RSpec.describe Workspace::Commands::Lock do
       expect(error_output.string).to include("Still queued")
     end
 
+    it "queues instead of refusing when given max_wait with wait: false" do
+      command_for(FakeLockIdentity.new(pid: 100)).acquire("edit")
+
+      waiter_identity = FakeLockIdentity.new(pid: 200)
+      times = [base_time, base_time, base_time + 10]
+      allow(clock).to receive(:now) { times.shift || base_time + 10 }
+
+      result = command_for(waiter_identity).acquire("edit", wait: false, poll: 0.01, max_wait: 5)
+
+      expect(result).to eq(exit_code: 75)
+      expect(error_output.string).to include("Still queued")
+    end
+
     it "returns the interrupted exit code through the normal {exit_code:} contract, never calling Kernel.exit" do
       command_for(FakeLockIdentity.new(pid: 100)).acquire("edit")
 

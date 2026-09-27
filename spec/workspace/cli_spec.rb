@@ -1470,14 +1470,14 @@ RSpec.describe Workspace::CLI do
       )
     end
 
-    it "turns on --wait when --max-wait is given alone" do
+    it "passes --max-wait alone through as given, leaving the command to imply --wait" do
       lock_command = CLITestHelpers::FakeLockCommand.new
       cli, _, _ = build_test_cli(lock_command: lock_command)
 
       cli.run(["lock", "acquire", "edit", "--max-wait", "9"])
 
       expect(lock_command.calls).to eq(
-        [{action: :acquire, name: "edit", task: nil, wait: true, poll: Workspace::Commands::Lock::DEFAULT_POLL_SECONDS, max_wait: 9.0}]
+        [{action: :acquire, name: "edit", task: nil, wait: false, poll: Workspace::Commands::Lock::DEFAULT_POLL_SECONDS, max_wait: 9.0}]
       )
     end
 
@@ -1659,12 +1659,12 @@ RSpec.describe Workspace::CLI do
         expect(dev_command.calls).to eq([{action: :up, wait: false, takeover: false, ready: true, max_wait: nil}])
       end
 
-      it "turns on --wait when --max-wait is given alone" do
+      it "passes --max-wait alone through as given, leaving the command to imply --wait" do
         cli, _, _ = build_test_cli(dev_command: dev_command)
 
         cli.run(["dev", "up", "--max-wait", "5"])
 
-        expect(dev_command.calls).to eq([{action: :up, wait: true, takeover: false, ready: true, max_wait: 5.0}])
+        expect(dev_command.calls).to eq([{action: :up, wait: false, takeover: false, ready: true, max_wait: 5.0}])
       end
 
       it "exits with up's exit code" do

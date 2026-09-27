@@ -77,13 +77,14 @@ module Workspace
       # @param task [String, nil] free-text description shown to other waiters
       # @param wait [Boolean] enqueue and poll instead of refusing when busy
       # @param poll [Numeric] seconds between polls while waiting
-      # @param max_wait [Numeric, nil] give up (exit 75) after this many seconds
+      # @param max_wait [Numeric, nil] give up (exit 75) after this many seconds; implies +wait+
       # @param working_dir [String] directory to resolve the lock namespace from
       # @return [Hash] {exit_code:}
       def acquire(name, task: nil, wait: false, poll: DEFAULT_POLL_SECONDS, max_wait: nil, working_dir: Dir.pwd)
         validate_name!(name)
         raise Workspace::UsageError, "--poll must be greater than 0." if poll.to_f <= 0
         raise Workspace::UsageError, "--max-wait must be greater than 0." if max_wait && max_wait.to_f <= 0
+        wait ||= !max_wait.nil?
         store = store_for(working_dir)
         identity = require_identity!
         waiter_pid = @pid_provider.call

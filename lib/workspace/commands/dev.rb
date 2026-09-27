@@ -78,6 +78,7 @@ module Workspace
       # @raise [Workspace::Error] if no dev command is configured or no tmux session is found
       def up(wait: false, takeover: false, ready: true, max_wait: nil, working_dir: Dir.pwd)
         raise Workspace::UsageError, "--max-wait must be greater than 0." if max_wait && max_wait.to_f <= 0
+        wait ||= !max_wait.nil?
         ctx = context(working_dir)
         raise Workspace::Error, NO_COMMAND unless command?(ctx)
 

@@ -664,6 +664,15 @@ RSpec.describe Workspace::Commands::Dev, "with fake processes and clock" do
       expect(now[0]).to eq(3)
       expect(error_output.string).to include("Still queued for devenv lock after --max-wait; re-run to keep waiting.")
     end
+
+    it "queues instead of refusing when given max_wait with wait: false" do
+      hold(700)
+      wrapper_joins(555)
+
+      expect(dev.up(wait: false, max_wait: 3, working_dir: worktree)).to eq(exit_code: 75)
+      expect(tmux).to have_received(:new_window).with("app", hash_including(command: end_with("__run", "--wait")))
+      expect(error_output.string).to include("Still queued for devenv lock after --max-wait")
+    end
   end
 
   describe "#up --takeover waiting for its wrapper to queue" do
