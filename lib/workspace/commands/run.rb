@@ -52,15 +52,11 @@ module Workspace
             @output.puts "tmux send-keys -l -t #{session_name}:#{pane_spec} exit" if close
             @output.puts "tmux send-keys -t #{session_name}:#{pane_spec} Enter" if close
           else
-            unless @tmux.send_keys(session_name, pane_spec, command, enter: enter)
-              raise Workspace::Error,
-                "Failed to send command to pane #{pane_spec} of '#{project}'"
-            end
+            send_text(session_name, pane_spec, command, enter: enter,
+              failure: "Failed to send command to pane #{pane_spec} of '#{project}'")
             if close
-              unless @tmux.send_keys(session_name, pane_spec, "exit", enter: true)
-                raise Workspace::Error,
-                  "Failed to send exit to pane #{pane_spec} of '#{project}'"
-              end
+              send_text(session_name, pane_spec, "exit", enter: true,
+                failure: "Failed to send exit to pane #{pane_spec} of '#{project}'")
             end
           end
         end
@@ -96,17 +92,20 @@ module Workspace
 
         pane_spec = "0.#{new_pane_index}"
 
-        unless @tmux.send_keys(session_name, pane_spec, command, enter: enter)
-          raise Workspace::Error,
-            "Failed to send command to new split pane of '#{session_name}'"
-        end
+        send_text(session_name, pane_spec, command, enter: enter,
+          failure: "Failed to send command to new split pane of '#{session_name}'")
 
         if close
-          unless @tmux.send_keys(session_name, pane_spec, "exit", enter: true)
-            raise Workspace::Error,
-              "Failed to send exit to new split pane of '#{session_name}'"
-          end
+          send_text(session_name, pane_spec, "exit", enter: true,
+            failure: "Failed to send exit to new split pane of '#{session_name}'")
         end
+      end
+
+      # Sends text and raises, with tmux's reason, unless it landed and (with
+      # +enter+) was submitted.
+      def send_text(session_name, pane_spec, text, enter:, failure:)
+        delivery = @tmux.deliver(session_name, pane_spec, text, enter: enter)
+        raise Workspace::Error, "#{failure}: #{delivery.message}" unless delivery.ok?
       end
 
       def focus_window(project)

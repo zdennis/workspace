@@ -59,94 +59,243 @@ RSpec.describe Workspace::Tmux do
     end
   end
 
-  describe "#send_keys" do
-    let(:tmux) { described_class.new(config: config) }
+  describe "#send_keys and #deliver" do
+    # A pane whose screen is read back from a script: each capture returns the
+    # next screen, and the last one repeats. Time moves only when the sender
+    # sleeps, so the timeouts run without waiting.
+    let(:now) { [0.0] }
+    let(:sleeps) { [] }
+    let(:tmux) do
+      described_class.new(config: config, clock: -> { now[0] },
+        sleeper: ->(seconds) {
+          sleeps << seconds
+          now[0] += seconds
+        })
+    end
+    let(:enters) { [] }
 
-    it "pastes the full text via buffer and presses Enter by default" do
+    def screens(*list)
+      queue = list.dup
+      allow(tmux).to receive(:capture_screen) { (queue.size > 1) ? queue.shift : queue.first }
+    end
+
+    # Screens that change whenever Enter is pressed, the way a live prompt does.
+    def live_pane(initial: "$ ", after_paste: "$ hello")
+      screen = [initial]
+      allow(tmux).to receive(:capture_screen) { screen[0] }
+      allow(tmux).to receive(:tmux_load_buffer) {
+        screen[0] = after_paste
+        true
+      }
+      allow(tmux).to receive(:system) do |*args|
+        if args[1] == "send-keys"
+          enters << args.last
+          screen[0] = "#{screen[0]}\n$ "
+        end
+        true
+      end
+    end
+
+    before do
       allow(tmux).to receive(:system).and_return(true)
       allow(tmux).to receive(:tmux_load_buffer).and_return(true)
-      allow(tmux).to receive(:sleep)
+    end
 
-      result = tmux.send_keys("my-session", "0.1", "hello world")
+    it "pastes the full text as one bracketed paste and presses Enter once" do
+      live_pane
 
-      expect(result).to be true
+      result = tmux.deliver("my-session", "0.1", "hello world")
+
+      expect(result.status).to eq(:submitted)
+      expect(result).to be_ok
       expect(tmux).to have_received(:tmux_load_buffer).with(anything, "hello world")
-      expect(tmux).to have_received(:system).with("tmux", "paste-buffer", "-b", anything, "-t", "my-session:0.1")
-      expect(tmux).to have_received(:system).with("tmux", "send-keys", "-t", "my-session:0.1", "Enter")
+      expect(tmux).to have_received(:system).with("tmux", "paste-buffer", "-p", "-b", anything, "-t", "my-session:0.1")
+      expect(enters).to eq(["Enter"])
     end
 
-    it "skips Enter when enter: false" do
-      allow(tmux).to receive(:system).and_return(true)
-      allow(tmux).to receive(:tmux_load_buffer).and_return(true)
-      allow(tmux).to receive(:sleep)
+    it "returns true from send_keys when the text was submitted" do
+      live_pane
 
-      tmux.send_keys("my-session", "0.1", "hello", enter: false)
-
-      expect(tmux).not_to have_received(:system).with("tmux", "send-keys", "-t", "my-session:0.1", "Enter")
+      expect(tmux.send_keys("my-session", "0.1", "hello")).to be true
     end
 
-    it "returns false when load-buffer fails" do
-      allow(tmux).to receive(:tmux_load_buffer).and_return(false)
+    it "presses Enter once for a paste over 1,000 bytes, so it is not submitted twice" do
+      live_pane
 
-      result = tmux.send_keys("bad-session", "0.1", "text")
+      result = tmux.deliver("my-session", "0.1", "x" * 5_000)
 
-      expect(result).to be false
-    end
-
-    it "returns false when paste-buffer fails" do
-      allow(tmux).to receive(:system).and_return(false)
-      allow(tmux).to receive(:tmux_load_buffer).and_return(true)
-      allow(tmux).to receive(:sleep)
-
-      result = tmux.send_keys("bad-session", "0.1", "text")
-
-      expect(result).to be false
+      expect(result.status).to eq(:submitted)
+      expect(enters).to eq(["Enter"])
     end
 
     it "sends multiline text as one paste so newlines are line-breaks not separate submissions" do
-      allow(tmux).to receive(:system).and_return(true)
-      allow(tmux).to receive(:tmux_load_buffer).and_return(true)
-      allow(tmux).to receive(:sleep)
+      live_pane
       text = "count to 10\n\nStatus reporting:\nsome command"
 
-      tmux.send_keys("my-session", "0.1", text)
+      tmux.deliver("my-session", "0.1", text)
 
-      expect(tmux).to have_received(:tmux_load_buffer).with(anything, text)
-      expect(tmux).to have_received(:system).with("tmux", "paste-buffer", "-b", anything, "-t", "my-session:0.1").once
+      expect(tmux).to have_received(:tmux_load_buffer).with(anything, text).once
+      expect(tmux).to have_received(:system).with("tmux", "paste-buffer", "-p", "-b", anything, "-t", "my-session:0.1").once
+      expect(enters).to eq(["Enter"])
+    end
+
+    it "waits for the pane to stop changing before pressing Enter" do
+      screens("$ ", "$ he", "$ hell", "$ hello", "$ hello", "$ hello", "$ hello\n$ ")
+      allow(tmux).to receive(:system) do |*args|
+        enters << now[0] if args[1] == "send-keys"
+        true
+      end
+
+      tmux.deliver("my-session", "0.1", "hello")
+
+      # Pasted text first shows at the second read; two more changes and a
+      # repeat come before Enter.
+      expect(enters.size).to eq(1)
+      expect(enters.first).to be >= 3 * described_class::DELIVERY_POLL
+    end
+
+    it "presses Enter a second time only when the first left the screen unchanged" do
+      screen = ["$ "]
+      allow(tmux).to receive(:capture_screen) { screen[0] }
+      allow(tmux).to receive(:tmux_load_buffer) {
+        screen[0] = "$ hello"
+        true
+      }
+      allow(tmux).to receive(:system) do |*args|
+        if args[1] == "send-keys"
+          enters << args.last
+          screen[0] = "$ hello\n$ " if enters.size == 2
+        end
+        true
+      end
+
+      result = tmux.deliver("my-session", "0.1", "hello")
+
+      expect(result.status).to eq(:submitted)
+      expect(enters.size).to eq(2)
+    end
+
+    it "reports :unsubmitted when neither Enter changes the screen" do
+      screens("$ ", "$ hello")
+      allow(tmux).to receive(:system) do |*args|
+        enters << args.last if args[1] == "send-keys"
+        true
+      end
+
+      result = tmux.deliver("my-session", "0.1", "hello")
+
+      expect(result.status).to eq(:unsubmitted)
+      expect(result).not_to be_ok
+      expect(result).to be_landed
+      expect(result.message).to include("may not have been submitted")
+      expect(enters.size).to eq(2)
+    end
+
+    it "reports :not_landed, and presses no Enter, when the paste never shows up" do
+      screens("$ ")
+      allow(tmux).to receive(:system) do |*args|
+        enters << args.last if args[1] == "send-keys"
+        true
+      end
+
+      result = tmux.deliver("my-session", "0.1", "hello")
+
+      expect(result.status).to eq(:not_landed)
+      expect(result).not_to be_landed
+      expect(enters).to be_empty
+      expect(now[0]).to be >= described_class::LAND_TIMEOUT
+      expect(tmux.send_keys("my-session", "0.1", "hello")).to be false
+    end
+
+    it "skips Enter when enter: false and reports :pasted" do
+      screens("$ ", "$ hello")
+
+      result = tmux.deliver("my-session", "0.1", "hello", enter: false)
+
+      expect(result.status).to eq(:pasted)
+      expect(result).to be_ok
+      expect(tmux).not_to have_received(:system).with("tmux", "send-keys", "-t", "my-session:0.1", "Enter")
+    end
+
+    it "reports :unverified, still pressing Enter, when the pane can't be read back" do
+      screens(nil)
+
+      result = tmux.deliver("my-session", "0.1", "hello")
+
+      expect(result.status).to eq(:unverified)
+      expect(result).to be_ok
       expect(tmux).to have_received(:system).with("tmux", "send-keys", "-t", "my-session:0.1", "Enter").once
     end
 
-    it "sends Enter twice for large pastes so Claude Code's collapse widget is dismissed then submitted" do
-      allow(tmux).to receive(:system).and_return(true)
-      allow(tmux).to receive(:tmux_load_buffer).and_return(true)
-      allow(tmux).to receive(:sleep)
-      large_text = "x" * 1_001
+    it "reports :failed when load-buffer fails" do
+      screens("$ ")
+      allow(tmux).to receive(:tmux_load_buffer).and_return(false)
 
-      result = tmux.send_keys("my-session", "0.1", large_text)
+      result = tmux.deliver("bad-session", "0.1", "text")
 
-      expect(result).to be true
-      expect(tmux).to have_received(:system).with("tmux", "send-keys", "-t", "my-session:0.1", "Enter").twice
+      expect(result.status).to eq(:failed)
+      expect(tmux.send_keys("bad-session", "0.1", "text")).to be false
     end
 
-    it "sends Enter once for small pastes" do
-      allow(tmux).to receive(:system).and_return(true)
-      allow(tmux).to receive(:tmux_load_buffer).and_return(true)
-      allow(tmux).to receive(:sleep)
+    it "reports :failed when paste-buffer fails, and still deletes the buffer" do
+      screens("$ ")
+      allow(tmux).to receive(:system).and_return(false)
 
-      tmux.send_keys("my-session", "0.1", "short text")
+      result = tmux.deliver("bad-session", "0.1", "text")
 
-      expect(tmux).to have_received(:system).with("tmux", "send-keys", "-t", "my-session:0.1", "Enter").once
+      expect(result.status).to eq(:failed)
+      expect(result.message).to include("could not paste")
+      expect(tmux).to have_received(:system).with("tmux", "delete-buffer", "-b", anything)
+    end
+
+    it "reports :failed when Enter can't be pressed" do
+      screens("$ ", "$ text")
+      allow(tmux).to receive(:system) { |*args| args[1] != "send-keys" }
+
+      expect(tmux.deliver("my-session", "0.1", "text").status).to eq(:failed)
     end
 
     it "handles text starting with '-' without flag parsing errors" do
-      allow(tmux).to receive(:system).and_return(true)
-      allow(tmux).to receive(:tmux_load_buffer).and_return(true)
-      allow(tmux).to receive(:sleep)
+      live_pane
 
       result = tmux.send_keys("my-session", "0.1", "--ref WC-1")
 
       expect(result).to be true
       expect(tmux).to have_received(:tmux_load_buffer).with(anything, "--ref WC-1")
+    end
+
+    it "only presses Enter for empty text" do
+      live_pane
+
+      result = tmux.deliver("my-session", "0.1", "")
+
+      expect(result.status).to eq(:submitted)
+      expect(tmux).not_to have_received(:tmux_load_buffer)
+    end
+
+    it "never really sleeps" do
+      screens("$ ")
+      tmux.deliver("my-session", "0.1", "hello")
+
+      expect(sleeps).to all(eq(described_class::DELIVERY_POLL))
+    end
+  end
+
+  describe "#capture_screen" do
+    let(:tmux) { described_class.new(config: config) }
+
+    it "reads the visible screen of any target" do
+      allow(Open3).to receive(:capture3)
+        .with("tmux", "capture-pane", "-p", "-t", "%23")
+        .and_return(["screen\n", "", double(success?: true)])
+
+      expect(tmux.capture_screen("%23")).to eq("screen\n")
+    end
+
+    it "returns nil on failure" do
+      allow(Open3).to receive(:capture3).and_return(["", "no pane", double(success?: false)])
+
+      expect(tmux.capture_screen("%99")).to be_nil
     end
   end
 

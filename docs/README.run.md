@@ -26,7 +26,7 @@ workspace run [project] <command> [options]
 
 ## Details
 
-The command is sent to the tmux pane using `tmux send-keys` in literal mode (`-l`), so special characters are passed through unchanged.
+The command is pasted into the tmux pane in one piece (`tmux load-buffer` + `paste-buffer -p`), so special characters and newlines pass through unchanged, and Enter is pressed once the pane stops changing. `run` reads the pane back to check the text arrived. It fails with the reason if the screen never changes after the paste, or if Enter doesn't change it even on a second press. Enter is never pressed again once the screen has changed, so a command is not submitted twice.
 
 **Pane targeting** — by default the bottommost pane is used (highest pane index at invocation time). Use `--pane N` for a specific zero-based index, or `--pane bottom` / `--bottom` to be explicit.
 

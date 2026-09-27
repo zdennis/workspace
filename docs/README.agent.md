@@ -47,6 +47,8 @@ A project with no `pipeline` block still works: commands go to the Claude Code p
 
 **Steering** — an `inject` message queues a note for the next stage without disturbing the running one. With `interrupt: true` it sends `C-c` to the running stage's pane first and types the note in immediately.
 
+**Delivery checks** — text is pasted into a pane in one piece and Enter is pressed once the pane stops changing. The agent reads the pane back to check each step. If the screen never changes after the paste, the text did not arrive. For a command, the agent then prints `workspace agent: command for <REF> was not delivered …` on stderr, reports an `error` to the coordinator, answers `not_delivered`, and does not start the pipeline. For a hand-off, the work item fails the same way a timed-out stage does. If the text arrived but Enter didn't change the screen, even on a second press, the stage still starts, with a `Warning:` status update, because sending the text again would type it twice. A pane whose output is already scrolling can pass this check without the text having landed.
+
 ## Wire protocol
 
 The agent answers every inbound connection with exactly one JSON line, so a caller can always tell an answer apart from a dead agent.
@@ -62,6 +64,13 @@ The coordinator's answer to a status report decides what the agent does next:
 | `error: "unknown_work_item"`, `action: "give_up"` | Stop reporting on this work item and drop it |
 | `error: "terminal_state"`, `action: "abort_pipeline"` | Fail the pipeline for this work item |
 
+### Command reply
+
+| Reply | Meaning |
+|-------|---------|
+| `{"ok": true}` | The command reached the pane (a `Warning:` status update follows if it may not have been submitted) |
+| `error: "not_delivered"`, `message` | The command never reached the pane; nothing was started |
+
 ### Inject reply
 
 | Reply | Meaning |
@@ -69,6 +78,8 @@ The coordinator's answer to a status report decides what the agent does next:
 | `{"ok": true, "queued_for_pane": N}` | Steer accepted, delivered to or held for pane N |
 | `error: "no_active_pipeline"` | Nothing is running for this work item |
 | `error: "no_next_stage"` | The work item is on the last stage, so there is no later pane to hold this for |
+| `error: "not_delivered"`, `message` | An urgent steer never reached the pane |
+| `error: "not_submitted"`, `message` | An urgent steer is in the pane but Enter didn't appear to submit it; don't resend, or it will be typed twice |
 
 ### Dispatch errors
 

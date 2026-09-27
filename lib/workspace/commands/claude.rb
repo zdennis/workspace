@@ -43,7 +43,8 @@ module Workspace
       def reactivate(projects)
         each_active_session(projects) do |project, session_name|
           @output.puts "  Reactivating Claude in #{project}..."
-          @tmux.send_keys(session_name, claude_pane(session_name), REACTIVATE_COMMAND)
+          delivery = @tmux.deliver(session_name, claude_pane(session_name), REACTIVATE_COMMAND)
+          @error_output.puts "  Warning: #{project}: #{delivery.message}" unless delivery.ok?
         end
         @output.puts "Done."
       end

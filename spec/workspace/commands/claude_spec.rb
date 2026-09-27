@@ -52,14 +52,22 @@ RSpec.describe Workspace::Commands::Claude do
   describe "#reactivate" do
     it "sends the reactivate command to the Claude pane" do
       allow(tmux).to receive(:sessions).and_return(["myproject"])
-      allow(tmux).to receive(:send_keys).and_return(true)
 
       command.reactivate(["myproject"])
 
-      expect(tmux).to have_received(:send_keys)
-        .with("myproject", "0.1", "claude --continue || claude")
+      expect(tmux.sent_keys).to eq([{session: "myproject", pane: "0.1", text: "claude --continue || claude", enter: true}])
       expect(output.string).to include("Reactivating Claude in myproject")
       expect(output.string).to include("Done.")
+      expect(error_output.string).to be_empty
+    end
+
+    it "warns when the command doesn't reach the pane" do
+      allow(tmux).to receive(:sessions).and_return(["myproject"])
+      tmux.delivery_status = :not_landed
+
+      command.reactivate(["myproject"])
+
+      expect(error_output.string).to include("Warning: myproject: fake not_landed")
     end
 
     it "warns and skips when session is not active" do
@@ -72,11 +80,10 @@ RSpec.describe Workspace::Commands::Claude do
 
     it "reactivates multiple projects" do
       allow(tmux).to receive(:sessions).and_return(["proj1", "proj2"])
-      allow(tmux).to receive(:send_keys).and_return(true)
 
       command.reactivate(["proj1", "proj2"])
 
-      expect(tmux).to have_received(:send_keys).twice
+      expect(tmux.sent_keys.size).to eq(2)
       expect(output.string).to include("Reactivating Claude in proj1")
       expect(output.string).to include("Reactivating Claude in proj2")
     end

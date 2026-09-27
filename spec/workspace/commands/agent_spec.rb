@@ -1432,4 +1432,104 @@ RSpec.describe Workspace::Commands::Agent do
       expect(monitor.send_alerts).to eq([])
     end
   end
+
+  describe "when text can't be delivered to a pane" do
+    def send_message(message)
+      UNIXSocket.open(agent_socket_path) do |s|
+        s.puts(message.to_json)
+        JSON.parse(s.gets)
+      end
+    end
+
+    def send_command
+      send_message("type" => "command", "workspace" => "myapp", "work_item_ref" => "WC-42",
+        "dispatch_id" => "d-7a1", "body" => "/build add OAuth support")
+    end
+
+    def send_urgent_steer
+      send_message("type" => "inject", "workspace" => "myapp", "work_item_ref" => "WC-42",
+        "dispatch_id" => "d-7a1", "body" => "use Postgres", "interrupt" => true)
+    end
+
+    def use_pipeline
+      File.write(project_config_path, <<~YAML)
+        pipeline:
+          panes:
+            - role: researcher
+            - role: implementer
+      YAML
+    end
+
+    before { coordinator.start }
+
+    it "answers not_delivered and reports an error when a command never reaches the pane" do
+      tmux.delivery_status = :not_landed
+
+      run_agent do
+        expect(send_command).to include("ok" => false, "error" => "not_delivered")
+
+        wait_until { coordinator.status_messages.any? { |m| m["type"] == "error" } }
+        expect(coordinator.status_messages.last).to include("type" => "error", "work_item_ref" => "WC-42")
+        expect(coordinator.status_messages.last["message"]).to include("was not delivered")
+        expect(error_output.string).to include("command for WC-42 was not delivered")
+      end
+    end
+
+    it "does not start a pipeline whose first stage never got the command" do
+      use_pipeline
+      tmux.delivery_status = :failed
+
+      run_agent do
+        expect(send_command).to include("ok" => false, "error" => "not_delivered")
+
+        expect(pipeline_state.current("WC-42")).to be_nil
+        expect(pollers).to be_empty
+      end
+    end
+
+    it "starts the stage with a warning when the text landed but may not have been submitted" do
+      use_pipeline
+      tmux.delivery_status = :unsubmitted
+
+      run_agent do
+        expect(send_command).to eq("ok" => true)
+        wait_until { pollers.any? }
+
+        expect(pipeline_state.current("WC-42")).to include(pane_index: 0)
+        wait_until { coordinator.status_messages.size >= 2 }
+        expect(coordinator.status_messages.last["message"]).to start_with("Warning: fake unsubmitted")
+      end
+    end
+
+    it "fails the work item when the next stage never gets its hand-off" do
+      use_pipeline
+
+      run_agent do
+        send_command
+        wait_until { pollers.any? }
+        tmux.delivery_status = :not_landed
+
+        pollers.first.on_complete.call("research done")
+
+        wait_until { coordinator.status_messages.any? { |m| m["type"] == "error" } }
+        expect(coordinator.status_messages.last["message"]).to include("could not hand off to the implementer stage")
+        expect(pipeline_state.current("WC-42")).to be_nil
+      end
+    end
+
+    it "answers an urgent steer with not_delivered or not_submitted" do
+      use_pipeline
+
+      run_agent do
+        send_command
+        wait_until { pollers.any? }
+
+        tmux.delivery_status = :not_landed
+        expect(send_urgent_steer).to include("ok" => false, "error" => "not_delivered")
+
+        tmux.delivery_status = :unsubmitted
+        expect(send_urgent_steer).to include("ok" => false, "error" => "not_submitted")
+      end
+    end
+  end
 end
