@@ -28,13 +28,15 @@ RSpec.describe Workspace::Commands::Launch, "headless" do
 
   before do
     allow(config).to receive(:agent_running?).and_return(true)
+    allow(config).to receive(:state_dir).and_return(File.join(tmpdir, "xdg-state"))
     allow(tmux).to receive(:session_name_for) { |project| "tmux-#{project}" }
   end
 
   after { FileUtils.rm_rf(tmpdir) }
 
   it "starts each session with tmuxinator in the background and records it as headless" do
-    allow(tmux).to receive(:sessions).and_return([], ["tmux-proj1"])
+    # Checked before the start lock, again under it, then waited on.
+    allow(tmux).to receive(:sessions).and_return([], [], ["tmux-proj1"])
     allow(tmux).to receive(:start_headless).with("proj1").and_return(nil)
 
     result = command.call(["proj1"], headless: true)
@@ -57,15 +59,38 @@ RSpec.describe Workspace::Commands::Launch, "headless" do
     expect(output.string).to include("Session tmux-proj1 is already running for proj1; reusing it.")
   end
 
-  it "keeps the state entry of a running session it reuses, so its iTerm window stays known" do
-    state["proj1"] = {"unique_id" => "uid-1", "iterm_window_id" => 7}
+  it "marks a reused session that was launched in iTerm2 headless, dropping its window ids" do
+    state["proj1"] = {"unique_id" => "uid-1", "iterm_window_id" => 7, "other" => "kept"}
     state.save
     allow(tmux).to receive(:sessions).and_return(["tmux-proj1"])
 
     command.call(["proj1"], headless: true)
 
     state.load
-    expect(state["proj1"]).to eq("unique_id" => "uid-1", "iterm_window_id" => 7)
+    expect(state["proj1"]).to eq("other" => "kept", "headless" => true)
+  end
+
+  it "starts a project only once when another launch started it while this one waited for the lock" do
+    allow(tmux).to receive(:sessions).and_return([], ["tmux-proj1"])
+    allow(tmux).to receive(:start_headless)
+
+    result = command.call(["proj1"], headless: true)
+
+    expect(tmux).not_to have_received(:start_headless)
+    expect(result).to include(exit_code: 0, reused: ["proj1"])
+  end
+
+  it "exits 1 without recording state when tmuxinator succeeded but the session never appeared" do
+    allow(tmux).to receive(:sessions).and_return([])
+    allow(tmux).to receive(:start_headless).and_return(nil)
+
+    result = command.call(["proj1"], headless: true)
+
+    expect(result).to include(exit_code: 1)
+    expect(result[:start_failures]["proj1"]).to match(/tmux-proj1 did not appear/)
+    expect(config).not_to have_received(:agent_running?)
+    state.load
+    expect(state["proj1"]).to be_nil
   end
 
   it "exits 1 and leaves state alone for a project whose session can't be started" do

@@ -35,7 +35,7 @@ If a prompt can't be sent, `launch` still finishes the launch and runs `post_lau
 
 ## Headless
 
-`--headless` starts each project's tmux session in the background, for remote machines, SSH sessions and CI. It runs `tmuxinator start --no-attach` on a copy of the project's config with `tmux_options: -CC` left out, because iTerm2's control mode needs a terminal. Nothing is sent to iTerm2, and no window is positioned.
+`--headless` starts each project's tmux session in the background, for remote machines, SSH sessions and CI. It runs `tmuxinator start --no-attach` on a copy of the project's config with `tmux_options: -CC` left out (quoted or not), because iTerm2's control mode needs a terminal. Nothing is sent to iTerm2, and no window is positioned.
 
 Without a flag, `launch` decides like this, and the first rule that applies wins:
 
@@ -44,11 +44,13 @@ Without a flag, `launch` decides like this, and the first rule that applies wins
 3. headless when this isn't macOS, when `osascript` isn't on `PATH`, or when the `CI` environment variable is set (to anything but `false` or `0`)
 4. otherwise iTerm2
 
-A headless project whose tmux session is already running is reused as it is, not started again. `launch` prints `Attach with: tmux attach -t <session>` for each project. `--reattach` has no effect headless.
+A headless project whose tmux session is already running is reused as it is, not started again. Two headless launches of one project at once start it only once; the second reuses the session the first started. `launch` prints `Attach with: tmux attach -t <session>` for each project. `--reattach` has no effect headless.
 
-The project is recorded as headless in the state file (`"headless": true`), so `stop`, `kill`, `finish`, `list`, `status`, `cleanup` and `relaunch` work as usual, and `sessions`, `agent`, `pipeline`, `run`, `capture`, `resize` and `layout` target its tmux panes the same way. `relaunch` brings headless projects back headless. `focus` and `tile` have no window to act on, so they exit 1 with a message naming the tmux session to attach to.
+The project is recorded as headless in the state file (`"headless": true`; a reused session that was launched in iTerm2 loses its window ids), so `stop`, `kill`, `finish`, `list`, `status`, `cleanup` and `relaunch` work as usual, and `sessions`, `agent`, `pipeline`, `run`, `capture`, `resize` and `layout` target its tmux panes the same way. `relaunch` brings headless projects back headless. `focus` and `tile` have no window to act on, so they exit 1 with a message naming the tmux session to attach to.
 
 `--prompt` works the same headless: the same readiness wait, paste and read-back.
+
+A project fails to start, and `launch` exits 1 without recording it or starting its session monitor, when tmuxinator exits nonzero, is still running after 60 seconds (it is then stopped), or exits 0 but its tmux session hasn't appeared 5 seconds later. The other projects are launched as usual.
 
 If tmuxinator can't start a project's session, `launch` prints `Error: could not start <project>: <reason>` on stderr, doesn't record the project, and exits 1 once the other projects are up.
 

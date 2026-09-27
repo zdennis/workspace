@@ -92,7 +92,8 @@ the coding agent. In that case the success doc above is still emitted, but with
 {"schema_version":1,"project":"myproject","workspace":"myproject.worktree-PROJ-123","path":"/path/to/.worktrees/PROJ-123","branch":"PROJ-123","base":null,"created":true,"headless":false,"error":"Prompt was not sent to every workspace.","prompt_failures":{"myproject.worktree-PROJ-123":"agent never became ready"}}
 ```
 
-Headless, when tmuxinator can't start the session, the success doc is emitted
+Headless, when tmuxinator can't start the session (it fails, times out after 60
+seconds, or its session never appears), the success doc is emitted
 with `error` set to `Could not start the workspace session: <reason>` (and no
 `prompt_failures`), and the exit code is 1.
 
