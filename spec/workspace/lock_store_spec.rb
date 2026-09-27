@@ -386,7 +386,7 @@ RSpec.describe Workspace::LockStore do
       s = store
       s.acquire("edit", identity: identity(pid: 100), waiter_pid: 100, waiter_started: "start-100")
 
-      expect(Dir.children(tmpdir)).to match_array(["locks.lock", "locks.json"])
+      expect(Dir.children(tmpdir)).to match_array(["locks.lock", "locks.json", "locks.jsonl"])
     end
 
     it "raises pointing at `workspace lock clear` when the data file is corrupt" do
@@ -487,6 +487,59 @@ RSpec.describe Workspace::LockStore do
       # Exactly one holder: flock serialized every worker's read-modify-write,
       # so no two acquires raced into the same "lock is free" branch.
       expect(final["holder"]).not_to be_nil
+    end
+  end
+
+  describe "audit log" do
+    def audit_events
+      path = File.join(tmpdir, "locks.jsonl")
+      return [] unless File.exist?(path)
+      File.readlines(path).map { |l| JSON.parse(l) }
+    end
+
+    it "records an acquire event when a free lock is taken" do
+      store.acquire("edit", identity: identity(pid: 100), waiter_pid: 100, waiter_started: "start-100")
+
+      expect(audit_events.map { |e| e["event"] }).to eq(["acquire"])
+    end
+
+    it "records a release event, then an acquire event for the promoted waiter" do
+      s = store
+      s.acquire("edit", identity: identity(pid: 100), waiter_pid: 100, waiter_started: "start-100")
+      s.acquire("edit", identity: identity(pid: 200), waiter_pid: 200, waiter_started: "start-200", wait: true)
+
+      s.release("edit", 100)
+
+      expect(audit_events.map { |e| e["event"] }).to eq(["acquire", "release", "acquire"])
+    end
+
+    it "records a reap event for a dead holder" do
+      s = store
+      s.acquire("edit", identity: identity(pid: 100), waiter_pid: 100, waiter_started: "start-100")
+      liveness.kill(100)
+
+      s.release_all(identity(pid: 999)) # any mutating op reaps
+
+      expect(audit_events.last["event"]).to eq("reap")
+    end
+
+    it "records a clear event" do
+      s = store
+      s.acquire("edit", identity: identity(pid: 100), waiter_pid: 100, waiter_started: "start-100")
+
+      s.clear("edit", cleared_by: "pid 999")
+
+      expect(audit_events.last).to include("event" => "clear", "cleared_by" => "pid 999")
+    end
+
+    it "does not touch the audit log for a read-only status call with no contention" do
+      s = store
+      s.acquire("edit", identity: identity(pid: 100), waiter_pid: 100, waiter_started: "start-100")
+      before = audit_events.size
+
+      s.status("edit")
+
+      expect(audit_events.size).to eq(before)
     end
   end
 end

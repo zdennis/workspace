@@ -38,7 +38,9 @@ module Workspace
     # @param logger [Workspace::Logger] debug logger
     # @param clock [#call] returns the current wall-clock time in epoch seconds, for idle tracking
     # @param idle_grace [Numeric] seconds an agent holder may stay idle before the head waiter may take over
-    def initialize(dir:, liveness:, logger: Workspace::Logger.new, clock: -> { Time.now.to_i }, idle_grace: DEFAULT_IDLE_GRACE)
+    # @param audit_log [Workspace::LockAuditLog] append-only `locks.jsonl` writer for this namespace
+    def initialize(dir:, liveness:, logger: Workspace::Logger.new, clock: -> { Time.now.to_i }, idle_grace: DEFAULT_IDLE_GRACE,
+      audit_log: nil)
       @dir = dir
       @liveness = liveness
       @logger = logger
@@ -46,6 +48,7 @@ module Workspace
       @idle_grace = idle_grace
       @lockfile_path = File.join(dir, "locks.lock")
       @data_path = File.join(dir, "locks.json")
+      @audit_log = audit_log || LockAuditLog.new(dir: dir, logger: logger)
     end
 
     # Acquires +name+ for +identity+, or enqueues behind the current holder
@@ -81,6 +84,7 @@ module Workspace
 
         if holder.nil? && (entry["queue"].empty? || priority)
           entry["holder"] = build_holder(identity, task, waiter_pid: waiter_pid)
+          audit(:acquire, name, holder: holder_summary(entry["holder"]))
           next {status: :acquired}
         end
 
@@ -121,7 +125,7 @@ module Workspace
         entry = data[name]
         next {status: :cleared} unless entry
 
-        claimed = claim!(entry, waiter_pid)
+        claimed = claim!(entry, waiter_pid, name)
         next claimed if claimed
 
         holder = entry["holder"]
@@ -145,7 +149,8 @@ module Workspace
         holder = entry["holder"]
         next false unless holder && holder["pid"] == pid
         entry["holder"] = nil
-        promote!(entry)
+        audit(:release, name, holder: holder_summary(holder))
+        promote!(entry, name)
         true
       end
     end
@@ -164,8 +169,10 @@ module Workspace
         data.each do |name, entry|
           entry["queue"].reject! { |w| w["agent_pid"] == identity[:pid] && w["agent_started"] == identity[:started] }
           next unless LockHolder.same_agent?(entry["holder"], identity)
+          holder = entry["holder"]
           entry["holder"] = nil
-          promote!(entry)
+          audit(:release, name, holder: holder_summary(holder))
+          promote!(entry, name)
           released << name
         end
         released
@@ -185,6 +192,23 @@ module Workspace
       end
     end
 
+    # Records a denied edit for the audit log, without mutating `locks.json`.
+    # Runs under the same shared flock {#status} uses, so it never blocks a
+    # concurrent mutating op and never contends with the fast, non-flocked
+    # {LockEnforcer#check} pre-check; only genuinely denied edits reach here,
+    # so the hot path (no contention) never touches the audit log at all.
+    #
+    # @param name [String] lock name
+    # @param denier [Hash] the denied agent's identity, from {LockHolder#current}
+    # @param holder [Hash] the current holder record
+    # @return [void]
+    def record_deny(name, denier:, holder:)
+      with_lock(readonly: true) do |data|
+        audit(:deny, name, agent: identity_summary(denier), holder: holder_summary(holder))
+        data
+      end
+    end
+
     # Abandons a wait, e.g. on SIGINT/SIGTERM while blocked in `acquire
     # --wait`: removes the waiter from the queue, or releases the lock if it
     # was already promoted to this waiter, so an interrupted wait never
@@ -199,7 +223,7 @@ module Workspace
         next :absent unless entry
         if entry["holder"] && entry["holder"]["waiter_pid"] == waiter_pid
           entry["holder"] = nil
-          promote!(entry)
+          promote!(entry, name)
           next :released
         end
         removed = entry["queue"].reject! { |w| w["waiter_pid"] == waiter_pid }
@@ -220,7 +244,7 @@ module Workspace
         reap!(data)
         entry = data[name]
         next {status: :dequeued} unless entry
-        claimed = claim!(entry, waiter_pid)
+        claimed = claim!(entry, waiter_pid, name)
         next claimed if claimed
         entry["queue"].reject! { |w| w["waiter_pid"] == waiter_pid }
         {status: :dequeued}
@@ -244,6 +268,7 @@ module Workspace
         yield holder if block_given?
         data.delete(name)
         @logger.debug { "lock: cleared #{name}#{" by #{cleared_by}" if cleared_by}" }
+        audit(:clear, name, holder: holder_summary(holder), queue_size: entry["queue"].size, cleared_by: cleared_by)
         {holder: holder, queue: entry["queue"]}
       end
     end
@@ -498,7 +523,7 @@ module Workspace
     #
     # @return [Hash, nil] {status: :acquired}, with :took_over after a
     #   takeover, or nil when the lock is not this waiter's
-    def claim!(entry, waiter_pid)
+    def claim!(entry, waiter_pid, name = nil)
       holder = entry["holder"]
       return unless holder
       if holder["waiter_pid"] == waiter_pid
@@ -509,12 +534,13 @@ module Workspace
       # The head waiter is the caller (the check above), so it is alive by
       # construction: this is its own poll/claim call running right now.
       # Liveness is deliberately not rechecked here.
-      displace!(entry, holder)
+      displace!(entry, holder, name)
       entry["holder"] = holder_from_waiter(entry["queue"].shift)
+      audit(:takeover, name, from: holder_summary(holder), to: entry["holder"] && holder_summary(entry["holder"])) if name
       {status: :acquired, took_over: holder}
     end
 
-    def displace!(entry, holder)
+    def displace!(entry, holder, name = nil)
       head = entry["queue"].first
       record = {
         "pid" => holder["pid"],
@@ -528,6 +554,31 @@ module Workspace
       records = (entry["displaced"] || []).reject { |r| r["pid"] == holder["pid"] && r["started"] == holder["started"] }
       entry["displaced"] = records << record
       @logger.debug { "lock: waiter #{head["waiter_pid"]} took over from idle pid #{holder["pid"]}" }
+    end
+
+    # Appends one audit event, unless +name+ is nil (a caller with no lock
+    # name to attribute the event to, which should not happen in practice).
+    # Appends one audit event. Every caller is expected to pass already-
+    # trimmed data (see {#holder_summary}/{#waiter_summary}/{#identity_summary}),
+    # so this only serializes and drops nils.
+    def audit(event, name, **data)
+      return unless name
+      @audit_log.append(event: event.to_s, name: name, data: data.compact)
+    end
+
+    def holder_summary(holder)
+      return nil unless holder
+      {"pid" => holder["pid"], "pane" => holder["pane"], "worktree" => holder["worktree"], "task" => holder["task"], "kind" => holder["kind"]}
+    end
+
+    def waiter_summary(waiter)
+      return nil unless waiter
+      {"agent_pid" => waiter["agent_pid"], "pane" => waiter["pane"], "worktree" => waiter["worktree"], "task" => waiter["task"]}
+    end
+
+    def identity_summary(identity)
+      return nil unless identity
+      {"pid" => identity[:pid], "pane" => identity[:pane], "worktree" => identity[:worktree]}
     end
 
     def within_liveness_snapshot(&block)
@@ -558,11 +609,12 @@ module Workspace
     # is alive, dropping dead entries in front of a live one as it goes so
     # FIFO order is preserved for whoever is still around. The new holder is
     # "unclaimed" until its waiter polls and learns of the promotion.
-    def promote!(entry)
+    def promote!(entry, name = nil)
       while entry["holder"].nil? && !entry["queue"].empty?
         candidate = entry["queue"].shift
         next unless waiter_alive?(candidate)
         entry["holder"] = holder_from_waiter(candidate).merge("unclaimed" => true)
+        audit(:acquire, name, holder: holder_summary(entry["holder"])) if name
       end
     end
 
@@ -591,14 +643,19 @@ module Workspace
     end
 
     def reap!(data)
-      data.each_value do |entry|
-        entry["holder"] = nil if entry["holder"] && !holder_alive?(entry["holder"])
-        entry["queue"].select! { |w| waiter_alive?(w) }
+      data.each do |name, entry|
+        if entry["holder"] && !holder_alive?(entry["holder"])
+          audit(:reap, name, holder: holder_summary(entry["holder"]))
+          entry["holder"] = nil
+        end
+        dead, alive = entry["queue"].partition { |w| !waiter_alive?(w) }
+        dead.each { |w| audit(:reap, name, waiter: waiter_summary(w)) }
+        entry["queue"] = alive
         if entry["displaced"]
           entry["displaced"].select! { |r| alive_or_unknown?(r["pid"], r["started"]) }
           entry.delete("displaced") if entry["displaced"].empty?
         end
-        promote!(entry)
+        promote!(entry, name)
       end
     end
   end

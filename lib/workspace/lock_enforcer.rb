@@ -45,6 +45,7 @@ module Workspace
       return nil unless identity
       return nil if LockHolder.same_agent?(holder, identity)
 
+      store.record_deny(LOCK_NAME, denier: identity, holder: holder)
       deny_message(holder, identity, store)
     rescue => e
       @logger.debug { "session-event: edit lock check failed (#{e.class}: #{e.message})" }
