@@ -373,6 +373,34 @@ RSpec.describe Workspace::Commands::Lock do
         expect(error_output.string).to include("Process group 4242 was not signalled (its holder pid 4242 is gone)")
       end
 
+      it "on a later clear, keeps a kept lock whose wrapper is gone while its group still runs" do
+        hold_devenv
+        allow(terminator).to receive(:stop_holder).and_raise(not_permitted)
+        clear_command.clear("devenv")
+        allow(terminator).to receive(:stop_holder).and_return(:gone)
+        allow(terminator).to receive(:orphan_running?).and_return(true)
+
+        result = clear_command.clear("devenv")
+
+        expect(result).to eq(exit_code: 1)
+        expect(devenv_holder_pid).to eq(4242)
+        expect(error_output.string).to include("its wrapper pid 4242 is gone, but the group is still running")
+      end
+
+      it "on a later clear, clears a kept lock once its group has stopped" do
+        hold_devenv
+        allow(terminator).to receive(:stop_holder).and_raise(not_permitted)
+        clear_command.clear("devenv")
+        allow(terminator).to receive(:stop_holder).and_return(:gone)
+        allow(terminator).to receive_messages(orphan_running?: false, running?: false)
+
+        result = clear_command.clear("devenv")
+
+        expect(result).to eq(exit_code: 0)
+        expect(devenv_holder_pid).to be_nil
+        expect(output.string).to include("Cleared devenv")
+      end
+
       it "with --all, clears every other lock and keeps only the one it could not stop" do
         hold_devenv
         command_for(FakeLockIdentity.new(pid: 100)).acquire("edit")

@@ -183,8 +183,9 @@ module Workspace
       # user may not signal, or one still running after SIGKILL, keeps its
       # lock (its waiters are still removed) and makes `clear` exit 1, since
       # freeing it would let a second dev environment start beside it. A
-      # holder whose pid is already gone is cleared as before. The holder is
-      # also yielded while the store is still locked.
+      # holder whose pid is already gone is cleared as before, unless an
+      # earlier `clear` kept it and its group still runs. The holder is also
+      # yielded while the store is still locked.
       #
       # @param name [String, nil] lock name, or nil with all: true
       # @param all [Boolean] clear every lock in this namespace; one that has
@@ -192,11 +193,12 @@ module Workspace
       # @param working_dir [String] directory to resolve the lock namespace from
       # @yieldparam holder [Hash, nil] the holder record being cleared
       # @return [Hash] {exit_code:} — 0 once everything named was cleared, 1
-      #   if any lock was kept because its process group could not be stopped
+      #   if any lock was kept because its process group could not be stopped,
+      #   or was taken by someone else while it was being stopped
       def clear(name, all: false, working_dir: Dir.pwd, &on_holder)
         validate_name!(name) unless name.nil?
         namespace = @lock_namespace.resolve(cwd: working_dir)
-        store = LockStore.new(dir: namespace[:dir], liveness: @lock_holder)
+        store = LockStore.new(dir: namespace[:dir], liveness: @lock_holder, terminator: @terminator)
         names = (all && name.nil?) ? store.names : [name]
 
         if names.empty?
@@ -232,7 +234,7 @@ module Workspace
       def store_for(working_dir)
         namespace = @lock_namespace.resolve(cwd: working_dir)
         idle_grace = @lock_config ? @lock_config.idle_grace_for(namespace[:display]) : LockStore::DEFAULT_IDLE_GRACE
-        LockStore.new(dir: namespace[:dir], liveness: @lock_holder, clock: @wall_clock, idle_grace: idle_grace)
+        LockStore.new(dir: namespace[:dir], liveness: @lock_holder, clock: @wall_clock, idle_grace: idle_grace, terminator: @terminator)
       end
 
       def report_displaced(records, advice)
@@ -360,15 +362,40 @@ module Workspace
       end
 
       # @return [Boolean] false when the lock was kept for a process group
-      #   that could not be stopped
+      #   that could not be stopped, or someone else holds it by the time
+      #   the group is stopped
       def clear_one(store, name, label, project, &on_holder)
         removed = store.clear(name, cleared_by: label, keep_process_holder: true, &on_holder)
         if removed&.dig(:pending)
-          return false unless stop_process_holder(name, removed[:holder], project)
-          store.finish_clear(name, removed[:holder], cleared_by: label, queue_size: removed[:queue].size)
+          holder = removed[:holder]
+          return keep_lock(store, name, holder, label) unless stop_process_holder(holder, project)
+          if (other = store.finish_clear(name, holder, cleared_by: label))
+            @error_output.puts "Stopped process group #{holder["pgid"] || holder["pid"]} (pid #{holder["pid"]}), but the " \
+              "#{name} lock is now held by #{describe_holder(other)} (pid #{other["pid"]}), so it was not cleared."
+            return false
+          end
         end
         describe_cleared(name, removed)
         true
+      end
+
+      # The lock must keep naming a holder whose group could not be stopped,
+      # even if its wrapper released it meanwhile (it exits with its
+      # command); only a hold someone else already started under is left alone.
+      def keep_lock(store, name, holder, label)
+        other = store.keep_process_holder(name, holder, cleared_by: label)
+        pid = holder["pid"]
+        pgid = holder["pgid"] || pid
+        if other
+          @error_output.puts "Could not keep #{name} lock for process group #{pgid}: it is now held by " \
+            "#{describe_holder(other)} (pid #{other["pid"]}), while process group #{pgid} may still be running. " \
+            "Stop the group as its owner (e.g. sudo kill -TERM -#{pgid})."
+        else
+          @error_output.puts "Kept #{name} lock: it still names pid #{pid}, so no second dev environment starts while " \
+            "process group #{pgid} runs. Stop the group as its owner (e.g. sudo kill -TERM -#{pgid}), " \
+            "then run: workspace lock clear #{name}"
+        end
+        false
       end
 
       # Runs after the store is unlocked: the wrapper needs the flock to
@@ -376,20 +403,23 @@ module Workspace
       #
       # @return [Boolean] true once nothing the holder started is known to be
       #   running, so its lock may go; false when its lock must be kept
-      def stop_process_holder(name, holder, project)
+      def stop_process_holder(holder, project)
         pid = holder["pid"]
         pgid = holder["pgid"] || pid
         timeout = stop_timeout_for(project)
         begin
           result = @terminator.stop_holder(holder, liveness: @lock_holder, stop_timeout: timeout)
         rescue Workspace::Error => e
-          return keep_process_holder(name, pgid, pid, e.message)
+          return cannot_stop(pgid, pid, e.message)
         end
         case result
-        when :gone
+        when :gone, :not_running
+          # :not_running means the wrapper exited just before its SIGTERM,
+          # so nothing was signalled: its group may still be running.
+          return cannot_stop(pgid, pid, "its wrapper pid #{pid} is gone, but the group is still running") if kept_group_running?(holder)
           warn_orphaned_group(pgid, pid)
         when :killed
-          return keep_process_holder(name, pgid, pid, "it was still running #{KILL_GRACE_SECONDS}s after SIGKILL") if survives_kill?(pgid)
+          return cannot_stop(pgid, pid, "it was still running #{KILL_GRACE_SECONDS}s after SIGKILL") if survives_kill?(pgid)
           @output.puts "Killed process group #{pgid} (pid #{pid}) after #{timeout}s."
         else
           @output.puts "Stopped process group #{pgid} (pid #{pid})."
@@ -397,12 +427,18 @@ module Workspace
         true
       end
 
-      def keep_process_holder(name, pgid, pid, reason)
+      def cannot_stop(pgid, pid, reason)
         @error_output.puts "Could not stop process group #{pgid} (pid #{pid}): #{reason}"
-        @error_output.puts "Kept #{name} lock: it still names pid #{pid}, so no second dev environment starts while " \
-          "process group #{pgid} runs. Stop the group as its owner (e.g. sudo kill -TERM -#{pgid}), " \
-          "then run: workspace lock clear #{name}"
         false
+      end
+
+      # Only a holder an earlier `clear` kept: its lock goes on naming it
+      # after its wrapper is gone, until the group itself has stopped.
+      def kept_group_running?(holder)
+        return false unless holder["kept"]
+        @terminator.orphan_running?(holder)
+      rescue Workspace::Error
+        true
       end
 
       # The holder's pid is gone, so the group id may name someone else by

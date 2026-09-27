@@ -39,8 +39,11 @@ module Workspace
     # @param clock [#call] returns the current wall-clock time in epoch seconds, for idle tracking
     # @param idle_grace [Numeric] seconds an agent holder may stay idle before the head waiter may take over
     # @param audit_log [Workspace::LockAuditLog] append-only `locks.jsonl` writer for this namespace
+    # @param terminator [Workspace::ProcessGroupTerminator, nil] checks whether a
+    #   kept process holder's group still runs; without one, such a group
+    #   always counts as running
     def initialize(dir:, liveness:, logger: Workspace::Logger.new, clock: -> { Time.now.to_i }, idle_grace: DEFAULT_IDLE_GRACE,
-      audit_log: nil)
+      audit_log: nil, terminator: nil)
       @dir = dir
       @liveness = liveness
       @logger = logger
@@ -49,6 +52,7 @@ module Workspace
       @lockfile_path = File.join(dir, "locks.lock")
       @data_path = File.join(dir, "locks.json")
       @audit_log = audit_log || LockAuditLog.new(dir: dir, logger: logger)
+      @terminator = terminator
     end
 
     # Acquires +name+ for +identity+, or enqueues behind the current holder
@@ -260,7 +264,9 @@ module Workspace
     # stopped outside the flock (the wrapper needs it to release), and the
     # lock must keep naming the holder until that has succeeded, or a second
     # dev environment could start beside one that is still running. The
-    # caller then removes it with {#finish_clear}, or leaves it held.
+    # caller then removes it with {#finish_clear}, or keeps it with
+    # {#keep_process_holder}. The `clear` audit event is written here either
+    # way, with `holder_kept` when the holder was left in place.
     #
     # @param name [String] lock name
     # @param cleared_by [String, nil] identity recorded for logging
@@ -278,6 +284,7 @@ module Workspace
           queue = entry["queue"]
           entry["queue"] = []
           @logger.debug { "lock: clearing #{name}#{" by #{cleared_by}" if cleared_by}, holder kept until stopped" }
+          audit(:clear, name, holder: holder_summary(holder), queue_size: queue.size, cleared_by: cleared_by, holder_kept: true)
           next {holder: holder, queue: queue, pending: true}
         end
         data.delete(name)
@@ -289,29 +296,67 @@ module Workspace
 
     # Completes a {#clear} that kept a `kind: "process"` holder, once its
     # process group is stopped: removes that holder if the lock still names
-    # it (same pid and start time), then promotes anyone who queued since.
-    # A holder that already released or was reaped is left as it is, and so
-    # is whoever holds the lock now.
+    # it (same pid and start time), logging a `release` by +cleared_by+, then
+    # promotes anyone who queued since. A holder that already released or
+    # was reaped is left as it is, and so is whoever holds the lock now.
     #
     # @param name [String] lock name
     # @param holder [Hash] the holder record {#clear} returned
     # @param cleared_by [String, nil] identity recorded for logging
-    # @param queue_size [Integer] waiters {#clear} removed, for the audit log
-    # @return [Boolean] whether the holder was removed here
-    def finish_clear(name, holder, cleared_by: nil, queue_size: 0)
+    # @return [Hash, nil] nil once the lock no longer names +holder+ (removed
+    #   here, or released on its own), or the record of whoever else held it
+    #   by then
+    def finish_clear(name, holder, cleared_by: nil)
       with_lock(lenient: true) do |data|
         entry = data[name]
-        next false unless entry
+        next nil unless entry
         current = entry["holder"]
-        removed = !current.nil? && current["pid"] == holder["pid"] && current["started"] == holder["started"]
-        if removed
+        other = nil
+        if same_process?(current, holder)
           entry["holder"] = nil
           @logger.debug { "lock: cleared #{name}#{" by #{cleared_by}" if cleared_by}" }
-          audit(:clear, name, holder: holder_summary(holder), queue_size: queue_size, cleared_by: cleared_by)
+          audit(:release, name, holder: holder_summary(holder), cleared_by: cleared_by)
           promote!(entry, name)
+        else
+          other = current
         end
         data.delete(name) if entry["holder"].nil? && entry["queue"].empty? && !entry["displaced"]
-        removed
+        other
+      end
+    end
+
+    # Ends a {#clear} that kept a `kind: "process"` holder whose process group
+    # could not be stopped: the lock must go on naming it for as long as that
+    # group runs. The holder is marked `kept`, so it is not reaped once its
+    # wrapper is gone while its group still runs (see {#holder_alive?}). If
+    # its hold ended in the meantime, it is restored, and a waiter promoted
+    # since but not yet told goes back to the head of the queue.
+    #
+    # @param name [String] lock name
+    # @param holder [Hash] the holder record {#clear} returned
+    # @param cleared_by [String, nil] identity recorded for logging
+    # @return [Hash, nil] nil once the lock names +holder+ again, or the
+    #   record of whoever holds it instead and already knows it (a hold that
+    #   cannot be taken back)
+    def keep_process_holder(name, holder, cleared_by: nil)
+      with_lock(lenient: true) do |data|
+        entry = data[name] ||= empty_entry
+        current = entry["holder"]
+        if same_process?(current, holder)
+          current["kept"] = true
+          next nil
+        end
+        next current if current && !current["unclaimed"]
+
+        entry["holder"] = holder.except("unclaimed").merge("kept" => true)
+        if current
+          entry["queue"].unshift(waiter_from_holder(current))
+          audit(:takeover, name, from: holder_summary(current), to: holder_summary(holder), cleared_by: cleared_by)
+        else
+          audit(:acquire, name, holder: holder_summary(holder), cleared_by: cleared_by)
+        end
+        @logger.debug { "lock: restored kept holder pid #{holder["pid"]} of #{name}" }
+        nil
       end
     end
 
@@ -642,10 +687,25 @@ module Workspace
     end
 
     # An unclaimed promotion also dies with its waiter: nobody is left to
-    # tell the agent it holds the lock.
-    def holder_alive?(holder)
-      return false unless alive_or_unknown?(holder["pid"], holder["started"])
+    # tell the agent it holds the lock. A holder `lock clear` kept outlives
+    # its wrapper for as long as its process group runs, unless
+    # +kept_group+ is false (the `stale` annotation, which reports the
+    # wrapper itself as gone).
+    def holder_alive?(holder, kept_group: true)
+      unless alive_or_unknown?(holder["pid"], holder["started"])
+        return kept_group && !!holder["kept"] && kept_group_running?(holder)
+      end
       !holder["unclaimed"] || alive_or_unknown?(holder["waiter_pid"], holder["waiter_started"])
+    end
+
+    # A group that can't be checked (no terminator, or `ps` failed) counts as
+    # running: reaping its hold would let a second dev environment start beside it.
+    def kept_group_running?(holder)
+      return true unless @terminator
+      @terminator.orphan_running?(holder)
+    rescue Workspace::Error => e
+      @logger.debug { "lock: kept process group #{holder["pgid"]} counts as running: #{e.message}" }
+      true
     end
 
     def waiter_alive?(waiter)
@@ -674,6 +734,25 @@ module Workspace
       end
     end
 
+    def same_process?(current, holder)
+      !current.nil? && current["pid"] == holder["pid"] && current["started"] == holder["started"]
+    end
+
+    # The inverse of {#holder_from_waiter}, for a promotion taken back
+    # before its waiter learned of it.
+    def waiter_from_holder(holder)
+      {
+        "waiter_pid" => holder["waiter_pid"],
+        "waiter_started" => holder["waiter_started"],
+        "agent_pid" => holder["pid"],
+        "agent_started" => holder["started"],
+        "pane" => holder["pane"],
+        "worktree" => holder["worktree"],
+        "task" => holder["task"],
+        "enqueued_at" => holder["acquired_at"]
+      }.merge(process_fields({kind: holder["kind"], pgid: holder["pgid"], branch: holder["branch"]}))
+    end
+
     def holder_from_waiter(waiter)
       build_holder(
         {
@@ -693,7 +772,7 @@ module Workspace
     def annotate_entry(entry)
       holder = entry["holder"]
       {
-        "holder" => holder&.merge("stale" => !holder_alive?(holder)),
+        "holder" => holder&.merge("stale" => !holder_alive?(holder, kept_group: false)),
         "queue" => entry["queue"].map { |w| w.merge("stale" => !waiter_alive?(w)) }
       }
     end

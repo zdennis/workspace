@@ -217,7 +217,7 @@ module Workspace
           branch: git(worktree, "rev-parse", "--abbrev-ref", "HEAD"),
           config_name: lineage.worktree || lineage.name,
           settings: @dev_config.for_project(lineage.name),
-          store: LockStore.new(dir: @lock_namespace.resolve(cwd: working_dir)[:dir], liveness: @lock_holder)
+          store: LockStore.new(dir: @lock_namespace.resolve(cwd: working_dir)[:dir], liveness: @lock_holder, terminator: @terminator)
         }
       end
 
@@ -285,15 +285,11 @@ module Workspace
       end
 
       def orphan_running?(holder)
-        !!holder["pgid"] && !pgid_reused?(holder) && @terminator.running?(holder["pgid"])
+        @terminator.orphan_running?(holder, pid_alive: method(:process_alive?))
       end
 
-      # The wrapper led its group, so its pgid is its pid. A live process
-      # with that pid is not the dead wrapper, and the kernel only hands out a
-      # pid once no group uses it: the recorded group is gone and the id now
-      # names an unrelated process (group) that must never be signalled.
       def pgid_reused?(holder)
-        holder["pgid"] == holder["pid"] && process_alive?(holder["pid"])
+        @terminator.pgid_reused?(holder, pid_alive: method(:process_alive?))
       end
 
       def stop_orphan(ctx, holder, force:)

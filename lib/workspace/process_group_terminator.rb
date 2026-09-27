@@ -89,7 +89,40 @@ module Workspace
       signal(0, -Integer(pgid), Integer(pgid))
     end
 
+    # Whether a process holder's group outlives its wrapper: the wrapper's
+    # pid is gone but its recorded group still has running members. Shared by
+    # `dev` (orphan reporting) and {LockStore} (a kept `devenv` holder).
+    #
+    # @param holder [Hash] a `kind: "process"` lock holder record ("pid", "pgid")
+    # @param pid_alive [#call] called with a pid, whether any process has it
+    # @return [Boolean]
+    # @raise [Workspace::Error] if the group has live members this user may not signal
+    def orphan_running?(holder, pid_alive: method(:pid_alive?))
+      !!holder["pgid"] && !pgid_reused?(holder, pid_alive: pid_alive) && running?(holder["pgid"])
+    end
+
+    # The wrapper led its group, so its pgid is its pid. A live process
+    # with that pid is not the dead wrapper, and the kernel only hands out a
+    # pid once no group uses it: the recorded group is gone and the id now
+    # names an unrelated process (group) that must never be signalled.
+    #
+    # @param holder [Hash] a `kind: "process"` lock holder record whose wrapper is gone
+    # @param pid_alive [#call] called with a pid, whether any process has it
+    # @return [Boolean]
+    def pgid_reused?(holder, pid_alive: method(:pid_alive?))
+      holder["pgid"] == holder["pid"] && pid_alive.call(holder["pid"])
+    end
+
     private
+
+    def pid_alive?(pid)
+      @kill.call(0, pid)
+      true
+    rescue Errno::ESRCH
+      false
+    rescue Errno::EPERM
+      true
+    end
 
     # @return [Boolean] whether the signal was delivered; false when there is
     #   nothing left to signal

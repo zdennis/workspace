@@ -49,7 +49,7 @@ workspace lock instructions [<name>]
 | Code | Meaning |
 |------|---------|
 | 0 | Cleared (or idempotently, nothing to clear) |
-| 1 | A `devenv` lock was kept because its dev environment's process group could not be stopped — see `clear` below. With `--all`, every other lock was still cleared |
+| 1 | A `devenv` lock was kept because its dev environment's process group could not be stopped, or someone else took it while the group was being stopped — see `clear` below. With `--all`, every other lock was still cleared |
 
 ## Details
 
@@ -63,7 +63,7 @@ workspace lock instructions [<name>]
 
 **FIFO queueing** — `--wait` enqueues behind the current holder and any earlier waiters. Only the queue head may take the lock once it frees up. Waiters are tracked by their own process pid and start time (not the agent's), so a killed `acquire --wait` process is dropped from the queue on the next reap.
 
-**Reaping** — every operation (`acquire`, `release`, `status`, `clear`) first drops any holder or waiter whose pid is no longer running, or whose start time no longer matches (pid reuse), promoting the next live waiter in FIFO order.
+**Reaping** — every operation (`acquire`, `release`, `status`, `clear`) first drops any holder or waiter whose pid is no longer running, or whose start time no longer matches (pid reuse), promoting the next live waiter in FIFO order. The exception is a `devenv` holder `clear` had to keep (below): it is not reaped while its process group is still running, even once its wrapper is gone.
 
 **Two-line `--wait` output** — printed once when queued, then again on success, with no progress output in between:
 
@@ -130,12 +130,12 @@ Before editing files, run `workspace lock acquire edit --wait --task "<your task
 - `schema_version` is bumped only on a breaking change to this shape; new optional fields may be added without bumping it.
 - An empty store is `{"schema_version": 1, "locks": {}}` — never an error.
 - `holder` is `null` when the lock is free; `queue` is `[]` when no one is waiting.
-- `stale` marks a holder or waiter that the next mutating op (`acquire`, `release`, `clear`) would reap as dead — the same annotation the table's `STALE` marker comes from.
+- `stale` marks a holder or waiter that the next mutating op (`acquire`, `release`, `clear`) would reap as dead — the same annotation the table's `STALE` marker comes from. A kept `devenv` holder (`"kept": true`, see `clear`) is marked stale once its wrapper is gone, but is not reaped while its process group still runs.
 - A corrupt `locks.json` becomes `{"schema_version": 1, "error": "<message>"}` on stdout, exit 1 — the JSON error stays on the same stream as a successful payload, so a caller only ever needs to read stdout and check for an `"error"` key, never stderr, to tell the two apart.
 - Usage/validation errors (a bad lock name, an unknown flag, extra arguments) get the same treatment: `{"schema_version": 1, "error": "<message>"}` on stdout, exit 1 — never plain text on stderr — as long as `--json` was present on the command line. A caller that always passes `--json` and always reads stdout never needs to special-case argument mistakes.
 - Exit codes: `0` on success (including an empty store or a free lock), `1` for a store error or a usage/validation error.
 
-**`clear`** — removes a lock's holder and queue unconditionally, with no liveness check and no confirmation prompt. Use it to recover from a stuck lock. Clearing `devenv` also stops the dev environment first: SIGTERM to its wrapper, then SIGKILL to its process group after `dev.stop_timeout` — but only while the wrapper's pid still matches its recorded start time, so a reused process group is never signalled (see [`workspace dev`](README.dev.md)). The lock keeps naming the dev environment until its process group is gone, so no second dev environment can start beside one that is still running. If the group can't be stopped — it has live processes this user isn't permitted to signal (for example a dev server started under `sudo` or by another user), or it is still running 2s after SIGKILL — `clear` keeps the `devenv` lock, prints `Could not stop process group N (pid P): ...` (naming the owning user when `ps` shows one) and `Kept devenv lock: ...` on stderr, and exits 1. Its waiters are removed either way. Stop the group as its owner (`sudo kill -TERM -N`), then run `workspace lock clear devenv` again. With `--all`, every other lock is still cleared. A wrapper that is already gone is cleared as before: if its process group is still running, `clear` names it on stderr (`kill -TERM -N`) without signalling it, since the id may have been reused.
+**`clear`** — removes a lock's holder and queue unconditionally, with no liveness check and no confirmation prompt. Use it to recover from a stuck lock. Clearing `devenv` also stops the dev environment first: SIGTERM to its wrapper, then SIGKILL to its process group after `dev.stop_timeout` — but only while the wrapper's pid still matches its recorded start time, so a reused process group is never signalled (see [`workspace dev`](README.dev.md)). The lock keeps naming the dev environment until its process group is gone, so no second dev environment can start beside one that is still running. If the group can't be stopped — it has live processes this user isn't permitted to signal (for example a dev server started under `sudo` or by another user), or it is still running 2s after SIGKILL — `clear` keeps the `devenv` lock, prints `Could not stop process group N (pid P): ...` (naming the owning user when `ps` shows one) and `Kept devenv lock: ...` on stderr, and exits 1. Its waiters are removed either way. The kept holder is marked `"kept": true`, and is restored if its wrapper released the lock meanwhile (a waiter promoted by that release goes back to the head of the queue). It is not reaped when its wrapper exits or is killed: it stays until its process group is gone. Stop the group as its owner (`sudo kill -TERM -N`), then run `workspace lock clear devenv` again. With `--all`, every other lock is still cleared. If someone else already holds the lock by the time the group is stopped (or can't be), `clear` names them on stderr, prints no `Cleared` line, and exits 1. A wrapper that is already gone is cleared as before (unless an earlier `clear` kept it and its group still runs): if its process group is still running, `clear` names it on stderr (`kill -TERM -N`) without signalling it, since the id may have been reused.
 
 ## Examples
 
@@ -163,7 +163,7 @@ workspace lock instructions
 
 ## Audit log
 
-Every namespace directory (alongside `locks.json`) also holds an append-only `locks.jsonl`: one JSON line per `acquire`, `release`, `reap`, `takeover` and `clear` event, plus a `deny` event whenever enforcement (above) actually denies an edit. Each line has a `timestamp`, `event`, `lock` (the lock name), and event-specific fields (trimmed holder/waiter summaries, not the full stored record):
+Every namespace directory (alongside `locks.json`) also holds an append-only `locks.jsonl`: one JSON line per `acquire`, `release`, `reap`, `takeover` and `clear` event, plus a `deny` event whenever enforcement (above) actually denies an edit. Each line has a `timestamp`, `event`, `lock` (the lock name), and event-specific fields (trimmed holder/waiter summaries, not the full stored record). A `clear` of a `devenv` holder is logged when it starts, with `"holder_kept": true`; the holder's removal once its process group is stopped is a separate `release` carrying `cleared_by`:
 
 ```json
 {"timestamp":"2026-09-26T09:30:00.123Z","event":"acquire","lock":"edit","holder":{"pid":4411,"pane":"%12","worktree":"app.worktree-login","task":"PROJ-12 fix login","kind":"agent"}}

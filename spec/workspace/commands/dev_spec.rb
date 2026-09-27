@@ -349,7 +349,13 @@ RSpec.describe Workspace::Commands::Dev, "with fake processes and clock" do
   let(:lock_namespace) { Struct.new(:dir) { def resolve(cwd:) = {key: dir, display: "app", dir: dir} }.new(lock_dir) }
   let(:dev_config) { Workspace::DevConfig.new(project_settings: Struct.new(:data) { def load(_name) = data }.new({"dev" => settings})) }
   let(:lineage) { double("lineage", resolve: double(name: "app", worktree: nil)) }
-  let(:terminator) { double("terminator", running?: false) }
+  # A real terminator, so dev's orphan rule runs as written, with every
+  # signal stubbed: nothing here may reach a real process group.
+  let(:terminator) do
+    Workspace::ProcessGroupTerminator.new(kill: ->(*) { raise "unexpected signal" }, own_pgid: 1).tap do |t|
+      allow(t).to receive(:running?).and_return(false)
+    end
+  end
   let(:tmux) { double("tmux", session_name_for_pane: "app", sessions: ["app"], session_name_for: "app", close_dead_pane: nil) }
   let(:dead_pids) { [] }
   let(:signals) { [] }

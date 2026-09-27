@@ -512,6 +512,24 @@ RSpec.describe Workspace::ProcessGroupTerminator do
     end
   end
 
+  describe "#orphan_running?" do
+    let(:holder) { {"pid" => 4242, "started" => "s", "pgid" => 4242} }
+
+    it "is true while a dead wrapper's group still has members" do
+      terminator = described_class.new(kill: ->(_sig, target) { raise Errno::ESRCH if target == 4242 }, own_pgid: 1)
+
+      expect(terminator.orphan_running?(holder)).to be(true)
+    end
+
+    it "is false once another process has taken the wrapper's pid, without probing the group" do
+      sent = []
+      terminator = described_class.new(kill: ->(sig, target) { sent << [sig, target] }, own_pgid: 1)
+
+      expect(terminator.orphan_running?(holder)).to be(false)
+      expect(sent).to eq([[0, 4242]])
+    end
+  end
+
   describe "#stop_holder" do
     it "signals nothing when the holder's pid and start time no longer match" do
       pgid = spawn_group("sleep 30")
