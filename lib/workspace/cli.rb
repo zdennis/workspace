@@ -1612,7 +1612,8 @@ module Workspace
         opts.separator ""
         opts.separator "Requires a running agent daemon (workspace agent <project>)."
         opts.separator ""
-        opts.separator "LOCK column: \"edit ✓\" holds the edit lock; \"edit #N\" is the Nth live waiter."
+        opts.separator "LOCK column: shows every lock a pane holds or waits on (e.g. \"edit ✓ devenv #2\","
+        opts.separator "space-joined, edit first and others alphabetical). JSON output includes a locks array."
         opts.separator ""
         opts.separator "Options:"
         opts.on("--json", "Emit the raw payload instead of a table") { json = true }
@@ -1621,6 +1622,12 @@ module Workspace
           interval = value
         end
       end
+
+      if args.include?("--help")
+        @output.puts parser.help
+        @exit_handler.exit(0)
+      end
+
       parser.parse!(args)
 
       project = args.first || @project_detector.detect(@working_dir)

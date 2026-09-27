@@ -2185,7 +2185,7 @@ RSpec.describe Workspace::CLI do
 
       expect { cli.run(["sessions"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
 
-      expect(error_output.string).to include("edit ✓", "edit #N")
+      expect(error_output.string).to include("every lock", "locks array")
     end
   end
 end
