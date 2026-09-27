@@ -11,6 +11,10 @@ module Workspace
       # Keys `set`/`get`/`unset` allow. Unlisted dotted keys are rejected.
       ALLOWED_KEYS = %w[dev.up dev.ready dev.stop_timeout dev.startup_timeout dev.ready_timeout dev.kill_grace locks.idle_grace locks.ps_timeout locks.reap_interval alerts.notify alerts.idle_after].freeze
 
+      # Keys the session-monitor daemon only reads once, at startup. Changing
+      # one of these has no effect on an already-running daemon.
+      RESTART_REQUIRED_KEYS = %w[locks.ps_timeout locks.reap_interval alerts.notify alerts.idle_after].freeze
+
       # @param project_settings [Workspace::ProjectSettings] reads/writes project YAML
       # @param lineage [Workspace::WorkspaceLineage] resolves a project from cwd (worktree -> parent)
       # @param file_backup [Workspace::FileBackup] backs up the config file before it's rewritten
@@ -49,6 +53,9 @@ module Workspace
           write(path, data)
         end
         @output.puts "Set #{key} = #{value} for '#{name}'."
+        if RESTART_REQUIRED_KEYS.include?(key)
+          @output.puts "Takes effect the next time the session monitor starts (workspace agent #{name} --force)."
+        end
       end
 
       # @param key [String] a dotted key from {ALLOWED_KEYS}

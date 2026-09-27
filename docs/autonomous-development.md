@@ -2,7 +2,7 @@
 
 ## Verdict
 
-`workspace` handles the middle of an autonomous run well: each agent gets its own worktree and tmux pane, agents share edits and one dev server safely through locks, and `sessions` shows who is working. The two ends are weak. Starting work needs an iTerm2 desktop and can stop at an interactive prompt, and finishing work (commit, PR, merge, cleanup) is left entirely to the agent. The most important gap is stall detection: an agent waiting on a person, an agent that finished, and an agent that hung all look the same (`idle`), and nothing alerts anyone, so an unattended run stalls silently.
+`workspace` handles the middle of an autonomous run well: each agent gets its own worktree and tmux pane, agents share edits and one dev server safely through locks, and `sessions` shows who is working. The two ends are weak. Starting work needs an iTerm2 desktop and can stop at an interactive prompt, and finishing work (commit, PR, merge, cleanup) is left entirely to the agent. Stall detection has improved: `sessions` now shows a `waiting` state (Claude Code only) when a pane asks for permission or input, and `alerts.notify` can run a command when a pane waits or stays idle too long. The remaining gap is that an agent that finished and an agent that hung both still show `idle` with no distinction, and non-Claude-Code agents never leave `working`/`idle`.
 
 ## Top recommendations
 
