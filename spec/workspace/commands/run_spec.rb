@@ -239,23 +239,36 @@ RSpec.describe Workspace::Commands::Run do
         )
       end
 
-      it "does not hint at resending, since the text never landed" do
+      it "hints that it is safe to run again, since the text never landed" do
         allow(tmux).to receive(:deliver).and_return(Workspace::Tmux::Delivery.new(status: :not_landed, message: "nothing changed"))
 
         expect { command.call("myproject", "echo hi") }.to raise_error(Workspace::Error) do |error|
           expect(error.message.downcase).not_to include("do not run it again")
+          expect(error.message).to include("safe to run it again")
         end
       end
     end
 
     context "when delivery is unverified (may or may not have landed)" do
-      it "raises Workspace::Error with a hint to check before resending" do
+      it "raises a NotSubmittedError with a hint to check before resending" do
         allow(tmux).to receive(:deliver).and_return(
           Workspace::Tmux::Delivery.new(status: :unverified, message: "pasted, but the pane could not be read back; it may not have arrived")
         )
 
-        expect { command.call("myproject", "echo hi") }.to raise_error(Workspace::Error) do |error|
+        expect { command.call("myproject", "echo hi") }.to raise_error(Workspace::Commands::Run::NotSubmittedError) do |error|
           expect(error.message.downcase).to include("do not run it again")
+        end
+      end
+    end
+
+    context "when delivery is unsubmitted (landed but Enter never took)" do
+      it "raises a NotSubmittedError, distinct from a plain not-landed failure" do
+        allow(tmux).to receive(:deliver).and_return(
+          Workspace::Tmux::Delivery.new(status: :unsubmitted, message: "may not have been submitted")
+        )
+
+        expect { command.call("myproject", "echo hi") }.to raise_error(Workspace::Commands::Run::NotSubmittedError) do |error|
+          expect(error.message.downcase).to include("press enter there instead")
         end
       end
     end

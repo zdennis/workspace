@@ -1,7 +1,23 @@
 module Workspace
+  # Defined here defensively: this file loads (via require_relative in
+  # workspace.rb) before workspace.rb itself defines Workspace::Error further
+  # down. Reopening with the same superclass once workspace.rb runs is a
+  # no-op, so this only matters when run.rb is required standalone (e.g. in
+  # isolation) or before that definition is reached.
+  class Error < StandardError; end unless const_defined?(:Error)
+
   module Commands
     # Sends a shell command to a specific pane in a running project's tmux session.
     class Run
+      # Raised when text reached the pane but wasn't confirmed submitted
+      # (tmux status :unsubmitted or :unverified). Distinct from the plain
+      # Workspace::Error used for :not_landed and :failed, so callers can
+      # tell "don't resend, go check" apart from "safe to resend" by exit
+      # code alone, without parsing the message.
+      class NotSubmittedError < Workspace::Error
+        EXIT_CODE = 2
+      end
+
       # @param tmux [Workspace::Tmux] tmux session operations
       # @param state [Workspace::State] state persistence (used for --focus)
       # @param window_manager [Workspace::WindowManager] iTerm window operations (used for --focus)
@@ -117,10 +133,15 @@ module Workspace
           " Do not run it again -- it is already in the pane; press Enter there instead."
         elsif delivery.landed?
           " Do not run it again -- it may already be in the pane; check before resending."
+        elsif delivery.status == :not_landed
+          " The text never reached the pane; it is safe to run it again."
         else
           ""
         end
-        raise Workspace::Error, "#{failure}: #{delivery.message}.#{hint}"
+
+        message = "#{failure}: #{delivery.message}.#{hint}"
+        raise NotSubmittedError, message if delivery.landed?
+        raise Workspace::Error, message
       end
 
       def focus_window(project)

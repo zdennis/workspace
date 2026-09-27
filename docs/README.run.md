@@ -32,6 +32,18 @@ If the text landed but Enter didn't visibly submit it, the error tells you not t
 
 Sometimes `run` can't tell whether the text arrived at all — the screen kept changing, or it couldn't be read back. That's an "unverified" delivery: it may or may not have landed, so the error still tells you not to resend it; check the pane yourself before deciding what to do.
 
+**Exit codes** distinguish "safe to run again" from "don't resend, go check":
+
+| Exit code | Meaning |
+|-----------|---------|
+| `0` | Delivered (and submitted, unless `--no-enter`) |
+| `1` | The text never reached the pane, or another failure unrelated to delivery. Safe to run again. |
+| `2` | The text landed in the pane but wasn't confirmed submitted (Enter didn't visibly take, or the pane couldn't be read back to check). Do not run it again — check the pane first. |
+
+A script that only checks for a non-zero exit can't tell these apart without parsing the message; checking the exit code directly avoids that.
+
+A paste large enough to trigger Claude Code's own large-paste widget (the `[Pasted text #N ...]` placeholder) has not been checked live against this delivery path — bracketed paste plus a single Enter is expected to work the same way, but it may show up as `:unverified` (exit `2`) rather than confirmed. If that happens, check the pane rather than resending.
+
 **Pane targeting** — by default the bottommost pane is used (highest pane index at invocation time). Use `--pane N` for a specific zero-based index, or `--pane bottom` / `--bottom` to be explicit.
 
 **Split panes** — `--split` creates a new horizontal pane below the bottommost pane, then sends the command there. `--split --vertical` splits side-by-side instead. The split uses `tmux split-window -P -F '#{pane_index}'` to capture the new pane index atomically.
