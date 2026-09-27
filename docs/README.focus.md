@@ -20,6 +20,8 @@ workspace focus [options] [project]
 
 Finds the iTerm window for the specified project using its stored window ID and brings it to the front via `window-tool`.
 
+A [headless](README.launch.md#headless) project has no window, so `focus` exits 1 with a message naming its tmux session (`tmux attach -t <session>`).
+
 Auto-detects the project from the current directory if not specified, using `.workspace-project` marker files or matching active project roots.
 
 ## Examples

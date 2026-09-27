@@ -12,6 +12,8 @@ workspace relaunch
 
 Convenience command that stops all active projects and then relaunches them. Useful when you want a fresh start without manually specifying which projects to launch.
 
+[Headless](README.launch.md#headless) projects are relaunched headless; the others come back in iTerm2.
+
 Exits with a non-zero status if there are no active projects to relaunch.
 
 ## Example

@@ -5,12 +5,20 @@ Check that all required dependencies are installed and configured.
 ## Usage
 
 ```sh
-workspace doctor
+workspace doctor [--headless | --no-headless]
 ```
+
+## Options
+
+| Option | Description |
+|--------|-------------|
+| `--headless` / `--no-headless` | Check for a headless setup, which skips the iTerm2 and window-tool checks, or for an iTerm2 one. The default follows the same rule as [`launch`](README.launch.md#headless) |
 
 ## Details
 
 Checks for all required tools (ruby, tmux, tmuxinator, iTerm2, window-tool, git) and optional tools (gh, ascii-banner). Reports version information and provides install instructions for anything missing.
+
+The first line says which mode it checked for and why, e.g. `mode: headless (not macOS)`. A [headless](README.launch.md#headless) setup doesn't need iTerm2 or window-tool, so those two checks are skipped and shown as `⊘  iTerm2 (not needed headless, skipped)`.
 
 Also verifies that tmuxinator templates are installed and checks the state file for health issues such as duplicate window IDs (which can cause commands like `focus` to target the wrong project).
 
@@ -26,6 +34,7 @@ Exits with a non-zero status if any issues are found, so it can be used in scrip
 $ workspace doctor
 workspace doctor
 
+  mode: iTerm2 (iTerm2)
   ✓  ruby (3+)
   ✓  tmux (3+)
   ✓  tmuxinator (3+)

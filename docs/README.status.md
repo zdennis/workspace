@@ -16,7 +16,7 @@ workspace status [options]
 
 ## Details
 
-Shows the state of all tracked workspace sessions, including their iTerm window IDs and whether they are still alive.
+Shows the state of all tracked workspace sessions, including their iTerm window IDs and whether they are still alive. A [headless](README.launch.md#headless) project shows `headless` instead of a window ID, and has `"headless": true` in the JSON.
 
 Dead sessions are automatically pruned before display, so only live sessions are shown.
 
@@ -28,6 +28,7 @@ Useful for debugging when sessions get out of sync, or for scripting with `--jso
 $ workspace status
   my-notes  window_id=1200  [alive]
   billing  window_id=1192  [alive]
+  ci-runner  headless  [alive]
 
 $ workspace status --json
 {

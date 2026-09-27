@@ -16,7 +16,7 @@ Ordered by value. Effort: S (a day or less), M (a few days), L (a week or more).
 6. **Pull the task in from its source**: `start PROJ-123` and GitHub issue URLs should fetch the ticket text and acceptance criteria into the initial prompt. (M)
 7. **Add a reliable "send to agent" command** that submits multi-line text and reports whether it landed. (S)
 8. **Record agent activity in one log**: dispatches, stage completions, lock waits and failures, with session history that survives a daemon restart. (M)
-9. **Offer a headless launch**: plain tmux without iTerm2 control mode, for remote machines and CI. (L)
+9. **Offer a headless launch**: plain tmux without iTerm2 control mode, for remote machines and CI. (L) Done: see the [Fixed] headless launch item in the gap analysis.
 10. **Support more than one dev environment per repo**: per-worktree ports and databases, or several named dev services. (L)
 
 ## A worked example: from ticket to merged change
@@ -201,7 +201,7 @@ Tags: **[Missing]** is a feature that does not exist. **[Improve]** is a change 
 - **[Improve] Interactive branch prompts.** A missing branch or several matching remote branches trigger a numbered menu read from stdin (`lib/workspace/git.rb:198-238`). A scripted `start` hangs. Fix: `--base <branch>`, `--yes`, and an error instead of a prompt when stdin is not a terminal.
 - **[Fixed] Blind prompt delivery.** `--prompt` now waits, up to 60 seconds, until an agent process is running in the session and its screen has stopped changing. It then sends the prompt, checks it landed, retries a paste that never showed up, and exits 1 with the reason if the prompt couldn't be sent (`lib/workspace/agent_readiness.rb`, `lib/workspace/commands/launch.rb`). It doesn't use the `SessionStart` hook, so it works for agents without hooks.
 - **[Missing] Machine-readable start.** `start`, `launch`, `kill` and `prune` have no `--json` (`lib/workspace/cli.rb:313-339`). An orchestrator must parse prose to learn the project name and worktree path. Fix: `--json` returning project, worktree, branch, session.
-- **[Missing] Headless launch.** Templates use iTerm2 control mode (`lib/templates/workspace.project-worktree-template.yml:5`) and `launch` always drives iTerm2 through AppleScript (`lib/workspace/commands/launch.rb:36-77`). Runs cannot happen on a remote box or in CI. Fix: a plain-tmux launch path that skips window management.
+- **[Fixed] Headless launch.** `launch --headless` and `start --headless` run `tmuxinator start --no-attach` on a copy of the config without `-CC` (`lib/workspace/tmux.rb`, `Tmux#start_headless`), and never call AppleScript or window-tool (`lib/workspace/commands/launch.rb`, `Launch#call_headless`). Without a flag, the global `launch.headless` key decides, else headless is picked off macOS, without `osascript`, or when `CI` is set (`lib/workspace/launch_mode.rb`). A session already running is reused. `stop`, `kill`, `cleanup`, `relaunch` and `--prompt` work headless; `focus` and `tile` explain there is no window; `doctor --headless` skips the iTerm2 and window-tool checks.
 
 ### Coordinating agents: dispatch works, completion is fragile
 
@@ -260,4 +260,3 @@ Every hand-off in the human-in-the-loop table runs through files and conventions
 
 - Should `finish` merge, or stop at opening the PR? We assumed PR only, with merge left to policy.
 - Should the notify hook be a shell command in config, or a built-in integration? We assumed a shell command.
-- Is headless launch worth its cost if all runs stay on the author's Mac? We ranked it low for that reason.

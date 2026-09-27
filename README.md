@@ -1,6 +1,6 @@
 # workspace
 
-A macOS CLI for managing tmuxinator-based development workspaces in iTerm2. Launch, focus, kill, and relaunch projects with automatic window positioning across multiple displays.
+A macOS CLI for managing tmuxinator-based development workspaces in iTerm2. Launch, focus, kill, and relaunch projects with automatic window positioning across multiple displays. On a remote machine or in CI, [`launch --headless`](docs/README.launch.md#headless) runs the same workspaces in plain tmux.
 
 ## Features
 
@@ -23,6 +23,8 @@ A macOS CLI for managing tmuxinator-based development workspaces in iTerm2. Laun
 - **[tmux](https://github.com/tmux/tmux)** — terminal multiplexer
 - **[tmuxinator](https://github.com/tmuxinator/tmuxinator)** — tmux session manager
 - **[window-tool](https://github.com/zdennis/window-tool)** — fast window management via Accessibility API (must be on PATH)
+
+A [headless](docs/README.launch.md#headless) launch needs only Ruby, tmux, tmuxinator and git: no macOS, iTerm2 or window-tool.
 - **[gh](https://cli.github.com/)** — GitHub CLI (for `workspace start` with PR URLs)
 - **git** — version control
 - **[ascii-banner](https://github.com/zdennis/homebrew-bin/blob/main/docs/README.ascii-banner.md)** — terminal banner display (optional, used in tmuxinator templates)
@@ -84,7 +86,7 @@ workspace <subcommand> [options]
 | focus | [README](docs/README.focus.md) | Bring a project's iTerm window to the front |
 | init | [README](docs/README.init.md) | Install tmuxinator templates and create workspace config directory |
 | kill | [README](docs/README.kill.md) | Kill a worktree project and remove its worktree |
-| launch | [README](docs/README.launch.md) | Launch tmuxinator projects in iTerm2 windows |
+| launch | [README](docs/README.launch.md) | Launch tmuxinator projects in iTerm2 windows, or headless in plain tmux |
 | layout | [README](docs/README.layout.md) | Save/restore tmux pane layouts (auto-saved before resize) |
 | list | [README](docs/README.list.md) | List active projects (`--all` for all available) |
 | lock | [README](docs/README.lock.md) | Acquire, release, inspect, or clear a shared repo-wide lock; print agent instructions |
