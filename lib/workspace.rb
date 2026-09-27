@@ -71,6 +71,7 @@ require_relative "workspace/lock_reaper"
 require_relative "workspace/lock_enforcer"
 require_relative "workspace/notifier"
 require_relative "workspace/alert_config"
+require_relative "workspace/handoff_config"
 require_relative "workspace/context_reasons"
 require_relative "workspace/context_store"
 require_relative "workspace/context_reader"
@@ -111,6 +112,7 @@ require_relative "workspace/commands/parent"
 require_relative "workspace/commands/config"
 require_relative "workspace/commands/statusline"
 require_relative "workspace/commands/restart_agent"
+require_relative "workspace/commands/handoff"
 require_relative "workspace/commands/ask"
 require_relative "workspace/work_coordinator_client"
 require_relative "workspace/pipeline_config"
@@ -257,6 +259,10 @@ module Workspace
     )
 
     restart_agent_command = Commands::RestartAgent.new(config: config, output: output)
+    handoff_config = HandoffConfig.new(project_settings: project_settings, project_config: project_config,
+      lineage: lineage, error_output: error_output)
+    handoff_command = Commands::Handoff.new(config: config, tmux: tmux, handoff_config: handoff_config,
+      restart_agent_command: restart_agent_command, output: output, error_output: error_output)
 
     CLI.new(
       config: config,
@@ -298,6 +304,7 @@ module Workspace
       statusline_command: statusline_command,
       ask_command: ask_command,
       restart_agent_command: restart_agent_command,
+      handoff_command: handoff_command,
       logger: logger,
       output: output,
       error_output: error_output,
