@@ -206,10 +206,49 @@ RSpec.describe Workspace::LockStore do
       s = store
       s.acquire("edit", identity: identity(pid: 100), waiter_pid: 100, waiter_started: "start-100")
 
-      released = s.release_all(100)
+      released = s.release_all(identity(pid: 100))
 
       expect(released).to eq(["edit"])
       expect(s.status("edit")["edit"]["holder"]).to be_nil
+    end
+
+    it "dequeues the agent's wait even though it runs under a separate waiter pid" do
+      s = store
+      s.acquire("edit", identity: identity(pid: 100), waiter_pid: 100, waiter_started: "start-100")
+      s.acquire("edit", identity: identity(pid: 200), waiter_pid: 201, waiter_started: "start-201", wait: true)
+
+      s.release_all(identity(pid: 200))
+
+      expect(s.status("edit")["edit"]["queue"]).to be_empty
+      expect(s.poll("edit", 201)).to eq(status: :cleared)
+    end
+
+    it "leaves a hold by a reused pid with a different start time" do
+      s = store
+      s.acquire("edit", identity: identity(pid: 100), waiter_pid: 100, waiter_started: "start-100")
+
+      expect(s.release_all(identity(pid: 100, started: "other-start"))).to eq([])
+      expect(s.status("edit")["edit"]["holder"]["pid"]).to eq(100)
+    end
+  end
+
+  describe "#current_holder" do
+    it "reaps a dead holder and returns the promoted waiter" do
+      s = store
+      s.acquire("edit", identity: identity(pid: 100), waiter_pid: 100, waiter_started: "start-100")
+      s.acquire("edit", identity: identity(pid: 200), waiter_pid: 201, waiter_started: "start-201", wait: true)
+      liveness.kill(100)
+
+      expect(s.current_holder("edit")).to include("pid" => 200, "unclaimed" => true)
+    end
+
+    it "returns nil once a dead holder with no waiters is reaped" do
+      s = store
+      s.acquire("edit", identity: identity(pid: 100), waiter_pid: 100, waiter_started: "start-100")
+      liveness.kill(100)
+
+      expect(s.current_holder("edit")).to be_nil
+      expect(JSON.parse(File.read(File.join(tmpdir, "locks.json")))["edit"]["holder"]).to be_nil
     end
   end
 

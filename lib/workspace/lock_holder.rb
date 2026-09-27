@@ -11,6 +11,13 @@ module Workspace
   # outside tmux (or when the pane's process cannot be resolved), the nearest
   # matching ancestor of this process is used instead.
   class LockHolder
+    # @param holder [Hash, nil] a stored holder/waiter record with "pid" and "started"
+    # @param identity [Hash] an identity from {#current}, with :pid and :started
+    # @return [Boolean] whether the record and the identity name the same agent
+    def self.same_agent?(holder, identity)
+      !!holder && holder["pid"] == identity[:pid] && holder["started"] == identity[:started]
+    end
+
     # @param process_tree [Workspace::ProcessTree] process table snapshots
     # @param provider [Workspace::AgentProvider] agent CLI to look for (defaults to Claude Code)
     # @param env [Hash] environment lookup, injectable for tests

@@ -116,4 +116,78 @@ RSpec.describe Workspace::Doctor do
       FileUtils.remove_entry(tmpdir) if tmpdir && File.directory?(tmpdir)
     end
   end
+
+  describe "worktree lock hook check" do
+    let(:git) { double("git") }
+    let(:tmpdir) { Dir.mktmpdir }
+    let(:worktree_path) { File.join(tmpdir, "worktree-a") }
+
+    before do
+      FileUtils.mkdir_p(worktree_path)
+      allow(project_detector).to receive(:detect).and_return("myapp")
+      allow(config).to receive(:agent_socket_path).with("myapp").and_return("/tmp/does-not-exist-workspace-myapp.sock")
+    end
+
+    after { FileUtils.remove_entry(tmpdir) }
+
+    it "is skipped without a git dependency" do
+      doctor = build_doctor(which: ->(exe) { exe == "claude" })
+      allow(hook_installer).to receive(:installed?).and_return(true)
+
+      begin
+        doctor.run
+      rescue Workspace::Error
+      end
+
+      expect(output.string).not_to include("edit lock hooks")
+    end
+
+    it "reports every worktree with hooks installed" do
+      allow(git).to receive(:list_worktrees).with(repo: Dir.pwd).and_return([worktree_path])
+      allow(hook_installer).to receive(:installed?).and_return(true)
+
+      doctor = build_doctor(which: ->(exe) { exe == "claude" }, git: git)
+      begin
+        doctor.run
+      rescue Workspace::Error
+      end
+
+      expect(output.string).to include("edit lock hooks installed in every worktree")
+    end
+
+    it "warns, without failing doctor, about a worktree missing hooks" do
+      allow(git).to receive(:list_worktrees).with(repo: Dir.pwd).and_return([worktree_path])
+      allow(hook_installer).to receive(:installed?).with(anything, worktree_path, anything).and_return(false)
+      allow(hook_installer).to receive(:installed?).with(anything, Dir.pwd, anything).and_return(true)
+
+      doctor = build_doctor(which: ->(exe) { exe == "claude" }, git: git)
+      begin
+        doctor.run
+      rescue Workspace::Error => e
+        # The worktree warning alone must never be why this raises.
+        expect(e.message).not_to match(/edit lock hooks/)
+      end
+
+      expect(output.string).to include("edit lock hooks missing in 1 worktree(s): worktree-a")
+      expect(output.string).to include("fix: run 'workspace init' from each worktree listed above")
+    end
+
+    it "falls back to full paths when worktree basenames collide" do
+      other_worktree_path = File.join(tmpdir, "nested", "worktree-a")
+      FileUtils.mkdir_p(other_worktree_path)
+
+      allow(git).to receive(:list_worktrees).with(repo: Dir.pwd).and_return([worktree_path, other_worktree_path])
+      allow(hook_installer).to receive(:installed?).with(anything, worktree_path, anything).and_return(false)
+      allow(hook_installer).to receive(:installed?).with(anything, other_worktree_path, anything).and_return(false)
+      allow(hook_installer).to receive(:installed?).with(anything, Dir.pwd, anything).and_return(true)
+
+      doctor = build_doctor(which: ->(exe) { exe == "claude" }, git: git)
+      begin
+        doctor.run
+      rescue Workspace::Error
+      end
+
+      expect(output.string).to include("edit lock hooks missing in 2 worktree(s): #{worktree_path}, #{other_worktree_path}")
+    end
+  end
 end

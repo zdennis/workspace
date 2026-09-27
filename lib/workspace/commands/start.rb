@@ -10,12 +10,18 @@ module Workspace
       # @param output [IO] output stream for user-facing messages
       # @param input [IO] input stream for interactive prompts
       # @param lineage [Workspace::WorkspaceLineage] writes the `.workspace-project` marker
-      def initialize(git:, project_config:, project_settings:, launch_command:, lineage: WorkspaceLineage.new, output: $stdout, input: $stdin)
+      # @param hook_installer [Workspace::HookInstaller, nil] installs agent hooks
+      #   (edit lock enforcement, session monitoring) into the new worktree; nil skips it
+      # @param which [#call] returns true when an executable is on PATH
+      def initialize(git:, project_config:, project_settings:, launch_command:, lineage: WorkspaceLineage.new,
+        hook_installer: nil, which: nil, output: $stdout, input: $stdin)
         @git = git
         @project_config = project_config
         @project_settings = project_settings
         @launch_command = launch_command
         @lineage = lineage
+        @hook_installer = hook_installer
+        @which = which || Workspace::Which
         @output = output
         @input = input
       end
@@ -42,6 +48,7 @@ module Workspace
           config_name = @project_config.create_worktree(project_name, worktree_dir_name, worktree_path, branch_name)
           @project_settings.ensure_exists(project_name)
           seed_worktree_hooks(project_name, config_name)
+          install_agent_hooks(worktree_path)
           write_project_marker(worktree_path, config_name)
           @output.puts "Launching #{config_name}..."
           prompts = prompt ? {config_name => prompt} : {}
@@ -65,6 +72,7 @@ module Workspace
           config_name = @project_config.create_worktree(project_name, adopt_dir_name, existing_path, branch_name)
           @project_settings.ensure_exists(project_name)
           seed_worktree_hooks(project_name, config_name)
+          install_agent_hooks(existing_path)
           write_project_marker(existing_path, config_name)
           @output.puts "Launching #{config_name}..."
           prompts = prompt ? {config_name => prompt} : {}
@@ -82,6 +90,7 @@ module Workspace
         config_name = @project_config.create_worktree(project_name, worktree_dir_name, worktree_path, branch_name)
         @project_settings.ensure_exists(project_name)
         seed_worktree_hooks(project_name, config_name)
+        install_agent_hooks(worktree_path)
         write_project_marker(worktree_path, config_name)
         @output.puts "Launching #{config_name}..."
         prompts = prompt ? {config_name => prompt} : {}
@@ -152,6 +161,19 @@ module Workspace
 
         worktree_data["hooks"] = worktree_hooks.dup
         @project_settings.save(worktree_config_name, worktree_data)
+      end
+
+      # Installs each detected, hook-capable agent's hooks (session monitoring
+      # and edit lock enforcement) into a new or adopted worktree, the same way
+      # `workspace init` does for the parent project. Silent, no prompt: a
+      # worktree an agent will immediately be launched into should already be
+      # enforcing the edit lock.
+      def install_agent_hooks(worktree_path)
+        return unless @hook_installer
+
+        AgentProvider.all.select { |p| p.supports_hooks? && @which.call(p.executable) }.each do |provider|
+          @hook_installer.install(provider, worktree_path, Commands::Init::HOOK_COMMAND)
+        end
       end
 
       def write_project_marker(worktree_path, config_name)

@@ -9,6 +9,7 @@ require_relative "workspace/config"
 require_relative "workspace/event_log"
 require_relative "workspace/state"
 require_relative "workspace/git"
+require_relative "workspace/which"
 require_relative "workspace/doctor"
 require_relative "workspace/tmux"
 require_relative "workspace/tmux_pane"
@@ -26,6 +27,7 @@ require_relative "workspace/lock_holder"
 require_relative "workspace/lock_store"
 require_relative "workspace/lock_config"
 require_relative "workspace/lock_idle_tracker"
+require_relative "workspace/lock_enforcer"
 require_relative "workspace/session_monitor"
 require_relative "workspace/agent_provider"
 require_relative "workspace/file_backup"
@@ -98,13 +100,13 @@ module Workspace
     project_detector = ProjectDetector.new(state: state, project_config: project_config)
     file_backup = FileBackup.new(output: output)
     hook_installer = HookInstaller.new(backup: file_backup, output: output, input: input)
-    doctor = Doctor.new(config: config, state: state, hook_installer: hook_installer, project_detector: project_detector, output: output)
+    doctor = Doctor.new(config: config, state: state, hook_installer: hook_installer, project_detector: project_detector, git: git, output: output)
 
     # Pre-build command objects so CLI delegates rather than constructs
     kill_command = Commands::Kill.new(state: state, iterm: iterm, window_manager: window_manager, tmux: tmux, output: output, error_output: error_output)
     launch_command = Commands::Launch.new(state: state, iterm: iterm, window_manager: window_manager, tmux: tmux, project_config: project_config, window_layout: window_layout, config: config, output: output, error_output: error_output)
     lineage = WorkspaceLineage.new
-    start_command = Commands::Start.new(git: git, project_config: project_config, project_settings: project_settings, launch_command: launch_command, lineage: lineage, output: output, input: input)
+    start_command = Commands::Start.new(git: git, project_config: project_config, project_settings: project_settings, launch_command: launch_command, lineage: lineage, hook_installer: hook_installer, output: output, input: input)
     stop_command = Commands::Stop.new(git: git, project_config: project_config, project_settings: project_settings, kill_command: kill_command, project_detector: project_detector, output: output, input: input)
     focus_command = Commands::Focus.new(state: state, window_manager: window_manager, output: output)
     tile_command = Commands::Tile.new(state: state, window_manager: window_manager, window_layout: window_layout, output: output)
@@ -135,7 +137,9 @@ module Workspace
     dev_config = DevConfig.new(project_settings: project_settings)
     lock_config = LockConfig.new(project_settings: project_settings, error_output: error_output)
     lock_idle_tracker = LockIdleTracker.new(config: config, lock_namespace: lock_namespace, lock_holder: lock_holder, logger: logger)
-    session_event_command = Commands::SessionEvent.new(config: config, tmux: tmux, input: input, logger: logger, lock_idle_tracker: lock_idle_tracker)
+    lock_enforcer = LockEnforcer.new(config: config, lock_namespace: lock_namespace, lock_holder: lock_holder, logger: logger)
+    session_event_command = Commands::SessionEvent.new(config: config, tmux: tmux, input: input, error_output: error_output, logger: logger,
+      lock_idle_tracker: lock_idle_tracker, lock_enforcer: lock_enforcer)
     process_group_terminator = ProcessGroupTerminator.new
     lock_command = Commands::Lock.new(config: config, lock_namespace: lock_namespace, lock_holder: lock_holder,
       terminator: process_group_terminator, dev_config: dev_config, lock_config: lock_config, output: output, error_output: error_output)

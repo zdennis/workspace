@@ -26,43 +26,69 @@ module Workspace
       # @param tmux [Workspace::Tmux] resolves the pane's session name
       # @param input [IO] stream the hook payload arrives on
       # @param env [Hash] process environment, for TMUX_PANE
+      # @param error_output [IO] stream a deny message is written to
       # @param logger [Workspace::Logger] debug logger
       # @param lock_idle_tracker [Workspace::LockIdleTracker, nil] marks the
       #   agent's locks idle/active; nil skips lock tracking
-      def initialize(config:, tmux:, input: $stdin, env: ENV, logger: Workspace::Logger.new, lock_idle_tracker: nil)
+      # @param lock_enforcer [Workspace::LockEnforcer, nil] denies an edit while
+      #   another agent holds the edit lock, and releases locks on session end;
+      #   nil skips enforcement
+      def initialize(config:, tmux:, input: $stdin, env: ENV, error_output: $stderr, logger: Workspace::Logger.new,
+        lock_idle_tracker: nil, lock_enforcer: nil)
         @config = config
         @tmux = tmux
         @input = input
         @env = env
+        @error_output = error_output
         @logger = logger
         @lock_idle_tracker = lock_idle_tracker
+        @lock_enforcer = lock_enforcer
       end
 
-      # Reads a hook payload, updates the agent's lock idle state, and
-      # forwards it. Always succeeds.
+      # Reads a hook payload, updates the agent's lock idle state, enforces
+      # the edit lock, and forwards the event to the agent daemon.
       #
       # @param workspace [String, nil] overrides the workspace the event is sent
       #   to; normally derived from the pane the hook is running in
-      # @return [void]
+      # @return [Hash] {exit_code:} — 2 when an edit is denied, 0 otherwise
       def call(workspace: nil)
         payload = parse(@input.read)
-        return unless payload.is_a?(Hash)
+        return ok unless payload.is_a?(Hash)
 
-        @lock_idle_tracker&.update(payload["hook_event_name"], cwd: payload["cwd"])
+        hook = payload["hook_event_name"]
+        cwd = payload["cwd"]
+
+        @lock_idle_tracker&.update(hook, cwd: cwd)
+
+        if hook == "PreToolUse"
+          deny = @lock_enforcer&.check(tool_name: payload["tool_name"], cwd: cwd)
+          if deny
+            @error_output.puts deny
+            return {exit_code: 2}
+          end
+        elsif hook == "SessionEnd" || (hook == "SessionStart" && payload["source"] == "clear")
+          @lock_enforcer&.release_all(cwd: cwd)
+        end
 
         pane_id = @env["TMUX_PANE"]
-        return @logger.debug { "session-event: not inside tmux, dropped" } unless pane_id
+        return ok { "session-event: not inside tmux, dropped" } unless pane_id
 
         name = workspace || @tmux.session_name_for_pane(pane_id)
-        return @logger.debug { "session-event: no session for #{pane_id}, dropped" } unless name
+        return ok { "session-event: no session for #{pane_id}, dropped" } unless name
 
         event = translate(payload, pane_id, name)
-        return @logger.debug { "session-event: ignoring #{payload["hook_event_name"]}" } unless event
+        return ok { "session-event: ignoring #{hook}" } unless event
 
         deliver(name, event)
+        ok
       end
 
       private
+
+      def ok
+        @logger.debug { yield } if block_given?
+        {exit_code: 0}
+      end
 
       def parse(raw)
         return nil if raw.nil? || raw.strip.empty?

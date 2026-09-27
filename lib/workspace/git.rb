@@ -114,6 +114,16 @@ module Workspace
       stdout.include?("worktree #{path}")
     end
 
+    # Lists every worktree of the repository containing +repo+, including the
+    # main one.
+    #
+    # @param repo [String] path to any directory inside the repo (defaults to Dir.pwd)
+    # @return [Array<String>] absolute worktree paths
+    def list_worktrees(repo: Dir.pwd)
+      stdout, _ = Open3.capture3("git", "-C", repo, "worktree", "list", "--porcelain")
+      stdout.lines.select { |line| line.start_with?("worktree ") }.map { |line| line.sub("worktree ", "").strip }
+    end
+
     # Returns the worktree path for a branch, if one exists anywhere.
     #
     # @param branch_name [String] the branch name to search for
