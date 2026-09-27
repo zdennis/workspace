@@ -919,9 +919,18 @@ module Workspace
     def annotate_entry(entry)
       holder = entry["holder"]
       {
-        "holder" => holder&.merge("stale" => !holder_alive?(holder, kept_group: false)),
-        "queue" => entry["queue"].map { |w| w.merge("stale" => !waiter_alive?(w)) }
+        "holder" => holder && strip_dead_clearing_marker(holder.merge("stale" => !holder_alive?(holder, kept_group: false))),
+        "queue" => entry["queue"].map { |w| strip_dead_clearing_marker(w.merge("stale" => !waiter_alive?(w))) }
       }
+    end
+
+    # Drops a `clearing` marker whose clearer is no longer alive, so
+    # `workspace lock status --json` matches the text output (`clearing_tag`)
+    # and {#clear}'s own {#live_clearing_marker} check: a marker left by a
+    # clearer that has since died is not shown as still in progress.
+    def strip_dead_clearing_marker(record)
+      return record unless record["clearing"]
+      live_clearing_marker(record) ? record : record.except("clearing")
     end
 
     def reap!(data, source: nil)

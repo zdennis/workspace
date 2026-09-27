@@ -697,6 +697,15 @@ RSpec.describe Workspace::LockStore do
         expect(s.status("devenv")["devenv"]["holder"]["clearing"]).to eq("pid" => 900, "started" => "start-900")
       end
 
+      it "drops a clearing marker from status once its clearer has died, without a second clear" do
+        s = store
+        s.acquire("devenv", identity: process_identity(pid: 100), waiter_pid: 100, waiter_started: "start-100")
+        s.clear("devenv", keep_process_holder: true, clearer: {"pid" => 900, "started" => "start-900"})
+        liveness.kill(900)
+
+        expect(s.status("devenv")["devenv"]["holder"]).not_to have_key("clearing")
+      end
+
       it "restores a holder that released meanwhile" do
         s = store
         holder = hold_and_clear(s)
