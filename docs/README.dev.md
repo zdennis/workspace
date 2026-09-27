@@ -44,10 +44,17 @@ workspace config set dev.ready_timeout 2m         # wait for the dev.ready check
 | Code | Meaning |
 |------|---------|
 | 0 | Running (or already running for this worktree) |
-| 1 | Running for another worktree (no `--wait`/`--takeover`), or failed to start |
+| 1 | Running for another worktree (no `--wait`/`--takeover`), or failed to start; also a `--takeover` whose target is already being stopped by another `lock clear`, `dev down`, or `dev up --takeover` |
 | 4 | The `devenv` lock was cleared while waiting |
 | 6 | Ready check failed; the env is stopped and the lock released |
 | 75 | Still queued after `--max-wait` |
+
+## Exit codes (down)
+
+| Code | Meaning |
+|------|---------|
+| 0 | Stopped (or nothing was running) |
+| 1 | Could not stop the process group, or it's already being stopped by another `lock clear`, `dev down`, or `dev up --takeover` |
 
 ## `--json`
 
