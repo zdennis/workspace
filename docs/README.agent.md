@@ -43,7 +43,7 @@ When the stage prints its sentinel, the agent captures that pane's output to a h
 
 **Restarts** — the token and deadline of each stage in flight are saved in the pipeline state file, so a restarted agent watches for the same token and keeps the same deadline. A stage that printed its sentinel while the agent was down advances as soon as the agent is back. State written by an older agent has no token; for those items the agent accepts any `WORKSPACE_DONE:` line printed after it restarts, as it did before tokens existed, and they have no deadline.
 
-A project with no `pipeline` block still works: commands go to pane 0 and nothing is tracked.
+A project with no `pipeline` block still works: commands go to the Claude Code pane (detected by pane title, falling back to pane 1 if detection fails) and nothing is tracked.
 
 **Steering** — an `inject` message queues a note for the next stage without disturbing the running one. With `interrupt: true` it sends `C-c` to the running stage's pane first and types the note in immediately.
 
