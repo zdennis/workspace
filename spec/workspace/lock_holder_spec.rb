@@ -14,7 +14,8 @@ RSpec.describe Workspace::LockHolder do
     context "inside tmux" do
       let(:env) { {"TMUX_PANE" => "%12"} }
 
-      it "finds the agent by walking down from the pane's process" do
+      it "falls back to walking down from the pane's process when no ancestor is an agent" do
+        allow(snapshot).to receive(:find_ancestor).and_return(nil)
         allow(Open3).to receive(:capture3)
           .with("tmux", "display-message", "-p", "-t", "%12", "#" + "{pane_pid}")
           .and_return(["4200\n", "", instance_double(Process::Status, success?: true)])
@@ -27,15 +28,14 @@ RSpec.describe Workspace::LockHolder do
         expect(result).to eq(kind: "agent", pid: 4411, started: "Sat Sep 26 09:12:03 2026", pane: "%12", worktree: Dir.pwd)
       end
 
-      it "falls back to an ancestor walk when the pane pid can't be resolved" do
+      it "prefers the nearest agent ancestor without asking tmux for the pane" do
         allow(Open3).to receive(:capture3)
-          .with("tmux", "display-message", "-p", "-t", "%12", "#" + "{pane_pid}")
-          .and_return(["", "", instance_double(Process::Status, success?: false)])
         allow(snapshot).to receive(:find_ancestor)
           .with(Process.pid, ["claude"], exclude: provider.background_markers)
           .and_return({pid: 999, ppid: 1, lstart: "start-999", command: "claude", args: "claude"})
 
         expect(holder.current).to include(pid: 999, started: "start-999")
+        expect(Open3).not_to have_received(:capture3)
       end
     end
 
@@ -97,6 +97,52 @@ RSpec.describe Workspace::LockHolder do
 
       it "still resolves to the claude process, skipping its background helpers" do
         expect(holder.current).to include(pid: 800, started: "start-800")
+      end
+    end
+
+    context "when a second agent was launched from inside another in the same pane" do
+      let(:env) { {"TMUX_PANE" => "%12"} }
+      let(:processes) do
+        [
+          process(1, 0, "launchd"),
+          process(4200, 1, "-zsh"),
+          process(4300, 4200, "claude"),
+          process(4350, 4300, "/bin/zsh -c codex"),
+          process(4400, 4350, "codex"),
+          process(Process.pid, 4400, "ruby bin/workspace lock")
+        ]
+      end
+
+      before do
+        allow(Open3).to receive(:capture3)
+          .with("tmux", "display-message", "-p", "-t", "%12", "#" + "{pane_pid}")
+          .and_return(["4200\n", "", instance_double(Process::Status, success?: true)])
+      end
+
+      it "resolves to the nearest agent above the caller, not the outermost one in the pane" do
+        expect(holder.current).to include(pid: 4400, started: "start-4400", pane: "%12")
+      end
+    end
+
+    context "when the caller has no agent ancestor inside tmux" do
+      let(:env) { {"TMUX_PANE" => "%12"} }
+      let(:processes) do
+        [
+          process(1, 0, "launchd"),
+          process(4200, 1, "-zsh"),
+          process(4300, 4200, "claude"),
+          process(Process.pid, 1, "ruby bin/workspace lock")
+        ]
+      end
+
+      before do
+        allow(Open3).to receive(:capture3)
+          .with("tmux", "display-message", "-p", "-t", "%12", "#" + "{pane_pid}")
+          .and_return(["4200\n", "", instance_double(Process::Status, success?: true)])
+      end
+
+      it "falls back to the agent running in the pane" do
+        expect(holder.current).to include(pid: 4300, started: "start-4300")
       end
     end
   end

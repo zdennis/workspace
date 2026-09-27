@@ -7,10 +7,14 @@ module Workspace
   # Identity is the agent process's pid plus its `ps` start time (`lstart`),
   # never a heartbeat: the start time guards against PID reuse without
   # costing the agent any tokens. Any registered {AgentProvider} counts as an
-  # agent. Inside tmux the agent is found by walking down from the pane's own
-  # process with {ProcessTree::Snapshot#find_descendant}; outside tmux (or when
-  # the pane's process cannot be resolved), the nearest matching ancestor of
-  # this process is used instead.
+  # agent.
+  #
+  # The agent is the nearest matching ancestor of this process, since that is
+  # the one that actually ran the command. A pane can hold more than one agent
+  # (one launched from inside another), and walking down from the pane's root
+  # would name the outermost one instead. Only when no ancestor matches does
+  # it fall back to searching down from the pane's process with
+  # {ProcessTree::Snapshot#find_descendant}.
   class LockHolder
     # @param holder [Hash, nil] a stored holder/waiter record with "pid" and "started"
     # @param identity [Hash] an identity from {#current}, with :pid and :started
@@ -34,7 +38,7 @@ module Workspace
     #   :pane, :worktree — or nil if no agent process could be found
     def current
       snapshot = @process_tree.snapshot
-      process = pane_process(snapshot) || ancestor_process(snapshot)
+      process = ancestor_process(snapshot) || pane_process(snapshot)
       return nil unless process
 
       {
