@@ -1385,5 +1385,51 @@ RSpec.describe Workspace::Commands::Agent do
 
       expect(monitor.instance_variable_get(:@process_tree).instance_variable_get(:@timeout)).to eq(42)
     end
+
+    it "gives the session monitor a notifier and idle threshold from the workspace's alert config" do
+      alert_config = instance_double(Workspace::AlertConfig)
+      allow(alert_config).to receive(:for_workspace).with("myapp").and_return(notify: "say hi", idle_after: 900)
+      notifier = instance_double(Workspace::Notifier)
+      commands = []
+      agent_with_alerts = described_class.new(
+        config: config,
+        tmux: tmux,
+        work_coordinator_client: client,
+        pipeline_config: pipeline_config,
+        pipeline_state: pipeline_state,
+        alert_config: alert_config,
+        notifier_factory: ->(command) {
+          commands << command
+          notifier
+        },
+        output: output,
+        error_output: error_output
+      )
+
+      monitor = agent_with_alerts.send(:build_session_monitor, "myapp")
+
+      expect(commands).to eq(["say hi"])
+      expect(monitor.instance_variable_get(:@notifier)).to be(notifier)
+      expect(monitor.instance_variable_get(:@idle_alert_after)).to eq(900)
+    end
+
+    it "builds no notifier when the workspace has no notify command" do
+      alert_config = instance_double(Workspace::AlertConfig, for_workspace: {notify: nil, idle_after: 600})
+      agent_without = described_class.new(
+        config: config,
+        tmux: tmux,
+        work_coordinator_client: client,
+        pipeline_config: pipeline_config,
+        pipeline_state: pipeline_state,
+        alert_config: alert_config,
+        notifier_factory: ->(_command) { raise "should not be built" },
+        output: output,
+        error_output: error_output
+      )
+
+      monitor = agent_without.send(:build_session_monitor, "myapp")
+
+      expect(monitor.send_alerts).to eq([])
+    end
   end
 end

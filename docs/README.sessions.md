@@ -55,6 +55,34 @@ A pane leaves `waiting` on the agent's next hook event: a submitted prompt, a fi
 
 When the LOCK column is hidden (project root unresolved), all five fields (`lock`, `lock_state`, `lock_position`, `lock_name`, `locks`) are absent from each pane's JSON, not merely `null` — a consumer should treat a missing `lock_state` key the same as a `null` one.
 
+## Alerts
+
+The session-monitor daemon can run a command of your choosing when an agent pane starts `waiting`, or when an agent pane's output stays unchanged for longer than `alerts.idle_after` (default `10m`). Set it with [`workspace config`](README.config.md):
+
+```sh
+workspace config set alerts.notify 'say "$WORKSPACE_ALERT_TEXT"'
+workspace config set alerts.idle_after 15m
+```
+
+With no `alerts.notify` set, nothing runs; `sessions` still shows the state. Both settings are read when the daemon starts, so restart it (`workspace agent <project> --force`, or relaunch) after changing them. For a worktree, the settings come from its parent project, where `workspace config set` stores them.
+
+Each wait alerts once, and each stretch of unchanged output alerts once, however long it lasts; a new wait, or output that changes and then goes quiet again, alerts again. A pane that is `waiting` doesn't also alert for being idle. Shell panes (no agent) never alert. Pane state lives in the daemon's memory, so a restarted daemon starts every pane afresh.
+
+The command runs through `/bin/sh -c`, in its own process group, with stdin and stdout discarded and stderr going to the daemon's log. It gets the alert only as environment variables; nothing from the agent is ever spliced into the command line, so quote the variables you use (`"$WORKSPACE_ALERT_TEXT"`):
+
+| Variable | Value |
+|----------|-------|
+| `WORKSPACE_ALERT` | `waiting` or `idle` |
+| `WORKSPACE_ALERT_WORKSPACE` | The workspace (tmux session) name |
+| `WORKSPACE_ALERT_PANE` | Pane as shown in the PANE column, e.g. `0.1` |
+| `WORKSPACE_ALERT_PANE_ID` | tmux pane id, e.g. `%12` |
+| `WORKSPACE_ALERT_KIND` | Agent kind, e.g. `claude` |
+| `WORKSPACE_ALERT_SECONDS` | Seconds the pane has been waiting or idle |
+| `WORKSPACE_ALERT_MESSAGE` | The agent's notification message (empty for `idle`) |
+| `WORKSPACE_ALERT_TEXT` | One-line summary, e.g. `myapp pane 0.1 (Claude Code) is waiting: Claude needs your permission to use Bash` |
+
+The daemon never waits on the command. One still running after 10 seconds gets SIGTERM, then SIGKILL 2 seconds later, sent to its process group; a command that exits non-zero, can't start, or is stopped is reported in the daemon's log. At most 4 runs go at once; an alert raised while 4 are still running is skipped, with a line in the log.
+
 ## Examples
 
 ```sh

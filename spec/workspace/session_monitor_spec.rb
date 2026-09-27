@@ -230,6 +230,134 @@ RSpec.describe Workspace::SessionMonitor do
     end
   end
 
+  describe "#send_alerts" do
+    let(:notifier) { instance_double(Workspace::Notifier, notify: nil) }
+
+    subject(:monitor) do
+      described_class.new(tmux: tmux, process_tree: process_tree, session_name: "proj",
+        idle_after: 30, clock: clock, notifier: notifier, idle_alert_after: 600)
+    end
+
+    before { monitor.scan }
+
+    def at(seconds)
+      allow(clock).to receive(:now).and_return(now + seconds)
+    end
+
+    it "alerts once when an agent pane starts waiting, with the details in env vars" do
+      monitor.record("event" => "notification", "pane_id" => "%2", "message" => "Claude needs your permission to use Bash")
+      at(4)
+
+      alerts = monitor.send_alerts
+      monitor.send_alerts
+
+      expect(alerts).to eq([{
+        "WORKSPACE_ALERT" => "waiting",
+        "WORKSPACE_ALERT_WORKSPACE" => "proj",
+        "WORKSPACE_ALERT_PANE" => "0.1",
+        "WORKSPACE_ALERT_PANE_ID" => "%2",
+        "WORKSPACE_ALERT_KIND" => "claude",
+        "WORKSPACE_ALERT_SECONDS" => "4",
+        "WORKSPACE_ALERT_MESSAGE" => "Claude needs your permission to use Bash",
+        "WORKSPACE_ALERT_TEXT" => "proj pane 0.1 (Claude Code) is waiting: Claude needs your permission to use Bash"
+      }])
+      expect(notifier).to have_received(:notify).once
+    end
+
+    it "alerts again for a new wait after the last one cleared" do
+      monitor.record("event" => "notification", "pane_id" => "%2")
+      monitor.send_alerts
+      monitor.record("event" => "user_prompt", "pane_id" => "%2")
+      at(10)
+      monitor.record("event" => "notification", "pane_id" => "%2")
+
+      monitor.send_alerts
+
+      expect(notifier).to have_received(:notify).twice
+    end
+
+    it "alerts once when an agent pane stays idle past the threshold, not on every scan" do
+      at(599)
+      monitor.scan
+      expect(monitor.send_alerts).to eq([])
+
+      at(600)
+      monitor.scan
+      alerts = monitor.send_alerts
+      at(900)
+      monitor.scan
+      monitor.send_alerts
+
+      expect(alerts.map { |a| [a["WORKSPACE_ALERT"], a["WORKSPACE_ALERT_PANE_ID"], a["WORKSPACE_ALERT_SECONDS"]] })
+        .to eq([["idle", "%2", "600"]])
+      expect(alerts.first["WORKSPACE_ALERT_TEXT"]).to eq("proj pane 0.1 (Claude Code) has been idle for 10m")
+      expect(notifier).to have_received(:notify).once
+    end
+
+    it "alerts for idle again once the pane's output has changed and gone quiet again" do
+      at(600)
+      monitor.scan
+      monitor.send_alerts
+      allow(tmux).to receive(:capture_pane).and_return("new output")
+      at(700)
+      monitor.scan
+      at(1300)
+      monitor.scan
+
+      monitor.send_alerts
+
+      expect(notifier).to have_received(:notify).twice
+    end
+
+    it "does not alert for idle while the pane is waiting, which has its own alert" do
+      monitor.record("event" => "notification", "pane_id" => "%2")
+      monitor.send_alerts
+      at(700)
+      monitor.scan
+
+      expect(monitor.send_alerts).to eq([])
+    end
+
+    it "never alerts for a shell pane" do
+      at(700)
+      monitor.scan
+      monitor.record("event" => "notification", "pane_id" => "%1")
+
+      expect(monitor.send_alerts.map { |a| a["WORKSPACE_ALERT_PANE_ID"] }).to eq(["%2"])
+    end
+
+    it "strips NUL bytes, which can't be passed in an environment variable" do
+      monitor.record("event" => "notification", "pane_id" => "%2", "message" => "a\u0000b")
+
+      expect(monitor.send_alerts.first["WORKSPACE_ALERT_MESSAGE"]).to eq("ab")
+    end
+
+    it "alerts only on waiting when no idle threshold is set" do
+      quiet = described_class.new(tmux: tmux, process_tree: process_tree, session_name: "proj",
+        idle_after: 30, clock: clock, notifier: notifier)
+      quiet.scan
+      at(10_000)
+      quiet.scan
+
+      expect(quiet.send_alerts).to eq([])
+    end
+
+    it "sends nothing without a notifier" do
+      plain = described_class.new(tmux: tmux, process_tree: process_tree, session_name: "proj", clock: clock)
+      plain.scan
+      plain.record("event" => "notification", "pane_id" => "%2")
+
+      expect(plain.send_alerts).to eq([])
+    end
+
+    it "returns an empty list instead of raising when the notifier raises, so the scan thread survives" do
+      allow(notifier).to receive(:notify).and_raise(ThreadError, "can't create Thread")
+      monitor.record("event" => "notification", "pane_id" => "%2")
+
+      expect(monitor.send_alerts).to eq([])
+    end
+  end
+
   describe "#reap_locks" do
     let(:lock_reaper) { instance_double(Workspace::LockReaper) }
 

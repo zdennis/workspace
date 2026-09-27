@@ -123,6 +123,37 @@ RSpec.describe Workspace::Commands::Config do
       end
     end
 
+    it "accepts alerts.notify and alerts.idle_after" do
+      command, project_settings = build_command
+      project_dir = Dir.mktmpdir("ws-config-project")
+      name = File.basename(project_dir)
+
+      command.set("alerts.notify", "say \"$WORKSPACE_ALERT_TEXT\"", cwd: project_dir)
+      command.set("alerts.idle_after", "15m", cwd: project_dir)
+
+      expect(project_settings.load(name)).to eq({"alerts" => {"notify" => "say \"$WORKSPACE_ALERT_TEXT\"", "idle_after" => "15m"}})
+    end
+
+    it "rejects a blank alerts.notify without writing it" do
+      command, project_settings = build_command
+      project_dir = Dir.mktmpdir("ws-config-project")
+
+      expect { command.set("alerts.notify", "  ", cwd: project_dir) }
+        .to raise_error(Workspace::UsageError, /Invalid alerts.notify: must not be blank/)
+      expect(project_settings.load(File.basename(project_dir))).to eq({})
+    end
+
+    ["0", "-5", "soon"].each do |bad|
+      it "rejects alerts.idle_after #{bad.inspect} without writing it" do
+        command, project_settings = build_command
+        project_dir = Dir.mktmpdir("ws-config-project")
+
+        expect { command.set("alerts.idle_after", bad, cwd: project_dir) }
+          .to raise_error(Workspace::UsageError, /Invalid alerts.idle_after/)
+        expect(project_settings.load(File.basename(project_dir))).to eq({})
+      end
+    end
+
     it "accepts locks.reap_interval as seconds or a duration" do
       command, project_settings = build_command
       project_dir = Dir.mktmpdir("ws-config-project")

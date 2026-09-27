@@ -39,10 +39,12 @@ Only an allowlisted set of keys can be written this way, so a typo doesn't silen
 | `locks.idle_grace` | How long an idle agent keeps a lock before the first waiter may take it over (default `5m`; see [`workspace lock`](README.lock.md)) |
 | `locks.ps_timeout` | How long to wait for `ps` when reading the process table for lock/session checks, before giving up (default `5s`, must be between `1s` and `60s`) |
 | `locks.reap_interval` | How often the session-monitor daemon sweeps for stale lock holders and waiters (default `30s`) |
+| `alerts.notify` | Command the session-monitor daemon runs when an agent pane starts waiting on a person or stays idle past `alerts.idle_after` (unset: no alerts; see [`workspace sessions`](README.sessions.md#alerts)) |
+| `alerts.idle_after` | How long an agent pane may sit idle before `alerts.notify` runs (default `10m`) |
 
-`dev.stop_timeout`, `dev.startup_timeout`, `dev.ready_timeout`, `dev.kill_grace`, `locks.idle_grace`, `locks.ps_timeout`, and `locks.reap_interval` must parse as a duration: a plain number of seconds, or a number with an `s`, `m` or `h` suffix (`20`, `20s`, `5m`, `1h`). `dev.startup_timeout`, `dev.ready_timeout`, `dev.kill_grace`, `locks.idle_grace`, `locks.ps_timeout`, and `locks.reap_interval` must also be greater than 0. `dev.kill_grace` is also capped at 60s. `locks.ps_timeout` must be between 1s and 60s: too small and `ps` times out on nearly every call, which makes liveness checks come back unknown (treated as alive) and can stall a lock queue behind a clearing marker that never gets to show dead. Anything else is rejected before it's written.
+`dev.stop_timeout`, `dev.startup_timeout`, `dev.ready_timeout`, `dev.kill_grace`, `locks.idle_grace`, `locks.ps_timeout`, `locks.reap_interval`, and `alerts.idle_after` must parse as a duration: a plain number of seconds, or a number with an `s`, `m` or `h` suffix (`20`, `20s`, `5m`, `1h`). `dev.startup_timeout`, `dev.ready_timeout`, `dev.kill_grace`, `locks.idle_grace`, `locks.ps_timeout`, `locks.reap_interval`, and `alerts.idle_after` must also be greater than 0. `alerts.notify` must not be blank. `dev.kill_grace` is also capped at 60s. `locks.ps_timeout` must be between 1s and 60s: too small and `ps` times out on nearly every call, which makes liveness checks come back unknown (treated as alive) and can stall a lock queue behind a clearing marker that never gets to show dead. Anything else is rejected before it's written.
 
-`locks.reap_interval` only takes effect the next time the session-monitor daemon starts (`workspace launch`/`workspace agent`); a daemon already running keeps the interval it started with.
+`locks.reap_interval`, `alerts.notify` and `alerts.idle_after` only take effect the next time the session-monitor daemon starts (`workspace launch`/`workspace agent`); a daemon already running keeps the values it started with.
 
 `dev.up` runs via `/bin/sh -c`, so it can carry inline environment variables and quoting, e.g.:
 
@@ -76,6 +78,7 @@ Before writing, `set` and `unset` back up the project's config file (via the sam
 | `locks.idle_grace` | Idle takeover grace period for this project's locks; set via `workspace config set` (see above) |
 | `locks.ps_timeout` | How long to wait for `ps` before giving up, for this project's lock and session checks; must be between `1s` and `60s`; set via `workspace config set` (see above) |
 | `locks.reap_interval` | How often the session-monitor daemon sweeps for stale locks; set via `workspace config set` (see above) |
+| `alerts.notify`, `alerts.idle_after` | Notify command for waiting and long-idle agent panes; set via `workspace config set` (see above) |
 
 ## Examples
 
@@ -93,6 +96,10 @@ workspace config --global
 workspace config set dev.up "./start-dev"
 workspace config set dev.ready "port:3000"
 workspace config set dev.stop_timeout 20s
+
+# Get a macOS notification when an agent waits on you or sits idle for 15 minutes
+workspace config set alerts.notify 'osascript -e "display notification (system attribute \"WORKSPACE_ALERT_TEXT\") with title \"workspace\""'
+workspace config set alerts.idle_after 15m
 
 # Let a waiter take over a lock after its holder has been idle for 10 minutes
 workspace config set locks.idle_grace 10m

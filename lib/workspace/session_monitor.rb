@@ -35,9 +35,14 @@ module Workspace
     # @param error_output [IO] stream for reporting an unexpected monitor death
     # @param lock_reaper [Workspace::LockReaper, nil] ticked after every scan with
     #   the panes' working directories, so stale lock holds are reaped
+    # @param notifier [Workspace::Notifier, nil] runs the notify command when an
+    #   agent pane starts waiting or stays idle too long; nil sends no alerts
+    # @param idle_alert_after [Numeric, nil] seconds of idle before an agent
+    #   pane alerts; nil alerts only on waiting
     def initialize(tmux:, process_tree:, session_name:,
       providers: AgentProvider.all, poll_interval: 2, idle_after: DEFAULT_IDLE_AFTER,
-      clock: Time, logger: Workspace::Logger.new, error_output: $stderr, lock_reaper: nil)
+      clock: Time, logger: Workspace::Logger.new, error_output: $stderr, lock_reaper: nil,
+      notifier: nil, idle_alert_after: nil)
       @tmux = tmux
       @process_tree = process_tree
       @session_name = session_name
@@ -48,6 +53,8 @@ module Workspace
       @logger = logger
       @error_output = error_output
       @lock_reaper = lock_reaper
+      @notifier = notifier
+      @idle_alert_after = idle_alert_after
       @panes = {}
       @lock = Mutex.new
       @running = false
@@ -61,6 +68,7 @@ module Workspace
       @thread = Thread.new do
         while @running
           scan
+          send_alerts
           reap_locks
           sleep @poll_interval
         end
@@ -152,7 +160,68 @@ module Workspace
       0
     end
 
+    # Runs the notify command for each agent pane that has started waiting, or
+    # has stayed idle past the idle alert threshold, since it last alerted.
+    # One wait, or one stretch of unchanged output, alerts once, however many
+    # scans it spans. Shell panes never alert. The notifier returns at once,
+    # and anything raised here is logged and swallowed, so alerting can never
+    # stall or end the scan thread.
+    #
+    # @return [Array<Hash>] the environment of each alert sent
+    def send_alerts
+      return [] unless @notifier
+      now = @clock.now
+      alerts = @lock.synchronize { @panes.values.filter_map { |pane| due_alert(pane, now) } }
+      alerts.each { |alert| @notifier.notify(alert) }
+      alerts
+    rescue => e
+      begin
+        @logger.debug { "session monitor: alert failed (#{e.class}: #{e.message})" }
+      rescue
+        nil
+      end
+      []
+    end
+
     private
+
+    NOT_AGENTS = ["shell", "unknown"].freeze
+    private_constant :NOT_AGENTS
+
+    def due_alert(pane, now)
+      return nil if NOT_AGENTS.include?(pane[:kind])
+
+      if (since = pane[:waiting_since])
+        return nil if pane[:alerted_waiting_since] == since
+        pane[:alerted_waiting_since] = since
+        return alert_env(pane, "waiting", now - since, pane[:waiting_message])
+      end
+
+      return nil unless @idle_alert_after && pane[:last_activity_at]
+      idle_for = now - pane[:last_activity_at]
+      return nil if idle_for < @idle_alert_after || pane[:alerted_idle_since] == pane[:last_activity_at]
+      pane[:alerted_idle_since] = pane[:last_activity_at]
+      alert_env(pane, "idle", idle_for, nil)
+    end
+
+    def alert_env(pane, alert, seconds, message)
+      where = "#{@session_name} pane 0.#{pane[:index]} (#{pane[:label]})"
+      text = if alert == "waiting"
+        "#{where} is waiting#{": #{message}" if message}"
+      else
+        "#{where} has been idle for #{Duration.humanize(seconds)}"
+      end
+      {
+        "WORKSPACE_ALERT" => alert,
+        "WORKSPACE_ALERT_WORKSPACE" => @session_name,
+        "WORKSPACE_ALERT_PANE" => "0.#{pane[:index]}",
+        "WORKSPACE_ALERT_PANE_ID" => pane[:pane_id].to_s,
+        "WORKSPACE_ALERT_KIND" => pane[:kind].to_s,
+        "WORKSPACE_ALERT_SECONDS" => seconds.round.to_s,
+        "WORKSPACE_ALERT_MESSAGE" => message.to_s,
+        "WORKSPACE_ALERT_TEXT" => text
+      }.transform_values { |value| value.delete("\0") }
+    end
 
     def new_pane(pane_id)
       {pane_id: pane_id, agents: [], kind: "unknown", index: nil}

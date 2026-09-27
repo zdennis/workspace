@@ -1809,6 +1809,8 @@ module Workspace
         opts.separator "  workspace config set dev.up \"./start-dev\""
         opts.separator "  workspace config set dev.stop_timeout 20s"
         opts.separator "  workspace config set locks.idle_grace 10m"
+        opts.separator "  workspace config set alerts.notify 'say \"$WORKSPACE_ALERT_TEXT\"'"
+        opts.separator "  workspace config set alerts.idle_after 15m"
         opts.separator "  workspace config set --project myapp dev.up \"bin/dev\""
       end
       begin
@@ -1894,6 +1896,14 @@ module Workspace
         opts.separator "                                 sweeps out stale lock holders (default: 30s,"
         opts.separator "                                 must be > 0; takes effect next time the"
         opts.separator "                                 monitor starts)"
+        opts.separator "  alerts.notify:                 Command the session-monitor daemon runs when an"
+        opts.separator "                                 agent pane starts waiting on a person or stays"
+        opts.separator "                                 idle past alerts.idle_after; details arrive in"
+        opts.separator "                                 WORKSPACE_ALERT_* environment variables (see"
+        opts.separator "                                 docs/README.sessions.md). Unset: no alerts"
+        opts.separator "  alerts.idle_after:             How long an agent pane may sit idle before it"
+        opts.separator "                                 alerts (default: 10m, must be > 0). Both take"
+        opts.separator "                                 effect next time the monitor starts"
         opts.separator ""
         opts.separator "Note: 'set', 'get', and 'unset' are reserved as the first argument"
         opts.separator "here and are always treated as subcommands, so a project literally"

@@ -30,6 +30,8 @@ require_relative "workspace/lock_config"
 require_relative "workspace/lock_idle_tracker"
 require_relative "workspace/lock_reaper"
 require_relative "workspace/lock_enforcer"
+require_relative "workspace/notifier"
+require_relative "workspace/alert_config"
 require_relative "workspace/session_monitor"
 require_relative "workspace/agent_provider"
 require_relative "workspace/file_backup"
@@ -188,6 +190,8 @@ module Workspace
       # LockHolder's snapshot scope is per-instance, not per-thread.
       lock_reaper: LockReaper.new(lock_namespace: lock_namespace, lock_holder: LockHolder.new(process_tree: process_tree),
         terminator: process_group_terminator, interval: reap_interval, logger: logger, error_output: error_output),
+      alert_config: AlertConfig.new(project_settings: project_settings, project_config: project_config,
+        lineage: lineage, error_output: error_output),
       ps_timeout: ps_timeout,
       logger: logger,
       output: output,
