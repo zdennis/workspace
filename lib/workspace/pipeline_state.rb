@@ -1,6 +1,7 @@
 require "json"
 require "fileutils"
 require "time"
+require "securerandom"
 
 module Workspace
   # Tracks in-flight pipeline state per work item, optionally persisting it so an
@@ -106,11 +107,12 @@ module Workspace
     # Written under the user's own state directory, so the file carries no
     # permissions a passer-by on a shared box could use. Written to a temp file
     # and renamed, because being killed mid-write is exactly the case this file
-    # exists for and a half-written one would lose every in-flight item.
+    # exists for and a half-written one would lose every in-flight item. The
+    # temp name is unique per write so two writers never share one.
     def persist
       return unless @state_path
       FileUtils.mkdir_p(File.dirname(@state_path), mode: 0o700)
-      temp_path = "#{@state_path}.#{Process.pid}.tmp"
+      temp_path = "#{@state_path}.#{Process.pid}.#{SecureRandom.hex(6)}.tmp"
       File.write(temp_path, JSON.pretty_generate(@entries), perm: 0o600)
       File.rename(temp_path, @state_path)
     end

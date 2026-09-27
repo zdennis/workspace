@@ -615,7 +615,7 @@ RSpec.describe Workspace::Commands::Agent do
           wait_until { coordinator.status_messages.any? { |m| m["type"] == "error" } }
           expect(coordinator.status_messages.last).to include(
             "type" => "error", "work_item_ref" => "WC-42",
-            "message" => "timed out: no WORKSPACE_DONE:tok-1 line by 2026-09-27T12:30:00Z"
+            "message" => "timed out after 30m (deadline 2026-09-27T12:30:00Z): no WORKSPACE_DONE:tok-1 line"
           )
           expect(error_output.string).to include("WC-42 failed at pane 0: timed out")
           expect(pipeline_state.current("WC-42")).to be_nil
@@ -1180,6 +1180,23 @@ RSpec.describe Workspace::Commands::Agent do
         )
         expect(pollers.map(&:pane)).to eq([1])
         expect(pipeline_state.current("WC-42")).to include(pane_index: 1)
+      end
+    end
+
+    it "names only the deadline when a recovered stage times out, since its budget is not persisted" do
+      coordinator.start
+      write_pipeline_config
+      write_persisted_state(pane_index: 1, sentinel_token: "persisted-tok", deadline_at: "2026-09-27T12:30:00.000Z")
+      tmux.pane_indexes = [0, 1]
+
+      run_agent do
+        wait_until { pollers.any? }
+        pollers.first.on_timeout.call
+
+        wait_until { coordinator.status_messages.any? { |m| m["type"] == "error" } }
+        expect(coordinator.status_messages.last).to include(
+          "message" => "timed out (deadline 2026-09-27T12:30:00Z): no WORKSPACE_DONE:persisted-tok line"
+        )
       end
     end
 
