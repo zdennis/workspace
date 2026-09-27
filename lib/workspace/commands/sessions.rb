@@ -10,14 +10,28 @@ module Workspace
     # code path behind both the table and `--json`, so what a future UI reads is
     # exactly what the table shows.
     class Sessions
+      # The lock this column shows; see {Workspace::LockEnforcer::LOCK_NAME}.
+      LOCK_NAME = "edit"
+
       # @param config [Workspace::Config] socket path lookups
+      # @param lock_namespace [Workspace::LockNamespace, nil] resolves the edit
+      #   lock's store directory; nil hides the LOCK column entirely
+      # @param lock_holder [Workspace::LockHolder, nil] checks holder/waiter
+      #   liveness for the lock store; required together with +lock_namespace+
+      # @param project_config [Workspace::ProjectConfig, nil] resolves the
+      #   rendered workspace's project root, so the lock namespace matches the
+      #   workspace being shown rather than the command's own Dir.pwd;
+      #   required together with +lock_namespace+/+lock_holder+
       # @param output [IO] stream for the rendered table or JSON
       # @param error_output [IO] stream for the no-daemon message
       # @param clock [#now] time source, injected for deterministic tests
       # @param sleeper [#call] delay between refreshes, injected for tests
-      def initialize(config:, output: $stdout, error_output: $stderr,
-        clock: Time, sleeper: ->(seconds) { sleep(seconds) })
+      def initialize(config:, lock_namespace: nil, lock_holder: nil, project_config: nil, output: $stdout,
+        error_output: $stderr, clock: Time, sleeper: ->(seconds) { sleep(seconds) })
         @config = config
+        @lock_namespace = lock_namespace
+        @lock_holder = lock_holder
+        @project_config = project_config
         @output = output
         @error_output = error_output
         @clock = clock
@@ -31,6 +45,7 @@ module Workspace
       # @return [void]
       # @raise [Workspace::Error] if no agent daemon is listening
       def call(name:, json: false, watch: false, interval: 2)
+        @name = name
         return render(fetch(name), json) unless watch
 
         loop do
@@ -59,14 +74,15 @@ module Workspace
       end
 
       def render(snapshot, json)
+        panes = snapshot["panes"] || []
+        apply_lock_column(panes)
         return @output.puts(JSON.pretty_generate(snapshot)) if json
 
         @output.puts "workspace: #{snapshot["workspace"]}"
         @output.puts ""
-        panes = snapshot["panes"] || []
         return @output.puts "  no panes" if panes.empty?
 
-        @output.puts format_row("PANE", "KIND", "TITLE", "STATE", "IDLE")
+        @output.puts format_row("PANE", "KIND", "TITLE", "STATE", "IDLE", "LOCK")
         panes.each { |pane| render_pane(pane) }
       end
 
@@ -76,9 +92,65 @@ module Workspace
           pane["kind"],
           truncate(pane["label"] || pane["title"], 22),
           pane["state"],
-          duration(pane["idle_seconds"])
+          duration(pane["idle_seconds"]),
+          pane["lock"]
         )
         Array(pane["agents"]).each { |agent| render_agent(agent) }
+      end
+
+      # Loads the `edit` lock's holder and queue once per render — never per
+      # pane — and stamps each pane with both the human `"lock"` string
+      # ("edit ✓", "edit #2", or "" for no lock) and structured fields for
+      # `--json` consumers: `"lock_state"` ("held", "queued", or nil),
+      # `"lock_position"` (1-based live-queue position, or nil), and
+      # `"lock_name"` (the lock's name, or nil). A holder or waiter flagged
+      # `"stale"` (its pid is no longer alive) is treated as absent: it never
+      # renders "✓" or "held", and it is skipped when numbering the queue, so
+      # `#1`/position 1 always refers to the next live waiter.
+      #
+      # Hides the whole column — leaving `"lock"`, `"lock_state"`,
+      # `"lock_position"`, and `"lock_name"` all unset — when the rendered
+      # workspace's project root can't be resolved, rather than guessing at
+      # some other project's lock state via the command's own working
+      # directory.
+      def apply_lock_column(panes)
+        return unless @lock_namespace && @lock_holder
+
+        root = project_root
+        return unless root
+
+        positions = lock_positions(root)
+        panes.each do |pane|
+          info = positions[pane["pane_id"]]
+          pane["lock"] = info ? info[:label] : ""
+          pane["lock_state"] = info ? info[:state] : nil
+          pane["lock_position"] = info ? info[:position] : nil
+          pane["lock_name"] = info ? info[:name] : nil
+        end
+      end
+
+      def project_root
+        return nil unless @project_config && @name
+        @project_config.project_root_for(@name)
+      end
+
+      def lock_positions(root)
+        namespace = @lock_namespace.resolve(cwd: root)
+        store = LockStore.new(dir: namespace[:dir], liveness: @lock_holder)
+        entry = store.status(LOCK_NAME)[LOCK_NAME] || {}
+        positions = {}
+        holder = entry["holder"]
+        if holder && holder["pane"] && !holder["stale"]
+          positions[holder["pane"]] = {label: "#{LOCK_NAME} ✓", state: "held", position: nil, name: LOCK_NAME}
+        end
+        live_waiters = (entry["queue"] || []).reject { |waiter| waiter["stale"] }
+        live_waiters.each_with_index do |waiter, i|
+          next unless waiter["pane"]
+          positions[waiter["pane"]] ||= {label: "#{LOCK_NAME} ##{i + 1}", state: "queued", position: i + 1, name: LOCK_NAME}
+        end
+        positions
+      rescue Workspace::Error
+        {}
       end
 
       # Indented to start under the TITLE column so a sub-agent reads as
@@ -88,8 +160,8 @@ module Workspace
           "└─ #{truncate(agent["name"], 20)}", agent["state"]).rstrip
       end
 
-      def format_row(pane, kind, title, state, idle)
-        format("%-6s%-10s%-24s%-10s%s", pane, kind, title, state, idle).rstrip
+      def format_row(pane, kind, title, state, idle, lock = "")
+        format("%-6s%-10s%-24s%-10s%-8s%s", pane, kind, title, state, idle, lock).rstrip
       end
 
       def truncate(value, width)

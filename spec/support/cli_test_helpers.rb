@@ -355,8 +355,8 @@ module CLITestHelpers
       @result
     end
 
-    def status(name = nil, working_dir: nil)
-      @calls << {action: :status, name: name}
+    def status(name = nil, working_dir: nil, json: false)
+      @calls << {action: :status, name: name, json: json}
       @result
     end
 
@@ -391,7 +391,7 @@ module CLITestHelpers
     end
 
     def status(**opts)
-      @calls << {action: :status}
+      @calls << {action: :status, **opts.except(:working_dir)}
       @result
     end
 

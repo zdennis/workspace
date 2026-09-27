@@ -3,6 +3,7 @@ require "socket"
 require "securerandom"
 require "shellwords"
 require "time"
+require "json"
 
 module Workspace
   # Command-line interface for the workspace CLI.
@@ -187,7 +188,7 @@ module Workspace
     rescue UsageError => e
       @error_output.puts e.message
       @exit_handler.exit(1)
-    rescue OptionParser::InvalidArgument, OptionParser::MissingArgument => e
+    rescue OptionParser::ParseError => e
       @error_output.puts e.message
       @exit_handler.exit(1)
     rescue Error => e
@@ -872,6 +873,18 @@ module Workspace
       raise UsageError, "#{flag}: #{e.message}"
     end
 
+    # Emits the documented `--json` error contract (see docs/README.lock.md,
+    # docs/README.dev.md) to stdout and exits, for usage/validation errors
+    # raised before a command's own `status_json` branch is reached (e.g. bad
+    # option, extra argument, invalid lock name).
+    #
+    # @param schema_version [Integer] the command's JSON schema version
+    # @param message [String] error message (single line; not the full help text)
+    def emit_json_usage_error(schema_version, message)
+      @output.puts JSON.generate({"schema_version" => schema_version, "error" => message})
+      @exit_handler.exit(1)
+    end
+
     def cmd_lock_release(args)
       all = false
       parser = OptionParser.new do |opts|
@@ -888,16 +901,23 @@ module Workspace
     end
 
     def cmd_lock_status(args)
+      json = false
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace lock status [<name>]"
+        opts.banner = "Usage: workspace lock status [<name>] [--json]"
+        opts.on("--json", "Emit the documented JSON schema instead of a table (see docs/README.lock.md)") { json = true }
+        opts.separator ""
+        opts.separator "Audit trail: locks.jsonl next to locks.json; see docs/README.lock.md."
       end
       parser.parse!(args)
 
       name = args.shift
       raise UsageError, parser.help if args.any?
 
-      result = @lock_command.status(name, working_dir: @working_dir)
+      result = @lock_command.status(name, working_dir: @working_dir, json: json)
       @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
+    rescue OptionParser::ParseError, UsageError => e
+      raise unless json || args.include?("--json")
+      emit_json_usage_error(Commands::Lock::JSON_SCHEMA_VERSION, e.message)
     end
 
     def cmd_lock_clear(args)
@@ -1004,12 +1024,19 @@ module Workspace
     end
 
     def cmd_dev_status(args)
-      parser = OptionParser.new { |opts| opts.banner = "Usage: workspace dev status" }
+      json = false
+      parser = OptionParser.new do |opts|
+        opts.banner = "Usage: workspace dev status [--json]"
+        opts.on("--json", "Emit the documented JSON schema instead of a table (see docs/README.dev.md)") { json = true }
+      end
       parser.parse!(args)
       raise UsageError, parser.help if args.any?
 
-      result = @dev_command.status(working_dir: @working_dir)
+      result = @dev_command.status(working_dir: @working_dir, json: json)
       @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
+    rescue OptionParser::ParseError, UsageError => e
+      raise unless json || args.include?("--json")
+      emit_json_usage_error(Commands::Dev::JSON_SCHEMA_VERSION, e.message)
     end
 
     # Hidden: the wrapper `dev up` runs in the devenv window.
@@ -1579,6 +1606,8 @@ module Workspace
         opts.separator "whether each is working or idle, and any sub-agents they started."
         opts.separator ""
         opts.separator "Requires a running agent daemon (workspace agent <project>)."
+        opts.separator ""
+        opts.separator "LOCK column: \"edit ✓\" holds the edit lock; \"edit #N\" is the Nth live waiter."
         opts.separator ""
         opts.separator "Options:"
         opts.on("--json", "Emit the raw payload instead of a table") { json = true }

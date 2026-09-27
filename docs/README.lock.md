@@ -7,7 +7,7 @@ Coordinate agents sharing a resource through one flock-guarded lock store per re
 ```sh
 workspace lock acquire <name> [options]
 workspace lock release [<name>|--all]
-workspace lock status  [<name>]
+workspace lock status  [<name>] [--json]
 workspace lock clear   [<name>|--all]
 workspace lock instructions [<name>]
 ```
@@ -95,7 +95,38 @@ An invalid stored value (for example one hand-edited to `0`) falls back to the d
 Before editing files, run `workspace lock acquire edit --wait --task "<your task>"` using Bash with run_in_background. Do not edit anything until it reports "Acquired". When your edits are complete, run `workspace lock release edit`. Never run `workspace lock clear`.
 ```
 
-**`release`/`clear` are idempotent** — both exit 0 even when there was nothing to release or clear, except that `release` exits 3 when it reports an idle takeover (releasing a lock this agent doesn't hold, or clearing a name with no entry), and say so in their output rather than treating it as an error. A future `--json` flag (planned) will let a caller distinguish "nothing to do" from "released/cleared something" without parsing prose.
+**`release`/`clear` are idempotent** — both exit 0 even when there was nothing to release or clear, except that `release` exits 3 when it reports an idle takeover (releasing a lock this agent doesn't hold, or clearing a name with no entry), and say so in their output rather than treating it as an error.
+
+### `--json`
+
+`workspace lock status --json` emits one JSON object on stdout instead of the table, for scripts:
+
+```json
+{
+  "schema_version": 1,
+  "locks": {
+    "edit": {
+      "holder": {
+        "kind": "agent", "pid": 4411, "started": "Sat Sep 26 09:12:03 2026",
+        "pane": "%12", "worktree": "app.worktree-login", "task": "PROJ-12 fix login",
+        "acquired_at": "2026-09-26T09:30:00Z", "idle_since": null, "stale": false
+      },
+      "queue": [
+        {"waiter_pid": 5120, "waiter_started": "...", "agent_pid": 4502, "pane": "%13",
+         "worktree": "app.worktree-search", "task": "PROJ-14", "enqueued_at": "...", "stale": false}
+      ]
+    }
+  }
+}
+```
+
+- `schema_version` is bumped only on a breaking change to this shape; new optional fields may be added without bumping it.
+- An empty store is `{"schema_version": 1, "locks": {}}` — never an error.
+- `holder` is `null` when the lock is free; `queue` is `[]` when no one is waiting.
+- `stale` marks a holder or waiter that the next mutating op (`acquire`, `release`, `clear`) would reap as dead — the same annotation the table's `STALE` marker comes from.
+- A corrupt `locks.json` becomes `{"schema_version": 1, "error": "<message>"}` on stdout, exit 1 — the JSON error stays on the same stream as a successful payload, so a caller only ever needs to read stdout and check for an `"error"` key, never stderr, to tell the two apart.
+- Usage/validation errors (a bad lock name, an unknown flag, extra arguments) get the same treatment: `{"schema_version": 1, "error": "<message>"}` on stdout, exit 1 — never plain text on stderr — as long as `--json` was present on the command line. A caller that always passes `--json` and always reads stdout never needs to special-case argument mistakes.
+- Exit codes: `0` on success (including an empty store or a free lock), `1` for a store error or a usage/validation error.
 
 **`clear`** — removes a lock's holder and queue unconditionally, with no liveness check and no confirmation prompt. Use it to recover from a stuck lock. Clearing `devenv` also stops the dev environment: SIGTERM to its wrapper, then SIGKILL to its process group after `dev.stop_timeout` — but only while the wrapper's pid still matches its recorded start time, so a reused process group is never signalled (see [`workspace dev`](README.dev.md)). The lock is cleared either way; if the process group has live processes this user isn't permitted to signal (its id was likely reused by another user), `clear` prints `Could not stop process group N (pid P): ... not permitted ...` instead of stopping it.
 
@@ -122,3 +153,16 @@ workspace lock clear edit
 # Print the agent prompt block for the edit lock
 workspace lock instructions
 ```
+
+## Audit log
+
+Every namespace directory (alongside `locks.json`) also holds an append-only `locks.jsonl`: one JSON line per `acquire`, `release`, `reap`, `takeover` and `clear` event, plus a `deny` event whenever enforcement (above) actually denies an edit. Each line has a `timestamp`, `event`, `lock` (the lock name), and event-specific fields (trimmed holder/waiter summaries, not the full stored record):
+
+```json
+{"timestamp":"2026-09-26T09:30:00.123Z","event":"acquire","lock":"edit","holder":{"pid":4411,"pane":"%12","worktree":"app.worktree-login","task":"PROJ-12 fix login","kind":"agent"}}
+{"timestamp":"2026-09-26T09:31:12.004Z","event":"deny","lock":"edit","agent":{"pid":5200,"pane":"%13","worktree":"app.worktree-search"},"holder":{"pid":4411,"pane":"%12","worktree":"app.worktree-login","task":"PROJ-12 fix login","kind":"agent"}}
+```
+
+- **Ordering matches `locks.json`** — every line is written while the store's own flock is held (the same lock a mutating op takes to rewrite `locks.json`), so the audit trail's order can be trusted against the data file's.
+- **The edit fast path never touches it** — `workspace session-event`'s `PreToolUse` check reads `locks.json` directly (no flock) when it's about to allow an edit; only a genuinely *denied* edit takes the flock to append a `deny` line. A busy repo doing nothing but allowed edits writes nothing to `locks.jsonl`.
+- **Bounded growth** — once the next line would push `locks.jsonl` past 256KB, it's rotated to `locks.jsonl.1` (replacing any previous one) and a fresh file started, so at most two generations ever exist. There's no `workspace lock log` reader yet; read it directly (`tail -f`, `jq`, etc.).
