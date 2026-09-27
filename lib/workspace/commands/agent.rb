@@ -288,6 +288,11 @@ module Workspace
           if entry.nil?
             @logger.debug { "steer for #{ref} dropped: no active pipeline" }
             {"ok" => false, "error" => "no_active_pipeline"}
+          elsif stale_token?(message, entry)
+            # The sender aimed at a stage that has since finished; typing into
+            # the pane now would reach the stage that replaced it.
+            @logger.debug { "steer for #{ref} dropped: stage token no longer current" }
+            {"ok" => false, "error" => "stale_token"}
           elsif message["interrupt"]
             deliver_urgent_steer(entry, message["body"])
             {"ok" => true, "queued_for_pane" => entry[:pane_index]}
@@ -302,6 +307,13 @@ module Workspace
         end
 
         reply_to(client, reply)
+      end
+
+      # An inject may name the stage it was meant for by that stage's token.
+      # One without a token is aimed at whatever stage is running.
+      def stale_token?(message, entry)
+        expected = message["expected_token"]
+        !expected.nil? && expected != entry[:sentinel_token]
       end
 
       # Steers deliberately carry no reporting instructions: an inject lands in a

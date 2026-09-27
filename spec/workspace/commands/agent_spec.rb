@@ -982,6 +982,32 @@ RSpec.describe Workspace::Commands::Agent do
       end
     end
 
+    it "refuses a steer aimed at a stage that has already finished" do
+      run_agent do
+        send_command
+        wait_until { pollers.any? }
+        old_token = pipeline_state.current("WC-42")[:sentinel_token]
+        pollers.first.on_complete.call("research done")
+        wait_until { pipeline_state.current("WC-42")&.[](:pane_index) == 1 }
+        sent_before = tmux.sent_keys.size
+
+        expect(send_inject("interrupt" => true, "expected_token" => old_token))
+          .to eq("ok" => false, "error" => "stale_token")
+        expect(tmux.sent_keys.size).to eq(sent_before)
+      end
+    end
+
+    it "accepts a steer naming the running stage's token" do
+      run_agent do
+        send_command
+        wait_until { pollers.any? }
+        token = pipeline_state.current("WC-42")[:sentinel_token]
+
+        expect(send_inject("interrupt" => true, "expected_token" => token))
+          .to eq("ok" => true, "queued_for_pane" => 0)
+      end
+    end
+
     it "refuses a steer for a work item that is not running" do
       run_agent do
         send_command("work_item_ref" => "WC-43", "dispatch_id" => "d-7a2")
