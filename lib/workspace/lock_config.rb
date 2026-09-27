@@ -6,6 +6,15 @@ module Workspace
   # default with a warning, since `config set` already rejects bad input and
   # a hand-edited typo should not wedge every agent waiting on a lock.
   class LockConfig
+    # Smallest accepted `locks.ps_timeout`, in seconds. Below this, `ps`
+    # times out on nearly every call, so liveness checks come back unknown
+    # (treated as alive) and a lock queue can stall behind a clearing
+    # marker that never gets to show dead.
+    MIN_PS_TIMEOUT = 1
+
+    # Largest accepted `locks.ps_timeout`, in seconds.
+    MAX_PS_TIMEOUT = 60
+
     # @param project_settings [Workspace::ProjectSettings]
     # @param error_output [IO] where a warning about an invalid value goes
     def initialize(project_settings:, error_output: $stderr)
@@ -32,10 +41,10 @@ module Workspace
     # Parses and validates a `ps` timeout.
     #
     # @param value [String, Numeric] seconds, or a duration like "5m"
-    # @return [Numeric] seconds, always greater than 0
-    # @raise [ArgumentError] if value isn't a positive duration
+    # @return [Numeric] seconds, always in [{MIN_PS_TIMEOUT}, {MAX_PS_TIMEOUT}]
+    # @raise [ArgumentError] if value isn't a duration in that range
     def self.parse_ps_timeout(value)
-      Duration.parse_positive(value)
+      Duration.parse_ranged(value, min: MIN_PS_TIMEOUT, max: MAX_PS_TIMEOUT)
     end
 
     # @param name [String] project name (already resolved to its parent, if a worktree)

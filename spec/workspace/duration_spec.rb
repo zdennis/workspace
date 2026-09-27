@@ -45,4 +45,23 @@ RSpec.describe Workspace::Duration do
       end
     end
   end
+
+  describe ".parse_ranged" do
+    it "accepts a value within [min, max]" do
+      expect(described_class.parse_ranged("1s", min: 1, max: 60)).to eq(1.0)
+      expect(described_class.parse_ranged("30s", min: 1, max: 60)).to eq(30.0)
+      expect(described_class.parse_ranged("1m", min: 1, max: 60)).to eq(60.0)
+    end
+
+    it "rejects a value below min or above max" do
+      expect { described_class.parse_ranged("0.5s", min: 1, max: 60) }.to raise_error(ArgumentError, /must be at least 1s and at most 60s/)
+      expect { described_class.parse_ranged("61s", min: 1, max: 60) }.to raise_error(ArgumentError, /must be at least 1s and at most 60s/)
+    end
+
+    it "rejects zero, negative and malformed values" do
+      ["0", "0s", "-1", "later"].each do |bad|
+        expect { described_class.parse_ranged(bad, min: 1, max: 60) }.to raise_error(ArgumentError)
+      end
+    end
+  end
 end

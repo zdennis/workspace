@@ -48,14 +48,21 @@ RSpec.describe Workspace::LockConfig do
   end
 
   describe ".parse_ps_timeout" do
-    it "parses seconds and durations" do
+    it "parses seconds and durations within [1s, 60s]" do
       expect(described_class.parse_ps_timeout("15")).to eq(15.0)
+      expect(described_class.parse_ps_timeout("1")).to eq(1.0)
       expect(described_class.parse_ps_timeout("1m")).to eq(60.0)
     end
 
     it "rejects zero, negative and malformed values" do
       ["0", "0m", "-1", "later"].each do |bad|
         expect { described_class.parse_ps_timeout(bad) }.to raise_error(ArgumentError)
+      end
+    end
+
+    it "rejects values below 1s or above 60s" do
+      ["0.01", "0.5", "61", "90s", "2m"].each do |bad|
+        expect { described_class.parse_ps_timeout(bad) }.to raise_error(ArgumentError, /must be at least 1s and at most 60s/)
       end
     end
   end
@@ -73,6 +80,13 @@ RSpec.describe Workspace::LockConfig do
 
     it "warns and falls back to the default on an invalid stored value" do
       project_settings.save("app", {"locks" => {"ps_timeout" => "0"}})
+
+      expect(lock_config.ps_timeout_for("app")).to eq(Workspace::ProcessTree::DEFAULT_TIMEOUT)
+      expect(error_output.string).to include("Warning: invalid locks.ps_timeout for 'app'", "using #{Workspace::ProcessTree::DEFAULT_TIMEOUT}s")
+    end
+
+    it "warns and falls back to the default on an out-of-range stored value" do
+      project_settings.save("app", {"locks" => {"ps_timeout" => "90s"}})
 
       expect(lock_config.ps_timeout_for("app")).to eq(Workspace::ProcessTree::DEFAULT_TIMEOUT)
       expect(error_output.string).to include("Warning: invalid locks.ps_timeout for 'app'", "using #{Workspace::ProcessTree::DEFAULT_TIMEOUT}s")

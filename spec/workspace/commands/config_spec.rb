@@ -85,7 +85,7 @@ RSpec.describe Workspace::Commands::Config do
       end
     end
 
-    it "accepts locks.ps_timeout as seconds or a duration" do
+    it "accepts locks.ps_timeout as seconds or a duration within [1s, 60s]" do
       command, project_settings = build_command
       project_dir = Dir.mktmpdir("ws-config-project")
       name = File.basename(project_dir)
@@ -95,6 +95,10 @@ RSpec.describe Workspace::Commands::Config do
       expect(project_settings.load(name)).to eq({"locks" => {"ps_timeout" => "15s"}})
       command.set("locks.ps_timeout", "10", cwd: project_dir)
       expect(project_settings.load(name)).to eq({"locks" => {"ps_timeout" => "10"}})
+      command.set("locks.ps_timeout", "1", cwd: project_dir)
+      expect(project_settings.load(name)).to eq({"locks" => {"ps_timeout" => "1"}})
+      command.set("locks.ps_timeout", "60s", cwd: project_dir)
+      expect(project_settings.load(name)).to eq({"locks" => {"ps_timeout" => "60s"}})
     end
 
     ["0", "0s", "-5", "soon", "5d", ""].each do |bad|
@@ -104,6 +108,17 @@ RSpec.describe Workspace::Commands::Config do
 
         expect { command.set("locks.ps_timeout", bad, cwd: project_dir) }
           .to raise_error(Workspace::UsageError, /Invalid locks.ps_timeout/)
+        expect(project_settings.load(File.basename(project_dir))).to eq({})
+      end
+    end
+
+    ["0.5", "0.01", "61", "90s", "2m"].each do |bad|
+      it "rejects out-of-range locks.ps_timeout #{bad.inspect} without writing it" do
+        command, project_settings = build_command
+        project_dir = Dir.mktmpdir("ws-config-project")
+
+        expect { command.set("locks.ps_timeout", bad, cwd: project_dir) }
+          .to raise_error(Workspace::UsageError, /Invalid locks.ps_timeout.*must be at least 1s and at most 60s/)
         expect(project_settings.load(File.basename(project_dir))).to eq({})
       end
     end

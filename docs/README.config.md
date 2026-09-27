@@ -37,10 +37,10 @@ Only an allowlisted set of keys can be written this way, so a typo doesn't silen
 | `dev.ready_timeout` | How long `dev up` waits for the `dev.ready` check to pass, e.g. `2m` (default `120s`) |
 | `dev.kill_grace` | How long `lock clear devenv`, `dev down` and `dev up --takeover` wait for a SIGKILLed dev environment's process group to disappear before keeping its lock (default `2s`, capped at `60s`) |
 | `locks.idle_grace` | How long an idle agent keeps a lock before the first waiter may take it over (default `5m`; see [`workspace lock`](README.lock.md)) |
-| `locks.ps_timeout` | How long to wait for `ps` when reading the process table for lock/session checks, before giving up (default `5s`) |
+| `locks.ps_timeout` | How long to wait for `ps` when reading the process table for lock/session checks, before giving up (default `5s`, must be between `1s` and `60s`) |
 | `locks.reap_interval` | How often the session-monitor daemon sweeps for stale lock holders and waiters (default `30s`) |
 
-`dev.stop_timeout`, `dev.startup_timeout`, `dev.ready_timeout`, `dev.kill_grace`, `locks.idle_grace`, `locks.ps_timeout`, and `locks.reap_interval` must parse as a duration: a plain number of seconds, or a number with an `s`, `m` or `h` suffix (`20`, `20s`, `5m`, `1h`). `dev.startup_timeout`, `dev.ready_timeout`, `dev.kill_grace`, `locks.idle_grace`, `locks.ps_timeout`, and `locks.reap_interval` must also be greater than 0. `dev.kill_grace` is also capped at 60s. Anything else is rejected before it's written.
+`dev.stop_timeout`, `dev.startup_timeout`, `dev.ready_timeout`, `dev.kill_grace`, `locks.idle_grace`, `locks.ps_timeout`, and `locks.reap_interval` must parse as a duration: a plain number of seconds, or a number with an `s`, `m` or `h` suffix (`20`, `20s`, `5m`, `1h`). `dev.startup_timeout`, `dev.ready_timeout`, `dev.kill_grace`, `locks.idle_grace`, `locks.ps_timeout`, and `locks.reap_interval` must also be greater than 0. `dev.kill_grace` is also capped at 60s. `locks.ps_timeout` must be between 1s and 60s: too small and `ps` times out on nearly every call, which makes liveness checks come back unknown (treated as alive) and can stall a lock queue behind a clearing marker that never gets to show dead. Anything else is rejected before it's written.
 
 `locks.reap_interval` only takes effect the next time the session-monitor daemon starts (`workspace launch`/`workspace agent`); a daemon already running keeps the interval it started with.
 
@@ -74,7 +74,7 @@ Before writing, `set` and `unset` back up the project's config file (via the sam
 | `worktree_hooks` | Hooks seeded into new worktrees created from this project |
 | `dev.up`, `dev.ready`, `dev.stop_timeout`, `dev.startup_timeout`, `dev.ready_timeout`, `dev.kill_grace` | Dev environment config; set via `workspace config set` (see above) |
 | `locks.idle_grace` | Idle takeover grace period for this project's locks; set via `workspace config set` (see above) |
-| `locks.ps_timeout` | How long to wait for `ps` before giving up, for this project's lock and session checks; set via `workspace config set` (see above) |
+| `locks.ps_timeout` | How long to wait for `ps` before giving up, for this project's lock and session checks; must be between `1s` and `60s`; set via `workspace config set` (see above) |
 | `locks.reap_interval` | How often the session-monitor daemon sweeps for stale locks; set via `workspace config set` (see above) |
 
 ## Examples
