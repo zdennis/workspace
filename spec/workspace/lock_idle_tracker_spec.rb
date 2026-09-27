@@ -95,6 +95,14 @@ RSpec.describe Workspace::LockIdleTracker do
     expect(tracker(lock_holder: lock_holder).update("PreToolUse")).to eq([])
   end
 
+  it "runs no subprocess when no hold in any namespace matches this pane" do
+    hold(FakeLockIdentity.new(pid: 200, pane: "%2"))
+    expect(Open3).not_to receive(:capture3)
+    expect(lock_namespace).not_to receive(:resolve)
+
+    expect(tracker.update("Stop")).to eq([])
+  end
+
   it "resolves the namespace from the payload's cwd when it exists" do
     hold(agent)
     expect(lock_namespace).to receive(:resolve).with(cwd: state_dir)
@@ -103,7 +111,7 @@ RSpec.describe Workspace::LockIdleTracker do
   end
 
   it "falls back to the process cwd when the payload's cwd is missing" do
-    FileUtils.mkdir_p(lock_dir)
+    hold(agent)
     expect(lock_namespace).to receive(:resolve).with(cwd: Dir.pwd)
 
     tracker.update("Stop", cwd: File.join(state_dir, "gone"))
