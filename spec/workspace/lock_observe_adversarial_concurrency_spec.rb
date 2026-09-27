@@ -26,9 +26,9 @@ RSpec.describe "Lock observability (adversarial concurrency)" do
     File.readlines(path).map { |l| JSON.parse(l) }
   end
 
-  it "OC1: an acquire whose locks.json write fails leaves no acquire event in locks.jsonl" do
-    allow(File).to receive(:open).and_call_original
-    allow(File).to receive(:open).with(/locks\.json\.\d+\.tmp\z/, "w", 0o600).and_raise(Errno::ENOSPC)
+  it "OC1: an acquire whose locks.json commit fails leaves no acquire event in locks.jsonl" do
+    allow(File).to receive(:rename).and_call_original
+    allow(File).to receive(:rename).with(/locks\.json\.\d+\.tmp\z/, anything).and_raise(Errno::ENOSPC)
 
     expect { acquire(100, "%1") }.to raise_error(Workspace::Error)
 
