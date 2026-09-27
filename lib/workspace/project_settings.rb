@@ -38,6 +38,31 @@ module Workspace
       {}
     end
 
+    # @param data [Hash] config data to write
+    # @return [void]
+    def save_global(data)
+      path = global_config_path
+      FileUtils.mkdir_p(File.dirname(path))
+      File.write(path, YAML.dump(data))
+    end
+
+    # Guards a load -> mutate -> write cycle on the global config with an
+    # exclusive flock on a sibling lock file, matching {#project_config_path}
+    # writers ({Workspace::Commands::Config}) so concurrent `config set`
+    # calls serialize instead of clobbering each other.
+    #
+    # @yield the current global config Hash; the block's return value is saved
+    # @return [void]
+    def with_global_lock
+      path = global_config_path
+      FileUtils.mkdir_p(File.dirname(path))
+      File.open("#{path}.lock", File::RDWR | File::CREAT, 0o600) do |f|
+        f.flock(File::LOCK_EX)
+        data = yield(load_global)
+        save_global(data)
+      end
+    end
+
     # Creates a default project config if one does not already exist.
     #
     # @param project_name [String] project name
