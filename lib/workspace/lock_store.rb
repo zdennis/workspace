@@ -69,7 +69,7 @@ module Workspace
         entry = data[name] ||= empty_entry
         holder = entry["holder"]
 
-        if same_agent?(holder, identity)
+        if LockHolder.same_agent?(holder, identity)
           holder.delete("unclaimed")
           holder["idle_since"] = nil
           next {status: :already_held}
@@ -163,7 +163,7 @@ module Workspace
         released = []
         data.each do |name, entry|
           entry["queue"].reject! { |w| w["agent_pid"] == identity[:pid] && w["agent_started"] == identity[:started] }
-          next unless same_agent?(entry["holder"], identity)
+          next unless LockHolder.same_agent?(entry["holder"], identity)
           entry["holder"] = nil
           promote!(entry)
           released << name
@@ -260,7 +260,7 @@ module Workspace
       with_lock do |data|
         data.filter_map do |name, entry|
           holder = entry["holder"]
-          next unless same_agent?(holder, identity) && holder["kind"] != "process"
+          next unless LockHolder.same_agent?(holder, identity) && holder["kind"] != "process"
           clamp_idle_since!(holder)
           next if idle == !holder["idle_since"].nil?
           holder["idle_since"] = idle ? @clock.call : nil
@@ -426,10 +426,6 @@ module Workspace
 
     def now_iso
       Time.now.utc.iso8601
-    end
-
-    def same_agent?(holder, identity)
-      !!holder && holder["pid"] == identity[:pid] && holder["started"] == identity[:started]
     end
 
     # An agent may hold or wait for only one lock at a time (the v1 deadlock

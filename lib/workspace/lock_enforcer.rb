@@ -43,7 +43,7 @@ module Workspace
 
       identity = @lock_holder.current
       return nil unless identity
-      return nil if same_agent?(holder, identity)
+      return nil if LockHolder.same_agent?(holder, identity)
 
       deny_message(holder, identity, store)
     rescue => e
@@ -79,10 +79,6 @@ module Workspace
 
     def resolved_cwd(cwd)
       (cwd && File.directory?(cwd)) ? cwd : Dir.pwd
-    end
-
-    def same_agent?(holder, identity)
-      holder["pid"] == identity[:pid] && holder["started"] == identity[:started]
     end
 
     # Scans every namespace directory under lock_dir for an `edit` hold,
