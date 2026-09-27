@@ -1398,9 +1398,10 @@ module Workspace
         return
       end
 
-      @output.puts "WORK ITEM  PANE  STAGE"
+      @output.puts "WORK ITEM  PANE  STAGE  DEADLINE"
       entries.each_value do |entry|
-        @output.puts "#{entry["work_item_ref"]}  pane #{entry["pane_index"]}  #{entry["phase"] || "(no pipeline)"}"
+        deadline = entry["deadline_at"] || "-"
+        @output.puts "#{entry["work_item_ref"]}  pane #{entry["pane_index"]}  #{entry["phase"] || "(no pipeline)"}  #{deadline}"
       end
     end
 
