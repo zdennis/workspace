@@ -11,7 +11,7 @@ workspace handoff check NAME [--pane N] [--threshold PCT] [--context-pct N] [--h
 workspace handoff new   NAME [--pane N] (--handoff-doc PATH | --handoff-prompt TEXT) [--json]
 ```
 
-`NAME` defaults to the workspace detected from the current directory.
+`NAME` defaults to the workspace detected from the current directory. `new` requires either `--handoff-doc` or `--handoff-prompt`.
 
 ## Options (check)
 
@@ -63,6 +63,20 @@ workspace: could not determine context usage
   or set a scrape pattern with `workspace config set context.source scrape` and
   `workspace config set context.pattern '(\d+)% ctx'`, or pass --context-pct N.
 ```
+
+That fix line packs two independent options together. Pick one:
+
+1. **Route the status line through workspace** (recommended if you already use `workspace statusline`): add a `statusLine` entry to `~/.claude/settings.json`:
+   ```json
+   "statusLine": {"type": "command", "command": "workspace statusline"}
+   ```
+2. **Scrape the pane's own status line instead**:
+   ```sh
+   workspace config set context.source scrape
+   workspace config set context.pattern '(\d+)% ctx'
+   ```
+
+Or skip detection entirely for one call with `--context-pct N`.
 
 With `--json`, the reason and fix go in the JSON object instead of stderr:
 
