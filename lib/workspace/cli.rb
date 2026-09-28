@@ -2360,6 +2360,11 @@ module Workspace
         opts.on("--workspace NAME", "Send to NAME instead of the pane's session") do |value|
           workspace = value
         end
+        opts.separator ""
+        opts.separator "Examples:"
+        opts.separator "  echo '{\"hook_event_name\":\"SessionStart\",\"session_id\":\"abc\"}' | workspace session-event"
+        opts.separator "  echo '{\"hook_event_name\":\"Stop\"}' | workspace session-event --workspace my-project"
+        opts.separator "  echo '{\"hook_event_name\":\"PreToolUse\",\"tool_name\":\"Edit\"}' | workspace session-event --workspace my-project"
       end
       parser.parse!(args)
 
