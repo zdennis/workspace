@@ -2331,6 +2331,13 @@ module Workspace
         opts.on("--no-install-hooks", "Skip the agent session hooks step") do
           hooks = false
         end
+        opts.separator ""
+        opts.separator "Examples:"
+        opts.separator "  workspace init    # install templates and create the config directory"
+        opts.separator "  workspace init --dry-run    # preview what would be done"
+        opts.separator "  workspace init --force    # overwrite modified templates"
+        opts.separator "  workspace init --install-hooks    # install agent session hooks without prompting"
+        opts.separator "  workspace init --no-install-hooks    # skip the hooks step entirely"
       end
       parser.parse!(args)
 
