@@ -84,7 +84,75 @@ module Workspace
       @output.puts "  #{existed ? "update" : "create"}  #{path}" unless quiet
     end
 
+    # @param provider [Workspace::AgentProvider]
+    # @param project_root [String]
+    # @param command [String] the statusLine command workspace wants installed
+    # @return [Boolean] whether the agent's settings already route statusLine through +command+
+    def statusline_installed?(provider, project_root, command)
+      existing = read_settings(settings_path_for(provider, project_root))
+      existing.dig("statusLine", "command") == command
+    end
+
+    # Routes Claude's status line through workspace, backing the settings file
+    # up first. A different command already configured there is preserved,
+    # not dropped: it moves into the global `statusline.command` config key,
+    # where {Commands::Statusline} reads it and delegates to it on every
+    # render. Other statusLine keys (e.g. `padding`) are kept as-is.
+    #
+    # Idempotent: a second call finds `command` already installed and does
+    # nothing.
+    #
+    # @param provider [Workspace::AgentProvider]
+    # @param project_root [String]
+    # @param command [String] the statusLine command to install (e.g. "workspace statusline")
+    # @param project_settings [Workspace::ProjectSettings] reads/writes the
+    #   global config that receives a displaced statusLine command
+    # @param dry_run [Boolean] report without writing
+    # @param quiet [Boolean] suppress progress lines
+    # @return [void]
+    def install_statusline(provider, project_root, command:, project_settings:, dry_run: false, quiet: false)
+      path = settings_path_for(provider, project_root)
+      existed = File.exist?(path)
+      existing = read_settings(path)
+      current = existing["statusLine"]
+      current_command = current.is_a?(Hash) ? current["command"] : nil
+
+      if current_command == command
+        @output.puts "  skip    #{path} (statusLine already routed through #{command})" unless quiet
+        return
+      end
+
+      if current_command && !current_command.to_s.empty?
+        preserve_existing_statusline_command(current_command, project_settings, dry_run: dry_run, quiet: quiet)
+      end
+
+      merged = deep_dup(existing)
+      merged["statusLine"] = (current.is_a?(Hash) ? current.dup : {}).merge("type" => "command", "command" => command)
+
+      @backup.backup(path, dry_run: dry_run, quiet: quiet)
+      unless dry_run
+        FileUtils.mkdir_p(File.dirname(path))
+        File.write(path, JSON.pretty_generate(merged) + "\n")
+      end
+      @output.puts "  #{existed ? "update" : "create"}  #{path}" unless quiet
+    end
+
     private
+
+    # Saves a status-line command workspace is about to displace, so it isn't
+    # lost. Written under `statusline.command` only if that key isn't already
+    # set, so a second `install_statusline` run (or one for a second worktree)
+    # never overwrites a value the user has since edited.
+    def preserve_existing_statusline_command(existing_command, project_settings, dry_run:, quiet:)
+      return if dry_run
+
+      project_settings.with_global_lock do |data|
+        data["statusline"] ||= {}
+        data["statusline"]["command"] ||= existing_command
+        data
+      end
+      @output.puts "  save    previous statusLine command -> statusline.command (#{existing_command})" unless quiet
+    end
 
     # A settings file we cannot parse is left alone rather than replaced: the
     # user's own configuration is more valuable than our hooks.

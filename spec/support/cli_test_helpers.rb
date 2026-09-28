@@ -230,10 +230,11 @@ module CLITestHelpers
   end
 
   class FakeDoctor
-    attr_reader :headless
+    attr_reader :headless, :fix
 
-    def run(headless: nil)
+    def run(headless: nil, fix: false)
       @headless = headless
+      @fix = fix
     end
   end
 
@@ -246,6 +247,11 @@ module CLITestHelpers
     def layouts_for(_project_name) = {}
     def project_config_path(name) = "/tmp/workspace/projects/#{name}.yml"
     def global_config_path = "/tmp/workspace/config.yml"
+
+    def with_global_lock
+      @global ||= {}
+      @global = yield(@global)
+    end
   end
 
   class FakeClaudeCommand
