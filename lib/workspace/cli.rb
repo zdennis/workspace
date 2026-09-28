@@ -949,6 +949,13 @@ module Workspace
           "Shell command to exec on match (a command after -- takes precedence)") do |c|
           exec_str = c
         end
+        opts.separator ""
+        opts.separator "Examples:"
+        opts.separator "  workspace wait-until-content \"Listening on\" -- open http://localhost:3000"
+        opts.separator "  workspace wait-until-content scooter \"Ready to accept connections\" --pane 0 --max-wait-time 120 -- bin/console"
+        opts.separator "  workspace wait-until-content scooter \"WORKSPACE_DONE\" --pane \"Claude Code\" -- irb"
+        opts.separator "  workspace wait-until-content scooter \"namespace is running\" --since-start --max-wait-time 60 -- ./scripts/attach.sh"
+        opts.separator "  workspace wait-until-content scooter \"READY\" -e 'echo matched'"
       end
       parser.parse!(args)
 
