@@ -1803,6 +1803,11 @@ module Workspace
 
         Exit codes (check): 0 under the threshold, 1 at/over it (a save-state prompt
         was sent), 2 when context usage can't be determined (nothing was sent).
+
+        Examples:
+          workspace handoff check myapp --handoff-doc HANDOFF.md
+          workspace handoff check myapp --pane 2 --threshold 20 --json    # for scripting
+          workspace handoff new myapp --pane 1 --handoff-doc HANDOFF.md    # without going through check
       HELP
     end
 
