@@ -2455,6 +2455,9 @@ module Workspace
         opts.banner = "Usage: workspace relaunch"
         opts.separator ""
         opts.separator "Stop all active workspace projects and relaunch them."
+        opts.separator ""
+        opts.separator "Example:"
+        opts.separator "  workspace relaunch    # stop every active project and relaunch it (headless ones stay headless)"
       end
       parser.parse!(args)
 
