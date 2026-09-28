@@ -122,6 +122,9 @@ module Workspace
 
       issues += check_duplicate_window_ids
       issues += check_session_monitoring
+      # A failed --fix (printed above, with its own reason) counts as an
+      # issue so `doctor --fix` still exits non-zero when there was nothing
+      # it could actually do.
       issues += 1 if @fix_failed
 
       @output.puts ""
@@ -153,7 +156,14 @@ module Workspace
         return
       end
 
-      capable.each do |provider|
+      statusline_capable = capable.select(&:supports_statusline?)
+      if statusline_capable.empty?
+        @output.puts "--fix: no statusLine-capable agent detected on PATH, so there's nothing to fix"
+        @fix_failed = true
+        return
+      end
+
+      statusline_capable.each do |provider|
         @hook_installer.install_statusline(provider, @working_dir, command: Commands::Init::STATUSLINE_COMMAND,
           project_settings: @project_settings)
       end
@@ -224,9 +234,22 @@ module Workspace
     # check`, `sessions --json` report the reason and this same fix), not
     # that anything else is broken.
     def check_statusline(capable)
-      return if capable.empty?
+      statusline_capable = capable.select(&:supports_statusline?)
+      return if statusline_capable.empty?
 
-      if capable.any? { |p| @hook_installer.statusline_installed?(p, @working_dir, Commands::Init::STATUSLINE_COMMAND) }
+      shadow = statusline_capable.each_with_object([]) do |provider, shadows|
+        command = @hook_installer.local_statusline_command(provider, @working_dir)
+        shadows << [provider, command] if command && !command.to_s.empty? && command != Commands::Init::STATUSLINE_COMMAND
+      end.first
+      if shadow
+        provider, command = shadow
+        local_path = @hook_installer.local_settings_path_for(provider, @working_dir)
+        @output.puts "  ⚠  statusLine shadowed by #{local_path} (routes through \"#{command}\" there)"
+        @output.puts "     ↳ fix: remove the statusLine entry from #{local_path}"
+        return
+      end
+
+      if statusline_capable.any? { |p| @hook_installer.statusline_installed?(p, @working_dir, Commands::Init::STATUSLINE_COMMAND) }
         @output.puts "  ✓  statusLine routed through workspace"
       else
         @output.puts "  ⚠  statusLine not routed through workspace (context usage can't be read)"

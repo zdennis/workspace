@@ -8,7 +8,10 @@ RSpec.describe Workspace::Doctor do
   let(:project_detector) { double("project_detector", detect: nil) }
 
   def build_doctor(**overrides)
-    allow(hook_installer).to receive(:statusline_installed?).and_return(true) unless overrides.key?(:hook_installer)
+    unless overrides.key?(:hook_installer)
+      allow(hook_installer).to receive(:statusline_installed?).and_return(true)
+      allow(hook_installer).to receive(:local_statusline_command).and_return(nil)
+    end
 
     described_class.new(
       config: config,
@@ -131,6 +134,7 @@ RSpec.describe Workspace::Doctor do
     it "reports statusLine routed through workspace" do
       allow(hook_installer).to receive(:installed?).and_return(true)
       allow(hook_installer).to receive(:statusline_installed?).and_return(true)
+      allow(hook_installer).to receive(:local_statusline_command).and_return(nil)
 
       doctor = build_doctor(which: ->(exe) { exe == "claude" }, hook_installer: hook_installer)
       begin
@@ -144,6 +148,7 @@ RSpec.describe Workspace::Doctor do
     it "warns, without failing doctor, when statusLine isn't routed through workspace" do
       allow(hook_installer).to receive(:installed?).and_return(true)
       allow(hook_installer).to receive(:statusline_installed?).and_return(false)
+      allow(hook_installer).to receive(:local_statusline_command).and_return(nil)
 
       doctor = build_doctor(which: ->(exe) { exe == "claude" }, hook_installer: hook_installer)
       begin
@@ -165,6 +170,23 @@ RSpec.describe Workspace::Doctor do
       end
       expect(output.string).not_to include("statusLine")
     end
+
+    it "warns that settings.local.json shadows the statusLine instead of reporting it routed" do
+      allow(hook_installer).to receive(:installed?).and_return(true)
+      allow(hook_installer).to receive(:statusline_installed?).and_return(true)
+      allow(hook_installer).to receive(:local_statusline_command).and_return("bash ~/.claude/local-statusline.sh")
+      allow(hook_installer).to receive(:local_settings_path_for).and_return("/tmp/.claude/settings.local.json")
+
+      doctor = build_doctor(which: ->(exe) { exe == "claude" }, hook_installer: hook_installer)
+      begin
+        doctor.run
+      rescue Workspace::Error
+        # Unrelated failures fine; the expectation below is what's under test
+      end
+      expect(output.string).to include("statusLine shadowed by /tmp/.claude/settings.local.json")
+      expect(output.string).to include("routes through \"bash ~/.claude/local-statusline.sh\" there")
+      expect(output.string).not_to include("✓  statusLine routed through workspace")
+    end
   end
 
   describe "--fix" do
@@ -177,6 +199,7 @@ RSpec.describe Workspace::Doctor do
       expect(hook_installer).to receive(:install_statusline)
         .with(instance_of(Workspace::AgentProvider), Dir.pwd, command: "workspace statusline", project_settings: project_settings)
       allow(hook_installer).to receive(:statusline_installed?).and_return(true)
+      allow(hook_installer).to receive(:local_statusline_command).and_return(nil)
 
       doctor = build_doctor(which: ->(exe) { exe == "claude" }, hook_installer: hook_installer, project_settings: project_settings)
       begin
