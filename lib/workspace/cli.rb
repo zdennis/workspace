@@ -16,7 +16,7 @@ module Workspace
     # hint).
     SUBCOMMANDS = %w[
       init doctor launch start stop add add-project kill finish relaunch
-      focus deactivate reactivate tile resize capture agent lock dev parent
+      focus deactivate reactivate tile resize capture agent agentd lock dev parent
       sessions ask session-event agent-run handoff pipeline run
       run-and-report report-run-status layout config statusline current
       list-projects list status repair cleanup prune set-command event-log
@@ -160,6 +160,8 @@ module Workspace
         cmd_wait_until_content(args)
       when "agent"
         cmd_agent(args)
+      when "agentd"
+        cmd_agentd(args)
       when "lock"
         cmd_lock(args)
       when "dev"
@@ -276,7 +278,8 @@ module Workspace
 
         Subcommands:
           add             Add a tmuxinator config for a project directory
-          agent           Run the workspace agent for a project (long-lived)
+          agent           Drive a workspace agent: agent run "prompt" (umbrella)
+          agentd          Run the long-lived workspace agent daemon for a project
           agent-run       Send a message to a running agent (command, inject, restart a pane)
           alfred          Manage the Alfred workflow for workspace focus
           ask             Record a question an unattended agent hit, with its default
@@ -1058,29 +1061,101 @@ module Workspace
       @exit_handler.exit(status) unless status == 0
     end
 
+    # Umbrella for driving a workspace's agent. `agent run PROMPT` sends a
+    # command message to the agent's pipeline; anything the daemon used to
+    # accept falls back to it with a deprecation warning pointing at
+    # `workspace agentd`.
     def cmd_agent(args)
+      # Help only counts in subcommand position, so a prompt containing the
+      # word "help" still sends; `agent --help` (no subcommand) still helps.
+      index = agent_subcommand_index(args)
+      subcommand = index && args[index]
+      rest = index ? args[0...index] + args[(index + 1)..] : args
+      # A `--` in subcommand position can only be a terminator, never a
+      # value; drop it or run's parser treats every flag after it as
+      # prompt text (swallowing safety flags like --dry-run).
+      rest.shift if rest.first == "--"
+
+      case subcommand
+      when "run" then cmd_agent_run_prompt(rest)
+      when "help" then @output.puts agent_help
+      when nil
+        if args.include?("--help") || args.include?("-h")
+          @output.puts agent_help
+        else
+          # Daemon-era usage was all-flag (`agent --name myapp`), so a bare
+          # all-flag invocation still starts the daemon, with a warning.
+          @error_output.puts "`workspace agent` for the daemon is deprecated; use `workspace agentd`"
+          cmd_agentd(args)
+        end
+      else
+        raise UsageError, "Unknown agent subcommand: #{subcommand}.\n" \
+          "For the daemon, use `workspace agentd`.\n\n#{agent_help}"
+      end
+    end
+
+    # Finds the index of the `agent` subcommand: the first argument that is
+    # neither a flag nor a value-taking flag's value (`--name` and
+    # `--wc-socket` take a value; `-f`/`--force` do not).
+    def agent_subcommand_index(args)
+      i = 0
+      while i < args.length
+        arg = args[i]
+        return i unless arg.start_with?("-")
+        i += (arg == "--name" || arg == "--wc-socket") ? 2 : 1
+      end
+      nil
+    end
+
+    def agent_help
+      <<~HELP
+        Usage: workspace agent <subcommand> [options]
+
+        Subcommands:
+          run PROMPT    Send a prompt to the workspace's pipeline (a "command" message)
+
+        The long-lived agent daemon now runs as `workspace agentd`
+        (see docs/README.agentd.md). During the deprecation window, daemon-era
+        invocations like `workspace agent --name myproject --force` still start
+        the daemon, with a warning.
+
+        Options (run):
+          --name NAME         Workspace name (default: detected from cwd)
+          --work-item REF     Work item reference (default: random UUID)
+          --dry-run           Print the message without sending it
+
+        Examples:
+          workspace agent run "Add OAuth support"
+          workspace agent run --name myapp --work-item WC-42 "Add OAuth support" --dry-run
+          workspace agentd myapp    # start the daemon for myapp
+      HELP
+    end
+
+    def cmd_agentd(args)
       name = nil
       wc_socket = nil
       force = false
 
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace agent [options]"
+        opts.banner = "Usage: workspace agentd [PROJECT] [options]"
         opts.separator ""
-        opts.separator "Run the long-lived workspace agent for a project."
+        opts.separator "Run the long-lived workspace agent daemon for a project."
         opts.separator "Registers with the work-coordinator and serves commands until terminated."
         opts.separator ""
         opts.separator "Options:"
-        opts.on("--name NAME", "Workspace name (defaults to the detected project)") { |v| name = v }
+        opts.on("--name NAME", "Workspace name (defaults to the detected project or PROJECT)") { |v| name = v }
         opts.on("--wc-socket PATH", "Path to the work-coordinator socket") { |v| wc_socket = v }
         opts.on("-f", "--force", "Kill any running agent for this workspace before starting") { force = true }
         opts.separator ""
         opts.separator "Examples:"
-        opts.separator "  workspace agent    # run for the project detected from the current directory"
-        opts.separator "  workspace agent --name scooter --wc-socket /tmp/wc-dev.sock    # named project, non-default coordinator"
-        opts.separator "  workspace agent --force    # replace the agent already running for this workspace"
+        opts.separator "  workspace agentd    # run for the project detected from the current directory"
+        opts.separator "  workspace agentd scooter --wc-socket /tmp/wc-dev.sock    # named project, non-default coordinator"
+        opts.separator "  workspace agentd --force    # replace the agent already running for this workspace"
       end
       parser.parse!(args)
 
+      name ||= args.shift
+      raise UsageError, "Unexpected argument: #{args.first}.\n\n#{parser.help}" if args.any?
       name ||= @project_detector.detect(@working_dir)
       raise UsageError, parser.help if name.nil?
 
@@ -1554,7 +1629,7 @@ module Workspace
     # Sends a raw JSONL message to a running agent socket for manual testing and
     # exploration. Always pretty-prints what is being sent before sending it.
     #
-    # Usage with a subcommand:
+    # Usage with a subcommand (--work-item defaults to a random UUID):
     #   workspace agent-run command --work-item WC-42
     #
     # Usage with raw JSON body (workspace is read from the message):
@@ -1623,8 +1698,9 @@ module Workspace
 
         Options (command):
           --name NAME         Workspace name (default: detected from cwd)
-          --work-item REF     Work item reference, e.g. WC-42  (required)
+          --work-item REF     Work item reference, e.g. WC-42  (default: random UUID)
           --body TEXT         Text to type into the first pipeline pane
+                              (default: "Begin work.")
           --dry-run           Print the message without sending it
 
         Options (inject):
@@ -1645,6 +1721,7 @@ module Workspace
           --json              Print the result as JSON; errors as {"schema_version":1,"error":...}
 
         Examples:
+          workspace agent-run command --body "Add OAuth support"
           workspace agent-run command --work-item WC-42 --body "Add OAuth support"
           workspace agent-run command --name myapp --work-item WC-42 --body "Add OAuth support" --dry-run
           workspace agent-run inject --work-item WC-42 --body "Use Postgres, not SQLite"
@@ -1672,16 +1749,56 @@ module Workspace
 
       name ||= @project_detector.detect(@working_dir)
       raise UsageError, "Missing workspace name.\n\n#{agent_run_help}" if name.nil?
-      raise UsageError, "Missing --work-item.\n\n#{agent_run_help}" if work_item.nil?
+      work_item ||= SecureRandom.uuid
 
-      message = {
+      message = build_command_message(name: name, work_item: work_item, body: body)
+      agent_run_send(name, message, dry_run: dry_run)
+    end
+
+    # `workspace agent run PROMPT`: the prompt is the positional arguments
+    # joined with a space, so a multi-word prompt needs no quoting. Everything
+    # else matches `agent-run command` minus the default body — the prompt
+    # positional is required.
+    def cmd_agent_run_prompt(args)
+      name = nil
+      work_item = nil
+      dry_run = false
+
+      parser = OptionParser.new do |opts|
+        opts.banner = "Usage: workspace agent run PROMPT [options]"
+        opts.separator ""
+        opts.separator "Send a prompt to the workspace's pipeline as a \"command\" message."
+        opts.separator ""
+        opts.separator "Options:"
+        opts.on("--name NAME", "Workspace name (default: detected from cwd)") { |v| name = v }
+        opts.on("--work-item REF", "Work item reference (default: random UUID)") { |v| work_item = v }
+        opts.on("--dry-run", "Print the message without sending it") { dry_run = true }
+      end
+      parser.parse!(args)
+
+      name ||= @project_detector.detect(@working_dir)
+      raise UsageError, "Missing workspace name.\n\n#{parser.help}" if name.nil?
+
+      prompt = args.join(" ")
+      raise UsageError, "Missing prompt.\n\n#{parser.help}" if prompt.empty?
+      work_item ||= SecureRandom.uuid
+
+      message = build_command_message(name: name, work_item: work_item, body: prompt, dispatch_prefix: "agent-run-")
+      agent_run_send(name, message, dry_run: dry_run)
+    rescue OptionParser::ParseError => e
+      raise UsageError, "#{e.message}\nIf the prompt starts with a dash or looks like a flag, pass it after --.\n\n#{parser.help}"
+    end
+
+    # Builds the "command" message shared by `agent run` and
+    # `agent-run command`.
+    def build_command_message(name:, work_item:, body:, dispatch_prefix: "debug-")
+      {
         "type" => "command",
         "workspace" => name,
         "work_item_ref" => work_item,
-        "dispatch_id" => "debug-#{SecureRandom.hex(4)}",
-        "body" => jsonl_body(body || "Begin work on #{work_item}.")
+        "dispatch_id" => "#{dispatch_prefix}#{SecureRandom.hex(4)}",
+        "body" => jsonl_body(body || "Begin work.")
       }
-      agent_run_send(name, message, dry_run: dry_run)
     end
 
     def cmd_agent_run_inject(args)
@@ -2155,7 +2272,7 @@ module Workspace
 
       if agent_running?(project)
         raise Error, "The agent for #{project} is running; stop it (Ctrl-C in its pane, " \
-          "or kill the 'workspace agent' process) before resetting its pipeline state"
+          "or kill the 'workspace agentd' process) before resetting its pipeline state"
       end
 
       state_path = @config.pipeline_state_path(project)
@@ -2181,7 +2298,7 @@ module Workspace
       socket = begin
         UNIXSocket.open(@config.agent_socket_path(project))
       rescue SystemCallError, IOError
-        raise Error, "No agent is running for #{project}. Start one with: workspace agent --name #{project}"
+        raise Error, "No agent is running for #{project}. Start one with: workspace agentd --name #{project}"
       end
       reply = begin
         socket.puts(message.to_json)
@@ -2393,7 +2510,7 @@ module Workspace
         opts.separator "agent's message on the line below it. waiting is Claude Code only;"
         opts.separator "other agents (Codex, OpenCode, Pi) only ever show working or idle."
         opts.separator ""
-        opts.separator "Requires a running agent daemon (workspace agent <project>; re-run"
+        opts.separator "Requires a running agent daemon (workspace agentd <project>; re-run"
         opts.separator "`workspace init` if `workspace doctor` reports it missing)."
         opts.separator ""
         opts.separator "LOCK column: shows every lock a pane holds or waits on (e.g. \"edit ✓ devenv #2\","

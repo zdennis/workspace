@@ -816,6 +816,34 @@ RSpec.describe Workspace::CLI do
     end
   end
 
+  describe "#run agent-run command" do
+    it "defaults --work-item to a random UUID, shown in the printed message" do
+      cli, output = build_test_cli
+
+      cli.run(["agent-run", "command", "--name", "myapp", "--body", "Add OAuth support", "--dry-run"])
+
+      expect(output.string).to match(/"work_item_ref": "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"/)
+    end
+
+    it "uses an explicit --work-item instead of generating one" do
+      cli, output = build_test_cli
+
+      cli.run(["agent-run", "command", "--name", "myapp", "--work-item", "WC-42", "--body", "Add OAuth support", "--dry-run"])
+
+      expect(output.string).to include('"work_item_ref": "WC-42"')
+    end
+  end
+
+  describe "#run agent-run inject" do
+    it "still requires --work-item" do
+      cli, _, error_output = build_test_cli
+
+      expect { cli.run(["agent-run", "inject", "--name", "myapp", "--body", "Use Postgres"]) }
+        .to raise_error(FakeSystemExit)
+      expect(error_output.string).to include("Missing --work-item")
+    end
+  end
+
   describe "#run agent-run restart" do
     let(:restart_command) { double("restart", call: {exit_code: 0}) }
 
@@ -2212,9 +2240,17 @@ RSpec.describe Workspace::CLI do
     it "dispatches to agent_command with --name and --wc-socket" do
       agent_command = CLITestHelpers::FakeAgentCommand.new
       cli, _, _ = build_test_cli(agent_command: agent_command)
-      cli.run(["agent", "--name", "myapp", "--wc-socket", "/tmp/wc.sock"])
+      cli.run(["agentd", "--name", "myapp", "--wc-socket", "/tmp/wc.sock"])
 
       expect(agent_command.calls).to eq([{name: "myapp", wc_socket: "/tmp/wc.sock"}])
+    end
+
+    it "accepts a positional project name for agentd" do
+      agent_command = CLITestHelpers::FakeAgentCommand.new
+      cli, _, _ = build_test_cli(agent_command: agent_command)
+      cli.run(["agentd", "myapp", "--force"])
+
+      expect(agent_command.calls).to eq([{name: "myapp", wc_socket: nil}])
     end
 
     it "exits 1 when the agent refuses to start" do
@@ -2222,9 +2258,138 @@ RSpec.describe Workspace::CLI do
       agent_command.result = false
       cli, _, _ = build_test_cli(agent_command: agent_command)
 
-      expect { cli.run(["agent", "--name", "myapp"]) }.to raise_error(FakeSystemExit) { |e|
+      expect { cli.run(["agentd", "--name", "myapp"]) }.to raise_error(FakeSystemExit) { |e|
         expect(e.status).to eq(1)
       }
+    end
+
+    it "starts the daemon for legacy agent --name, with a deprecation warning" do
+      agent_command = CLITestHelpers::FakeAgentCommand.new
+      cli, _, error_output = build_test_cli(agent_command: agent_command)
+
+      cli.run(["agent", "--name", "myapp"])
+
+      expect(agent_command.calls).to eq([{name: "myapp", wc_socket: nil}])
+      expect(error_output.string).to include("deprecated; use `workspace agentd`")
+    end
+
+    it "starts the daemon for bare agent with empty args (installed templates)" do
+      agent_command = CLITestHelpers::FakeAgentCommand.new
+      project_detector = instance_double(Workspace::ProjectDetector, detect: "proj")
+      cli, _, error_output = build_test_cli(agent_command: agent_command, project_detector: project_detector)
+
+      cli.run(["agent"])
+
+      expect(agent_command.calls).to eq([{name: "proj", wc_socket: nil}])
+      expect(error_output.string).to include("deprecated; use `workspace agentd`")
+    end
+
+    it "shows the umbrella help for agent help" do
+      cli, output, _ = build_test_cli
+
+      cli.run(["agent", "help"])
+
+      expect(output.string).to include("Usage: workspace agent <subcommand>")
+      expect(output.string).to include("workspace agentd")
+    end
+
+    describe "#run agent run" do
+      it "sends the joined positional args as the prompt" do
+        cli, output = build_test_cli
+
+        cli.run(["agent", "run", "--name", "myapp", "--work-item", "WC-42", "Add", "OAuth", "support", "--dry-run"])
+
+        expect(output.string).to include('"work_item_ref": "WC-42"')
+        expect(output.string).to include("Add OAuth support")
+        expect(output.string).to include('"type": "command"')
+      end
+
+      it "defaults --work-item to a random UUID" do
+        cli, output = build_test_cli
+
+        cli.run(["agent", "run", "--name", "myapp", "Do the thing", "--dry-run"])
+
+        expect(output.string).to match(/"work_item_ref": "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"/)
+      end
+
+      it "supports -- for a prompt starting with a dash" do
+        cli, output = build_test_cli
+
+        cli.run(["agent", "run", "--name", "myapp", "--dry-run", "--", "--verbose prompt"])
+
+        expect(output.string).to include("--verbose prompt")
+      end
+
+      it "errors when the prompt is missing" do
+        cli, _, error_output = build_test_cli
+
+        expect { cli.run(["agent", "run", "--name", "myapp"]) }.to raise_error(FakeSystemExit)
+        expect(error_output.string).to include("Missing prompt")
+      end
+
+      it "sends a prompt containing the word help" do
+        cli, output = build_test_cli
+
+        cli.run(["agent", "run", "--name", "myapp", "--dry-run", "help", "me", "refactor", "login"])
+
+        expect(output.string).to include("help me refactor login")
+      end
+
+      it "dispatches to run when a value-taking flag leads" do
+        cli, output = build_test_cli
+
+        cli.run(["agent", "--name", "myapp", "run", "Add OAuth support", "--dry-run"])
+
+        expect(output.string).to include("Add OAuth support")
+      end
+
+      it "dry-runs when a -- terminator leads the subcommand" do
+        cli, output = build_test_cli
+
+        cli.run(["agent", "--", "run", "--name", "myapp", "x", "--dry-run"])
+
+        expect(output.string).to include('"type": "command"')
+        expect(output.string).to include('"body"')
+        expect(output.string).to include("(dry-run: not sent)")
+        expect(output.string).not_to include("--dry-run")
+      end
+
+      it "uses an agent-run dispatch_id prefix" do
+        cli, output = build_test_cli
+
+        cli.run(["agent", "run", "--name", "myapp", "Do the thing", "--dry-run"])
+
+        expect(output.string).to match(/"dispatch_id": "agent-run-[0-9a-f]{8}"/)
+      end
+
+      it "errors with a hint when a flag-looking word is parsed as an option" do
+        cli, _, error_output = build_test_cli
+
+        expect { cli.run(["agent", "run", "--name", "myapp", "fix", "the", "--force", "flag", "handling"]) }
+          .to raise_error(FakeSystemExit)
+        expect(error_output.string).to include("pass it after --")
+      end
+    end
+
+    describe "#run agent unknown word" do
+      it "errors instead of starting a daemon named after the word" do
+        agent_command = CLITestHelpers::FakeAgentCommand.new
+        cli, _, error_output = build_test_cli(agent_command: agent_command)
+
+        expect { cli.run(["agent", "status"]) }.to raise_error(FakeSystemExit)
+        expect(error_output.string).to include("Unknown agent subcommand: status")
+        expect(error_output.string).to include("workspace agentd")
+        expect(agent_command.calls).to be_empty
+      end
+    end
+
+    describe "#run agentd" do
+      it "errors on an unexpected argument" do
+        cli, _, error_output = build_test_cli
+
+        expect { cli.run(["agentd", "myapp", "extra"]) }.to raise_error(FakeSystemExit)
+        expect(error_output.string).to include("Unexpected argument: extra")
+      end
     end
 
     it "dispatches to capture_command with explicit project and default options" do
@@ -2753,7 +2918,7 @@ RSpec.describe Workspace::CLI do
         expect { cli.run(["pipeline", "start", "myapp", "--work-item", "WC-42"]) }
           .to raise_error(FakeSystemExit)
         expect(error_output.string).to include("No agent is running for myapp")
-        expect(error_output.string).to include("workspace agent --name myapp")
+        expect(error_output.string).to include("workspace agentd --name myapp")
       end
 
       it "exits 1 when the work item is missing" do
@@ -2968,7 +3133,7 @@ RSpec.describe Workspace::CLI do
 
       expect { cli.run(["sessions", "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
 
-      expect(JSON.parse(output.string)).to eq("schema_version" => 1, "error" => "No agent daemon for 'proj'.\nStart one with:  workspace agent proj")
+      expect(JSON.parse(output.string)).to eq("schema_version" => 1, "error" => "No agent daemon for 'proj'.\nStart one with:  workspace agentd proj")
     end
 
     it "forwards --worktrees to the sessions command" do

@@ -126,7 +126,7 @@ RSpec.describe Workspace::Commands::RestartAgent do
 
   context "when no daemon is running" do
     it "raises naming how to start one" do
-      expect { call }.to raise_error(Workspace::Error, /No agent daemon for 'myapp'.*workspace agent --name myapp/)
+      expect { call }.to raise_error(Workspace::Error, /No agent daemon for 'myapp'.*workspace agentd --name myapp/)
     end
 
     it "prints the JSON error contract with --json" do

@@ -1,6 +1,6 @@
 # workspace agent-run
 
-Send a raw JSONL message to a running workspace agent socket. Useful for manual testing, debugging pipelines, and scripting one-off commands without going through the work-coordinator.
+Send a raw JSONL message to a running workspace agent socket. Useful for manual testing, debugging pipelines, and scripting one-off commands without going through the work-coordinator. For the common case of sending a prompt, see the umbrella [`workspace agent run`](README.agent.md); for the daemon itself, [`workspace agentd`](README.agentd.md).
 
 ## Usage
 
@@ -32,9 +32,15 @@ workspace agent-run --body '<full message JSON>' [--dry-run]
 | Option | Description |
 |--------|-------------|
 | `--name NAME` | Workspace name (default: detected from current directory) |
-| `--work-item REF` | Work item reference, e.g. `WC-42` (required) |
-| `--body TEXT` | Text to type into the first pipeline pane |
+| `--work-item REF` | Work item reference, e.g. `WC-42` (default: random UUID) |
+| `--body TEXT` | Text to type into the first pipeline pane (default: `Begin work.`) |
 | `--dry-run` | Print the message without sending it |
+
+When `--work-item` is omitted a random UUID is generated for the message's `work_item_ref`. Three things to know:
+
+- The printed message always shows the generated ref — you need it for later `workspace agent-run inject --work-item <ref>` or `workspace pipeline status`, so copy it from the output.
+- Re-running without `--work-item` starts a second, parallel pipeline entry; it does not re-dispatch the same one.
+- A ref unknown to a running coordinator gets a `give_up` reply, which drops the pipeline. Passing a ref that is no longer in flight (or one that never was) removes the pipeline entry rather than steering it.
 
 ### `inject` subcommand
 
@@ -75,13 +81,16 @@ The pane must be named. Nothing picks "the Claude pane" for you, so in a workspa
 
 Because the daemon does the typing from outside the pane, an agent can restart itself: it runs `restart` on its own pane and ends its turn. Without `--wait` the command returns once the checks pass, and a later failure is printed on the daemon's stderr. With `--wait` it returns when the restart has finished (or failed).
 
-With `--json`, success prints the daemon's reply with `schema_version: 1` (`status` is `started`, or `restarted` with `context_before`/`context_after` under `--wait`). Errors print `{"schema_version":1,"error":"<message>","code":"<daemon error code>",...}` and exit 1; see the `restart_agent` reply table in [README.agent.md](README.agent.md) for the codes.
+With `--json`, success prints the daemon's reply with `schema_version: 1` (`status` is `started`, or `restarted` with `context_before`/`context_after` under `--wait`). Errors print `{"schema_version":1,"error":"<message>","code":"<daemon error code>",...}` and exit 1; see the `restart_agent` reply table in [README.agentd.md](README.agentd.md) for the codes.
 
 **`examples`** prints the full set of stock example messages (with realistic field values for the detected workspace) without sending anything. Use it to see the wire format before firing a real message.
 
 ## Examples
 
 ```sh
+# Send a command with a generated work-item ref (printed in the message output)
+workspace agent-run command --body "Add OAuth support"
+
 # Send a command to WC-42 in the project detected from the current directory
 workspace agent-run command --work-item WC-42 --body "Add OAuth support"
 

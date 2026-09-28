@@ -67,7 +67,7 @@ module Workspace
         @output.puts "Set #{key} = #{value} for '#{name}'."
         if RESTART_REQUIRED_KEYS.include?(key)
           daemon_name = (project.nil? && lineage.worktree) ? lineage.worktree : name
-          @output.puts "Takes effect the next time the session monitor starts (workspace agent #{daemon_name} --force, or relaunch)."
+          @output.puts "Takes effect the next time the session monitor starts (workspace agentd #{daemon_name} --force, or relaunch)."
         end
       end
 

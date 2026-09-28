@@ -102,7 +102,7 @@ module Workspace
         socket = begin
           UNIXSocket.open(@config.agent_socket_path(name))
         rescue SystemCallError, IOError
-          raise ConnectionError.new("No agent daemon for '#{name}'. Start one with: workspace agent --name #{name}", "no_daemon")
+          raise ConnectionError.new("No agent daemon for '#{name}'. Start one with: workspace agentd --name #{name}", "no_daemon")
         end
         begin
           socket.puts(JSON.generate(message))

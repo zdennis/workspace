@@ -1,6 +1,6 @@
 # workspace pipeline
 
-Inspect and drive a project's agent pipeline by hand. These are operator tools for watching a pipeline and nudging it when something needs a push — the day-to-day driving is done by work-coordinator through [`workspace agent`](README.agent.md).
+Inspect and drive a project's agent pipeline by hand. These are operator tools for watching a pipeline and nudging it when something needs a push — the day-to-day driving is done by work-coordinator through [`workspace agentd`](README.agentd.md).
 
 ## Usage
 

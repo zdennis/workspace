@@ -134,7 +134,7 @@ module Workspace
           [member, snapshot] if snapshot
         }
         return pairs if pairs.any?
-        raise Workspace::Error, "No agent daemon for '#{root}'.\nStart one with:  workspace agent #{root}"
+        raise Workspace::Error, "No agent daemon for '#{root}'.\nStart one with:  workspace agentd #{root}"
       end
 
       def fetch_silently(name)
@@ -179,7 +179,7 @@ module Workspace
         end
       rescue SystemCallError, IOError
         raise NoAgentDaemonError,
-          "No agent daemon for '#{name}'.\nStart one with:  workspace agent #{name}"
+          "No agent daemon for '#{name}'.\nStart one with:  workspace agentd #{name}"
       end
 
       def render(snapshot, json)

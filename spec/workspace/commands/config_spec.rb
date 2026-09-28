@@ -303,7 +303,7 @@ RSpec.describe Workspace::Commands::Config do
       command.set("locks.reap_interval", "1m", cwd: project_dir)
 
       output = command.instance_variable_get(:@output)
-      expect(output.string).to include("workspace agent #{name} --force, or relaunch")
+      expect(output.string).to include("workspace agentd #{name} --force, or relaunch")
     end
 
     it "names the worktree's own daemon (not the parent project) after a restart-required key, inside a worktree" do
@@ -325,8 +325,8 @@ RSpec.describe Workspace::Commands::Config do
 
       command.set("locks.reap_interval", "1m", cwd: worktree_path)
 
-      expect(output.string).to include("workspace agent myapp.worktree-wt1 --force, or relaunch")
-      expect(output.string).not_to include("workspace agent myapp --force")
+      expect(output.string).to include("workspace agentd myapp.worktree-wt1 --force, or relaunch")
+      expect(output.string).not_to include("workspace agentd myapp --force")
     ensure
       FileUtils.remove_entry(root) if root && File.directory?(root)
     end
