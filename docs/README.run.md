@@ -12,7 +12,7 @@ workspace run [project] <command> [options]
 
 | Option | Description |
 |--------|-------------|
-| `--pane N` | Target pane by zero-based index, or `bottom` for the last pane |
+| `--pane N` | Target pane by zero-based index, `window.pane` (e.g. `0.1`), a tmux pane id (e.g. `%19`, from `workspace sessions --json`), or `bottom` for the last pane |
 | `--bottom` | Target the bottommost pane (default behavior, useful for explicit scripts) |
 | `--split` | Create a new pane below the bottommost and run the command there |
 | `--vertical` | With `--split`, split side-by-side (vertical divider) instead of below |
@@ -44,7 +44,7 @@ A script that only checks for a non-zero exit can't tell these apart without par
 
 A paste large enough to trigger Claude Code's own large-paste widget (the `[Pasted text #N ...]` placeholder) has not been checked live against this delivery path — bracketed paste plus a single Enter is expected to work the same way, but it may show up as `:unverified` (exit `2`) rather than confirmed. If that happens, check the pane rather than resending.
 
-**Pane targeting** — by default the bottommost pane is used (highest pane index at invocation time). Use `--pane N` for a specific zero-based index, or `--pane bottom` / `--bottom` to be explicit.
+**Pane targeting** — by default the bottommost pane is used (highest pane index at invocation time). Use `--pane N` for a specific zero-based index, `--pane 0.1` for `window.pane` (as shown by `workspace sessions`), `--pane %19` for a tmux pane id (from `workspace sessions --json`), or `--pane bottom` / `--bottom` to be explicit.
 
 **Split panes** — `--split` creates a new horizontal pane below the bottommost pane, then sends the command there. `--split --vertical` splits side-by-side instead. The split uses `tmux split-window -P -F '#{pane_index}'` to capture the new pane index atomically.
 

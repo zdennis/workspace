@@ -26,6 +26,13 @@ workspace lock instructions [<name>]
 | Option | Description |
 |--------|-------------|
 | `--all` | `release`: release every lock this agent holds. `clear`: clear every lock in this namespace |
+| `--json` | `clear` only: emit the documented JSON schema instead of text (see `--json (clear)` below) |
+
+## Options (status)
+
+| Option | Description |
+|--------|-------------|
+| `--json` | Emit the documented JSON schema instead of a table (see `--json` below) |
 
 ## Exit codes (acquire)
 
