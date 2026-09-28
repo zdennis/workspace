@@ -2985,6 +2985,11 @@ module Workspace
         opts.on("-f", "--force", "Skip confirmation, and skip the uncommitted/unpushed-work check") do
           force = true
         end
+        opts.separator ""
+        opts.separator "Examples:"
+        opts.separator "  workspace prune --dry-run    # see what would be pruned without changing anything"
+        opts.separator "  workspace prune    # prune with a confirmation prompt"
+        opts.separator "  workspace prune --force    # prune without prompting, including candidates with unsaved work"
       end
       parser.parse!(args)
 
