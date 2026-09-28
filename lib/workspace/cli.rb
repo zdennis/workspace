@@ -3064,6 +3064,10 @@ module Workspace
           that history, keeping only each live pane's latest state.
 
           The event log is at: #{@config.event_log_file}
+
+          Examples:
+            workspace event-log show --project myapp --limit 20    # the last 20 events for one project
+            workspace event-log compact    # compact the event log to current state only
         HELP
       else
         message = "Unknown event-log subcommand: #{subcommand}"
