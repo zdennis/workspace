@@ -13,10 +13,15 @@ module Workspace
     # @param backup [Workspace::FileBackup] writes the pre-edit copy
     # @param output [IO] stream for user-facing messages
     # @param input [IO] stream for interactive confirmation
-    def initialize(backup:, output: $stdout, input: $stdin)
+    # @param user_settings_path [String] the coding agent's user-level
+    #   settings file, read (never written) so a user-level statusLine
+    #   command isn't silently shadowed by a project-level one; Claude Code
+    #   deep-merges settings with the project file's keys taking precedence
+    def initialize(backup:, output: $stdout, input: $stdin, user_settings_path: File.expand_path("~/.claude/settings.json"))
       @backup = backup
       @output = output
       @input = input
+      @user_settings_path = user_settings_path
     end
 
     # @param provider [Workspace::AgentProvider]
@@ -90,7 +95,8 @@ module Workspace
     # @return [Boolean] whether the agent's settings already route statusLine through +command+
     def statusline_installed?(provider, project_root, command)
       existing = read_settings(settings_path_for(provider, project_root))
-      existing.dig("statusLine", "command") == command
+      status_line = existing["statusLine"]
+      status_line.is_a?(Hash) && status_line["type"] == "command" && status_line["command"] == command
     end
 
     # Routes Claude's status line through workspace, backing the settings file
@@ -115,7 +121,7 @@ module Workspace
       existed = File.exist?(path)
       existing = read_settings(path)
       current = existing["statusLine"]
-      current_command = current.is_a?(Hash) ? current["command"] : nil
+      current_command = statusline_command_in(current)
 
       if current_command == command
         @output.puts "  skip    #{path} (statusLine already routed through #{command})" unless quiet
@@ -124,6 +130,11 @@ module Workspace
 
       if current_command && !current_command.to_s.empty?
         preserve_existing_statusline_command(current_command, project_settings, dry_run: dry_run, quiet: quiet)
+      else
+        user_command = user_level_statusline_command(path)
+        if user_command && !user_command.to_s.empty? && user_command != command
+          preserve_existing_statusline_command(user_command, project_settings, dry_run: dry_run, quiet: quiet)
+        end
       end
 
       merged = deep_dup(existing)
@@ -142,16 +153,55 @@ module Workspace
     # Saves a status-line command workspace is about to displace, so it isn't
     # lost. Written under `statusline.command` only if that key isn't already
     # set, so a second `install_statusline` run (or one for a second worktree)
-    # never overwrites a value the user has since edited.
+    # never overwrites a value the user has since edited. If a *different*
+    # command is already saved there, this one is not overwritten -- it's
+    # printed as a warning instead, naming both commands, so the user can
+    # decide which one they actually want.
     def preserve_existing_statusline_command(existing_command, project_settings, dry_run:, quiet:)
       return if dry_run
 
+      saved_command = nil
       project_settings.with_global_lock do |data|
         data["statusline"] ||= {}
         data["statusline"]["command"] ||= existing_command
+        saved_command = data["statusline"]["command"]
         data
       end
-      @output.puts "  save    previous statusLine command -> statusline.command (#{existing_command})" unless quiet
+
+      if saved_command == existing_command
+        @output.puts "  save    previous statusLine command -> statusline.command (#{existing_command})" unless quiet
+      else
+        @output.puts "  warn    statusline.command is already set to \"#{saved_command}\"; not overwriting it with the different command found here, \"#{existing_command}\" (set it by hand with 'workspace config set statusline.command' if you want to keep #{existing_command} instead)" unless quiet
+      end
+    end
+
+    # The command in a statusLine value, whether it's the Hash form Claude
+    # documents (`{"type" => "command", "command" => "..."}`) or the bare
+    # String form it also accepts.
+    def statusline_command_in(status_line)
+      case status_line
+      when Hash then status_line["command"]
+      when String then status_line
+      end
+    end
+
+    # A user-level settings file (e.g. `~/.claude/settings.json`) is read
+    # read-only, never written: its own statusLine command is preserved into
+    # `statusline.command` when the project-level file being edited has none
+    # of its own, since Claude Code's project settings otherwise shadow it
+    # key-by-key once workspace installs a project-level statusLine.
+    #
+    # @param project_settings_path [String] the project-level settings file
+    #   being installed into; skipped when it *is* the user-level file (e.g.
+    #   a headless/no-project setup that edits `~/.claude/settings.json`
+    #   directly), so it is never read as its own "user-level" fallback.
+    def user_level_statusline_command(project_settings_path)
+      return nil if File.expand_path(project_settings_path) == File.expand_path(@user_settings_path)
+
+      user_settings = read_settings(@user_settings_path)
+      statusline_command_in(user_settings["statusLine"])
+    rescue Workspace::Error
+      nil
     end
 
     # A settings file we cannot parse is left alone rather than replaced: the
