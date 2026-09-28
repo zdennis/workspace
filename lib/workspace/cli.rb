@@ -199,8 +199,9 @@ module Workspace
         main_help
       else
         if subcommand&.start_with?("-")
-          following = args.first || "<subcommand>"
-          @error_output.puts "Unknown option before the subcommand: #{subcommand}. Put options after the subcommand, e.g. \"workspace #{following} #{subcommand}\"."
+          following = args.find { |a| !a.start_with?("-") }
+          hint = following ? ", e.g. \"workspace #{following} #{subcommand}\"." : "."
+          @error_output.puts "Unknown option before the subcommand: #{subcommand}. Put options after the subcommand#{hint}"
         else
           @error_output.puts "Unknown subcommand: #{subcommand}"
           @error_output.puts
@@ -307,7 +308,9 @@ module Workspace
         opts.separator "Windows are arranged left-to-right with slight overlap."
         opts.separator ""
         opts.separator "Options:"
-        opts.on("--reattach", "Reattach to existing tmux sessions, preserving session state.") do
+        opts.on("--reattach", "Reattach to the tmux session of a launcher pane launch is reusing,",
+          "instead of relaunching tmuxinator into it, preserving session state.",
+          "A new pane already reuses its session on its own when it's running.") do
           reattach = true
         end
         opts.on("--[no-]headless", "Start each session in the background with plain tmux: no iTerm2,",
@@ -1654,11 +1657,18 @@ module Workspace
     # everything that touches a pane goes through the agent that owns it, so a
     # manual nudge cannot get the agent's own view of the pipeline out of step.
     def cmd_pipeline(args)
-      case args.shift
-      when "start" then cmd_pipeline_start(args)
-      when "advance" then cmd_pipeline_advance(args)
-      when "status" then cmd_pipeline_status(args)
-      when "reset" then cmd_pipeline_reset(args)
+      # The subcommand is the first non-option argument, so a leading flag
+      # (e.g. `pipeline --json status`) is dispatched correctly regardless of
+      # where it appears.
+      index = args.index { |a| !a.start_with?("-") }
+      subcommand = index && args[index]
+      rest = index ? args[0...index] + args[(index + 1)..] : args
+
+      case subcommand
+      when "start" then cmd_pipeline_start(rest)
+      when "advance" then cmd_pipeline_advance(rest)
+      when "status" then cmd_pipeline_status(rest)
+      when "reset" then cmd_pipeline_reset(rest)
       when "help", nil then @output.puts pipeline_help
       else
         raise UsageError, pipeline_help

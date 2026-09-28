@@ -134,13 +134,24 @@ RSpec.describe Workspace::CLI do
       )
     end
 
-    it "falls back to a generic subcommand placeholder when a leading flag has nothing after it" do
+    it "drops the example when a leading flag has nothing after it" do
       cli, _, error_output = build_test_cli
       expect { cli.run(["--json"]) }.to raise_error(FakeSystemExit) { |e|
         expect(e.status).to eq(1)
       }
       expect(error_output.string).to include(
-        "Unknown option before the subcommand: --json. Put options after the subcommand, e.g. \"workspace <subcommand> --json\"."
+        "Unknown option before the subcommand: --json. Put options after the subcommand."
+      )
+      expect(error_output.string).not_to include("<subcommand>")
+    end
+
+    it "scans past further leading options to find the real subcommand for the example" do
+      cli, _, error_output = build_test_cli
+      expect { cli.run(["--headless", "--json", "launch"]) }.to raise_error(FakeSystemExit) { |e|
+        expect(e.status).to eq(1)
+      }
+      expect(error_output.string).to include(
+        "Unknown option before the subcommand: --headless. Put options after the subcommand, e.g. \"workspace launch --headless\"."
       )
     end
 
