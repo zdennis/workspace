@@ -2823,6 +2823,11 @@ module Workspace
         opts.separator ""
         opts.separator "Options:"
         opts.on("--json", "Output as JSON") { json = true }
+        opts.separator ""
+        opts.separator "Examples:"
+        opts.separator "  workspace status          # tracked sessions with window ids, headless ones marked"
+        opts.separator "  workspace status --json   # machine-readable state (unique ids, window ids)"
+        opts.separator "  workspace status --json | jq -r '.[\"my-notes\"].iterm_window_id'    # one project's window id"
       end
       parser.parse!(args)
 
