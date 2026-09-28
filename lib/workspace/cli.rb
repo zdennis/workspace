@@ -921,6 +921,13 @@ module Workspace
         opts.on("--all", "Capture full pane history up to tmux history-limit") do
           all = true
         end
+        opts.separator ""
+        opts.separator "Examples:"
+        opts.separator "  workspace capture    # last 100 lines of the bottommost pane, project auto-detected"
+        opts.separator "  workspace capture scooter --lines 200    # last 200 lines of an explicit project"
+        opts.separator "  workspace capture scooter --all    # full pane history"
+        opts.separator "  workspace capture scooter --pane 1    # specific pane by index"
+        opts.separator "  workspace capture scooter | grep ERROR    # composable — pipe to other tools"
       end
       parser.parse!(args)
 
