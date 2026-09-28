@@ -49,6 +49,30 @@ RSpec.describe Workspace::TmuxPane do
       allow(tmux).to receive(:find_pane_by_title).with(session_name, "Claude Code", window: "0").and_return(1)
       expect(described_class.new("Claude Code", tmux: tmux).resolve(session_name)).to eq(1)
     end
+
+    it "resolves a tmux pane id searching the whole session" do
+      allow(tmux).to receive(:pane_details).with(session_name, window: nil).and_return([
+        {id: "%1", window: 0, index: 0},
+        {id: "%19", window: 0, index: 1}
+      ])
+      expect(described_class.new("%19", tmux: tmux).resolve(session_name)).to eq(1)
+    end
+
+    it "resolves a tmux pane id in a non-default window" do
+      allow(tmux).to receive(:pane_details).with(session_name, window: nil).and_return([
+        {id: "%1", window: 0, index: 0},
+        {id: "%19", window: 3, index: 2}
+      ])
+      expect(described_class.new("%19", tmux: tmux).resolve(session_name)).to eq(2)
+    end
+
+    it "raises when no pane with the given id exists in the session" do
+      allow(tmux).to receive(:pane_details).with(session_name, window: nil).and_return([
+        {id: "%1", window: 0, index: 0}
+      ])
+      expect { described_class.new("%99", tmux: tmux).resolve(session_name) }
+        .to raise_error(Workspace::Error, "No pane with id %99 in session '#{session_name}'")
+    end
   end
 
   describe "#target" do
@@ -60,6 +84,20 @@ RSpec.describe Workspace::TmuxPane do
     it "returns window.pane using the window embedded in the spec" do
       allow(tmux).to receive(:panes).with(session_name, window: "2").and_return([0, 1])
       expect(described_class.new("2.1", tmux: tmux).target(session_name)).to eq("2.1")
+    end
+
+    it "returns window.pane for a tmux pane id, using the pane's actual window" do
+      allow(tmux).to receive(:pane_details).with(session_name, window: nil).and_return([
+        {id: "%1", window: 0, index: 0},
+        {id: "%19", window: 3, index: 2}
+      ])
+      expect(described_class.new("%19", tmux: tmux).target(session_name)).to eq("3.2")
+    end
+
+    it "raises when no pane with the given id exists in the session" do
+      allow(tmux).to receive(:pane_details).with(session_name, window: nil).and_return([])
+      expect { described_class.new("%5", tmux: tmux).target(session_name) }
+        .to raise_error(Workspace::Error, "No pane with id %5 in session '#{session_name}'")
     end
   end
 end

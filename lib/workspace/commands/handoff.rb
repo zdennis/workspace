@@ -198,6 +198,7 @@ module Workspace
       def find_pane(snapshot, pane)
         panes = snapshot["panes"] || []
         return panes.find { |p| p["kind"] == "claude" } if pane.nil?
+        return panes.find { |p| p["pane_id"] == pane.to_s } if pane.to_s.match?(Workspace::TmuxPane::PANE_ID)
         panes.find { |p| p["index"].to_s == pane.to_s }
       end
 

@@ -67,6 +67,17 @@ RSpec.describe Workspace::Commands::Handoff do
       expect(output.string).to include("42%", "sent save-state prompt")
     end
 
+    it "selects the pane by tmux pane id when --pane is a %N id" do
+      allow(tmux).to receive(:deliver).and_return(Workspace::Tmux::Delivery.new(status: :submitted))
+      other_pane = {"index" => 4, "pane_id" => "%9", "kind" => "claude", "context_pct" => 3, "context_error" => nil}
+      over_pane = claude_pane.merge("index" => 7, "pane_id" => "%1", "context_pct" => 42)
+
+      result = with_sessions([other_pane, over_pane]) { command.check(name: "myapp", pane: "%1", handoff_doc: "HANDOFF.md") }
+
+      expect(result).to eq(exit_code: 1)
+      expect(tmux).to have_received(:deliver).with("myapp", "0.7", anything)
+    end
+
     it "sends the prompt verbatim (via --handoff-prompt) instead of a doc" do
       allow(tmux).to receive(:deliver).and_return(Workspace::Tmux::Delivery.new(status: :submitted))
       over_pane = claude_pane.merge("context_pct" => 42)

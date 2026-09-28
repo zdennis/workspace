@@ -657,7 +657,7 @@ module Workspace
         opts.separator ""
         opts.separator "Options:"
         opts.on("--pane N", String,
-          "Target pane: zero-based index, 'window.pane' (e.g. '0.1', as shown by 'workspace sessions'), 'bottom', or a title substring (e.g. 'Claude Code')") do |n|
+          "Target pane: zero-based index, 'window.pane' (e.g. '0.1', as shown by 'workspace sessions'), a tmux pane id (e.g. '%19', from 'workspace sessions --json'), 'bottom', or a title substring (e.g. 'Claude Code')") do |n|
           pane_opt = n
         end
         # --bottom is intentionally equivalent to the default. It exists so scripts can
@@ -851,7 +851,7 @@ module Workspace
         opts.separator ""
         opts.separator "Options:"
         opts.on("--pane N", String,
-          "Target pane: zero-based index, 'window.pane' (e.g. '0.1', from 'workspace sessions'), 'bottom', or a title substring (e.g. 'Claude Code')") do |n|
+          "Target pane: zero-based index, 'window.pane' (e.g. '0.1', from 'workspace sessions'), a tmux pane id (e.g. '%19', from 'workspace sessions --json'), 'bottom', or a title substring (e.g. 'Claude Code')") do |n|
           pane_opt = n
         end
         opts.on("--lines N", Integer,
@@ -1641,7 +1641,7 @@ module Workspace
 
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: workspace handoff check NAME [options]"
-        opts.on("--pane N", "Pane index (default: the first Claude Code pane)") { |v| pane = v }
+        opts.on("--pane N", "Pane index or tmux pane id (e.g. '%19', from 'workspace sessions --json'); default: the first Claude Code pane") { |v| pane = v }
         opts.on("--threshold PCT", "Context usage percent that triggers a handoff") { |v| threshold = v }
         opts.on("--context-pct N", Integer, "Skip detection and use this value") { |v| context_pct = v }
         opts.on("--handoff-doc PATH", "Doc the agent updates and resumes from") { |v| handoff_doc = v }
@@ -1680,7 +1680,7 @@ module Workspace
 
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: workspace handoff new NAME [options]"
-        opts.on("--pane N", "Pane index (default: the first Claude Code pane)") { |v| pane = v }
+        opts.on("--pane N", "Pane index or tmux pane id (e.g. '%19', from 'workspace sessions --json'); default: the first Claude Code pane") { |v| pane = v }
         opts.on("--handoff-doc PATH", "Doc the agent reads and resumes from") { |v| handoff_doc = v }
         opts.on("--handoff-prompt TEXT", "Prompt sent verbatim instead of a doc") { |v| handoff_prompt = v }
         opts.on("--json", "Print the result as JSON") { json = true }

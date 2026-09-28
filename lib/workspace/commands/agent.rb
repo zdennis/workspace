@@ -507,7 +507,7 @@ module Workspace
 
         details = @tmux.pane_details(@tmux_session, window: nil)
         detail =
-          if spec.match?(/\A%\d+\z/)
+          if spec.match?(Workspace::TmuxPane::PANE_ID)
             details.find { |d| d[:id] == spec }
           elsif (match = RESTART_PANE_TARGET.match(spec))
             session = match[:session]
