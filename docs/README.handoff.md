@@ -58,18 +58,21 @@ If no agent daemon is running for the workspace, or the pane's context usage has
 ```
 workspace: could not determine context usage
   reason: no agent daemon for 'myapp' (start one with: workspace agent --name myapp)
-  Fix: add a statusLine entry to ~/.claude/settings.json:
+  Fix: run `workspace doctor --fix` to route Claude's status line through
+  workspace, or add manually to ~/.claude/settings.json (or a project's
+  .claude/settings.json):
   "statusLine": {"type": "command", "command": "workspace statusline"},
   or set a scrape pattern with `workspace config set context.source scrape` and
   `workspace config set context.pattern '(\d+)% ctx'`, or pass --context-pct N.
 ```
 
-That fix line packs two independent options together. Pick one:
+That fix line packs three independent options together. Pick one:
 
-1. **Route the status line through workspace** (recommended if you already use `workspace statusline`): add a `statusLine` entry to `~/.claude/settings.json`:
+1. **Route the status line through workspace** (recommended if you already use `workspace statusline`): `workspace doctor --fix`, or add a `statusLine` entry to `~/.claude/settings.json` by hand:
    ```json
    "statusLine": {"type": "command", "command": "workspace statusline"}
    ```
+   `workspace doctor` (no `--fix`) reports whether this is already routed correctly.
 2. **Scrape the pane's own status line instead**:
    ```sh
    workspace config set context.source scrape

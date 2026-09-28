@@ -5,7 +5,7 @@ Check that all required dependencies are installed and configured.
 ## Usage
 
 ```sh
-workspace doctor [--headless | --no-headless]
+workspace doctor [--headless | --no-headless] [--fix]
 ```
 
 ## Options
@@ -13,6 +13,7 @@ workspace doctor [--headless | --no-headless]
 | Option | Description |
 |--------|-------------|
 | `--headless` / `--no-headless` | Check for a headless setup, which skips the iTerm2 and window-tool checks, or for an iTerm2 one. The default follows the same rule as [`launch`](README.launch.md#headless) |
+| `--fix` | Route Claude's `statusLine` through `workspace statusline`, backing up `settings.json` first. The only fix `doctor` performs today; everything else it reports has to be fixed by hand |
 
 ## Details
 
@@ -23,6 +24,8 @@ The first line says which mode it checked for and why, e.g. `mode: headless (not
 Also verifies that tmuxinator templates are installed and checks the state file for health issues such as duplicate window IDs (which can cause commands like `focus` to target the wrong project).
 
 **Session monitoring** — when run from inside a workspace project, also checks that project's session monitoring: whether a hook-capable coding agent (e.g. Claude Code) has its hooks installed for the project, and whether the [`sessions`](README.sessions.md) agent daemon is currently running for it. Skipped when not run from inside a workspace project, or when no hook-capable agent is detected on `PATH`.
+
+**statusLine** — also warns (`⚠`, doesn't fail the check) when a hook-capable agent's `statusLine` isn't routed through `workspace statusline`, since [context usage](README.statusline.md) then can't be read for `handoff check`/`sessions --json`. `workspace doctor --fix` installs it. Whether a pane has rendered a reading yet isn't checked here — that's read per-pane from [`sessions --json`](README.sessions.md)'s `context_error`, not from `doctor`.
 
 **Pipeline config** — also validates the current project's [pipeline config](README.pipeline.md), if it has one, reporting an invalid `timeout:` the same way `launch` does. It also warns, without failing the check, on a `pipeline:` block with no panes (it won't start a pipeline) and on a stage whose own text names the bare completion sentinel (workspace appends that itself with a per-dispatch token, so a stage repeating it verbatim can be confusing, though the tokened instruction still wins).
 
@@ -47,6 +50,7 @@ workspace doctor
   ✓  state: no duplicate window IDs
   ✓  session monitoring hooks installed for myapp
   ✓  session monitor agent running for myapp
+  ✓  statusLine routed through workspace
 
 Everything looks good!
 ```

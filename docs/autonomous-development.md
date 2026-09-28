@@ -101,7 +101,7 @@ The pattern, independent of any feature:
 - **Parallel only on disjoint files.** Concurrent committers share one git index, so they stage by explicit path and retry on `index.lock`.
 - **A cycle per change**: implement, adversarial "skeptic" agents that write failing specs, fixers, a verifier, five persona reviewers, review fixes, merge, bookkeeping.
 - **A handoff file is the memory.** After every commit the orchestrator updates `HANDOFF.md` with state, decisions and next steps, so a fresh session resumes from it alone.
-- **Context check at every boundary.** An external `agent-context check` measures the pane's context use; over the threshold, it has the agent finish the handoff and restart itself with the "Start here" prompt.
+- **Context check at every boundary.** `workspace handoff check` measures the pane's context use; over the threshold, it has the agent finish the handoff and restart itself with the "Start here" prompt (`workspace handoff new` sends the restart).
 - **Autonomous mode.** Never wait on the user. Questions go to a questions file with the default taken; a written policy says when pushing is allowed.
 
 Where `workspace` fits: it provides the worktree and pane (`start`), the context check reaches the pane through `workspace agent-run`, and `sessions` shows the sub-agents under the orchestrator's pane. Everything else is convention.
@@ -251,7 +251,7 @@ Every hand-off in the human-in-the-loop table runs through files and conventions
 - **[Fixed] `prune` always forced.** It now runs the same unsaved-work check per candidate; a dirty or unpushed candidate is skipped and reported by name rather than removed, while the rest of the run keeps going (`lib/workspace/commands/prune.rb`). `--force` removes those anyway.
 - **[Fixed] Swapped class names.** CLI `stop` now runs `Commands::Stop` and CLI `kill` now runs `Commands::Kill` (`lib/workspace/cli.rb`). Previously the classes were swapped relative to the commands they backed.
 - **[Improve] Run results pile up.** `run --wait` results are never cleaned up (`lib/workspace/run_result_store.rb:9`). Fix: delete results older than a day on each write.
-- **[Missing] Context handoff.** Long runs depend on an external `agent-context` tool to notice a full context and restart the agent with a handoff prompt. Fix: a `sessions` field for context use, and a `workspace restart-agent --prompt-file` that clears and re-prompts a pane.
+- **[Fixed] Context handoff.** `workspace statusline` records each pane's context use (routed through `workspace doctor --fix` or a manual `statusLine` entry), `sessions --json` reports `context_pct`, and `workspace handoff check|new` replace the external `agent-context` tool: `check` decides against the threshold, `new` clears and re-prompts a pane via `restart_agent`.
 
 ### Docs drift
 

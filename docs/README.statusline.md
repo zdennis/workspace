@@ -54,6 +54,6 @@ If you'd rather not route Claude's status line through `workspace statusline` (o
 - pattern didn't match (scrape mode)
 - the last reading is from an earlier Claude session in this pane
 
-Every one of these comes with the same fix: add a `statusLine` entry to `~/.claude/settings.json` (`"statusLine": {"type": "command", "command": "workspace statusline"}`), switch to scrape mode (`workspace config set context.source scrape` and `context.pattern`), or pass `--context-pct N` to whatever command needs the number.
+Every one of these comes with the same fix: run `workspace doctor --fix` (or add a `statusLine` entry to `~/.claude/settings.json` by hand: `"statusLine": {"type": "command", "command": "workspace statusline"}`), switch to scrape mode (`workspace config set context.source scrape` and `context.pattern`), or pass `--context-pct N` to whatever command needs the number.
 
 A stale reading is still reported, with its timestamp — Claude's status line only renders between turns, so a long-running tool call means no fresher reading exists yet. `workspace` never estimates a percentage it hasn't actually read.
