@@ -2907,6 +2907,10 @@ module Workspace
         opts.separator "Print the workspace project name for the current directory."
         opts.separator "Detects worktree projects via .workspace-project marker files,"
         opts.separator "then falls back to matching active project roots."
+        opts.separator ""
+        opts.separator "Examples:"
+        opts.separator "  workspace current    # print the current directory's project name"
+        opts.separator "  PROJECT=$(workspace current) && workspace focus \"$PROJECT\"    # use in scripts"
       end
       parser.parse!(args)
 
