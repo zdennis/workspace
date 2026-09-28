@@ -122,4 +122,166 @@ RSpec.describe Workspace::Config do
       expect(config.lock_dir).to eq(File.join(config.state_dir, "locks"))
     end
   end
+
+  describe "length-capped agent runtime paths" do
+    subject(:config) { described_class.new }
+
+    let(:socket_dir) { Dir.mktmpdir }
+
+    before do
+      allow(config).to receive(:socket_dir).and_return(socket_dir)
+    end
+
+    after do
+      FileUtils.rm_rf(socket_dir)
+    end
+
+    it "leaves a short name's socket path unhashed" do
+      expect(config.agent_socket_path("myapp")).to eq(
+        File.join(socket_dir, "workspace-myapp.sock")
+      )
+    end
+
+    it "leaves a short name's log path unhashed" do
+      expect(config.agent_log_path("myapp")).to eq(
+        File.join(socket_dir, "workspace-myapp.log")
+      )
+    end
+
+    it "caps a long name's socket path at the byte limit" do
+      path = config.agent_socket_path("a" * 200)
+
+      expect(path.bytesize).to be <= described_class::MAX_SOCKET_PATH_BYTES
+      expect(path).to start_with(File.join(socket_dir, "workspace-"))
+    end
+
+    it "caps a long name's log filename component at the byte limit" do
+      path = config.agent_log_path("a" * 300)
+
+      expect(File.basename(path).bytesize).to be <= described_class::MAX_LOG_PATH_BYTES
+      expect(path).to start_with(File.join(socket_dir, "workspace-"))
+    end
+
+    it "keeps distinct long names on distinct socket paths" do
+      long_a = "a" * 200
+      long_b = "b" * 200
+
+      expect(config.agent_socket_path(long_a)).not_to eq(config.agent_socket_path(long_b))
+    end
+
+    it "keeps distinct long names on distinct log paths" do
+      long_a = "a" * 300
+      long_b = "b" * 300
+
+      expect(config.agent_log_path(long_a)).not_to eq(config.agent_log_path(long_b))
+    end
+
+    it "leaves a name at exactly the socket byte limit unhashed" do
+      name_length = described_class::MAX_SOCKET_PATH_BYTES - socket_dir.bytesize -
+        1 - "workspace-".bytesize - ".sock".bytesize
+      name = "a" * name_length
+
+      expect(config.agent_socket_path(name)).to eq(
+        File.join(socket_dir, "workspace-#{name}.sock")
+      )
+    end
+
+    it "hashes a name one byte past the socket byte limit" do
+      name_length = described_class::MAX_SOCKET_PATH_BYTES - socket_dir.bytesize -
+        1 - "workspace-".bytesize - ".sock".bytesize
+      name = "a" * name_length + "b"
+
+      literal = File.join(socket_dir, "workspace-#{name}.sock")
+      expect(config.agent_socket_path(name)).not_to eq(literal)
+      expect(config.agent_socket_path(name).bytesize).to be <= described_class::MAX_SOCKET_PATH_BYTES
+    end
+
+    it "truncates a multibyte name to a valid-encoding path that still binds" do
+      name = "項目" * 60
+      path = config.agent_socket_path(name)
+
+      expect(path.bytesize).to be <= described_class::MAX_SOCKET_PATH_BYTES
+      expect(path).to be_valid_encoding
+
+      server = UNIXServer.new(path)
+      begin
+        expect(File.socket?(path)).to be true
+      ensure
+        server.close
+        File.delete(path)
+      end
+    end
+
+    it "raises when the socket dir is too deep for any capped socket path" do
+      allow(config).to receive(:socket_dir).and_return("/" + "d" * 100)
+
+      expect { config.agent_socket_path("myapp") }.to raise_error(
+        Workspace::Error, /socket dir is too deep/
+      )
+    end
+
+    it "caps only the log filename component, however deep the socket dir" do
+      allow(config).to receive(:socket_dir).and_return("/" + "d" * 100)
+
+      expect(config.agent_log_path("myapp")).to eq(
+        File.join("/" + "d" * 100, "workspace-myapp.log")
+      )
+    end
+
+    it "suffixes a truncated path with a deterministic hash of the name" do
+      name = "a" * 200
+      path = config.agent_socket_path(name)
+
+      expect(path).to end_with("-#{Digest::SHA256.hexdigest(name)[0, 10]}.sock")
+    end
+
+    it "maps the same name to the same path across instances" do
+      other = described_class.new
+      allow(other).to receive(:socket_dir).and_return(socket_dir)
+      name = "a" * 200
+
+      expect(other.agent_socket_path(name)).to eq(config.agent_socket_path(name))
+    end
+
+    it "binds a real Unix server on a capped path" do
+      path = config.agent_socket_path("a" * 200)
+      server = UNIXServer.new(path)
+
+      begin
+        expect(File.socket?(path)).to be true
+      ensure
+        server.close
+        File.delete(path)
+      end
+    end
+  end
+
+  describe "#agent_running?" do
+    subject(:config) { described_class.new }
+
+    it "returns false when no socket is listening" do
+      expect(config.agent_running?("workspace-spec-not-running")).to be false
+    end
+
+    it "returns true when a socket is listening" do
+      Dir.mktmpdir do |dir|
+        path = File.join(dir, "w-ar.sock")
+        server = UNIXServer.new(path)
+        begin
+          allow(config).to receive(:agent_socket_path).with("myapp").and_return(path)
+
+          expect(config.agent_running?("myapp")).to be true
+        ensure
+          server.close
+          File.delete(path)
+        end
+      end
+    end
+
+    it "returns false rather than raising when the socket path is too long" do
+      allow(config).to receive(:agent_socket_path).with("myapp").and_return("/" + "a" * 200)
+
+      expect(config.agent_running?("myapp")).to be false
+    end
+  end
 end

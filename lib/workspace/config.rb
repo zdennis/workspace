@@ -1,9 +1,18 @@
+require "digest"
 require "fileutils"
 require "socket"
 
 module Workspace
   # Centralizes all path constants and configuration for the workspace CLI.
   class Config
+    # Cap for socket paths: macOS sockaddr_un allows 104 bytes for the full
+    # expanded path, so agent socket paths are kept under this with headroom.
+    MAX_SOCKET_PATH_BYTES = 100
+
+    # Cap for the log filename component: macOS NAME_MAX allows 255 bytes per
+    # path component (the log path itself is not length-limited).
+    MAX_LOG_PATH_BYTES = 250
+
     # @param workspace_dir [String] override for the workspace installation directory
     def initialize(workspace_dir: nil)
       @workspace_dir = workspace_dir || File.expand_path("../..", __dir__)
@@ -84,13 +93,13 @@ module Workspace
     # @param name [String] the workspace name
     # @return [String] path to the agent's own Unix socket
     def agent_socket_path(name)
-      File.join(socket_dir, "workspace-#{name}.sock")
+      agent_file_path(name, ".sock", MAX_SOCKET_PATH_BYTES)
     end
 
     # @param name [String] the workspace name
     # @return [String] path to the agent's daemon log file, when launched in the background
     def agent_log_path(name)
-      File.join(socket_dir, "workspace-#{name}.log")
+      agent_file_path(name, ".log", MAX_LOG_PATH_BYTES, component_only: true)
     end
 
     # @param name [String] the workspace name
@@ -98,7 +107,7 @@ module Workspace
     def agent_running?(name)
       UNIXSocket.open(agent_socket_path(name), &:close)
       true
-    rescue SystemCallError
+    rescue SystemCallError, ArgumentError
       false
     end
 
@@ -183,6 +192,67 @@ module Workspace
     # @return [String]
     def run_stderr_path(uuid)
       File.join(run_results_dir, "#{uuid}.stderr")
+    end
+
+    private
+
+    # Builds the agent's per-name runtime file path ("workspace-<name><ext>")
+    # under the socket directory. Short names keep their literal path; long
+    # names are truncated and suffixed with a deterministic SHA-256 prefix so
+    # distinct names still map to distinct files.
+    #
+    # Length caps keep the path within what the OS accepts: macOS caps unix
+    # socket paths at 104 bytes (sockaddr_un, a full-path limit) and file
+    # names at 255 bytes (NAME_MAX, a per-component limit). When +component_only+
+    # is false the cap applies to the full expanded path, otherwise only to
+    # the filename component.
+    #
+    # @param name [String] the workspace name
+    # @param ext [String] the file extension, including the leading dot
+    # @param limit [Integer] maximum byte length of the capped portion
+    # @param component_only [Boolean] cap the filename component rather than
+    #   the full path
+    # @raise [Workspace::Error] when the socket directory is too deep for
+    #   even the minimal hashed path to fit within +limit+
+    # @return [String] the length-capped file path
+    def agent_file_path(name, ext, limit, component_only: false)
+      dir = socket_dir
+      filename = "workspace-#{name}#{ext}"
+      path = File.join(dir, filename)
+      return path if capped_bytesize(path, filename, component_only) <= limit
+
+      hash = Digest::SHA256.hexdigest(name)[0, 10]
+      min_filename = "workspace-#{hash}#{ext}"
+      min_path = File.join(dir, min_filename)
+      min_bytesize = capped_bytesize(min_path, min_filename, component_only)
+      if min_bytesize > limit
+        raise Workspace::Error,
+          "socket dir is too deep for an agent file to fit within #{limit} bytes: #{dir}"
+      end
+
+      name_budget = limit - min_bytesize - 1
+      return min_path if name_budget < 1
+
+      truncated = truncate_to_bytes(name, name_budget)
+      File.join(dir, "workspace-#{truncated}-#{hash}#{ext}")
+    end
+
+    # Returns the byte size the length cap applies to: the full path, or just
+    # its filename component.
+    def capped_bytesize(path, filename, component_only)
+      component_only ? filename.bytesize : path.bytesize
+    end
+
+    # Truncates +string+ to at most +budget+ bytes without splitting a
+    # multibyte character (an invalid-encoding filename would fail to create).
+    def truncate_to_bytes(string, budget)
+      truncated = +""
+      string.each_char do |char|
+        break if truncated.bytesize + char.bytesize > budget
+
+        truncated << char
+      end
+      truncated
     end
   end
 end
