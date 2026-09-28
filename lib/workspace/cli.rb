@@ -606,6 +606,13 @@ module Workspace
           "Colors: red, green, blue, yellow, orange, purple, white, cyan, magenta, random") do |c|
           highlight_color = c
         end
+        opts.separator ""
+        opts.separator "Examples:"
+        opts.separator "  workspace focus    # focus the current directory's project"
+        opts.separator "  workspace focus my-notes    # focus a specific project"
+        opts.separator "  workspace focus --shake my-notes    # shake the window after focusing"
+        opts.separator "  workspace focus --highlight my-notes    # highlight the window green (default)"
+        opts.separator "  workspace focus --highlight --color blue my-notes    # highlight in another color"
       end
       parser.parse!(args)
 
