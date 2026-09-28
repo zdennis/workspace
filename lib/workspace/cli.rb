@@ -2472,6 +2472,9 @@ module Workspace
         opts.separator "exits 0. A `statusline.command` in the global config (see 'workspace"
         opts.separator "config set') delegates rendering to another command; a slow or hung"
         opts.separator "delegate falls back to the built-in line."
+        opts.separator ""
+        opts.separator "Example (installed in ~/.claude/settings.json):"
+        opts.separator "  { \"statusLine\": { \"type\": \"command\", \"command\": \"workspace statusline\" } }"
       end
       parser.parse!(args)
       raise UsageError, parser.help if args.any?
