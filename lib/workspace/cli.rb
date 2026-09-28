@@ -217,7 +217,18 @@ module Workspace
       when "alfred"
         cmd_alfred(args)
       when "version", "--version", "-v"
-        @output.puts "workspace #{Workspace::VERSION}"
+        if args.include?("--help") || args.include?("-h")
+          @output.puts <<~HELP
+            Usage: workspace version
+
+            Print the workspace version.
+
+            Example:
+              workspace version
+          HELP
+        else
+          @output.puts "workspace #{Workspace::VERSION}"
+        end
       when "help", "--help", "-h", nil
         main_help
       else
