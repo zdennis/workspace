@@ -3075,6 +3075,11 @@ module Workspace
         opts.separator ""
         opts.separator "Options:"
         opts.on("--all", "Reactivate Claude in all active projects") { all = true }
+        opts.separator ""
+        opts.separator "Examples:"
+        opts.separator "  workspace reactivate my-project    # reactivate Claude in a specific project"
+        opts.separator "  workspace reactivate    # auto-detected from the current directory"
+        opts.separator "  workspace reactivate --all    # reactivate Claude in all active projects"
       end
       parser.parse!(args)
 
