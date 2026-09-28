@@ -3128,6 +3128,9 @@ module Workspace
         opts.banner = "Usage: workspace whereis"
         opts.separator ""
         opts.separator "Print the workspace installation directory."
+        opts.separator ""
+        opts.separator "Example:"
+        opts.separator "  workspace whereis    # print the directory workspace is installed in"
       end
       parser.parse!(args)
 
