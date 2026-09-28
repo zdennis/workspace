@@ -39,6 +39,8 @@ module T5StartConcurrencyFakes
     def window_tool = File.join(@dir, "window-tool")
 
     def agent_running?(_name) = true
+
+    def state_dir = File.join(@dir, "state")
   end
 
   class State < Hash

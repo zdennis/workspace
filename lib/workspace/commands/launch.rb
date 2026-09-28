@@ -46,6 +46,7 @@ module Workspace
         @clock = clock
         @output = output
         @error_output = error_output
+        @held_start_locks = {}
       end
 
       # Launches the given projects, reusing existing panes when possible.
@@ -74,19 +75,25 @@ module Workspace
 
         @tmux.start_server
 
-        @state.load
-        live_sessions = @iterm.session_map
-        existing = @iterm.find_existing_sessions(@state, live_sessions: live_sessions)
+        # The start locks are held from the running-session check until each
+        # session exists: tmuxinator started in a pane makes it
+        # asynchronously, and another launch (windowed or headless) must see
+        # it rather than start the project a second time.
+        session_names, reused = with_start_locks(projects) do
+          @state.load
+          live_sessions = @iterm.session_map
+          existing = @iterm.find_existing_sessions(@state, live_sessions: live_sessions)
 
-        reuse_projects = projects.select { |p| existing.key?(p) }
-        new_projects = projects.reject { |p| existing.key?(p) }
+          reuse_projects = projects.select { |p| existing.key?(p) }
+          new_projects = projects.reject { |p| existing.key?(p) }
 
-        relaunch_existing(reuse_projects, existing, new_projects, reattach: reattach)
-        reused = create_new_panes(new_projects, reattach: reattach, live_sessions: live_sessions)
+          relaunch_existing(reuse_projects, existing, new_projects, reattach: reattach)
+          reused = create_new_panes(new_projects, reattach: reattach, live_sessions: live_sessions)
 
-        @state.save
+          @state.save
 
-        session_names, = wait_for_tmux_sessions(projects)
+          [wait_for_tmux_sessions(projects).first, reused]
+        end
 
         start_session_monitors(session_names.keys)
 
@@ -181,14 +188,26 @@ module Workspace
       end
 
       # Holds an exclusive flock on the project's start lock (under the XDG
-      # state dir) while the block runs.
+      # state dir) while the block runs. Reentrant: a lock this launch
+      # already holds is not taken again, since a second flock on the same
+      # file from this process would wait on itself.
       def with_start_lock(project)
+        return yield if @held_start_locks[project]
         dir = File.join(@config.state_dir, "launch")
         FileUtils.mkdir_p(dir)
         File.open(File.join(dir, "#{project.gsub(/[^\w.-]/, "_")}.lock"), File::RDWR | File::CREAT, 0o600) do |f|
           f.flock(File::LOCK_EX)
+          @held_start_locks[project] = true
           yield
+        ensure
+          @held_start_locks.delete(project)
         end
+      end
+
+      # Holds every project's start lock while the block runs, taken in
+      # sorted order so two launches of overlapping projects can't deadlock.
+      def with_start_locks(projects, &block)
+        projects.uniq.sort.reverse.reduce(block) { |inner, project| -> { with_start_lock(project, &inner) } }.call
       end
 
       # Refuses to launch any project headless whose tmuxinator config selects
@@ -239,14 +258,21 @@ module Workspace
 
       # Marks the project headless. An entry left by an earlier iTerm2 launch
       # keeps its other keys but loses its window and pane ids, which name a
-      # window this session no longer has.
+      # window this session no longer has. Done under the start lock on
+      # freshly loaded state, so a windowed launch recorded meanwhile is
+      # replaced rather than merged into.
       def record_headless(project)
-        current = @state[project]
-        replace_state(project, (current || {}).except("unique_id", "iterm_window_id").merge("headless" => true))
+        with_start_lock(project) do
+          @state.load
+          current = @state[project]
+          replace_state(project, (current || {}).except("unique_id", "iterm_window_id").merge("headless" => true))
+        end
       end
 
       # Sets the project's state entry to exactly +entry+. A state_set event
       # merges into the entry, so dropping keys means removing it first.
+      # Callers hold the project's start lock and have just loaded state, so
+      # +current+ is what another launch may have written.
       def replace_state(project, entry)
         current = @state[project]
         return if current == entry
@@ -289,6 +315,7 @@ module Workspace
         launcher_wid = @iterm.find_launcher_window_id(@state, live_sessions: live_sessions)
         new_session_ids = @iterm.create_launcher_panes(new_projects, commands, launcher_wid: launcher_wid)
 
+        @state.load
         new_session_ids.each do |project, uid|
           replace_state(project, {"unique_id" => uid})
           log("  Created pane for #{project} (#{uid})")
@@ -427,7 +454,7 @@ module Workspace
 
             if best_id
               @found_windows[project] = best_id
-              @state[project] = (@state[project] || {}).merge("iterm_window_id" => best_id.to_i)
+              record_window_id(project, best_id.to_i)
               log("  Found window for #{project}")
             end
           end
@@ -438,9 +465,22 @@ module Workspace
           @error_output.puts "Warning: Could not find windows for: #{missing_windows.join(", ")}"
           # Clear stale window IDs so focus/other commands don't use invalid IDs
           missing_windows.each do |project|
-            info = @state[project]
-            replace_state(project, info.except("iterm_window_id")) if info
+            with_start_lock(project) do
+              @state.load
+              info = @state[project]
+              replace_state(project, info.except("iterm_window_id")) if info && !info["headless"]
+            end
           end
+        end
+      end
+
+      # Records the project's iTerm window, unless a headless launch took the
+      # project over after this one created its pane.
+      def record_window_id(project, window_id)
+        with_start_lock(project) do
+          @state.load
+          info = @state[project]
+          @state[project] = {"iterm_window_id" => window_id} if info && !info["headless"]
         end
       end
 
