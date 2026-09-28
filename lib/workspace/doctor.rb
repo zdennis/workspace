@@ -218,7 +218,7 @@ module Workspace
         @output.puts "  ✓  session monitor agent running for #{project}"
       else
         @output.puts "  ✗  session monitor agent not running for #{project}"
-        @output.puts "     ↳ fix: run 'workspace agent --name #{project}' (workspace launch now does this automatically)"
+        @output.puts "     ↳ fix: run 'workspace agentd --name #{project}' (workspace launch now does this automatically)"
         issues += 1
       end
 

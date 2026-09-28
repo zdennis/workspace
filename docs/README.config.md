@@ -50,7 +50,7 @@ Only an allowlisted set of keys can be written this way, so a typo doesn't silen
 
 `dev.stop_timeout`, `dev.startup_timeout`, `dev.ready_timeout`, `dev.kill_grace`, `locks.idle_grace`, `locks.ps_timeout`, `locks.reap_interval`, and `alerts.idle_after` must parse as a duration: a plain number of seconds, or a number with an `s`, `m` or `h` suffix (`20`, `20s`, `5m`, `1h`). `dev.startup_timeout`, `dev.ready_timeout`, `dev.kill_grace`, `locks.idle_grace`, `locks.ps_timeout`, `locks.reap_interval`, and `alerts.idle_after` must also be greater than 0. `alerts.notify` must not be blank. `dev.kill_grace` is also capped at 60s. `locks.ps_timeout` must be between 1s and 60s: too small and `ps` times out on nearly every call, which makes liveness checks come back unknown (treated as alive) and can stall a lock queue behind a clearing marker that never gets to show dead. Anything else is rejected before it's written.
 
-`locks.ps_timeout`, `locks.reap_interval`, `alerts.notify` and `alerts.idle_after` only take effect the next time the session-monitor daemon starts (`workspace launch`/`workspace agent --force`); a daemon already running keeps the values it started with. `workspace config set` prints a reminder of this after setting any of these four keys.
+`locks.ps_timeout`, `locks.reap_interval`, `alerts.notify` and `alerts.idle_after` only take effect the next time the session-monitor daemon starts (`workspace launch`/`workspace agentd --force`); a daemon already running keeps the values it started with. `workspace config set` prints a reminder of this after setting any of these four keys.
 
 `dev.up` runs via `/bin/sh -c`, so it can carry inline environment variables and quoting, e.g.:
 

@@ -22,4 +22,4 @@ windows:
           ascii-banner "{{DISPLAY_NAME}}" --rainbow --random -W --center --minimal
         - claude --dangerously-skip-permissions --continue || claude --dangerously-skip-permissions
         - echo 'Worktree — {{WORKTREE_BRANCH}} ({{PROJECT_NAME}})'
-        - workspace agent --debug
+        - workspace agentd --debug

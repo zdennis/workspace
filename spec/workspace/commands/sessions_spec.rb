@@ -91,7 +91,7 @@ RSpec.describe Workspace::Commands::Sessions do
 
       expect(JSON.parse(output.string)).to eq(
         "schema_version" => 1,
-        "error" => "No agent daemon for 'proj'.\nStart one with:  workspace agent proj"
+        "error" => "No agent daemon for 'proj'.\nStart one with:  workspace agentd proj"
       )
       expect(result).to eq({exit_code: 1})
     end
@@ -126,7 +126,7 @@ RSpec.describe Workspace::Commands::Sessions do
 
     it "tells the user how to start a daemon when none is listening" do
       expect { command.call(name: "proj") }
-        .to raise_error(Workspace::Error, /No agent daemon for 'proj'.*workspace agent proj/m)
+        .to raise_error(Workspace::Error, /No agent daemon for 'proj'.*workspace agentd proj/m)
     end
 
     it "reports a daemon that closes without answering" do
@@ -520,7 +520,7 @@ RSpec.describe Workspace::Commands::Sessions do
 
       expect(JSON.parse(output.string)).to eq(
         "schema_version" => 1,
-        "error" => "No agent daemon for 'proj'.\nStart one with:  workspace agent proj"
+        "error" => "No agent daemon for 'proj'.\nStart one with:  workspace agentd proj"
       )
       expect(result).to eq({exit_code: 1})
     end

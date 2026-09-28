@@ -106,7 +106,7 @@ RSpec.describe Workspace::Commands::Launch do
         command.call(["proj1"])
 
         expect(Process).to have_received(:spawn).with(
-          $PROGRAM_NAME, "agent", "--name", "proj1",
+          $PROGRAM_NAME, "agentd", "--name", "proj1",
           out: "/tmp/workspace-proj1.log", err: "/tmp/workspace-proj1.log", in: File::NULL
         )
         expect(Process).to have_received(:detach).with(999)

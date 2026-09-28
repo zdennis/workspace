@@ -57,7 +57,7 @@ If no agent daemon is running for the workspace, or the pane's context usage has
 
 ```
 workspace: could not determine context usage
-  reason: no agent daemon for 'myapp' (start one with: workspace agent --name myapp)
+  reason: no agent daemon for 'myapp' (start one with: workspace agentd --name myapp)
   Fix: run `workspace doctor --fix` to route Claude's status line through
   workspace, or add manually to ~/.claude/settings.json (or a project's
   .claude/settings.json):

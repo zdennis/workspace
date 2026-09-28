@@ -22,4 +22,4 @@ windows:
           ascii-banner "{{PROJECT_NAME}}" --rainbow --random -W --center --minimal
         - claude --dangerously-skip-permissions --continue || claude --dangerously-skip-permissions
         - echo 'Ready to work on {{PROJECT_NAME}}'
-        - workspace agent --debug
+        - workspace agentd --debug

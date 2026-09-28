@@ -192,7 +192,7 @@ module Workspace
         end
         [snapshot, nil]
       rescue SystemCallError, IOError
-        [nil, "no agent daemon for '#{name}' (start one with: workspace agent --name #{name})"]
+        [nil, "no agent daemon for '#{name}' (start one with: workspace agentd --name #{name})"]
       end
 
       def find_pane(snapshot, pane)

@@ -19,7 +19,7 @@ workspace sessions [options] [project]
 
 ## Details
 
-Requires a running agent daemon for the project (`workspace agent <project>`, or launched automatically by [`workspace launch`](README.launch.md)). If no daemon is listening, the command fails with a message telling you how to start one. `workspace doctor` also reports whether the daemon is running for the current project.
+Requires a running agent daemon for the project (`workspace agentd <project>`, or launched automatically by [`workspace launch`](README.launch.md)). If no daemon is listening, the command fails with a message telling you how to start one. `workspace doctor` also reports whether the daemon is running for the current project.
 
 `project` defaults to the project detected from the current directory, same as other commands.
 
@@ -91,7 +91,7 @@ workspace config set alerts.notify 'say "$WORKSPACE_ALERT_TEXT"'
 workspace config set alerts.idle_after 15m
 ```
 
-With no `alerts.notify` set, nothing runs; `sessions` still shows the state. Both settings are read when the daemon starts, so restart it (`workspace agent <project> --force`, or relaunch) after changing them (`workspace doctor` confirms it's running). For a worktree, the settings come from its parent project, where `workspace config set` stores them, but the daemon to restart is the worktree's own.
+With no `alerts.notify` set, nothing runs; `sessions` still shows the state. Both settings are read when the daemon starts, so restart it (`workspace agentd <project> --force`, or relaunch) after changing them (`workspace doctor` confirms it's running). For a worktree, the settings come from its parent project, where `workspace config set` stores them, but the daemon to restart is the worktree's own.
 
 Each wait alerts once, and each stretch of unchanged output alerts once, however long it lasts; a new wait, or output that changes and then goes quiet again, alerts again. A pane that is `waiting` doesn't also alert for being idle. Shell panes (no agent) never alert. A restarted daemon reads the alerts it already sent back from the event log, so it doesn't alert again for a quiet stretch that is still going, or for a wait the agent asks about again before sending any other hook event (see [event-log](README.event-log.md#agent-activity)).
 

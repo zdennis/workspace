@@ -392,7 +392,7 @@ module Workspace
 
       # Starts the session-monitor agent daemon for each project that doesn't
       # already have one running, so `workspace sessions` has something to show
-      # without requiring a separate `workspace agent` invocation.
+      # without requiring a separate `workspace agentd` invocation.
       def start_session_monitors(projects)
         projects.each do |project|
           next if @config.agent_running?(project)
@@ -409,7 +409,7 @@ module Workspace
 
           @pipeline_config.literal_sentinel_warnings(project).each { |warning| @error_output.puts "Warning: #{warning}" }
 
-          pid = Process.spawn($PROGRAM_NAME, "agent", "--name", project,
+          pid = Process.spawn($PROGRAM_NAME, "agentd", "--name", project,
             out: log_path, err: log_path, in: File::NULL)
           Process.detach(pid)
         rescue SystemCallError => e
