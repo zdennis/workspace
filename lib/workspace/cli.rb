@@ -3305,6 +3305,11 @@ module Workspace
         The workflow lets you type 'wf' in Alfred to list and focus
         active workspace projects. Assign a hotkey in Alfred Preferences
         > Workflows > Workspace Focus.
+
+        Examples:
+          workspace alfred install    # install or update the Alfred workflow
+          workspace alfred info    # show the workflow's installation status
+          workspace alfred uninstall    # remove the Alfred workflow
       HELP
     end
 
