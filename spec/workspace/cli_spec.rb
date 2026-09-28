@@ -119,6 +119,18 @@ RSpec.describe Workspace::CLI do
       expect(output.string).to match(/Usage: workspace/)
     end
 
+    it "prints the version for the version subcommand" do
+      cli, output, _ = build_test_cli
+      cli.run(["version"])
+      expect(output.string).to eq("workspace #{Workspace::VERSION}\n")
+    end
+
+    it "prints help for version --help" do
+      cli, output, _ = build_test_cli
+      cli.run(["version", "--help"])
+      expect(output.string).to include("Usage: workspace version")
+    end
+
     it "exits 1 and prints error for unknown subcommand" do
       cli, _, error_output = build_test_cli
       expect { cli.run(["bogus"]) }.to raise_error(FakeSystemExit) { |e|

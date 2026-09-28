@@ -465,7 +465,7 @@ module Workspace
         opts.separator "  workspace start feature/my-feature    # from an existing branch name"
         opts.separator "  workspace start PROJ-123 --prompt \"Fix the login bug\"    # with an initial agent prompt"
         opts.separator "  workspace start PROJ-123 --headless --yes --json    # non-interactive, e.g. from CI"
-        opts.separator "  workspace start PROJ-123 --base main --yes --json    # non-interactive, from a script or agent"
+        opts.separator "  workspace start PROJ-123 --base main --yes --json    # non-interactive, branch from main, not the default base"
       end
       parser.parse!(args)
 
@@ -1002,7 +1002,7 @@ module Workspace
         opts.separator ""
         opts.separator "Examples:"
         opts.separator "  workspace wait-until-content \"Listening on\" -- open http://localhost:3000"
-        opts.separator "  workspace wait-until-content scooter \"Ready to accept connections\" --pane 0 --max-wait-time 120 -- bin/console"
+        opts.separator "  workspace wait-until-content scooter \"Ready to accept\" --pane 0 -- bin/console"
         opts.separator "  workspace wait-until-content scooter \"WORKSPACE_DONE\" --pane \"Claude Code\" -- irb"
         opts.separator "  workspace wait-until-content scooter \"namespace is running\" --since-start --max-wait-time 60 -- ./scripts/attach.sh"
         opts.separator "  workspace wait-until-content scooter \"READY\" -e 'echo matched'"
@@ -2479,9 +2479,9 @@ module Workspace
         end
         opts.separator ""
         opts.separator "Examples:"
-        opts.separator "  workspace doctor             # check the current machine's setup"
-        opts.separator "  workspace doctor --fix       # also route Claude's statusLine through workspace statusline"
-        opts.separator "  workspace doctor --headless  # check for a headless setup (skips iTerm2 and window-tool)"
+        opts.separator "  workspace doctor    # check the current machine's setup"
+        opts.separator "  workspace doctor --fix    # also route Claude's statusLine through workspace statusline"
+        opts.separator "  workspace doctor --headless    # check for a headless setup (skips iTerm2 and window-tool)"
       end
       parser.parse!(args)
 
@@ -2790,11 +2790,11 @@ module Workspace
         opts.on("--show-urls", "Include the git origin URL alongside each project name") { show_urls = true }
         opts.separator ""
         opts.separator "Examples:"
-        opts.separator "  workspace list                             # list active (launched) projects"
-        opts.separator "  workspace list --all                       # list all available projects"
-        opts.separator "  workspace list-projects                    # alias for 'list --all'"
-        opts.separator "  workspace list --show-urls                 # each active project with its git origin URL"
-        opts.separator "  workspace list --json                      # active projects as JSON"
+        opts.separator "  workspace list    # list active (launched) projects"
+        opts.separator "  workspace list --all    # list all available projects"
+        opts.separator "  workspace list-projects    # alias for 'list --all'"
+        opts.separator "  workspace list --show-urls    # each active project with its git origin URL"
+        opts.separator "  workspace list --json    # active projects as JSON"
         opts.separator "  workspace list --all --json --show-urls    # all projects with directories and URLs as JSON"
       end
       parser.parse!(args)
