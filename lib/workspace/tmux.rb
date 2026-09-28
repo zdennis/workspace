@@ -1,5 +1,6 @@
 require "open3"
 require "securerandom"
+require "shellwords"
 require "tmpdir"
 
 module Workspace
@@ -536,12 +537,26 @@ module Workspace
     # @return [String] the shell command to start/attach the project
     def command_for(project, reattach: false)
       tmuxinator_name = File.basename(@config.config_path_for(project), ".yml")
-      start = "tmuxinator start #{tmuxinator_name} --attach"
+      start = "tmuxinator start #{Shellwords.escape(tmuxinator_name)} --attach"
       if reattach
         tmux_session = session_name_for(project)
-        return "tmux -CC attach -t #{tmux_session} || #{start}" if sessions.include?(tmux_session)
+        return reattach_or_start(tmux_session, start) if sessions.include?(tmux_session)
       end
       start
+    end
+
+    # Builds the `a || b || c` fallback chain for attaching to an existing
+    # session: attach, and only start it fresh if the attach failed because
+    # the session is really gone (not on any other nonzero exit from the
+    # attach client, e.g. a detach keybinding). A plain `||` chain so it
+    # works in any user shell, no braces or subshells.
+    #
+    # @param session [String] tmux session name (shell-quoted before use)
+    # @param start [String] the tmuxinator start command to fall back to
+    # @return [String] the shell command
+    def reattach_or_start(session, start)
+      quoted = Shellwords.escape(session)
+      "tmux -CC attach -t #{quoted} || tmux has-session -t #{quoted} 2>/dev/null || #{start}"
     end
 
     # Starts a project's tmux session in the background with tmuxinator,
@@ -582,7 +597,12 @@ module Workspace
         next unless line.match?(/^tmux_options:/)
         value = line.split(":", 2).last.to_s.strip
         quoted = value.match(/\A(["'])(.*)\1\z/)
-        options = (quoted ? quoted[2] : value).split
+        options = begin
+          Shellwords.split(quoted ? quoted[2] : value)
+        rescue ArgumentError
+          # Unbalanced quotes: not detectable, same as no custom socket found.
+          []
+        end
         flag = options.find { |option| option.match?(/\A-[LS]/) }
         return flag[0, 2] if flag
       end

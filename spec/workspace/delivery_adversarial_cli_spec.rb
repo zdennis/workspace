@@ -105,6 +105,7 @@ RSpec.describe "delivery adversarial (CLI/UX)" do
       allow(tmux).to receive(:command_for).with("proj1", reattach: false).and_return("tmuxinator start proj1 --attach")
       allow(tmux).to receive(:session_name_for).with("proj1").and_return("proj1")
       allow(tmux).to receive(:sessions).and_return(["proj1"])
+      allow(tmux).to receive(:reattach_or_start) { |session, start| "tmux -CC attach -t #{session} || tmux has-session -t #{session} 2>/dev/null || #{start}" }
       iterm = double("iterm", session_map: {}, find_existing_sessions: {}, find_launcher_window_id: nil,
         create_launcher_panes: {"proj1" => "new-uid"})
       window_manager = double("window_manager", iterm_windows: {300 => "workspace-proj1"})

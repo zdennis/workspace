@@ -23,6 +23,8 @@ class T9Tmux
 
   def command_for(project, reattach: false) = "tmuxinator start #{project} --attach"
 
+  def reattach_or_start(session, start) = "tmux -CC attach -t #{session} || tmux has-session -t #{session} 2>/dev/null || #{start}"
+
   def sessions = @mutex.synchronize { @live.dup }
 
   def add(session) = @mutex.synchronize { @live << session unless @live.include?(session) }
@@ -41,6 +43,8 @@ class T9Tmux
   def run_in_pane(command)
     command.split("||").map(&:strip).any? do |clause|
       if (m = clause.match(/\Atmux -CC attach -t (\S+)\z/))
+        sessions.include?(m[1])
+      elsif (m = clause.match(/\Atmux has-session -t (\S+) 2>\/dev\/null\z/))
         sessions.include?(m[1])
       elsif (m = clause.match(/\Atmuxinator start (\S+)/))
         session = session_name_for(m[1])
@@ -138,7 +142,7 @@ RSpec.describe "T9 windowed launch reuse: concurrency and liveness (adversarial)
     threads.each { |t| t.join(10) }
     tmux.join_threads
 
-    expect(iterm.commands).to eq(["tmux -CC attach -t tmux-proj || tmuxinator start proj --attach"]),
+    expect(iterm.commands).to eq(["tmux -CC attach -t tmux-proj || tmux has-session -t tmux-proj 2>/dev/null || tmuxinator start proj --attach"]),
       "the windowed launch ignored the start lock and ran #{iterm.commands.inspect} into a session being started"
   end
 
@@ -243,6 +247,25 @@ RSpec.describe "T9 windowed launch reuse: concurrency and liveness (adversarial)
     expect(pane_tmux.run_in_pane(command)).to be(true),
       "the pane ran #{command.inspect}; with the session gone it attached to nothing and never started it"
     pane_tmux.join_threads
+  end
+
+  it "TC9: a --reattach pane whose attach client exits nonzero for another reason, with the session still alive, never restarts tmuxinator" do
+    config_path = config.config_path_for("proj")
+    FileUtils.mkdir_p(File.dirname(config_path))
+    File.write(config_path, "name: proj\nroot: /tmp\n")
+    real_tmux = Workspace::Tmux.new(config: config)
+    allow(real_tmux).to receive(:sessions).and_return(["proj"])
+
+    command = real_tmux.command_for("proj", reattach: true)
+    # Session is still live even though the attach client itself failed
+    # (e.g. a detach keybinding, terminal resize race, etc).
+    pane_tmux = T9Tmux.new(live: ["proj"], pane_start_delay: 0.01)
+
+    pane_tmux.run_in_pane(command)
+    pane_tmux.join_threads
+
+    expect(pane_tmux.headless_starts).to eq([]),
+      "tmuxinator was restarted even though the session was still alive: #{command.inspect}"
   end
 
   it "TC6: listing sessions on a wedged tmux server gives up instead of blocking launch forever" do

@@ -76,14 +76,41 @@ RSpec.describe Workspace::Tmux do
       expect(tmux.command_for("myproject", reattach: true)).to eq("tmuxinator start workspace.myproject --attach")
     end
 
-    it "returns tmux attach command when reattaching and session exists" do
+    it "returns tmux attach command when reattaching and session exists, falling back to start only if the session is really gone" do
       config_path = config.config_path_for("myproject")
       FileUtils.mkdir_p(File.dirname(config_path))
       File.write(config_path, "name: myproject\nroot: /tmp\n")
 
       tmux = described_class.new(config: config)
       allow(tmux).to receive(:sessions).and_return(["myproject"])
-      expect(tmux.command_for("myproject", reattach: true)).to eq("tmux -CC attach -t myproject || tmuxinator start workspace.myproject --attach")
+      expect(tmux.command_for("myproject", reattach: true)).to eq(
+        "tmux -CC attach -t myproject || tmux has-session -t myproject 2>/dev/null || tmuxinator start workspace.myproject --attach"
+      )
+    end
+
+    it "shell-quotes a session name and tmuxinator config name containing shell metacharacters" do
+      dangerous = %(pro"j$(touch pwned)`x` a\\b)
+      config_path = config.config_path_for(dangerous)
+      FileUtils.mkdir_p(File.dirname(config_path))
+      File.write(config_path, "name: #{dangerous}\nroot: /tmp\n")
+
+      tmux = described_class.new(config: config)
+      allow(tmux).to receive(:sessions).and_return([dangerous])
+      command = tmux.command_for(dangerous, reattach: true)
+
+      expect(command).to eq(
+        "tmux -CC attach -t #{Shellwords.escape(dangerous)} || tmux has-session -t #{Shellwords.escape(dangerous)} 2>/dev/null || " \
+        "tmuxinator start #{Shellwords.escape("workspace.#{dangerous}")} --attach"
+      )
+    end
+  end
+
+  describe "#reattach_or_start" do
+    it "builds a plain || chain with no braces" do
+      tmux = described_class.new(config: config)
+      expect(tmux.reattach_or_start("myproject", "tmuxinator start workspace.myproject --attach")).to eq(
+        "tmux -CC attach -t myproject || tmux has-session -t myproject 2>/dev/null || tmuxinator start workspace.myproject --attach"
+      )
     end
   end
 
@@ -919,6 +946,18 @@ RSpec.describe Workspace::Tmux do
       allow(config).to receive(:config_path_for).with("missing-project").and_return(File.join(tmpdir, "nope.yml"))
 
       expect(tmux.custom_socket_option("missing-project")).to be_nil
+    end
+
+    it "detects a -L socket name containing a quoted space" do
+      File.write(source, %(name: proj\ntmux_options: -CC -L "my socket"\nwindows: []\n))
+
+      expect(tmux.custom_socket_option("proj")).to eq("-L")
+    end
+
+    it "treats unbalanced quotes in tmux_options as not detectable, same as no custom socket" do
+      File.write(source, %(name: proj\ntmux_options: -CC -L "my socket\nwindows: []\n))
+
+      expect(tmux.custom_socket_option("proj")).to be_nil
     end
   end
 end

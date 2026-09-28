@@ -346,7 +346,7 @@ module Workspace
         if running.include?(session)
           log("Session #{session} is already running for #{project}; reusing it.")
           reused << project
-          return "tmux -CC attach -t #{session} || #{@tmux.command_for(project, reattach: false)}"
+          return @tmux.reattach_or_start(session, @tmux.command_for(project, reattach: false))
         end
         @tmux.command_for(project, reattach: reattach)
       end

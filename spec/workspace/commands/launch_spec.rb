@@ -168,6 +168,7 @@ RSpec.describe Workspace::Commands::Launch do
         # tmuxinator starts it, which is what wait_for_tmux_sessions polls for.
         allow(tmux).to receive(:sessions).and_return([], ["proj1"])
         allow(tmux).to receive(:rename_window)
+        allow(tmux).to receive(:reattach_or_start) { |session, start| "tmux -CC attach -t #{session} || tmux has-session -t #{session} 2>/dev/null || #{start}" }
 
         allow(iterm).to receive(:session_map).and_return({})
         allow(iterm).to receive(:find_existing_sessions).and_return({})
@@ -196,7 +197,7 @@ RSpec.describe Workspace::Commands::Launch do
 
         result = command.call(["proj1"])
 
-        expect(iterm).to have_received(:create_launcher_panes).with(["proj1"], {"proj1" => "tmux -CC attach -t proj1 || tmuxinator start proj1 --attach"}, launcher_wid: nil)
+        expect(iterm).to have_received(:create_launcher_panes).with(["proj1"], {"proj1" => "tmux -CC attach -t proj1 || tmux has-session -t proj1 2>/dev/null || tmuxinator start proj1 --attach"}, launcher_wid: nil)
         expect(output.string).to include("Session proj1 is already running for proj1; reusing it.")
         expect(result[:reused]).to eq(["proj1"])
       end

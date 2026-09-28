@@ -66,6 +66,8 @@ module T5StartConcurrencyFakes
 
     def command_for(project, reattach:) = "tmuxinator start #{project}"
 
+    def reattach_or_start(session, start) = "tmux -CC attach -t #{session} || tmux has-session -t #{session} 2>/dev/null || #{start}"
+
     def session_name_for(project) = "sess-#{project}"
 
     def sessions = ["sess-proj.worktree-x"]
