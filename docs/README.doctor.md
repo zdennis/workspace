@@ -13,7 +13,7 @@ workspace doctor [--headless | --no-headless] [--fix]
 | Option | Description |
 |--------|-------------|
 | `--headless` / `--no-headless` | Check for a headless setup, which skips the iTerm2 and window-tool checks, or for an iTerm2 one. The default follows the same rule as [`launch`](README.launch.md#headless) |
-| `--fix` | Route Claude's `statusLine` through `workspace statusline`, backing up `settings.json` first. The only fix `doctor` performs today; everything else it reports has to be fixed by hand |
+| `--fix` | Route Claude's `statusLine` through `workspace statusline`, backing up `settings.json` first. The only fix `doctor` performs today; everything else it reports has to be fixed by hand. Restart any running Claude Code sessions afterward — Claude Code doesn't reload `statusLine` mid-session. Reports and fails (non-zero exit) when run outside a workspace project, or when no hook-capable agent is on `PATH` |
 
 ## Details
 

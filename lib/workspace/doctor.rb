@@ -39,6 +39,7 @@ module Workspace
     # @return [void]
     # @raise [Workspace::Error] if any issues are found
     def run(headless: nil, fix: false)
+      @fix_failed = false
       apply_fixes if fix
       mode = @launch_mode.resolve(headless)
       @output.puts "workspace doctor"
@@ -121,6 +122,7 @@ module Workspace
 
       issues += check_duplicate_window_ids
       issues += check_session_monitoring
+      issues += 1 if @fix_failed
 
       @output.puts ""
       if issues > 0
@@ -138,13 +140,24 @@ module Workspace
     # reports the fixed state rather than requiring a second `doctor` run.
     def apply_fixes
       project = @project_detector.detect(@working_dir)
-      return unless project
+      unless project
+        @output.puts "--fix: not inside a workspace project here, so there's nothing to fix"
+        @fix_failed = true
+        return
+      end
 
       capable = AgentProvider.all.select { |p| p.supports_hooks? && @which.call(p.executable) }
+      if capable.empty?
+        @output.puts "--fix: no hook-capable agent detected on PATH, so there's nothing to fix"
+        @fix_failed = true
+        return
+      end
+
       capable.each do |provider|
         @hook_installer.install_statusline(provider, @working_dir, command: Commands::Init::STATUSLINE_COMMAND,
           project_settings: @project_settings)
       end
+      @output.puts "Restart any running Claude Code sessions for the statusLine change to take effect."
     end
 
     def check_duplicate_window_ids

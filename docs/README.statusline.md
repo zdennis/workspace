@@ -15,6 +15,8 @@ Install as Claude Code's `statusLine` command (in `~/.claude/settings.json` or a
 }
 ```
 
+Restart any running Claude Code sessions after installing or changing this (by hand or via `workspace doctor --fix`) — Claude Code doesn't reload `statusLine` mid-session.
+
 Claude Code runs this on every render, piping one JSON payload on stdin (model, cwd, cost, `context_window.used_percentage`, etc.) and printing whatever it writes to stdout.
 
 ## What it does
