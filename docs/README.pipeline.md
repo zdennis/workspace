@@ -67,7 +67,7 @@ workspace pipeline reset myapp
 
 ## Breaking changes
 
-`status --json` used to print a bare array of entries. It now prints an envelope, matching `lock`/`dev`: `{"schema_version":1,"entries":[...]}`. A parse error under `--json` is `{"schema_version":1,"error":"..."}` on stdout, exit 1. Scripts parsing the old array need to read `.entries` instead.
+`status --json` used to print a bare array of entries. It now prints an envelope, matching `lock`/`dev`: `{"schema_version":1,"entries":[...]}`, where `schema_version` bumps only on an incompatible change. A parse error under `--json` is `{"schema_version":1,"error":"..."}` on stdout, exit 1. Scripts parsing the old array need to read `.entries` instead.
 
 ## Exit status
 
