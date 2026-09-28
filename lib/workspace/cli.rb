@@ -3260,6 +3260,12 @@ module Workspace
         opts.separator ""
         opts.on("--path", "Print the parent's root directory instead of its name") { path = true }
         opts.on("--json", "Print name, path, git_common_dir, is_worktree, worktree as JSON") { json = true }
+        opts.separator ""
+        opts.separator "Examples:"
+        opts.separator "  workspace parent    # the parent of the current directory's workspace"
+        opts.separator "  workspace parent app.worktree-login    # the parent of a named workspace"
+        opts.separator "  workspace parent --path    # the parent's root directory"
+        opts.separator "  workspace parent --json    # name, path, git_common_dir, is_worktree, worktree"
       end
       parser.parse!(args)
       raise UsageError, "--path and --json cannot be used together." if path && json
