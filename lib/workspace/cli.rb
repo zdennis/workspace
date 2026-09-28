@@ -368,6 +368,13 @@ module Workspace
         opts.separator "Note: --reattach uses tmux -CC attach which may trigger an iTerm dialog."
         opts.separator "To suppress it, set iTerm > Settings > General > tmux >"
         opts.separator "  'When attaching, restore windows' to 'Always'."
+        opts.separator ""
+        opts.separator "Examples:"
+        opts.separator "  workspace launch my-project    # launch one project by name"
+        opts.separator "  workspace launch my-notes work-notes billing    # launch several projects"
+        opts.separator "  workspace launch ~/Code/my-project    # launch from a directory path (creates a config)"
+        opts.separator "  workspace launch --reattach my-project    # reuse the pane's existing tmux session"
+        opts.separator "  workspace launch --prompt \"Review the README\" my-project    # send the agent an initial prompt"
       end
       parser.parse!(args)
 
