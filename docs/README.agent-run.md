@@ -32,9 +32,15 @@ workspace agent-run --body '<full message JSON>' [--dry-run]
 | Option | Description |
 |--------|-------------|
 | `--name NAME` | Workspace name (default: detected from current directory) |
-| `--work-item REF` | Work item reference, e.g. `WC-42` (required) |
-| `--body TEXT` | Text to type into the first pipeline pane |
+| `--work-item REF` | Work item reference, e.g. `WC-42` (default: random UUID) |
+| `--body TEXT` | Text to type into the first pipeline pane (default: `Begin work.`) |
 | `--dry-run` | Print the message without sending it |
+
+When `--work-item` is omitted a random UUID is generated for the message's `work_item_ref`. Three things to know:
+
+- The printed message always shows the generated ref — you need it for later `workspace agent-run inject --work-item <ref>` or `workspace pipeline status`, so copy it from the output.
+- Re-running without `--work-item` starts a second, parallel pipeline entry; it does not re-dispatch the same one.
+- A ref unknown to a running coordinator gets a `give_up` reply, which drops the pipeline. Passing a ref that is no longer in flight (or one that never was) removes the pipeline entry rather than steering it.
 
 ### `inject` subcommand
 
@@ -82,6 +88,9 @@ With `--json`, success prints the daemon's reply with `schema_version: 1` (`stat
 ## Examples
 
 ```sh
+# Send a command with a generated work-item ref (printed in the message output)
+workspace agent-run command --body "Add OAuth support"
+
 # Send a command to WC-42 in the project detected from the current directory
 workspace agent-run command --work-item WC-42 --body "Add OAuth support"
 

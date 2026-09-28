@@ -816,6 +816,34 @@ RSpec.describe Workspace::CLI do
     end
   end
 
+  describe "#run agent-run command" do
+    it "defaults --work-item to a random UUID, shown in the printed message" do
+      cli, output = build_test_cli
+
+      cli.run(["agent-run", "command", "--name", "myapp", "--body", "Add OAuth support", "--dry-run"])
+
+      expect(output.string).to match(/"work_item_ref": "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"/)
+    end
+
+    it "uses an explicit --work-item instead of generating one" do
+      cli, output = build_test_cli
+
+      cli.run(["agent-run", "command", "--name", "myapp", "--work-item", "WC-42", "--body", "Add OAuth support", "--dry-run"])
+
+      expect(output.string).to include('"work_item_ref": "WC-42"')
+    end
+  end
+
+  describe "#run agent-run inject" do
+    it "still requires --work-item" do
+      cli, _, error_output = build_test_cli
+
+      expect { cli.run(["agent-run", "inject", "--name", "myapp", "--body", "Use Postgres"]) }
+        .to raise_error(FakeSystemExit)
+      expect(error_output.string).to include("Missing --work-item")
+    end
+  end
+
   describe "#run agent-run restart" do
     let(:restart_command) { double("restart", call: {exit_code: 0}) }
 

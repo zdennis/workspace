@@ -1554,7 +1554,7 @@ module Workspace
     # Sends a raw JSONL message to a running agent socket for manual testing and
     # exploration. Always pretty-prints what is being sent before sending it.
     #
-    # Usage with a subcommand:
+    # Usage with a subcommand (--work-item defaults to a random UUID):
     #   workspace agent-run command --work-item WC-42
     #
     # Usage with raw JSON body (workspace is read from the message):
@@ -1623,8 +1623,9 @@ module Workspace
 
         Options (command):
           --name NAME         Workspace name (default: detected from cwd)
-          --work-item REF     Work item reference, e.g. WC-42  (required)
+          --work-item REF     Work item reference, e.g. WC-42  (default: random UUID)
           --body TEXT         Text to type into the first pipeline pane
+                              (default: "Begin work.")
           --dry-run           Print the message without sending it
 
         Options (inject):
@@ -1645,6 +1646,7 @@ module Workspace
           --json              Print the result as JSON; errors as {"schema_version":1,"error":...}
 
         Examples:
+          workspace agent-run command --body "Add OAuth support"
           workspace agent-run command --work-item WC-42 --body "Add OAuth support"
           workspace agent-run command --name myapp --work-item WC-42 --body "Add OAuth support" --dry-run
           workspace agent-run inject --work-item WC-42 --body "Use Postgres, not SQLite"
@@ -1672,14 +1674,14 @@ module Workspace
 
       name ||= @project_detector.detect(@working_dir)
       raise UsageError, "Missing workspace name.\n\n#{agent_run_help}" if name.nil?
-      raise UsageError, "Missing --work-item.\n\n#{agent_run_help}" if work_item.nil?
+      work_item ||= SecureRandom.uuid
 
       message = {
         "type" => "command",
         "workspace" => name,
         "work_item_ref" => work_item,
         "dispatch_id" => "debug-#{SecureRandom.hex(4)}",
-        "body" => jsonl_body(body || "Begin work on #{work_item}.")
+        "body" => jsonl_body(body || "Begin work.")
       }
       agent_run_send(name, message, dry_run: dry_run)
     end
