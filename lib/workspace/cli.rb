@@ -198,9 +198,14 @@ module Workspace
       when "help", "--help", "-h", nil
         main_help
       else
-        @error_output.puts "Unknown subcommand: #{subcommand}"
-        @error_output.puts
-        main_help
+        if subcommand&.start_with?("-")
+          following = args.first || "<subcommand>"
+          @error_output.puts "Unknown option before the subcommand: #{subcommand}. Put options after the subcommand, e.g. \"workspace #{following} #{subcommand}\"."
+        else
+          @error_output.puts "Unknown subcommand: #{subcommand}"
+          @error_output.puts
+          main_help
+        end
         @exit_handler.exit(1)
       end
     rescue UsageError => e
@@ -1714,18 +1719,21 @@ module Workspace
       @output.puts "Nudged #{project}/#{work_item} to advance"
     end
 
+    # `workspace pipeline status --json`'s schema version.
+    PIPELINE_JSON_SCHEMA_VERSION = 1
+
     def cmd_pipeline_status(args)
       as_json = false
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: workspace pipeline status <project>"
-        opts.on("--json", "Print the in-flight entries as JSON") { as_json = true }
+        opts.on("--json", "Print {schema_version, entries} instead of a table") { as_json = true }
       end
       parser.parse!(args)
       project = args.shift
       raise UsageError, parser.help if project.nil?
 
       entries = read_pipeline_state(project)
-      return @output.puts JSON.pretty_generate(entries.values) if as_json
+      return @output.puts JSON.generate({"schema_version" => PIPELINE_JSON_SCHEMA_VERSION, "entries" => entries.values}) if as_json
 
       if entries.empty?
         @output.puts "No pipeline work in flight for #{project}"
@@ -1737,6 +1745,9 @@ module Workspace
         deadline = format_deadline(entry["deadline_at"])
         @output.puts "#{entry["work_item_ref"]}  pane #{entry["pane_index"]}  #{entry["phase"] || "(no pipeline)"}  #{deadline}"
       end
+    rescue OptionParser::ParseError, UsageError => e
+      raise unless json_requested?(as_json, args)
+      emit_json_usage_error(PIPELINE_JSON_SCHEMA_VERSION, e.message.lines.first.strip)
     end
 
     # Renders a stage's deadline in local time plus how far off it is, so an
