@@ -151,7 +151,7 @@ module Workspace
     hook_installer = HookInstaller.new(backup: file_backup, output: output, input: input)
     pipeline_config = PipelineConfig.new(config: config)
     launch_mode = LaunchMode.new(project_settings: project_settings)
-    doctor = Doctor.new(config: config, state: state, hook_installer: hook_installer, project_detector: project_detector, git: git, pipeline_config: pipeline_config, launch_mode: launch_mode, output: output)
+    doctor = Doctor.new(config: config, state: state, hook_installer: hook_installer, project_detector: project_detector, git: git, pipeline_config: pipeline_config, launch_mode: launch_mode, project_settings: project_settings, output: output)
 
     # Pre-build command objects so CLI delegates rather than constructs
     stop_command = Commands::Stop.new(state: state, iterm: iterm, window_manager: window_manager, tmux: tmux, output: output, error_output: error_output)

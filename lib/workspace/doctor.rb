@@ -12,10 +12,12 @@ module Workspace
     # @param pipeline_config [Workspace::PipelineConfig, nil] validates the current project's pipeline config
     # @param launch_mode [Workspace::LaunchMode, nil] decides whether iTerm2 and
     #   window-tool are needed; nil builds one from +config+
+    # @param project_settings [Workspace::ProjectSettings, nil] reads/writes the
+    #   global config for the statusLine check and `--fix`; nil builds one from +config+
     # @param working_dir [String] directory to detect the current project from
     # @param output [IO] output stream for results
     def initialize(config:, state:, hook_installer:, project_detector:, which: nil, git: nil,
-      pipeline_config: nil, launch_mode: nil, working_dir: Dir.pwd, output: $stdout)
+      pipeline_config: nil, launch_mode: nil, project_settings: nil, working_dir: Dir.pwd, output: $stdout)
       @launch_mode = launch_mode || LaunchMode.new(project_settings: ProjectSettings.new(config: config), which: which)
       @config = config
       @state = state
@@ -24,15 +26,20 @@ module Workspace
       @which = which || Workspace::Which
       @git = git
       @pipeline_config = pipeline_config || PipelineConfig.new(config: config)
+      @project_settings = project_settings || ProjectSettings.new(config: config)
       @working_dir = working_dir
       @output = output
     end
 
     # @param headless [Boolean, nil] the `--[no-]headless` flag; nil lets
     #   {LaunchMode} decide. Headless skips the iTerm2 and window-tool checks.
+    # @param fix [Boolean] install the statusLine entry (via {HookInstaller},
+    #   with a backup) before running checks, so this run reports the fixed
+    #   state. The only fix `doctor --fix` performs today.
     # @return [void]
     # @raise [Workspace::Error] if any issues are found
-    def run(headless: nil)
+    def run(headless: nil, fix: false)
+      apply_fixes if fix
       mode = @launch_mode.resolve(headless)
       @output.puts "workspace doctor"
       @output.puts ""
@@ -125,6 +132,21 @@ module Workspace
 
     private
 
+    # `--fix` is limited to one thing today: routing Claude's statusLine
+    # through `workspace statusline`, via the same {HookInstaller} used by
+    # `workspace init`. Applied before the checks run, so this same call
+    # reports the fixed state rather than requiring a second `doctor` run.
+    def apply_fixes
+      project = @project_detector.detect(@working_dir)
+      return unless project
+
+      capable = AgentProvider.all.select { |p| p.supports_hooks? && @which.call(p.executable) }
+      capable.each do |provider|
+        @hook_installer.install_statusline(provider, @working_dir, command: Commands::Init::STATUSLINE_COMMAND,
+          project_settings: @project_settings)
+      end
+    end
+
     def check_duplicate_window_ids
       @state.load
       return 0 if @state.empty?
@@ -178,9 +200,25 @@ module Workspace
       end
 
       check_worktree_lock_hooks(capable) unless capable.empty?
+      check_statusline(capable)
       issues += check_pipeline_config(project)
 
       issues
+    end
+
+    # Warns rather than counting as an issue: a status line not routed
+    # through workspace only means context usage can't be read (`handoff
+    # check`, `sessions --json` report the reason and this same fix), not
+    # that anything else is broken.
+    def check_statusline(capable)
+      return if capable.empty?
+
+      if capable.any? { |p| @hook_installer.statusline_installed?(p, @working_dir, Commands::Init::STATUSLINE_COMMAND) }
+        @output.puts "  ✓  statusLine routed through workspace"
+      else
+        @output.puts "  ⚠  statusLine not routed through workspace (context usage can't be read)"
+        @output.puts "     ↳ fix: run 'workspace doctor --fix'"
+      end
     end
 
     # A bad `timeout:` in the project's pipeline config would otherwise only

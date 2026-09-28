@@ -127,7 +127,7 @@ RSpec.describe Workspace::CLI do
 
     it "exits 1 when a Workspace::Error is raised" do
       doctor = CLITestHelpers::FakeDoctor.new
-      doctor.define_singleton_method(:run) do |headless: nil|
+      doctor.define_singleton_method(:run) do |headless: nil, fix: false|
         raise Workspace::Error, "something broke"
       end
 
@@ -614,7 +614,7 @@ RSpec.describe Workspace::CLI do
     it "delegates to the doctor collaborator" do
       doctor = CLITestHelpers::FakeDoctor.new
       called = false
-      doctor.define_singleton_method(:run) { |headless: nil| called = true }
+      doctor.define_singleton_method(:run) { |headless: nil, fix: false| called = true }
 
       cli, _, _ = build_test_cli(doctor: doctor)
       cli.run(["doctor"])
@@ -2887,6 +2887,16 @@ RSpec.describe Workspace::CLI do
       expect(doctor.headless).to be false
       cli.run(["doctor"])
       expect(doctor.headless).to be_nil
+    end
+
+    it "passes --fix to doctor, and false without the flag" do
+      doctor = CLITestHelpers::FakeDoctor.new
+      cli, = build_test_cli(doctor: doctor)
+
+      cli.run(["doctor", "--fix"])
+      expect(doctor.fix).to be true
+      cli.run(["doctor"])
+      expect(doctor.fix).to be false
     end
 
     it "relaunches headless projects headless and the rest in iTerm2" do

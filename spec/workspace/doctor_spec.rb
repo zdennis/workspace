@@ -8,12 +8,15 @@ RSpec.describe Workspace::Doctor do
   let(:project_detector) { double("project_detector", detect: nil) }
 
   def build_doctor(**overrides)
+    allow(hook_installer).to receive(:statusline_installed?).and_return(true) unless overrides.key?(:hook_installer)
+
     described_class.new(
       config: config,
       state: state,
       hook_installer: hook_installer,
       project_detector: project_detector,
       output: output,
+      project_settings: CLITestHelpers::FakeProjectSettings.new,
       launch_mode: Workspace::LaunchMode.new(project_settings: CLITestHelpers::FakeProjectSettings.new,
         platform: "arm64-darwin", env: {}, which: ->(_exe) { true }),
       **overrides
@@ -116,6 +119,84 @@ RSpec.describe Workspace::Doctor do
     ensure
       server&.close
       FileUtils.remove_entry(tmpdir) if tmpdir && File.directory?(tmpdir)
+    end
+  end
+
+  describe "statusLine check" do
+    before do
+      allow(project_detector).to receive(:detect).and_return("myapp")
+      allow(config).to receive(:agent_socket_path).with("myapp").and_return("/tmp/does-not-exist-workspace-myapp.sock")
+    end
+
+    it "reports statusLine routed through workspace" do
+      allow(hook_installer).to receive(:installed?).and_return(true)
+      allow(hook_installer).to receive(:statusline_installed?).and_return(true)
+
+      doctor = build_doctor(which: ->(exe) { exe == "claude" }, hook_installer: hook_installer)
+      begin
+        doctor.run
+      rescue Workspace::Error
+        # May fail on unrelated checks (e.g. agent not running)
+      end
+      expect(output.string).to include("✓  statusLine routed through workspace")
+    end
+
+    it "warns, without failing doctor, when statusLine isn't routed through workspace" do
+      allow(hook_installer).to receive(:installed?).and_return(true)
+      allow(hook_installer).to receive(:statusline_installed?).and_return(false)
+
+      doctor = build_doctor(which: ->(exe) { exe == "claude" }, hook_installer: hook_installer)
+      begin
+        doctor.run
+      rescue Workspace::Error
+        # Unrelated failures (e.g. agent not running) still raise; the
+        # statusLine warning itself must not be why.
+      end
+      expect(output.string).to include("statusLine not routed through workspace")
+      expect(output.string).to include("workspace doctor --fix")
+    end
+
+    it "skips the check when no hook-capable agent is detected" do
+      doctor = build_doctor(which: ->(_exe) { false })
+      begin
+        doctor.run
+      rescue Workspace::Error
+        # Expected
+      end
+      expect(output.string).not_to include("statusLine")
+    end
+  end
+
+  describe "--fix" do
+    it "installs the statusLine entry via HookInstaller before running checks" do
+      allow(project_detector).to receive(:detect).and_return("myapp")
+      allow(config).to receive(:agent_socket_path).with("myapp").and_return("/tmp/does-not-exist-workspace-myapp.sock")
+      allow(hook_installer).to receive(:installed?).and_return(true)
+      project_settings = CLITestHelpers::FakeProjectSettings.new
+
+      expect(hook_installer).to receive(:install_statusline)
+        .with(instance_of(Workspace::AgentProvider), Dir.pwd, command: "workspace statusline", project_settings: project_settings)
+      allow(hook_installer).to receive(:statusline_installed?).and_return(true)
+
+      doctor = build_doctor(which: ->(exe) { exe == "claude" }, hook_installer: hook_installer, project_settings: project_settings)
+      begin
+        doctor.run(fix: true)
+      rescue Workspace::Error
+        # Unrelated failures fine; the expectation above is what's under test
+      end
+    end
+
+    it "does nothing when not inside a workspace project" do
+      allow(project_detector).to receive(:detect).and_return(nil)
+
+      expect(hook_installer).not_to receive(:install_statusline)
+
+      doctor = build_doctor
+      begin
+        doctor.run(fix: true)
+      rescue Workspace::Error
+        # Expected
+      end
     end
   end
 
