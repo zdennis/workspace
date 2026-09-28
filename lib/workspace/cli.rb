@@ -492,6 +492,11 @@ module Workspace
         opts.separator "Stop workspace projects and their tmux sessions."
         opts.separator "If no projects are specified, stops all active workspace projects."
         opts.separator "Projects can be restarted with 'workspace launch'."
+        opts.separator ""
+        opts.separator "Examples:"
+        opts.separator "  workspace stop    # stop all active projects"
+        opts.separator "  workspace stop my-notes    # stop one project"
+        opts.separator "  workspace stop my-notes billing    # stop several projects"
       end
       parser.parse!(args)
 
