@@ -97,4 +97,49 @@ RSpec.describe Workspace::ITerm do
       expect(iterm.session_map).to eq({})
     end
   end
+
+  describe "AppleScript injection safety" do
+    let(:iterm) { described_class.new(config: config, output: output) }
+
+    def captured_script
+      script = nil
+      allow(Open3).to receive(:capture3) do |*args|
+        script = args.last
+        ["", "", instance_double(Process::Status, success?: true)]
+      end
+      yield
+      script
+    end
+
+    # A command containing a double quote, a backslash, a `$(...)`
+    # substitution, a backtick and a space, all of which would otherwise
+    # break out of the AppleScript string literal or execute in the shell.
+    let(:dangerous_command) { %(echo "hi" && $(rm -rf /) `x` a\\b) }
+
+    it "escapes a dangerous command sent to a new launcher window" do
+      script = captured_script { iterm.create_launcher_panes(["proj"], {"proj" => dangerous_command}) }
+
+      expect(script).to include(%(write text "echo \\"hi\\" && $(rm -rf /) `x` a\\\\b"))
+    end
+
+    it "escapes a dangerous command sent to an existing launcher window" do
+      script = captured_script do
+        iterm.create_launcher_panes(["proj"], {"proj" => dangerous_command}, launcher_wid: "99")
+      end
+
+      expect(script).to include(%(write text "echo \\"hi\\" && $(rm -rf /) `x` a\\\\b"))
+    end
+
+    it "escapes a dangerous command sent via relaunch_in_session" do
+      script = captured_script { iterm.relaunch_in_session("uid-1", dangerous_command) }
+
+      expect(script).to include(%(write text "echo \\"hi\\" && $(rm -rf /) `x` a\\\\b"))
+    end
+
+    it "escapes a dangerous project name used in the launcher output line" do
+      script = captured_script { iterm.create_launcher_panes(["pro\"ject"], {"pro\"ject" => "cmd"}) }
+
+      expect(script).to include(%("pro\\"ject"))
+    end
+  end
 end

@@ -1,5 +1,6 @@
 require "open3"
 require "securerandom"
+require "shellwords"
 require "tmpdir"
 
 module Workspace
@@ -9,6 +10,9 @@ module Workspace
     DEFAULT_START_TIMEOUT = 60
     # Seconds a timed-out tmuxinator gets to exit after SIGTERM before SIGKILL.
     STOP_GRACE = 2
+    # Seconds `tmux list-sessions` or `tmux start-server` may take before the
+    # tmux server is taken to be wedged.
+    DEFAULT_COMMAND_TIMEOUT = 10
 
     # @param config [Workspace::Config] configuration for path lookups
     # @param logger [Workspace::Logger] debug logger
@@ -16,29 +20,37 @@ module Workspace
     # @param sleeper [#call] sleeps the given seconds, injected likewise
     # @param start_timeout [Numeric] seconds {#start_headless} gives tmuxinator
     #   before stopping it and reporting the start as failed
+    # @param command_timeout [Numeric] seconds {#sessions} and {#start_server}
+    #   give tmux before stopping it and raising
     def initialize(config:, logger: Workspace::Logger.new,
       clock: -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) }, sleeper: ->(seconds) { sleep(seconds) },
-      start_timeout: DEFAULT_START_TIMEOUT)
+      start_timeout: DEFAULT_START_TIMEOUT, command_timeout: DEFAULT_COMMAND_TIMEOUT)
       @config = config
       @logger = logger
       @clock = clock
       @sleeper = sleeper
       @start_timeout = start_timeout
+      @command_timeout = command_timeout
     end
 
     # @return [Array<String>] list of active tmux session names
+    # @raise [Workspace::Error] if tmux doesn't answer within +command_timeout+
     def sessions
       @logger.debug { "tmux: listing sessions" }
-      stdout, _, status = Open3.capture3("tmux", "list-sessions", "-F", "\#{session_name}")
-      result = status.success? ? stdout.strip.lines.map(&:strip) : []
+      stdout, ok = run_bounded("list-sessions", "-F", "\#{session_name}")
+      result = ok ? stdout.strip.lines.map(&:strip) : []
       @logger.debug { "tmux: found #{result.size} session(s): #{result.join(", ")}" }
       result
     end
 
-    # @return [void]
+    # @return [Boolean, nil] whether tmux started (or already had) a server;
+    #   nil when tmux couldn't be run
+    # @raise [Workspace::Error] if tmux doesn't answer within +command_timeout+
     def start_server
       @logger.debug { "tmux: starting server" }
-      system("tmux", "start-server")
+      run_bounded("start-server", capture: false).last
+    rescue SystemCallError
+      nil
     end
 
     # @param name [String] tmux session name
@@ -520,17 +532,31 @@ module Workspace
     end
 
     # @param project [String] project/config name
-    # @param reattach [Boolean] whether to reattach to existing session
+    # @param reattach [Boolean] whether to reattach to existing session; should
+    #   the session be killed before the attach runs, tmuxinator starts it
     # @return [String] the shell command to start/attach the project
     def command_for(project, reattach: false)
+      tmuxinator_name = File.basename(@config.config_path_for(project), ".yml")
+      start = "tmuxinator start #{Shellwords.escape(tmuxinator_name)} --attach"
       if reattach
         tmux_session = session_name_for(project)
-        if sessions.include?(tmux_session)
-          return "tmux -CC attach -t #{tmux_session}"
-        end
+        return reattach_or_start(tmux_session, start) if sessions.include?(tmux_session)
       end
-      tmuxinator_name = File.basename(@config.config_path_for(project), ".yml")
-      "tmuxinator start #{tmuxinator_name} --attach"
+      start
+    end
+
+    # Builds the `a || b || c` fallback chain for attaching to an existing
+    # session: attach, and only start it fresh if the attach failed because
+    # the session is really gone (not on any other nonzero exit from the
+    # attach client, e.g. a detach keybinding). A plain `||` chain so it
+    # works in any user shell, no braces or subshells.
+    #
+    # @param session [String] tmux session name (shell-quoted before use)
+    # @param start [String] the tmuxinator start command to fall back to
+    # @return [String] the shell command
+    def reattach_or_start(session, start)
+      quoted = Shellwords.escape(session)
+      "tmux -CC attach -t #{quoted} || tmux has-session -t #{quoted} 2>/dev/null || #{start}"
     end
 
     # Starts a project's tmux session in the background with tmuxinator,
@@ -571,7 +597,12 @@ module Workspace
         next unless line.match?(/^tmux_options:/)
         value = line.split(":", 2).last.to_s.strip
         quoted = value.match(/\A(["'])(.*)\1\z/)
-        options = (quoted ? quoted[2] : value).split
+        options = begin
+          Shellwords.split(quoted ? quoted[2] : value)
+        rescue ArgumentError
+          # Unbalanced quotes: not detectable, same as no custom socket found.
+          []
+        end
         flag = options.find { |option| option.match?(/\A-[LS]/) }
         return flag[0, 2] if flag
       end
@@ -623,6 +654,43 @@ module Workspace
       writer&.close unless writer&.closed?
       stderr&.kill
       reader&.close
+    end
+
+    # Runs a tmux command, stopping it (SIGTERM, then SIGKILL) and raising
+    # if it hasn't exited within +command_timeout+: a wedged tmux server
+    # would otherwise block the caller forever. Only the tmux client is
+    # signalled; a server it starts daemonizes into its own session.
+    #
+    # @return [Array(String, Boolean)] stdout (empty unless +capture+) and
+    #   whether tmux exited successfully
+    def run_bounded(*args, capture: true)
+      reader, writer = IO.pipe if capture
+      pid = Process.spawn("tmux", *args, in: File::NULL, out: writer || File::NULL, err: File::NULL)
+      writer&.close
+      stdout = Thread.new { reader.read } if capture
+      waiter = Process.detach(pid)
+      unless waiter.join(@command_timeout)
+        stop_process(pid, waiter)
+        raise Workspace::Error, "tmux #{args.first} did not respond within #{@command_timeout}s; " \
+          "the tmux server may be wedged (try `tmux kill-server`)"
+      end
+      out = capture ? (stdout.join(STOP_GRACE) && stdout.value).to_s : ""
+      [out, waiter.value.success?]
+    ensure
+      writer&.close unless writer.nil? || writer.closed?
+      stdout&.kill
+      reader&.close
+    end
+
+    def stop_process(pid, waiter)
+      %w[TERM KILL].each do |signal|
+        begin
+          Process.kill(signal, pid) if pid > 1 && pid != Process.pid
+        rescue Errno::ESRCH, Errno::EPERM
+          nil
+        end
+        break if waiter.join(STOP_GRACE)
+      end
     end
 
     # SIGTERM to tmuxinator's group, then SIGKILL to whatever is left in it.

@@ -84,7 +84,7 @@ module Workspace
                 set newSession to (split horizontally with default profile)
               end tell
               tell newSession
-                write text "#{commands[project]}"
+                write text "#{applescript_escape(commands[project])}"
               end tell
               return unique ID of newSession
             end tell
@@ -99,8 +99,8 @@ module Workspace
             set output to ""
             set launcherWindow to (create window with default profile)
             tell current session of launcherWindow
-              write text "#{commands[first]}"
-              set output to output & unique ID of (current session of launcherWindow) & "\\t" & "#{first}" & "\\n"
+              write text "#{applescript_escape(commands[first])}"
+              set output to output & unique ID of (current session of launcherWindow) & "\\t" & "#{applescript_escape(first)}" & "\\n"
         APPLESCRIPT
 
         rest.each_with_index do |project, i|
@@ -108,9 +108,9 @@ module Workspace
             delay 1
             set newSession#{i} to split horizontally with default profile
             tell newSession#{i}
-              write text "#{commands[project]}"
+              write text "#{applescript_escape(commands[project])}"
             end tell
-            set output to output & unique ID of newSession#{i} & "\\t" & "#{project}" & "\\n"
+            set output to output & unique ID of newSession#{i} & "\\t" & "#{applescript_escape(project)}" & "\\n"
           APPLESCRIPT
         end
 
@@ -137,9 +137,9 @@ module Workspace
           repeat with w in every window
             repeat with t in every tab of w
               repeat with s in every session of t
-                if unique ID of s is "#{unique_id}" then
+                if unique ID of s is "#{applescript_escape(unique_id)}" then
                   tell s
-                    write text "#{command}"
+                    write text "#{applescript_escape(command)}"
                   end tell
                   return "ok"
                 end if
@@ -153,6 +153,16 @@ module Workspace
     end
 
     private
+
+    # Escapes a string for embedding inside a double-quoted AppleScript
+    # string literal. Backslashes must be escaped before quotes, or an
+    # escaped quote's own backslash would be re-escaped.
+    #
+    # @param text [String] raw text to embed
+    # @return [String] text safe to interpolate inside `"..."` in AppleScript
+    def applescript_escape(text)
+      text.gsub("\\") { "\\\\" }.gsub('"') { "\\\"" }
+    end
 
     # @param script [String] AppleScript code to execute
     # @return [String] stripped output from osascript

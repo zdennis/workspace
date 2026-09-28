@@ -54,7 +54,7 @@ workspace pipeline status myapp
 # WORK ITEM  PANE  STAGE  DEADLINE
 # WC-42  pane 1  implementer  14:03 (in 12m)
 
-# Same, for a script
+# Same, for a script (envelope: {"schema_version":1,"entries":[...]})
 workspace pipeline status myapp --json
 
 # Push a work item through by hand
@@ -64,6 +64,10 @@ workspace pipeline advance myapp --work-item WC-42
 # Clear leftover state after stopping the agent
 workspace pipeline reset myapp
 ```
+
+## Breaking changes
+
+`status --json` used to print a bare array of entries. It now prints an envelope, matching `lock`/`dev`: `{"schema_version":1,"entries":[...]}`, where `schema_version` bumps only on an incompatible change. A parse error under `--json` is `{"schema_version":1,"error":"..."}` on stdout, exit 1. Scripts parsing the old array need to read `.entries` instead.
 
 ## Exit status
 

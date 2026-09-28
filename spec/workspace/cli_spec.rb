@@ -125,6 +125,63 @@ RSpec.describe Workspace::CLI do
       expect(error_output.string).to include("Unknown subcommand: bogus")
     end
 
+    it "names a leading flag as an option and shows where it belongs, using the subcommand that follows it" do
+      cli, _, error_output = build_test_cli
+      expect { cli.run(["--headless", "launch"]) }.to raise_error(FakeSystemExit) { |e|
+        expect(e.status).to eq(1)
+      }
+      expect(error_output.string).to include(
+        "Unknown option before the subcommand: --headless. Put options after the subcommand, e.g. \"workspace launch --headless\"."
+      )
+    end
+
+    it "drops the example when a leading flag has nothing after it" do
+      cli, _, error_output = build_test_cli
+      expect { cli.run(["--json"]) }.to raise_error(FakeSystemExit) { |e|
+        expect(e.status).to eq(1)
+      }
+      expect(error_output.string).to include(
+        "Unknown option before the subcommand: --json. Put options after the subcommand."
+      )
+      expect(error_output.string).not_to include("<subcommand>")
+    end
+
+    it "scans past further leading options to find the real subcommand for the example" do
+      cli, _, error_output = build_test_cli
+      expect { cli.run(["--headless", "--json", "launch"]) }.to raise_error(FakeSystemExit) { |e|
+        expect(e.status).to eq(1)
+      }
+      expect(error_output.string).to include(
+        "Unknown option before the subcommand: --headless. Put options after the subcommand, e.g. \"workspace launch --headless\"."
+      )
+    end
+
+    it "skips a leading flag's value and uses the real subcommand for the example" do
+      cli, _, error_output = build_test_cli
+      expect { cli.run(["--project", "myproj", "launch"]) }.to raise_error(FakeSystemExit) { |e|
+        expect(e.status).to eq(1)
+      }
+      expect(error_output.string).to include(
+        "Unknown option before the subcommand: --project. Put options after the subcommand, e.g. \"workspace launch --project\"."
+      )
+    end
+
+    it "drops the example when no known subcommand appears after the leading flag" do
+      cli, _, error_output = build_test_cli
+      expect { cli.run(["--state-dir", "/foo", "bogus"]) }.to raise_error(FakeSystemExit) { |e|
+        expect(e.status).to eq(1)
+      }
+      expect(error_output.string).to include(
+        "Unknown option before the subcommand: --state-dir. Put options after the subcommand."
+      )
+    end
+
+    it "still enables --debug when it appears before the subcommand" do
+      cli, _, error_output = build_test_cli
+      expect { cli.run(["--debug", "bogus"]) }.to raise_error(FakeSystemExit)
+      expect(error_output.string).to include("Unknown subcommand: bogus")
+    end
+
     it "exits 1 when a Workspace::Error is raised" do
       doctor = CLITestHelpers::FakeDoctor.new
       doctor.define_singleton_method(:run) do |headless: nil|
@@ -2480,7 +2537,7 @@ RSpec.describe Workspace::CLI do
 
         cli.run(["pipeline", "status", "myapp", "--json"])
 
-        expect(JSON.parse(output.string).first["deadline_at"]).to eq(deadline.iso8601(3))
+        expect(JSON.parse(output.string)["entries"].first["deadline_at"]).to eq(deadline.iso8601(3))
       end
 
       it "treats an unreadable state file as empty rather than dying on it" do
@@ -2493,7 +2550,7 @@ RSpec.describe Workspace::CLI do
         expect(output.string).to include("No pipeline work in flight for myapp")
       end
 
-      it "prints the entries as JSON for scripts" do
+      it "prints the entries as a JSON envelope for scripts" do
         cli, output, = build_test_cli(config: config)
         write_state("myapp",
           "WC-42" => {"work_item_ref" => "WC-42", "dispatch_id" => "d-7a1",
@@ -2501,16 +2558,29 @@ RSpec.describe Workspace::CLI do
 
         cli.run(["pipeline", "status", "myapp", "--json"])
 
-        expect(JSON.parse(output.string)).to eq([
-          {"work_item_ref" => "WC-42", "dispatch_id" => "d-7a1",
-           "pane_index" => 1, "phase" => "implementer"}
-        ])
+        expect(JSON.parse(output.string)).to eq({
+          "schema_version" => 1,
+          "entries" => [
+            {"work_item_ref" => "WC-42", "dispatch_id" => "d-7a1",
+             "pane_index" => 1, "phase" => "implementer"}
+          ]
+        })
       end
 
-      it "prints an empty JSON array when nothing is in flight" do
+      it "prints an empty entries array when nothing is in flight" do
         cli, output, = build_test_cli(config: config)
         cli.run(["pipeline", "status", "myapp", "--json"])
-        expect(JSON.parse(output.string)).to eq([])
+        expect(JSON.parse(output.string)).to eq({"schema_version" => 1, "entries" => []})
+      end
+
+      it "emits a JSON usage error when --json is passed without a project" do
+        cli, output, = build_test_cli(config: config)
+        expect { cli.run(["pipeline", "status", "--json"]) }.to raise_error(FakeSystemExit) { |e|
+          expect(e.status).to eq(1)
+        }
+        parsed = JSON.parse(output.string)
+        expect(parsed["schema_version"]).to eq(1)
+        expect(parsed["error"]).to be_a(String)
       end
     end
 

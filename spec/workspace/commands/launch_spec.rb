@@ -164,8 +164,11 @@ RSpec.describe Workspace::Commands::Launch do
         allow(tmux).to receive(:start_server)
         allow(tmux).to receive(:command_for).with("proj1", reattach: false).and_return("tmuxinator start proj1 --attach")
         allow(tmux).to receive(:session_name_for).with("proj1").and_return("proj1")
-        allow(tmux).to receive(:sessions).and_return(["proj1"])
+        # No session running yet when the pane is created; it appears once
+        # tmuxinator starts it, which is what wait_for_tmux_sessions polls for.
+        allow(tmux).to receive(:sessions).and_return([], ["proj1"])
         allow(tmux).to receive(:rename_window)
+        allow(tmux).to receive(:reattach_or_start) { |session, start| "tmux -CC attach -t #{session} || tmux has-session -t #{session} 2>/dev/null || #{start}" }
 
         allow(iterm).to receive(:session_map).and_return({})
         allow(iterm).to receive(:find_existing_sessions).and_return({})
@@ -178,7 +181,7 @@ RSpec.describe Workspace::Commands::Launch do
       it "creates new panes" do
         command.call(["proj1"])
 
-        expect(iterm).to have_received(:create_launcher_panes)
+        expect(iterm).to have_received(:create_launcher_panes).with(["proj1"], {"proj1" => "tmuxinator start proj1 --attach"}, launcher_wid: nil)
         expect(output.string).to include("Creating 1 new launcher pane(s)")
       end
 
@@ -188,6 +191,32 @@ RSpec.describe Workspace::Commands::Launch do
         state.load
         expect(state["proj1"]["unique_id"]).to eq("new-uid")
       end
+
+      it "attaches instead of restarting tmuxinator when the session is already running" do
+        allow(tmux).to receive(:sessions).and_return(["proj1"])
+
+        result = command.call(["proj1"])
+
+        expect(iterm).to have_received(:create_launcher_panes).with(["proj1"], {"proj1" => "tmux -CC attach -t proj1 || tmux has-session -t proj1 2>/dev/null || tmuxinator start proj1 --attach"}, launcher_wid: nil)
+        expect(output.string).to include("Session proj1 is already running for proj1; reusing it.")
+        expect(result[:reused]).to eq(["proj1"])
+      end
+
+      it "reports no reused sessions when the pane is freshly started" do
+        result = command.call(["proj1"])
+        expect(result[:reused]).to eq([])
+      end
+
+      it "replaces headless state with iTerm state when the project switches modes" do
+        state["proj1"] = {"headless" => true}
+        state.save
+        allow(tmux).to receive(:sessions).and_return(["proj1"])
+
+        command.call(["proj1"])
+
+        state.load
+        expect(state["proj1"]).to eq("unique_id" => "new-uid", "iterm_window_id" => 300)
+      end
     end
 
     context "when an existing session disappears during relaunch" do
@@ -196,7 +225,7 @@ RSpec.describe Workspace::Commands::Launch do
         allow(tmux).to receive(:start_server)
         allow(tmux).to receive(:command_for).and_return("tmuxinator start proj1 --attach")
         allow(tmux).to receive(:session_name_for).with("proj1").and_return("proj1")
-        allow(tmux).to receive(:sessions).and_return(["proj1"])
+        allow(tmux).to receive(:sessions).and_return([], ["proj1"])
         allow(tmux).to receive(:rename_window)
 
         state["proj1"] = {"unique_id" => "old-uid"}
@@ -262,7 +291,7 @@ RSpec.describe Workspace::Commands::Launch do
         expect(agent_readiness).to have_received(:wait).with("tmux-proj2", deadline: 60.0)
         expect(tmux).to have_received(:deliver).with("tmux-proj1", "0.1", "fix it")
         expect(tmux).to have_received(:deliver).with("tmux-proj2", "0.1", "test it")
-        expect(result).to eq(exit_code: 0, prompt_failures: {})
+        expect(result).to eq(exit_code: 0, prompt_failures: {}, reused: [])
         expect(output.string).to include("Sending prompt to proj1 (Claude Code, pane 0.1)")
         expect(error_output.string).to be_empty
       end
@@ -324,7 +353,7 @@ RSpec.describe Workspace::Commands::Launch do
       end
 
       it "does not wait for agents when there are no prompts" do
-        expect(command.call(["proj1"])).to eq(exit_code: 0, prompt_failures: {})
+        expect(command.call(["proj1"])).to eq(exit_code: 0, prompt_failures: {}, reused: [])
         expect(agent_readiness).not_to have_received(:wait)
       end
     end

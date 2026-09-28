@@ -10,6 +10,19 @@ module Workspace
   # Receives all collaborators via constructor injection and dispatches
   # subcommands via a case statement.
   class CLI
+    # Known subcommand names, matching the `case subcommand` branches in
+    # {#run}. Used to pick out the intended subcommand when a leading flag
+    # is mistaken for one (see the "Unknown option before the subcommand"
+    # hint).
+    SUBCOMMANDS = %w[
+      init doctor launch start stop add add-project kill finish relaunch
+      focus deactivate reactivate tile resize capture agent lock dev parent
+      sessions ask session-event agent-run handoff pipeline run
+      run-and-report report-run-status layout config statusline current
+      list-projects list status repair cleanup prune set-command event-log
+      whereis lookup dir alfred version help
+    ].freeze
+
     # @param config [Workspace::Config] configuration for path lookups
     # @param state [Workspace::State] state persistence
     # @param project_config [Workspace::ProjectConfig] project config management
@@ -203,9 +216,15 @@ module Workspace
       when "help", "--help", "-h", nil
         main_help
       else
-        @error_output.puts "Unknown subcommand: #{subcommand}"
-        @error_output.puts
-        main_help
+        if subcommand&.start_with?("-")
+          known = args.find { |a| SUBCOMMANDS.include?(a) }
+          hint = known ? ", e.g. \"workspace #{known} #{subcommand}\"." : "."
+          @error_output.puts "Unknown option before the subcommand: #{subcommand}. Put options after the subcommand#{hint}"
+        else
+          @error_output.puts "Unknown subcommand: #{subcommand}"
+          @error_output.puts
+          main_help
+        end
         @exit_handler.exit(1)
       end
     rescue UsageError => e
@@ -308,7 +327,8 @@ module Workspace
         opts.separator "Windows are arranged left-to-right with slight overlap."
         opts.separator ""
         opts.separator "Options:"
-        opts.on("--reattach", "Reattach to existing tmux sessions, preserving session state.") do
+        opts.on("--reattach", "Reuse a launcher pane's existing tmux session instead of relaunching",
+          "into it (see docs/README.launch.md).") do
           reattach = true
         end
         opts.on("--[no-]headless", "Start each session in the background with plain tmux: no iTerm2,",
@@ -1778,11 +1798,18 @@ module Workspace
     # everything that touches a pane goes through the agent that owns it, so a
     # manual nudge cannot get the agent's own view of the pipeline out of step.
     def cmd_pipeline(args)
-      case args.shift
-      when "start" then cmd_pipeline_start(args)
-      when "advance" then cmd_pipeline_advance(args)
-      when "status" then cmd_pipeline_status(args)
-      when "reset" then cmd_pipeline_reset(args)
+      # The subcommand is the first non-option argument, so a leading flag
+      # (e.g. `pipeline --json status`) is dispatched correctly regardless of
+      # where it appears.
+      index = args.index { |a| !a.start_with?("-") }
+      subcommand = index && args[index]
+      rest = index ? args[0...index] + args[(index + 1)..] : args
+
+      case subcommand
+      when "start" then cmd_pipeline_start(rest)
+      when "advance" then cmd_pipeline_advance(rest)
+      when "status" then cmd_pipeline_status(rest)
+      when "reset" then cmd_pipeline_reset(rest)
       when "help", nil then @output.puts pipeline_help
       else
         raise UsageError, pipeline_help
@@ -1843,18 +1870,21 @@ module Workspace
       @output.puts "Nudged #{project}/#{work_item} to advance"
     end
 
+    # `workspace pipeline status --json`'s schema version.
+    PIPELINE_JSON_SCHEMA_VERSION = 1
+
     def cmd_pipeline_status(args)
       as_json = false
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: workspace pipeline status <project>"
-        opts.on("--json", "Print the in-flight entries as JSON") { as_json = true }
+        opts.on("--json", "Print JSON (schema_version plus entries) instead of a table") { as_json = true }
       end
       parser.parse!(args)
       project = args.shift
       raise UsageError, parser.help if project.nil?
 
       entries = read_pipeline_state(project)
-      return @output.puts JSON.pretty_generate(entries.values) if as_json
+      return @output.puts JSON.generate({"schema_version" => PIPELINE_JSON_SCHEMA_VERSION, "entries" => entries.values}) if as_json
 
       if entries.empty?
         @output.puts "No pipeline work in flight for #{project}"
@@ -1866,6 +1896,9 @@ module Workspace
         deadline = format_deadline(entry["deadline_at"])
         @output.puts "#{entry["work_item_ref"]}  pane #{entry["pane_index"]}  #{entry["phase"] || "(no pipeline)"}  #{deadline}"
       end
+    rescue OptionParser::ParseError, UsageError => e
+      raise unless json_requested?(as_json, args)
+      emit_json_usage_error(PIPELINE_JSON_SCHEMA_VERSION, e.message.lines.first.strip)
     end
 
     # Renders a stage's deadline in local time plus how far off it is, so an

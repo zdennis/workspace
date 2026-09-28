@@ -39,6 +39,8 @@ module T5StartConcurrencyFakes
     def window_tool = File.join(@dir, "window-tool")
 
     def agent_running?(_name) = true
+
+    def state_dir = File.join(@dir, "state")
   end
 
   class State < Hash
@@ -63,6 +65,8 @@ module T5StartConcurrencyFakes
     def start_server = true
 
     def command_for(project, reattach:) = "tmuxinator start #{project}"
+
+    def reattach_or_start(session, start) = "tmux -CC attach -t #{session} || tmux has-session -t #{session} 2>/dev/null || #{start}"
 
     def session_name_for(project) = "sess-#{project}"
 

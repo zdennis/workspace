@@ -130,7 +130,7 @@ pipeline:
 ```sh
 workspace agent myapp                                    # the daemon (launch starts one too)
 workspace pipeline start myapp --work-item PROJ-482 --body "Research PROJ-482: …"
-workspace pipeline status myapp --json
+workspace pipeline status myapp --json                   # {"schema_version":1,"entries":[...]}
 workspace pipeline advance myapp --work-item PROJ-482    # force a stage complete
 ```
 

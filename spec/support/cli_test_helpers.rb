@@ -187,6 +187,10 @@ module CLITestHelpers
     def session_name_for(config)
       config
     end
+
+    def reattach_or_start(session, start)
+      "tmux -CC attach -t #{session} || tmux has-session -t #{session} 2>/dev/null || #{start}"
+    end
   end
 
   class FakeProjectConfig

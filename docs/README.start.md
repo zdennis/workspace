@@ -71,9 +71,10 @@ On success, one line of JSON on stdout (nothing else is written to stdout under
   or adopted
 - `headless` — whether the session was started headless (see
   [`launch`](README.launch.md#headless))
-- `session_reused` — present only when `headless` is true: whether the tmux
-  session was already running, in which case it was reused as it is instead of
-  started again. Running `start` again for the same workspace is safe this way
+- `session_reused` — present only when the workspace's tmux session was
+  already running (headless or windowed), in which case it was attached to as
+  it is instead of started again. Running `start` again for the same
+  workspace is safe this way
 - `warnings` — present only when non-empty; notes about a flag that was silently
   adjusted, e.g. `--base` ignored because the branch already existed
 
