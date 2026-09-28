@@ -1005,6 +1005,11 @@ module Workspace
         opts.on("--name NAME", "Workspace name (defaults to the detected project)") { |v| name = v }
         opts.on("--wc-socket PATH", "Path to the work-coordinator socket") { |v| wc_socket = v }
         opts.on("-f", "--force", "Kill any running agent for this workspace before starting") { force = true }
+        opts.separator ""
+        opts.separator "Examples:"
+        opts.separator "  workspace agent    # run for the project detected from the current directory"
+        opts.separator "  workspace agent --name scooter --wc-socket /tmp/wc-dev.sock    # named project, non-default coordinator"
+        opts.separator "  workspace agent --force    # replace the agent already running for this workspace"
       end
       parser.parse!(args)
 
