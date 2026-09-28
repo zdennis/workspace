@@ -7,3 +7,4 @@ bin/dev/
 .worktrees
 .workspace-project
 HANDOFF.md
+tmp
