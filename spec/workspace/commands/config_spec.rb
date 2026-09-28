@@ -155,6 +155,39 @@ RSpec.describe Workspace::Commands::Config do
       end
     end
 
+    it "accepts handoff.threshold, handoff.check_prompt, and handoff.resume_prompt" do
+      command, project_settings = build_command
+      project_dir = Dir.mktmpdir("ws-config-project")
+      name = File.basename(project_dir)
+
+      command.set("handoff.threshold", "20", cwd: project_dir)
+      command.set("handoff.check_prompt", "Save %{usage} now", cwd: project_dir)
+      command.set("handoff.resume_prompt", "Resume %{doc}", cwd: project_dir)
+
+      expect(project_settings.load(name)).to eq({"handoff" => {"threshold" => "20", "check_prompt" => "Save %{usage} now",
+                                                               "resume_prompt" => "Resume %{doc}"}})
+    end
+
+    ["0", "101", "soon"].each do |bad|
+      it "rejects handoff.threshold #{bad.inspect} without writing it" do
+        command, project_settings = build_command
+        project_dir = Dir.mktmpdir("ws-config-project")
+
+        expect { command.set("handoff.threshold", bad, cwd: project_dir) }
+          .to raise_error(Workspace::UsageError, /Invalid handoff.threshold/)
+        expect(project_settings.load(File.basename(project_dir))).to eq({})
+      end
+    end
+
+    it "rejects a blank handoff.check_prompt without writing it" do
+      command, project_settings = build_command
+      project_dir = Dir.mktmpdir("ws-config-project")
+
+      expect { command.set("handoff.check_prompt", "  ", cwd: project_dir) }
+        .to raise_error(Workspace::UsageError, /Invalid handoff.check_prompt: must not be blank/)
+      expect(project_settings.load(File.basename(project_dir))).to eq({})
+    end
+
     it "accepts locks.reap_interval as seconds or a duration" do
       command, project_settings = build_command
       project_dir = Dir.mktmpdir("ws-config-project")

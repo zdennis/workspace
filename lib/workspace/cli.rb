@@ -36,6 +36,8 @@ module Workspace
     # @param agent_command [Workspace::Commands::Agent] pre-built agent command
     # @param restart_agent_command [Workspace::Commands::RestartAgent, nil] pre-built
     #   `agent-run restart` command; optional so test builders need not wire it
+    # @param handoff_command [Workspace::Commands::Handoff, nil] pre-built
+    #   `handoff check`/`handoff new` command; optional so test builders need not wire it
     # @param logger [Workspace::Logger] debug logger
     # @param output [IO] output stream for user-facing messages
     # @param error_output [IO] error output stream for warnings and errors
@@ -46,7 +48,7 @@ module Workspace
     # @param clock [#call] returns the current Time, for relative deadline display
     # @param launch_mode [Workspace::LaunchMode, nil] decides whether launch/start
     #   run headless when no --[no-]headless flag is given; nil builds one
-    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, restart_agent_command: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil)
+    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, restart_agent_command: nil, handoff_command: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil)
       @config = config
       @state = state
       @project_config = project_config
@@ -86,6 +88,7 @@ module Workspace
       @statusline_command = statusline_command
       @ask_command = ask_command
       @restart_agent_command = restart_agent_command
+      @handoff_command = handoff_command
       @exit_handler = exit_handler
       @logger = logger
       @output = output
@@ -153,6 +156,8 @@ module Workspace
         cmd_session_event(args)
       when "agent-run"
         cmd_agent_run(args)
+      when "handoff"
+        cmd_handoff(args)
       when "pipeline"
         cmd_pipeline(args)
       when "run"
@@ -251,6 +256,7 @@ module Workspace
           event-log       Show or compact the event log (state changes and agent activity)
           finish          Verify a worktree is clean and pushed, then remove it (optionally opens a PR)
           focus           Bring a project's iTerm window to the front (not for headless projects)
+          handoff         Check context usage and hand off to a fresh conversation
           help            Show this help message
           init            Install tmuxinator templates and create config directory
           kill            Kill a worktree project and remove its worktree (auto-detects from cwd)
@@ -1551,6 +1557,129 @@ module Workspace
     rescue OptionParser::ParseError, UsageError => e
       raise unless json_requested?(json, args)
       emit_json_usage_error(Commands::RestartAgent::JSON_SCHEMA_VERSION, e.message.lines.first.strip)
+    end
+
+    def handoff_help
+      <<~HELP
+        Usage: workspace handoff check NAME [options]
+               workspace handoff new NAME (--handoff-doc PATH|--handoff-prompt TEXT) [options]
+
+        Watches a coding agent's context-window usage and hands off to a fresh
+        conversation before it fills up: `check` tells the agent to save its state
+        once usage crosses a threshold, `new` clears the conversation and resumes it
+        (the same flow as `workspace agent-run restart`).
+
+        NAME defaults to the workspace detected from the current directory.
+
+        Options (check):
+          --pane N               Pane index (default: the first Claude Code pane;
+                                  see `workspace sessions NAME` to list panes)
+          --threshold PCT        Context usage percent that triggers a handoff, 1-100
+                                  (default: handoff.threshold, or 11)
+          --context-pct N        Skip detection and use this value (0-100)
+          --handoff-doc PATH     Doc the agent updates and resumes from
+          --handoff-prompt TEXT  Prompt sent verbatim instead of a doc
+          --json                 Print the result as JSON
+
+        Options (new):
+          --pane N               Pane index (default: the first Claude Code pane;
+                                  see `workspace sessions NAME` to list panes)
+          --handoff-doc PATH     Doc the agent reads and resumes from (one of
+                                  --handoff-doc/--handoff-prompt is required)
+          --handoff-prompt TEXT  Prompt sent verbatim instead of a doc (one of
+                                  --handoff-doc/--handoff-prompt is required)
+          --json                 Print the result as JSON
+
+        Exit codes (check): 0 under the threshold, 1 at/over it (a save-state prompt
+        was sent), 2 when context usage can't be determined (nothing was sent).
+      HELP
+    end
+
+    # Dispatches `workspace handoff check|new`. Never guesses a pane or a
+    # context percentage; see {Workspace::Commands::Handoff}.
+    def cmd_handoff(args)
+      original_args = args.dup
+      subcommand = args.shift
+      case subcommand
+      when "check" then cmd_handoff_check(args)
+      when "new" then cmd_handoff_new(args)
+      else
+        raise UsageError, handoff_help
+      end
+    rescue UsageError => e
+      raise unless json_requested?(false, original_args)
+      emit_json_usage_error(Commands::Handoff::JSON_SCHEMA_VERSION, e.message.lines.first.strip)
+    end
+
+    def cmd_handoff_check(args)
+      pane = nil
+      threshold = nil
+      context_pct = nil
+      handoff_doc = nil
+      handoff_prompt = nil
+      json = false
+
+      parser = OptionParser.new do |opts|
+        opts.banner = "Usage: workspace handoff check NAME [options]"
+        opts.on("--pane N", "Pane index (default: the first Claude Code pane)") { |v| pane = v }
+        opts.on("--threshold PCT", "Context usage percent that triggers a handoff") { |v| threshold = v }
+        opts.on("--context-pct N", Integer, "Skip detection and use this value") { |v| context_pct = v }
+        opts.on("--handoff-doc PATH", "Doc the agent updates and resumes from") { |v| handoff_doc = v }
+        opts.on("--handoff-prompt TEXT", "Prompt sent verbatim instead of a doc") { |v| handoff_prompt = v }
+        opts.on("--json", "Print the result as JSON") { json = true }
+      end
+      parser.parse!(args)
+      raise UsageError, "--handoff-doc and --handoff-prompt are mutually exclusive.\n\n#{parser.help}" if handoff_doc && handoff_prompt
+      if threshold
+        begin
+          threshold = HandoffConfig.parse_threshold(threshold)
+        rescue ArgumentError => e
+          raise UsageError, "--threshold #{e.message}\n\n#{parser.help}"
+        end
+      end
+
+      name = args.shift
+      name ||= @project_detector.detect(@working_dir)
+      raise UsageError, "Missing workspace name.\n\n#{parser.help}" if name.nil?
+      raise UsageError, "Unexpected argument: #{args.first}\n\n#{parser.help}" if args.any?
+      raise Error, "workspace handoff is not available in this build" unless @handoff_command
+
+      result = @handoff_command.check(name: name, pane: pane, threshold: threshold, context_pct: context_pct,
+        handoff_doc: handoff_doc, handoff_prompt: handoff_prompt, json: json)
+      @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
+    rescue OptionParser::ParseError, UsageError, Error => e
+      raise unless json_requested?(json, args)
+      emit_json_usage_error(Commands::Handoff::JSON_SCHEMA_VERSION, e.message.lines.first.strip)
+    end
+
+    def cmd_handoff_new(args)
+      pane = nil
+      handoff_doc = nil
+      handoff_prompt = nil
+      json = false
+
+      parser = OptionParser.new do |opts|
+        opts.banner = "Usage: workspace handoff new NAME [options]"
+        opts.on("--pane N", "Pane index (default: the first Claude Code pane)") { |v| pane = v }
+        opts.on("--handoff-doc PATH", "Doc the agent reads and resumes from") { |v| handoff_doc = v }
+        opts.on("--handoff-prompt TEXT", "Prompt sent verbatim instead of a doc") { |v| handoff_prompt = v }
+        opts.on("--json", "Print the result as JSON") { json = true }
+      end
+      parser.parse!(args)
+      raise UsageError, "--handoff-doc and --handoff-prompt are mutually exclusive.\n\n#{parser.help}" if handoff_doc && handoff_prompt
+
+      name = args.shift
+      name ||= @project_detector.detect(@working_dir)
+      raise UsageError, "Missing workspace name.\n\n#{parser.help}" if name.nil?
+      raise UsageError, "Unexpected argument: #{args.first}\n\n#{parser.help}" if args.any?
+      raise UsageError, "Missing --handoff-doc or --handoff-prompt.\n\n#{parser.help}" if handoff_doc.nil? && handoff_prompt.nil?
+      raise Error, "workspace handoff is not available in this build" unless @handoff_command
+
+      result = @handoff_command.new(name: name, pane: pane, handoff_doc: handoff_doc, handoff_prompt: handoff_prompt, json: json)
+      @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
+    rescue OptionParser::ParseError, Error => e
+      raise unless json_requested?(json, args)
+      emit_json_usage_error(Commands::Handoff::JSON_SCHEMA_VERSION, e.message.lines.first.strip)
     end
 
     def cmd_agent_run_examples
