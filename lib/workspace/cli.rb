@@ -1684,6 +1684,10 @@ module Workspace
           timeout = parse_duration_option("--timeout", v, positive: true)
         end
         opts.on("--json", "Print the result as JSON; errors as {\"schema_version\":1,\"error\":...}") { json = true }
+        opts.separator ""
+        opts.separator "Examples:"
+        opts.separator "  workspace agent-run restart --name myapp --pane 0.1 --prompt \"Read HANDOFF.md and follow it.\" --wait"
+        opts.separator "  workspace agent-run restart --pane %18 --prompt \"Resume from HANDOFF.md\" --json"
       end
       parser.parse!(args)
       raise UsageError, "Unexpected argument: #{args.first}\n\n#{parser.help}" if args.any?
@@ -1874,6 +1878,18 @@ module Workspace
             "work_item_ref" => "WC-42",
             "interrupt" => true,
             "body" => "Stop. Run bundle exec rspec spec/workspace/cli_spec.rb first."
+          }
+        },
+        {
+          label: "restart — clear the coding agent in one pane and hand it a fresh prompt",
+          cli: "workspace agent-run restart --pane 0.1 --prompt \"Read HANDOFF.md and follow it.\" --wait",
+          message: {
+            "type" => "restart_agent",
+            "workspace" => name,
+            "pane" => "0.1",
+            "prompt" => "Read HANDOFF.md and follow it.",
+            "force" => false,
+            "wait" => true
           }
         }
       ]
