@@ -115,6 +115,7 @@ require_relative "workspace/commands/statusline"
 require_relative "workspace/commands/restart_agent"
 require_relative "workspace/commands/handoff"
 require_relative "workspace/commands/ask"
+require_relative "workspace/commands/wait_until_content"
 require_relative "workspace/work_coordinator_client"
 require_relative "workspace/pipeline_config"
 require_relative "workspace/pipeline_state"
@@ -183,6 +184,7 @@ module Workspace
     run_result_store = RunResultStore.new(config: config)
     run_and_report_command = Commands::RunAndReport.new(run_result_store: run_result_store)
     capture_command = Commands::Capture.new(tmux: tmux, output: output, error_output: error_output)
+    wait_until_content_command = Commands::WaitUntilContent.new(tmux: tmux, output: output, error_output: error_output)
 
     lock_namespace = LockNamespace.new(config: config, lineage: lineage)
     dev_config = DevConfig.new(project_settings: project_settings)
@@ -296,6 +298,7 @@ module Workspace
       run_result_store: run_result_store,
       run_and_report_command: run_and_report_command,
       capture_command: capture_command,
+      wait_until_content_command: wait_until_content_command,
       lock_command: lock_command,
       dev_command: dev_command,
       parent_command: parent_command,

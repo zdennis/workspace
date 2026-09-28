@@ -196,7 +196,7 @@ RSpec.describe "headless launch adversarial (CLI/UX)" do
       run_command: CLITestHelpers::FakeRunCommand.new,
       run_result_store: CLITestHelpers::FakeRunResultStore.new,
       run_and_report_command: CLITestHelpers::FakeRunAndReportCommand.new,
-      capture_command: CLITestHelpers::FakeCaptureCommand.new,
+      capture_command: CLITestHelpers::FakeCaptureCommand.new, wait_until_content_command: CLITestHelpers::FakeWaitUntilContentCommand.new,
       lock_command: CLITestHelpers::FakeLockCommand.new,
       dev_command: CLITestHelpers::FakeDevCommand.new,
       parent_command: CLITestHelpers::FakeParentCommand.new,

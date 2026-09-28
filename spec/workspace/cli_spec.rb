@@ -45,6 +45,7 @@ RSpec.describe Workspace::CLI do
     run_result_store = overrides[:run_result_store] || CLITestHelpers::FakeRunResultStore.new
     run_and_report_command = overrides[:run_and_report_command] || CLITestHelpers::FakeRunAndReportCommand.new
     capture_command = overrides[:capture_command] || CLITestHelpers::FakeCaptureCommand.new
+    wait_until_content_command = overrides[:wait_until_content_command] || CLITestHelpers::FakeWaitUntilContentCommand.new
     lock_command = overrides[:lock_command] || CLITestHelpers::FakeLockCommand.new
     dev_command = overrides[:dev_command] || CLITestHelpers::FakeDevCommand.new
     parent_command = overrides[:parent_command] || CLITestHelpers::FakeParentCommand.new
@@ -81,6 +82,7 @@ RSpec.describe Workspace::CLI do
       run_result_store: run_result_store,
       run_and_report_command: run_and_report_command,
       capture_command: capture_command,
+      wait_until_content_command: wait_until_content_command,
       lock_command: lock_command,
       dev_command: dev_command,
       parent_command: parent_command,
@@ -2325,6 +2327,141 @@ RSpec.describe Workspace::CLI do
       }
       expect(error_output.string).to include("--path and --json cannot be used together")
       expect(parent_command.calls).to be_empty
+    end
+  end
+
+  describe "#run with wait-until-content" do
+    it "exits 1 with a specific message when one positional is given but no project is detected from cwd" do
+      cli, _, error_output = build_test_cli(working_dir: Dir.tmpdir)
+      expect { cli.run(["wait-until-content", "myproject"]) }.to raise_error(FakeSystemExit) { |e|
+        expect(e.status).to eq(1)
+      }
+      expect(error_output.string).to include("no workspace project detected from the current directory")
+      expect(error_output.string).to include("pass the project name explicitly")
+      expect(error_output.string).to include("Usage: workspace wait-until-content")
+    end
+
+    it "exits 1 when no command is given (neither -- nor -e)" do
+      cli, _, error_output = build_test_cli
+      expect { cli.run(["wait-until-content", "myproject", "READY"]) }.to raise_error(FakeSystemExit) { |e|
+        expect(e.status).to eq(1)
+      }
+      expect(error_output.string).to include("a command is required")
+    end
+
+    it "exits 1 when --lines is zero" do
+      cli, _, error_output = build_test_cli
+      expect { cli.run(["wait-until-content", "myproject", "READY", "--lines", "0", "--", "irb"]) }
+        .to raise_error(FakeSystemExit) { |e|
+          expect(e.status).to eq(1)
+        }
+      expect(error_output.string).to include("--lines must be a positive integer")
+    end
+
+    it "exits 1 when --interval is zero" do
+      cli, _, error_output = build_test_cli
+      expect { cli.run(["wait-until-content", "myproject", "READY", "--interval", "0", "--", "irb"]) }
+        .to raise_error(FakeSystemExit) { |e|
+          expect(e.status).to eq(1)
+        }
+      expect(error_output.string).to include("--interval must be a positive number")
+    end
+
+    it "exits 1 when --max-wait-time is negative" do
+      cli, _, error_output = build_test_cli
+      expect { cli.run(["wait-until-content", "myproject", "READY", "--max-wait-time", "-1", "--", "irb"]) }
+        .to raise_error(FakeSystemExit) { |e|
+          expect(e.status).to eq(1)
+        }
+      expect(error_output.string).to include("--max-wait-time must be a positive number")
+    end
+
+    it "exits 1 when -e has invalid shell quoting" do
+      cli, _, error_output = build_test_cli
+      expect { cli.run(["wait-until-content", "myproject", "READY", "-e", 'unbalanced "quote']) }
+        .to raise_error(FakeSystemExit) { |e|
+          expect(e.status).to eq(1)
+        }
+      expect(error_output.string).to include("invalid shell quoting")
+    end
+
+    it "dispatches with project, content, and the command after -- as an argv array" do
+      wait_command = CLITestHelpers::FakeWaitUntilContentCommand.new
+      cli, _, _ = build_test_cli(wait_until_content_command: wait_command)
+      cli.run(["wait-until-content", "myproject", "READY", "--", "irb", "--noreadline"])
+
+      expect(wait_command.calls.size).to eq(1)
+      call = wait_command.calls.first
+      expect(call[:project]).to eq("myproject")
+      expect(call[:content]).to eq("READY")
+      expect(call[:exec_command]).to eq(["irb", "--noreadline"])
+      expect(call[:pane]).to eq(:bottom)
+      expect(call[:lines]).to eq(100)
+      expect(call[:interval]).to eq(0.5)
+      expect(call[:max_wait_time]).to be_nil
+      expect(call[:since_start]).to eq(false)
+    end
+
+    it "dispatches with -e command as a shell string" do
+      wait_command = CLITestHelpers::FakeWaitUntilContentCommand.new
+      cli, _, _ = build_test_cli(wait_until_content_command: wait_command)
+      cli.run(["wait-until-content", "myproject", "READY", "-e", "echo hi"])
+
+      expect(wait_command.calls.first[:exec_command]).to eq("echo hi")
+    end
+
+    it "gives the command after -- precedence over -e" do
+      wait_command = CLITestHelpers::FakeWaitUntilContentCommand.new
+      cli, _, _ = build_test_cli(wait_until_content_command: wait_command)
+      cli.run(["wait-until-content", "myproject", "READY", "-e", "echo hi", "--", "irb"])
+
+      expect(wait_command.calls.first[:exec_command]).to eq(["irb"])
+    end
+
+    it "passes options through to the command" do
+      wait_command = CLITestHelpers::FakeWaitUntilContentCommand.new
+      cli, _, _ = build_test_cli(wait_until_content_command: wait_command)
+      cli.run(["wait-until-content", "myproject", "READY", "--pane", "Claude Code",
+        "--lines", "200", "--interval", "1.5", "--max-wait-time", "30",
+        "--since-start", "--", "irb"])
+
+      call = wait_command.calls.first
+      expect(call[:pane]).to eq("Claude Code")
+      expect(call[:lines]).to eq(200)
+      expect(call[:interval]).to eq(1.5)
+      expect(call[:max_wait_time]).to eq(30.0)
+      expect(call[:since_start]).to eq(true)
+    end
+
+    it "auto-detects the project from cwd when only content is given" do
+      Dir.mktmpdir do |dir|
+        File.write(File.join(dir, ".workspace-project"), "detected-project")
+
+        wait_command = CLITestHelpers::FakeWaitUntilContentCommand.new
+        cli, _, _ = build_test_cli(wait_until_content_command: wait_command, working_dir: dir)
+        cli.run(["wait-until-content", "READY", "--", "irb"])
+
+        call = wait_command.calls.first
+        expect(call[:project]).to eq("detected-project")
+        expect(call[:content]).to eq("READY")
+      end
+    end
+
+    it "exits 1 when the command returns a failure status" do
+      wait_command = CLITestHelpers::FakeWaitUntilContentCommand.new
+      wait_command.next_status = 1
+      cli, _, _ = build_test_cli(wait_until_content_command: wait_command)
+
+      expect { cli.run(["wait-until-content", "myproject", "READY", "--", "irb"]) }
+        .to raise_error(FakeSystemExit) { |e|
+          expect(e.status).to eq(1)
+        }
+    end
+
+    it "shows wait-until-content in help output" do
+      cli, output, _ = build_test_cli
+      cli.run(["help"])
+      expect(output.string).to include("wait-until-content")
     end
   end
 

@@ -85,7 +85,7 @@ RSpec.describe "pipeline reliability adversarial CLI specs" do
       run_command: run_command,
       run_result_store: run_result_store,
       run_and_report_command: run_and_report_command,
-      capture_command: capture_command,
+      capture_command: capture_command, wait_until_content_command: CLITestHelpers::FakeWaitUntilContentCommand.new,
       lock_command: lock_command,
       dev_command: dev_command,
       parent_command: parent_command,

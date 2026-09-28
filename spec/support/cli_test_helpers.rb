@@ -324,6 +324,21 @@ module CLITestHelpers
     end
   end
 
+  class FakeWaitUntilContentCommand
+    attr_reader :calls
+    attr_accessor :next_status
+
+    def initialize
+      @calls = []
+      @next_status = 0
+    end
+
+    def call(project, content, **opts)
+      @calls << {project: project, content: content, **opts}
+      @next_status
+    end
+  end
+
   class FakeRunResultStore
     attr_reader :written
 

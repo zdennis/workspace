@@ -61,7 +61,7 @@ RSpec.describe "workspace ask adversarial findings" do
       resize_command: resize_command, init_command: init_command, repair_command: repair_command, cleanup_command: cleanup_command,
       prune_command: prune_command, claude_command: claude_command, lookup_command: lookup_command, update_pane_command: update_pane_command,
       run_command: run_command, run_result_store: run_result_store, run_and_report_command: run_and_report_command,
-      capture_command: capture_command, lock_command: lock_command, dev_command: dev_command, parent_command: parent_command,
+      capture_command: capture_command, wait_until_content_command: CLITestHelpers::FakeWaitUntilContentCommand.new, lock_command: lock_command, dev_command: dev_command, parent_command: parent_command,
       agent_command: agent_command, sessions_command: sessions_command, session_event_command: session_event_command,
       config_command: CLITestHelpers::FakeConfigCommand.new, statusline_command: CLITestHelpers::FakeStatuslineCommand.new,
       ask_command: ask_command, logger: logger,

@@ -511,15 +511,21 @@ module Workspace
     # @param all [Boolean] capture the full history up to history-limit (overrides lines:)
     # @return [String, nil] the captured text, or nil if tmux reported failure
     def capture_pane(session_name, pane, lines: 100, all: false)
-      target = "#{session_name}:0.#{pane}"
-      @logger.debug { "tmux: capture-pane -t #{target} (all=#{all}, lines=#{lines})" }
-      args = ["tmux", "capture-pane", "-t", target, "-p", "-S", "-"]
-      stdout, _, status = Open3.capture3(*args)
-      return nil unless status.success?
+      capture_pane_target("#{session_name}:0.#{pane}", lines: lines, all: all)
+    end
 
-      return stdout if all
-
-      stdout.lines.last(lines).join
+    # Captures the scrollback buffer of a tmux pane by its pane id, which
+    # stays with the pane for its whole life: the capture follows the pane
+    # itself across index renumbering and window moves, instead of whatever
+    # pane currently holds an index. tmux accepts a pane id (e.g. "%19")
+    # directly as a -t target.
+    #
+    # @param pane_id [String] tmux pane id (e.g. "%19")
+    # @param lines [Integer] number of lines from the bottom to capture (default 100)
+    # @param all [Boolean] capture the full history up to history-limit (overrides lines:)
+    # @return [String, nil] the captured text, or nil if tmux reported failure
+    def capture_pane_by_id(pane_id, lines: 100, all: false)
+      capture_pane_target(pane_id, lines: lines, all: all)
     end
 
     # @param session_name [String] tmux session name
@@ -621,6 +627,24 @@ module Workspace
     end
 
     private
+
+    # Runs capture-pane against any tmux target ("my-session:0.2" or a pane
+    # id like "%19"), shared by {#capture_pane} and {#capture_pane_by_id}.
+    def capture_pane_target(target, lines:, all:)
+      @logger.debug { "tmux: capture-pane -t #{target} (all=#{all}, lines=#{lines})" }
+      # A bounded window asks tmux to start N lines back instead of at the top
+      # of the history, so it doesn't ship the whole scrollback; the Ruby trim
+      # still applies because -S counts from the top of the visible pane, and
+      # the visible pane's own lines are included in the capture.
+      start = all ? "-" : "-#{lines}"
+      args = ["tmux", "capture-pane", "-t", target, "-p", "-S", start]
+      stdout, _, status = Open3.capture3(*args)
+      return nil unless status.success?
+
+      return stdout if all
+
+      stdout.lines.last(lines).join
+    end
 
     # Rewrites a `tmux_options:` value without -C/-CC, keeping any quotes
     # around the value; returns "" when nothing else was left.

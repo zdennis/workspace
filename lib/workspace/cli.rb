@@ -46,6 +46,8 @@ module Workspace
     # @param claude_command [Workspace::Commands::Claude] pre-built claude command
     # @param lookup_command [Workspace::Commands::Lookup] pre-built lookup command
     # @param update_pane_command [Workspace::Commands::UpdatePaneCommand] pre-built set-command command
+    # @param capture_command [Workspace::Commands::Capture] pre-built capture command
+    # @param wait_until_content_command [Workspace::Commands::WaitUntilContent] pre-built wait-until-content command
     # @param agent_command [Workspace::Commands::Agent] pre-built agent command
     # @param restart_agent_command [Workspace::Commands::RestartAgent, nil] pre-built
     #   `agent-run restart` command; optional so test builders need not wire it
@@ -61,7 +63,7 @@ module Workspace
     # @param clock [#call] returns the current Time, for relative deadline display
     # @param launch_mode [Workspace::LaunchMode, nil] decides whether launch/start
     #   run headless when no --[no-]headless flag is given; nil builds one
-    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, restart_agent_command: nil, handoff_command: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil)
+    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, restart_agent_command: nil, handoff_command: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil)
       @config = config
       @state = state
       @project_config = project_config
@@ -93,6 +95,7 @@ module Workspace
       @run_result_store = run_result_store
       @run_and_report_command = run_and_report_command
       @capture_command = capture_command
+      @wait_until_content_command = wait_until_content_command
       @lock_command = lock_command
       @dev_command = dev_command
       @parent_command = parent_command
@@ -153,6 +156,8 @@ module Workspace
         cmd_resize(args)
       when "capture"
         cmd_capture(args)
+      when "wait-until-content"
+        cmd_wait_until_content(args)
       when "agent"
         cmd_agent(args)
       when "lock"
@@ -302,6 +307,7 @@ module Workspace
           statusline      Render Claude Code's status line (install as its statusLine command)
           stop            Stop active workspace projects and their tmux sessions
           tile            Tile all windows for a project across the screen
+          wait-until-content  Block until a pane shows content, then exec a command
           whereis         Print the workspace installation directory
 
         Global options:
@@ -882,6 +888,106 @@ module Workspace
       pane = pane_opt || :bottom
 
       @capture_command.call(project, pane: pane, lines: lines_opt, all: all)
+    end
+
+    def cmd_wait_until_content(args)
+      # Split the command after "--" before optparse sees it: parse! permutes,
+      # so option-looking words in the command would be swallowed as options.
+      exec_args = []
+      if (sep = args.index("--"))
+        exec_args = args[(sep + 1)..] || []
+        args = args[0...sep]
+      end
+
+      pane_opt = nil
+      lines_opt = 100
+      interval_opt = 0.5
+      max_wait_time = nil
+      since_start = false
+      exec_str = nil
+
+      parser = OptionParser.new do |opts|
+        opts.banner = "Usage: workspace wait-until-content [project] \"content\" [options] [-- command...]"
+        opts.separator ""
+        opts.separator "Poll a tmux pane's scrollback until it contains CONTENT,"
+        opts.separator "then exec COMMAND in this process (it takes over the terminal:"
+        opts.separator "direct Ctrl-C, untouched STDIN/STDOUT/STDERR)."
+        opts.separator ""
+        opts.separator "Options:"
+        opts.on("--pane N", String,
+          "Target pane: zero-based index, 'window.pane' (e.g. '0.1', as shown by 'workspace sessions'), a tmux pane id (e.g. '%19', from 'workspace sessions --json'), 'bottom', or a title substring (e.g. 'Claude Code') (default: bottom)") do |n|
+          pane_opt = n
+        end
+        opts.on("--lines N", Integer,
+          "Match against the last N lines of scrollback (default: 100)") do |n|
+          lines_opt = n
+        end
+        opts.on("--interval SECONDS", Float,
+          "Seconds between polls (default: 0.5)") do |s|
+          interval_opt = s
+        end
+        opts.on("--max-wait-time SECONDS", Float,
+          "Give up after this many seconds (default: wait forever)") do |s|
+          max_wait_time = s
+        end
+        opts.on("--since-start",
+          "Only match content written after this command starts") do
+          since_start = true
+        end
+        opts.on("-e CMD", "--exec CMD", String,
+          "Shell command to exec on match (a command after -- takes precedence)") do |c|
+          exec_str = c
+        end
+      end
+      parser.parse!(args)
+
+      if lines_opt <= 0
+        raise UsageError, "--lines must be a positive integer.\n\n#{parser.help}"
+      end
+      if interval_opt <= 0
+        raise UsageError, "--interval must be a positive number.\n\n#{parser.help}"
+      end
+      if max_wait_time && max_wait_time <= 0
+        raise UsageError, "--max-wait-time must be a positive number.\n\n#{parser.help}"
+      end
+
+      if args.length == 1
+        content = args.first
+        project = @project_detector.detect(@working_dir)
+        unless project
+          raise UsageError,
+            "no workspace project detected from the current directory — pass the project name explicitly.\n\n#{parser.help}"
+        end
+      elsif args.length == 2
+        project, content = args
+      else
+        raise UsageError, parser.help
+      end
+      if content.nil? || content.empty?
+        raise UsageError, "content to match is required.\n\n#{parser.help}"
+      end
+
+      # -- args are passed straight through as an argv array (no shell
+      # re-quoting); -e/--exec stays a shell string so metacharacters work,
+      # but is validated for balanced quoting at parse time.
+      exec_command = if exec_args.any?
+        exec_args
+      elsif exec_str
+        validate_shell_quoting!(exec_str)
+        exec_str
+      end
+      if exec_command.nil? || (exec_command.respond_to?(:empty?) && exec_command.empty?)
+        raise UsageError, "a command is required — pass one after -- or use -e/--exec.\n\n#{parser.help}"
+      end
+
+      status = @wait_until_content_command.call(project, content,
+        pane: pane_opt || :bottom,
+        lines: lines_opt,
+        interval: interval_opt,
+        max_wait_time: max_wait_time,
+        since_start: since_start,
+        exec_command: exec_command)
+      @exit_handler.exit(status) unless status == 0
     end
 
     def cmd_agent(args)

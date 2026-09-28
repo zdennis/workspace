@@ -528,9 +528,9 @@ RSpec.describe Workspace::Tmux do
   describe "#capture_pane" do
     let(:tmux) { described_class.new(config: config) }
 
-    it "returns the last 100 lines by default, sliced from full history" do
+    it "bounds the capture server-side to the requested window via -S -N" do
       allow(Open3).to receive(:capture3)
-        .with("tmux", "capture-pane", "-t", "my-session:0.2", "-p", "-S", "-")
+        .with("tmux", "capture-pane", "-t", "my-session:0.2", "-p", "-S", "-100")
         .and_return(["line1\nline2\nlog output\n", "", double(success?: true)])
 
       expect(tmux.capture_pane("my-session", 2)).to eq("line1\nline2\nlog output\n")
@@ -544,9 +544,9 @@ RSpec.describe Workspace::Tmux do
       expect(tmux.capture_pane("my-session", 0, all: true)).to eq("full history\n")
     end
 
-    it "slices to a custom lines count from the tail" do
+    it "still trims to a custom lines count from the tail in Ruby" do
       allow(Open3).to receive(:capture3)
-        .with("tmux", "capture-pane", "-t", "my-session:0.1", "-p", "-S", "-")
+        .with("tmux", "capture-pane", "-t", "my-session:0.1", "-p", "-S", "-2")
         .and_return(["old\nrecent1\nrecent2\n", "", double(success?: true)])
 
       expect(tmux.capture_pane("my-session", 1, lines: 2)).to eq("recent1\nrecent2\n")
@@ -578,10 +578,44 @@ RSpec.describe Workspace::Tmux do
 
     it "returns empty string when buffer is empty (valid)" do
       allow(Open3).to receive(:capture3)
-        .with("tmux", "capture-pane", "-t", "my-session:0.0", "-p", "-S", "-")
+        .with("tmux", "capture-pane", "-t", "my-session:0.0", "-p", "-S", "-100")
         .and_return(["", "", double(success?: true)])
 
       expect(tmux.capture_pane("my-session", 0)).to eq("")
+    end
+  end
+
+  describe "#capture_pane_by_id" do
+    let(:tmux) { described_class.new(config: config) }
+
+    it "captures by pane id, bounding the window via -S -N" do
+      allow(Open3).to receive(:capture3)
+        .with("tmux", "capture-pane", "-t", "%19", "-p", "-S", "-100")
+        .and_return(["line1\nline2\nlog output\n", "", double(success?: true)])
+
+      expect(tmux.capture_pane_by_id("%19")).to eq("line1\nline2\nlog output\n")
+    end
+
+    it "captures full history via -S -" do
+      allow(Open3).to receive(:capture3)
+        .with("tmux", "capture-pane", "-t", "%19", "-p", "-S", "-")
+        .and_return(["full history\n", "", double(success?: true)])
+
+      expect(tmux.capture_pane_by_id("%19", all: true)).to eq("full history\n")
+    end
+
+    it "trims to a custom lines count from the tail in Ruby" do
+      allow(Open3).to receive(:capture3)
+        .with("tmux", "capture-pane", "-t", "%19", "-p", "-S", "-2")
+        .and_return(["old\nrecent1\nrecent2\n", "", double(success?: true)])
+
+      expect(tmux.capture_pane_by_id("%19", lines: 2)).to eq("recent1\nrecent2\n")
+    end
+
+    it "returns nil on failure" do
+      allow(Open3).to receive(:capture3).and_return(["", "error", double(success?: false)])
+
+      expect(tmux.capture_pane_by_id("%99")).to be_nil
     end
   end
 

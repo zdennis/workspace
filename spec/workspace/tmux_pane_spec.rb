@@ -75,6 +75,46 @@ RSpec.describe Workspace::TmuxPane do
     end
   end
 
+  describe "#resolve_id" do
+    it "resolves an index spec to the pane's tmux pane id" do
+      allow(tmux).to receive(:panes).with(session_name, window: "0").and_return([0, 1])
+      allow(tmux).to receive(:pane_details).with(session_name, window: "0").and_return([
+        {id: "%1", window: 0, index: 0},
+        {id: "%19", window: 0, index: 1}
+      ])
+      expect(described_class.new(1, tmux: tmux).resolve_id(session_name)).to eq("%19")
+    end
+
+    it "resolves bottom to the last pane's id" do
+      allow(tmux).to receive(:panes).with(session_name, window: "0").and_return([0, 1, 2])
+      allow(tmux).to receive(:pane_details).with(session_name, window: "0").and_return([
+        {id: "%1", window: 0, index: 1},
+        {id: "%19", window: 0, index: 2}
+      ])
+      expect(described_class.new(nil, tmux: tmux).resolve_id(session_name)).to eq("%19")
+    end
+
+    it "resolves a window.pane spec against the named window" do
+      allow(tmux).to receive(:panes).with(session_name, window: "3").and_return([0, 1])
+      allow(tmux).to receive(:pane_details).with(session_name, window: "3").and_return([
+        {id: "%1", window: 3, index: 0},
+        {id: "%19", window: 3, index: 1}
+      ])
+      expect(described_class.new("3.1", tmux: tmux).resolve_id(session_name)).to eq("%19")
+    end
+
+    it "returns a pane-id spec unchanged" do
+      expect(described_class.new("%19", tmux: tmux).resolve_id(session_name)).to eq("%19")
+    end
+
+    it "raises when the resolved pane has no detail entry" do
+      allow(tmux).to receive(:panes).with(session_name, window: "0").and_return([0, 1])
+      allow(tmux).to receive(:pane_details).with(session_name, window: "0").and_return([])
+      expect { described_class.new(1, tmux: tmux).resolve_id(session_name) }
+        .to raise_error(Workspace::Error, /No pane with index 1 in window 0/)
+    end
+  end
+
   describe "#target" do
     it "returns window.pane using the default window" do
       allow(tmux).to receive(:panes).with(session_name, window: "0").and_return([0, 1])

@@ -13,7 +13,7 @@ workspace report-run-status <uuid> <exit_code>
 This subcommand is not intended for direct use. It is called automatically by the shell wrapper that `workspace run --wait` injects into the tmux pane:
 
 ```sh
-(<command>) > '~/.workspace-runs/<uuid>.stdout' 2>'~/.workspace-runs/<uuid>.stderr'
+bash '~/.workspace-runs/<uuid>.cmd' > '~/.workspace-runs/<uuid>.stdout' 2>'~/.workspace-runs/<uuid>.stderr'
 workspace report-run-status <uuid> $?
 ```
 

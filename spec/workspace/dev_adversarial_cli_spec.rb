@@ -138,7 +138,7 @@ RSpec.describe "PR2 adversarial findings" do
         resize_command: placeholder, init_command: placeholder, repair_command: placeholder,
         cleanup_command: placeholder, prune_command: placeholder, claude_command: placeholder,
         lookup_command: placeholder, update_pane_command: placeholder, run_command: placeholder,
-        run_result_store: placeholder, run_and_report_command: placeholder, capture_command: placeholder,
+        run_result_store: placeholder, run_and_report_command: placeholder, capture_command: placeholder, wait_until_content_command: placeholder,
         lock_command: placeholder, dev_command: placeholder, parent_command: placeholder,
         agent_command: placeholder, sessions_command: placeholder, session_event_command: placeholder,
         config_command: config_command, statusline_command: CLITestHelpers::FakeStatuslineCommand.new,

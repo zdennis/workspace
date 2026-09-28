@@ -60,6 +60,28 @@ module Workspace
       end
     end
 
+    # Resolves the spec to the pane's tmux pane id (e.g. "%19"), the stable
+    # identifier that stays with a pane for its whole life even as indices
+    # are renumbered by splits and closes. A pane-id spec resolves to itself,
+    # with no further lookup.
+    #
+    # @param session_name [String] tmux session name
+    # @param window [String] window index (default "0")
+    # @return [String] tmux pane id (e.g. "%19")
+    # @raise [Workspace::Error] if pane cannot be found or is out of range
+    def resolve_id(session_name, window: "0")
+      window, spec = split_window_pane(window)
+      return spec if spec.is_a?(String) && spec.match?(PANE_ID)
+
+      index = resolve(session_name, window: window)
+      detail = @tmux.pane_details(session_name, window: window).find { |d| d[:index] == index }
+      unless detail
+        raise Workspace::Error,
+          "No pane with index #{index} in window #{window} of session '#{session_name}'"
+      end
+      detail[:id]
+    end
+
     # Returns a qualified tmux pane target string (e.g. "0.1").
     #
     # @param session_name [String] tmux session name
