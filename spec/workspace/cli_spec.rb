@@ -825,6 +825,31 @@ RSpec.describe Workspace::CLI do
       expect { cli.run(["handoff", "check", "myapp"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(2) }
     end
 
+    it "rejects a non-numeric --threshold with the custom range message" do
+      cli, _, error_output = build_test_cli(handoff_command: handoff_command)
+
+      expect { cli.run(["handoff", "check", "myapp", "--threshold", "bogus"]) }.to raise_error(FakeSystemExit)
+      expect(error_output.string).to include("--threshold must be an integer between 1 and 100")
+      expect(handoff_command).not_to have_received(:check)
+    end
+
+    it "rejects an out-of-range --threshold with the custom range message" do
+      cli, _, error_output = build_test_cli(handoff_command: handoff_command)
+
+      expect { cli.run(["handoff", "check", "myapp", "--threshold", "150"]) }.to raise_error(FakeSystemExit)
+      expect(error_output.string).to include("--threshold must be an integer between 1 and 100")
+      expect(handoff_command).not_to have_received(:check)
+    end
+
+    it "reports a Workspace::Error from handoff check as a JSON error with --json" do
+      allow(handoff_command).to receive(:check).and_raise(Workspace::Error, "no agent daemon for 'myapp'")
+      cli, output = build_test_cli(handoff_command: handoff_command)
+
+      expect { cli.run(["handoff", "check", "myapp", "--json"]) }
+        .to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+      expect(JSON.parse(output.string)).to eq("schema_version" => 1, "error" => "no agent daemon for 'myapp'")
+    end
+
     it "rejects both --handoff-doc and --handoff-prompt together" do
       cli, _, error_output = build_test_cli(handoff_command: handoff_command)
 

@@ -1533,7 +1533,8 @@ module Workspace
 
     def handoff_help
       <<~HELP
-        Usage: workspace handoff <check|new> [NAME] [options]
+        Usage: workspace handoff check NAME [options]
+               workspace handoff new NAME (--handoff-doc PATH|--handoff-prompt TEXT) [options]
 
         Watches a coding agent's context-window usage and hands off to a fresh
         conversation before it fills up: `check` tells the agent to save its state
@@ -1543,21 +1544,23 @@ module Workspace
         NAME defaults to the workspace detected from the current directory.
 
         Options (check):
-          --pane N              Pane index (default: the first Claude Code pane;
-                                 see `workspace sessions NAME` to list panes)
+          --pane N               Pane index (default: the first Claude Code pane;
+                                  see `workspace sessions NAME` to list panes)
           --threshold PCT        Context usage percent that triggers a handoff, 1-100
-                                 (default: handoff.threshold, or 11)
-          --context-pct N       Skip detection and use this value (0-100)
-          --handoff-doc PATH    Doc the agent updates and resumes from
-          --handoff-prompt TEXT Prompt sent verbatim instead of a doc
-          --json                Print the result as JSON
+                                  (default: handoff.threshold, or 11)
+          --context-pct N        Skip detection and use this value (0-100)
+          --handoff-doc PATH     Doc the agent updates and resumes from
+          --handoff-prompt TEXT  Prompt sent verbatim instead of a doc
+          --json                 Print the result as JSON
 
         Options (new):
-          --pane N              Pane index (default: the first Claude Code pane;
-                                 see `workspace sessions NAME` to list panes)
-          --handoff-doc PATH    Doc the agent reads and resumes from
-          --handoff-prompt TEXT Prompt sent verbatim instead of a doc
-          --json                Print the result as JSON
+          --pane N               Pane index (default: the first Claude Code pane;
+                                  see `workspace sessions NAME` to list panes)
+          --handoff-doc PATH     Doc the agent reads and resumes from (one of
+                                  --handoff-doc/--handoff-prompt is required)
+          --handoff-prompt TEXT  Prompt sent verbatim instead of a doc (one of
+                                  --handoff-doc/--handoff-prompt is required)
+          --json                 Print the result as JSON
 
         Exit codes (check): 0 under the threshold, 1 at/over it (a save-state prompt
         was sent), 2 when context usage can't be determined (nothing was sent).
@@ -1591,7 +1594,7 @@ module Workspace
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: workspace handoff check NAME [options]"
         opts.on("--pane N", "Pane index (default: the first Claude Code pane)") { |v| pane = v }
-        opts.on("--threshold PCT", Integer, "Context usage percent that triggers a handoff") { |v| threshold = v }
+        opts.on("--threshold PCT", "Context usage percent that triggers a handoff") { |v| threshold = v }
         opts.on("--context-pct N", Integer, "Skip detection and use this value") { |v| context_pct = v }
         opts.on("--handoff-doc PATH", "Doc the agent updates and resumes from") { |v| handoff_doc = v }
         opts.on("--handoff-prompt TEXT", "Prompt sent verbatim instead of a doc") { |v| handoff_prompt = v }
@@ -1616,7 +1619,7 @@ module Workspace
       result = @handoff_command.check(name: name, pane: pane, threshold: threshold, context_pct: context_pct,
         handoff_doc: handoff_doc, handoff_prompt: handoff_prompt, json: json)
       @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
-    rescue OptionParser::ParseError, UsageError => e
+    rescue OptionParser::ParseError, UsageError, Error => e
       raise unless json_requested?(json, args)
       emit_json_usage_error(Commands::Handoff::JSON_SCHEMA_VERSION, e.message.lines.first.strip)
     end
