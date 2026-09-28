@@ -558,6 +558,26 @@ module Workspace
       "could not run tmuxinator (#{e.message})"
     end
 
+    # @param config_name [String] tmuxinator config name (without .yml)
+    # @return [String, nil] the -L/-S flag if the project's tmux_options
+    #   selects a custom tmux socket, else nil. Every Tmux call here (this
+    #   method included) talks to the default socket, so a session started
+    #   on another one would never be seen; headless launch refuses these
+    #   configs rather than silently missing the session.
+    def custom_socket_option(config_name)
+      source = @config.config_path_for(config_name)
+      return nil unless File.exist?(source)
+      File.foreach(source) do |line|
+        next unless line.match?(/^tmux_options:/)
+        value = line.split(":", 2).last.to_s.strip
+        quoted = value.match(/\A(["'])(.*)\1\z/)
+        options = (quoted ? quoted[2] : value).split
+        flag = options.find { |option| option.match?(/\A-[LS]/) }
+        return flag[0, 2] if flag
+      end
+      nil
+    end
+
     # @param config_name [String] tmuxinator config file name (without .yml)
     # @return [String] the tmux session name from the config file
     def session_name_for(config_name)

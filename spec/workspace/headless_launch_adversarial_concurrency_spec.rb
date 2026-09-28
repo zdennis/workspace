@@ -16,6 +16,8 @@ class HeadlessRaceTmux
 
   def start_server = nil
 
+  def custom_socket_option(_project) = nil
+
   def rename_window(*) = nil
 
   def session_name_for(project) = "tmux-#{project}"
@@ -138,7 +140,7 @@ RSpec.describe "headless launch: concurrency and liveness (adversarial)" do
   end
 
   it "HC4: a session that never appears after tmuxinator succeeded is a failure, not a successful launch" do
-    tmux = double("tmux", start_server: nil, rename_window: nil, sessions: [], start_headless: nil)
+    tmux = double("tmux", start_server: nil, rename_window: nil, sessions: [], start_headless: nil, custom_socket_option: nil)
     allow(tmux).to receive(:session_name_for) { |project| "tmux-#{project}" }
     launch = new_launch(tmux: tmux)
 

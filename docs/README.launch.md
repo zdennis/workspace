@@ -46,7 +46,9 @@ Without a flag, `launch` decides like this, and the first rule that applies wins
 
 A headless project whose tmux session is already running is reused as it is, not started again. Two headless launches of one project at once start it only once; the second reuses the session the first started. `launch` prints `Attach with: tmux attach -t <session>` for each project. `--reattach` has no effect headless.
 
-The project is recorded as headless in the state file (`"headless": true`; a reused session that was launched in iTerm2 loses its window ids), so `stop`, `kill`, `finish`, `list`, `status`, `cleanup` and `relaunch` work as usual, and `sessions`, `agent`, `pipeline`, `run`, `capture`, `resize` and `layout` target its tmux panes the same way. `relaunch` brings headless projects back headless. `focus` and `tile` have no window to act on, so they exit 1 with a message naming the tmux session to attach to.
+The project is recorded as headless in the state file (`"headless": true`; a reused session that was launched in iTerm2 loses its window ids, and its old launcher window is closed), so `stop`, `kill`, `finish`, `list`, `status`, `cleanup` and `relaunch` work as usual, and `sessions`, `agent`, `pipeline`, `run`, `capture`, `resize` and `layout` target its tmux panes the same way. `relaunch` brings headless projects back headless. `focus` and `tile` have no window to act on, so they exit 1 with a message naming the tmux session to attach to.
+
+`--headless` refuses a project whose `tmux_options` selects a custom tmux socket (`-L`/`-S`), with `Error: headless launch doesn't support custom tmux sockets (-L/-S in tmux_options) for <project>`, before running tmuxinator: every tmux call `launch` makes headless uses the default socket, so it would never see a session started on another one and would rerun tmuxinator into it. Windowed `launch` is unaffected.
 
 `--prompt` works the same headless: the same readiness wait, paste and read-back.
 

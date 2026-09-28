@@ -14,7 +14,7 @@ RSpec.describe Workspace::Commands::Launch, "headless" do
   let(:iterm) { double("iterm") }
   let(:window_manager) { double("window_manager") }
   let(:window_layout) { double("window_layout") }
-  let(:tmux) { double("tmux", start_server: nil, rename_window: nil) }
+  let(:tmux) { double("tmux", start_server: nil, rename_window: nil, custom_socket_option: nil) }
   let(:project_config) { double("project_config", exists?: true) }
   let(:pipeline_config) { double("pipeline_config", stages_for: nil, literal_sentinel_warnings: []) }
   let(:agent_readiness) { instance_double(Workspace::AgentReadiness, deadline_in: 60.0) }
@@ -59,15 +59,68 @@ RSpec.describe Workspace::Commands::Launch, "headless" do
     expect(output.string).to include("Session tmux-proj1 is already running for proj1; reusing it.")
   end
 
-  it "marks a reused session that was launched in iTerm2 headless, dropping its window ids" do
+  it "marks a reused session that was launched in iTerm2 headless, dropping its window ids and closing the old launcher window" do
     state["proj1"] = {"unique_id" => "uid-1", "iterm_window_id" => 7, "other" => "kept"}
     state.save
     allow(tmux).to receive(:sessions).and_return(["tmux-proj1"])
+    allow(iterm).to receive(:find_existing_sessions).and_return({"proj1" => "uid-1"})
+    allow(iterm).to receive(:session_map).and_return({"uid-1" => 7})
+    allow(window_manager).to receive(:close_window).with(7).and_return(true)
 
     command.call(["proj1"], headless: true)
 
+    expect(window_manager).to have_received(:close_window).with(7)
     state.load
     expect(state["proj1"]).to eq("other" => "kept", "headless" => true)
+  end
+
+  it "does not touch iTerm2 when the reused project never had a launcher pane" do
+    # iterm/window_manager are bare doubles with nothing stubbed, so any call
+    # to them fails this example.
+    allow(tmux).to receive(:sessions).and_return(["tmux-proj1"])
+
+    result = command.call(["proj1"], headless: true)
+
+    expect(result[:exit_code]).to eq(0)
+  end
+
+  it "warns but continues when the old launcher window can't be closed" do
+    state["proj1"] = {"unique_id" => "uid-1", "iterm_window_id" => 7}
+    state.save
+    allow(tmux).to receive(:sessions).and_return(["tmux-proj1"])
+    allow(iterm).to receive(:find_existing_sessions).and_return({"proj1" => "uid-1"})
+    allow(iterm).to receive(:session_map).and_return({"uid-1" => 7})
+    allow(window_manager).to receive(:close_window).with(7).and_return(false)
+
+    result = command.call(["proj1"], headless: true)
+
+    expect(result[:exit_code]).to eq(0)
+    expect(error_output.string).to include("Warning: could not close launcher window 7")
+    state.load
+    expect(state["proj1"]).to eq("headless" => true)
+  end
+
+  it "leaves the launcher window open when another project in it isn't going headless in this run" do
+    state["proj1"] = {"unique_id" => "uid-1", "iterm_window_id" => 7}
+    state["proj2"] = {"unique_id" => "uid-2", "iterm_window_id" => 7}
+    state.save
+    allow(tmux).to receive(:sessions).and_return(["tmux-proj1"])
+    allow(iterm).to receive(:find_existing_sessions).and_return({"proj1" => "uid-1"})
+    allow(iterm).to receive(:session_map).and_return({"uid-1" => 7, "uid-2" => 7})
+    allow(window_manager).to receive(:close_window)
+
+    command.call(["proj1"], headless: true)
+
+    expect(window_manager).not_to have_received(:close_window)
+  end
+
+  it "refuses a project whose tmux_options selects a custom tmux socket" do
+    allow(tmux).to receive(:sessions)
+    allow(tmux).to receive(:custom_socket_option).with("proj1").and_return("-L")
+
+    expect { command.call(["proj1"], headless: true) }
+      .to raise_error(Workspace::Error, "headless launch doesn't support custom tmux sockets (-L in tmux_options) for proj1")
+    expect(tmux).not_to have_received(:sessions)
   end
 
   it "starts a project only once when another launch started it while this one waited for the lock" do

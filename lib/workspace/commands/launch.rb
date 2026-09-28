@@ -117,6 +117,7 @@ module Workspace
       # records each project whose session is up as headless, so stop, kill,
       # list and status find it, and focus/tile know it has no window.
       def call_headless(projects, prompts:, prompt_timeout:)
+        validate_headless_sockets(projects)
         @tmux.start_server
         @state.load
         running = @tmux.sessions
@@ -140,6 +141,7 @@ module Workspace
         session_names = session_names.except(*not_found)
         reused -= not_found
 
+        close_headless_launcher_windows(session_names.keys)
         session_names.each_key { |project| record_headless(project) }
         @state.save
         start_session_monitors(session_names.keys)
@@ -185,6 +187,52 @@ module Workspace
           f.flock(File::LOCK_EX)
           yield
         end
+      end
+
+      # Refuses to launch any project headless whose tmuxinator config selects
+      # a custom tmux socket (-L/-S in tmux_options): every Tmux call this
+      # class makes uses the default socket, so it would never see a session
+      # started on another one and would rerun tmuxinator into it.
+      def validate_headless_sockets(projects)
+        projects.each do |project|
+          option = @tmux.custom_socket_option(project)
+          next unless option
+          raise Workspace::Error, "headless launch doesn't support custom tmux sockets (#{option} in tmux_options) for #{project}"
+        end
+      end
+
+      # Closes the iTerm2 launcher window for any of +projects+ (about to be
+      # marked headless) that still has one from an earlier windowed launch,
+      # so it isn't left orphaned. Mirrors Stop#find_launcher_windows_to_close:
+      # a window is only closed once every project tracked in it is going
+      # headless in this same batch. A missing osascript or AppleScript error
+      # is a warning, not a failure -- the tmux session already started, and
+      # this never touches it.
+      def close_headless_launcher_windows(projects)
+        return unless projects.any? { |p| @state[p].is_a?(Hash) && @state[p]["unique_id"] }
+
+        existing = @iterm.find_existing_sessions(@state)
+        launcher_uids = projects.filter_map { |p| existing[p] }
+        return if launcher_uids.empty?
+
+        live_sessions = @iterm.session_map
+        candidate_window_ids = launcher_uids.filter_map { |uid| live_sessions[uid] }.uniq
+        candidate_window_ids.each do |wid|
+          sessions_in_window = live_sessions.select { |_, w| w == wid }.keys
+          tracked_project_names = []
+          @state.each do |proj, info|
+            tracked_project_names << proj if info.is_a?(Hash) && sessions_in_window.include?(info["unique_id"])
+          end
+          next unless (tracked_project_names - projects).empty?
+          close_launcher_window(wid)
+        end
+      end
+
+      def close_launcher_window(window_id)
+        ok = @window_manager.close_window(window_id)
+        @error_output.puts "Warning: could not close launcher window #{window_id}" unless ok
+      rescue => e
+        @error_output.puts "Warning: could not close launcher window #{window_id} (#{e.message})"
       end
 
       # Marks the project headless. An entry left by an earlier iTerm2 launch

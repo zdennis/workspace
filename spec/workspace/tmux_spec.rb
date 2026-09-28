@@ -828,4 +828,41 @@ RSpec.describe Workspace::Tmux do
       expect { Process.kill(0, pid) }.to raise_error(Errno::ESRCH)
     end
   end
+
+  describe "#custom_socket_option" do
+    let(:tmux) { described_class.new(config: config) }
+    let(:source) { File.join(tmpdir, "workspace.proj.yml") }
+
+    before { allow(config).to receive(:config_path_for).with("proj").and_return(source) }
+
+    it "returns nil when tmux_options has no -L/-S" do
+      File.write(source, "name: proj\ntmux_options: -CC -2\nwindows: []\n")
+
+      expect(tmux.custom_socket_option("proj")).to be_nil
+    end
+
+    it "detects an unquoted -L socket name" do
+      File.write(source, "name: proj\ntmux_options: -CC -L mysocket\nwindows: []\n")
+
+      expect(tmux.custom_socket_option("proj")).to eq("-L")
+    end
+
+    it "detects a -S socket path inside a quoted tmux_options value" do
+      File.write(source, "name: proj\ntmux_options: \"-CC -S /tmp/my.sock\"\nwindows: []\n")
+
+      expect(tmux.custom_socket_option("proj")).to eq("-S")
+    end
+
+    it "returns nil when the config has no tmux_options line" do
+      File.write(source, "name: proj\nwindows: []\n")
+
+      expect(tmux.custom_socket_option("proj")).to be_nil
+    end
+
+    it "returns nil when the config doesn't exist" do
+      allow(config).to receive(:config_path_for).with("missing-project").and_return(File.join(tmpdir, "nope.yml"))
+
+      expect(tmux.custom_socket_option("missing-project")).to be_nil
+    end
+  end
 end

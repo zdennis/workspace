@@ -128,6 +128,7 @@ module CLITestHelpers
     def sessions = []
     def start_server = nil
     def kill_session(_name) = nil
+    def custom_socket_option(_config_name) = nil
     def rename_window(_session, _index, _name) = nil
     def resize_pane(_session, _pane, _size) = true
     def capture_layout(_session, **_opts) = "layout-string"
