@@ -57,7 +57,15 @@ module Workspace
       #   "over threshold" with a plain exit-code check.
       def check(name:, pane: nil, threshold: nil, context_pct: nil, handoff_doc: nil, handoff_prompt: nil, json: false)
         defaults = @handoff_config.for_workspace(name)
-        threshold ||= defaults[:threshold]
+        if threshold
+          begin
+            threshold = Workspace::HandoffConfig.parse_threshold(threshold)
+          rescue ArgumentError => e
+            raise Workspace::UsageError, "--threshold #{e.message}"
+          end
+        else
+          threshold = defaults[:threshold]
+        end
 
         snapshot, error = fetch_sessions(name)
         return undetermined(json, error) if error
@@ -79,7 +87,11 @@ module Workspace
 
         body = check_body(name: name, pane_index: pane_info["index"], pct: pct, threshold: threshold,
           handoff_doc: handoff_doc, handoff_prompt: handoff_prompt, defaults: defaults)
-        delivery = @tmux.deliver(@tmux.session_name_for(name), "0.#{pane_info["index"]}", body)
+        delivery = begin
+          @tmux.deliver(@tmux.session_name_for(name), "0.#{pane_info["index"]}", body)
+        rescue Workspace::Error, SystemCallError => e
+          Workspace::Tmux::Delivery.new(status: :failed, message: e.message)
+        end
         over_threshold(json, pct: pct, threshold: threshold, pane: pane_info, delivery: delivery)
       end
 
@@ -101,7 +113,7 @@ module Workspace
 
         defaults = @handoff_config.for_workspace(name)
         template = defaults[:resume_prompt] || DEFAULT_RESUME_PROMPT
-        prompt = handoff_prompt || format(template, doc: handoff_doc)
+        prompt = handoff_prompt || safe_format(template, DEFAULT_RESUME_PROMPT, doc: handoff_doc)
         @restart_agent_command.call(name: name, pane: pane, prompt: prompt, json: json)
       end
 
@@ -159,7 +171,7 @@ module Workspace
       # built-in template rather than guessing at the intended text.
       def safe_format(template, fallback, **placeholders)
         format(template, **placeholders)
-      rescue KeyError, ArgumentError => e
+      rescue KeyError, ArgumentError, TypeError => e
         @error_output.puts "Warning: invalid prompt template (#{e.message}); using the built-in default."
         format(fallback, **placeholders)
       end
@@ -171,10 +183,12 @@ module Workspace
           reply = socket.gets
           return [nil, "no reply from the agent daemon for '#{name}'"] unless reply
           begin
-            JSON.parse(reply)
+            parsed = JSON.parse(reply)
           rescue JSON::ParserError
             return [nil, "malformed reply from the agent daemon for '#{name}'"]
           end
+          return [nil, "malformed reply from the agent daemon for '#{name}'"] unless parsed.is_a?(Hash)
+          parsed
         end
         [snapshot, nil]
       rescue SystemCallError, IOError

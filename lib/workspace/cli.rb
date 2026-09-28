@@ -1545,7 +1545,7 @@ module Workspace
         Options (check):
           --pane N              Pane index (default: the first Claude Code pane;
                                  see `workspace sessions NAME` to list panes)
-          --threshold PCT        Context usage percent that triggers a handoff
+          --threshold PCT        Context usage percent that triggers a handoff, 1-100
                                  (default: handoff.threshold, or 11)
           --context-pct N       Skip detection and use this value (0-100)
           --handoff-doc PATH    Doc the agent updates and resumes from
@@ -1567,6 +1567,7 @@ module Workspace
     # Dispatches `workspace handoff check|new`. Never guesses a pane or a
     # context percentage; see {Workspace::Commands::Handoff}.
     def cmd_handoff(args)
+      original_args = args.dup
       subcommand = args.shift
       case subcommand
       when "check" then cmd_handoff_check(args)
@@ -1574,6 +1575,9 @@ module Workspace
       else
         raise UsageError, handoff_help
       end
+    rescue UsageError => e
+      raise unless json_requested?(false, original_args)
+      emit_json_usage_error(Commands::Handoff::JSON_SCHEMA_VERSION, e.message.lines.first.strip)
     end
 
     def cmd_handoff_check(args)
@@ -1595,6 +1599,13 @@ module Workspace
       end
       parser.parse!(args)
       raise UsageError, "--handoff-doc and --handoff-prompt are mutually exclusive.\n\n#{parser.help}" if handoff_doc && handoff_prompt
+      if threshold
+        begin
+          threshold = HandoffConfig.parse_threshold(threshold)
+        rescue ArgumentError => e
+          raise UsageError, "--threshold #{e.message}\n\n#{parser.help}"
+        end
+      end
 
       name = args.shift
       name ||= @project_detector.detect(@working_dir)

@@ -18,7 +18,7 @@ workspace handoff new   NAME [--pane N] (--handoff-doc PATH | --handoff-prompt T
 | Option | Description |
 |--------|-------------|
 | `--pane N` | Pane index (default: the daemon's first Claude Code pane) |
-| `--threshold PCT` | Context-usage percent that triggers a handoff (default: `handoff.threshold`, or 11) |
+| `--threshold PCT` | Context-usage percent that triggers a handoff, 1-100 (default: `handoff.threshold`, or 11) |
 | `--context-pct N` | Skip detection and use this value |
 | `--handoff-doc PATH` | Doc the agent updates and resumes from |
 | `--handoff-prompt TEXT` | Prompt sent verbatim instead of a doc |
