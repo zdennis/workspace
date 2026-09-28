@@ -48,16 +48,16 @@ RSpec.describe Workspace::Commands::Lock, "recording lock waits in the event log
   end
 
   it "records nothing for an uncontended acquire" do
-    command_for(holder_identity).acquire("edit")
+    command_for(holder_identity).acquire("edit", working_dir: tmpdir)
 
     expect(logged).to be_empty
   end
 
   it "records the wait's start and how long it took to acquire" do
-    command_for(holder_identity).acquire("edit", task: "PROJ-1")
-    on_sleep << -> { command_for(holder_identity).release("edit") }
+    command_for(holder_identity).acquire("edit", task: "PROJ-1", working_dir: tmpdir)
+    on_sleep << -> { command_for(holder_identity).release("edit", working_dir: tmpdir) }
 
-    result = command_for(waiter_identity).acquire("edit", task: "PROJ-2", wait: true, poll: 0.25)
+    result = command_for(waiter_identity).acquire("edit", task: "PROJ-2", wait: true, poll: 0.25, working_dir: tmpdir)
 
     expect(result).to eq(exit_code: 0)
     expect(logged.map { |project, type, _| [project, type] }).to eq([["app", "lock_wait_started"], ["app", "lock_acquired"]])
@@ -67,41 +67,41 @@ RSpec.describe Workspace::Commands::Lock, "recording lock waits in the event log
   end
 
   it "records giving up after --max-wait" do
-    command_for(holder_identity).acquire("edit")
+    command_for(holder_identity).acquire("edit", working_dir: tmpdir)
 
-    result = command_for(waiter_identity).acquire("edit", wait: true, poll: 0.25, max_wait: 9)
+    result = command_for(waiter_identity).acquire("edit", wait: true, poll: 0.25, max_wait: 9, working_dir: tmpdir)
 
     expect(result).to eq(exit_code: 75)
     expect(logged.last[1..]).to eq(["lock_wait_gave_up", {"lock" => "edit", "pid" => 200, "waited_seconds" => 10.0}])
   end
 
   it "records a wait ended by clear" do
-    command_for(holder_identity).acquire("edit")
-    on_sleep << -> { command_for(holder_identity).clear("edit") }
+    command_for(holder_identity).acquire("edit", working_dir: tmpdir)
+    on_sleep << -> { command_for(holder_identity).clear("edit", working_dir: tmpdir) }
 
-    result = command_for(waiter_identity).acquire("edit", wait: true, poll: 0.25)
+    result = command_for(waiter_identity).acquire("edit", wait: true, poll: 0.25, working_dir: tmpdir)
 
     expect(result).to eq(exit_code: 4)
     expect(logged.last[1]).to eq("lock_wait_cleared")
   end
 
   it "records a wait abandoned on a signal, with the exit code" do
-    command_for(holder_identity).acquire("edit")
+    command_for(holder_identity).acquire("edit", working_dir: tmpdir)
     on_sleep << -> { traps["TERM"].call }
 
-    result = command_for(waiter_identity).acquire("edit", wait: true, poll: 0.25)
+    result = command_for(waiter_identity).acquire("edit", wait: true, poll: 0.25, working_dir: tmpdir)
 
     expect(result).to eq(exit_code: 143)
     expect(logged.last[1..]).to eq(["lock_wait_abandoned", {"lock" => "edit", "pid" => 200, "waited_seconds" => 5.0, "exit_code" => 143}])
   end
 
   it "records an idle takeover with the holder it displaced" do
-    command_for(holder_identity).acquire("edit", task: "PROJ-1")
+    command_for(holder_identity).acquire("edit", task: "PROJ-1", working_dir: tmpdir)
     Workspace::LockStore.new(dir: store_dir, liveness: holder_identity, clock: -> { now[0] })
       .mark_idle(holder_identity.current, idle: true)
     now[0] += 300
 
-    command_for(waiter_identity).acquire("edit", wait: true)
+    command_for(waiter_identity).acquire("edit", wait: true, working_dir: tmpdir)
 
     event = logged.last
     expect(event[1]).to eq("lock_takeover")
@@ -110,10 +110,10 @@ RSpec.describe Workspace::Commands::Lock, "recording lock waits in the event log
 
   it "keeps its exit code and stdout when the log can't be written" do
     allow(log_config).to receive(:event_log_file).and_return(File.join(tmpdir, "gone", "events.jsonl"))
-    command_for(holder_identity).acquire("edit")
-    on_sleep << -> { command_for(holder_identity).release("edit") }
+    command_for(holder_identity).acquire("edit", working_dir: tmpdir)
+    on_sleep << -> { command_for(holder_identity).release("edit", working_dir: tmpdir) }
 
-    result = command_for(waiter_identity).acquire("edit", wait: true, poll: 0.25)
+    result = command_for(waiter_identity).acquire("edit", wait: true, poll: 0.25, working_dir: tmpdir)
 
     expect(result).to eq(exit_code: 0)
     expect(output.string).not_to include("event log")
