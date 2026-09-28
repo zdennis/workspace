@@ -425,6 +425,174 @@ RSpec.describe Workspace::Commands::Sessions do
     end
   end
 
+  describe "--worktrees" do
+    let(:project_config) { instance_double(Workspace::ProjectConfig, available_projects: %w[proj proj.worktree-a proj.worktree-b proj.staging proj-bar other]) }
+    let(:command) do
+      described_class.new(config: config, project_config: project_config, output: output, error_output: error_output)
+    end
+    let(:sockets) { {} }
+
+    before do
+      allow(config).to receive(:agent_socket_path) { |name| sockets[name] ||= File.join(tmpdir, "#{name}.sock") }
+      allow(config).to receive(:ask_state_path) { |name| File.join(tmpdir, "#{name}-asks.json") }
+    end
+
+    # Stands in for the agent daemon for a specific member workspace, unless
+    # `up` is false, in which case no daemon listens at all (simulating a
+    # workspace with no running agent daemon).
+    def with_member_daemons(members)
+      servers = members.filter_map { |name, up|
+        next unless up
+        server = UNIXServer.new(sockets[name] ||= File.join(tmpdir, "#{name}.sock"))
+        Thread.new do
+          client = server.accept
+          client.gets
+          client.puts(JSON.generate(payload.merge("workspace" => name)))
+          client.close
+        end
+        server
+      }
+      yield
+    ensure
+      servers&.each(&:close)
+    end
+
+    it "lists the root plus every child worktree workspace, root first" do
+      with_member_daemons("proj" => true, "proj.worktree-a" => true, "proj.worktree-b" => true) do
+        command.call(name: "proj", worktrees: true)
+      end
+
+      out = output.string
+      expect(out.index("workspace: proj\n")).to be < out.index("workspace: proj.worktree-a")
+      expect(out.index("workspace: proj.worktree-a")).to be < out.index("workspace: proj.worktree-b")
+      expect(out).not_to include("workspace: other")
+    end
+
+    it "excludes a non-worktree sibling config and a prefix-sharing project" do
+      with_member_daemons("proj" => true, "proj.worktree-a" => true, "proj.staging" => true, "proj-bar" => true) do
+        command.call(name: "proj", worktrees: true)
+      end
+
+      expect(output.string).not_to include("workspace: proj.staging")
+      expect(output.string).not_to include("workspace: proj-bar")
+    end
+
+    it "omits a member whose agent daemon isn't running, without erroring" do
+      with_member_daemons("proj" => true, "proj.worktree-a" => false, "proj.worktree-b" => true) do
+        command.call(name: "proj", worktrees: true)
+      end
+
+      expect(output.string).to include("workspace: proj\n")
+      expect(output.string).to include("workspace: proj.worktree-b")
+      expect(output.string).not_to include("worktree-a")
+    end
+
+    it "separates sections with a blank line" do
+      with_member_daemons("proj" => true, "proj.worktree-a" => true, "proj.worktree-b" => false) do
+        command.call(name: "proj", worktrees: true)
+      end
+
+      expect(output.string).to match(/workspace: proj\n.*\n\nworkspace: proj\.worktree-a/m)
+    end
+
+    it "resolves a worktree name argument to its parent, so the family is shown either way" do
+      with_member_daemons("proj" => true, "proj.worktree-a" => true, "proj.worktree-b" => true) do
+        command.call(name: "proj.worktree-a", worktrees: true)
+      end
+
+      expect(output.string).to include("workspace: proj\n")
+      expect(output.string).to include("workspace: proj.worktree-b")
+    end
+
+    it "raises the usual no-daemon error when no member answers" do
+      expect {
+        with_member_daemons("proj" => false, "proj.worktree-a" => false, "proj.worktree-b" => false) do
+          command.call(name: "proj", worktrees: true)
+        end
+      }.to raise_error(Workspace::Error, /No agent daemon for 'proj'/)
+    end
+
+    it "writes the usual schema_version error and exit_code 1 with --json when no member answers" do
+      result = nil
+      with_member_daemons("proj" => false, "proj.worktree-a" => false, "proj.worktree-b" => false) do
+        result = command.call(name: "proj", worktrees: true, json: true)
+      end
+
+      expect(JSON.parse(output.string)).to eq(
+        "schema_version" => 1,
+        "error" => "No agent daemon for 'proj'.\nStart one with:  workspace agent proj"
+      )
+      expect(result).to eq({exit_code: 1})
+    end
+
+    it "nests each member's payload under a workspaces array in --json" do
+      with_member_daemons("proj" => true, "proj.worktree-a" => true, "proj.worktree-b" => false) do
+        command.call(name: "proj", worktrees: true, json: true)
+      end
+
+      parsed = JSON.parse(output.string)
+      expect(parsed["schema_version"]).to eq(1)
+      expect(parsed["workspaces"].map { |w| w["workspace"] }).to eq(%w[proj proj.worktree-a])
+      expect(parsed["workspaces"]).to all(include("schema_version" => 1))
+    end
+
+    it "leaves default (non --worktrees) behavior unchanged" do
+      with_member_daemons("proj" => true) { command.call(name: "proj") }
+
+      expect(output.string).to include("workspace: proj")
+      expect(output.string).not_to include("workspaces")
+    end
+
+    it "propagates a different Workspace::Error from a member instead of swallowing it" do
+      server = UNIXServer.new(sockets["proj.worktree-a"] ||= File.join(tmpdir, "proj.worktree-a.sock"))
+      listener = Thread.new do
+        client = server.accept
+        client.gets
+        client.puts("not json")
+        client.close
+      end
+
+      expect {
+        with_member_daemons("proj" => true, "proj.worktree-b" => true) do
+          command.call(name: "proj", worktrees: true)
+        end
+      }.to raise_error(Workspace::Error, /Malformed reply/)
+      listener.join(2)
+    ensure
+      server&.close
+    end
+
+    it "redraws every member's section across watch ticks" do
+      draws = 0
+      sleeper = ->(_seconds) {
+        draws += 1
+        raise Interrupt if draws >= 2
+      }
+      watcher = described_class.new(config: config, project_config: project_config, output: output,
+        error_output: error_output, sleeper: sleeper)
+
+      servers = %w[proj proj.worktree-a].map { |name|
+        server = UNIXServer.new(sockets[name] ||= File.join(tmpdir, "#{name}.sock"))
+        Thread.new do
+          2.times do
+            client = server.accept
+            client.gets
+            client.puts(JSON.generate(payload.merge("workspace" => name)))
+            client.close
+          end
+        end
+        server
+      }
+
+      watcher.call(name: "proj", watch: true, worktrees: true)
+
+      expect(output.string.scan("workspace: proj\n").size).to eq(2)
+      expect(output.string.scan("workspace: proj.worktree-a").size).to eq(2)
+    ensure
+      servers&.each(&:close)
+    end
+  end
+
   describe "--watch" do
     it "redraws on an interval until interrupted" do
       draws = 0

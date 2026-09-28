@@ -157,7 +157,7 @@ RSpec.describe "workspace lock observability adversarial findings" do
             "panes" => [{"pane_id" => identity[:pane], "index" => 0, "kind" => "agent"}]
           }
 
-          sessions.send(:apply_lock_column, snapshot["panes"])
+          sessions.send(:apply_lock_column, "other-project", snapshot["panes"])
 
           # Desired behavior: a pane belonging to "other-project" must never
           # be stamped with a lock held in some unrelated project's store.

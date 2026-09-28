@@ -2145,6 +2145,7 @@ module Workspace
       json = false
       watch = false
       interval = 2
+      worktrees = false
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: workspace sessions [options] [project]"
         opts.separator ""
@@ -2164,12 +2165,20 @@ module Workspace
         opts.separator "LOCK column: shows every lock a pane holds or waits on (e.g. \"edit ✓ devenv #2\","
         opts.separator "space-joined, edit first and others alphabetical). JSON output includes a locks array."
         opts.separator ""
+        opts.separator "--worktrees also shows sessions for the project's child worktree workspaces"
+        opts.separator "(config names \"<project>.worktree-*\"), one table per workspace that has an"
+        opts.separator "agent daemon running; workspaces without one are omitted silently. With no"
+        opts.separator "[project], the parent of the current worktree is used, so the whole family"
+        opts.separator "shows even when run from inside a worktree. --json nests them under a"
+        opts.separator "\"workspaces\" array."
+        opts.separator ""
         opts.separator "Options:"
         opts.on("--json", "Emit the raw payload instead of a table") { json = true }
         opts.on("--watch", "Redraw until interrupted") { watch = true }
         opts.on("--interval SECONDS", Float, "Seconds between redraws (default 2)") do |value|
           interval = value
         end
+        opts.on("--worktrees", "Also show sessions for child worktree workspaces") { worktrees = true }
       end
 
       parser.parse!(args)
@@ -2177,7 +2186,7 @@ module Workspace
       project = args.first || @project_detector.detect(@working_dir)
       raise UsageError, parser.help unless project
 
-      result = @sessions_command.call(name: project, json: json, watch: watch, interval: interval)
+      result = @sessions_command.call(name: project, json: json, watch: watch, interval: interval, worktrees: worktrees)
       @exit_handler.exit(result[:exit_code]) if result && !result[:exit_code].zero?
     end
 
