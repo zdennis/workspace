@@ -563,6 +563,11 @@ module Workspace
         opts.on("--json", "Emit the documented JSON schema instead of plain text (see docs/README.finish.md)") do
           json = true
         end
+        opts.separator ""
+        opts.separator "Examples:"
+        opts.separator "  workspace finish    # finish the current worktree project (auto-detected from cwd)"
+        opts.separator "  workspace finish --pr    # open (or reuse) a PR first"
+        opts.separator "  workspace finish myproject.worktree-PROJ-123 --json    # scripted; JSON on stdout"
       end
       parser.parse!(args)
 
