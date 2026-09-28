@@ -2684,6 +2684,11 @@ module Workspace
         end
         opts.on("--json", "Output as JSON") { json = true }
         opts.on("--show-urls", "Include the git origin URL alongside each project name") { show_urls = true }
+        opts.separator ""
+        opts.separator "Examples:"
+        opts.separator "  workspace list             # list active (launched) projects"
+        opts.separator "  workspace list --all       # list all available projects"
+        opts.separator "  workspace list-projects    # alias for 'list --all'"
       end
       parser.parse!(args)
 
