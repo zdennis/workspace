@@ -47,11 +47,14 @@ module Workspace
     #   ❯ Try "write a test..."
     # Confirmed against a live v2.1.283 pane (no side borders on this
     # prompt). Anchored to the rule+marker pair, not the rule's width, so it
-    # survives terminal resizes. A modal dialog's own menu items (e.g. "Do
-    # you trust the files in this folder?") also use `❯` to mark the
-    # selected option, but sit inside a `│`-bordered box, not directly under
-    # a bare horizontal rule, so this pattern does not match them.
-    CLAUDE_READY_PATTERN = /─{3,}\n❯[ \t]/
+    # survives terminal resizes. The character after `❯` is a plain space
+    # when the prompt carries text (e.g. `❯ Try "write a test..."`) but a
+    # non-breaking space (U+00A0) on an empty prompt, so both are accepted.
+    # A modal dialog's own menu items (e.g. "Do you trust the files in this
+    # folder?") also use `❯` to mark the selected option, but sit inside a
+    # `│`-bordered box, not directly under a bare horizontal rule, so this
+    # pattern does not match them.
+    CLAUDE_READY_PATTERN = /─{3,}\n❯[ \t\u00A0]?/
 
     # @return [Array<AgentProvider>] every known provider
     def self.all
