@@ -750,6 +750,13 @@ module Workspace
         opts.separator ""
         opts.separator "Exit codes: 0 delivered; 1 not delivered, safe to run again; 2 text"
         opts.separator "  landed but wasn't confirmed submitted — do not resend, check the pane first."
+        opts.separator ""
+        opts.separator "Examples:"
+        opts.separator "  workspace run 'rake spec'    # bottommost pane, project auto-detected from cwd"
+        opts.separator "  workspace run scooter 'rake spec' --pane 1    # explicit project and pane"
+        opts.separator "  workspace run scooter 'tail -f log/development.log' --split    # run in a new pane below"
+        opts.separator "  workspace run scooter 'bundle exec rails console' --no-enter    # pre-fill without pressing Enter"
+        opts.separator "  workspace run scooter 'rake spec' --wait    # wait for the command and report its result"
       end
       parser.parse!(args)
 
