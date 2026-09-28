@@ -459,6 +459,13 @@ module Workspace
         opts.separator "The worktree is created in .worktrees/ under the project root."
         opts.separator "Never blocks on stdin when stdin isn't a TTY: pass --base/--yes, or it exits with"
         opts.separator "a usage error naming the flag it needed."
+        opts.separator ""
+        opts.separator "Examples:"
+        opts.separator "  workspace start PROJ-123    # from a JIRA issue key (used as the branch name)"
+        opts.separator "  workspace start feature/my-feature    # from an existing branch name"
+        opts.separator "  workspace start PROJ-123 --prompt \"Fix the login bug\"    # with an initial agent prompt"
+        opts.separator "  workspace start PROJ-123 --headless --yes --json    # non-interactive, e.g. from CI"
+        opts.separator "  workspace start PROJ-123 --base main --yes --json    # non-interactive, from a script or agent"
       end
       parser.parse!(args)
 
