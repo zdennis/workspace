@@ -29,6 +29,7 @@ RSpec.describe Workspace::Commands::Handoff do
 
   # Answers one "sessions" request with +panes+ and closes.
   def with_sessions(panes)
+    File.delete(socket_path) if File.exist?(socket_path)
     server = UNIXServer.new(socket_path)
     thread = Thread.new do
       client = server.accept
@@ -137,6 +138,49 @@ RSpec.describe Workspace::Commands::Handoff do
       expect(result).to eq(exit_code: 0)
       expect(output.string).to include("threshold 50%")
     end
+
+    it "rejects an out-of-range --context-pct instead of guessing" do
+      with_sessions([claude_pane]) do
+        expect { command.check(name: "myapp", context_pct: 101) }
+          .to raise_error(Workspace::UsageError, /--context-pct must be between 0 and 100/)
+      end
+    end
+
+    it "refuses to deliver into a pane that isn't running Claude Code" do
+      allow(tmux).to receive(:deliver)
+      shell_pane = claude_pane.merge("kind" => "shell")
+
+      with_sessions([shell_pane]) do
+        expect { command.check(name: "myapp", pane: "1") }
+          .to raise_error(Workspace::UsageError, /is running shell, not Claude Code/)
+      end
+      expect(tmux).not_to have_received(:deliver)
+    end
+
+    it "reports a failed delivery distinctly from a successful one, in JSON and in text" do
+      allow(tmux).to receive(:deliver).and_return(Workspace::Tmux::Delivery.new(status: :failed, message: "tmux could not paste"))
+      over_pane = claude_pane.merge("context_pct" => 42)
+
+      json_result = with_sessions([over_pane]) { command.check(name: "myapp", handoff_doc: "HANDOFF.md", json: true) }
+      expect(json_result).to eq(exit_code: 1)
+      payload = JSON.parse(output.string)
+      expect(payload).to include("status" => "handoff_send_failed", "landed" => false)
+
+      text_result = with_sessions([over_pane]) { command.check(name: "myapp", handoff_doc: "HANDOFF.md") }
+      expect(text_result).to eq(exit_code: 1)
+      expect(error_output.string).to include("did not reach the pane")
+    end
+
+    it "falls back to the built-in template when a custom check_prompt has a bad placeholder" do
+      allow(handoff_config).to receive(:for_workspace).with("myapp").and_return(defaults.merge(check_prompt: "Save %{oops}"))
+      allow(tmux).to receive(:deliver).and_return(Workspace::Tmux::Delivery.new(status: :submitted))
+      over_pane = claude_pane.merge("context_pct" => 42)
+
+      with_sessions([over_pane]) { command.check(name: "myapp", handoff_doc: "HANDOFF.md") }
+
+      expect(tmux).to have_received(:deliver).with("myapp", "0.1", a_string_including("Update HANDOFF.md now"))
+      expect(error_output.string).to include("invalid prompt template")
+    end
   end
 
   describe "#new" do
@@ -161,6 +205,15 @@ RSpec.describe Workspace::Commands::Handoff do
 
     it "raises when no agent daemon is reachable and no pane was given" do
       expect { command.new(name: "myapp", handoff_doc: "HANDOFF.md") }.to raise_error(Workspace::Error, /no agent daemon/)
+    end
+
+    it "substitutes %{doc} into a configured resume_prompt override" do
+      allow(handoff_config).to receive(:for_workspace).with("myapp").and_return(defaults.merge(resume_prompt: "Resume from %{doc} please"))
+      allow(restart_agent_command).to receive(:call).and_return({exit_code: 0})
+
+      command.new(name: "myapp", pane: "1", handoff_doc: "HANDOFF.md")
+
+      expect(restart_agent_command).to have_received(:call).with(name: "myapp", pane: "1", prompt: "Resume from HANDOFF.md please", json: false)
     end
   end
 end

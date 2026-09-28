@@ -1533,24 +1533,28 @@ module Workspace
 
     def handoff_help
       <<~HELP
-        Usage: workspace handoff <check|new> NAME [options]
+        Usage: workspace handoff <check|new> [NAME] [options]
 
         Watches a coding agent's context-window usage and hands off to a fresh
         conversation before it fills up: `check` tells the agent to save its state
         once usage crosses a threshold, `new` clears the conversation and resumes it
         (the same flow as `workspace agent-run restart`).
 
+        NAME defaults to the workspace detected from the current directory.
+
         Options (check):
-          --pane N              Pane index (default: the first Claude Code pane)
+          --pane N              Pane index (default: the first Claude Code pane;
+                                 see `workspace sessions NAME` to list panes)
           --threshold PCT        Context usage percent that triggers a handoff
                                  (default: handoff.threshold, or 11)
-          --context-pct N       Skip detection and use this value
+          --context-pct N       Skip detection and use this value (0-100)
           --handoff-doc PATH    Doc the agent updates and resumes from
           --handoff-prompt TEXT Prompt sent verbatim instead of a doc
           --json                Print the result as JSON
 
         Options (new):
-          --pane N              Pane index (default: the first Claude Code pane)
+          --pane N              Pane index (default: the first Claude Code pane;
+                                 see `workspace sessions NAME` to list panes)
           --handoff-doc PATH    Doc the agent reads and resumes from
           --handoff-prompt TEXT Prompt sent verbatim instead of a doc
           --json                Print the result as JSON
@@ -1631,7 +1635,7 @@ module Workspace
 
       result = @handoff_command.new(name: name, pane: pane, handoff_doc: handoff_doc, handoff_prompt: handoff_prompt, json: json)
       @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
-    rescue OptionParser::ParseError, UsageError => e
+    rescue OptionParser::ParseError, Error => e
       raise unless json_requested?(json, args)
       emit_json_usage_error(Commands::Handoff::JSON_SCHEMA_VERSION, e.message.lines.first.strip)
     end

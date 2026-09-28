@@ -64,7 +64,11 @@ module Workspace
 
         pane_info = find_pane(snapshot, pane)
         raise Workspace::UsageError, no_pane_message(name, pane, snapshot) unless pane_info
+        raise Workspace::UsageError, not_claude_message(name, pane_info) unless pane_kind_ok?(pane_info)
 
+        if context_pct && !context_pct.between?(0, 100)
+          raise Workspace::UsageError, "--context-pct must be between 0 and 100"
+        end
         pct = context_pct || pane_info["context_pct"]
         reason = context_pct ? nil : pane_info["context_error"]
         return undetermined(json, reason || ContextReasons::NO_READING) if pct.nil?
@@ -96,7 +100,8 @@ module Workspace
         end
 
         defaults = @handoff_config.for_workspace(name)
-        prompt = handoff_prompt || defaults[:resume_prompt] || format(DEFAULT_RESUME_PROMPT, doc: handoff_doc)
+        template = defaults[:resume_prompt] || DEFAULT_RESUME_PROMPT
+        prompt = handoff_prompt || format(template, doc: handoff_doc)
         @restart_agent_command.call(name: name, pane: pane, prompt: prompt, json: json)
       end
 
@@ -133,18 +138,30 @@ module Workspace
 
       def check_body(name:, pane_index:, pct:, threshold:, handoff_doc:, handoff_prompt:, defaults:)
         usage = "Context usage is at #{pct}%, #{(pct > threshold) ? "over" : "at"} the #{threshold}% threshold."
-        new_cmd_base = "workspace handoff new #{name} --pane #{pane_index}"
+        new_cmd_base = "workspace handoff new #{[name].shelljoin} --pane #{pane_index}"
 
         if handoff_prompt
           new_cmd = "#{new_cmd_base} #{["--handoff-prompt", handoff_prompt].shelljoin}"
-          format(DEFAULT_CHECK_PROMPT_PROMPT, usage: usage, new_cmd: new_cmd)
+          safe_format(DEFAULT_CHECK_PROMPT_PROMPT, DEFAULT_CHECK_PROMPT_PROMPT, usage: usage, new_cmd: new_cmd)
         elsif handoff_doc
           new_cmd = "#{new_cmd_base} #{["--handoff-doc", handoff_doc].shelljoin}"
           template = defaults[:check_prompt] || DEFAULT_CHECK_PROMPT_DOC
-          format(template, usage: usage, doc: handoff_doc, new_cmd: new_cmd)
+          safe_format(template, DEFAULT_CHECK_PROMPT_DOC, usage: usage, doc: handoff_doc, new_cmd: new_cmd)
         else
-          format(DEFAULT_CHECK_PROMPT_PICK, usage: usage, new_cmd: new_cmd_base)
+          safe_format(DEFAULT_CHECK_PROMPT_PICK, DEFAULT_CHECK_PROMPT_PICK, usage: usage, new_cmd: new_cmd_base)
         end
+      end
+
+      # A hand-edited `handoff.check_prompt`/`handoff.resume_prompt` with a
+      # stray `%` (not one of the documented placeholders) would otherwise
+      # raise from `format` and crash `check` with a Ruby backtrace instead
+      # of its documented `--json` error contract. Falls back to the
+      # built-in template rather than guessing at the intended text.
+      def safe_format(template, fallback, **placeholders)
+        format(template, **placeholders)
+      rescue KeyError, ArgumentError => e
+        @error_output.puts "Warning: invalid prompt template (#{e.message}); using the built-in default."
+        format(fallback, **placeholders)
       end
 
       def fetch_sessions(name)
@@ -175,6 +192,24 @@ module Workspace
         "No pane #{pane} in workspace '#{name}'. Panes: #{(snapshot["panes"] || []).map { |p| p["index"] }.join(", ")}"
       end
 
+      # Session monitor pane kinds `check` will type the save-state prompt
+      # into: the Claude provider, and a pane not identified yet. Mirrors
+      # RESTARTABLE_KINDS in lib/workspace/commands/agent.rb -- keep both in
+      # sync if this changes. Unlike `new` (which hands the pane to the
+      # daemon's own restart_agent, already gated this way), `check` delivers
+      # directly via Tmux#deliver, so it must gate the pane kind itself.
+      RESTARTABLE_KINDS = ["claude", "unknown"].freeze
+      private_constant :RESTARTABLE_KINDS
+
+      def pane_kind_ok?(pane_info)
+        RESTARTABLE_KINDS.include?(pane_info["kind"])
+      end
+
+      def not_claude_message(name, pane_info)
+        "Pane #{pane_info["index"]} in workspace '#{name}' is running #{pane_info["kind"]}, not Claude Code; " \
+          "handoff only restarts Claude Code, whose /clear it types."
+      end
+
       def undetermined(json, reason)
         if json
           @output.puts JSON.generate({"schema_version" => JSON_SCHEMA_VERSION, "status" => "undetermined",
@@ -197,14 +232,22 @@ module Workspace
         {exit_code: 0}
       end
 
+      # +delivery.landed?+ is false only when tmux itself failed (e.g. a
+      # dead pane) -- see {Workspace::Tmux::Delivery} -- not merely
+      # "unconfirmed". A caller scripting on `--json` can check "landed"
+      # without parsing the status string; the status still travels for
+      # anyone who wants the detail.
       def over_threshold(json, pct:, threshold:, pane:, delivery:)
+        status = delivery.landed? ? "handoff_sent" : "handoff_send_failed"
         if json
-          @output.puts JSON.generate({"schema_version" => JSON_SCHEMA_VERSION, "status" => "handoff_sent",
+          @output.puts JSON.generate({"schema_version" => JSON_SCHEMA_VERSION, "status" => status,
                                         "context_pct" => pct, "threshold" => threshold, "pane" => pane["index"],
-                                        "delivery" => delivery.status.to_s})
-        else
+                                        "delivery" => delivery.status.to_s, "landed" => delivery.landed?})
+        elsif delivery.landed?
           @output.puts "Context usage: #{pct}% (threshold #{threshold}%) -- at/over threshold; sent save-state prompt to pane #{pane["index"]} (#{delivery.status})."
-          @error_output.puts "Warning: the save-state prompt may not have reached the pane (#{delivery.status})." unless delivery.landed?
+        else
+          @output.puts "Context usage: #{pct}% (threshold #{threshold}%) -- at/over threshold; failed to deliver the save-state prompt to pane #{pane["index"]} (#{delivery.status})."
+          @error_output.puts "Warning: the save-state prompt did not reach the pane (#{delivery.status})."
         end
         {exit_code: 1}
       end

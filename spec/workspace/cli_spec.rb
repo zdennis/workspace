@@ -851,6 +851,15 @@ RSpec.describe Workspace::CLI do
         handoff_prompt: nil, json: true)
     end
 
+    it "reports a Workspace::Error from handoff new as a JSON error with --json" do
+      allow(handoff_command).to receive(:new).and_raise(Workspace::Error, "no agent daemon for 'myapp'")
+      cli, output = build_test_cli(handoff_command: handoff_command)
+
+      expect { cli.run(["handoff", "new", "myapp", "--handoff-doc", "a", "--json"]) }
+        .to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+      expect(JSON.parse(output.string)).to eq("schema_version" => 1, "error" => "no agent daemon for 'myapp'")
+    end
+
     it "requires --handoff-doc or --handoff-prompt for handoff new" do
       cli, _, error_output = build_test_cli(handoff_command: handoff_command)
 
