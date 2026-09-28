@@ -2186,7 +2186,7 @@ module Workspace
         opts.separator "  workspace config set --project myapp dev.up \"bin/dev\""
         opts.separator "  workspace config set statusline.command \"~/bin/my-statusline\""
         opts.separator "  workspace config set context.source scrape"
-        opts.separator "  workspace config set context.pattern '(\d+)% ctx'"
+        opts.separator "  workspace config set context.pattern '(\\d+)% ctx'"
         opts.separator "  workspace config set launch.headless true"
         opts.separator ""
         opts.separator "statusline.command, context.source, context.pattern, and launch.headless are"

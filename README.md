@@ -17,14 +17,14 @@ A macOS CLI for managing tmuxinator-based development workspaces in iTerm2. Laun
 
 ## Requirements
 
+A [headless](docs/README.launch.md#headless) launch needs only Ruby, tmux, tmuxinator and git: no macOS, iTerm2 or window-tool.
+
 - **macOS** (uses AppleScript and Accessibility APIs)
 - **Ruby** (tested with 3.x)
 - **[iTerm2](https://iterm2.com/)** — terminal emulator
 - **[tmux](https://github.com/tmux/tmux)** — terminal multiplexer
 - **[tmuxinator](https://github.com/tmuxinator/tmuxinator)** — tmux session manager
 - **[window-tool](https://github.com/zdennis/window-tool)** — fast window management via Accessibility API (must be on PATH)
-
-A [headless](docs/README.launch.md#headless) launch needs only Ruby, tmux, tmuxinator and git: no macOS, iTerm2 or window-tool.
 - **[gh](https://cli.github.com/)** — GitHub CLI (for `workspace start` with PR URLs)
 - **git** — version control
 - **[ascii-banner](https://github.com/zdennis/homebrew-bin/blob/main/docs/README.ascii-banner.md)** — terminal banner display (optional, used in tmuxinator templates)

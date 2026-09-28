@@ -77,7 +77,10 @@ module Workspace
       @data[key]
     end
 
-    # Sets a project's state and appends a state_set event to the log.
+    # Sets a project's state and appends a state_set event to the log. This
+    # merges +value+'s keys into the project's existing entry (as does every
+    # other state event type) rather than replacing it; dropping a key means
+    # deleting the project first, as launch's +replace_state+ does.
     #
     # @param key [String]
     # @param value [Object]
