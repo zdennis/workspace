@@ -2047,6 +2047,13 @@ module Workspace
           --json            Print status as JSON (status only)
 
         'advance' marks the running stage complete even if it has not finished.
+
+        Examples:
+          workspace pipeline status myapp    # what is myapp working on?
+          workspace pipeline status myapp --json    # same, for a script
+          workspace pipeline start myapp --work-item WC-42 --body "/build add OAuth support"
+          workspace pipeline advance myapp --work-item WC-42    # push a work item through by hand
+          workspace pipeline reset myapp    # clear leftover state after stopping the agent
       HELP
     end
 
