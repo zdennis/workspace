@@ -80,6 +80,17 @@ logging `no buffer ws_send_<id>` / `unknown buffer: ws_send_<id>` to the
 for empty text (skip straight to sending Enter), or have callers pass a
 single space instead of `""`.
 
+### `wait-until-content --since-start` reflow limitation
+
+If a pane is reflowed mid-wait (e.g. a rewrapping resize), the content anchor
+can be lost and the surviving==0 fallback treats pre-start content as
+post-start, allowing a possible false match. Content alone cannot distinguish
+reflow from full history eviction, and full eviction must treat everything as
+post-start — so fixing this needs an out-of-band signal (e.g. a pane resize
+event, capture-time pane dimensions, or a marker-based baseline). See
+`docs/README.wait-until-content.md` and
+`lib/workspace/commands/wait_until_content.rb`.
+
 ## Completed
 
 ### Claude MCP servers config setting
