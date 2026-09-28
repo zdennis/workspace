@@ -1567,8 +1567,23 @@ module Workspace
           --dry-run           Print the message without sending it
 
         Options (restart; see `workspace agent-run restart --help`):
+          --name NAME         Workspace name (default: detected from cwd)
           --pane PANE         Pane to restart: %12, 0.1, session:0.1, or a pane index  (required)
           --prompt TEXT       Text typed once /clear is confirmed  (required)
+          --force             Restart even when a pipeline stage is running on the pane
+          --wait              Wait for the restart to finish and report how it went
+          --timeout DURATION  Longest wait for context usage to drop after /clear
+                              (e.g. "45s", or seconds); default 30s, at most 600s
+          --json              Print the result as JSON; errors as {"schema_version":1,"error":...}
+
+        Examples:
+          workspace agent-run command --work-item WC-42 --body "Add OAuth support"
+          workspace agent-run command --name myapp --work-item WC-42 --body "Add OAuth support" --dry-run
+          workspace agent-run inject --work-item WC-42 --body "Use Postgres, not SQLite"
+          workspace agent-run inject --work-item WC-42 --body "Stop and pivot to the auth approach" --interrupt
+          workspace agent-run restart --name myapp --pane 0.1 --prompt "Read HANDOFF.md and follow it." --wait
+          workspace agent-run restart --pane %18 --prompt "Resume from HANDOFF.md" --json
+          workspace agent-run examples
       HELP
     end
 
