@@ -3228,6 +3228,12 @@ module Workspace
         opts.separator "  AIKYA-389-skip-validation      Full branch name"
         opts.separator ""
         opts.separator "Returns the workspace project name if found, or exits with status 1 if not found."
+        opts.separator ""
+        opts.separator "Examples:"
+        opts.separator "  workspace lookup ~/Code/zendesk/growth-engine/.worktrees/growth-engine-kick-test    # by worktree path"
+        opts.separator "  workspace lookup PUFFINS-1876-use-lock-version    # by branch name"
+        opts.separator "  workspace lookup growth-engine    # by project name"
+        opts.separator "  workspace lookup ~/Documents/Obsidian-LocalOnly/Zendesk    # by project root directory"
       end
       parser.parse!(args)
 
