@@ -2406,6 +2406,13 @@ module Workspace
           interval = value
         end
         opts.on("--worktrees", "Also show sessions for child worktree workspaces") { worktrees = true }
+        opts.separator ""
+        opts.separator "Examples:"
+        opts.separator "  workspace sessions    # sessions for the current directory's project"
+        opts.separator "  workspace sessions my-project    # sessions for a named project"
+        opts.separator "  workspace sessions --watch    # watch and redraw every 2 seconds"
+        opts.separator "  workspace sessions --json    # emit raw JSON for scripting"
+        opts.separator "  workspace sessions my-project --worktrees    # include the project's worktree workspaces"
       end
 
       parser.parse!(args)
