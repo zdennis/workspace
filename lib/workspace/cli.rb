@@ -2926,6 +2926,10 @@ module Workspace
         opts.on("--window-id WID", Integer, "Manually set the window ID for a project") do |wid|
           window_id = wid
         end
+        opts.separator ""
+        opts.separator "Examples:"
+        opts.separator "  workspace repair    # auto-rebuild state from all live workspace windows"
+        opts.separator "  workspace repair homebrew-bin --window-id 1196    # manually set a project's window ID"
       end
       parser.parse!(args)
 
