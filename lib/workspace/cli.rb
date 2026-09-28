@@ -2532,6 +2532,11 @@ module Workspace
         opts.separator "For paths inside .worktrees/, prefixes with the repo name"
         opts.separator "(e.g. repo/.worktrees/MYJIRA-123 → repo-MYJIRA-123)."
         opts.separator "Does nothing if a config already exists."
+        opts.separator ""
+        opts.separator "Examples:"
+        opts.separator "  workspace add ~/Code/my-project    # add a project by path"
+        opts.separator "  workspace add .    # add the current directory"
+        opts.separator "  workspace add ~/Code/project-a ~/Code/project-b    # add multiple projects"
       end
       parser.parse!(args)
 
