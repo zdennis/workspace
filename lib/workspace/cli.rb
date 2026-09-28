@@ -2189,6 +2189,11 @@ module Workspace
         opts.separator "Run a shell command as a subprocess (bypassing tmux)."
         opts.separator "Captures stdout, stderr, and exit status, writes them under a UUID,"
         opts.separator "prints the JSON result, and exits with the command's exit code."
+        opts.separator ""
+        opts.separator "Examples:"
+        opts.separator "  workspace run-and-report 'echo hello'    # run a command and capture its output"
+        opts.separator "  workspace run-and-report 'rake spec'    # check the exit code in a script via $?"
+        opts.separator "  workspace run-and-report 'bundle exec rspec' | jq '.status'    # parse the JSON result"
       end
       parser.parse!(args)
 
