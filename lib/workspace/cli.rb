@@ -2373,6 +2373,11 @@ module Workspace
           "settings.json first); the only fix this performs today") do
           fix = true
         end
+        opts.separator ""
+        opts.separator "Examples:"
+        opts.separator "  workspace doctor             # check the current machine's setup"
+        opts.separator "  workspace doctor --fix       # also route Claude's statusLine through workspace statusline"
+        opts.separator "  workspace doctor --headless  # check for a headless setup (skips iTerm2 and window-tool)"
       end
       parser.parse!(args)
 
