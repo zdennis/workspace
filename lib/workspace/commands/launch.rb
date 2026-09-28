@@ -150,8 +150,13 @@ module Workspace
         session_names = session_names.except(*not_found)
         reused -= not_found
 
-        close_headless_launcher_windows(session_names.keys)
-        session_names.each_key { |project| record_headless(project) }
+        # A windowed launch may have recorded a pane for one of these since
+        # state was loaded; reload under the locks so its window is closed.
+        with_start_locks(session_names.keys) do
+          @state.load
+          close_headless_launcher_windows(session_names.keys)
+          session_names.each_key { |project| record_headless(project) }
+        end
         @state.save
         start_session_monitors(session_names.keys)
 

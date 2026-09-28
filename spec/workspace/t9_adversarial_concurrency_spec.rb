@@ -107,8 +107,8 @@ RSpec.describe "T9 windowed launch reuse: concurrency and liveness (adversarial)
     Workspace::State.new(config: config, event_log: Workspace::EventLog.new(config: config))
   end
 
-  def new_launch(tmux:, iterm: double("iterm"), state: new_state)
-    window_manager = double("window_manager", iterm_windows: {101 => "workspace-tmux-proj"}, close_window: true)
+  def new_launch(tmux:, iterm: double("iterm"), state: new_state,
+    window_manager: double("window_manager", iterm_windows: {101 => "workspace-tmux-proj"}, close_window: true))
     Workspace::Commands::Launch.new(state: state, iterm: iterm, window_manager: window_manager,
       tmux: tmux, project_config: double("project_config", exists?: true),
       window_layout: double("window_layout", arrange: nil), config: config,
@@ -159,7 +159,7 @@ RSpec.describe "T9 windowed launch reuse: concurrency and liveness (adversarial)
 
   it "TC3: a headless start while a windowed launch's tmuxinator is still starting reuses that session" do
     tmux = T9Tmux.new(pane_start_delay: 0.3)
-    headless = new_launch(tmux: tmux)
+    headless = new_launch(tmux: tmux, iterm: T9ITerm.new(tmux: tmux, uid: "unused"))
     iterm = T9ITerm.new(tmux: tmux, uid: "uid-w",
       after_create: -> { threads << Thread.new { headless.call(["proj"], headless: true) } })
 
@@ -207,6 +207,27 @@ RSpec.describe "T9 windowed launch reuse: concurrency and liveness (adversarial)
     entry = new_state.load["proj"]
     expect(entry.key?("headless") && entry.key?("unique_id")).to be(false),
       "state merged both launches into #{entry.inspect}: marked headless while tracking launcher pane uid-w"
+  end
+
+  it "TC7: a headless start closes the launcher window of a windowed launch recorded after it loaded state" do
+    tmux = T9Tmux.new
+    iterm = double("iterm", session_map: {"uid-w" => 7})
+    allow(iterm).to receive(:find_existing_sessions) do |state, **|
+      state.to_h.filter_map { |project, info| [project, info["unique_id"]] if info["unique_id"] }.to_h
+    end
+    window_manager = double("window_manager", close_window: true)
+    headless = new_launch(tmux: tmux, iterm: iterm, window_manager: window_manager)
+
+    allow(tmux).to receive(:start_headless).and_wrap_original do |m, project|
+      # A windowed launch records its pane after the headless one loaded state.
+      new_state.load["proj"] = {"unique_id" => "uid-w", "iterm_window_id" => 7}
+      m.call(project)
+    end
+
+    headless.call(["proj"], headless: true)
+
+    expect(window_manager).to have_received(:close_window).with(7)
+    expect(new_state.load["proj"]).to eq({"headless" => true})
   end
 
   it "TC6: listing sessions on a wedged tmux server gives up instead of blocking launch forever" do
