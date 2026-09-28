@@ -11,12 +11,15 @@ RSpec.describe Workspace::HookInstaller do
   let(:settings_path) { File.join(tmpdir, ".claude", "settings.json") }
   let(:global_config_dir) { Dir.mktmpdir }
   let(:project_settings) { Workspace::ProjectSettings.new(config: instance_double(Workspace::Config, workspace_config_dir: global_config_dir)) }
+  let(:user_settings_dir) { Dir.mktmpdir }
+  let(:user_settings_path) { File.join(user_settings_dir, "user-settings.json") }
 
-  subject(:installer) { described_class.new(backup: backup, output: output, input: input) }
+  subject(:installer) { described_class.new(backup: backup, output: output, input: input, user_settings_path: user_settings_path) }
 
   after do
     FileUtils.remove_entry(tmpdir)
     FileUtils.remove_entry(global_config_dir)
+    FileUtils.remove_entry(user_settings_dir)
   end
 
   def write_settings(hash)
