@@ -12,7 +12,7 @@ workspace launch [options] <project1> [project2] ...
 
 | Option | Description |
 |--------|-------------|
-| `--reattach` | Reattach to existing tmux sessions, preserving session state |
+| `--reattach` | Reattach to an existing pane's tmux session instead of relaunching tmuxinator into it, preserving session state (a new pane already does this on its own when its session is running; `--reattach` matters for a pane `launch` is reusing) |
 | `--headless` / `--no-headless` | Start each session in the background with plain tmux (no iTerm2, AppleScript or window-tool), or force iTerm2. See [Headless](#headless) for the default |
 | `--prompt PROMPT` | Send an initial prompt to the coding agent in each project, once it is ready (up to 60s); exits 1 if it can't be sent |
 | `--prompt-timeout DURATION` | How long to wait for the coding agent to be ready for `--prompt` (e.g. `90s`, `2m`, or a plain number of seconds); default 60s |
@@ -21,7 +21,7 @@ workspace launch [options] <project1> [project2] ...
 
 Launches one or more tmuxinator projects, each in its own iTerm2 window. Windows are arranged left-to-right with slight overlap on the active display.
 
-Reuses existing launcher panes when available instead of creating new windows.
+Reuses existing launcher panes when available instead of creating new windows. A new pane whose project's tmux session is already running (left over from a headless launch, or from a window that was closed without killing the session) attaches to it instead of running tmuxinator into it again, the same way a headless launch reuses a running session; `launch` prints a one-line note that it's reusing the session. If the project was tracked as headless, its state entry loses the `headless` flag and gains the new iTerm window/pane ids.
 
 You can pass either a project name (matching an existing tmuxinator config) or a directory path (which will auto-create a config).
 

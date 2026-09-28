@@ -281,12 +281,13 @@ module Workspace
         return if new_projects.empty?
 
         log("Creating #{new_projects.size} new launcher pane(s)...")
-        commands = new_projects.map { |p| [p, @tmux.command_for(p, reattach: reattach)] }.to_h
+        running = @tmux.sessions
+        commands = new_projects.map { |p| [p, command_for_new_pane(p, reattach: reattach, running: running)] }.to_h
         launcher_wid = @iterm.find_launcher_window_id(@state, live_sessions: live_sessions)
         new_session_ids = @iterm.create_launcher_panes(new_projects, commands, launcher_wid: launcher_wid)
 
         new_session_ids.each do |project, uid|
-          @state[project] = {"unique_id" => uid}
+          replace_state(project, {"unique_id" => uid})
           log("  Created pane for #{project} (#{uid})")
         end
 
@@ -294,6 +295,22 @@ module Workspace
         if missing_panes.any?
           @error_output.puts "Warning: Failed to create panes for: #{missing_panes.join(", ")}"
         end
+      end
+
+      # Command to run in a newly-created launcher pane for +project+. A
+      # session already running for it (e.g. left over from a headless
+      # launch, or from a window closed without killing the session) is
+      # attached to as-is, the same way a headless launch reuses it, rather
+      # than re-running tmuxinator into it.
+      #
+      # @return [String] the shell command for the new pane
+      def command_for_new_pane(project, reattach:, running:)
+        session = @tmux.session_name_for(project)
+        if running.include?(session)
+          log("Session #{session} is already running for #{project}; reusing it.")
+          return "tmux -CC attach -t #{session}"
+        end
+        @tmux.command_for(project, reattach: reattach)
       end
 
       # Polls for tmux sessions to appear, checking before each wait: a

@@ -164,7 +164,9 @@ RSpec.describe Workspace::Commands::Launch do
         allow(tmux).to receive(:start_server)
         allow(tmux).to receive(:command_for).with("proj1", reattach: false).and_return("tmuxinator start proj1 --attach")
         allow(tmux).to receive(:session_name_for).with("proj1").and_return("proj1")
-        allow(tmux).to receive(:sessions).and_return(["proj1"])
+        # No session running yet when the pane is created; it appears once
+        # tmuxinator starts it, which is what wait_for_tmux_sessions polls for.
+        allow(tmux).to receive(:sessions).and_return([], ["proj1"])
         allow(tmux).to receive(:rename_window)
 
         allow(iterm).to receive(:session_map).and_return({})
@@ -178,7 +180,7 @@ RSpec.describe Workspace::Commands::Launch do
       it "creates new panes" do
         command.call(["proj1"])
 
-        expect(iterm).to have_received(:create_launcher_panes)
+        expect(iterm).to have_received(:create_launcher_panes).with(["proj1"], {"proj1" => "tmuxinator start proj1 --attach"}, launcher_wid: nil)
         expect(output.string).to include("Creating 1 new launcher pane(s)")
       end
 
@@ -188,6 +190,26 @@ RSpec.describe Workspace::Commands::Launch do
         state.load
         expect(state["proj1"]["unique_id"]).to eq("new-uid")
       end
+
+      it "attaches instead of restarting tmuxinator when the session is already running" do
+        allow(tmux).to receive(:sessions).and_return(["proj1"])
+
+        command.call(["proj1"])
+
+        expect(iterm).to have_received(:create_launcher_panes).with(["proj1"], {"proj1" => "tmux -CC attach -t proj1"}, launcher_wid: nil)
+        expect(output.string).to include("Session proj1 is already running for proj1; reusing it.")
+      end
+
+      it "replaces headless state with iTerm state when the project switches modes" do
+        state["proj1"] = {"headless" => true}
+        state.save
+        allow(tmux).to receive(:sessions).and_return(["proj1"])
+
+        command.call(["proj1"])
+
+        state.load
+        expect(state["proj1"]).to eq("unique_id" => "new-uid", "iterm_window_id" => 300)
+      end
     end
 
     context "when an existing session disappears during relaunch" do
@@ -196,7 +218,7 @@ RSpec.describe Workspace::Commands::Launch do
         allow(tmux).to receive(:start_server)
         allow(tmux).to receive(:command_for).and_return("tmuxinator start proj1 --attach")
         allow(tmux).to receive(:session_name_for).with("proj1").and_return("proj1")
-        allow(tmux).to receive(:sessions).and_return(["proj1"])
+        allow(tmux).to receive(:sessions).and_return([], ["proj1"])
         allow(tmux).to receive(:rename_window)
 
         state["proj1"] = {"unique_id" => "old-uid"}
