@@ -40,7 +40,9 @@ module Workspace
     # One line of fix instructions, printed alongside any of the reasons
     # above. Never suggests sudo.
     FIX_HINT = <<~HINT.strip
-      Fix: add a statusLine entry to ~/.claude/settings.json:
+      Fix: run `workspace doctor --fix` to route Claude's status line through
+      workspace, or add manually to ~/.claude/settings.json (or a project's
+      .claude/settings.json):
       "statusLine": {"type": "command", "command": "workspace statusline"},
       or set a scrape pattern with `workspace config set context.source scrape` and
       `workspace config set context.pattern '(\\d+)% ctx'`, or pass --context-pct N.

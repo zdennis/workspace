@@ -155,6 +155,14 @@ module Workspace
       @ready_pattern = ready_pattern
     end
 
+    # @return [Boolean] whether workspace can route this agent's statusLine
+    #   through `workspace statusline`. Claude Code is the only agent that
+    #   supports a `statusLine` settings key today; installing or checking for
+    #   one on another agent would be meaningless.
+    def supports_statusline?
+      key == "claude"
+    end
+
     # @return [Boolean] whether workspace can install hooks for this agent
     def supports_hooks?
       !settings_path.nil? && !events.nil?

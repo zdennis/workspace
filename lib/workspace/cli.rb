@@ -2207,6 +2207,7 @@ module Workspace
 
     def cmd_doctor(args)
       headless = nil
+      fix = false
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: workspace doctor [options]"
         opts.separator ""
@@ -2217,10 +2218,14 @@ module Workspace
           "default follows the same rule as 'workspace launch'") do |v|
           headless = v
         end
+        opts.on("--fix", "Route Claude's statusLine through 'workspace statusline' (backs up",
+          "settings.json first); the only fix this performs today") do
+          fix = true
+        end
       end
       parser.parse!(args)
 
-      @doctor.run(headless: headless)
+      @doctor.run(headless: headless, fix: fix)
     end
 
     def cmd_relaunch(args)

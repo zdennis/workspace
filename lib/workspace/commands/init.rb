@@ -13,6 +13,10 @@ module Workspace
       # Hooks route agent events to this command, which the agent daemon reads.
       HOOK_COMMAND = "workspace session-event".freeze
 
+      # The statusLine command Claude Code runs so `workspace statusline` can
+      # read and store `context_window.used_percentage` for the pane.
+      STATUSLINE_COMMAND = "workspace statusline".freeze
+
       # @param config [Workspace::Config] configuration for path lookups
       # @param hook_installer [Workspace::HookInstaller] installs agent hooks
       # @param which [#call] returns true when an executable is on PATH

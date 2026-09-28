@@ -15,6 +15,10 @@ Install as Claude Code's `statusLine` command (in `~/.claude/settings.json` or a
 }
 ```
 
+Restart any running Claude Code sessions after installing or changing this (by hand or via `workspace doctor --fix`) — Claude Code doesn't reload `statusLine` mid-session.
+
+If `.claude/settings.local.json` also has a `statusLine` entry, it wins over this one at runtime (Claude Code deep-merges settings.json and settings.local.json, with the local file's keys taking precedence). `workspace doctor` checks for this and reports the shadow; `--fix` only ever writes `settings.json`, since `settings.local.json` is the user's own file. Remove the `statusLine` entry from `settings.local.json` by hand if you want workspace's rendering to actually take effect.
+
 Claude Code runs this on every render, piping one JSON payload on stdin (model, cwd, cost, `context_window.used_percentage`, etc.) and printing whatever it writes to stdout.
 
 ## What it does
@@ -54,6 +58,6 @@ If you'd rather not route Claude's status line through `workspace statusline` (o
 - pattern didn't match (scrape mode)
 - the last reading is from an earlier Claude session in this pane
 
-Every one of these comes with the same fix: add a `statusLine` entry to `~/.claude/settings.json` (`"statusLine": {"type": "command", "command": "workspace statusline"}`), switch to scrape mode (`workspace config set context.source scrape` and `context.pattern`), or pass `--context-pct N` to whatever command needs the number.
+Every one of these comes with the same fix: run `workspace doctor --fix` (or add a `statusLine` entry to `~/.claude/settings.json` by hand: `"statusLine": {"type": "command", "command": "workspace statusline"}`), switch to scrape mode (`workspace config set context.source scrape` and `context.pattern`), or pass `--context-pct N` to whatever command needs the number.
 
 A stale reading is still reported, with its timestamp — Claude's status line only renders between turns, so a long-running tool call means no fresher reading exists yet. `workspace` never estimates a percentage it hasn't actually read.

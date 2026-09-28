@@ -12,6 +12,13 @@ RSpec.describe Workspace::AgentProvider do
       expect(described_class.find("codex").supports_hooks?).to be false
     end
 
+    it "only Claude Code supports statusLine routing" do
+      expect(described_class.find("claude").supports_statusline?).to be true
+      expect(described_class.find("codex").supports_statusline?).to be false
+      expect(described_class.find("opencode").supports_statusline?).to be false
+      expect(described_class.find("pi").supports_statusline?).to be false
+    end
+
     it "returns nil for an unknown key" do
       expect(described_class.find("nope")).to be_nil
     end
