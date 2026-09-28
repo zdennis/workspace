@@ -2953,6 +2953,10 @@ module Workspace
         opts.on("-f", "--force", "Skip confirmation and remove zombies immediately") do
           force = true
         end
+        opts.separator ""
+        opts.separator "Examples:"
+        opts.separator "  workspace cleanup    # list zombie sessions and ask before removing"
+        opts.separator "  workspace cleanup --force    # remove all zombie sessions immediately"
       end
       parser.parse!(args)
 
