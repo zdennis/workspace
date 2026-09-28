@@ -230,6 +230,21 @@ RSpec.describe "T9 windowed launch reuse: concurrency and liveness (adversarial)
     expect(new_state.load["proj"]).to eq({"headless" => true})
   end
 
+  it "TC8: a --reattach pane whose session is killed just before the attach starts the session instead of attaching to nothing" do
+    config_path = config.config_path_for("proj")
+    FileUtils.mkdir_p(File.dirname(config_path))
+    File.write(config_path, "name: proj\nroot: /tmp\n")
+    real_tmux = Workspace::Tmux.new(config: config)
+    allow(real_tmux).to receive(:sessions).and_return(["proj"])
+
+    command = real_tmux.command_for("proj", reattach: true)
+    pane_tmux = T9Tmux.new(live: [], pane_start_delay: 0.01)
+
+    expect(pane_tmux.run_in_pane(command)).to be(true),
+      "the pane ran #{command.inspect}; with the session gone it attached to nothing and never started it"
+    pane_tmux.join_threads
+  end
+
   it "TC6: listing sessions on a wedged tmux server gives up instead of blocking launch forever" do
     bin = File.join(tmpdir, "bin")
     FileUtils.mkdir_p(bin)

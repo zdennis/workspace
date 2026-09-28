@@ -83,7 +83,7 @@ RSpec.describe Workspace::Tmux do
 
       tmux = described_class.new(config: config)
       allow(tmux).to receive(:sessions).and_return(["myproject"])
-      expect(tmux.command_for("myproject", reattach: true)).to eq("tmux -CC attach -t myproject")
+      expect(tmux.command_for("myproject", reattach: true)).to eq("tmux -CC attach -t myproject || tmuxinator start workspace.myproject --attach")
     end
   end
 

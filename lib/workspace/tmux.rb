@@ -531,17 +531,17 @@ module Workspace
     end
 
     # @param project [String] project/config name
-    # @param reattach [Boolean] whether to reattach to existing session
+    # @param reattach [Boolean] whether to reattach to existing session; should
+    #   the session be killed before the attach runs, tmuxinator starts it
     # @return [String] the shell command to start/attach the project
     def command_for(project, reattach: false)
+      tmuxinator_name = File.basename(@config.config_path_for(project), ".yml")
+      start = "tmuxinator start #{tmuxinator_name} --attach"
       if reattach
         tmux_session = session_name_for(project)
-        if sessions.include?(tmux_session)
-          return "tmux -CC attach -t #{tmux_session}"
-        end
+        return "tmux -CC attach -t #{tmux_session} || #{start}" if sessions.include?(tmux_session)
       end
-      tmuxinator_name = File.basename(@config.config_path_for(project), ".yml")
-      "tmuxinator start #{tmuxinator_name} --attach"
+      start
     end
 
     # Starts a project's tmux session in the background with tmuxinator,
