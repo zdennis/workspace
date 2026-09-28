@@ -202,6 +202,68 @@ RSpec.describe Workspace::HookInstaller do
 
       expect(File.exist?(settings_path)).to be false
     end
+
+    it "reports what a dry run would preserve instead of silently doing nothing" do
+      write_settings("statusLine" => {"type" => "command", "command" => "bash ~/.claude/statusline-command.sh"})
+
+      installer.install_statusline(provider, tmpdir, command: statusline_command, project_settings: project_settings, dry_run: true)
+
+      expect(output.string).to include("(dry run) would save previous statusLine command -> statusline.command (bash ~/.claude/statusline-command.sh)")
+    end
+
+    it "reports a dry-run conflict instead of silently doing nothing" do
+      project_settings.with_global_lock { |data| data.merge("statusline" => {"command" => "my-existing-choice"}) }
+      write_settings("statusLine" => {"type" => "command", "command" => "bash ~/.claude/statusline-command.sh"})
+
+      installer.install_statusline(provider, tmpdir, command: statusline_command, project_settings: project_settings, dry_run: true)
+
+      expect(output.string).to include("(dry run) statusline.command is already set to \"my-existing-choice\"; would not overwrite it")
+    end
+
+    it "preserves a command found in settings.local.json when settings.json has none of its own" do
+      local_settings_path = File.join(tmpdir, ".claude", "settings.local.json")
+      FileUtils.mkdir_p(File.dirname(local_settings_path))
+      File.write(local_settings_path, JSON.pretty_generate("statusLine" => {"type" => "command", "command" => "bash ~/.claude/local-statusline.sh"}))
+
+      installer.install_statusline(provider, tmpdir, command: statusline_command, project_settings: project_settings)
+
+      expect(global_config.dig("statusline", "command")).to eq("bash ~/.claude/local-statusline.sh")
+    end
+
+    it "warns that settings.local.json still shadows the statusLine it just installed" do
+      local_settings_path = File.join(tmpdir, ".claude", "settings.local.json")
+      FileUtils.mkdir_p(File.dirname(local_settings_path))
+      File.write(local_settings_path, JSON.pretty_generate("statusLine" => {"type" => "command", "command" => "bash ~/.claude/local-statusline.sh"}))
+
+      installer.install_statusline(provider, tmpdir, command: statusline_command, project_settings: project_settings)
+
+      expect(output.string).to include("settings.local.json")
+      expect(output.string).to include("still routes statusLine through \"bash ~/.claude/local-statusline.sh\"")
+    end
+
+    it "tolerates an unparsable settings.local.json without raising or writing to it" do
+      local_settings_path = File.join(tmpdir, ".claude", "settings.local.json")
+      FileUtils.mkdir_p(File.dirname(local_settings_path))
+      File.write(local_settings_path, "{ not json")
+
+      expect { installer.install_statusline(provider, tmpdir, command: statusline_command, project_settings: project_settings) }
+        .not_to raise_error
+      expect(File.read(local_settings_path)).to eq("{ not json")
+    end
+  end
+
+  describe "#local_statusline_command" do
+    it "is nil when settings.local.json has no statusLine" do
+      expect(installer.local_statusline_command(provider, tmpdir)).to be_nil
+    end
+
+    it "reads the command from settings.local.json" do
+      local_settings_path = File.join(tmpdir, ".claude", "settings.local.json")
+      FileUtils.mkdir_p(File.dirname(local_settings_path))
+      File.write(local_settings_path, JSON.pretty_generate("statusLine" => {"type" => "command", "command" => "bash ~/.claude/local-statusline.sh"}))
+
+      expect(installer.local_statusline_command(provider, tmpdir)).to eq("bash ~/.claude/local-statusline.sh")
+    end
   end
 
   describe "#preview" do

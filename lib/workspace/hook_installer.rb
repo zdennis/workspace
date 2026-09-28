@@ -33,6 +33,30 @@ module Workspace
 
     # @param provider [Workspace::AgentProvider]
     # @param project_root [String]
+    # @return [String] absolute path to the agent's local settings file (e.g.
+    #   `.claude/settings.local.json`). Claude Code deep-merges this on top
+    #   of the project's own settings.json at runtime, with the local file's
+    #   keys winning -- it is read-only here, never written, since it's the
+    #   user's own file, not workspace's to edit.
+    def local_settings_path_for(provider, project_root)
+      File.join(File.dirname(settings_path_for(provider, project_root)), "settings.local.json")
+    end
+
+    # @param provider [Workspace::AgentProvider]
+    # @param project_root [String]
+    # @return [String, nil] the statusLine command found in the agent's
+    #   settings.local.json, if any. Local settings win at runtime, so a
+    #   command found here shadows whatever `install_statusline` puts in
+    #   settings.json.
+    def local_statusline_command(provider, project_root)
+      local = read_settings(local_settings_path_for(provider, project_root))
+      statusline_command_in(local["statusLine"])
+    rescue Workspace::Error
+      nil
+    end
+
+    # @param provider [Workspace::AgentProvider]
+    # @param project_root [String]
     # @param command [String] the hook command to install
     # @return [Boolean] whether every wanted hook is already present
     def installed?(provider, project_root, command)
@@ -131,10 +155,14 @@ module Workspace
       if current_command && !current_command.to_s.empty?
         preserve_existing_statusline_command(current_command, project_settings, dry_run: dry_run, quiet: quiet)
       else
-        user_command = user_level_statusline_command(path)
-        if user_command && !user_command.to_s.empty? && user_command != command
-          preserve_existing_statusline_command(user_command, project_settings, dry_run: dry_run, quiet: quiet)
+        local_command = local_statusline_command(provider, project_root)
+        preserved = if local_command && !local_command.to_s.empty? && local_command != command
+          local_command
+        else
+          user_command = user_level_statusline_command(path)
+          (user_command && !user_command.to_s.empty? && user_command != command) ? user_command : nil
         end
+        preserve_existing_statusline_command(preserved, project_settings, dry_run: dry_run, quiet: quiet) if preserved
       end
 
       merged = deep_dup(existing)
@@ -146,6 +174,12 @@ module Workspace
         File.write(path, JSON.pretty_generate(merged) + "\n")
       end
       @output.puts "  #{existed ? "update" : "create"}  #{path}" unless quiet
+
+      shadow_command = local_statusline_command(provider, project_root)
+      if shadow_command && !shadow_command.to_s.empty? && shadow_command != command
+        local_path = local_settings_path_for(provider, project_root)
+        @output.puts "  warn    #{local_path} still routes statusLine through \"#{shadow_command}\"; settings.json's statusLine is shadowed there until you remove that entry from #{local_path}" unless quiet
+      end
     end
 
     private
@@ -158,7 +192,15 @@ module Workspace
     # printed as a warning instead, naming both commands, so the user can
     # decide which one they actually want.
     def preserve_existing_statusline_command(existing_command, project_settings, dry_run:, quiet:)
-      return if dry_run
+      if dry_run
+        current = project_settings.load_global.dig("statusline", "command")
+        if current.nil? || current.to_s.empty? || current == existing_command
+          @output.puts "  save    (dry run) would save previous statusLine command -> statusline.command (#{existing_command})" unless quiet
+        else
+          @output.puts "  warn    (dry run) statusline.command is already set to \"#{current}\"; would not overwrite it with the different command found here, \"#{existing_command}\"" unless quiet
+        end
+        return
+      end
 
       saved_command = nil
       project_settings.with_global_lock do |data|
@@ -190,6 +232,14 @@ module Workspace
     # `statusline.command` when the project-level file being edited has none
     # of its own, since Claude Code's project settings otherwise shadow it
     # key-by-key once workspace installs a project-level statusLine.
+    #
+    # Claude Code's precedence, highest first, is `settings.local.json` >
+    # `settings.json` (project) > `~/.claude/settings.json` (user). All three
+    # are read-only from workspace's side except the project `settings.json`
+    # it installs into: `install_statusline` preserves whichever command a
+    # higher-precedence file already has (local first, then user-level) into
+    # `statusline.command` before writing its own, and warns if a
+    # `settings.local.json` entry will keep shadowing the result.
     #
     # @param project_settings_path [String] the project-level settings file
     #   being installed into; skipped when it *is* the user-level file (e.g.
