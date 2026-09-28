@@ -8,6 +8,62 @@ RSpec.describe Workspace::Tmux do
 
   after { FileUtils.remove_entry(tmpdir) }
 
+  describe "#sessions and #start_server" do
+    let(:bin) { File.join(tmpdir, "bin") }
+    let(:tmux) { described_class.new(config: config, command_timeout: 0.5) }
+
+    def fake_tmux(body)
+      FileUtils.mkdir_p(bin)
+      File.write(File.join(bin, "tmux"), "#!/bin/sh\n#{body}\n")
+      File.chmod(0o755, File.join(bin, "tmux"))
+    end
+
+    around do |example|
+      original_path = ENV["PATH"]
+      ENV["PATH"] = "#{bin}:#{original_path}"
+      example.run
+    ensure
+      ENV["PATH"] = original_path
+    end
+
+    it "lists the session names tmux prints" do
+      fake_tmux(%(printf 'alpha\\nbeta\\n'))
+      expect(tmux.sessions).to eq(%w[alpha beta])
+    end
+
+    it "treats a tmux that exits nonzero (no server) as no sessions" do
+      fake_tmux("echo 'no server running' >&2; exit 1")
+      expect(tmux.sessions).to eq([])
+    end
+
+    it "stops a tmux that doesn't answer and raises naming the command" do
+      pid_file = File.join(tmpdir, "tmux.pid")
+      fake_tmux("echo $$ > '#{pid_file}'\nexec sleep 30")
+
+      expect { tmux.sessions }.to raise_error(Workspace::Error, /tmux list-sessions did not respond within 0.5s/)
+      pid = File.read(pid_file).to_i
+      expect { Process.kill(0, pid) }.to raise_error(Errno::ESRCH)
+    end
+
+    it "raises when start-server doesn't answer" do
+      fake_tmux("exec sleep 30")
+      expect { tmux.start_server }.to raise_error(Workspace::Error, /tmux start-server did not respond/)
+    end
+
+    it "reports whether start-server succeeded" do
+      fake_tmux("exit 0")
+      expect(tmux.start_server).to be(true)
+    end
+
+    it "returns nil from start_server when tmux can't be run" do
+      FileUtils.mkdir_p(bin)
+      File.write(File.join(bin, "tmux"), "not executable")
+      File.chmod(0o644, File.join(bin, "tmux"))
+      ENV["PATH"] = bin
+      expect(tmux.start_server).to be_nil
+    end
+  end
+
   describe "#command_for" do
     it "returns tmuxinator command using the namespaced config name" do
       tmux = described_class.new(config: config)
