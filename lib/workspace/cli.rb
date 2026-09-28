@@ -2979,6 +2979,11 @@ module Workspace
         opts.on("--pane N", Integer, "Pane index (1-based)") do |n|
           pane_index = n
         end
+        opts.separator ""
+        opts.separator "Examples:"
+        opts.separator "  workspace set-command myproject 'vim .' --pane 2    # replace the second pane's command"
+        opts.separator "  workspace set-command scooter 'ascii-banner \"scooter\" --rainbow' --pane 1    # replace the banner pane"
+        opts.separator "  workspace set-command myproject 'htop' --pane 4    # add a fourth pane (prompts if only 3 exist)"
       end
       parser.parse!(args)
 
