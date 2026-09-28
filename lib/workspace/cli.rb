@@ -524,6 +524,11 @@ module Workspace
         opts.on("-f", "--force", "Skip confirmation, and skip the uncommitted/unpushed-work check") do
           force = true
         end
+        opts.separator ""
+        opts.separator "Examples:"
+        opts.separator "  workspace kill    # kill the current worktree project (auto-detected from cwd)"
+        opts.separator "  workspace kill myproject.worktree-PROJ-123    # kill a specific worktree project"
+        opts.separator "  workspace kill -f myproject.worktree-PROJ-123    # skip confirmation and the unsaved-work check"
       end
       parser.parse!(args)
 
