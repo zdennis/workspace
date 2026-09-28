@@ -10,6 +10,19 @@ module Workspace
   # Receives all collaborators via constructor injection and dispatches
   # subcommands via a case statement.
   class CLI
+    # Known subcommand names, matching the `case subcommand` branches in
+    # {#run}. Used to pick out the intended subcommand when a leading flag
+    # is mistaken for one (see the "Unknown option before the subcommand"
+    # hint).
+    SUBCOMMANDS = %w[
+      init doctor launch start stop add add-project kill finish relaunch
+      focus deactivate reactivate tile resize capture agent lock dev parent
+      sessions ask session-event agent-run handoff pipeline run
+      run-and-report report-run-status layout config statusline current
+      list-projects list status repair cleanup prune set-command event-log
+      whereis lookup dir alfred version help
+    ].freeze
+
     # @param config [Workspace::Config] configuration for path lookups
     # @param state [Workspace::State] state persistence
     # @param project_config [Workspace::ProjectConfig] project config management
@@ -204,8 +217,8 @@ module Workspace
         main_help
       else
         if subcommand&.start_with?("-")
-          following = args.find { |a| !a.start_with?("-") }
-          hint = following ? ", e.g. \"workspace #{following} #{subcommand}\"." : "."
+          known = args.find { |a| SUBCOMMANDS.include?(a) }
+          hint = known ? ", e.g. \"workspace #{known} #{subcommand}\"." : "."
           @error_output.puts "Unknown option before the subcommand: #{subcommand}. Put options after the subcommand#{hint}"
         else
           @error_output.puts "Unknown subcommand: #{subcommand}"
@@ -314,9 +327,8 @@ module Workspace
         opts.separator "Windows are arranged left-to-right with slight overlap."
         opts.separator ""
         opts.separator "Options:"
-        opts.on("--reattach", "Reattach to the tmux session of a launcher pane launch is reusing,",
-          "instead of relaunching tmuxinator into it, preserving session state.",
-          "A new pane already reuses its session on its own when it's running.") do
+        opts.on("--reattach", "Reuse a launcher pane's existing tmux session instead of relaunching",
+          "into it (see docs/README.launch.md).") do
           reattach = true
         end
         opts.on("--[no-]headless", "Start each session in the background with plain tmux: no iTerm2,",
@@ -1865,7 +1877,7 @@ module Workspace
       as_json = false
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: workspace pipeline status <project>"
-        opts.on("--json", "Print {schema_version, entries} instead of a table") { as_json = true }
+        opts.on("--json", "Print JSON (schema_version plus entries) instead of a table") { as_json = true }
       end
       parser.parse!(args)
       project = args.shift

@@ -156,6 +156,26 @@ RSpec.describe Workspace::CLI do
       )
     end
 
+    it "skips a leading flag's value and uses the real subcommand for the example" do
+      cli, _, error_output = build_test_cli
+      expect { cli.run(["--project", "myproj", "launch"]) }.to raise_error(FakeSystemExit) { |e|
+        expect(e.status).to eq(1)
+      }
+      expect(error_output.string).to include(
+        "Unknown option before the subcommand: --project. Put options after the subcommand, e.g. \"workspace launch --project\"."
+      )
+    end
+
+    it "drops the example when no known subcommand appears after the leading flag" do
+      cli, _, error_output = build_test_cli
+      expect { cli.run(["--state-dir", "/foo", "bogus"]) }.to raise_error(FakeSystemExit) { |e|
+        expect(e.status).to eq(1)
+      }
+      expect(error_output.string).to include(
+        "Unknown option before the subcommand: --state-dir. Put options after the subcommand."
+      )
+    end
+
     it "still enables --debug when it appears before the subcommand" do
       cli, _, error_output = build_test_cli
       expect { cli.run(["--debug", "bogus"]) }.to raise_error(FakeSystemExit)
