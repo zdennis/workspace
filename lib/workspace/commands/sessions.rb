@@ -11,6 +11,11 @@ module Workspace
     # code path behind both the table and `--json`, so what a future UI reads is
     # exactly what the table shows.
     class Sessions
+      # Raised internally by {#fetch_silently} when a member workspace has no
+      # agent daemon running; swallowed there so {#fetch_members} can omit
+      # that member silently while any other {Workspace::Error} propagates.
+      class NoAgentDaemonError < Workspace::Error; end
+
       # The lock this column shows; see {Workspace::LockEnforcer::LOCK_NAME}.
       LOCK_NAME = "edit"
 
@@ -44,10 +49,18 @@ module Workspace
         @sleeper = sleeper
       end
 
-      # @param name [String] workspace name
+      # @param name [String] workspace name; when `worktrees` is true, this is
+      #   the root project (or one of its worktree config names, which is
+      #   resolved back to its root)
       # @param json [Boolean] emit the raw payload instead of a table
       # @param watch [Boolean] redraw until interrupted
       # @param interval [Numeric] seconds between redraws when watching
+      # @param worktrees [Boolean] also show sessions for every child
+      #   worktree workspace of the root project (config names of the form
+      #   `"<root>.worktree-*"`, per {Workspace::WorkspaceLineage}). A
+      #   workspace whose agent daemon isn't running is omitted silently;
+      #   only when none of them answer is the usual "no agent daemon"
+      #   error raised, naming the root.
       # @return [Hash] {exit_code:} — 0 on success, 1 if `--json` was given
       #   and no agent daemon answered (the error is then written to stdout
       #   as `{"schema_version":1,"error":...}` instead of being raised,
@@ -57,14 +70,13 @@ module Workspace
       #   loops until interrupted and never returns.
       # @raise [Workspace::Error] if no agent daemon is listening and `json`
       #   is false
-      def call(name:, json: false, watch: false, interval: 2)
+      def call(name:, json: false, watch: false, interval: 2, worktrees: false)
         @name = name
+        @worktrees = worktrees
         return call_once(json) unless watch
 
         loop do
-          snapshot = fetch(name)
-          @output.print "\e[H\e[2J"
-          render(snapshot, json)
+          render_current(json, clear: true)
           @sleeper.call(interval)
         end
       rescue Interrupt
@@ -78,12 +90,79 @@ module Workspace
       private
 
       def call_once(json)
-        render(fetch(@name), json)
+        render_current(json)
         {exit_code: 0}
       rescue Workspace::Error => e
         raise unless json
         @output.puts JSON.generate({"schema_version" => JSON_SCHEMA_VERSION, "error" => e.message})
         {exit_code: 1}
+      end
+
+      # Fetches (root snapshot, or every member's when `--worktrees`) and
+      # renders it. Shared by the watch loop and the single-shot path so
+      # they never diverge on how `@worktrees` is handled. Fetches before
+      # clearing the screen, so a failed fetch (no agent daemon) leaves the
+      # previous frame, or nothing, on screen instead of a blank one.
+      def render_current(json, clear: false)
+        if @worktrees
+          pairs = fetch_members(@name)
+          @output.print "\e[H\e[2J" if clear
+          render_members(pairs, json)
+        else
+          snapshot = fetch(@name)
+          @output.print "\e[H\e[2J" if clear
+          render(snapshot, json)
+        end
+      end
+
+      # Root project plus every worktree config that belongs to it, root
+      # first and children sorted, mirroring {Workspace::Commands::Tile}'s
+      # `"#{project}."` prefix match.
+      def members(root)
+        root = WorkspaceLineage.split_worktree_name(root)&.first || root
+        prefix = "#{root}#{WorkspaceLineage::WORKTREE_SEPARATOR}"
+        children = @project_config ? @project_config.available_projects.select { |n| n.start_with?(prefix) }.sort : []
+        [root, *children]
+      end
+
+      # Fetches every member's snapshot, silently dropping any whose agent
+      # daemon isn't running. Raises the usual "no agent daemon" error,
+      # naming the root, only when none of them answer.
+      def fetch_members(root)
+        pairs = members(root).filter_map { |member|
+          snapshot = fetch_silently(member)
+          [member, snapshot] if snapshot
+        }
+        return pairs if pairs.any?
+        raise Workspace::Error, "No agent daemon for '#{root}'.\nStart one with:  workspace agent #{root}"
+      end
+
+      def fetch_silently(name)
+        fetch(name)
+      rescue NoAgentDaemonError
+        nil
+      end
+
+      # Renders one section per member that answered: the same heading and
+      # table (or JSON payload) as a single-workspace {#render}, separated
+      # by a blank line in table mode, or collected under a `"workspaces"`
+      # array in JSON mode.
+      def render_members(pairs, json)
+        if json
+          workspaces = pairs.map { |member, snapshot| prepared_payload(member, snapshot) }
+          return @output.puts JSON.pretty_generate({"schema_version" => JSON_SCHEMA_VERSION, "workspaces" => workspaces})
+        end
+
+        pairs.each_with_index do |(member, snapshot), index|
+          @output.puts "" if index.positive?
+          prepare(member, snapshot)
+          render_table(snapshot)
+        end
+      end
+
+      def prepared_payload(member, snapshot)
+        prepare(member, snapshot)
+        json_payload(snapshot)
       end
 
       def fetch(name)
@@ -99,23 +178,39 @@ module Workspace
           end
         end
       rescue SystemCallError, IOError
-        raise Workspace::Error,
+        raise NoAgentDaemonError,
           "No agent daemon for '#{name}'.\nStart one with:  workspace agent #{name}"
       end
 
       def render(snapshot, json)
+        prepare(@name, snapshot)
+        return @output.puts(JSON.pretty_generate(json_payload(snapshot))) if json
+
+        render_table(snapshot)
+      end
+
+      # Cleans waiting messages and stamps the LOCK/ASK columns for one
+      # member's panes, scoped to that member's own lock namespace and ask
+      # store (each `apply_*_column` takes the workspace name explicitly,
+      # rather than reading shared state, since `prepare` is called once per
+      # member under `--worktrees`).
+      def prepare(name, snapshot)
         panes = snapshot["panes"] || []
         # The daemon cleans messages as they arrive, but one started before an
         # upgrade may not, and --json output reaches terminals and scripts too.
         panes.each { |pane| pane["waiting_message"] &&= SessionMonitor.clean_message(pane["waiting_message"]) }
-        apply_lock_column(panes)
-        apply_ask_column(panes)
-        if json
-          payload = {"schema_version" => JSON_SCHEMA_VERSION}.merge(snapshot)
-          payload["schema_version"] = JSON_SCHEMA_VERSION
-          return @output.puts(JSON.pretty_generate(payload))
-        end
+        apply_lock_column(name, panes)
+        apply_ask_column(name, panes)
+      end
 
+      def json_payload(snapshot)
+        payload = {"schema_version" => JSON_SCHEMA_VERSION}.merge(snapshot)
+        payload["schema_version"] = JSON_SCHEMA_VERSION
+        payload
+      end
+
+      def render_table(snapshot)
+        panes = snapshot["panes"] || []
         @output.puts "workspace: #{snapshot["workspace"]}"
         @output.puts ""
         return @output.puts "  no panes" if panes.empty?
@@ -167,10 +262,10 @@ module Workspace
       # rendered workspace's project root can't be resolved, rather than
       # guessing at some other project's lock state via the command's own
       # working directory.
-      def apply_lock_column(panes)
+      def apply_lock_column(name, panes)
         return unless @lock_namespace && @lock_holder
 
-        root = project_root
+        root = project_root(name)
         return unless root
 
         positions = lock_positions(root)
@@ -185,9 +280,9 @@ module Workspace
         end
       end
 
-      def project_root
-        return nil unless @project_config && @name
-        @project_config.project_root_for(@name)
+      def project_root(name)
+        return nil unless @project_config && name
+        @project_config.project_root_for(name)
       end
 
       # Stamps each pane with `"open_questions"`, the count of unanswered
@@ -196,9 +291,9 @@ module Workspace
       # against any row here; `workspace ask list` still shows it. A store
       # that can't be read leaves the column off with a warning, so the rest
       # of `sessions` still works.
-      def apply_ask_column(panes)
-        return unless @name
-        records = AskStore.new(path: @config.ask_state_path(@name), error_output: @error_output).list(open_only: true)
+      def apply_ask_column(name, panes)
+        return unless name
+        records = AskStore.new(path: @config.ask_state_path(name), error_output: @error_output).list(open_only: true)
         by_pane = records.group_by { |r| r["pane"] }
         panes.each { |pane| pane["open_questions"] = by_pane[pane["pane_id"]]&.size || 0 }
       rescue Workspace::Error => e

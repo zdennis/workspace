@@ -73,7 +73,7 @@ RSpec.describe "Lock observability (adversarial concurrency)" do
       lock_namespace: namespace, lock_holder: liveness, output: StringIO.new, error_output: StringIO.new)
     panes = [{"pane_id" => "%1"}, {"pane_id" => "%2"}]
 
-    sessions.send(:apply_lock_column, panes)
+    sessions.send(:apply_lock_column, "proj", panes)
 
     expect(panes[0]["lock"]).not_to eq("edit ✓")
   end

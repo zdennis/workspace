@@ -2821,6 +2821,17 @@ RSpec.describe Workspace::CLI do
 
       expect(JSON.parse(output.string)).to eq("schema_version" => 1, "error" => "No agent daemon for 'proj'.\nStart one with:  workspace agent proj")
     end
+
+    it "forwards --worktrees to the sessions command" do
+      sessions_command = instance_double(Workspace::Commands::Sessions)
+      cli, = build_test_cli(sessions_command: sessions_command, project_detector: instance_double(Workspace::ProjectDetector, detect: "proj"))
+
+      expect(sessions_command).to receive(:call)
+        .with(name: "proj", json: false, watch: false, interval: 2, worktrees: true)
+        .and_return({exit_code: 0})
+
+      cli.run(["sessions", "--worktrees"])
+    end
   end
 
   describe "#run with event-log show" do

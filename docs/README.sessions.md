@@ -15,6 +15,7 @@ workspace sessions [options] [project]
 | `--json` | Emit the raw payload instead of a table |
 | `--watch` | Redraw until interrupted |
 | `--interval SECONDS` | Seconds between redraws when watching (default 2) |
+| `--worktrees` | Also show sessions for child worktree workspaces |
 
 ## Details
 
@@ -75,6 +76,12 @@ When the LOCK column is hidden (project root unresolved), all five fields (`lock
 
 The fix is always one of: run `workspace doctor --fix` (or add a `statusLine` entry to `~/.claude/settings.json` by hand: `"statusLine": {"type": "command", "command": "workspace statusline"}`), switch to scrape mode (`workspace config set context.source scrape` and `workspace config set context.pattern '(\d+)% ctx'`), or pass `--context-pct N` to whatever command needs the number. `context_pct` is never guessed — a stale reading is reported as-is, with `context_updated_at` showing its age, since renders are event-driven and none happen during a long tool call.
 
+## --worktrees
+
+`--worktrees` shows the root project's sessions plus every child worktree workspace's (config names `<project>.worktree-*`, same family `workspace tile` groups). With no `project`, the root is the parent of the current worktree (via `.workspace-project`/git ancestry), so running it from inside a worktree still shows the whole family. Passing a worktree's own name works the same way — it's resolved to its parent first.
+
+A member workspace with no agent daemon running is left out silently; only when *none* of the family answers does the command fail the same way plain `sessions` does for a single project, naming the root. The table shows one section per workspace that answered — a `workspace: <name>` heading and its usual pane table, root first, then children sorted, separated by a blank line. `--json` nests each member's usual payload (same shape as plain `sessions --json`, `schema_version` included) under a `"workspaces"` array, itself wrapped in `{"schema_version": 1, "workspaces": [...]}`. `--watch`/`--interval` redraw every section each tick.
+
 ## Alerts
 
 The session-monitor daemon can run a command of your choosing when an agent pane starts `waiting`, or when an agent pane's output stays unchanged for longer than `alerts.idle_after` (default `10m`). Set it with [`workspace config`](README.config.md):
@@ -122,4 +129,7 @@ workspace sessions --watch --interval 5
 
 # Emit raw JSON for scripting
 workspace sessions --json
+
+# Show sessions for a project and all its worktree workspaces
+workspace sessions my-project --worktrees
 ```
