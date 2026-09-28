@@ -2,6 +2,15 @@ require "stringio"
 require "tmpdir"
 
 module CLITestHelpers
+  # A LaunchMode whose automatic choice is fixed, so specs never depend on the
+  # machine (platform, osascript, CI) or on a real ~/.config.
+  def self.launch_mode(headless:, global: {})
+    settings = FakeProjectSettings.new
+    settings.define_singleton_method(:load_global) { global }
+    Workspace::LaunchMode.new(project_settings: settings, platform: headless ? "x86_64-linux" : "arm64-darwin",
+      env: {}, which: ->(_exe) { true })
+  end
+
   class FakeEventLog
     attr_reader :events
 
@@ -119,6 +128,7 @@ module CLITestHelpers
     def sessions = []
     def start_server = nil
     def kill_session(_name) = nil
+    def custom_socket_option(_config_name) = nil
     def rename_window(_session, _index, _name) = nil
     def resize_pane(_session, _pane, _size) = true
     def capture_layout(_session, **_opts) = "layout-string"
@@ -220,7 +230,10 @@ module CLITestHelpers
   end
 
   class FakeDoctor
-    def run
+    attr_reader :headless
+
+    def run(headless: nil)
+      @headless = headless
     end
   end
 

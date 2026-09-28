@@ -420,6 +420,14 @@ RSpec.describe Workspace::Commands::Config do
       expect { command.set("context.source", "bogus") }.to raise_error(Workspace::UsageError, /Invalid context.source/)
     end
 
+    it "stores launch.headless globally, accepting only true or false" do
+      command, project_settings = build_command
+      command.set("launch.headless", "true")
+
+      expect(project_settings.load_global.dig("launch", "headless")).to eq("true")
+      expect { command.set("launch.headless", "yes") }.to raise_error(Workspace::UsageError, /Invalid launch.headless/)
+    end
+
     it "requires context.pattern to have exactly one capture group" do
       command, = build_command
       expect { command.set("context.pattern", '(\d+)% ctx') }.not_to raise_error

@@ -149,4 +149,31 @@ RSpec.describe Workspace::Commands::Tile do
       expect(tiled_entries.first[:project]).to eq("alive")
     end
   end
+
+  describe "headless projects" do
+    it "explains that a headless-only project has no windows, without asking window-tool" do
+      state["proj"] = {"headless" => true}
+      state["proj.worktree-a"] = {"headless" => true}
+      expect(window_manager).not_to receive(:live_window_ids)
+
+      expect { command.call("proj") }.to raise_error(Workspace::Error, /run headless \(no iTerm windows\)/)
+    end
+
+    it "tiles the windowed projects and leaves headless ones out" do
+      state["proj"] = {"iterm_window_id" => 100}
+      state["proj.worktree-a"] = {"headless" => true}
+      allow(window_manager).to receive(:live_window_ids).and_return(Set[100])
+
+      command.call("proj")
+
+      expect(output.string).to include("Tiling 1 window(s) for proj")
+    end
+
+    it "notes headless workspaces when tiling everything finds no windows" do
+      state["proj"] = {"headless" => true}
+      expect(window_manager).not_to receive(:live_window_ids)
+
+      expect { command.call_all }.to raise_error(Workspace::Error, /headless workspaces have no windows/)
+    end
+  end
 end

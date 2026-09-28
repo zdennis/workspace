@@ -22,6 +22,8 @@ Auto-detects the project from the current directory if not specified.
 
 With `--all`, tiles every active workspace window regardless of project.
 
+[Headless](README.launch.md#headless) projects have no window and are left out. When every matching project is headless, `tile` exits 1 and says so.
+
 ## Examples
 
 ```sh

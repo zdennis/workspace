@@ -25,7 +25,7 @@ The cleanup command:
 3. **Asks for confirmation** before removing (unless `--force` is used)
 4. **Removes zombie entries** from state
 
-A session is considered a zombie if either its tmux session or iTerm window (or both) no longer exists.
+A session is considered a zombie if either its tmux session or iTerm window (or both) no longer exists. A [headless](README.launch.md#headless) project has no window, so only its tmux session is checked, and it's listed with `iTerm window: none (headless)`.
 
 ## Examples
 

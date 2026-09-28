@@ -45,7 +45,7 @@ module Workspace
     # @return [Hash<Integer, String>] map of window_id => title
     def iterm_windows
       require "json"
-      output, _, status = Open3.capture3(@config.window_tool, "list", "--app", "iTerm2", "--json")
+      output, _, status = window_tool("list", "--app", "iTerm2", "--json")
       return {} unless status.success?
 
       windows = JSON.parse(output)
@@ -65,7 +65,7 @@ module Workspace
         args += ["+", "highlight", "id=#{window_id}", "--color", highlight]
       end
       @logger.debug { "window_manager: focus #{args.join(" ")}" }
-      _, _, status = Open3.capture3(*args)
+      _, _, status = window_tool(*args.drop(1))
       @logger.debug { "window_manager: focus result=#{status.success?}" }
       status.success?
     end
@@ -73,7 +73,7 @@ module Workspace
     # @param window_id [String, Integer] window ID (CGWindowID)
     # @return [Boolean] whether the window was shaken
     def shake_by_id(window_id)
-      _, _, status = Open3.capture3(@config.window_tool, "shake", "id=#{window_id}")
+      _, _, status = window_tool("shake", "id=#{window_id}")
       status.success?
     end
 
@@ -82,7 +82,7 @@ module Workspace
     def live_window_ids
       require "json"
       @logger.debug { "window_manager: listing live window IDs" }
-      output, _, status = Open3.capture3(@config.window_tool, "list", "--app", "iTerm2", "--json")
+      output, _, status = window_tool("list", "--app", "iTerm2", "--json")
       unless status.success?
         raise Workspace::Error, "window-tool list failed. Is window-tool installed?"
       end
@@ -98,7 +98,7 @@ module Workspace
     # @return [Hash<Integer, Hash>] map of window_id => {x:, y:, width:, height:}
     def all_window_bounds(window_ids)
       require "json"
-      output, _, status = Open3.capture3(@config.window_tool, "list", "--app", "iTerm2", "--json")
+      output, _, status = window_tool("list", "--app", "iTerm2", "--json")
       return {} unless status.success?
 
       windows = JSON.parse(output)
@@ -138,5 +138,17 @@ module Workspace
     end
 
     private
+
+    FailedStatus = Struct.new(:success?)
+
+    # Runs window-tool. A missing window-tool (e.g. on a headless machine)
+    # reads as a failed run instead of raising, so callers report it the way
+    # they report any other window-tool failure.
+    def window_tool(*args)
+      Open3.capture3(@config.window_tool, *args)
+    rescue SystemCallError => e
+      @logger.debug { "window_manager: could not run window-tool: #{e.message}" }
+      ["", e.message, FailedStatus.new(false)]
+    end
   end
 end

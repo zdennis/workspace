@@ -41,6 +41,8 @@ module Workspace
       # @param base [String, nil] branch/ref to create a new branch from, skipping the
       #   base-branch prompt
       # @param yes [Boolean] accept every default instead of prompting
+      # @param headless [Boolean] launch the session in the background with plain
+      #   tmux instead of in iTerm2 (see Commands::Launch#call)
       # @param json [Boolean] emit the documented JSON schema instead of plain text; on
       #   an error, prints `{"schema_version":1,"error":"..."}` to stdout and returns
       #   +{exit_code: 1}+ instead of raising
@@ -50,16 +52,16 @@ module Workspace
       # @raise [Workspace::Error] if not in a git repository (unless +json+ is true)
       # @raise [Workspace::UsageError] if a prompt would block on a non-TTY stdin and
       #   neither +base+ nor +yes+ resolves it (unless +json+ is true)
-      def call(input_string, prompt: nil, prompt_timeout: nil, base: nil, yes: false, json: false)
-        return call_json(input_string, prompt: prompt, prompt_timeout: prompt_timeout, base: base, yes: yes) if json
+      def call(input_string, prompt: nil, prompt_timeout: nil, base: nil, yes: false, headless: false, json: false)
+        return call_json(input_string, prompt: prompt, prompt_timeout: prompt_timeout, base: base, yes: yes, headless: headless) if json
 
-        start!(input_string, prompt: prompt, prompt_timeout: prompt_timeout, base: base, yes: yes, quiet: false)
+        start!(input_string, prompt: prompt, prompt_timeout: prompt_timeout, base: base, yes: yes, headless: headless, quiet: false)
       end
 
       private
 
-      def call_json(input_string, prompt:, prompt_timeout:, base:, yes:)
-        payload = start!(input_string, prompt: prompt, prompt_timeout: prompt_timeout, base: base, yes: yes, quiet: true)
+      def call_json(input_string, prompt:, prompt_timeout:, base:, yes:, headless:)
+        payload = start!(input_string, prompt: prompt, prompt_timeout: prompt_timeout, base: base, yes: yes, headless: headless, quiet: true)
         @output.puts JSON.generate(payload[:json])
         {exit_code: payload[:exit_code]}
       rescue Workspace::Error, SystemCallError => e
@@ -69,7 +71,7 @@ module Workspace
 
       # @return [Hash] when quiet is true, +{exit_code:, json:}+; otherwise the
       #   launch result, or nil if branch selection was cancelled
-      def start!(input_string, prompt:, prompt_timeout:, base:, yes:, quiet:)
+      def start!(input_string, prompt:, prompt_timeout:, base:, yes:, headless:, quiet:)
         root = @git.root
         raise Workspace::Error, "Not inside a git repository." unless root
 
@@ -86,7 +88,7 @@ module Workspace
         if @git.worktree_exists?(worktree_path)
           note_base_ignored(branch_name, quiet: quiet) if base
           return finish_worktree(project_name, worktree_dir_name, worktree_path, branch_name,
-            base: nil, created: false, prompt: prompt, prompt_timeout: prompt_timeout, quiet: quiet, already_exists: true)
+            base: nil, created: false, prompt: prompt, prompt_timeout: prompt_timeout, headless: headless, quiet: quiet, already_exists: true)
         end
 
         result = resolve_or_create_branch(branch_name, base: base, yes: yes, interactive: interactive, quiet: quiet)
@@ -100,7 +102,7 @@ module Workspace
         existing_path = @git.find_worktree_by_branch(branch_name, repo: root)
         if existing_path
           return finish_worktree(project_name, File.basename(existing_path), existing_path, branch_name,
-            base: nil, created: false, prompt: prompt, prompt_timeout: prompt_timeout, quiet: quiet, adopted: true)
+            base: nil, created: false, prompt: prompt, prompt_timeout: prompt_timeout, headless: headless, quiet: quiet, adopted: true)
         end
 
         create_worktree_directory(root)
@@ -114,13 +116,13 @@ module Workspace
         ensure_gitignore(root, quiet: quiet)
 
         finish_worktree(project_name, worktree_dir_name, worktree_path, branch_name,
-          base: result[:base_branch], created: true, prompt: prompt, prompt_timeout: prompt_timeout, quiet: quiet)
+          base: result[:base_branch], created: true, prompt: prompt, prompt_timeout: prompt_timeout, headless: headless, quiet: quiet)
       end
 
       # Shared tail of every branch: config generation, hook seeding/installation,
       # marker, launch, and (when quiet) the JSON payload.
       def finish_worktree(project_name, worktree_dir_name, worktree_path, branch_name, base:, created:,
-        prompt:, prompt_timeout:, quiet:, already_exists: false, adopted: false)
+        prompt:, prompt_timeout:, headless:, quiet:, already_exists: false, adopted: false)
         log(quiet, "Worktree already exists at: #{worktree_path}") if already_exists
         log(quiet, "Adopting existing worktree at: #{worktree_path}") if adopted
 
@@ -131,7 +133,7 @@ module Workspace
         write_project_marker(worktree_path, config_name)
         log(quiet, "Launching #{config_name}...")
         prompts = prompt ? {config_name => prompt} : {}
-        result = launch(config_name, prompts, prompt_timeout, quiet: quiet)
+        result = launch(config_name, prompts, prompt_timeout, headless: headless, quiet: quiet)
         @project_settings.ensure_exists(config_name)
 
         return result unless quiet
@@ -144,12 +146,19 @@ module Workspace
           "path" => worktree_path,
           "branch" => branch_name,
           "base" => base,
-          "created" => created
+          "created" => created,
+          "headless" => headless
         }
+        json["session_reused"] = result[:reused].include?(config_name) if result && result[:reused]
         if exit_code != 0
           prompt_failures = result && result[:prompt_failures]
-          json["error"] = "Prompt was not sent to every workspace."
-          json["prompt_failures"] = prompt_failures || {}
+          start_failure = result && result[:start_failures] && result[:start_failures][config_name]
+          if start_failure
+            json["error"] = "Could not start the workspace session: #{start_failure}"
+          else
+            json["error"] = "Prompt was not sent to every workspace."
+            json["prompt_failures"] = prompt_failures || {}
+          end
         end
         json["warnings"] = @warnings if @warnings&.any?
 
@@ -178,8 +187,9 @@ module Workspace
       end
 
       # @param prompt_timeout [Numeric, nil] nil defers to the launch command's own default
-      def launch(config_name, prompts, prompt_timeout, quiet:)
+      def launch(config_name, prompts, prompt_timeout, headless:, quiet:)
         kwargs = {prompts: prompts}
+        kwargs[:headless] = true if headless
         kwargs[:prompt_timeout] = prompt_timeout unless prompt_timeout.nil?
         kwargs[:quiet] = true if quiet
         @launch_command.call([config_name], **kwargs)

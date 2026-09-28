@@ -14,6 +14,8 @@ RSpec.describe Workspace::Doctor do
       hook_installer: hook_installer,
       project_detector: project_detector,
       output: output,
+      launch_mode: Workspace::LaunchMode.new(project_settings: CLITestHelpers::FakeProjectSettings.new,
+        platform: "arm64-darwin", env: {}, which: ->(_exe) { true }),
       **overrides
     )
   end
@@ -277,6 +279,42 @@ RSpec.describe Workspace::Doctor do
       end
 
       expect(output.string).to include("edit lock hooks missing in 2 worktree(s): #{worktree_path}, #{other_worktree_path}")
+    end
+  end
+
+  describe "headless" do
+    it "skips the iTerm2 and window-tool checks and says why" do
+      doctor = build_doctor
+      begin
+        doctor.run(headless: true)
+      rescue Workspace::Error
+        # other dependencies may be missing on this machine
+      end
+
+      expect(output.string).to include("mode: headless (--headless)")
+      expect(output.string).to include("⊘  iTerm2 (not needed headless, skipped)")
+      expect(output.string).to include("⊘  window-tool (not needed headless, skipped)")
+    end
+
+    it "follows the launch mode when no flag is given" do
+      doctor = build_doctor(launch_mode: CLITestHelpers.launch_mode(headless: true))
+      begin
+        doctor.run
+      rescue Workspace::Error
+      end
+
+      expect(output.string).to include("mode: headless (not macOS)")
+    end
+
+    it "checks iTerm2 when not headless" do
+      doctor = build_doctor
+      begin
+        doctor.run(headless: false)
+      rescue Workspace::Error
+      end
+
+      expect(output.string).to include("mode: iTerm2 (--no-headless)")
+      expect(output.string).not_to include("not needed headless")
     end
   end
 end

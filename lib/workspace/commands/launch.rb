@@ -8,6 +8,10 @@ module Workspace
       # Times a prompt is pasted into an agent's pane when it never shows up
       # there. A prompt that did show up is never sent again.
       MAX_PROMPT_ATTEMPTS = 3
+      # Seconds a headless launch waits for a session tmuxinator reported
+      # starting. `tmuxinator start --no-attach` returns once tmux has made
+      # it, so one that is still missing after this is a failed start.
+      HEADLESS_SESSION_WAIT = 5
 
       # @param state [Workspace::State] state persistence
       # @param iterm [Workspace::ITerm] iTerm session/pane automation
@@ -22,11 +26,12 @@ module Workspace
       # @param prompt_timeout [Numeric] seconds to wait for the agents to be
       #   ready, shared by every project in one launch
       # @param sleeper [#call] sleeps the given seconds, injected for fast tests
+      # @param clock [#call] monotonic seconds, bounding the wait for sessions
       # @param output [IO] output stream for user-facing messages
       # @param error_output [IO] error output stream for warnings
       def initialize(state:, iterm:, window_manager:, tmux:, project_config:, window_layout:, config:, pipeline_config: nil,
         agent_readiness: nil, prompt_timeout: AgentReadiness::DEFAULT_TIMEOUT, sleeper: ->(seconds) { sleep(seconds) },
-        output: $stdout, error_output: $stderr)
+        clock: -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) }, output: $stdout, error_output: $stderr)
         @state = state
         @iterm = iterm
         @window_manager = window_manager
@@ -38,6 +43,7 @@ module Workspace
         @agent_readiness = agent_readiness || AgentReadiness.new(tmux: tmux, process_tree: ProcessTree.new)
         @prompt_timeout = prompt_timeout
         @sleeper = sleeper
+        @clock = clock
         @output = output
         @error_output = error_output
       end
@@ -48,15 +54,21 @@ module Workspace
       # @param reattach [Boolean] whether to reattach to existing tmux sessions
       # @param prompts [Hash{String => String}] project name => prompt text to
       #   send to the coding agent (Claude Code first) in that project's session
+      # @param headless [Boolean] start each session in the background with
+      #   plain tmux (see #call_headless) instead of in iTerm2 windows
       # @param quiet [Boolean] suppress the progress messages normally written to
       #   +output+ (warnings still go to +error_output+); for callers building a
       #   machine-readable payload of their own, such as `start --json`
       # @return [Hash] +{exit_code:, prompt_failures:}+; exit_code is 1 when any
-      #   prompt was not sent, and prompt_failures maps each such project to why
+      #   prompt was not sent, and prompt_failures maps each such project to why.
+      #   A headless launch adds +headless: true+, +reused:+ (projects whose
+      #   session was already running) and +start_failures:+ (project => why
+      #   its session could not be started, which also makes exit_code 1).
       # @raise [Workspace::Error] if any project configs are missing
-      def call(projects, reattach: false, prompts: {}, prompt_timeout: @prompt_timeout, quiet: false)
+      def call(projects, reattach: false, prompts: {}, prompt_timeout: @prompt_timeout, headless: false, quiet: false)
         @quiet = quiet
         validate_configs(projects)
+        return call_headless(projects, prompts: prompts, prompt_timeout: prompt_timeout) if headless
 
         @tmux.start_server
 
@@ -72,7 +84,7 @@ module Workspace
 
         @state.save
 
-        session_names = wait_for_tmux_sessions(projects)
+        session_names, = wait_for_tmux_sessions(projects)
 
         start_session_monitors(session_names.keys)
 
@@ -96,6 +108,149 @@ module Workspace
       end
 
       private
+
+      # Starts each project's tmux session in the background with tmuxinator,
+      # never touching iTerm2, AppleScript or window-tool. A project whose
+      # session is already running is reused as it is rather than started
+      # again; the check and the start happen under a per-project lock, so two
+      # launches at once never both run tmuxinator into one session. State
+      # records each project whose session is up as headless, so stop, kill,
+      # list and status find it, and focus/tile know it has no window.
+      def call_headless(projects, prompts:, prompt_timeout:)
+        validate_headless_sockets(projects)
+        @tmux.start_server
+        @state.load
+        running = @tmux.sessions
+
+        reused = []
+        start_failures = {}
+        projects.each do |project|
+          failure = start_or_reuse(project, running, reused)
+          next unless failure
+          @error_output.puts "Error: could not start #{project}: #{failure}"
+          start_failures[project] = failure
+        end
+
+        launched = projects - start_failures.keys
+        session_names, not_found = launched.empty? ? [{}, []] : wait_for_tmux_sessions(launched, max_wait: HEADLESS_SESSION_WAIT)
+        not_found.each do |project|
+          failure = "its tmux session #{session_names[project]} did not appear within #{HEADLESS_SESSION_WAIT}s"
+          @error_output.puts "Error: could not start #{project}: #{failure}"
+          start_failures[project] = failure
+        end
+        session_names = session_names.except(*not_found)
+        reused -= not_found
+
+        close_headless_launcher_windows(session_names.keys)
+        session_names.each_key { |project| record_headless(project) }
+        @state.save
+        start_session_monitors(session_names.keys)
+
+        prompts = prompts.reject { |project, _| start_failures.key?(project) }
+        prompt_failures = prompts.any? ? send_prompts(session_names, prompts, prompt_timeout) : {}
+
+        log("Done! Launched #{session_names.size} project(s) headless.")
+        session_names.each_value { |session| log("  Attach with: tmux attach -t #{session}") }
+        unless prompt_failures.empty?
+          @error_output.puts "Error: the prompt was not sent to: #{prompt_failures.keys.join(", ")}"
+        end
+        ok = prompt_failures.empty? && start_failures.empty?
+        {exit_code: ok ? 0 : 1, prompt_failures: prompt_failures, headless: true, reused: reused, start_failures: start_failures}
+      end
+
+      # Reuses the project's running session, or starts it. A session missing
+      # from +running+ is checked again under the project's start lock, since
+      # another launch may have started it in the meantime.
+      #
+      # @return [String, nil] why the session could not be started
+      def start_or_reuse(project, running, reused)
+        session = @tmux.session_name_for(project)
+        unless running.include?(session)
+          failure = with_start_lock(project) do
+            next :running if @tmux.sessions.include?(session)
+            log("Starting #{project} headless (tmux session #{session})...")
+            @tmux.start_headless(project)
+          end
+          return failure unless failure == :running
+        end
+        log("Session #{session} is already running for #{project}; reusing it.")
+        reused << project
+        nil
+      end
+
+      # Holds an exclusive flock on the project's start lock (under the XDG
+      # state dir) while the block runs.
+      def with_start_lock(project)
+        dir = File.join(@config.state_dir, "launch")
+        FileUtils.mkdir_p(dir)
+        File.open(File.join(dir, "#{project.gsub(/[^\w.-]/, "_")}.lock"), File::RDWR | File::CREAT, 0o600) do |f|
+          f.flock(File::LOCK_EX)
+          yield
+        end
+      end
+
+      # Refuses to launch any project headless whose tmuxinator config selects
+      # a custom tmux socket (-L/-S in tmux_options): every Tmux call this
+      # class makes uses the default socket, so it would never see a session
+      # started on another one and would rerun tmuxinator into it.
+      def validate_headless_sockets(projects)
+        projects.each do |project|
+          option = @tmux.custom_socket_option(project)
+          next unless option
+          raise Workspace::Error, "headless launch doesn't support custom tmux sockets (#{option} in tmux_options) for #{project}"
+        end
+      end
+
+      # Closes the iTerm2 launcher window for any of +projects+ (about to be
+      # marked headless) that still has one from an earlier windowed launch,
+      # so it isn't left orphaned. Mirrors Stop#find_launcher_windows_to_close:
+      # a window is only closed once every project tracked in it is going
+      # headless in this same batch. A missing osascript or AppleScript error
+      # is a warning, not a failure -- the tmux session already started, and
+      # this never touches it.
+      def close_headless_launcher_windows(projects)
+        return unless projects.any? { |p| @state[p].is_a?(Hash) && @state[p]["unique_id"] }
+
+        existing = @iterm.find_existing_sessions(@state)
+        launcher_uids = projects.filter_map { |p| existing[p] }
+        return if launcher_uids.empty?
+
+        live_sessions = @iterm.session_map
+        candidate_window_ids = launcher_uids.filter_map { |uid| live_sessions[uid] }.uniq
+        candidate_window_ids.each do |wid|
+          sessions_in_window = live_sessions.select { |_, w| w == wid }.keys
+          tracked_project_names = []
+          @state.each do |proj, info|
+            tracked_project_names << proj if info.is_a?(Hash) && sessions_in_window.include?(info["unique_id"])
+          end
+          next unless (tracked_project_names - projects).empty?
+          close_launcher_window(wid)
+        end
+      end
+
+      def close_launcher_window(window_id)
+        ok = @window_manager.close_window(window_id)
+        @error_output.puts "Warning: could not close launcher window #{window_id}" unless ok
+      rescue => e
+        @error_output.puts "Warning: could not close launcher window #{window_id} (#{e.message})"
+      end
+
+      # Marks the project headless. An entry left by an earlier iTerm2 launch
+      # keeps its other keys but loses its window and pane ids, which name a
+      # window this session no longer has.
+      def record_headless(project)
+        current = @state[project]
+        replace_state(project, (current || {}).except("unique_id", "iterm_window_id").merge("headless" => true))
+      end
+
+      # Sets the project's state entry to exactly +entry+. A state_set event
+      # merges into the entry, so dropping keys means removing it first.
+      def replace_state(project, entry)
+        current = @state[project]
+        return if current == entry
+        @state.delete(project) if current && (current.keys - entry.keys).any?
+        @state[project] = entry
+      end
 
       def log(message)
         @output.puts message unless @quiet
@@ -141,20 +296,22 @@ module Workspace
         end
       end
 
-      # Polls for tmux sessions to appear after pane creation. Tmuxinator
-      # starts sessions asynchronously via iTerm's "write text" command, so
-      # we need to wait for them to register with the tmux server.
-      def wait_for_tmux_sessions(projects)
+      # Polls for tmux sessions to appear, checking before each wait: a
+      # headless start has already made its session, and tmuxinator started
+      # from an iTerm pane makes it asynchronously. Gives up after +max_wait+
+      # polls or seconds, whichever comes first.
+      #
+      # @return [Array(Hash{String => String}, Array<String>)] project =>
+      #   tmux session name for every project, and the projects never found
+      def wait_for_tmux_sessions(projects, max_wait: 30)
         log("Waiting for tmux sessions...")
         window_prefix = "workspace"
-        max_wait = 30
-        elapsed = 0
+        deadline = @clock.call + max_wait
+        waited = 0
         sessions_ready = []
         session_names = projects.map { |p| [p, @tmux.session_name_for(p)] }.to_h
 
-        while sessions_ready.size < projects.size && elapsed < max_wait
-          @sleeper.call(1)
-          elapsed += 1
+        loop do
           existing_tmux = @tmux.sessions
           projects.each do |project|
             next if sessions_ready.include?(project)
@@ -165,6 +322,9 @@ module Workspace
               log("  Session ready: #{project} (tmux: #{tmux_name})")
             end
           end
+          break if sessions_ready.size == projects.size || waited >= max_wait || @clock.call >= deadline
+          @sleeper.call(1)
+          waited += 1
         end
 
         not_found = projects - sessions_ready
@@ -172,7 +332,7 @@ module Workspace
           @error_output.puts "Warning: Timed out waiting for sessions: #{not_found.join(", ")}"
         end
 
-        session_names
+        [session_names, not_found]
       end
 
       # Starts the session-monitor agent daemon for each project that doesn't
@@ -256,11 +416,7 @@ module Workspace
           # Clear stale window IDs so focus/other commands don't use invalid IDs
           missing_windows.each do |project|
             info = @state[project]
-            if info
-              info = info.dup
-              info.delete("iterm_window_id")
-              @state[project] = info
-            end
+            replace_state(project, info.except("iterm_window_id")) if info
           end
         end
       end

@@ -72,7 +72,11 @@ module Workspace
         end
       end
 
+      # Headless projects have no launcher pane, so iTerm2 is only asked about
+      # targets that have one: a headless-only stop never runs AppleScript.
       def find_launcher_windows_to_close(targets)
+        return [] unless targets.any? { |p| @state[p].is_a?(Hash) && @state[p]["unique_id"] }
+
         existing = @iterm.find_existing_sessions(@state)
         launcher_uids = targets.filter_map { |p| existing[p] }
         windows_to_close = []

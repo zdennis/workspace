@@ -1,5 +1,6 @@
 require "fileutils"
 require "json"
+require "securerandom"
 
 module Workspace
   # Wraps JSON-persisted workspace state for tracked sessions.
@@ -60,9 +61,14 @@ module Workspace
       @data = @event_log.reconstruct(strict: true)
       @logger.debug { "state: saving #{@data.keys.size} project(s) to #{@config.state_file}" }
       backup_state_file
-      tmp = "#{@config.state_file}.tmp"
+      # Each save writes its own temp file, so two processes saving at once
+      # never rename one another's file out from under them.
+      tmp = "#{@config.state_file}.#{Process.pid}.#{SecureRandom.hex(4)}.tmp"
       File.write(tmp, JSON.pretty_generate(@data))
       File.rename(tmp, @config.state_file)
+    rescue
+      File.delete(tmp) if tmp && File.exist?(tmp)
+      raise
     end
 
     # @param key [String]
@@ -71,7 +77,10 @@ module Workspace
       @data[key]
     end
 
-    # Sets a project's state and appends a state_set event to the log.
+    # Sets a project's state and appends a state_set event to the log. This
+    # merges +value+'s keys into the project's existing entry (as does every
+    # other state event type) rather than replacing it; dropping a key means
+    # deleting the project first, as launch's +replace_state+ does.
     #
     # @param key [String]
     # @param value [Object]

@@ -158,7 +158,13 @@ module Workspace
     # @return [String] stripped output from osascript
     def execute_applescript(script)
       @logger.debug { "iterm: executing AppleScript (#{script.lines.first&.strip}...)" }
-      stdout, _ = Open3.capture3("osascript", "-e", script)
+      stdout, _ = begin
+        Open3.capture3("osascript", "-e", script)
+      rescue SystemCallError => e
+        # No osascript (not macOS): nothing to report, same as an empty answer.
+        @logger.debug { "iterm: could not run osascript: #{e.message}" }
+        [""]
+      end
       @logger.debug { "iterm: AppleScript result=#{stdout.strip.inspect}" }
       stdout.strip
     end

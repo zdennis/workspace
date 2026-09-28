@@ -88,4 +88,13 @@ RSpec.describe Workspace::ITerm do
       expect(result).to be_nil
     end
   end
+
+  describe "without osascript" do
+    it "answers as if iTerm2 had no sessions instead of raising" do
+      allow(Open3).to receive(:capture3).and_raise(Errno::ENOENT, "osascript")
+      iterm = described_class.new(config: config, output: output)
+
+      expect(iterm.session_map).to eq({})
+    end
+  end
 end

@@ -88,4 +88,16 @@ RSpec.describe Workspace::Commands::Focus do
       )
     end
   end
+
+  describe "#call with a headless project" do
+    it "explains there is no window and names the tmux session to attach to" do
+      state["proj"] = {"headless" => true}
+      state.save
+      tmux = double("tmux", session_name_for: "proj-session")
+      command = described_class.new(state: state, window_manager: window_manager, tmux: tmux, output: output)
+
+      expect { command.call("proj") }.to raise_error(Workspace::Error,
+        /'proj' runs headless, so it has no iTerm window.*tmux attach -t proj-session/m)
+    end
+  end
 end
