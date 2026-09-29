@@ -139,21 +139,24 @@ module Workspace
     #   global config that receives a displaced statusLine command
     # @param dry_run [Boolean] report without writing
     # @param quiet [Boolean] suppress progress lines
-    # @return [void]
+    # @return [Array<String>] the "save"/"warn" notices produced, with
+    #   indentation stripped, so a quiet caller (e.g. `start --json`) can
+    #   still surface them in its own warnings channel
     def install_statusline(provider, project_root, command:, project_settings:, dry_run: false, quiet: false)
       path = settings_path_for(provider, project_root)
       existed = File.exist?(path)
       existing = read_settings(path)
       current = existing["statusLine"]
       current_command = statusline_command_in(current)
+      notices = []
 
       if current_command == command
         @output.puts "  skip    #{path} (statusLine already routed through #{command})" unless quiet
-        return
+        return notices
       end
 
       if current_command && !current_command.to_s.empty?
-        preserve_existing_statusline_command(current_command, project_settings, dry_run: dry_run, quiet: quiet)
+        preserve_existing_statusline_command(current_command, project_settings, dry_run: dry_run, quiet: quiet, notices: notices)
       else
         local_command = local_statusline_command(provider, project_root)
         preserved = if local_command && !local_command.to_s.empty? && local_command != command
@@ -162,7 +165,7 @@ module Workspace
           user_command = user_level_statusline_command(path)
           (user_command && !user_command.to_s.empty? && user_command != command) ? user_command : nil
         end
-        preserve_existing_statusline_command(preserved, project_settings, dry_run: dry_run, quiet: quiet) if preserved
+        preserve_existing_statusline_command(preserved, project_settings, dry_run: dry_run, quiet: quiet, notices: notices) if preserved
       end
 
       merged = deep_dup(existing)
@@ -178,8 +181,10 @@ module Workspace
       shadow_command = local_statusline_command(provider, project_root)
       if shadow_command && !shadow_command.to_s.empty? && shadow_command != command
         local_path = local_settings_path_for(provider, project_root)
-        @output.puts "  warn    #{local_path} still routes statusLine through \"#{shadow_command}\"; settings.json's statusLine is shadowed there until you remove that entry from #{local_path}" unless quiet
+        notice("warn", "#{local_path} still routes statusLine through \"#{shadow_command}\"; settings.json's statusLine is shadowed there until you remove that entry from #{local_path}", notices, quiet)
       end
+
+      notices
     end
 
     private
@@ -191,13 +196,13 @@ module Workspace
     # command is already saved there, this one is not overwritten -- it's
     # printed as a warning instead, naming both commands, so the user can
     # decide which one they actually want.
-    def preserve_existing_statusline_command(existing_command, project_settings, dry_run:, quiet:)
+    def preserve_existing_statusline_command(existing_command, project_settings, dry_run:, quiet:, notices:)
       if dry_run
         current = project_settings.load_global.dig("statusline", "command")
         if current.nil? || current.to_s.empty? || current == existing_command
-          @output.puts "  save    (dry run) would save previous statusLine command -> statusline.command (#{existing_command})" unless quiet
+          notice("save", "(dry run) would save previous statusLine command -> statusline.command (#{existing_command})", notices, quiet)
         else
-          @output.puts "  warn    (dry run) statusline.command is already set to \"#{current}\"; would not overwrite it with the different command found here, \"#{existing_command}\"" unless quiet
+          notice("warn", "(dry run) statusline.command is already set to \"#{current}\"; would not overwrite it with the different command found here, \"#{existing_command}\"", notices, quiet)
         end
         return
       end
@@ -211,10 +216,19 @@ module Workspace
       end
 
       if saved_command == existing_command
-        @output.puts "  save    previous statusLine command -> statusline.command (#{existing_command})" unless quiet
+        notice("save", "previous statusLine command -> statusline.command (#{existing_command})", notices, quiet)
       else
-        @output.puts "  warn    statusline.command is already set to \"#{saved_command}\"; not overwriting it with the different command found here, \"#{existing_command}\" (set it by hand with 'workspace config set statusline.command' if you want to keep #{existing_command} instead)" unless quiet
+        notice("warn", "statusline.command is already set to \"#{saved_command}\"; not overwriting it with the different command found here, \"#{existing_command}\" (set it by hand with 'workspace config set statusline.command' if you want to keep #{existing_command} instead)", notices, quiet)
       end
+    end
+
+    # Prints a "save"/"warn" notice unless quiet, and records it either way,
+    # so a quiet caller can still surface it in its own warnings channel.
+    # +verb+ is padded for the progress-line column; the recorded notice
+    # carries the clean text.
+    def notice(verb, text, notices, quiet)
+      @output.puts "  #{verb.ljust(8)}#{text}" unless quiet
+      notices << "#{verb} #{text}".strip
     end
 
     # The command in a statusLine value, whether it's the Hash form Claude

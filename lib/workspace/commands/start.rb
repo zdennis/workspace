@@ -265,14 +265,24 @@ module Workspace
 
       # Installs each detected, hook-capable agent's hooks (session monitoring
       # and edit lock enforcement) into a new or adopted worktree, the same way
-      # `workspace init` does for the parent project. Silent, no prompt: a
-      # worktree an agent will immediately be launched into should already be
-      # enforcing the edit lock.
+      # `workspace init` does for the parent project, and routes
+      # statusLine-capable agents' status lines through `workspace statusline`
+      # (the way `workspace doctor --fix` does for a parent project), so
+      # `workspace handoff check` can read the agent's context usage from the
+      # worktree right away. Silent, no prompt: a worktree an agent will
+      # immediately be launched into should already be enforcing the edit lock.
       def install_agent_hooks(worktree_path, quiet:)
         return unless @hook_installer
 
         AgentProvider.all.select { |p| p.supports_hooks? && @which.call(p.executable) }.each do |provider|
           @hook_installer.install(provider, worktree_path, Commands::Init::HOOK_COMMAND, quiet: quiet)
+        end
+
+        AgentProvider.all.select { |p| p.supports_statusline? && @which.call(p.executable) }.each do |provider|
+          notices = @hook_installer.install_statusline(provider, worktree_path,
+            command: Commands::Init::STATUSLINE_COMMAND, project_settings: @project_settings, quiet: quiet)
+          next unless quiet && notices.any?
+          notices.each { |notice| @warnings << "Note: #{notice}." }
         end
       end
 

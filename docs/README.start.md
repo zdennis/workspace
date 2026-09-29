@@ -39,6 +39,8 @@ If multiple remote branches match your input, you'll be prompted to select one o
 
 If a worktree for the branch already exists at a non-standard location (created outside of workspace via `git worktree add`), it is automatically adopted — a tmuxinator config and project marker are created, and the worktree is launched without being recreated.
 
+Before launching, `start` installs each detected coding agent's hooks (session monitoring, edit lock enforcement) and — for Claude Code — `statusLine` routing through `workspace statusline` into the worktree's `.claude/settings.json`, so `workspace handoff check` and `sessions --json` can read the agent's context usage from the worktree right away. This is idempotent and backs the settings file up first; an existing statusLine command is preserved into the global `statusline.command` config (see [workspace statusline](README.statusline.md)).
+
 ### Non-interactive use (scripts, agents)
 
 `start` never blocks on stdin when stdin isn't a TTY. Whenever it would otherwise
@@ -76,7 +78,9 @@ On success, one line of JSON on stdout (nothing else is written to stdout under
   it is instead of started again. Running `start` again for the same
   workspace is safe this way
 - `warnings` — present only when non-empty; notes about a flag that was silently
-  adjusted, e.g. `--base` ignored because the branch already existed
+  adjusted, e.g. `--base` ignored because the branch already existed, or a
+  statusLine command displaced during worktree settings installation (see
+  [`workspace statusline`](README.statusline.md))
 
 On a hard error (bad input, `--base`/`--yes` needed, git failure), exits 1 with
 the error on stdout instead of the success doc:

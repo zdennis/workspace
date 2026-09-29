@@ -15,7 +15,7 @@ Install as Claude Code's `statusLine` command (in `~/.claude/settings.json` or a
 }
 ```
 
-Restart any running Claude Code sessions after installing or changing this (by hand or via `workspace doctor --fix`) — Claude Code doesn't reload `statusLine` mid-session.
+Restart any running Claude Code sessions after installing or changing this (by hand or via `workspace doctor --fix`) — Claude Code doesn't reload `statusLine` mid-session. `workspace start` also installs this routing into each new or adopted worktree's `.claude/settings.json` automatically, alongside its session-monitoring hooks.
 
 If `.claude/settings.local.json` also has a `statusLine` entry, it wins over this one at runtime (Claude Code deep-merges settings.json and settings.local.json, with the local file's keys taking precedence). `workspace doctor` checks for this and reports the shadow; `--fix` only ever writes `settings.json`, since `settings.local.json` is the user's own file. Remove the `statusLine` entry from `settings.local.json` by hand if you want workspace's rendering to actually take effect.
 

@@ -110,6 +110,32 @@ RSpec.describe Workspace::Commands::Start do
           expect(File).to exist(settings_path)
           expect(JSON.parse(File.read(settings_path))["hooks"]).to have_key("PreToolUse")
         end
+
+        it "routes its status line through workspace statusline" do
+          command.call("PROJ-123")
+
+          status_line = JSON.parse(File.read(settings_path))["statusLine"]
+          expect(status_line).to eq("type" => "command", "command" => "workspace statusline")
+        end
+
+        context "in quiet mode, when the worktree already routes statusLine elsewhere" do
+          before do
+            FileUtils.mkdir_p(File.dirname(settings_path))
+            File.write(settings_path, JSON.pretty_generate(
+              "statusLine" => {"type" => "command", "command" => "my-statusline.sh"}
+            ) + "\n")
+          end
+
+          it "surfaces the displaced statusLine notice in the JSON warnings" do
+            command.call("PROJ-123", json: true)
+
+            payload = JSON.parse(output.string)
+            expect(payload["warnings"]).to include(
+              "Note: save previous statusLine command -> statusline.command (my-statusline.sh)."
+            )
+            expect(JSON.parse(File.read(settings_path))["statusLine"]["command"]).to eq("workspace statusline")
+          end
+        end
       end
 
       context "when no hook-capable agent is detected" do
