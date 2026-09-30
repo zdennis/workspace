@@ -14,7 +14,9 @@ module Workspace
       # @param launch_command [#call] launch command (Commands::Launch or similar)
       # @param output [IO] output stream for user-facing messages
       # @param input [IO] input stream for interactive prompts
-      # @param lineage [Workspace::WorkspaceLineage] writes the `.workspace-project` marker
+      # @param lineage [Workspace::WorkspaceLineage] writes the `.workspace-project` marker,
+      #   and resolves the parent repo when start is run from inside a linked
+      #   worktree, so the new worktree targets the parent project
       # @param hook_installer [Workspace::HookInstaller, nil] installs agent hooks
       #   (edit lock enforcement, session monitoring) into the new worktree; nil skips it
       # @param which [#call] returns true when an executable is on PATH
@@ -78,7 +80,17 @@ module Workspace
         interactive = !quiet && !yes && stdin_tty?
         @warnings = []
 
-        project_name = WorkspaceLineage.name_from_path(root)
+        info = @lineage.resolve(cwd: root)
+        if parent_repo?(root, info)
+          # Running from inside a linked worktree: resolve to the parent repo so
+          # worktree creation, adoption, config naming, and session reuse all
+          # target the parent project.
+          note_parent_repo(info.path, quiet: quiet)
+          root = info.path
+          project_name = info.name
+        else
+          project_name = WorkspaceLineage.name_from_path(root)
+        end
         parsed = @git.parse_start_input(input_string)
 
         branch_name = resolve_branch_name(parsed, quiet: quiet)
@@ -167,6 +179,38 @@ module Workspace
 
       def note_base_ignored(branch_name, quiet:)
         message = "Note: --base ignored; branch '#{branch_name}' already exists."
+        if quiet
+          @warnings << message
+        else
+          @error_output.puts message
+        end
+      end
+
+      # A lineage result is only trusted when git's own common dir confirms it:
+      # the common dir must be a normal ".git" directory (a bare repo's common
+      # dir is the bare repo itself, whose parent directory is not a checkout),
+      # and it must resolve somewhere other than cwd's own toplevel (a marker
+      # found above a standalone repo nested inside a worktree would otherwise
+      # claim a parent the repo's own git does not).
+      #
+      # @param root [String] the git toplevel start was run from
+      # @param info [Workspace::WorkspaceLineage::Lineage] the resolved lineage
+      # @return [Boolean]
+      def parent_repo?(root, info)
+        info.is_worktree &&
+          info.git_common_dir && File.basename(info.git_common_dir) == ".git" &&
+          File.expand_path(info.path) != File.expand_path(root)
+      end
+
+      # Notes that start was run from inside a linked worktree and resolved the
+      # parent repo instead, since the worktree landing under a different repo
+      # root than cwd is otherwise surprising.
+      #
+      # @param parent_root [String] the parent repo's root directory
+      # @param quiet [Boolean] whether output is JSON-only
+      # @return [void]
+      def note_parent_repo(parent_root, quiet:)
+        message = "Note: run from inside a linked worktree; using parent repo #{parent_root}."
         if quiet
           @warnings << message
         else

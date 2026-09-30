@@ -305,6 +305,210 @@ RSpec.describe Workspace::Commands::Start do
       end
     end
 
+    context "when run from inside a linked worktree" do
+      let(:worktree_root) { File.join(tmpdir, ".worktrees", "existing") }
+      let(:lineage) { instance_double(Workspace::WorkspaceLineage) }
+
+      subject(:command) do
+        described_class.new(
+          git: git,
+          project_config: project_config,
+          project_settings: project_settings,
+          launch_command: launch_command,
+          lineage: lineage,
+          output: output,
+          error_output: error_output,
+          input: input
+        )
+      end
+
+      before do
+        allow(git).to receive(:root).and_return(worktree_root)
+        allow(git).to receive(:parse_start_input).with("feature-x").and_return({type: :branch, value: "feature-x"})
+        allow(git).to receive(:sanitize_for_filesystem).with("feature-x").and_return("feature-x")
+        allow(git).to receive(:worktree_exists?).and_return(false)
+        allow(git).to receive(:find_worktree_by_branch).and_return(nil)
+        allow(git).to receive(:branch_exists?).with("feature-x").and_return(true)
+        allow(git).to receive(:create_worktree)
+        allow(project_config).to receive(:create_worktree).and_return("myproject.worktree-feature-x")
+        allow(launch_command).to receive(:call)
+        allow(lineage).to receive(:write_marker)
+      end
+
+      def lineage_info(**overrides)
+        defaults = {name: "myproject", path: tmpdir, git_common_dir: File.join(tmpdir, ".git"),
+                    is_worktree: true, worktree: "myproject.worktree-existing"}
+        Workspace::WorkspaceLineage::Lineage.new(**defaults.merge(overrides))
+      end
+
+      it "targets the parent repo for the worktree, config name, and session" do
+        allow(lineage).to receive(:resolve).with(cwd: worktree_root).and_return(lineage_info)
+
+        command.call("feature-x")
+
+        expect(git).to have_received(:create_worktree).with(
+          File.join(tmpdir, ".worktrees", "feature-x"), "feature-x", base: nil, quiet: false
+        )
+        expect(git).to have_received(:find_worktree_by_branch).with("feature-x", repo: tmpdir)
+        expect(project_config).to have_received(:create_worktree).with(
+          "myproject", "feature-x", File.join(tmpdir, ".worktrees", "feature-x"), "feature-x", quiet: false
+        )
+        expect(launch_command).to have_received(:call).with(["myproject.worktree-feature-x"], prompts: {})
+        expect(error_output.string).to include("Note: run from inside a linked worktree; using parent repo #{tmpdir}.")
+      end
+
+      it "surfaces the parent repo note in the JSON warnings in quiet mode" do
+        allow(launch_command).to receive(:call).and_return({exit_code: 0, prompt_failures: {}})
+        allow(lineage).to receive(:resolve).with(cwd: worktree_root).and_return(lineage_info)
+
+        command.call("feature-x", json: true)
+
+        payload = JSON.parse(output.string)
+        expect(payload["warnings"]).to include("Note: run from inside a linked worktree; using parent repo #{tmpdir}.")
+      end
+
+      it "uses the repo root and name as-is when not inside a worktree" do
+        allow(lineage).to receive(:resolve).with(cwd: worktree_root).and_return(lineage_info(is_worktree: false, worktree: nil))
+
+        command.call("feature-x")
+
+        expect(git).to have_received(:create_worktree).with(
+          File.join(worktree_root, ".worktrees", "feature-x"), "feature-x", base: nil, quiet: false
+        )
+        expect(project_config).to have_received(:create_worktree).with(
+          Workspace::WorkspaceLineage.name_from_path(worktree_root), "feature-x",
+          File.join(worktree_root, ".worktrees", "feature-x"), "feature-x", quiet: false
+        )
+        expect(error_output.string).not_to include("using parent repo")
+      end
+
+      context "falls back when the lineage result is not self-consistent" do
+        it "uses the cwd repo's own root when the resolved path is the cwd root itself" do
+          git_root = File.join(tmpdir, ".worktrees", "existing", "myrepo")
+          allow(git).to receive(:root).and_return(git_root)
+          allow(lineage).to receive(:resolve).with(cwd: git_root).and_return(
+            lineage_info(name: "myproject", path: git_root, git_common_dir: File.join(git_root, ".git"))
+          )
+
+          command.call("feature-x")
+
+          expect(error_output.string).not_to include("using parent repo")
+          expect(git).to have_received(:create_worktree).with(
+            File.join(git_root, ".worktrees", "feature-x"), "feature-x", base: nil, quiet: false
+          )
+          expect(project_config).to have_received(:create_worktree).with(
+            Workspace::WorkspaceLineage.name_from_path(git_root), "feature-x",
+            File.join(git_root, ".worktrees", "feature-x"), "feature-x", quiet: false
+          )
+        end
+
+        it "uses the cwd repo's own root when the common dir is a bare repo" do
+          allow(lineage).to receive(:resolve).with(cwd: worktree_root).and_return(
+            lineage_info(path: tmpdir, git_common_dir: File.join(tmpdir, "myproject.git"), worktree: nil)
+          )
+
+          command.call("feature-x")
+
+          expect(error_output.string).not_to include("using parent repo")
+          expect(git).to have_received(:create_worktree).with(
+            File.join(worktree_root, ".worktrees", "feature-x"), "feature-x", base: nil, quiet: false
+          )
+          expect(project_config).to have_received(:create_worktree).with(
+            Workspace::WorkspaceLineage.name_from_path(worktree_root), "feature-x",
+            File.join(worktree_root, ".worktrees", "feature-x"), "feature-x", quiet: false
+          )
+        end
+      end
+    end
+
+    context "with real git, run from inside a linked worktree" do
+      let(:real_git) { Workspace::Git.new(output: output, input: input) }
+      let(:lineage) { Workspace::WorkspaceLineage.new }
+      let(:worktree_path) { File.join(tmpdir, ".worktrees", "existing") }
+
+      subject(:command) do
+        described_class.new(
+          git: real_git,
+          project_config: project_config,
+          project_settings: project_settings,
+          launch_command: launch_command,
+          lineage: lineage,
+          output: output,
+          error_output: error_output,
+          input: input
+        )
+      end
+
+      def git(*args, chdir:)
+        system("git", *args, chdir: chdir, out: File::NULL, err: File::NULL)
+      end
+
+      def init_repo(dir)
+        FileUtils.mkdir_p(dir)
+        git("init", "-q", chdir: dir)
+        git("config", "user.email", "test@example.com", chdir: dir)
+        git("config", "user.name", "Test", chdir: dir)
+        File.write(File.join(dir, "README"), "x")
+        git("add", "README", chdir: dir)
+        git("commit", "-q", "-m", "init", chdir: dir)
+      end
+
+      before do
+        init_repo(tmpdir)
+        FileUtils.mkdir_p(File.join(tmpdir, ".worktrees"))
+        git("worktree", "add", "-b", "existing", worktree_path, chdir: tmpdir)
+        allow(real_git).to receive(:find_matching_branches).and_return([])
+        allow(project_config).to receive(:create_worktree) { |project_name, dir_name, *_args, **_kwargs| "#{project_name}.worktree-#{dir_name}" }
+        allow(launch_command).to receive(:call)
+      end
+
+      after do
+        %w[existing feature-x].each do |name|
+          path = File.join(tmpdir, ".worktrees", name)
+          git("worktree", "remove", "--force", path, chdir: tmpdir) if File.directory?(path)
+        end
+      end
+
+      it "creates the worktree under the parent repo, not nested inside the cwd worktree" do
+        Dir.chdir(worktree_path) do
+          command.call("feature-x", yes: true)
+        end
+
+        expect(File.directory?(File.join(tmpdir, ".worktrees", "feature-x"))).to be true
+        expect(File).not_to exist(File.join(worktree_path, ".worktrees"))
+      end
+
+      it "reuses the parent repo's existing worktree and config name" do
+        git("worktree", "add", "-b", "feature-x", File.join(tmpdir, ".worktrees", "feature-x"), chdir: tmpdir)
+
+        Dir.chdir(worktree_path) do
+          command.call("feature-x", yes: true)
+        end
+
+        parent_name = Workspace::WorkspaceLineage.name_from_path(tmpdir)
+        expect(launch_command).to have_received(:call).with(["#{parent_name}.worktree-feature-x"], prompts: {})
+        expect(File).not_to exist(File.join(worktree_path, ".worktrees"))
+      end
+
+      it "uses a standalone repo nested inside the worktree as its own project" do
+        lineage.write_marker(worktree_path, "#{Workspace::WorkspaceLineage.name_from_path(tmpdir)}.worktree-existing")
+        nested_repo = File.join(worktree_path, "nested-repo")
+        init_repo(nested_repo)
+
+        Dir.chdir(nested_repo) do
+          command.call("feature-x", yes: true)
+        end
+
+        expect(error_output.string).not_to include("using parent repo")
+        # git reports the symlink-resolved toplevel (/private/var on macOS)
+        nested_worktree = File.realpath(File.join(nested_repo, ".worktrees", "feature-x"))
+        expect(project_config).to have_received(:create_worktree).with(
+          "nested-repo", "feature-x", nested_worktree, "feature-x", quiet: false
+        )
+        expect(File).not_to exist(File.join(tmpdir, ".worktrees", "feature-x"))
+      end
+    end
+
     context "worktree hooks" do
       let(:settings_dir) { File.join(tmpdir, "config") }
       let(:config) { Workspace::Config.new(workspace_dir: tmpdir) }

@@ -459,7 +459,8 @@ module Workspace
           json = true
         end
         opts.separator ""
-        opts.separator "The worktree is created in .worktrees/ under the project root."
+        opts.separator "The worktree is created in .worktrees/ under the project root (when run from"
+        opts.separator "inside a linked worktree, the parent repo's root is used)."
         opts.separator "Never blocks on stdin when stdin isn't a TTY: pass --base/--yes, or it exits with"
         opts.separator "a usage error naming the flag it needed."
         opts.separator ""

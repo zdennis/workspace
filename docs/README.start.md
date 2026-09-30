@@ -31,7 +31,7 @@ workspace start [options] <jira-key|jira-url|pr-url|issue-url|branch>
 
 ## Details
 
-Must be run from within a git repository. Creates a worktree in `.worktrees/` under the project root, generates a tmuxinator config, and launches it.
+Must be run from within a git repository. Creates a worktree in `.worktrees/` under the project root, generates a tmuxinator config, and launches it. When run from inside a linked worktree, `start` resolves the parent repo first — the worktree is created under the parent repo's `.worktrees/` and named after the parent project, so an existing session is reused rather than a nested workspace created (this applies when the worktree belongs to the surrounding repo; a standalone repo nested inside a worktree, and worktrees of a bare clone, keep the cwd repo's own root).
 
 If the branch already exists (locally or remotely), it checks it out. If not, it prompts you to choose a base branch for creation.
 
@@ -78,9 +78,10 @@ On success, one line of JSON on stdout (nothing else is written to stdout under
   it is instead of started again. Running `start` again for the same
   workspace is safe this way
 - `warnings` — present only when non-empty; notes about a flag that was silently
-  adjusted, e.g. `--base` ignored because the branch already existed, or a
+  adjusted, e.g. `--base` ignored because the branch already existed, a
   statusLine command displaced during worktree settings installation (see
-  [`workspace statusline`](README.statusline.md))
+  [`workspace statusline`](README.statusline.md)), or run from inside a
+  worktree ("run from inside a linked worktree; using parent repo …")
 
 On a hard error (bad input, `--base`/`--yes` needed, git failure), exits 1 with
 the error on stdout instead of the success doc:
