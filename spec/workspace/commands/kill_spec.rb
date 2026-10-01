@@ -195,6 +195,47 @@ RSpec.describe Workspace::Commands::Kill do
 
           expect(git).to have_received(:remove_worktree).with("/path/to/worktree", force: true)
         end
+
+        it "ignores missing_ok while the checkout exists" do
+          allow(File).to receive(:directory?).and_call_original
+          allow(File).to receive(:directory?).with("/path/to/worktree").and_return(true)
+          allow(git).to receive(:remove_worktree)
+          allow(stop_command).to receive(:call).and_return([])
+          allow(project_config).to receive(:remove)
+          allow(project_settings).to receive(:remove)
+
+          command.call("myproject.worktree-PROJ-123", confirm: false, missing_ok: true)
+
+          expect(git).to have_received(:unsaved_work)
+          expect(git).to have_received(:remove_worktree).with("/path/to/worktree", force: false)
+        end
+      end
+
+      context "when the checkout directory is gone" do
+        let(:order) { [] }
+
+        before do
+          allow(git).to receive(:worktree_exists?).with("/path/to/worktree").and_return(false)
+          allow(stop_command).to receive(:call) { order << :stop }
+          allow(project_config).to receive(:remove) { order << :remove_config }
+          allow(project_settings).to receive(:remove) { order << :remove_settings }
+        end
+
+        it "still raises without missing_ok" do
+          expect { command.call("myproject.worktree-PROJ-123", confirm: false) }.to raise_error(Workspace::Error, /does not appear to be a worktree project/)
+          expect(order).to be_empty
+        end
+
+        it "with missing_ok, skips the worktree removal and unsaved check but removes everything else" do
+          expect(git).not_to receive(:remove_worktree)
+          expect(git).not_to receive(:unsaved_work)
+
+          result = command.call("myproject.worktree-PROJ-123", confirm: false, missing_ok: true) { |p| order << [:yield, p] }
+
+          expect(result).to eq("myproject.worktree-PROJ-123")
+          expect(order).to eq([[:yield, "myproject.worktree-PROJ-123"], :remove_config, :remove_settings, :stop])
+          expect(output.string).to include("Checkout already gone; skipping worktree removal.")
+        end
       end
     end
 

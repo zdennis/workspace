@@ -43,12 +43,17 @@ module Workspace
       #   (unlike force) still refuses unsaved work
       # @param quiet [Boolean] print nothing to the output stream
       # @param working_dir [String] cwd to detect the project from, when project is nil
+      # @param missing_ok [Boolean] when the checkout directory is already gone,
+      #   skip the worktree removal (git's own metadata for it is left for
+      #   `git worktree prune`) and still remove the config, settings, state
+      #   entry and session; false treats a gone checkout as not a worktree
+      #   project and raises
       # @yieldparam project [String] the project, after its worktree is removed and
       #   before its config, settings and session go
       # @return [String, nil] the project name, or nil if the user cancelled
       # @raise [Workspace::UnsavedWorkError] if it has unsaved work and force is false
       # @raise [Workspace::Error] if the project config is not a worktree project
-      def call(project = nil, force: false, confirm: true, quiet: false, working_dir: Dir.pwd)
+      def call(project = nil, force: false, confirm: true, quiet: false, working_dir: Dir.pwd, missing_ok: false)
         out = quiet ? StringIO.new : @output
         project ||= @project_detector.detect_from_marker(working_dir)
         unless project
@@ -62,11 +67,12 @@ module Workspace
         end
 
         worktree_path = read_worktree_path(config_path)
-        unless worktree_path && @git.worktree_exists?(worktree_path)
+        missing = missing_ok && worktree_path && !File.directory?(worktree_path)
+        if !missing && !(worktree_path && @git.worktree_exists?(worktree_path))
           raise Workspace::Error, "'#{project}' does not appear to be a worktree project.\nUse 'workspace stop #{project}' to stop non-worktree projects."
         end
 
-        unless force
+        unless force || missing
           unsaved = @git.unsaved_work(worktree_path)
           raise_unsaved_work!(project, worktree_path, unsaved) if unsaved
         end
@@ -83,11 +89,15 @@ module Workspace
           end
         end
 
-        out.puts "Removing worktree..."
-        begin
-          @git.remove_worktree(worktree_path, force: force)
-        rescue Workspace::UnsavedWorkError => e
-          raise_unsaved_work!(project, worktree_path, e.unsaved)
+        if missing
+          out.puts "Checkout already gone; skipping worktree removal."
+        else
+          out.puts "Removing worktree..."
+          begin
+            @git.remove_worktree(worktree_path, force: force)
+          rescue Workspace::UnsavedWorkError => e
+            raise_unsaved_work!(project, worktree_path, e.unsaved)
+          end
         end
 
         yield project if block_given?
