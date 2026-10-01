@@ -107,7 +107,7 @@ module Workspace
       groups.each_value { |group| name_group(group) }
 
       # Standalone configs first, so worktree-named configs can attach to them.
-      missing.sort_by { |entry| WorkspaceLineage.split_worktree_name(entry[:name]) ? 1 : 0 }.each do |entry|
+      missing.sort_by { |entry| [WorkspaceLineage.split_worktree_name(entry[:name]) ? 1 : 0, entry[:name]] }.each do |entry|
         split = WorkspaceLineage.split_worktree_name(entry[:name])
         group = split && group_for_missing(groups.values, split.first, entry[:path])
         if group

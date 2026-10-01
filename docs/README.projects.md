@@ -94,8 +94,8 @@ broken checkout.
 | Key | Meaning |
 |-----|---------|
 | `name` | Display name. Not unique across clones |
-| `id` | Stable identifier: realpath of the shared git dir (the checkout's realpath for a non-git project) |
-| `path` | The main checkout (the git dir itself for a bare repo) |
+| `id` | Stable identifier: realpath of the shared git dir (the checkout's realpath for a non-git project). `workspace:<name>` for a project whose checkout is gone and whose config has no usable path of its own (no `root:`, or one already taken by another config) |
+| `path` | The main checkout (the git dir itself for a bare repo). `""` for a config with no `root:` |
 | `vcs` | `git`, `none` (checkout exists, not in git), `broken` (`.git` file points at a missing git dir) or `unknown` (checkout gone) |
 | `workspaces` | Number of workspaces in the project |
 | `running` | How many of them have a running tmux session |
