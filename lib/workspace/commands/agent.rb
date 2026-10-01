@@ -459,7 +459,9 @@ module Workspace
         # with no reading is refused with FIX_HINT instead of guessed at.
         # Mirrors AgentRestart.confirmable? (lib/workspace/agent_restart.rb) —
         # keep both in sync if this changes.
-        reading = @context_reader.read(pane_id: pane_id)
+        # Looked up as `sessions` and `handoff check` do: a reading recorded
+        # without $TMUX_PANE is keyed by the agent's pid, not the pane id.
+        reading = @context_reader.read(pane_id: pane_id, agent_pid: @session_monitor&.agent_pid(pane_id))
         confirmable = AgentRestart.confirmable?(reading) &&
           (reading[:error] != ContextReasons::NO_READING || kind == "claude")
         unless confirmable
@@ -549,7 +551,8 @@ module Workspace
             session_name: @tmux_session,
             delivery_lock: @delivery_lock,
             pipeline_ref: method(:pipeline_ref_on),
-            pane_state: ->(id) { @session_monitor&.restart_state(id) }
+            pane_state: ->(id) { @session_monitor&.restart_state(id) },
+            agent_pid: ->(id) { @session_monitor&.agent_pid(id) }
           )
           restart.call(pane_id: pane_id, prompt: prompt, force: force, confirm_timeout: timeout)
         rescue => e
@@ -592,9 +595,10 @@ module Workspace
         workers.each { |worker| worker.join(1) }
       end
 
-      def build_agent_restart(session_name:, delivery_lock:, pipeline_ref:, pane_state:)
+      def build_agent_restart(session_name:, delivery_lock:, pipeline_ref:, pane_state:, agent_pid:)
         AgentRestart.new(tmux: @tmux, context_reader: @context_reader, session_name: session_name,
-          delivery_lock: delivery_lock, pipeline_ref: pipeline_ref, pane_state: pane_state, logger: @logger)
+          delivery_lock: delivery_lock, pipeline_ref: pipeline_ref, pane_state: pane_state, agent_pid: agent_pid,
+          logger: @logger)
       end
 
       def urgent_steer_reply(ref, entry, body)
