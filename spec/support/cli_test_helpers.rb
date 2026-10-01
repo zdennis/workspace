@@ -451,6 +451,21 @@ module CLITestHelpers
     end
   end
 
+  class FakeProjectsCommand
+    attr_reader :calls
+    attr_accessor :result
+
+    def initialize
+      @calls = []
+      @result = {exit_code: 0}
+    end
+
+    def list(running_only: false, json: false)
+      @calls << {running_only: running_only, json: json}
+      @result
+    end
+  end
+
   class FakeParentCommand
     attr_reader :calls
     attr_accessor :result

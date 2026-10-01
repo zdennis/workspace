@@ -94,6 +94,7 @@ RSpec.describe Workspace::CLI do
       ask_command: ask_command,
       restart_agent_command: overrides[:restart_agent_command],
       handoff_command: overrides[:handoff_command],
+      projects_command: overrides[:projects_command],
       logger: logger,
       output: output,
       error_output: error_output,
@@ -2512,6 +2513,111 @@ RSpec.describe Workspace::CLI do
       }
       expect(error_output.string).to include("--path and --json cannot be used together")
       expect(parent_command.calls).to be_empty
+    end
+  end
+
+  describe "#run with projects" do
+    let(:projects_command) { CLITestHelpers::FakeProjectsCommand.new }
+    let(:built) { build_test_cli(projects_command: projects_command) }
+    let(:cli) { built[0] }
+    let(:output) { built[1] }
+    let(:error_output) { built[2] }
+
+    it "runs list for a bare `projects`" do
+      cli.run(["projects"])
+
+      expect(projects_command.calls).to eq([{running_only: false, json: false}])
+    end
+
+    it "runs list for `projects list`" do
+      cli.run(["projects", "list"])
+
+      expect(projects_command.calls).to eq([{running_only: false, json: false}])
+    end
+
+    it "passes --running and --json, with flags before or after the subcommand" do
+      cli.run(["projects", "--json", "list", "--running"])
+
+      expect(projects_command.calls).to eq([{running_only: true, json: true}])
+    end
+
+    it "runs list for `projects --json` with no subcommand" do
+      cli.run(["projects", "--json"])
+
+      expect(projects_command.calls).to eq([{running_only: false, json: true}])
+    end
+
+    it "prints the definition of a project for `projects --help`, `-h` and `help`" do
+      [["--help"], ["-h"], ["help"]].each do |args|
+        cli.run(["projects"] + args)
+      end
+
+      expect(output.string.scan("A project is a repository's main checkout plus its linked git worktrees.").size).to eq(3)
+      expect(output.string).to include("`list-projects` operate on single workspaces")
+      expect(projects_command.calls).to be_empty
+    end
+
+    it "exits with the command's exit code when it is non-zero" do
+      projects_command.result = {exit_code: 1}
+
+      expect { cli.run(["projects", "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+    end
+
+    it "lists projects in the main help" do
+      cli.run(["help"])
+
+      expect(output.string).to match(/^\s+projects\s+Group workspaces/)
+    end
+
+    it "does not touch list-projects" do
+      state = CLITestHelpers::FakeState.new
+      cli, output, = build_test_cli(state: state, projects_command: projects_command)
+
+      cli.run(["list-projects", "--json"])
+
+      expect(projects_command.calls).to be_empty
+      expect(JSON.parse(output.string)).to be_an(Array)
+    end
+
+    context "usage errors" do
+      it "rejects an unknown subcommand with the help on stderr and exit 1" do
+        expect { cli.run(["projects", "nope"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+
+        expect(error_output.string).to include("Unknown projects subcommand: nope")
+        expect(error_output.string).to include("Usage: workspace projects")
+      end
+
+      it "rejects an unknown option with the parser message and exit 1" do
+        expect { cli.run(["projects", "--bogus"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+
+        expect(error_output.string).to include("invalid option: --bogus")
+      end
+
+      it "rejects extra arguments to list" do
+        expect { cli.run(["projects", "list", "extra"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+
+        expect(error_output.string).to include("Unexpected argument: extra. Run 'workspace projects --help'.")
+        expect(projects_command.calls).to be_empty
+      end
+
+      it "emits a single-line JSON error on stdout for an unknown subcommand when --json is given" do
+        expect { cli.run(["projects", "nope", "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+
+        expect(JSON.parse(output.string)).to eq("schema_version" => 1, "error" => "Unknown projects subcommand: nope")
+        expect(error_output.string).to eq("")
+      end
+
+      it "emits the JSON error whatever the flag order, for an unknown option" do
+        expect { cli.run(["projects", "--bogus", "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+
+        expect(JSON.parse(output.string)).to eq("schema_version" => 1, "error" => "invalid option: --bogus")
+      end
+
+      it "emits the JSON error for extra arguments" do
+        expect { cli.run(["projects", "list", "extra", "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+
+        expect(JSON.parse(output.string)["error"]).to eq("Unexpected argument: extra. Run 'workspace projects --help'.")
+      end
     end
   end
 

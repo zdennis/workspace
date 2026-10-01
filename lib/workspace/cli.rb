@@ -16,7 +16,7 @@ module Workspace
     # hint).
     SUBCOMMANDS = %w[
       init doctor launch start stop add add-project kill finish relaunch
-      focus deactivate reactivate tile resize capture agent agentd lock dev parent
+      focus deactivate reactivate tile resize capture agent agentd lock dev parent projects
       sessions ask session-event agent-run handoff pipeline run
       run-and-report report-run-status layout config statusline current
       list-projects list status repair cleanup prune set-command event-log
@@ -60,10 +60,11 @@ module Workspace
     # @param exit_handler [#exit] callable for process exit (Kernel in production, FakeExitHandler in tests)
     # @param parent_command [Workspace::Commands::Parent] pre-built parent command
     # @param dev_command [Workspace::Commands::Dev] pre-built dev command
+    # @param projects_command [Workspace::Commands::Projects, nil] pre-built projects command
     # @param clock [#call] returns the current Time, for relative deadline display
     # @param launch_mode [Workspace::LaunchMode, nil] decides whether launch/start
     #   run headless when no --[no-]headless flag is given; nil builds one
-    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, restart_agent_command: nil, handoff_command: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil)
+    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, restart_agent_command: nil, handoff_command: nil, projects_command: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil)
       @config = config
       @state = state
       @project_config = project_config
@@ -105,6 +106,7 @@ module Workspace
       @ask_command = ask_command
       @restart_agent_command = restart_agent_command
       @handoff_command = handoff_command
+      @projects_command = projects_command
       @exit_handler = exit_handler
       @logger = logger
       @output = output
@@ -168,6 +170,8 @@ module Workspace
         cmd_dev(args)
       when "parent"
         cmd_parent(args)
+      when "projects"
+        cmd_projects(args)
       when "sessions"
         cmd_sessions(args)
       when "ask"
@@ -305,6 +309,7 @@ module Workspace
           lookup          Find a workspace project by worktree path, branch, or project name
           parent          Print the parent workspace of the current (or given) workspace
           pipeline        Inspect and drive a project's agent pipeline
+          projects        Group workspaces by repository (main checkout + worktrees)
           prune           Remove worktree projects whose PR is closed or merged
           reactivate      Reactivate Claude in a project's tmux pane
           relaunch        Stop and relaunch all active workspace projects
@@ -3367,6 +3372,85 @@ module Workspace
       else
         raise Workspace::Error, "No workspace project found for '#{query}'"
       end
+    end
+
+    def cmd_projects(args)
+      # The subcommand is the first non-option argument, so a leading flag
+      # (e.g. `projects --json`) still reaches the default `list`.
+      index = args.index { |a| !a.start_with?("-") }
+      subcommand = index && args[index]
+      rest = index ? args[0...index] + args[(index + 1)..] : args
+
+      case subcommand
+      when "list", nil
+        if subcommand.nil? && (rest.include?("--help") || rest.include?("-h"))
+          @output.puts projects_help
+        else
+          cmd_projects_list(rest)
+        end
+      when "help" then @output.puts projects_help
+      else
+        raise UsageError, "Unknown projects subcommand: #{subcommand}\n\n#{projects_help}"
+      end
+    rescue UsageError => e
+      raise unless json_requested?(false, args)
+      emit_json_usage_error(Commands::Projects::JSON_SCHEMA_VERSION, e.message.lines.first.strip)
+    end
+
+    def projects_help
+      <<~HELP
+        Usage: workspace projects [list] [options]
+
+        Group workspaces by repository.
+
+        A project is a repository's main checkout plus its linked git worktrees.
+        Each member that has a tmuxinator config is a workspace. Other commands that
+        take a [project] argument (launch, stop, sessions, pipeline...) and
+        `list-projects` operate on single workspaces.
+
+        Subcommands:
+          list    One row per project: its workspaces and how many are running (default)
+
+        Options:
+          --running   Only projects with at least one running workspace
+          --json      Print schema-versioned JSON (see docs/README.projects.md)
+
+        A workspace joins the project whose repository its directory belongs to. If that
+        directory is gone, it is matched by config name. The note after a path flags a
+        project with no git repo, a missing checkout, or a name shared with another project.
+
+        Examples:
+          workspace projects                # same as 'workspace projects list'
+          workspace projects --running      # projects with something running
+          workspace projects --json         # for a script
+      HELP
+    end
+
+    def cmd_projects_list(args)
+      raw = args.dup
+      running = false
+      json = false
+      parser = OptionParser.new do |opts|
+        opts.banner = "Usage: workspace projects [list] [--running] [--json]"
+        opts.separator ""
+        opts.separator "List projects (a repository's main checkout plus its worktrees) and their workspaces."
+        opts.separator ""
+        opts.on("--running", "Only projects with at least one running workspace") { running = true }
+        opts.on("--json", "Print schema-versioned JSON (see docs/README.projects.md)") { json = true }
+        opts.separator ""
+        opts.separator "Examples:"
+        opts.separator "  workspace projects list"
+        opts.separator "  workspace projects list --running --json"
+      end
+      parser.parse!(args)
+      raise UsageError, "Unexpected argument: #{args.first}. Run 'workspace projects --help'." if args.any?
+      raise Error, "projects is not available: no projects command was wired" unless @projects_command
+
+      result = @projects_command.list(running_only: running, json: json)
+      @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
+    rescue OptionParser::ParseError, UsageError => e
+      raise unless json_requested?(json, raw)
+      emit_json_usage_error(Commands::Projects::JSON_SCHEMA_VERSION, e.message.lines.first.strip)
     end
 
     def cmd_parent(args)
