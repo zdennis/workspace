@@ -30,8 +30,10 @@ module Workspace
       #
       # @param projects [Array<String>] project names to stop (empty = all)
       # @param quiet [Boolean] print nothing to the output stream
+      # @param warn_inactive [Boolean] warn on the error stream about each named
+      #   project that is not active
       # @return [Array<String>] names of stopped projects
-      def call(projects = [], quiet: false)
+      def call(projects = [], quiet: false, warn_inactive: true)
         out = quiet ? StringIO.new : @output
         @state.load
 
@@ -40,7 +42,7 @@ module Workspace
           return []
         end
 
-        targets = resolve_targets(projects)
+        targets = resolve_targets(projects, warn_inactive)
 
         if targets.empty?
           out.puts "No matching workspace projects to stop."
@@ -61,12 +63,13 @@ module Workspace
 
       private
 
-      def resolve_targets(projects)
+      def resolve_targets(projects, warn_inactive)
         if projects.empty?
           @state.keys
         else
           projects.select { |p| @state[p] }.tap do |found|
             not_found = projects - found
+            next unless warn_inactive
             not_found.each { |p| @error_output.puts "Warning: '#{p}' is not an active workspace project" }
           end
         end

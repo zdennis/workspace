@@ -2782,7 +2782,7 @@ RSpec.describe Workspace::CLI do
       let(:built) { build_test_cli(projects_command: projects_command, project_actions_command: actions_command, input: tty_input) }
 
       def kill_call(name, **given)
-        {kill: name, dry_run: false, yes: false, force: false, discard_unsaved: false, json: false}.merge(given)
+        {kill: name, dry_run: false, yes: false, force: false, discard_unsaved: false, json: false, git_timeout: 5.0}.merge(given)
       end
 
       it "passes the name and every flag, with flags before or after" do
@@ -2802,6 +2802,36 @@ RSpec.describe Workspace::CLI do
 
         expect(error_output.string).to include("projects kill needs a project NAME or PATH")
         expect(actions_command.calls).to be_empty
+      end
+
+      it "prints the JSON error contract for a missing NAME under --json" do
+        expect { cli.run(["projects", "kill", "--yes", "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+
+        expect(JSON.parse(output.string)).to eq("schema_version" => 1,
+          "error" => "projects kill needs a project NAME or PATH. Run 'workspace projects kill --help'.")
+        expect(actions_command.calls).to be_empty
+      end
+
+      it "parses --timeout as a duration" do
+        cli.run(["projects", "kill", "app", "--timeout", "30s"])
+        cli.run(["projects", "kill", "app", "--timeout", "2"])
+
+        expect(actions_command.calls.map { |c| c[:git_timeout] }).to eq([30.0, 2.0])
+      end
+
+      it "rejects a --timeout that isn't a positive duration" do
+        expect { cli.run(["projects", "kill", "app", "--timeout", "0"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+        expect { cli.run(["projects", "kill", "app", "--timeout", "soon", "--json"]) }.to raise_error(FakeSystemExit)
+
+        expect(error_output.string).to include("--timeout: must be greater than 0")
+        expect(JSON.parse(output.string)["error"]).to start_with("--timeout: expected a duration")
+        expect(actions_command.calls).to be_empty
+      end
+
+      it "documents --timeout in its help" do
+        cli.run(["projects", "kill", "--help"])
+
+        expect(output.string).to include("--timeout DURATION", "default 5s")
       end
 
       it "rejects a second argument" do
@@ -2833,6 +2863,14 @@ RSpec.describe Workspace::CLI do
           expect(actions_command.calls).to be_empty
         end
 
+        it "prints the JSON error contract under --json" do
+          expect { cli.run(["projects", "kill", "app", "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+
+          expect(JSON.parse(output.string)).to eq("schema_version" => 1,
+            "error" => "projects kill --json never prompts: pass --yes to remove, or --dry-run to preview.")
+          expect(error_output.string).to be_empty
+        end
+
         it "runs with --yes or --dry-run" do
           cli.run(["projects", "kill", "app", "--yes"])
           cli.run(["projects", "kill", "app", "--dry-run"])
@@ -2850,9 +2888,116 @@ RSpec.describe Workspace::CLI do
       it "prints kill's own help for `projects kill --help`" do
         cli.run(["projects", "kill", "--help"])
 
-        expect(output.string).to include("Usage: workspace projects kill NAME|PATH [--dry-run] [--yes] [--force] [--discard-unsaved] [--json]",
+        expect(output.string).to include("Usage: workspace projects kill NAME|PATH [--dry-run] [--yes] [--force] [--discard-unsaved] [--timeout DURATION] [--json]",
           "--discard-unsaved", "workspace dev down", "Exit status")
         expect(actions_command.calls).to be_empty
+      end
+
+      # The real Kill, ProjectConfig and Stop write their own progress lines;
+      # under --json none of them may reach stdout.
+      context "with the real Kill, ProjectConfig and Stop" do
+        include FakeCheckouts
+
+        around do |example|
+          Dir.mktmpdir do |dir|
+            @root = File.realpath(dir)
+            example.run
+          end
+        end
+
+        let(:own_session) { nil }
+        let(:out) { StringIO.new }
+        let(:err) { StringIO.new }
+        let(:main) { make_main_checkout(File.join(@root, "app")) }
+        let(:checkouts) do
+          {"app" => main,
+           "app.worktree-login" => make_linked_worktree(main, File.join(main, ".worktrees", "login")),
+           "app.worktree-wip" => make_linked_worktree(main, File.join(main, ".worktrees", "wip"))}
+        end
+        let(:config_dir) { FileUtils.mkdir_p(File.join(@root, "tmuxinator")).first }
+        let(:tmuxinator) do
+          dir = config_dir
+          Class.new do
+            define_method(:tmuxinator_dir) { dir }
+            define_method(:config_path_for) { |name| File.join(dir, "workspace.#{name}.yml") }
+          end.new
+        end
+        let(:removed_worktrees) { [] }
+        let(:fake_git) do
+          removed = removed_worktrees
+          Class.new do
+            define_method(:worktree_exists?) { |path| File.directory?(path) }
+            define_method(:unsaved_work) { |_path| nil }
+            define_method(:worktree_branch) { |path| File.basename(path) }
+            define_method(:remove_worktree) { |path, force: false| removed << path }
+            define_method(:sanitize_for_filesystem) { |name| name }
+          end.new
+        end
+        let(:live_sessions) { %w[app app-worktree-login app-worktree-wip] }
+        let(:fake_tmux) do
+          live = live_sessions
+          own = own_session
+          Class.new do
+            define_method(:sessions) { |strict: false| live.dup }
+            define_method(:session_name_for) { |workspace| workspace.tr(".", "-") }
+            define_method(:session_name_for_pane) { |_pane| own }
+            define_method(:kill_session) { |name| live.delete(name) }
+          end.new
+        end
+        let(:fake_state) do
+          CLITestHelpers::FakeState.new.tap { |s| s["app.worktree-wip"] = {"iterm_window_id" => 1} }
+        end
+        let(:lock_namespace) do
+          dir = File.join(@root, "locks")
+          Class.new { define_method(:resolve) { |cwd:| {dir: dir} } }.new
+        end
+        let(:built) do
+          checkouts.each { |name, path| File.write(tmuxinator.config_path_for(name), "root: #{path}\n") }
+          project_config = Workspace::ProjectConfig.new(config: tmuxinator, git: fake_git, output: out)
+          stop = Workspace::Commands::Stop.new(state: fake_state, iterm: CLITestHelpers::FakeITerm.new,
+            window_manager: CLITestHelpers::FakeWindowManager.new, tmux: fake_tmux, output: out, error_output: err)
+          kill = Workspace::Commands::Kill.new(git: fake_git, project_config: project_config, project_settings: CLITestHelpers::FakeProjectSettings.new,
+            stop_command: stop, project_detector: nil, output: out, input: StringIO.new)
+          catalog = Workspace::ProjectCatalog.new(project_config: project_config, git: Workspace::Git.new(output: StringIO.new, input: StringIO.new))
+          actions = Workspace::Commands::ProjectActions.new(catalog: catalog, stop_command: stop, kill_command: kill, state: fake_state,
+            tmux: fake_tmux, git: fake_git, lock_namespace: lock_namespace, lock_holder: FakeLockLiveness.new,
+            hook_runner: CLITestHelpers::FakeHookRunner.new, output: out, error_output: err, input: StringIO.new, own_pane: own_session && "%7")
+          build_test_cli(output: out, error_output: err, project_actions_command: actions, projects_command: projects_command)
+        end
+
+        def expect_single_json_document
+          expect(output.string.lines.size).to eq(1), "stdout was:\n#{output.string}"
+          payload = JSON.parse(output.string)
+          expect(payload["summary"]).to include("removed" => 2, "kept" => 1)
+          expect(removed_worktrees.size).to eq(2)
+          expect(Dir.glob(File.join(config_dir, "*.yml")).map { |f| File.basename(f) }).to eq(["workspace.app.yml"])
+          payload
+        end
+
+        it "writes exactly one JSON document to stdout" do
+          cli.run(["projects", "kill", "app", "--yes", "--json"])
+
+          expect(expect_single_json_document["status"]).to eq("ok")
+          expect(live_sessions).to eq(%w[app app-worktree-login])
+        end
+
+        it "doesn't warn about members that weren't active" do
+          cli.run(["projects", "kill", "app", "--yes", "--json"])
+
+          expect(error_output.string).not_to include("not an active workspace project")
+        end
+
+        context "when run from inside one of the worktrees" do
+          let(:own_session) { "app-worktree-login" }
+
+          it "still writes exactly one JSON document, with its own worktree removed last" do
+            cli.run(["projects", "kill", "app", "--yes", "--json"])
+
+            payload = expect_single_json_document
+            expect(payload["results"].last).to include("workspace" => "app.worktree-login", "outcome" => "removed")
+            expect(removed_worktrees.last).to eq(checkouts["app.worktree-login"])
+          end
+        end
       end
 
       it "lists kill under Actions in the projects help" do

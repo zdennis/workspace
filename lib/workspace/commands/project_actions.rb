@@ -25,6 +25,11 @@ module Workspace
       # Every outcome `kill` can report; `summary` always carries all of them.
       KILL_OUTCOMES = %w[removed would_remove refused not_attempted failed kept].freeze
 
+      # Outcomes that carry `forced`/`overridden_reason`: the ones where the
+      # override was, or would be, acted on.
+      FORCED_OUTCOMES = %w[removed failed would_remove].freeze
+      private_constant :FORCED_OUTCOMES
+
       # Seconds all of `kill`'s preflight git reads may take together.
       DEFAULT_GIT_TIMEOUT = ProjectFacts::DEFAULT_GIT_TIMEOUT
 
@@ -166,7 +171,10 @@ module Workspace
       # +discard_unsaved+ are killed with `force: true`, which skips the
       # kill command's last-moment unsaved-work re-check; every other member
       # keeps it, and a member the re-check refuses is `failed` while the run
-      # carries on.
+      # carries on. Any other error removing one member (including an OS
+      # error) is also `failed` for that member only; when it came after the
+      # member's worktree was already gone (its `post_kill` hook, its config
+      # removal), the row says so with `worktree_removed: true`.
       #
       # Unless +yes+ or +dry_run+, the plan is printed and the user is asked
       # to confirm. The caller's own workspace is killed last, and the
@@ -187,12 +195,16 @@ module Workspace
       # @return [Hash] `{exit_code:}`
       # @raise [Workspace::UsageError] if +json+ is set without +yes+ or +dry_run+
       #   (as JSON when +json+ is set), or if +name+ matches several projects
-      # @raise [Workspace::Error] if the project can't be found, unless +json+ is set
+      # @raise [Workspace::Error] if the project can't be found, or the kill
+      #   collaborators weren't wired, unless +json+ is set
       def kill(name:, dry_run: false, yes: false, force: false, discard_unsaved: false, json: false, git_timeout: DEFAULT_GIT_TIMEOUT)
         @emitted = false
         @own_session_name = nil
         @own_session_known = false
         with_json_errors(json) do
+          unwired = {kill_command: @kill_command, git: @git, lock_namespace: @lock_namespace, lock_holder: @lock_holder}
+            .select { |_, collaborator| collaborator.nil? }.keys
+          raise Workspace::Error, "projects kill is not available: no #{unwired.join(", ")} was wired" if unwired.any?
           if json && !yes && !dry_run
             raise UsageError, "projects kill --json never prompts: pass --yes to remove, or --dry-run to preview."
           end
@@ -241,8 +253,8 @@ module Workspace
         finish = lambda do
           rows = members.map do |m|
             next kill_row(m, "kept", checks[m], overrides) unless m.kind == "worktree"
-            outcome, reason, message = outcomes.fetch(m, ["removed"])
-            kill_row(m, outcome, checks[m], overrides, reason: reason, message: message)
+            outcome, reason, message, worktree_removed = outcomes.fetch(m, ["removed"])
+            kill_row(m, outcome, checks[m], overrides, reason: reason, message: message, worktree_removed: worktree_removed)
           end
           removed = rows.count { |r| r["outcome"] == "removed" }
           failed = rows.count { |r| r["outcome"] == "failed" }
@@ -273,20 +285,27 @@ module Workspace
         finish.call
       end
 
-      # @return [Array] `[outcome, reason, message]`
+      # Kill yields once the worktree is gone, so reaching the block marks a
+      # later failure as one that left the worktree removed.
+      #
+      # @return [Array] `[outcome, reason, message, worktree_removed]`
       def kill_member(member, check, overrides, json:, own:)
         overridden = overridden_reason(check, overrides)
         runner = json ? @json_hook_runner : @hook_runner
+        worktree_gone = false
         @kill_command.call(member.workspace, force: overridden == "unsaved", confirm: false, quiet: json || own,
-          missing_ok: overridden == "missing") do |workspace|
+          missing_ok: overridden == "missing", warn_inactive: false) do |workspace|
+          worktree_gone = true
           runner.run(workspace, "post_kill")
           yield if block_given?
         end
-        ["removed", nil, nil]
+        ["removed", nil, nil, nil]
       rescue Workspace::UnsavedWorkError => e
-        ["failed", (e.unsaved == :unknown) ? "unknown" : "unsaved", first_line(e.message)]
-      rescue Workspace::Error => e
-        ["failed", "error", first_line(e.message)]
+        ["failed", (e.unsaved == :unknown) ? "unknown" : "unsaved", first_line(e.message), nil]
+      rescue Workspace::Error, SystemCallError, IOError => e
+        message = first_line(e.message)
+        return ["failed", "error", message, nil] unless worktree_gone
+        ["failed", "error", "#{message} (its worktree is already removed)", true]
       end
 
       def first_line(message)
@@ -328,7 +347,9 @@ module Workspace
           list << {reason: "dev_env", override: nil, message: "the dev environment is running in it; run 'workspace dev down' first"}
         end
         if lock_error
-          list << {reason: "error", override: nil, message: "could not read the repo's locks to rule out a running dev environment: #{lock_error}"}
+          list << {reason: "lock_store", override: nil,
+                   message: "could not read the repo's locks to rule out a running dev environment (#{lock_error}); " \
+                     "nothing overrides this, so remove worktrees one at a time with 'workspace kill NAME'"}
         end
         list
       end
@@ -395,7 +416,7 @@ module Workspace
         end
       end
 
-      def kill_row(member, outcome, check, overrides, reason: nil, message: nil, blockers: nil)
+      def kill_row(member, outcome, check, overrides, reason: nil, message: nil, blockers: nil, worktree_removed: nil)
         return result_row(member, outcome, reason: reason, message: message) unless check
         extra = {unsaved: check[:unsaved], branch: check[:branch], dev_env: check[:dev_env]}
         if check[:detail]
@@ -403,10 +424,11 @@ module Workspace
           extra[:unpushed_commits] = check[:detail][:unpushed_commits]
         end
         extra[:locks] = check[:locks] if check[:locks].any?
-        if (overridden = overridden_reason(check, overrides))
+        if FORCED_OUTCOMES.include?(outcome) && (overridden = overridden_reason(check, overrides))
           extra[:forced] = true
           extra[:overridden_reason] = overridden
         end
+        extra[:worktree_removed] = true if worktree_removed
         extra[:blockers] = blockers.map { |b| {"reason" => b[:reason], "message" => b[:message]} } if blockers
         result_row(member, outcome, reason: reason, message: message, **extra)
       end
@@ -431,7 +453,8 @@ module Workspace
 
       def override_hint(blocker)
         case blocker[:override]
-        when :force then " (--force overrides this)"
+        when :force
+          (blocker[:reason] == "unknown") ? " (--force overrides this, or retry with a longer --timeout)" : " (--force overrides this)"
         when :discard_unsaved then " (--discard-unsaved removes it anyway, losing that work)"
         else ""
         end

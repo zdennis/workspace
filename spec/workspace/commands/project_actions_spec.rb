@@ -516,8 +516,9 @@ RSpec.describe Workspace::Commands::ProjectActions do
       errors = kill_errors
       late = late_errors
       Class.new do
-        define_method(:call) do |project, force: false, confirm: true, quiet: false, missing_ok: false, &block|
-          log << {project: project, force: force, confirm: confirm, quiet: quiet, missing_ok: missing_ok, output_so_far: out.string.dup}
+        define_method(:call) do |project, force: false, confirm: true, quiet: false, missing_ok: false, warn_inactive: true, &block|
+          log << {project: project, force: force, confirm: confirm, quiet: quiet, missing_ok: missing_ok, warn_inactive: warn_inactive,
+                  output_so_far: out.string.dup}
           raise errors[project] if errors[project]
           block&.call(project)
           raise late[project] if late[project]
@@ -575,6 +576,7 @@ RSpec.describe Workspace::Commands::ProjectActions do
         expect(result).to eq({exit_code: 0})
         expect(kill_calls.map { |c| c.values_at(:project, :force, :confirm, :quiet, :missing_ok) })
           .to eq([["app.worktree-login", false, false, true, false]])
+        expect(kill_calls.first[:warn_inactive]).to be(false)
         expect(payload).to include("schema_version" => 1, "action" => "kill", "dry_run" => false, "status" => "ok", "warnings" => [])
         expect(outcomes(payload)).to eq("app" => "kept", "app.worktree-login" => "removed")
         expect(payload["summary"]).to eq(kill_counts(removed: 1, kept: 1))
@@ -746,8 +748,30 @@ RSpec.describe Workspace::Commands::ProjectActions do
 
         _, payload = kill_json
 
-        expect(row(payload, "app.worktree-login")).to include("outcome" => "refused", "reason" => "error")
+        expect(row(payload, "app.worktree-login")).to include("outcome" => "refused", "reason" => "lock_store")
         expect(row(payload, "app.worktree-login")["message"]).to start_with("could not read the repo's locks")
+          .and include("nothing overrides this", "'workspace kill NAME'")
+      end
+
+      it "does not let --force or --discard-unsaved override an unreadable lock store" do
+        drop_old
+        FileUtils.mkdir_p(lock_dir)
+        File.write(File.join(lock_dir, "locks.json"), "{not json")
+
+        result, payload = kill_json(force: true, discard_unsaved: true)
+
+        expect(result).to eq({exit_code: 1})
+        expect(row(payload, "app.worktree-login")["reason"]).to eq("lock_store")
+        expect(kill_calls).to be_empty
+      end
+
+      it "points at --timeout when git couldn't check a worktree" do
+        drop_old
+        git_answers[login] = {unsaved: :unknown}
+
+        command.kill(name: "app", yes: true)
+
+        expect(output.string).to include("app.worktree-login: git couldn't check it for unsaved work (--force overrides this, or retry with a longer --timeout)")
       end
 
       it "lists every blocker of every member, and each reason in text" do
@@ -854,6 +878,17 @@ RSpec.describe Workspace::Commands::ProjectActions do
         _, payload = kill_json(force: true)
 
         expect(row(payload, "app.worktree-old")["blockers"].map { |b| b["reason"] }).to eq(["dev_env"])
+        expect(row(payload, "app.worktree-old")).not_to include("forced", "overridden_reason")
+      end
+
+      it "leaves forced off not_attempted rows when another member refuses" do
+        add_wip
+        git_answers[wip] = {unsaved: unsaved_hash}
+
+        _, payload = kill_json(force: true)
+
+        expect(row(payload, "app.worktree-old")["outcome"]).to eq("not_attempted")
+        expect(row(payload, "app.worktree-old")).not_to include("forced", "overridden_reason")
       end
     end
 
@@ -921,6 +956,31 @@ RSpec.describe Workspace::Commands::ProjectActions do
         _, payload = kill_json
 
         expect(row(payload, "app.worktree-login")).to include("outcome" => "failed", "reason" => "error", "message" => "Error removing worktree: locked")
+        expect(row(payload, "app.worktree-login")).not_to include("worktree_removed")
+      end
+
+      [Errno::EACCES.new("/tmp/x"), IOError.new("closed stream")].each do |error|
+        it "reports #{error.class} as failed for that member only and carries on" do
+          kill_errors["app.worktree-login"] = error
+
+          result, payload = kill_json
+
+          expect(result).to eq({exit_code: 3})
+          expect(payload["status"]).to eq("partial")
+          expect(row(payload, "app.worktree-login")).to include("outcome" => "failed", "reason" => "error", "message" => error.message)
+          expect(row(payload, "app.worktree-wip")["outcome"]).to eq("removed")
+        end
+      end
+
+      it "says when a failure came after the worktree was removed" do
+        kill_errors.clear
+        late_errors["app.worktree-login"] = Errno::EACCES.new("config")
+
+        result, payload = kill_json
+
+        expect(result).to eq({exit_code: 3})
+        expect(row(payload, "app.worktree-login")).to include("outcome" => "failed", "reason" => "error", "worktree_removed" => true,
+          "message" => "Permission denied - config (its worktree is already removed)")
       end
     end
 
@@ -939,6 +999,7 @@ RSpec.describe Workspace::Commands::ProjectActions do
         expect(result).to eq({exit_code: 0})
         expect(payload).to include("dry_run" => true, "status" => "dry_run")
         expect(outcomes(payload)).to eq("app" => "kept", "app.worktree-login" => "would_remove", "app.worktree-old" => "would_remove")
+        expect(row(payload, "app.worktree-old")).to include("forced" => true, "overridden_reason" => "missing")
         expect(payload["summary"]).to eq(kill_counts(would_remove: 2, kept: 1))
         expect(kill_calls).to be_empty
         expect(hook_calls).to be_empty
@@ -1094,7 +1155,25 @@ RSpec.describe Workspace::Commands::ProjectActions do
 
         expect(result).to eq({exit_code: 1})
         expect(output.string.lines.size).to eq(1)
-        expect(row(JSON.parse(output.string), "app.worktree-login")).to include("outcome" => "failed", "message" => "hook broke")
+        expect(row(JSON.parse(output.string), "app.worktree-login")).to include("outcome" => "failed", "worktree_removed" => true,
+          "message" => "hook broke (its worktree is already removed)")
+      end
+    end
+
+    context "when the kill collaborators aren't wired" do
+      subject(:command) do
+        described_class.new(catalog: catalog, stop_command: stop_command, state: state, tmux: tmux, hook_runner: hook_runner,
+          output: output, error_output: error_output, own_pane: own_pane)
+      end
+
+      it "raises a clear error naming them" do
+        expect { command.kill(name: "app", yes: true) }
+          .to raise_error(Workspace::Error, "projects kill is not available: no kill_command, git, lock_namespace, lock_holder was wired")
+      end
+
+      it "prints it as the JSON error contract under json" do
+        expect(command.kill(name: "app", yes: true, json: true)).to eq({exit_code: 1})
+        expect(JSON.parse(output.string)["error"]).to start_with("projects kill is not available")
       end
     end
   end

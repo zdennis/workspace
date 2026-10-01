@@ -98,8 +98,8 @@ RSpec.describe Workspace::Commands::Kill do
           command.call("myproject.worktree-PROJ-123")
 
           expect(git).to have_received(:remove_worktree).with("/path/to/worktree", force: false)
-          expect(stop_command).to have_received(:call).with(["myproject.worktree-PROJ-123"], quiet: false)
-          expect(project_config).to have_received(:remove).with("myproject.worktree-PROJ-123")
+          expect(stop_command).to have_received(:call).with(["myproject.worktree-PROJ-123"], quiet: false, warn_inactive: true)
+          expect(project_config).to have_received(:remove).with("myproject.worktree-PROJ-123", quiet: false)
           expect(project_settings).to have_received(:remove).with("myproject.worktree-PROJ-123")
           expect(output.string).to include("Killing session...")
         end
@@ -157,7 +157,7 @@ RSpec.describe Workspace::Commands::Kill do
           command.call("myproject.worktree-PROJ-123", force: true, quiet: true)
 
           expect(output.string).to eq("")
-          expect(stop_command).to have_received(:call).with(["myproject.worktree-PROJ-123"], quiet: true)
+          expect(stop_command).to have_received(:call).with(["myproject.worktree-PROJ-123"], quiet: true, warn_inactive: true)
         end
 
         it "yields the project after removing the worktree and before removing config or stopping" do
@@ -259,7 +259,7 @@ RSpec.describe Workspace::Commands::Kill do
         )
         cmd.call(nil, force: true, working_dir: marker_dir)
 
-        expect(stop_command).to have_received(:call).with(["myproject.worktree-PROJ-123"], quiet: false)
+        expect(stop_command).to have_received(:call).with(["myproject.worktree-PROJ-123"], quiet: false, warn_inactive: true)
         expect(output.string).to include("Killing session...")
       end
 
@@ -283,7 +283,7 @@ RSpec.describe Workspace::Commands::Kill do
         )
         cmd.call(nil, force: true, working_dir: sub_dir)
 
-        expect(stop_command).to have_received(:call).with(["myproject.worktree-PROJ-123"], quiet: false)
+        expect(stop_command).to have_received(:call).with(["myproject.worktree-PROJ-123"], quiet: false, warn_inactive: true)
       end
 
       it "raises error when no marker file found and no project given" do

@@ -136,6 +136,15 @@ RSpec.describe Workspace::Commands::Stop do
 
         expect(error_output.string).to include("Warning: 'unknown-project' is not an active workspace project")
       end
+
+      it "doesn't warn about unknown projects with warn_inactive: false" do
+        allow(iterm).to receive(:find_existing_sessions).and_return({})
+        allow(tmux).to receive(:sessions).and_return([])
+
+        command.call(["unknown-project"], warn_inactive: false)
+
+        expect(error_output.string).to be_empty
+      end
     end
 
     context "launcher window cleanup" do

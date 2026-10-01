@@ -11,7 +11,7 @@ workspace projects [list] [--running] [--git] [--json]
 workspace projects show [NAME|PATH] [--json] [--no-agents] [--no-git] [--timeout SECONDS]
 workspace projects members [NAME|PATH] [--path] [--all] [--timeout SECONDS] [--json]
 workspace projects stop [NAME] [--dry-run] [--json]
-workspace projects kill NAME [--dry-run] [--yes] [--force] [--discard-unsaved] [--json]
+workspace projects kill NAME [--dry-run] [--yes] [--force] [--discard-unsaved] [--timeout DURATION] [--json]
 ```
 
 A bare `workspace projects` runs `list`.
@@ -44,6 +44,7 @@ settings, despite the directory name.
 | `--yes` | `kill` only: don't ask for confirmation. Every check still runs. Required with `--json` or when stdin is not a terminal |
 | `--force` | `kill` only: also remove worktrees whose checkout is gone or that git can't check for unsaved work |
 | `--discard-unsaved` | `kill` only: also remove worktrees that have unsaved work, losing it |
+| `--timeout DURATION` | `kill` only: how long all the unsaved-work checks may take together, e.g. `10`, `30s` or `1m` (default 5s). A worktree git doesn't answer for in time is `unknown` |
 | `--json` | Print schema-versioned JSON (below) |
 
 ## Details
@@ -406,15 +407,18 @@ path), so a group removal never depends on the current directory.
 | Check | `reason` | Overridden by |
 |-------|----------|---------------|
 | Unsaved work: changed tracked files or commits not pushed anywhere (`unsaved: "yes"`) | `unsaved` | `--discard-unsaved` |
-| Git couldn't answer, or took longer than 5 seconds for all worktrees together (`unsaved: "unknown"`) | `unknown` | `--force` |
+| Git couldn't answer, or took longer than `--timeout` (default 5s) for all worktrees together (`unsaved: "unknown"`) | `unknown` | `--force`, or retry with a longer `--timeout` |
 | The checkout directory is gone (`unsaved: "missing"`) | `missing` | `--force` |
 | The worktree runs the dev environment (it holds the `devenv` lock) | `dev_env` | nothing: run `workspace dev down` first |
-| The repository's lock store can't be read, so a running dev env can't be ruled out | `error` | nothing |
+| The repository's lock store can't be read, so a running dev env can't be ruled out | `lock_store` | nothing: remove worktrees one at a time with `workspace kill NAME` |
 
 If any worktree has a check that isn't overridden, nothing is removed: those
 worktrees report `refused` with every reason listed, the rest `not_attempted`,
 and the command exits 1. Other locks a worktree holds are listed under
 `warnings` but don't refuse; their holders end with the session.
+
+The dev environment is checked only here, before the prompt. A `workspace dev
+up` started in a worktree while the prompt waits is not caught.
 
 **Overrides.** `--force` covers only `missing` and `unknown`. A missing
 checkout's config, settings, state entry and session are still removed; git's
@@ -424,7 +428,9 @@ needs `--discard-unsaved`, and only those worktrees are removed with
 kill`'s last-moment unsaved-work re-check, so an edit made after the check, or a
 worktree git still can't answer for, fails that worktree (`failed`, reason
 `unsaved` or `unknown`) while the rest carry on. Overridden worktrees carry
-`"forced": true` and `"overridden_reason"` in JSON.
+`"forced": true` and `"overridden_reason"` in JSON on `removed`, `failed` and
+`would_remove` rows (not on `refused` or `not_attempted`, where nothing was
+acted on).
 
 **Confirmation.** On a terminal it prints the plan (each worktree with its path
 and branch, and the main checkout that stays) and asks `Remove N worktree(s) of
@@ -465,7 +471,7 @@ nothing is read from stdin. Answering no prints `Cancelled.` and exits 0.
     "unsaved":"yes","branch":"wip","dev_env":true,"changed_files":2,"unpushed_commits":1,
     "blockers":[{"reason":"unsaved","message":"has unsaved work: ..."},{"reason":"dev_env","message":"the dev environment is running in it; ..."}]},
    {"workspace":"app.worktree-old","path":"...","kind":"worktree","outcome":"not_attempted","reason":null,
-    "unsaved":"missing","branch":null,"dev_env":false,"forced":true,"overridden_reason":"missing"}
+    "unsaved":"missing","branch":null,"dev_env":false}
  ],
  "warnings":["app.worktree-login holds lock 'deploy'; it is released when its session ends"],
  "summary":{"removed":0,"would_remove":0,"refused":1,"not_attempted":2,"failed":0,"kept":1}}
@@ -476,10 +482,16 @@ nothing is read from stdin. Answering no prints `Cancelled.` and exits 0.
 `outcome` is `removed`, `would_remove` (dry run), `refused`, `not_attempted`,
 `failed` or `kept` (the main checkout). On `refused`, `reason` is the first
 check that wasn't overridden and `blockers` lists them all; on `failed` it is
-`unsaved`, `unknown` or `error`, with the detail in `message`. Every worktree row
+`unsaved`, `unknown` or `error` (any other failure removing it), with the detail
+in `message`. A `failed` row whose failure came after its worktree was already
+removed (its `post_kill` hook or config removal failed) also has
+`"worktree_removed": true`; the config, settings or session may be left behind,
+so finish with `workspace kill NAME` or by hand. Every worktree row
 carries `unsaved` (`yes`, `no`, `unknown` or `missing`), `branch` and `dev_env`,
 plus `changed_files` and `unpushed_commits` when `unsaved` is `yes` and `locks`
 when it holds other locks. `summary` always has a count for all six outcomes.
+Programs should key off `reason` and `blockers[].reason`, not `message`: the
+messages are for people and their wording can change.
 Usage errors (including `--json` without `--yes` or `--dry-run`) and an unknown
 or ambiguous NAME print `{"schema_version":1,"error":"..."}` instead and exit 1.
 

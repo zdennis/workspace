@@ -3430,7 +3430,7 @@ module Workspace
     def projects_help
       <<~HELP
         Usage: workspace projects [list [--running] | show [NAME|PATH] | members [NAME|PATH] | stop [NAME|PATH] [--dry-run]
-                                  | kill NAME|PATH [--dry-run] [--yes] [--force] [--discard-unsaved]] [--json]
+                                  | kill NAME|PATH [--dry-run] [--yes] [--force] [--discard-unsaved] [--timeout DURATION]] [--json]
 
         Group workspaces by repository.
 
@@ -3474,7 +3474,8 @@ module Workspace
           --no-git    show only: skip git (no branch or unsaved work, no unconfigured worktrees)
           --timeout SECONDS
                       show: how long to wait for each agent daemon (default 1) and for all
-                      the git reads (default 5); members --all: for the worktree listing
+                      the git reads (default 5); members --all: for the worktree listing;
+                      kill: for all the unsaved-work checks (a duration, e.g. 30s; default 5s)
 
         A workspace joins the project whose repository its directory belongs to. If that
         directory is gone, it is matched by config name. The note after a path flags a
@@ -3611,7 +3612,7 @@ module Workspace
 
     def projects_kill_parser(options)
       OptionParser.new do |opts|
-        opts.banner = "Usage: workspace projects kill NAME|PATH [--dry-run] [--yes] [--force] [--discard-unsaved] [--json]"
+        opts.banner = "Usage: workspace projects kill NAME|PATH [--dry-run] [--yes] [--force] [--discard-unsaved] [--timeout DURATION] [--json]"
         opts.separator ""
         opts.separator "Remove every worktree workspace of a project in one step, each the way 'workspace kill' does"
         opts.separator "(tmux session, git worktree, tmuxinator config, project settings, state entry). The main"
@@ -3622,6 +3623,8 @@ module Workspace
         opts.on("--yes", "Don't ask for confirmation (every check still runs)") { options[:yes] = true }
         opts.on("--force", "Also remove worktrees whose checkout is gone or that git can't check for unsaved work") { options[:force] = true }
         opts.on("--discard-unsaved", "Also remove worktrees that have unsaved work, losing it") { options[:discard_unsaved] = true }
+        opts.on("--timeout DURATION", "Time all the unsaved-work checks may take together, e.g. 10 or 30s (default 5s);",
+          "a worktree not checked in time can't be checked") { |value| options[:timeout] = parse_duration_option("--timeout", value, positive: true) }
         opts.on("--json", "Print one schema-versioned result object (see docs/README.projects.md); needs --yes or --dry-run") { options[:json] = true }
         opts.separator ""
         opts.separator "Every worktree is checked before anything is removed. If any has unsaved work (uncommitted"
@@ -3644,7 +3647,7 @@ module Workspace
     end
 
     def cmd_projects_kill(args)
-      options = {json: false, dry_run: false, yes: false, force: false, discard_unsaved: false}
+      options = {json: false, dry_run: false, yes: false, force: false, discard_unsaved: false, timeout: Commands::ProjectActions::DEFAULT_GIT_TIMEOUT}
       projects_kill_parser(options).parse!(args)
       raise UsageError, "projects kill needs a project NAME or PATH. Run 'workspace projects kill --help'." if args.empty?
       raise UsageError, "Unexpected argument: #{args[1]}. Run 'workspace projects kill --help'." if args.size > 1
@@ -3657,7 +3660,7 @@ module Workspace
       raise Error, "projects kill is not available: no project actions command was wired" unless @project_actions_command
 
       result = @project_actions_command.kill(name: args.first, dry_run: options[:dry_run], yes: options[:yes], force: options[:force],
-        discard_unsaved: options[:discard_unsaved], json: options[:json])
+        discard_unsaved: options[:discard_unsaved], json: options[:json], git_timeout: options[:timeout])
       @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
     end
 
