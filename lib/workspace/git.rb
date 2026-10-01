@@ -105,7 +105,9 @@ module Workspace
     #
     # @param path [String] a directory inside (or at the root of) a checkout
     # @return [Hash, nil] `{toplevel:, common_dir:, linked:}` with absolute
-    #   paths, or nil when +path+ isn't inside a git checkout
+    #   paths, or nil when +path+ isn't inside a git checkout. A `.git` file
+    #   whose `gitdir:` target is missing (a broken checkout) gives
+    #   `{toplevel:, common_dir: nil, linked: true, broken: true}`.
     def checkout_layout(path)
       dir = File.expand_path(path)
       loop do
@@ -120,7 +122,7 @@ module Workspace
 
     # @param path [String] a directory inside (or at the root of) a checkout
     # @return [String, nil] the absolute shared git directory, or nil when
-    #   +path+ isn't inside a git checkout; see {#checkout_layout}
+    #   +path+ isn't inside a git checkout or its checkout is broken; see {#checkout_layout}
     def common_dir_from_files(path)
       checkout_layout(path)&.fetch(:common_dir)
     end
@@ -409,7 +411,7 @@ module Workspace
       gitdir = File.read(dot_git)[/\Agitdir:\s*(.+?)\s*\z/, 1]
       return layout_from_rev_parse(dir) unless gitdir
       gitdir = File.expand_path(gitdir, dir)
-      return nil unless File.directory?(gitdir)
+      return {toplevel: dir, common_dir: nil, linked: true, broken: true} unless File.directory?(gitdir)
       commondir_file = File.join(gitdir, "commondir")
       if File.file?(commondir_file)
         common = File.expand_path(File.read(commondir_file).strip, gitdir)

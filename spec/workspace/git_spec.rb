@@ -507,12 +507,13 @@ RSpec.describe Workspace::Git, "checkout layout" do
       expect(git.checkout_layout(sub)).to eq(toplevel: sub, common_dir: File.join(main, ".git", "modules", "lib"), linked: false)
     end
 
-    it "returns nil for a worktree whose main repository is gone" do
+    it "reports a worktree whose main repository is gone as a broken checkout" do
       stale = File.join(@root, "stale")
       FileUtils.mkdir_p(stale)
       File.write(File.join(stale, ".git"), "gitdir: #{File.join(@root, "deleted", ".git", "worktrees", "stale")}\n")
 
-      expect(git.checkout_layout(stale)).to be_nil
+      expect(git.checkout_layout(stale)).to eq(toplevel: stale, common_dir: nil, linked: true, broken: true)
+      expect(git.common_dir_from_files(stale)).to be_nil
     end
 
     it "returns nil outside any git checkout" do
@@ -528,6 +529,19 @@ RSpec.describe Workspace::Git, "checkout layout" do
       File.write(File.join(broken, ".git"), "not a gitdir line\n")
 
       expect(git.checkout_layout(broken)).to be_nil
+    end
+
+    it "uses git rev-parse's answer for a .git file with no gitdir line" do
+      odd = File.join(@root, "odd")
+      FileUtils.mkdir_p(odd)
+      File.write(File.join(odd, ".git"), "garbage\n")
+      common = File.join(@root, "real", ".git")
+      FileUtils.mkdir_p(common)
+      ok = instance_double(Process::Status, success?: true)
+      allow(Open3).to receive(:capture3).with("git", "-C", odd, "rev-parse", "--show-toplevel", "--git-common-dir", "--absolute-git-dir")
+        .and_return(["#{odd}\n#{common}\n#{common}\n", "", ok])
+
+      expect(git.checkout_layout(odd)).to eq(toplevel: odd, common_dir: common, linked: false)
     end
 
     it "agrees with git itself on a real linked worktree" do

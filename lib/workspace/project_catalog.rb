@@ -11,7 +11,8 @@ module Workspace
   #
   # 1. The root exists and is in a git repo: keyed by its common dir.
   # 2. The root exists and isn't in git: its own single-member project, keyed
-  #    by the realpath of the root, with vcs "none".
+  #    by the realpath of the root, with vcs "none". A `.git` file pointing at
+  #    a missing git dir (a broken checkout) is the same but with vcs "broken".
   # 3. The root is gone: attached by config-name prefix
   #    ({Workspace::WorkspaceLineage.split_worktree_name}) to the project whose
   #    name matches the prefix, else its own project (vcs "unknown"). The
@@ -21,7 +22,7 @@ module Workspace
     # @!attribute id [String] realpath of the shared git dir, or of the
     #   checkout for a non-git project; the stable identifier
     # @!attribute path [String] the main checkout (the git dir itself for a bare repo)
-    # @!attribute vcs [String] "git", "none" or "unknown"
+    # @!attribute vcs [String] "git", "none", "broken" or "unknown"
     # @!attribute members [Array<Member>] main member first, then by workspace name
     Project = Struct.new(:name, :id, :path, :vcs, :members, keyword_init: true)
 
@@ -87,11 +88,20 @@ module Workspace
 
       existing.each do |entry|
         layout = entry[:layout]
-        id = layout ? real(layout[:common_dir]) : entry[:path]
-        group = (groups[id] ||= {id: id, vcs: layout ? "git" : "none", common_dir: id, members: [], main_path: nil})
-        linked = layout && layout[:linked]
-        group[:main_path] ||= real(layout[:toplevel]) if layout && !linked
-        group[:main_path] ||= entry[:path] unless layout
+        broken = layout && layout[:broken]
+        git = layout && !broken
+        id = git ? real(layout[:common_dir]) : entry[:path]
+        vcs = if git
+          "git"
+        elsif broken
+          "broken"
+        else
+          "none"
+        end
+        group = (groups[id] ||= {id: id, vcs: vcs, common_dir: id, members: [], main_path: nil})
+        linked = git && layout[:linked]
+        group[:main_path] ||= real(layout[:toplevel]) if git && !linked
+        group[:main_path] ||= entry[:path] unless git
         group[:members] << member_for(entry, linked ? "worktree" : "main")
       end
       groups.each_value { |group| name_group(group) }
@@ -99,23 +109,34 @@ module Workspace
       # Standalone configs first, so worktree-named configs can attach to them.
       missing.sort_by { |entry| WorkspaceLineage.split_worktree_name(entry[:name]) ? 1 : 0 }.each do |entry|
         split = WorkspaceLineage.split_worktree_name(entry[:name])
-        group = split && groups.values.find { |g| g[:name] == split.first }
+        group = split && group_for_missing(groups.values, split.first, entry[:path])
         if group
           group[:members] << member_for(entry, "worktree")
         else
-          # A config with no root: has no path to key on, so it keys on its name.
-          key = entry[:path].empty? ? "workspace:#{entry[:name]}" : entry[:path]
-          groups[key] ||= {id: key, vcs: "unknown", name: entry[:name], main_path: entry[:path],
-                           members: [member_for(entry, split ? "worktree" : "main")]}
+          # No path to key on (no root:), or the path is already taken by
+          # another missing config: key on the config name so none is dropped.
+          key = (entry[:path].empty? || groups.key?(entry[:path])) ? "workspace:#{entry[:name]}" : entry[:path]
+          groups[key] = {id: key, vcs: "unknown", name: entry[:name], main_path: entry[:path],
+                         members: [member_for(entry, split ? "worktree" : "main")]}
         end
       end
 
       groups.values.map { |group| project_for(group) }.sort_by { |project| [project.name, project.path] }
     end
 
+    # The one group a missing-root worktree config belongs to: the sole group
+    # named +name+, or, when several share the name, the sole one whose main
+    # checkout contains +path+. Ambiguous means standalone (nil).
+    def group_for_missing(groups, name, path)
+      named = groups.select { |g| g[:name] == name }
+      return named.first if named.size == 1
+      inside = named.select { |g| !path.empty? && g[:main_path] && path.start_with?("#{g[:main_path]}/") }
+      (inside.size == 1) ? inside.first : nil
+    end
+
     def entry_for(name)
       root = @project_config.project_root_for(name)
-      path = root.to_s.empty? ? nil : File.expand_path(root.to_s)
+      path = (root.is_a?(String) && !root.empty?) ? File.expand_path(root) : nil
       exists = !path.nil? && File.directory?(path)
       path = real(path) if exists
       {name: name, path: path || "", exists: exists, layout: exists ? @git.checkout_layout(path) : nil}

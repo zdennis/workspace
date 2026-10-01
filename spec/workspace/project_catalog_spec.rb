@@ -189,12 +189,74 @@ RSpec.describe Workspace::ProjectCatalog do
         expect(project.members.first.path).to eq("")
       end
 
+      it "keeps two configs whose missing roots share a path as separate projects" do
+        gone = File.join(@root, "gone")
+        roots["one"] = gone
+        roots["two"] = gone
+
+        expect(catalog.all.map { |p| p.members.map(&:workspace) }).to eq([%w[one], %w[two]])
+        expect(catalog.all.map(&:id).uniq.size).to eq(2)
+      end
+
+      context "when two projects share a name" do
+        let(:main_a) { make_main_checkout(File.join(@root, "a", "app")) }
+        let(:main_b) { make_main_checkout(File.join(@root, "b", "app")) }
+
+        before do
+          roots["wt-a"] = make_linked_worktree(main_a, File.join(@root, "wa"))
+          roots["wt-b"] = make_linked_worktree(main_b, File.join(@root, "wb"))
+        end
+
+        it "attaches a missing worktree config to the group whose main checkout contains its old root" do
+          roots["app.worktree-old"] = File.join(main_b, ".worktrees", "old")
+
+          by_path = catalog.all.to_h { |p| [p.path, p.members.map(&:workspace)] }
+          expect(by_path[main_a]).to eq(%w[wt-a])
+          expect(by_path[main_b]).to eq(%w[app.worktree-old wt-b])
+        end
+
+        it "leaves it standalone when the groups can't be told apart" do
+          roots["app.worktree-old"] = File.join(@root, "nowhere")
+
+          expect(catalog.all.map(&:name)).to match_array(["app", "app", "app.worktree-old"])
+          expect(catalog.all.find { |p| p.name == "app" && p.members.size > 1 }).to be_nil
+        end
+      end
+
+      it "treats a non-string root: as no root" do
+        roots["weird"] = {"path" => "/tmp"}
+        roots["list"] = ["/tmp"]
+
+        expect(catalog.all.map(&:id)).to eq(%w[workspace:list workspace:weird])
+        expect(catalog.all.flat_map(&:members).map(&:path)).to eq(["", ""])
+      end
+
       it "keeps unrelated configs with no root: as separate projects" do
         roots["one"] = nil
         roots["two"] = ""
 
         expect(catalog.all.map(&:id)).to eq(%w[workspace:one workspace:two])
       end
+    end
+
+    it "names a monorepo's project after the repository when only subdirectories have configs" do
+      main = make_main_checkout(File.join(@root, "mono"))
+      FileUtils.mkdir_p(File.join(main, "packages", "web"))
+      roots["web"] = File.join(main, "packages", "web")
+
+      project = catalog.all.first
+      expect(project.name).to eq("mono")
+      expect(project.path).to eq(main)
+    end
+
+    it "reports a checkout whose gitdir is missing as vcs broken, keyed by its path" do
+      stale = File.join(@root, "stale")
+      FileUtils.mkdir_p(stale)
+      File.write(File.join(stale, ".git"), "gitdir: #{File.join(@root, "gone", ".git", "worktrees", "stale")}\n")
+      roots["stale"] = stale
+
+      project = catalog.all.first
+      expect(project.to_h.except(:members)).to eq(name: "stale", id: stale, path: stale, vcs: "broken")
     end
 
     it "keeps two clones of the same repository name as separate projects" do
