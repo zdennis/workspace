@@ -3423,7 +3423,7 @@ module Workspace
 
     def projects_help
       <<~HELP
-        Usage: workspace projects [list [--running] | show [NAME|PATH] | members [NAME|PATH] | stop [NAME] [--dry-run] [--json]]
+        Usage: workspace projects [list [--running] | show [NAME|PATH] | members [NAME|PATH] | stop [NAME|PATH] [--dry-run]] [--json]
 
         Group workspaces by repository.
 
