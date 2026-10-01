@@ -25,6 +25,8 @@ Requires a running agent daemon for the project (`workspace agentd <project>`, o
 
 The daemon holds the session state; this command only asks for it, over the agent's Unix socket. That keeps `--json` and the table behind one code path, so scripting against `--json` sees exactly what the table shows.
 
+The reply is read with a 5 second limit, so a daemon that accepts the connection but never answers can't hang the command. It fails like a missing daemon, with `Agent daemon for '<project>' did not answer within 5.0s.` (and exit 1 with `--json`); under `--worktrees` that member is left out like any other without an answering daemon. [`workspace projects show`](README.projects.md#agents) reads the same snapshot with its own `--timeout`.
+
 `--json` output starts with `"schema_version": 1`, matching [`workspace lock status --json`](README.lock.md) and [`workspace dev status --json`](README.dev.md). If no agent daemon is listening, `--json` writes `{"schema_version":1,"error":"..."}` to stdout and exits 1, instead of the plain-text error the table view prints to stderr.
 
 Each pane shows its index, kind, title, state, how long it's been idle, a LOCK column, and an ASK column.
