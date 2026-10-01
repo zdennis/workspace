@@ -3398,6 +3398,12 @@ module Workspace
         else
           cmd_projects_show(rest)
         end
+      when "members"
+        if rest.include?("--help") || rest.include?("-h")
+          @output.puts projects_members_parser({}).help
+        else
+          cmd_projects_members(rest)
+        end
       when "help" then @output.puts projects_help
       else
         raise UsageError, "Unknown projects subcommand: #{subcommand}. Run 'workspace projects --help'."
@@ -3409,7 +3415,7 @@ module Workspace
 
     def projects_help
       <<~HELP
-        Usage: workspace projects [list [--running] | show [NAME|PATH]] [--json]
+        Usage: workspace projects [list [--running] | show [NAME|PATH] | members [NAME|PATH]] [--json]
 
         Group workspaces by repository.
 
@@ -3424,9 +3430,15 @@ module Workspace
                             asks and pipeline entries, plus the repo-wide locks and dev environment.
                             NAME is a project name, a member workspace name or a path; it
                             defaults to the project containing the current directory.
+          members [NAME|PATH]
+                            The project's workspaces, one name per line, main checkout first, for
+                            scripts: for ws in $(workspace projects members); do ...; done
+                            Same NAME rules as show. Runs no git unless --all is given.
 
         Options:
           --running   list only: projects with at least one running workspace
+          --path      members only: print checkout paths instead of workspace names
+          --all       members only: also list worktrees that have no workspace config (runs git)
           --git       list only: add an UNSAVED column (runs git in every checkout)
           --json      Print schema-versioned JSON (see docs/README.projects.md)
           --no-agents show only: skip the agent daemons (no sockets are read)
@@ -3445,6 +3457,7 @@ module Workspace
           workspace projects --json         # for a script
           workspace projects show           # the project for the current directory
           workspace projects show app --json
+          workspace projects members        # one workspace per line
       HELP
     end
 
@@ -3486,6 +3499,40 @@ module Workspace
       raise Error, "projects is not available: no projects command was wired" unless @projects_command
 
       result = @projects_command.show(name: args.first, json: options[:json], agents: options[:agents], git: options[:git], timeout: options[:timeout])
+      @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
+    end
+
+    def projects_members_parser(options)
+      OptionParser.new do |opts|
+        opts.banner = "Usage: workspace projects members [NAME|PATH] [--path] [--all] [--json]"
+        opts.separator ""
+        opts.separator "List a project's member workspaces, one per line, main checkout first. NAME is a project"
+        opts.separator "name, a member workspace name or a path (use a path when two projects share a name);"
+        opts.separator "it defaults to the project containing the current directory."
+        opts.separator ""
+        opts.on("--path", "Print each checkout's path instead of its workspace name") { options[:path] = true }
+        opts.on("--all", "Also list worktrees that have no workspace config, as their path (runs git)") { options[:all] = true }
+        opts.on("--json", "Print schema-versioned JSON (see docs/README.projects.md)") { options[:json] = true }
+        opts.separator ""
+        opts.separator "Without --all no git runs. Members whose checkout is gone are still listed."
+        opts.separator ""
+        opts.separator "Examples:"
+        opts.separator "  workspace projects members"
+        opts.separator "  for ws in $(workspace projects members app); do workspace stop \"$ws\"; done"
+        opts.separator "  workspace launch $(workspace projects members)"
+        opts.separator "  workspace projects members --path"
+        opts.separator "  workspace projects members --all --json"
+      end
+    end
+
+    def cmd_projects_members(args)
+      options = {json: false, path: false, all: false}
+      projects_members_parser(options).parse!(args)
+      raise UsageError, "Unexpected argument: #{args[1]}. Run 'workspace projects members --help'." if args.size > 1
+      raise UsageError, "--path and --json cannot be used together." if options[:path] && options[:json]
+      raise Error, "projects is not available: no projects command was wired" unless @projects_command
+
+      result = @projects_command.members(name: args.first, path: options[:path], all: options[:all], json: options[:json])
       @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
     end
 

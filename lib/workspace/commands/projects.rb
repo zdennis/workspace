@@ -74,6 +74,45 @@ module Workspace
         {exit_code: 1}
       end
 
+      # Prints the project's member workspaces for scripts: one per line,
+      # main checkout first, so `for ws in $(workspace projects members)` works.
+      # Reads only config and `.git` files, with no git subprocess, unless
+      # +all+ is set.
+      #
+      # Text output is one workspace name per line, or one checkout path per
+      # line with +path+. A member with no workspace config (only listed with
+      # +all+) has no name, so it prints as its path in name mode. Members
+      # whose checkout is gone are still listed.
+      #
+      # @param name [String, nil] a project name, a member workspace name or a
+      #   path; nil means the project containing +cwd+
+      # @param path [Boolean] print checkout paths instead of workspace names
+      # @param all [Boolean] also list worktrees that have no workspace config
+      #   (one bounded `git worktree list`)
+      # @param json [Boolean] print the schema-versioned JSON payload instead of text
+      # @param cwd [String] directory used when +name+ is nil
+      # @return [Hash] `{exit_code:}`; 1 only after a JSON error payload was printed
+      # @raise [Workspace::Error] if the project can't be found or the worktree listing times out, unless +json+ is set
+      # @raise [Workspace::UsageError] if +name+ matches several projects, unless +json+ is set
+      def members(name: nil, path: false, all: false, json: false, cwd: Dir.pwd)
+        project = name ? @catalog.find(name) : @catalog.for_cwd(cwd)
+        members = project_members(project, all: all)
+        if json
+          @output.puts JSON.generate({
+            "schema_version" => JSON_SCHEMA_VERSION,
+            "project" => {"name" => project.name, "id" => project.id, "path" => project.path},
+            "members" => members.map { |m| {"workspace" => m.workspace, "path" => m.path, "kind" => m.kind, "configured" => m.configured, "exists" => m.exists} }
+          })
+        else
+          members.each { |m| @output.puts(path ? m.path : (m.workspace || m.path)) }
+        end
+        {exit_code: 0}
+      rescue => e
+        raise unless json
+        @output.puts JSON.generate({"schema_version" => JSON_SCHEMA_VERSION, "error" => e.message.lines.first.to_s.strip})
+        {exit_code: 1}
+      end
+
       # @param running_only [Boolean] only projects with at least one running workspace
       # @param json [Boolean] print the schema-versioned JSON payload instead of a table
       # @param git [Boolean] add each project's unsaved-work count, which costs
@@ -104,6 +143,19 @@ module Workspace
       end
 
       private
+
+      # The configured members; with +all+ also the unconfigured worktrees,
+      # whose listing is one git subprocess bounded by the default git timeout.
+      def project_members(project, all:)
+        return @catalog.members(project) unless all
+        thread = Thread.new do
+          Thread.current.report_on_exception = false
+          @catalog.members(project, include_unconfigured: true)
+        end
+        return thread.value if thread.join(ProjectFacts::DEFAULT_GIT_TIMEOUT)
+        thread.kill
+        raise Workspace::Error, "Timed out listing the worktrees of project '#{project.name}'. Run without --all to list configured workspaces only."
+      end
 
       # No tmux server (or one that doesn't answer) means nothing is running.
       def running_sessions
