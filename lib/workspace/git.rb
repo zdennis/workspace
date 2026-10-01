@@ -95,6 +95,36 @@ module Workspace
       false
     end
 
+    # Describes the git checkout containing +path+ by reading `.git` files
+    # directly, with no subprocess. Walks up from +path+ to the first `.git`:
+    # a directory is a main checkout; a file holds `gitdir: X`, and when
+    # `X/commondir` exists the checkout is a linked worktree whose common dir
+    # is that `commondir` resolved against X (otherwise, as for a submodule,
+    # X itself is the common dir). When a `.git` file can't be parsed, falls
+    # back to `git rev-parse`.
+    #
+    # @param path [String] a directory inside (or at the root of) a checkout
+    # @return [Hash, nil] `{toplevel:, common_dir:, linked:}` with absolute
+    #   paths, or nil when +path+ isn't inside a git checkout
+    def checkout_layout(path)
+      dir = File.expand_path(path)
+      loop do
+        dot_git = File.join(dir, ".git")
+        return {toplevel: dir, common_dir: dot_git, linked: false} if File.directory?(dot_git)
+        return layout_from_git_file(dir, dot_git) if File.file?(dot_git)
+        parent = File.dirname(dir)
+        return nil if parent == dir
+        dir = parent
+      end
+    end
+
+    # @param path [String] a directory inside (or at the root of) a checkout
+    # @return [String, nil] the absolute shared git directory, or nil when
+    #   +path+ isn't inside a git checkout; see {#checkout_layout}
+    def common_dir_from_files(path)
+      checkout_layout(path)&.fetch(:common_dir)
+    end
+
     # Returns the current branch name for a worktree directory.
     # Returns nil if the HEAD is detached or an error occurs.
     #
@@ -371,6 +401,35 @@ module Workspace
       unless status.success?
         raise Workspace::Error, "Error creating worktree: #{stderr}"
       end
+    end
+
+    private
+
+    def layout_from_git_file(dir, dot_git)
+      gitdir = File.read(dot_git)[/\Agitdir:\s*(.+?)\s*\z/, 1]
+      return layout_from_rev_parse(dir) unless gitdir
+      gitdir = File.expand_path(gitdir, dir)
+      return nil unless File.directory?(gitdir)
+      commondir_file = File.join(gitdir, "commondir")
+      if File.file?(commondir_file)
+        common = File.expand_path(File.read(commondir_file).strip, gitdir)
+        {toplevel: dir, common_dir: common, linked: true}
+      else
+        {toplevel: dir, common_dir: gitdir, linked: false}
+      end
+    rescue SystemCallError
+      layout_from_rev_parse(dir)
+    end
+
+    def layout_from_rev_parse(dir)
+      stdout, _, status = Open3.capture3("git", "-C", dir, "rev-parse", "--show-toplevel", "--git-common-dir", "--absolute-git-dir")
+      return nil unless status.success?
+      toplevel, common, git_dir = stdout.lines.map(&:strip)
+      return nil unless toplevel && common && git_dir
+      common = File.expand_path(common, dir)
+      {toplevel: toplevel, common_dir: common, linked: File.realpath(common) != File.realpath(git_dir)}
+    rescue SystemCallError
+      nil
     end
   end
 end
