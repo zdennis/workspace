@@ -95,6 +95,7 @@ RSpec.describe Workspace::CLI do
       restart_agent_command: overrides[:restart_agent_command],
       handoff_command: overrides[:handoff_command],
       projects_command: overrides[:projects_command],
+      project_actions_command: overrides[:project_actions_command],
       logger: logger,
       output: output,
       error_output: error_output,
@@ -2710,6 +2711,67 @@ RSpec.describe Workspace::CLI do
 
       expect { cli.run(["projects", "members"]) }.to raise_error(FakeSystemExit)
       expect(error_output.string).to include("no projects command was wired")
+    end
+
+    describe "projects stop" do
+      let(:actions_command) { CLITestHelpers::FakeProjectActionsCommand.new }
+      let(:built) { build_test_cli(projects_command: projects_command, project_actions_command: actions_command) }
+
+      it "runs stop with no name by default" do
+        cli.run(["projects", "stop"])
+
+        expect(actions_command.calls).to eq([{stop: nil, dry_run: false, json: false}])
+        expect(projects_command.calls).to be_empty
+      end
+
+      it "passes the name, --dry-run and --json, with flags before or after" do
+        cli.run(["projects", "stop", "app", "--dry-run"])
+        cli.run(["projects", "--json", "stop", "~/src/app"])
+
+        expect(actions_command.calls).to eq([
+          {stop: "app", dry_run: true, json: false},
+          {stop: "~/src/app", dry_run: false, json: true}
+        ])
+      end
+
+      it "exits with the command's exit code when it is non-zero" do
+        actions_command.result = {exit_code: 3}
+
+        expect { cli.run(["projects", "stop"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(3) }
+      end
+
+      it "rejects a second argument with a usage error" do
+        expect { cli.run(["projects", "stop", "a", "b"]) }.to raise_error(FakeSystemExit)
+
+        expect(error_output.string).to include("Unexpected argument: b")
+        expect(actions_command.calls).to be_empty
+      end
+
+      it "prints a JSON usage error under --json, whatever the flag order" do
+        expect { cli.run(["projects", "stop", "--bogus", "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+
+        expect(JSON.parse(output.string)).to include("schema_version" => 1, "error" => /bogus/)
+      end
+
+      it "prints stop's own help for `projects stop --help`" do
+        cli.run(["projects", "stop", "--help"])
+
+        expect(output.string).to include("Usage: workspace projects stop [NAME|PATH] [--dry-run] [--json]", "--dry-run", "Exit status")
+        expect(actions_command.calls).to be_empty
+      end
+
+      it "lists stop under Actions in the projects help" do
+        cli.run(["projects", "--help"])
+
+        expect(output.string).to include("Actions:", "stop [NAME|PATH]", "--dry-run")
+      end
+
+      it "reports an error when no project actions command was wired" do
+        cli, _, error_output = build_test_cli(project_actions_command: nil)
+
+        expect { cli.run(["projects", "stop"]) }.to raise_error(FakeSystemExit)
+        expect(error_output.string).to include("no project actions command was wired")
+      end
     end
 
     it "mentions show in the projects help" do

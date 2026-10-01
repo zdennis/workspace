@@ -1,7 +1,7 @@
 # workspace projects
 
-List projects, show one in detail, or list its member workspaces: each repository's main checkout plus its
-linked git worktrees, with the workspaces that belong to each.
+Group workspaces by repository: each project is a repository's main checkout plus its linked git worktrees.
+List projects, show one, list its member workspaces, or stop all of its running workspaces at once.
 
 ## Usage
 
@@ -9,6 +9,7 @@ linked git worktrees, with the workspaces that belong to each.
 workspace projects [list] [--running] [--git] [--json]
 workspace projects show [NAME|PATH] [--json] [--no-agents] [--no-git] [--timeout SECONDS]
 workspace projects members [NAME|PATH] [--path] [--all] [--timeout SECONDS] [--json]
+workspace projects stop [NAME] [--dry-run] [--json]
 ```
 
 A bare `workspace projects` runs `list`.
@@ -37,6 +38,7 @@ settings, despite the directory name.
 | `--timeout SECONDS` | `show`: how long to wait for each agent daemon (default 1) and for all the git reads, the worktree listing included (default 5). A small value turns slow checkouts `unknown`. `members --all`: how long to wait for the worktree listing (default 5) |
 | `--path` | `members` only: print each checkout's path instead of its workspace name. Not with `--json` |
 | `--all` | `members` only: also list worktrees that have no workspace config (runs one bounded `git worktree list`); they show only with `--path` or `--json` |
+| `--dry-run` | `stop` only: list the workspaces that would be stopped and stop nothing |
 | `--json` | Print schema-versioned JSON (below) |
 
 ## Details
@@ -316,9 +318,77 @@ Errors (an unknown or ambiguous NAME, a directory in no project) exit 1, as for 
 appears only with `--all`; `exists: false` marks a checkout that is gone. `project` has the same
 fields as in `show`.
 
+## stop
+
+`workspace projects stop [NAME|PATH]` stops every running workspace of the
+project, the main checkout and the worktrees alike, in one step: at the end of
+the day, or before switching repos. NAME works as for `show`.
+
+- Targets are the members that are active in the state file, the same notion of
+  "active" `workspace stop` uses. The rest report `not_running`. A workspace
+  whose checkout is gone but whose session is still live is stopped like any other.
+- There is no prompt and no unsaved-work check: `stop` removes nothing that
+  `launch` can't recreate, and `workspace stop` doesn't prompt either.
+- It runs the same code as `workspace stop`, once for all the targets, so a
+  launcher window closes only when every tracked project in it is stopping. Each
+  stopped workspace's `post_stop` hook runs (in `--json` mode its output goes to
+  stderr). Afterwards one `tmux list-sessions` flags any session that is still
+  alive as `failed`. A failed workspace's `post_stop` does not run. If tmux itself
+  can't be listed, the outcomes stay as `stop` reported them, `warnings` gets
+  `could not verify sessions stopped: <detail>`, and the same line goes to stderr.
+- A failed stop has already removed the workspace from the state file, so running
+  `projects stop` again reports `Nothing running` and can't retry it. Kill the
+  leftover session yourself with `tmux kill-session -t <session>` (or
+  `workspace kill <workspace>`).
+- If you run it from inside one of the project's sessions, that workspace is
+  stopped last, after the result is printed; its `post_stop` hook does not run,
+  and its outcome reads `stopped`.
+- A failed stop has already removed the workspace's state, so running `projects stop`
+  again will not retry it (it reports `not_running`). Kill the leftover tmux session
+  yourself (`tmux kill-session -t <session>`, the name is in the `message`) or run
+  `workspace kill <workspace>`.
+- If the post-stop `tmux list-sessions` itself errors, the Stop outcomes stand and a
+  `warnings` entry and a stderr line say "could not verify sessions stopped".
+- Agent daemons, locks and each workspace's pipeline and asks files are left
+  alone, as with `workspace stop`.
+- `--dry-run` prints what would be stopped and exits 0.
+
+### Exit codes
+
+| Code | Meaning |
+|------|---------|
+| 0 | Every target stopped, nothing was running (`Nothing running in project 'x'.`), or a `--dry-run` |
+| 1 | Nothing stopped: a usage error, an unknown or ambiguous NAME, or every target failed (`status` is `failed`) |
+| 3 | Some workspaces stopped and some failed |
+
+### stop JSON
+
+```json
+{"schema_version":1,"action":"stop","dry_run":false,"status":"partial",
+ "project":{"name":"app","id":"/Users/z/src/app/.git","path":"/Users/z/src/app"},
+ "results":[
+   {"workspace":"app","path":"/Users/z/src/app","kind":"main","outcome":"stopped","reason":null},
+   {"workspace":"app.worktree-login","path":"...","kind":"worktree","outcome":"failed","reason":"error",
+    "message":"tmux session 'app-worktree-login' is still running after stop"},
+   {"workspace":"app.worktree-old","path":"...","kind":"worktree","outcome":"not_running","reason":null}
+ ],
+ "warnings":[],
+ "summary":{"stopped":1,"would_stop":0,"not_running":1,"failed":1}}
+```
+
+`status` is `ok` (exit 0), `dry_run` (0), `partial` (3) or `failed` (1, every
+target failed). `outcome` is `stopped`, `would_stop` (dry run), `not_running` or
+`failed`. `results` lists the workspaces in member order, with the caller's own
+last. `summary` always has a count for all four outcomes, zero included. Usage errors and an unknown or
+ambiguous NAME print `{"schema_version":1,"error":"..."}` instead and exit 1.
+
 ## Examples
 
 ```sh
+$ workspace projects stop app --dry-run
+$ workspace projects stop            # the project for the current directory
+$ workspace projects stop app --json
+
 $ workspace projects show
 $ workspace projects show app --json
 $ workspace projects show ~/src/app   # a path picks between same-named clones

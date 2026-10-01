@@ -115,6 +115,7 @@ require_relative "workspace/commands/lock"
 require_relative "workspace/commands/dev"
 require_relative "workspace/commands/parent"
 require_relative "workspace/commands/projects"
+require_relative "workspace/commands/project_actions"
 require_relative "workspace/commands/config"
 require_relative "workspace/commands/statusline"
 require_relative "workspace/commands/restart_agent"
@@ -236,6 +237,10 @@ module Workspace
       lock_holder: lock_holder, dev: dev_command, agents: ProjectAgents.new(client: agent_snapshot_client),
       git: git, catalog: project_catalog, error_output: error_output)
     projects_command = Commands::Projects.new(catalog: project_catalog, tmux: tmux, facts: project_facts, output: output, error_output: error_output)
+    # Hook output goes to stderr so it never lands in the JSON on stdout.
+    json_hook_runner = HookRunner.new(project_settings: project_settings, project_config: project_config, output: error_output, error_output: error_output, logger: logger)
+    project_actions_command = Commands::ProjectActions.new(catalog: project_catalog, stop_command: stop_command, state: state, tmux: tmux,
+      hook_runner: hook_runner, json_hook_runner: json_hook_runner, output: output, error_output: error_output)
     config_command = Commands::Config.new(project_settings: project_settings, lineage: lineage, file_backup: file_backup, output: output)
 
     context_store = ContextStore.new(path: config.context_store_path, logger: logger)
@@ -314,6 +319,7 @@ module Workspace
       dev_command: dev_command,
       parent_command: parent_command,
       projects_command: projects_command,
+      project_actions_command: project_actions_command,
       agent_command: agent_command,
       sessions_command: sessions_command,
       session_event_command: session_event_command,

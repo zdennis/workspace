@@ -33,11 +33,19 @@ module Workspace
       @command_timeout = command_timeout
     end
 
+    # @param strict [Boolean] raise when tmux fails for a reason other than
+    #   having no server (and so no sessions) instead of returning []
     # @return [Array<String>] list of active tmux session names
-    # @raise [Workspace::Error] if tmux doesn't answer within +command_timeout+
-    def sessions
+    # @raise [Workspace::Error] if tmux doesn't answer within +command_timeout+,
+    #   or, when +strict+, if it fails with an error
+    def sessions(strict: false)
       @logger.debug { "tmux: listing sessions" }
-      stdout, ok = run_bounded("list-sessions", "-F", "\#{session_name}")
+      err = []
+      stdout, ok = run_bounded("list-sessions", "-F", "\#{session_name}", stderr_sink: err)
+      if strict && !ok
+        detail = err.join.strip
+        raise Workspace::Error, (detail.empty? ? "tmux list-sessions failed" : detail) unless detail.empty? || detail.match?(/no server running|no sessions|error connecting/i)
+      end
       result = ok ? stdout.strip.lines.map(&:strip) : []
       @logger.debug { "tmux: found #{result.size} session(s): #{result.join(", ")}" }
       result
@@ -687,11 +695,14 @@ module Workspace
     #
     # @return [Array(String, Boolean)] stdout (empty unless +capture+) and
     #   whether tmux exited successfully
-    def run_bounded(*args, capture: true)
+    def run_bounded(*args, capture: true, stderr_sink: nil)
       reader, writer = IO.pipe if capture
-      pid = Process.spawn("tmux", *args, in: File::NULL, out: writer || File::NULL, err: File::NULL)
+      err_reader, err_writer = IO.pipe if stderr_sink
+      pid = Process.spawn("tmux", *args, in: File::NULL, out: writer || File::NULL, err: err_writer || File::NULL)
       writer&.close
+      err_writer&.close
       stdout = Thread.new { reader.read } if capture
+      stderr = Thread.new { err_reader.read } if stderr_sink
       waiter = Process.detach(pid)
       unless waiter.join(@command_timeout)
         stop_process(pid, waiter)
@@ -699,11 +710,15 @@ module Workspace
           "the tmux server may be wedged (try `tmux kill-server`)"
       end
       out = capture ? (stdout.join(STOP_GRACE) && stdout.value).to_s : ""
+      stderr_sink << (stderr.join(STOP_GRACE) && stderr.value).to_s if stderr_sink
       [out, waiter.value.success?]
     ensure
       writer&.close unless writer.nil? || writer.closed?
+      err_writer&.close unless err_writer.nil? || err_writer.closed?
       stdout&.kill
+      stderr&.kill
       reader&.close
+      err_reader&.close
     end
 
     def stop_process(pid, waiter)
