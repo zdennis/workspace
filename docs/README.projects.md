@@ -42,7 +42,7 @@ settings, despite the directory name.
 | `--all` | `members` only: also list worktrees that have no workspace config (runs one bounded `git worktree list`); they show only with `--path` or `--json` |
 | `--dry-run` | `stop`, `kill`: show what would happen and change nothing |
 | `--yes` | `kill` only: don't ask for confirmation. Every check still runs. Required with `--json` or when stdin is not a terminal |
-| `--force` | `kill` only: also remove worktrees whose checkout is gone or that git can't check for unsaved work |
+| `--force` | `kill` only: let worktrees whose checkout is gone (`missing`) or that git can't check (`unknown`) past preflight; a `missing` one is then removed, an `unknown` one still fails if git can't check it at removal time |
 | `--discard-unsaved` | `kill` only: also remove worktrees that have unsaved work, losing it |
 | `--timeout DURATION` | `kill` only: how long all the unsaved-work checks may take together, e.g. `10`, `30s` or `1m` (default 5s). A worktree git doesn't answer for in time is `unknown` |
 | `--json` | Print schema-versioned JSON (below) |

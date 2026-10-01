@@ -3462,7 +3462,8 @@ module Workspace
         Options:
           --dry-run   stop, kill: show what would happen and change nothing
           --yes       kill only: don't ask for confirmation (required with --json or without a terminal)
-          --force     kill only: remove worktrees whose checkout is gone or that git can't check
+          --force     kill only: let worktrees whose checkout is gone or that git can't check through
+                      preflight (the last-moment unsaved-work re-check still applies)
           --discard-unsaved
                       kill only: remove worktrees that have unsaved work, losing it
           --running   list only: projects with at least one running workspace
@@ -3621,7 +3622,7 @@ module Workspace
         opts.separator ""
         opts.on("--dry-run", "Run the checks and show what would be removed; remove nothing") { options[:dry_run] = true }
         opts.on("--yes", "Don't ask for confirmation (every check still runs)") { options[:yes] = true }
-        opts.on("--force", "Also remove worktrees whose checkout is gone or that git can't check for unsaved work") { options[:force] = true }
+        opts.on("--force", "Let worktrees whose checkout is gone or that git can't check past preflight (kill still re-checks for unsaved work, so an unknown one can fail)") { options[:force] = true }
         opts.on("--discard-unsaved", "Also remove worktrees that have unsaved work, losing it") { options[:discard_unsaved] = true }
         opts.on("--timeout DURATION", "Time all the unsaved-work checks may take together, e.g. 10 or 30s (default 5s);",
           "a worktree not checked in time can't be checked") { |value| options[:timeout] = parse_duration_option("--timeout", value, positive: true) }

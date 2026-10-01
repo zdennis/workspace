@@ -157,6 +157,7 @@ RSpec.describe Workspace::Commands::Kill do
           command.call("myproject.worktree-PROJ-123", force: true, quiet: true)
 
           expect(output.string).to eq("")
+          expect(project_config).to have_received(:remove).with("myproject.worktree-PROJ-123", quiet: true)
           expect(stop_command).to have_received(:call).with(["myproject.worktree-PROJ-123"], quiet: true, warn_inactive: true)
         end
 
