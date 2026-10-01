@@ -2535,38 +2535,38 @@ RSpec.describe Workspace::CLI do
     it "runs list for a bare `projects`" do
       cli.run(["projects"])
 
-      expect(projects_command.calls).to eq([{running_only: false, json: false}])
+      expect(projects_command.calls).to eq([{running_only: false, json: false, git: false}])
     end
 
     it "runs list for `projects list`" do
       cli.run(["projects", "list"])
 
-      expect(projects_command.calls).to eq([{running_only: false, json: false}])
+      expect(projects_command.calls).to eq([{running_only: false, json: false, git: false}])
     end
 
     it "passes --running and --json, with flags before or after the subcommand" do
       cli.run(["projects", "--json", "list", "--running"])
 
-      expect(projects_command.calls).to eq([{running_only: true, json: true}])
+      expect(projects_command.calls).to eq([{running_only: true, json: true, git: false}])
     end
 
     it "runs list for `projects --json` with no subcommand" do
       cli.run(["projects", "--json"])
 
-      expect(projects_command.calls).to eq([{running_only: false, json: true}])
+      expect(projects_command.calls).to eq([{running_only: false, json: true, git: false}])
     end
 
     it "runs show with no name for `projects show`" do
       cli.run(["projects", "show"])
 
-      expect(projects_command.calls).to eq([{show: nil, json: false, agents: true, timeout: nil}])
+      expect(projects_command.calls).to eq([{show: nil, json: false, agents: true, git: true, timeout: nil}])
     end
 
     it "passes the name and --json to show, with flags before or after" do
       cli.run(["projects", "show", "app", "--json"])
       cli.run(["projects", "--json", "show", "~/src/app"])
 
-      expect(projects_command.calls).to eq([{show: "app", json: true, agents: true, timeout: nil}, {show: "~/src/app", json: true, agents: true, timeout: nil}])
+      expect(projects_command.calls).to eq([{show: "app", json: true, agents: true, git: true, timeout: nil}, {show: "~/src/app", json: true, agents: true, git: true, timeout: nil}])
     end
 
     it "passes --no-agents and --timeout to show" do
@@ -2574,8 +2574,8 @@ RSpec.describe Workspace::CLI do
       cli.run(["projects", "show", "--timeout", "0.5"])
 
       expect(projects_command.calls).to eq([
-        {show: "app", json: false, agents: false, timeout: nil},
-        {show: nil, json: false, agents: true, timeout: 0.5}
+        {show: "app", json: false, agents: false, git: true, timeout: nil},
+        {show: nil, json: false, agents: true, git: true, timeout: 0.5}
       ])
     end
 
@@ -2607,10 +2607,30 @@ RSpec.describe Workspace::CLI do
       expect(JSON.parse(output.string)).to eq("schema_version" => 1, "error" => "--timeout must be a finite number greater than 0.")
     end
 
-    it "lists --no-agents and --timeout in show's help" do
+    it "lists --no-agents, --no-git and --timeout in show's help" do
       cli.run(["projects", "show", "--help"])
 
-      expect(output.string).to include("--no-agents", "--timeout SECONDS")
+      expect(output.string).to include("--no-agents", "--no-git", "--timeout SECONDS")
+    end
+
+    it "passes --no-git to show" do
+      cli.run(["projects", "show", "app", "--no-git"])
+
+      expect(projects_command.calls).to eq([{show: "app", json: false, agents: true, git: false, timeout: nil}])
+    end
+
+    it "passes --git to list" do
+      cli.run(["projects", "list", "--git"])
+      cli.run(["projects", "--git", "--json"])
+
+      expect(projects_command.calls).to eq([{running_only: false, json: false, git: true}, {running_only: false, json: true, git: true}])
+    end
+
+    it "documents --git and --no-git in the projects help" do
+      cli.run(["projects", "--help"])
+      cli.run(["projects", "list", "--help"])
+
+      expect(output.string).to include("--git", "--no-git")
     end
 
     it "prints show's own help for `projects show --help`" do

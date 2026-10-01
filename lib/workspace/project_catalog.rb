@@ -45,6 +45,30 @@ module Workspace
       @all ||= build
     end
 
+    # A project's members, optionally with the linked worktrees git knows
+    # about that have no workspace config. Finding those costs one
+    # `git worktree list` subprocess, so it is opt-in and only runs for git projects.
+    #
+    # @param project [Project]
+    # @param include_unconfigured [Boolean] also list worktrees without a tmuxinator config
+    # @return [Array<Member>] the configured members (main first), then the
+    #   unconfigured checkouts (the main checkout if it has no config, then worktrees by path); an unconfigured member has a nil +workspace+
+    #   and +configured+ false, and +exists+ false when git still lists a worktree whose directory is gone
+    def members(project, include_unconfigured: false)
+      return project.members unless include_unconfigured && project.vcs == "git" && File.directory?(project.path.to_s)
+
+      known = project.members.map(&:path) + [project.id]
+      extra = @git.list_worktrees(repo: project.path).filter_map do |path|
+        path = real(path)
+        next if known.include?(path)
+        Member.new(workspace: nil, path: path, kind: (path == project.path) ? "main" : "worktree", configured: false,
+          exists: File.directory?(path))
+      end
+      project.members + extra.uniq(&:path).sort_by { |member| [(member.kind == "main") ? 0 : 1, member.path] }
+    rescue SystemCallError
+      project.members
+    end
+
     # Finds one project by a path, a project name, or a member workspace name.
     #
     # @param token [String] a path to a project or member checkout, a project

@@ -14,8 +14,9 @@ module Workspace
     # @param lock_holder [Workspace::LockHolder] tells live lock holders from stale ones
     # @param dev [Workspace::Commands::Dev] reports the dev environment's state
     # @param agents [Workspace::ProjectAgents] reads each running workspace's agent states from its daemon
+    # @param git [Workspace::Git] reads each checkout's branch, changes and unsaved work
     # @param error_output [IO] stream for warnings about unreadable ask or pipeline stores
-    def initialize(tmux:, state:, config:, lock_namespace:, lock_holder:, dev:, agents:, error_output: $stderr)
+    def initialize(tmux:, state:, config:, lock_namespace:, lock_holder:, dev:, agents:, git:, error_output: $stderr)
       @tmux = tmux
       @state = state
       @config = config
@@ -23,32 +24,110 @@ module Workspace
       @lock_holder = lock_holder
       @dev = dev
       @agents = agents
+      @git = git
       @error_output = error_output
     end
+
+    # Seconds all of a project's git facts may take unless told otherwise.
+    DEFAULT_GIT_TIMEOUT = 5.0
+
+    MISSING_GIT = {"available" => true, "branch" => nil, "changed_files" => nil, "ahead" => nil, "upstream" => nil,
+                   "unpushed_commits" => nil, "unsaved" => "missing"}.freeze
+    private_constant :MISSING_GIT
 
     # @param project [Workspace::ProjectCatalog::Project]
     # @param sessions [Array<String>] running tmux session names
     # @param agents [Boolean] read agent states from the daemons; false skips every socket
     # @param timeout [Numeric] seconds to wait for each agent daemon
+    # @param git [Boolean] read each member's git facts; false leaves them nil
+    # @param git_timeout [Numeric] seconds all members' git facts may take in total
+    # @param members [Array<Workspace::ProjectCatalog::Member>] the members to report
+    #   (defaults to the project's configured ones; may add unconfigured worktrees)
     # @return [Hash] `{members:, locks:, dev:, errors:}`; each member is the
     #   JSON-ready hash `show` prints, +errors+ maps a source name to why it was unreadable
-    def for_project(project, sessions:, agents:, timeout:)
+    def for_project(project, sessions:, agents:, timeout:, git: false, git_timeout: DEFAULT_GIT_TIMEOUT, members: project.members)
       @state.load
-      members = project.members.map { |member| member_facts(member, sessions, agents: agents, timeout: timeout) }
+      facts = members.map { |member| member_facts(member, sessions, agents: agents, timeout: timeout) }
+      if git
+        git_facts(project, members, timeout: git_timeout).each_with_index { |fact, i| facts[i]["git"] = fact }
+      end
       errors = {}
       locks = lock_facts(project, errors)
       dev = dev_facts(project, errors)
-      {members: members, locks: locks, dev: dev, errors: errors}
+      {members: facts, locks: locks, dev: dev, errors: errors}
+    end
+
+    # Git facts for each member, in order, read in parallel and bounded as a
+    # whole by +timeout+. Each is a Hash with `available`, `branch`,
+    # `changed_files`, `ahead`, `upstream`, `unpushed_commits` and `unsaved`
+    # (`"no"`, `"yes"`, `"unknown"` or `"missing"`), plus `reason` when
+    # `available` is false (`"timeout"` or `"error"`; git failing or timing
+    # out means `unsaved` is `"unknown"`, never clean). A checkout that is gone
+    # is `"missing"`, never clean. A member of a project that isn't a git
+    # repository gets nil.
+    #
+    # @param project [Workspace::ProjectCatalog::Project]
+    # @param members [Array<Workspace::ProjectCatalog::Member>]
+    # @param timeout [Numeric] seconds all members share
+    # @return [Array<Hash, nil>] one entry per member
+    def git_facts(project, members, timeout: DEFAULT_GIT_TIMEOUT)
+      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout
+      runs = members.map do |member|
+        if !member.exists || !File.directory?(member.path)
+          MISSING_GIT
+        elsif project.vcs == "git"
+          Thread.new do
+            Thread.current.report_on_exception = false
+            collect_git(member.path)
+          end
+        end
+      end
+      runs.map { |run| run.is_a?(Thread) ? await_git(run, deadline) : run }
     end
 
     private
+
+    def await_git(thread, deadline)
+      remaining = [deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC), 0].max
+      return thread.value if thread.join(remaining)
+      thread.kill
+      unavailable_git("timeout")
+    rescue => e
+      unavailable_git("error", detail: e.message)
+    end
+
+    def unavailable_git(reason, detail: nil)
+      fact = MISSING_GIT.merge("available" => false, "reason" => reason, "unsaved" => "unknown")
+      detail ? fact.merge("detail" => detail) : fact
+    end
+
+    # `Git#unsaved_work` answers nil ("clean") for a directory that isn't
+    # there, so {#git_facts} has already ruled that out; nil here really
+    # means nothing is unsaved.
+    def collect_git(path)
+      unsaved = @git.unsaved_work(path)
+      upstream = @git.upstream_branch(path)
+      fact = {
+        "available" => true,
+        "branch" => @git.worktree_branch(path),
+        "changed_files" => nil,
+        "ahead" => upstream && @git.commits_ahead_of_upstream(path),
+        "upstream" => upstream,
+        "unpushed_commits" => nil,
+        "unsaved" => "unknown"
+      }
+      return fact.merge("available" => false, "reason" => "error") if unsaved == :unknown
+      return fact.merge("changed_files" => 0, "unpushed_commits" => 0, "unsaved" => "no") if unsaved.nil?
+      fact.merge("changed_files" => unsaved[:changed_files], "unpushed_commits" => unsaved[:unpushed_commits], "unsaved" => "yes")
+    end
 
     # A missing checkout has no sessions or state worth reading, so its
     # counts are nil (unknown) rather than 0.
     def member_facts(member, sessions, agents:, timeout:)
       workspace = member.workspace
-      running = member.exists && sessions.include?(@tmux.session_name_for(workspace))
-      entries = member.exists ? pipeline_entries(workspace) : nil
+      local = member.configured && member.exists
+      running = local && sessions.include?(@tmux.session_name_for(workspace))
+      entries = local ? pipeline_entries(workspace) : nil
       {
         "workspace" => workspace,
         "path" => member.path,
@@ -56,8 +135,8 @@ module Workspace
         "configured" => member.configured,
         "exists" => member.exists,
         "running" => running ? true : false,
-        "headless" => headless?(workspace),
-        "open_asks" => member.exists ? open_asks(workspace) : nil,
+        "headless" => member.configured ? headless?(workspace) : false,
+        "open_asks" => local ? open_asks(workspace) : nil,
         "pipeline" => entries && {"entries" => entries},
         "agents" => agent_facts(workspace, running, agents: agents, timeout: timeout)
       }
