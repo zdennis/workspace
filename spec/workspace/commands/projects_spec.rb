@@ -466,6 +466,24 @@ RSpec.describe Workspace::Commands::Projects do
       end
     end
 
+    context "with a project that is not a git repository" do
+      it "looks up locks and the dev environment from the project directory" do
+        notes = FileUtils.mkdir_p(File.join(@root, "notes")).first
+        roots["notes"] = notes
+        resolved = []
+        allow(lock_namespace).to receive(:resolve) { |cwd:| resolved << cwd and {dir: lock_dir} }
+
+        expect(command.show(name: "notes", json: true)).to eq(exit_code: 0)
+
+        expect(payload["project"]).to include("name" => "notes", "path" => notes, "vcs" => "none")
+        expect(resolved).to eq([notes])
+        expect(dev_calls).to eq([notes])
+        expect(payload["locks"]).to eq({})
+        expect(payload["dev"]).to eq("running" => false, "ready" => nil, "holder_workspace" => nil)
+        expect(payload["errors"]).to be_nil
+      end
+    end
+
     describe "locks" do
       let!(:main) { build_app_with_worktrees }
       let(:login) { File.join(main, ".worktrees", "login") }

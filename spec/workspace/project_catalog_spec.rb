@@ -304,6 +304,16 @@ RSpec.describe Workspace::ProjectCatalog do
       expect(catalog.find(File.join(main, ".git")).name).to eq("app")
     end
 
+    it "finds a project by a symlinked path" do
+      link = File.join(@root, "app-link")
+      File.symlink(main, link)
+      sub_link = File.join(@root, "login-link")
+      File.symlink(login, sub_link)
+
+      expect(catalog.find(link).path).to eq(main)
+      expect(catalog.find(sub_link).path).to eq(main)
+    end
+
     it "raises an unknown-project error for no match" do
       expect { catalog.find("nope") }.to raise_error(Workspace::Error, "Unknown project 'nope'")
     end
