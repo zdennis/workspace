@@ -7,7 +7,7 @@ linked git worktrees, with the workspaces that belong to each.
 
 ```sh
 workspace projects [list] [--running] [--json]
-workspace projects show [NAME|PATH] [--json]
+workspace projects show [NAME|PATH] [--json] [--no-agents] [--timeout SECONDS]
 ```
 
 A bare `workspace projects` runs `list`.
@@ -113,20 +113,20 @@ directory, including a repository that has no workspace config yet (shown with
 no workspaces). If two projects share a name, `show` is a usage error listing
 each candidate's path; pass a path to pick one.
 
-It reads local files and makes one `tmux list-sessions` call, and opens no
-sockets. The dev status comes from `Dev#status_payload`, which runs
-`git rev-parse` and, if the project sets `dev.ready`, that command in the main
-checkout (not in the holder's worktree). Reading the lock store creates its
-directory and `locks.json` if they are missing. Agent states and git facts are
-not shown yet.
+It reads local files, makes one `tmux list-sessions` call and, for each running
+workspace, one read from its agent daemon's socket (see "Agents" below). The
+dev status comes from `Dev#status_payload`, which runs `git rev-parse` and, if
+the project sets `dev.ready`, that command in the main checkout (not in the
+holder's worktree). Reading the lock store creates its
+directory and `locks.json` if they are missing. Git facts are not shown yet.
 
 ```
 Project  app   ~/src/app   (git)
 
-WORKSPACE           KIND      RUN             ASKS  PIPE  NOTE
-app                 main      yes             0     2
-app.worktree-login  worktree  yes (headless)  1     0
-app.worktree-old    worktree  -               -     -     MISSING (checkout gone)
+WORKSPACE           KIND      RUN             AGENTS                ASKS  PIPE  NOTE
+app                 main      yes             1 idle                0     2
+app.worktree-login  worktree  yes (headless)  1 waiting, 1 working  1     0
+app.worktree-old    worktree  -               -                     -     -     MISSING (checkout gone)
 
 Locks (repo-wide)
   devenv   held by app.worktree-login (pid 4121)   queue: 1
@@ -137,9 +137,32 @@ Dev env   running in app.worktree-login, ready
 | Column | Meaning |
 |--------|---------|
 | `RUN` | The workspace's tmux session is running (`yes (headless)` when launched headless). `-` for a missing checkout |
+| `AGENTS` | Panes by state, waiting first, from the workspace's agent daemon. `-` when the workspace isn't running, `none` when its daemon reports no panes, `no daemon`, `timed out` or `bad reply` when the daemon couldn't be read. Absent with `--no-agents` |
 | `ASKS` | Open `workspace ask` questions. `?` if the store can't be read |
 | `PIPE` | Work items in flight in the workspace's pipeline. `?` if the file can't be read |
-| `NOTE` | `MISSING (checkout gone)`: the config's `root:` no longer exists. Its run, ask and pipeline facts are not read |
+| `NOTE` | `MISSING (checkout gone)`: the config's `root:` no longer exists. Its run, agent, ask and pipeline facts are not read |
+
+### Agents
+
+By default `show` asks each running workspace's agent daemon for its pane states,
+the same snapshot `workspace sessions` reads. Each read is bounded: a daemon that
+is down, or doesn't answer within the timeout, is reported as unavailable and the
+command still exits 0. A hung daemon therefore costs at most the timeout per
+running workspace. Timeouts apply per running workspace, so they add up: three
+hung daemons at the default 1 second cost about 3 seconds. Workspaces that
+aren't running are never asked. The bound covers the wait for the reply; opening
+the socket and writing the request are not timed, though both are local and
+return at once unless the daemon's accept queue or socket buffer is full.
+
+Two kinds of degradation, kept apart on purpose: local state `show` can't read
+(asks, pipeline, locks, dev) is `null` in its field, with a top-level `errors`
+entry for locks and dev; the optional agent daemon not answering is
+`agents.available: false` plus a `reason`, with no `errors` entry.
+
+| Option | Meaning |
+|--------|---------|
+| `--no-agents` | Skip every daemon: opens no sockets, drops the `AGENTS` column, and `agents` is `null` in JSON |
+| `--timeout SECONDS` | How long to wait for each running workspace's daemon (default 1; a finite number greater than 0). Ignored with `--no-agents` |
 
 Locks and the dev environment are repo-wide, so they are read once from the
 project's main checkout. Each holder or waiter is mapped to the workspace whose
@@ -156,23 +179,28 @@ succeeds and says so in place of the locks and dev lines.
  "members":[
    {"workspace":"app.worktree-login","path":"/Users/z/src/app/.worktrees/login","kind":"worktree",
     "configured":true,"exists":true,"running":true,"headless":true,
+    "agents":{"available":true,
+             "panes":[{"pane_id":"%3","kind":"claude","state":"waiting","idle_seconds":120,
+                      "agents":[{"name":"eval","state":"running"}]}],
+             "counts":{"working":0,"idle":0,"waiting":1}},
     "open_asks":1,"pipeline":{"entries":0}}
  ],
  "locks":{"devenv":{"holder":{"workspace":"app.worktree-login","path":"...","pid":4121,"stale":false},
                     "queue":[{"workspace":"app","path":"...","pid":4150,"stale":false}]}},
  "dev":{"running":true,"ready":true,"holder_workspace":"app.worktree-login"},
- "summary":{"workspaces":3,"running":2,"open_asks":1,"pipeline_entries":2}}
+ "summary":{"workspaces":3,"running":2,"open_asks":1,"pipeline_entries":2,"waiting_agents":1,"agents_unavailable":1}}
 ```
 
 | Key | Meaning |
 |-----|---------|
 | `members[].running` | The workspace has a running tmux session and its checkout exists |
 | `members[].headless` | Launched headless, from the session state |
+| `members[].agents` | `{"available":true,"panes":[...],"counts":{"working","idle","waiting"}}` from the daemon. `{"available":false,"reason":...}` when it can't be read: `not_running` (never asked), `no_daemon`, `timeout` or `error` (bad reply, with the message in `detail`). This is never an `errors` entry and never changes the exit code. `null` with `--no-agents` |
 | `members[].open_asks`, `pipeline` | `null` for a missing checkout, or when the file can't be read. `pipeline` is `{"entries": N}` |
 | `locks` | Lock name to `holder` (or `null`) and `queue`. `{}` when nothing is locked or every checkout is gone. `null` if the store can't be read |
 | `dev` | Same facts as `workspace dev status --json`, for the project. `holder_workspace` is set only while running. `null` if every checkout is gone or the store can't be read |
 | `errors` | Present only when `locks` or `dev` couldn't be read: `{"locks": "...", "dev": "..."}` |
-| `summary` | Totals across the workspaces |
+| `summary` | Totals across the workspaces. `waiting_agents` counts panes waiting on a person. `agents_unavailable` counts running workspaces whose daemon couldn't be read (`no_daemon`, `timeout`, `error`), so `waiting_agents: 0` with `agents_unavailable: 0` means none waiting, while a nonzero `agents_unavailable` means the count may be low. Both are `null` with `--no-agents` |
 
 Exit code 0 means the project was found, even if every session is down. An
 unknown or ambiguous NAME, or a directory in no project, exits 1; under

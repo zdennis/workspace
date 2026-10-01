@@ -135,6 +135,39 @@ RSpec.describe Workspace::Commands::Sessions do
       }.to raise_error(Workspace::Error, /closed the connection/)
     end
 
+    context "when the daemon accepts but never answers" do
+      let(:quick_client) { Workspace::AgentSnapshotClient.new(config: config, timeout: 0.03) }
+      let(:command) { described_class.new(config: config, snapshot_client: quick_client, output: output, error_output: error_output) }
+
+      def with_hung_daemon
+        server = UNIXServer.new(socket_path)
+        listener = Thread.new do
+          conn = server.accept
+          conn.gets
+          sleep 0.1
+          conn.close
+        end
+        yield
+        listener.join(2)
+      ensure
+        server&.close
+      end
+
+      it "gives up after the read timeout with an error instead of blocking" do
+        expect {
+          with_hung_daemon { command.call(name: "proj") }
+        }.to raise_error(Workspace::Error, /did not answer within 0.03s/)
+      end
+
+      it "writes the timeout as a schema_version error with --json" do
+        result = nil
+        with_hung_daemon { result = command.call(name: "proj", json: true) }
+
+        expect(result).to eq(exit_code: 1)
+        expect(JSON.parse(output.string)).to eq("schema_version" => 1, "error" => "Agent daemon for 'proj' did not answer within 0.03s.")
+      end
+    end
+
     def with_raw_daemon(raw_reply)
       server = UNIXServer.new(socket_path)
       listener = Thread.new do

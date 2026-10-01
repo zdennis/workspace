@@ -42,6 +42,20 @@ RSpec.describe Workspace::Commands::Projects do
   let(:dev_payload) { {"schema_version" => 1, "running" => false, "holder" => nil, "ready" => nil, "queue" => []} }
   let(:dev_error) { nil }
   let(:dev_calls) { [] }
+  let(:agent_facts) { {} }
+  let(:agent_calls) { [] }
+
+  # Answers per workspace from +agent_facts+; a workspace with no entry has no daemon.
+  let(:agents) do
+    facts = agent_facts
+    calls = agent_calls
+    Class.new do
+      define_method(:facts) do |workspace, timeout: nil|
+        calls << {workspace: workspace, timeout: timeout}
+        facts.fetch(workspace) { {"available" => false, "reason" => "no_daemon"} }
+      end
+    end.new
+  end
 
   let(:state) do
     names = headless_workspaces
@@ -82,7 +96,7 @@ RSpec.describe Workspace::Commands::Projects do
 
   subject(:command) do
     described_class.new(catalog: catalog, tmux: tmux, state: state, config: state_config, lock_namespace: lock_namespace,
-      lock_holder: liveness, dev: dev, output: output, error_output: error_output, home: @root)
+      lock_holder: liveness, dev: dev, agents: agents, output: output, error_output: error_output, home: @root)
   end
 
   around do |example|
@@ -179,7 +193,7 @@ RSpec.describe Workspace::Commands::Projects do
       other_home = File.join(@root, "elsewhere")
       roots["app"] = make_main_checkout(File.join(@root, "app"))
       described_class.new(catalog: catalog, tmux: tmux, state: state, config: state_config, lock_namespace: lock_namespace,
-        lock_holder: liveness, dev: dev, output: output, home: other_home).list
+        lock_holder: liveness, dev: dev, agents: agents, output: output, home: other_home).list
 
       expect(output.string).to include(File.join(@root, "app"))
     end
@@ -321,7 +335,7 @@ RSpec.describe Workspace::Commands::Projects do
           "headless" => false, "open_asks" => 0, "pipeline" => {"entries" => 2})
         expect(member("app.worktree-login")).to include("kind" => "worktree", "running" => true, "headless" => true,
           "open_asks" => 2, "pipeline" => {"entries" => 0})
-        expect(payload["summary"]).to eq("workspaces" => 3, "running" => 2, "open_asks" => 2, "pipeline_entries" => 2)
+        expect(payload["summary"]).to eq("workspaces" => 3, "running" => 2, "open_asks" => 2, "pipeline_entries" => 2, "waiting_agents" => 0, "agents_unavailable" => 2)
       end
 
       it "counts only open asks" do
@@ -351,7 +365,7 @@ RSpec.describe Workspace::Commands::Projects do
         headless_workspaces << "app.worktree-login"
         add_ask("app")
 
-        command.show(name: "app")
+        command.show(name: "app", agents: false)
 
         lines = output.string.lines.map(&:chomp)
         expect(lines[0]).to eq("Project  app   ~/app   (git)")
@@ -674,6 +688,109 @@ RSpec.describe Workspace::Commands::Projects do
       command.show(name: "app", json: true)
 
       expect(payload.keys).to eq(%w[schema_version project members locks dev summary])
+    end
+
+    describe "agents" do
+      def pane(state, id: "%1") = {"pane_id" => id, "kind" => "claude", "state" => state, "idle_seconds" => 3, "agents" => []}
+
+      def available(*states)
+        panes = states.each_with_index.map { |state, i| pane(state, id: "%#{i}") }
+        counts = %w[working idle waiting].to_h { |state| [state, states.count(state)] }
+        {"available" => true, "panes" => panes, "counts" => counts}
+      end
+
+      before { build_app_with_worktrees }
+
+      it "asks each running workspace's daemon, with the default 1 second timeout, and nobody else" do
+        sessions.replace(%w[app app-worktree-login app-worktree-old])
+
+        command.show(name: "app", json: true)
+
+        expect(agent_calls).to eq([{workspace: "app", timeout: 1.0}, {workspace: "app.worktree-login", timeout: 1.0}])
+      end
+
+      it "passes --timeout through" do
+        sessions.replace(%w[app])
+
+        command.show(name: "app", json: true, timeout: 0.25)
+
+        expect(agent_calls).to eq([{workspace: "app", timeout: 0.25}])
+      end
+
+      it "reports each running workspace's agent facts and sums waiting agents" do
+        sessions.replace(%w[app app-worktree-login])
+        agent_facts["app"] = available("idle")
+        agent_facts["app.worktree-login"] = available("waiting", "waiting", "working")
+
+        command.show(name: "app", json: true)
+
+        expect(member("app")["agents"]).to eq(agent_facts["app"])
+        expect(member("app.worktree-login")["agents"]["counts"]).to eq("working" => 1, "idle" => 0, "waiting" => 2)
+        expect(payload["summary"]["waiting_agents"]).to eq(2)
+        expect(payload["summary"]["agents_unavailable"]).to eq(0)
+        expect(payload["errors"]).to be_nil
+      end
+
+      it "reports a workspace that isn't running as not running, without asking its daemon" do
+        command.show(name: "app", json: true)
+
+        expect(member("app")["agents"]).to eq("available" => false, "reason" => "not_running")
+        expect(agent_calls).to be_empty
+      end
+
+      it "degrades to unavailable, with exit 0 and no errors entry, when a daemon is down or too slow" do
+        sessions.replace(%w[app app-worktree-login])
+        agent_facts["app.worktree-login"] = {"available" => false, "reason" => "timeout"}
+
+        result = command.show(name: "app", json: true)
+
+        expect(result).to eq(exit_code: 0)
+        expect(member("app")["agents"]).to eq("available" => false, "reason" => "no_daemon")
+        expect(member("app.worktree-login")["agents"]).to eq("available" => false, "reason" => "timeout")
+        expect(payload["summary"]["agents_unavailable"]).to eq(2)
+        expect(payload).not_to have_key("errors")
+      end
+
+      it "skips every daemon and nulls the facts with agents: false" do
+        sessions.replace(%w[app])
+
+        command.show(name: "app", json: true, agents: false)
+
+        expect(agent_calls).to be_empty
+        expect(member("app")["agents"]).to be_nil
+        expect(payload["summary"]).to include("waiting_agents" => nil, "agents_unavailable" => nil)
+      end
+
+      context "in the text view" do
+        it "adds an AGENTS column with waiting first and a note for unavailable daemons" do
+          sessions.replace(%w[app app-worktree-login])
+          agent_facts["app"] = available("idle", "working", "waiting")
+
+          command.show(name: "app")
+
+          lines = output.string.lines.map(&:chomp)
+          expect(lines.find { |l| l.start_with?("WORKSPACE") }).to match(/\AWORKSPACE\s+KIND\s+RUN\s+AGENTS\s+ASKS\s+PIPE/)
+          expect(lines.find { |l| l.start_with?("app ") }).to include("1 waiting, 1 working, 1 idle")
+          expect(lines.find { |l| l.start_with?("app.worktree-login") }).to include("no daemon")
+          expect(lines.find { |l| l.start_with?("app.worktree-old") }).to match(/\s-\s+-\s+-\s+MISSING/)
+        end
+
+        it "says none for a daemon with no panes and a dash for a stopped workspace" do
+          sessions.replace(%w[app])
+          agent_facts["app"] = available
+
+          command.show(name: "app")
+
+          expect(output.string.lines.find { |l| l.start_with?("app ") }).to include("none")
+          expect(output.string.lines.find { |l| l.start_with?("app.worktree-login") }).to match(/worktree\s+-\s+-\s+0\s+0/)
+        end
+
+        it "drops the AGENTS column with agents: false" do
+          command.show(name: "app", agents: false)
+
+          expect(output.string).not_to include("AGENTS")
+        end
+      end
     end
   end
 end

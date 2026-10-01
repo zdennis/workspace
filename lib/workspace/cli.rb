@@ -3420,14 +3420,17 @@ module Workspace
 
         Subcommands:
           list              One row per project: its workspaces and how many are running (default)
-          show [NAME|PATH]  One project in detail: each workspace's running state, open asks and
-                            pipeline entries, plus the repo-wide locks and dev environment.
+          show [NAME|PATH]  One project in detail: each workspace's running state, agent states, open
+                            asks and pipeline entries, plus the repo-wide locks and dev environment.
                             NAME is a project name, a member workspace name or a path; it
                             defaults to the project containing the current directory.
 
         Options:
           --running   list only: projects with at least one running workspace
           --json      Print schema-versioned JSON (see docs/README.projects.md)
+          --no-agents show only: skip the agent daemons (no sockets are read)
+          --timeout SECONDS
+                      show only: how long to wait for each agent daemon (default 1)
 
         A workspace joins the project whose repository its directory belongs to. If that
         directory is gone, it is matched by config name. The note after a path flags a
@@ -3444,29 +3447,38 @@ module Workspace
 
     def projects_show_parser(options)
       OptionParser.new do |opts|
-        opts.banner = "Usage: workspace projects show [NAME|PATH] [--json]"
+        opts.banner = "Usage: workspace projects show [NAME|PATH] [--json] [--no-agents] [--timeout SECONDS]"
         opts.separator ""
-        opts.separator "Show one project: its workspaces (running, headless, open asks, pipeline entries),"
+        opts.separator "Show one project: its workspaces (running, headless, agent states, open asks, pipeline entries),"
         opts.separator "the repo-wide locks and the dev environment. NAME is a project name, a member"
         opts.separator "workspace name or a path (use a path when two projects share a name); it defaults"
         opts.separator "to the project containing the current directory."
         opts.separator ""
         opts.on("--json", "Print schema-versioned JSON (see docs/README.projects.md)") { options[:json] = true }
+        opts.on("--no-agents", "Don't ask the agent daemons for agent states") { options[:agents] = false }
+        opts.on("--timeout SECONDS", Float, "Seconds to wait for each running workspace's agent daemon (default 1); ignored with --no-agents") { |seconds| options[:timeout] = seconds }
+        opts.separator ""
+        opts.separator "A daemon that is down or doesn't answer in time shows as unavailable; the command still exits 0."
         opts.separator ""
         opts.separator "Examples:"
         opts.separator "  workspace projects show"
         opts.separator "  workspace projects show app --json"
         opts.separator "  workspace projects show ~/src/app"
+        opts.separator "  workspace projects show --no-agents    # skip the agent daemons"
+        opts.separator "  workspace projects show --timeout 0.5"
       end
     end
 
     def cmd_projects_show(args)
-      options = {json: false}
+      options = {json: false, agents: true, timeout: nil}
       projects_show_parser(options).parse!(args)
+      if options[:timeout] && !(options[:timeout].finite? && options[:timeout].positive?)
+        raise UsageError, "--timeout must be a finite number greater than 0."
+      end
       raise UsageError, "Unexpected argument: #{args[1]}. Run 'workspace projects show --help'." if args.size > 1
       raise Error, "projects is not available: no projects command was wired" unless @projects_command
 
-      result = @projects_command.show(name: args.first, json: options[:json])
+      result = @projects_command.show(name: args.first, json: options[:json], agents: options[:agents], timeout: options[:timeout])
       @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
     end
 
