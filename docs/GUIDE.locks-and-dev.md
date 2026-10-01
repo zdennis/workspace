@@ -195,22 +195,22 @@ Because another worktree already holds the `devenv` lock, this is refused:
 
 ```
 $ workspace dev up
-Dev environment is running for app.worktree-login (feat/login). Use --wait to queue or --takeover to switch.
+Dev environment is running for app.worktree-login (feat/login). Use --wait to queue or --force (formerly --takeover) to switch.
 ```
 
 (exit 1). You have two ways past that:
 
 ```sh
 workspace dev up --wait              # queue and wait your turn
-workspace dev up --takeover          # stop the other worktree's env, then start yours
+workspace dev up --force              # stop the other worktree's env, then start yours
 ```
 
-`--wait` queues FIFO behind whoever's running; `--takeover` stops the
+`--wait` queues FIFO behind whoever's running; `--force` stops the
 current holder's dev environment first and hands the lock straight to you,
 ahead of anyone already waiting. Add `--max-wait DURATION` (such as `10m`,
 or a plain number of seconds) to give up after a while instead of waiting
 forever (exit 75); it implies `--wait`, so you don't need to pass both.
-With `--takeover`, `--max-wait` limits the whole switch: if your env isn't
+With `--force`, `--max-wait` limits the whole switch: if your env isn't
 running by then, `up` exits 75 and, if it hadn't stopped the other
 worktree's env yet, leaves that env running.
 
@@ -322,7 +322,7 @@ dev environment first. Four outcomes are possible:
 - **Kept** — the process group couldn't be stopped (see below), or someone
   else grabbed the lock while it was being stopped. Exits 1.
 - **Already being cleared** — another `clear` (or `dev down`, or `dev up
-  --takeover`) is already stopping it. Exits 1; check
+  --force`) is already stopping it. Exits 1; check
   `workspace lock status devenv` for progress.
 - **Not held** — nothing to do.
 
@@ -352,7 +352,7 @@ All of these are set with `workspace config set <key> <value>` on the
 | `dev.stop_timeout` | SIGTERM -> SIGKILL grace when stopping the dev env | 20s | any positive duration |
 | `dev.startup_timeout` | How long `dev up` waits for the wrapper to take a free lock | 30s | any positive duration |
 | `dev.ready_timeout` | How long `dev up` waits for `dev.ready` to pass | 120s (2m) | any positive duration |
-| `dev.kill_grace` | How long `lock clear devenv`/`dev down`/`dev up --takeover` wait after SIGKILL before keeping the lock | 2s | any positive duration, capped at 60s |
+| `dev.kill_grace` | How long `lock clear devenv`/`dev down`/`dev up --force` wait after SIGKILL before keeping the lock | 2s | any positive duration, capped at 60s |
 | `locks.idle_grace` | How long an idle agent keeps a lock before the head waiter may take it over | 5m (300s) | any positive duration |
 | `locks.ps_timeout` | How long to wait for `ps` when checking process liveness | 5s | 1s–60s |
 | `locks.reap_interval` | How often the session-monitor daemon sweeps for stale lock holders/waiters | 30s | any positive duration; takes effect only the next time the daemon starts |
@@ -365,7 +365,7 @@ Durations are a plain number of seconds, or a number with an `s`, `m`, or
 - **"No dev command configured"** — you haven't set `dev.up` yet on the
   parent project. See [section 4](#4-configure-the-dev-environment).
 - **`dev up` or `lock acquire` refuses immediately** — someone else holds
-  it. Use `--wait` to queue, `--takeover` (dev only) to preempt, or check
+  it. Use `--wait` to queue, `--force` (dev only) to preempt, or check
   `workspace lock status` / `workspace dev status` to see who.
 - **Edits are being denied unexpectedly** — you don't currently hold the
   `edit` lock. Run `workspace lock acquire edit --wait --task "..."` first,

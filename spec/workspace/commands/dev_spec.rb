@@ -132,7 +132,7 @@ RSpec.describe Workspace::Commands::Dev do
       result = dev.up(working_dir: main)
 
       expect(result).to eq(exit_code: 1)
-      expect(error_output.string).to include("Dev environment is running for app-login (feat/login). Use --wait to queue or --takeover to switch.")
+      expect(error_output.string).to include("Dev environment is running for app-login (feat/login). Use --wait to queue or --force (formerly --takeover) to switch.")
       expect(tmux.windows.size).to eq(1)
     end
 
@@ -420,7 +420,7 @@ RSpec.describe Workspace::Commands::Dev, "with fake processes and clock" do
     end
   end
 
-  describe "#up --takeover" do
+  describe "#up --force" do
     it "queues the new wrapper ahead of an earlier waiter so the stopped holder's lock passes to it" do
       hold(700)
       enqueue(800)
@@ -448,7 +448,7 @@ RSpec.describe Workspace::Commands::Dev, "with fake processes and clock" do
     end
   end
 
-  describe "#up --takeover --max-wait" do
+  describe "#up --force --max-wait" do
     before { hold(700) }
 
     it "exits 75 and stops its queued wrapper when the stopped holder hasn't let go by the deadline" do
@@ -618,7 +618,7 @@ RSpec.describe Workspace::Commands::Dev, "with fake processes and clock" do
       expect(tmux).not_to have_received(:new_window)
     end
 
-    it "with --takeover, kills the orphaned group and starts its own" do
+    it "with --force, kills the orphaned group and starts its own" do
       orphan(700)
       allow(terminator).to receive(:running?).with(700).and_return(true)
       allow(terminator).to receive(:terminate).and_return(:terminated)
@@ -742,7 +742,7 @@ RSpec.describe Workspace::Commands::Dev, "with fake processes and clock" do
     end
   end
 
-  describe "#up --takeover waiting for its wrapper to queue" do
+  describe "#up --force waiting for its wrapper to queue" do
     before { hold(700) }
 
     it "stops a wrapper that never queues within the startup timeout, leaving the holder alone" do
@@ -884,7 +884,7 @@ RSpec.describe Workspace::Commands::Dev, "with fake processes and clock" do
     end
   end
 
-  describe "#up --takeover of a group that can't be stopped" do
+  describe "#up --force of a group that can't be stopped" do
     it "keeps the holder's lock, exits 1 and leaves its own wrapper queued first" do
       hold(700)
       wrapper_joins(555)
@@ -926,7 +926,7 @@ RSpec.describe Workspace::Commands::Dev, "with fake processes and clock" do
       expect(holder["clearing"]).to eq(clearer)
     end
 
-    it "`up --takeover` signals nothing and leaves its own wrapper queued first" do
+    it "`up --force` signals nothing and leaves its own wrapper queued first" do
       mark_held_by_clearer(700)
       wrapper_joins(555)
       allow(terminator).to receive(:stop_holder)

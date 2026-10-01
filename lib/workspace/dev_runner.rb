@@ -11,7 +11,7 @@ module Workspace
   # reaping.
   #
   # The wrapper must lead its process group, since that group is recorded in
-  # the lock and signalled as a whole. `dev down` and `--takeover` send
+  # the lock and signalled as a whole. `dev down` and `--force` send
   # SIGTERM (or SIGHUP) to the wrapper pid only; the wrapper forwards it once
   # to the whole group, reaching the command's own children too, and ignores
   # the copy delivered back to itself.
@@ -63,7 +63,7 @@ module Workspace
     # @param worktree [String] worktree root, used as the command's cwd
     # @param branch [String, nil] branch recorded in the lock holder
     # @param wait [Boolean] queue FIFO behind the current holder instead of failing
-    # @param priority [Boolean] queue ahead of everyone already waiting (`dev up --takeover`)
+    # @param priority [Boolean] queue ahead of everyone already waiting (`dev up --force`)
     # @return [Integer] the child's exit status, 128 + signal number if it was
     #   killed (or the wait was interrupted), or 4 if the lock was cleared while queued
     # @raise [Workspace::Error] if the lock is held by someone else (without

@@ -512,9 +512,9 @@ module Workspace
         (removed[:takeovers] || []).any? { |w| w["waiter_pid"] == holder["waiter_pid"] && w["waiter_started"] == holder["waiter_started"] }
       end
 
-      # A queued `dev up --takeover` is kept by the clear, not removed: it
+      # A queued `dev up --force` is kept by the clear, not removed: it
       # takes the lock next. At most one takeover can ever be queued for a
-      # lock (a second `dev up --takeover` refuses while one is already
+      # lock (a second `dev up --force` refuses while one is already
       # queued), so `.first` is always the one promoted.
       def takeover_note(removed)
         takeover = removed[:takeovers]&.first

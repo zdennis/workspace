@@ -4,7 +4,7 @@ module Workspace
   # Stops a recorded process group: SIGTERM (to the whole group, or to its
   # leader alone), then SIGKILL to the whole group if anything in it is still
   # running after +stop_timeout+ seconds. Used for a `kind: "process"` lock
-  # holder's pgid by `dev down`, `--takeover` and `lock clear devenv`.
+  # holder's pgid by `dev down`, `--force` and `lock clear devenv`.
   #
   # {#terminate} trusts its caller to have checked the holder is still alive;
   # {#stop_holder} does that check itself, so a recycled pgid is never

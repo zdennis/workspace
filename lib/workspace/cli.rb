@@ -1310,7 +1310,7 @@ module Workspace
                                      Ordinary waiters are removed once the lock is
                                      actually cleared, but stay queued if a kept
                                      devenv holder can't be stopped; a queued
-                                     `dev up --takeover` is kept either way, not
+                                     `dev up --force` is kept either way, not
                                      removed.
           instructions [<name>]      Print the prompt block that tells a coding
                                      agent how to use the lock (default: edit)
@@ -1530,11 +1530,13 @@ module Workspace
 
         Options (up):
           --wait            Queue behind another worktree's dev env
-          --takeover        Stop another worktree's dev env, then start this one
+          --force           Stop another worktree's dev env, then start this one
+                            (--takeover, the old flag, still works; unrelated to
+                            `down --force`)
           --no-ready        Don't wait for the dev.ready check
           --max-wait DUR    Give up after DUR, e.g. "9m" (a plain number is seconds;
-                            exit 75; implies --wait). With --takeover, it limits
-                            the whole takeover.
+                            exit 75; implies --wait). With --force, it limits
+                            the whole switch.
 
         Options (down):
           --force           Also kill a process group left behind by a dead wrapper
@@ -1544,9 +1546,9 @@ module Workspace
 
         Exit codes (up):
           0   running (or already running for this worktree)
-          1   running for another worktree (without --wait/--takeover), or failed to start;
-              also a --takeover whose target is already being stopped by another
-              `lock clear`/`dev down`/`dev up --takeover`
+          1   running for another worktree (without --wait/--force), or failed to start;
+              also a --force whose target is already being stopped by another
+              `lock clear`/`dev down`/`dev up --force`
           4   devenv lock cleared while waiting
           6   ready check failed (the env is stopped and the lock released)
           75  still queued after --max-wait
@@ -1554,12 +1556,12 @@ module Workspace
         Exit codes (down):
           0   stopped (or nothing was running)
           1   could not stop the process group, or it's already being stopped by
-              another `lock clear`/`dev down`/`dev up --takeover`
+              another `lock clear`/`dev down`/`dev up --force`
 
         Examples:
           workspace dev up
           workspace dev up --wait --max-wait 10m
-          workspace dev up --takeover
+          workspace dev up --force
           workspace dev status
           workspace dev down
       HELP
@@ -1567,20 +1569,20 @@ module Workspace
 
     def cmd_dev_up(args)
       wait = false
-      takeover = false
+      force = false
       ready = true
       max_wait = nil
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace dev up [--wait] [--takeover] [--no-ready] [--max-wait DURATION]"
+        opts.banner = "Usage: workspace dev up [--wait] [--force] [--no-ready] [--max-wait DURATION]"
         opts.on("--wait", "Queue behind another worktree's dev env") { wait = true }
-        opts.on("--takeover", "Stop another worktree's dev env, then start this one") { takeover = true }
+        opts.on("--force", "--takeover", "Stop another worktree's dev env, then start this one") { force = true }
         opts.on("--[no-]ready", "Wait for the dev.ready check (default: on)") { |v| ready = v }
         opts.on("--max-wait DURATION", "Give up after DURATION (e.g. \"9m\", or a plain number of seconds); exits 75; implies --wait") { |v| max_wait = parse_duration_option("--max-wait", v) }
       end
       parser.parse!(args)
       raise UsageError, parser.help if args.any?
 
-      result = @dev_command.up(wait: wait, takeover: takeover, ready: ready, max_wait: max_wait, working_dir: @working_dir)
+      result = @dev_command.up(wait: wait, takeover: force, ready: ready, max_wait: max_wait, working_dir: @working_dir)
       @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
     end
 

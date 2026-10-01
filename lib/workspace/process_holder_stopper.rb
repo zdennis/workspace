@@ -67,7 +67,7 @@ module Workspace
 
     # The `clearing` marker naming the process +pid+, recorded on a process
     # holder it is stopping so a concurrent `lock clear`, `dev down` or `dev
-    # up --takeover` leaves that holder to it. Without a readable start time
+    # up --force` leaves that holder to it. Without a readable start time
     # there is no marker, since its liveness could not be checked.
     #
     # @param pid [Integer] the stopping process's pid

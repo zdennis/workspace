@@ -2125,12 +2125,20 @@ RSpec.describe Workspace::CLI do
     describe "dev" do
       let(:dev_command) { CLITestHelpers::FakeDevCommand.new }
 
-      it "dispatches up with --wait, --takeover, --no-ready and --max-wait" do
+      it "dispatches up with --wait, --force, --no-ready and --max-wait" do
         cli, _, _ = build_test_cli(dev_command: dev_command)
 
-        cli.run(["dev", "up", "--wait", "--takeover", "--no-ready", "--max-wait", "30"])
+        cli.run(["dev", "up", "--wait", "--force", "--no-ready", "--max-wait", "30"])
 
         expect(dev_command.calls).to eq([{action: :up, wait: true, takeover: true, ready: false, max_wait: 30.0}])
+      end
+
+      it "dispatches up with --takeover, the deprecated alias for --force" do
+        cli, _, _ = build_test_cli(dev_command: dev_command)
+
+        cli.run(["dev", "up", "--takeover"])
+
+        expect(dev_command.calls).to eq([{action: :up, wait: false, takeover: true, ready: true, max_wait: nil}])
       end
 
       it "defaults up to no wait, no takeover, and a ready check" do

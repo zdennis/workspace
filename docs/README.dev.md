@@ -5,7 +5,7 @@ Run one dev environment per repository, guarded by the repo-wide `devenv` lock. 
 ## Usage
 
 ```sh
-workspace dev up     [--wait] [--takeover] [--no-ready] [--max-wait DURATION]
+workspace dev up     [--wait] [--force] [--no-ready] [--max-wait DURATION]
 workspace dev down   [--force]
 workspace dev status [--json]
 ```
@@ -29,12 +29,13 @@ workspace config set dev.ready_timeout 2m         # wait for the dev.ready check
 | Option | Description |
 |--------|-------------|
 | `--wait` | Queue FIFO behind another worktree's dev env instead of refusing |
-| `--takeover` | Stop another worktree's dev env, then start this one |
+| `--force` | Stop another worktree's dev env, then start this one |
 | `--no-ready` | Don't wait for the `dev.ready` check |
-| `--max-wait DURATION` | Give up after `DURATION`: `30s`, `9m`, `1h`, or a plain number of seconds (exit 75); implies `--wait`. With `--takeover`, it limits the whole takeover |
+| `--max-wait DURATION` | Give up after `DURATION`: `30s`, `9m`, `1h`, or a plain number of seconds (exit 75); implies `--wait`. With `--force`, it limits the whole switch |
+
+`--takeover` is the deprecated alias for `--force` and still works; `down --force` (below) is a separate flag.
 
 ## Options (down)
-
 | Option | Description |
 |--------|-------------|
 | `--force` | Also kill a process group left behind by a wrapper that was SIGKILLed |
@@ -44,7 +45,7 @@ workspace config set dev.ready_timeout 2m         # wait for the dev.ready check
 | Code | Meaning |
 |------|---------|
 | 0 | Running (or already running for this worktree) |
-| 1 | Running for another worktree (no `--wait`/`--takeover`), or failed to start; also a `--takeover` whose target is already being stopped by another `lock clear`, `dev down`, or `dev up --takeover` |
+| 1 | Running for another worktree (no `--wait`/`--force`), or failed to start; also a `--force` whose target is already being stopped by another `lock clear`, `dev down`, or `dev up --force` |
 | 4 | The `devenv` lock was cleared while waiting |
 | 6 | Ready check failed; the env is stopped and the lock released |
 | 75 | Still queued after `--max-wait` |
@@ -54,7 +55,7 @@ workspace config set dev.ready_timeout 2m         # wait for the dev.ready check
 | Code | Meaning |
 |------|---------|
 | 0 | Stopped (or nothing was running) |
-| 1 | Could not stop the process group, or it's already being stopped by another `lock clear`, `dev down`, or `dev up --takeover` |
+| 1 | Could not stop the process group, or it's already being stopped by another `lock clear`, `dev down`, or `dev up --force` |
 
 ## `--json`
 
@@ -86,11 +87,11 @@ workspace config set dev.ready_timeout 2m         # wait for the dev.ready check
 
 **`up`** opens a background `devenv` window in the current tmux session and runs the hidden `workspace dev __run` wrapper there. The wrapper takes the `devenv` lock and runs `dev.up` through the shell with the worktree root as cwd. The command owns the pane's TTY: no pipes, output goes straight to the pane, and it can prompt or hit `binding.pry`. `up` returns once the wrapper holds the lock and `dev.ready` passes, printing `Dev environment running for <worktree> (<branch>) in <session>:devenv.` Running `up` again from the same worktree is a no-op.
 
-**Another worktree holds it** — `up` exits 1 with that worktree's name and branch. `--wait` queues (the wrapper waits in its window, and `up` prints one `Trying to obtain workspace devenv lock...` line). `--takeover` stops the holder first and hands the lock straight to this worktree, ahead of anyone already queued.
+**Another worktree holds it** — `up` exits 1 with that worktree's name and branch. `--wait` queues (the wrapper waits in its window, and `up` prints one `Trying to obtain workspace devenv lock...` line). `--force` stops the holder first and hands the lock straight to this worktree, ahead of anyone already queued.
 
-**Stopping** — `down`, `--takeover` and `workspace lock clear devenv` send SIGTERM to the wrapper only. The wrapper forwards it once to its whole process group (the dev command and its children), waits for the command to exit, releases the lock, and exits. If anything in the group is still running after `dev.stop_timeout`, the group gets SIGKILL. `down` works from any worktree of the repo. If the group can't be stopped — processes this user isn't permitted to signal (a server under `sudo`), something still running `dev.kill_grace` (default `2s`, capped at `60s`) after SIGKILL, or a wrapper already gone while its group runs on — `down` and `--takeover` keep the `devenv` lock exactly as `workspace lock clear devenv` does: `Could not stop process group N (pid P): ...` and `Kept devenv lock: ...` (with a `kill -TERM -N` hint for the group's owner) on stderr, exit 1, and the lock is not reaped while that group still runs. `--takeover`'s own wrapper stays queued first and starts once the lock frees.
+**Stopping** — `down`, `--force` and `workspace lock clear devenv` send SIGTERM to the wrapper only. The wrapper forwards it once to its whole process group (the dev command and its children), waits for the command to exit, releases the lock, and exits. If anything in the group is still running after `dev.stop_timeout`, the group gets SIGKILL. `down` works from any worktree of the repo. If the group can't be stopped — processes this user isn't permitted to signal (a server under `sudo`), something still running `dev.kill_grace` (default `2s`, capped at `60s`) after SIGKILL, or a wrapper already gone while its group runs on — `down` and `--force` keep the `devenv` lock exactly as `workspace lock clear devenv` does: `Could not stop process group N (pid P): ...` and `Kept devenv lock: ...` (with a `kill -TERM -N` hint for the group's owner) on stderr, exit 1, and the lock is not reaped while that group still runs. `--force`'s own wrapper stays queued first and starts once the lock frees.
 
-**One stop at a time** — while `down`, `--takeover` or `lock clear devenv` is stopping the group, the holder carries `"clearing": {"pid", "started"}` naming that process. Any of the three run meanwhile signals nothing, prints `devenv lock is already being cleared by pid N ...` on stderr, and exits 1 (a `--takeover` that finds one keeps its own wrapper queued first, so it still starts once that group is stopped). The marker is dropped when that stop finishes, and ignored once the process that set it is no longer running.
+**One stop at a time** — while `down`, `--force` or `lock clear devenv` is stopping the group, the holder carries `"clearing": {"pid", "started"}` naming that process. Any of the three run meanwhile signals nothing, prints `devenv lock is already being cleared by pid N ...` on stderr, and exits 1 (a `--force` that finds one keeps its own wrapper queued first, so it still starts once that group is stopped). The marker is dropped when that stop finishes, and ignored once the process that set it is no longer running.
 
 **Ctrl-C** in the `devenv` window stops the command and releases the lock.
 
@@ -98,15 +99,15 @@ workspace config set dev.ready_timeout 2m         # wait for the dev.ready check
 
 **Crashes** — the wrapper releases the lock whenever the command and everything left in its group have exited. If the wrapper itself is SIGKILLed, its lock is reaped as a dead holder. When the dev command survives it, `down` and `status` report the orphaned process group, and `down --force` kills it. The group is only ever signalled while the wrapper's pid still matches its recorded start time, except for this explicit `--force`, and never once a live process has taken the wrapper's pid (the group id has then been reused by something unrelated; the stale lock is just removed).
 
-**The `devenv` window is set `remain-on-exit`**, so it stays open after the wrapper exits and crash output stays readable. `down` and `--takeover` close the dead pane once the env is actually stopped; a ready-check timeout, giving up on `--max-wait`/startup, or `lock clear devenv` leave the window open — close it by hand with `tmux kill-window`.
+**The `devenv` window is set `remain-on-exit`**, so it stays open after the wrapper exits and crash output stays readable. `down` and `--force` close the dead pane once the env is actually stopped; a ready-check timeout, giving up on `--max-wait`/startup, or `lock clear devenv` leave the window open — close it by hand with `tmux kill-window`.
 
 **No tmux server running** — `up` fails fast: `tmux server not running; start the workspace with 'workspace launch', then run 'workspace dev up' again.`
 
-**A foreign pgid** — when a stale (wrapper-gone) holder's recorded process group has live processes this user isn't permitted to signal (its id was likely reused by another user), `down` (with or without `--force`) and `up --takeover` refuse and leave the lock in place, printing a `ps -axo pid,pgid,user,stat,command | awk '$2 == N'` inspection hint; `status` shows the same note. `workspace lock clear devenv` keeps the lock too and exits 1, without signalling the group, while that group still runs and the wrapper's pid has not been taken by another process. Likewise a group `lock clear devenv` can't stop while the wrapper is still alive (another user's processes, or still running after SIGKILL) keeps its lock and exits 1, and that lock is not reaped when the wrapper goes away while the group still runs; see [`workspace lock`](README.lock.md).
+**A foreign pgid** — when a stale (wrapper-gone) holder's recorded process group has live processes this user isn't permitted to signal (its id was likely reused by another user), `down` (with or without `--force`) and `up --force` refuse and leave the lock in place, printing a `ps -axo pid,pgid,user,stat,command | awk '$2 == N'` inspection hint; `status` shows the same note. `workspace lock clear devenv` keeps the lock too and exits 1, without signalling the group, while that group still runs and the wrapper's pid has not been taken by another process. Likewise a group `lock clear devenv` can't stop while the wrapper is still alive (another user's processes, or still running after SIGKILL) keeps its lock and exits 1, and that lock is not reaped when the wrapper goes away while the group still runs; see [`workspace lock`](README.lock.md).
 
-**`--takeover` jumps the queue** — it stops the current holder and hands the lock straight to this worktree, ahead of anyone already waiting with `--wait`. A `workspace lock clear devenv` run at the same time still removes those `--wait` waiters once the holder is stopped (they exit 4; if it can't be stopped they stay queued), but keeps the takeover's queued wrapper, which starts once the holder is stopped.
+**`--force` jumps the queue** — it stops the current holder and hands the lock straight to this worktree, ahead of anyone already waiting with `--wait`. A `workspace lock clear devenv` run at the same time still removes those `--wait` waiters once the holder is stopped (they exit 4; if it can't be stopped they stay queued), but keeps the takeover's queued wrapper, which starts once the holder is stopped.
 
-**`--takeover --max-wait DURATION`** gives up if this worktree's dev env isn't running by then: `up` stops its queued wrapper, which leaves the queue, and exits 75, the same as `--wait --max-wait`. If the time runs out before the current holder is stopped, the holder keeps running. `DURATION` doesn't cut short a stop already under way; `up` checks it again once that stop finishes.
+**`--force --max-wait DURATION`** gives up if this worktree's dev env isn't running by then: `up` stops its queued wrapper, which leaves the queue, and exits 75, the same as `--wait --max-wait`. If the time runs out before the current holder is stopped, the holder keeps running. `DURATION` doesn't cut short a stop already under way; `up` checks it again once that stop finishes.
 
 **`status`** shows the holder's worktree and branch, pid/pgid, pane, uptime, whether `dev.ready` currently passes, and the queue.
 
@@ -125,10 +126,10 @@ workspace dev up
 workspace dev up --wait --max-wait 10m
 
 # Switch the running env to this worktree
-workspace dev up --takeover
+workspace dev up --force
 
 # Switch, but give up if it isn't running within 2 minutes
-workspace dev up --takeover --max-wait 2m
+workspace dev up --force --max-wait 2m
 
 # Inspect and stop
 workspace dev status

@@ -49,7 +49,7 @@ The same log records what agents and pipelines do. `reconstruct` ignores these e
 | `agent_alert` | agent daemon's session monitor, once the notify command accepts an alert | `pane_id`, `pane_pid`, `kind` (`idle` or `waiting`; missing means `idle`); for `idle`: `idle_since` (when the output went quiet); for `waiting`: `agent_id` (`null` for the main agent), `waiting_since` |
 | `lock_wait_started` | `lock acquire --wait`, `dev up` | `lock`, `pid`, `holder`; for `lock`: `task`, `position` |
 | `lock_acquired` | same, once a wait ends with the lock | `lock`, `pid`, `waited_seconds` |
-| `lock_takeover` | `lock acquire` taking over an idle holder; `dev up --takeover` | `lock`, `pid`, `from`; for `lock`: `waited_seconds`, `idle_since` |
+| `lock_takeover` | `lock acquire` taking over an idle holder; `dev up --force` | `lock`, `pid`, `from`; for `lock`: `waited_seconds`, `idle_since` |
 | `lock_wait_gave_up` | `--max-wait` or the startup timeout passed while queued | `lock`, `pid`, `waited_seconds` |
 | `lock_wait_cleared` | `lock clear` removed the waiter | `lock`, `pid`, `waited_seconds` |
 | `lock_wait_abandoned` | `lock acquire --wait` interrupted | `lock`, `pid`, `waited_seconds`, `exit_code` |

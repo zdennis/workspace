@@ -20,7 +20,7 @@ module Workspace
   # process, for the dev-environment lock in a later PR) — both are stored
   # and reaped identically, since liveness only depends on pid + start time.
   # A process holder also records its "pgid" and "branch", so `dev down`,
-  # `--takeover` and `lock clear` can signal its whole process group; a
+  # `--force` and `lock clear` can signal its whole process group; a
   # queued process waiter carries the same fields into its promotion.
   #
   # An agent holder whose coding agent has finished its turn is marked idle
@@ -67,7 +67,7 @@ module Workspace
     # @param task [String, nil] free-text description shown in status/queue messages
     # @param wait [Boolean] enqueue instead of refusing when the lock is busy
     # @param priority [Boolean] go ahead of everyone already queued (`dev up
-    #   --takeover`): take a free lock even with others waiting, or enqueue at
+    #   --force`): take a free lock even with others waiting, or enqueue at
     #   the head, in the same flocked step so no release can promote past it;
     #   the queue entry is marked "takeover", which {#clear} keeps
     # @return [Hash] :status is one of :acquired, :already_held, :held, :queued, :deadlock
@@ -288,7 +288,7 @@ module Workspace
     # behind it) while that clearer runs. {#finish_clear} removes those
     # waiters once the group is stopped; {#keep_process_holder} unmarks them,
     # so they go on waiting when it can't be. A live waiter queued by `dev up
-    # --takeover` is not marked: it means to replace this holder, not wait
+    # --force` is not marked: it means to replace this holder, not wait
     # on it, so it stays first in line and {#finish_clear} (or the holder's
     # own release) promotes it. Without +clearer+ the marked waiters are
     # removed at once instead. The holder's process group has to be
@@ -302,7 +302,7 @@ module Workspace
     # A kept holder is marked `clearing` with +clearer+ (the `lock clear`
     # process's pid and start time) until {#finish_clear} or
     # {#keep_process_holder} ends that clear (`dev down` and `dev up
-    # --takeover` mark it the same way, with {#mark_clearing}), so a second,
+    # --force` mark it the same way, with {#mark_clearing}), so a second,
     # concurrent clear
     # neither stops the same group again nor writes a second `clear` event:
     # it gets in_progress: true back instead, with nothing changed and
@@ -430,7 +430,7 @@ module Workspace
     end
 
     # Marks a `kind: "process"` holder as being stopped by +clearer+ (`dev
-    # down` or `dev up --takeover`), exactly as {#clear} marks it for `lock
+    # down` or `dev up --force`), exactly as {#clear} marks it for `lock
     # clear`, unless another live clearer is already stopping it. The marker
     # is dropped by {#unmark_clearing} or {#keep_process_holder}, or with
     # the holder once it releases.

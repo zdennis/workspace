@@ -166,7 +166,7 @@ module Workspace
 
       # The hidden `dev __run` entry point: runs {DevRunner} in the current
       # pane with this worktree's configured command. A wrapper opened by
-      # `up --takeover` (TAKEOVER_ENV set) queues ahead of everyone waiting.
+      # `up --force` (TAKEOVER_ENV set) queues ahead of everyone waiting.
       #
       # @param wait [Boolean] queue for the lock instead of failing when it is held
       # @param working_dir [String] directory inside the worktree
@@ -308,7 +308,7 @@ module Workspace
 
         return nil if wait
         if holder
-          @error_output.puts "Dev environment is running for #{describe(holder)}. Use --wait to queue or --takeover to switch."
+          @error_output.puts "Dev environment is running for #{describe(holder)}. Use --wait to queue or --force (formerly --takeover) to switch."
           return {exit_code: 1}
         end
         unless (entry["queue"] || []).empty?
