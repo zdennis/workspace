@@ -70,7 +70,7 @@ RSpec.describe Workspace::ProjectAgents do
     let(:failure) { Workspace::Error.new("Malformed reply") }
 
     it "reports unavailable with the error reason instead of raising" do
-      expect(agents.facts("app")).to eq("available" => false, "reason" => "error")
+      expect(agents.facts("app")).to eq("available" => false, "reason" => "error", "detail" => "Malformed reply")
     end
   end
 end

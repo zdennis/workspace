@@ -173,7 +173,8 @@ module Workspace
             "pipeline_entries" => members.sum { |m| m.dig("pipeline", "entries").to_i }
           }
         }
-        payload["summary"]["waiting_agents"] = members.sum { |m| m.dig("agents", "counts", "waiting").to_i } if agents
+        payload["summary"]["waiting_agents"] = agents ? members.sum { |m| m.dig("agents", "counts", "waiting").to_i } : nil
+        payload["summary"]["agents_unavailable"] = agents ? members.count { |m| m.dig("agents", "reason").to_s.match?(/\A(no_daemon|timeout|error)\z/) } : nil
         payload["errors"] = errors unless errors.empty?
         payload
       end

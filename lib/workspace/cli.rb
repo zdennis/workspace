@@ -3456,7 +3456,7 @@ module Workspace
         opts.separator ""
         opts.on("--json", "Print schema-versioned JSON (see docs/README.projects.md)") { options[:json] = true }
         opts.on("--no-agents", "Don't ask the agent daemons for agent states") { options[:agents] = false }
-        opts.on("--timeout SECONDS", Float, "Seconds to wait for each agent daemon (default 1)") { |seconds| options[:timeout] = seconds }
+        opts.on("--timeout SECONDS", Float, "Seconds to wait for each running workspace's agent daemon (default 1); ignored with --no-agents") { |seconds| options[:timeout] = seconds }
         opts.separator ""
         opts.separator "A daemon that is down or doesn't answer in time shows as unavailable; the command still exits 0."
         opts.separator ""
@@ -3472,7 +3472,9 @@ module Workspace
     def cmd_projects_show(args)
       options = {json: false, agents: true, timeout: nil}
       projects_show_parser(options).parse!(args)
-      raise UsageError, "--timeout must be greater than 0." if options[:timeout] && !options[:timeout].positive?
+      if options[:timeout] && !(options[:timeout].finite? && options[:timeout].positive?)
+        raise UsageError, "--timeout must be a finite number greater than 0."
+      end
       raise UsageError, "Unexpected argument: #{args[1]}. Run 'workspace projects show --help'." if args.size > 1
       raise Error, "projects is not available: no projects command was wired" unless @projects_command
 

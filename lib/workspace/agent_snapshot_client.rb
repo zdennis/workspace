@@ -4,6 +4,9 @@ require "json"
 module Workspace
   # Asks one workspace's agent daemon for its session snapshot over the
   # daemon's Unix socket, with a bound on how long it waits for the reply.
+  # The bound covers the wait for the reply only: opening the socket and
+  # writing the one-line request are not timed, though both are local and
+  # return at once unless the daemon's accept queue or socket buffer is full.
   #
   # Shared by `workspace sessions` and `workspace projects show`, so a hung
   # daemon costs a caller at most the timeout instead of blocking forever.

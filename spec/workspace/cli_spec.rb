@@ -2581,7 +2581,7 @@ RSpec.describe Workspace::CLI do
 
     it "rejects a --timeout that is not positive" do
       expect { cli.run(["projects", "show", "--timeout", "0"]) }.to raise_error(FakeSystemExit)
-      expect(error_output.string).to include("--timeout must be greater than 0")
+      expect(error_output.string).to include("--timeout must be a finite number greater than 0")
       expect(projects_command.calls).to be_empty
     end
 
@@ -2590,10 +2590,21 @@ RSpec.describe Workspace::CLI do
       expect(error_output.string).to include("invalid argument")
     end
 
+    it "rejects an infinite --timeout" do
+      expect { cli.run(["projects", "show", "--timeout", "1e400"]) }.to raise_error(FakeSystemExit)
+      expect(error_output.string).to include("--timeout must be a finite number greater than 0")
+      expect(projects_command.calls).to be_empty
+    end
+
+    it "rejects a NaN --timeout" do
+      expect { cli.run(["projects", "show", "--timeout", "NaN"]) }.to raise_error(FakeSystemExit)
+      expect(projects_command.calls).to be_empty
+    end
+
     it "reports a bad --timeout as a JSON error with --json" do
       expect { cli.run(["projects", "show", "--json", "--timeout", "0"]) }.to raise_error(FakeSystemExit)
 
-      expect(JSON.parse(output.string)).to eq("schema_version" => 1, "error" => "--timeout must be greater than 0.")
+      expect(JSON.parse(output.string)).to eq("schema_version" => 1, "error" => "--timeout must be a finite number greater than 0.")
     end
 
     it "lists --no-agents and --timeout in show's help" do

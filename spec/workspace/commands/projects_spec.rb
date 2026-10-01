@@ -335,7 +335,7 @@ RSpec.describe Workspace::Commands::Projects do
           "headless" => false, "open_asks" => 0, "pipeline" => {"entries" => 2})
         expect(member("app.worktree-login")).to include("kind" => "worktree", "running" => true, "headless" => true,
           "open_asks" => 2, "pipeline" => {"entries" => 0})
-        expect(payload["summary"]).to eq("workspaces" => 3, "running" => 2, "open_asks" => 2, "pipeline_entries" => 2, "waiting_agents" => 0)
+        expect(payload["summary"]).to eq("workspaces" => 3, "running" => 2, "open_asks" => 2, "pipeline_entries" => 2, "waiting_agents" => 0, "agents_unavailable" => 2)
       end
 
       it "counts only open asks" do
@@ -727,6 +727,7 @@ RSpec.describe Workspace::Commands::Projects do
         expect(member("app")["agents"]).to eq(agent_facts["app"])
         expect(member("app.worktree-login")["agents"]["counts"]).to eq("working" => 1, "idle" => 0, "waiting" => 2)
         expect(payload["summary"]["waiting_agents"]).to eq(2)
+        expect(payload["summary"]["agents_unavailable"]).to eq(0)
         expect(payload["errors"]).to be_nil
       end
 
@@ -746,6 +747,7 @@ RSpec.describe Workspace::Commands::Projects do
         expect(result).to eq(exit_code: 0)
         expect(member("app")["agents"]).to eq("available" => false, "reason" => "no_daemon")
         expect(member("app.worktree-login")["agents"]).to eq("available" => false, "reason" => "timeout")
+        expect(payload["summary"]["agents_unavailable"]).to eq(2)
         expect(payload).not_to have_key("errors")
       end
 
@@ -756,7 +758,7 @@ RSpec.describe Workspace::Commands::Projects do
 
         expect(agent_calls).to be_empty
         expect(member("app")["agents"]).to be_nil
-        expect(payload["summary"]).not_to have_key("waiting_agents")
+        expect(payload["summary"]).to include("waiting_agents" => nil, "agents_unavailable" => nil)
       end
 
       context "in the text view" do

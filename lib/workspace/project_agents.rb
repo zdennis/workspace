@@ -14,7 +14,7 @@ module Workspace
     # @param workspace [String] workspace name
     # @param timeout [Numeric, nil] seconds to wait for the daemon
     # @return [Hash] `{"available" => true, "panes" => [...], "counts" => {...}}`, or
-    #   `{"available" => false, "reason" => "no_daemon" | "timeout" | "error"}`
+    #   `{"available" => false, "reason" => "no_daemon" | "timeout" | "error", "detail" => message}` (`detail` only with "error")
     def facts(workspace, timeout: nil)
       snapshot = @client.fetch(workspace, timeout: timeout)
       panes = Array(snapshot["panes"]).map { |pane| pane_facts(pane) }
@@ -22,8 +22,8 @@ module Workspace
       {"available" => true, "panes" => panes, "counts" => counts}
     rescue AgentSnapshotClient::Unavailable => e
       unavailable(e.reason.to_s)
-    rescue Workspace::Error
-      unavailable("error")
+    rescue Workspace::Error => e
+      unavailable("error").merge("detail" => e.message)
     end
 
     private
