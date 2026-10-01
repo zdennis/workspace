@@ -16,8 +16,12 @@ module Workspace
       JSON_SCHEMA_VERSION = Projects::JSON_SCHEMA_VERSION
 
       # Exit code for each result `status`. A partial run (some members
-      # changed, some failed) is 3; `refused` means nothing changed.
-      STATUS_EXIT_CODES = {"ok" => 0, "cancelled" => 0, "dry_run" => 0, "refused" => 1, "partial" => 3}.freeze
+      # changed, some failed) is 3; `failed` means every target failed. `refused`
+      # is reserved for safety refusals.
+      STATUS_EXIT_CODES = {"ok" => 0, "cancelled" => 0, "dry_run" => 0, "failed" => 1, "partial" => 3}.freeze
+
+      # Every outcome `stop` can report; `summary` always carries all of them.
+      STOP_OUTCOMES = %w[stopped would_stop not_running failed].freeze
 
       # @param catalog [Workspace::ProjectCatalog] groups workspaces into projects and resolves NAME
       # @param stop_command [Workspace::Commands::Stop] the existing stop command, called once for all targets
@@ -55,7 +59,7 @@ module Workspace
       #
       # Outcomes: `stopped`, `would_stop` (dry run), `not_running`, `failed`.
       # Status: `ok`, `dry_run`, `partial` (some stopped, some failed) or
-      # `refused` (every target failed). Exit code: 0, 0, 3, 1.
+      # `failed` (every target failed). Exit code: 0, 0, 3, 1.
       #
       # @param name [String, nil] a project name, a member workspace name or a
       #   path; nil means the project containing +cwd+
@@ -66,49 +70,62 @@ module Workspace
       # @raise [Workspace::Error] if the project can't be found, unless +json+ is set
       # @raise [Workspace::UsageError] if +name+ matches several projects, unless +json+ is set
       def stop(name: nil, dry_run: false, json: false, cwd: Dir.pwd)
-        project = name ? @catalog.find(name) : @catalog.for_cwd(cwd)
-        @state.load
-        members = ordered_members(project)
-        running = members.select { |m| active?(m) }
-        own = own_member(running)
-        others = running - [own].compact
+        @emitted = false
+        @own_session_name = nil
+        @own_session_known = false
+        with_json_errors(json) do
+          project = name ? @catalog.find(name) : @catalog.for_cwd(cwd)
+          @state.load
+          members = ordered_members(project)
+          running = members.select { |m| active?(m) }
+          own = own_member(running)
+          others = running - [own].compact
 
-        return report_stop_dry_run(project, members, running, json: json) if dry_run
+          next report_stop_dry_run(project, members, running, json: json) if dry_run
 
-        outcomes = members.to_h { |m| [m, running.include?(m) ? "stopped" : "not_running"] }
-        failed = {}
-        stopped_names = others.empty? ? [] : @stop_command.call(others.map(&:workspace), quiet: json)
-        runner = json ? @json_hook_runner : @hook_runner
-        stopped_names.each { |ws| runner.run(ws, "post_stop") }
-        unless others.empty?
-          live = @tmux.sessions
-          others.each do |m|
-            session = @tmux.session_name_for(m.workspace)
-            next unless live.include?(session)
-            outcomes[m] = "failed"
-            failed[m] = "tmux session '#{session}' is still running after stop"
+          outcomes = members.to_h { |m| [m, running.include?(m) ? "stopped" : "not_running"] }
+          failed = {}
+          warnings = []
+          stopped_names = others.empty? ? [] : @stop_command.call(others.map(&:workspace), quiet: json)
+          unless others.empty?
+            live = begin
+              @tmux.sessions(strict: true)
+            rescue Workspace::Error => e
+              warnings << "could not verify sessions stopped: #{e.message}"
+              @error_output.puts warnings.last
+              nil
+            end
+            others.each do |m|
+              session = @tmux.session_name_for(m.workspace)
+              next unless live&.include?(session)
+              outcomes[m] = "failed"
+              failed[m] = "tmux session '#{session}' is still running after stop"
+            end
           end
-        end
+          runner = json ? @json_hook_runner : @hook_runner
+          stopped_names.each do |ws|
+            member = others.find { |m| m.workspace == ws }
+            runner.run(ws, "post_stop") unless member && failed.key?(member)
+          end
 
-        stopped = outcomes.values.count("stopped")
-        status = if failed.empty? then "ok"
-        elsif stopped.positive? then "partial"
-        else
-          "refused"
+          stopped = outcomes.values.count("stopped")
+          status = if failed.empty? then "ok"
+          elsif stopped.positive? then "partial"
+          else
+            "failed"
+          end
+          results = members.map { |m| result_row(m, outcomes[m], reason: failed[m] && "error", message: failed[m]) }
+          emit_result("stop", project, results, status: status, dry_run: false, json: json, warnings: warnings) do
+            print_stop_text(project, results)
+          end
+          @emitted = true
+          # Last: stopping our own session ends this process, so buffered
+          # output has to reach the reader first. Quiet so text mode keeps
+          # a single summary line.
+          flush_outputs
+          @stop_command.call([own.workspace], quiet: true) if own
+          {exit_code: STATUS_EXIT_CODES.fetch(status)}
         end
-        results = members.map { |m| result_row(m, outcomes[m], failed[m]) }
-        emit_result("stop", project, results, status: status, dry_run: false, json: json) do
-          print_stop_text(project, results)
-        end
-        # Last: stopping our own session ends this process, so buffered
-        # output has to reach the reader first.
-        flush_outputs
-        @stop_command.call([own.workspace], quiet: json) if own
-        {exit_code: STATUS_EXIT_CODES.fetch(status)}
-      rescue => e
-        raise unless json
-        @output.puts JSON.generate({"schema_version" => JSON_SCHEMA_VERSION, "error" => e.message.lines.first.to_s.strip})
-        {exit_code: 1}
       end
 
       private
@@ -121,20 +138,39 @@ module Workspace
 
       def own_member(members)
         return nil unless @own_pane
-        own_session = @tmux.session_name_for_pane(@own_pane)
-        return nil unless own_session
-        members.find { |m| @tmux.session_name_for(m.workspace) == own_session }
+        unless @own_session_known
+          @own_session_name = @tmux.session_name_for_pane(@own_pane)
+          @own_session_known = true
+        end
+        return nil unless @own_session_name
+        members.find { |m| @tmux.session_name_for(m.workspace) == @own_session_name }
+      end
+
+      # Runs the block. Under +json+ any error becomes the JSON error object
+      # and exit code 1, unless the result was already written (a second JSON
+      # document would corrupt stdout); then it goes to stderr.
+      def with_json_errors(json)
+        yield
+      rescue => e
+        raise unless json
+        message = e.message.lines.first.to_s.strip
+        if @emitted
+          @error_output.puts "error after the result was written: #{message}"
+        else
+          @output.puts JSON.generate({"schema_version" => JSON_SCHEMA_VERSION, "error" => message})
+        end
+        {exit_code: 1}
       end
 
       def active?(member)
         !!@state[member.workspace]
       end
 
-      def result_row(member, outcome, message = nil)
+      def result_row(member, outcome, reason: nil, message: nil, **extra)
         row = {"workspace" => member.workspace, "path" => member.path, "kind" => member.kind,
-               "outcome" => outcome, "reason" => message ? "error" : nil}
+               "outcome" => outcome, "reason" => reason}
         row["message"] = message if message
-        row
+        row.merge(extra.transform_keys(&:to_s))
       end
 
       def report_stop_dry_run(project, members, running, json:)
@@ -162,12 +198,13 @@ module Workspace
       end
 
       # Writes the JSON result, or yields to print the text form.
-      def emit_result(action, project, results, status:, dry_run:, json:)
+      def emit_result(action, project, results, status:, dry_run:, json:, warnings: [])
         unless json
           yield
           return
         end
-        summary = results.each_with_object(Hash.new(0)) { |r, counts| counts[r["outcome"]] += 1 }
+        summary = STOP_OUTCOMES.to_h { |o| [o, 0] }
+        results.each { |r| summary[r["outcome"]] += 1 }
         @output.puts JSON.generate({
           "schema_version" => JSON_SCHEMA_VERSION,
           "action" => action,
@@ -175,7 +212,7 @@ module Workspace
           "status" => status,
           "project" => {"name" => project.name, "id" => project.id, "path" => project.path},
           "results" => results,
-          "warnings" => [],
+          "warnings" => warnings,
           "summary" => summary
         })
       end

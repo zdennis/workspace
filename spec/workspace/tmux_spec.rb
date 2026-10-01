@@ -36,6 +36,17 @@ RSpec.describe Workspace::Tmux do
       expect(tmux.sessions).to eq([])
     end
 
+    it "treats no server as no sessions even when strict" do
+      fake_tmux("echo 'no server running' >&2; exit 1")
+      expect(tmux.sessions(strict: true)).to eq([])
+    end
+
+    it "raises on any other tmux error when strict, but not otherwise" do
+      fake_tmux("echo 'protocol version mismatch' >&2; exit 1")
+      expect(tmux.sessions).to eq([])
+      expect { tmux.sessions(strict: true) }.to raise_error(Workspace::Error, /protocol version mismatch/)
+    end
+
     it "stops a tmux that doesn't answer and raises naming the command" do
       pid_file = File.join(tmpdir, "tmux.pid")
       fake_tmux("echo $$ > '#{pid_file}'\nexec sleep 30")

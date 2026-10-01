@@ -42,7 +42,7 @@ RSpec.describe Workspace::Commands::ProjectActions do
     live = live_sessions
     own = own_session
     Class.new do
-      define_method(:sessions) { live.dup }
+      define_method(:sessions) { |strict: false| live.dup }
       define_method(:session_name_for) { |workspace| workspace.tr(".", "-") }
       define_method(:session_name_for_pane) { |_pane| own }
     end.new
@@ -107,6 +107,10 @@ RSpec.describe Workspace::Commands::ProjectActions do
     [result, JSON.parse(output.string)]
   end
 
+  def counts(**given)
+    {"stopped" => 0, "would_stop" => 0, "not_running" => 0, "failed" => 0}.merge(given.transform_keys(&:to_s))
+  end
+
   def outcomes(payload)
     payload["results"].to_h { |r| [r["workspace"], r["outcome"]] }
   end
@@ -129,7 +133,7 @@ RSpec.describe Workspace::Commands::ProjectActions do
         expect(result).to eq({exit_code: 0})
         expect(payload).to include("schema_version" => 1, "action" => "stop", "dry_run" => false, "status" => "ok", "warnings" => [])
         expect(outcomes(payload).values.uniq).to eq(["not_running"])
-        expect(payload["summary"]).to eq("not_running" => 3)
+        expect(payload["summary"]).to eq(counts(not_running: 3))
       end
     end
 
@@ -162,7 +166,7 @@ RSpec.describe Workspace::Commands::ProjectActions do
         expect(payload["project"]).to eq("name" => "app", "id" => File.join(@root, "app", ".git"), "path" => File.join(@root, "app"))
         expect(payload["results"].first).to eq("workspace" => "app", "path" => File.join(@root, "app"), "kind" => "main", "outcome" => "stopped", "reason" => nil)
         expect(outcomes(payload)).to eq("app" => "stopped", "app.worktree-login" => "stopped", "app.worktree-old" => "not_running")
-        expect(payload["summary"]).to eq("stopped" => 2, "not_running" => 1)
+        expect(payload["summary"]).to eq(counts(stopped: 2, not_running: 1))
       end
 
       it "runs post_stop for each stopped workspace, through the stderr-bound runner in JSON mode" do
@@ -212,7 +216,7 @@ RSpec.describe Workspace::Commands::ProjectActions do
       let(:live_sessions) { %w[app app-worktree-login] }
       let(:stubborn) { ["app.worktree-login"] }
 
-      it "marks it failed, still runs post_stop (Stop already removed it from state) and exits 3" do
+      it "marks it failed, skips its post_stop and exits 3" do
         result, payload = run_json(name: "app")
 
         expect(result).to eq({exit_code: 3})
@@ -220,7 +224,8 @@ RSpec.describe Workspace::Commands::ProjectActions do
         expect(outcomes(payload)).to include("app" => "stopped", "app.worktree-login" => "failed")
         failed = payload["results"].find { |r| r["outcome"] == "failed" }
         expect(failed).to include("reason" => "error", "message" => "tmux session 'app-worktree-login' is still running after stop")
-        expect(payload["summary"]).to eq("stopped" => 1, "failed" => 1, "not_running" => 1)
+        expect(payload["summary"]).to eq(counts(stopped: 1, failed: 1, not_running: 1))
+        expect(hook_calls).to eq([[:json, "app", "post_stop"]])
       end
 
       it "names the failure in the text summary" do
@@ -232,12 +237,12 @@ RSpec.describe Workspace::Commands::ProjectActions do
       context "and every target failed" do
         let(:stubborn) { %w[app app.worktree-login] }
 
-        it "reports refused and exits 1" do
+        it "reports failed and exits 1" do
           result, payload = run_json(name: "app")
 
           expect(result).to eq({exit_code: 1})
-          expect(payload["status"]).to eq("refused")
-          expect(payload["summary"]).to eq("failed" => 2, "not_running" => 1)
+          expect(payload["status"]).to eq("failed")
+          expect(payload["summary"]).to eq(counts(failed: 2, not_running: 1))
         end
       end
     end
@@ -284,6 +289,31 @@ RSpec.describe Workspace::Commands::ProjectActions do
         expect(result).to eq({exit_code: 3})
       end
 
+      it "stops its own session quietly so text mode prints one summary line" do
+        command.stop(name: "app")
+
+        expect(events.last).to include(stop: ["app"], quiet: true)
+        expect(output.string.scan("Stopped").size).to eq(1)
+      end
+
+      it "looks up its own session once per call" do
+        expect(tmux).to receive(:session_name_for_pane).once.and_call_original
+        command.stop(name: "app")
+      end
+
+      it "prints only the result JSON, and reports a failing last stop on stderr" do
+        allow(stop_command).to receive(:call).and_wrap_original do |original, *args, **kwargs|
+          raise Workspace::Error, "late boom" if args.first == ["app"]
+          original.call(*args, **kwargs)
+        end
+
+        result = command.stop(name: "app", json: true)
+
+        expect(result).to eq({exit_code: 1})
+        expect(JSON.parse(output.string)).to include("status" => "ok")
+        expect(error_output.string).to include("late boom")
+      end
+
       it "flushes the output before stopping its own session" do
         flushed = []
         allow(output).to receive(:flush) { flushed << output.string.dup }
@@ -293,6 +323,49 @@ RSpec.describe Workspace::Commands::ProjectActions do
         end
 
         command.stop(name: "app")
+      end
+    end
+
+    context "when the caller's own workspace is active in tmux but absent from state" do
+      let(:active) { %w[app.worktree-login] }
+      let(:live_sessions) { %w[app app-worktree-login] }
+      let(:own_session) { "app" }
+
+      it "is not a target and is not stopped" do
+        _, payload = run_json(name: "app")
+
+        expect(events.map { |e| e[:stop] }).to eq([["app.worktree-login"]])
+        expect(outcomes(payload)["app"]).to eq("not_running")
+      end
+    end
+
+    context "when a post_stop hook raises mid-run" do
+      let(:active) { %w[app app.worktree-login] }
+      let(:live_sessions) { %w[app app-worktree-login] }
+
+      it "reports a JSON error and prints a single document" do
+        allow(json_hook_runner).to receive(:run).and_raise(Workspace::Error, "hook broke")
+
+        result = command.stop(name: "app", json: true)
+
+        expect(result).to eq({exit_code: 1})
+        expect(JSON.parse(output.string)).to eq("schema_version" => 1, "error" => "hook broke")
+      end
+    end
+
+    context "when the tmux re-read errors" do
+      let(:active) { %w[app app.worktree-login] }
+      let(:live_sessions) { %w[app app-worktree-login] }
+
+      before { allow(tmux).to receive(:sessions).and_raise(Workspace::Error, "protocol mismatch") }
+
+      it "keeps the outcomes Stop reported and warns in JSON and on stderr" do
+        result, payload = run_json(name: "app")
+
+        expect(result).to eq({exit_code: 0})
+        expect(outcomes(payload)).to include("app" => "stopped", "app.worktree-login" => "stopped")
+        expect(payload["warnings"]).to eq(["could not verify sessions stopped: protocol mismatch"])
+        expect(error_output.string).to eq("could not verify sessions stopped: protocol mismatch\n")
       end
     end
 
@@ -342,7 +415,7 @@ RSpec.describe Workspace::Commands::ProjectActions do
         expect(result).to eq({exit_code: 0})
         expect(payload).to include("dry_run" => true, "status" => "dry_run")
         expect(outcomes(payload)).to eq("app" => "would_stop", "app.worktree-login" => "would_stop", "app.worktree-old" => "not_running")
-        expect(payload["summary"]).to eq("would_stop" => 2, "not_running" => 1)
+        expect(payload["summary"]).to eq(counts(would_stop: 2, not_running: 1))
       end
 
       it "says nothing is running when nothing would be stopped" do
@@ -384,6 +457,13 @@ RSpec.describe Workspace::Commands::ProjectActions do
         expect(events).to be_empty
         expect(command.stop(name: "dup", json: true)).to eq({exit_code: 1})
         expect(JSON.parse(output.string)).to include("schema_version" => 1, "error" => /dup/)
+      end
+
+      it "reports a usage error from the catalog as the JSON error contract" do
+        allow(catalog).to receive(:find).and_raise(Workspace::UsageError, "Unexpected argument: b.")
+
+        expect(command.stop(name: "a", json: true)).to eq({exit_code: 1})
+        expect(JSON.parse(output.string)).to eq("schema_version" => 1, "error" => "Unexpected argument: b.")
       end
 
       it "reports an unexpected failure from Stop as a JSON error under --json" do
