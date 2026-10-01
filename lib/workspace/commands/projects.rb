@@ -121,16 +121,18 @@ module Workspace
       # worktrees included; `unsaved` is nil for a project with no git
       # repository to ask. Checkouts that are gone are counted as `missing`,
       # not in `total`, so a gone checkout never reads as clean. All projects
-      # share +deadline+.
+      # share +deadline+. When the worktree listing ran out of time the
+      # unconfigured worktrees are unknown: `unconfigured` is nil and the
+      # counts are marked `incomplete`, so they never read as clean.
       def unsaved_for(project, deadline)
         checkouts = @facts.git_checkouts(project, deadline: deadline)
-        unconfigured = checkouts[:members].count { |member| !member.configured }
+        unconfigured = checkouts[:members].count { |member| !member.configured } if checkouts[:listed]
         facts = checkouts[:facts].compact
         return {unsaved: nil, unconfigured: unconfigured} if facts.empty?
         unsaved = facts.map { |fact| fact["unsaved"] }
         present = unsaved.size - unsaved.count("missing")
         {unsaved: {"members" => unsaved.count { |u| %w[yes unknown].include?(u) }, "unknown" => unsaved.count("unknown"),
-                   "missing" => unsaved.count("missing"), "total" => present},
+                   "missing" => unsaved.count("missing"), "total" => present, "incomplete" => !checkouts[:listed]},
          unconfigured: unconfigured}
       end
 
@@ -145,7 +147,7 @@ module Workspace
           "running" => row[:running]
         }
         if git
-          json["unsaved"] = row[:unsaved]&.slice("members", "unknown", "missing", "total")
+          json["unsaved"] = row[:unsaved]&.slice("members", "unknown", "missing", "total", "incomplete")
           json["unconfigured_worktrees"] = row[:unconfigured]
         end
         json
@@ -156,7 +158,7 @@ module Workspace
         lines = rows.map do |row|
           project = row[:project]
           [project.name, project.members.size.to_s, row[:running].to_s, (unsaved_label(row[:unsaved]) if git), abbreviate(project.path),
-            notes_for(project, name_counts, row[:unconfigured].to_i)].compact
+            notes_for(project, name_counts, row[:unconfigured], unlisted: git && row[:unconfigured].nil? && !row[:unsaved].nil?)].compact
         end
         header = ["PROJECT", "WORKSPACES", "RUNNING", ("UNSAVED" if git), "PATH", "NOTE"].compact
         widths = header.each_index.map { |i| ([header[i]] + lines.map { |line| line[i] }).map(&:length).max }
@@ -168,9 +170,10 @@ module Workspace
       # left out of the total and named at the end: "2 of 3 (1 missing)".
       def unsaved_label(unsaved)
         return "-" unless unsaved
-        return "missing" if unsaved["total"].zero?
-        return "unknown" if unsaved["unknown"] == unsaved["total"]
+        return "missing" if unsaved["total"].zero? && !unsaved["incomplete"]
+        return "unknown" if unsaved["unknown"] == unsaved["total"] && !unsaved["incomplete"]
         notes = []
+        notes << "worktrees not listed" if unsaved["incomplete"]
         notes << "#{unsaved["unknown"]} unknown" if unsaved["unknown"].positive?
         notes << "#{unsaved["missing"]} missing" if unsaved["missing"].positive?
         label = "#{unsaved["members"]} of #{unsaved["total"]}"
@@ -181,12 +184,14 @@ module Workspace
         "#{cells.each_with_index.map { |cell, i| cell.ljust(widths[i]) }.join("  ")}  #{note}".rstrip
       end
 
-      def notes_for(project, name_counts, unconfigured = 0)
+      def notes_for(project, name_counts, unconfigured = 0, unlisted: false)
+        unconfigured = unconfigured.to_i
         notes = []
         notes << "no git" if project.vcs == "none"
         notes << "broken checkout" if project.vcs == "broken"
         notes << "checkout missing" if project.members.none?(&:exists)
         notes << "same name" if name_counts[project.name] > 1
+        notes << "unconfigured worktrees unknown" if unlisted
         notes << "#{unconfigured} unconfigured #{(unconfigured == 1) ? "worktree" : "worktrees"}" if unconfigured.positive?
         notes.empty? ? "" : "(#{notes.join(", ")})"
       end

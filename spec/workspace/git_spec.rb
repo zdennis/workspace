@@ -517,6 +517,30 @@ RSpec.describe Workspace::Git, "checkout layout" do
       end
     end
 
+    it "kills a git process that ignores SIGTERM" do
+      bin = File.join(@root, "bin")
+      FileUtils.mkdir_p(bin)
+      pid_file = File.join(@root, "git.pid")
+      File.write(File.join(bin, "git"), "#!/bin/sh\ntrap '' TERM\necho $$ > '#{pid_file}'\nwhile true; do sleep 1; done\n")
+      File.chmod(0o755, File.join(bin, "git"))
+      original_path = ENV["PATH"]
+      ENV["PATH"] = "#{bin}:#{original_path}"
+      begin
+        thread = Thread.new { git.upstream_branch(@root) }
+        Timeout.timeout(5) { sleep 0.02 until File.exist?(pid_file) && !File.read(pid_file).strip.empty? }
+        sleep 0.2
+        pid = File.read(pid_file).to_i
+
+        thread.kill
+        thread.join
+
+        expect { Timeout.timeout(3) { sleep 0.02 while process_alive?(pid) } }.not_to raise_error
+      ensure
+        ENV["PATH"] = original_path
+        Process.kill("KILL", pid) if pid && process_alive?(pid)
+      end
+    end
+
     def process_alive?(pid)
       Process.kill(0, pid)
       true
@@ -602,7 +626,7 @@ RSpec.describe Workspace::Git, "checkout layout" do
       common = File.join(@root, "real", ".git")
       FileUtils.mkdir_p(common)
       ok = instance_double(Process::Status, success?: true)
-      allow(Open3).to receive(:capture3).with("git", "-C", odd, "rev-parse", "--show-toplevel", "--git-common-dir", "--absolute-git-dir")
+      allow(git).to receive(:capture_git).with("-C", odd, "rev-parse", "--show-toplevel", "--git-common-dir", "--absolute-git-dir")
         .and_return(["#{odd}\n#{common}\n#{common}\n", "", ok])
 
       expect(git.checkout_layout(odd)).to eq(toplevel: odd, common_dir: common, linked: false)

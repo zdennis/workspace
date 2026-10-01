@@ -453,7 +453,7 @@ module Workspace
     end
 
     def layout_from_rev_parse(dir)
-      stdout, _, status = Open3.capture3("git", "-C", dir, "rev-parse", "--show-toplevel", "--git-common-dir", "--absolute-git-dir")
+      stdout, _, status = capture_git("-C", dir, "rev-parse", "--show-toplevel", "--git-common-dir", "--absolute-git-dir")
       return nil unless status.success?
       toplevel, common, git_dir = stdout.lines.map(&:strip)
       return nil unless toplevel && common && git_dir

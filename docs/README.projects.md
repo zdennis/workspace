@@ -59,7 +59,10 @@ how many, e.g. `(1 unconfigured worktree)`), though `WORKSPACES` still counts on
 configured ones. It runs about five git commands per checkout, all checkouts of a
 project in parallel, so it is slower than a plain `list`. All projects share one
 5-second budget, `git worktree list` included: whatever is still running when it
-runs out is stopped and shows `unknown`.
+runs out is stopped and shows `unknown`. If the worktree listing is what ran out,
+the unconfigured worktrees are not known: the UNSAVED cell gains `worktrees not
+listed` (so a `0 of 2` is not a clean bill) and the NOTE says `unconfigured
+worktrees unknown`.
 
 ### How a workspace joins a project
 
@@ -110,7 +113,7 @@ broken checkout.
 ]}
 ```
 
-With `--git` each project also has `"unsaved":{"members":2,"unknown":1,"missing":0,"total":3}` (`null` for a project with no git repository; `members` counts `yes` and `unknown`, and `total` leaves out the `missing` ones) and `"unconfigured_worktrees":1`.
+With `--git` each project also has `"unsaved":{"members":2,"unknown":1,"missing":0,"total":3,"incomplete":false}` (`null` for a project with no git repository; `members` counts `yes` and `unknown`, and `total` leaves out the `missing` ones) and `"unconfigured_worktrees":1`. When the worktree listing ran out of time, `incomplete` is `true` (the counts cover only the configured checkouts) and `unconfigured_worktrees` is `null`.
 
 | Key | Meaning |
 |-----|---------|

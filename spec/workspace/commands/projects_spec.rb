@@ -1021,7 +1021,7 @@ RSpec.describe Workspace::Commands::Projects do
 
         expect(Process.clock_gettime(Process::CLOCK_MONOTONIC) - started).to be < 1.5
         expect(output.string).to match(/^app\s+3\s+0\s+unknown\s/)
-        expect(output.string).to match(/^other\s+1\s+0\s+unknown\s/)
+        expect(output.string).to match(/^other\s+1\s+0\s+1 of 1 \(worktrees not listed, 1 unknown\)\s/)
       end
 
       it "leaves a gone checkout out of the total and names it" do
@@ -1029,7 +1029,7 @@ RSpec.describe Workspace::Commands::Projects do
 
         command.list(git: true, json: true)
 
-        expect(listed.first["unsaved"]).to eq("members" => 1, "unknown" => 0, "missing" => 1, "total" => 2)
+        expect(listed.first["unsaved"]).to eq("members" => 1, "unknown" => 0, "missing" => 1, "total" => 2, "incomplete" => false)
       end
 
       it "adds the unknown count when git couldn't answer for some checkouts" do
@@ -1057,8 +1057,28 @@ RSpec.describe Workspace::Commands::Projects do
 
         command.list(git: true, json: true)
 
-        expect(listed.map { |p| p["unsaved"] }).to eq([{"members" => 1, "unknown" => 1, "missing" => 1, "total" => 2}, nil])
+        expect(listed.map { |p| p["unsaved"] }).to eq([{"members" => 1, "unknown" => 1, "missing" => 1, "total" => 2, "incomplete" => false}, nil])
         expect(listed.map { |p| p["unconfigured_worktrees"] }).to eq([0, 0])
+      end
+
+      it "reports unconfigured worktrees as unknown and the counts as incomplete when listing times out" do
+        allow(catalog).to receive(:members).and_wrap_original do |original, *args, **kwargs|
+          sleep 5 if kwargs[:include_unconfigured]
+          original.call(*args, **kwargs)
+        end
+
+        allow(facts).to receive(:git_deadline).and_return(Process.clock_gettime(Process::CLOCK_MONOTONIC) + 0.2)
+        command.list(git: true, json: true)
+
+        expect(listed.first["unconfigured_worktrees"]).to be_nil
+        expect(listed.first["unsaved"]).to include("incomplete" => true)
+
+        output.truncate(0)
+        output.rewind
+        command.list(git: true)
+
+        expect(output.string).to include("worktrees not listed").and include("unconfigured worktrees unknown")
+        expect(output.string).not_to match(/\b0 unconfigured/)
       end
 
       it "runs no git without --git" do
