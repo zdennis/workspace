@@ -33,13 +33,17 @@ module Workspace
       #   rendered workspace's project root, so the lock namespace matches the
       #   workspace being shown rather than the command's own Dir.pwd;
       #   required together with +lock_namespace+/+lock_holder+
+      # @param snapshot_client [Workspace::AgentSnapshotClient, nil] reads each
+      #   daemon's snapshot with a bounded read timeout; defaults to one built
+      #   from +config+
       # @param output [IO] stream for the rendered table or JSON
       # @param error_output [IO] stream for the no-daemon message
       # @param clock [#now] time source, injected for deterministic tests
       # @param sleeper [#call] delay between refreshes, injected for tests
       def initialize(config:, lock_namespace: nil, lock_holder: nil, project_config: nil, output: $stdout,
-        error_output: $stderr, clock: Time, sleeper: ->(seconds) { sleep(seconds) })
+        error_output: $stderr, snapshot_client: nil, clock: Time, sleeper: ->(seconds) { sleep(seconds) })
         @config = config
+        @snapshot_client = snapshot_client || AgentSnapshotClient.new(config: config)
         @lock_namespace = lock_namespace
         @lock_holder = lock_holder
         @project_config = project_config
@@ -166,20 +170,9 @@ module Workspace
       end
 
       def fetch(name)
-        path = @config.agent_socket_path(name)
-        UNIXSocket.open(path) do |socket|
-          socket.puts(JSON.generate("type" => "sessions", "workspace" => name))
-          reply = socket.gets
-          raise Workspace::Error, "Agent for '#{name}' closed the connection." unless reply
-          begin
-            JSON.parse(reply)
-          rescue JSON::ParserError
-            raise Workspace::Error, "Malformed reply from session monitor for '#{name}'."
-          end
-        end
-      rescue SystemCallError, IOError
-        raise NoAgentDaemonError,
-          "No agent daemon for '#{name}'.\nStart one with:  workspace agentd #{name}"
+        @snapshot_client.fetch(name)
+      rescue AgentSnapshotClient::Unavailable => e
+        raise NoAgentDaemonError, e.message
       end
 
       def render(snapshot, json)

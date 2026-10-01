@@ -2559,14 +2559,47 @@ RSpec.describe Workspace::CLI do
     it "runs show with no name for `projects show`" do
       cli.run(["projects", "show"])
 
-      expect(projects_command.calls).to eq([{show: nil, json: false}])
+      expect(projects_command.calls).to eq([{show: nil, json: false, agents: true, timeout: nil}])
     end
 
     it "passes the name and --json to show, with flags before or after" do
       cli.run(["projects", "show", "app", "--json"])
       cli.run(["projects", "--json", "show", "~/src/app"])
 
-      expect(projects_command.calls).to eq([{show: "app", json: true}, {show: "~/src/app", json: true}])
+      expect(projects_command.calls).to eq([{show: "app", json: true, agents: true, timeout: nil}, {show: "~/src/app", json: true, agents: true, timeout: nil}])
+    end
+
+    it "passes --no-agents and --timeout to show" do
+      cli.run(["projects", "show", "app", "--no-agents"])
+      cli.run(["projects", "show", "--timeout", "0.5"])
+
+      expect(projects_command.calls).to eq([
+        {show: "app", json: false, agents: false, timeout: nil},
+        {show: nil, json: false, agents: true, timeout: 0.5}
+      ])
+    end
+
+    it "rejects a --timeout that is not positive" do
+      expect { cli.run(["projects", "show", "--timeout", "0"]) }.to raise_error(FakeSystemExit)
+      expect(error_output.string).to include("--timeout must be greater than 0")
+      expect(projects_command.calls).to be_empty
+    end
+
+    it "rejects a non-numeric --timeout" do
+      expect { cli.run(["projects", "show", "--timeout", "soon"]) }.to raise_error(FakeSystemExit)
+      expect(error_output.string).to include("invalid argument")
+    end
+
+    it "reports a bad --timeout as a JSON error with --json" do
+      expect { cli.run(["projects", "show", "--json", "--timeout", "0"]) }.to raise_error(FakeSystemExit)
+
+      expect(JSON.parse(output.string)).to eq("schema_version" => 1, "error" => "--timeout must be greater than 0.")
+    end
+
+    it "lists --no-agents and --timeout in show's help" do
+      cli.run(["projects", "show", "--help"])
+
+      expect(output.string).to include("--no-agents", "--timeout SECONDS")
     end
 
     it "prints show's own help for `projects show --help`" do

@@ -465,8 +465,8 @@ module CLITestHelpers
       @result
     end
 
-    def show(name: nil, json: false)
-      @calls << {show: name, json: json}
+    def show(name: nil, json: false, agents: true, timeout: nil)
+      @calls << {show: name, json: json, agents: agents, timeout: timeout}
       @result
     end
   end

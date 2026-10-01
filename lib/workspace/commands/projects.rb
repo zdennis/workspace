@@ -8,11 +8,19 @@ module Workspace
     #
     # Both are cheap by design: config files, `.git` files and a single
     # `tmux list-sessions` call. `list` runs no git subprocesses, sockets or
-    # network; `show` adds state files, the lock store and the dev status.
+    # network; `show` adds state files, the lock store, the dev status and,
+    # unless told not to, one bounded agent-daemon socket read per running
+    # workspace.
     class Projects
       # Bumped whenever the `--json` payload's shape changes in a
       # backward-incompatible way.
       JSON_SCHEMA_VERSION = 1
+
+      # Seconds `show` waits for each agent daemon unless told otherwise.
+      DEFAULT_AGENT_TIMEOUT = 1.0
+
+      UNAVAILABLE_LABELS = {"no_daemon" => "no daemon", "timeout" => "timed out", "error" => "bad reply"}.freeze
+      private_constant :UNAVAILABLE_LABELS
 
       # @param catalog [Workspace::ProjectCatalog] groups workspaces into projects
       # @param tmux [Workspace::Tmux] lists running sessions and maps workspace names to them
@@ -21,10 +29,11 @@ module Workspace
       # @param lock_namespace [Workspace::LockNamespace] locates the project's lock store
       # @param lock_holder [Workspace::LockHolder] tells live lock holders from stale ones
       # @param dev [Workspace::Commands::Dev] reports the dev environment's state
+      # @param agents [Workspace::ProjectAgents] reads each running workspace's agent states from its daemon
       # @param output [IO] stream for the table or JSON
       # @param error_output [IO] stream for warnings about unreadable ask stores
       # @param home [String] home directory, abbreviated to `~` in the table
-      def initialize(catalog:, tmux:, state:, config:, lock_namespace:, lock_holder:, dev:, output: $stdout, error_output: $stderr,
+      def initialize(catalog:, tmux:, state:, config:, lock_namespace:, lock_holder:, dev:, agents:, output: $stdout, error_output: $stderr,
         home: Dir.home)
         @catalog = catalog
         @tmux = tmux
@@ -33,6 +42,7 @@ module Workspace
         @lock_namespace = lock_namespace
         @lock_holder = lock_holder
         @dev = dev
+        @agents = agents
         @output = output
         @error_output = error_output
         @home = home
@@ -41,18 +51,22 @@ module Workspace
       # Prints everything the project's local files and processes say about
       # one project: each workspace's running state, headless flag, open asks
       # and pipeline entries, plus the repo-wide locks and the dev environment.
-      # Reads files and one `tmux list-sessions`; no sockets or network.
+      # Reads files and one `tmux list-sessions`, and asks each running
+      # workspace's agent daemon for its agent states (see +agents+). A daemon
+      # that is down or too slow shows as unavailable; it never fails the command.
       #
       # @param name [String, nil] a project name, a member workspace name or a
       #   path; nil means the project containing +cwd+
       # @param json [Boolean] print the schema-versioned JSON payload instead of text
+      # @param agents [Boolean] read agent states from the daemons; false skips every socket
+      # @param timeout [Numeric, nil] seconds to wait for each daemon; nil means {DEFAULT_AGENT_TIMEOUT}
       # @param cwd [String] directory used when +name+ is nil
       # @return [Hash] `{exit_code:}`; 1 only after a JSON error payload was printed
       # @raise [Workspace::Error] if the project can't be found, unless +json+ is set
       # @raise [Workspace::UsageError] if +name+ matches several projects, unless +json+ is set
-      def show(name: nil, json: false, cwd: Dir.pwd)
+      def show(name: nil, json: false, agents: true, timeout: nil, cwd: Dir.pwd)
         project = name ? @catalog.find(name) : @catalog.for_cwd(cwd)
-        payload = show_payload(project)
+        payload = show_payload(project, agents: agents, timeout: timeout)
         if json
           @output.puts JSON.generate(payload)
         else
@@ -139,10 +153,10 @@ module Workspace
         notes.empty? ? "" : "(#{notes.join(", ")})"
       end
 
-      def show_payload(project)
+      def show_payload(project, agents:, timeout:)
         sessions = running_sessions
         @state.load
-        members = project.members.map { |member| member_facts(member, sessions) }
+        members = project.members.map { |member| member_facts(member, sessions, agents: agents, timeout: timeout) }
         errors = {}
         locks = lock_facts(project, errors)
         dev = dev_facts(project, errors)
@@ -159,13 +173,14 @@ module Workspace
             "pipeline_entries" => members.sum { |m| m.dig("pipeline", "entries").to_i }
           }
         }
+        payload["summary"]["waiting_agents"] = members.sum { |m| m.dig("agents", "counts", "waiting").to_i } if agents
         payload["errors"] = errors unless errors.empty?
         payload
       end
 
       # A missing checkout has no sessions or state worth reading, so its
       # counts are nil (unknown) rather than 0.
-      def member_facts(member, sessions)
+      def member_facts(member, sessions, agents:, timeout:)
         workspace = member.workspace
         running = member.exists && sessions.include?(@tmux.session_name_for(workspace))
         entries = member.exists ? pipeline_entries(workspace) : nil
@@ -178,8 +193,16 @@ module Workspace
           "running" => running ? true : false,
           "headless" => headless?(workspace),
           "open_asks" => member.exists ? open_asks(workspace) : nil,
-          "pipeline" => entries && {"entries" => entries}
+          "pipeline" => entries && {"entries" => entries},
+          "agents" => agent_facts(workspace, running, agents: agents, timeout: timeout)
         }
+      end
+
+      # nil with --no-agents; a workspace that isn't running has no daemon to ask.
+      def agent_facts(workspace, running, agents:, timeout:)
+        return nil unless agents
+        return {"available" => false, "reason" => "not_running"} unless running
+        @agents.facts(workspace, timeout: timeout || DEFAULT_AGENT_TIMEOUT)
       end
 
       def headless?(workspace)
@@ -282,16 +305,29 @@ module Workspace
       end
 
       def print_members(members)
+        with_agents = members.any? { |m| m["agents"] }
+        header = ["WORKSPACE", "KIND", "RUN", ("AGENTS" if with_agents), "ASKS", "PIPE", "NOTE"].compact
         rows = members.map do |m|
           if m["exists"]
-            [m["workspace"], m["kind"], run_label(m), (m["open_asks"] || "?").to_s, (m.dig("pipeline", "entries") || "?").to_s, ""]
+            [m["workspace"], m["kind"], run_label(m), (agents_label(m["agents"]) if with_agents), (m["open_asks"] || "?").to_s,
+              (m.dig("pipeline", "entries") || "?").to_s, ""].compact
           else
-            [m["workspace"], m["kind"], "-", "-", "-", "MISSING (checkout gone)"]
+            [m["workspace"], m["kind"], "-", ("-" if with_agents), "-", "-", "MISSING (checkout gone)"].compact
           end
         end
-        header = %w[WORKSPACE KIND RUN ASKS PIPE NOTE]
         widths = header.each_index.map { |i| ([header[i]] + rows.map { |row| row[i] }).map(&:length).max }
         ([header] + rows).each { |row| @output.puts row.each_with_index.map { |cell, i| cell.ljust(widths[i]) }.join("  ").rstrip }
+      end
+
+      # Waiting first, since that is the state that needs a person.
+      def agents_label(agents)
+        return "-" if agents.nil? || agents["reason"] == "not_running"
+        return UNAVAILABLE_LABELS.fetch(agents["reason"], "unavailable") unless agents["available"]
+        parts = %w[waiting working idle].filter_map do |state|
+          count = agents.dig("counts", state).to_i
+          "#{count} #{state}" if count.positive?
+        end
+        parts.empty? ? "none" : parts.join(", ")
       end
 
       def run_label(member)
