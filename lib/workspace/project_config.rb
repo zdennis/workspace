@@ -84,12 +84,13 @@ module Workspace
     end
 
     # @param name [String] project or config name
+    # @param quiet [Boolean] print nothing to the output stream
     # @return [void]
-    def remove(name)
+    def remove(name, quiet: false)
       path = config_path_for(name)
       if File.exist?(path)
         File.delete(path)
-        @output.puts "Removed config: #{path}"
+        @output.puts "Removed config: #{path}" unless quiet
       end
     end
 

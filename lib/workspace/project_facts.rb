@@ -260,20 +260,8 @@ module Workspace
       }
     end
 
-    # The member whose checkout contains +path+ (the deepest one wins, since
-    # worktrees can sit inside the main checkout), or nil for a path that
-    # belongs to no configured member.
     def workspace_at(path, project)
-      return nil if path.to_s.empty?
-      target = begin
-        File.realpath(path)
-      rescue SystemCallError
-        File.expand_path(path)
-      end
-      member = project.members
-        .select { |m| !m.path.empty? && (target == m.path || target.start_with?("#{m.path}/")) }
-        .max_by { |m| m.path.length }
-      member&.workspace
+      @catalog.member_at(project, path)&.workspace
     end
   end
 end

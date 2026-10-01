@@ -121,6 +121,20 @@ module Workspace
       raise Error, "No project found for #{path}"
     end
 
+    # The member whose checkout contains +path+. Worktrees can sit inside
+    # the main checkout, so the deepest checkout wins.
+    #
+    # @param project [Project]
+    # @param path [String, nil] a directory, e.g. a lock holder's `worktree`
+    # @return [Member, nil] nil for a blank path or one inside no member
+    def member_at(project, path)
+      return nil if path.to_s.empty?
+      target = real(path)
+      project.members
+        .select { |m| !m.path.to_s.empty? && (target == m.path || target.start_with?("#{m.path}/")) }
+        .max_by { |m| m.path.length }
+    end
+
     private
 
     # {#for_cwd} for a path that may belong to no project: nil, not an error.

@@ -28,7 +28,7 @@ module T4ConcurrencyFakes
       @on_call = on_call
     end
 
-    def call(projects = [], quiet: false)
+    def call(projects = [], quiet: false, warn_inactive: true)
       @calls << projects
       @on_call&.call
       projects
@@ -68,7 +68,7 @@ RSpec.describe "T4 finish/kill/prune adversarial concurrency" do
     proj = project
     double("project_config").tap do |pc|
       allow(pc).to receive(:config_path_for).with(proj).and_return(cfg_path)
-      allow(pc).to receive(:remove).with(proj) { FileUtils.rm_f(cfg_path) }
+      allow(pc).to receive(:remove) { FileUtils.rm_f(cfg_path) }
       allow(pc).to receive(:available_projects).and_return([proj])
       allow(pc).to receive(:project_root_for).with(proj).and_return(wt)
     end

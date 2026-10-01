@@ -1,7 +1,8 @@
 # workspace projects
 
 Group workspaces by repository: each project is a repository's main checkout plus its linked git worktrees.
-List projects, show one, list its member workspaces, or stop all of its running workspaces at once.
+List projects, show one, list its member workspaces, stop all of its running workspaces at once,
+or remove all of its worktrees.
 
 ## Usage
 
@@ -10,6 +11,7 @@ workspace projects [list] [--running] [--git] [--json]
 workspace projects show [NAME|PATH] [--json] [--no-agents] [--no-git] [--timeout SECONDS]
 workspace projects members [NAME|PATH] [--path] [--all] [--timeout SECONDS] [--json]
 workspace projects stop [NAME] [--dry-run] [--json]
+workspace projects kill NAME [--dry-run] [--yes] [--force] [--discard-unsaved] [--timeout DURATION] [--json]
 ```
 
 A bare `workspace projects` runs `list`.
@@ -38,7 +40,11 @@ settings, despite the directory name.
 | `--timeout SECONDS` | `show`: how long to wait for each agent daemon (default 1) and for all the git reads, the worktree listing included (default 5). A small value turns slow checkouts `unknown`. `members --all`: how long to wait for the worktree listing (default 5) |
 | `--path` | `members` only: print each checkout's path instead of its workspace name. Not with `--json` |
 | `--all` | `members` only: also list worktrees that have no workspace config (runs one bounded `git worktree list`); they show only with `--path` or `--json` |
-| `--dry-run` | `stop` only: list the workspaces that would be stopped and stop nothing |
+| `--dry-run` | `stop`, `kill`: show what would happen and change nothing |
+| `--yes` | `kill` only: don't ask for confirmation. Every check still runs. Required with `--json` or when stdin is not a terminal |
+| `--force` | `kill` only: let worktrees whose checkout is gone (`missing`) or that git can't check (`unknown`) past preflight; a `missing` one is then removed, an `unknown` one still fails if git can't check it at removal time |
+| `--discard-unsaved` | `kill` only: also remove worktrees that have unsaved work, losing it |
+| `--timeout DURATION` | `kill` only: how long all the unsaved-work checks may take together, e.g. `10`, `30s` or `1m` (default 5s). A worktree git doesn't answer for in time is `unknown` |
 | `--json` | Print schema-versioned JSON (below) |
 
 ## Details
@@ -382,9 +388,121 @@ target failed). `outcome` is `stopped`, `would_stop` (dry run), `not_running` or
 last. `summary` always has a count for all four outcomes, zero included. Usage errors and an unknown or
 ambiguous NAME print `{"schema_version":1,"error":"..."}` instead and exit 1.
 
+## kill
+
+`workspace projects kill NAME` removes every worktree workspace of the project
+in one step, once their work has landed. Each goes the way `workspace kill`
+does: its tmux session, git worktree, tmuxinator config, project settings and
+state entry. NAME is required (a project name, a member workspace name or a
+path), so a group removal never depends on the current directory.
+
+- The main checkout is never removed. It reports `kept`, and its session keeps
+  running; run `projects stop` afterwards for a full shutdown.
+- Worktrees with no workspace config are not touched or listed; use
+  `git worktree remove` for those.
+- In a bare repository every configured member is a worktree.
+
+**Checks first.** Every worktree is checked before anything is removed:
+
+| Check | `reason` | Overridden by |
+|-------|----------|---------------|
+| Unsaved work: changed tracked files or commits not pushed anywhere (`unsaved: "yes"`) | `unsaved` | `--discard-unsaved` |
+| Git couldn't answer, or took longer than `--timeout` (default 5s) for all worktrees together (`unsaved: "unknown"`) | `unknown` | `--force`, or retry with a longer `--timeout` |
+| The checkout directory is gone (`unsaved: "missing"`) | `missing` | `--force` |
+| The worktree runs the dev environment (it holds the `devenv` lock) | `dev_env` | nothing: run `workspace dev down` first |
+| The repository's lock store can't be read, so a running dev env can't be ruled out | `lock_store` | nothing: remove worktrees one at a time with `workspace kill NAME` |
+
+If any worktree has a check that isn't overridden, nothing is removed: those
+worktrees report `refused` with every reason listed, the rest `not_attempted`,
+and the command exits 1. Other locks a worktree holds are listed under
+`warnings` but don't refuse; their holders end with the session.
+
+The dev environment is checked only here, before the prompt. A `workspace dev
+up` started in a worktree while the prompt waits is not caught.
+
+**Overrides.** `--force` covers only `missing` and `unknown`. A missing
+checkout's config, settings, state entry and session are still removed; git's
+own record of the gone directory is left for `git worktree prune`. Unsaved work
+needs `--discard-unsaved`, and only those worktrees are removed with
+`workspace kill --force` semantics. Every other worktree keeps `workspace
+kill`'s last-moment unsaved-work re-check, so an edit made after the check, or a
+worktree git still can't answer for, fails that worktree (`failed`, reason
+`unsaved` or `unknown`) while the rest carry on. Overridden worktrees carry
+`"forced": true` and `"overridden_reason"` in JSON on `removed`, `failed` and
+`would_remove` rows (not on `refused` or `not_attempted`, where nothing was
+acted on).
+
+**Confirmation.** On a terminal it prints the plan (each worktree with its path
+and branch, and the main checkout that stays) and asks `Remove N worktree(s) of
+'x' and kill their sessions? [y/N]`. Unlike `workspace kill -f`, `--force` does
+not skip the prompt; `--yes` does. With `--json`, or when stdin is not a
+terminal, pass `--yes` (or `--dry-run`); otherwise it is a usage error and
+nothing is read from stdin. Answering no prints `Cancelled.` and exits 0.
+
+- `--dry-run` runs the checks and prints the plan, or the refusal, without
+  prompting. It exits 0 if the run would go ahead and 1 if it would be refused.
+- Each removed worktree's `post_kill` hook runs (in `--json` mode its output goes
+  to stderr).
+- If you run it from inside one of the worktrees, that worktree is removed last,
+  and the result is printed once its worktree is gone and before its session
+  ends.
+- Agent daemons and each workspace's pipeline and asks files are left alone, as
+  with `workspace kill`.
+
+### kill exit codes
+
+| Code | Meaning |
+|------|---------|
+| 0 | Every worktree removed, no worktrees (`No worktrees in project 'x'.`), cancelled at the prompt, or a `--dry-run` that would go ahead |
+| 1 | Nothing removed: a usage error, an unknown or ambiguous NAME, a refusal (`status` is `refused`), or every worktree failed (`failed`) |
+| 3 | Some worktrees removed and some failed |
+
+### kill JSON
+
+```json
+{"schema_version":1,"action":"kill","dry_run":false,"status":"refused",
+ "project":{"name":"app","id":"/Users/z/src/app/.git","path":"/Users/z/src/app"},
+ "results":[
+   {"workspace":"app","path":"/Users/z/src/app","kind":"main","outcome":"kept","reason":null},
+   {"workspace":"app.worktree-login","path":"...","kind":"worktree","outcome":"not_attempted","reason":null,
+    "unsaved":"no","branch":"login","dev_env":false,"locks":["deploy"]},
+   {"workspace":"app.worktree-wip","path":"...","kind":"worktree","outcome":"refused","reason":"unsaved",
+    "message":"has unsaved work: 2 changed file(s) and 1 unpushed commit(s) on wip; the dev environment is running in it; run 'workspace dev down' first",
+    "unsaved":"yes","branch":"wip","dev_env":true,"changed_files":2,"unpushed_commits":1,
+    "blockers":[{"reason":"unsaved","message":"has unsaved work: ..."},{"reason":"dev_env","message":"the dev environment is running in it; ..."}]},
+   {"workspace":"app.worktree-old","path":"...","kind":"worktree","outcome":"not_attempted","reason":null,
+    "unsaved":"missing","branch":null,"dev_env":false}
+ ],
+ "warnings":["app.worktree-login holds lock 'deploy'; it is released when its session ends"],
+ "summary":{"removed":0,"would_remove":0,"refused":1,"not_attempted":2,"failed":0,"kept":1}}
+```
+
+`status` is `ok` (exit 0), `dry_run` (0), `refused` (1), `partial` (3) or
+`failed` (1). `--json` never prompts, so it never reports `cancelled`.
+`outcome` is `removed`, `would_remove` (dry run), `refused`, `not_attempted`,
+`failed` or `kept` (the main checkout). On `refused`, `reason` is the first
+check that wasn't overridden and `blockers` lists them all; on `failed` it is
+`unsaved`, `unknown` or `error` (any other failure removing it), with the detail
+in `message`. A `failed` row whose failure came after its worktree was already
+removed (its `post_kill` hook or config removal failed) also has
+`"worktree_removed": true`; the config, settings or session may be left behind,
+so finish with `workspace kill NAME` or by hand. Every worktree row
+carries `unsaved` (`yes`, `no`, `unknown` or `missing`), `branch` and `dev_env`,
+plus `changed_files` and `unpushed_commits` when `unsaved` is `yes` and `locks`
+when it holds other locks. `summary` always has a count for all six outcomes.
+Programs should key off `reason` and `blockers[].reason`, not `message`: the
+messages are for people and their wording can change.
+Usage errors (including `--json` without `--yes` or `--dry-run`) and an unknown
+or ambiguous NAME print `{"schema_version":1,"error":"..."}` instead and exit 1.
+
 ## Examples
 
 ```sh
+$ workspace projects kill app --dry-run
+$ workspace projects kill app                    # asks first
+$ workspace projects kill app --yes --json
+$ workspace projects kill app --force --yes      # also clear out worktrees whose checkout is gone
+
 $ workspace projects stop app --dry-run
 $ workspace projects stop            # the project for the current directory
 $ workspace projects stop app --json

@@ -99,13 +99,13 @@ RSpec.describe "T4 finish/kill/prune adversarial findings" do
         File.write(config_path, YAML.dump("root" => wt_path))
         project_config = double("project_config")
         allow(project_config).to receive(:config_path_for).with("myproject").and_return(config_path)
-        allow(project_config).to receive(:remove).with("myproject")
+        allow(project_config).to receive(:remove).with("myproject", quiet: true)
 
         project_settings = double("project_settings")
         allow(project_settings).to receive(:remove).with("myproject")
 
         stop_command = double("stop_command")
-        allow(stop_command).to receive(:call).with(["myproject"], quiet: true)
+        allow(stop_command).to receive(:call).with(["myproject"], quiet: true, warn_inactive: true)
 
         state = CLITestHelpers::FakeState.new
         project_detector = Workspace::ProjectDetector.new(state: state, project_config: project_config)

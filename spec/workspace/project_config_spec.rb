@@ -125,6 +125,26 @@ RSpec.describe Workspace::ProjectConfig do
     end
   end
 
+  describe "#remove" do
+    subject(:pc) { described_class.new(config: config, output: output, git: git) }
+
+    it "announces the removal by default" do
+      path = File.join(tmpdir, "workspace.myapp.yml")
+      File.write(path, "x")
+      pc.remove("myapp")
+      expect(output.string).to include("Removed config: #{path}")
+      expect(File.exist?(path)).to be(false)
+    end
+
+    it "with quiet: true, writes nothing and still removes the file" do
+      path = File.join(tmpdir, "workspace.myapp.yml")
+      File.write(path, "x")
+      pc.remove("myapp", quiet: true)
+      expect(output.string).to eq("")
+      expect(File.exist?(path)).to be(false)
+    end
+  end
+
   describe "#exists?" do
     subject(:pc) { described_class.new(config: config, output: output, git: git) }
 

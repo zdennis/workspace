@@ -249,6 +249,7 @@ module CLITestHelpers
     def ensure_exists(_project_name) = nil
     def hook_for(_project_name, _event) = nil
     def layouts_for(_project_name) = {}
+    def remove(_project_name) = nil
     def project_config_path(name) = "/tmp/workspace/projects/#{name}.yml"
     def global_config_path = "/tmp/workspace/config.yml"
 
@@ -487,6 +488,11 @@ module CLITestHelpers
 
     def stop(name: nil, dry_run: false, json: false)
       @calls << {stop: name, dry_run: dry_run, json: json}
+      @result
+    end
+
+    def kill(name:, dry_run: false, yes: false, force: false, discard_unsaved: false, json: false, git_timeout: nil)
+      @calls << {kill: name, dry_run: dry_run, yes: yes, force: force, discard_unsaved: discard_unsaved, json: json, git_timeout: git_timeout}
       @result
     end
   end
