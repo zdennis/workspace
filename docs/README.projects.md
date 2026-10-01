@@ -113,8 +113,12 @@ directory, including a repository that has no workspace config yet (shown with
 no workspaces). If two projects share a name, `show` is a usage error listing
 each candidate's path; pass a path to pick one.
 
-It reads files and makes one `tmux list-sessions` call. It opens no sockets and
-runs no git commands (agent states and git facts are not shown yet).
+It reads local files and makes one `tmux list-sessions` call, and opens no
+sockets. The dev status comes from `Dev#status_payload`, which runs
+`git rev-parse` and, if the project sets `dev.ready`, that command in the main
+checkout (not in the holder's worktree). Reading the lock store creates its
+directory and `locks.json` if they are missing. Agent states and git facts are
+not shown yet.
 
 ```
 Project  app   ~/src/app   (git)

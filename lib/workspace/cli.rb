@@ -3409,7 +3409,7 @@ module Workspace
 
     def projects_help
       <<~HELP
-        Usage: workspace projects [list|show] [options]
+        Usage: workspace projects [list [--running] | show [NAME|PATH]] [--json]
 
         Group workspaces by repository.
 
@@ -3419,14 +3419,14 @@ module Workspace
         `list-projects` operate on single workspaces.
 
         Subcommands:
-          list            One row per project: its workspaces and how many are running (default)
-          show [NAME]     One project in detail: each workspace's running state, open asks and
-                          pipeline entries, plus the repo-wide locks and dev environment.
-                          NAME is a project name, a member workspace name or a path; it
-                          defaults to the project containing the current directory.
+          list              One row per project: its workspaces and how many are running (default)
+          show [NAME|PATH]  One project in detail: each workspace's running state, open asks and
+                            pipeline entries, plus the repo-wide locks and dev environment.
+                            NAME is a project name, a member workspace name or a path; it
+                            defaults to the project containing the current directory.
 
         Options:
-          --running   Only projects with at least one running workspace (list)
+          --running   list only: projects with at least one running workspace
           --json      Print schema-versioned JSON (see docs/README.projects.md)
 
         A workspace joins the project whose repository its directory belongs to. If that
