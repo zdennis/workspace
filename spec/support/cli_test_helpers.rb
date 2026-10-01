@@ -476,6 +476,21 @@ module CLITestHelpers
     end
   end
 
+  class FakeProjectActionsCommand
+    attr_reader :calls
+    attr_accessor :result
+
+    def initialize
+      @calls = []
+      @result = {exit_code: 0}
+    end
+
+    def stop(name: nil, dry_run: false, json: false)
+      @calls << {stop: name, dry_run: dry_run, json: json}
+      @result
+    end
+  end
+
   class FakeParentCommand
     attr_reader :calls
     attr_accessor :result

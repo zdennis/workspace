@@ -61,10 +61,11 @@ module Workspace
     # @param parent_command [Workspace::Commands::Parent] pre-built parent command
     # @param dev_command [Workspace::Commands::Dev] pre-built dev command
     # @param projects_command [Workspace::Commands::Projects, nil] pre-built projects command
+    # @param project_actions_command [Workspace::Commands::ProjectActions, nil] pre-built project-wide actions command
     # @param clock [#call] returns the current Time, for relative deadline display
     # @param launch_mode [Workspace::LaunchMode, nil] decides whether launch/start
     #   run headless when no --[no-]headless flag is given; nil builds one
-    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, restart_agent_command: nil, handoff_command: nil, projects_command: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil)
+    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, restart_agent_command: nil, handoff_command: nil, projects_command: nil, project_actions_command: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil)
       @config = config
       @state = state
       @project_config = project_config
@@ -107,6 +108,7 @@ module Workspace
       @restart_agent_command = restart_agent_command
       @handoff_command = handoff_command
       @projects_command = projects_command
+      @project_actions_command = project_actions_command
       @exit_handler = exit_handler
       @logger = logger
       @output = output
@@ -3404,6 +3406,12 @@ module Workspace
         else
           cmd_projects_members(rest)
         end
+      when "stop"
+        if rest.include?("--help") || rest.include?("-h")
+          @output.puts projects_stop_parser({}).help
+        else
+          cmd_projects_stop(rest)
+        end
       when "help" then @output.puts projects_help
       else
         raise UsageError, "Unknown projects subcommand: #{subcommand}. Run 'workspace projects --help'."
@@ -3415,7 +3423,7 @@ module Workspace
 
     def projects_help
       <<~HELP
-        Usage: workspace projects [list [--running] | show [NAME|PATH] | members [NAME|PATH]] [--json]
+        Usage: workspace projects [list [--running] | show [NAME|PATH] | members [NAME|PATH] | stop [NAME|PATH]] [--json]
 
         Group workspaces by repository.
 
@@ -3435,7 +3443,13 @@ module Workspace
                             scripts: workspace projects members | while read -r ws; do ...; done
                             Same NAME rules as show. Runs no git unless --all is given.
 
+        Actions:
+          stop [NAME|PATH]  Stop every running workspace of the project (main checkout and worktrees).
+                            No prompt and no unsaved-work check, like 'workspace stop'. The session you
+                            run it from is stopped last. Same NAME rules as show.
+
         Options:
+          --dry-run   stop only: list what would be stopped and stop nothing
           --running   list only: projects with at least one running workspace
           --path      members only: print checkout paths instead of workspace names (not with --json)
           --all       members only: also list worktrees that have no workspace config (runs git)
@@ -3458,6 +3472,7 @@ module Workspace
           workspace projects show           # the project for the current directory
           workspace projects show app --json
           workspace projects members        # one workspace per line
+          workspace projects stop app --dry-run
       HELP
     end
 
@@ -3542,6 +3557,39 @@ module Workspace
       raise Error, "projects is not available: no projects command was wired" unless @projects_command
 
       result = @projects_command.members(name: args.first, path: options[:path], all: options[:all], json: options[:json], timeout: options[:timeout])
+      @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
+    end
+
+    def projects_stop_parser(options)
+      OptionParser.new do |opts|
+        opts.banner = "Usage: workspace projects stop [NAME|PATH] [--dry-run] [--json]"
+        opts.separator ""
+        opts.separator "Stop every running workspace of a project (its main checkout and worktrees) and their tmux"
+        opts.separator "sessions in one step. NAME is a project name, a member workspace name or a path (use a path"
+        opts.separator "when two projects share a name); it defaults to the project containing the current directory."
+        opts.separator ""
+        opts.on("--dry-run", "List the workspaces that would be stopped and stop nothing") { options[:dry_run] = true }
+        opts.on("--json", "Print one schema-versioned result object (see docs/README.projects.md)") { options[:json] = true }
+        opts.separator ""
+        opts.separator "There is no prompt and no unsaved-work check, like 'workspace stop'. If you run this from inside"
+        opts.separator "one of the project's sessions, that session is stopped last, after the result is printed."
+        opts.separator "Exit status: 0 stopped or nothing running, 3 some stopped and some failed, 1 nothing stopped or"
+        opts.separator "a usage error."
+        opts.separator ""
+        opts.separator "Examples:"
+        opts.separator "  workspace projects stop                # the project for the current directory"
+        opts.separator "  workspace projects stop app --dry-run"
+        opts.separator "  workspace projects stop ~/src/app --json"
+      end
+    end
+
+    def cmd_projects_stop(args)
+      options = {json: false, dry_run: false}
+      projects_stop_parser(options).parse!(args)
+      raise UsageError, "Unexpected argument: #{args[1]}. Run 'workspace projects stop --help'." if args.size > 1
+      raise Error, "projects stop is not available: no project actions command was wired" unless @project_actions_command
+
+      result = @project_actions_command.stop(name: args.first, dry_run: options[:dry_run], json: options[:json])
       @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
     end
 
