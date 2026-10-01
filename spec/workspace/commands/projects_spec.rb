@@ -94,9 +94,13 @@ RSpec.describe Workspace::Commands::Projects do
     end.new
   end
 
+  let(:facts) do
+    Workspace::ProjectFacts.new(tmux: tmux, state: state, config: state_config, lock_namespace: lock_namespace,
+      lock_holder: liveness, dev: dev, agents: agents, error_output: error_output)
+  end
+
   subject(:command) do
-    described_class.new(catalog: catalog, tmux: tmux, state: state, config: state_config, lock_namespace: lock_namespace,
-      lock_holder: liveness, dev: dev, agents: agents, output: output, error_output: error_output, home: @root)
+    described_class.new(catalog: catalog, tmux: tmux, facts: facts, output: output, home: @root)
   end
 
   around do |example|
@@ -192,8 +196,7 @@ RSpec.describe Workspace::Commands::Projects do
     it "shows a full path when it is outside the home directory" do
       other_home = File.join(@root, "elsewhere")
       roots["app"] = make_main_checkout(File.join(@root, "app"))
-      described_class.new(catalog: catalog, tmux: tmux, state: state, config: state_config, lock_namespace: lock_namespace,
-        lock_holder: liveness, dev: dev, agents: agents, output: output, home: other_home).list
+      described_class.new(catalog: catalog, tmux: tmux, facts: facts, output: output, home: other_home).list
 
       expect(output.string).to include(File.join(@root, "app"))
     end
