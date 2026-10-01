@@ -2640,6 +2640,78 @@ RSpec.describe Workspace::CLI do
       expect(projects_command.calls).to be_empty
     end
 
+    it "runs members with no name for `projects members`" do
+      cli.run(["projects", "members"])
+
+      expect(projects_command.calls).to eq([{members: nil, path: false, all: false, json: false, timeout: nil}])
+    end
+
+    it "passes the name, --path, --all and --json to members, with flags before or after" do
+      cli.run(["projects", "members", "app", "--path", "--all"])
+      cli.run(["projects", "--json", "members", "~/src/app", "--all"])
+
+      expect(projects_command.calls).to eq([
+        {members: "app", path: true, all: true, json: false, timeout: nil},
+        {members: "~/src/app", path: false, all: true, json: true, timeout: nil}
+      ])
+    end
+
+    it "passes --timeout through to members --all" do
+      cli.run(["projects", "members", "app", "--all", "--timeout", "0.5"])
+
+      expect(projects_command.calls).to eq([{members: "app", path: false, all: true, json: false, timeout: 0.5}])
+    end
+
+    it "rejects a non-positive members --timeout" do
+      expect { cli.run(["projects", "members", "--all", "--timeout", "0"]) }.to raise_error(FakeSystemExit)
+
+      expect(error_output.string).to include("--timeout must be a finite number greater than 0.")
+      expect(projects_command.calls).to be_empty
+    end
+
+    it "rejects --path with --json" do
+      expect { cli.run(["projects", "members", "--path", "--json"]) }.to raise_error(FakeSystemExit)
+
+      expect(JSON.parse(output.string)).to eq("schema_version" => 1, "error" => "--path and --json cannot be used together.")
+      expect(projects_command.calls).to be_empty
+    end
+
+    it "rejects a second members argument with a usage error" do
+      expect { cli.run(["projects", "members", "a", "b"]) }.to raise_error(FakeSystemExit)
+      expect(error_output.string).to include("Unexpected argument: b")
+    end
+
+    it "prints a JSON error for a bad members usage under --json, whatever the flag order" do
+      expect { cli.run(["projects", "members", "--bogus", "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+      expect(JSON.parse(output.string)).to include("schema_version" => 1, "error" => /bogus/)
+    end
+
+    it "exits with members' exit code when it is non-zero" do
+      projects_command.result = {exit_code: 1}
+
+      expect { cli.run(["projects", "members", "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+    end
+
+    it "prints members' own help for `projects members --help`" do
+      cli.run(["projects", "members", "--help"])
+
+      expect(output.string).to include("Usage: workspace projects members [NAME|PATH] [--path] [--all] [--timeout SECONDS] [--json]", "--path", "--all", "not with --json")
+      expect(projects_command.calls).to be_empty
+    end
+
+    it "mentions members in the projects help" do
+      cli.run(["projects", "--help"])
+
+      expect(output.string).to include("members [NAME|PATH]", "--path", "--all")
+    end
+
+    it "reports an error for `projects members` when no projects command was wired" do
+      cli, _, error_output = build_test_cli(projects_command: nil)
+
+      expect { cli.run(["projects", "members"]) }.to raise_error(FakeSystemExit)
+      expect(error_output.string).to include("no projects command was wired")
+    end
+
     it "mentions show in the projects help" do
       cli.run(["projects", "--help"])
 

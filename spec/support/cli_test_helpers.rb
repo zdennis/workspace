@@ -469,6 +469,11 @@ module CLITestHelpers
       @calls << {show: name, json: json, agents: agents, git: git, timeout: timeout}
       @result
     end
+
+    def members(name: nil, path: false, all: false, json: false, timeout: nil)
+      @calls << {members: name, path: path, all: all, json: json, timeout: timeout}
+      @result
+    end
   end
 
   class FakeParentCommand

@@ -121,7 +121,7 @@ RSpec.describe Workspace::Commands::Projects do
   end
 
   subject(:command) do
-    described_class.new(catalog: catalog, tmux: tmux, facts: facts, output: output, home: @root)
+    described_class.new(catalog: catalog, tmux: tmux, facts: facts, output: output, error_output: error_output, home: @root)
   end
 
   around do |example|
@@ -313,6 +313,326 @@ RSpec.describe Workspace::Commands::Projects do
 
       expect { command.list }.to raise_error(Workspace::Error, "boom")
       expect(output.string).to eq("")
+    end
+  end
+
+  describe "#members" do
+    def lines = output.string.lines.map(&:chomp)
+
+    def payload = JSON.parse(output.string)
+
+    context "with a main checkout, a worktree and a worktree whose checkout is gone" do
+      let!(:main) { build_app_with_worktrees }
+      let(:login) { File.join(main, ".worktrees", "login") }
+      let(:old) { File.join(main, ".worktrees", "old") }
+
+      it "prints one workspace name per line, main first, including a missing checkout" do
+        result = command.members(name: "app")
+
+        expect(result).to eq(exit_code: 0)
+        expect(lines).to eq(%w[app app.worktree-login app.worktree-old])
+      end
+
+      it "prints checkout paths with path: true" do
+        command.members(name: "app", path: true)
+
+        expect(lines).to eq([main, login, old])
+      end
+
+      it "prints the schema-versioned member list as JSON" do
+        command.members(name: "app", json: true)
+
+        expect(payload).to eq(
+          "schema_version" => 1,
+          "project" => {"name" => "app", "id" => File.join(main, ".git"), "path" => main, "vcs" => "git"},
+          "members" => [
+            {"workspace" => "app", "path" => main, "kind" => "main", "configured" => true, "exists" => true},
+            {"workspace" => "app.worktree-login", "path" => login, "kind" => "worktree", "configured" => true, "exists" => true},
+            {"workspace" => "app.worktree-old", "path" => old, "kind" => "worktree", "configured" => true, "exists" => false}
+          ]
+        )
+      end
+
+      it "prints paths in JSON even with path: true" do
+        command.members(name: "app", json: true, path: true)
+
+        expect(payload["members"].map { |m| m["path"] }).to eq([main, login, old])
+      end
+
+      it "makes no git subprocess and no fact reads without all" do
+        expect(Open3).not_to receive(:popen3)
+        expect(Open3).not_to receive(:capture3)
+        expect(Open3).not_to receive(:capture2e)
+        expect(Open3).not_to receive(:capture2)
+
+        command.members(name: "app")
+        command.members(name: "app", json: true)
+
+        expect(git_calls).to be_empty
+      end
+
+      it "does not ask tmux, state, locks or agents" do
+        expect(tmux).not_to receive(:sessions)
+        expect(agents).not_to receive(:facts)
+        expect(dev).not_to receive(:status_payload)
+
+        command.members(name: "app", json: true)
+      end
+
+      it "does not list worktrees without all" do
+        expect_any_instance_of(Workspace::Git).not_to receive(:list_worktrees)
+
+        command.members(name: "app")
+      end
+
+      it "adds nothing with --all when every worktree git lists has a config" do
+        allow_any_instance_of(Workspace::Git).to receive(:list_worktrees).and_return([main, login])
+
+        command.members(name: "app", all: true)
+
+        expect(lines).to eq(%w[app app.worktree-login app.worktree-old])
+      end
+    end
+
+    describe "resolving the project" do
+      let!(:main) { build_app_with_worktrees }
+
+      it "accepts a member workspace name" do
+        command.members(name: "app.worktree-login")
+
+        expect(lines).to eq(%w[app app.worktree-login app.worktree-old])
+      end
+
+      it "accepts a path to the project or to a member checkout" do
+        command.members(name: main)
+        expect(lines.first).to eq("app")
+
+        output.truncate(0)
+        output.rewind
+        command.members(name: File.join(main, ".worktrees", "login"))
+        expect(lines.first).to eq("app")
+      end
+
+      it "defaults to the project containing the working directory" do
+        FileUtils.mkdir_p(File.join(main, "lib"))
+
+        command.members(cwd: File.join(main, "lib"))
+
+        expect(lines).to eq(%w[app app.worktree-login app.worktree-old])
+      end
+
+      it "prints nothing for a repository with no workspaces" do
+        repo = make_main_checkout(File.join(@root, "fresh"))
+
+        expect(command.members(cwd: repo)).to eq(exit_code: 0)
+        expect(output.string).to eq("")
+        expect(error_output.string).to eq("no workspaces in project fresh\n")
+      end
+
+      it "prints an empty member list as JSON for a repository with no workspaces" do
+        repo = make_main_checkout(File.join(@root, "fresh"))
+
+        command.members(cwd: repo, json: true)
+
+        expect(payload["project"]["name"]).to eq("fresh")
+        expect(payload["members"]).to eq([])
+      end
+
+      context "with two clones sharing a name" do
+        let!(:a) { make_main_checkout(File.join(@root, "a", "shared")).tap { |p| roots["wt-a"] = make_linked_worktree(p, File.join(@root, "wa")) } }
+        let!(:b) { make_main_checkout(File.join(@root, "b", "shared")).tap { |p| roots["wt-b"] = make_linked_worktree(p, File.join(@root, "wb")) } }
+
+        it "raises a usage error listing the candidate paths" do
+          expect { command.members(name: "shared") }.to raise_error(Workspace::UsageError) { |e|
+            expect(e.message).to include(a, b)
+          }
+          expect(output.string).to eq("")
+        end
+
+        it "prints the same error as JSON with exit code 1" do
+          expect(command.members(name: "shared", json: true)).to eq(exit_code: 1)
+          expect(payload["error"]).to include("Ambiguous project 'shared'", a, b)
+        end
+
+        it "accepts a path to choose one" do
+          command.members(name: b, path: true)
+
+          expect(lines).to eq([File.join(@root, "wb")])
+        end
+      end
+
+      it "raises for an unknown project" do
+        expect { command.members(name: "nope") }.to raise_error(Workspace::Error, "Unknown project 'nope'")
+        expect(output.string).to eq("")
+      end
+
+      it "prints an unknown project as a JSON error with exit code 1" do
+        expect(command.members(name: "nope", json: true)).to eq(exit_code: 1)
+        expect(payload).to eq("schema_version" => 1, "error" => "Unknown project 'nope'")
+      end
+
+      it "reports a directory in no project as an error" do
+        FileUtils.mkdir_p(File.join(@root, "stray"))
+
+        expect { command.members(cwd: File.join(@root, "stray")) }.to raise_error(Workspace::Error, /No project found/)
+        expect(command.members(cwd: File.join(@root, "stray"), json: true)).to eq(exit_code: 1)
+      end
+
+      it "lets an unexpected failure raise without json and print a JSON error with it" do
+        allow(catalog).to receive(:for_cwd).and_raise(NoMethodError, "boom")
+
+        expect { command.members }.to raise_error(NoMethodError)
+        expect(command.members(json: true)).to eq(exit_code: 1)
+        expect(payload).to eq("schema_version" => 1, "error" => "boom")
+      end
+    end
+
+    context "with a project whose checkouts are all gone" do
+      before do
+        roots["lost"] = File.join(@root, "lost")
+        roots["lost.worktree-x"] = File.join(@root, "lost", ".worktrees", "x")
+      end
+
+      it "still lists the workspaces, marked as not existing" do
+        command.members(name: "lost", json: true)
+
+        expect(payload["members"].map { |m| [m["workspace"], m["exists"]] }).to eq([["lost", false], ["lost.worktree-x", false]])
+      end
+
+      it "makes no git subprocess for --all when the project is not a git repository on disk" do
+        expect_any_instance_of(Workspace::Git).not_to receive(:list_worktrees)
+
+        command.members(name: "lost", all: true)
+
+        expect(lines).to eq(%w[lost lost.worktree-x])
+      end
+    end
+
+    context "with a project that is not a git repository" do
+      it "lists its one workspace" do
+        roots["notes"] = FileUtils.mkdir_p(File.join(@root, "notes")).first
+
+        command.members(name: "notes", all: true)
+
+        expect(lines).to eq(%w[notes])
+      end
+    end
+
+    context "with --all and a worktree that has no workspace config" do
+      let!(:main) { build_app_with_worktrees }
+      let(:spike) { File.join(@root, "spike") }
+      let(:gone) { File.join(@root, "gone") }
+
+      before do
+        allow_any_instance_of(Workspace::Git).to receive(:list_worktrees)
+          .and_return([main, File.join(main, ".worktrees", "login"), File.join(main, ".worktrees", "old"), spike, gone])
+        FileUtils.mkdir_p(spike)
+      end
+
+      it "omits them in name mode, with one stderr note counting them" do
+        command.members(name: "app", all: true)
+
+        expect(lines).to eq(%w[app app.worktree-login app.worktree-old])
+        expect(error_output.string).to eq("2 unconfigured worktree(s) omitted; use --path or --json to include them\n")
+      end
+
+      it "prints no omission note with path: true or json" do
+        command.members(name: "app", all: true, path: true)
+        command.members(name: "app", all: true, json: true)
+
+        expect(error_output.string).to eq("")
+      end
+
+      it "lists them by path with path: true" do
+        command.members(name: "app", all: true, path: true)
+
+        expect(lines.last(2)).to eq([gone, spike])
+      end
+
+      it "reports them in JSON as unconfigured, with a null workspace" do
+        command.members(name: "app", all: true, json: true)
+
+        expect(payload["members"].last(2)).to eq([
+          {"workspace" => nil, "path" => gone, "kind" => "worktree", "configured" => false, "exists" => false},
+          {"workspace" => nil, "path" => spike, "kind" => "worktree", "configured" => false, "exists" => true}
+        ])
+      end
+
+      it "leaves them out without all" do
+        command.members(name: "app")
+
+        expect(lines).to eq(%w[app app.worktree-login app.worktree-old])
+      end
+
+      it "bounds the listing by timeout:" do
+        allow_any_instance_of(Workspace::Git).to receive(:list_worktrees) { sleep 5 }
+
+        expect { command.members(name: "app", all: true, timeout: 0.1) }.to raise_error(Workspace::Error, /Timed out listing/)
+      end
+
+      it "fails with a clear error when the listing times out" do
+        stub_const("Workspace::ProjectFacts::DEFAULT_GIT_TIMEOUT", 0.1)
+        allow_any_instance_of(Workspace::Git).to receive(:list_worktrees) { sleep 5 }
+
+        expect { command.members(name: "app", all: true) }.to raise_error(Workspace::Error, /Timed out listing the worktrees of project 'app'/)
+        expect(command.members(name: "app", all: true, json: true)).to eq(exit_code: 1)
+        expect(payload["error"]).to include("Timed out listing")
+      end
+    end
+
+    context "with a bare repository common dir and all: true" do
+      let(:bare) { File.join(@root, "svc.git") }
+      let(:wt) { File.join(@root, "svc-a") }
+
+      def sh(*cmd, chdir:)
+        out, status = Open3.capture2e(*cmd, chdir: chdir)
+        raise "#{cmd.join(" ")} failed: #{out}" unless status.success?
+      end
+
+      before do
+        seed = File.join(@root, "seed")
+        FileUtils.mkdir_p(seed)
+        sh("git", "init", "-q", "-b", "main", chdir: seed)
+        sh("git", "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "--allow-empty", "-m", "i", chdir: seed)
+        sh("git", "clone", "-q", "--bare", seed, bare, chdir: @root)
+        sh("git", "worktree", "add", "-q", wt, "main", chdir: bare)
+        roots["svc-a"] = wt
+      end
+
+      it "leaves the bare entry out of the members" do
+        command.members(name: "svc-a", all: true, json: true)
+
+        expect(payload["members"].map { |m| m["path"] }).to eq([wt])
+        expect(payload["members"].map { |m| m["path"] }).not_to include(bare)
+      end
+    end
+
+    context "with real git repositories" do
+      let(:main) { File.join(@root, "real") }
+      let(:spike) { File.join(main, ".worktrees", "spike") }
+
+      def sh(*cmd, chdir:)
+        out, status = Open3.capture2e(*cmd, chdir: chdir)
+        raise "#{cmd.join(" ")} failed: #{out}" unless status.success?
+      end
+
+      before do
+        FileUtils.mkdir_p(main)
+        sh("git", "init", "-q", "-b", "main", chdir: main)
+        sh("git", "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "--allow-empty", "-m", "initial", chdir: main)
+        sh("git", "worktree", "add", "-q", "-b", "spike", spike, chdir: main)
+        roots["real"] = main
+      end
+
+      it "lists the main checkout without --all and the unconfigured worktree with it" do
+        command.members(name: "real", path: true)
+        expect(lines).to eq([main])
+
+        output.truncate(0)
+        output.rewind
+        command.members(name: "real", path: true, all: true)
+        expect(lines).to eq([main, spike])
+      end
     end
   end
 
