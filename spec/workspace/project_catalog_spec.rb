@@ -304,6 +304,16 @@ RSpec.describe Workspace::ProjectCatalog do
       expect(catalog.find(File.join(main, ".git")).name).to eq("app")
     end
 
+    it "finds a project by a symlinked path" do
+      link = File.join(@root, "app-link")
+      File.symlink(main, link)
+      sub_link = File.join(@root, "login-link")
+      File.symlink(login, sub_link)
+
+      expect(catalog.find(link).path).to eq(main)
+      expect(catalog.find(sub_link).path).to eq(main)
+    end
+
     it "raises an unknown-project error for no match" do
       expect { catalog.find("nope") }.to raise_error(Workspace::Error, "Unknown project 'nope'")
     end
@@ -332,6 +342,97 @@ RSpec.describe Workspace::ProjectCatalog do
       it "still resolves a member workspace name that is unique" do
         expect(catalog.find("other-wt").path).to eq(other)
       end
+    end
+
+    it "stands in a member-less project for an unconfigured repository's path" do
+      repo = make_main_checkout(File.join(@root, "fresh"))
+
+      project = catalog.find(repo)
+
+      expect(project.to_h).to include(name: "fresh", id: File.join(repo, ".git"), path: repo, vcs: "git", members: [])
+    end
+  end
+
+  describe "#for_cwd" do
+    let!(:main) { make_main_checkout(File.join(@root, "app")) }
+    let!(:login) { make_linked_worktree(main, File.join(main, ".worktrees", "login")) }
+
+    before { roots.merge!("app" => main, "app.worktree-login" => login) }
+
+    it "finds the project from the main checkout, a worktree or a subdirectory" do
+      FileUtils.mkdir_p(File.join(login, "lib", "deep"))
+
+      expect(catalog.for_cwd(main).name).to eq("app")
+      expect(catalog.for_cwd(login).name).to eq("app")
+      expect(catalog.for_cwd(File.join(login, "lib", "deep")).name).to eq("app")
+    end
+
+    it "finds the project from a worktree that has no workspace config" do
+      spike = make_linked_worktree(main, File.join(@root, "spike"))
+
+      expect(catalog.for_cwd(spike).path).to eq(main)
+    end
+
+    it "picks the right clone when two share a name" do
+      other = make_main_checkout(File.join(@root, "elsewhere", "app"))
+      roots["other"] = other
+
+      expect(catalog.for_cwd(other).path).to eq(other)
+      expect(catalog.for_cwd(main).path).to eq(main)
+    end
+
+    it "returns a project with no members for a repository with no workspaces" do
+      repo = make_main_checkout(File.join(@root, "fresh"))
+
+      project = catalog.for_cwd(repo)
+
+      expect(project.name).to eq("fresh")
+      expect(project.id).to eq(File.join(repo, ".git"))
+      expect(project.members).to eq([])
+    end
+
+    it "names an unconfigured bare repository after its directory minus .git" do
+      bare = File.join(@root, "svc.git")
+      FileUtils.mkdir_p(File.join(bare, "worktrees", "a"))
+      FileUtils.mkdir_p(File.join(@root, "svc-a"))
+      File.write(File.join(@root, "svc-a", ".git"), "gitdir: #{bare}/worktrees/a\n")
+      File.write(File.join(bare, "worktrees", "a", "commondir"), "../..\n")
+
+      project = catalog.for_cwd(File.join(@root, "svc-a"))
+
+      expect(project.name).to eq("svc")
+      expect(project.id).to eq(bare)
+    end
+
+    it "finds a non-git project from inside its directory" do
+      notes = File.join(@root, "notes")
+      FileUtils.mkdir_p(File.join(notes, "sub"))
+      roots["notes"] = notes
+
+      expect(catalog.for_cwd(File.join(notes, "sub")).name).to eq("notes")
+    end
+
+    it "raises when the directory is in no project" do
+      FileUtils.mkdir_p(File.join(@root, "stray"))
+
+      expect { catalog.for_cwd(File.join(@root, "stray")) }.to raise_error(Workspace::Error, /No project found for #{@root}\/stray/)
+    end
+
+    it "does not match a sibling directory that merely shares a prefix" do
+      notes = File.join(@root, "notes")
+      FileUtils.mkdir_p([notes, "#{notes}-extra"])
+      roots["notes"] = notes
+
+      expect { catalog.for_cwd("#{notes}-extra") }.to raise_error(Workspace::Error, /No project found/)
+    end
+  end
+
+  describe "key assignment for configs with no usable root" do
+    it "gives the shared missing path to the first config by name, whatever order they are listed in" do
+      gone = File.join(@root, "gone")
+      roots.merge!("b" => gone, "a" => gone)
+
+      expect(catalog.all.map { |project| [project.name, project.id] }).to eq([["a", gone], ["b", "workspace:b"]])
     end
   end
 end

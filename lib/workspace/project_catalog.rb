@@ -66,10 +66,60 @@ module Workspace
       by_workspace = all.find { |project| project.members.any? { |member| member.workspace == token } }
       return by_workspace if by_workspace
 
+      by_directory = token.start_with?("/", "~", ".") && File.directory?(File.expand_path(token)) && for_directory(token)
+      return by_directory if by_directory
+
       raise Error, "Unknown project '#{token}'"
     end
 
+    # Finds the project a directory belongs to. A directory inside a git
+    # checkout belongs to the project with that checkout's git common dir; if
+    # no workspace is configured for that repository, a project with no
+    # members stands in for it. Otherwise the directory must be inside a
+    # configured member's checkout.
+    #
+    # @param cwd [String] a directory, usually the working directory
+    # @return [Project]
+    # @raise [Workspace::Error] if the directory belongs to no project
+    def for_cwd(cwd)
+      path = real(File.expand_path(cwd))
+      layout = @git.checkout_layout(path)
+      if layout && !layout[:broken]
+        id = real(layout[:common_dir])
+        return all.find { |project| project.id == id } || unconfigured_project(id)
+      end
+
+      inside = all.select do |project|
+        project.members.any? { |member| member.exists && (path == member.path || path.start_with?("#{member.path}/")) }
+      end
+      return inside.first if inside.size == 1
+      raise UsageError, "Ambiguous project for #{path}: #{inside.map(&:path).join(", ")}" if inside.size > 1
+      raise Error, "No project found for #{path}"
+    end
+
     private
+
+    # {#for_cwd} for a path that may belong to no project: nil, not an error.
+    def for_directory(path)
+      for_cwd(path)
+    rescue UsageError
+      raise
+    rescue Error
+      nil
+    end
+
+    def unconfigured_project(id)
+      main = (File.basename(id) == ".git") ? File.dirname(id) : id
+      Project.new(name: derive_name(main), id: id, path: main, vcs: "git", members: [])
+    end
+
+    def derive_name(main)
+      if File.basename(main).end_with?(".git") && File.basename(main) != ".git"
+        File.basename(main).delete_suffix(".git")
+      else
+        WorkspaceLineage.name_from_path(main)
+      end
+    end
 
     def find_by_path(token)
       return nil unless token.start_with?("/", "~", ".")
@@ -107,7 +157,7 @@ module Workspace
       groups.each_value { |group| name_group(group) }
 
       # Standalone configs first, so worktree-named configs can attach to them.
-      missing.sort_by { |entry| WorkspaceLineage.split_worktree_name(entry[:name]) ? 1 : 0 }.each do |entry|
+      missing.sort_by { |entry| [WorkspaceLineage.split_worktree_name(entry[:name]) ? 1 : 0, entry[:name]] }.each do |entry|
         split = WorkspaceLineage.split_worktree_name(entry[:name])
         group = split && group_for_missing(groups.values, split.first, entry[:path])
         if group
@@ -157,13 +207,7 @@ module Workspace
           group[:main_path] = main
         end
         configured = group[:members].find { |member| member.path == real(main) }
-        group[:name] = if configured
-          configured.workspace
-        elsif File.basename(main).end_with?(".git") && File.basename(main) != ".git"
-          File.basename(main).delete_suffix(".git")
-        else
-          WorkspaceLineage.name_from_path(main)
-        end
+        group[:name] = configured ? configured.workspace : derive_name(main)
       else
         group[:name] = group[:members].first.workspace
       end

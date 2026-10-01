@@ -3392,6 +3392,12 @@ module Workspace
         else
           cmd_projects_list(rest)
         end
+      when "show"
+        if rest.include?("--help") || rest.include?("-h")
+          @output.puts projects_show_parser({}).help
+        else
+          cmd_projects_show(rest)
+        end
       when "help" then @output.puts projects_help
       else
         raise UsageError, "Unknown projects subcommand: #{subcommand}. Run 'workspace projects --help'."
@@ -3403,7 +3409,7 @@ module Workspace
 
     def projects_help
       <<~HELP
-        Usage: workspace projects [list] [options]
+        Usage: workspace projects [list [--running] | show [NAME|PATH]] [--json]
 
         Group workspaces by repository.
 
@@ -3413,10 +3419,14 @@ module Workspace
         `list-projects` operate on single workspaces.
 
         Subcommands:
-          list    One row per project: its workspaces and how many are running (default)
+          list              One row per project: its workspaces and how many are running (default)
+          show [NAME|PATH]  One project in detail: each workspace's running state, open asks and
+                            pipeline entries, plus the repo-wide locks and dev environment.
+                            NAME is a project name, a member workspace name or a path; it
+                            defaults to the project containing the current directory.
 
         Options:
-          --running   Only projects with at least one running workspace
+          --running   list only: projects with at least one running workspace
           --json      Print schema-versioned JSON (see docs/README.projects.md)
 
         A workspace joins the project whose repository its directory belongs to. If that
@@ -3427,7 +3437,37 @@ module Workspace
           workspace projects                # same as 'workspace projects list'
           workspace projects --running      # projects with something running
           workspace projects --json         # for a script
+          workspace projects show           # the project for the current directory
+          workspace projects show app --json
       HELP
+    end
+
+    def projects_show_parser(options)
+      OptionParser.new do |opts|
+        opts.banner = "Usage: workspace projects show [NAME|PATH] [--json]"
+        opts.separator ""
+        opts.separator "Show one project: its workspaces (running, headless, open asks, pipeline entries),"
+        opts.separator "the repo-wide locks and the dev environment. NAME is a project name, a member"
+        opts.separator "workspace name or a path (use a path when two projects share a name); it defaults"
+        opts.separator "to the project containing the current directory."
+        opts.separator ""
+        opts.on("--json", "Print schema-versioned JSON (see docs/README.projects.md)") { options[:json] = true }
+        opts.separator ""
+        opts.separator "Examples:"
+        opts.separator "  workspace projects show"
+        opts.separator "  workspace projects show app --json"
+        opts.separator "  workspace projects show ~/src/app"
+      end
+    end
+
+    def cmd_projects_show(args)
+      options = {json: false}
+      projects_show_parser(options).parse!(args)
+      raise UsageError, "Unexpected argument: #{args[1]}. Run 'workspace projects show --help'." if args.size > 1
+      raise Error, "projects is not available: no projects command was wired" unless @projects_command
+
+      result = @projects_command.show(name: args.first, json: options[:json])
+      @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
     end
 
     def cmd_projects_list(args)

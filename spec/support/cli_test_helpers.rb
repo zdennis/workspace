@@ -464,6 +464,11 @@ module CLITestHelpers
       @calls << {running_only: running_only, json: json}
       @result
     end
+
+    def show(name: nil, json: false)
+      @calls << {show: name, json: json}
+      @result
+    end
   end
 
   class FakeParentCommand

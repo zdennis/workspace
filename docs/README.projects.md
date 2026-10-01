@@ -1,12 +1,13 @@
 # workspace projects
 
-List projects: each repository's main checkout plus its linked git worktrees,
-with the workspaces that belong to each.
+List projects, or show one in detail: each repository's main checkout plus its
+linked git worktrees, with the workspaces that belong to each.
 
 ## Usage
 
 ```sh
 workspace projects [list] [--running] [--json]
+workspace projects show [NAME|PATH] [--json]
 ```
 
 A bare `workspace projects` runs `list`.
@@ -28,7 +29,7 @@ settings, despite the directory name.
 
 | Option | Description |
 |--------|-------------|
-| `--running` | Only projects with at least one running workspace |
+| `--running` | `list` only: projects with at least one running workspace |
 | `--json` | Print schema-versioned JSON (below) |
 
 ## Details
@@ -94,8 +95,8 @@ broken checkout.
 | Key | Meaning |
 |-----|---------|
 | `name` | Display name. Not unique across clones |
-| `id` | Stable identifier: realpath of the shared git dir (the checkout's realpath for a non-git project) |
-| `path` | The main checkout (the git dir itself for a bare repo) |
+| `id` | Stable identifier: realpath of the shared git dir (the checkout's realpath for a non-git project). `workspace:<name>` for a project whose checkout is gone and whose config has no usable path of its own (no `root:`, or one already taken by another config) |
+| `path` | The main checkout (the git dir itself for a bare repo). `""` for a config with no `root:` |
 | `vcs` | `git`, `none` (checkout exists, not in git), `broken` (`.git` file points at a missing git dir) or `unknown` (checkout gone) |
 | `workspaces` | Number of workspaces in the project |
 | `running` | How many of them have a running tmux session |
@@ -103,9 +104,87 @@ broken checkout.
 Errors under `--json` print `{"schema_version":1,"error":"..."}` on stdout and
 exit 1, whatever the order of the flags.
 
+## show
+
+`workspace projects show [NAME|PATH]` prints everything the local files and
+processes say about one project. NAME is a project name, a member workspace
+name or a path. With no argument it uses the project containing the current
+directory, including a repository that has no workspace config yet (shown with
+no workspaces). If two projects share a name, `show` is a usage error listing
+each candidate's path; pass a path to pick one.
+
+It reads local files and makes one `tmux list-sessions` call, and opens no
+sockets. The dev status comes from `Dev#status_payload`, which runs
+`git rev-parse` and, if the project sets `dev.ready`, that command in the main
+checkout (not in the holder's worktree). Reading the lock store creates its
+directory and `locks.json` if they are missing. Agent states and git facts are
+not shown yet.
+
+```
+Project  app   ~/src/app   (git)
+
+WORKSPACE           KIND      RUN             ASKS  PIPE  NOTE
+app                 main      yes             0     2
+app.worktree-login  worktree  yes (headless)  1     0
+app.worktree-old    worktree  -               -     -     MISSING (checkout gone)
+
+Locks (repo-wide)
+  devenv   held by app.worktree-login (pid 4121)   queue: 1
+  deploy   STALE holder app (pid 999)
+Dev env   running in app.worktree-login, ready
+```
+
+| Column | Meaning |
+|--------|---------|
+| `RUN` | The workspace's tmux session is running (`yes (headless)` when launched headless). `-` for a missing checkout |
+| `ASKS` | Open `workspace ask` questions. `?` if the store can't be read |
+| `PIPE` | Work items in flight in the workspace's pipeline. `?` if the file can't be read |
+| `NOTE` | `MISSING (checkout gone)`: the config's `root:` no longer exists. Its run, ask and pipeline facts are not read |
+
+Locks and the dev environment are repo-wide, so they are read once from the
+project's main checkout. Each holder or waiter is mapped to the workspace whose
+checkout contains its worktree (the deepest one wins); a worktree with no
+workspace config shows as `null` in JSON and by its directory name in text. A
+stale holder is shown as `STALE`. If the lock store is unreadable, `show` still
+succeeds and says so in place of the locks and dev lines.
+
+### show JSON
+
+```json
+{"schema_version":1,
+ "project":{"name":"app","id":"/Users/z/src/app/.git","path":"/Users/z/src/app","vcs":"git"},
+ "members":[
+   {"workspace":"app.worktree-login","path":"/Users/z/src/app/.worktrees/login","kind":"worktree",
+    "configured":true,"exists":true,"running":true,"headless":true,
+    "open_asks":1,"pipeline":{"entries":0}}
+ ],
+ "locks":{"devenv":{"holder":{"workspace":"app.worktree-login","path":"...","pid":4121,"stale":false},
+                    "queue":[{"workspace":"app","path":"...","pid":4150,"stale":false}]}},
+ "dev":{"running":true,"ready":true,"holder_workspace":"app.worktree-login"},
+ "summary":{"workspaces":3,"running":2,"open_asks":1,"pipeline_entries":2}}
+```
+
+| Key | Meaning |
+|-----|---------|
+| `members[].running` | The workspace has a running tmux session and its checkout exists |
+| `members[].headless` | Launched headless, from the session state |
+| `members[].open_asks`, `pipeline` | `null` for a missing checkout, or when the file can't be read. `pipeline` is `{"entries": N}` |
+| `locks` | Lock name to `holder` (or `null`) and `queue`. `{}` when nothing is locked or every checkout is gone. `null` if the store can't be read |
+| `dev` | Same facts as `workspace dev status --json`, for the project. `holder_workspace` is set only while running. `null` if every checkout is gone or the store can't be read |
+| `errors` | Present only when `locks` or `dev` couldn't be read: `{"locks": "...", "dev": "..."}` |
+| `summary` | Totals across the workspaces |
+
+Exit code 0 means the project was found, even if every session is down. An
+unknown or ambiguous NAME, or a directory in no project, exits 1; under
+`--json` that is `{"schema_version":1,"error":"..."}` on stdout.
+
 ## Examples
 
 ```sh
+$ workspace projects show
+$ workspace projects show app --json
+$ workspace projects show ~/src/app   # a path picks between same-named clones
+
 $ workspace projects
 PROJECT      WORKSPACES  RUNNING  PATH           NOTE
 app          3           2        ~/src/app

@@ -2,11 +2,13 @@ require "json"
 
 module Workspace
   module Commands
-    # Lists projects: each repository's main checkout plus its linked
-    # worktrees, with the workspaces (tmuxinator configs) that belong to it.
+    # Lists projects (each repository's main checkout plus its linked
+    # worktrees, with the workspaces (tmuxinator configs) that belong to it)
+    # and shows one project's local facts.
     #
-    # The listing is cheap by design: config files, `.git` files and a single
-    # `tmux list-sessions` call. Normally no git subprocesses, sockets or network.
+    # Both are cheap by design: config files, `.git` files and a single
+    # `tmux list-sessions` call. `list` runs no git subprocesses, sockets or
+    # network; `show` adds state files, the lock store and the dev status.
     class Projects
       # Bumped whenever the `--json` payload's shape changes in a
       # backward-incompatible way.
@@ -14,13 +16,53 @@ module Workspace
 
       # @param catalog [Workspace::ProjectCatalog] groups workspaces into projects
       # @param tmux [Workspace::Tmux] lists running sessions and maps workspace names to them
+      # @param state [Workspace::State] session state, read for each workspace's headless flag
+      # @param config [Workspace::Config] locates each workspace's ask and pipeline state files
+      # @param lock_namespace [Workspace::LockNamespace] locates the project's lock store
+      # @param lock_holder [Workspace::LockHolder] tells live lock holders from stale ones
+      # @param dev [Workspace::Commands::Dev] reports the dev environment's state
       # @param output [IO] stream for the table or JSON
+      # @param error_output [IO] stream for warnings about unreadable ask stores
       # @param home [String] home directory, abbreviated to `~` in the table
-      def initialize(catalog:, tmux:, output: $stdout, home: Dir.home)
+      def initialize(catalog:, tmux:, state:, config:, lock_namespace:, lock_holder:, dev:, output: $stdout, error_output: $stderr,
+        home: Dir.home)
         @catalog = catalog
         @tmux = tmux
+        @state = state
+        @config = config
+        @lock_namespace = lock_namespace
+        @lock_holder = lock_holder
+        @dev = dev
         @output = output
+        @error_output = error_output
         @home = home
+      end
+
+      # Prints everything the project's local files and processes say about
+      # one project: each workspace's running state, headless flag, open asks
+      # and pipeline entries, plus the repo-wide locks and the dev environment.
+      # Reads files and one `tmux list-sessions`; no sockets or network.
+      #
+      # @param name [String, nil] a project name, a member workspace name or a
+      #   path; nil means the project containing +cwd+
+      # @param json [Boolean] print the schema-versioned JSON payload instead of text
+      # @param cwd [String] directory used when +name+ is nil
+      # @return [Hash] `{exit_code:}`; 1 only after a JSON error payload was printed
+      # @raise [Workspace::Error] if the project can't be found, unless +json+ is set
+      # @raise [Workspace::UsageError] if +name+ matches several projects, unless +json+ is set
+      def show(name: nil, json: false, cwd: Dir.pwd)
+        project = name ? @catalog.find(name) : @catalog.for_cwd(cwd)
+        payload = show_payload(project)
+        if json
+          @output.puts JSON.generate(payload)
+        else
+          print_show(project, payload)
+        end
+        {exit_code: 0}
+      rescue => e
+        raise unless json
+        @output.puts JSON.generate({"schema_version" => JSON_SCHEMA_VERSION, "error" => e.message.lines.first.to_s.strip})
+        {exit_code: 1}
       end
 
       # @param running_only [Boolean] only projects with at least one running workspace
@@ -95,6 +137,197 @@ module Workspace
         notes << "checkout missing" if project.members.none?(&:exists)
         notes << "same name" if name_counts[project.name] > 1
         notes.empty? ? "" : "(#{notes.join(", ")})"
+      end
+
+      def show_payload(project)
+        sessions = running_sessions
+        @state.load
+        members = project.members.map { |member| member_facts(member, sessions) }
+        errors = {}
+        locks = lock_facts(project, errors)
+        dev = dev_facts(project, errors)
+        payload = {
+          "schema_version" => JSON_SCHEMA_VERSION,
+          "project" => {"name" => project.name, "id" => project.id, "path" => project.path, "vcs" => project.vcs},
+          "members" => members,
+          "locks" => locks,
+          "dev" => dev,
+          "summary" => {
+            "workspaces" => members.size,
+            "running" => members.count { |m| m["running"] },
+            "open_asks" => members.sum { |m| m["open_asks"].to_i },
+            "pipeline_entries" => members.sum { |m| m.dig("pipeline", "entries").to_i }
+          }
+        }
+        payload["errors"] = errors unless errors.empty?
+        payload
+      end
+
+      # A missing checkout has no sessions or state worth reading, so its
+      # counts are nil (unknown) rather than 0.
+      def member_facts(member, sessions)
+        workspace = member.workspace
+        running = member.exists && sessions.include?(@tmux.session_name_for(workspace))
+        entries = member.exists ? pipeline_entries(workspace) : nil
+        {
+          "workspace" => workspace,
+          "path" => member.path,
+          "kind" => member.kind,
+          "configured" => member.configured,
+          "exists" => member.exists,
+          "running" => running ? true : false,
+          "headless" => headless?(workspace),
+          "open_asks" => member.exists ? open_asks(workspace) : nil,
+          "pipeline" => entries && {"entries" => entries}
+        }
+      end
+
+      def headless?(workspace)
+        info = @state[workspace]
+        (info.is_a?(Hash) && info["headless"]) ? true : false
+      end
+
+      def open_asks(workspace)
+        AskStore.new(path: @config.ask_state_path(workspace), error_output: @error_output).list(open_only: true).size
+      rescue Workspace::Error => e
+        @error_output.puts "workspace projects: not counting open questions for #{workspace}: #{e.message}"
+        nil
+      end
+
+      def pipeline_entries(workspace)
+        path = @config.pipeline_state_path(workspace)
+        return 0 unless File.exist?(path)
+        entries = JSON.parse(File.read(path))
+        entries.is_a?(Hash) ? entries.size : 0
+      rescue JSON::ParserError, SystemCallError
+        @error_output.puts "workspace projects: could not read #{workspace}'s pipeline state at #{path}"
+        nil
+      end
+
+      # Locks and the dev environment live in the repository's shared lock
+      # store, so they are read once for the project, from its main checkout.
+      def lock_facts(project, errors)
+        return {} unless project_dir?(project)
+        store = LockStore.new(dir: @lock_namespace.resolve(cwd: project.path)[:dir], liveness: @lock_holder)
+        store.status.each_with_object({}) do |(name, entry), locks|
+          locks[name] = {
+            "holder" => entry["holder"] && lock_record(entry["holder"], project),
+            "queue" => (entry["queue"] || []).map { |waiter| lock_record(waiter, project) }
+          }
+        end
+      rescue Workspace::Error => e
+        errors["locks"] = e.message
+        nil
+      end
+
+      def dev_facts(project, errors)
+        return nil unless project_dir?(project)
+        payload = @dev.status_payload(working_dir: project.path)
+        holder = payload["holder"]
+        {
+          "running" => payload["running"],
+          "ready" => payload["ready"],
+          "holder_workspace" => payload["running"] ? workspace_at(holder["worktree"], project) : nil
+        }
+      rescue Workspace::Error => e
+        errors["dev"] = e.message
+        nil
+      end
+
+      def project_dir?(project)
+        !project.path.to_s.empty? && File.directory?(project.path)
+      end
+
+      def lock_record(record, project)
+        {
+          "workspace" => workspace_at(record["worktree"], project),
+          "path" => record["worktree"],
+          "pid" => record["pid"] || record["waiter_pid"],
+          "stale" => record["stale"] ? true : false
+        }
+      end
+
+      # The member whose checkout contains +path+ (the deepest one wins, since
+      # worktrees can sit inside the main checkout), or nil for a path that
+      # belongs to no configured member.
+      def workspace_at(path, project)
+        return nil if path.to_s.empty?
+        target = begin
+          File.realpath(path)
+        rescue SystemCallError
+          File.expand_path(path)
+        end
+        member = project.members
+          .select { |m| !m.path.empty? && (target == m.path || target.start_with?("#{m.path}/")) }
+          .max_by { |m| m.path.length }
+        member&.workspace
+      end
+
+      def print_show(project, payload)
+        @output.puts "Project  #{project.name}   #{abbreviate(project.path)}   (#{vcs_label(project.vcs)})"
+        @output.puts
+        members = payload["members"]
+        if members.empty?
+          @output.puts "No workspaces are configured for this project."
+        else
+          print_members(members)
+        end
+        @output.puts
+        print_locks(payload)
+        print_dev(payload)
+      end
+
+      def vcs_label(vcs)
+        (vcs == "none") ? "no git" : vcs
+      end
+
+      def print_members(members)
+        rows = members.map do |m|
+          if m["exists"]
+            [m["workspace"], m["kind"], run_label(m), (m["open_asks"] || "?").to_s, (m.dig("pipeline", "entries") || "?").to_s, ""]
+          else
+            [m["workspace"], m["kind"], "-", "-", "-", "MISSING (checkout gone)"]
+          end
+        end
+        header = %w[WORKSPACE KIND RUN ASKS PIPE NOTE]
+        widths = header.each_index.map { |i| ([header[i]] + rows.map { |row| row[i] }).map(&:length).max }
+        ([header] + rows).each { |row| @output.puts row.each_with_index.map { |cell, i| cell.ljust(widths[i]) }.join("  ").rstrip }
+      end
+
+      def run_label(member)
+        return "-" unless member["running"]
+        member["headless"] ? "yes (headless)" : "yes"
+      end
+
+      def print_locks(payload)
+        @output.puts "Locks (repo-wide)"
+        if payload["locks"].nil?
+          @output.puts "  unavailable (#{payload.dig("errors", "locks")})"
+        elsif payload["locks"].empty?
+          @output.puts "  none"
+        else
+          payload["locks"].each { |name, entry| @output.puts "  #{lock_line(name, entry)}" }
+        end
+      end
+
+      def lock_line(name, entry)
+        holder = entry["holder"]
+        queue = entry["queue"].empty? ? "" : "   queue: #{entry["queue"].size}"
+        return "#{name}   free#{queue}" unless holder
+        who = "#{holder["workspace"] || File.basename(holder["path"].to_s)} (pid #{holder["pid"]})"
+        holder["stale"] ? "#{name}   STALE holder #{who}#{queue}" : "#{name}   held by #{who}#{queue}"
+      end
+
+      def print_dev(payload)
+        dev = payload["dev"]
+        if dev.nil?
+          @output.puts "Dev env   #{payload["errors"]&.key?("dev") ? "unavailable (#{payload.dig("errors", "dev")})" : "not available"}"
+        elsif dev["running"]
+          readiness = {true => ", ready", false => ", not ready"}.fetch(dev["ready"], "")
+          @output.puts "Dev env   running in #{dev["holder_workspace"] || "an unconfigured worktree"}#{readiness}"
+        else
+          @output.puts "Dev env   not running"
+        end
       end
 
       def abbreviate(path)

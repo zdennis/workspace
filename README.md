@@ -95,7 +95,7 @@ workspace <subcommand> [options]
 | lookup | [README](docs/README.lookup.md) | Find a workspace project by worktree path, branch, or project name |
 | parent | [README](docs/README.parent.md) | Print the parent workspace of the current (or given) workspace |
 | pipeline | [README](docs/README.pipeline.md) | Inspect and drive a project's agent pipeline |
-| projects | [README](docs/README.projects.md) | Group workspaces by repository: main checkout plus worktrees, with running counts |
+| projects | [README](docs/README.projects.md) | Group workspaces by repository: main checkout plus worktrees (`list` for running counts, `show` for one project's asks, pipeline, locks and dev env) |
 | prune | [README](docs/README.prune.md) | Remove worktree projects whose PR is closed or merged |
 | reactivate | [README](docs/README.reactivate.md) | Reactivate Claude in a project's tmux pane |
 | relaunch | [README](docs/README.relaunch.md) | Stop and relaunch all active workspace projects |
