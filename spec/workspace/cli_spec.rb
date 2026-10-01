@@ -2579,7 +2579,7 @@ RSpec.describe Workspace::CLI do
     it "mentions show in the projects help" do
       cli.run(["projects", "--help"])
 
-      expect(output.string).to include("show [NAME]")
+      expect(output.string).to include("show [NAME|PATH]")
     end
 
     it "rejects a second show argument with a usage error" do
