@@ -69,7 +69,7 @@ RSpec.describe Workspace::Commands::Projects do
 
       expect(result).to eq(exit_code: 0)
       lines = output.string.lines.map(&:chomp)
-      expect(lines[0]).to match(/\APROJECT\s+WORKSPACES\s+RUNNING\s+PATH\z/)
+      expect(lines[0]).to match(/\APROJECT\s+WORKSPACES\s+RUNNING\s+PATH\s+NOTE\z/)
       expect(lines[1]).to match(%r{\Aapp\s+3\s+2\s+~/app\z})
       expect(lines[2]).to match(%r{\Anotes\s+1\s+0\s+~/notes\s+\(no git\)\z})
     end
@@ -102,6 +102,30 @@ RSpec.describe Workspace::Commands::Projects do
       lines = output.string.lines.map(&:chomp)
       expect(lines[1]).to match(%r{\Aapp\s+1\s+0\s+~/a/app\s+\(same name\)\z})
       expect(lines[2]).to match(%r{\Aapp\s+1\s+0\s+~/b/app\s+\(same name\)\z})
+    end
+
+    it "flags a broken checkout in the NOTE column" do
+      broken = File.join(@root, "stale")
+      FileUtils.mkdir_p(broken)
+      File.write(File.join(broken, ".git"), "gitdir: #{File.join(@root, "gone", ".git", "worktrees", "stale")}\n")
+      roots["stale"] = broken
+
+      command.list
+
+      expect(output.string.lines.last).to match(%r{\Astale\s+1\s+0\s+~/stale\s+\(broken checkout\)$})
+    end
+
+    it "prints a JSON error instead of raising when something unexpected fails under --json" do
+      allow(catalog).to receive(:all).and_raise(NoMethodError, "boom")
+
+      expect(command.list(json: true)).to eq(exit_code: 1)
+      expect(JSON.parse(output.string)).to eq("schema_version" => 1, "error" => "boom")
+    end
+
+    it "lets an unexpected failure raise without --json" do
+      allow(catalog).to receive(:all).and_raise(NoMethodError, "boom")
+
+      expect { command.list }.to raise_error(NoMethodError)
     end
 
     it "shows a full path when it is outside the home directory" do

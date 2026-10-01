@@ -2557,6 +2557,20 @@ RSpec.describe Workspace::CLI do
       expect(projects_command.calls).to be_empty
     end
 
+    it "prints the same help for `projects list --help`" do
+      cli.run(["projects", "list", "--help"])
+
+      expect(output.string).to include("A project is a repository's main checkout plus its linked git worktrees.")
+      expect(projects_command.calls).to be_empty
+    end
+
+    it "reports an error when no projects command was wired" do
+      cli, _, error_output = build_test_cli(projects_command: nil)
+
+      expect { cli.run(["projects"]) }.to raise_error(FakeSystemExit)
+      expect(error_output.string).to include("no projects command was wired")
+    end
+
     it "exits with the command's exit code when it is non-zero" do
       projects_command.result = {exit_code: 1}
 
@@ -2580,11 +2594,10 @@ RSpec.describe Workspace::CLI do
     end
 
     context "usage errors" do
-      it "rejects an unknown subcommand with the help on stderr and exit 1" do
+      it "rejects an unknown subcommand with a one-line pointer to help on stderr and exit 1" do
         expect { cli.run(["projects", "nope"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
 
-        expect(error_output.string).to include("Unknown projects subcommand: nope")
-        expect(error_output.string).to include("Usage: workspace projects")
+        expect(error_output.string).to eq("Unknown projects subcommand: nope. Run 'workspace projects --help'.\n")
       end
 
       it "rejects an unknown option with the parser message and exit 1" do
@@ -2603,7 +2616,7 @@ RSpec.describe Workspace::CLI do
       it "emits a single-line JSON error on stdout for an unknown subcommand when --json is given" do
         expect { cli.run(["projects", "nope", "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
 
-        expect(JSON.parse(output.string)).to eq("schema_version" => 1, "error" => "Unknown projects subcommand: nope")
+        expect(JSON.parse(output.string)).to eq("schema_version" => 1, "error" => "Unknown projects subcommand: nope. Run 'workspace projects --help'.")
         expect(error_output.string).to eq("")
       end
 

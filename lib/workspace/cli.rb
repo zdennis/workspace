@@ -3383,16 +3383,16 @@ module Workspace
 
       case subcommand
       when "list", nil
-        if subcommand.nil? && (rest.include?("--help") || rest.include?("-h"))
+        if rest.include?("--help") || rest.include?("-h")
           @output.puts projects_help
         else
           cmd_projects_list(rest)
         end
       when "help" then @output.puts projects_help
       else
-        raise UsageError, "Unknown projects subcommand: #{subcommand}\n\n#{projects_help}"
+        raise UsageError, "Unknown projects subcommand: #{subcommand}. Run 'workspace projects --help'."
       end
-    rescue UsageError => e
+    rescue OptionParser::ParseError, UsageError => e
       raise unless json_requested?(false, args)
       emit_json_usage_error(Commands::Projects::JSON_SCHEMA_VERSION, e.message.lines.first.strip)
     end
@@ -3427,7 +3427,6 @@ module Workspace
     end
 
     def cmd_projects_list(args)
-      raw = args.dup
       running = false
       json = false
       parser = OptionParser.new do |opts|
@@ -3448,9 +3447,6 @@ module Workspace
 
       result = @projects_command.list(running_only: running, json: json)
       @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
-    rescue OptionParser::ParseError, UsageError => e
-      raise unless json_requested?(json, raw)
-      emit_json_usage_error(Commands::Projects::JSON_SCHEMA_VERSION, e.message.lines.first.strip)
     end
 
     def cmd_parent(args)

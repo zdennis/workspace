@@ -40,7 +40,7 @@ module Workspace
           print_table(rows)
         end
         {exit_code: 0}
-      rescue Workspace::Error => e
+      rescue => e
         raise unless json
         @output.puts JSON.generate({"schema_version" => JSON_SCHEMA_VERSION, "error" => e.message.lines.first.to_s.strip})
         {exit_code: 1}
@@ -78,9 +78,9 @@ module Workspace
           project = row[:project]
           [project.name, project.members.size.to_s, row[:running].to_s, abbreviate(project.path), notes_for(project, name_counts)]
         end
-        header = %w[PROJECT WORKSPACES RUNNING PATH]
+        header = %w[PROJECT WORKSPACES RUNNING PATH NOTE]
         widths = header.each_index.map { |i| ([header[i]] + lines.map { |line| line[i] }).map(&:length).max }
-        @output.puts format_line(header, widths)
+        @output.puts format_line(header[0, 4], widths, note: header[4])
         lines.each { |line| @output.puts format_line(line[0, 4], widths, note: line[4]) }
       end
 
@@ -91,6 +91,7 @@ module Workspace
       def notes_for(project, name_counts)
         notes = []
         notes << "no git" if project.vcs == "none"
+        notes << "broken checkout" if project.vcs == "broken"
         notes << "checkout missing" if project.members.none?(&:exists)
         notes << "same name" if name_counts[project.name] > 1
         notes.empty? ? "" : "(#{notes.join(", ")})"
