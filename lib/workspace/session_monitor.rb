@@ -218,6 +218,27 @@ module Workspace
       end
     end
 
+    # The state the restart busy check goes by. A pane's agent that has ended
+    # its turn (a Stop hook) is idle here even though {#pane_state} still says
+    # "working" until `alerts.idle_after` of screen quiet; otherwise an agent
+    # restarting itself would wait on its own last output. A pane with waits
+    # is "waiting". With no turn event seen (or one still in progress) this
+    # is {#pane_state}.
+    #
+    # @param pane_id [String] tmux pane id
+    # @return [String, nil] "working", "idle" or "waiting", or nil when the
+    #   pane hasn't been scanned yet
+    def restart_state(pane_id)
+      now = @clock.now
+      @lock.synchronize do
+        pane = @panes[pane_id]
+        next unless pane
+        next "waiting" unless pane[:waits].empty?
+        next "idle" if pane[:turn_ended]
+        state_of(pane, now - (pane[:last_activity_at] || now))
+      end
+    end
+
     # Reaps stale lock holds in the namespaces the panes are working in, when
     # the reaper is due. Runs on the scan thread, never the agent's accept
     # loop, so a slow `git` only delays the next scan. A lock store another
@@ -515,6 +536,7 @@ module Workspace
         wait[:message] = self.class.clean_message(event["message"])
       elsif TURN_EVENTS.include?(event["event"])
         clear_waiting(pane)
+        pane[:turn_ended] = (event["event"] != "user_prompt")
       else
         pane[:waits].delete(event_agent_id(event))
         pane[:alerted_waits]&.delete(event_agent_id(event))

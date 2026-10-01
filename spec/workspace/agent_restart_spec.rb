@@ -241,6 +241,61 @@ RSpec.describe Workspace::AgentRestart do
     expect(tmux.delivered).to be_empty
   end
 
+  context "when the agent restarts itself (Stop event, screen quiet, idle_after not yet elapsed)" do
+    let(:wall_clock_source) { Struct.new(:wall) { def now = wall[0] }.new(wall) }
+    let(:session_tmux) { instance_double(Workspace::Tmux, pane_details: [{id: "%18", index: 1, pid: 1, command: "node", cwd: "/p", title: "Claude"}], capture_pane: "output") }
+    let(:process_tree) do
+      tree = instance_double(Workspace::ProcessTree)
+      snap = instance_double(Workspace::ProcessTree::Snapshot)
+      allow(tree).to receive(:snapshot).and_return(snap)
+      allow(snap).to receive(:find_descendant).and_return({pid: 2, command: "claude", args: "claude"})
+      tree
+    end
+    let(:monitor) do
+      Workspace::SessionMonitor.new(tmux: session_tmux, process_tree: process_tree, session_name: "proj",
+        idle_after: 600, clock: wall_clock_source)
+    end
+
+    subject(:restart) do
+      described_class.new(
+        tmux: tmux, context_reader: context_reader, session_name: "workspace-wt-app",
+        delivery_lock: Mutex.new, pipeline_ref: ->(_) {},
+        pane_state: ->(id) { monitor.restart_state(id) },
+        clock: -> { now[0] }, wall_clock: -> { wall[0] },
+        sleeper: ->(seconds) {
+          now[0] += seconds
+          wall[0] += seconds
+        },
+        quiet_timeout: 120, quiet_for: 2, poll_interval: 0.5
+      )
+    end
+
+    it "types /clear once the screen has been quiet, long before the timeout" do
+      monitor.scan
+      monitor.record("pane_id" => "%18", "event" => "user_prompt")
+      monitor.record("pane_id" => "%18", "event" => "stop")
+      expect(monitor.pane_state("%18")).to eq("working")
+      readings.push(reading(42), reading(42), reading(42), reading(3))
+
+      result = call
+
+      expect(result).to include("ok" => true, "status" => "restarted")
+      expect(now[0]).to be < 10
+      expect(tmux.delivered.map { |d| d[:text] }).to eq(["/clear", "Read HANDOFF.md"])
+    end
+
+    it "still refuses while the turn is running and the pane is within idle_after" do
+      monitor.scan
+      monitor.record("pane_id" => "%18", "event" => "user_prompt")
+      readings.push(reading(42))
+
+      result = call
+
+      expect(result).to include("ok" => false, "error" => "pane_busy")
+      expect(tmux.delivered).to be_empty
+    end
+  end
+
   it "reports a pane that is gone before anything is typed" do
     tmux.define_singleton_method(:capture_screen) { |_| nil }
 

@@ -100,9 +100,11 @@ module Workspace
       #   "claude" pane, same as {#check}
       # @param handoff_doc [String, nil] path the agent should resume from
       # @param handoff_prompt [String, nil] prompt sent verbatim instead
+      # @param wait [Boolean] wait for the restart to finish instead of
+      #   returning once it has started
       # @param json [Boolean] emit the result as JSON instead of text
       # @return [Hash] {exit_code:} -- see {Workspace::Commands::RestartAgent#call}
-      def new(name:, pane: nil, handoff_doc: nil, handoff_prompt: nil, json: false)
+      def new(name:, pane: nil, handoff_doc: nil, handoff_prompt: nil, wait: false, json: false)
         if pane.nil?
           snapshot, error = fetch_sessions(name)
           raise Workspace::Error, error if error
@@ -114,7 +116,7 @@ module Workspace
         defaults = @handoff_config.for_workspace(name)
         template = defaults[:resume_prompt] || DEFAULT_RESUME_PROMPT
         prompt = handoff_prompt || safe_format(template, DEFAULT_RESUME_PROMPT, doc: handoff_doc)
-        @restart_agent_command.call(name: name, pane: pane, prompt: prompt, json: json)
+        @restart_agent_command.call(name: name, pane: pane, prompt: prompt, wait: wait, json: json)
       end
 
       private

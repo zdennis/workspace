@@ -8,7 +8,7 @@ Watches a coding agent's context-window usage and hands off to a fresh conversat
 
 ```sh
 workspace handoff check NAME [--pane N] [--threshold PCT] [--context-pct N] [--handoff-doc PATH | --handoff-prompt TEXT] [--json]
-workspace handoff new   NAME [--pane N] (--handoff-doc PATH | --handoff-prompt TEXT) [--json]
+workspace handoff new   NAME [--pane N] (--handoff-doc PATH | --handoff-prompt TEXT) [--wait] [--json]
 ```
 
 `NAME` defaults to the workspace detected from the current directory. `new` requires either `--handoff-doc` or `--handoff-prompt`.
@@ -31,6 +31,7 @@ workspace handoff new   NAME [--pane N] (--handoff-doc PATH | --handoff-prompt T
 | `--pane N` | Pane index or tmux pane id (e.g. `%19`, from `workspace sessions --json`); default: the daemon's first Claude Code pane |
 | `--handoff-doc PATH` | Doc the agent reads and resumes from |
 | `--handoff-prompt TEXT` | Prompt sent verbatim instead of a doc |
+| `--wait` | Wait for the restart to finish and report how it went. Don't use it from the agent being restarted: it would block the turn the restart waits on |
 | `--json` | Print the result as JSON |
 
 `--handoff-doc` and `--handoff-prompt` are mutually exclusive. `new` requires one of them; `check` doesn't -- when neither is given, the save-state prompt tells the agent to pick a doc path itself.

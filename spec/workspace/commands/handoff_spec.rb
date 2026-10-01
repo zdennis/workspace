@@ -202,7 +202,7 @@ RSpec.describe Workspace::Commands::Handoff do
 
       expect(result).to eq(exit_code: 0)
       expect(restart_agent_command).to have_received(:call)
-        .with(name: "myapp", pane: "1", prompt: a_string_including("HANDOFF.md", "Start here"), json: false)
+        .with(name: "myapp", pane: "1", prompt: a_string_including("HANDOFF.md", "Start here"), wait: false, json: false)
     end
 
     it "uses an explicit --pane without needing the daemon" do
@@ -211,7 +211,15 @@ RSpec.describe Workspace::Commands::Handoff do
       result = command.new(name: "myapp", pane: "3", handoff_prompt: "Resume now")
 
       expect(result).to eq(exit_code: 0)
-      expect(restart_agent_command).to have_received(:call).with(name: "myapp", pane: "3", prompt: "Resume now", json: false)
+      expect(restart_agent_command).to have_received(:call).with(name: "myapp", pane: "3", prompt: "Resume now", wait: false, json: false)
+    end
+
+    it "passes wait: through to restart_agent_command" do
+      allow(restart_agent_command).to receive(:call).and_return({exit_code: 0})
+
+      command.new(name: "myapp", pane: "3", handoff_prompt: "Resume now", wait: true)
+
+      expect(restart_agent_command).to have_received(:call).with(name: "myapp", pane: "3", prompt: "Resume now", wait: true, json: false)
     end
 
     it "raises when no agent daemon is reachable and no pane was given" do
@@ -224,7 +232,7 @@ RSpec.describe Workspace::Commands::Handoff do
 
       command.new(name: "myapp", pane: "1", handoff_doc: "HANDOFF.md")
 
-      expect(restart_agent_command).to have_received(:call).with(name: "myapp", pane: "1", prompt: "Resume from HANDOFF.md please", json: false)
+      expect(restart_agent_command).to have_received(:call).with(name: "myapp", pane: "1", prompt: "Resume from HANDOFF.md please", wait: false, json: false)
     end
   end
 end

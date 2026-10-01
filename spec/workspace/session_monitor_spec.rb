@@ -564,6 +564,54 @@ RSpec.describe Workspace::SessionMonitor do
     end
   end
 
+  describe "#restart_state" do
+    def event(name)
+      monitor.record("pane_id" => "%2", "event" => name)
+    end
+
+    before { monitor.scan }
+
+    it "returns nil for a pane it hasn't scanned" do
+      expect(monitor.restart_state("%9")).to be_nil
+    end
+
+    it "follows pane_state when no turn event has been seen" do
+      expect(monitor.restart_state("%2")).to eq("working")
+    end
+
+    it "follows pane_state while a turn is in progress" do
+      event("stop")
+      event("user_prompt")
+
+      expect(monitor.restart_state("%2")).to eq("working")
+    end
+
+    it "is idle once the turn ended, while pane_state still says working" do
+      event("user_prompt")
+      event("stop")
+
+      expect(monitor.pane_state("%2")).to eq("working")
+      expect(monitor.restart_state("%2")).to eq("idle")
+    end
+
+    it "treats session_start and session_end as ending a turn" do
+      event("user_prompt")
+      event("session_end")
+      expect(monitor.restart_state("%2")).to eq("idle")
+
+      event("user_prompt")
+      event("session_start")
+      expect(monitor.restart_state("%2")).to eq("idle")
+    end
+
+    it "is waiting when the pane has a wait, even after a stop" do
+      event("stop")
+      monitor.record("pane_id" => "%2", "event" => "notification", "message" => "Allow?")
+
+      expect(monitor.restart_state("%2")).to eq("waiting")
+    end
+  end
+
   describe "#snapshot" do
     it "orders panes by index" do
       monitor.scan

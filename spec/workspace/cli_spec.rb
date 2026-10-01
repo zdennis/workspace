@@ -973,7 +973,16 @@ RSpec.describe Workspace::CLI do
       cli.run(["handoff", "new", "myapp", "--pane", "2", "--handoff-doc", "HANDOFF.md", "--json"])
 
       expect(handoff_command).to have_received(:new).with(name: "myapp", pane: "2", handoff_doc: "HANDOFF.md",
-        handoff_prompt: nil, json: true)
+        handoff_prompt: nil, wait: false, json: true)
+    end
+
+    it "passes --wait to handoff new" do
+      cli, = build_test_cli(handoff_command: handoff_command)
+
+      cli.run(["handoff", "new", "myapp", "--pane", "2", "--handoff-prompt", "Go", "--wait"])
+
+      expect(handoff_command).to have_received(:new).with(name: "myapp", pane: "2", handoff_doc: nil,
+        handoff_prompt: "Go", wait: true, json: false)
     end
 
     it "reports a Workspace::Error from handoff new as a JSON error with --json" do

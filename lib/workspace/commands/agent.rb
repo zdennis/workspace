@@ -549,7 +549,7 @@ module Workspace
             session_name: @tmux_session,
             delivery_lock: @delivery_lock,
             pipeline_ref: method(:pipeline_ref_on),
-            pane_state: ->(id) { @session_monitor&.pane_state(id) }
+            pane_state: ->(id) { @session_monitor&.restart_state(id) }
           )
           restart.call(pane_id: pane_id, prompt: prompt, force: force, confirm_timeout: timeout)
         rescue => e

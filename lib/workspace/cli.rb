@@ -1926,6 +1926,8 @@ module Workspace
                                   --handoff-doc/--handoff-prompt is required)
           --handoff-prompt TEXT  Prompt sent verbatim instead of a doc (one of
                                   --handoff-doc/--handoff-prompt is required)
+          --wait                 Wait for the restart to finish and report how it
+                                  went (don't use this from the agent being restarted)
           --json                 Print the result as JSON
 
         Exit codes (check): 0 under the threshold, 1 at/over it (a save-state prompt
@@ -1999,6 +2001,7 @@ module Workspace
       pane = nil
       handoff_doc = nil
       handoff_prompt = nil
+      wait = false
       json = false
 
       parser = OptionParser.new do |opts|
@@ -2006,6 +2009,7 @@ module Workspace
         opts.on("--pane N", "Pane index or tmux pane id (e.g. '%19', from 'workspace sessions --json'); default: the first Claude Code pane") { |v| pane = v }
         opts.on("--handoff-doc PATH", "Doc the agent reads and resumes from") { |v| handoff_doc = v }
         opts.on("--handoff-prompt TEXT", "Prompt sent verbatim instead of a doc") { |v| handoff_prompt = v }
+        opts.on("--wait", "Wait for the restart to finish and report how it went") { wait = true }
         opts.on("--json", "Print the result as JSON") { json = true }
       end
       parser.parse!(args)
@@ -2018,7 +2022,7 @@ module Workspace
       raise UsageError, "Missing --handoff-doc or --handoff-prompt.\n\n#{parser.help}" if handoff_doc.nil? && handoff_prompt.nil?
       raise Error, "workspace handoff is not available in this build" unless @handoff_command
 
-      result = @handoff_command.new(name: name, pane: pane, handoff_doc: handoff_doc, handoff_prompt: handoff_prompt, json: json)
+      result = @handoff_command.new(name: name, pane: pane, handoff_doc: handoff_doc, handoff_prompt: handoff_prompt, wait: wait, json: json)
       @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
     rescue OptionParser::ParseError, Error => e
       raise unless json_requested?(json, args)
