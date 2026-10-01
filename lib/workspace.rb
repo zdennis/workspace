@@ -60,6 +60,7 @@ require_relative "workspace/process_tree"
 require_relative "workspace/agent_readiness"
 require_relative "workspace/agent_restart"
 require_relative "workspace/workspace_lineage"
+require_relative "workspace/project_catalog"
 require_relative "workspace/duration"
 require_relative "workspace/dev_config"
 require_relative "workspace/lock_namespace"
@@ -110,6 +111,7 @@ require_relative "workspace/commands/capture"
 require_relative "workspace/commands/lock"
 require_relative "workspace/commands/dev"
 require_relative "workspace/commands/parent"
+require_relative "workspace/commands/projects"
 require_relative "workspace/commands/config"
 require_relative "workspace/commands/statusline"
 require_relative "workspace/commands/restart_agent"
@@ -225,6 +227,8 @@ module Workspace
       error_output: error_output
     )
     parent_command = Commands::Parent.new(lineage: lineage, project_config: project_config, output: output)
+    project_catalog = ProjectCatalog.new(project_config: project_config, git: git)
+    projects_command = Commands::Projects.new(catalog: project_catalog, tmux: tmux, output: output)
     config_command = Commands::Config.new(project_settings: project_settings, lineage: lineage, file_backup: file_backup, output: output)
 
     context_store = ContextStore.new(path: config.context_store_path, logger: logger)
@@ -302,6 +306,7 @@ module Workspace
       lock_command: lock_command,
       dev_command: dev_command,
       parent_command: parent_command,
+      projects_command: projects_command,
       agent_command: agent_command,
       sessions_command: sessions_command,
       session_event_command: session_event_command,

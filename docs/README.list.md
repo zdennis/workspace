@@ -2,6 +2,8 @@
 
 List currently active (launched) projects.
 
+See also: `workspace projects`, which groups workspaces by repository.
+
 ## Usage
 
 ```sh

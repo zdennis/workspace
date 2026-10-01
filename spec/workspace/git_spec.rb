@@ -461,3 +461,113 @@ RSpec.describe Workspace::Git do
     end
   end
 end
+
+RSpec.describe Workspace::Git, "checkout layout" do
+  include FakeCheckouts
+
+  subject(:git) { described_class.new(output: StringIO.new, input: StringIO.new) }
+
+  around do |example|
+    Dir.mktmpdir { |dir| (@root = File.realpath(dir)) && example.run }
+  end
+
+  describe "#checkout_layout" do
+    it "treats a directory .git as a main checkout" do
+      main = make_main_checkout(File.join(@root, "app"))
+
+      expect(git.checkout_layout(main)).to eq(toplevel: main, common_dir: File.join(main, ".git"), linked: false)
+    end
+
+    it "walks up from a subdirectory to the checkout root" do
+      main = make_main_checkout(File.join(@root, "app"))
+      FileUtils.mkdir_p(File.join(main, "lib", "deep"))
+
+      expect(git.checkout_layout(File.join(main, "lib", "deep"))).to include(toplevel: main)
+    end
+
+    it "resolves a linked worktree to the main checkout's .git via commondir" do
+      main = make_main_checkout(File.join(@root, "app"))
+      worktree = make_linked_worktree(main, File.join(@root, "elsewhere", "login"))
+
+      expect(git.checkout_layout(worktree)).to eq(toplevel: worktree, common_dir: File.join(main, ".git"), linked: true)
+    end
+
+    it "resolves a relative gitdir against the .git file's directory" do
+      main = make_main_checkout(File.join(@root, "app"))
+      worktree = make_linked_worktree(main, File.join(main, ".worktrees", "login"), "login")
+      File.write(File.join(worktree, ".git"), "gitdir: ../../.git/worktrees/login\n")
+
+      expect(git.common_dir_from_files(worktree)).to eq(File.join(main, ".git"))
+    end
+
+    it "uses the gitdir itself as the common dir when there is no commondir (submodule)" do
+      main = make_main_checkout(File.join(@root, "app"))
+      sub = make_submodule(main, File.join(main, "vendor", "lib"), "lib")
+
+      expect(git.checkout_layout(sub)).to eq(toplevel: sub, common_dir: File.join(main, ".git", "modules", "lib"), linked: false)
+    end
+
+    it "reports a worktree whose main repository is gone as a broken checkout" do
+      stale = File.join(@root, "stale")
+      FileUtils.mkdir_p(stale)
+      File.write(File.join(stale, ".git"), "gitdir: #{File.join(@root, "deleted", ".git", "worktrees", "stale")}\n")
+
+      expect(git.checkout_layout(stale)).to eq(toplevel: stale, common_dir: nil, linked: true, broken: true)
+      expect(git.common_dir_from_files(stale)).to be_nil
+    end
+
+    it "returns nil outside any git checkout" do
+      plain = File.join(@root, "notes")
+      FileUtils.mkdir_p(plain)
+
+      expect(git.checkout_layout(plain)).to be_nil
+    end
+
+    it "falls back to git when the .git file can't be parsed, and returns nil if git can't either" do
+      broken = File.join(@root, "broken")
+      FileUtils.mkdir_p(broken)
+      File.write(File.join(broken, ".git"), "not a gitdir line\n")
+
+      expect(git.checkout_layout(broken)).to be_nil
+    end
+
+    it "uses git rev-parse's answer for a .git file with no gitdir line" do
+      odd = File.join(@root, "odd")
+      FileUtils.mkdir_p(odd)
+      File.write(File.join(odd, ".git"), "garbage\n")
+      common = File.join(@root, "real", ".git")
+      FileUtils.mkdir_p(common)
+      ok = instance_double(Process::Status, success?: true)
+      allow(Open3).to receive(:capture3).with("git", "-C", odd, "rev-parse", "--show-toplevel", "--git-common-dir", "--absolute-git-dir")
+        .and_return(["#{odd}\n#{common}\n#{common}\n", "", ok])
+
+      expect(git.checkout_layout(odd)).to eq(toplevel: odd, common_dir: common, linked: false)
+    end
+
+    it "agrees with git itself on a real linked worktree" do
+      main = File.join(@root, "real")
+      FileUtils.mkdir_p(main)
+      system("git", "-C", main, "init", "--quiet", "-b", "main")
+      system("git", "-C", main, "-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "--allow-empty", "-m", "init", "--quiet")
+      worktree = File.join(@root, "real-wt")
+      system("git", "-C", main, "worktree", "add", "--quiet", "-b", "wt", worktree)
+
+      expected = File.realpath(File.join(main, ".git"))
+      expect(File.realpath(git.common_dir_from_files(worktree))).to eq(expected)
+      expect(git.checkout_layout(worktree)[:linked]).to be(true)
+      expect(git.checkout_layout(main)[:linked]).to be(false)
+    end
+  end
+
+  describe "#common_dir_from_files" do
+    it "returns just the shared git directory" do
+      main = make_main_checkout(File.join(@root, "app"))
+
+      expect(git.common_dir_from_files(main)).to eq(File.join(main, ".git"))
+    end
+
+    it "returns nil for a non-git directory" do
+      expect(git.common_dir_from_files(@root)).to be_nil
+    end
+  end
+end
