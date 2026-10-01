@@ -306,7 +306,6 @@ module Workspace
         {exit_code: 1}
       end
 
-
       # @return [Hash, nil] an exit result if up must not proceed
       def clear_the_way(ctx, entry, wait:, takeover:)
         holder = entry["holder"]
