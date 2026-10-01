@@ -3412,6 +3412,12 @@ module Workspace
         else
           cmd_projects_stop(rest)
         end
+      when "kill"
+        if rest.include?("--help") || rest.include?("-h")
+          @output.puts projects_kill_parser({}).help
+        else
+          cmd_projects_kill(rest)
+        end
       when "help" then @output.puts projects_help
       else
         raise UsageError, "Unknown projects subcommand: #{subcommand}. Run 'workspace projects --help'."
@@ -3423,7 +3429,8 @@ module Workspace
 
     def projects_help
       <<~HELP
-        Usage: workspace projects [list [--running] | show [NAME|PATH] | members [NAME|PATH] | stop [NAME|PATH] [--dry-run]] [--json]
+        Usage: workspace projects [list [--running] | show [NAME|PATH] | members [NAME|PATH] | stop [NAME|PATH] [--dry-run]
+                                  | kill NAME|PATH [--dry-run] [--yes] [--force] [--discard-unsaved]] [--json]
 
         Group workspaces by repository.
 
@@ -3447,9 +3454,17 @@ module Workspace
           stop [NAME|PATH]  Stop every running workspace of the project (main checkout and worktrees).
                             No prompt and no unsaved-work check, like 'workspace stop'. The session you
                             run it from is stopped last. Same NAME rules as show.
+          kill NAME|PATH    Remove every worktree workspace of the project (session, worktree, config,
+                            state), never the main checkout. Checks every worktree first and removes
+                            nothing if any has unsaved work, can't be checked, is gone, or runs the dev
+                            env. Asks first; NAME is required. See 'workspace projects kill --help'.
 
         Options:
-          --dry-run   stop only: list what would be stopped and stop nothing
+          --dry-run   stop, kill: show what would happen and change nothing
+          --yes       kill only: don't ask for confirmation (required with --json or without a terminal)
+          --force     kill only: remove worktrees whose checkout is gone or that git can't check
+          --discard-unsaved
+                      kill only: remove worktrees that have unsaved work, losing it
           --running   list only: projects with at least one running workspace
           --path      members only: print checkout paths instead of workspace names (not with --json)
           --all       members only: also list worktrees that have no workspace config (runs git)
@@ -3473,6 +3488,7 @@ module Workspace
           workspace projects show app --json
           workspace projects members        # one workspace per line
           workspace projects stop app --dry-run
+          workspace projects kill app --dry-run
       HELP
     end
 
@@ -3590,6 +3606,58 @@ module Workspace
       raise Error, "projects stop is not available: no project actions command was wired" unless @project_actions_command
 
       result = @project_actions_command.stop(name: args.first, dry_run: options[:dry_run], json: options[:json])
+      @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
+    end
+
+    def projects_kill_parser(options)
+      OptionParser.new do |opts|
+        opts.banner = "Usage: workspace projects kill NAME|PATH [--dry-run] [--yes] [--force] [--discard-unsaved] [--json]"
+        opts.separator ""
+        opts.separator "Remove every worktree workspace of a project in one step, each the way 'workspace kill' does"
+        opts.separator "(tmux session, git worktree, tmuxinator config, project settings, state entry). The main"
+        opts.separator "checkout is never removed, and worktrees with no workspace config are not touched. NAME is"
+        opts.separator "required: a project name, a member workspace name or a path."
+        opts.separator ""
+        opts.on("--dry-run", "Run the checks and show what would be removed; remove nothing") { options[:dry_run] = true }
+        opts.on("--yes", "Don't ask for confirmation (every check still runs)") { options[:yes] = true }
+        opts.on("--force", "Also remove worktrees whose checkout is gone or that git can't check for unsaved work") { options[:force] = true }
+        opts.on("--discard-unsaved", "Also remove worktrees that have unsaved work, losing it") { options[:discard_unsaved] = true }
+        opts.on("--json", "Print one schema-versioned result object (see docs/README.projects.md); needs --yes or --dry-run") { options[:json] = true }
+        opts.separator ""
+        opts.separator "Every worktree is checked before anything is removed. If any has unsaved work (uncommitted"
+        opts.separator "changes to tracked files or unpushed commits), can't be checked, has a checkout that is gone,"
+        opts.separator "or is running the dev environment, nothing is removed and each problem is listed. --force"
+        opts.separator "overrides only a gone checkout or a failed check; unsaved work needs --discard-unsaved. A"
+        opts.separator "running dev environment is never overridden: run 'workspace dev down' first."
+        opts.separator ""
+        opts.separator "--force does not skip the prompt; --yes does. Without a terminal, or with --json, pass --yes"
+        opts.separator "(or --dry-run). If you run this from one of the worktrees, it is removed last."
+        opts.separator "Exit status: 0 removed, nothing to remove, cancelled or a dry run that would proceed;"
+        opts.separator "1 refused, nothing removed, or a usage error; 3 some removed and some failed."
+        opts.separator ""
+        opts.separator "Examples:"
+        opts.separator "  workspace projects kill app --dry-run"
+        opts.separator "  workspace projects kill app"
+        opts.separator "  workspace projects kill app --yes --json"
+        opts.separator "  workspace projects kill ~/src/app --force --yes"
+      end
+    end
+
+    def cmd_projects_kill(args)
+      options = {json: false, dry_run: false, yes: false, force: false, discard_unsaved: false}
+      projects_kill_parser(options).parse!(args)
+      raise UsageError, "projects kill needs a project NAME or PATH. Run 'workspace projects kill --help'." if args.empty?
+      raise UsageError, "Unexpected argument: #{args[1]}. Run 'workspace projects kill --help'." if args.size > 1
+      unless options[:yes] || options[:dry_run]
+        raise UsageError, "projects kill --json never prompts: pass --yes to remove, or --dry-run to preview." if options[:json]
+        unless @input.respond_to?(:tty?) && @input.tty?
+          raise UsageError, "projects kill can't ask for confirmation without a terminal: pass --yes (or --dry-run)."
+        end
+      end
+      raise Error, "projects kill is not available: no project actions command was wired" unless @project_actions_command
+
+      result = @project_actions_command.kill(name: args.first, dry_run: options[:dry_run], yes: options[:yes], force: options[:force],
+        discard_unsaved: options[:discard_unsaved], json: options[:json])
       @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
     end
 

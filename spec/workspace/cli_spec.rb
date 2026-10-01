@@ -2774,6 +2774,94 @@ RSpec.describe Workspace::CLI do
       end
     end
 
+    describe "projects kill" do
+      let(:actions_command) { CLITestHelpers::FakeProjectActionsCommand.new }
+      let(:tty_input) do
+        Class.new(StringIO) { def tty? = true }.new("")
+      end
+      let(:built) { build_test_cli(projects_command: projects_command, project_actions_command: actions_command, input: tty_input) }
+
+      def kill_call(name, **given)
+        {kill: name, dry_run: false, yes: false, force: false, discard_unsaved: false, json: false}.merge(given)
+      end
+
+      it "passes the name and every flag, with flags before or after" do
+        cli.run(["projects", "kill", "app"])
+        cli.run(["projects", "kill", "app", "--force", "--discard-unsaved", "--dry-run"])
+        cli.run(["projects", "--json", "--yes", "kill", "~/src/app"])
+
+        expect(actions_command.calls).to eq([
+          kill_call("app"),
+          kill_call("app", force: true, discard_unsaved: true, dry_run: true),
+          kill_call("~/src/app", yes: true, json: true)
+        ])
+      end
+
+      it "requires NAME" do
+        expect { cli.run(["projects", "kill", "--yes"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+
+        expect(error_output.string).to include("projects kill needs a project NAME or PATH")
+        expect(actions_command.calls).to be_empty
+      end
+
+      it "rejects a second argument" do
+        expect { cli.run(["projects", "kill", "a", "b"]) }.to raise_error(FakeSystemExit)
+
+        expect(error_output.string).to include("Unexpected argument: b")
+      end
+
+      it "makes --json without --yes a JSON usage error" do
+        expect { cli.run(["projects", "kill", "app", "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+
+        expect(JSON.parse(output.string)).to eq("schema_version" => 1, "error" => "projects kill --json never prompts: pass --yes to remove, or --dry-run to preview.")
+        expect(actions_command.calls).to be_empty
+      end
+
+      it "allows --json with --dry-run and no --yes" do
+        cli.run(["projects", "kill", "app", "--json", "--dry-run"])
+
+        expect(actions_command.calls).to eq([kill_call("app", json: true, dry_run: true)])
+      end
+
+      context "when stdin is not a terminal" do
+        let(:built) { build_test_cli(projects_command: projects_command, project_actions_command: actions_command) }
+
+        it "is a usage error without --yes" do
+          expect { cli.run(["projects", "kill", "app"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+
+          expect(error_output.string).to include("pass --yes")
+          expect(actions_command.calls).to be_empty
+        end
+
+        it "runs with --yes or --dry-run" do
+          cli.run(["projects", "kill", "app", "--yes"])
+          cli.run(["projects", "kill", "app", "--dry-run"])
+
+          expect(actions_command.calls.size).to eq(2)
+        end
+      end
+
+      it "exits with the command's exit code when it is non-zero" do
+        actions_command.result = {exit_code: 1}
+
+        expect { cli.run(["projects", "kill", "app"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+      end
+
+      it "prints kill's own help for `projects kill --help`" do
+        cli.run(["projects", "kill", "--help"])
+
+        expect(output.string).to include("Usage: workspace projects kill NAME|PATH [--dry-run] [--yes] [--force] [--discard-unsaved] [--json]",
+          "--discard-unsaved", "workspace dev down", "Exit status")
+        expect(actions_command.calls).to be_empty
+      end
+
+      it "lists kill under Actions in the projects help" do
+        cli.run(["projects", "--help"])
+
+        expect(output.string).to include("kill NAME|PATH", "--discard-unsaved", "--yes", "--force")
+      end
+    end
+
     it "mentions show in the projects help" do
       cli.run(["projects", "--help"])
 

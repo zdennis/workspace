@@ -489,6 +489,11 @@ module CLITestHelpers
       @calls << {stop: name, dry_run: dry_run, json: json}
       @result
     end
+
+    def kill(name:, dry_run: false, yes: false, force: false, discard_unsaved: false, json: false)
+      @calls << {kill: name, dry_run: dry_run, yes: yes, force: force, discard_unsaved: discard_unsaved, json: json}
+      @result
+    end
   end
 
   class FakeParentCommand

@@ -478,9 +478,630 @@ RSpec.describe Workspace::Commands::ProjectActions do
     end
   end
 
+  describe "#kill" do
+    let(:input) { StringIO.new("") }
+    let(:liveness) { FakeLockLiveness.new }
+    let(:lock_dir) { File.join(@root, "locks") }
+    let(:lock_namespace) do
+      dir = -> { lock_dir }
+      Class.new do
+        define_method(:resolve) { |cwd:| {key: cwd, display: File.basename(cwd), dir: dir.call} }
+      end.new
+    end
+
+    # Answers per checkout path: unsaved (nil = clean), branch, or :raise / :sleep.
+    let(:git_answers) { {} }
+    let(:fake_git) do
+      answers = git_answers
+      Class.new do
+        define_method(:unsaved_work) do |path|
+          answer = answers.fetch(path, {})
+          raise answer[:raise] if answer[:raise]
+          sleep answer[:sleep] if answer[:sleep]
+          answer[:unsaved]
+        end
+        define_method(:worktree_branch) { |path| answers.fetch(path, {}).fetch(:branch, File.basename(path)) }
+      end.new
+    end
+
+    # Records each call with the output written so far. Raises +kill_errors+
+    # for a workspace before its block runs (as Kill's re-check would), and
+    # +late_errors+ after it (as a failing config removal would).
+    let(:kill_calls) { [] }
+    let(:kill_errors) { {} }
+    let(:late_errors) { {} }
+    let(:kill_command) do
+      out = output
+      log = kill_calls
+      errors = kill_errors
+      late = late_errors
+      Class.new do
+        define_method(:call) do |project, force: false, confirm: true, quiet: false, missing_ok: false, &block|
+          log << {project: project, force: force, confirm: confirm, quiet: quiet, missing_ok: missing_ok, output_so_far: out.string.dup}
+          raise errors[project] if errors[project]
+          block&.call(project)
+          raise late[project] if late[project]
+          project
+        end
+      end.new
+    end
+
+    subject(:command) do
+      described_class.new(catalog: catalog, stop_command: stop_command, kill_command: kill_command, state: state, tmux: tmux,
+        git: fake_git, lock_namespace: lock_namespace, lock_holder: liveness, hook_runner: hook_runner,
+        json_hook_runner: json_hook_runner, output: output, error_output: error_output, input: input, own_pane: own_pane)
+    end
+
+    let(:main) { File.join(@root, "app") }
+    let(:login) { File.join(main, ".worktrees", "login") }
+    let(:old) { File.join(main, ".worktrees", "old") }
+    let(:wip) { File.join(main, ".worktrees", "wip") }
+    let(:unsaved_hash) { {changed_files: 2, unpushed_commits: 1, branch: "wip"} }
+
+    def add_wip
+      roots["app.worktree-wip"] = make_linked_worktree(main, wip)
+    end
+
+    def drop_old
+      roots.delete("app.worktree-old")
+    end
+
+    def hold_lock(name, worktree, pid)
+      Workspace::LockStore.new(dir: lock_dir, liveness: liveness)
+        .acquire(name, identity: {kind: "agent", pid: pid, started: "start-#{pid}", pane: "%#{pid}", worktree: worktree},
+          waiter_pid: pid, waiter_started: "start-#{pid}")
+    end
+
+    def kill_json(**opts)
+      result = command.kill(name: "app", json: true, yes: true, **opts)
+      [result, JSON.parse(output.string)]
+    end
+
+    def kill_counts(**given)
+      {"removed" => 0, "would_remove" => 0, "refused" => 0, "not_attempted" => 0, "failed" => 0, "kept" => 0}
+        .merge(given.transform_keys(&:to_s))
+    end
+
+    def row(payload, workspace)
+      payload["results"].find { |r| r["workspace"] == workspace }
+    end
+
+    context "when every worktree is clean" do
+      before { drop_old }
+
+      it "kills each worktree through Kill without its prompt, keeps the main checkout and exits 0" do
+        result, payload = kill_json
+
+        expect(result).to eq({exit_code: 0})
+        expect(kill_calls.map { |c| c.values_at(:project, :force, :confirm, :quiet, :missing_ok) })
+          .to eq([["app.worktree-login", false, false, true, false]])
+        expect(payload).to include("schema_version" => 1, "action" => "kill", "dry_run" => false, "status" => "ok", "warnings" => [])
+        expect(outcomes(payload)).to eq("app" => "kept", "app.worktree-login" => "removed")
+        expect(payload["summary"]).to eq(kill_counts(removed: 1, kept: 1))
+      end
+
+      it "reports each worktree's checks in its row" do
+        _, payload = kill_json
+
+        expect(row(payload, "app")).to eq("workspace" => "app", "path" => main, "kind" => "main", "outcome" => "kept", "reason" => nil)
+        expect(row(payload, "app.worktree-login")).to eq(
+          "workspace" => "app.worktree-login", "path" => login, "kind" => "worktree", "outcome" => "removed",
+          "reason" => nil, "unsaved" => "no", "branch" => "login", "dev_env" => false
+        )
+      end
+
+      it "runs post_kill from inside Kill, through the stderr-bound runner in JSON mode" do
+        kill_json
+        command.kill(name: "app", yes: true)
+
+        expect(hook_calls).to eq([[:json, "app.worktree-login", "post_kill"], [:text, "app.worktree-login", "post_kill"]])
+      end
+
+      it "prints a text summary" do
+        command.kill(name: "app", yes: true)
+
+        expect(output.string).to eq("Removed 1 worktree(s) of project 'app'.\nKept the main checkout app.\n")
+        expect(kill_calls.first[:quiet]).to be(false)
+      end
+    end
+
+    context "with the confirmation prompt" do
+      before { drop_old }
+
+      it "prints the plan and kills nothing when the answer is no" do
+        input.string = "n\n"
+
+        result = command.kill(name: "app")
+
+        expect(result).to eq({exit_code: 0})
+        expect(kill_calls).to be_empty
+        expect(output.string).to include(
+          "Project 'app' (#{main}):\n",
+          "  keep    app                 #{main}  (main checkout)\n",
+          "  remove  app.worktree-login  #{login}  (branch login)\n",
+          "Remove 1 worktree(s) of 'app' and kill their sessions? [y/N] Cancelled.\n"
+        )
+      end
+
+      it "treats no answer at all as no" do
+        expect(command.kill(name: "app")).to eq({exit_code: 0})
+        expect(kill_calls).to be_empty
+      end
+
+      it "kills after a yes" do
+        input.string = "y\n"
+
+        expect(command.kill(name: "app")).to eq({exit_code: 0})
+        expect(kill_calls.map { |c| c[:project] }).to eq(["app.worktree-login"])
+        expect(kill_calls.first[:confirm]).to be(false)
+      end
+
+      it "is skipped with yes" do
+        command.kill(name: "app", yes: true)
+
+        expect(output.string).not_to include("[y/N]")
+        expect(kill_calls.size).to eq(1)
+      end
+
+      it "still asks under force" do
+        command.kill(name: "app", force: true)
+
+        expect(output.string).to include("[y/N]")
+        expect(kill_calls).to be_empty
+      end
+    end
+
+    context "with --json but neither --yes nor --dry-run" do
+      it "is a usage error printed as the JSON error contract, and kills nothing" do
+        result = command.kill(name: "app", json: true)
+
+        expect(result).to eq({exit_code: 1})
+        expect(JSON.parse(output.string)).to eq("schema_version" => 1, "error" => "projects kill --json never prompts: pass --yes to remove, or --dry-run to preview.")
+        expect(kill_calls).to be_empty
+      end
+    end
+
+    describe "refusals" do
+      it "refuses a missing checkout, kills nothing and exits 1" do
+        result, payload = kill_json
+
+        expect(result).to eq({exit_code: 1})
+        expect(kill_calls).to be_empty
+        expect(payload["status"]).to eq("refused")
+        expect(outcomes(payload)).to eq("app" => "kept", "app.worktree-login" => "not_attempted", "app.worktree-old" => "refused")
+        expect(row(payload, "app.worktree-old")).to include("reason" => "missing", "unsaved" => "missing",
+          "message" => "checkout is gone (#{old})", "blockers" => [{"reason" => "missing", "message" => "checkout is gone (#{old})"}])
+        expect(payload["summary"]).to eq(kill_counts(refused: 1, not_attempted: 1, kept: 1))
+      end
+
+      it "refuses unsaved work, with its details" do
+        drop_old
+        git_answers[login] = {unsaved: {changed_files: 2, unpushed_commits: 1, branch: "login"}}
+
+        result, payload = kill_json
+
+        expect(result).to eq({exit_code: 1})
+        expect(row(payload, "app.worktree-login")).to include("outcome" => "refused", "reason" => "unsaved", "unsaved" => "yes",
+          "changed_files" => 2, "unpushed_commits" => 1, "branch" => "login")
+        expect(row(payload, "app.worktree-login")["message"]).to eq("has unsaved work: 2 changed file(s) and 1 unpushed commit(s) on login")
+      end
+
+      it "refuses a worktree git can't check" do
+        drop_old
+        git_answers[login] = {unsaved: :unknown}
+
+        _, payload = kill_json
+
+        expect(row(payload, "app.worktree-login")).to include("outcome" => "refused", "reason" => "unknown", "unsaved" => "unknown")
+      end
+
+      it "treats a git error as unknown" do
+        drop_old
+        git_answers[login] = {raise: RuntimeError.new("boom")}
+
+        _, payload = kill_json
+
+        expect(row(payload, "app.worktree-login")).to include("reason" => "unknown", "unsaved" => "unknown")
+      end
+
+      it "treats a git check that runs out of time as unknown" do
+        drop_old
+        git_answers[login] = {sleep: 2}
+
+        result = command.kill(name: "app", json: true, yes: true, git_timeout: 0.05)
+
+        expect(result).to eq({exit_code: 1})
+        expect(row(JSON.parse(output.string), "app.worktree-login")).to include("reason" => "unknown")
+      end
+
+      it "refuses the worktree running the dev env, pointing at 'workspace dev down'" do
+        drop_old
+        hold_lock("devenv", File.join(login, "lib"), 101)
+
+        _, payload = kill_json
+
+        expect(row(payload, "app.worktree-login")).to include("outcome" => "refused", "reason" => "dev_env", "dev_env" => true,
+          "message" => "the dev environment is running in it; run 'workspace dev down' first")
+      end
+
+      it "ignores a stale dev env holder" do
+        drop_old
+        hold_lock("devenv", login, 101)
+        liveness.kill(101)
+
+        expect(kill_json.first).to eq({exit_code: 0})
+      end
+
+      it "does not refuse when the dev env runs in the main checkout" do
+        drop_old
+        hold_lock("devenv", main, 101)
+
+        expect(kill_json.first).to eq({exit_code: 0})
+      end
+
+      it "refuses every worktree when the lock store can't be read" do
+        drop_old
+        FileUtils.mkdir_p(lock_dir)
+        File.write(File.join(lock_dir, "locks.json"), "{not json")
+
+        _, payload = kill_json
+
+        expect(row(payload, "app.worktree-login")).to include("outcome" => "refused", "reason" => "error")
+        expect(row(payload, "app.worktree-login")["message"]).to start_with("could not read the repo's locks")
+      end
+
+      it "lists every blocker of every member, and each reason in text" do
+        add_wip
+        git_answers[wip] = {unsaved: unsaved_hash}
+        hold_lock("devenv", wip, 101)
+
+        result = command.kill(name: "app", yes: true)
+
+        expect(result).to eq({exit_code: 1})
+        expect(output.string).to eq(<<~TEXT)
+          Not killing project 'app'; nothing was removed:
+            app.worktree-old: checkout is gone (#{old}) (--force overrides this)
+            app.worktree-wip: has unsaved work: 2 changed file(s) and 1 unpushed commit(s) on wip (--discard-unsaved removes it anyway, losing that work)
+            app.worktree-wip: the dev environment is running in it; run 'workspace dev down' first
+        TEXT
+        expect(kill_calls).to be_empty
+      end
+
+      it "lists both blockers of one member in JSON, the first as its reason" do
+        drop_old
+        add_wip
+        git_answers[wip] = {unsaved: unsaved_hash}
+        hold_lock("devenv", wip, 101)
+
+        _, payload = kill_json
+
+        expect(row(payload, "app.worktree-wip")["reason"]).to eq("unsaved")
+        expect(row(payload, "app.worktree-wip")["blockers"].map { |b| b["reason"] }).to eq(%w[unsaved dev_env])
+      end
+
+      it "warns about other locks a worktree holds without refusing" do
+        drop_old
+        hold_lock("deploy", login, 101)
+
+        result, payload = kill_json
+
+        expect(result).to eq({exit_code: 0})
+        expect(payload["warnings"]).to eq(["app.worktree-login holds lock 'deploy'; it is released when its session ends"])
+        expect(row(payload, "app.worktree-login")["locks"]).to eq(["deploy"])
+      end
+    end
+
+    describe "--force" do
+      it "overrides a missing checkout, killing it with missing_ok but not force" do
+        result, payload = kill_json(force: true)
+
+        expect(result).to eq({exit_code: 0})
+        old_call = kill_calls.find { |c| c[:project] == "app.worktree-old" }
+        expect(old_call).to include(force: false, missing_ok: true)
+        expect(kill_calls.find { |c| c[:project] == "app.worktree-login" }).to include(force: false, missing_ok: false)
+        expect(row(payload, "app.worktree-old")).to include("outcome" => "removed", "forced" => true, "overridden_reason" => "missing")
+        expect(row(payload, "app.worktree-login")).not_to include("forced")
+      end
+
+      it "overrides unknown, keeping Kill's re-check" do
+        drop_old
+        git_answers[login] = {unsaved: :unknown}
+
+        result, payload = kill_json(force: true)
+
+        expect(result).to eq({exit_code: 0})
+        expect(kill_calls.first).to include(force: false, missing_ok: false)
+        expect(row(payload, "app.worktree-login")).to include("forced" => true, "overridden_reason" => "unknown")
+      end
+
+      it "reports an unknown member that git still can't check at removal as failed" do
+        drop_old
+        git_answers[login] = {unsaved: :unknown}
+        kill_errors["app.worktree-login"] = Workspace::UnsavedWorkError.new("Could not check 'app.worktree-login'.\nmore", unsaved: :unknown)
+
+        result, payload = kill_json(force: true)
+
+        expect(result).to eq({exit_code: 1})
+        expect(payload["status"]).to eq("failed")
+        expect(row(payload, "app.worktree-login")).to include("outcome" => "failed", "reason" => "unknown", "message" => "Could not check 'app.worktree-login'.")
+      end
+
+      it "does not override unsaved work" do
+        drop_old
+        git_answers[login] = {unsaved: unsaved_hash}
+
+        result, payload = kill_json(force: true)
+
+        expect(result).to eq({exit_code: 1})
+        expect(row(payload, "app.worktree-login")).to include("outcome" => "refused", "reason" => "unsaved")
+        expect(kill_calls).to be_empty
+      end
+
+      it "does not override a running dev env" do
+        drop_old
+        hold_lock("devenv", login, 101)
+
+        result, payload = kill_json(force: true, discard_unsaved: true)
+
+        expect(result).to eq({exit_code: 1})
+        expect(row(payload, "app.worktree-login")).to include("outcome" => "refused", "reason" => "dev_env")
+        expect(kill_calls).to be_empty
+      end
+
+      it "still refuses a missing member that runs the dev env" do
+        hold_lock("devenv", old, 101)
+
+        _, payload = kill_json(force: true)
+
+        expect(row(payload, "app.worktree-old")["blockers"].map { |b| b["reason"] }).to eq(["dev_env"])
+      end
+    end
+
+    describe "--discard-unsaved" do
+      before do
+        add_wip
+        git_answers[wip] = {unsaved: unsaved_hash}
+      end
+
+      it "passes force only for the members it covers" do
+        result, payload = kill_json(force: true, discard_unsaved: true)
+
+        expect(result).to eq({exit_code: 0})
+        forced = kill_calls.to_h { |c| [c[:project], c[:force]] }
+        expect(forced).to eq("app.worktree-login" => false, "app.worktree-old" => false, "app.worktree-wip" => true)
+        expect(row(payload, "app.worktree-wip")).to include("outcome" => "removed", "forced" => true, "overridden_reason" => "unsaved")
+      end
+
+      it "does not override missing or unknown on its own" do
+        _, payload = kill_json(discard_unsaved: true)
+
+        expect(payload["status"]).to eq("refused")
+        expect(outcomes(payload)).to include("app.worktree-old" => "refused", "app.worktree-wip" => "not_attempted")
+      end
+
+      it "shows the work it will discard in the plan" do
+        drop_old
+        input.string = "n\n"
+
+        command.kill(name: "app", discard_unsaved: true)
+
+        expect(output.string).to include("  remove  app.worktree-wip    #{wip}  (DISCARDING unsaved work: 2 changed file(s) and 1 unpushed commit(s) on wip)\n")
+      end
+    end
+
+    context "when Kill's re-check finds new work during the run" do
+      before do
+        drop_old
+        add_wip
+        kill_errors["app.worktree-login"] = Workspace::UnsavedWorkError.new("'app.worktree-login' has unsaved work at x: 1 changed file(s).\nCommit/push", unsaved: {changed_files: 1, unpushed_commits: 0, branch: "login"})
+      end
+
+      it "marks that member failed, carries on with the rest and exits 3" do
+        result, payload = kill_json
+
+        expect(result).to eq({exit_code: 3})
+        expect(kill_calls.map { |c| c[:project] }).to eq(%w[app.worktree-login app.worktree-wip])
+        expect(payload["status"]).to eq("partial")
+        expect(row(payload, "app.worktree-login")).to include("outcome" => "failed", "reason" => "unsaved",
+          "message" => "'app.worktree-login' has unsaved work at x: 1 changed file(s).")
+        expect(row(payload, "app.worktree-wip")["outcome"]).to eq("removed")
+        expect(payload["summary"]).to eq(kill_counts(removed: 1, failed: 1, kept: 1))
+        expect(hook_calls).to eq([[:json, "app.worktree-wip", "post_kill"]])
+      end
+
+      it "names the failure in text" do
+        command.kill(name: "app", yes: true)
+
+        expect(output.string).to include("Removed 1 worktree(s)", "Failed to remove app.worktree-login: 'app.worktree-login' has unsaved work")
+      end
+
+      it "reports any other error as reason error" do
+        kill_errors["app.worktree-login"] = Workspace::Error.new("Error removing worktree: locked")
+
+        _, payload = kill_json
+
+        expect(row(payload, "app.worktree-login")).to include("outcome" => "failed", "reason" => "error", "message" => "Error removing worktree: locked")
+      end
+    end
+
+    context "with --dry-run" do
+      it "reports the refusal and exits 1 without prompting or killing" do
+        result, payload = kill_json(dry_run: true, yes: false)
+
+        expect(result).to eq({exit_code: 1})
+        expect(payload).to include("dry_run" => true, "status" => "refused")
+        expect(kill_calls).to be_empty
+      end
+
+      it "reports would_remove and exits 0 when the run would proceed" do
+        result, payload = kill_json(dry_run: true, yes: false, force: true)
+
+        expect(result).to eq({exit_code: 0})
+        expect(payload).to include("dry_run" => true, "status" => "dry_run")
+        expect(outcomes(payload)).to eq("app" => "kept", "app.worktree-login" => "would_remove", "app.worktree-old" => "would_remove")
+        expect(payload["summary"]).to eq(kill_counts(would_remove: 2, kept: 1))
+        expect(kill_calls).to be_empty
+        expect(hook_calls).to be_empty
+      end
+
+      it "prints the plan in text, without a prompt" do
+        result = command.kill(name: "app", dry_run: true, force: true)
+
+        expect(result).to eq({exit_code: 0})
+        expect(output.string).to eq(<<~TEXT)
+          Would remove 2 worktree(s) of project 'app':
+            keep    app                 #{main}  (main checkout)
+            remove  app.worktree-login  #{login}  (branch login)
+            remove  app.worktree-old    #{old}  (checkout gone; removing its config and state)
+        TEXT
+      end
+
+      it "says so in text when it would be refused" do
+        expect(command.kill(name: "app", dry_run: true)).to eq({exit_code: 1})
+        expect(output.string).to start_with("Would refuse to kill project 'app' (dry run):\n")
+      end
+    end
+
+    context "when the project has no worktrees" do
+      before do
+        roots.delete("app.worktree-login")
+        drop_old
+      end
+
+      it "says so and exits 0" do
+        expect(command.kill(name: "app", yes: true)).to eq({exit_code: 0})
+        expect(output.string).to eq("No worktrees in project 'app'.\n")
+        expect(kill_calls).to be_empty
+      end
+    end
+
+    context "when the caller runs inside one of the worktrees" do
+      let(:own_session) { "app-worktree-login" }
+
+      before { add_wip }
+
+      it "kills its own worktree last, quietly, with the JSON written from inside its Kill block" do
+        written_in_block = nil
+        allow(json_hook_runner).to receive(:run).and_wrap_original do |original, project, event, **kw|
+          original.call(project, event, **kw)
+        end
+        allow(kill_command).to receive(:call).and_wrap_original do |original, project, **kw, &block|
+          original.call(project, **kw) do |p|
+            block.call(p)
+            written_in_block = output.string.dup if project == "app.worktree-login"
+          end
+        end
+
+        result, payload = kill_json(force: true)
+
+        expect(result).to eq({exit_code: 0})
+        expect(kill_calls.map { |c| c[:project] }).to eq(%w[app.worktree-old app.worktree-wip app.worktree-login])
+        expect(kill_calls.last[:quiet]).to be(true)
+        expect(kill_calls.last[:output_so_far]).to eq("")
+        expect(JSON.parse(written_in_block)).to eq(payload)
+        expect(payload["results"].last).to include("workspace" => "app.worktree-login", "outcome" => "removed")
+        expect(output.string.lines.size).to eq(1)
+      end
+
+      it "writes the text summary from inside its Kill block, after the others ran" do
+        written_in_block = nil
+        allow(kill_command).to receive(:call).and_wrap_original do |original, project, **kw, &block|
+          original.call(project, **kw) do |p|
+            block.call(p)
+            written_in_block = output.string.dup if project == "app.worktree-login"
+          end
+        end
+
+        command.kill(name: "app", yes: true, force: true)
+
+        expect(written_in_block).to eq("Removed 3 worktree(s) of project 'app'.\nKept the main checkout app.\n")
+        expect(kill_calls.last[:quiet]).to be(true)
+      end
+
+      it "writes the result after its own kill when that fails before the block" do
+        kill_errors["app.worktree-login"] = Workspace::Error.new("Error removing worktree: busy")
+
+        result, payload = kill_json(force: true)
+
+        expect(result).to eq({exit_code: 3})
+        expect(row(payload, "app.worktree-login")).to include("outcome" => "failed", "reason" => "error")
+      end
+
+      it "keeps a single JSON document when its kill fails after the result was written" do
+        late_errors["app.worktree-login"] = Workspace::Error.new("could not remove config")
+
+        result = command.kill(name: "app", json: true, yes: true, force: true)
+
+        expect(result).to eq({exit_code: 0})
+        expect(JSON.parse(output.string)["status"]).to eq("ok")
+        expect(error_output.string).to include("error after the result was written: could not remove config")
+      end
+    end
+
+    context "when the main checkout is the caller's own session" do
+      let(:own_session) { "app" }
+
+      it "never kills it" do
+        drop_old
+
+        _, payload = kill_json
+
+        expect(kill_calls.map { |c| c[:project] }).to eq(["app.worktree-login"])
+        expect(row(payload, "app")["outcome"]).to eq("kept")
+      end
+    end
+
+    context "with a bare repository" do
+      it "treats every configured member as a worktree" do
+        bare = File.join(@root, "bare.git")
+        FileUtils.mkdir_p(bare)
+        roots.clear
+        %w[a b].each do |n|
+          wt_gitdir = File.join(bare, "worktrees", n)
+          FileUtils.mkdir_p(wt_gitdir)
+          File.write(File.join(wt_gitdir, "commondir"), "../..\n")
+          path = FileUtils.mkdir_p(File.join(@root, "wt-#{n}")).first
+          File.write(File.join(path, ".git"), "gitdir: #{wt_gitdir}\n")
+          roots["bare.worktree-#{n}"] = path
+        end
+
+        result = command.kill(name: "bare.worktree-a", json: true, yes: true)
+
+        expect(result).to eq({exit_code: 0})
+        expect(kill_calls.map { |c| c[:project] }).to eq(%w[bare.worktree-a bare.worktree-b])
+        expect(JSON.parse(output.string)["summary"]).to include("removed" => 2, "kept" => 0)
+      end
+    end
+
+    context "with a name that doesn't resolve" do
+      it "prints the JSON error contract and kills nothing" do
+        expect(command.kill(name: "nope", json: true, yes: true)).to eq({exit_code: 1})
+        expect(JSON.parse(output.string)).to include("schema_version" => 1, "error" => /nope/)
+        expect(kill_calls).to be_empty
+      end
+
+      it "raises in text mode" do
+        expect { command.kill(name: "nope", yes: true) }.to raise_error(Workspace::Error, /nope/)
+      end
+    end
+
+    context "when a post_kill hook raises mid-run" do
+      it "reports that member as failed in a single JSON document" do
+        drop_old
+        allow(json_hook_runner).to receive(:run).and_raise(Workspace::Error, "hook broke")
+
+        result = command.kill(name: "app", json: true, yes: true)
+
+        expect(result).to eq({exit_code: 1})
+        expect(output.string.lines.size).to eq(1)
+        expect(row(JSON.parse(output.string), "app.worktree-login")).to include("outcome" => "failed", "message" => "hook broke")
+      end
+    end
+  end
+
   describe "list-projects" do
-    it "is not touched: ProjectActions only adds the stop leaf" do
-      expect(described_class.instance_methods(false)).to eq([:stop])
+    it "is not touched: ProjectActions only adds the stop and kill leaves" do
+      expect(described_class.instance_methods(false)).to contain_exactly(:stop, :kill)
     end
   end
 end
