@@ -2556,6 +2556,48 @@ RSpec.describe Workspace::CLI do
       expect(projects_command.calls).to eq([{running_only: false, json: true}])
     end
 
+    it "runs show with no name for `projects show`" do
+      cli.run(["projects", "show"])
+
+      expect(projects_command.calls).to eq([{show: nil, json: false}])
+    end
+
+    it "passes the name and --json to show, with flags before or after" do
+      cli.run(["projects", "show", "app", "--json"])
+      cli.run(["projects", "--json", "show", "~/src/app"])
+
+      expect(projects_command.calls).to eq([{show: "app", json: true}, {show: "~/src/app", json: true}])
+    end
+
+    it "prints show's own help for `projects show --help`" do
+      cli.run(["projects", "show", "--help"])
+
+      expect(output.string).to include("Usage: workspace projects show [NAME|PATH] [--json]")
+      expect(projects_command.calls).to be_empty
+    end
+
+    it "mentions show in the projects help" do
+      cli.run(["projects", "--help"])
+
+      expect(output.string).to include("show [NAME]")
+    end
+
+    it "rejects a second show argument with a usage error" do
+      expect { cli.run(["projects", "show", "a", "b"]) }.to raise_error(FakeSystemExit)
+      expect(error_output.string).to include("Unexpected argument: b")
+    end
+
+    it "prints a JSON error for a bad show usage under --json, whatever the flag order" do
+      expect { cli.run(["projects", "show", "--bogus", "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+      expect(JSON.parse(output.string)).to include("schema_version" => 1, "error" => /bogus/)
+    end
+
+    it "exits with show's exit code when it is non-zero" do
+      projects_command.result = {exit_code: 1}
+
+      expect { cli.run(["projects", "show", "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+    end
+
     it "prints the definition of a project for `projects --help`, `-h` and `help`" do
       [["--help"], ["-h"], ["help"]].each do |args|
         cli.run(["projects"] + args)

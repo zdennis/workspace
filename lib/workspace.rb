@@ -228,7 +228,8 @@ module Workspace
     )
     parent_command = Commands::Parent.new(lineage: lineage, project_config: project_config, output: output)
     project_catalog = ProjectCatalog.new(project_config: project_config, git: git)
-    projects_command = Commands::Projects.new(catalog: project_catalog, tmux: tmux, output: output)
+    projects_command = Commands::Projects.new(catalog: project_catalog, tmux: tmux, state: state, config: config,
+      lock_namespace: lock_namespace, lock_holder: lock_holder, dev: dev_command, output: output, error_output: error_output)
     config_command = Commands::Config.new(project_settings: project_settings, lineage: lineage, file_backup: file_backup, output: output)
 
     context_store = ContextStore.new(path: config.context_store_path, logger: logger)
