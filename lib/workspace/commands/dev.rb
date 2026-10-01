@@ -135,6 +135,25 @@ module Workspace
         {exit_code: 0}
       end
 
+      # The dev environment's state as the `dev status --json` payload, without
+      # printing it. The ready probe runs only while the environment is held.
+      #
+      # @param working_dir [String] any directory inside the repository
+      # @return [Hash] `schema_version`, `running`, `holder`, `ready` and `queue`
+      # @raise [Workspace::Error] if the lock store can't be read
+      def status_payload(working_dir: Dir.pwd)
+        ctx = context(working_dir)
+        entry = entry(ctx[:store])
+        holder = entry["holder"]
+        {
+          "schema_version" => JSON_SCHEMA_VERSION,
+          "running" => !holder.nil? && !holder["stale"],
+          "holder" => holder,
+          "ready" => (holder && !holder["stale"] && ctx[:settings][:ready]) ? ready?(ctx[:settings][:ready], ctx[:worktree]) : nil,
+          "queue" => entry["queue"] || []
+        }
+      end
+
       # @param working_dir [String] any directory inside the repository
       # @param json [Boolean] emit the documented `--json` schema (see docs/README.dev.md)
       #   on stdout instead of the human-readable listing; a store error becomes
@@ -280,22 +299,13 @@ module Workspace
       # @return [Hash] {exit_code:} — 0 on success, 1 if the store itself
       #   could not be read (e.g. a corrupt `locks.json`)
       def status_json(working_dir)
-        ctx = context(working_dir)
-        entry = entry(ctx[:store])
-        holder = entry["holder"]
-        payload = {
-          "schema_version" => JSON_SCHEMA_VERSION,
-          "running" => !holder.nil? && !holder["stale"],
-          "holder" => holder,
-          "ready" => (holder && !holder["stale"] && ctx[:settings][:ready]) ? ready?(ctx[:settings][:ready], ctx[:worktree]) : nil,
-          "queue" => entry["queue"] || []
-        }
-        @output.puts JSON.generate(payload)
+        @output.puts JSON.generate(status_payload(working_dir: working_dir))
         {exit_code: 0}
       rescue Workspace::Error => e
         @output.puts JSON.generate({"schema_version" => JSON_SCHEMA_VERSION, "error" => e.message})
         {exit_code: 1}
       end
+
 
       # @return [Hash, nil] an exit result if up must not proceed
       def clear_the_way(ctx, entry, wait:, takeover:)

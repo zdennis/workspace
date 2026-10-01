@@ -277,6 +277,35 @@ RSpec.describe Workspace::Commands::Dev do
       expect(output.string).to eq("No dev environment is running.\n")
     end
 
+    describe "#status_payload" do
+      it "returns the --json payload without printing it" do
+        payload = dev.status_payload(working_dir: main)
+
+        expect(payload).to eq("schema_version" => 1, "running" => false, "holder" => nil, "ready" => nil, "queue" => [])
+        expect(output.string).to eq("")
+      end
+
+      it "matches what `status --json` prints for a running environment" do
+        dev_settings["ready"] = "true"
+        dev.up(working_dir: login)
+        payload = dev.status_payload(working_dir: main)
+        output.truncate(0)
+        output.rewind
+        dev.status(working_dir: main, json: true)
+
+        expect(payload["running"]).to be true
+        expect(payload["ready"]).to be true
+        expect(JSON.parse(output.string)).to eq(payload)
+      end
+
+      it "raises Workspace::Error for a corrupt locks.json" do
+        FileUtils.mkdir_p(lock_dir)
+        File.write(File.join(lock_dir, "locks.json"), "{not json")
+
+        expect { dev.status_payload(working_dir: main) }.to raise_error(Workspace::Error, /corrupt/)
+      end
+    end
+
     describe "--json" do
       it "reports not running for an empty store" do
         dev.status(working_dir: main, json: true)
