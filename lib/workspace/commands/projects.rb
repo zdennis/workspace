@@ -54,7 +54,7 @@ module Workspace
       # @param agents [Boolean] read agent states from the daemons; false skips every socket
       # @param git [Boolean] read git facts and list unconfigured worktrees; false leaves each member's `git` nil
       # @param timeout [Numeric, nil] seconds to wait for each daemon and for all the git reads; nil means
-      #   {DEFAULT_AGENT_TIMEOUT} for daemons and {ProjectFacts::DEFAULT_GIT_TIMEOUT} for git
+      #   {DEFAULT_AGENT_TIMEOUT} for daemons and {ProjectFacts::DEFAULT_GIT_TIMEOUT} for git (the worktree listing included)
       # @param cwd [String] directory used when +name+ is nil
       # @return [Hash] `{exit_code:}`; 1 only after a JSON error payload was printed
       # @raise [Workspace::Error] if the project can't be found, unless +json+ is set
@@ -84,7 +84,10 @@ module Workspace
         sessions = running_sessions
         rows = @catalog.all.map { |project| row_for(project, sessions) }
         rows = rows.select { |row| row[:running].positive? } if running_only
-        rows.each { |row| row.merge!(unsaved_for(row[:project])) } if git
+        if git
+          deadline = @facts.git_deadline
+          rows.each { |row| row.merge!(unsaved_for(row[:project], deadline)) }
+        end
 
         if json
           @output.puts JSON.generate({"schema_version" => JSON_SCHEMA_VERSION, "projects" => rows.map { |row| json_row(row, git: git) }})
@@ -115,14 +118,19 @@ module Workspace
       end
 
       # Unsaved-work counts over every checkout of a git project, unconfigured
-      # worktrees included; `unsaved` is nil for a project with no git repository to ask.
-      def unsaved_for(project)
-        members = @catalog.members(project, include_unconfigured: true)
-        unconfigured = members.count { |member| !member.configured }
-        facts = @facts.git_facts(project, members).compact
+      # worktrees included; `unsaved` is nil for a project with no git
+      # repository to ask. Checkouts that are gone are counted as `missing`,
+      # not in `total`, so a gone checkout never reads as clean. All projects
+      # share +deadline+.
+      def unsaved_for(project, deadline)
+        checkouts = @facts.git_checkouts(project, deadline: deadline)
+        unconfigured = checkouts[:members].count { |member| !member.configured }
+        facts = checkouts[:facts].compact
         return {unsaved: nil, unconfigured: unconfigured} if facts.empty?
         unsaved = facts.map { |fact| fact["unsaved"] }
-        {unsaved: {"members" => unsaved.count { |u| %w[yes unknown].include?(u) }, "unknown" => unsaved.count("unknown"), "total" => unsaved.size},
+        present = unsaved.size - unsaved.count("missing")
+        {unsaved: {"members" => unsaved.count { |u| %w[yes unknown].include?(u) }, "unknown" => unsaved.count("unknown"),
+                   "missing" => unsaved.count("missing"), "total" => present},
          unconfigured: unconfigured}
       end
 
@@ -137,7 +145,7 @@ module Workspace
           "running" => row[:running]
         }
         if git
-          json["unsaved"] = row[:unsaved]&.slice("members", "unknown")
+          json["unsaved"] = row[:unsaved]&.slice("members", "unknown", "missing", "total")
           json["unconfigured_worktrees"] = row[:unconfigured]
         end
         json
@@ -155,12 +163,18 @@ module Workspace
         ([header] + lines).each { |line| @output.puts format_line(line[0...-1], widths, note: line.last) }
       end
 
-      # "2 of 3" checkouts unsaved, "unknown" when git couldn't answer for any of them, "-" without git.
+      # "2 of 3" checkouts unsaved, "unknown" when git couldn't answer for any of them,
+      # "missing" when every checkout is gone, "-" without git. Gone checkouts are
+      # left out of the total and named at the end: "2 of 3 (1 missing)".
       def unsaved_label(unsaved)
         return "-" unless unsaved
+        return "missing" if unsaved["total"].zero?
         return "unknown" if unsaved["unknown"] == unsaved["total"]
+        notes = []
+        notes << "#{unsaved["unknown"]} unknown" if unsaved["unknown"].positive?
+        notes << "#{unsaved["missing"]} missing" if unsaved["missing"].positive?
         label = "#{unsaved["members"]} of #{unsaved["total"]}"
-        unsaved["unknown"].positive? ? "#{label} (#{unsaved["unknown"]} unknown)" : label
+        notes.empty? ? label : "#{label} (#{notes.join(", ")})"
       end
 
       def format_line(cells, widths, note: nil)
@@ -178,9 +192,8 @@ module Workspace
       end
 
       def show_payload(project, agents:, git:, timeout:)
-        members = git ? @catalog.members(project, include_unconfigured: true) : project.members
         gathered = @facts.for_project(project, sessions: running_sessions, agents: agents, timeout: timeout || DEFAULT_AGENT_TIMEOUT,
-          git: git, git_timeout: timeout || ProjectFacts::DEFAULT_GIT_TIMEOUT, members: members)
+          git: git, git_timeout: timeout)
         members, locks, dev, errors = gathered.values_at(:members, :locks, :dev, :errors)
         payload = {
           "schema_version" => JSON_SCHEMA_VERSION,

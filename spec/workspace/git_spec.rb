@@ -1,4 +1,5 @@
 require "stringio"
+require "timeout"
 
 RSpec.describe Workspace::Git do
   let(:output) { StringIO.new }
@@ -297,8 +298,8 @@ RSpec.describe Workspace::Git do
       end
 
       it "returns nil when git can't be started" do
-        allow(Open3).to receive(:capture3).and_call_original
-        allow(Open3).to receive(:capture3).with("git", "-C", @repo_dir, "rev-list", any_args).and_raise(Errno::E2BIG)
+        allow(git).to receive(:capture_git).and_call_original
+        allow(git).to receive(:capture_git).with("-C", @repo_dir, "rev-list", any_args).and_raise(Errno::E2BIG)
 
         expect(git.unpushed_commit_count(@repo_dir)).to be_nil
       end
@@ -328,8 +329,8 @@ RSpec.describe Workspace::Git do
       end
 
       it "returns :unknown when git cannot answer for an existing directory" do
-        allow(Open3).to receive(:capture3).and_call_original
-        allow(Open3).to receive(:capture3).with("git", "-C", @repo_dir, "status", any_args).and_return(["", "", instance_double(Process::Status, success?: false)])
+        allow(git).to receive(:capture_git).and_call_original
+        allow(git).to receive(:capture_git).with("-C", @repo_dir, "status", any_args).and_return(["", "", instance_double(Process::Status, success?: false)])
 
         expect(git.unsaved_work(@repo_dir)).to eq(:unknown)
       end
@@ -471,6 +472,59 @@ RSpec.describe Workspace::Git, "checkout layout" do
     Dir.mktmpdir { |dir| (@root = File.realpath(dir)) && example.run }
   end
 
+  describe "#list_worktrees" do
+    def sh(*cmd, chdir: @root)
+      system(*cmd, chdir: chdir, out: File::NULL, err: File::NULL) || raise("#{cmd.join(" ")} failed")
+    end
+
+    it "leaves out a bare repository's own entry, keeping its linked worktrees" do
+      source = File.join(@root, "source")
+      FileUtils.mkdir_p(source)
+      sh("git", "init", "-q", "-b", "main", chdir: source)
+      sh("git", "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "--allow-empty", "-m", "init", chdir: source)
+      bare = File.join(@root, "bare.git")
+      sh("git", "clone", "-q", "--bare", source, bare)
+
+      expect(git.list_worktrees(repo: bare)).to eq([])
+
+      sh("git", "worktree", "add", "-q", "-b", "feature", File.join(@root, "feature"), chdir: bare)
+
+      expect(git.list_worktrees(repo: bare).map { |path| File.realpath(path) }).to eq([File.realpath(File.join(@root, "feature"))])
+    end
+  end
+
+  describe "stopping a timed-out read" do
+    it "terminates the git process when the thread waiting on it is killed" do
+      bin = File.join(@root, "bin")
+      FileUtils.mkdir_p(bin)
+      pid_file = File.join(@root, "git.pid")
+      File.write(File.join(bin, "git"), "#!/bin/sh\necho $$ > '#{pid_file}'\nexec sleep 30\n")
+      File.chmod(0o755, File.join(bin, "git"))
+      original_path = ENV["PATH"]
+      ENV["PATH"] = "#{bin}:#{original_path}"
+      begin
+        thread = Thread.new { git.upstream_branch(@root) }
+        Timeout.timeout(5) { sleep 0.02 until File.exist?(pid_file) && !File.read(pid_file).strip.empty? }
+        pid = File.read(pid_file).to_i
+
+        thread.kill
+        thread.join
+
+        expect { Timeout.timeout(5) { sleep 0.02 while process_alive?(pid) } }.not_to raise_error
+      ensure
+        ENV["PATH"] = original_path
+        Process.kill("KILL", pid) if pid && process_alive?(pid)
+      end
+    end
+
+    def process_alive?(pid)
+      Process.kill(0, pid)
+      true
+    rescue Errno::ESRCH
+      false
+    end
+  end
+
   describe "#checkout_layout" do
     it "treats a directory .git as a main checkout" do
       main = make_main_checkout(File.join(@root, "app"))
@@ -529,6 +583,16 @@ RSpec.describe Workspace::Git, "checkout layout" do
       File.write(File.join(broken, ".git"), "not a gitdir line\n")
 
       expect(git.checkout_layout(broken)).to be_nil
+    end
+
+    it "gives nil for a garbage .git file inside a real repository, without walking up to the repository" do
+      repo = File.join(@root, "real")
+      FileUtils.mkdir_p(File.join(repo, "sub"))
+      system("git", "-C", repo, "init", "--quiet", "-b", "main")
+      File.write(File.join(repo, "sub", ".git"), "garbage\n")
+
+      expect(git.checkout_layout(File.join(repo, "sub"))).to be_nil
+      expect(git.checkout_layout(repo)).to include(toplevel: repo)
     end
 
     it "uses git rev-parse's answer for a .git file with no gitdir line" do

@@ -2679,6 +2679,27 @@ RSpec.describe Workspace::CLI do
       expect(projects_command.calls).to be_empty
     end
 
+    it "prints the projects help for `projects help`" do
+      cli.run(["projects", "help"])
+
+      expect(output.string).to include("Usage: workspace projects", "--no-git")
+      expect(projects_command.calls).to be_empty
+    end
+
+    it "reports an error for `projects show` when no projects command was wired" do
+      cli, _, error_output = build_test_cli(projects_command: nil)
+
+      expect { cli.run(["projects", "show"]) }.to raise_error(FakeSystemExit)
+      expect(error_output.string).to include("no projects command was wired")
+    end
+
+    it "reports an error for `projects list --git` when no projects command was wired" do
+      cli, _, error_output = build_test_cli(projects_command: nil)
+
+      expect { cli.run(["projects", "list", "--git"]) }.to raise_error(FakeSystemExit)
+      expect(error_output.string).to include("no projects command was wired")
+    end
+
     it "reports an error when no projects command was wired" do
       cli, _, error_output = build_test_cli(projects_command: nil)
 

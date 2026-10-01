@@ -117,7 +117,7 @@ RSpec.describe Workspace::Commands::Projects do
 
   let(:facts) do
     Workspace::ProjectFacts.new(tmux: tmux, state: state, config: state_config, lock_namespace: lock_namespace,
-      lock_holder: liveness, dev: dev, agents: agents, git: fake_git, error_output: error_output)
+      lock_holder: liveness, dev: dev, agents: agents, git: fake_git, catalog: catalog, error_output: error_output)
   end
 
   subject(:command) do
@@ -911,6 +911,35 @@ RSpec.describe Workspace::Commands::Projects do
         expect(git_calls).to be_empty
       end
 
+      it "has a nil git key (not an absent one) for every member with --no-git" do
+        command.show(name: "app", json: true, git: false)
+
+        expect(payload["members"]).to all(have_key("git"))
+      end
+
+      it "stops a git read that outlasts the timeout, and reports the listing of worktrees timing out" do
+        allow(catalog).to receive(:members).and_wrap_original do |original, *args, **kwargs|
+          sleep 5 if kwargs[:include_unconfigured]
+          original.call(*args, **kwargs)
+        end
+        started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+
+        command.show(name: "app", json: true, timeout: 0.2)
+
+        expect(Process.clock_gettime(Process::CLOCK_MONOTONIC) - started).to be < 2
+        expect(payload["errors"]).to include("worktrees" => /timed out/)
+        expect(payload["members"].map { |m| m["workspace"] }).to eq(%w[app app.worktree-login app.worktree-old])
+      end
+
+      it "gives a project whose checkout is gone no git facts" do
+        roots["lost"] = File.join(@root, "lost")
+
+        command.show(name: "lost", json: true)
+
+        expect(payload["members"].first["git"]).to be_nil
+        expect(payload["summary"]["unsaved_members"]).to be_nil
+      end
+
       it "leaves git nil for a project that is not a git repository" do
         roots["notes"] = FileUtils.mkdir_p(File.join(@root, "notes")).first
 
@@ -975,8 +1004,32 @@ RSpec.describe Workspace::Commands::Projects do
 
         lines = output.string.lines.map(&:chomp)
         expect(lines[0]).to match(/\APROJECT\s+WORKSPACES\s+RUNNING\s+UNSAVED\s+PATH\s+NOTE\z/)
-        expect(lines[1]).to match(%r{\Aapp\s+3\s+0\s+1 of 3\s+~/app\z})
+        expect(lines[1]).to match(%r{\Aapp\s+3\s+0\s+1 of 2 \(1 missing\)\s+~/app\z})
         expect(lines[2]).to match(%r{\Anotes\s+1\s+0\s+-\s+~/notes\s+\(no git\)\z})
+      end
+
+      it "shares one deadline across every project instead of one per project" do
+        other = make_main_checkout(File.join(@root, "other"))
+        roots["other"] = other
+        git_answers[main] = {sleep: 5}
+        git_answers[other] = {sleep: 5}
+        git_answers[login] = {sleep: 5}
+        allow(facts).to receive(:git_deadline).and_return(Process.clock_gettime(Process::CLOCK_MONOTONIC) + 0.3)
+        started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+
+        command.list(git: true)
+
+        expect(Process.clock_gettime(Process::CLOCK_MONOTONIC) - started).to be < 1.5
+        expect(output.string).to match(/^app\s+3\s+0\s+unknown\s/)
+        expect(output.string).to match(/^other\s+1\s+0\s+unknown\s/)
+      end
+
+      it "leaves a gone checkout out of the total and names it" do
+        git_answers[main] = {unsaved: {changed_files: 1, unpushed_commits: 0, branch: "main"}}
+
+        command.list(git: true, json: true)
+
+        expect(listed.first["unsaved"]).to eq("members" => 1, "unknown" => 0, "missing" => 1, "total" => 2)
       end
 
       it "adds the unknown count when git couldn't answer for some checkouts" do
@@ -985,7 +1038,7 @@ RSpec.describe Workspace::Commands::Projects do
 
         command.list(git: true)
 
-        expect(output.string).to match(/^app\s+3\s+0\s+2 of 3 \(2 unknown\)\s/)
+        expect(output.string).to match(/^app\s+3\s+0\s+unknown\s/)
       end
 
       it "shows unknown when git couldn't answer for any checkout" do
@@ -1004,7 +1057,7 @@ RSpec.describe Workspace::Commands::Projects do
 
         command.list(git: true, json: true)
 
-        expect(listed.map { |p| p["unsaved"] }).to eq([{"members" => 1, "unknown" => 1}, nil])
+        expect(listed.map { |p| p["unsaved"] }).to eq([{"members" => 1, "unknown" => 1, "missing" => 1, "total" => 2}, nil])
         expect(listed.map { |p| p["unconfigured_worktrees"] }).to eq([0, 0])
       end
 
