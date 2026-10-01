@@ -32,6 +32,8 @@ settings, despite the directory name.
 | `--running` | `list` only: projects with at least one running workspace |
 | `--git` | `list` only: add an `UNSAVED` column and count worktrees that have no workspace config. Runs git in every checkout |
 | `--no-git` | `show` only: skip git (see "Git" below) |
+| `--no-agents` | `show` only: skip every agent daemon (see "Agents" below) |
+| `--timeout SECONDS` | `show` only: how long to wait for each agent daemon (default 1) and for all the git reads, the worktree listing included (default 5). A small value turns slow checkouts `unknown` |
 | `--json` | Print schema-versioned JSON (below) |
 
 ## Details
@@ -48,12 +50,16 @@ sockets and uses no network. With no tmux server, every project shows 0 running.
 With `--git`, an `UNSAVED` column shows how many of the project's checkouts have
 unsaved work: `2 of 3`, `2 of 3 (1 unknown)` when git couldn't answer for one of
 them, `unknown` when it couldn't answer for any, or `-` for a project with no git
-repository. A checkout counts as unsaved when it has changed tracked files or
-commits that aren't pushed anywhere. The total includes worktrees that have no
-workspace config (the NOTE column says how many, e.g. `(1 unconfigured
-worktree)`) and checkouts that are gone (never counted as unsaved), though
-`WORKSPACES` still counts only configured ones. It runs about five git commands
-per checkout, all checkouts of a project in parallel, so it is slower than a plain `list`.
+repository. A checkout that is gone is left out of the total and named instead,
+`2 of 3 (1 missing)`, so it never reads as clean; `missing` alone means every
+checkout is gone. A checkout counts as unsaved when it has changed tracked files or
+commits that aren't pushed anywhere; `unknown` counts as unsaved and `missing` does not.
+The total includes worktrees that have no workspace config (the NOTE column says
+how many, e.g. `(1 unconfigured worktree)`), though `WORKSPACES` still counts only
+configured ones. It runs about five git commands per checkout, all checkouts of a
+project in parallel, so it is slower than a plain `list`. All projects share one
+5-second budget, `git worktree list` included: whatever is still running when it
+runs out is stopped and shows `unknown`.
 
 ### How a workspace joins a project
 
@@ -104,7 +110,7 @@ broken checkout.
 ]}
 ```
 
-With `--git` each project also has `"unsaved":{"members":2,"unknown":1}` (`null` for a project with no git repository) and `"unconfigured_worktrees":1`.
+With `--git` each project also has `"unsaved":{"members":2,"unknown":1,"missing":0,"total":3}` (`null` for a project with no git repository; `members` counts `yes` and `unknown`, and `total` leaves out the `missing` ones) and `"unconfigured_worktrees":1`.
 
 | Key | Meaning |
 |-----|---------|
@@ -170,13 +176,18 @@ checkout, all checkouts in parallel. Unsaved work is changed tracked files
 (untracked files never count) or commits not pushed anywhere, the same test
 `kill` and `prune` use. `--no-git` runs none of it.
 
-The whole git step is bounded by `--timeout` (default 5 seconds when not given;
-an explicit value also bounds each agent daemon). A checkout that doesn't answer
+The whole git step, `git worktree list` included, is bounded by `--timeout` (default 5
+seconds when not given; an explicit value also bounds each agent daemon, and a small
+one turns checkouts `unknown`). A checkout that doesn't answer
 in time, or that git fails on, doesn't fail the command: its `git.unsaved` is
 `"unknown"` with `available: false` and a `reason` (`timeout` or `error`), and
 `summary.unsaved_members` counts it as unsaved. A timed-out git command is
-abandoned, not killed, and finishes in the background. A checkout whose directory
-is gone is `"missing"`, never clean. These are kept apart from `errors`, which is
+stopped: its process group gets SIGTERM, then SIGKILL after a second. If listing the
+worktrees runs out of time, the unconfigured worktrees are left out and `errors.worktrees` says so. `unknown` counts as unsaved in `summary.unsaved_members`; `missing` (a checkout whose
+directory is gone, never clean) does not. `unpushed_commits` counts commits not on any
+remote, while `ahead` counts commits not on the upstream branch. Scripts and
+preflights must read `git.unsaved` (or `summary.unsaved_members`), not the exit code:
+`show` exits 0 whatever it finds. These are kept apart from `errors`, which is
 only for unreadable local state.
 
 ### Agents
@@ -239,11 +250,11 @@ succeeds and says so in place of the locks and dev lines.
 | `members[].running` | The workspace has a running tmux session and its checkout exists |
 | `members[].headless` | Launched headless, from the session state |
 | `members[].agents` | `{"available":true,"panes":[...],"counts":{"working","idle","waiting"}}` from the daemon. `{"available":false,"reason":...}` when it can't be read: `not_running` (never asked), `no_daemon`, `timeout` or `error` (bad reply, with the message in `detail`). This is never an `errors` entry and never changes the exit code. `null` with `--no-agents` |
-| `members[].git` | `{"available","branch","changed_files","ahead","upstream","unpushed_commits","unsaved"}`. `unsaved` is always present: `"no"`, `"yes"`, `"unknown"` (git couldn't answer, with `available: false` and `reason` `timeout` or `error`; `detail` carries an error message) or `"missing"` (checkout gone). `branch` is `null` when detached; `ahead` and `upstream` are `null` without an upstream. `null` with `--no-git` and for every existing member of a project with no git repository |
+| `members[].git` | `{"available","branch","changed_files","ahead","upstream","unpushed_commits","unsaved"}`. `unsaved` is always present: `"no"`, `"yes"`, `"unknown"` (git couldn't answer, with `available: false` and `reason` `timeout` or `error`; `detail` carries an error message) or `"missing"` (checkout gone). `branch` is `null` when detached; `ahead` and `upstream` are `null` without an upstream. `null` with `--no-git` (the key is always present) and for every member of a project with no git repository |
 | `members[].open_asks`, `pipeline` | `null` for a missing checkout, or when the file can't be read. `pipeline` is `{"entries": N}` |
 | `locks` | Lock name to `holder` (or `null`) and `queue`. `{}` when nothing is locked or every checkout is gone. `null` if the store can't be read |
 | `dev` | Same facts as `workspace dev status --json`, for the project. `holder_workspace` is set only while running. `null` if every checkout is gone or the store can't be read |
-| `errors` | Present only when `locks` or `dev` couldn't be read: `{"locks": "...", "dev": "..."}` |
+| `errors` | Present only when `locks` or `dev` couldn't be read, or listing worktrees timed out: `{"locks": "...", "dev": "...", "worktrees": "..."}` |
 | `summary` | Totals across the workspaces. `waiting_agents` counts panes waiting on a person. `agents_unavailable` counts running workspaces whose daemon couldn't be read (`no_daemon`, `timeout`, `error`), so `waiting_agents: 0` with `agents_unavailable: 0` means none waiting, while a nonzero `agents_unavailable` means the count may be low. Both are `null` with `--no-agents`. `workspaces` counts configured workspaces only. `unsaved_members` counts members whose `git.unsaved` is `"yes"` or `"unknown"` (a missing checkout isn't counted); `null` with `--no-git` or for a project with no git repository |
 
 Exit code 0 means the project was found, even if every session is down. An
