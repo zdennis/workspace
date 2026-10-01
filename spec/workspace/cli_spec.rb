@@ -2643,7 +2643,7 @@ RSpec.describe Workspace::CLI do
     it "runs members with no name for `projects members`" do
       cli.run(["projects", "members"])
 
-      expect(projects_command.calls).to eq([{members: nil, path: false, all: false, json: false}])
+      expect(projects_command.calls).to eq([{members: nil, path: false, all: false, json: false, timeout: nil}])
     end
 
     it "passes the name, --path, --all and --json to members, with flags before or after" do
@@ -2651,9 +2651,22 @@ RSpec.describe Workspace::CLI do
       cli.run(["projects", "--json", "members", "~/src/app", "--all"])
 
       expect(projects_command.calls).to eq([
-        {members: "app", path: true, all: true, json: false},
-        {members: "~/src/app", path: false, all: true, json: true}
+        {members: "app", path: true, all: true, json: false, timeout: nil},
+        {members: "~/src/app", path: false, all: true, json: true, timeout: nil}
       ])
+    end
+
+    it "passes --timeout through to members --all" do
+      cli.run(["projects", "members", "app", "--all", "--timeout", "0.5"])
+
+      expect(projects_command.calls).to eq([{members: "app", path: false, all: true, json: false, timeout: 0.5}])
+    end
+
+    it "rejects a non-positive members --timeout" do
+      expect { cli.run(["projects", "members", "--all", "--timeout", "0"]) }.to raise_error(FakeSystemExit)
+
+      expect(error_output.string).to include("--timeout must be a finite number greater than 0.")
+      expect(projects_command.calls).to be_empty
     end
 
     it "rejects --path with --json" do
@@ -2682,7 +2695,7 @@ RSpec.describe Workspace::CLI do
     it "prints members' own help for `projects members --help`" do
       cli.run(["projects", "members", "--help"])
 
-      expect(output.string).to include("Usage: workspace projects members [NAME|PATH] [--path] [--all] [--json]", "--path", "--all")
+      expect(output.string).to include("Usage: workspace projects members [NAME|PATH] [--path] [--all] [--timeout SECONDS] [--json]", "--path", "--all", "not with --json")
       expect(projects_command.calls).to be_empty
     end
 

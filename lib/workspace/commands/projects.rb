@@ -26,12 +26,14 @@ module Workspace
       # @param tmux [Workspace::Tmux] lists running sessions and maps workspace names to them
       # @param facts [Workspace::ProjectFacts] gathers each workspace's and project's facts
       # @param output [IO] stream for the table or JSON
+      # @param error_output [IO] stream for notes that must stay out of script-readable output
       # @param home [String] home directory, abbreviated to `~` in the table
-      def initialize(catalog:, tmux:, facts:, output: $stdout, home: Dir.home)
+      def initialize(catalog:, tmux:, facts:, output: $stdout, error_output: $stderr, home: Dir.home)
         @catalog = catalog
         @tmux = tmux
         @facts = facts
         @output = output
+        @error_output = error_output
         @home = home
       end
 
@@ -80,31 +82,34 @@ module Workspace
       # +all+ is set.
       #
       # Text output is one workspace name per line, or one checkout path per
-      # line with +path+. A member with no workspace config (only listed with
-      # +all+) has no name, so it prints as its path in name mode. Members
-      # whose checkout is gone are still listed.
+      # line with +path+. Name mode never prints a path: with +all+ the
+      # worktrees that have no workspace config are left out, with a note on
+      # stderr counting them; +path+ and +json+ include them. An empty result
+      # prints a note on stderr and nothing on stdout. Members whose checkout
+      # is gone are still listed.
       #
       # @param name [String, nil] a project name, a member workspace name or a
       #   path; nil means the project containing +cwd+
       # @param path [Boolean] print checkout paths instead of workspace names
       # @param all [Boolean] also list worktrees that have no workspace config
       #   (one bounded `git worktree list`)
+      # @param timeout [Numeric, nil] seconds to wait for that listing; nil means {ProjectFacts::DEFAULT_GIT_TIMEOUT}
       # @param json [Boolean] print the schema-versioned JSON payload instead of text
       # @param cwd [String] directory used when +name+ is nil
       # @return [Hash] `{exit_code:}`; 1 only after a JSON error payload was printed
       # @raise [Workspace::Error] if the project can't be found or the worktree listing times out, unless +json+ is set
       # @raise [Workspace::UsageError] if +name+ matches several projects, unless +json+ is set
-      def members(name: nil, path: false, all: false, json: false, cwd: Dir.pwd)
+      def members(name: nil, path: false, all: false, json: false, timeout: nil, cwd: Dir.pwd)
         project = name ? @catalog.find(name) : @catalog.for_cwd(cwd)
-        members = project_members(project, all: all)
+        members = project_members(project, all: all, timeout: timeout)
         if json
           @output.puts JSON.generate({
             "schema_version" => JSON_SCHEMA_VERSION,
-            "project" => {"name" => project.name, "id" => project.id, "path" => project.path},
+            "project" => {"name" => project.name, "id" => project.id, "path" => project.path, "vcs" => project.vcs},
             "members" => members.map { |m| {"workspace" => m.workspace, "path" => m.path, "kind" => m.kind, "configured" => m.configured, "exists" => m.exists} }
           })
         else
-          members.each { |m| @output.puts(path ? m.path : (m.workspace || m.path)) }
+          print_member_names(project, members, path: path)
         end
         {exit_code: 0}
       rescue => e
@@ -146,15 +151,27 @@ module Workspace
 
       # The configured members; with +all+ also the unconfigured worktrees,
       # whose listing is one git subprocess bounded by the default git timeout.
-      def project_members(project, all:)
+      def project_members(project, all:, timeout: nil)
         return @catalog.members(project) unless all
         thread = Thread.new do
           Thread.current.report_on_exception = false
           @catalog.members(project, include_unconfigured: true)
         end
-        return thread.value if thread.join(ProjectFacts::DEFAULT_GIT_TIMEOUT)
+        return thread.value if thread.join(timeout || ProjectFacts::DEFAULT_GIT_TIMEOUT)
         thread.kill
         raise Workspace::Error, "Timed out listing the worktrees of project '#{project.name}'. Run without --all to list configured workspaces only."
+      end
+
+      def print_member_names(project, members, path:)
+        unless path
+          omitted = members.count { |m| m.workspace.nil? }
+          members = members.reject { |m| m.workspace.nil? }
+          if omitted.positive?
+            @error_output.puts "#{omitted} unconfigured worktree(s) omitted; use --path or --json to include them"
+          end
+        end
+        @error_output.puts "no workspaces in project #{project.name}" if members.empty?
+        members.each { |m| @output.puts(path ? m.path : m.workspace) }
       end
 
       # No tmux server (or one that doesn't answer) means nothing is running.

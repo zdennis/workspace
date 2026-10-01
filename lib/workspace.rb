@@ -235,7 +235,7 @@ module Workspace
     project_facts = ProjectFacts.new(tmux: tmux, state: state, config: config, lock_namespace: lock_namespace,
       lock_holder: lock_holder, dev: dev_command, agents: ProjectAgents.new(client: agent_snapshot_client),
       git: git, catalog: project_catalog, error_output: error_output)
-    projects_command = Commands::Projects.new(catalog: project_catalog, tmux: tmux, facts: project_facts, output: output)
+    projects_command = Commands::Projects.new(catalog: project_catalog, tmux: tmux, facts: project_facts, output: output, error_output: error_output)
     config_command = Commands::Config.new(project_settings: project_settings, lineage: lineage, file_backup: file_backup, output: output)
 
     context_store = ContextStore.new(path: config.context_store_path, logger: logger)

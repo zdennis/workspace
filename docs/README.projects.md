@@ -8,7 +8,7 @@ linked git worktrees, with the workspaces that belong to each.
 ```sh
 workspace projects [list] [--running] [--git] [--json]
 workspace projects show [NAME|PATH] [--json] [--no-agents] [--no-git] [--timeout SECONDS]
-workspace projects members [NAME|PATH] [--path] [--all] [--json]
+workspace projects members [NAME|PATH] [--path] [--all] [--timeout SECONDS] [--json]
 ```
 
 A bare `workspace projects` runs `list`.
@@ -34,9 +34,9 @@ settings, despite the directory name.
 | `--git` | `list` only: add an `UNSAVED` column and count worktrees that have no workspace config. Runs git in every checkout |
 | `--no-git` | `show` only: skip git (see "Git" below) |
 | `--no-agents` | `show` only: skip every agent daemon (see "Agents" below) |
-| `--timeout SECONDS` | `show` only: how long to wait for each agent daemon (default 1) and for all the git reads, the worktree listing included (default 5). A small value turns slow checkouts `unknown` |
+| `--timeout SECONDS` | `show`: how long to wait for each agent daemon (default 1) and for all the git reads, the worktree listing included (default 5). A small value turns slow checkouts `unknown`. `members --all`: how long to wait for the worktree listing (default 5) |
 | `--path` | `members` only: print each checkout's path instead of its workspace name. Not with `--json` |
-| `--all` | `members` only: also list worktrees that have no workspace config (runs one bounded `git worktree list`) |
+| `--all` | `members` only: also list worktrees that have no workspace config (runs one bounded `git worktree list`); they show only with `--path` or `--json` |
 | `--json` | Print schema-versioned JSON (below) |
 
 ## Details
@@ -277,27 +277,34 @@ means the project containing the current directory). Output is only the names, s
 it fits a loop:
 
 ```sh
-for ws in $(workspace projects members); do workspace stop "$ws"; done
-workspace launch $(workspace projects members app)
+workspace projects members | while read -r ws; do workspace stop "$ws"; done
 ```
+
+Use `while read -r` (or `--json`) rather than word splitting, so a path with
+spaces stays in one piece. Do not pass the output unquoted to a command that acts on
+every workspace when given no argument: with an empty result,
+`workspace stop $(workspace projects members)` becomes a bare `workspace stop`,
+which stops every active workspace.
 
 - `--path` prints each member's checkout path instead of its name, in the same order.
 - Without `--all` it reads only the tmuxinator configs and `.git` files and runs
   no git command. A workspace whose checkout is gone is still listed.
 - `--all` also lists worktrees that have no workspace config, after the configured
-  members, which costs one `git worktree list` (stopped after 5 seconds, then an
-  error). They have no name, so they print as their path, with or without `--path`;
-  a name is never blank.
-  Paths start with `/`, which workspace names never do, so a script can tell them apart.
-- A repository with no workspaces prints nothing and exits 0.
+  members, which costs one `git worktree list` (stopped after 5 seconds, or after
+  `--timeout SECONDS`, then an error). They have no name, so name mode (no `--path`,
+  no `--json`) omits them and prints one note to stderr, such as
+  `1 unconfigured worktree(s) omitted; use --path or --json to include them`.
+  `--path` and `--json` include them. Name mode never prints a path.
+- A project with no workspaces prints nothing on stdout, a note on stderr
+  (`no workspaces in project NAME`), and exits 0.
 
-Errors (an unknown or ambiguous NAME, a directory in no project) exit 1, as for `show`.
+Errors (an unknown or ambiguous NAME, a directory in no project) exit 1, as for `show`; under `--json` they print `{"schema_version":1,"error":"..."}` on stdout.
 
 ### members JSON
 
 ```json
 {"schema_version":1,
- "project":{"name":"app","id":"/Users/z/src/app/.git","path":"/Users/z/src/app"},
+ "project":{"name":"app","id":"/Users/z/src/app/.git","path":"/Users/z/src/app","vcs":"git"},
  "members":[
    {"workspace":"app","path":"/Users/z/src/app","kind":"main","configured":true,"exists":true},
    {"workspace":"app.worktree-login","path":"/Users/z/src/app/.worktrees/login","kind":"worktree","configured":true,"exists":true},
@@ -306,8 +313,8 @@ Errors (an unknown or ambiguous NAME, a directory in no project) exit 1, as for 
 ```
 
 `kind` is `main` or `worktree`. The `workspace: null` member (`configured: false`)
-appears only with `--all`; `exists: false` marks a checkout that is gone. Errors under
-`--json` print `{"schema_version":1,"error":"..."}` on stdout and exit 1, as for `list`.
+appears only with `--all`; `exists: false` marks a checkout that is gone. `project` has the same
+fields as in `show`.
 
 ## Examples
 

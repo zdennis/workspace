@@ -470,8 +470,8 @@ module CLITestHelpers
       @result
     end
 
-    def members(name: nil, path: false, all: false, json: false)
-      @calls << {members: name, path: path, all: all, json: json}
+    def members(name: nil, path: false, all: false, json: false, timeout: nil)
+      @calls << {members: name, path: path, all: all, json: json, timeout: timeout}
       @result
     end
   end

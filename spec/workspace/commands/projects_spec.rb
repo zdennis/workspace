@@ -121,7 +121,7 @@ RSpec.describe Workspace::Commands::Projects do
   end
 
   subject(:command) do
-    described_class.new(catalog: catalog, tmux: tmux, facts: facts, output: output, home: @root)
+    described_class.new(catalog: catalog, tmux: tmux, facts: facts, output: output, error_output: error_output, home: @root)
   end
 
   around do |example|
@@ -344,7 +344,7 @@ RSpec.describe Workspace::Commands::Projects do
 
         expect(payload).to eq(
           "schema_version" => 1,
-          "project" => {"name" => "app", "id" => File.join(main, ".git"), "path" => main},
+          "project" => {"name" => "app", "id" => File.join(main, ".git"), "path" => main, "vcs" => "git"},
           "members" => [
             {"workspace" => "app", "path" => main, "kind" => "main", "configured" => true, "exists" => true},
             {"workspace" => "app.worktree-login", "path" => login, "kind" => "worktree", "configured" => true, "exists" => true},
@@ -426,6 +426,7 @@ RSpec.describe Workspace::Commands::Projects do
 
         expect(command.members(cwd: repo)).to eq(exit_code: 0)
         expect(output.string).to eq("")
+        expect(error_output.string).to eq("no workspaces in project fresh\n")
       end
 
       it "prints an empty member list as JSON for a repository with no workspaces" do
@@ -528,10 +529,18 @@ RSpec.describe Workspace::Commands::Projects do
         FileUtils.mkdir_p(spike)
       end
 
-      it "lists them after the configured members, by path in name mode" do
+      it "omits them in name mode, with one stderr note counting them" do
         command.members(name: "app", all: true)
 
-        expect(lines).to eq(["app", "app.worktree-login", "app.worktree-old", gone, spike])
+        expect(lines).to eq(%w[app app.worktree-login app.worktree-old])
+        expect(error_output.string).to eq("2 unconfigured worktree(s) omitted; use --path or --json to include them\n")
+      end
+
+      it "prints no omission note with path: true or json" do
+        command.members(name: "app", all: true, path: true)
+        command.members(name: "app", all: true, json: true)
+
+        expect(error_output.string).to eq("")
       end
 
       it "lists them by path with path: true" do
@@ -555,6 +564,12 @@ RSpec.describe Workspace::Commands::Projects do
         expect(lines).to eq(%w[app app.worktree-login app.worktree-old])
       end
 
+      it "bounds the listing by timeout:" do
+        allow_any_instance_of(Workspace::Git).to receive(:list_worktrees) { sleep 5 }
+
+        expect { command.members(name: "app", all: true, timeout: 0.1) }.to raise_error(Workspace::Error, /Timed out listing/)
+      end
+
       it "fails with a clear error when the listing times out" do
         stub_const("Workspace::ProjectFacts::DEFAULT_GIT_TIMEOUT", 0.1)
         allow_any_instance_of(Workspace::Git).to receive(:list_worktrees) { sleep 5 }
@@ -562,6 +577,33 @@ RSpec.describe Workspace::Commands::Projects do
         expect { command.members(name: "app", all: true) }.to raise_error(Workspace::Error, /Timed out listing the worktrees of project 'app'/)
         expect(command.members(name: "app", all: true, json: true)).to eq(exit_code: 1)
         expect(payload["error"]).to include("Timed out listing")
+      end
+    end
+
+    context "with a bare repository common dir and all: true" do
+      let(:bare) { File.join(@root, "svc.git") }
+      let(:wt) { File.join(@root, "svc-a") }
+
+      def sh(*cmd, chdir:)
+        out, status = Open3.capture2e(*cmd, chdir: chdir)
+        raise "#{cmd.join(" ")} failed: #{out}" unless status.success?
+      end
+
+      before do
+        seed = File.join(@root, "seed")
+        FileUtils.mkdir_p(seed)
+        sh("git", "init", "-q", "-b", "main", chdir: seed)
+        sh("git", "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "--allow-empty", "-m", "i", chdir: seed)
+        sh("git", "clone", "-q", "--bare", seed, bare, chdir: @root)
+        sh("git", "worktree", "add", "-q", wt, "main", chdir: bare)
+        roots["svc-a"] = wt
+      end
+
+      it "leaves the bare entry out of the members" do
+        command.members(name: "svc-a", all: true, json: true)
+
+        expect(payload["members"].map { |m| m["path"] }).to eq([wt])
+        expect(payload["members"].map { |m| m["path"] }).not_to include(bare)
       end
     end
 

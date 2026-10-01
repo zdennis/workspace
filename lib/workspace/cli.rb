@@ -3432,20 +3432,20 @@ module Workspace
                             defaults to the project containing the current directory.
           members [NAME|PATH]
                             The project's workspaces, one name per line, main checkout first, for
-                            scripts: for ws in $(workspace projects members); do ...; done
+                            scripts: workspace projects members | while read -r ws; do ...; done
                             Same NAME rules as show. Runs no git unless --all is given.
 
         Options:
           --running   list only: projects with at least one running workspace
-          --path      members only: print checkout paths instead of workspace names
+          --path      members only: print checkout paths instead of workspace names (not with --json)
           --all       members only: also list worktrees that have no workspace config (runs git)
           --git       list only: add an UNSAVED column (runs git in every checkout)
           --json      Print schema-versioned JSON (see docs/README.projects.md)
           --no-agents show only: skip the agent daemons (no sockets are read)
           --no-git    show only: skip git (no branch or unsaved work, no unconfigured worktrees)
           --timeout SECONDS
-                      show only: how long to wait for each agent daemon (default 1)
-                      and for all the git reads (default 5)
+                      show: how long to wait for each agent daemon (default 1) and for all
+                      the git reads (default 5); members --all: for the worktree listing
 
         A workspace joins the project whose repository its directory belongs to. If that
         directory is gone, it is matched by config name. The note after a path flags a
@@ -3492,9 +3492,7 @@ module Workspace
     def cmd_projects_show(args)
       options = {json: false, agents: true, git: true, timeout: nil}
       projects_show_parser(options).parse!(args)
-      if options[:timeout] && !(options[:timeout].finite? && options[:timeout].positive?)
-        raise UsageError, "--timeout must be a finite number greater than 0."
-      end
+      validate_projects_timeout(options[:timeout])
       raise UsageError, "Unexpected argument: #{args[1]}. Run 'workspace projects show --help'." if args.size > 1
       raise Error, "projects is not available: no projects command was wired" unless @projects_command
 
@@ -3502,37 +3500,48 @@ module Workspace
       @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
     end
 
+    def validate_projects_timeout(timeout)
+      return if timeout.nil? || (timeout.finite? && timeout.positive?)
+      raise UsageError, "--timeout must be a finite number greater than 0."
+    end
+
     def projects_members_parser(options)
       OptionParser.new do |opts|
-        opts.banner = "Usage: workspace projects members [NAME|PATH] [--path] [--all] [--json]"
+        opts.banner = "Usage: workspace projects members [NAME|PATH] [--path] [--all] [--timeout SECONDS] [--json]"
         opts.separator ""
         opts.separator "List a project's member workspaces, one per line, main checkout first. NAME is a project"
         opts.separator "name, a member workspace name or a path (use a path when two projects share a name);"
         opts.separator "it defaults to the project containing the current directory."
         opts.separator ""
-        opts.on("--path", "Print each checkout's path instead of its workspace name") { options[:path] = true }
-        opts.on("--all", "Also list worktrees that have no workspace config, as their path (runs git)") { options[:all] = true }
+        opts.on("--path", "Print each checkout's path instead of its workspace name (not with --json)") { options[:path] = true }
+        opts.on("--all", "Also list worktrees that have no workspace config, shown only with --path or --json (runs git)") { options[:all] = true }
+        opts.on("--timeout SECONDS", Float, "Seconds to wait for the worktree listing under --all (default 5)") { |seconds| options[:timeout] = seconds }
         opts.on("--json", "Print schema-versioned JSON (see docs/README.projects.md)") { options[:json] = true }
         opts.separator ""
-        opts.separator "Without --all no git runs. Members whose checkout is gone are still listed."
+        opts.separator "Without --all no git runs. Members whose checkout is gone are still listed. Names only: with --all"
+        opts.separator "the unconfigured worktrees are omitted (a note goes to stderr) unless --path or --json is given."
+        opts.separator "An empty result prints a note to stderr and nothing to stdout, so loop over the output"
+        opts.separator "(for/while read -r) rather than pass it unquoted to a command that acts on every workspace"
+        opts.separator "when given no argument."
         opts.separator ""
         opts.separator "Examples:"
         opts.separator "  workspace projects members"
         opts.separator "  for ws in $(workspace projects members app); do workspace stop \"$ws\"; done"
-        opts.separator "  workspace launch $(workspace projects members)"
+        opts.separator "  workspace projects members app | while read -r ws; do workspace stop \"$ws\"; done"
         opts.separator "  workspace projects members --path"
         opts.separator "  workspace projects members --all --json"
       end
     end
 
     def cmd_projects_members(args)
-      options = {json: false, path: false, all: false}
+      options = {json: false, path: false, all: false, timeout: nil}
       projects_members_parser(options).parse!(args)
+      validate_projects_timeout(options[:timeout])
       raise UsageError, "Unexpected argument: #{args[1]}. Run 'workspace projects members --help'." if args.size > 1
       raise UsageError, "--path and --json cannot be used together." if options[:path] && options[:json]
       raise Error, "projects is not available: no projects command was wired" unless @projects_command
 
-      result = @projects_command.members(name: args.first, path: options[:path], all: options[:all], json: options[:json])
+      result = @projects_command.members(name: args.first, path: options[:path], all: options[:all], json: options[:json], timeout: options[:timeout])
       @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
     end
 
