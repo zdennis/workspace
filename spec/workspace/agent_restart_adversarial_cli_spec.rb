@@ -176,6 +176,7 @@ class AgentRestartAdversarialFakeMonitor
   def stop = nil
   def snapshot = {"panes" => []}
   def pane_kind(id) = @kinds[id]
+  def agent_pid(_id) = nil
   def pane_state(_id) = "idle"
 end
 

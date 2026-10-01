@@ -89,6 +89,29 @@ RSpec.describe Workspace::AgentRestart do
     ])
   end
 
+  it "reads by the pane's agent pid too, so readings recorded without $TMUX_PANE confirm the /clear" do
+    scripted = [reading(14, session: "old"), reading(nil, session: "new")]
+    clock_now = wall
+    pid_reader = Object.new
+    pid_reader.define_singleton_method(:read) do |pane_id:, agent_pid: nil, current_session_id: nil|
+      next {pct: nil, error: Workspace::ContextReasons::NO_READING, updated_at: nil} unless agent_pid == 4242
+      ((scripted.size > 1) ? scripted.shift : scripted.first).call(clock_now[0])
+    end
+    restart = described_class.new(tmux: tmux, context_reader: pid_reader, session_name: "workspace-wt-app",
+      delivery_lock: Mutex.new, pipeline_ref: ->(_) {}, agent_pid: ->(id) { (id == "%18") ? 4242 : nil },
+      clock: -> { now[0] }, wall_clock: -> { wall[0] },
+      sleeper: ->(seconds) {
+        now[0] += seconds
+        wall[0] += seconds
+      },
+      quiet_timeout: 10, quiet_for: 1, poll_interval: 0.5)
+
+    result = restart.call(pane_id: "%18", prompt: "Read HANDOFF.md")
+
+    expect(result).to include("ok" => true, "status" => "restarted", "context_before" => 14, "context_after" => nil)
+    expect(tmux.delivered.map { |d| d[:text] }).to eq(["/clear", "Read HANDOFF.md"])
+  end
+
   it "does not type the prompt when usage never drops, and says so" do
     readings.push(reading(42))
 

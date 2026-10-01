@@ -21,13 +21,18 @@ class RestartMessageTmux < CLITestHelpers::FakeTmux
 end
 
 class RestartMessageMonitor
-  attr_accessor :kinds
+  attr_accessor :kinds, :pids
 
-  def initialize = @kinds = {"%17" => "shell", "%18" => "claude"}
+  def initialize
+    @kinds = {"%17" => "shell", "%18" => "claude"}
+    @pids = {}
+  end
+
   def start = nil
   def stop = nil
   def snapshot = {"panes" => []}
   def pane_kind(id) = @kinds[id]
+  def agent_pid(id) = @pids[id]
   def pane_state(_id) = "idle"
 end
 
@@ -212,7 +217,7 @@ RSpec.describe Workspace::Commands::Agent, "restart_agent" do
       pipeline_config: pipeline_config, context_reader: context_reader)
 
     built = plain.send(:build_agent_restart, session_name: "workspace-wt-myapp", delivery_lock: Mutex.new,
-      pipeline_ref: ->(_) {}, pane_state: ->(_) {})
+      pipeline_ref: ->(_) {}, pane_state: ->(_) {}, agent_pid: ->(_) {})
     expect(built).to be_a(Workspace::AgentRestart)
   end
 
@@ -305,6 +310,37 @@ RSpec.describe Workspace::Commands::Agent, "restart_agent" do
       expect(reply).to include("ok" => false, "error" => "context_unknown",
         "reason" => Workspace::ContextReasons::NO_READING, "fix" => Workspace::ContextReasons::FIX_HINT)
       expect(restart.calls).to be_empty
+    end
+  end
+
+  context "when the pane's reading was recorded under the agent's pid (no $TMUX_PANE)" do
+    let(:context_store) { Workspace::ContextStore.new(path: File.join(tmpdir, "context.json")) }
+    let(:lock_holder) { instance_double(Workspace::LockHolder, alive?: true) }
+    let(:context_reader) do
+      Workspace::ContextReader.new(context_store: context_store,
+        project_settings: instance_double(Workspace::ProjectSettings, load_global: {}), lock_holder: lock_holder)
+    end
+
+    before do
+      monitor.kinds["%18"] = "unknown"
+      monitor.pids["%18"] = 4242
+      context_store.record(pct: 14, pid: 4242, started: "Wed Sep 30 21:00:00 2026", session_id: "s1")
+    end
+
+    it "finds it by the pid, as sessions and handoff check do, and starts the restart" do
+      run_agent do
+        expect(send_restart("pane" => "1")).to include("ok" => true, "status" => "started", "pane" => "0.1",
+          "pane_id" => "%18", "context_pct" => 14)
+      end
+      expect(lock_holder).to have_received(:alive?).with(pid: 4242, started: "Wed Sep 30 21:00:00 2026")
+    end
+
+    it "gives the restart worker the monitor's agent pid for its readings" do
+      run_agent do
+        send_restart
+        restart.calls.pop(timeout: 2)
+        expect(restart.built_with[:agent_pid].call("%18")).to eq(4242)
+      end
     end
   end
 

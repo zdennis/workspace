@@ -46,6 +46,8 @@ module Workspace
     #   lock held, just before the prompt is typed
     # @param pane_state [#call] returns the session monitor's state for a pane
     #   id ("working", "idle", "waiting") or nil when it has none
+    # @param agent_pid [#call] returns the pid of the coding agent in a pane
+    #   id, or nil; a reading recorded without $TMUX_PANE is found by it
     # @param clock [#call] monotonic seconds, for the bounded waits
     # @param wall_clock [#call] the current Time, compared with when a reading
     #   was recorded
@@ -56,6 +58,7 @@ module Workspace
     # @param logger [Workspace::Logger] debug logger
     def initialize(tmux:, context_reader:, session_name:, delivery_lock:, pipeline_ref:,
       pane_state: ->(_pane_id) {},
+      agent_pid: ->(_pane_id) {},
       clock: -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) },
       wall_clock: -> { Time.now },
       sleeper: ->(seconds) { sleep(seconds) },
@@ -67,6 +70,7 @@ module Workspace
       @delivery_lock = delivery_lock
       @pipeline_ref = pipeline_ref
       @pane_state = pane_state
+      @agent_pid = agent_pid
       @clock = clock
       @wall_clock = wall_clock
       @sleeper = sleeper
@@ -95,7 +99,7 @@ module Workspace
       quiet = wait_until_quiet(pane_id)
       return reply.merge(quiet) unless quiet["ok"]
 
-      before = @context_reader.read(pane_id: pane_id)
+      before = read_context(pane_id)
       unless self.class.confirmable?(before)
         return reply.merge(failure("context_unknown",
           "can't read context usage for pane #{pane_id} (#{before[:error]}), so a /clear couldn't be confirmed; " \
@@ -112,7 +116,7 @@ module Workspace
 
       after = wait_for_clear(pane_id, before, cleared_at, confirm_timeout)
       unless after
-        last = @context_reader.read(pane_id: pane_id)
+        last = read_context(pane_id)
         return reply.merge(failure("clear_not_confirmed",
           "typed /clear into pane #{pane_id}, but no status-line reading from a new conversation arrived " \
           "within #{confirm_timeout}s (before: #{describe(before)}; last reading: #{describe(last)}); the prompt was not sent"))
@@ -141,6 +145,12 @@ module Workspace
     end
 
     private
+
+    # Looks the reading up by pane id, then by the agent's pid, as the
+    # session monitor does for `sessions` and `handoff check`.
+    def read_context(pane_id)
+      @context_reader.read(pane_id: pane_id, agent_pid: @agent_pid.call(pane_id))
+    end
 
     def failure(error, message)
       {"ok" => false, "error" => error, "message" => message}
@@ -185,7 +195,7 @@ module Workspace
     def wait_for_clear(pane_id, before, cleared_at, timeout)
       deadline = @clock.call + timeout
       loop do
-        reading = @context_reader.read(pane_id: pane_id)
+        reading = read_context(pane_id)
         return reading if clear_confirmed?(reading, before, cleared_at)
         return nil if @clock.call >= deadline
         @sleeper.call(@poll_interval)

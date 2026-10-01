@@ -564,6 +564,16 @@ RSpec.describe Workspace::SessionMonitor do
     end
   end
 
+  describe "#agent_pid" do
+    it "returns the pid of the coding agent in a pane, and nil for a shell or unscanned pane" do
+      monitor.scan
+
+      expect(monitor.agent_pid("%2")).to eq(250)
+      expect(monitor.agent_pid("%1")).to be_nil
+      expect(monitor.agent_pid("%9")).to be_nil
+    end
+  end
+
   describe "#restart_state" do
     def event(name)
       monitor.record("pane_id" => "%2", "event" => name)

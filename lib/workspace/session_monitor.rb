@@ -201,6 +201,14 @@ module Workspace
     end
 
     # @param pane_id [String] tmux pane id
+    # @return [Integer, nil] the pid of the coding agent running in the pane,
+    #   or nil when the pane runs none or hasn't been scanned yet. Context
+    #   readings recorded without $TMUX_PANE are keyed by this pid.
+    def agent_pid(pane_id)
+      @lock.synchronize { @panes[pane_id]&.dig(:agent_pid) }
+    end
+
+    # @param pane_id [String] tmux pane id
     # @return [String, nil] the pane's kind ("shell", "claude", ...), or nil
     #   when it hasn't been scanned yet
     def pane_kind(pane_id)
