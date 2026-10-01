@@ -460,13 +460,13 @@ module CLITestHelpers
       @result = {exit_code: 0}
     end
 
-    def list(running_only: false, json: false)
-      @calls << {running_only: running_only, json: json}
+    def list(running_only: false, json: false, git: false)
+      @calls << {running_only: running_only, json: json, git: git}
       @result
     end
 
-    def show(name: nil, json: false, agents: true, timeout: nil)
-      @calls << {show: name, json: json, agents: agents, timeout: timeout}
+    def show(name: nil, json: false, agents: true, git: true, timeout: nil)
+      @calls << {show: name, json: json, agents: agents, git: git, timeout: timeout}
       @result
     end
   end

@@ -94,9 +94,34 @@ RSpec.describe Workspace::Commands::Projects do
     end.new
   end
 
+  # Answers per checkout path from +git_answers+ (unsaved_work, branch, upstream, ahead);
+  # a path with no entry is clean on "main" with no upstream. A :raise entry blows up.
+  let(:git_answers) { {} }
+  let(:git_calls) { [] }
+  let(:fake_git) do
+    answers = git_answers
+    calls = git_calls
+    Class.new do
+      define_method(:unsaved_work) do |path|
+        calls << path
+        answer = answers.fetch(path, {})
+        raise answer[:raise] if answer[:raise]
+        sleep answer[:sleep] if answer[:sleep]
+        answer.fetch(:unsaved, nil)
+      end
+      define_method(:worktree_branch) { |path| answers.fetch(path, {}).fetch(:branch, "main") }
+      define_method(:upstream_branch) { |path| answers.fetch(path, {}).fetch(:upstream, nil) }
+      define_method(:commits_ahead_of_upstream) { |path| answers.fetch(path, {}).fetch(:ahead, 0) }
+    end.new
+  end
+
+  let(:facts) do
+    Workspace::ProjectFacts.new(tmux: tmux, state: state, config: state_config, lock_namespace: lock_namespace,
+      lock_holder: liveness, dev: dev, agents: agents, git: fake_git, catalog: catalog, error_output: error_output)
+  end
+
   subject(:command) do
-    described_class.new(catalog: catalog, tmux: tmux, state: state, config: state_config, lock_namespace: lock_namespace,
-      lock_holder: liveness, dev: dev, agents: agents, output: output, error_output: error_output, home: @root)
+    described_class.new(catalog: catalog, tmux: tmux, facts: facts, output: output, home: @root)
   end
 
   around do |example|
@@ -192,8 +217,7 @@ RSpec.describe Workspace::Commands::Projects do
     it "shows a full path when it is outside the home directory" do
       other_home = File.join(@root, "elsewhere")
       roots["app"] = make_main_checkout(File.join(@root, "app"))
-      described_class.new(catalog: catalog, tmux: tmux, state: state, config: state_config, lock_namespace: lock_namespace,
-        lock_holder: liveness, dev: dev, agents: agents, output: output, home: other_home).list
+      described_class.new(catalog: catalog, tmux: tmux, facts: facts, output: output, home: other_home).list
 
       expect(output.string).to include(File.join(@root, "app"))
     end
@@ -326,7 +350,7 @@ RSpec.describe Workspace::Commands::Projects do
         add_ask("app.worktree-login", "other?")
         write_pipeline("app", JSON.generate("item-1" => {}, "item-2" => {}))
 
-        expect(command.show(name: "app", json: true)).to eq(exit_code: 0)
+        expect(command.show(name: "app", json: true, git: false)).to eq(exit_code: 0)
 
         expect(payload["schema_version"]).to eq(1)
         expect(payload["project"]).to eq("name" => "app", "id" => File.join(@root, "app", ".git"), "path" => File.join(@root, "app"), "vcs" => "git")
@@ -335,7 +359,7 @@ RSpec.describe Workspace::Commands::Projects do
           "headless" => false, "open_asks" => 0, "pipeline" => {"entries" => 2})
         expect(member("app.worktree-login")).to include("kind" => "worktree", "running" => true, "headless" => true,
           "open_asks" => 2, "pipeline" => {"entries" => 0})
-        expect(payload["summary"]).to eq("workspaces" => 3, "running" => 2, "open_asks" => 2, "pipeline_entries" => 2, "waiting_agents" => 0, "agents_unavailable" => 2)
+        expect(payload["summary"]).to eq("workspaces" => 3, "running" => 2, "open_asks" => 2, "pipeline_entries" => 2, "unsaved_members" => nil, "waiting_agents" => 0, "agents_unavailable" => 2)
       end
 
       it "counts only open asks" do
@@ -365,7 +389,7 @@ RSpec.describe Workspace::Commands::Projects do
         headless_workspaces << "app.worktree-login"
         add_ask("app")
 
-        command.show(name: "app", agents: false)
+        command.show(name: "app", agents: false, git: false)
 
         lines = output.string.lines.map(&:chomp)
         expect(lines[0]).to eq("Project  app   ~/app   (git)")
@@ -562,7 +586,7 @@ RSpec.describe Workspace::Commands::Projects do
         FileUtils.mkdir_p(lock_dir)
         File.write(File.join(lock_dir, "locks.json"), "{not json")
 
-        expect(command.show(name: "app", json: true)).to eq(exit_code: 0)
+        expect(command.show(name: "app", json: true, git: false)).to eq(exit_code: 0)
 
         expect(payload["locks"]).to be_nil
         expect(payload["errors"]["locks"]).to include("corrupt")
@@ -639,7 +663,7 @@ RSpec.describe Workspace::Commands::Projects do
         let(:dev_error) { Workspace::Error.new("locks.json is corrupt") }
 
         it "reports an error entry instead of failing" do
-          expect(command.show(name: "app", json: true)).to eq(exit_code: 0)
+          expect(command.show(name: "app", json: true, git: false)).to eq(exit_code: 0)
 
           expect(payload["dev"]).to be_nil
           expect(payload["errors"]).to eq("dev" => "locks.json is corrupt")
@@ -766,7 +790,7 @@ RSpec.describe Workspace::Commands::Projects do
           sessions.replace(%w[app app-worktree-login])
           agent_facts["app"] = available("idle", "working", "waiting")
 
-          command.show(name: "app")
+          command.show(name: "app", git: false)
 
           lines = output.string.lines.map(&:chomp)
           expect(lines.find { |l| l.start_with?("WORKSPACE") }).to match(/\AWORKSPACE\s+KIND\s+RUN\s+AGENTS\s+ASKS\s+PIPE/)
@@ -779,17 +803,382 @@ RSpec.describe Workspace::Commands::Projects do
           sessions.replace(%w[app])
           agent_facts["app"] = available
 
-          command.show(name: "app")
+          command.show(name: "app", git: false)
 
           expect(output.string.lines.find { |l| l.start_with?("app ") }).to include("none")
           expect(output.string.lines.find { |l| l.start_with?("app.worktree-login") }).to match(/worktree\s+-\s+-\s+0\s+0/)
         end
 
         it "drops the AGENTS column with agents: false" do
-          command.show(name: "app", agents: false)
+          command.show(name: "app", agents: false, git: false)
 
           expect(output.string).not_to include("AGENTS")
         end
+      end
+    end
+
+    context "git facts, with fake git answers" do
+      before { build_app_with_worktrees }
+
+      let(:main) { File.join(@root, "app") }
+      let(:login) { File.join(main, ".worktrees", "login") }
+      let(:old) { File.join(main, ".worktrees", "old") }
+      let(:clean_git) do
+        {"available" => true, "branch" => "main", "changed_files" => 0, "ahead" => nil, "upstream" => nil, "unpushed_commits" => 0, "unsaved" => "no"}
+      end
+
+      it "reports a clean checkout" do
+        command.show(name: "app", json: true)
+
+        expect(member("app")["git"]).to eq(clean_git)
+      end
+
+      it "reports branch, changed files, upstream, ahead and unpushed commits for a dirty checkout" do
+        git_answers[login] = {unsaved: {changed_files: 3, unpushed_commits: 2, branch: "projects"}, branch: "projects", upstream: "origin/projects", ahead: 2}
+
+        command.show(name: "app", json: true)
+
+        expect(member("app.worktree-login")["git"]).to eq("available" => true, "branch" => "projects", "changed_files" => 3, "ahead" => 2,
+          "upstream" => "origin/projects", "unpushed_commits" => 2, "unsaved" => "yes")
+      end
+
+      it "reports a detached HEAD as a nil branch" do
+        git_answers[main] = {branch: nil}
+
+        command.show(name: "app", json: true)
+
+        expect(member("app")["git"]).to include("branch" => nil, "unsaved" => "no")
+      end
+
+      it "reports git not being able to answer as unknown, never clean" do
+        git_answers[login] = {unsaved: :unknown}
+
+        command.show(name: "app", json: true)
+
+        expect(member("app.worktree-login")["git"]).to include("available" => false, "reason" => "error", "unsaved" => "unknown", "changed_files" => nil)
+      end
+
+      it "reports a failing member as unknown with the error, leaving the other members alone" do
+        git_answers[login] = {raise: Workspace::Error.new("boom")}
+
+        command.show(name: "app", json: true)
+
+        expect(member("app.worktree-login")["git"]).to include("available" => false, "reason" => "error", "detail" => "boom", "unsaved" => "unknown")
+        expect(member("app")["git"]).to eq(clean_git)
+      end
+
+      it "reports a member that outlasts the timeout as unknown, without waiting for it" do
+        git_answers[login] = {sleep: 5}
+        started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+
+        command.show(name: "app", json: true, timeout: 0.2)
+
+        expect(Process.clock_gettime(Process::CLOCK_MONOTONIC) - started).to be < 2
+        expect(member("app.worktree-login")["git"]).to include("available" => false, "reason" => "timeout", "unsaved" => "unknown")
+        expect(member("app")["git"]).to eq(clean_git)
+      end
+
+      it "reports a checkout that is gone as missing, never clean, without asking git about it" do
+        command.show(name: "app", json: true)
+
+        expect(member("app.worktree-old")["git"]).to include("available" => true, "branch" => nil, "unsaved" => "missing")
+        expect(git_calls).not_to include(old)
+      end
+
+      it "reports a checkout that vanished after the catalog was built as missing" do
+        catalog.all
+        FileUtils.rm_rf(login)
+
+        command.show(name: "app", json: true)
+
+        expect(member("app.worktree-login")["git"]).to include("unsaved" => "missing")
+      end
+
+      it "counts yes and unknown, not missing, in the summary" do
+        git_answers[main] = {unsaved: {changed_files: 1, unpushed_commits: 0, branch: "main"}}
+        git_answers[login] = {unsaved: :unknown}
+
+        command.show(name: "app", json: true)
+
+        expect(payload["summary"]["unsaved_members"]).to eq(2)
+      end
+
+      it "leaves git nil, runs no git and nulls the summary count with --no-git" do
+        command.show(name: "app", json: true, git: false)
+
+        expect(payload["members"].map { |m| m["git"] }).to all(be_nil)
+        expect(payload["summary"]["unsaved_members"]).to be_nil
+        expect(git_calls).to be_empty
+      end
+
+      it "has a nil git key (not an absent one) for every member with --no-git" do
+        command.show(name: "app", json: true, git: false)
+
+        expect(payload["members"]).to all(have_key("git"))
+      end
+
+      it "stops a git read that outlasts the timeout, and reports the listing of worktrees timing out" do
+        allow(catalog).to receive(:members).and_wrap_original do |original, *args, **kwargs|
+          sleep 5 if kwargs[:include_unconfigured]
+          original.call(*args, **kwargs)
+        end
+        started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+
+        command.show(name: "app", json: true, timeout: 0.2)
+
+        expect(Process.clock_gettime(Process::CLOCK_MONOTONIC) - started).to be < 2
+        expect(payload["errors"]).to include("worktrees" => /timed out/)
+        expect(payload["members"].map { |m| m["workspace"] }).to eq(%w[app app.worktree-login app.worktree-old])
+      end
+
+      it "gives a project whose checkout is gone no git facts" do
+        roots["lost"] = File.join(@root, "lost")
+
+        command.show(name: "lost", json: true)
+
+        expect(payload["members"].first["git"]).to be_nil
+        expect(payload["summary"]["unsaved_members"]).to be_nil
+      end
+
+      it "leaves git nil for a project that is not a git repository" do
+        roots["notes"] = FileUtils.mkdir_p(File.join(@root, "notes")).first
+
+        command.show(name: "notes", json: true)
+
+        expect(payload["members"].first["git"]).to be_nil
+        expect(payload["summary"]["unsaved_members"]).to be_nil
+        expect(git_calls).to be_empty
+      end
+
+      it "adds BRANCH and GIT columns to the text view" do
+        git_answers[main] = {branch: "trunk"}
+        git_answers[login] = {unsaved: {changed_files: 3, unpushed_commits: 2, branch: "x"}, branch: "login"}
+
+        command.show(name: "app")
+
+        lines = output.string.lines.map(&:chomp)
+        expect(lines[2]).to match(/\AWORKSPACE\s+KIND\s+BRANCH\s+RUN\s+AGENTS\s+ASKS\s+PIPE\s+GIT\s+NOTE\z/)
+        expect(lines[3]).to match(/\Aapp\s+main\s+trunk\s.*\sclean\z/)
+        expect(lines[4]).to match(/\Aapp.worktree-login\s+worktree\s+login\s.*\s3 changed, 2 unpushed\z/)
+        expect(lines[5]).to match(/\Aapp.worktree-old\s+worktree\s+-\s.*\s-\s+MISSING \(checkout gone\)\z/)
+      end
+
+      it "says unknown and timed out are treated as unsaved in the text view" do
+        git_answers[main] = {unsaved: :unknown}
+        git_answers[login] = {sleep: 5}
+
+        command.show(name: "app", timeout: 0.2)
+
+        expect(output.string).to match(/^app\s.*unknown \(treated as unsaved\)$/)
+        expect(output.string).to match(/^app.worktree-login\s.*timed out \(treated as unsaved\)$/)
+      end
+
+      it "omits the git columns with --no-git" do
+        command.show(name: "app", git: false)
+
+        expect(output.string).not_to include("BRANCH")
+        expect(output.string).not_to include("GIT")
+      end
+
+      it "prints a JSON error when listing the worktrees fails under --json" do
+        allow(catalog).to receive(:members).and_raise(Workspace::Error, "no")
+
+        expect(command.show(name: "app", json: true)).to eq(exit_code: 1)
+        expect(JSON.parse(output.string)).to include("error" => "no")
+      end
+    end
+
+    context "list --git, with fake git answers" do
+      before { build_app_with_worktrees }
+
+      let(:main) { File.join(@root, "app") }
+      let(:login) { File.join(main, ".worktrees", "login") }
+
+      def listed = JSON.parse(output.string)["projects"]
+
+      it "adds an UNSAVED column counting checkouts with unsaved work" do
+        git_answers[login] = {unsaved: {changed_files: 1, unpushed_commits: 0, branch: "login"}}
+        roots["notes"] = FileUtils.mkdir_p(File.join(@root, "notes")).first
+
+        command.list(git: true)
+
+        lines = output.string.lines.map(&:chomp)
+        expect(lines[0]).to match(/\APROJECT\s+WORKSPACES\s+RUNNING\s+UNSAVED\s+PATH\s+NOTE\z/)
+        expect(lines[1]).to match(%r{\Aapp\s+3\s+0\s+1 of 2 \(1 missing\)\s+~/app\z})
+        expect(lines[2]).to match(%r{\Anotes\s+1\s+0\s+-\s+~/notes\s+\(no git\)\z})
+      end
+
+      it "shares one deadline across every project instead of one per project" do
+        other = make_main_checkout(File.join(@root, "other"))
+        roots["other"] = other
+        git_answers[main] = {sleep: 5}
+        git_answers[other] = {sleep: 5}
+        git_answers[login] = {sleep: 5}
+        allow(facts).to receive(:git_deadline).and_return(Process.clock_gettime(Process::CLOCK_MONOTONIC) + 0.3)
+        started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+
+        command.list(git: true)
+
+        expect(Process.clock_gettime(Process::CLOCK_MONOTONIC) - started).to be < 1.5
+        expect(output.string).to match(/^app\s+3\s+0\s+unknown\s/)
+        expect(output.string).to match(/^other\s+1\s+0\s+1 of 1 \(worktrees not listed, 1 unknown\)\s/)
+      end
+
+      it "leaves a gone checkout out of the total and names it" do
+        git_answers[main] = {unsaved: {changed_files: 1, unpushed_commits: 0, branch: "main"}}
+
+        command.list(git: true, json: true)
+
+        expect(listed.first["unsaved"]).to eq("members" => 1, "unknown" => 0, "missing" => 1, "total" => 2, "incomplete" => false)
+      end
+
+      it "adds the unknown count when git couldn't answer for some checkouts" do
+        git_answers[main] = {unsaved: :unknown}
+        git_answers[login] = {unsaved: :unknown}
+
+        command.list(git: true)
+
+        expect(output.string).to match(/^app\s+3\s+0\s+unknown\s/)
+      end
+
+      it "shows unknown when git couldn't answer for any checkout" do
+        roots.delete("app.worktree-login")
+        roots.delete("app.worktree-old")
+        git_answers[main] = {unsaved: :unknown}
+
+        command.list(git: true)
+
+        expect(output.string).to match(/^app\s+1\s+0\s+unknown\s/)
+      end
+
+      it "adds unsaved and unconfigured_worktrees to the JSON only with --git" do
+        git_answers[login] = {unsaved: :unknown}
+        roots["notes"] = FileUtils.mkdir_p(File.join(@root, "notes")).first
+
+        command.list(git: true, json: true)
+
+        expect(listed.map { |p| p["unsaved"] }).to eq([{"members" => 1, "unknown" => 1, "missing" => 1, "total" => 2, "incomplete" => false}, nil])
+        expect(listed.map { |p| p["unconfigured_worktrees"] }).to eq([0, 0])
+      end
+
+      it "reports unconfigured worktrees as unknown and the counts as incomplete when listing times out" do
+        allow(catalog).to receive(:members).and_wrap_original do |original, *args, **kwargs|
+          sleep 5 if kwargs[:include_unconfigured]
+          original.call(*args, **kwargs)
+        end
+
+        allow(facts).to receive(:git_deadline).and_return(Process.clock_gettime(Process::CLOCK_MONOTONIC) + 0.2)
+        command.list(git: true, json: true)
+
+        expect(listed.first["unconfigured_worktrees"]).to be_nil
+        expect(listed.first["unsaved"]).to include("incomplete" => true)
+
+        output.truncate(0)
+        output.rewind
+        command.list(git: true)
+
+        expect(output.string).to include("worktrees not listed").and include("unconfigured worktrees unknown")
+        expect(output.string).not_to match(/\b0 unconfigured/)
+      end
+
+      it "runs no git without --git" do
+        command.list(json: true)
+
+        expect(listed.first).not_to have_key("unsaved")
+        expect(git_calls).to be_empty
+      end
+
+      it "skips git for projects filtered out by --running" do
+        sessions.replace(%w[app])
+
+        command.list(git: true, running_only: true)
+
+        expect(git_calls).not_to be_empty
+        git_calls.clear
+        sessions.clear
+        command.list(git: true, running_only: true)
+        expect(git_calls).to be_empty
+      end
+    end
+
+    context "with real git repositories" do
+      let(:fake_git) { Workspace::Git.new(output: StringIO.new, input: StringIO.new) }
+      let(:main) { File.join(@root, "real") }
+      let(:wt_a) { File.join(main, ".worktrees", "a") }
+      let(:spike) { File.join(main, ".worktrees", "spike") }
+
+      def sh(*cmd, chdir:)
+        out, status = Open3.capture2e(*cmd, chdir: chdir)
+        raise "#{cmd.join(" ")} failed: #{out}" unless status.success?
+      end
+
+      def commit(dir, message)
+        sh("git", "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "--allow-empty", "-m", message, chdir: dir)
+      end
+
+      before do
+        FileUtils.mkdir_p(main)
+        sh("git", "init", "-q", "-b", "main", chdir: main)
+        File.write(File.join(main, "README.md"), "hi\n")
+        sh("git", "add", "README.md", chdir: main)
+        commit(main, "initial")
+        sh("git", "worktree", "add", "-q", "-b", "a", wt_a, chdir: main)
+        sh("git", "worktree", "add", "-q", "-b", "spike", spike, chdir: main)
+        roots["real"] = main
+        roots["real.worktree-a"] = wt_a
+      end
+
+      it "reports clean checkouts and lists a worktree with no workspace config" do
+        command.show(name: "real", json: true)
+
+        expect(payload["members"].map { |m| m["workspace"] }).to eq(["real", "real.worktree-a", nil])
+        expect(member("real")["git"]).to include("branch" => "main", "changed_files" => 0, "unsaved" => "no", "available" => true)
+        unconfigured = payload["members"].last
+        expect(unconfigured).to include("path" => File.realpath(spike), "kind" => "worktree", "configured" => false, "exists" => true,
+          "running" => false, "headless" => false, "open_asks" => nil, "pipeline" => nil)
+        expect(unconfigured["git"]).to include("branch" => "spike", "unsaved" => "no")
+        expect(payload["summary"]).to include("workspaces" => 2, "unsaved_members" => 0)
+      end
+
+      it "reports changed tracked files and unpushed commits, ignoring untracked files" do
+        File.write(File.join(wt_a, "README.md"), "changed\n")
+        File.write(File.join(wt_a, "untracked.txt"), "x")
+        commit(spike, "unpushed")
+
+        command.show(name: "real", json: true)
+
+        expect(member("real.worktree-a")["git"]).to include("changed_files" => 1, "unsaved" => "yes")
+        expect(payload["members"].last["git"]).to include("unpushed_commits" => 1, "unsaved" => "yes")
+        expect(payload["summary"]["unsaved_members"]).to eq(2)
+      end
+
+      it "reports a deleted worktree directory as missing" do
+        FileUtils.rm_rf(wt_a)
+
+        command.show(name: "real", json: true)
+
+        expect(member("real.worktree-a")).to include("exists" => false)
+        expect(member("real.worktree-a")["git"]).to include("unsaved" => "missing")
+      end
+
+      it "leaves the unconfigured worktree out with --no-git" do
+        command.show(name: "real", json: true, git: false)
+
+        expect(payload["members"].size).to eq(2)
+      end
+
+      it "prints the unconfigured worktree as (no config) in the text view" do
+        command.show(name: "real")
+
+        expect(output.string).to match(/^\(no config\)\s+worktree\s+spike\s+-\s+-\s+-\s+-\s+clean$/)
+      end
+
+      it "counts unconfigured worktrees in list --git and says how many there are" do
+        File.write(File.join(wt_a, "README.md"), "changed\n")
+
+        command.list(git: true)
+
+        expect(output.string).to match(%r{^real\s+2\s+0\s+1 of 3\s+~/real\s+\(1 unconfigured worktree\)$})
       end
     end
   end

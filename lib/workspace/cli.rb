@@ -3427,10 +3427,13 @@ module Workspace
 
         Options:
           --running   list only: projects with at least one running workspace
+          --git       list only: add an UNSAVED column (runs git in every checkout)
           --json      Print schema-versioned JSON (see docs/README.projects.md)
           --no-agents show only: skip the agent daemons (no sockets are read)
+          --no-git    show only: skip git (no branch or unsaved work, no unconfigured worktrees)
           --timeout SECONDS
                       show only: how long to wait for each agent daemon (default 1)
+                      and for all the git reads (default 5)
 
         A workspace joins the project whose repository its directory belongs to. If that
         directory is gone, it is matched by config name. The note after a path flags a
@@ -3447,30 +3450,34 @@ module Workspace
 
     def projects_show_parser(options)
       OptionParser.new do |opts|
-        opts.banner = "Usage: workspace projects show [NAME|PATH] [--json] [--no-agents] [--timeout SECONDS]"
+        opts.banner = "Usage: workspace projects show [NAME|PATH] [--json] [--no-agents] [--no-git] [--timeout SECONDS]"
         opts.separator ""
-        opts.separator "Show one project: its workspaces (running, headless, agent states, open asks, pipeline entries),"
-        opts.separator "the repo-wide locks and the dev environment. NAME is a project name, a member"
+        opts.separator "Show one project: its workspaces (running, headless, agent states, open asks, pipeline entries,"
+        opts.separator "branch and unsaved work), worktrees with no workspace config, the repo-wide locks and the"
+        opts.separator "dev environment. NAME is a project name, a member"
         opts.separator "workspace name or a path (use a path when two projects share a name); it defaults"
         opts.separator "to the project containing the current directory."
         opts.separator ""
         opts.on("--json", "Print schema-versioned JSON (see docs/README.projects.md)") { options[:json] = true }
         opts.on("--no-agents", "Don't ask the agent daemons for agent states") { options[:agents] = false }
-        opts.on("--timeout SECONDS", Float, "Seconds to wait for each running workspace's agent daemon (default 1); ignored with --no-agents") { |seconds| options[:timeout] = seconds }
+        opts.on("--no-git", "Don't run git (no branch or unsaved work, no unconfigured worktrees)") { options[:git] = false }
+        opts.on("--timeout SECONDS", Float, "Seconds to wait for each running workspace's agent daemon (default 1) and for all the git reads (default 5)") { |seconds| options[:timeout] = seconds }
         opts.separator ""
-        opts.separator "A daemon that is down or doesn't answer in time shows as unavailable; the command still exits 0."
+        opts.separator "A daemon that is down or doesn't answer in time shows as unavailable, and a checkout git can't answer for"
+        opts.separator "shows as unknown (treated as unsaved); the command still exits 0."
         opts.separator ""
         opts.separator "Examples:"
         opts.separator "  workspace projects show"
         opts.separator "  workspace projects show app --json"
         opts.separator "  workspace projects show ~/src/app"
         opts.separator "  workspace projects show --no-agents    # skip the agent daemons"
+        opts.separator "  workspace projects show --no-git       # skip git (fastest)"
         opts.separator "  workspace projects show --timeout 0.5"
       end
     end
 
     def cmd_projects_show(args)
-      options = {json: false, agents: true, timeout: nil}
+      options = {json: false, agents: true, git: true, timeout: nil}
       projects_show_parser(options).parse!(args)
       if options[:timeout] && !(options[:timeout].finite? && options[:timeout].positive?)
         raise UsageError, "--timeout must be a finite number greater than 0."
@@ -3478,30 +3485,33 @@ module Workspace
       raise UsageError, "Unexpected argument: #{args[1]}. Run 'workspace projects show --help'." if args.size > 1
       raise Error, "projects is not available: no projects command was wired" unless @projects_command
 
-      result = @projects_command.show(name: args.first, json: options[:json], agents: options[:agents], timeout: options[:timeout])
+      result = @projects_command.show(name: args.first, json: options[:json], agents: options[:agents], git: options[:git], timeout: options[:timeout])
       @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
     end
 
     def cmd_projects_list(args)
       running = false
       json = false
+      git = false
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace projects [list] [--running] [--json]"
+        opts.banner = "Usage: workspace projects [list] [--running] [--git] [--json]"
         opts.separator ""
         opts.separator "List projects (a repository's main checkout plus its worktrees) and their workspaces."
         opts.separator ""
         opts.on("--running", "Only projects with at least one running workspace") { running = true }
+        opts.on("--git", "Add an UNSAVED column (runs git in every checkout, and counts worktrees with no workspace config)") { git = true }
         opts.on("--json", "Print schema-versioned JSON (see docs/README.projects.md)") { json = true }
         opts.separator ""
         opts.separator "Examples:"
         opts.separator "  workspace projects list"
         opts.separator "  workspace projects list --running --json"
+        opts.separator "  workspace projects list --git    # which projects have unsaved work"
       end
       parser.parse!(args)
       raise UsageError, "Unexpected argument: #{args.first}. Run 'workspace projects --help'." if args.any?
       raise Error, "projects is not available: no projects command was wired" unless @projects_command
 
-      result = @projects_command.list(running_only: running, json: json)
+      result = @projects_command.list(running_only: running, json: json, git: git)
       @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
     end
 

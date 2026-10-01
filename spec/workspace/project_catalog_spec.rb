@@ -30,6 +30,77 @@ RSpec.describe Workspace::ProjectCatalog do
 
   def project_named(name) = catalog.all.find { |project| project.name == name }
 
+  describe "#members" do
+    def sh(*cmd, chdir:)
+      out, status = Open3.capture2e(*cmd, chdir: chdir)
+      raise "#{cmd.join(" ")} failed: #{out}" unless status.success?
+    end
+
+    let(:main) { File.join(@root, "app") }
+
+    before do
+      FileUtils.mkdir_p(main)
+      sh("git", "init", "-q", "-b", "main", chdir: main)
+      sh("git", "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "--allow-empty", "-m", "initial", chdir: main)
+      sh("git", "worktree", "add", "-q", "-b", "login", File.join(main, ".worktrees", "login"), chdir: main)
+      sh("git", "worktree", "add", "-q", "-b", "spike", File.join(main, ".worktrees", "spike"), chdir: main)
+      sh("git", "worktree", "add", "-q", "-b", "zed", File.join(@root, "elsewhere", "zed"), chdir: main)
+      roots["app"] = main
+      roots["app.worktree-login"] = File.join(main, ".worktrees", "login")
+    end
+
+    it "returns only the configured members by default, without running git" do
+      expect(vcs).not_to receive(:list_worktrees)
+
+      expect(catalog.members(project_named("app")).map(&:workspace)).to eq(%w[app app.worktree-login])
+    end
+
+    it "adds worktrees with no config, sorted by path after the configured members" do
+      members = catalog.members(project_named("app"), include_unconfigured: true)
+
+      expect(members.map(&:workspace)).to eq(["app", "app.worktree-login", nil, nil])
+      expect(members.last(2).map(&:path)).to eq([File.join(@root, "elsewhere", "zed"), File.join(main, ".worktrees", "spike")].sort)
+      expect(members.last).to have_attributes(kind: "worktree", configured: false, exists: true)
+    end
+
+    it "keeps a worktree whose directory is gone, as not existing" do
+      FileUtils.rm_rf(File.join(main, ".worktrees", "spike"))
+
+      spike = catalog.members(project_named("app"), include_unconfigured: true).find { |m| m.path.end_with?("spike") }
+
+      expect(spike).to have_attributes(configured: false, exists: false)
+    end
+
+    it "does not list the main checkout or a configured member as unconfigured" do
+      paths = catalog.members(project_named("app"), include_unconfigured: true).map(&:path)
+
+      expect(paths.uniq).to eq(paths)
+      expect(paths.count(main)).to eq(1)
+    end
+
+    it "returns the configured members for a project with no git repository, without running git" do
+      roots["notes"] = FileUtils.mkdir_p(File.join(@root, "notes")).first
+      expect(vcs).not_to receive(:list_worktrees)
+
+      expect(catalog.members(project_named("notes"), include_unconfigured: true).map(&:workspace)).to eq(["notes"])
+    end
+
+    it "returns the configured members when git can't be run" do
+      allow(vcs).to receive(:list_worktrees).and_raise(Errno::ENOENT)
+
+      expect(catalog.members(project_named("app"), include_unconfigured: true).map(&:workspace)).to eq(%w[app app.worktree-login])
+    end
+
+    it "lists every worktree for a repository with no workspace at the main checkout" do
+      roots.delete("app")
+
+      members = catalog.members(catalog.all.first, include_unconfigured: true)
+
+      expect(members.map(&:workspace)).to eq(["app.worktree-login", nil, nil, nil])
+      expect(members[1]).to have_attributes(path: main, kind: "main", configured: false)
+    end
+  end
+
   describe "#all" do
     it "is empty with no workspaces" do
       expect(catalog.all).to eq([])

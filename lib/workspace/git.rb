@@ -133,7 +133,7 @@ module Workspace
     # @param path [String] worktree directory path
     # @return [String, nil] the branch name, or nil if detached or error
     def worktree_branch(path)
-      stdout, _, status = Open3.capture3("git", "-C", path, "rev-parse", "--abbrev-ref", "HEAD")
+      stdout, _, status = capture_git("-C", path, "rev-parse", "--abbrev-ref", "HEAD")
       return nil unless status.success?
       result = stdout.strip
       (result == "HEAD") ? nil : result
@@ -150,10 +150,15 @@ module Workspace
     # main one.
     #
     # @param repo [String] path to any directory inside the repo (defaults to Dir.pwd)
-    # @return [Array<String>] absolute worktree paths
+    # @return [Array<String>] absolute worktree paths; a bare repository's own
+    #   entry is not a worktree and is left out
     def list_worktrees(repo: Dir.pwd)
-      stdout, _ = Open3.capture3("git", "-C", repo, "worktree", "list", "--porcelain")
-      stdout.lines.select { |line| line.start_with?("worktree ") }.map { |line| line.sub("worktree ", "").strip }
+      stdout, _ = capture_git("-C", repo, "worktree", "list", "--porcelain")
+      stdout.split(/\n\n+/).filter_map do |block|
+        lines = block.lines.map(&:strip)
+        next if lines.include?("bare")
+        lines.find { |line| line.start_with?("worktree ") }&.delete_prefix("worktree ")
+      end
     end
 
     # Returns the worktree path for a branch, if one exists anywhere.
@@ -278,7 +283,7 @@ module Workspace
     # @return [Integer, nil] count of changed tracked files (staged or
     #   unstaged); untracked files are never counted, or nil if git could not answer
     def changed_files_count(path)
-      stdout, _, status = Open3.capture3("git", "-C", path, "status", "--porcelain", "--untracked-files=no")
+      stdout, _, status = capture_git("-C", path, "status", "--porcelain", "--untracked-files=no")
       return nil unless status.success?
       stdout.lines.count { |l| !l.strip.empty? }
     end
@@ -287,7 +292,7 @@ module Workspace
     # @return [Boolean, nil] true if the repository has any remotes, or nil if
     #   git could not answer
     def remotes?(path)
-      stdout, _, status = Open3.capture3("git", "-C", path, "remote")
+      stdout, _, status = capture_git("-C", path, "remote")
       return nil unless status.success?
       !stdout.strip.empty?
     end
@@ -303,11 +308,11 @@ module Workspace
       return nil if has_remotes.nil?
 
       if has_remotes
-        stdout, _, status = Open3.capture3("git", "-C", path, "rev-list", "--count", "HEAD", "--not", "--remotes")
+        stdout, _, status = capture_git("-C", path, "rev-list", "--count", "HEAD", "--not", "--remotes")
       else
         # --exclude takes the name without refs/heads/ when it applies to --branches.
         exclude = (branch = worktree_branch(path)) ? ["--exclude=#{branch}"] : []
-        stdout, _, status = Open3.capture3("git", "-C", path, "rev-list", "--count", "HEAD", "--not", *exclude, "--branches")
+        stdout, _, status = capture_git("-C", path, "rev-list", "--count", "HEAD", "--not", *exclude, "--branches")
       end
       return nil unless status.success?
       stdout.strip.to_i
@@ -343,7 +348,7 @@ module Workspace
     # @return [String, nil] the upstream branch's full name (e.g. "origin/main"),
     #   or nil if there is none
     def upstream_branch(path)
-      stdout, _, status = Open3.capture3("git", "-C", path, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")
+      stdout, _, status = capture_git("-C", path, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")
       status.success? ? stdout.strip : nil
     end
 
@@ -351,7 +356,7 @@ module Workspace
     # @return [Integer, nil] number of commits on HEAD not in its upstream, or
     #   nil if there is no upstream or git could not answer
     def commits_ahead_of_upstream(path)
-      stdout, _, status = Open3.capture3("git", "-C", path, "rev-list", "--count", "@{u}..HEAD")
+      stdout, _, status = capture_git("-C", path, "rev-list", "--count", "@{u}..HEAD")
       status.success? ? stdout.strip.to_i : nil
     end
 
@@ -423,8 +428,32 @@ module Workspace
       layout_from_rev_parse(dir)
     end
 
+    # Runs git in a process group of its own and, if the calling thread is
+    # killed while waiting (a read that ran out of time), stops that group:
+    # SIGTERM, then SIGKILL after a second.
+    #
+    # @return [Array(String, String, Process::Status)] stdout, stderr, status
+    def capture_git(*args)
+      Open3.popen3("git", *args, pgroup: true) do |stdin, stdout, stderr, waiter|
+        stdin.close
+        errors = Thread.new { stderr.read }
+        begin
+          [stdout.read, errors.value, waiter.value]
+        ensure
+          stop_group(waiter) if waiter.alive?
+        end
+      end
+    end
+
+    def stop_group(waiter)
+      Process.kill("TERM", -waiter.pid)
+      Process.kill("KILL", -waiter.pid) unless waiter.join(1)
+    rescue Errno::ESRCH, Errno::EPERM
+      nil
+    end
+
     def layout_from_rev_parse(dir)
-      stdout, _, status = Open3.capture3("git", "-C", dir, "rev-parse", "--show-toplevel", "--git-common-dir", "--absolute-git-dir")
+      stdout, _, status = capture_git("-C", dir, "rev-parse", "--show-toplevel", "--git-common-dir", "--absolute-git-dir")
       return nil unless status.success?
       toplevel, common, git_dir = stdout.lines.map(&:strip)
       return nil unless toplevel && common && git_dir

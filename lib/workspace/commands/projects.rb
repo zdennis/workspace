@@ -24,27 +24,14 @@ module Workspace
 
       # @param catalog [Workspace::ProjectCatalog] groups workspaces into projects
       # @param tmux [Workspace::Tmux] lists running sessions and maps workspace names to them
-      # @param state [Workspace::State] session state, read for each workspace's headless flag
-      # @param config [Workspace::Config] locates each workspace's ask and pipeline state files
-      # @param lock_namespace [Workspace::LockNamespace] locates the project's lock store
-      # @param lock_holder [Workspace::LockHolder] tells live lock holders from stale ones
-      # @param dev [Workspace::Commands::Dev] reports the dev environment's state
-      # @param agents [Workspace::ProjectAgents] reads each running workspace's agent states from its daemon
+      # @param facts [Workspace::ProjectFacts] gathers each workspace's and project's facts
       # @param output [IO] stream for the table or JSON
-      # @param error_output [IO] stream for warnings about unreadable ask stores
       # @param home [String] home directory, abbreviated to `~` in the table
-      def initialize(catalog:, tmux:, state:, config:, lock_namespace:, lock_holder:, dev:, agents:, output: $stdout, error_output: $stderr,
-        home: Dir.home)
+      def initialize(catalog:, tmux:, facts:, output: $stdout, home: Dir.home)
         @catalog = catalog
         @tmux = tmux
-        @state = state
-        @config = config
-        @lock_namespace = lock_namespace
-        @lock_holder = lock_holder
-        @dev = dev
-        @agents = agents
+        @facts = facts
         @output = output
-        @error_output = error_output
         @home = home
       end
 
@@ -55,18 +42,26 @@ module Workspace
       # workspace's agent daemon for its agent states (see +agents+). A daemon
       # that is down or too slow shows as unavailable; it never fails the command.
       #
+      # Unless +git+ is false it also reads each checkout's branch, changed
+      # files, upstream and unsaved-work state (a few git subprocesses per
+      # checkout, run in parallel and bounded by +timeout+, see
+      # {ProjectFacts#git_facts}) and lists worktrees that have no workspace
+      # config. A checkout git can't answer for shows as unsaved `unknown`.
+      #
       # @param name [String, nil] a project name, a member workspace name or a
       #   path; nil means the project containing +cwd+
       # @param json [Boolean] print the schema-versioned JSON payload instead of text
       # @param agents [Boolean] read agent states from the daemons; false skips every socket
-      # @param timeout [Numeric, nil] seconds to wait for each daemon; nil means {DEFAULT_AGENT_TIMEOUT}
+      # @param git [Boolean] read git facts and list unconfigured worktrees; false leaves each member's `git` nil
+      # @param timeout [Numeric, nil] seconds to wait for each daemon and for all the git reads; nil means
+      #   {DEFAULT_AGENT_TIMEOUT} for daemons and {ProjectFacts::DEFAULT_GIT_TIMEOUT} for git (the worktree listing included)
       # @param cwd [String] directory used when +name+ is nil
       # @return [Hash] `{exit_code:}`; 1 only after a JSON error payload was printed
       # @raise [Workspace::Error] if the project can't be found, unless +json+ is set
       # @raise [Workspace::UsageError] if +name+ matches several projects, unless +json+ is set
-      def show(name: nil, json: false, agents: true, timeout: nil, cwd: Dir.pwd)
+      def show(name: nil, json: false, agents: true, git: true, timeout: nil, cwd: Dir.pwd)
         project = name ? @catalog.find(name) : @catalog.for_cwd(cwd)
-        payload = show_payload(project, agents: agents, timeout: timeout)
+        payload = show_payload(project, agents: agents, git: git, timeout: timeout)
         if json
           @output.puts JSON.generate(payload)
         else
@@ -81,19 +76,25 @@ module Workspace
 
       # @param running_only [Boolean] only projects with at least one running workspace
       # @param json [Boolean] print the schema-versioned JSON payload instead of a table
+      # @param git [Boolean] add each project's unsaved-work count, which costs
+      #   git subprocesses per checkout and counts unconfigured worktrees too
       # @return [Hash] `{exit_code:}`; 1 only after a JSON error payload was printed
       # @raise [Workspace::Error] on failure, unless +json+ is set
-      def list(running_only: false, json: false)
+      def list(running_only: false, json: false, git: false)
         sessions = running_sessions
         rows = @catalog.all.map { |project| row_for(project, sessions) }
         rows = rows.select { |row| row[:running].positive? } if running_only
+        if git
+          deadline = @facts.git_deadline
+          rows.each { |row| row.merge!(unsaved_for(row[:project], deadline)) }
+        end
 
         if json
-          @output.puts JSON.generate({"schema_version" => JSON_SCHEMA_VERSION, "projects" => rows.map { |row| json_row(row) }})
+          @output.puts JSON.generate({"schema_version" => JSON_SCHEMA_VERSION, "projects" => rows.map { |row| json_row(row, git: git) }})
         elsif rows.empty?
           @output.puts running_only ? "No projects with a running workspace." : "No projects. Run 'workspace add' to create one."
         else
-          print_table(rows)
+          print_table(rows, git: git)
         end
         {exit_code: 0}
       rescue => e
@@ -116,9 +117,28 @@ module Workspace
         {project: project, running: running}
       end
 
-      def json_row(row)
+      # Unsaved-work counts over every checkout of a git project, unconfigured
+      # worktrees included; `unsaved` is nil for a project with no git
+      # repository to ask. Checkouts that are gone are counted as `missing`,
+      # not in `total`, so a gone checkout never reads as clean. All projects
+      # share +deadline+. When the worktree listing ran out of time the
+      # unconfigured worktrees are unknown: `unconfigured` is nil and the
+      # counts are marked `incomplete`, so they never read as clean.
+      def unsaved_for(project, deadline)
+        checkouts = @facts.git_checkouts(project, deadline: deadline)
+        unconfigured = checkouts[:members].count { |member| !member.configured } if checkouts[:listed]
+        facts = checkouts[:facts].compact
+        return {unsaved: nil, unconfigured: unconfigured} if facts.empty?
+        unsaved = facts.map { |fact| fact["unsaved"] }
+        present = unsaved.size - unsaved.count("missing")
+        {unsaved: {"members" => unsaved.count { |u| %w[yes unknown].include?(u) }, "unknown" => unsaved.count("unknown"),
+                   "missing" => unsaved.count("missing"), "total" => present, "incomplete" => !checkouts[:listed]},
+         unconfigured: unconfigured}
+      end
+
+      def json_row(row, git:)
         project = row[:project]
-        {
+        json = {
           "name" => project.name,
           "id" => project.id,
           "path" => project.path,
@@ -126,40 +146,60 @@ module Workspace
           "workspaces" => project.members.size,
           "running" => row[:running]
         }
+        if git
+          json["unsaved"] = row[:unsaved]&.slice("members", "unknown", "missing", "total", "incomplete")
+          json["unconfigured_worktrees"] = row[:unconfigured]
+        end
+        json
       end
 
-      def print_table(rows)
+      def print_table(rows, git: false)
         name_counts = rows.map { |row| row[:project].name }.tally
         lines = rows.map do |row|
           project = row[:project]
-          [project.name, project.members.size.to_s, row[:running].to_s, abbreviate(project.path), notes_for(project, name_counts)]
+          [project.name, project.members.size.to_s, row[:running].to_s, (unsaved_label(row[:unsaved]) if git), abbreviate(project.path),
+            notes_for(project, name_counts, row[:unconfigured], unlisted: git && row[:unconfigured].nil? && !row[:unsaved].nil?)].compact
         end
-        header = %w[PROJECT WORKSPACES RUNNING PATH NOTE]
+        header = ["PROJECT", "WORKSPACES", "RUNNING", ("UNSAVED" if git), "PATH", "NOTE"].compact
         widths = header.each_index.map { |i| ([header[i]] + lines.map { |line| line[i] }).map(&:length).max }
-        @output.puts format_line(header[0, 4], widths, note: header[4])
-        lines.each { |line| @output.puts format_line(line[0, 4], widths, note: line[4]) }
+        ([header] + lines).each { |line| @output.puts format_line(line[0...-1], widths, note: line.last) }
+      end
+
+      # "2 of 3" checkouts unsaved, "unknown" when git couldn't answer for any of them,
+      # "missing" when every checkout is gone, "-" without git. Gone checkouts are
+      # left out of the total and named at the end: "2 of 3 (1 missing)".
+      def unsaved_label(unsaved)
+        return "-" unless unsaved
+        return "missing" if unsaved["total"].zero? && !unsaved["incomplete"]
+        return "unknown" if unsaved["unknown"] == unsaved["total"] && !unsaved["incomplete"]
+        notes = []
+        notes << "worktrees not listed" if unsaved["incomplete"]
+        notes << "#{unsaved["unknown"]} unknown" if unsaved["unknown"].positive?
+        notes << "#{unsaved["missing"]} missing" if unsaved["missing"].positive?
+        label = "#{unsaved["members"]} of #{unsaved["total"]}"
+        notes.empty? ? label : "#{label} (#{notes.join(", ")})"
       end
 
       def format_line(cells, widths, note: nil)
         "#{cells.each_with_index.map { |cell, i| cell.ljust(widths[i]) }.join("  ")}  #{note}".rstrip
       end
 
-      def notes_for(project, name_counts)
+      def notes_for(project, name_counts, unconfigured = 0, unlisted: false)
+        unconfigured = unconfigured.to_i
         notes = []
         notes << "no git" if project.vcs == "none"
         notes << "broken checkout" if project.vcs == "broken"
         notes << "checkout missing" if project.members.none?(&:exists)
         notes << "same name" if name_counts[project.name] > 1
+        notes << "unconfigured worktrees unknown" if unlisted
+        notes << "#{unconfigured} unconfigured #{(unconfigured == 1) ? "worktree" : "worktrees"}" if unconfigured.positive?
         notes.empty? ? "" : "(#{notes.join(", ")})"
       end
 
-      def show_payload(project, agents:, timeout:)
-        sessions = running_sessions
-        @state.load
-        members = project.members.map { |member| member_facts(member, sessions, agents: agents, timeout: timeout) }
-        errors = {}
-        locks = lock_facts(project, errors)
-        dev = dev_facts(project, errors)
+      def show_payload(project, agents:, git:, timeout:)
+        gathered = @facts.for_project(project, sessions: running_sessions, agents: agents, timeout: timeout || DEFAULT_AGENT_TIMEOUT,
+          git: git, git_timeout: timeout)
+        members, locks, dev, errors = gathered.values_at(:members, :locks, :dev, :errors)
         payload = {
           "schema_version" => JSON_SCHEMA_VERSION,
           "project" => {"name" => project.name, "id" => project.id, "path" => project.path, "vcs" => project.vcs},
@@ -167,124 +207,18 @@ module Workspace
           "locks" => locks,
           "dev" => dev,
           "summary" => {
-            "workspaces" => members.size,
+            "workspaces" => members.count { |m| m["configured"] },
             "running" => members.count { |m| m["running"] },
             "open_asks" => members.sum { |m| m["open_asks"].to_i },
             "pipeline_entries" => members.sum { |m| m.dig("pipeline", "entries").to_i }
           }
         }
+        git_facts = members.filter_map { |m| m["git"] }
+        payload["summary"]["unsaved_members"] = git_facts.empty? ? nil : git_facts.count { |g| %w[yes unknown].include?(g["unsaved"]) }
         payload["summary"]["waiting_agents"] = agents ? members.sum { |m| m.dig("agents", "counts", "waiting").to_i } : nil
         payload["summary"]["agents_unavailable"] = agents ? members.count { |m| m.dig("agents", "reason").to_s.match?(/\A(no_daemon|timeout|error)\z/) } : nil
         payload["errors"] = errors unless errors.empty?
         payload
-      end
-
-      # A missing checkout has no sessions or state worth reading, so its
-      # counts are nil (unknown) rather than 0.
-      def member_facts(member, sessions, agents:, timeout:)
-        workspace = member.workspace
-        running = member.exists && sessions.include?(@tmux.session_name_for(workspace))
-        entries = member.exists ? pipeline_entries(workspace) : nil
-        {
-          "workspace" => workspace,
-          "path" => member.path,
-          "kind" => member.kind,
-          "configured" => member.configured,
-          "exists" => member.exists,
-          "running" => running ? true : false,
-          "headless" => headless?(workspace),
-          "open_asks" => member.exists ? open_asks(workspace) : nil,
-          "pipeline" => entries && {"entries" => entries},
-          "agents" => agent_facts(workspace, running, agents: agents, timeout: timeout)
-        }
-      end
-
-      # nil with --no-agents; a workspace that isn't running has no daemon to ask.
-      def agent_facts(workspace, running, agents:, timeout:)
-        return nil unless agents
-        return {"available" => false, "reason" => "not_running"} unless running
-        @agents.facts(workspace, timeout: timeout || DEFAULT_AGENT_TIMEOUT)
-      end
-
-      def headless?(workspace)
-        info = @state[workspace]
-        (info.is_a?(Hash) && info["headless"]) ? true : false
-      end
-
-      def open_asks(workspace)
-        AskStore.new(path: @config.ask_state_path(workspace), error_output: @error_output).list(open_only: true).size
-      rescue Workspace::Error => e
-        @error_output.puts "workspace projects: not counting open questions for #{workspace}: #{e.message}"
-        nil
-      end
-
-      def pipeline_entries(workspace)
-        path = @config.pipeline_state_path(workspace)
-        return 0 unless File.exist?(path)
-        entries = JSON.parse(File.read(path))
-        entries.is_a?(Hash) ? entries.size : 0
-      rescue JSON::ParserError, SystemCallError
-        @error_output.puts "workspace projects: could not read #{workspace}'s pipeline state at #{path}"
-        nil
-      end
-
-      # Locks and the dev environment live in the repository's shared lock
-      # store, so they are read once for the project, from its main checkout.
-      def lock_facts(project, errors)
-        return {} unless project_dir?(project)
-        store = LockStore.new(dir: @lock_namespace.resolve(cwd: project.path)[:dir], liveness: @lock_holder)
-        store.status.each_with_object({}) do |(name, entry), locks|
-          locks[name] = {
-            "holder" => entry["holder"] && lock_record(entry["holder"], project),
-            "queue" => (entry["queue"] || []).map { |waiter| lock_record(waiter, project) }
-          }
-        end
-      rescue Workspace::Error => e
-        errors["locks"] = e.message
-        nil
-      end
-
-      def dev_facts(project, errors)
-        return nil unless project_dir?(project)
-        payload = @dev.status_payload(working_dir: project.path)
-        holder = payload["holder"]
-        {
-          "running" => payload["running"],
-          "ready" => payload["ready"],
-          "holder_workspace" => payload["running"] ? workspace_at(holder["worktree"], project) : nil
-        }
-      rescue Workspace::Error => e
-        errors["dev"] = e.message
-        nil
-      end
-
-      def project_dir?(project)
-        !project.path.to_s.empty? && File.directory?(project.path)
-      end
-
-      def lock_record(record, project)
-        {
-          "workspace" => workspace_at(record["worktree"], project),
-          "path" => record["worktree"],
-          "pid" => record["pid"] || record["waiter_pid"],
-          "stale" => record["stale"] ? true : false
-        }
-      end
-
-      # The member whose checkout contains +path+ (the deepest one wins, since
-      # worktrees can sit inside the main checkout), or nil for a path that
-      # belongs to no configured member.
-      def workspace_at(path, project)
-        return nil if path.to_s.empty?
-        target = begin
-          File.realpath(path)
-        rescue SystemCallError
-          File.expand_path(path)
-        end
-        member = project.members
-          .select { |m| !m.path.empty? && (target == m.path || target.start_with?("#{m.path}/")) }
-          .max_by { |m| m.path.length }
-        member&.workspace
       end
 
       def print_show(project, payload)
@@ -307,13 +241,18 @@ module Workspace
 
       def print_members(members)
         with_agents = members.any? { |m| m["agents"] }
-        header = ["WORKSPACE", "KIND", "RUN", ("AGENTS" if with_agents), "ASKS", "PIPE", "NOTE"].compact
+        with_git = members.any? { |m| m["git"] }
+        header = ["WORKSPACE", "KIND", ("BRANCH" if with_git), "RUN", ("AGENTS" if with_agents), "ASKS", "PIPE", ("GIT" if with_git), "NOTE"].compact
         rows = members.map do |m|
-          if m["exists"]
-            [m["workspace"], m["kind"], run_label(m), (agents_label(m["agents"]) if with_agents), (m["open_asks"] || "?").to_s,
-              (m.dig("pipeline", "entries") || "?").to_s, ""].compact
+          name = m["workspace"] || "(no config)"
+          branch = with_git ? (m.dig("git", "branch") || "-") : nil
+          if !m["exists"]
+            [name, m["kind"], branch, "-", ("-" if with_agents), "-", "-", ("-" if with_git), "MISSING (checkout gone)"].compact
+          elsif !m["configured"]
+            [name, m["kind"], branch, "-", ("-" if with_agents), "-", "-", (git_label(m["git"]) if with_git), ""].compact
           else
-            [m["workspace"], m["kind"], "-", ("-" if with_agents), "-", "-", "MISSING (checkout gone)"].compact
+            [name, m["kind"], branch, run_label(m), (agents_label(m["agents"]) if with_agents), (m["open_asks"] || "?").to_s,
+              (m.dig("pipeline", "entries") || "?").to_s, (git_label(m["git"]) if with_git), ""].compact
           end
         end
         widths = header.each_index.map { |i| ([header[i]] + rows.map { |row| row[i] }).map(&:length).max }
@@ -329,6 +268,17 @@ module Workspace
           "#{count} #{state}" if count.positive?
         end
         parts.empty? ? "none" : parts.join(", ")
+      end
+
+      # Unknown is shown as unsaved, since that is how kill and prune treat it.
+      def git_label(git)
+        return "-" if git.nil?
+        return "#{(git["reason"] == "timeout") ? "timed out" : "unknown"} (treated as unsaved)" if git["unsaved"] == "unknown"
+        return "-" if git["unsaved"] == "missing"
+        parts = []
+        parts << "#{git["changed_files"]} changed" if git["changed_files"].to_i.positive?
+        parts << "#{git["unpushed_commits"]} unpushed" if git["unpushed_commits"].to_i.positive?
+        parts.empty? ? "clean" : parts.join(", ")
       end
 
       def run_label(member)
