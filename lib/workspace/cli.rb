@@ -63,9 +63,12 @@ module Workspace
     # @param projects_command [Workspace::Commands::Projects, nil] pre-built projects command
     # @param project_actions_command [Workspace::Commands::ProjectActions, nil] pre-built project-wide actions command
     # @param clock [#call] returns the current Time, for relative deadline display
+    # @param liveness [#call, nil] maps project names to true, false, or nil
+    #   (alive, dead, can't tell) for `list --liveness` and `status`; nil
+    #   reports every project as unknown
     # @param launch_mode [Workspace::LaunchMode, nil] decides whether launch/start
     #   run headless when no --[no-]headless flag is given; nil builds one
-    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, restart_agent_command: nil, handoff_command: nil, projects_command: nil, project_actions_command: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil)
+    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, restart_agent_command: nil, handoff_command: nil, projects_command: nil, project_actions_command: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil, liveness: nil)
       @config = config
       @state = state
       @project_config = project_config
@@ -117,6 +120,7 @@ module Workspace
       @working_dir = working_dir
       @clock = clock
       @launch_mode = launch_mode || LaunchMode.new(project_settings: project_settings)
+      @liveness = liveness || ->(names) { names.to_h { |name| [name, nil] } }
     end
 
     # Parses the subcommand from argv and dispatches to the appropriate method.
@@ -2914,10 +2918,13 @@ module Workspace
       all = false
       json = false
       show_urls = false
+      show_liveness = false
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: workspace list [options]"
         opts.separator ""
         opts.separator "List currently active (launched) projects."
+        opts.separator "Plain list reads the state file and does not check that each project is still"
+        opts.separator "running; add --liveness to check each project's tmux session."
         opts.separator ""
         opts.separator "Options:"
         opts.on("--all", "List all available projects (not just active ones)") do
@@ -2925,6 +2932,7 @@ module Workspace
         end
         opts.on("--json", "Output as JSON") { json = true }
         opts.on("--show-urls", "Include the git origin URL alongside each project name") { show_urls = true }
+        opts.on("--liveness", "Mark each active project alive, dead, or unknown from its tmux session") { show_liveness = true }
         opts.separator ""
         opts.separator "Examples:"
         opts.separator "  workspace list    # list active (launched) projects"
@@ -2932,9 +2940,13 @@ module Workspace
         opts.separator "  workspace list-projects    # alias for 'list --all'"
         opts.separator "  workspace list --show-urls    # each active project with its git origin URL"
         opts.separator "  workspace list --json    # active projects as JSON"
+        opts.separator "  workspace list --liveness    # each active project marked [alive], [dead], or [unknown]"
+        opts.separator "  workspace list --liveness --json    # [{\"name\":\"my-notes\",\"alive\":true},...]"
         opts.separator "  workspace list --all --json --show-urls    # all projects with directories and URLs as JSON"
       end
       parser.parse!(args)
+
+      raise Workspace::UsageError, "--liveness applies to active projects and can't be combined with --all" if all && show_liveness
 
       if all
         if json
@@ -2971,7 +2983,9 @@ module Workspace
         return
       end
 
-      if json && show_urls
+      if show_liveness
+        list_with_liveness(json: json, show_urls: show_urls)
+      elsif json && show_urls
         projects = @state.keys.sort.map do |name|
           root = @project_config.project_root_for(name)
           dir = root ? File.expand_path(root) : nil
@@ -2999,14 +3013,16 @@ module Workspace
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: workspace status [options]"
         opts.separator ""
-        opts.separator "Show detailed state of tracked launcher sessions."
+        opts.separator "Show detailed state of tracked launcher sessions. Each is marked [alive] (its tmux"
+        opts.separator "session exists), [dead] (the session is gone; remove it with 'workspace cleanup'),"
+        opts.separator "or [unknown] (tmux didn't answer, or the project uses a custom tmux socket)."
         opts.separator ""
         opts.separator "Options:"
         opts.on("--json", "Output as JSON") { json = true }
         opts.separator ""
         opts.separator "Examples:"
         opts.separator "  workspace status          # tracked sessions with window ids, headless ones marked"
-        opts.separator "  workspace status --json   # machine-readable state (unique ids, window ids)"
+        opts.separator "  workspace status --json   # machine-readable state (unique ids, window ids, alive: true/false/null)"
         opts.separator "  workspace status --json | jq -r '.[\"my-notes\"].iterm_window_id'    # one project's window id"
       end
       parser.parse!(args)
@@ -3022,8 +3038,9 @@ module Workspace
         return
       end
 
+      alive = @liveness.call(@state.keys)
       if json
-        @output.puts JSON.pretty_generate(@state.to_h)
+        @output.puts JSON.pretty_generate(@state.to_h.to_h { |project, info| [project, info.merge("alive" => alive[project])] })
       else
         @state.each do |project, info|
           wid = info["iterm_window_id"]
@@ -3032,8 +3049,46 @@ module Workspace
           else
             wid ? "  window_id=#{wid}" : ""
           end
-          @output.puts "  #{project}#{wid_str}  [alive]"
+          @output.puts "  #{project}#{wid_str}  [#{liveness_label(alive[project])}]"
         end
+      end
+    end
+
+    def liveness_label(alive)
+      case alive
+      when true then "alive"
+      when false then "dead"
+      else "unknown"
+      end
+    end
+
+    def list_with_liveness(json:, show_urls:)
+      names = @state.keys.sort
+      alive = @liveness.call(names)
+      entries = names.map do |name|
+        entry = {"name" => name}
+        if show_urls
+          root = @project_config.project_root_for(name)
+          dir = root ? File.expand_path(root) : nil
+          entry["directory"] = dir
+          entry["url"] = dir ? @git.remote_url(dir) : nil
+        end
+        entry["alive"] = alive[name]
+        entry
+      end
+
+      if json
+        @output.puts JSON.generate(entries)
+        return
+      end
+
+      name_width = entries.map { |e| e["name"].length }.max
+      url_width = show_urls ? entries.map { |e| e["url"].to_s.length }.max : 0
+      entries.each do |e|
+        cells = [e["name"].ljust(name_width)]
+        cells << e["url"].to_s.ljust(url_width) if show_urls
+        cells << "[#{liveness_label(e["alive"])}]"
+        @output.puts cells.join("  ")
       end
     end
 

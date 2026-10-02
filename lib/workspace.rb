@@ -74,6 +74,7 @@ require_relative "workspace/window_manager"
 require_relative "workspace/window_layout"
 require_relative "workspace/project_settings"
 require_relative "workspace/process_tree"
+require_relative "workspace/liveness"
 require_relative "workspace/agent_readiness"
 require_relative "workspace/agent_restart"
 require_relative "workspace/workspace_lineage"
@@ -347,6 +348,7 @@ module Workspace
       statusline_command: statusline_command,
       ask_command: ask_command,
       launch_mode: launch_mode,
+      liveness: Liveness.new(tmux: tmux),
       restart_agent_command: restart_agent_command,
       handoff_command: handoff_command,
       logger: logger,

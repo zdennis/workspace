@@ -103,7 +103,8 @@ RSpec.describe Workspace::CLI do
       input: input,
       working_dir: working_dir,
       clock: overrides[:clock] || -> { Time.now },
-      launch_mode: overrides[:launch_mode] || CLITestHelpers.launch_mode(headless: false)
+      launch_mode: overrides[:launch_mode] || CLITestHelpers.launch_mode(headless: false),
+      liveness: overrides[:liveness] || ->(names) { names.to_h { |name| [name, true] } }
     )
     [cli, output, error_output, hook_runner]
   end
@@ -534,6 +535,97 @@ RSpec.describe Workspace::CLI do
       cli, output, _ = build_test_cli
       cli.run(["status", "--json"])
       expect(JSON.parse(output.string)).to eq({})
+    end
+  end
+
+  describe "#run with status liveness" do
+    let(:state) do
+      CLITestHelpers::FakeState.new.tap do |s|
+        s["up"] = {"unique_id" => "u1", "iterm_window_id" => 1}
+        s["gone"] = {"unique_id" => "u2", "iterm_window_id" => 2}
+        s["hl"] = {"headless" => true}
+      end
+    end
+    let(:liveness) { ->(names) { {"up" => true, "gone" => false, "hl" => nil}.slice(*names) } }
+
+    it "marks each session alive, dead, or unknown from tmux" do
+      cli, output, _ = build_test_cli(state: state, liveness: liveness)
+      cli.run(["status"])
+      expect(output.string).to include("up  window_id=1  [alive]")
+      expect(output.string).to include("gone  window_id=2  [dead]")
+      expect(output.string).to include("hl  headless  [unknown]")
+    end
+
+    it "adds an alive key to each entry with --json and keeps the rest" do
+      cli, output, _ = build_test_cli(state: state, liveness: liveness)
+      cli.run(["status", "--json"])
+      result = JSON.parse(output.string)
+      expect(result["up"]).to eq("unique_id" => "u1", "iterm_window_id" => 1, "alive" => true)
+      expect(result["gone"]["alive"]).to eq(false)
+      expect(result["hl"]).to eq("headless" => true, "alive" => nil)
+    end
+
+    it "does not write alive into the state file" do
+      cli, _, _ = build_test_cli(state: state, liveness: liveness)
+      cli.run(["status", "--json"])
+      expect(state["up"]).to eq("unique_id" => "u1", "iterm_window_id" => 1)
+    end
+  end
+
+  describe "#run with list --liveness" do
+    let(:state) do
+      CLITestHelpers::FakeState.new.tap do |s|
+        s["up"] = {"unique_id" => "u1"}
+        s["gone"] = {"unique_id" => "u2"}
+      end
+    end
+    let(:liveness) { ->(names) { {"up" => true, "gone" => false}.slice(*names) } }
+
+    it "leaves plain list output as bare names" do
+      cli, output, _ = build_test_cli(state: state, liveness: liveness)
+      cli.run(["list"])
+      expect(output.string).to eq("gone\nup\n")
+    end
+
+    it "marks each project alive or dead" do
+      cli, output, _ = build_test_cli(state: state, liveness: liveness)
+      cli.run(["list", "--liveness"])
+      expect(output.string).to eq("gone  [dead]\nup    [alive]\n")
+    end
+
+    it "prints name and alive objects with --json" do
+      cli, output, _ = build_test_cli(state: state, liveness: liveness)
+      cli.run(["list", "--liveness", "--json"])
+      expect(JSON.parse(output.string)).to eq([{"name" => "gone", "alive" => false}, {"name" => "up", "alive" => true}])
+    end
+
+    it "keeps url and directory with --show-urls --json" do
+      git = Object.new.tap { |g| g.define_singleton_method(:remote_url) { |_| "git@h:o/r.git" } }
+      pc = CLITestHelpers::FakeProjectConfig.new({"up" => "/tmp/up"})
+      cli, output, _ = build_test_cli(state: state, liveness: liveness, git: git, project_config: pc)
+      cli.run(["list", "--liveness", "--show-urls", "--json"])
+      up = JSON.parse(output.string).find { |e| e["name"] == "up" }
+      expect(up).to eq("name" => "up", "directory" => "/tmp/up", "url" => "git@h:o/r.git", "alive" => true)
+    end
+
+    it "shows the alive marker after the url column" do
+      git = Object.new.tap { |g| g.define_singleton_method(:remote_url) { |_| "u" } }
+      pc = CLITestHelpers::FakeProjectConfig.new({"up" => "/tmp/up"})
+      cli, output, _ = build_test_cli(state: state, liveness: liveness, git: git, project_config: pc)
+      cli.run(["list", "--liveness", "--show-urls"])
+      expect(output.string).to include("up    u  [alive]")
+    end
+
+    it "refuses --all, which lists configs rather than active projects" do
+      cli, _, error_output = build_test_cli(state: state, liveness: liveness)
+      expect { cli.run(["list", "--all", "--liveness"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+      expect(error_output.string).to include("can't be combined with --all")
+    end
+
+    it "reports an empty list as before" do
+      cli, output, _ = build_test_cli(liveness: liveness)
+      cli.run(["list", "--liveness", "--json"])
+      expect(output.string.strip).to eq("[]")
     end
   end
 
