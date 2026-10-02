@@ -645,6 +645,24 @@ RSpec.describe Workspace::Commands::ProjectActions do
         expect(kill_calls.size).to eq(1)
       end
 
+      context "when input is off" do
+        let(:input) { Workspace::PromptInput.new(StringIO.new("y\n"), no_input: true) }
+
+        it "refuses with confirmation_required and offers --yes, killing nothing" do
+          expect { command.kill(name: "app") }.to raise_error(Workspace::Error) { |e|
+            expect(e.code).to eq("confirmation_required")
+            expect(e.retry).to eq({"flags" => ["--yes"], "destructive" => true})
+          }
+          expect(kill_calls).to be_empty
+        end
+
+        it "still kills with yes" do
+          command.kill(name: "app", yes: true)
+
+          expect(kill_calls.size).to eq(1)
+        end
+      end
+
       it "still asks under force" do
         command.kill(name: "app", force: true)
 

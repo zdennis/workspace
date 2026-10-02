@@ -17,6 +17,7 @@ workspace ask answer <id> "<answer>" [--json]
 | `--default TEXT` | The default the agent took (required) |
 | `--context TEXT` | Free-text pointer to the code in question, e.g. `"lib/cache.rb:12"` |
 | `--json` | Emit the documented JSON schema instead of a message |
+| `--name WS` | Act on workspace `WS` instead of the one detected from cwd |
 
 ## Details
 

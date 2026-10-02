@@ -24,6 +24,12 @@ workspace config set dev.ready_timeout 2m         # wait for the dev.ready check
 
 `dev.ready` is either `port:N` (passes once `localhost:N` accepts a TCP connection) or a shell command run in the worktree (passes on exit 0).
 
+## Options (every subcommand)
+
+| Option | Description |
+|--------|-------------|
+| `--name WS` | Act on workspace `WS` instead of the one detected from cwd |
+
 ## Options (up)
 
 | Option | Description |

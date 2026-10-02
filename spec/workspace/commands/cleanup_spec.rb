@@ -72,6 +72,18 @@ RSpec.describe Workspace::Commands::Cleanup do
       end
 
       context "without force flag" do
+        context "when input is off" do
+          let(:input) { Workspace::PromptInput.new(StringIO.new, no_input: true) }
+
+          it "refuses with confirmation_required and offers --force, removing nothing" do
+            expect { command.call }.to raise_error(Workspace::Error) { |e|
+              expect(e.code).to eq("confirmation_required")
+              expect(e.retry).to eq({"flags" => ["--force"], "destructive" => true})
+            }
+            expect(output.string).not_to include("Cancelled")
+          end
+        end
+
         it "lists zombies and prompts for confirmation" do
           input.string = "n\n"
           input.rewind

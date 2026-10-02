@@ -16,7 +16,7 @@ workspace config unset <key> [--project NAME]
 | Option | Description |
 |--------|-------------|
 | `--global` | Show global configuration instead of project config |
-| `--project NAME` | (`set`/`get`/`unset`) Configure this project instead of the one inferred from cwd |
+| `--project NAME`, `--name NAME` | (`set`/`get`/`unset`) Configure this project instead of the one inferred from cwd; the two are the same option |
 
 ## Details
 

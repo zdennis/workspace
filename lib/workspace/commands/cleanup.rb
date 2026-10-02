@@ -39,8 +39,7 @@ module Workspace
         list_zombies(zombies)
 
         unless force
-          @output.print "\nRemove these #{zombies.size} zombie session(s) from state? [y/N] "
-          answer = @input.gets&.strip
+          answer = Prompt.ask(@input, @output, "\nRemove these #{zombies.size} zombie session(s) from state? [y/N] ", retry_flags: ["--force"], destructive: true)&.strip
           unless answer&.match?(/\Ay(es)?\z/i)
             @output.puts "Cancelled."
             return []

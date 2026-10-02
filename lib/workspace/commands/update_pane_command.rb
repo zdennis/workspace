@@ -38,9 +38,8 @@ module Workspace
         adjusted_index = pane_index - 1
 
         if adjusted_index >= pane_count
-          @output.print "\nPane #{pane_index} does not exist (project has #{pane_count} pane(s)). " \
-            "Add a new pane with command #{command.inspect}? [y/N] "
-          answer = @input.gets&.strip
+          answer = Prompt.ask(@input, @output, "\nPane #{pane_index} does not exist (project has #{pane_count} pane(s)). " \
+            "Add a new pane with command #{command.inspect}? [y/N] ")&.strip
           unless answer&.match?(/\Ay(es)?\z/i)
             @output.puts "Cancelled."
             return

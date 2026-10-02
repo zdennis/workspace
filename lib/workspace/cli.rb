@@ -133,6 +133,7 @@ module Workspace
     def run(argv)
       args = argv.dup
       @logger.enable! if args.delete("--debug")
+      @input.no_input! if take_no_input_flag!(args) && @input.respond_to?(:no_input!)
       subcommand = args.shift
       @logger.debug { "subcommand=#{subcommand} args=#{args.inspect}" }
 
@@ -289,6 +290,33 @@ module Workspace
       @exit_handler.exit(exit_code)
     end
 
+    # Removes `--no-input` from `args` wherever it appears before a bare `--`,
+    # so every subcommand accepts it without declaring it.
+    #
+    # @param args [Array<String>] arguments, modified in place
+    # @return [Boolean] whether the flag was present
+    def take_no_input_flag!(args)
+      stop = args.index("--") || args.size
+      found = args.first(stop).include?("--no-input")
+      args.replace(args.first(stop).reject { |arg| arg == "--no-input" } + args.drop(stop)) if found
+      found
+    end
+
+    # The directory a per-workspace command acts from: the named workspace's
+    # root for `--name`, else the detected working directory.
+    #
+    # @param name [String, nil] value of `--name`
+    # @return [String]
+    # @raise [Workspace::Error] code `unknown_workspace` when no such workspace exists
+    def working_dir_for(name)
+      return @working_dir unless name
+
+      root = @project_config.project_root_for(name)
+      raise Error.new("Unknown project '#{name}'", code: "unknown_workspace", details: {"name" => name}) unless root
+
+      File.expand_path(root)
+    end
+
     # Whether `--json` appears as its own argument before a bare `--`.
     #
     # @param argv [Array<String>]
@@ -362,11 +390,15 @@ module Workspace
 
         Global options:
           --debug         Print detailed debug output to stderr
+          --no-input      Never wait for an answer: a prompt fails with code confirmation_required
+                          (with --json, an error document naming the prompt and the flag that
+                          answers it). Same as WORKSPACE_NO_INPUT=1.
 
         Run 'workspace <subcommand> --help' for subcommand-specific help.
 
         Environment variables:
           WORKSPACE_DEBUG   Enable debug output (same as --debug)
+          WORKSPACE_NO_INPUT  Fail prompts instead of asking (same as --no-input; empty, 0 and false mean off)
       HELP
     end
 
@@ -1233,7 +1265,7 @@ module Workspace
 
       # The subcommand is the first non-option argument, so a leading flag
       # (e.g. `ask --json list`) doesn't get mistaken for the question text.
-      index = args.index { |a| !a.start_with?("-") }
+      index = args.each_index.find { |i| !args[i].start_with?("-") && !(i.positive? && args[i - 1] == "--name") }
       subcommand = index && args[index]
       rest = index ? args[0...index] + args[(index + 1)..] : args
 
@@ -1263,6 +1295,10 @@ module Workspace
         A first word of list, answer, resolve or help is a subcommand only
         without --default; `workspace ask list --default x` records "list".
 
+        Options (every subcommand):
+          --name WS         Act on workspace WS instead of the one detected from the
+                            current directory
+
         Options (recording a question):
           --default TEXT    The default the agent took (required)
           --context TEXT    Free-text pointer to the code in question, e.g. "file.rb:42"
@@ -1281,11 +1317,13 @@ module Workspace
     end
 
     def cmd_ask_record(args)
+      workspace = nil
       default = nil
       context = nil
       json = false
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: workspace ask \"<question>\" --default \"<default taken>\" [options]"
+        opts.on("--name NAME", "Workspace to act on instead of the one detected from cwd") { |v| workspace = v }
         opts.on("--default TEXT", "The default the agent took (required)") { |v| default = v }
         opts.on("--context TEXT", "Free-text pointer to the code in question, e.g. \"file.rb:42\"") { |v| context = v }
         opts.on("--json", "Emit the documented JSON schema instead of a message") { json = true }
@@ -1298,7 +1336,7 @@ module Workspace
         return emit_json_usage_error(Commands::Ask::JSON_SCHEMA_VERSION, "workspace ask: a question and --default are required.")
       end
 
-      result = @ask_command.call(question: question, default: default, context: context, working_dir: @working_dir, json: json)
+      result = @ask_command.call(question: question, default: default, context: context, working_dir: working_dir_for(workspace), json: json)
       @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
     rescue OptionParser::ParseError => e
       raise unless json_requested?(json, args)
@@ -1306,15 +1344,17 @@ module Workspace
     end
 
     def cmd_ask_list(args)
+      workspace = nil
       json = false
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: workspace ask list [--json]"
+        opts.on("--name NAME", "Workspace to act on instead of the one detected from cwd") { |v| workspace = v }
         opts.on("--json", "Emit the documented JSON schema instead of a table") { json = true }
       end
       parser.parse!(args)
       raise UsageError, parser.help if args.any?
 
-      result = @ask_command.list(working_dir: @working_dir, json: json)
+      result = @ask_command.list(working_dir: working_dir_for(workspace), json: json)
       @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
     rescue OptionParser::ParseError => e
       raise unless json_requested?(json, args)
@@ -1322,9 +1362,11 @@ module Workspace
     end
 
     def cmd_ask_answer(args)
+      workspace = nil
       json = false
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: workspace ask answer <id> \"<answer>\" [--json]"
+        opts.on("--name NAME", "Workspace to act on instead of the one detected from cwd") { |v| workspace = v }
         opts.on("--json", "Emit the documented JSON schema instead of a message") { json = true }
       end
       parser.parse!(args)
@@ -1336,7 +1378,7 @@ module Workspace
         return emit_json_usage_error(Commands::Ask::JSON_SCHEMA_VERSION, "workspace ask answer: an id and an answer are required.")
       end
 
-      result = @ask_command.answer(id, answer, working_dir: @working_dir, json: json)
+      result = @ask_command.answer(id, answer, working_dir: working_dir_for(workspace), json: json)
       @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
     rescue OptionParser::ParseError => e
       raise unless json_requested?(json, args)
@@ -1377,6 +1419,10 @@ module Workspace
                                      removed.
           instructions [<name>]      Print the prompt block that tells a coding
                                      agent how to use the lock (default: edit)
+
+        Options (every subcommand):
+          --name WS         Act on workspace WS instead of the one detected from the
+                            current directory (the lock namespace is WS's repository)
 
         Options (acquire):
           --task TEXT       Free-text description shown to other waiters
@@ -1449,12 +1495,14 @@ module Workspace
     end
 
     def cmd_lock_acquire(args)
+      workspace = nil
       task = nil
       wait = false
       poll = Commands::Lock::DEFAULT_POLL_SECONDS
       max_wait = nil
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: workspace lock acquire <name> [options]"
+        opts.on("--name NAME", "Workspace to act on instead of the one detected from cwd") { |v| workspace = v }
         opts.on("--task TEXT", "Free-text description shown to other waiters") { |v| task = v }
         opts.on("--wait", "Enqueue and poll instead of refusing when busy") { wait = true }
         opts.on("--poll DURATION", "Time between polls while waiting (e.g. \"5s\", or a plain number of seconds)") { |v| poll = parse_duration_option("--poll", v) }
@@ -1465,7 +1513,7 @@ module Workspace
       name = args.shift
       raise UsageError, parser.help if name.nil? || args.any?
 
-      result = @lock_command.acquire(name, task: task, wait: wait, poll: poll, max_wait: max_wait, working_dir: @working_dir)
+      result = @lock_command.acquire(name, task: task, wait: wait, poll: poll, max_wait: max_wait, working_dir: working_dir_for(workspace))
       @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
     end
 
@@ -1518,9 +1566,11 @@ module Workspace
     end
 
     def cmd_lock_release(args)
+      workspace = nil
       all = false
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: workspace lock release [<name>|--all]"
+        opts.on("--name NAME", "Workspace to act on instead of the one detected from cwd") { |v| workspace = v }
         opts.on("--all", "Release every lock this agent holds") { all = true }
       end
       parser.parse!(args)
@@ -1528,14 +1578,16 @@ module Workspace
       name = args.shift
       raise UsageError, parser.help if (!all && name.nil?) || (all && name) || args.any?
 
-      result = @lock_command.release(name, all: all, working_dir: @working_dir)
+      result = @lock_command.release(name, all: all, working_dir: working_dir_for(workspace))
       @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
     end
 
     def cmd_lock_status(args)
+      workspace = nil
       json = false
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: workspace lock status [<name>] [--json]"
+        opts.on("--name NAME", "Workspace to act on instead of the one detected from cwd") { |v| workspace = v }
         opts.on("--json", "Emit the documented JSON schema instead of a table (see docs/README.lock.md)") { json = true }
         opts.separator ""
         opts.separator "Audit trail: locks.jsonl next to locks.json; see docs/README.lock.md."
@@ -1545,7 +1597,7 @@ module Workspace
       name = args.shift
       raise UsageError, parser.help if args.any?
 
-      result = @lock_command.status(name, working_dir: @working_dir, json: json)
+      result = @lock_command.status(name, working_dir: working_dir_for(workspace), json: json)
       @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
     rescue OptionParser::ParseError, UsageError => e
       raise unless json_requested?(json, args)
@@ -1553,10 +1605,12 @@ module Workspace
     end
 
     def cmd_lock_clear(args)
+      workspace = nil
       all = false
       json = false
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: workspace lock clear [<name>|--all] [--json]"
+        opts.on("--name NAME", "Workspace to act on instead of the one detected from cwd") { |v| workspace = v }
         opts.on("--all", "Clear every lock in this namespace") { all = true }
         opts.on("--json", "Emit the documented JSON schema instead of text (see docs/README.lock.md)") { json = true }
       end
@@ -1566,7 +1620,7 @@ module Workspace
       raise UsageError, parser.help if (!all && name.nil?) || (all && name)
       raise UsageError, "workspace lock clear: too many arguments.\n\n#{parser.help}" if args.any?
 
-      result = @lock_command.clear(name, all: all, working_dir: @working_dir, json: json)
+      result = @lock_command.clear(name, all: all, working_dir: working_dir_for(workspace), json: json)
       @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
     rescue OptionParser::ParseError, UsageError => e
       raise unless json_requested?(json, args)
@@ -1601,6 +1655,10 @@ module Workspace
           up [options]      Start this worktree's dev env in a devenv tmux window
           down [--force]    Stop this repo's dev env, whichever worktree holds it
           status            Show holder, branch, uptime, pane, readiness, and queue
+
+        Options (every subcommand):
+          --name WS         Act on workspace WS instead of the one detected from the
+                            current directory
 
         Options (up):
           --wait            Queue behind another worktree's dev env
@@ -1642,12 +1700,14 @@ module Workspace
     end
 
     def cmd_dev_up(args)
+      workspace = nil
       wait = false
       force = false
       ready = true
       max_wait = nil
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: workspace dev up [--wait] [--force] [--no-ready] [--max-wait DURATION]"
+        opts.on("--name NAME", "Workspace to act on instead of the one detected from cwd") { |v| workspace = v }
         opts.on("--wait", "Queue behind another worktree's dev env") { wait = true }
         opts.on("--force", "--takeover", "Stop another worktree's dev env, then start this one") { force = true }
         opts.on("--[no-]ready", "Wait for the dev.ready check (default: on)") { |v| ready = v }
@@ -1656,33 +1716,37 @@ module Workspace
       parser.parse!(args)
       raise UsageError, parser.help if args.any?
 
-      result = @dev_command.up(wait: wait, takeover: force, ready: ready, max_wait: max_wait, working_dir: @working_dir)
+      result = @dev_command.up(wait: wait, takeover: force, ready: ready, max_wait: max_wait, working_dir: working_dir_for(workspace))
       @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
     end
 
     def cmd_dev_down(args)
+      workspace = nil
       force = false
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: workspace dev down [--force]"
+        opts.on("--name NAME", "Workspace to act on instead of the one detected from cwd") { |v| workspace = v }
         opts.on("--force", "Also kill a process group left behind by a dead wrapper") { force = true }
       end
       parser.parse!(args)
       raise UsageError, parser.help if args.any?
 
-      result = @dev_command.down(force: force, working_dir: @working_dir)
+      result = @dev_command.down(force: force, working_dir: working_dir_for(workspace))
       @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
     end
 
     def cmd_dev_status(args)
+      workspace = nil
       json = false
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: workspace dev status [--json]"
+        opts.on("--name NAME", "Workspace to act on instead of the one detected from cwd") { |v| workspace = v }
         opts.on("--json", "Emit the documented JSON schema instead of a table (see docs/README.dev.md)") { json = true }
       end
       parser.parse!(args)
       raise UsageError, parser.help if args.any?
 
-      result = @dev_command.status(working_dir: @working_dir, json: json)
+      result = @dev_command.status(working_dir: working_dir_for(workspace), json: json)
       @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
     rescue OptionParser::ParseError, UsageError => e
       raise unless json_requested?(json, args)
@@ -2812,7 +2876,7 @@ module Workspace
         opts.separator "left untouched and the command fails; fix or remove it first."
         opts.separator ""
         opts.separator "Options:"
-        opts.on("--project NAME", "Project to configure instead of the one inferred from cwd") { |v| project = v }
+        opts.on("--project NAME", "--name NAME", "Project to configure instead of the one inferred from cwd (--name is the same)") { |v| project = v }
         opts.separator ""
         opts.separator "Examples:"
         opts.separator "  workspace config set dev.up \"./start-dev\""
@@ -2849,7 +2913,7 @@ module Workspace
         opts.separator "Prints the value on stdout and exits 0. If the key has no value,"
         opts.separator "prints nothing on stdout, a note on stderr, and exits 1."
         opts.separator ""
-        opts.on("--project NAME", "Project to read instead of the one inferred from cwd") { |v| project = v }
+        opts.on("--project NAME", "--name NAME", "Project to read instead of the one inferred from cwd (--name is the same)") { |v| project = v }
       end
       parser.parse!(args)
       key = args.shift
@@ -2863,7 +2927,7 @@ module Workspace
       project = nil
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: workspace config unset <key> [options]"
-        opts.on("--project NAME", "Project to configure instead of the one inferred from cwd") { |v| project = v }
+        opts.on("--project NAME", "--name NAME", "Project to configure instead of the one inferred from cwd (--name is the same)") { |v| project = v }
       end
       parser.parse!(args)
       key = args.shift
@@ -3772,6 +3836,7 @@ module Workspace
       raise UsageError, "projects kill needs a project NAME or PATH. Run 'workspace projects kill --help'." if args.empty?
       raise UsageError, "Unexpected argument: #{args[1]}. Run 'workspace projects kill --help'." if args.size > 1
       unless options[:yes] || options[:dry_run]
+        Prompt.refuse_if_no_input!(@input, "Remove the worktrees of '#{args.first}' and kill their sessions?", retry_flags: ["--yes"], destructive: true)
         raise UsageError, "projects kill --json never prompts: pass --yes to remove, or --dry-run to preview." if options[:json]
         unless @input.respond_to?(:tty?) && @input.tty?
           raise UsageError, "projects kill can't ask for confirmation without a terminal: pass --yes (or --dry-run)."
@@ -3971,8 +4036,7 @@ module Workspace
         return
       end
 
-      @output.print "Remove workflow from #{target_dir}? [y/N] "
-      answer = @input.gets&.strip
+      answer = Prompt.ask(@input, @output, "Remove workflow from #{target_dir}? [y/N] ")&.strip
       unless answer&.match?(/\Ay(es)?\z/i)
         @output.puts "Cancelled."
         return

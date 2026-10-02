@@ -15,6 +15,7 @@ module Workspace
       "unsaved_work" => "The worktree has uncommitted changes or unpushed commits.",
       "unsaved_unknown" => "git couldn't tell whether the worktree has unsaved work.",
       "not_submitted" => "Text reached the pane but wasn't confirmed submitted; check before resending.",
+      "confirmation_required" => "A prompt would have read stdin while --no-input or WORKSPACE_NO_INPUT was set.",
       "config_parse" => "A config file exists but can't be parsed as a YAML mapping.",
       # Codes the agent daemon puts in its replies; `agent-run` passes them through.
       "malformed_message" => "The daemon couldn't parse the request.",

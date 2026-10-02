@@ -260,8 +260,7 @@ module Workspace
       end
       @output.puts "  0) None — create a new branch instead"
       @output.puts ""
-      @output.print "Choose [1-#{matches.size}, 0]: "
-      choice = @input.gets&.strip&.to_i
+      choice = Prompt.ask(@input, @output, "Choose [1-#{matches.size}, 0]: ")&.strip&.to_i
       if choice && choice > 0 && choice <= matches.size
         matches[choice - 1]
       end
@@ -283,8 +282,7 @@ module Workspace
       @output.puts "  2) #{cur} (current branch)"
       @output.puts "  3) Cancel"
       @output.puts ""
-      @output.print "Choose [1/2/3]: "
-      choice = @input.gets&.strip
+      choice = Prompt.ask(@input, @output, "Choose [1/2/3]: ")&.strip
       case choice
       when "1", ""
         db

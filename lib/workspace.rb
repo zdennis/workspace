@@ -119,6 +119,7 @@ end
 require_relative "workspace/version"
 require_relative "workspace/error_codes"
 require_relative "workspace/json_envelope"
+require_relative "workspace/prompt_input"
 require_relative "workspace/warn"
 require_relative "workspace/logger"
 require_relative "workspace/config"
@@ -221,9 +222,11 @@ module Workspace
   # @param output [IO] output stream for user-facing messages
   # @param error_output [IO] error output stream for warnings and errors
   # @param input [IO] input stream for interactive prompts
+  # @param env [Hash] environment; `WORKSPACE_NO_INPUT` makes every prompt fail instead of waiting
   # @param logger [Workspace::Logger, nil] debug logger (created automatically if nil)
   # @return [Workspace::CLI] a fully-wired CLI instance
-  def self.build_cli(output: $stdout, error_output: $stderr, input: $stdin, logger: nil)
+  def self.build_cli(output: $stdout, error_output: $stderr, input: $stdin, env: ENV, logger: nil)
+    input = PromptInput.new(input, no_input: PromptInput.env_truthy?(env))
     logger ||= Logger.new(output: error_output, enabled: ENV.key?("WORKSPACE_DEBUG"))
     config = Config.new
     project_settings = ProjectSettings.new(config: config)

@@ -120,6 +120,21 @@ RSpec.describe Workspace::Commands::UpdatePaneCommand do
     end
 
     context "when pane_index is beyond the last pane" do
+      context "and input is off" do
+        let(:input) { Workspace::PromptInput.new(StringIO.new("y\n"), no_input: true) }
+
+        it "refuses with confirmation_required and leaves the config alone" do
+          before = File.read(config_path)
+
+          expect { command.call(project: "myproject", command: "htop", pane_index: 10) }.to raise_error(Workspace::Error) { |e|
+            expect(e.code).to eq("confirmation_required")
+            expect(e.details["prompt"]).to include("Pane 10 does not exist")
+            expect(e.retry).to be_nil
+          }
+          expect(File.read(config_path)).to eq(before)
+        end
+      end
+
       context "and user confirms" do
         before do
           input.string = "y\n"

@@ -110,8 +110,7 @@ module Workspace
 
       def prompt_action(providers)
         names = providers.map(&:label).join(", ")
-        @output.print "  [v]iew, [i]nstall for #{names}, or [n]othing? [v/i/N] "
-        @input.gets&.strip&.downcase
+        Prompt.ask(@input, @output, "  [v]iew, [i]nstall for #{names}, or [n]othing? [v/i/N] ")&.strip&.downcase
       end
 
       def ensure_tmuxinator_dir(dry_run)

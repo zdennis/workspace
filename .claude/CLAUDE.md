@@ -46,6 +46,7 @@ A macOS CLI (Ruby) for managing tmuxinator-based development workspaces in iTerm
 - `lib/workspace/process_holder_stopper.rb` — Stops a `kind: "process"` lock holder for `lock clear`/`dev down`, or keeps the lock naming it when the group can't be stopped
 - `lib/workspace/dev_config.rb` — Reads a project's `dev:` block (`up`, `ready`, `stop_timeout`), as written by `workspace config set`
 - `lib/workspace/run_result_cleaner.rb` — Removes run files in `~/.workspace-runs` older than 7 days, never an in-progress run or a live session's; swept at most hourly from `RunResultStore#write`
+- `lib/workspace/prompt_input.rb` — `PromptInput` wraps the input stream and refuses prompts under `--no-input`/`WORKSPACE_NO_INPUT`; `Prompt.ask` is how every prompt site reads an answer
 - `lib/workspace/duration.rb` — Parses duration strings (`"20"`, `"5m"`, `"1h"`) shared by dev/lock config and CLI options
 - `lib/templates/workspace.project-template.yml` — Tmuxinator template for standard projects
 - `lib/templates/workspace.project-worktree-template.yml` — Tmuxinator template for git worktree projects

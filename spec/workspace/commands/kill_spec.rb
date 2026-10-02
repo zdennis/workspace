@@ -77,6 +77,19 @@ RSpec.describe Workspace::Commands::Kill do
           expect(stop_command).not_to have_received(:call) if stop_command.respond_to?(:have_received)
         end
 
+        context "when input is off" do
+          let(:input) { Workspace::PromptInput.new(StringIO.new("y\n"), no_input: true) }
+
+          it "refuses with confirmation_required and offers --force" do
+            expect { command.call("myproject.worktree-PROJ-123") }.to raise_error(Workspace::Error) { |e|
+              expect(e.code).to eq("confirmation_required")
+              expect(e.details).to eq({"prompt" => "Remove worktree and kill session? [y/N]"})
+              expect(e.retry).to eq({"flags" => ["--force"], "destructive" => true})
+            }
+            expect(output.string).not_to include("[y/N]")
+          end
+        end
+
         it "cancels on empty input" do
           input.puts ""
           input.rewind

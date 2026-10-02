@@ -84,8 +84,7 @@ module Workspace
         out.puts "  Worktree: #{worktree_path}"
 
         if confirm && !force
-          out.print "Remove worktree and kill session? [y/N] "
-          answer = @input.gets&.strip
+          answer = Prompt.ask(@input, out, "Remove worktree and kill session? [y/N] ", retry_flags: ["--force"], destructive: true)&.strip
           unless answer&.match?(/\Ay(es)?\z/i)
             out.puts "Cancelled."
             return

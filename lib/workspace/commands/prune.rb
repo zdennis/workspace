@@ -53,8 +53,7 @@ module Workspace
         end
 
         unless force
-          @output.print "\nRemove these #{candidates.size} project(s)? [y/N] "
-          answer = @input.gets&.strip
+          answer = Prompt.ask(@input, @output, "\nRemove these #{candidates.size} project(s)? [y/N] ", retry_flags: ["--force"], destructive: true)&.strip
           unless answer&.match?(/\Ay(es)?\z/i)
             @output.puts "Cancelled."
             return []

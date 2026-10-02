@@ -233,8 +233,7 @@ module Workspace
           end
           unless yes
             print_kill_plan(project, members, checks, overrides, warnings, heading: "Project '#{project.name}' (#{project.path}):")
-            @output.print "Remove #{targets.size} worktree(s) of '#{project.name}' and kill their sessions? [y/N] "
-            unless @input.gets&.strip&.match?(/\Ay(es)?\z/i)
+            unless Prompt.ask(@input, @output, "Remove #{targets.size} worktree(s) of '#{project.name}' and kill their sessions? [y/N] ", retry_flags: ["--yes"], destructive: true)&.strip&.match?(/\Ay(es)?\z/i)
               @output.puts "Cancelled."
               next {exit_code: 0}
             end

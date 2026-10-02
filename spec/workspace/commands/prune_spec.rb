@@ -325,6 +325,17 @@ RSpec.describe Workspace::Commands::Prune do
         input.rewind
       end
 
+      context "when input is off" do
+        let(:input) { Workspace::PromptInput.new(StringIO.new, no_input: true) }
+
+        it "refuses with confirmation_required and offers --force" do
+          expect { command.call }.to raise_error(Workspace::Error) { |e|
+            expect(e.code).to eq("confirmation_required")
+            expect(e.retry).to eq({"flags" => ["--force"], "destructive" => true})
+          }
+        end
+      end
+
       it "prints Cancelled and leaves state unchanged" do
         result = command.call
         expect(result).to eq([])

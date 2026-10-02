@@ -21,6 +21,12 @@ workspace lock instructions [<name>]
 | `--poll DURATION` | Time between polls while waiting: `30s`, `5m`, `1h`, or a plain number of seconds (default: 5) |
 | `--max-wait DURATION` | Give up after `DURATION`: `30s`, `5m`, `1h`, or a plain number of seconds (exit 75); re-run to keep waiting; implies `--wait` |
 
+## Options (every subcommand)
+
+| Option | Description |
+|--------|-------------|
+| `--name WS` | Act on workspace `WS` instead of the one detected from cwd; the lock namespace is `WS`'s repository |
+
 ## Options (release / clear)
 
 | Option | Description |

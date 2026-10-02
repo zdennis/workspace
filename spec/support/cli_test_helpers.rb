@@ -388,30 +388,35 @@ module CLITestHelpers
   end
 
   class FakeLockCommand
-    attr_reader :calls
+    attr_reader :calls, :working_dirs
     attr_accessor :result
 
     def initialize
       @calls = []
+      @working_dirs = []
       @result = {exit_code: 0}
     end
 
     def acquire(name, task: nil, wait: false, poll: nil, max_wait: nil, working_dir: nil)
+      @working_dirs << working_dir
       @calls << {action: :acquire, name: name, task: task, wait: wait, poll: poll, max_wait: max_wait}
       @result
     end
 
     def release(name, all: false, working_dir: nil)
+      @working_dirs << working_dir
       @calls << {action: :release, name: name, all: all}
       @result
     end
 
     def status(name = nil, working_dir: nil, json: false)
+      @working_dirs << working_dir
       @calls << {action: :status, name: name, json: json}
       @result
     end
 
     def clear(name, all: false, working_dir: nil, json: false)
+      @working_dirs << working_dir
       @calls << {action: :clear, name: name, all: all, json: json}
       @result
     end
@@ -423,30 +428,35 @@ module CLITestHelpers
   end
 
   class FakeDevCommand
-    attr_reader :calls
+    attr_reader :calls, :working_dirs
     attr_accessor :result
 
     def initialize
       @calls = []
+      @working_dirs = []
       @result = {exit_code: 0}
     end
 
     def up(**opts)
+      @working_dirs << opts[:working_dir]
       @calls << {action: :up, **opts.except(:working_dir)}
       @result
     end
 
     def down(**opts)
+      @working_dirs << opts[:working_dir]
       @calls << {action: :down, **opts.except(:working_dir)}
       @result
     end
 
     def status(**opts)
+      @working_dirs << opts[:working_dir]
       @calls << {action: :status, **opts.except(:working_dir)}
       @result
     end
 
     def run(**opts)
+      @working_dirs << opts[:working_dir]
       @calls << {action: :run, **opts.except(:working_dir)}
       @result
     end

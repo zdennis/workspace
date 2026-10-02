@@ -37,6 +37,10 @@ The exit code is unchanged by `--json` (1 for most failures, 2 for `not_submitte
 
 `--json` is found as its own argument anywhere before a bare `--`, so `workspace parent --json` and `workspace parent --json app` both ask for it, and `workspace run app -- cmd --json` passes `--json` through to the command.
 
+## Never prompting
+
+`--no-input`, or `WORKSPACE_NO_INPUT=1` (empty, `0` and `false` mean off), works on every command and may appear anywhere before a bare `--`. A prompt that would have read stdin fails with `confirmation_required` instead, before anything is printed or read: `details.prompt` is the question and `retry.flags` the flag that answers it (`--force` for `kill`, `cleanup` and `prune`; `--yes` for `projects kill`), with `retry.destructive` true. Prompts with no such flag, like choosing a branch, give no `retry`. Commands that never prompt are unaffected; `session-event` still reads its hook payload from stdin.
+
 ## Error codes
 
 | Code | Meaning |
@@ -51,6 +55,7 @@ The exit code is unchanged by `--json` (1 for most failures, 2 for `not_submitte
 | `unsaved_work` | The worktree has uncommitted changes or unpushed commits. `details` has the counts; `retry` is `--force`. |
 | `unsaved_unknown` | git couldn't tell whether the worktree has unsaved work. `retry` is `--force`. |
 | `not_submitted` | Text reached the pane but wasn't confirmed submitted; check before resending. |
+| `confirmation_required` | A prompt would have read stdin while `--no-input` or `WORKSPACE_NO_INPUT` was set. `details.prompt` is the question; `retry` names the flag that answers it, when there is one (`--force` or `--yes`, destructive). |
 | `config_parse` | A config file exists but can't be parsed as a YAML mapping. `details.path` and `details.reason`. |
 
 The registry lives in `Workspace::ErrorCodes`; a spec checks that every code a raise site names is listed there and on this page. More codes arrive with the commands that need them.

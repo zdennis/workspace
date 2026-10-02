@@ -4228,4 +4228,145 @@ RSpec.describe Workspace::CLI do
       expect(output.string).to include("proj  headless  [alive]")
     end
   end
+
+  describe "#run with --no-input" do
+    def guarded_input(**opts)
+      Workspace::PromptInput.new(StringIO.new, **opts)
+    end
+
+    it "turns prompts off for the run and does not pass the flag to the subcommand" do
+      input = guarded_input
+      ask = CLITestHelpers::FakeAskCommand.new
+      cli, = build_test_cli(input: input, ask_command: ask)
+
+      cli.run(["ask", "list", "--no-input"])
+
+      expect(input.no_input?).to be true
+      expect(ask.calls).to contain_exactly(a_hash_including(action: :list))
+    end
+
+    it "accepts the flag ahead of the subcommand" do
+      input = guarded_input
+      cli, = build_test_cli(input: input)
+
+      cli.run(["--no-input", "doctor"])
+      expect(input.no_input?).to be true
+    end
+
+    it "leaves a --no-input after a bare -- alone" do
+      input = guarded_input
+      lock = CLITestHelpers::FakeLockCommand.new
+      cli, = build_test_cli(input: input, lock_command: lock)
+
+      cli.run(["lock", "status", "--", "--no-input"])
+
+      expect(input.no_input?).to be false
+      expect(lock.calls.first[:name]).to eq("--no-input")
+    end
+
+    it "reports a refused prompt as one envelope with the prompt and the answering flag" do
+      cli, output, error_output = build_test_cli(input: guarded_input)
+
+      expect { cli.run(["projects", "kill", "app", "--no-input", "--json"]) }.to raise_error(FakeSystemExit) { |e|
+        expect(e.status).to eq(1)
+      }
+      doc = JSON.parse(output.string)
+      expect(doc).to include("schema_version" => 1, "ok" => false, "code" => "confirmation_required")
+      expect(doc["details"]["prompt"]).to include("app")
+      expect(doc["retry"]).to eq({"flags" => ["--yes"], "destructive" => true})
+      expect(error_output.string).to eq("")
+    end
+
+    it "reports a refused prompt on stderr without --json" do
+      cli, output, error_output = build_test_cli(input: guarded_input)
+
+      expect { cli.run(["projects", "kill", "app", "--no-input"]) }.to raise_error(FakeSystemExit)
+      expect(output.string).to eq("")
+      expect(error_output.string).to include("Can't ask").and include("--no-input")
+    end
+
+    it "still lets --yes through" do
+      actions = double("project_actions")
+      allow(actions).to receive(:kill).and_return({exit_code: 0})
+      cli, = build_test_cli(input: guarded_input, project_actions_command: actions)
+
+      cli.run(["projects", "kill", "app", "--yes", "--no-input"])
+
+      expect(actions).to have_received(:kill).with(a_hash_including(name: "app", yes: true))
+    end
+  end
+
+  describe "#run with --name" do
+    let(:roots) { {"api.worktree-x" => "/src/api-x"} }
+    let(:project_config) { CLITestHelpers::FakeProjectConfig.new(roots) }
+
+    it "points ask at the named workspace's root" do
+      ask = CLITestHelpers::FakeAskCommand.new
+      cli, = build_test_cli(project_config: project_config, ask_command: ask, working_dir: "/elsewhere")
+
+      cli.run(["ask", "list", "--name", "api.worktree-x"])
+      cli.run(["ask", "answer", "--name", "api.worktree-x", "a1", "ok"])
+      cli.run(["ask", "--name", "api.worktree-x", "Q?", "--default", "d"])
+
+      expect(ask.calls.map { |c| c[:working_dir] }).to all(eq("/src/api-x"))
+      expect(ask.calls.map { |c| c[:action] }).to eq(%i[list answer call])
+    end
+
+    it "keeps cwd detection without --name" do
+      ask = CLITestHelpers::FakeAskCommand.new
+      cli, = build_test_cli(project_config: project_config, ask_command: ask, working_dir: "/elsewhere")
+
+      cli.run(["ask", "list"])
+
+      expect(ask.calls.first[:working_dir]).to eq("/elsewhere")
+    end
+
+    it "points every lock subcommand at the named workspace, apart from the lock name" do
+      lock = CLITestHelpers::FakeLockCommand.new
+      cli, = build_test_cli(project_config: project_config, lock_command: lock, working_dir: "/elsewhere")
+
+      cli.run(["lock", "acquire", "edit", "--name", "api.worktree-x"])
+      cli.run(["lock", "release", "edit", "--name", "api.worktree-x"])
+      cli.run(["lock", "status", "edit", "--name", "api.worktree-x", "--json"])
+      cli.run(["lock", "clear", "--all", "--name", "api.worktree-x"])
+
+      expect(lock.working_dirs).to eq(["/src/api-x"] * 4)
+      expect(lock.calls.map { |c| c[:name] }).to eq(["edit", "edit", "edit", nil])
+    end
+
+    it "points dev up, down and status at the named workspace" do
+      dev = CLITestHelpers::FakeDevCommand.new
+      cli, = build_test_cli(project_config: project_config, dev_command: dev, working_dir: "/elsewhere")
+
+      cli.run(["dev", "up", "--name", "api.worktree-x"])
+      cli.run(["dev", "down", "--name", "api.worktree-x"])
+      cli.run(["dev", "status", "--name", "api.worktree-x", "--json"])
+
+      expect(dev.working_dirs).to eq(["/src/api-x"] * 3)
+    end
+
+    it "fails with unknown_workspace for a name it doesn't know" do
+      lock = CLITestHelpers::FakeLockCommand.new
+      cli, output, = build_test_cli(project_config: project_config, lock_command: lock)
+
+      expect { cli.run(["lock", "status", "--name", "nope", "--json"]) }.to raise_error(FakeSystemExit) { |e|
+        expect(e.status).to eq(1)
+      }
+      doc = JSON.parse(output.string)
+      expect(doc).to include("ok" => false, "code" => "unknown_workspace", "details" => {"name" => "nope"})
+      expect(lock.calls).to be_empty
+    end
+
+    it "accepts --name as the same option as --project on config set, get and unset" do
+      config = CLITestHelpers::FakeConfigCommand.new
+      cli, = build_test_cli(config_command: config)
+
+      cli.run(["config", "set", "--name", "api", "dev.up", "bin/dev"])
+      cli.run(["config", "get", "--name", "api", "dev.up"])
+      cli.run(["config", "unset", "--name", "api", "dev.up"])
+      cli.run(["config", "set", "--project", "api", "dev.up", "bin/dev"])
+
+      expect(config.calls.map { |c| c[:project] }).to eq(%w[api api api api])
+    end
+  end
 end
