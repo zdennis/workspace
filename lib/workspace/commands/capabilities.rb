@@ -23,9 +23,9 @@ module Workspace
         "snapshot" => 0,
         "events_follow" => 0,
         "actions_manifest" => 0,
-        "agent_send" => 0,
+        "agent_send" => 1,
         "agent_spawn" => 0,
-        "focus_pane" => 0,
+        "focus_pane" => 1,
         "state_done" => 0,
         "doctor_json" => 0,
         "daemon_control" => 0

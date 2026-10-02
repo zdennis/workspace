@@ -93,6 +93,7 @@ RSpec.describe Workspace::CLI do
       statusline_command: overrides[:statusline_command] || CLITestHelpers::FakeStatuslineCommand.new,
       ask_command: ask_command,
       restart_agent_command: overrides[:restart_agent_command],
+      send_command: overrides[:send_command],
       ensure_agent_command: overrides[:ensure_agent_command],
       handoff_command: overrides[:handoff_command],
       projects_command: overrides[:projects_command],
@@ -993,6 +994,137 @@ RSpec.describe Workspace::CLI do
     end
   end
 
+  describe "#run agent-run send" do
+    let(:tmux) do
+      CLITestHelpers::FakeTmuxServer.new("api" => [{id: "%3", window: 0, index: 0}, {id: "%19", window: 1, index: 2}], "web" => [{id: "%7", window: 0, index: 0}])
+    end
+
+    def send_cli(**overrides)
+      out = StringIO.new
+      send_command = Workspace::Commands::Send.new(locator: Workspace::PaneLocator.new(tmux: tmux), tmux: tmux, output: out)
+      build_test_cli(output: out, send_command: send_command, **overrides)
+    end
+
+    def status_of
+      yield
+      0
+    rescue FakeSystemExit => e
+      e.status
+    end
+
+    it "pastes --body and Enter into the named pane" do
+      cli, output = send_cli
+
+      cli.run(["agent-run", "send", "--name", "api", "--pane", "%19", "--body", "yes"])
+
+      expect(tmux.deliveries).to eq([{session: "api", pane: "%19", text: "yes", enter: true}])
+      expect(output.string).to eq("Sent text to pane %19 and pressed Enter.\n")
+    end
+
+    it "keeps text that starts with a dash intact" do
+      cli, = send_cli
+
+      cli.run(["agent-run", "send", "--name", "api", "--pane", "%3", "--body", "--force"])
+
+      expect(tmux.deliveries.first).to include(text: "--force")
+    end
+
+    it "sends --no-enter text without Enter" do
+      cli, = send_cli
+
+      cli.run(["agent-run", "send", "--name", "api", "--pane", "%3", "--body", "draft", "--no-enter", "--json"])
+
+      expect(tmux.deliveries.first).to include(enter: false)
+    end
+
+    it "sends --keys as key names and prints the contract's JSON" do
+      cli, output = send_cli
+
+      cli.run(["agent-run", "send", "--name", "api", "--pane", "%19", "--keys", "Escape", "--json"])
+
+      expect(tmux.keys_sent.map { |k| k[:key] }).to eq(["Escape"])
+      expect(JSON.parse(output.string)).to eq("schema_version" => 1, "ok" => true, "workspace" => "api",
+        "pane" => "%19", "mode" => "keys", "submitted" => true, "keys" => ["Escape"])
+    end
+
+    it "detects the workspace from the working directory" do
+      detector = double("detector", detect: "api")
+      cli, = send_cli(project_detector: detector)
+
+      cli.run(["agent-run", "send", "--pane", "%3", "--keys", "y Enter"])
+
+      expect(tmux.keys_sent.map { |k| k[:key] }).to eq(%w[y Enter])
+    end
+
+    it "answers a pane of another workspace with wrong_session and types nothing, exit 1" do
+      cli, output = send_cli
+
+      expect(status_of { cli.run(["agent-run", "send", "--name", "api", "--pane", "%7", "--body", "x", "--json"]) }).to eq(1)
+
+      expect(JSON.parse(output.string)).to include("ok" => false, "code" => "wrong_session")
+      expect(tmux.deliveries).to be_empty
+    end
+
+    it "answers a bad key with bad_keys before sending any key" do
+      cli, output = send_cli
+
+      expect(status_of { cli.run(["agent-run", "send", "--name", "api", "--pane", "%3", "--keys", "Escape hello", "--json"]) }).to eq(1)
+
+      expect(JSON.parse(output.string)).to include("code" => "bad_keys")
+      expect(tmux.keys_sent).to be_empty
+    end
+
+    it "exits 2 with not_submitted when the text landed but wasn't confirmed" do
+      tmux.delivery_status = :unsubmitted
+      cli, output = send_cli
+
+      expect(status_of { cli.run(["agent-run", "send", "--name", "api", "--pane", "%3", "--body", "x", "--json"]) }).to eq(2)
+
+      expect(JSON.parse(output.string)).to include("ok" => false, "code" => "not_submitted")
+    end
+
+    it "prints the error on stderr without --json" do
+      cli, output, error_output = send_cli
+
+      expect(status_of { cli.run(["agent-run", "send", "--name", "api", "--pane", "%99", "--body", "x"]) }).to eq(1)
+
+      expect(output.string).to eq("")
+      expect(error_output.string).to include("No pane %99 in tmux session 'api'")
+    end
+
+    [
+      [["--name", "api", "--body", "x"], "Missing --pane."],
+      [["--name", "api", "--pane", "%3"], "Missing --body or --keys."],
+      [["--name", "api", "--pane", "%3", "--body", "x", "--keys", "y"], "Pass --body or --keys, not both."],
+      [["--name", "api", "--pane", "%3", "--body", ""], "--body can't be empty."],
+      [["--name", "api", "--pane", "%3", "--keys", "y", "--no-enter"], "--no-enter applies to --body; --keys never presses Enter on its own."],
+      [["--name", "api", "--pane", "%3", "--body", "x", "extra"], "Unexpected argument: extra"]
+    ].each do |args, message|
+      it "rejects #{args.join(" ").inspect} as a usage error naming #{message.inspect}" do
+        cli, output = send_cli
+
+        expect(status_of { cli.run(["agent-run", "send", "--json", *args]) }).to eq(1)
+
+        expect(JSON.parse(output.string)).to include("ok" => false, "code" => "usage", "error" => message)
+        expect(tmux.deliveries + tmux.keys_sent).to be_empty
+      end
+    end
+
+    it "reports an unwired build plainly" do
+      cli, _, error_output = build_test_cli
+
+      expect(status_of { cli.run(["agent-run", "send", "--name", "api", "--pane", "%3", "--body", "x"]) }).to eq(1)
+      expect(error_output.string).to include("not available in this build")
+    end
+
+    it "lists send in the agent-run help" do
+      cli, _, error_output = build_test_cli
+
+      expect { cli.run(["agent-run"]) }.to raise_error(FakeSystemExit)
+      expect(error_output.string).to include("send       Type text or tmux keys into one named pane")
+    end
+  end
+
   describe "#run handoff" do
     let(:handoff_command) { double("handoff", check: {exit_code: 0}, new: {exit_code: 0}) }
 
@@ -1388,6 +1520,24 @@ RSpec.describe Workspace::CLI do
       cli.run(["ask", "resolve", "--default=x"])
 
       expect(ask_command.calls).to contain_exactly(a_hash_including(action: :call, question: "resolve", default: "x"))
+    end
+
+    it "passes --deliver to ask answer, with the id and answer after --" do
+      ask_command = CLITestHelpers::FakeAskCommand.new
+      cli, = build_test_cli(ask_command: ask_command)
+
+      cli.run(["ask", "answer", "--deliver", "--json", "--", "q_7", "-y"])
+
+      expect(ask_command.calls).to contain_exactly(a_hash_including(action: :answer, id: "q_7", answer: "-y", deliver: true, json: true))
+    end
+
+    it "does not deliver unless asked" do
+      ask_command = CLITestHelpers::FakeAskCommand.new
+      cli, = build_test_cli(ask_command: ask_command)
+
+      cli.run(["ask", "answer", "q_7", "yes"])
+
+      expect(ask_command.calls).to contain_exactly(a_hash_including(action: :answer, deliver: false))
     end
   end
 
@@ -4820,6 +4970,57 @@ RSpec.describe Workspace::CLI do
 
         expect(parse_one(raw)).to include("ok" => false)
         expect(parse_one(raw)["error"]).to include("No iTerm window found for 'api'")
+      end
+    end
+
+    describe "focus --pane" do
+      let(:tmux) { CLITestHelpers::FakeTmuxServer.new("api" => [{id: "%3", window: 0, index: 0}, {id: "%19", window: 1, index: 2}], "web" => [{id: "%7", window: 0, index: 0}]) }
+      let(:state) do
+        CLITestHelpers::FakeState.new.tap { |st| st["api"] = {"iterm_window_id" => 77} }
+      end
+
+      def pane_cli(**overrides)
+        action_cli(state: state, **overrides) do |out|
+          focus = Workspace::Commands::Focus.new(state: state, window_manager: CLITestHelpers::FakeWindowManager.new, tmux: tmux,
+            pane_locator: Workspace::PaneLocator.new(tmux: tmux), output: out)
+          {focus_command: focus}
+        end
+      end
+
+      it "selects the pane and reports it in the row" do
+        cli, raw, = pane_cli
+
+        cli.run(["focus", "api", "--pane", "%19", "--json"])
+
+        expect(tmux.selected).to eq([{session: "api", id: "%19", window: 1}])
+        expect(parse_one(raw)["results"]).to eq([{"workspace" => "api", "outcome" => "focused", "reason" => nil, "message" => nil, "iterm_window_id" => 77, "pane" => "%19"}])
+      end
+
+      it "leaves the pane out of the row without --pane" do
+        cli, raw, = pane_cli
+
+        cli.run(["focus", "api", "--json"])
+
+        expect(parse_one(raw)["results"].first).not_to have_key("pane")
+        expect(tmux.selected).to be_empty
+      end
+
+      it "refuses a pane of another workspace before focusing anything" do
+        cli, raw, = pane_cli
+
+        expect(exit_status { cli.run(["focus", "api", "--pane", "%7", "--json"]) }).to eq(1)
+
+        expect(parse_one(raw)).to include("ok" => false, "code" => "wrong_session")
+        expect(tmux.selected).to be_empty
+      end
+
+      it "reports focus_failed when tmux can't select the pane" do
+        tmux.select_ok = false
+        cli, raw, = pane_cli
+
+        expect(exit_status { cli.run(["focus", "api", "--pane", "%3", "--json"]) }).to eq(1)
+
+        expect(parse_one(raw)).to include("ok" => false, "code" => "focus_failed")
       end
     end
 

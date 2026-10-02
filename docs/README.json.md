@@ -80,6 +80,11 @@ The exit code is unchanged by `--json` (1 for most failures, 2 for `not_submitte
 | `unsaved_unknown` | git couldn't tell whether the worktree has unsaved work. `retry` is `--force`. |
 | `not_submitted` | Text reached the pane but wasn't confirmed submitted; check before resending. |
 | `confirmation_required` | A prompt would have read stdin while `--no-input` or `WORKSPACE_NO_INPUT` was set. `details.prompt` is the question; `retry` names the flag that answers it, when there is one (`--force` or `--yes`, destructive). |
+| `no_session` | The workspace has no running tmux session. `details.workspace`. |
+| `bad_keys` | `agent-run send --keys` named something that isn't a tmux key name, or too many keys. `details.keys`. |
+| `no_pane` | The question wasn't asked from a tmux pane, so `ask answer --deliver` has nowhere to type. `details.question`. |
+| `stale_pane` | `ask answer --deliver` can't be sure the question's pane is the one that asked: tmux restarted since, or the question was recorded without the tmux server. `details.question`, `details.pane`. |
+| `focus_failed` | tmux couldn't select the pane for `focus --pane`; the window is already in front. |
 | `config_parse` | A config file exists but can't be parsed as a YAML mapping. `details.path` and `details.reason`. |
 
 The registry lives in `Workspace::ErrorCodes`; a spec checks that every code a raise site names is listed there and on this page. More codes arrive with the commands that need them.
@@ -97,13 +102,13 @@ The registry lives in `Workspace::ErrorCodes`; a spec checks that every code a r
 | `no_active_pipeline` | No pipeline work item is in flight. |
 | `stale_token` | The pipeline token no longer matches the in-flight item. |
 | `no_next_stage` | The pipeline has no stage after the current one. |
-| `not_delivered` | The text never reached the pane; safe to resend. |
+| `not_delivered` | The text never reached the pane, or `send --keys` stopped partway (`details.keys_sent`); safe to resend. |
 | `missing_prompt` | restart needs a non-empty prompt. |
 | `missing_pane` | restart needs a pane. |
-| `bad_pane` | The pane reference isn't a pane id, window.pane, or index. |
+| `bad_pane` | The pane reference isn't a pane id, window.pane, or index (`send`, `focus --pane` and `ask answer --deliver` accept only a pane id or window.pane). |
 | `bad_timeout` | The timeout isn't a number of seconds in range. |
-| `wrong_session` | The pane belongs to another tmux session. |
-| `no_such_pane` | No pane matches the reference. |
+| `wrong_session` | The pane belongs to another tmux session. `details.pane`, `details.session` (also from `send`, `focus --pane`, `ask answer --deliver`). |
+| `no_such_pane` | No pane matches the reference. `details.pane` (also from `send`, `focus --pane`, `ask answer --deliver`). |
 | `pane_gone` | The pane closed before or during the restart. |
 | `pane_busy` | The pane didn't go quiet in time; nothing was typed. |
 | `pane_in_pipeline` | A pipeline stage is running on the pane; pass force to restart it. |

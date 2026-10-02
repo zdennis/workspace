@@ -119,7 +119,8 @@ module Workspace
     # Sends text to a pane and reports whether it landed.
     #
     # @param session_name [String] tmux session name
-    # @param pane [String] pane target (e.g. "0.1" for window 0, pane 1)
+    # @param pane [String] pane target (e.g. "0.1" for window 0, pane 1, or a pane id like "%19",
+    #   which names the pane itself even if indices are renumbered meanwhile)
     # @param text [String] text to send (sent in literal mode to avoid key-name interpretation)
     # @param enter [Boolean] whether to press Enter after sending
     # @return [Boolean] true if the text reached the pane and, with +enter+,
@@ -154,7 +155,7 @@ module Workspace
     # @param enter [Boolean] whether to press Enter after sending
     # @return [Workspace::Tmux::Delivery]
     def deliver(session_name, pane, text, enter: true)
-      target = "#{session_name}:#{pane}"
+      target = pane_target(session_name, pane)
       @logger.debug { "tmux: deliver to #{target} (#{text.bytesize} bytes, enter=#{enter})" }
       return submit(target, capture_screen(target)) if text.empty? && enter
       return Delivery.new(status: :pasted, message: "nothing to send") if text.empty?
@@ -213,13 +214,40 @@ module Workspace
     # Used for special keys like "C-c", "Enter", "Escape".
     #
     # @param session_name [String] tmux session name
-    # @param pane [String] pane target (e.g. "0.1")
+    # @param pane [String] pane target (e.g. "0.1", or a pane id like "%19")
     # @param key_name [String] tmux key name (e.g. "C-c", "Enter")
     # @return [Boolean] true if send succeeded
     def send_key(session_name, pane, key_name)
-      target = "#{session_name}:#{pane}"
+      target = pane_target(session_name, pane)
       @logger.debug { "tmux: send-key #{key_name} to #{target}" }
       system("tmux", "send-keys", "-t", target, key_name)
+    end
+
+    # Names the tmux server a pane lives in. Pane ids restart from %0 when the
+    # server does, so an id recorded earlier can only be trusted while this
+    # still matches what was recorded.
+    #
+    # @param pane_id [String] a tmux pane id (e.g. "%23")
+    # @return [String, nil] the server's process id, or nil if the pane is gone
+    def server_pid_for_pane(pane_id)
+      stdout, _, status = Open3.capture3("tmux", "display-message", "-p", "-t", pane_id, "\#{pid}")
+      return nil unless status.success?
+      pid = stdout.strip
+      pid.empty? ? nil : pid
+    end
+
+    # Brings a pane to the front of its tmux session: selects its window, then
+    # the pane. Targets the pane by id, which is unique across the tmux server,
+    # so a renumbered index can't select a different pane.
+    #
+    # @param session_name [String] tmux session name
+    # @param detail [Hash] the pane's `:id` and `:window`, from {#pane_details}
+    # @return [Boolean] true if both tmux commands succeeded
+    def select_pane(session_name, detail)
+      @logger.debug { "tmux: select pane #{detail[:id]} in #{session_name}:#{detail[:window]}" }
+      selected = system("tmux", "select-window", "-t", "#{session_name}:#{detail[:window]}") &&
+        system("tmux", "select-pane", "-t", detail[:id])
+      selected ? true : false
     end
 
     # Reads what a pane shows right now (its visible screen, no scrollback).
@@ -232,6 +260,12 @@ module Workspace
     end
 
     private
+
+    # A pane id is a target by itself and is never renumbered; any other pane
+    # is qualified by its session.
+    def pane_target(session_name, pane)
+      pane.to_s.match?(TmuxPane::PANE_ID) ? pane : "#{session_name}:#{pane}"
+    end
 
     # Presses Enter, and presses it once more only if the first left the
     # screen as it was.

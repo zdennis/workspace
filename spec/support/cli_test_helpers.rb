@@ -193,6 +193,70 @@ module CLITestHelpers
     end
   end
 
+  # A tmux server with named sessions and panes, answering the way real tmux
+  # does: `pane_details(session, window: nil)` lists the whole session, a pane
+  # id that doesn't exist makes `session_name_for_pane` return nil, and a
+  # delivery or key to a pane that isn't there fails.
+  class FakeTmuxServer
+    attr_reader :deliveries, :keys_sent, :selected
+    attr_accessor :delivery_status, :select_ok, :server_pid
+
+    # @param sessions [Hash{String=>Array<Hash>}] session name to panes (`:id`, `:window`, `:index`)
+    def initialize(sessions)
+      @sessions = sessions
+      @deliveries = []
+      @keys_sent = []
+      @selected = []
+      @delivery_status = :submitted
+      @select_ok = true
+      @server_pid = "4242"
+    end
+
+    def session_name_for(project) = project
+
+    def sessions = @sessions.keys
+
+    def pane_details(session, window: "0")
+      panes = @sessions.fetch(session, [])
+      panes = panes.select { |p| p[:window] == window.to_i } unless window.nil?
+      panes.map { |p| {pid: 1, command: "zsh", cwd: "/", title: ""}.merge(p) }
+    end
+
+    def session_name_for_pane(pane_id)
+      @sessions.find { |_, panes| panes.any? { |p| p[:id] == pane_id } }&.first
+    end
+
+    def deliver(session, pane, text, enter: true)
+      return Workspace::Tmux::Delivery.new(status: :failed, message: "can't find pane: #{pane}") unless pane_at?(session, pane)
+      @deliveries << {session: session, pane: pane, text: text, enter: enter}
+      Workspace::Tmux::Delivery.new(status: @delivery_status, message: "fake #{@delivery_status}")
+    end
+
+    def send_key(session, pane, key)
+      return false unless pane_at?(session, pane)
+      @keys_sent << {session: session, pane: pane, key: key}
+      true
+    end
+
+    def server_pid_for_pane(pane_id)
+      session_name_for_pane(pane_id) && @server_pid
+    end
+
+    def select_pane(session, detail)
+      @selected << {session: session, id: detail[:id], window: detail[:window]}
+      @select_ok
+    end
+
+    private
+
+    # A pane id is a target on its own, anywhere on the server; anything else is looked up in the session.
+    def pane_at?(session, pane)
+      return @sessions.values.flatten.any? { |p| p[:id] == pane } if pane.start_with?("%")
+      window, index = pane.split(".").map(&:to_i)
+      @sessions.fetch(session, []).any? { |p| p[:window] == window && p[:index] == index }
+    end
+  end
+
   class FakeProjectConfig
     def initialize(roots = {})
       @roots = roots
@@ -552,8 +616,8 @@ module CLITestHelpers
       @result
     end
 
-    def answer(id, answer, working_dir: Dir.pwd, json: false)
-      @calls << {action: :answer, id: id, answer: answer, working_dir: working_dir, json: json}
+    def answer(id, answer, working_dir: Dir.pwd, json: false, deliver: false)
+      @calls << {action: :answer, id: id, answer: answer, working_dir: working_dir, json: json, deliver: deliver}
       @result
     end
   end

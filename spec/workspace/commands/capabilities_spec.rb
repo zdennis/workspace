@@ -39,7 +39,7 @@ RSpec.describe Workspace::Commands::Capabilities do
       expect(features.values).to all(be_a(Integer))
       expect(features).to include("prune_safe" => 1)
       expect(features).to include("envelope" => 1, "error_codes" => 1, "no_input" => 1, "name_scope" => 1, "action_json" => 1, "sessions" => 1)
-      expect(features).to include("snapshot" => 0, "agent_send" => 0, "focus_pane" => 0, "actions_manifest" => 0)
+      expect(features).to include("snapshot" => 0, "agent_send" => 1, "focus_pane" => 1, "actions_manifest" => 0)
     end
 
     it "reports the exit codes the CLI uses" do

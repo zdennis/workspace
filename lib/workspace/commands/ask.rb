@@ -19,16 +19,19 @@ module Workspace
       # @param alert_config [Workspace::AlertConfig, nil] reads a project's
       #   `alerts.notify`; nil records questions without ever notifying
       # @param notifier_factory [#call] builds a {Workspace::Notifier} for a notify command string
+      # @param pane_sender [Workspace::Commands::Send, nil] types an answer into the
+      #   asking pane for `answer --deliver`; nil refuses `--deliver`
       # @param env [Hash] process environment, for `TMUX_PANE`
       # @param output [IO] stream for the recorded/listed/answered question
       # @param error_output [IO]
       def initialize(config:, project_detector:, alert_config: nil, notifier_factory: nil,
-        env: ENV, output: $stdout, error_output: $stderr)
+        pane_sender: nil, env: ENV, output: $stdout, error_output: $stderr)
         @config = config
         @project_detector = project_detector
         @alert_config = alert_config
         @notifier_factory = notifier_factory ||
           ->(command) { Notifier.new(command: command, error_output: error_output, label: "workspace ask") }
+        @pane_sender = pane_sender
         @env = env
         @output = output
         @error_output = error_output
@@ -49,7 +52,7 @@ module Workspace
         raise Workspace::Error, "The default can't be blank." if default.strip.empty?
         name = workspace_for(working_dir)
         record = store_for(name).add(question: question, default: default, context: context,
-          pane: @env["TMUX_PANE"], worktree: working_dir)
+          pane: @env["TMUX_PANE"], worktree: working_dir, tmux_server: tmux_server_pid)
         notifier = notify(name, record)
 
         if json
@@ -89,36 +92,90 @@ module Workspace
         {exit_code: 1}
       end
 
-      # Marks a question answered.
+      # Marks a question answered, and with +deliver+ types the answer into
+      # the pane that asked.
+      #
+      # The asking pane is checked before the question is touched, so a missing
+      # or foreign pane leaves it open. Delivery then happens after the answer
+      # is recorded: if typing fails the question stays answered and the error
+      # says so (`details.answered`), so it is not answered twice.
       #
       # @param id [String]
       # @param answer [String]
       # @param working_dir [String] directory to detect the workspace from
       # @param json [Boolean] emit the documented JSON schema instead of a message
+      # @param deliver [Boolean] type the answer, then Enter, into the asking pane
       # @return [Hash] {exit_code:}
-      def answer(id, answer, working_dir: Dir.pwd, json: false)
+      def answer(id, answer, working_dir: Dir.pwd, json: false, deliver: false)
         name = workspace_for(working_dir)
         store = store_for(name)
+        pane = deliver ? pane_to_deliver_to(store, name, id) : nil
         record = store.answer(id, answer)
         unless record
           already_answered = store.list.any? { |r| r["id"] == id }
           message = already_answered ? "Question '#{id}' was already answered for #{name}." : "No question '#{id}' for #{name}."
           raise Workspace::Error, message
         end
+        delivered = pane ? deliver_answer(name, pane, answer, id) : nil
 
         if json
-          @output.puts JSON.generate({"schema_version" => JSON_SCHEMA_VERSION, "ok" => true, "question" => record})
+          document = {"schema_version" => JSON_SCHEMA_VERSION, "ok" => true, "question" => record}
+          document["delivered"] = {"pane" => delivered["pane"], "submitted" => delivered["submitted"]} if delivered
+          @output.puts JSON.generate(document)
         else
           @output.puts "Answered #{id}"
+          @output.puts "Typed the answer into pane #{delivered["pane"]} and pressed Enter." if delivered
         end
         {exit_code: 0}
       rescue Workspace::Error => e
         raise unless json
         @output.puts JSON.generate(Workspace::JsonEnvelope.from_exception(JSON_SCHEMA_VERSION, e))
-        {exit_code: 1}
+        {exit_code: e.is_a?(Run::NotSubmittedError) ? Run::NotSubmittedError::EXIT_CODE : 1}
       end
 
       private
+
+      # The open question's asking pane, checked against the workspace's
+      # session. Nil when there is no such open question, so the normal
+      # not-found error follows.
+      def pane_to_deliver_to(store, name, id)
+        raise Workspace::Error, "workspace ask answer --deliver is not available in this build" unless @pane_sender
+        record = store.list(open_only: true).find { |r| r["id"] == id }
+        return unless record
+
+        pane = record["pane"]
+        unless pane
+          raise Workspace::Error.new("Question '#{id}' wasn't asked from a tmux pane, so there is nowhere to type the answer. Answer it without --deliver.",
+            code: "no_pane", details: {"question" => id})
+        end
+        @pane_sender.locate(name, pane)
+        confirm_same_tmux_server(record, pane)
+        pane
+      end
+
+      # Pane ids restart from %0 when tmux does, so a pane id recorded before
+      # a restart can name a different pane now. Delivery needs the server
+      # the question was asked under to still be the one running.
+      def confirm_same_tmux_server(record, pane)
+        recorded = record["tmux_server"]
+        return if recorded && recorded == @pane_sender.server_pid(pane)
+
+        reason = recorded ? "tmux has restarted since it was asked" : "it doesn't record which tmux server it was asked under"
+        raise Workspace::Error.new("Question '#{record["id"]}' can't be delivered: #{reason}, so pane #{pane} may not be the pane that asked. Answer it without --deliver.",
+          code: "stale_pane", details: {"question" => record["id"], "pane" => pane})
+      end
+
+      # The tmux server's process id from `$TMUX` ("socket,pid,session"), when run inside tmux.
+      def tmux_server_pid
+        @env["TMUX"].to_s[/\A[^,]*,(\d+),/, 1]
+      end
+
+      def deliver_answer(name, pane, answer, id)
+        @pane_sender.deliver(name: name, pane: pane, body: answer)
+      rescue Workspace::Error => e
+        raise e.class.new("Question '#{id}' is marked answered, but typing the answer into pane #{pane} failed: #{e.message}",
+          code: e.code, details: e.details.merge("question" => id, "answered" => true))
+      end
 
       def workspace_for(working_dir)
         name = @project_detector.detect(working_dir)

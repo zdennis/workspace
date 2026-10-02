@@ -29,8 +29,10 @@ module Workspace
     # @param context [String, nil] free-text pointer to the code in question (e.g. "file:line")
     # @param pane [String, nil] tmux pane id, when run inside tmux
     # @param worktree [String, nil] absolute path to the working directory that asked
+    # @param tmux_server [String, nil] process id of the tmux server the pane lives in, so
+    #   a later `answer --deliver` can tell the pane from one that reused its id after a restart
     # @return [Hash] the new record
-    def add(question:, default:, context: nil, pane: nil, worktree: nil)
+    def add(question:, default:, context: nil, pane: nil, worktree: nil, tmux_server: nil)
       with_lock do |data|
         record = {
           "id" => unused_id(data),
@@ -44,6 +46,7 @@ module Workspace
           "answer" => nil,
           "answered_at" => nil
         }
+        record["tmux_server"] = tmux_server if tmux_server
         data << record
         record
       end

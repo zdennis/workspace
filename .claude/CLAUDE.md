@@ -21,7 +21,8 @@ A macOS CLI (Ruby) for managing tmuxinator-based development workspaces in iTerm
 - `lib/workspace/json_envelope.rb` — Builds the `--json` action and error documents (`ok`, `code`, `details`, `retry`); the CLI rescue funnel emits the errors, `CLI#run_action` the actions
 - `lib/workspace/output_gate.rb` — The stdout every collaborator writes through; `--json` actions divert it to stderr so stdout holds one document
 - `lib/workspace/error_codes.rb` — Registry of the stable error `code` values, mirrored in `docs/README.json.md`
-- `lib/workspace/commands/` — Complex command objects (launch, kill, focus, start, agent, ensure_agent, lock, dev, projects, capabilities)
+- `lib/workspace/pane_locator.rb` — Strict pane resolver for `agent-run send`, `focus --pane` and `ask answer --deliver`: only a pane id or `window.pane`, and only a pane of the workspace's own tmux session
+- `lib/workspace/commands/` — Complex command objects (launch, kill, focus, start, agent, ensure_agent, lock, dev, projects, capabilities, send)
 - `lib/workspace/work_coordinator_client.rb` — JSONL client for work-coordinator sockets
 - `lib/workspace/pipeline_config.rb` — Reads per-project pipeline stage config from `~/.config/workspace/projects/<name>.yml`
 - `lib/workspace/pipeline_state.rb` — In-flight work item tracking, disk-persisted to `~/.local/state/workspace/<name>/pipeline.json`

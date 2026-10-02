@@ -191,4 +191,157 @@ RSpec.describe Workspace::Commands::Ask do
       expect(payload["error"]).to match(/was already answered/)
     end
   end
+
+  describe "#answer with deliver" do
+    let(:tmux) do
+      CLITestHelpers::FakeTmuxServer.new("myapp" => [{id: "%19", window: 1, index: 2}], "other" => [{id: "%7", window: 0, index: 0}])
+    end
+    let(:pane_sender) { Workspace::Commands::Send.new(locator: Workspace::PaneLocator.new(tmux: tmux), tmux: tmux, output: StringIO.new) }
+    let(:env) { {"TMUX_PANE" => "%19", "TMUX" => "/private/tmp/tmux-501/default,4242,0"} }
+
+    subject(:command) do
+      described_class.new(config: config, project_detector: project_detector, alert_config: alert_config,
+        notifier_factory: notifier_factory, pane_sender: pane_sender, env: env, output: output, error_output: error_output)
+    end
+
+    def ask(pane_env = env)
+      out = StringIO.new
+      described_class.new(config: config, project_detector: project_detector, notifier_factory: notifier_factory,
+        env: pane_env, output: out, error_output: error_output).call(question: "pg?", default: "sqlite", working_dir: "/app", json: true)
+      JSON.parse(out.string)["question"]["id"]
+    end
+
+    def error_from(**opts)
+      command.answer(*opts.delete(:args), working_dir: "/app", **opts)
+      nil
+    rescue Workspace::Error => e
+      e
+    end
+
+    it "answers, then types the answer and Enter into the asking pane" do
+      id = ask
+
+      result = command.answer(id, "postgres", working_dir: "/app", deliver: true)
+
+      expect(result).to eq(exit_code: 0)
+      expect(tmux.deliveries).to eq([{session: "myapp", pane: "%19", text: "postgres", enter: true}])
+      expect(output.string).to eq("Answered #{id}\nTyped the answer into pane %19 and pressed Enter.\n")
+    end
+
+    it "adds the delivery to the JSON document" do
+      id = ask
+
+      command.answer(id, "postgres", working_dir: "/app", deliver: true, json: true)
+
+      payload = JSON.parse(output.string)
+      expect(payload["question"]).to include("id" => id, "status" => "answered", "answer" => "postgres")
+      expect(payload["delivered"]).to eq("pane" => "%19", "submitted" => true)
+    end
+
+    it "leaves delivered out without deliver" do
+      id = ask
+
+      command.answer(id, "postgres", working_dir: "/app", json: true)
+
+      expect(JSON.parse(output.string)).not_to have_key("delivered")
+      expect(tmux.deliveries).to be_empty
+    end
+
+    it "leaves the question open when its pane is in another session" do
+      id = ask(env.merge("TMUX_PANE" => "%7"))
+
+      expect(error_from(args: [id, "x"], deliver: true).code).to eq("wrong_session")
+
+      expect(tmux.deliveries).to be_empty
+      command.answer(id, "x", working_dir: "/app")
+    end
+
+    it "leaves the question open when its pane has gone" do
+      id = ask(env.merge("TMUX_PANE" => "%99"))
+
+      expect(error_from(args: [id, "x"], deliver: true).code).to eq("no_such_pane")
+
+      command.answer(id, "x", working_dir: "/app")
+    end
+
+    it "leaves the question open when it wasn't asked from tmux" do
+      id = ask({})
+
+      error = error_from(args: [id, "x"], deliver: true)
+
+      expect(error.code).to eq("no_pane")
+      expect(error.details).to eq("question" => id)
+      command.answer(id, "x", working_dir: "/app")
+    end
+
+    it "records the tmux server the question was asked under" do
+      id = ask
+
+      record = command.answer(id, "x", working_dir: "/app", json: true) && JSON.parse(output.string)["question"]
+
+      expect(record).to include("id" => id, "pane" => "%19", "tmux_server" => "4242")
+    end
+
+    it "leaves tmux_server out of a question asked outside tmux" do
+      id = ask({})
+      command.answer(id, "x", working_dir: "/app", json: true)
+
+      expect(JSON.parse(output.string)["question"]).not_to have_key("tmux_server")
+    end
+
+    it "refuses a pane id that may have been reused after tmux restarted, leaving the question open" do
+      id = ask
+      tmux.server_pid = "9999"
+
+      error = error_from(args: [id, "x"], deliver: true)
+
+      expect(error.code).to eq("stale_pane")
+      expect(error.message).to include("tmux has restarted since it was asked")
+      expect(error.details).to eq("question" => id, "pane" => "%19")
+      expect(tmux.deliveries).to be_empty
+      command.answer(id, "x", working_dir: "/app")
+    end
+
+    it "refuses a question that doesn't record its tmux server" do
+      id = ask(env.except("TMUX"))
+
+      error = error_from(args: [id, "x"], deliver: true)
+
+      expect(error.code).to eq("stale_pane")
+      expect(error.message).to include("doesn't record which tmux server")
+      expect(tmux.deliveries).to be_empty
+    end
+
+    it "keeps the answer and says so when typing fails" do
+      id = ask
+      tmux.delivery_status = :not_landed
+
+      error = error_from(args: [id, "x"], deliver: true)
+
+      expect(error.code).to eq("not_delivered")
+      expect(error.message).to include("is marked answered, but typing the answer into pane %19 failed")
+      expect(error.details).to include("question" => id, "answered" => true, "pane" => "%19")
+      expect { command.answer(id, "again", working_dir: "/app") }.to raise_error(Workspace::Error, /already answered/)
+    end
+
+    it "exits 2 in JSON when the answer may already be in the pane" do
+      id = ask
+      tmux.delivery_status = :unverified
+
+      result = command.answer(id, "x", working_dir: "/app", deliver: true, json: true)
+
+      expect(result).to eq(exit_code: 2)
+      expect(JSON.parse(output.string)).to include("ok" => false, "code" => "not_submitted")
+    end
+
+    it "keeps the not-found error for an unknown id" do
+      expect(error_from(args: ["nope", "x"], deliver: true).message).to eq("No question 'nope' for myapp.")
+    end
+
+    it "refuses deliver when no sender is wired" do
+      plain = described_class.new(config: config, project_detector: project_detector, env: {}, output: output, error_output: error_output)
+
+      expect { plain.answer("x", "y", working_dir: "/app", deliver: true) }.to raise_error(Workspace::Error, /not available in this build/)
+    end
+  end
 end

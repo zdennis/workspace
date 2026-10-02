@@ -1036,4 +1036,82 @@ RSpec.describe Workspace::Tmux do
       expect(tmux.pane_slot("%7")).to be_nil
     end
   end
+
+  describe "#select_pane" do
+    let(:tmux) { described_class.new(config: config) }
+    let(:detail) { {id: "%19", window: 1, index: 2} }
+
+    it "selects the window of the session, then the pane by id" do
+      allow(tmux).to receive(:system).and_return(true)
+
+      expect(tmux.select_pane("my-session", detail)).to be true
+
+      expect(tmux).to have_received(:system).with("tmux", "select-window", "-t", "my-session:1").ordered
+      expect(tmux).to have_received(:system).with("tmux", "select-pane", "-t", "%19").ordered
+    end
+
+    it "returns false, without selecting the pane, when the window can't be selected" do
+      allow(tmux).to receive(:system).and_return(false)
+
+      expect(tmux.select_pane("my-session", detail)).to be false
+
+      expect(tmux).not_to have_received(:system).with("tmux", "select-pane", "-t", "%19")
+    end
+
+    it "returns false when tmux is missing" do
+      allow(tmux).to receive(:system).and_return(nil)
+
+      expect(tmux.select_pane("my-session", detail)).to be false
+    end
+  end
+
+  describe "pane id targets" do
+    let(:tmux) { described_class.new(config: config) }
+
+    it "sends a key to a pane id on its own, not qualified by the session" do
+      allow(tmux).to receive(:system).and_return(true)
+
+      tmux.send_key("my-session", "%19", "Escape")
+
+      expect(tmux).to have_received(:system).with("tmux", "send-keys", "-t", "%19", "Escape")
+    end
+
+    it "still qualifies window.pane targets with the session" do
+      allow(tmux).to receive(:system).and_return(true)
+
+      tmux.send_key("my-session", "1.2", "Escape")
+
+      expect(tmux).to have_received(:system).with("tmux", "send-keys", "-t", "my-session:1.2", "Escape")
+    end
+
+    it "pastes into a pane id on its own" do
+      allow(tmux).to receive(:system).and_return(true)
+      allow(tmux).to receive(:capture_screen).and_return(nil)
+      allow(tmux).to receive(:tmux_load_buffer).and_return(true)
+      allow(tmux).to receive(:tmux_paste_buffer).and_return([true, nil])
+
+      tmux.deliver("my-session", "%19", "hello", enter: false)
+
+      expect(tmux).to have_received(:tmux_paste_buffer).with(anything, "%19")
+    end
+  end
+
+  describe "#server_pid_for_pane" do
+    let(:tmux) { described_class.new(config: config) }
+    let(:ok) { instance_double(Process::Status, success?: true) }
+    let(:failed) { instance_double(Process::Status, success?: false) }
+
+    it "asks tmux for the server pid of the pane" do
+      allow(Open3).to receive(:capture3).and_return(["4242\n", "", ok])
+
+      expect(tmux.server_pid_for_pane("%19")).to eq("4242")
+      expect(Open3).to have_received(:capture3).with("tmux", "display-message", "-p", "-t", "%19", "\#{pid}")
+    end
+
+    it "is nil when the pane is gone" do
+      allow(Open3).to receive(:capture3).and_return(["", "can't find pane: %19", failed])
+
+      expect(tmux.server_pid_for_pane("%19")).to be_nil
+    end
+  end
 end

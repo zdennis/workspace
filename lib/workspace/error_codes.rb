@@ -16,6 +16,11 @@ module Workspace
       "unsaved_unknown" => "git couldn't tell whether the worktree has unsaved work.",
       "not_submitted" => "Text reached the pane but wasn't confirmed submitted; check before resending.",
       "confirmation_required" => "A prompt would have read stdin while --no-input or WORKSPACE_NO_INPUT was set.",
+      "no_session" => "The workspace has no running tmux session.",
+      "bad_keys" => "--keys named something that isn't a tmux key name, or too many keys.",
+      "no_pane" => "The question wasn't asked from a tmux pane, so there is nowhere to deliver an answer.",
+      "stale_pane" => "The question's pane may not be the one that asked (tmux restarted since, or the question predates the check).",
+      "focus_failed" => "tmux couldn't select the pane; the window is already in front.",
       "config_parse" => "A config file exists but can't be parsed as a YAML mapping.",
       # Codes the agent daemon puts in its replies; `agent-run` passes them through.
       "malformed_message" => "The daemon couldn't parse the request.",

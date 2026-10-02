@@ -132,6 +132,7 @@ require_relative "workspace/launch_mode"
 require_relative "workspace/doctor"
 require_relative "workspace/tmux"
 require_relative "workspace/tmux_pane"
+require_relative "workspace/pane_locator"
 require_relative "workspace/project_config"
 require_relative "workspace/iterm"
 require_relative "workspace/window_manager"
@@ -193,6 +194,7 @@ require_relative "workspace/commands/prune"
 require_relative "workspace/commands/lookup"
 require_relative "workspace/commands/update_pane_command"
 require_relative "workspace/commands/run"
+require_relative "workspace/commands/send"
 require_relative "workspace/commands/capture"
 require_relative "workspace/commands/lock"
 require_relative "workspace/commands/dev"
@@ -259,7 +261,9 @@ module Workspace
     start_command = Commands::Start.new(git: git, project_config: project_config, project_settings: project_settings, launch_command: launch_command, lineage: lineage, hook_installer: hook_installer, output: output, input: input)
     kill_command = Commands::Kill.new(git: git, project_config: project_config, project_settings: project_settings, stop_command: stop_command, project_detector: project_detector, output: output, input: input)
     finish_command = Commands::Finish.new(git: git, project_config: project_config, kill_command: kill_command, project_detector: project_detector, output: output, error_output: error_output, input: input)
-    focus_command = Commands::Focus.new(state: state, window_manager: window_manager, tmux: tmux, output: output)
+    pane_locator = PaneLocator.new(tmux: tmux)
+    send_command = Commands::Send.new(locator: pane_locator, tmux: tmux, output: output)
+    focus_command = Commands::Focus.new(state: state, window_manager: window_manager, tmux: tmux, pane_locator: pane_locator, output: output)
     tile_command = Commands::Tile.new(state: state, window_manager: window_manager, window_layout: window_layout, output: output)
     layout_command = Commands::Layout.new(state: state, tmux: tmux, project_settings: project_settings, output: output)
     resize_command = Commands::Resize.new(tmux: tmux, layout_command: layout_command, output: output, error_output: error_output)
@@ -355,7 +359,7 @@ module Workspace
     alert_config = AlertConfig.new(project_settings: project_settings, project_config: project_config,
       lineage: lineage, error_output: error_output)
     ask_command = Commands::Ask.new(config: config, project_detector: project_detector, alert_config: alert_config,
-      output: output, error_output: error_output)
+      pane_sender: send_command, output: output, error_output: error_output)
 
     work_coordinator_client = WorkCoordinatorClient.new(
       socket_path: config.work_coordinator_socket,
@@ -432,6 +436,7 @@ module Workspace
       launch_mode: launch_mode,
       liveness: Liveness.new(tmux: tmux),
       restart_agent_command: restart_agent_command,
+      send_command: send_command,
       ensure_agent_command: ensure_agent_command,
       handoff_command: handoff_command,
       logger: logger,

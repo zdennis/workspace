@@ -53,6 +53,8 @@ module Workspace
     #   `agentd --ensure` command
     # @param restart_agent_command [Workspace::Commands::RestartAgent, nil] pre-built
     #   `agent-run restart` command; optional so test builders need not wire it
+    # @param send_command [Workspace::Commands::Send, nil] pre-built
+    #   `agent-run send` command; optional so test builders need not wire it
     # @param handoff_command [Workspace::Commands::Handoff, nil] pre-built
     #   `handoff check`/`handoff new` command; optional so test builders need not wire it
     # @param logger [Workspace::Logger] debug logger
@@ -71,7 +73,7 @@ module Workspace
     #   reports every project as unknown
     # @param launch_mode [Workspace::LaunchMode, nil] decides whether launch/start
     #   run headless when no --[no-]headless flag is given; nil builds one
-    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, restart_agent_command: nil, ensure_agent_command: nil, handoff_command: nil, projects_command: nil, capabilities_command: nil, project_actions_command: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil, liveness: nil)
+    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, restart_agent_command: nil, send_command: nil, ensure_agent_command: nil, handoff_command: nil, projects_command: nil, capabilities_command: nil, project_actions_command: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil, liveness: nil)
       @config = config
       @state = state
       @project_config = project_config
@@ -112,6 +114,7 @@ module Workspace
       @statusline_command = statusline_command
       @ask_command = ask_command
       @restart_agent_command = restart_agent_command
+      @send_command = send_command
       @ensure_agent_command = ensure_agent_command
       @handoff_command = handoff_command
       @projects_command = projects_command
@@ -347,7 +350,7 @@ module Workspace
           add             Add a tmuxinator config for a project directory
           agent           Drive a workspace agent: agent run "prompt" (umbrella)
           agentd          Run the long-lived workspace agent daemon for a project
-          agent-run       Send a message to a running agent (command, inject, restart a pane)
+          agent-run       Send a message to a running agent, or type into a pane (command, inject, restart, send)
           alfred          Manage the Alfred workflow for workspace focus
           ask             Record a question an unattended agent hit, with its default
           capabilities    Print what this CLI supports, as feature revisions (for scripts and the UI)
@@ -720,6 +723,7 @@ module Workspace
       highlight = false
       highlight_color = "green"
       json = false
+      pane = nil
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: workspace focus [options] [project]"
         opts.separator ""
@@ -737,10 +741,13 @@ module Workspace
           "Colors: red, green, blue, yellow, orange, purple, white, cyan, magenta, random") do |c|
           highlight_color = c
         end
+        opts.on("--pane PANE", "Also select this pane once the window is up front: a pane id (%19) or",
+          "window.pane (0.1). Must belong to the project's tmux session") { |v| pane = v }
         opts.on("--json", "Print one action document (see docs/README.json.md) instead of text, which goes to stderr") { json = true }
         opts.separator ""
         opts.separator "Examples:"
         opts.separator "  workspace focus    # focus the current directory's project"
+        opts.separator "  workspace focus my-notes --pane %19    # focus the window and select pane %19"
         opts.separator "  workspace focus my-notes    # focus a specific project"
         opts.separator "  workspace focus --shake my-notes    # shake the window after focusing"
         opts.separator "  workspace focus --highlight my-notes    # highlight the window green (default)"
@@ -752,11 +759,13 @@ module Workspace
       raise UsageError, parser.help unless project
 
       run_action("focus", json: json) do
-        @focus_command.call(project, shake: shake, highlight: highlight ? highlight_color : nil)
+        focused_pane = @focus_command.call(project, shake: shake, highlight: highlight ? highlight_color : nil, pane: pane)
         @hook_runner.run(project, "post_focus")
         if json
           @state.load
-          {results: [action_row(project, "focused", iterm_window_id: @state.dig(project, "iterm_window_id"))]}
+          row = action_row(project, "focused", iterm_window_id: @state.dig(project, "iterm_window_id"))
+          row["pane"] = focused_pane if pane
+          {results: [row]}
         else
           {}
         end
@@ -1344,7 +1353,7 @@ module Workspace
       <<~HELP
         Usage: workspace ask "<question>" --default "<default taken>" [options]
                workspace ask list [--json]
-               workspace ask answer <id> "<answer>" [--json]
+               workspace ask answer <id> "<answer>" [--deliver] [--json]
 
         Records a question an unattended agent hit, with the default it took,
         so the agent can keep going instead of blocking on a person. Never
@@ -1353,7 +1362,8 @@ module Workspace
 
         Subcommands:
           list                    Show open questions for this workspace
-          answer <id> <answer>    Resolve an open question (alias: resolve)
+          answer <id> <answer>    Resolve an open question (alias: resolve); with --deliver,
+                                  also type the answer and Enter into the pane that asked
 
         A first word of list, answer, resolve or help is a subcommand only
         without --default; `workspace ask list --default x` records "list".
@@ -1361,6 +1371,13 @@ module Workspace
         Options (every subcommand):
           --name WS         Act on workspace WS instead of the one detected from the
                             current directory
+
+        Options (answer):
+          --deliver         Type the answer, then Enter, into the pane that asked, which must
+                            belong to the workspace's tmux session. The pane is checked before the
+                            question is answered; if typing then fails, the question stays
+                            answered and the error says so. Needs a question asked from tmux.
+          --                Ends options, so an answer starting with "-" works
 
         Options (recording a question):
           --default TEXT    The default the agent took (required)
@@ -1376,6 +1393,7 @@ module Workspace
           workspace ask "Use pg or sqlite for the cache?" --default "sqlite" --context "lib/cache.rb:12"
           workspace ask list
           workspace ask answer a1b2c3 "Use postgres instead"
+          workspace ask answer --deliver a1b2c3 -- yes    # also types it into the asking pane
       HELP
     end
 
@@ -1427,9 +1445,11 @@ module Workspace
     def cmd_ask_answer(args)
       workspace = nil
       json = false
+      deliver = false
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace ask answer <id> \"<answer>\" [--json]"
+        opts.banner = "Usage: workspace ask answer <id> \"<answer>\" [--deliver] [--json]"
         opts.on("--name NAME", "Workspace to act on instead of the one detected from cwd") { |v| workspace = v }
+        opts.on("--deliver", "Also type the answer and Enter into the pane that asked") { deliver = true }
         opts.on("--json", "Emit the documented JSON schema instead of a message") { json = true }
       end
       parser.parse!(args)
@@ -1441,7 +1461,7 @@ module Workspace
         return emit_json_usage_error(Commands::Ask::JSON_SCHEMA_VERSION, "workspace ask answer: an id and an answer are required.")
       end
 
-      result = @ask_command.answer(id, answer, working_dir: working_dir_for(workspace), json: json)
+      result = @ask_command.answer(id, answer, working_dir: working_dir_for(workspace), json: json, deliver: deliver)
       @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
     rescue OptionParser::ParseError => e
       raise unless json_requested?(json, args)
@@ -1937,6 +1957,7 @@ module Workspace
       when "command" then cmd_agent_run_command(args)
       when "inject" then cmd_agent_run_inject(args)
       when "restart" then cmd_agent_run_restart(args)
+      when "send" then cmd_agent_run_send(args)
       when "examples" then cmd_agent_run_examples
       else
         raise UsageError, agent_run_help
@@ -1971,6 +1992,7 @@ module Workspace
           command    Send a "command" message (delivers work to the first pipeline stage)
           inject     Send an "inject" message (steers a running work item)
           restart    Clear the coding agent in one pane and type a fresh prompt into it
+          send       Type text or tmux keys into one named pane (straight through tmux; no daemon)
           examples   Print all stock example messages without sending anything
 
         Raw mode (paste a full message directly):
@@ -2001,6 +2023,14 @@ module Workspace
                               (e.g. "45s", or seconds); default 30s, at most 600s
           --json              Print the result as JSON; errors as {"schema_version":1,"ok":false,"error":...}
 
+        Options (send; see `workspace agent-run send --help`):
+          --name NAME         Workspace name (default: detected from cwd)
+          --pane PANE         Pane to type into: a pane id (%19) or window.pane (0.1)  (required)
+          --body TEXT         Literal text to paste, then Enter  (one of --body/--keys)
+          --keys KEYS         Space-separated tmux key names: Escape, Enter, Up, C-c, y  (one of --body/--keys)
+          --no-enter          With --body, don't press Enter
+          --json              Print the result as JSON
+
         Examples:
           workspace agent-run command --body "Add OAuth support"
           workspace agent-run command --work-item WC-42 --body "Add OAuth support"
@@ -2009,6 +2039,8 @@ module Workspace
           workspace agent-run inject --work-item WC-42 --body "Stop and pivot to the auth approach" --interrupt
           workspace agent-run restart --name myapp --pane 0.1 --prompt "Read HANDOFF.md and follow it." --wait
           workspace agent-run restart --pane %18 --prompt "Resume from HANDOFF.md" --json
+          workspace agent-run send --pane %19 --body "yes"
+          workspace agent-run send --pane %19 --keys Escape --json
           workspace agent-run examples
       HELP
     end
@@ -2190,6 +2222,62 @@ module Workspace
     rescue OptionParser::ParseError, UsageError => e
       raise unless json_requested?(json, args)
       emit_json_error(Commands::RestartAgent::JSON_SCHEMA_VERSION, e, message: e.message.lines.first.strip)
+    end
+
+    # Types text or tmux key names into one named pane. The pane must be a
+    # pane id or window.pane of the workspace's own tmux session; there is
+    # no default pane. See {Workspace::Commands::Send}.
+    def cmd_agent_run_send(args)
+      name = nil
+      pane = nil
+      body = nil
+      keys = nil
+      no_enter = false
+      json = false
+
+      parser = OptionParser.new do |opts|
+        opts.banner = "Usage: workspace agent-run send --pane PANE (--body TEXT | --keys KEYS) [options]"
+        opts.separator ""
+        opts.separator "Type into one pane of a workspace's tmux session, straight through tmux (no agent daemon)."
+        opts.separator "The pane is always named: a pane id (%19, from `workspace sessions --json`) or window.pane"
+        opts.separator "(0.1). It is checked against the workspace's own tmux session first, so a wrong or stale"
+        opts.separator "pane is an error, never a different pane."
+        opts.separator ""
+        opts.separator "  --body TEXT  pastes TEXT literally (no key names are interpreted), then presses Enter."
+        opts.separator "  --keys KEYS  sends tmux key names, never text and never an implicit Enter: add Enter"
+        opts.separator "               yourself (\"Escape\", \"Up Up Enter\", \"C-c\", \"y\"). Anything that isn't a key"
+        opts.separator "               name is refused before the first key is sent."
+        opts.separator ""
+        opts.separator "Options:"
+        opts.on("--name NAME", "Workspace name (default: detected from cwd)") { |v| name = v }
+        opts.on("--pane PANE", "Pane id (%19) or window.pane (0.1)  (required)") { |v| pane = v }
+        opts.on("--body TEXT", "Literal text to paste, then Enter") { |v| body = v }
+        opts.on("--keys KEYS", "Space-separated tmux key names") { |v| keys = v }
+        opts.on("--no-enter", "With --body, paste the text without pressing Enter") { no_enter = true }
+        opts.on("--json", "Print the result as JSON; errors as {\"schema_version\":1,\"ok\":false,\"error\":...}") { json = true }
+        opts.separator ""
+        opts.separator "Exit codes: 0 delivered; 1 not delivered (safe to resend) or bad input; 2 text landed but wasn't"
+        opts.separator "  confirmed submitted (check the pane before resending)."
+        opts.separator ""
+        opts.separator "Examples:"
+        opts.separator "  workspace agent-run send --name api --pane %19 --body \"yes\""
+        opts.separator "  workspace agent-run send --name api --pane %19 --keys Escape --json"
+        opts.separator "  workspace agent-run send --pane 0.1 --keys \"Up Enter\""
+      end
+      parser.parse!(args)
+      raise UsageError, "Unexpected argument: #{args.first}\n\n#{parser.help}" if args.any?
+
+      name ||= @project_detector.detect(@working_dir)
+      raise UsageError, "Missing workspace name (pass --name).\n\n#{parser.help}" if name.nil?
+      raise UsageError, "Missing --pane.\n\n#{parser.help}" if pane.nil? || pane.strip.empty?
+      raise UsageError, "Pass --body or --keys, not both.\n\n#{parser.help}" if body && keys
+      raise UsageError, "Missing --body or --keys.\n\n#{parser.help}" if body.nil? && keys.nil?
+      raise UsageError, "--body can't be empty.\n\n#{parser.help}" if body && body.empty?
+      raise UsageError, "--no-enter applies to --body; --keys never presses Enter on its own.\n\n#{parser.help}" if no_enter && keys
+      raise Error, "workspace agent-run send is not available in this build" unless @send_command
+
+      key_names = keys && Commands::Send.parse_keys(keys)
+      @send_command.call(name: name, pane: pane, body: body, keys: key_names, enter: !no_enter, json: json)
     end
 
     def handoff_help

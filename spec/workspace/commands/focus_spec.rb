@@ -100,4 +100,67 @@ RSpec.describe Workspace::Commands::Focus do
         /'proj' runs headless, so it has no iTerm window.*tmux attach -t proj-session/m)
     end
   end
+
+  describe "#call with a pane" do
+    let(:tmux) do
+      CLITestHelpers::FakeTmuxServer.new("proj" => [{id: "%3", window: 0, index: 0}, {id: "%19", window: 1, index: 2}], "other" => [{id: "%7", window: 0, index: 0}])
+    end
+    let(:command) do
+      described_class.new(state: state, window_manager: window_manager, tmux: tmux,
+        pane_locator: Workspace::PaneLocator.new(tmux: tmux), output: output)
+    end
+
+    before do
+      state["proj"] = {"unique_id" => "uid1", "iterm_window_id" => 42}
+      state.save
+      allow(window_manager).to receive(:focus_by_id).and_return(true)
+    end
+
+    it "focuses the window, then selects the pane, and returns its id" do
+      expect(command.call("proj", pane: "1.2")).to eq("%19")
+
+      expect(window_manager).to have_received(:focus_by_id).with(42, highlight: nil)
+      expect(tmux.selected).to eq([{session: "proj", id: "%19", window: 1}])
+      expect(output.string).to eq("Focusing proj, pane %19...\n")
+    end
+
+    it "returns nil without a pane" do
+      expect(command.call("proj")).to be_nil
+      expect(tmux.selected).to be_empty
+    end
+
+    it "checks the pane before focusing the window" do
+      expect { command.call("proj", pane: "%7") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("wrong_session") }
+
+      expect(window_manager).not_to have_received(:focus_by_id)
+      expect(tmux.selected).to be_empty
+    end
+
+    it "does not select the pane when the window is gone" do
+      allow(window_manager).to receive(:focus_by_id).and_return(false)
+
+      expect { command.call("proj", pane: "%3") }.to raise_error(Workspace::Error, /no longer exists/)
+
+      expect(tmux.selected).to be_empty
+    end
+
+    it "raises focus_failed, naming the window as already focused, when tmux can't select the pane" do
+      tmux.select_ok = false
+
+      expect { command.call("proj", pane: "%3") }.to raise_error(Workspace::Error, /its window is in front/) { |e| expect(e.code).to eq("focus_failed") }
+    end
+
+    it "explains a build with no locator" do
+      bare = described_class.new(state: state, window_manager: window_manager, output: output)
+
+      expect { bare.call("proj", pane: "%3") }.to raise_error(Workspace::Error, /not available in this build/)
+    end
+
+    it "keeps the headless error ahead of the pane check" do
+      state["proj"] = {"headless" => true}
+      state.save
+
+      expect { command.call("proj", pane: "%3") }.to raise_error(Workspace::Error, /runs headless/)
+    end
+  end
 end
