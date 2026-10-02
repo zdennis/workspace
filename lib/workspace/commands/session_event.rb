@@ -24,6 +24,9 @@ module Workspace
         "PostToolUse" => "tool_use"
       }.freeze
 
+      # The hooks recorded in the session ledger, as the names it stores.
+      LEDGER_EVENTS = {"SessionStart" => "session_start", "SessionEnd" => "session_end"}.freeze
+
       # Longest notification message forwarded to the daemon. The message is
       # shown in `sessions --json` and handed to the notify command; a long
       # one is cut rather than dropped.
@@ -44,8 +47,10 @@ module Workspace
       # @param lock_enforcer [Workspace::LockEnforcer, nil] denies an edit while
       #   another agent holds the edit lock, and releases locks on session end;
       #   nil skips enforcement
+      # @param session_ledger [Workspace::SessionLedger, nil] records each
+      #   SessionStart and SessionEnd; nil skips the ledger
       def initialize(config:, tmux:, input: $stdin, env: ENV, error_output: $stderr, logger: Workspace::Logger.new,
-        lock_idle_tracker: nil, lock_enforcer: nil)
+        lock_idle_tracker: nil, lock_enforcer: nil, session_ledger: nil)
         @config = config
         @tmux = tmux
         @input = input
@@ -54,6 +59,7 @@ module Workspace
         @logger = logger
         @lock_idle_tracker = lock_idle_tracker
         @lock_enforcer = lock_enforcer
+        @session_ledger = session_ledger
       end
 
       # Reads a hook payload, updates the agent's lock idle state, enforces
@@ -87,6 +93,8 @@ module Workspace
         name = workspace || @tmux.session_name_for_pane(pane_id)
         return ok { "session-event: no session for #{pane_id}, dropped" } unless name
 
+        record_in_ledger(payload, pane_id, name)
+
         event = translate(payload, pane_id, name)
         return ok { "session-event: ignoring #{hook}" } unless event
 
@@ -114,6 +122,28 @@ module Workspace
       rescue JSON::ParserError => e
         @logger.debug { "session-event: unparseable payload (#{e.message})" }
         nil
+      end
+
+      # Written before delivery so a missing daemon doesn't lose the record. The
+      # slot lookup shells out to tmux, so it runs only for the two events that
+      # are recorded.
+      def record_in_ledger(payload, pane_id, workspace)
+        hook = payload["hook_event_name"]
+        return unless @session_ledger && LEDGER_EVENTS.key?(hook)
+
+        @session_ledger.record(
+          "event" => LEDGER_EVENTS[hook],
+          "workspace" => workspace,
+          "pane_slot" => @tmux.pane_slot(pane_id),
+          "pane_id" => pane_id,
+          "session_id" => text_field(payload, "session_id"),
+          "transcript_path" => text_field(payload, "transcript_path"),
+          "cwd" => text_field(payload, "cwd"),
+          "source" => text_field(payload, "source"),
+          "reason" => text_field(payload, "reason")
+        )
+      rescue => e
+        @logger.debug { "session-event: ledger write failed (#{e.class}: #{e.message})" }
       end
 
       def translate(payload, pane_id, workspace)

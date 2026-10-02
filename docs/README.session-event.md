@@ -28,6 +28,8 @@ Exits 2, with the deny message on stderr, when an edit is denied. Otherwise alwa
 
 Every forwarded event also carries the agent's `transcript_path` when the payload has one, and a `UserPromptSubmit` carries the user's `prompt` (cut to 1000 characters). The prompt is forwarded as typed, so anything pasted into it travels to the daemon too. The daemon does not yet surface either, and keeps neither beyond the event it receives; they are there for labels in `workspace sessions`.
 
+It also appends every `SessionStart` and `SessionEnd` to `ledger.jsonl` in workspace's state directory (`$XDG_STATE_HOME/workspace`, default `~/.local/state/workspace`), mode 0600. Each line is JSON: `at`, `event` (`session_start` or `session_end`), `workspace`, `pane_slot` (`session:window.index`, which survives a tmux restart), `pane_id`, `session_id`, `transcript_path`, `cwd`, and the payload's `source` or `reason`; missing fields are left out. The file is append-only and nothing reads it yet; it exists so a later `restore` can recreate panes and resume sessions. It is written before the event goes to the daemon, so a missing daemon doesn't lose it, and a failed write never fails the hook. Outside tmux nothing is recorded.
+
 ## Examples
 
 ```sh

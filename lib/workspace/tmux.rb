@@ -370,6 +370,22 @@ module Workspace
       name.empty? ? nil : name
     end
 
+    # Names where a pane sits in its session, as `session:window.index`.
+    #
+    # Unlike a pane id, the slot survives a tmux server restart, which is what
+    # lets a ledger entry be matched to a recreated pane.
+    #
+    # @param pane_id [String] a tmux pane id (e.g. "%23")
+    # @return [String, nil] the slot, or nil if the pane is gone
+    def pane_slot(pane_id)
+      stdout, _, status = Open3.capture3(
+        "tmux", "display-message", "-p", "-t", pane_id, "\#{session_name}:\#{window_index}.\#{pane_index}"
+      )
+      return nil unless status.success?
+      slot = stdout.strip
+      slot.empty? ? nil : slot
+    end
+
     # Opens a background window running +command+ directly (no shell), so the
     # command itself is the pane's process and leads its own process group.
     #

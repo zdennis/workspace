@@ -24,6 +24,7 @@ A macOS CLI (Ruby) for managing tmuxinator-based development workspaces in iTerm
 - `lib/workspace/pipeline_state.rb` — In-flight work item tracking, disk-persisted to `~/.local/state/workspace/<name>/pipeline.json`
 - `lib/workspace/sentinel_poller.rb` — Background poller watching tmux panes for `WORKSPACE_DONE:` sentinel
 - `lib/workspace/session_monitor.rb` — Per-pane coding-agent and sub-agent state (working/idle/waiting), keyed on tmux pane id; fires alerts
+- `lib/workspace/session_ledger.rb` — Flock-guarded append-only `ledger.jsonl` of SessionStart/SessionEnd (with pane slot), written by `session-event`
 - `lib/workspace/alert_config.rb` — Reads a project's `alerts.notify` and `alerts.idle_after`
 - `lib/workspace/notifier.rb` — Runs the notify command in the background with a timeout, details in `WORKSPACE_ALERT_*` env vars
 - `lib/workspace/ask_store.rb` — Flock-guarded append-only store for `workspace ask` questions, one `asks.json` per workspace under its XDG state dir

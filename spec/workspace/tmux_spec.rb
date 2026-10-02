@@ -1005,4 +1005,35 @@ RSpec.describe Workspace::Tmux do
       expect(tmux.custom_socket_option("proj")).to be_nil
     end
   end
+  describe "#pane_slot" do
+    let(:bin) { File.join(tmpdir, "bin") }
+    let(:tmux) { described_class.new(config: config) }
+
+    def fake_tmux(body)
+      FileUtils.mkdir_p(bin)
+      File.write(File.join(bin, "tmux"), "#!/bin/sh\n#{body}\n")
+      File.chmod(0o755, File.join(bin, "tmux"))
+    end
+
+    around do |example|
+      original_path = ENV["PATH"]
+      ENV["PATH"] = "#{bin}:#{original_path}"
+      example.run
+    ensure
+      ENV["PATH"] = original_path
+    end
+
+    it "asks tmux for session:window.pane of the pane id" do
+      fake_tmux(%(echo "$@" > "#{tmpdir}/args"; echo 'proj:0.2'))
+
+      expect(tmux.pane_slot("%7")).to eq("proj:0.2")
+      expect(File.read(File.join(tmpdir, "args"))).to eq("display-message -p -t %7 \#{session_name}:\#{window_index}.\#{pane_index}\n")
+    end
+
+    it "returns nil when tmux fails, as for a pane that is gone" do
+      fake_tmux(%(echo "can't find pane: %7" >&2; exit 1))
+
+      expect(tmux.pane_slot("%7")).to be_nil
+    end
+  end
 end

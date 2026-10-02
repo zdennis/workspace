@@ -249,4 +249,90 @@ RSpec.describe Workspace::Commands::SessionEvent do
       end
     end
   end
+  describe "session ledger" do
+    let(:ledger) { instance_double(Workspace::SessionLedger, record: true) }
+
+    before do
+      allow(tmux).to receive(:pane_slot).with("%2").and_return("proj:0.1")
+      allow(config).to receive(:agent_socket_path).with("other").and_return(socket_path)
+    end
+
+    def invoke_with_ledger(payload, workspace: nil, with: ledger)
+      described_class.new(config: config, tmux: tmux, input: StringIO.new(JSON.generate(payload)), env: env,
+        session_ledger: with).call(workspace: workspace)
+    end
+
+    it "records a SessionStart with the pane slot, pane id and session" do
+      invoke_with_ledger({"hook_event_name" => "SessionStart", "session_id" => "s1", "cwd" => "/p",
+        "transcript_path" => "/t.jsonl", "source" => "resume"})
+
+      expect(ledger).to have_received(:record).with(
+        "event" => "session_start", "workspace" => "proj", "pane_slot" => "proj:0.1", "pane_id" => "%2",
+        "session_id" => "s1", "transcript_path" => "/t.jsonl", "cwd" => "/p", "source" => "resume", "reason" => nil
+      )
+    end
+
+    it "records a SessionEnd with its reason" do
+      invoke_with_ledger({"hook_event_name" => "SessionEnd", "session_id" => "s1", "reason" => "logout"})
+
+      expect(ledger).to have_received(:record).with(hash_including("event" => "session_end", "reason" => "logout"))
+    end
+
+    it "uses the --workspace override as the recorded workspace" do
+      invoke_with_ledger({"hook_event_name" => "SessionStart"}, workspace: "other")
+
+      expect(ledger).to have_received(:record).with(hash_including("workspace" => "other"))
+    end
+
+    it "records even when no daemon is listening" do
+      expect(invoke_with_ledger({"hook_event_name" => "SessionStart"})).to eq(exit_code: 0)
+      expect(ledger).to have_received(:record)
+    end
+
+    it "does not record other events or look up the slot for them" do
+      %w[Stop UserPromptSubmit PostToolUse Notification].each do |hook|
+        invoke_with_ledger({"hook_event_name" => hook})
+      end
+
+      expect(ledger).not_to have_received(:record)
+      expect(tmux).not_to have_received(:pane_slot)
+    end
+
+    it "does not record outside tmux" do
+      command = described_class.new(config: config, tmux: tmux, session_ledger: ledger, env: {},
+        input: StringIO.new(JSON.generate("hook_event_name" => "SessionStart")))
+
+      command.call
+
+      expect(ledger).not_to have_received(:record)
+    end
+
+    it "ignores a non-string session id" do
+      invoke_with_ledger({"hook_event_name" => "SessionStart", "session_id" => 7})
+
+      expect(ledger).to have_received(:record).with(hash_including("session_id" => nil))
+    end
+
+    it "still exits 0 and delivers when the ledger raises" do
+      allow(ledger).to receive(:record).and_raise(IOError, "disk full")
+
+      expect(invoke_with_ledger({"hook_event_name" => "SessionEnd"})).to eq(exit_code: 0)
+    end
+
+    it "still exits 0 when the slot lookup raises" do
+      allow(tmux).to receive(:pane_slot).and_raise(Errno::ENOENT, "tmux")
+
+      expect(invoke_with_ledger({"hook_event_name" => "SessionStart"})).to eq(exit_code: 0)
+    end
+
+    it "writes a real ledger line end to end" do
+      Dir.mktmpdir do |dir|
+        real = Workspace::SessionLedger.new(path: File.join(dir, "ledger.jsonl"))
+        invoke_with_ledger({"hook_event_name" => "SessionStart", "session_id" => "s1"}, with: real)
+
+        entry = JSON.parse(File.read(File.join(dir, "ledger.jsonl")))
+        expect(entry).to include("event" => "session_start", "pane_slot" => "proj:0.1", "session_id" => "s1")
+      end
+    end
+  end
 end

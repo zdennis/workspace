@@ -99,6 +99,7 @@ require_relative "workspace/context_store"
 require_relative "workspace/context_reader"
 require_relative "workspace/statusline_renderer"
 require_relative "workspace/ask_store"
+require_relative "workspace/session_ledger"
 require_relative "workspace/session_monitor"
 require_relative "workspace/agent_provider"
 require_relative "workspace/file_backup"
@@ -228,8 +229,9 @@ module Workspace
       project_config: project_config, snapshot_client: agent_snapshot_client, output: output, error_output: error_output)
     lock_idle_tracker = LockIdleTracker.new(config: config, lock_namespace: lock_namespace, lock_holder: lock_holder, logger: logger)
     lock_enforcer = LockEnforcer.new(config: config, lock_namespace: lock_namespace, lock_holder: lock_holder, logger: logger)
+    session_ledger = SessionLedger.new(path: File.join(config.state_dir, "ledger.jsonl"), logger: logger)
     session_event_command = Commands::SessionEvent.new(config: config, tmux: tmux, input: input, error_output: error_output, logger: logger,
-      lock_idle_tracker: lock_idle_tracker, lock_enforcer: lock_enforcer)
+      lock_idle_tracker: lock_idle_tracker, lock_enforcer: lock_enforcer, session_ledger: session_ledger)
     process_group_terminator = ProcessGroupTerminator.new
     lock_command = Commands::Lock.new(config: config, lock_namespace: lock_namespace, lock_holder: lock_holder,
       terminator: process_group_terminator, dev_config: dev_config, lock_config: lock_config, event_log: event_log,
