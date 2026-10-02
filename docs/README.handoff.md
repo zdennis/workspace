@@ -22,7 +22,7 @@ workspace handoff new   NAME [--pane N] (--handoff-doc PATH | --handoff-prompt T
 | `--context-pct N` | Skip detection and use this value |
 | `--handoff-doc PATH` | Doc the agent updates and resumes from |
 | `--handoff-prompt TEXT` | Prompt sent verbatim instead of a doc |
-| `--json` | Print the result as JSON |
+| `--json` | Print the result as JSON; errors as `{"schema_version":1,"ok":false,"error":...}` |
 
 ## Options (new)
 
@@ -32,7 +32,7 @@ workspace handoff new   NAME [--pane N] (--handoff-doc PATH | --handoff-prompt T
 | `--handoff-doc PATH` | Doc the agent reads and resumes from |
 | `--handoff-prompt TEXT` | Prompt sent verbatim instead of a doc |
 | `--wait` | Wait for the restart to finish and report how it went. Don't use it from the agent being restarted: it would block the turn the restart waits on |
-| `--json` | Print the result as JSON |
+| `--json` | Print the result as JSON; errors as `{"schema_version":1,"ok":false,"error":...}` |
 
 `--handoff-doc` and `--handoff-prompt` are mutually exclusive. `new` requires one of them; `check` doesn't -- when neither is given, the save-state prompt tells the agent to pick a doc path itself.
 

@@ -1,6 +1,6 @@
 # `--json` output
 
-Every command that takes `--json` prints exactly one JSON object on stdout. That holds for success, refusal, usage error and unknown subcommand alike; with `--json` nothing is written to stderr for a failure.
+Every command that takes `--json` prints exactly one JSON value on stdout, and with `--json` nothing is written to stderr for a failure. A failure (refusal, usage error, unknown subcommand) is always the error envelope below. Success is an enveloped object for every command except the three listed under [Success output without the envelope](#success-output-without-the-envelope).
 
 ## Success
 
@@ -9,6 +9,18 @@ Every command that takes `--json` prints exactly one JSON object on stdout. That
 ```
 
 `schema_version` and `ok` come first, then the command's own keys (see each command's page).
+
+### Success output without the envelope
+
+These commands keep their original success shape, which other tools already parse. Their failures still use the envelope, so check for `ok` being `false` before reading the success shape.
+
+| Command | Success shape |
+|---|---|
+| `list --json` | A bare array: names, or objects with `--show-urls`, `--liveness` or `--all`. |
+| `status --json` | A bare object keyed by project name (`{}` when nothing is tracked). |
+| `parent --json` | A bare object with `name`, `path`, `git_common_dir`, `is_worktree`, `worktree`; no `schema_version` or `ok`. |
+
+Wrapping these in the envelope would change what existing callers parse, so it is later work and not part of CLI10. CLI12 and CLI13 in the implementation plan do not name it.
 
 ## Failure
 

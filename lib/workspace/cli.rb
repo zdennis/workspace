@@ -2045,7 +2045,7 @@ module Workspace
         opts.on("--context-pct N", Integer, "Skip detection and use this value") { |v| context_pct = v }
         opts.on("--handoff-doc PATH", "Doc the agent updates and resumes from") { |v| handoff_doc = v }
         opts.on("--handoff-prompt TEXT", "Prompt sent verbatim instead of a doc") { |v| handoff_prompt = v }
-        opts.on("--json", "Print the result as JSON") { json = true }
+        opts.on("--json", "Print the result as JSON; errors as {\"schema_version\":1,\"ok\":false,\"error\":...}") { json = true }
       end
       parser.parse!(args)
       raise UsageError, "--handoff-doc and --handoff-prompt are mutually exclusive.\n\n#{parser.help}" if handoff_doc && handoff_prompt
@@ -2084,7 +2084,7 @@ module Workspace
         opts.on("--handoff-doc PATH", "Doc the agent reads and resumes from") { |v| handoff_doc = v }
         opts.on("--handoff-prompt TEXT", "Prompt sent verbatim instead of a doc") { |v| handoff_prompt = v }
         opts.on("--wait", "Wait for the restart to finish and report how it went") { wait = true }
-        opts.on("--json", "Print the result as JSON") { json = true }
+        opts.on("--json", "Print the result as JSON; errors as {\"schema_version\":1,\"ok\":false,\"error\":...}") { json = true }
       end
       parser.parse!(args)
       raise UsageError, "--handoff-doc and --handoff-prompt are mutually exclusive.\n\n#{parser.help}" if handoff_doc && handoff_prompt
@@ -2297,7 +2297,7 @@ module Workspace
       as_json = false
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: workspace pipeline status <project>"
-        opts.on("--json", "Print JSON (schema_version plus entries) instead of a table") { as_json = true }
+        opts.on("--json", "Print JSON ({schema_version, ok, entries}; failures print {schema_version, ok: false, error, code}) instead of a table") { as_json = true }
       end
       parser.parse!(args)
       project = args.shift
@@ -3400,7 +3400,7 @@ module Workspace
           types.concat(value.split(",").map(&:strip).reject(&:empty?))
         end
         opts.on("--limit N", Integer, "Only the last N matching events") { |value| limit = value }
-        opts.on("--json", "Emit {schema_version, events} instead of lines") { json = true }
+        opts.on("--json", "Emit {schema_version, ok, events} instead of lines") { json = true }
       end
       raw_args = args.dup
       begin
