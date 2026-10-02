@@ -10,10 +10,10 @@ module Workspace
     # times out on nearly every call, so liveness checks come back unknown
     # (treated as alive) and a lock queue can stall behind a clearing
     # marker that never gets to show dead.
-    MIN_PS_TIMEOUT = 1
+    MIN_PS_TIMEOUT = ConfigSchema::MIN_PS_TIMEOUT
 
     # Largest accepted `locks.ps_timeout`, in seconds.
-    MAX_PS_TIMEOUT = 60
+    MAX_PS_TIMEOUT = ConfigSchema::MAX_PS_TIMEOUT
 
     # @param project_settings [Workspace::ProjectSettings]
     # @param error_output [IO] where a warning about an invalid value goes
@@ -28,14 +28,14 @@ module Workspace
     # @return [Numeric] seconds, always greater than 0
     # @raise [ArgumentError] if value isn't a positive duration
     def self.parse_idle_grace(value)
-      Duration.parse_positive(value)
+      ConfigSchema.parse("locks.idle_grace", value)
     end
 
     # @param name [String] project name (already resolved to its parent, if a worktree)
     # @return [Numeric] seconds an idle agent may keep a lock before the head
     #   waiter may take it over; {LockStore::DEFAULT_IDLE_GRACE} when unset or invalid
     def idle_grace_for(name)
-      setting(name, "idle_grace", LockStore::DEFAULT_IDLE_GRACE) { |value| self.class.parse_idle_grace(value) }
+      setting(name, "idle_grace")
     end
 
     # Parses and validates a `ps` timeout.
@@ -44,14 +44,14 @@ module Workspace
     # @return [Numeric] seconds, always in [{MIN_PS_TIMEOUT}, {MAX_PS_TIMEOUT}]
     # @raise [ArgumentError] if value isn't a duration in that range
     def self.parse_ps_timeout(value)
-      Duration.parse_ranged(value, min: MIN_PS_TIMEOUT, max: MAX_PS_TIMEOUT)
+      ConfigSchema.parse("locks.ps_timeout", value)
     end
 
     # @param name [String] project name (already resolved to its parent, if a worktree)
     # @return [Numeric] seconds to wait for `ps` before killing it;
     #   {ProcessTree::DEFAULT_TIMEOUT} when unset or invalid
     def ps_timeout_for(name)
-      setting(name, "ps_timeout", ProcessTree::DEFAULT_TIMEOUT) { |value| self.class.parse_ps_timeout(value) }
+      setting(name, "ps_timeout")
     end
 
     # Parses and validates a stale-lock reap interval.
@@ -60,23 +60,25 @@ module Workspace
     # @return [Numeric] seconds, always greater than 0
     # @raise [ArgumentError] if value isn't a positive duration
     def self.parse_reap_interval(value)
-      Duration.parse_positive(value)
+      ConfigSchema.parse("locks.reap_interval", value)
     end
 
     # @param name [String] project name (already resolved to its parent, if a worktree)
     # @return [Numeric] seconds between the session-monitor daemon's stale-lock
     #   sweeps; {LockReaper::DEFAULT_INTERVAL} when unset or invalid
     def reap_interval_for(name)
-      setting(name, "reap_interval", LockReaper::DEFAULT_INTERVAL) { |value| self.class.parse_reap_interval(value) }
+      setting(name, "reap_interval")
     end
 
     private
 
-    def setting(name, key, default)
+    def setting(name, key)
+      schema_key = "locks.#{key}"
+      default = ConfigSchema.default(schema_key)
       settings = @project_settings.load(name)
       locks = settings.is_a?(Hash) ? settings["locks"] : nil
       return default unless locks.is_a?(Hash) && locks.key?(key)
-      yield locks[key]
+      ConfigSchema.parse(schema_key, locks[key])
     rescue Workspace::ConfigParseError => e
       @error_output.puts "Warning: #{e.message} Using #{default}s for locks.#{key}."
       default

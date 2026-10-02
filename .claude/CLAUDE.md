@@ -8,6 +8,8 @@ A macOS CLI (Ruby) for managing tmuxinator-based development workspaces in iTerm
 - `lib/workspace.rb` — Module root, `build_cli` factory, error classes
 - `lib/workspace/cli.rb` — CLI dispatch, OptionParser definitions, simple command methods
 - `lib/workspace/config.rb` — Path constants and configuration
+- `lib/workspace/config_schema.rb` — The one table of config keys: scope, settable, default, value parser, restart flag, doc text; readers, `config set/get/unset` and the docs take their key lists and checks from it
+- `lib/workspace/config_schema_docs.rb` — Renders the schema into the generated blocks of `docs/README.config.md`; `script/generate-config-docs [--check]` runs it, and a spec fails on drift
 - `lib/workspace/state.rb` — JSON-persisted session state
 - `lib/workspace/git.rb` — Git and worktree operations
 - `lib/workspace/which.rb` — Shared default PATH lookup for injectable `which:` collaborators

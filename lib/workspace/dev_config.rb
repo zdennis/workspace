@@ -7,11 +7,11 @@ module Workspace
   # parent project name (see {WorkspaceLineage}), so this stays a plain
   # reader over {ProjectSettings}.
   class DevConfig
-    DEFAULT_STOP_TIMEOUT = 20
-    DEFAULT_STARTUP_TIMEOUT = 30
-    DEFAULT_READY_TIMEOUT = 120
+    DEFAULT_STOP_TIMEOUT = ConfigSchema.default("dev.stop_timeout")
+    DEFAULT_STARTUP_TIMEOUT = ConfigSchema.default("dev.startup_timeout")
+    DEFAULT_READY_TIMEOUT = ConfigSchema.default("dev.ready_timeout")
     # Largest accepted `dev.kill_grace`, in seconds (see {ProcessHolderStopper}).
-    MAX_KILL_GRACE = 60
+    MAX_KILL_GRACE = ConfigSchema::MAX_KILL_GRACE
 
     # @param project_settings [Workspace::ProjectSettings]
     def initialize(project_settings:)
@@ -40,24 +40,17 @@ module Workspace
       {
         up: dev["up"],
         ready: dev["ready"],
-        stop_timeout: duration(dev, "stop_timeout", DEFAULT_STOP_TIMEOUT, name),
-        startup_timeout: duration(dev, "startup_timeout", DEFAULT_STARTUP_TIMEOUT, name, require_positive: true),
-        ready_timeout: duration(dev, "ready_timeout", DEFAULT_READY_TIMEOUT, name, require_positive: true),
-        kill_grace: duration(dev, "kill_grace", ProcessHolderStopper::KILL_GRACE_SECONDS, name, max: MAX_KILL_GRACE)
+        stop_timeout: duration(dev, "stop_timeout", name),
+        startup_timeout: duration(dev, "startup_timeout", name),
+        ready_timeout: duration(dev, "ready_timeout", name),
+        kill_grace: duration(dev, "kill_grace", name)
       }
     end
 
-    def duration(dev, key, default, name, require_positive: false, max: nil)
-      return default unless dev.key?(key)
-      # Every branch raises ArgumentError on invalid input, caught below and
-      # re-raised with context.
-      if max
-        Duration.parse_capped(dev[key], max: max)
-      elsif require_positive
-        Duration.parse_positive(dev[key])
-      else
-        Duration.parse(dev[key])
-      end
+    def duration(dev, key, name)
+      schema_key = "dev.#{key}"
+      return ConfigSchema.default(schema_key) unless dev.key?(key)
+      ConfigSchema.parse(schema_key, dev[key])
     rescue ArgumentError => e
       raise Workspace::Error, "Invalid dev.#{key} for '#{name}': #{e.message}"
     end

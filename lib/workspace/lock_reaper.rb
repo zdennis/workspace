@@ -10,7 +10,7 @@ module Workspace
   class LockReaper
     # Seconds between reaps. Each one forks `git` per pane directory and `ps`
     # per namespace, so it runs far less often than the pane scan.
-    DEFAULT_INTERVAL = 30
+    DEFAULT_INTERVAL = ConfigSchema.default("locks.reap_interval")
 
     # Consecutive failed reaps of the same directory before a warning goes to
     # +error_output+. Earlier failures are debug-only, so a one-off error (a

@@ -31,7 +31,7 @@ module Workspace
   # back through {#pop_displaced}. `kind: "process"` holders are never marked
   # idle and never taken over.
   class LockStore
-    DEFAULT_IDLE_GRACE = 300
+    DEFAULT_IDLE_GRACE = ConfigSchema.default("locks.idle_grace")
 
     # @param dir [String] this namespace's lock store directory
     # @param liveness [Workspace::LockHolder] checks whether a recorded pid is still alive

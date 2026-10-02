@@ -66,6 +66,18 @@ RSpec.describe Workspace::ProjectSettings do
       }
     end
 
+    it "names the file once in the error message" do
+      projects_dir = File.join(tmpdir, "projects")
+      FileUtils.mkdir_p(projects_dir)
+      path = File.join(projects_dir, "bad.yml")
+      File.write(path, "a: [\n")
+
+      expect { settings.load("bad") }.to raise_error(Workspace::ConfigParseError) { |e|
+        expect(e.reason).not_to include(path)
+        expect(e.message.scan(path).size).to eq(1)
+      }
+    end
+
     it "returns empty hash for an empty file" do
       projects_dir = File.join(tmpdir, "projects")
       FileUtils.mkdir_p(projects_dir)

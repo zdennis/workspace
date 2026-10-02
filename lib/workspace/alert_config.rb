@@ -12,7 +12,7 @@ module Workspace
   # with a warning, since `config set` already rejects bad input.
   class AlertConfig
     # Seconds an agent pane may sit idle before the notify command runs.
-    DEFAULT_IDLE_AFTER = 600
+    DEFAULT_IDLE_AFTER = ConfigSchema.default("alerts.idle_after")
 
     # @param project_settings [Workspace::ProjectSettings]
     # @param project_config [Workspace::ProjectConfig, nil] finds a workspace's
@@ -33,7 +33,7 @@ module Workspace
     # @return [Numeric] seconds, always greater than 0
     # @raise [ArgumentError] if value isn't a positive duration
     def self.parse_idle_after(value)
-      Duration.parse_positive(value)
+      ConfigSchema.parse("alerts.idle_after", value)
     end
 
     # Validates a notify command.
@@ -42,9 +42,7 @@ module Workspace
     # @return [String] the command, stripped
     # @raise [ArgumentError] if the command is blank
     def self.parse_notify(value)
-      command = value.to_s.strip
-      raise ArgumentError, "must not be blank" if command.empty?
-      command
+      ConfigSchema.parse("alerts.notify", value)
     end
 
     # @param workspace [String] the daemon's workspace name
@@ -55,8 +53,8 @@ module Workspace
       alerts = load_alerts(name)
       alerts = {} unless alerts.is_a?(Hash)
       {
-        notify: setting(alerts, name, "notify", nil) { |value| self.class.parse_notify(value) },
-        idle_after: setting(alerts, name, "idle_after", DEFAULT_IDLE_AFTER) { |value| self.class.parse_idle_after(value) }
+        notify: setting(alerts, name, "notify"),
+        idle_after: setting(alerts, name, "idle_after")
       }
     end
 
@@ -77,9 +75,11 @@ module Workspace
       workspace
     end
 
-    def setting(alerts, name, key, default)
+    def setting(alerts, name, key)
+      schema_key = "alerts.#{key}"
+      default = ConfigSchema.default(schema_key)
       return default unless alerts.key?(key)
-      yield alerts[key]
+      ConfigSchema.parse(schema_key, alerts[key])
     rescue ArgumentError => e
       fallback = default.nil? ? "no alerts will be sent" : "using #{default}s"
       @error_output.puts "Warning: invalid alerts.#{key} for '#{name}' (#{e.message}); #{fallback}."

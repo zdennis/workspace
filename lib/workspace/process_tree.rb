@@ -8,7 +8,7 @@ module Workspace
   class ProcessTree
     PS_ENV = {"LC_ALL" => "C", "TZ" => "UTC"}.freeze
     PS_COMMAND = ["ps", "-axo", "pid=,ppid=,lstart=,comm=,args="].freeze
-    DEFAULT_TIMEOUT = 5
+    DEFAULT_TIMEOUT = ConfigSchema.default("locks.ps_timeout")
     private_constant :PS_ENV, :PS_COMMAND
 
     # @param logger [Workspace::Logger] debug logger

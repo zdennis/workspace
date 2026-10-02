@@ -26,8 +26,11 @@ With no subcommand, displays the YAML configuration for a project or the global 
 
 `set`, `get`, and `unset` are reserved as the first argument to `workspace config`: they are always treated as subcommands, not as a project name. A project literally named `set`, `get`, or `unset` can't be shown via `workspace config <name>`; it would need a different name, or reading its YAML file directly.
 
+<!-- The tables between GENERATED markers are rendered from lib/workspace/config_schema.rb; edit the schema and run script/generate-config-docs. -->
+
 Only an allowlisted set of keys can be written this way, so a typo doesn't silently create unused config:
 
+<!-- BEGIN GENERATED: keys -->
 | Key | Description |
 |-----|-------------|
 | `dev.up` | Command that starts the project's dev environment |
@@ -41,16 +44,22 @@ Only an allowlisted set of keys can be written this way, so a typo doesn't silen
 | `locks.reap_interval` | How often the session-monitor daemon sweeps for stale lock holders and waiters (default `30s`) |
 | `alerts.notify` | Command the session-monitor daemon runs when an agent pane starts waiting on a person or stays idle past `alerts.idle_after` (unset: no alerts; see [`workspace sessions`](README.sessions.md#alerts)) |
 | `alerts.idle_after` | How long an agent pane may sit idle before `alerts.notify` runs (default `10m`) |
+| `handoff.threshold` | Context-usage percent, 1 to 100, that triggers a handoff in [`workspace handoff check`](README.handoff.md) (default `11`) |
+| `handoff.check_prompt` | Overrides the built-in save-state prompt `handoff check --handoff-doc` sends; must not be blank (see [`workspace handoff`](README.handoff.md)) |
+| `handoff.resume_prompt` | Overrides the built-in resume prompt `handoff new` sends; must not be blank (see [`workspace handoff`](README.handoff.md)) |
 | `statusline.command` | Global. Delegates [`workspace statusline`](README.statusline.md) rendering to another command instead of the built-in renderer |
 | `context.source` | Global. `statusline` (default) or `scrape` — where `workspace sessions` reads a pane's context usage; see [`workspace statusline`](README.statusline.md) |
 | `context.pattern` | Global. Regex with exactly one capture group, used when `context.source` is `scrape` |
 | `launch.headless` | Global. `true` or `false`: whether `launch`, `start` and `doctor` run [headless](README.launch.md#headless) on this machine when no `--headless`/`--no-headless` flag is given. Unset, they pick headless off macOS, without `osascript`, or when `CI` is set |
+<!-- END GENERATED: keys -->
 
 `statusline.command`, `context.source`, `context.pattern`, and `launch.headless` are always written to the global config, never a project's — there's one status line, one context source and one launch mode per machine. `context.source` must be `statusline` or `scrape`; `context.pattern` must be a valid regex with exactly one capture group. `launch.headless` must be `true` or `false`.
 
 `dev.stop_timeout`, `dev.startup_timeout`, `dev.ready_timeout`, `dev.kill_grace`, `locks.idle_grace`, `locks.ps_timeout`, `locks.reap_interval`, and `alerts.idle_after` must parse as a duration: a plain number of seconds, or a number with an `s`, `m` or `h` suffix (`20`, `20s`, `5m`, `1h`). `dev.startup_timeout`, `dev.ready_timeout`, `dev.kill_grace`, `locks.idle_grace`, `locks.ps_timeout`, `locks.reap_interval`, and `alerts.idle_after` must also be greater than 0. `alerts.notify` must not be blank. `dev.kill_grace` is also capped at 60s. `locks.ps_timeout` must be between 1s and 60s: too small and `ps` times out on nearly every call, which makes liveness checks come back unknown (treated as alive) and can stall a lock queue behind a clearing marker that never gets to show dead. Anything else is rejected before it's written.
 
+<!-- BEGIN GENERATED: restart -->
 `locks.ps_timeout`, `locks.reap_interval`, `alerts.notify` and `alerts.idle_after` only take effect the next time the session-monitor daemon starts (`workspace launch`/`workspace agentd --force`); a daemon already running keeps the values it started with. `workspace config set` prints a reminder of this after setting any of these four keys.
+<!-- END GENERATED: restart -->
 
 `dev.up` runs via `/bin/sh -c`, so it can carry inline environment variables and quoting, e.g.:
 
@@ -69,24 +78,25 @@ If the file isn't valid YAML (or isn't a mapping at the top level), `set` and `u
 
 ### Global settings
 
+<!-- BEGIN GENERATED: global-settings -->
 | Setting | Description |
 |---------|-------------|
 | `hooks` | Global hooks applied to all projects |
 | `layouts` | Default tmux pane layouts |
 | `event_log_compact_threshold` | Size warning threshold (e.g., "10kb", "1mb"). Default: 1mb |
+<!-- END GENERATED: global-settings -->
 
 ### Project settings
 
+<!-- BEGIN GENERATED: project-settings -->
 | Setting | Description |
 |---------|-------------|
 | `hooks` | Project-specific hooks (e.g., `post_launch`) |
 | `layouts` | Project-specific tmux pane layouts |
 | `worktree_hooks` | Hooks seeded into new worktrees created from this project |
-| `dev.up`, `dev.ready`, `dev.stop_timeout`, `dev.startup_timeout`, `dev.ready_timeout`, `dev.kill_grace` | Dev environment config; set via `workspace config set` (see above) |
-| `locks.idle_grace` | Idle takeover grace period for this project's locks; set via `workspace config set` (see above) |
-| `locks.ps_timeout` | How long to wait for `ps` before giving up, for this project's lock and session checks; must be between `1s` and `60s`; set via `workspace config set` (see above) |
-| `locks.reap_interval` | How often the session-monitor daemon sweeps for stale locks; set via `workspace config set` (see above) |
-| `alerts.notify`, `alerts.idle_after` | Notify command for waiting and long-idle agent panes; set via `workspace config set` (see above) |
+<!-- END GENERATED: project-settings -->
+
+Keys you can set with `workspace config set` are listed in the table above; the settings here are edited by hand.
 
 ## Examples
 

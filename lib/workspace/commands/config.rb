@@ -6,21 +6,9 @@ module Workspace
     # Sets, reads, and unsets a project's config by dotted key
     # (`workspace config set/get/unset`), so callers don't need to hand-edit
     # YAML. Restricted to an allowlist, so a typo doesn't silently create
-    # unused config.
+    # unused config. The allowlist, value checks and restart notes come from
+    # {Workspace::ConfigSchema}.
     class Config
-      # Keys `set`/`get`/`unset` allow, written to a project's config. Unlisted
-      # dotted keys are rejected.
-      ALLOWED_KEYS = %w[dev.up dev.ready dev.stop_timeout dev.startup_timeout dev.ready_timeout dev.kill_grace locks.idle_grace locks.ps_timeout locks.reap_interval alerts.notify alerts.idle_after handoff.threshold handoff.check_prompt handoff.resume_prompt].freeze
-
-      # Keys `set`/`get`/`unset` allow, written to the global config
-      # (~/.config/workspace/config.yml) instead of a project's — there's one
-      # status line and one context source per machine, not per project.
-      GLOBAL_ALLOWED_KEYS = %w[statusline.command context.source context.pattern launch.headless].freeze
-
-      # Keys the session-monitor daemon only reads once, at startup. Changing
-      # one of these has no effect on an already-running daemon.
-      RESTART_REQUIRED_KEYS = %w[locks.ps_timeout locks.reap_interval alerts.notify alerts.idle_after].freeze
-
       # @param project_settings [Workspace::ProjectSettings] reads/writes project YAML
       # @param lineage [Workspace::WorkspaceLineage] resolves a project from cwd (worktree -> parent)
       # @param file_backup [Workspace::FileBackup] backs up the config file before it's rewritten
@@ -34,7 +22,7 @@ module Workspace
         @error_output = error_output
       end
 
-      # @param key [String] a dotted key from {ALLOWED_KEYS}
+      # @param key [String] a dotted key from {Workspace::ConfigSchema}
       # @param value [String] the value to store
       # @param project [String, nil] project to configure; defaults to the one inferred from cwd
       # @param cwd [String] directory to infer the project from, when project is nil
@@ -44,7 +32,7 @@ module Workspace
         validate_key!(key)
         validate_value!(key, value)
 
-        if GLOBAL_ALLOWED_KEYS.include?(key)
+        if ConfigSchema.key(key).global?
           set_global(key, value)
           return
         end
@@ -65,14 +53,14 @@ module Workspace
           write(path, data)
         end
         @output.puts "Set #{key} = #{value} for '#{name}'."
-        if RESTART_REQUIRED_KEYS.include?(key)
+        if ConfigSchema.key(key).restart_required?
           daemon_name = (project.nil? && lineage.worktree) ? lineage.worktree : name
           @output.puts "Takes effect the next time the session monitor starts (workspace agentd #{daemon_name} --force, or relaunch)."
         end
         name
       end
 
-      # @param key [String] a dotted key from {ALLOWED_KEYS}
+      # @param key [String] a dotted key from {Workspace::ConfigSchema}
       # @param project [String, nil] project to read; defaults to the one inferred from cwd
       # @param cwd [String] directory to infer the project from, when project is nil
       # @return [Boolean] true if the key had a value, false if unset
@@ -80,7 +68,7 @@ module Workspace
       def get(key, project: nil, cwd: Dir.pwd)
         validate_key!(key)
 
-        if GLOBAL_ALLOWED_KEYS.include?(key)
+        if ConfigSchema.key(key).global?
           value = @project_settings.load_global.dig(*key.split("."))
           if value.nil?
             @error_output.puts "#{key} is not set."
@@ -102,7 +90,7 @@ module Workspace
         end
       end
 
-      # @param key [String] a dotted key from {ALLOWED_KEYS}
+      # @param key [String] a dotted key from {Workspace::ConfigSchema}
       # @param project [String, nil] project to configure; defaults to the one inferred from cwd
       # @param cwd [String] directory to infer the project from, when project is nil
       # @return [void]
@@ -110,7 +98,7 @@ module Workspace
       def unset(key, project: nil, cwd: Dir.pwd)
         validate_key!(key)
 
-        if GLOBAL_ALLOWED_KEYS.include?(key)
+        if ConfigSchema.key(key).global?
           @project_settings.with_global_lock do |data|
             segments = key.split(".")
             cursor = segments[0..-2].reduce(data) { |node, segment| node.is_a?(Hash) ? node[segment] : nil }
@@ -173,74 +161,14 @@ module Workspace
       end
 
       def validate_key!(key)
-        return if ALLOWED_KEYS.include?(key) || GLOBAL_ALLOWED_KEYS.include?(key)
-        raise Workspace::UsageError, "Unknown config key '#{key}'. Allowed keys: #{(ALLOWED_KEYS + GLOBAL_ALLOWED_KEYS).join(", ")}"
+        return if ConfigSchema.settable?(key)
+        raise Workspace::UsageError, "Unknown config key '#{key}'. Allowed keys: #{ConfigSchema.settable_names.join(", ")}"
       end
 
       def validate_value!(key, value)
-        case key
-        when "dev.stop_timeout" then Workspace::Duration.parse(value)
-        when "dev.startup_timeout", "dev.ready_timeout" then Workspace::Duration.parse_positive(value)
-        when "dev.kill_grace" then Workspace::Duration.parse_capped(value, max: Workspace::DevConfig::MAX_KILL_GRACE)
-        when "locks.idle_grace" then Workspace::LockConfig.parse_idle_grace(value)
-        when "locks.ps_timeout" then Workspace::LockConfig.parse_ps_timeout(value)
-        when "locks.reap_interval" then Workspace::LockConfig.parse_reap_interval(value)
-        when "alerts.notify" then Workspace::AlertConfig.parse_notify(value)
-        when "alerts.idle_after" then Workspace::AlertConfig.parse_idle_after(value)
-        when "launch.headless" then Workspace::LaunchMode.parse_config(value)
-        when "handoff.threshold" then Workspace::HandoffConfig.parse_threshold(value)
-        when "handoff.check_prompt", "handoff.resume_prompt" then Workspace::HandoffConfig.parse_prompt(value)
-        when "context.source"
-          raise ArgumentError, "must be \"statusline\" or \"scrape\"" unless %w[statusline scrape].include?(value)
-        when "context.pattern"
-          Regexp.new(value)
-          raise ArgumentError, "must have exactly one capture group" unless capture_group_count(value) == 1
-        end
+        ConfigSchema.parse(key, value)
       rescue ArgumentError, RegexpError => e
         raise Workspace::UsageError, "Invalid #{key}: #{e.message}"
-      end
-
-      # Counts capturing groups (named and unnamed) in a regex source by
-      # walking it character by character, skipping escaped characters and
-      # character-class bodies (`[(]` isn't a group), and recognizing named
-      # groups (`(?<name>`, `(?'name'`) while excluding lookaround
-      # (`(?=`, `(?!`, `(?<=`, `(?<!`) and non-capturing groups (`(?:`).
-      # Good enough for validating a config value; not a full regex parser.
-      def capture_group_count(pattern)
-        count = 0
-        in_class = false
-        i = 0
-        chars = pattern.chars
-        while i < chars.size
-          c = chars[i]
-          if c == "\\"
-            i += 2
-            next
-          end
-          if in_class
-            in_class = false if c == "]"
-            i += 1
-            next
-          end
-          case c
-          when "["
-            in_class = true
-          when "("
-            if chars[i + 1] == "?"
-              nxt = chars[i + 2]
-              if nxt == "<" && !["=", "!"].include?(chars[i + 3])
-                count += 1 # named group (?<name>...)
-              elsif nxt == "'"
-                count += 1 # named group (?'name'...)
-              end
-              # else: non-capturing (?:...) or lookaround (?=/?!/?<=/?<!), not counted
-            else
-              count += 1 # unnamed capturing group
-            end
-          end
-          i += 1
-        end
-        count
       end
 
       def write(path, data)

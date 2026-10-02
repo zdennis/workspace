@@ -10,7 +10,7 @@ module Workspace
   # input.
   class HandoffConfig
     # Context-usage percent that triggers a handoff, unless overridden.
-    DEFAULT_THRESHOLD = 11
+    DEFAULT_THRESHOLD = ConfigSchema.default("handoff.threshold")
 
     # @param project_settings [Workspace::ProjectSettings]
     # @param project_config [Workspace::ProjectConfig, nil] finds a workspace's
@@ -31,11 +31,7 @@ module Workspace
     # @return [Integer]
     # @raise [ArgumentError] if value isn't an integer percent in range
     def self.parse_threshold(value)
-      pct = Integer(value)
-      raise ArgumentError, "must be between 1 and 100" unless pct.between?(1, 100)
-      pct
-    rescue ArgumentError, TypeError
-      raise ArgumentError, "must be an integer between 1 and 100"
+      ConfigSchema.parse("handoff.threshold", value)
     end
 
     # Validates a prompt template override. Only checked for blankness: the
@@ -46,9 +42,7 @@ module Workspace
     # @return [String]
     # @raise [ArgumentError] if value is blank
     def self.parse_prompt(value)
-      text = value.to_s
-      raise ArgumentError, "must not be blank" if text.strip.empty?
-      text
+      ConfigSchema.parse("handoff.check_prompt", value)
     end
 
     # @param workspace [String] the calling workspace's name
@@ -59,9 +53,9 @@ module Workspace
       handoff = load_handoff(name)
       handoff = {} unless handoff.is_a?(Hash)
       {
-        threshold: setting(handoff, name, "threshold", DEFAULT_THRESHOLD) { |value| self.class.parse_threshold(value) },
-        check_prompt: setting(handoff, name, "check_prompt", nil) { |value| self.class.parse_prompt(value) },
-        resume_prompt: setting(handoff, name, "resume_prompt", nil) { |value| self.class.parse_prompt(value) }
+        threshold: setting(handoff, name, "threshold"),
+        check_prompt: setting(handoff, name, "check_prompt"),
+        resume_prompt: setting(handoff, name, "resume_prompt")
       }
     end
 
@@ -82,9 +76,11 @@ module Workspace
       workspace
     end
 
-    def setting(handoff, name, key, default)
+    def setting(handoff, name, key)
+      schema_key = "handoff.#{key}"
+      default = ConfigSchema.default(schema_key)
       return default unless handoff.key?(key)
-      yield handoff[key]
+      ConfigSchema.parse(schema_key, handoff[key])
     rescue ArgumentError => e
       @error_output.puts "Warning: invalid handoff.#{key} for '#{name}' (#{e.message}); using #{default.inspect}."
       default

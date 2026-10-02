@@ -1,0 +1,26 @@
+#!/usr/bin/env ruby
+# Rewrites the generated blocks of docs/README.config.md from
+# Workspace::ConfigSchema.
+#
+#   script/generate-config-docs            rewrite docs/README.config.md
+#   script/generate-config-docs --check    exit 1 if it is out of date, change nothing
+#   script/generate-config-docs [--check] PATH   use another file
+
+$LOAD_PATH.unshift File.expand_path("../lib", __dir__)
+require "workspace"
+
+check = ARGV.delete("--check")
+path = ARGV.first || File.expand_path("../docs/README.config.md", __dir__)
+
+current = File.read(path)
+updated = Workspace::ConfigSchemaDocs.rewrite(current)
+
+if updated == current
+  puts "#{path} is up to date."
+elsif check
+  warn "#{path} is out of date; run script/generate-config-docs."
+  exit 1
+else
+  File.write(path, updated)
+  puts "Rewrote #{path}."
+end

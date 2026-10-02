@@ -3093,12 +3093,6 @@ module Workspace
       end
     end
 
-    # Project config keys `workspace config set/get/unset` allow. Unlisted
-    # dotted keys are rejected so typos don't silently create config.
-    # Keys `workspace config set/get/unset` allow, mirrored here only for
-    # help text; {Commands::Config::ALLOWED_KEYS} is the source of truth.
-    CONFIG_ALLOWED_KEYS = Commands::Config::ALLOWED_KEYS + Commands::Config::GLOBAL_ALLOWED_KEYS
-
     def cmd_statusline(args)
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: workspace statusline"
@@ -3146,7 +3140,7 @@ module Workspace
         opts.separator "Sets a project config key. The project is inferred from cwd"
         opts.separator "(a worktree resolves to its parent project)."
         opts.separator ""
-        opts.separator "Allowed keys: #{CONFIG_ALLOWED_KEYS.join(", ")}"
+        opts.separator "Allowed keys: #{ConfigSchema.settable_names.join(", ")}"
         opts.separator ""
         opts.separator "Note: this rewrites the whole YAML file, so YAML.dump drops"
         opts.separator "any comments already in it. A file that isn't valid YAML is"

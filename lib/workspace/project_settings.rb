@@ -118,7 +118,7 @@ module Workspace
       raise ConfigParseError.new(path, "expected a mapping at the top level, got #{data.class.name.downcase}") unless data.is_a?(Hash)
       data
     rescue Psych::Exception => e
-      raise ConfigParseError.new(path, e.message.sub(/\A\(<unknown>\): /, ""))
+      raise ConfigParseError.new(path, e.message.delete_prefix("(<unknown>): ").delete_prefix("(#{path}): "))
     end
 
     def atomic_write(path, content)

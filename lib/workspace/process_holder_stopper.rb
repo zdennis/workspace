@@ -13,7 +13,7 @@ module Workspace
   # and would otherwise sit blocked until SIGKILL.
   class ProcessHolderStopper
     # Default seconds a SIGKILLed group may take to disappear (`dev.kill_grace`).
-    KILL_GRACE_SECONDS = 2
+    KILL_GRACE_SECONDS = ConfigSchema.default("dev.kill_grace")
     KILL_POLL_SECONDS = 0.1
 
     # Builds a stopper wired from a caller's own collaborators of the same

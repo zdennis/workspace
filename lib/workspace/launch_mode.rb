@@ -18,14 +18,13 @@ module Workspace
     end
 
     # Values the `launch.headless` config key accepts.
-    CONFIG_VALUES = %w[true false].freeze
+    CONFIG_VALUES = ConfigSchema::LAUNCH_HEADLESS_VALUES
 
     # @param value [String]
     # @return [String] the value, when it is "true" or "false"
     # @raise [ArgumentError] for anything else
     def self.parse_config(value)
-      return value if CONFIG_VALUES.include?(value.to_s)
-      raise ArgumentError, "must be \"true\" or \"false\""
+      ConfigSchema.parse("launch.headless", value)
     end
 
     # @param project_settings [Workspace::ProjectSettings] reads the global `launch.headless` key

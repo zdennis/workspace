@@ -17,7 +17,7 @@ RSpec.describe "statusline adversarial: CLI/UX" do
     [command, project_settings]
   end
 
-  # U1: capture_group_count (lib/workspace/commands/config.rb:196-199) strips
+  # U1: capture_group_count (lib/workspace/config_schema.rb) strips
   # `(?<` via the same gsub that's supposed to detect it, so the later
   # `stripped.scan("(?<")` correction is dead code. A named capture group
   # like `(?<pct>\d+)` is counted as zero capturing groups instead of one,
