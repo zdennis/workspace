@@ -210,6 +210,14 @@ RSpec.describe Workspace::Commands::SessionEvent do
         expect { invoke({"hook_event_name" => "Stop"}) }.not_to raise_error
       end
 
+      it "replaces invalid UTF-8 in the payload instead of failing the hook" do
+        raw = %({"hook_event_name":"UserPromptSubmit","prompt":"a\xFFb"}).b.force_encoding("UTF-8")
+
+        event = deliver(raw)
+
+        expect(event).to include("event" => "user_prompt", "prompt" => "a\uFFFDb")
+      end
+
       it "does nothing when the pane has no session" do
         allow(tmux).to receive(:session_name_for_pane).with("%2").and_return(nil)
 

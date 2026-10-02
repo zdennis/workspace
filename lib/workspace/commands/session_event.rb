@@ -102,7 +102,13 @@ module Workspace
       end
 
       def parse(raw)
-        return nil if raw.nil? || raw.strip.empty?
+        return nil if raw.nil?
+
+        # Invalid bytes would make strip and JSON.generate raise inside the
+        # agent's turn; replacing them keeps the event deliverable.
+        raw = raw.scrub
+        return nil if raw.strip.empty?
+
         JSON.parse(raw)
       rescue JSON::ParserError => e
         @logger.debug { "session-event: unparseable payload (#{e.message})" }
