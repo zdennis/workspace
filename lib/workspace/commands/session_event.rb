@@ -105,8 +105,9 @@ module Workspace
         return nil if raw.nil?
 
         # Invalid bytes would make strip and JSON.generate raise inside the
-        # agent's turn; replacing them keeps the event deliverable.
-        raw = raw.scrub
+        # agent's turn; replacing them keeps the event deliverable. Hook stdin is UTF-8
+        # whatever the locale tags it, so retag first.
+        raw = raw.dup.force_encoding(Encoding::UTF_8).scrub
         return nil if raw.strip.empty?
 
         JSON.parse(raw)

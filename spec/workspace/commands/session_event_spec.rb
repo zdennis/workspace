@@ -218,6 +218,18 @@ RSpec.describe Workspace::Commands::SessionEvent do
         expect(event).to include("event" => "user_prompt", "prompt" => "a\uFFFDb")
       end
 
+      it "keeps valid UTF-8 when the locale tags stdin as ASCII" do
+        raw = JSON.generate("hook_event_name" => "UserPromptSubmit", "prompt" => "caf\u00e9").b.force_encoding(Encoding::US_ASCII)
+
+        expect(deliver(raw)).to include("prompt" => "caf\u00e9")
+      end
+
+      it "does not raise on a lone surrogate escape" do
+        raw = %q({"hook_event_name":"UserPromptSubmit","prompt":"a\ud800b"})
+
+        expect { invoke(raw) }.not_to raise_error
+      end
+
       it "does nothing when the pane has no session" do
         allow(tmux).to receive(:session_name_for_pane).with("%2").and_return(nil)
 
