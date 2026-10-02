@@ -60,7 +60,9 @@ A restarted agent daemon reads each pane's last `agent_state` back, so `workspac
 
 Recording activity never fails the command doing it: if the log can't be written, one warning goes to stderr and the command carries on. Nothing is written to stdout, so `--json` output stays JSON-only.
 
-When the event log exceeds 1MB (`event_log_compact_threshold` in the global config), workspace warns you to compact it. Compaction replays the log and rewrites it with one `compacted` event per active project, plus the latest `agent_state` of each pane that still has an agent (and changed within the last 7 days), that pane's latest idle `agent_alert`, and, while it is still waiting, its latest waiting `agent_alert` per agent. All other activity history is dropped. There is no automatic rotation.
+When the event log exceeds 1MB (`event_log_compact_threshold` in the global config), workspace warns you to compact it. Compaction replays the log and rewrites it with one `compacted` event per active project, plus the latest `agent_state` of each pane that still has an agent (and changed within the last 7 days), that pane's latest idle `agent_alert`, and, while it is still waiting, its latest waiting `agent_alert` per agent. All other activity history is dropped.
+
+When an append leaves the log over 10MB, workspace rotates it on its own: the log is renamed to `.workspace-events.jsonl.1` (older files shift to `.2` and `.3`; the one past `.3` is deleted), and a new log, seeded with the same compacted state, takes its place. Rotated files keep the activity history, so the log and its rotated files stay under about 40MB. Rotation is safe with several workspace processes appending at once, and a failed rotation never fails the command that triggered it.
 
 Existing users are automatically migrated on first run — the current state file is converted to `migrated` events in the log.
 

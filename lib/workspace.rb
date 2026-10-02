@@ -148,6 +148,7 @@ require_relative "workspace/pipeline_state"
 require_relative "workspace/sentinel_poller"
 require_relative "workspace/commands/agent"
 require_relative "workspace/run_result"
+require_relative "workspace/run_result_cleaner"
 require_relative "workspace/run_result_store"
 require_relative "workspace/commands/run_and_report"
 require_relative "workspace/cli"
@@ -208,7 +209,15 @@ module Workspace
       error_output: error_output
     )
 
-    run_result_store = RunResultStore.new(config: config)
+    run_result_cleaner = RunResultCleaner.new(
+      dir: config.run_results_dir,
+      live_projects: -> {
+        state.load
+        Liveness.new(tmux: tmux).call(state.keys).reject { |_, alive| alive == false }.keys
+      },
+      logger: logger
+    )
+    run_result_store = RunResultStore.new(config: config, cleaner: run_result_cleaner)
     run_and_report_command = Commands::RunAndReport.new(run_result_store: run_result_store)
     capture_command = Commands::Capture.new(tmux: tmux, output: output, error_output: error_output)
     wait_until_content_command = Commands::WaitUntilContent.new(tmux: tmux, output: output, error_output: error_output)

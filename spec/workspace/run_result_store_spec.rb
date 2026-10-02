@@ -40,6 +40,31 @@ RSpec.describe Workspace::RunResultStore do
     end
   end
 
+  describe "#write with a cleaner" do
+    let(:cleaner) { instance_double(Workspace::RunResultCleaner, call: 0) }
+
+    subject(:store) { described_class.new(config: config, cleaner: cleaner) }
+
+    it "runs the cleaner after the result is on disk" do
+      on_disk = nil
+      allow(cleaner).to receive(:call) {
+        on_disk = store.exist?("test-uuid")
+        0
+      }
+
+      store.write(build_result)
+
+      expect(on_disk).to be(true)
+    end
+
+    it "still writes the result, and does not raise, when the cleaner raises" do
+      allow(cleaner).to receive(:call).and_raise(RuntimeError, "boom")
+
+      expect { store.write(build_result) }.not_to raise_error
+      expect(store.exist?("test-uuid")).to be(true)
+    end
+  end
+
   describe "#exist?" do
     it "returns false before write" do
       expect(store.exist?("missing")).to be false

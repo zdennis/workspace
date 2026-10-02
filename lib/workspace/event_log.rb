@@ -18,8 +18,25 @@ module Workspace
   # hold a shared `flock` on a sidecar lock file and {#compact} holds it
   # exclusively, so no append lands in the old file while compact is
   # rewriting it.
+  #
+  # An append that leaves the log over {DEFAULT_ROTATE_THRESHOLD} rotates it:
+  # under the same exclusive lock the log is renamed to `<log>.1` (older
+  # rotated files shift to `.2`, `.3`, and the one past {KEEP_ROTATED} is
+  # deleted) and a new file, seeded with the compacted state, is renamed into
+  # place. A reader that tails the log sees a new inode, as it does after
+  # {#compact}, and starts over on the new file.
   class EventLog
     DEFAULT_COMPACT_THRESHOLD = 1_048_576 # 1MB
+
+    # The log size (bytes) past which an append rotates it.
+    DEFAULT_ROTATE_THRESHOLD = 10 * 1_048_576
+
+    # How many rotated files (`<log>.1` .. `<log>.N`) are kept.
+    KEEP_ROTATED = 3
+
+    # Seconds a rotation waits for the log's lock before leaving the rotation
+    # to the next append over the threshold.
+    ROTATE_LOCK_WAIT = 1
 
     # Activity event type for a pane's agent changing state.
     AGENT_STATE = "agent_state"
@@ -45,7 +62,12 @@ module Workspace
     # @param error_output [IO] error output stream for warnings (stderr)
     # @param logger [Workspace::Logger] debug logger
     # @param clock [#now] time source, injected for deterministic tests
-    def initialize(config:, project_settings: nil, error_output: $stderr, logger: Workspace::Logger.new, clock: Time)
+    # @param rotate_threshold [Integer] log size in bytes past which an append rotates it
+    # @param keep_rotated [Integer] how many rotated files to keep
+    def initialize(config:, project_settings: nil, error_output: $stderr, logger: Workspace::Logger.new, clock: Time,
+      rotate_threshold: DEFAULT_ROTATE_THRESHOLD, keep_rotated: KEEP_ROTATED)
+      @rotate_threshold = rotate_threshold
+      @keep_rotated = keep_rotated
       @config = config
       @project_settings = project_settings
       @error_output = error_output
@@ -77,6 +99,7 @@ module Workspace
           f.syswrite(line)
         end
       end
+      rotate_if_large
     end
 
     # Appends an activity event. Never raises: a log that can't be written
@@ -283,7 +306,7 @@ module Workspace
 
     # Runs with the lock held exclusively. Reads with {#read_events}, so a
     # log that can't be read is never rewritten as empty.
-    def rewrite
+    def rewrite(rotate: false)
       all = read_events
       state = replay(all)
       pane_states = latest_pane_states(all, state)
@@ -303,10 +326,48 @@ module Workspace
         end
         pane_states.each { |event| f.puts JSON.generate(event) }
       end
+      shift_rotated if rotate
       File.rename(tmp, @config.event_log_file)
       state
     ensure
       remove(tmp) if tmp
+    end
+
+    # Rotates the log once it is over the threshold. Never raises: the append
+    # that triggered it has already been written, and a log that can't rotate
+    # just keeps growing until the next try. The size is checked again under
+    # the exclusive lock, so of several processes that notice at once only the
+    # first rotates, and one that can't get the lock leaves it to the others.
+    def rotate_if_large
+      return unless size > @rotate_threshold
+      with_lock(File::LOCK_EX, wait: ROTATE_LOCK_WAIT) do |locked|
+        next unless locked && size > @rotate_threshold
+        @logger.debug { "event_log: rotating #{size} bytes" }
+        rewrite(rotate: true)
+      end
+    rescue => e
+      @logger.debug { "event_log: could not rotate (#{e.class}: #{e.message})" }
+    end
+
+    # Moves each rotated file up one number, dropping the oldest, then links
+    # the log as `.1`. The log is linked, not renamed, so its path never stops
+    # existing: a reader (which takes no lock) never sees a missing log, and the
+    # rename that follows swaps in the new one in a single step. Nothing is
+    # truncated: a writer or tail holding the old file keeps a coherent file.
+    # The link is made first, so a filesystem that can't link fails before
+    # any rotated file has moved or been dropped.
+    def shift_rotated
+      log = @config.event_log_file
+      pending = "#{log}.#{Process.pid}.rotating"
+      remove(pending)
+      File.link(log, pending)
+      remove("#{log}.#{@keep_rotated}")
+      (@keep_rotated - 1).downto(1) do |n|
+        File.rename("#{log}.#{n}", "#{log}.#{n + 1}") if File.exist?("#{log}.#{n}")
+      end
+      File.rename(pending, "#{log}.1")
+    ensure
+      remove(pending) if pending
     end
 
     def remove(path)
@@ -360,20 +421,20 @@ module Workspace
     # Yields whether the lock was taken: false if the lock file can't be
     # opened or the lock isn't free within {LOCK_WAIT}. Closing the file
     # releases the lock.
-    def with_lock(mode)
+    def with_lock(mode, wait: LOCK_WAIT)
       lock = begin
         File.open("#{@config.event_log_file}.lock", File::RDWR | File::CREAT, 0o600)
       rescue SystemCallError => e
         @logger.debug { "event_log: can't open the lock file (#{e.class}: #{e.message})" }
         nil
       end
-      yield(lock ? acquire(lock, mode) : false)
+      yield(lock ? acquire(lock, mode, wait) : false)
     ensure
       lock&.close
     end
 
-    def acquire(lock, mode)
-      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + LOCK_WAIT
+    def acquire(lock, mode, wait)
+      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + wait
       until lock.flock(mode | File::LOCK_NB)
         return false if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
         sleep 0.01

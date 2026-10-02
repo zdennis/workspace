@@ -79,7 +79,7 @@ Each stage is individually validated for shell quoting before the stages are joi
 
 **`--dry-run` with `--wait`** prints the contents of both files that would be written (`.cmd` and `.sh`) and the pane command that would be sent, using `<uuid>` as a placeholder. Nothing is written or sent.
 
-Result files in `~/.workspace-runs/` accumulate and are not automatically cleaned up.
+Run files in `~/.workspace-runs/` are removed once a run has been untouched for 7 days. A run with no result yet counts as in progress until its files have been silent that long, and the runs of a project whose tmux session is alive are never removed. The sweep runs at most once an hour, after a result is written, and never fails the command.
 
 ## Examples
 

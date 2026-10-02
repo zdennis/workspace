@@ -6,15 +6,17 @@ module Workspace
   #   <uuid>.stdout  — raw stdout (written by shell redirection before report-run-status)
   #   <uuid>.stderr  — raw stderr (written by shell redirection before report-run-status)
   #
-  # Result files accumulate indefinitely — there is no TTL or automatic cleanup.
-  # Callers that generate many runs are responsible for pruning the directory.
+  # Old runs are removed by a {Workspace::RunResultCleaner}, run after each
+  # write.
   class RunResultStore
     DEFAULT_POLL_INTERVAL = 0.1
     DEFAULT_TIMEOUT = 300
 
     # @param config [Workspace::Config]
-    def initialize(config:)
+    # @param cleaner [#call, nil] sweeps old runs after each write; never fails the write
+    def initialize(config:, cleaner: nil)
       @config = config
+      @cleaner = cleaner
     end
 
     # @return [void]
@@ -30,6 +32,7 @@ module Workspace
       tmp = "#{path}.tmp"
       File.write(tmp, result.to_json)
       File.rename(tmp, path)
+      sweep
     end
 
     # @param uuid [String]
@@ -85,6 +88,14 @@ module Workspace
         raise Workspace::Error, "Run result for #{uuid} disappeared before it could be read"
       end
       result
+    end
+
+    private
+
+    def sweep
+      @cleaner&.call
+    rescue
+      nil
     end
   end
 end
