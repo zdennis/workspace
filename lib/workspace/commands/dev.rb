@@ -111,7 +111,7 @@ module Workspace
       # @param working_dir [String] any directory inside the repository
       # @return [Hash] {exit_code:}
       def down(force: false, working_dir: Dir.pwd)
-        ctx = context(working_dir)
+        ctx = context(working_dir, tolerate_bad_config: true)
         holder = entry(ctx[:store])["holder"]
         unless holder
           @output.puts "No dev environment is running."
@@ -266,7 +266,7 @@ module Workspace
         {exit_code: 0}
       end
 
-      def context(working_dir)
+      def context(working_dir, tolerate_bad_config: false)
         lineage = @lineage.resolve(cwd: working_dir)
         worktree = git(working_dir, "rev-parse", "--show-toplevel") || File.expand_path(working_dir)
         {
@@ -275,9 +275,19 @@ module Workspace
           config_name: lineage.worktree || lineage.name,
           project: lineage.name,
           workspace: lineage.worktree,
-          settings: @dev_config.for_project(lineage.name),
+          settings: settings_for(lineage.name, tolerate_bad_config),
           store: LockStore.new(dir: @lock_namespace.resolve(cwd: working_dir)[:dir], liveness: @lock_holder, terminator: @terminator)
         }
+      end
+
+      # `dev down` must stay reachable while the config is mid-edit, so it
+      # warns and stops with the default timeouts instead of failing.
+      def settings_for(project, tolerate_bad_config)
+        @dev_config.for_project(project)
+      rescue Workspace::ConfigParseError => e
+        raise unless tolerate_bad_config
+        @error_output.puts "Warning: #{e.message} Stopping with the default timeouts."
+        @dev_config.defaults
       end
 
       # A blank `dev.up` is as good as unset: there is nothing to run.

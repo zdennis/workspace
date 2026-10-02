@@ -54,7 +54,7 @@ module Workspace
         path = @project_settings.project_config_path(name)
         with_config_lock(path) do
           @file_backup.backup(path)
-          data = @project_settings.load(name)
+          data = load_for_edit(name)
           segments = key.split(".")
           cursor = data
           segments[0..-2].each do |segment|
@@ -124,7 +124,7 @@ module Workspace
         path = @project_settings.project_config_path(name)
         with_config_lock(path) do
           @file_backup.backup(path)
-          data = @project_settings.load(name)
+          data = load_for_edit(name)
           segments = key.split(".")
           cursor = segments[0..-2].reduce(data) { |node, segment| node.is_a?(Hash) ? node[segment] : nil }
           cursor.delete(segments.last) if cursor.is_a?(Hash)
@@ -134,6 +134,12 @@ module Workspace
       end
 
       private
+
+      def load_for_edit(name)
+        @project_settings.load(name)
+      rescue Workspace::ConfigParseError => e
+        raise Workspace::ConfigParseError.new(e.path, "#{e.reason}. Fix or remove the file, then retry")
+      end
 
       def set_global(key, value)
         @project_settings.with_global_lock do |data|

@@ -12,12 +12,9 @@ module Workspace
 
     # @param project_name [String] project name
     # @return [Hash] parsed project config, or empty hash if none exists
+    # @raise [Workspace::ConfigParseError] if the file exists but isn't a valid YAML mapping
     def load(project_name)
-      path = project_config_path(project_name)
-      return {} unless File.exist?(path)
-      YAML.safe_load_file(path) || {}
-    rescue Psych::SyntaxError
-      {}
+      read_strict(project_config_path(project_name))
     end
 
     # @param project_name [String] project name
@@ -55,13 +52,15 @@ module Workspace
     # calls serialize instead of clobbering each other.
     #
     # @yield the current global config Hash; the block's return value is saved
+    # @raise [Workspace::ConfigParseError] if the existing file can't be parsed,
+    #   so a rewrite never discards what the user wrote
     # @return [void]
     def with_global_lock
       path = global_config_path
       FileUtils.mkdir_p(File.dirname(path))
       File.open("#{path}.lock", File::RDWR | File::CREAT, 0o600) do |f|
         f.flock(File::LOCK_EX)
-        data = yield(load_global)
+        data = yield(read_strict(path))
         save_global(data)
       end
     end
@@ -111,6 +110,16 @@ module Workspace
     end
 
     private
+
+    def read_strict(path)
+      return {} unless File.exist?(path)
+      data = YAML.safe_load_file(path)
+      return {} if data.nil?
+      raise ConfigParseError.new(path, "expected a mapping at the top level, got #{data.class.name.downcase}") unless data.is_a?(Hash)
+      data
+    rescue Psych::Exception => e
+      raise ConfigParseError.new(path, e.message.sub(/\A\(<unknown>\): /, ""))
+    end
 
     def atomic_write(path, content)
       tmp_path = "#{path}.tmp#{Process.pid}"

@@ -23,7 +23,20 @@ module Workspace
     #   :startup_timeout [Numeric], :ready_timeout [Numeric], :kill_grace [Numeric]
     # @raise [Workspace::Error] if a stored duration key isn't a valid duration
     def for_project(name)
-      dev = @project_settings.load(name)["dev"] || {}
+      build(@project_settings.load(name)["dev"] || {}, name)
+    end
+
+    # Settings with every key unset, for callers that must still act when the
+    # project config can't be read (e.g. `dev down`).
+    #
+    # @return [Hash] same shape as {#for_project}
+    def defaults
+      build({}, nil)
+    end
+
+    private
+
+    def build(dev, name)
       {
         up: dev["up"],
         ready: dev["ready"],
@@ -33,8 +46,6 @@ module Workspace
         kill_grace: duration(dev, "kill_grace", ProcessHolderStopper::KILL_GRACE_SECONDS, name, max: MAX_KILL_GRACE)
       }
     end
-
-    private
 
     def duration(dev, key, default, name, require_positive: false, max: nil)
       return default unless dev.key?(key)

@@ -21,6 +21,15 @@ RSpec.describe Workspace::HookRunner do
   end
 
   describe "#run" do
+    it "warns, skips the hook, and returns false when the project config can't be parsed" do
+      allow(project_settings).to receive(:hook_for)
+        .and_raise(Workspace::ConfigParseError.new("/cfg/myproject.yml", "bad yaml"))
+
+      expect(runner.run("myproject", "post_kill")).to be false
+      expect(error_output.string).to include("Cannot parse /cfg/myproject.yml", "Skipping the post_kill hook")
+      expect(output.string).to be_empty
+    end
+
     it "returns true when no hook is defined" do
       allow(project_settings).to receive(:hook_for).with("myproject", "post_launch").and_return(nil)
 

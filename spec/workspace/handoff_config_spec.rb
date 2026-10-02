@@ -31,6 +31,16 @@ RSpec.describe Workspace::HandoffConfig do
     end
   end
 
+  describe "#for_workspace with an unparseable project config" do
+    it "warns and uses defaults instead of raising" do
+      FileUtils.mkdir_p(File.join(dir, "projects"))
+      File.write(File.join(dir, "projects", "app.yml"), "a: [\n")
+
+      expect(handoff_config.for_workspace("app")[:threshold]).to eq(described_class::DEFAULT_THRESHOLD)
+      expect(error_output.string).to include("Cannot parse", "app.yml", "Using handoff defaults")
+    end
+  end
+
   describe "#for_workspace" do
     it "uses the default threshold and no prompt overrides when unset" do
       expect(handoff_config.for_workspace("app")).to eq(threshold: 11, check_prompt: nil, resume_prompt: nil)

@@ -11,6 +11,23 @@ module Workspace
   # Raised for invalid usage or missing required arguments.
   class UsageError < Error; end
 
+  # Raised when a config file exists but can't be parsed as a YAML mapping.
+  class ConfigParseError < Error
+    # @return [String] path of the file that failed to parse
+    attr_reader :path
+
+    # @return [String] why the file couldn't be used
+    attr_reader :reason
+
+    # @param path [String] the config file
+    # @param reason [String] why it couldn't be used
+    def initialize(path, reason)
+      @path = path
+      @reason = reason
+      super("Cannot parse #{path}: #{reason}.")
+    end
+  end
+
   # Raised when a worktree can't be removed because it has unsaved work
   # (or git couldn't tell whether it does).
   class UnsavedWorkError < Error

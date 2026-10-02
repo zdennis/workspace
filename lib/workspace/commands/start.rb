@@ -322,6 +322,12 @@ module Workspace
       end
 
       def seed_worktree_hooks(parent_project, worktree_config_name)
+        seed_worktree_hooks!(parent_project, worktree_config_name)
+      rescue Workspace::ConfigParseError => e
+        @error_output.puts "Warning: #{e.message} Worktree hooks were not seeded."
+      end
+
+      def seed_worktree_hooks!(parent_project, worktree_config_name)
         parent_data = @project_settings.load(parent_project)
         worktree_hooks = parent_data["worktree_hooks"]
         return unless worktree_hooks&.any?

@@ -22,6 +22,26 @@ RSpec.describe Workspace::LockConfig do
     end
   end
 
+  describe "#reap_interval_for with an unparseable project config" do
+    it "warns and falls back to the default" do
+      FileUtils.mkdir_p(File.join(dir, "projects"))
+      File.write(File.join(dir, "projects", "app.yml"), "a: [\n")
+
+      expect(lock_config.reap_interval_for("app")).to eq(Workspace::LockReaper::DEFAULT_INTERVAL)
+      expect(error_output.string).to include("Cannot parse", "locks.reap_interval")
+    end
+  end
+
+  describe "an unparseable project config" do
+    it "warns and falls back to the default instead of raising" do
+      FileUtils.mkdir_p(File.join(dir, "projects"))
+      File.write(File.join(dir, "projects", "app.yml"), "a: [\n")
+
+      expect(lock_config.idle_grace_for("app")).to eq(300)
+      expect(error_output.string).to include("Cannot parse", "app.yml", "Using 300s for locks.idle_grace")
+    end
+  end
+
   describe "#idle_grace_for" do
     it "defaults to 5 minutes when unset" do
       expect(lock_config.idle_grace_for("app")).to eq(300)

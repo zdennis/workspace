@@ -77,6 +77,9 @@ module Workspace
       locks = settings.is_a?(Hash) ? settings["locks"] : nil
       return default unless locks.is_a?(Hash) && locks.key?(key)
       yield locks[key]
+    rescue Workspace::ConfigParseError => e
+      @error_output.puts "Warning: #{e.message} Using #{default}s for locks.#{key}."
+      default
     rescue ArgumentError => e
       @error_output.puts "Warning: invalid locks.#{key} for '#{name}' (#{e.message}); using #{default}s."
       default

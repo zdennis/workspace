@@ -56,8 +56,7 @@ module Workspace
     #   :resume_prompt [String, nil] (nil means "use the built-in default")
     def for_workspace(workspace)
       name = project_name_for(workspace)
-      handoff = @project_settings.load(name)
-      handoff = handoff.is_a?(Hash) ? handoff["handoff"] : nil
+      handoff = load_handoff(name)
       handoff = {} unless handoff.is_a?(Hash)
       {
         threshold: setting(handoff, name, "threshold", DEFAULT_THRESHOLD) { |value| self.class.parse_threshold(value) },
@@ -67,6 +66,13 @@ module Workspace
     end
 
     private
+
+    def load_handoff(name)
+      @project_settings.load(name)["handoff"]
+    rescue Workspace::ConfigParseError => e
+      @error_output.puts "Warning: #{e.message} Using handoff defaults."
+      nil
+    end
 
     def project_name_for(workspace)
       root = @project_config&.project_root_for(workspace)

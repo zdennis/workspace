@@ -656,6 +656,27 @@ RSpec.describe Workspace::Commands::Start do
         })
       end
 
+      it "warns and still starts when the parent project config can't be parsed" do
+        parent_name = Workspace::WorkspaceLineage.name_from_path(tmpdir)
+        File.write(project_settings.project_config_path(parent_name), "a: [\n")
+
+        worktree_config = "#{parent_name}.worktree-PROJ-789"
+        allow(git).to receive(:root).and_return(tmpdir)
+        allow(git).to receive(:parse_start_input).with("PROJ-789").and_return({type: :jira_key, value: "PROJ-789"})
+        allow(git).to receive(:sanitize_for_filesystem).with("PROJ-789").and_return("PROJ-789")
+        allow(git).to receive(:worktree_exists?).and_return(false)
+        allow(git).to receive(:find_worktree_by_branch).and_return(nil)
+        allow(git).to receive(:branch_exists?).with("PROJ-789").and_return(true)
+        allow(git).to receive(:create_worktree) { FileUtils.mkdir_p(File.join(tmpdir, ".worktrees", "PROJ-789")) }
+        allow(project_config).to receive(:create_worktree).and_return(worktree_config)
+        allow(launch_command).to receive(:call)
+
+        command.call("PROJ-789")
+
+        expect(launch_command).to have_received(:call)
+        expect(error_output.string).to include("Worktree hooks were not seeded")
+      end
+
       it "does not overwrite existing worktree hooks" do
         parent_name = Workspace::WorkspaceLineage.name_from_path(tmpdir)
         worktree_config = "#{parent_name}.worktree-PROJ-789"

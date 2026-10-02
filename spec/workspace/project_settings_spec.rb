@@ -26,12 +26,52 @@ RSpec.describe Workspace::ProjectSettings do
       expect(data).to eq({"hooks" => {"post_launch" => "echo hi"}})
     end
 
-    it "returns empty hash for corrupt YAML" do
+    it "raises ConfigParseError naming the file for corrupt YAML" do
       projects_dir = File.join(tmpdir, "projects")
       FileUtils.mkdir_p(projects_dir)
-      File.write(File.join(projects_dir, "bad.yml"), "---\n\t\tinvalid: yaml: broken")
+      path = File.join(projects_dir, "bad.yml")
+      File.write(path, "---\n\t\tinvalid: yaml: broken")
 
-      expect(settings.load("bad")).to eq({})
+      expect { settings.load("bad") }.to raise_error(Workspace::ConfigParseError) { |e|
+        expect(e.path).to eq(path)
+        expect(e.message).to include("Cannot parse #{path}")
+      }
+    end
+
+    it "raises ConfigParseError when the file is not a mapping" do
+      projects_dir = File.join(tmpdir, "projects")
+      FileUtils.mkdir_p(projects_dir)
+      File.write(File.join(projects_dir, "list.yml"), "- a\n- b\n")
+
+      expect { settings.load("list") }.to raise_error(Workspace::ConfigParseError, /expected a mapping/)
+    end
+
+    it "raises ConfigParseError for YAML with disallowed tags or aliases" do
+      projects_dir = File.join(tmpdir, "projects")
+      FileUtils.mkdir_p(projects_dir)
+      File.write(File.join(projects_dir, "tag.yml"), "a: !ruby/object:Object {}\n")
+      File.write(File.join(projects_dir, "alias.yml"), "a: &x 1\nb: *x\n")
+
+      expect { settings.load("tag") }.to raise_error(Workspace::ConfigParseError)
+      expect { settings.load("alias") }.to raise_error(Workspace::ConfigParseError)
+    end
+
+    it "keeps the Psych reason without its '(<unknown>)' prefix" do
+      projects_dir = File.join(tmpdir, "projects")
+      FileUtils.mkdir_p(projects_dir)
+      File.write(File.join(projects_dir, "bad.yml"), "a: [\n")
+
+      expect { settings.load("bad") }.to raise_error(Workspace::ConfigParseError) { |e|
+        expect(e.reason).not_to include("(<unknown>)")
+      }
+    end
+
+    it "returns empty hash for an empty file" do
+      projects_dir = File.join(tmpdir, "projects")
+      FileUtils.mkdir_p(projects_dir)
+      File.write(File.join(projects_dir, "empty.yml"), "")
+
+      expect(settings.load("empty")).to eq({})
     end
   end
 
@@ -68,6 +108,16 @@ RSpec.describe Workspace::ProjectSettings do
       File.write(File.join(tmpdir, "config.yml"), "---\n\t\tinvalid")
 
       expect(settings.load_global).to eq({})
+    end
+  end
+
+  describe "#with_global_lock" do
+    it "refuses a global config it cannot parse and leaves the file untouched" do
+      path = File.join(tmpdir, "config.yml")
+      File.write(path, "---\n\t\tinvalid")
+
+      expect { settings.with_global_lock { |d| d } }.to raise_error(Workspace::ConfigParseError, /Cannot parse #{Regexp.escape(path)}/)
+      expect(File.read(path)).to eq("---\n\t\tinvalid")
     end
   end
 

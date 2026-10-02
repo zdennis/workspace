@@ -14,6 +14,49 @@ RSpec.describe Workspace::Commands::Config do
     [command, project_settings]
   end
 
+  describe "unparseable config" do
+    def corrupt_project(project_settings, name)
+      path = project_settings.project_config_path(name)
+      FileUtils.mkdir_p(File.dirname(path))
+      File.write(path, "hooks: [unclosed\n\tbad: yaml")
+      path
+    end
+
+    it "set refuses and leaves the file as written" do
+      command, project_settings = build_command
+      path = corrupt_project(project_settings, "broken")
+
+      expect { command.set("dev.up", "x", project: "broken", cwd: Dir.pwd) }
+        .to raise_error(Workspace::ConfigParseError, /Cannot parse #{Regexp.escape(path)}/)
+      expect(File.read(path)).to eq("hooks: [unclosed\n\tbad: yaml")
+    end
+
+    it "set tells the user to fix or remove the file" do
+      command, project_settings = build_command
+      corrupt_project(project_settings, "broken")
+
+      expect { command.set("dev.up", "x", project: "broken", cwd: Dir.pwd) }
+        .to raise_error(Workspace::ConfigParseError, /Fix or remove the file, then retry\.\z/)
+    end
+
+    it "unset refuses and leaves the file as written" do
+      command, project_settings = build_command
+      path = corrupt_project(project_settings, "broken")
+
+      expect { command.unset("dev.up", project: "broken", cwd: Dir.pwd) }.to raise_error(Workspace::ConfigParseError)
+      expect(File.read(path)).to eq("hooks: [unclosed\n\tbad: yaml")
+    end
+
+    it "set refuses a global key when the global file is unparseable" do
+      command, project_settings = build_command
+      path = project_settings.global_config_path
+      File.write(path, "a: [\n")
+
+      expect { command.set("launch.headless", "true") }.to raise_error(Workspace::ConfigParseError)
+      expect(File.read(path)).to eq("a: [\n")
+    end
+  end
+
   describe "#set" do
     it "sets a dotted key under the project inferred from cwd" do
       output = StringIO.new

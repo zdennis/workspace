@@ -7,6 +7,26 @@ RSpec.describe Workspace::DevConfig do
     Workspace::ProjectSettings.new(config: fake_path_config)
   end
 
+  describe "#defaults" do
+    it "matches an empty config without reading any file" do
+      dir = Dir.mktmpdir("ws-dev-config")
+      dev_config = described_class.new(project_settings: project_settings_with(dir: dir))
+
+      expect(dev_config.defaults).to eq(dev_config.for_project("myapp"))
+    end
+  end
+
+  describe "#for_project with an unparseable config" do
+    it "raises ConfigParseError rather than reading it as empty" do
+      dir = Dir.mktmpdir("ws-dev-config")
+      FileUtils.mkdir_p(File.join(dir, "projects"))
+      File.write(File.join(dir, "projects", "myapp.yml"), "a: [\n")
+      dev_config = described_class.new(project_settings: project_settings_with(dir: dir))
+
+      expect { dev_config.for_project("myapp") }.to raise_error(Workspace::ConfigParseError)
+    end
+  end
+
   describe "#for_project" do
     it "returns nils and the default timeouts when nothing is configured" do
       dir = Dir.mktmpdir("ws-dev-config")

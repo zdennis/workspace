@@ -52,8 +52,7 @@ module Workspace
     #   :idle_after [Numeric] seconds before an idle agent pane alerts
     def for_workspace(workspace)
       name = project_name_for(workspace)
-      alerts = @project_settings.load(name)
-      alerts = alerts.is_a?(Hash) ? alerts["alerts"] : nil
+      alerts = load_alerts(name)
       alerts = {} unless alerts.is_a?(Hash)
       {
         notify: setting(alerts, name, "notify", nil) { |value| self.class.parse_notify(value) },
@@ -62,6 +61,13 @@ module Workspace
     end
 
     private
+
+    def load_alerts(name)
+      @project_settings.load(name)["alerts"]
+    rescue Workspace::ConfigParseError => e
+      @error_output.puts "Warning: #{e.message} No alerts will be sent."
+      nil
+    end
 
     def project_name_for(workspace)
       root = @project_config&.project_root_for(workspace)

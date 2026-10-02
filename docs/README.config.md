@@ -60,6 +60,8 @@ workspace config set dev.up 'FOO="bar baz" ./start-dev'
 
 Before writing, `set` and `unset` back up the project's config file (via the same backup mechanism used elsewhere in workspace) and then rewrite it through a temp file and rename. **`YAML.dump` drops comments** — if you've hand-edited the file with comments, they will be lost the first time `set` or `unset` touches it.
 
+If the file isn't valid YAML (or isn't a mapping at the top level), `set` and `unset` stop with `Cannot parse <path>: ...` and leave it as written; fix or remove it and retry. Readers that run in the background (lock, alert, and handoff settings) warn and use their defaults instead of failing.
+
 ### Config file locations
 
 - **Global:** `~/.config/workspace/config.yml`

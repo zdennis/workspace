@@ -222,6 +222,16 @@ RSpec.describe Workspace::Commands::Dev do
     end
   end
 
+  describe "#up with an unparseable project config" do
+    it "refuses instead of running with defaults" do
+      broken = Struct.new(:x) { def load(_name) = raise(Workspace::ConfigParseError.new("/cfg/app.yml", "bad yaml")) }.new
+      broken_dev = dev(dev_config: Workspace::DevConfig.new(project_settings: broken))
+
+      expect { broken_dev.up(working_dir: main) }.to raise_error(Workspace::ConfigParseError)
+      expect(spawned).to be_empty
+    end
+  end
+
   describe "#down" do
     it "stops the env from any worktree of the repo and frees the lock" do
       dev.up(working_dir: login)
@@ -233,6 +243,19 @@ RSpec.describe Workspace::Commands::Dev do
       expect(output.string).to include("Stopped dev environment for app-login (feat/login).")
       expect(alive?(wrapper)).to be(false)
       expect(holder).to be_nil
+    end
+
+    it "still stops the env, with a warning, when the project config can't be parsed" do
+      dev.up(working_dir: login)
+      wrapper = spawned.last
+      broken = Struct.new(:x) { def load(_name) = raise(Workspace::ConfigParseError.new("/cfg/app.yml", "bad yaml")) }.new
+      broken_dev = dev(dev_config: Workspace::DevConfig.new(project_settings: broken))
+
+      result = broken_dev.down(working_dir: main)
+
+      expect(result).to eq(exit_code: 0)
+      expect(error_output.string).to include("Cannot parse /cfg/app.yml", "default timeouts")
+      expect(alive?(wrapper)).to be(false)
     end
 
     it "reports nothing to stop" do

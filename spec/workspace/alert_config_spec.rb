@@ -28,6 +28,16 @@ RSpec.describe Workspace::AlertConfig do
     end
   end
 
+  describe "#for_workspace with an unparseable project config" do
+    it "warns and sends no alerts instead of raising" do
+      FileUtils.mkdir_p(File.join(dir, "projects"))
+      File.write(File.join(dir, "projects", "app.yml"), "a: [\n")
+
+      expect(alert_config.for_workspace("app")).to eq(notify: nil, idle_after: 600)
+      expect(error_output.string).to include("Cannot parse", "app.yml", "No alerts will be sent")
+    end
+  end
+
   describe "#for_workspace" do
     it "sends no alerts and uses the default idle threshold when unset" do
       expect(alert_config.for_workspace("app")).to eq(notify: nil, idle_after: 600)

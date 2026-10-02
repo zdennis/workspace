@@ -24,9 +24,15 @@ module Workspace
     # @param project [String] project name
     # @param event [String] hook event name (e.g. "post_launch")
     # @param env [Hash] additional environment variables
-    # @return [Boolean] true if hook ran successfully or no hook defined
+    # @return [Boolean] true if hook ran successfully or no hook defined; false if it
+    #   failed or the project config couldn't be parsed
     def run(project, event, env: {})
-      script = @project_settings.hook_for(project, event)
+      script = begin
+        @project_settings.hook_for(project, event)
+      rescue Workspace::ConfigParseError => e
+        @error_output.puts "Warning: #{e.message} Skipping the #{event} hook."
+        return false
+      end
       unless script
         @logger.debug { "hook_runner: no #{event} hook for #{project}" }
         return true

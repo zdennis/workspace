@@ -2746,7 +2746,8 @@ module Workspace
         opts.separator "Allowed keys: #{CONFIG_ALLOWED_KEYS.join(", ")}"
         opts.separator ""
         opts.separator "Note: this rewrites the whole YAML file, so YAML.dump drops"
-        opts.separator "any comments already in it."
+        opts.separator "any comments already in it. A file that isn't valid YAML is"
+        opts.separator "left untouched and the command fails; fix or remove it first."
         opts.separator ""
         opts.separator "Options:"
         opts.on("--project NAME", "Project to configure instead of the one inferred from cwd") { |v| project = v }
