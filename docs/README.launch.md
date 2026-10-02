@@ -87,3 +87,7 @@ workspace launch --prompt "Review the README" my-project
 workspace launch --headless my-project
 tmux attach -t my-project
 ```
+
+## JSON output
+
+`--json` prints an action document (see [README.json.md](README.json.md#actions)) with one row per project: `launched` or `reused` (a headless session that was already running) with `iterm_window_id` and `headless`, or `failed` with `reason` `session_not_started`, `not_launched` or `prompt_not_sent`. The progress text goes to stderr. Exit 0, 3 when some projects failed, 1 when all did.

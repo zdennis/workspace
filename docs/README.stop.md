@@ -28,3 +28,7 @@ workspace stop my-notes
 # Stop multiple specific projects
 workspace stop my-notes billing
 ```
+
+## JSON output
+
+`--json` prints an action document (see [README.json.md](README.json.md#actions)) with one row per project: `stopped`, or `not_running` for a named project that wasn't active (no stderr warning). The text goes to stderr.

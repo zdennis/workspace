@@ -36,6 +36,17 @@ RSpec.describe Workspace::Commands::Claude do
       expect(output.string).to include("Done.")
     end
 
+    it "returns each project's outcome, skipped ones included" do
+      allow(tmux).to receive(:sessions).and_return(["proj1"])
+      allow(tmux).to receive(:send_key).and_return(true)
+      allow(command).to receive(:sleep)
+
+      expect(command.deactivate(%w[proj1 gone])).to eq(
+        "proj1" => {"outcome" => "deactivated"},
+        "gone" => {"outcome" => "skipped", "reason" => "no_session", "message" => "No active tmux session for gone"}
+      )
+    end
+
     it "deactivates multiple projects" do
       allow(tmux).to receive(:sessions).and_return(["proj1", "proj2"])
       allow(tmux).to receive(:send_key).and_return(true)
@@ -76,6 +87,21 @@ RSpec.describe Workspace::Commands::Claude do
       command.reactivate(["missing-project"])
 
       expect(error_output.string).to include("No active tmux session for missing-project")
+    end
+
+    it "returns reactivated, or failed with the delivery message" do
+      allow(tmux).to receive(:sessions).and_return(["proj1"])
+
+      expect(command.reactivate(["proj1"])).to eq("proj1" => {"outcome" => "reactivated"})
+
+      tmux.delivery_status = :not_landed
+      expect(command.reactivate(["proj1"])).to eq("proj1" => {"outcome" => "failed", "reason" => "not_delivered", "message" => "fake not_landed"})
+    end
+
+    it "returns skipped for a project with no session" do
+      allow(tmux).to receive(:sessions).and_return([])
+
+      expect(command.reactivate(["gone"])["gone"]).to include("outcome" => "skipped", "reason" => "no_session")
     end
 
     it "reactivates multiple projects" do

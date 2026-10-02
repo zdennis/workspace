@@ -70,6 +70,12 @@ RSpec.describe Workspace::Commands::Config do
       expect(project_settings.load(name)).to eq({"dev" => {"up" => "./start-dev"}})
     end
 
+    it "returns the project it set the key for, and nil for a global key" do
+      command, = build_command
+      expect(command.set("dev.up", "./start-dev", project: "api", cwd: Dir.pwd)).to eq("api")
+      expect(command.set("launch.headless", "true")).to be_nil
+    end
+
     it "preserves other keys already in the project config" do
       command, project_settings = build_command
       project_dir = Dir.mktmpdir("ws-config-project")

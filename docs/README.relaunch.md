@@ -25,3 +25,7 @@ Stopped 2 project(s): my-notes, billing
 Creating 2 new launcher pane(s)...
 Done! Launched 2 project(s).
 ```
+
+## JSON output
+
+`--json` prints an action document (see [README.json.md](README.json.md#actions)) with one row per project: `relaunched`, or `failed` as for `launch`. With nothing active it prints the failure envelope. The text goes to stderr.

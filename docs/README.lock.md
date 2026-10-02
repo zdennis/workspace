@@ -218,3 +218,7 @@ Every namespace directory (alongside `locks.json`) also holds an append-only `lo
 - **Ordering matches `locks.json`** — every line is written while the store's own flock is held (the same lock a mutating op takes to rewrite `locks.json`), so the audit trail's order can be trusted against the data file's.
 - **The edit fast path never touches it** — `workspace session-event`'s `PreToolUse` check reads `locks.json` directly (no flock) when it's about to allow an edit; only a genuinely *denied* edit takes the flock to append a `deny` line. A busy repo doing nothing but allowed edits writes nothing to `locks.jsonl`.
 - **Bounded growth** — once the next line would push `locks.jsonl` past 256KB, it's rotated to `locks.jsonl.1` (replacing any previous one) and a fresh file started, so at most two generations ever exist. There's no `workspace lock log` reader yet; read it directly (`tail -f`, `jq`, etc.).
+
+## JSON output
+
+`lock release --json` prints an action document (see [README.json.md](README.json.md#actions); the action is `lock release`) with one row: `released` with `lock` (the name, or null) and `all`, or `failed` with `reason` `exit_code`. The exit code is the command's own. `lock status` and `lock clear` have their own `--json` output, described above.

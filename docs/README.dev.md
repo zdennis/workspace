@@ -144,3 +144,7 @@ workspace dev down
 # Clean up after a SIGKILLed wrapper
 workspace dev down --force
 ```
+
+## JSON output
+
+`dev up --json` and `dev down --json` print an action document (see [README.json.md](README.json.md#actions); the actions are `dev up` and `dev down`) with one row: `started` or `stopped`, or `failed` with `reason` `exit_code` and the command's `exit_code` (the explanation is on stderr). The exit code is the command's own. `dev status --json` is described above.

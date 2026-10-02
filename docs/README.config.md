@@ -128,3 +128,7 @@ workspace config set --project myapp dev.up "bin/dev"
 $EDITOR ~/.config/workspace/config.yml
 $EDITOR ~/.config/workspace/projects/myproject.yml
 ```
+
+## JSON output
+
+`config set --json` prints an action document (see [README.json.md](README.json.md#actions); the action is `config set`) with one `set` row carrying `key`, `value` and `global`; `workspace` is the project, or null for a global key.

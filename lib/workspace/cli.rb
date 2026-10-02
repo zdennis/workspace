@@ -407,6 +407,7 @@ module Workspace
       headless = nil
       prompt = nil
       prompt_timeout = nil
+      json = false
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: workspace launch [options] <project1> [project2] ..."
         opts.separator ""
@@ -432,6 +433,10 @@ module Workspace
           "(e.g. \"90s\", or a plain number of seconds); default #{AgentReadiness::DEFAULT_TIMEOUT}s") do |v|
           prompt_timeout = parse_duration_option("--prompt-timeout", v, positive: true)
         end
+        opts.on("--json", "Print one action document (see docs/README.json.md) instead of progress text;",
+          "the text goes to stderr. Exit 0, 3 when some projects failed, 1 when all did") do
+          json = true
+        end
         opts.separator ""
         opts.separator "Headless: a session already running is reused as it is; attach with"
         opts.separator "'tmux attach -t <session>'. --reattach has no effect headless."
@@ -451,12 +456,15 @@ module Workspace
 
       raise UsageError, parser.help if args.empty?
 
-      exit_code = launch_projects(args, reattach: reattach, headless: headless, prompt: prompt, prompt_timeout: prompt_timeout)
-      @exit_handler.exit(exit_code) if exit_code && !exit_code.zero?
+      run_action("launch", json: json) do
+        launched = launch_projects(args, reattach: reattach, headless: headless, prompt: prompt, prompt_timeout: prompt_timeout)
+        {exit_code: launched[:exit_code], results: json ? launch_rows(launched[:projects], launched[:result]) : []}
+      end
     end
 
     # Launches the given project args (already parsed, no leading flags) and
-    # returns the resulting exit code without exiting -- so callers with
+    # returns `{exit_code:, projects:, result:}` (the project names and Launch's
+    # own result) without exiting -- so callers with
     # multiple batches to run (e.g. cmd_relaunch) can attempt every batch
     # before deciding whether to exit.
     def launch_projects(args, reattach: false, headless: nil, prompt: nil, prompt_timeout: nil)
@@ -480,7 +488,28 @@ module Workspace
         @project_settings.ensure_exists(p)
         @hook_runner.run(p, "post_launch")
       end
-      result && result[:exit_code]
+      {exit_code: result && result[:exit_code], projects: projects, result: result}
+    end
+
+    # One `results` row per launched project, from the state Launch wrote.
+    def launch_rows(projects, result, ok_outcome: "launched")
+      @state.load
+      reused = result&.dig(:reused) || []
+      prompt_failures = result&.dig(:prompt_failures) || {}
+      start_failures = result&.dig(:start_failures) || {}
+      projects.map do |project|
+        entry = @state[project]
+        details = {iterm_window_id: entry.is_a?(Hash) ? entry["iterm_window_id"] : nil, headless: entry.is_a?(Hash) && entry["headless"] == true}
+        if start_failures[project]
+          action_row(project, "failed", reason: "session_not_started", message: start_failures[project].to_s, **details)
+        elsif entry.nil?
+          action_row(project, "failed", reason: "not_launched", message: "No state was recorded for '#{project}'.", **details)
+        elsif prompt_failures[project]
+          action_row(project, "failed", reason: "prompt_not_sent", message: prompt_failures[project].to_s, **details)
+        else
+          action_row(project, reused.include?(project) ? "reused" : ok_outcome, **details)
+        end
+      end
     end
 
     def cmd_start(args)
@@ -563,12 +592,16 @@ module Workspace
     end
 
     def cmd_stop(args)
+      json = false
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace stop [project1] [project2] ..."
+        opts.banner = "Usage: workspace stop [--json] [project1] [project2] ..."
         opts.separator ""
         opts.separator "Stop workspace projects and their tmux sessions."
         opts.separator "If no projects are specified, stops all active workspace projects."
         opts.separator "Projects can be restarted with 'workspace launch'."
+        opts.separator ""
+        opts.on("--json", "Print one action document (see docs/README.json.md) instead of text, which goes",
+          "to stderr; a named project that isn't active gets a not_running row, not a warning") { json = true }
         opts.separator ""
         opts.separator "Examples:"
         opts.separator "  workspace stop    # stop all active projects"
@@ -577,15 +610,19 @@ module Workspace
       end
       parser.parse!(args)
 
-      stopped = @stop_command.call(args)
-
-      stopped.each { |p| @hook_runner.run(p, "post_stop") }
+      run_action("stop", json: json) do
+        stopped = json ? @stop_command.call(args, warn_inactive: false) : @stop_command.call(args)
+        stopped.each { |p| @hook_runner.run(p, "post_stop") }
+        rows = json ? stopped.map { |p| action_row(p, "stopped") } + (args - stopped).map { |p| action_row(p, "not_running", reason: "not_active", message: "'#{p}' is not an active workspace project") } : []
+        {results: rows}
+      end
     end
 
     def cmd_kill(args)
       force = false
+      json = false
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace kill [project]"
+        opts.banner = "Usage: workspace kill [--json] [project]"
         opts.separator ""
         opts.separator "Kill a worktree project's session and remove its git worktree."
         opts.separator "The inverse of 'workspace start'."
@@ -601,6 +638,8 @@ module Workspace
         opts.on("-f", "--force", "Skip confirmation, and skip the uncommitted/unpushed-work check") do
           force = true
         end
+        opts.on("--json", "Print one action document (see docs/README.json.md) instead of text, which goes",
+          "to stderr; a refusal is the error envelope with a retry hint") { json = true }
         opts.separator ""
         opts.separator "Examples:"
         opts.separator "  workspace kill    # kill the current worktree project (auto-detected from cwd)"
@@ -611,8 +650,17 @@ module Workspace
 
       # The hook runs from inside Kill, before the session is killed: kill may
       # be running inside that session, and nothing after the kill would run.
-      @kill_command.call(args.first, force: force, working_dir: @working_dir) do |project|
-        @hook_runner.run(project, "post_kill")
+      run_action("kill", json: json) do
+        killed = @kill_command.call(args.first, force: force, working_dir: @working_dir) do |project|
+          @hook_runner.run(project, "post_kill")
+        end
+        if !json
+          {}
+        elsif killed
+          {results: [action_row(killed, "killed")]}
+        else
+          {results: [action_row(args.first, "cancelled", reason: "declined", message: "Not confirmed; nothing was removed.")], status: "cancelled"}
+        end
       end
     end
 
@@ -666,6 +714,7 @@ module Workspace
       shake = false
       highlight = false
       highlight_color = "green"
+      json = false
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: workspace focus [options] [project]"
         opts.separator ""
@@ -683,6 +732,7 @@ module Workspace
           "Colors: red, green, blue, yellow, orange, purple, white, cyan, magenta, random") do |c|
           highlight_color = c
         end
+        opts.on("--json", "Print one action document (see docs/README.json.md) instead of text, which goes to stderr") { json = true }
         opts.separator ""
         opts.separator "Examples:"
         opts.separator "  workspace focus    # focus the current directory's project"
@@ -696,9 +746,16 @@ module Workspace
       project = args.first || @project_detector.detect(@working_dir)
       raise UsageError, parser.help unless project
 
-      @focus_command.call(project, shake: shake, highlight: highlight ? highlight_color : nil)
-
-      @hook_runner.run(project, "post_focus")
+      run_action("focus", json: json) do
+        @focus_command.call(project, shake: shake, highlight: highlight ? highlight_color : nil)
+        @hook_runner.run(project, "post_focus")
+        if json
+          @state.load
+          {results: [action_row(project, "focused", iterm_window_id: @state.dig(project, "iterm_window_id"))]}
+        else
+          {}
+        end
+      end
     end
 
     def cmd_tile(args)
@@ -1197,6 +1254,7 @@ module Workspace
           --name NAME         Workspace name (default: detected from cwd)
           --work-item REF     Work item reference (default: random UUID)
           --dry-run           Print the message without sending it
+          --json              Print one JSON document with the agent's reply; text goes to stderr
 
         Examples:
           workspace agent run "Add OAuth support"
@@ -1531,6 +1589,61 @@ module Workspace
       raise UsageError, "#{flag}: #{e.message}"
     end
 
+    # Schema version of the action documents the mutating commands print with `--json`.
+    ACTION_JSON_SCHEMA_VERSION = 1
+
+    # Runs a mutating command's work and reports it. Without `--json` the
+    # command's text is untouched and a non-zero `exit_code` from the block
+    # exits. With it, the text goes to stderr, stdout gets one action document
+    # ({JsonEnvelope.action}), and the exit code follows its `status`: 0, 3 for
+    # partial, and for failed the block's own non-zero code (else 1). A raised
+    # {Workspace::Error} still becomes the error envelope in the rescue funnel.
+    #
+    # @param action [String] the verb in the document, e.g. "stop"
+    # @param json [Boolean] whether `--json` was given
+    # @yieldreturn [Hash, nil] `:exit_code`; with `json` also `:results` (rows
+    #   with an `"outcome"`), and optionally `:warnings`, `:extra` and `:status`
+    #   (else derived from the rows); build rows only when `json`, as text mode ignores them
+    # @return [void]
+    def run_action(action, json:)
+      unless json
+        outcome = yield
+        code = outcome && outcome[:exit_code]
+        @exit_handler.exit(code) if code && !code.zero?
+        return
+      end
+
+      outcome = divert_output { yield }
+      results = outcome.fetch(:results)
+      code = outcome[:exit_code]
+      status = outcome[:status] || JsonEnvelope.action_status(results)
+      status = "failed" if status == "ok" && code && !code.zero?
+      @output.puts JSON.generate(JsonEnvelope.action(ACTION_JSON_SCHEMA_VERSION, action,
+        results: results, status: status, warnings: outcome[:warnings] || [], extra: outcome[:extra] || {}))
+      exit_code = JsonEnvelope::ACTION_EXIT_CODES.fetch(status)
+      exit_code = code if exit_code == 1 && code && !code.zero?
+      @exit_handler.exit(exit_code) unless exit_code.zero?
+    end
+
+    # Sends what collaborators print to stderr while the block runs, so stdout
+    # stays free for one JSON document. A plain stream (a test double) is left alone.
+    def divert_output(&block)
+      return yield unless @output.respond_to?(:divert_to)
+      @output.divert_to(@error_output, &block)
+    end
+
+    # One row of an action document's `results`.
+    #
+    # @param workspace [String, nil]
+    # @param outcome [String] e.g. "stopped", "failed"
+    # @param reason [String, nil] a short machine-readable cause
+    # @param message [String, nil] what a person would read
+    # @param extra [Hash] more keys for the row
+    # @return [Hash]
+    def action_row(workspace, outcome, reason: nil, message: nil, **extra)
+      {"workspace" => workspace, "outcome" => outcome, "reason" => reason, "message" => message}.merge(extra.transform_keys(&:to_s))
+    end
+
     # Emits a caught failure as the `--json` error envelope (code, details and
     # retry from the exception) to stdout and exits 1.
     #
@@ -1568,18 +1681,30 @@ module Workspace
     def cmd_lock_release(args)
       workspace = nil
       all = false
+      json = false
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace lock release [<name>|--all]"
+        opts.banner = "Usage: workspace lock release [<name>|--all] [--json]"
         opts.on("--name NAME", "Workspace to act on instead of the one detected from cwd") { |v| workspace = v }
         opts.on("--all", "Release every lock this agent holds") { all = true }
+        opts.on("--json", "Print one action document (see docs/README.json.md) instead of text, which goes to stderr") { json = true }
       end
       parser.parse!(args)
 
       name = args.shift
       raise UsageError, parser.help if (!all && name.nil?) || (all && name) || args.any?
 
-      result = @lock_command.release(name, all: all, working_dir: working_dir_for(workspace))
-      @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
+      run_action("lock release", json: json) do
+        result = @lock_command.release(name, all: all, working_dir: working_dir_for(workspace))
+        rows = json ? [exit_code_row(workspace || @project_detector.detect(@working_dir), "released", result[:exit_code], lock: name, all: all)] : []
+        {exit_code: result[:exit_code], results: rows}
+      end
+    end
+
+    # One `results` row for a command that reports only an exit code: `ok_outcome`
+    # on 0, else `failed` with the code (the details went to stderr).
+    def exit_code_row(workspace, ok_outcome, code, **extra)
+      return action_row(workspace, ok_outcome, **extra) if code.zero?
+      action_row(workspace, "failed", reason: "exit_code", message: "Exited #{code}; the details are on stderr.", exit_code: code, **extra)
     end
 
     def cmd_lock_status(args)
@@ -1705,34 +1830,44 @@ module Workspace
       force = false
       ready = true
       max_wait = nil
+      json = false
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace dev up [--wait] [--force] [--no-ready] [--max-wait DURATION]"
+        opts.banner = "Usage: workspace dev up [--wait] [--force] [--no-ready] [--max-wait DURATION] [--json]"
         opts.on("--name NAME", "Workspace to act on instead of the one detected from cwd") { |v| workspace = v }
         opts.on("--wait", "Queue behind another worktree's dev env") { wait = true }
         opts.on("--force", "--takeover", "Stop another worktree's dev env, then start this one") { force = true }
         opts.on("--[no-]ready", "Wait for the dev.ready check (default: on)") { |v| ready = v }
         opts.on("--max-wait DURATION", "Give up after DURATION (e.g. \"9m\", or a plain number of seconds); exits 75; implies --wait") { |v| max_wait = parse_duration_option("--max-wait", v) }
+        opts.on("--json", "Print one action document (see docs/README.json.md) instead of text, which goes to stderr") { json = true }
       end
       parser.parse!(args)
       raise UsageError, parser.help if args.any?
 
-      result = @dev_command.up(wait: wait, takeover: force, ready: ready, max_wait: max_wait, working_dir: working_dir_for(workspace))
-      @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
+      run_action("dev up", json: json) do
+        result = @dev_command.up(wait: wait, takeover: force, ready: ready, max_wait: max_wait, working_dir: working_dir_for(workspace))
+        rows = json ? [exit_code_row(workspace || @project_detector.detect(@working_dir), "started", result[:exit_code])] : []
+        {exit_code: result[:exit_code], results: rows}
+      end
     end
 
     def cmd_dev_down(args)
       workspace = nil
       force = false
+      json = false
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace dev down [--force]"
+        opts.banner = "Usage: workspace dev down [--force] [--json]"
         opts.on("--name NAME", "Workspace to act on instead of the one detected from cwd") { |v| workspace = v }
         opts.on("--force", "Also kill a process group left behind by a dead wrapper") { force = true }
+        opts.on("--json", "Print one action document (see docs/README.json.md) instead of text, which goes to stderr") { json = true }
       end
       parser.parse!(args)
       raise UsageError, parser.help if args.any?
 
-      result = @dev_command.down(force: force, working_dir: working_dir_for(workspace))
-      @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
+      run_action("dev down", json: json) do
+        result = @dev_command.down(force: force, working_dir: working_dir_for(workspace))
+        rows = json ? [exit_code_row(workspace || @project_detector.detect(@working_dir), "stopped", result[:exit_code])] : []
+        {exit_code: result[:exit_code], results: rows}
+      end
     end
 
     def cmd_dev_status(args)
@@ -1904,6 +2039,7 @@ module Workspace
       name = nil
       work_item = nil
       dry_run = false
+      json = false
 
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: workspace agent run PROMPT [options]"
@@ -1914,6 +2050,8 @@ module Workspace
         opts.on("--name NAME", "Workspace name (default: detected from cwd)") { |v| name = v }
         opts.on("--work-item REF", "Work item reference (default: random UUID)") { |v| work_item = v }
         opts.on("--dry-run", "Print the message without sending it") { dry_run = true }
+        opts.on("--json", "Print one JSON document with the agent's reply (see docs/README.json.md) instead of",
+          "text; the text goes to stderr. Exit 0 whatever the reply says: read reply.ok") { json = true }
       end
       parser.parse!(args)
 
@@ -1924,8 +2062,22 @@ module Workspace
       raise UsageError, "Missing prompt.\n\n#{parser.help}" if prompt.empty?
       work_item ||= SecureRandom.uuid
 
-      message = build_command_message(name: name, work_item: work_item, body: prompt, dispatch_prefix: "agent-run-")
-      agent_run_send(name, message, dry_run: dry_run)
+      unless json
+        message = build_command_message(name: name, work_item: work_item, body: prompt, dispatch_prefix: "agent-run-")
+        agent_run_send(name, message, dry_run: dry_run)
+        return
+      end
+
+      # Not an action document (the agent's reply is the result), so it diverts and prints by hand.
+      message = reply = nil
+      divert_output do
+        message = build_command_message(name: name, work_item: work_item, body: prompt, dispatch_prefix: "agent-run-")
+        reply = agent_run_send(name, message, dry_run: dry_run)
+      end
+      doc = {"schema_version" => ACTION_JSON_SCHEMA_VERSION, "ok" => true, "workspace" => name,
+             "work_item_ref" => work_item, "dispatch_id" => message["dispatch_id"], "dry_run" => dry_run}
+      doc[dry_run ? "message" : "reply"] = dry_run ? message : reply
+      @output.puts JSON.generate(doc)
     rescue OptionParser::ParseError => e
       raise UsageError, "#{e.message}\nIf the prompt starts with a dash or looks like a flag, pass it after --.\n\n#{parser.help}"
     end
@@ -2269,6 +2421,7 @@ module Workspace
       reply = send_to_agent(name, message)
       @output.puts "Reply:"
       JSON.pretty_generate(reply).each_line { |line| @output.puts "  #{line}" }
+      reply
     end
 
     # Drives and inspects a running agent's pipeline. These are operator tools:
@@ -2306,7 +2459,7 @@ module Workspace
         Options:
           --work-item REF   Work item reference (e.g. WC-42)
           --body TEXT       Message body to send (start/advance)
-          --json            Print status as JSON (status only)
+          --json            Print JSON: the status (status), or an action document (start, advance, reset)
 
         'advance' marks the running stage complete even if it has not finished.
 
@@ -2320,15 +2473,18 @@ module Workspace
     end
 
     def cmd_pipeline_start(args)
-      project, work_item, body = parse_pipeline_args(args, "start")
+      project, work_item, body, json = parse_pipeline_args(args, "start")
       raise UsageError, "Missing project or --work-item.\n\n#{pipeline_help}" if project.nil? || work_item.nil?
 
-      reply = send_to_agent(project,
-        "type" => "command", "workspace" => project, "work_item_ref" => work_item,
-        "dispatch_id" => "manual-#{SecureRandom.hex(4)}",
-        "body" => body || "Begin work on #{work_item}.")
-      raise Error, "The agent for #{project} refused the work item: #{reply["error"]}" unless reply["ok"]
-      @output.puts "Sent #{work_item} into #{project}'s pipeline"
+      run_action("pipeline start", json: json) do
+        reply = send_to_agent(project,
+          "type" => "command", "workspace" => project, "work_item_ref" => work_item,
+          "dispatch_id" => "manual-#{SecureRandom.hex(4)}",
+          "body" => body || "Begin work on #{work_item}.")
+        raise Error, "The agent for #{project} refused the work item: #{reply["error"]}" unless reply["ok"]
+        @output.puts "Sent #{work_item} into #{project}'s pipeline"
+        {results: json ? [action_row(project, "started", work_item_ref: work_item)] : []}
+      end
     end
 
     # Types the completion sentinel into the running stage's pane, which is
@@ -2338,20 +2494,23 @@ module Workspace
     # between that read and the inject, the sentinel carries the old stage's
     # token and the new stage ignores it, rather than being ended unasked.
     def cmd_pipeline_advance(args)
-      project, work_item, body = parse_pipeline_args(args, "advance")
+      project, work_item, body, json = parse_pipeline_args(args, "advance")
       raise UsageError, "Missing project or --work-item.\n\n#{pipeline_help}" if project.nil? || work_item.nil?
 
-      token = read_pipeline_state(project).dig(work_item, "sentinel_token")
-      # The body reaches a live shell, so it is escaped rather than interpolated.
-      sentinel = "#{SentinelPoller.marker(token)} #{body || "manual advance"}"
-      reply = send_to_agent(project,
-        "type" => "inject", "workspace" => project, "work_item_ref" => work_item,
-        "interrupt" => true, "expected_token" => token, "body" => "echo #{Shellwords.escape(sentinel)}")
-      unless reply["ok"]
-        raise Error, "The stage moved on before the advance landed; run 'workspace pipeline advance' again" if reply["error"] == "stale_token"
-        raise Error, "The agent for #{project} refused the advance: #{reply["error"]}"
+      run_action("pipeline advance", json: json) do
+        token = read_pipeline_state(project).dig(work_item, "sentinel_token")
+        # The body reaches a live shell, so it is escaped rather than interpolated.
+        sentinel = "#{SentinelPoller.marker(token)} #{body || "manual advance"}"
+        reply = send_to_agent(project,
+          "type" => "inject", "workspace" => project, "work_item_ref" => work_item,
+          "interrupt" => true, "expected_token" => token, "body" => "echo #{Shellwords.escape(sentinel)}")
+        unless reply["ok"]
+          raise Error.new("The stage moved on before the advance landed; run 'workspace pipeline advance' again", code: "stale_token") if reply["error"] == "stale_token"
+          raise Error, "The agent for #{project} refused the advance: #{reply["error"]}"
+        end
+        @output.puts "Nudged #{project}/#{work_item} to advance"
+        {results: json ? [action_row(project, "advanced", work_item_ref: work_item)] : []}
       end
-      @output.puts "Nudged #{project}/#{work_item} to advance"
     end
 
     # `workspace pipeline status --json`'s schema version.
@@ -2412,51 +2571,62 @@ module Workspace
     # The agent holds this state in memory while it runs, so clearing the file
     # under a live agent would only put the two out of step.
     def cmd_pipeline_reset(args)
-      project = args.shift
-      raise UsageError, "Usage: workspace pipeline reset <project>" if project.nil?
-
-      if agent_running?(project)
-        raise Error, "The agent for #{project} is running; stop it (Ctrl-C in its pane, " \
-          "or kill the 'workspace agentd' process) before resetting its pipeline state"
+      json = false
+      parser = OptionParser.new do |opts|
+        opts.banner = "Usage: workspace pipeline reset <project> [--json]"
+        opts.on("--json", "Print one action document (see docs/README.json.md) instead of text") { json = true }
       end
+      parser.parse!(args)
+      project = args.shift
+      raise UsageError, "Usage: workspace pipeline reset <project> [--json]" if project.nil? || args.any?
 
-      state_path = @config.pipeline_state_path(project)
-      File.unlink(state_path) if File.exist?(state_path)
-      @output.puts "Cleared pipeline state for #{project}"
+      run_action("pipeline reset", json: json) do
+        if agent_running?(project)
+          raise Error, "The agent for #{project} is running; stop it (Ctrl-C in its pane, " \
+            "or kill the 'workspace agentd' process) before resetting its pipeline state"
+        end
+
+        state_path = @config.pipeline_state_path(project)
+        File.unlink(state_path) if File.exist?(state_path)
+        @output.puts "Cleared pipeline state for #{project}"
+        {results: json ? [action_row(project, "reset")] : []}
+      end
     end
 
     def parse_pipeline_args(args, subcommand)
       work_item = nil
       body = nil
+      json = false
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace pipeline #{subcommand} <project> --work-item REF"
+        opts.banner = "Usage: workspace pipeline #{subcommand} <project> --work-item REF [--json]"
         opts.on("--work-item REF", "Work item reference") { |v| work_item = v }
         opts.on("--body TEXT", "Message body") { |v| body = v }
+        opts.on("--json", "Print one action document (see docs/README.json.md) instead of text") { json = true }
       end
       parser.parse!(args)
       project = args.shift
       raise UsageError, "Unexpected arguments: #{args.join(" ")}\n\n#{parser.help}" if args.any?
-      [project, work_item, body]
+      [project, work_item, body, json]
     end
 
     def send_to_agent(project, message)
       socket = begin
         UNIXSocket.open(@config.agent_socket_path(project))
       rescue SystemCallError, IOError
-        raise Error, "No agent is running for #{project}. Start one with: workspace agentd --name #{project}"
+        raise Error.new("No agent is running for #{project}. Start one with: workspace agentd --name #{project}", code: "no_daemon")
       end
       reply = begin
         socket.puts(message.to_json)
         socket.gets
       rescue SystemCallError, IOError
-        raise Error, "The agent for #{project} closed the connection without replying"
+        raise Error.new("The agent for #{project} closed the connection without replying", code: "connection_failed")
       ensure
         socket.close
       end
-      raise Error, "The agent for #{project} closed the connection without replying" if reply.nil?
+      raise Error.new("The agent for #{project} closed the connection without replying", code: "connection_failed") if reply.nil?
       JSON.parse(reply)
     rescue JSON::ParserError
-      raise Error, "Unreadable reply from the agent for #{project}"
+      raise Error.new("Unreadable reply from the agent for #{project}", code: "unreadable_reply")
     end
 
     def agent_running?(project)
@@ -2751,10 +2921,14 @@ module Workspace
     end
 
     def cmd_relaunch(args)
+      json = false
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace relaunch"
+        opts.banner = "Usage: workspace relaunch [--json]"
         opts.separator ""
         opts.separator "Stop all active workspace projects and relaunch them."
+        opts.separator ""
+        opts.on("--json", "Print one action document (see docs/README.json.md) instead of progress text;",
+          "the text goes to stderr. Exit 0, 3 when some projects failed, 1 when all did") { json = true }
         opts.separator ""
         opts.separator "Example:"
         opts.separator "  workspace relaunch    # stop every active project and relaunch it (headless ones stay headless)"
@@ -2763,10 +2937,17 @@ module Workspace
 
       @state.load
       if @state.empty?
+        raise Error, "No active workspace projects to relaunch." if json
         @error_output.puts "No active workspace projects to relaunch."
         @exit_handler.exit(1)
       end
 
+      run_action("relaunch", json: json) do
+        relaunch_active_projects(json)
+      end
+    end
+
+    def relaunch_active_projects(json)
       projects = @state.keys.dup
       headless, windowed = projects.partition { |p| @state.dig(p, "headless") }
       @output.puts "Will relaunch: #{projects.join(", ")}"
@@ -2779,10 +2960,12 @@ module Workspace
       # headless. Both batches are attempted even if the windowed batch
       # fails, so a windowed failure never silently drops the headless
       # relaunch; the combined exit code reflects either failure.
-      windowed_exit = launch_projects(windowed.dup) if windowed.any?
-      headless_exit = launch_projects(headless.dup, headless: true) if headless.any?
-      failed = [windowed_exit, headless_exit].any? { |code| code && !code.zero? }
-      @exit_handler.exit(1) if failed
+      launches = []
+      launches << launch_projects(windowed.dup) if windowed.any?
+      launches << launch_projects(headless.dup, headless: true) if headless.any?
+      failed = launches.any? { |l| l[:exit_code] && !l[:exit_code].zero? }
+      rows = json ? launches.flat_map { |l| launch_rows(l[:projects], l[:result], ok_outcome: "relaunched") } : []
+      {exit_code: failed ? 1 : 0, results: rows}
     end
 
     def cmd_add(args)
@@ -2863,6 +3046,7 @@ module Workspace
 
     def cmd_config_set(args)
       project = nil
+      json = false
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: workspace config set <key> <value> [options]"
         opts.separator ""
@@ -2877,6 +3061,7 @@ module Workspace
         opts.separator ""
         opts.separator "Options:"
         opts.on("--project NAME", "--name NAME", "Project to configure instead of the one inferred from cwd (--name is the same)") { |v| project = v }
+        opts.on("--json", "Print one action document (see docs/README.json.md) instead of text, which goes to stderr") { json = true }
         opts.separator ""
         opts.separator "Examples:"
         opts.separator "  workspace config set dev.up \"./start-dev\""
@@ -2902,7 +3087,10 @@ module Workspace
       value = args.shift
       raise UsageError, parser.help if key.nil? || value.nil? || args.any?
 
-      @config_command.set(key, value, project: project, cwd: @working_dir)
+      run_action("config set", json: json) do
+        name = @config_command.set(key, value, project: project, cwd: @working_dir)
+        {results: json ? [action_row(name, "set", key: key, value: value, global: name.nil?)] : []}
+      end
     end
 
     def cmd_config_get(args)
@@ -3238,6 +3426,7 @@ module Workspace
 
     def cmd_repair(args)
       window_id = nil
+      json = false
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: workspace repair [project] [options]"
         opts.separator ""
@@ -3249,6 +3438,7 @@ module Workspace
         opts.on("--window-id WID", Integer, "Manually set the window ID for a project") do |wid|
           window_id = wid
         end
+        opts.on("--json", "Print one action document (see docs/README.json.md) instead of text, which goes to stderr") { json = true }
         opts.separator ""
         opts.separator "Examples:"
         opts.separator "  workspace repair    # auto-rebuild state from all live workspace windows"
@@ -3259,14 +3449,22 @@ module Workspace
       if window_id
         project = args.first
         raise UsageError, "Project name required with --window-id\n\n#{parser.help}" unless project
-        @repair_command.set_window_id(project, window_id)
+        run_action("repair", json: json) do
+          @repair_command.set_window_id(project, window_id)
+          {results: json ? [action_row(project, "repaired", iterm_window_id: window_id)] : []}
+        end
       else
-        @repair_command.call
+        run_action("repair", json: json) do
+          repaired = @repair_command.call
+          rows = json ? repaired.map { |r| action_row(r["workspace"], "repaired", iterm_window_id: r["iterm_window_id"], unique_id: r["unique_id"]) } : []
+          {results: rows}
+        end
       end
     end
 
     def cmd_cleanup(args)
       force = false
+      json = false
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: workspace cleanup [options]"
         opts.separator ""
@@ -3280,6 +3478,8 @@ module Workspace
         opts.on("-f", "--force", "Skip confirmation and remove zombies immediately") do
           force = true
         end
+        opts.on("--json", "Print one action document (see docs/README.json.md) instead of text, which goes",
+          "to stderr; without --force the prompt still asks (or fails under --no-input)") { json = true }
         opts.separator ""
         opts.separator "Examples:"
         opts.separator "  workspace cleanup    # list zombie sessions and ask before removing"
@@ -3287,7 +3487,10 @@ module Workspace
       end
       parser.parse!(args)
 
-      @cleanup_command.call(force: force)
+      run_action("cleanup", json: json) do
+        cleaned = @cleanup_command.call(force: force)
+        {results: json ? cleaned.map { |p| action_row(p, "cleaned") } : []}
+      end
     end
 
     def cmd_prune(args)
@@ -3359,6 +3562,7 @@ module Workspace
 
     def cmd_deactivate(args)
       all = false
+      json = false
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: workspace deactivate [options] [project]"
         opts.separator ""
@@ -3367,6 +3571,7 @@ module Workspace
         opts.separator ""
         opts.separator "Options:"
         opts.on("--all", "Deactivate Claude in all active projects") { all = true }
+        opts.on("--json", "Print one action document (see docs/README.json.md) instead of text, which goes to stderr") { json = true }
         opts.separator ""
         opts.separator "Examples:"
         opts.separator "  workspace deactivate my-project    # deactivate Claude in a specific project"
@@ -3376,11 +3581,14 @@ module Workspace
       parser.parse!(args)
 
       projects = resolve_claude_targets(args, all, parser)
-      @claude_command.deactivate(projects)
+      run_action("deactivate", json: json) do
+        {results: claude_rows(@claude_command.deactivate(projects), json)}
+      end
     end
 
     def cmd_reactivate(args)
       all = false
+      json = false
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: workspace reactivate [options] [project]"
         opts.separator ""
@@ -3389,6 +3597,7 @@ module Workspace
         opts.separator ""
         opts.separator "Options:"
         opts.on("--all", "Reactivate Claude in all active projects") { all = true }
+        opts.on("--json", "Print one action document (see docs/README.json.md) instead of text, which goes to stderr") { json = true }
         opts.separator ""
         opts.separator "Examples:"
         opts.separator "  workspace reactivate my-project    # reactivate Claude in a specific project"
@@ -3398,7 +3607,15 @@ module Workspace
       parser.parse!(args)
 
       projects = resolve_claude_targets(args, all, parser)
-      @claude_command.reactivate(projects)
+      run_action("reactivate", json: json) do
+        {results: claude_rows(@claude_command.reactivate(projects), json)}
+      end
+    end
+
+    # `results` rows from {Commands::Claude}'s per-project outcomes.
+    def claude_rows(outcomes, json)
+      return [] unless json
+      outcomes.map { |project, o| action_row(project, o["outcome"], reason: o["reason"], message: o["message"]) }
     end
 
     # `workspace event-log show --json`'s schema version.

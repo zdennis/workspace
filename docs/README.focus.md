@@ -42,3 +42,7 @@ workspace focus --highlight my-notes
 # Focus and highlight in a specific color
 workspace focus --highlight --color blue my-notes
 ```
+
+## JSON output
+
+`--json` prints an action document (see [README.json.md](README.json.md#actions)) with one `focused` row carrying `iterm_window_id`. A missing window or a headless project is the failure envelope.

@@ -60,3 +60,7 @@ workspace kill -f myproject.worktree-PROJ-123
 ## See also
 
 `workspace finish` also removes a worktree, but requires the branch to be clean and fully pushed (no override), and can optionally open a PR first.
+
+## JSON output
+
+`--json` prints an action document (see [README.json.md](README.json.md#actions)) with one row: `killed`, or `cancelled` (status `cancelled`, exit 0) when the confirmation was declined. A refusal is the failure envelope with `code` `unsaved_work` and `retry.flags` `["--force"]`. Run it from outside the session being killed, which ends last.

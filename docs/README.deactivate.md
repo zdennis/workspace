@@ -32,3 +32,7 @@ workspace deactivate
 # Deactivate all active projects
 workspace deactivate --all
 ```
+
+## JSON output
+
+`--json` prints an action document (see [README.json.md](README.json.md#actions)) with a row per project: `deactivated`, or `skipped` with `reason` `no_session`.

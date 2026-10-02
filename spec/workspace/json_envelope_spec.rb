@@ -41,4 +41,31 @@ RSpec.describe Workspace::JsonEnvelope do
       expect(described_class.from_exception(1, RuntimeError.new("x"))["code"]).to eq("error")
     end
   end
+  describe ".action_status" do
+    it "is ok with no failed rows, or no rows" do
+      expect(described_class.action_status([])).to eq("ok")
+      expect(described_class.action_status([{"outcome" => "stopped"}, {"outcome" => "not_running"}])).to eq("ok")
+    end
+
+    it "is partial when some rows failed and failed when all did" do
+      expect(described_class.action_status([{"outcome" => "stopped"}, {"outcome" => "failed"}])).to eq("partial")
+      expect(described_class.action_status([{"outcome" => "failed"}, {"outcome" => "refused"}])).to eq("failed")
+    end
+  end
+
+  describe ".action" do
+    let(:results) { [{"workspace" => "api", "outcome" => "stopped"}, {"workspace" => "web", "outcome" => "stopped"}] }
+
+    it "builds the action document, counting outcomes for the summary" do
+      expect(described_class.action(1, "stop", results: results, status: "ok")).to eq(
+        "schema_version" => 1, "ok" => true, "action" => "stop", "status" => "ok",
+        "results" => results, "warnings" => [], "summary" => {"stopped" => 2}
+      )
+    end
+
+    it "keeps ok true for a failed status, and takes a summary and extra keys" do
+      doc = described_class.action(1, "kill", results: [], status: "failed", warnings: [{"code" => "w"}], summary: {"failed" => 0}, extra: {"dry_run" => false})
+      expect(doc).to include("ok" => true, "status" => "failed", "dry_run" => false, "summary" => {"failed" => 0}, "warnings" => [{"code" => "w"}])
+    end
+  end
 end

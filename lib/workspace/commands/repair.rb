@@ -17,14 +17,14 @@ module Workspace
 
       # Scans live iTerm windows and rebuilds state entries.
       #
-      # @return [void]
+      # @return [Array<Hash>] one `{"workspace", "iterm_window_id", "unique_id"}` per rebuilt entry
       def call
         windows = @window_manager.iterm_windows
         workspace_windows = extract_workspace_windows(windows)
 
         if workspace_windows.empty?
           @output.puts "No workspace windows found."
-          return
+          return []
         end
 
         sessions = @iterm.session_map
@@ -32,6 +32,7 @@ module Workspace
 
         @state.load
         rebuilt = []
+        rows = []
         workspace_windows.each do |name, wid|
           uid = sessions_by_window[wid]&.first
           entry = @state[name] || {}
@@ -39,12 +40,14 @@ module Workspace
           entry["unique_id"] = uid if uid
           @state[name] = entry
           rebuilt << name
+          rows << {"workspace" => name, "iterm_window_id" => wid, "unique_id" => uid}
           uid_info = uid ? " unique_id=#{uid}" : ""
           @output.puts "  #{name}: window_id=#{wid}#{uid_info}"
         end
 
         @state.save
         @output.puts "Repaired #{rebuilt.size} project(s)."
+        rows
       end
 
       # Sets the window ID for a specific project.

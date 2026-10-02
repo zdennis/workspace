@@ -32,3 +32,7 @@ workspace reactivate
 # Reactivate all active projects
 workspace reactivate --all
 ```
+
+## JSON output
+
+`--json` prints an action document (see [README.json.md](README.json.md#actions)) with a row per project: `reactivated`, `skipped` (`reason` `no_session`), or `failed` (`reason` `not_delivered`).

@@ -15,7 +15,7 @@ RSpec.describe Workspace::Commands::Repair do
 
   describe "#call" do
     it "reports no windows found when none match" do
-      command.call
+      expect(command.call).to eq([])
       expect(output.string).to include("No workspace windows found.")
     end
 
@@ -31,8 +31,12 @@ RSpec.describe Workspace::Commands::Repair do
       end
 
       cmd = described_class.new(state: state, iterm: fake_iterm, window_manager: wm, output: output)
-      cmd.call
+      rows = cmd.call
 
+      expect(rows).to eq([
+        {"workspace" => "proj1", "iterm_window_id" => 100, "unique_id" => "uid-a"},
+        {"workspace" => "proj2", "iterm_window_id" => 200, "unique_id" => "uid-b"}
+      ])
       expect(state["proj1"]).to include("iterm_window_id" => 100, "unique_id" => "uid-a")
       expect(state["proj2"]).to include("iterm_window_id" => 200, "unique_id" => "uid-b")
       expect(state["Scooter"]).to be_nil

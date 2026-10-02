@@ -31,3 +31,7 @@ workspace repair
 # Manually set a project's window ID
 workspace repair homebrew-bin --window-id 1196
 ```
+
+## JSON output
+
+`--json` prints an action document (see [README.json.md](README.json.md#actions)) with a `repaired` row per rebuilt window, carrying `iterm_window_id` and `unique_id` (only `iterm_window_id` with `--window-id`).

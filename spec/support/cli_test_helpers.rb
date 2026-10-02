@@ -260,12 +260,12 @@ module CLITestHelpers
   end
 
   class FakeClaudeCommand
-    def deactivate(_projects) = nil
-    def reactivate(_projects) = nil
+    def deactivate(_projects) = {}
+    def reactivate(_projects) = {}
   end
 
   class FakeRepairCommand
-    def call = nil
+    def call = []
     def set_window_id(_project, _wid) = nil
   end
 

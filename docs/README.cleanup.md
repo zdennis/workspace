@@ -51,3 +51,7 @@ Found 2 zombie session(s):
 
 Remove these 2 zombie session(s) from state? [y/N]
 ```
+
+## JSON output
+
+`--json` prints an action document (see [README.json.md](README.json.md#actions)) with a `cleaned` row per zombie removed. Without `--force` the prompt still asks, on stderr. Declining, or having nothing to clean, prints no rows (status `ok`).

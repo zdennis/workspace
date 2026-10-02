@@ -566,16 +566,9 @@ module Workspace
         end
         summary = OUTCOMES.fetch(action).to_h { |o| [o, 0] }
         results.each { |r| summary[r["outcome"]] += 1 }
-        @output.puts JSON.generate({
-          "schema_version" => JSON_SCHEMA_VERSION, "ok" => true,
-          "action" => action,
-          "dry_run" => dry_run,
-          "status" => status,
-          "project" => {"name" => project.name, "id" => project.id, "path" => project.path},
-          "results" => results,
-          "warnings" => warnings,
-          "summary" => summary
-        })
+        @output.puts JSON.generate(JsonEnvelope.action(JSON_SCHEMA_VERSION, action,
+          results: results, status: status, warnings: warnings, summary: summary,
+          extra: {"dry_run" => dry_run, "project" => {"name" => project.name, "id" => project.id, "path" => project.path}}))
       end
 
       def flush_outputs

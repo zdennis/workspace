@@ -74,3 +74,7 @@ workspace pipeline reset myapp
 Exits 1 when no agent is running for the project, when the agent refuses a `start` or an `advance` (for instance, no active pipeline for that work item), or when `reset` is run against a project whose agent is still up.
 
 An unreadable state file is not an error: `status` warns on stderr and treats it as empty, the same way the agent does.
+
+## JSON output
+
+`pipeline start`, `advance` and `reset` take `--json` and print an action document (see [README.json.md](README.json.md#actions); the actions are `pipeline start`, `pipeline advance`, `pipeline reset`) with one row: `started`, `advanced` (both with `work_item_ref`) or `reset`. A refused work item or advance is the failure envelope; a stale advance has `code` `stale_token`. `pipeline status --json` is described above.

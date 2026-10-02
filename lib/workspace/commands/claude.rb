@@ -23,30 +23,40 @@ module Workspace
       # Sends Ctrl-C to the Claude pane to stop the running process.
       #
       # @param projects [Array<String>] project names to deactivate
-      # @return [void]
+      # @return [Hash{String => Hash}] per project, `{"outcome" => "deactivated" | "skipped", ...}`
       def deactivate(projects)
-        each_active_session(projects) do |project, session_name|
+        outcomes = {}
+        each_active_session(projects, outcomes) do |project, session_name|
           @output.puts "  Deactivating Claude in #{project}..."
           pane = claude_pane(session_name)
           CTRL_C_COUNT.times do |i|
             @tmux.send_key(session_name, pane, "C-c")
             sleep CTRL_C_DELAY if i < CTRL_C_COUNT - 1
           end
+          outcomes[project] = {"outcome" => "deactivated"}
         end
         @output.puts "Done."
+        outcomes
       end
 
       # Sends the reactivate command to the Claude pane.
       #
       # @param projects [Array<String>] project names to reactivate
-      # @return [void]
+      # @return [Hash{String => Hash}] per project, `{"outcome" => "reactivated" | "skipped" | "failed", ...}`
       def reactivate(projects)
-        each_active_session(projects) do |project, session_name|
+        outcomes = {}
+        each_active_session(projects, outcomes) do |project, session_name|
           @output.puts "  Reactivating Claude in #{project}..."
           delivery = @tmux.deliver(session_name, claude_pane(session_name), REACTIVATE_COMMAND)
           @error_output.puts "  Warning: #{project}: #{delivery.message}" unless delivery.ok?
+          outcomes[project] = if delivery.ok?
+            {"outcome" => "reactivated"}
+          else
+            {"outcome" => "failed", "reason" => "not_delivered", "message" => delivery.message}
+          end
         end
         @output.puts "Done."
+        outcomes
       end
 
       private
@@ -57,12 +67,13 @@ module Workspace
         CLAUDE_PANE_FALLBACK
       end
 
-      def each_active_session(projects)
+      def each_active_session(projects, outcomes)
         active_sessions = @tmux.sessions
         projects.each do |project|
           session_name = @tmux.session_name_for(project)
           unless active_sessions.include?(session_name)
             @error_output.puts "  Warning: No active tmux session for #{project}, skipping"
+            outcomes[project] = {"outcome" => "skipped", "reason" => "no_session", "message" => "No active tmux session for #{project}"}
             next
           end
           yield project, session_name

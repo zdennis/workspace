@@ -118,6 +118,7 @@ end
 
 require_relative "workspace/version"
 require_relative "workspace/error_codes"
+require_relative "workspace/output_gate"
 require_relative "workspace/json_envelope"
 require_relative "workspace/prompt_input"
 require_relative "workspace/warn"
@@ -227,6 +228,8 @@ module Workspace
   # @return [Workspace::CLI] a fully-wired CLI instance
   def self.build_cli(output: $stdout, error_output: $stderr, input: $stdin, env: ENV, logger: nil)
     input = PromptInput.new(input, no_input: PromptInput.env_truthy?(env))
+    # Every collaborator writes through the gate, so a `--json` action can send their text to stderr.
+    output = OutputGate.new(output)
     logger ||= Logger.new(output: error_output, enabled: ENV.key?("WORKSPACE_DEBUG"))
     config = Config.new
     project_settings = ProjectSettings.new(config: config)

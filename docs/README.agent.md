@@ -54,3 +54,7 @@ workspace agentd myapp
 
 - [`workspace agentd`](README.agentd.md) — the long-lived agent daemon
 - [`workspace agent-run`](README.agent-run.md) — the low-level form of `agent run`, plus `inject` and `restart`
+
+## JSON output
+
+`agent run --json` prints one document with the agent's reply instead of the text (which goes to stderr): `{"schema_version":1,"ok":true,"workspace":"api","work_item_ref":"wi_12","dispatch_id":"agent-run-ab12cd34","dry_run":false,"reply":{"ok":true,"work_item_ref":"wi_12"}}`. `reply` is the agent's reply as is; the exit code is 0 whatever `reply.ok` says. With `--dry-run` there is `message` and no `reply`. A missing daemon is the failure envelope with `code` `no_daemon`.

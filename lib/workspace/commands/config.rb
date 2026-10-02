@@ -38,7 +38,7 @@ module Workspace
       # @param value [String] the value to store
       # @param project [String, nil] project to configure; defaults to the one inferred from cwd
       # @param cwd [String] directory to infer the project from, when project is nil
-      # @return [void]
+      # @return [String, nil] the project the key was set for; nil for a global key
       # @raise [Workspace::UsageError] for an unknown key or an invalid value
       def set(key, value, project: nil, cwd: Dir.pwd)
         validate_key!(key)
@@ -69,6 +69,7 @@ module Workspace
           daemon_name = (project.nil? && lineage.worktree) ? lineage.worktree : name
           @output.puts "Takes effect the next time the session monitor starts (workspace agentd #{daemon_name} --force, or relaunch)."
         end
+        name
       end
 
       # @param key [String] a dotted key from {ALLOWED_KEYS}

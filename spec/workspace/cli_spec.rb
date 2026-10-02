@@ -2504,6 +2504,88 @@ RSpec.describe Workspace::CLI do
     end
 
     describe "#run agent run" do
+      describe "--json" do
+        let(:tmpdir) { Dir.mktmpdir("ws-agent-run", "/tmp") }
+        let(:config) do
+          dir = tmpdir
+          Class.new(Workspace::Config) do
+            define_method(:agent_socket_path) { |name| File.join(dir, "#{name}.sock") }
+          end.new
+        end
+
+        after { FileUtils.remove_entry(tmpdir) if File.directory?(tmpdir) }
+
+        def json_cli
+          raw = StringIO.new
+          err = StringIO.new
+          cli, = build_test_cli(config: config, output: Workspace::OutputGate.new(raw), error_output: err)
+          [cli, raw, err]
+        end
+
+        def with_fake_agent(project, reply)
+          server = UNIXServer.new(config.agent_socket_path(project))
+          accepter = Thread.new do
+            client = server.accept
+            client.gets
+            client.puts(reply.to_json)
+            client.close
+          rescue IOError, Errno::EBADF
+            nil
+          end
+          yield
+          accepter.join(2)
+        ensure
+          server.close
+          accepter&.kill
+        end
+
+        it "prints one document with the agent's reply and no Reply: scrape" do
+          cli, raw, err = json_cli
+
+          with_fake_agent("myapp", {"ok" => true, "work_item_ref" => "wi_12"}) do
+            cli.run(["agent", "run", "--name", "myapp", "--work-item", "wi_12", "fix it", "--json"])
+          end
+
+          doc = JSON.parse(raw.string)
+          expect(doc).to include("schema_version" => 1, "ok" => true, "workspace" => "myapp", "work_item_ref" => "wi_12", "dry_run" => false)
+          expect(doc["dispatch_id"]).to start_with("agent-run-")
+          expect(doc["reply"]).to eq({"ok" => true, "work_item_ref" => "wi_12"})
+          expect(raw.string).not_to include("Reply:")
+          expect(err.string).to include("Reply:")
+        end
+
+        it "passes a refusing reply through under reply, exit 0" do
+          cli, raw, = json_cli
+
+          with_fake_agent("myapp", {"ok" => false, "error" => "no_active_pipeline"}) do
+            cli.run(["agent", "run", "--name", "myapp", "fix it", "--json"])
+          end
+
+          expect(JSON.parse(raw.string)).to include("ok" => true, "reply" => {"ok" => false, "error" => "no_active_pipeline"})
+        end
+
+        it "shows the message instead of a reply for --dry-run" do
+          cli, raw, = json_cli
+
+          cli.run(["agent", "run", "--name", "myapp", "fix it", "--dry-run", "--json"])
+
+          doc = JSON.parse(raw.string)
+          expect(doc).to include("dry_run" => true)
+          expect(doc).not_to have_key("reply")
+          expect(doc["message"]).to include("type" => "command", "workspace" => "myapp")
+        end
+
+        it "answers a missing daemon with the error envelope" do
+          cli, raw, err = json_cli
+
+          expect { cli.run(["agent", "run", "--name", "myapp", "fix it", "--json"]) }.to raise_error(FakeSystemExit)
+
+          expect(JSON.parse(raw.string)).to include("ok" => false, "code" => "no_daemon")
+          expect(JSON.parse(raw.string)["error"]).to include("No agent is running for myapp")
+          expect(err.string).not_to include("No agent")
+        end
+      end
+
       it "sends the joined positional args as the prompt" do
         cli, output = build_test_cli
 
@@ -3991,6 +4073,71 @@ RSpec.describe Workspace::CLI do
       end
     end
 
+    describe "--json" do
+      def json_cli
+        raw = StringIO.new
+        err = StringIO.new
+        cli, = build_test_cli(config: config, output: Workspace::OutputGate.new(raw), error_output: err)
+        [cli, raw, err]
+      end
+
+      it "start prints one action document" do
+        cli, raw, err = json_cli
+
+        received = with_fake_agent("myapp", {"ok" => true}) do
+          cli.run(["pipeline", "start", "myapp", "--work-item", "WC-42", "--json"])
+        end
+
+        expect(received.first).to include("type" => "command", "work_item_ref" => "WC-42")
+        expect(JSON.parse(raw.string)).to include("action" => "pipeline start", "status" => "ok")
+        expect(JSON.parse(raw.string)["results"].first).to include("workspace" => "myapp", "outcome" => "started", "work_item_ref" => "WC-42")
+        expect(err.string).to include("Sent WC-42 into myapp's pipeline")
+      end
+
+      it "advance prints one action document" do
+        cli, raw, = json_cli
+
+        with_fake_agent("myapp", {"ok" => true}) do
+          cli.run(["pipeline", "advance", "myapp", "--work-item", "WC-42", "--json"])
+        end
+
+        expect(JSON.parse(raw.string)["results"].first).to include("outcome" => "advanced", "work_item_ref" => "WC-42")
+      end
+
+      it "advance answers a stale token with the stale_token code" do
+        cli, raw, err = json_cli
+
+        with_fake_agent("myapp", {"ok" => false, "error" => "stale_token"}) do
+          expect { cli.run(["pipeline", "advance", "myapp", "--work-item", "WC-42", "--json"]) }.to raise_error(FakeSystemExit)
+        end
+
+        expect(JSON.parse(raw.string)).to include("ok" => false, "code" => "stale_token")
+        expect(err.string).to eq("")
+      end
+
+      it "start answers an agent that hangs up with the connection_failed code" do
+        cli, raw, = json_cli
+        server = UNIXServer.new(config.agent_socket_path("myapp"))
+        accepter = Thread.new { server.accept.close }
+
+        expect { cli.run(["pipeline", "start", "myapp", "--work-item", "WC-42", "--json"]) }.to raise_error(FakeSystemExit)
+        accepter.join(2)
+
+        expect(JSON.parse(raw.string)).to include("ok" => false, "code" => "connection_failed")
+        server.close
+      end
+
+      it "reset prints one action document" do
+        cli, raw, = json_cli
+        write_state("myapp", "WC-42" => {"work_item_ref" => "WC-42"})
+
+        cli.run(["pipeline", "reset", "myapp", "--json"])
+
+        expect(File.exist?(config.pipeline_state_path("myapp"))).to be false
+        expect(JSON.parse(raw.string)["results"]).to eq([{"workspace" => "myapp", "outcome" => "reset", "reason" => nil, "message" => nil}])
+      end
+    end
+
     it "prints help for an unknown subcommand" do
       cli, _, error_output = build_test_cli(config: config)
       expect { cli.run(["pipeline", "nonsense"]) }.to raise_error(FakeSystemExit)
@@ -4367,6 +4514,375 @@ RSpec.describe Workspace::CLI do
       cli.run(["config", "set", "--project", "api", "dev.up", "bin/dev"])
 
       expect(config.calls.map { |c| c[:project] }).to eq(%w[api api api api])
+    end
+  end
+  describe "action --json" do
+    def action_cli(**overrides)
+      raw = StringIO.new
+      gate = Workspace::OutputGate.new(raw)
+      error_output = StringIO.new
+      overrides = overrides.merge(yield(gate)) if block_given?
+      cli, = build_test_cli(output: gate, error_output: error_output, **overrides)
+      [cli, raw, error_output]
+    end
+
+    # stdout must be exactly one JSON document.
+    def parse_one(raw)
+      expect(raw.string.lines.size).to eq(1), "stdout was: #{raw.string.inspect}"
+      JSON.parse(raw.string)
+    end
+
+    def exit_status
+      yield
+      0
+    rescue FakeSystemExit => e
+      e.status
+    end
+
+    # The block action_cli yields the shared output gate to, so the fake launch prints through it.
+    def launching(state, **options)
+      ->(out) { {launch_command: launch_class.new(state: state, output: out, **options)} }
+    end
+
+    # A launch that behaves like Commands::Launch: prints progress, records state.
+    let(:launch_class) do
+      Class.new do
+        attr_reader :calls
+
+        def initialize(state:, output:, result: {}, fail: [])
+          @state = state
+          @output = output
+          @result = result
+          @fail = fail
+          @calls = []
+        end
+
+        def call(projects, **options)
+          @calls << [projects, options]
+          @output.puts "Launching #{projects.join(", ")}..."
+          projects.each do |p|
+            next if @fail.include?(p)
+            @state[p] = {"iterm_window_id" => 31337, "headless" => options[:headless] == true}
+          end
+          {exit_code: 0, prompt_failures: {}, reused: []}.merge(@result)
+        end
+      end
+    end
+
+    describe "stop" do
+      it "prints one action document and sends the text to stderr" do
+        state = CLITestHelpers::FakeState.new
+        state["api"] = {"iterm_window_id" => 1}
+        hooks = CLITestHelpers::FakeHookRunner.new
+        cli, raw, err = action_cli(state: state, hook_runner: hooks)
+
+        cli.run(["stop", "api", "--json"])
+
+        doc = parse_one(raw)
+        expect(doc).to include("schema_version" => 1, "ok" => true, "action" => "stop", "status" => "ok", "summary" => {"stopped" => 1})
+        expect(doc["results"]).to eq([{"workspace" => "api", "outcome" => "stopped", "reason" => nil, "message" => nil}])
+        expect(err.string).to include("Stopped 1 project(s): api")
+        expect(hooks.runs.map { |r| r[:event] }).to eq(["post_stop"])
+      end
+
+      it "reports a named project that is not active as not_running, without a stderr warning" do
+        state = CLITestHelpers::FakeState.new
+        state["api"] = {}
+        cli, raw, err = action_cli(state: state)
+
+        cli.run(["stop", "api", "ghost", "--json"])
+
+        doc = parse_one(raw)
+        expect(doc["status"]).to eq("ok")
+        expect(doc["results"].map { |r| [r["workspace"], r["outcome"]] }).to eq([%w[api stopped], %w[ghost not_running]])
+        expect(err.string).not_to include("Warning")
+      end
+
+      it "prints nothing but text, and still warns, without --json" do
+        state = CLITestHelpers::FakeState.new
+        state["api"] = {}
+        cli, raw, err = action_cli(state: state)
+
+        cli.run(["stop", "api", "ghost"])
+
+        expect(raw.string).to include("Stopped 1 project(s): api")
+        expect(raw.string).not_to include("{")
+        expect(err.string).to include("'ghost' is not an active workspace project")
+      end
+
+      it "prints ok with no results when nothing is running" do
+        cli, raw, = action_cli
+
+        cli.run(["stop", "--json"])
+
+        expect(parse_one(raw)).to include("ok" => true, "status" => "ok", "results" => [])
+      end
+    end
+
+    describe "launch" do
+      it "reports each project with its window id" do
+        state = CLITestHelpers::FakeState.new
+        cli, raw, err = action_cli(state: state, &launching(state))
+
+        cli.run(["launch", "api", "web", "--json"])
+
+        doc = parse_one(raw)
+        expect(doc).to include("action" => "launch", "status" => "ok", "summary" => {"launched" => 2})
+        expect(doc["results"].first).to include("workspace" => "api", "outcome" => "launched", "iterm_window_id" => 31337, "headless" => false)
+        expect(err.string).to eq("Launching api, web...\n")
+        expect(raw.string).not_to include("Launching")
+      end
+
+      it "is partial (exit 3) when a prompt could not be sent to one project" do
+        state = CLITestHelpers::FakeState.new
+        cli, raw, = action_cli(state: state, &launching(state, result: {exit_code: 1, prompt_failures: {"web" => "agent not ready"}}))
+
+        status = exit_status { cli.run(["launch", "api", "web", "--prompt", "hi", "--json"]) }
+
+        doc = parse_one(raw)
+        expect(status).to eq(3)
+        expect(doc["status"]).to eq("partial")
+        expect(doc["results"].last).to include("workspace" => "web", "outcome" => "failed", "reason" => "prompt_not_sent", "message" => "agent not ready")
+      end
+
+      it "fails (exit 1) when no project got a session" do
+        state = CLITestHelpers::FakeState.new
+        cli, raw, = action_cli(state: state, &launching(state, fail: ["api"], result: {exit_code: 1, start_failures: {"api" => "tmux refused"}}))
+
+        status = exit_status { cli.run(["launch", "api", "--json"]) }
+
+        expect(status).to eq(1)
+        doc = parse_one(raw)
+        expect(doc).to include("ok" => true, "status" => "failed")
+        expect(doc["results"].first).to include("outcome" => "failed", "reason" => "session_not_started")
+      end
+
+      it "reports a headless project that was already running as reused" do
+        state = CLITestHelpers::FakeState.new
+        cli, raw, = action_cli(state: state, launch_mode: CLITestHelpers.launch_mode(headless: true), &launching(state, result: {reused: ["api"]}))
+
+        cli.run(["launch", "api", "--json"])
+
+        expect(parse_one(raw)["results"].first).to include("outcome" => "reused", "headless" => true)
+      end
+
+      it "keeps the exit code and text without --json" do
+        state = CLITestHelpers::FakeState.new
+        cli, raw, = action_cli(state: state, &launching(state, result: {exit_code: 1}))
+
+        expect(exit_status { cli.run(["launch", "api"]) }).to eq(1)
+        expect(raw.string).to eq("Launching api...\n")
+      end
+
+      it "answers a usage error with the error envelope" do
+        cli, raw, err = action_cli
+
+        expect(exit_status { cli.run(["launch", "--json"]) }).to eq(1)
+
+        expect(parse_one(raw)).to include("ok" => false, "code" => "usage")
+        expect(err.string).to eq("")
+      end
+    end
+
+    describe "relaunch" do
+      it "stops and relaunches every project, reporting relaunched" do
+        state = CLITestHelpers::FakeState.new
+        state["api"] = {"iterm_window_id" => 1}
+        cli, raw, err = action_cli(state: state, &launching(state))
+        allow(cli).to receive(:sleep)
+
+        cli.run(["relaunch", "--json"])
+
+        doc = parse_one(raw)
+        expect(doc).to include("action" => "relaunch", "status" => "ok", "summary" => {"relaunched" => 1})
+        expect(err.string).to include("Will relaunch: api")
+      end
+
+      it "answers with the error envelope when nothing is active" do
+        cli, raw, err = action_cli
+
+        expect(exit_status { cli.run(["relaunch", "--json"]) }).to eq(1)
+
+        expect(parse_one(raw)).to include("ok" => false, "error" => "No active workspace projects to relaunch.")
+        expect(err.string).to eq("")
+      end
+    end
+
+    describe "kill" do
+      it "reports killed" do
+        kill = double("kill")
+        allow(kill).to receive(:call).and_return("myproj.worktree-x")
+        cli, raw, = action_cli(kill_command: kill)
+
+        cli.run(["kill", "myproj.worktree-x", "--json"])
+
+        expect(parse_one(raw)).to include("action" => "kill", "status" => "ok")
+        expect(parse_one(raw)["results"].first).to include("workspace" => "myproj.worktree-x", "outcome" => "killed")
+      end
+
+      it "reports a declined confirmation as cancelled with exit 0" do
+        kill = double("kill", call: nil)
+        cli, raw, = action_cli(kill_command: kill)
+
+        expect(exit_status { cli.run(["kill", "x", "--json"]) }).to eq(0)
+
+        expect(parse_one(raw)).to include("status" => "cancelled")
+        expect(parse_one(raw)["results"].first).to include("outcome" => "cancelled", "reason" => "declined")
+      end
+
+      it "answers a refusal with the error envelope and a retry hint" do
+        error = Workspace::UnsavedWorkError.new("has unsaved work", unsaved: {changed_files: 3, unpushed_commits: 0})
+        kill = double("kill")
+        allow(kill).to receive(:call).and_raise(error)
+        cli, raw, err = action_cli(kill_command: kill)
+
+        expect(exit_status { cli.run(["kill", "x", "--json"]) }).to eq(1)
+
+        expect(parse_one(raw)).to include("ok" => false, "code" => "unsaved_work", "retry" => {"flags" => ["--force"], "destructive" => true})
+        expect(err.string).to eq("")
+      end
+    end
+
+    describe "focus" do
+      it "reports focused with the window id" do
+        state = CLITestHelpers::FakeState.new
+        state["api"] = {"iterm_window_id" => 77}
+        hooks = CLITestHelpers::FakeHookRunner.new
+        cli, raw, err = action_cli(state: state, hook_runner: hooks) do |out|
+          {focus_command: Workspace::Commands::Focus.new(state: state, window_manager: CLITestHelpers::FakeWindowManager.new, output: out)}
+        end
+
+        cli.run(["focus", "api", "--json"])
+
+        expect(parse_one(raw)["results"]).to eq([{"workspace" => "api", "outcome" => "focused", "reason" => nil, "message" => nil, "iterm_window_id" => 77}])
+        expect(err.string).to include("Focusing api...")
+        expect(hooks.runs.map { |r| r[:event] }).to eq(["post_focus"])
+      end
+
+      it "answers a missing window with the error envelope" do
+        focus = Workspace::Commands::Focus.new(state: CLITestHelpers::FakeState.new, window_manager: CLITestHelpers::FakeWindowManager.new, output: StringIO.new)
+        cli, raw, = action_cli(focus_command: focus)
+
+        expect(exit_status { cli.run(["focus", "api", "--json"]) }).to eq(1)
+
+        expect(parse_one(raw)).to include("ok" => false)
+        expect(parse_one(raw)["error"]).to include("No iTerm window found for 'api'")
+      end
+    end
+
+    describe "repair" do
+      it "reports each rebuilt window" do
+        repair = double("repair", call: [{"workspace" => "api", "iterm_window_id" => 5, "unique_id" => "U1"}])
+        cli, raw, = action_cli(repair_command: repair)
+
+        cli.run(["repair", "--json"])
+
+        expect(parse_one(raw)["results"]).to eq([{"workspace" => "api", "outcome" => "repaired", "reason" => nil, "message" => nil, "iterm_window_id" => 5, "unique_id" => "U1"}])
+      end
+
+      it "reports the window id set by hand" do
+        repair = double("repair", set_window_id: nil)
+        cli, raw, = action_cli(repair_command: repair)
+
+        cli.run(["repair", "api", "--window-id", "9", "--json"])
+
+        expect(parse_one(raw)["results"].first).to include("workspace" => "api", "outcome" => "repaired", "iterm_window_id" => 9)
+      end
+    end
+
+    describe "cleanup" do
+      it "reports each zombie removed" do
+        cleanup = double("cleanup", call: %w[old-a old-b])
+        cli, raw, = action_cli(cleanup_command: cleanup)
+
+        cli.run(["cleanup", "--force", "--json"])
+
+        expect(cleanup).to have_received(:call).with(force: true)
+        expect(parse_one(raw)).to include("action" => "cleanup", "summary" => {"cleaned" => 2})
+      end
+    end
+
+    describe "deactivate and reactivate" do
+      it "reports per-project outcomes, including a skipped project" do
+        claude = double("claude", deactivate: {"api" => {"outcome" => "deactivated"}, "web" => {"outcome" => "skipped", "reason" => "no_session", "message" => "No active tmux session for web"}})
+        cli, raw, = action_cli(claude_command: claude)
+
+        cli.run(["deactivate", "--all", "--json"])
+
+        doc = parse_one(raw)
+        expect(doc).to include("action" => "deactivate", "status" => "ok", "summary" => {"deactivated" => 1, "skipped" => 1})
+        expect(doc["results"].last).to include("workspace" => "web", "reason" => "no_session")
+      end
+
+      it "is failed when a reactivate delivery failed" do
+        claude = double("claude", reactivate: {"api" => {"outcome" => "failed", "reason" => "not_delivered", "message" => "pane gone"}})
+        cli, raw, = action_cli(claude_command: claude)
+
+        expect(exit_status { cli.run(["reactivate", "api", "--json"]) }).to eq(1)
+
+        expect(parse_one(raw)).to include("action" => "reactivate", "status" => "failed")
+      end
+    end
+
+    describe "dev and lock" do
+      it "reports dev up as started" do
+        dev = double("dev", up: {exit_code: 0})
+        cli, raw, = action_cli(dev_command: dev, project_config: CLITestHelpers::FakeProjectConfig.new("api" => Dir.tmpdir))
+
+        cli.run(["dev", "up", "--name", "api", "--json"])
+
+        expect(parse_one(raw)).to include("action" => "dev up", "status" => "ok")
+        expect(parse_one(raw)["results"].first).to include("workspace" => "api", "outcome" => "started")
+      end
+
+      it "keeps the command's own exit code when dev up fails" do
+        dev = double("dev", up: {exit_code: 75})
+        cli, raw, = action_cli(dev_command: dev, project_config: CLITestHelpers::FakeProjectConfig.new("api" => Dir.tmpdir))
+
+        expect(exit_status { cli.run(["dev", "up", "--name", "api", "--json"]) }).to eq(75)
+
+        doc = parse_one(raw)
+        expect(doc["status"]).to eq("failed")
+        expect(doc["results"].first).to include("outcome" => "failed", "reason" => "exit_code", "exit_code" => 75)
+      end
+
+      it "reports dev down as stopped" do
+        dev = double("dev", down: {exit_code: 0})
+        cli, raw, = action_cli(dev_command: dev, project_config: CLITestHelpers::FakeProjectConfig.new("api" => Dir.tmpdir))
+
+        cli.run(["dev", "down", "--name", "api", "--json"])
+
+        expect(parse_one(raw)).to include("action" => "dev down", "status" => "ok")
+      end
+
+      it "reports lock release as released, naming the lock" do
+        lock = double("lock", release: {exit_code: 0})
+        cli, raw, = action_cli(lock_command: lock, project_config: CLITestHelpers::FakeProjectConfig.new("api" => Dir.tmpdir))
+
+        cli.run(["lock", "release", "edit", "--name", "api", "--json"])
+
+        expect(parse_one(raw)["results"].first).to include("workspace" => "api", "outcome" => "released", "lock" => "edit", "all" => false)
+      end
+    end
+
+    describe "config set" do
+      it "reports the project and key set" do
+        config_command = double("config", set: "api")
+        cli, raw, = action_cli(config_command: config_command)
+
+        cli.run(["config", "set", "dev.up", "bin/dev", "--name", "api", "--json"])
+
+        expect(parse_one(raw)["results"]).to eq([{"workspace" => "api", "outcome" => "set", "reason" => nil, "message" => nil, "key" => "dev.up", "value" => "bin/dev", "global" => false}])
+      end
+
+      it "marks a global key" do
+        config_command = double("config", set: nil)
+        cli, raw, = action_cli(config_command: config_command)
+
+        cli.run(["config", "set", "launch.headless", "true", "--json"])
+
+        expect(parse_one(raw)["results"].first).to include("workspace" => nil, "global" => true)
+      end
     end
   end
 end
