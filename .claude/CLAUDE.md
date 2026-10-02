@@ -186,12 +186,14 @@ When the user asks to capture, add, view, list, or look up feature requests, alw
 
 ## Pre-commit Requirements
 
-Before every commit, run all 5 review agents in parallel using the Agent tool. Each agent should only review files changed in the current commit (or on the topic branch vs main). Pass this context when launching each agent.
+Before every commit, run up to 3 review agents from `.claude/agents/` that best fit the change, in parallel, one Agent call each (never combine lenses into one agent). Each agent should only review files changed in the current commit. Pass this context when launching each agent.
 
-1. `.claude/agents/staff-engineer.md` — Architecture and complexity review
-2. `.claude/agents/new-user.md` — UX and discoverability review
-3. `.claude/agents/ai-agent-operator.md` — Automation and scriptability review
-4. `.claude/agents/testing-craftsperson.md` — Test coverage, `bundle exec rspec`, and `bundle exec standardrb lib/ spec/`
-5. `.claude/agents/power-user.md` — Edge cases and extensibility review
+- `testing-craftsperson.md` — Test coverage, `bundle exec rspec`, and `bundle exec standardrb lib/ spec/`; pick it for almost every code change
+- `staff-engineer.md` — Architecture and complexity
+- `ai-agent-operator.md` — Automation and scriptability (`--json`, exit codes, machine-read output)
+- `power-user.md` — Edge cases and extensibility
+- `new-user.md` — UX and discoverability (help text, errors, human output)
+- `dependency-injection-expert.md` — Constructor injection and `build_cli`
+- `ddd-hexagonal-expert.md` — Domain boundaries and adapters
 
-All 5 must pass before committing. Address any concerns raised before proceeding.
+All review agents that run must pass before committing. Address any concerns raised before proceeding.
