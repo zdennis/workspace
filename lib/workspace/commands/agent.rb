@@ -52,6 +52,8 @@ module Workspace
       # @param logger [Workspace::Logger] debug logger
       # @param output [IO] output stream for user-facing messages
       # @param error_output [IO] error output stream for errors
+      # @param label_reader [Workspace::TranscriptLabel, nil] reads each pane's
+      #   transcript title for `sessions --json`; nil leaves transcripts unread
       def initialize(config:, tmux:, work_coordinator_client:, pipeline_config:, pipeline_state: nil,
         epoch_generator: -> { "wa-#{Agent.ulid}" },
         signal_trapper: Signal,
@@ -66,6 +68,7 @@ module Workspace
         retry_backoff: 0.5,
         event_log: nil,
         context_reader: nil,
+        label_reader: nil,
         agent_restart_factory: nil,
         logger: Workspace::Logger.new, output: $stdout, error_output: $stderr)
         @config = config
@@ -83,6 +86,7 @@ module Workspace
         @lock_reaper = lock_reaper
         @alert_config = alert_config
         @context_reader = context_reader
+        @label_reader = label_reader
         @agent_restart_factory = agent_restart_factory || method(:build_agent_restart)
         # Restart workers by pane id, so one pane is restarted once at a time.
         @restarts = {}
@@ -1084,7 +1088,8 @@ module Workspace
           idle_alert_after: alerts[:idle_after],
           event_log: @event_log,
           project: name,
-          context_reader: @context_reader
+          context_reader: @context_reader,
+          label_reader: @label_reader
         )
       end
 

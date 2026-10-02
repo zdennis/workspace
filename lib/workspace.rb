@@ -166,6 +166,7 @@ require_relative "workspace/context_reader"
 require_relative "workspace/statusline_renderer"
 require_relative "workspace/ask_store"
 require_relative "workspace/session_ledger"
+require_relative "workspace/transcript_label"
 require_relative "workspace/session_monitor"
 require_relative "workspace/agent_provider"
 require_relative "workspace/file_backup"
@@ -379,6 +380,7 @@ module Workspace
       ps_timeout: ps_timeout,
       event_log: event_log,
       context_reader: context_reader,
+      label_reader: TranscriptLabel.new,
       logger: logger,
       output: output,
       error_output: error_output

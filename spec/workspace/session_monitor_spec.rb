@@ -961,3 +961,100 @@ RSpec.describe Workspace::SessionMonitor do
     end
   end
 end
+
+RSpec.describe Workspace::SessionMonitor, "display_label" do
+  let(:tmux) { instance_double(Workspace::Tmux) }
+  let(:process_tree) { instance_double(Workspace::ProcessTree) }
+  let(:snapshot) { instance_double(Workspace::ProcessTree::Snapshot) }
+  let(:clock) { class_double(Time, now: Time.utc(2026, 9, 26, 12, 0, 0)) }
+  let(:label_reader) { instance_double(Workspace::TranscriptLabel) }
+  let(:panes) do
+    [
+      {id: "%1", index: 0, pid: 100, command: "zsh", cwd: "/project", title: "shell"},
+      {id: "%2", index: 1, pid: 200, command: "node", cwd: "/project", title: "Claude"}
+    ]
+  end
+
+  subject(:monitor) do
+    described_class.new(tmux: tmux, process_tree: process_tree, session_name: "proj",
+      idle_after: 30, clock: clock, label_reader: label_reader)
+  end
+
+  before do
+    allow(tmux).to receive(:pane_details).and_return(panes)
+    allow(process_tree).to receive(:snapshot).and_return(snapshot)
+    allow(snapshot).to receive(:find_descendant).and_return(nil)
+    allow(snapshot).to receive(:find_descendant)
+      .with(200, ["claude"], hash_including(include_root: true))
+      .and_return({pid: 250, command: "claude", args: "claude"})
+    allow(tmux).to receive(:capture_pane).and_return("output")
+    allow(label_reader).to receive(:read).and_return(title: nil, last_prompt: nil)
+    monitor.scan
+  end
+
+  def pane(id) = monitor.snapshot["panes"].find { |p| p["pane_id"] == id }
+
+  it "is null before the pane has reported anything, and the existing label is unchanged" do
+    expect(pane("%2")["display_label"]).to be_nil
+    expect(pane("%2")["label"]).to eq("Claude Code")
+  end
+
+  it "prefers the transcript's ai-title" do
+    allow(label_reader).to receive(:read).with("/t/a.jsonl").and_return(title: "Fix the build", last_prompt: "hello")
+    monitor.record("event" => "user_prompt", "pane_id" => "%2", "session_id" => "s1",
+      "transcript_path" => "/t/a.jsonl", "prompt" => "typed")
+
+    expect(pane("%2")["display_label"]).to eq("Fix the build")
+  end
+
+  it "falls back to the last prompt seen in memory, cleaned and cut to 80 characters" do
+    monitor.record("event" => "user_prompt", "pane_id" => "%2", "session_id" => "s1",
+      "prompt" => "line one\nline two " + "x" * 200)
+
+    expect(pane("%2")["display_label"]).to eq(("line one line two " + "x" * 200)[0, 80])
+  end
+
+  it "falls back to the transcript's last-prompt when no prompt was seen" do
+    allow(label_reader).to receive(:read).with("/t/a.jsonl").and_return(title: nil, last_prompt: "from file")
+    monitor.record("event" => "session_start", "pane_id" => "%2", "session_id" => "s1", "transcript_path" => "/t/a.jsonl")
+
+    expect(pane("%2")["display_label"]).to eq("from file")
+  end
+
+  it "forgets the old session's path and prompt when the session id changes" do
+    allow(label_reader).to receive(:read).with("/t/a.jsonl").and_return(title: "Old", last_prompt: nil)
+    monitor.record("event" => "user_prompt", "pane_id" => "%2", "session_id" => "s1",
+      "transcript_path" => "/t/a.jsonl", "prompt" => "old prompt")
+    monitor.record("event" => "session_start", "pane_id" => "%2", "session_id" => "s2")
+
+    expect(pane("%2")["display_label"]).to be_nil
+  end
+
+  it "keeps the label source when a later event carries no session id" do
+    monitor.record("event" => "user_prompt", "pane_id" => "%2", "session_id" => "s1", "prompt" => "keep me")
+    monitor.record("event" => "notification", "pane_id" => "%2", "message" => "hello")
+
+    expect(pane("%2")["display_label"]).to eq("keep me")
+  end
+
+  it "is null on a shell pane" do
+    monitor.record("event" => "user_prompt", "pane_id" => "%1", "session_id" => "s1", "prompt" => "hi")
+
+    expect(pane("%1")["display_label"]).to be_nil
+  end
+
+  it "never writes the prompt to the event log" do
+    log = instance_double(Workspace::EventLog)
+    written = []
+    allow(log).to receive(:record) { |**args| written << args }
+    allow(log).to receive_messages(latest_agent_alerts: {}, latest_agent_states: {})
+    logged = described_class.new(tmux: tmux, process_tree: process_tree, session_name: "proj",
+      idle_after: 30, clock: clock, event_log: log, project: "proj", label_reader: label_reader)
+    logged.scan
+    logged.record("event" => "user_prompt", "pane_id" => "%2", "session_id" => "s1", "prompt" => "secret text")
+    logged.scan
+
+    expect(written).not_to be_empty
+    expect(written.to_s).not_to include("secret text")
+  end
+end

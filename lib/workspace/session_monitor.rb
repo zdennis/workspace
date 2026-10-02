@@ -79,11 +79,14 @@ module Workspace
     # @param context_reader [Workspace::ContextReader, nil] resolves each
     #   coding-agent pane's context-window usage; nil omits `context_pct`,
     #   `context_error`, and `context_updated_at` from {#present}
+    # @param label_reader [Workspace::TranscriptLabel, nil] reads a pane's
+    #   transcript for its `display_label`; nil falls back to the last prompt
+    #   the daemon saw
     def initialize(tmux:, process_tree:, session_name:,
       providers: AgentProvider.all, poll_interval: 2, idle_after: DEFAULT_IDLE_AFTER,
       clock: Time, logger: Workspace::Logger.new, error_output: $stderr, lock_reaper: nil,
       notifier: nil, idle_alert_after: nil, event_log: nil, project: nil,
-      context_reader: nil)
+      context_reader: nil, label_reader: nil)
       @tmux = tmux
       @process_tree = process_tree
       @session_name = session_name
@@ -101,6 +104,7 @@ module Workspace
       @history = nil
       @alert_history = {}
       @context_reader = context_reader
+      @label_reader = label_reader
       @panes = {}
       @failed_scans = 0
       @lock = Mutex.new
@@ -183,7 +187,9 @@ module Workspace
 
       @lock.synchronize do
         pane = (@panes[pane_id] ||= new_pane(pane_id))
+        forget_label_source(pane, event["session_id"])
         pane[:session_id] = event["session_id"] || pane[:session_id]
+        note_label_source(pane, event)
         pane[:last_event_at] = @clock.now
         apply_event(pane, event)
       end
@@ -618,6 +624,7 @@ module Workspace
         "waiting_seconds" => waiting_since && (now - waiting_since).round,
         "waiting_message" => wait&.dig(:message),
         "session_id" => pane[:session_id],
+        "display_label" => display_label(pane),
         "agents" => pane[:agents].map { |agent|
           {"name" => agent[:name], "state" => agent[:state],
            "started_at" => agent[:started_at]&.utc&.iso8601,
@@ -626,6 +633,38 @@ module Workspace
       }
       apply_context(result, pane) unless pane[:kind] == "shell"
       result
+    end
+
+    # Longest prompt kept as a label fallback.
+    LABEL_PROMPT_LENGTH = TranscriptLabel::MAX_LENGTH
+
+    # A different session in the same pane starts with no label source: the
+    # old transcript and prompt describe someone else's work.
+    def forget_label_source(pane, session_id)
+      return unless session_id && pane[:session_id] && session_id != pane[:session_id]
+
+      pane.delete(:transcript_path)
+      pane.delete(:last_prompt)
+    end
+
+    # Keeps the transcript path and the last prompt, in memory only; neither
+    # is written to the event log or anywhere else.
+    def note_label_source(pane, event)
+      path = event["transcript_path"]
+      pane[:transcript_path] = path if path.is_a?(String)
+      prompt = event["prompt"]
+      return unless event["event"] == "user_prompt" && prompt.is_a?(String)
+
+      pane[:last_prompt] = self.class.clean_message(prompt)&.slice(0, LABEL_PROMPT_LENGTH)
+    end
+
+    # What a person would call this pane: the transcript's AI title, else the
+    # last prompt, else nil. A shell pane has none.
+    def display_label(pane)
+      return nil if pane[:kind] == "shell"
+
+      transcript = pane[:transcript_path] && @label_reader&.read(pane[:transcript_path])
+      transcript&.dig(:title) || pane[:last_prompt] || transcript&.dig(:last_prompt)
     end
 
     # Stamps `context_pct`/`context_error`/`context_updated_at` onto a

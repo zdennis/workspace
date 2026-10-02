@@ -21,7 +21,7 @@ It reads constants, config paths and the `PATH`. It starts no process and touche
 ```json
 {"schema_version":1,"ok":true,"version":"0.27.1",
  "features":{"envelope":1,"error_codes":1,"name_scope":1,"no_input":1,"action_json":1,
-   "sessions":1,"locks_json":1,"git_facts":1,"prune_safe":1,"snapshot":0,"events_follow":0,
+   "sessions":1,"locks_json":1,"git_facts":1,"prune_safe":1,"snapshot":1,"events_follow":0,
    "actions_manifest":0,"agent_send":1,"agent_spawn":0,"focus_pane":1,"state_done":0,
    "doctor_json":0,"daemon_control":0},
  "exit_codes":{"ok":0,"failed":1,"not_submitted":2,"partial":3,"lock_cleared":4,"timeout":75},
@@ -48,7 +48,7 @@ It reads constants, config paths and the `PATH`. It starts no process and touche
 | `locks_json` | `lock status --json` and `lock clear --json` |
 | `git_facts` | `projects show` reports git facts per workspace |
 | `prune_safe` | `prune` skips a worktree with unsaved work and reports it, rather than removing it |
-| `snapshot` | Not available yet |
+| `snapshot` | `sessions --json` panes carry `display_label` (see [`sessions`](README.sessions.md)); nothing else is covered yet |
 | `events_follow` | Not available yet |
 | `actions_manifest` | Not available yet |
 | `agent_send` | `agent-run send --pane` types text or tmux keys into one named pane; `ask answer --deliver` types an answer into the asking pane |
