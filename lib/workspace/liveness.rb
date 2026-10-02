@@ -32,7 +32,7 @@ module Workspace
 
     def list_sessions
       @tmux.sessions(strict: true)
-    rescue Workspace::Error
+    rescue Workspace::Error, SystemCallError
       nil
     end
 

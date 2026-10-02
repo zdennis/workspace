@@ -54,6 +54,11 @@ RSpec.describe Workspace::Liveness do
     expect(described_class.new(tmux: tmux).call(%w[alpha beta])).to eq("alpha" => nil, "beta" => nil)
   end
 
+  it "reports nil for every project when tmux cannot be run" do
+    tmux = FakeLivenessTmux.new(sessions: [], error: Errno::ENOENT.new("tmux"))
+    expect(described_class.new(tmux: tmux).call(%w[alpha beta])).to eq("alpha" => nil, "beta" => nil)
+  end
+
   it "reports nil for a project on a custom tmux socket, which the default socket cannot see" do
     tmux = FakeLivenessTmux.new(sessions: ["alpha"], sockets: {"alpha" => "-L other"})
     expect(described_class.new(tmux: tmux).call(%w[alpha beta])).to eq("alpha" => nil, "beta" => false)
