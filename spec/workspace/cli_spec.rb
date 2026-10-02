@@ -96,6 +96,7 @@ RSpec.describe Workspace::CLI do
       ensure_agent_command: overrides[:ensure_agent_command],
       handoff_command: overrides[:handoff_command],
       projects_command: overrides[:projects_command],
+      capabilities_command: overrides[:capabilities_command],
       project_actions_command: overrides[:project_actions_command],
       logger: logger,
       output: output,
@@ -2805,6 +2806,58 @@ RSpec.describe Workspace::CLI do
       cli, output, _ = build_test_cli
       cli.run(["help"])
       expect(output.string).to include("capture")
+    end
+  end
+
+  describe "#run with capabilities" do
+    it "dispatches to capabilities_command#call without --json" do
+      capabilities_command = CLITestHelpers::FakeCapabilitiesCommand.new
+      cli, _, _ = build_test_cli(capabilities_command: capabilities_command)
+
+      cli.run(["capabilities"])
+
+      expect(capabilities_command.calls).to eq([{json: false}])
+    end
+
+    it "dispatches with --json" do
+      capabilities_command = CLITestHelpers::FakeCapabilitiesCommand.new
+      cli, _, _ = build_test_cli(capabilities_command: capabilities_command)
+
+      cli.run(["capabilities", "--json"])
+
+      expect(capabilities_command.calls).to eq([{json: true}])
+    end
+
+    it "prints help for --help without calling the command" do
+      capabilities_command = CLITestHelpers::FakeCapabilitiesCommand.new
+      cli, output, _ = build_test_cli(capabilities_command: capabilities_command)
+
+      cli.run(["capabilities", "--help"])
+
+      expect(output.string).to include("Usage: workspace capabilities [--json]")
+      expect(capabilities_command.calls).to eq([])
+    end
+
+    it "rejects an extra argument as a usage error" do
+      capabilities_command = CLITestHelpers::FakeCapabilitiesCommand.new
+      cli, output, _ = build_test_cli(capabilities_command: capabilities_command)
+
+      expect { cli.run(["capabilities", "--json", "extra"]) }.to raise_error(FakeSystemExit)
+      expect(JSON.parse(output.string)).to include("ok" => false, "code" => "usage")
+      expect(capabilities_command.calls).to eq([])
+    end
+
+    it "is an error when no capabilities command was wired" do
+      cli, _, error_output = build_test_cli
+
+      expect { cli.run(["capabilities"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+      expect(error_output.string).to include("no capabilities command was wired")
+    end
+
+    it "is listed in the main help" do
+      cli, output, _ = build_test_cli
+      cli.run(["help"])
+      expect(output.string).to match(/^  capabilities /)
     end
   end
 

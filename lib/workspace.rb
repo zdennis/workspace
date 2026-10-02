@@ -196,6 +196,7 @@ require_relative "workspace/commands/run"
 require_relative "workspace/commands/capture"
 require_relative "workspace/commands/lock"
 require_relative "workspace/commands/dev"
+require_relative "workspace/commands/capabilities"
 require_relative "workspace/commands/parent"
 require_relative "workspace/commands/projects"
 require_relative "workspace/commands/project_actions"
@@ -330,6 +331,7 @@ module Workspace
       output: output,
       error_output: error_output
     )
+    capabilities_command = Commands::Capabilities.new(config: config, output: output)
     parent_command = Commands::Parent.new(lineage: lineage, project_config: project_config, output: output)
     project_catalog = ProjectCatalog.new(project_config: project_config, git: git)
     project_facts = ProjectFacts.new(tmux: tmux, state: state, config: config, lock_namespace: lock_namespace,
@@ -419,6 +421,7 @@ module Workspace
       dev_command: dev_command,
       parent_command: parent_command,
       projects_command: projects_command,
+      capabilities_command: capabilities_command,
       project_actions_command: project_actions_command,
       agent_command: agent_command,
       sessions_command: sessions_command,

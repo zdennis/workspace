@@ -74,6 +74,7 @@ workspace <subcommand> [options]
 | agent-run | [README](docs/README.agent-run.md) | Send a message to a running agent (command, inject, restart a pane) |
 | alfred | [README](docs/README.alfred.md) | Manage the Alfred workflow for workspace focus |
 | ask | [README](docs/README.ask.md) | Record a question an unattended agent hit, with its default; list/answer them |
+| capabilities | [README](docs/README.capabilities.md) | Print what this CLI supports, as feature revisions (for scripts and the UI) |
 | capture | [README](docs/README.capture.md) | Print a tmux pane's scrollback buffer to stdout |
 | cleanup | [README](docs/README.cleanup.md) | Detect and remove zombie sessions from state |
 | config | [README](docs/README.config.md) | Show, set, get, or unset project or global configuration |

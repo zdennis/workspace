@@ -17,7 +17,7 @@ module Workspace
     SUBCOMMANDS = %w[
       init doctor launch start stop add add-project kill finish relaunch
       focus deactivate reactivate tile resize capture agent agentd lock dev parent projects
-      sessions ask session-event agent-run handoff pipeline run
+      capabilities sessions ask session-event agent-run handoff pipeline run
       run-and-report report-run-status layout config statusline current
       list-projects list status repair cleanup prune set-command event-log
       whereis lookup dir alfred version help
@@ -63,6 +63,7 @@ module Workspace
     # @param parent_command [Workspace::Commands::Parent] pre-built parent command
     # @param dev_command [Workspace::Commands::Dev] pre-built dev command
     # @param projects_command [Workspace::Commands::Projects, nil] pre-built projects command
+    # @param capabilities_command [Workspace::Commands::Capabilities, nil] pre-built capabilities command
     # @param project_actions_command [Workspace::Commands::ProjectActions, nil] pre-built project-wide actions command
     # @param clock [#call] returns the current Time, for relative deadline display
     # @param liveness [#call, nil] maps project names to true, false, or nil
@@ -70,7 +71,7 @@ module Workspace
     #   reports every project as unknown
     # @param launch_mode [Workspace::LaunchMode, nil] decides whether launch/start
     #   run headless when no --[no-]headless flag is given; nil builds one
-    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, restart_agent_command: nil, ensure_agent_command: nil, handoff_command: nil, projects_command: nil, project_actions_command: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil, liveness: nil)
+    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, restart_agent_command: nil, ensure_agent_command: nil, handoff_command: nil, projects_command: nil, capabilities_command: nil, project_actions_command: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil, liveness: nil)
       @config = config
       @state = state
       @project_config = project_config
@@ -114,6 +115,7 @@ module Workspace
       @ensure_agent_command = ensure_agent_command
       @handoff_command = handoff_command
       @projects_command = projects_command
+      @capabilities_command = capabilities_command
       @project_actions_command = project_actions_command
       @exit_handler = exit_handler
       @logger = logger
@@ -182,6 +184,8 @@ module Workspace
         cmd_parent(args)
       when "projects"
         cmd_projects(args)
+      when "capabilities"
+        cmd_capabilities(args)
       when "sessions"
         cmd_sessions(args)
       when "ask"
@@ -346,6 +350,7 @@ module Workspace
           agent-run       Send a message to a running agent (command, inject, restart a pane)
           alfred          Manage the Alfred workflow for workspace focus
           ask             Record a question an unattended agent hit, with its default
+          capabilities    Print what this CLI supports, as feature revisions (for scripts and the UI)
           capture         Print a tmux pane's scrollback buffer to stdout
           cleanup         Detect and remove zombie sessions from state
           config          Show project or global configuration
@@ -3400,6 +3405,33 @@ module Workspace
         cells << "[#{liveness_label(e["alive"])}]"
         @output.puts cells.join("  ")
       end
+    end
+
+    def cmd_capabilities(args)
+      json = false
+      help = false
+      parser = OptionParser.new do |opts|
+        opts.banner = "Usage: workspace capabilities [--json]"
+        opts.separator ""
+        opts.separator "Print what this workspace supports: the version, a revision number per feature"
+        opts.separator "(0 means not available), exit codes, key paths, and where gh, tmux and window-tool are."
+        opts.separator "Reads no state and starts no process, so it is cheap to call. Check a feature's"
+        opts.separator "revision rather than comparing version numbers."
+        opts.separator ""
+        opts.on("--json", "Print one JSON document (see docs/README.capabilities.md)") { json = true }
+        opts.on("-h", "--help", "Show this help") { help = true }
+        opts.separator ""
+        opts.separator "Examples:"
+        opts.separator "  workspace capabilities    # a readable summary"
+        opts.separator "  workspace capabilities --json | jq '.features.no_input'    # 1 when --no-input is supported"
+      end
+      parser.parse!(args)
+      return @output.puts(parser.help) if help
+
+      raise UsageError, "workspace capabilities takes no arguments." unless args.empty?
+      raise Error, "capabilities is not available: no capabilities command was wired" unless @capabilities_command
+
+      @capabilities_command.call(json: json)
     end
 
     def cmd_current(args)

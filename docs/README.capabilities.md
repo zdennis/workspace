@@ -1,0 +1,67 @@
+# workspace capabilities
+
+Print what this workspace supports, so a script or the UI can check a feature instead of comparing version numbers.
+
+## Usage
+
+```sh
+workspace capabilities [--json]
+```
+
+It reads constants, config paths and the `PATH`. It starts no process and touches no state, git, tmux or daemon, so it is cheap to call.
+
+## Options
+
+| Option | Description |
+|---|---|
+| `--json` | Print one JSON document (below) instead of a readable summary |
+
+## JSON output
+
+```json
+{"schema_version":1,"ok":true,"version":"0.27.1",
+ "features":{"envelope":1,"error_codes":1,"name_scope":1,"no_input":1,"action_json":1,
+   "sessions":1,"locks_json":1,"git_facts":1,"prune_safe":1,"snapshot":0,"events_follow":0,
+   "actions_manifest":0,"agent_send":0,"agent_spawn":0,"focus_pane":0,"state_done":0,
+   "doctor_json":0,"daemon_control":0},
+ "exit_codes":{"ok":0,"failed":1,"not_submitted":2,"partial":3,"lock_cleared":4,"timeout":75},
+ "paths":{"event_log":"/Users/me/.workspace-events.jsonl","run_dir":"/Users/me/.local/workspace/run"},
+ "dependencies":{"window_tool":{"path":"/opt/homebrew/bin/window-tool"},
+   "gh":{"path":"/opt/homebrew/bin/gh"},"tmux":{"path":null}}}
+```
+
+- `features` maps each name to an integer revision. `0` means this CLI doesn't have it, and a name missing from the map means the same. Check `features.no_input >= 1`; don't compare `version`. A revision goes up when the feature's output changes in a way a reader must handle. An older CLI that predates this command answers `Unknown subcommand` (exit 1), so treat that as "no features".
+- `exit_codes` names the statuses commands use: `not_submitted` (2, `run`), `partial` (3, `--json` action documents), `lock_cleared` (4, a queued lock wait whose lock was cleared) and `timeout` (75, `--max-wait` ran out).
+- `paths` are absolute.
+- `dependencies` gives the first match on `PATH` for each tool, or `null` when it isn't there. Nothing is run, so there is no version.
+
+### Features
+
+| Feature | Meaning (revision 1) |
+|---|---|
+| `envelope` | `--json` failures are the error envelope, and successes carry `schema_version` and `ok` (see [`--json` output](README.json.md)) |
+| `error_codes` | Error envelopes carry a stable `code` |
+| `name_scope` | `--name` on `ask`, `lock`, `dev` and `config` |
+| `no_input` | `--no-input` and `WORKSPACE_NO_INPUT` |
+| `action_json` | `--json` action documents on the lifecycle commands, `dev up|down`, `lock release`, `config set`, `pipeline start|advance|reset`, and `agent run --json` |
+| `sessions` | `sessions --json` |
+| `locks_json` | `lock status --json` and `lock clear --json` |
+| `git_facts` | `projects show` reports git facts per workspace |
+| `prune_safe` | `prune` skips a worktree with unsaved work and reports it, rather than removing it |
+| `snapshot` | Not available yet |
+| `events_follow` | Not available yet |
+| `actions_manifest` | Not available yet |
+| `agent_send` | Not available yet |
+| `agent_spawn` | Not available yet |
+| `focus_pane` | Not available yet |
+| `state_done` | Not available yet |
+| `doctor_json` | Not available yet |
+| `daemon_control` | Not available yet |
+
+## Examples
+
+```sh
+workspace capabilities
+workspace capabilities --json | jq '.features.no_input'
+workspace capabilities --json | jq -r '.dependencies.window_tool.path'
+```

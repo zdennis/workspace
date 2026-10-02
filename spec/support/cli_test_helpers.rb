@@ -522,6 +522,18 @@ module CLITestHelpers
     end
   end
 
+  class FakeCapabilitiesCommand
+    attr_reader :calls
+
+    def initialize
+      @calls = []
+    end
+
+    def call(json: false)
+      @calls << {json: json}
+    end
+  end
+
   class FakeAskCommand
     attr_reader :calls
 

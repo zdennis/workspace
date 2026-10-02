@@ -6,6 +6,10 @@ RSpec.describe Workspace::Config do
       expect(config.workspace_dir).to eq(File.expand_path("../..", __dir__))
     end
 
+    it "returns the run directory without creating it" do
+      expect(config.run_dir).to eq(File.expand_path("~/.local/workspace/run"))
+    end
+
     it "returns the tmuxinator config directory" do
       expect(config.tmuxinator_dir).to eq(File.expand_path("~/.config/tmuxinator"))
     end

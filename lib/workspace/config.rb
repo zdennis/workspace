@@ -80,9 +80,14 @@ module Workspace
     #
     # @return [String] path to the directory holding the agent's runtime socket files
     def socket_dir
-      dir = File.expand_path("~/.local/workspace/run")
+      dir = run_dir
       FileUtils.mkdir_p(dir)
       dir
+    end
+
+    # @return [String] path to the agent's runtime directory, created on first use by {#socket_dir}
+    def run_dir
+      File.expand_path("~/.local/workspace/run")
     end
 
     # @return [String] path to the directory where work-coordinator stores its sockets

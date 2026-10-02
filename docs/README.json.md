@@ -22,6 +22,8 @@ These commands keep their original success shape, which other tools already pars
 
 Wrapping these in the envelope would change what existing callers parse, so it is later work and not part of CLI10. CLI12 and CLI13 in the implementation plan do not name it.
 
+To ask which of these a given CLI supports, run `workspace capabilities --json` (see [capabilities](README.capabilities.md)).
+
 ## Actions
 
 These commands take `--json` and print one action document: `launch`, `stop`, `kill`, `relaunch`, `focus`, `repair`, `cleanup`, `deactivate`, `reactivate`, `dev up`, `dev down`, `lock release`, `config set`, `pipeline start`, `pipeline advance` and `pipeline reset`. (`finish`, `start`, `lock clear` and `projects stop|kill` have their own pages; `projects stop|kill` use the same shape.)

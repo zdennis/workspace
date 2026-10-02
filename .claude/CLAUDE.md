@@ -21,7 +21,7 @@ A macOS CLI (Ruby) for managing tmuxinator-based development workspaces in iTerm
 - `lib/workspace/json_envelope.rb` — Builds the `--json` action and error documents (`ok`, `code`, `details`, `retry`); the CLI rescue funnel emits the errors, `CLI#run_action` the actions
 - `lib/workspace/output_gate.rb` — The stdout every collaborator writes through; `--json` actions divert it to stderr so stdout holds one document
 - `lib/workspace/error_codes.rb` — Registry of the stable error `code` values, mirrored in `docs/README.json.md`
-- `lib/workspace/commands/` — Complex command objects (launch, kill, focus, start, agent, ensure_agent, lock, dev, projects)
+- `lib/workspace/commands/` — Complex command objects (launch, kill, focus, start, agent, ensure_agent, lock, dev, projects, capabilities)
 - `lib/workspace/work_coordinator_client.rb` — JSONL client for work-coordinator sockets
 - `lib/workspace/pipeline_config.rb` — Reads per-project pipeline stage config from `~/.config/workspace/projects/<name>.yml`
 - `lib/workspace/pipeline_state.rb` — In-flight work item tracking, disk-persisted to `~/.local/state/workspace/<name>/pipeline.json`
@@ -64,7 +64,7 @@ A macOS CLI (Ruby) for managing tmuxinator-based development workspaces in iTerm
 
 ## Subcommands
 
-init, doctor, launch, start, add, stop, kill, finish, relaunch, focus, list, status, whereis, agent, pipeline, sessions, session-event, lock, dev, parent, projects, ask
+init, doctor, launch, start, add, stop, kill, finish, relaunch, focus, list, status, whereis, agent, pipeline, sessions, session-event, lock, dev, parent, projects, ask, capabilities
 
 ## Adding a Subcommand
 
