@@ -19,6 +19,16 @@ RSpec.describe Workspace::ContextReader do
         recorded_at: Time.utc(2026, 9, 27), session_id: nil)
     end
 
+    it "returns the same result for a record that also carries cost, duration, and model" do
+      allow(context_store).to receive(:reading_for_pane).with("%1").and_return(
+        {"pct" => 42, "session_id" => "sess-1", "recorded_at" => "2026-09-27T00:00:00Z",
+         "cost_usd" => 1.25, "duration_ms" => 90_000, "model" => "Opus 5.5"}
+      )
+
+      expect(reader.read(pane_id: "%1")).to eq(pct: 42, error: nil, updated_at: "2026-09-27T00:00:00Z",
+        recorded_at: Time.utc(2026, 9, 27), session_id: "sess-1")
+    end
+
     it "returns the stored session id" do
       allow(context_store).to receive(:reading_for_pane).with("%1").and_return(
         {"pct" => 42, "session_id" => "sess-1", "recorded_at" => "2026-09-27T00:00:00Z"}
