@@ -18,6 +18,8 @@ module Workspace
     #    with a nil pct, so the new session is visible to readers even
     #    before Claude reports a real percentage. Only a present-but-invalid
     #    value (a string, a negative number, one over 100) is dropped.
+    #    The same call records `cost.total_cost_usd`, `cost.total_duration_ms`,
+    #    and `model.display_name` (each nil when absent or the wrong type).
     # 2. Print a line: a `statusline.command` in the global config gets the
     #    same stdin and its stdout is printed as-is, time-bounded so a slow
     #    or hung delegate can't freeze Claude's status bar; otherwise (or on
@@ -103,10 +105,18 @@ module Workspace
           pid: pid,
           started: pid && pid_started(pid),
           session_id: payload["session_id"],
-          cwd: payload["cwd"]
+          cwd: payload["cwd"],
+          cost_usd: nested(payload, "cost", "total_cost_usd"),
+          duration_ms: nested(payload, "cost", "total_duration_ms"),
+          model: nested(payload, "model", "display_name")
         )
       rescue => e
         @logger.debug { "statusline: recording reading failed (#{e.class}: #{e.message})" }
+      end
+
+      def nested(payload, key, field)
+        section = payload[key]
+        section[field] if section.is_a?(Hash)
       end
 
       def pid_started(pid)

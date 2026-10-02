@@ -29,11 +29,33 @@ RSpec.describe Workspace::Commands::Statusline do
     payload = {"context_window" => {"used_percentage" => 42}, "session_id" => "s1", "cwd" => "/tmp/proj"}
 
     expect(context_store).to receive(:record).with(
-      pct: 42, pane_id: "%1", pid: nil, started: nil, session_id: "s1", cwd: "/tmp/proj"
+      pct: 42, pane_id: "%1", pid: nil, started: nil, session_id: "s1", cwd: "/tmp/proj",
+      cost_usd: nil, duration_ms: nil, model: nil
     )
 
     build(JSON.generate(payload)).call
     expect(output.string).to eq("built-in line")
+  end
+
+  it "records cost, duration, and model from the payload" do
+    env["TMUX_PANE"] = "%1"
+    payload = {"context_window" => {"used_percentage" => 42}, "model" => {"display_name" => "Opus 5.5"},
+               "cost" => {"total_cost_usd" => 1.25, "total_duration_ms" => 90_000}}
+
+    expect(context_store).to receive(:record).with(
+      hash_including(cost_usd: 1.25, duration_ms: 90_000, model: "Opus 5.5")
+    )
+
+    build(JSON.generate(payload)).call
+  end
+
+  it "still records the percentage when cost or model is not an object" do
+    env["TMUX_PANE"] = "%1"
+    payload = {"context_window" => {"used_percentage" => 42}, "cost" => "free", "model" => "opus"}
+
+    expect(context_store).to receive(:record).with(hash_including(pct: 42, cost_usd: nil, duration_ms: nil, model: nil))
+
+    build(JSON.generate(payload)).call
   end
 
   it "records by CLAUDE_PID when TMUX_PANE isn't set, with its process start time" do
@@ -42,7 +64,8 @@ RSpec.describe Workspace::Commands::Statusline do
 
     expect(lock_holder).to receive(:start_time).with(555).and_return("Thu Sep 26 09:12:03 2026")
     expect(context_store).to receive(:record).with(
-      pct: 10, pane_id: nil, pid: "555", started: "Thu Sep 26 09:12:03 2026", session_id: nil, cwd: nil
+      pct: 10, pane_id: nil, pid: "555", started: "Thu Sep 26 09:12:03 2026", session_id: nil, cwd: nil,
+      cost_usd: nil, duration_ms: nil, model: nil
     )
 
     build(JSON.generate(payload)).call
@@ -54,7 +77,8 @@ RSpec.describe Workspace::Commands::Statusline do
     allow(lock_holder).to receive(:start_time).and_raise(Workspace::Error, "ps failed")
 
     expect(context_store).to receive(:record).with(
-      pct: 10, pane_id: nil, pid: "555", started: nil, session_id: nil, cwd: nil
+      pct: 10, pane_id: nil, pid: "555", started: nil, session_id: nil, cwd: nil,
+      cost_usd: nil, duration_ms: nil, model: nil
     )
 
     build(JSON.generate(payload)).call

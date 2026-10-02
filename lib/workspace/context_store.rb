@@ -41,12 +41,15 @@ module Workspace
     #   reused pid could otherwise report another session's percentage
     # @param session_id [String, nil] Claude Code session id
     # @param cwd [String, nil] the agent's working directory
+    # @param cost_usd [Numeric, nil] session cost so far; recorded as nil unless a non-negative number
+    # @param duration_ms [Numeric, nil] session duration so far; recorded as nil unless a non-negative number
+    # @param model [String, nil] model display name; recorded as nil unless a string
     # @param recorded_at [Time] when the reading was taken; stored to the
     #   microsecond, so a reading can be ordered against a moment in the same
     #   second (restart_agent's /clear)
     # @return [void]
     def record(pct:, pane_id: nil, pid: nil, started: nil, session_id: nil, cwd: nil,
-      recorded_at: Time.now)
+      cost_usd: nil, duration_ms: nil, model: nil, recorded_at: Time.now)
       return if pane_id.nil? && pid.nil?
       valid_pct = pct.nil? || (pct.is_a?(Numeric) && (0..100).cover?(pct))
       return unless valid_pct
@@ -56,7 +59,10 @@ module Workspace
         "recorded_at" => recorded_at.utc.iso8601(6),
         "session_id" => session_id,
         "cwd" => cwd,
-        "started" => started
+        "started" => started,
+        "cost_usd" => non_negative(cost_usd),
+        "duration_ms" => non_negative(duration_ms),
+        "model" => (model if model.is_a?(String))
       }
 
       with_lock do
@@ -92,6 +98,10 @@ module Workspace
     end
 
     private
+
+    def non_negative(value)
+      value if value.is_a?(Numeric) && value >= 0
+    end
 
     def with_lock
       FileUtils.mkdir_p(File.dirname(@path))

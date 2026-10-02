@@ -21,6 +21,37 @@ RSpec.describe Workspace::ContextStore do
     expect(reading["recorded_at"]).to eq("2023-11-14T22:13:20.000000Z")
   end
 
+  it "records cost, duration, and model alongside the percentage" do
+    store.record(pct: 5, pane_id: "%1", cost_usd: 0.5, duration_ms: 1200, model: "Sonnet 5.5")
+
+    reading = store.reading_for_pane("%1")
+    expect(reading).to include("cost_usd" => 0.5, "duration_ms" => 1200, "model" => "Sonnet 5.5")
+  end
+
+  it "records cost, duration, and model by pid too" do
+    store.record(pct: 5, pid: 9, cost_usd: 2, duration_ms: 3, model: "m")
+
+    expect(store.reading_for_pid(9)).to include("cost_usd" => 2, "duration_ms" => 3, "model" => "m")
+  end
+
+  it "keeps a zero cost and duration" do
+    store.record(pct: 5, pane_id: "%1", cost_usd: 0, duration_ms: 0)
+
+    expect(store.reading_for_pane("%1")).to include("cost_usd" => 0, "duration_ms" => 0)
+  end
+
+  it "drops a cost or duration that is negative or not a number, and a model that is not a string" do
+    store.record(pct: 5, pane_id: "%1", cost_usd: -1, duration_ms: "soon", model: 3)
+
+    expect(store.reading_for_pane("%1")).to include("cost_usd" => nil, "duration_ms" => nil, "model" => nil)
+  end
+
+  it "still records the percentage when cost, duration, and model are omitted" do
+    store.record(pct: 5, pane_id: "%1")
+
+    expect(store.reading_for_pane("%1")).to include("pct" => 5, "cost_usd" => nil, "duration_ms" => nil, "model" => nil)
+  end
+
   it "records the time to the microsecond" do
     store.record(pct: 1, pane_id: "%1", recorded_at: Time.at(1_700_000_000, 250_000, :usec))
 
