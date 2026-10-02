@@ -90,7 +90,7 @@ On a hard error (bad input, `--base`/`--yes` needed, git failure), exits 1 with
 the error on stdout instead of the success doc:
 
 ```json
-{"schema_version":1,"error":"..."}
+{"schema_version":1,"ok":false,"error":"..."}
 ```
 
 The worktree can also be created successfully but the `--prompt` fail to reach

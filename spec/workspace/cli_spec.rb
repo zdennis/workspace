@@ -155,18 +155,18 @@ RSpec.describe Workspace::CLI do
 
     it "drops the example when a leading flag has nothing after it" do
       cli, _, error_output = build_test_cli
-      expect { cli.run(["--json"]) }.to raise_error(FakeSystemExit) { |e|
+      expect { cli.run(["--bogus"]) }.to raise_error(FakeSystemExit) { |e|
         expect(e.status).to eq(1)
       }
       expect(error_output.string).to include(
-        "Unknown option before the subcommand: --json. Put options after the subcommand."
+        "Unknown option before the subcommand: --bogus. Put options after the subcommand."
       )
       expect(error_output.string).not_to include("<subcommand>")
     end
 
     it "scans past further leading options to find the real subcommand for the example" do
       cli, _, error_output = build_test_cli
-      expect { cli.run(["--headless", "--json", "launch"]) }.to raise_error(FakeSystemExit) { |e|
+      expect { cli.run(["--headless", "--bogus", "launch"]) }.to raise_error(FakeSystemExit) { |e|
         expect(e.status).to eq(1)
       }
       expect(error_output.string).to include(
@@ -980,7 +980,7 @@ RSpec.describe Workspace::CLI do
         expect { cli.run(["agent-run", "restart", "--json", *args]) }.to raise_error(FakeSystemExit) { |e|
           expect(e.status).to eq(1)
         }
-        expect(JSON.parse(output.string)).to eq("schema_version" => 1, "error" => message)
+        expect(JSON.parse(output.string)).to eq("schema_version" => 1, "ok" => false, "code" => "usage", "error" => message)
       end
     end
 
@@ -1042,7 +1042,7 @@ RSpec.describe Workspace::CLI do
 
       expect { cli.run(["handoff", "check", "myapp", "--json"]) }
         .to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
-      expect(JSON.parse(output.string)).to eq("schema_version" => 1, "error" => "no agent daemon for 'myapp'")
+      expect(JSON.parse(output.string)).to eq("schema_version" => 1, "ok" => false, "code" => "error", "error" => "no agent daemon for 'myapp'")
     end
 
     it "rejects both --handoff-doc and --handoff-prompt together" do
@@ -1086,7 +1086,7 @@ RSpec.describe Workspace::CLI do
 
       expect { cli.run(["handoff", "new", "myapp", "--handoff-doc", "a", "--json"]) }
         .to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
-      expect(JSON.parse(output.string)).to eq("schema_version" => 1, "error" => "no agent daemon for 'myapp'")
+      expect(JSON.parse(output.string)).to eq("schema_version" => 1, "ok" => false, "code" => "error", "error" => "no agent daemon for 'myapp'")
     end
 
     it "requires --handoff-doc or --handoff-prompt for handoff new" do
@@ -1204,6 +1204,104 @@ RSpec.describe Workspace::CLI do
         expect(e.status).to eq(1)
       }
       expect(error_output.string).to include("--prompt-timeout")
+    end
+  end
+
+  describe "#run failure envelope" do
+    def raising(error)
+      Class.new {
+        define_method(:call) { |*_args, **_opts| raise error }
+      }.new
+    end
+
+    def run_failing(argv, error)
+      cli, output, error_output = build_test_cli(parent_command: raising(error))
+      status = nil
+      begin
+        cli.run(argv)
+      rescue FakeSystemExit => e
+        status = e.status
+      end
+      [status, output.string, error_output.string]
+    end
+
+    it "prints Error: on stderr without --json" do
+      status, out, err = run_failing(["parent", "x"], Workspace::Error.new("boom", code: "unknown_workspace"))
+      expect([status, out, err]).to eq([1, "", "Error: boom\n"])
+    end
+
+    it "prints one envelope on stdout and nothing on stderr with --json" do
+      error = Workspace::Error.new("Unknown project 'x'", code: "unknown_workspace", details: {"name" => "x"})
+      status, out, err = run_failing(["parent", "x", "--json"], error)
+      expect(status).to eq(1)
+      expect(err).to eq("")
+      expect(JSON.parse(out)).to eq(
+        "schema_version" => 1, "ok" => false, "error" => "Unknown project 'x'",
+        "code" => "unknown_workspace", "details" => {"name" => "x"}
+      )
+    end
+
+    it "includes retry when the error has one" do
+      error = Workspace::UnsavedWorkError.new("unsaved", unsaved: {changed_files: 2, unpushed_commits: 0, branch: "b"})
+      _, out, _ = run_failing(["parent", "--json"], error)
+      expect(JSON.parse(out)).to include("code" => "unsaved_work", "retry" => {"flags" => ["--force"], "destructive" => true})
+    end
+
+    it "finds --json in any position before --" do
+      _, out, _ = run_failing(["parent", "--json", "x"], Workspace::Error.new("boom"))
+      expect(JSON.parse(out)).to include("ok" => false, "code" => "error")
+    end
+
+    it "ignores --json after a bare --" do
+      _, out, err = run_failing(["parent", "--", "--json"], Workspace::Error.new("boom"))
+      expect([out, err]).to eq(["", "Error: boom\n"])
+    end
+
+    it "reports a usage error with the first line only and the usage code" do
+      _, out, err = run_failing(["parent", "--json"], Workspace::UsageError.new("Usage: workspace parent\n\nmore help"))
+      expect(err).to eq("")
+      expect(JSON.parse(out)).to include("ok" => false, "error" => "Usage: workspace parent", "code" => "usage")
+    end
+
+    it "prints the full usage text on stderr without --json" do
+      _, _, err = run_failing(["parent"], Workspace::UsageError.new("Usage: workspace parent\n\nmore help"))
+      expect(err).to eq("Usage: workspace parent\n\nmore help\n")
+    end
+
+    it "keeps the exit code of a not-submitted error and gives it its code" do
+      error = Workspace::Commands::Run::NotSubmittedError.new("typed but not sent")
+      status, out, _ = run_failing(["parent", "--json"], error)
+      expect(status).to eq(Workspace::Commands::Run::NotSubmittedError::EXIT_CODE)
+      expect(JSON.parse(out)).to include("code" => "not_submitted", "error" => "typed but not sent")
+    end
+
+    it "reports an option parse error as a usage envelope" do
+      cli, output, error_output = build_test_cli
+      expect { cli.run(["parent", "--bogus", "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+      expect(error_output.string).to eq("")
+      expect(JSON.parse(output.string)).to include("ok" => false, "error" => "invalid option: --bogus", "code" => "usage")
+    end
+
+    it "reports an unknown subcommand as a usage envelope with --json" do
+      cli, output, error_output = build_test_cli
+      expect { cli.run(["bogus", "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+      expect(error_output.string).to eq("")
+      expect(JSON.parse(output.string)).to include("ok" => false, "error" => "Unknown subcommand: bogus", "code" => "usage")
+    end
+
+    it "makes sessions --json outside a workspace an envelope instead of usage text" do
+      cli, output, error_output = build_test_cli
+      expect { cli.run(["sessions", "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+      expect(error_output.string).to eq("")
+      expect(JSON.parse(output.string)).to include("schema_version" => 1, "ok" => false, "code" => "usage")
+    end
+
+    it "reports a leading flag as a usage envelope with --json" do
+      cli, output, error_output = build_test_cli
+      expect { cli.run(["--headless", "launch", "--json"]) }.to raise_error(FakeSystemExit)
+      expect(error_output.string).to eq("")
+      expect(JSON.parse(output.string)).to include("ok" => false, "code" => "usage")
+      expect(JSON.parse(output.string)["error"]).to start_with("Unknown option before the subcommand: --headless")
     end
   end
 
@@ -2673,12 +2771,13 @@ RSpec.describe Workspace::CLI do
 
     it "raises a usage error when --path and --json are combined" do
       parent_command = CLITestHelpers::FakeParentCommand.new
-      cli, _, error_output = build_test_cli(parent_command: parent_command)
+      cli, output, error_output = build_test_cli(parent_command: parent_command)
 
       expect { cli.run(["parent", "--path", "--json"]) }.to raise_error(FakeSystemExit) { |e|
         expect(e.status).to eq(1)
       }
-      expect(error_output.string).to include("--path and --json cannot be used together")
+      expect(JSON.parse(output.string)).to include("ok" => false, "code" => "usage", "error" => "--path and --json cannot be used together.")
+      expect(error_output.string).to eq("")
       expect(parent_command.calls).to be_empty
     end
   end
@@ -2762,7 +2861,7 @@ RSpec.describe Workspace::CLI do
     it "reports a bad --timeout as a JSON error with --json" do
       expect { cli.run(["projects", "show", "--json", "--timeout", "0"]) }.to raise_error(FakeSystemExit)
 
-      expect(JSON.parse(output.string)).to eq("schema_version" => 1, "error" => "--timeout must be a finite number greater than 0.")
+      expect(JSON.parse(output.string)).to eq("schema_version" => 1, "ok" => false, "code" => "usage", "error" => "--timeout must be a finite number greater than 0.")
     end
 
     it "lists --no-agents, --no-git and --timeout in show's help" do
@@ -2830,7 +2929,7 @@ RSpec.describe Workspace::CLI do
     it "rejects --path with --json" do
       expect { cli.run(["projects", "members", "--path", "--json"]) }.to raise_error(FakeSystemExit)
 
-      expect(JSON.parse(output.string)).to eq("schema_version" => 1, "error" => "--path and --json cannot be used together.")
+      expect(JSON.parse(output.string)).to eq("schema_version" => 1, "ok" => false, "code" => "usage", "error" => "--path and --json cannot be used together.")
       expect(projects_command.calls).to be_empty
     end
 
@@ -2964,7 +3063,7 @@ RSpec.describe Workspace::CLI do
       it "prints the JSON error contract for a missing NAME under --json" do
         expect { cli.run(["projects", "kill", "--yes", "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
 
-        expect(JSON.parse(output.string)).to eq("schema_version" => 1,
+        expect(JSON.parse(output.string)).to eq("schema_version" => 1, "ok" => false, "code" => "usage",
           "error" => "projects kill needs a project NAME or PATH. Run 'workspace projects kill --help'.")
         expect(actions_command.calls).to be_empty
       end
@@ -3000,7 +3099,7 @@ RSpec.describe Workspace::CLI do
       it "makes --json without --yes a JSON usage error" do
         expect { cli.run(["projects", "kill", "app", "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
 
-        expect(JSON.parse(output.string)).to eq("schema_version" => 1, "error" => "projects kill --json never prompts: pass --yes to remove, or --dry-run to preview.")
+        expect(JSON.parse(output.string)).to eq("schema_version" => 1, "ok" => false, "code" => "usage", "error" => "projects kill --json never prompts: pass --yes to remove, or --dry-run to preview.")
         expect(actions_command.calls).to be_empty
       end
 
@@ -3023,7 +3122,7 @@ RSpec.describe Workspace::CLI do
         it "prints the JSON error contract under --json" do
           expect { cli.run(["projects", "kill", "app", "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
 
-          expect(JSON.parse(output.string)).to eq("schema_version" => 1,
+          expect(JSON.parse(output.string)).to eq("schema_version" => 1, "ok" => false, "code" => "usage",
             "error" => "projects kill --json never prompts: pass --yes to remove, or --dry-run to preview.")
           expect(error_output.string).to be_empty
         end
@@ -3276,14 +3375,14 @@ RSpec.describe Workspace::CLI do
       it "emits a single-line JSON error on stdout for an unknown subcommand when --json is given" do
         expect { cli.run(["projects", "nope", "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
 
-        expect(JSON.parse(output.string)).to eq("schema_version" => 1, "error" => "Unknown projects subcommand: nope. Run 'workspace projects --help'.")
+        expect(JSON.parse(output.string)).to eq("schema_version" => 1, "ok" => false, "code" => "usage", "error" => "Unknown projects subcommand: nope. Run 'workspace projects --help'.")
         expect(error_output.string).to eq("")
       end
 
       it "emits the JSON error whatever the flag order, for an unknown option" do
         expect { cli.run(["projects", "--bogus", "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
 
-        expect(JSON.parse(output.string)).to eq("schema_version" => 1, "error" => "invalid option: --bogus")
+        expect(JSON.parse(output.string)).to eq("schema_version" => 1, "ok" => false, "code" => "usage", "error" => "invalid option: --bogus")
       end
 
       it "emits the JSON error for extra arguments" do
@@ -3660,7 +3759,7 @@ RSpec.describe Workspace::CLI do
         cli.run(["pipeline", "status", "myapp", "--json"])
 
         expect(JSON.parse(output.string)).to eq({
-          "schema_version" => 1,
+          "schema_version" => 1, "ok" => true,
           "entries" => [
             {"work_item_ref" => "WC-42", "dispatch_id" => "d-7a1",
              "pane_index" => 1, "phase" => "implementer"}
@@ -3671,7 +3770,7 @@ RSpec.describe Workspace::CLI do
       it "prints an empty entries array when nothing is in flight" do
         cli, output, = build_test_cli(config: config)
         cli.run(["pipeline", "status", "myapp", "--json"])
-        expect(JSON.parse(output.string)).to eq({"schema_version" => 1, "entries" => []})
+        expect(JSON.parse(output.string)).to eq({"schema_version" => 1, "ok" => true, "entries" => []})
       end
 
       it "emits a JSON usage error when --json is passed without a project" do
@@ -3920,7 +4019,7 @@ RSpec.describe Workspace::CLI do
 
       expect { cli.run(["sessions", "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
 
-      expect(JSON.parse(output.string)).to eq("schema_version" => 1, "error" => "No agent daemon for 'proj'.\nStart one with:  workspace agentd proj")
+      expect(JSON.parse(output.string)).to eq("schema_version" => 1, "ok" => false, "code" => "no_daemon", "error" => "No agent daemon for 'proj'.\nStart one with:  workspace agentd proj")
     end
 
     it "forwards --worktrees to the sessions command" do

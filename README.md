@@ -116,7 +116,7 @@ workspace <subcommand> [options]
 | wait-until-content | [README](docs/README.wait-until-content.md) | Block until a pane shows content, then exec a command |
 | whereis | [README](docs/README.whereis.md) | Print the workspace installation directory |
 
-Run `workspace <subcommand> --help` for subcommand-specific help.
+Run `workspace <subcommand> --help` for subcommand-specific help. Scripts and agents: every `--json` result is one object with `schema_version` and `ok`, and failures carry a stable `code`; see [`--json` output](docs/README.json.md).
 
 New to locks and the dev environment? Start with the [walkthrough](docs/GUIDE.locks-and-dev.md). For autonomous workflows, see [autonomous development](docs/autonomous-development.md) (how to run autonomous feature development with workspace, and its current gaps).
 

@@ -14,7 +14,12 @@ module Workspace
       # Raised internally by {#fetch_silently} when a member workspace has no
       # agent daemon running; swallowed there so {#fetch_members} can omit
       # that member silently while any other {Workspace::Error} propagates.
-      class NoAgentDaemonError < Workspace::Error; end
+      class NoAgentDaemonError < Workspace::Error
+        # @return [String] `"no_daemon"`
+        def code
+          @code || "no_daemon"
+        end
+      end
 
       # The lock this column shows; see {Workspace::LockEnforcer::LOCK_NAME}.
       LOCK_NAME = "edit"
@@ -67,7 +72,7 @@ module Workspace
       #   error raised, naming the root.
       # @return [Hash] {exit_code:} — 0 on success, 1 if `--json` was given
       #   and no agent daemon answered (the error is then written to stdout
-      #   as `{"schema_version":1,"error":...}` instead of being raised,
+      #   as `{"schema_version":1,"ok":false,"error":...}` instead of being raised,
       #   matching `lock status --json` and `dev status --json`); this
       #   applies on the non-watch path and also stops watch mode the same
       #   way when the daemon disappears mid-watch. Watch mode otherwise
@@ -87,7 +92,7 @@ module Workspace
         @output.puts ""
       rescue Workspace::Error => e
         raise unless json
-        @output.puts JSON.generate({"schema_version" => JSON_SCHEMA_VERSION, "error" => e.message})
+        @output.puts JSON.generate(Workspace::JsonEnvelope.from_exception(JSON_SCHEMA_VERSION, e))
         {exit_code: 1}
       end
 
@@ -98,7 +103,7 @@ module Workspace
         {exit_code: 0}
       rescue Workspace::Error => e
         raise unless json
-        @output.puts JSON.generate({"schema_version" => JSON_SCHEMA_VERSION, "error" => e.message})
+        @output.puts JSON.generate(Workspace::JsonEnvelope.from_exception(JSON_SCHEMA_VERSION, e))
         {exit_code: 1}
       end
 
@@ -138,7 +143,7 @@ module Workspace
           [member, snapshot] if snapshot
         }
         return pairs if pairs.any?
-        raise Workspace::Error, "No agent daemon for '#{root}'.\nStart one with:  workspace agentd #{root}"
+        raise NoAgentDaemonError, "No agent daemon for '#{root}'.\nStart one with:  workspace agentd #{root}"
       end
 
       def fetch_silently(name)
@@ -154,7 +159,7 @@ module Workspace
       def render_members(pairs, json)
         if json
           workspaces = pairs.map { |member, snapshot| prepared_payload(member, snapshot) }
-          return @output.puts JSON.pretty_generate({"schema_version" => JSON_SCHEMA_VERSION, "workspaces" => workspaces})
+          return @output.puts JSON.pretty_generate({"schema_version" => JSON_SCHEMA_VERSION, "ok" => true, "workspaces" => workspaces})
         end
 
         pairs.each_with_index do |(member, snapshot), index|
@@ -197,7 +202,7 @@ module Workspace
       end
 
       def json_payload(snapshot)
-        payload = {"schema_version" => JSON_SCHEMA_VERSION}.merge(snapshot)
+        payload = {"schema_version" => JSON_SCHEMA_VERSION, "ok" => true}.merge(snapshot)
         payload["schema_version"] = JSON_SCHEMA_VERSION
         payload
       end

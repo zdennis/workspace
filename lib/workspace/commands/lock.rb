@@ -222,7 +222,7 @@ module Workspace
 
         if names.empty?
           if json
-            @output.puts JSON.generate({"schema_version" => JSON_SCHEMA_VERSION, "results" => []})
+            @output.puts JSON.generate({"schema_version" => JSON_SCHEMA_VERSION, "ok" => true, "results" => []})
           else
             @output.puts "No locks to clear."
           end
@@ -236,9 +236,9 @@ module Workspace
 
         if json
           payload = if all
-            {"schema_version" => JSON_SCHEMA_VERSION, "results" => results.map { |r| r[:json] }}
+            {"schema_version" => JSON_SCHEMA_VERSION, "ok" => true, "results" => results.map { |r| r[:json] }}
           else
-            {"schema_version" => JSON_SCHEMA_VERSION}.merge(results.first[:json])
+            {"schema_version" => JSON_SCHEMA_VERSION, "ok" => true}.merge(results.first[:json])
           end
           @output.puts JSON.generate(payload)
         end
@@ -246,7 +246,7 @@ module Workspace
         {exit_code: kept.empty? ? 0 : 1}
       rescue Workspace::Error => e
         raise unless json
-        @output.puts JSON.generate({"schema_version" => JSON_SCHEMA_VERSION, "error" => e.message})
+        @output.puts JSON.generate(Workspace::JsonEnvelope.from_exception(JSON_SCHEMA_VERSION, e))
         {exit_code: 1}
       end
 
@@ -257,10 +257,10 @@ module Workspace
       def status_json(name, working_dir)
         store = store_for(working_dir)
         entries = store.status(name)
-        @output.puts JSON.generate({"schema_version" => JSON_SCHEMA_VERSION, "locks" => entries})
+        @output.puts JSON.generate({"schema_version" => JSON_SCHEMA_VERSION, "ok" => true, "locks" => entries})
         {exit_code: 0}
       rescue Workspace::Error => e
-        @output.puts JSON.generate({"schema_version" => JSON_SCHEMA_VERSION, "error" => e.message})
+        @output.puts JSON.generate(Workspace::JsonEnvelope.from_exception(JSON_SCHEMA_VERSION, e))
         {exit_code: 1}
       end
 

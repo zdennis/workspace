@@ -349,7 +349,7 @@ RSpec.describe Workspace::Commands::ProjectActions do
         result = command.stop(name: "app", json: true)
 
         expect(result).to eq({exit_code: 1})
-        expect(JSON.parse(output.string)).to eq("schema_version" => 1, "error" => "hook broke")
+        expect(JSON.parse(output.string)).to eq("schema_version" => 1, "ok" => false, "code" => "error", "error" => "hook broke")
       end
     end
 
@@ -463,7 +463,7 @@ RSpec.describe Workspace::Commands::ProjectActions do
         allow(catalog).to receive(:find).and_raise(Workspace::UsageError, "Unexpected argument: b.")
 
         expect(command.stop(name: "a", json: true)).to eq({exit_code: 1})
-        expect(JSON.parse(output.string)).to eq("schema_version" => 1, "error" => "Unexpected argument: b.")
+        expect(JSON.parse(output.string)).to eq("schema_version" => 1, "ok" => false, "code" => "usage", "error" => "Unexpected argument: b.")
       end
 
       it "reports an unexpected failure from Stop as a JSON error under --json" do
@@ -473,7 +473,7 @@ RSpec.describe Workspace::Commands::ProjectActions do
         allow(stop_command).to receive(:call).and_raise(stop_error_value)
 
         expect(command.stop(name: "app", json: true)).to eq({exit_code: 1})
-        expect(JSON.parse(output.string)).to eq("schema_version" => 1, "error" => "boom")
+        expect(JSON.parse(output.string)).to eq("schema_version" => 1, "ok" => false, "code" => "error", "error" => "boom")
       end
     end
   end
@@ -658,7 +658,7 @@ RSpec.describe Workspace::Commands::ProjectActions do
         result = command.kill(name: "app", json: true)
 
         expect(result).to eq({exit_code: 1})
-        expect(JSON.parse(output.string)).to eq("schema_version" => 1, "error" => "projects kill --json never prompts: pass --yes to remove, or --dry-run to preview.")
+        expect(JSON.parse(output.string)).to eq("schema_version" => 1, "ok" => false, "code" => "usage", "error" => "projects kill --json never prompts: pass --yes to remove, or --dry-run to preview.")
         expect(kill_calls).to be_empty
       end
     end

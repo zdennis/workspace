@@ -229,7 +229,7 @@ module Workspace
 
       def undetermined(json, reason)
         if json
-          @output.puts JSON.generate({"schema_version" => JSON_SCHEMA_VERSION, "status" => "undetermined",
+          @output.puts JSON.generate({"schema_version" => JSON_SCHEMA_VERSION, "ok" => true, "status" => "undetermined",
                                         "reason" => reason, "fix" => ContextReasons::FIX_HINT})
         else
           @error_output.puts "workspace: could not determine context usage"
@@ -241,7 +241,7 @@ module Workspace
 
       def ok(json, pct:, threshold:, pane:)
         if json
-          @output.puts JSON.generate({"schema_version" => JSON_SCHEMA_VERSION, "status" => "ok", "context_pct" => pct,
+          @output.puts JSON.generate({"schema_version" => JSON_SCHEMA_VERSION, "ok" => true, "status" => "ok", "context_pct" => pct,
                                         "threshold" => threshold, "pane" => pane["index"]})
         else
           @output.puts "Context usage: #{pct}% (threshold #{threshold}%) -- under threshold, nothing to do."
@@ -257,7 +257,7 @@ module Workspace
       def over_threshold(json, pct:, threshold:, pane:, delivery:)
         status = delivery.landed? ? "handoff_sent" : "handoff_send_failed"
         if json
-          @output.puts JSON.generate({"schema_version" => JSON_SCHEMA_VERSION, "status" => status,
+          @output.puts JSON.generate({"schema_version" => JSON_SCHEMA_VERSION, "ok" => true, "status" => status,
                                         "context_pct" => pct, "threshold" => threshold, "pane" => pane["index"],
                                         "delivery" => delivery.status.to_s, "landed" => delivery.landed?})
         elsif delivery.landed?

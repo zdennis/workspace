@@ -250,29 +250,51 @@ module Workspace
         if subcommand&.start_with?("-")
           known = args.find { |a| SUBCOMMANDS.include?(a) }
           hint = known ? ", e.g. \"workspace #{known} #{subcommand}\"." : "."
-          @error_output.puts "Unknown option before the subcommand: #{subcommand}. Put options after the subcommand#{hint}"
+          message = "Unknown option before the subcommand: #{subcommand}. Put options after the subcommand#{hint}"
+          raise UsageError, message if json_flag?(argv)
+          @error_output.puts message
         else
+          raise UsageError, "Unknown subcommand: #{subcommand}" if json_flag?(argv)
           @error_output.puts "Unknown subcommand: #{subcommand}"
           @error_output.puts
           main_help
         end
         @exit_handler.exit(1)
       end
-    rescue UsageError => e
-      @error_output.puts e.message
-      @exit_handler.exit(1)
-    rescue OptionParser::ParseError => e
-      @error_output.puts e.message
-      @exit_handler.exit(1)
+    rescue UsageError, OptionParser::ParseError => e
+      report_failure(e, argv, e.message, json_message: e.message.lines.first.to_s.strip)
     rescue Workspace::Commands::Run::NotSubmittedError => e
-      @error_output.puts "Error: #{e.message}"
-      @exit_handler.exit(Workspace::Commands::Run::NotSubmittedError::EXIT_CODE)
+      report_failure(e, argv, "Error: #{e.message}", exit_code: Workspace::Commands::Run::NotSubmittedError::EXIT_CODE)
     rescue Error => e
-      @error_output.puts "Error: #{e.message}"
-      @exit_handler.exit(1)
+      report_failure(e, argv, "Error: #{e.message}")
     end
 
     private
+
+    # The rescue funnel's output: with `--json` among the arguments, the
+    # failure goes to stdout as one {JsonEnvelope} error document and stderr
+    # stays empty; otherwise `human` goes to stderr. Exits either way.
+    #
+    # @param error [Exception] the failure
+    # @param argv [Array<String>] the original arguments, to look for `--json`
+    # @param human [String] the stderr text without `--json`
+    # @param json_message [String, nil] the envelope's `error`, when not the exception's message
+    # @param exit_code [Integer]
+    def report_failure(error, argv, human, json_message: nil, exit_code: 1)
+      if json_flag?(argv)
+        @output.puts JSON.generate(JsonEnvelope.from_exception(JsonEnvelope::SCHEMA_VERSION, error, message: json_message))
+      else
+        @error_output.puts human
+      end
+      @exit_handler.exit(exit_code)
+    end
+
+    # Whether `--json` appears as its own argument before a bare `--`.
+    #
+    # @param argv [Array<String>]
+    def json_flag?(argv)
+      argv.take_while { |arg| arg != "--" }.include?("--json")
+    end
 
     def resolve_claude_targets(args, all, parser)
       if all
@@ -505,7 +527,7 @@ module Workspace
       # so hooks for start should use post_launch (which fires from Launch)
     rescue OptionParser::ParseError, UsageError => e
       raise unless json_requested?(json, args)
-      emit_json_usage_error(Workspace::Commands::Start::JSON_SCHEMA_VERSION, e.message.lines.first.strip)
+      emit_json_error(Workspace::Commands::Start::JSON_SCHEMA_VERSION, e, message: e.message.lines.first.strip)
     end
 
     def cmd_stop(args)
@@ -605,7 +627,7 @@ module Workspace
       end
     rescue OptionParser::ParseError, UsageError => e
       raise unless json_requested?(json, args)
-      emit_json_usage_error(Workspace::Commands::Finish::JSON_SCHEMA_VERSION, e.message.lines.first.strip)
+      emit_json_error(Workspace::Commands::Finish::JSON_SCHEMA_VERSION, e, message: e.message.lines.first.strip)
     end
 
     def cmd_focus(args)
@@ -1280,7 +1302,7 @@ module Workspace
       @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
     rescue OptionParser::ParseError => e
       raise unless json_requested?(json, args)
-      emit_json_usage_error(Commands::Ask::JSON_SCHEMA_VERSION, e.message)
+      emit_json_error(Commands::Ask::JSON_SCHEMA_VERSION, e)
     end
 
     def cmd_ask_list(args)
@@ -1296,7 +1318,7 @@ module Workspace
       @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
     rescue OptionParser::ParseError => e
       raise unless json_requested?(json, args)
-      emit_json_usage_error(Commands::Ask::JSON_SCHEMA_VERSION, e.message)
+      emit_json_error(Commands::Ask::JSON_SCHEMA_VERSION, e)
     end
 
     def cmd_ask_answer(args)
@@ -1318,7 +1340,7 @@ module Workspace
       @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
     rescue OptionParser::ParseError => e
       raise unless json_requested?(json, args)
-      emit_json_usage_error(Commands::Ask::JSON_SCHEMA_VERSION, e.message)
+      emit_json_error(Commands::Ask::JSON_SCHEMA_VERSION, e)
     end
 
     def cmd_lock(args)
@@ -1461,6 +1483,17 @@ module Workspace
       raise UsageError, "#{flag}: #{e.message}"
     end
 
+    # Emits a caught failure as the `--json` error envelope (code, details and
+    # retry from the exception) to stdout and exits 1.
+    #
+    # @param schema_version [Integer] the command's JSON schema version
+    # @param error [Exception] the failure
+    # @param message [String, nil] replaces the exception's message (e.g. its first line)
+    def emit_json_error(schema_version, error, message: nil)
+      @output.puts JSON.generate(JsonEnvelope.from_exception(schema_version, error, message: message))
+      @exit_handler.exit(1)
+    end
+
     # Emits the documented `--json` error contract (see docs/README.lock.md,
     # docs/README.dev.md) to stdout and exits, for usage/validation errors
     # raised before a command's own `status_json` branch is reached (e.g. bad
@@ -1469,7 +1502,7 @@ module Workspace
     # @param schema_version [Integer] the command's JSON schema version
     # @param message [String] error message (single line; not the full help text)
     def emit_json_usage_error(schema_version, message)
-      @output.puts JSON.generate({"schema_version" => schema_version, "error" => message})
+      @output.puts JSON.generate(JsonEnvelope.error(schema_version, message, code: "usage"))
       @exit_handler.exit(1)
     end
 
@@ -1516,7 +1549,7 @@ module Workspace
       @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
     rescue OptionParser::ParseError, UsageError => e
       raise unless json_requested?(json, args)
-      emit_json_usage_error(Commands::Lock::JSON_SCHEMA_VERSION, e.message)
+      emit_json_error(Commands::Lock::JSON_SCHEMA_VERSION, e)
     end
 
     def cmd_lock_clear(args)
@@ -1537,7 +1570,7 @@ module Workspace
       @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
     rescue OptionParser::ParseError, UsageError => e
       raise unless json_requested?(json, args)
-      emit_json_usage_error(Commands::Lock::JSON_SCHEMA_VERSION, e.message.lines.first.strip)
+      emit_json_error(Commands::Lock::JSON_SCHEMA_VERSION, e, message: e.message.lines.first.strip)
     end
 
     def cmd_dev(args)
@@ -1653,7 +1686,7 @@ module Workspace
       @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
     rescue OptionParser::ParseError, UsageError => e
       raise unless json_requested?(json, args)
-      emit_json_usage_error(Commands::Dev::JSON_SCHEMA_VERSION, e.message)
+      emit_json_error(Commands::Dev::JSON_SCHEMA_VERSION, e)
     end
 
     # Hidden: the wrapper `dev up` runs in the devenv window.
@@ -1762,7 +1795,7 @@ module Workspace
           --wait              Wait for the restart to finish and report how it went
           --timeout DURATION  Longest wait for context usage to drop after /clear
                               (e.g. "45s", or seconds); default 30s, at most 600s
-          --json              Print the result as JSON; errors as {"schema_version":1,"error":...}
+          --json              Print the result as JSON; errors as {"schema_version":1,"ok":false,"error":...}
 
         Examples:
           workspace agent-run command --body "Add OAuth support"
@@ -1912,7 +1945,7 @@ module Workspace
           "#{Commands::Agent::MAX_RESTART_TIMEOUT}s") do |v|
           timeout = parse_duration_option("--timeout", v, positive: true)
         end
-        opts.on("--json", "Print the result as JSON; errors as {\"schema_version\":1,\"error\":...}") { json = true }
+        opts.on("--json", "Print the result as JSON; errors as {\"schema_version\":1,\"ok\":false,\"error\":...}") { json = true }
         opts.separator ""
         opts.separator "Examples:"
         opts.separator "  workspace agent-run restart --name myapp --pane 0.1 --prompt \"Read HANDOFF.md and follow it.\" --wait"
@@ -1935,7 +1968,7 @@ module Workspace
       @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
     rescue OptionParser::ParseError, UsageError => e
       raise unless json_requested?(json, args)
-      emit_json_usage_error(Commands::RestartAgent::JSON_SCHEMA_VERSION, e.message.lines.first.strip)
+      emit_json_error(Commands::RestartAgent::JSON_SCHEMA_VERSION, e, message: e.message.lines.first.strip)
     end
 
     def handoff_help
@@ -1994,7 +2027,7 @@ module Workspace
       end
     rescue UsageError => e
       raise unless json_requested?(false, original_args)
-      emit_json_usage_error(Commands::Handoff::JSON_SCHEMA_VERSION, e.message.lines.first.strip)
+      emit_json_error(Commands::Handoff::JSON_SCHEMA_VERSION, e, message: e.message.lines.first.strip)
     end
 
     def cmd_handoff_check(args)
@@ -2035,7 +2068,7 @@ module Workspace
       @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
     rescue OptionParser::ParseError, UsageError, Error => e
       raise unless json_requested?(json, args)
-      emit_json_usage_error(Commands::Handoff::JSON_SCHEMA_VERSION, e.message.lines.first.strip)
+      emit_json_error(Commands::Handoff::JSON_SCHEMA_VERSION, e, message: e.message.lines.first.strip)
     end
 
     def cmd_handoff_new(args)
@@ -2067,7 +2100,7 @@ module Workspace
       @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
     rescue OptionParser::ParseError, Error => e
       raise unless json_requested?(json, args)
-      emit_json_usage_error(Commands::Handoff::JSON_SCHEMA_VERSION, e.message.lines.first.strip)
+      emit_json_error(Commands::Handoff::JSON_SCHEMA_VERSION, e, message: e.message.lines.first.strip)
     end
 
     def cmd_agent_run_examples
@@ -2271,7 +2304,7 @@ module Workspace
       raise UsageError, parser.help if project.nil?
 
       entries = read_pipeline_state(project)
-      return @output.puts JSON.generate({"schema_version" => PIPELINE_JSON_SCHEMA_VERSION, "entries" => entries.values}) if as_json
+      return @output.puts JSON.generate({"schema_version" => PIPELINE_JSON_SCHEMA_VERSION, "ok" => true, "entries" => entries.values}) if as_json
 
       if entries.empty?
         @output.puts "No pipeline work in flight for #{project}"
@@ -2285,7 +2318,7 @@ module Workspace
       end
     rescue OptionParser::ParseError, UsageError => e
       raise unless json_requested?(as_json, args)
-      emit_json_usage_error(PIPELINE_JSON_SCHEMA_VERSION, e.message.lines.first.strip)
+      emit_json_error(PIPELINE_JSON_SCHEMA_VERSION, e, message: e.message.lines.first.strip)
     end
 
     # Renders a stage's deadline in local time plus how far off it is, so an
@@ -3375,7 +3408,7 @@ module Workspace
         raise UsageError, "--limit must be greater than 0." if limit && limit <= 0
         raise UsageError, "Unexpected argument: #{args.first}" unless args.empty?
       rescue OptionParser::ParseError, UsageError => e
-        return emit_json_usage_error(EVENT_LOG_JSON_SCHEMA_VERSION, e.message) if json_requested?(json, raw_args)
+        return emit_json_error(EVENT_LOG_JSON_SCHEMA_VERSION, e) if json_requested?(json, raw_args)
         raise UsageError, (e.is_a?(UsageError) ? e.message : "#{e.message}\n\n#{parser.help}")
       end
 
@@ -3386,7 +3419,7 @@ module Workspace
       events = events.last(limit) if limit
 
       if json
-        @output.puts JSON.generate({"schema_version" => EVENT_LOG_JSON_SCHEMA_VERSION, "events" => events})
+        @output.puts JSON.generate({"schema_version" => EVENT_LOG_JSON_SCHEMA_VERSION, "ok" => true, "events" => events})
       else
         events.each { |event| @output.puts format_event(event) }
       end
@@ -3510,7 +3543,7 @@ module Workspace
       end
     rescue OptionParser::ParseError, UsageError => e
       raise unless json_requested?(false, args)
-      emit_json_usage_error(Commands::Projects::JSON_SCHEMA_VERSION, e.message.lines.first.strip)
+      emit_json_error(Commands::Projects::JSON_SCHEMA_VERSION, e, message: e.message.lines.first.strip)
     end
 
     def projects_help

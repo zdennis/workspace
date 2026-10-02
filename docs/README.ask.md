@@ -32,7 +32,7 @@ workspace ask answer <id> "<answer>" [--json]
 
 **Pane** — when run inside tmux, the question is tagged with `$TMUX_PANE`, which is how [`sessions`](README.sessions.md) attributes it to a pane. Outside tmux, the question is still recorded (with no pane), and still shown by `ask list`.
 
-**`answer`** (alias `resolve`) marks a question answered and records the answer text. Answering an unknown id fails with "No question '\<id\>'"; answering an already-answered id fails with "Question '\<id\>' was already answered" (either way, exit 1; with `--json`, `{"schema_version":1,"error":"..."}`).
+**`answer`** (alias `resolve`) marks a question answered and records the answer text. Answering an unknown id fails with "No question '\<id\>'"; answering an already-answered id fails with "Question '\<id\>' was already answered" (either way, exit 1; with `--json`, `{"schema_version":1,"ok":false,"error":"..."}`).
 
 **Alerts** — when the project has `alerts.notify` configured (see [`workspace config`](README.config.md)), it runs with the same alert-type variable [`sessions`'s alerts](README.sessions.md#alerts) use:
 
@@ -49,7 +49,7 @@ workspace ask answer <id> "<answer>" [--json]
 
 `WORKSPACE_ALERT_KIND` (the agent kind, e.g. `claude`, used by `sessions`'s waiting/idle alerts) is deliberately not set here — a question has no agent kind of its own, and reusing that variable for something else would make a notify script that switches on it see two unrelated things through the same value. With no `alerts.notify` configured, the question is recorded and nothing else happens; that is not an error.
 
-**`--json` schema** — `{"schema_version":1,"question":{...}}` for `ask`/`ask answer`, `{"schema_version":1,"workspace":"...","questions":[...]}` for `ask list`. Each question record: `id`, `question`, `default`, `context`, `pane`, `worktree`, `asked_at` (ISO 8601 UTC), `status` (`"open"` or `"answered"`), `answer`, `answered_at`. A failure writes `{"schema_version":1,"error":"..."}` to stdout and exits 1, whether the failure is a bad invocation or the workspace couldn't be detected — matching [`workspace lock`](README.lock.md)'s `--json` contract.
+**`--json` schema** — `{"schema_version":1,"question":{...}}` for `ask`/`ask answer`, `{"schema_version":1,"workspace":"...","questions":[...]}` for `ask list`. Each question record: `id`, `question`, `default`, `context`, `pane`, `worktree`, `asked_at` (ISO 8601 UTC), `status` (`"open"` or `"answered"`), `answer`, `answered_at`. A failure writes `{"schema_version":1,"ok":false,"error":"..."}` to stdout and exits 1, whether the failure is a bad invocation or the workspace couldn't be detected — matching [`workspace lock`](README.lock.md)'s `--json` contract.
 
 ## Examples
 

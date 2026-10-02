@@ -72,7 +72,7 @@ module Workspace
         {exit_code: 0}
       rescue => e
         raise unless json
-        @output.puts JSON.generate({"schema_version" => JSON_SCHEMA_VERSION, "error" => e.message.lines.first.to_s.strip})
+        @output.puts JSON.generate(Workspace::JsonEnvelope.from_exception(JSON_SCHEMA_VERSION, e, message: e.message.lines.first.to_s.strip))
         {exit_code: 1}
       end
 
@@ -104,7 +104,7 @@ module Workspace
         members = project_members(project, all: all, timeout: timeout)
         if json
           @output.puts JSON.generate({
-            "schema_version" => JSON_SCHEMA_VERSION,
+            "schema_version" => JSON_SCHEMA_VERSION, "ok" => true,
             "project" => {"name" => project.name, "id" => project.id, "path" => project.path, "vcs" => project.vcs},
             "members" => members.map { |m| {"workspace" => m.workspace, "path" => m.path, "kind" => m.kind, "configured" => m.configured, "exists" => m.exists} }
           })
@@ -114,7 +114,7 @@ module Workspace
         {exit_code: 0}
       rescue => e
         raise unless json
-        @output.puts JSON.generate({"schema_version" => JSON_SCHEMA_VERSION, "error" => e.message.lines.first.to_s.strip})
+        @output.puts JSON.generate(Workspace::JsonEnvelope.from_exception(JSON_SCHEMA_VERSION, e, message: e.message.lines.first.to_s.strip))
         {exit_code: 1}
       end
 
@@ -134,7 +134,7 @@ module Workspace
         end
 
         if json
-          @output.puts JSON.generate({"schema_version" => JSON_SCHEMA_VERSION, "projects" => rows.map { |row| json_row(row, git: git) }})
+          @output.puts JSON.generate({"schema_version" => JSON_SCHEMA_VERSION, "ok" => true, "projects" => rows.map { |row| json_row(row, git: git) }})
         elsif rows.empty?
           @output.puts running_only ? "No projects with a running workspace." : "No projects. Run 'workspace add' to create one."
         else
@@ -143,7 +143,7 @@ module Workspace
         {exit_code: 0}
       rescue => e
         raise unless json
-        @output.puts JSON.generate({"schema_version" => JSON_SCHEMA_VERSION, "error" => e.message.lines.first.to_s.strip})
+        @output.puts JSON.generate(Workspace::JsonEnvelope.from_exception(JSON_SCHEMA_VERSION, e, message: e.message.lines.first.to_s.strip))
         {exit_code: 1}
       end
 
@@ -270,7 +270,7 @@ module Workspace
           git: git, git_timeout: timeout)
         members, locks, dev, errors = gathered.values_at(:members, :locks, :dev, :errors)
         payload = {
-          "schema_version" => JSON_SCHEMA_VERSION,
+          "schema_version" => JSON_SCHEMA_VERSION, "ok" => true,
           "project" => {"name" => project.name, "id" => project.id, "path" => project.path, "vcs" => project.vcs},
           "members" => members,
           "locks" => locks,

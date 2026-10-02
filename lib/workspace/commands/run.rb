@@ -9,6 +9,11 @@ module Workspace
       # code alone, without parsing the message.
       class NotSubmittedError < Workspace::Error
         EXIT_CODE = 2
+
+        # @return [String] `"not_submitted"`
+        def code
+          @code || "not_submitted"
+        end
       end
 
       # @param tmux [Workspace::Tmux] tmux session operations

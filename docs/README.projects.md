@@ -135,7 +135,7 @@ With `--git` each project also has `"unsaved":{"members":2,"unknown":1,"missing"
 | `workspaces` | Number of workspaces in the project |
 | `running` | How many of them have a running tmux session |
 
-Errors under `--json` print `{"schema_version":1,"error":"..."}` on stdout and
+Errors under `--json` print `{"schema_version":1,"ok":false,"error":"..."}` on stdout and
 exit 1, whatever the order of the flags.
 
 ## show
@@ -273,7 +273,7 @@ succeeds and says so in place of the locks and dev lines.
 
 Exit code 0 means the project was found, even if every session is down. An
 unknown or ambiguous NAME, or a directory in no project, exits 1; under
-`--json` that is `{"schema_version":1,"error":"..."}` on stdout.
+`--json` that is `{"schema_version":1,"ok":false,"error":"..."}` on stdout.
 
 ## members
 
@@ -306,7 +306,7 @@ which stops every active workspace.
 - A project with no workspaces prints nothing on stdout, a note on stderr
   (`no workspaces in project NAME`), and exits 0.
 
-Errors (an unknown or ambiguous NAME, a directory in no project) exit 1, as for `show`; under `--json` they print `{"schema_version":1,"error":"..."}` on stdout.
+Errors (an unknown or ambiguous NAME, a directory in no project) exit 1, as for `show`; under `--json` they print `{"schema_version":1,"ok":false,"error":"..."}` on stdout.
 
 ### members JSON
 
@@ -386,7 +386,7 @@ the day, or before switching repos. NAME works as for `show`.
 target failed). `outcome` is `stopped`, `would_stop` (dry run), `not_running` or
 `failed`. `results` lists the workspaces in member order, with the caller's own
 last. `summary` always has a count for all four outcomes, zero included. Usage errors and an unknown or
-ambiguous NAME print `{"schema_version":1,"error":"..."}` instead and exit 1.
+ambiguous NAME print `{"schema_version":1,"ok":false,"error":"..."}` instead and exit 1.
 
 ## kill
 
@@ -493,7 +493,7 @@ when it holds other locks. `summary` always has a count for all six outcomes.
 Programs should key off `reason` and `blockers[].reason`, not `message`: the
 messages are for people and their wording can change.
 Usage errors (including `--json` without `--yes` or `--dry-run`) and an unknown
-or ambiguous NAME print `{"schema_version":1,"error":"..."}` instead and exit 1.
+or ambiguous NAME print `{"schema_version":1,"ok":false,"error":"..."}` instead and exit 1.
 
 ## Examples
 

@@ -519,7 +519,7 @@ module Workspace
         if @emitted
           @error_output.puts "error after the result was written: #{message}"
         else
-          @output.puts JSON.generate({"schema_version" => JSON_SCHEMA_VERSION, "error" => message})
+          @output.puts JSON.generate(Workspace::JsonEnvelope.from_exception(JSON_SCHEMA_VERSION, e, message: message))
         end
         {exit_code: 1}
       end
@@ -568,7 +568,7 @@ module Workspace
         summary = OUTCOMES.fetch(action).to_h { |o| [o, 0] }
         results.each { |r| summary[r["outcome"]] += 1 }
         @output.puts JSON.generate({
-          "schema_version" => JSON_SCHEMA_VERSION,
+          "schema_version" => JSON_SCHEMA_VERSION, "ok" => true,
           "action" => action,
           "dry_run" => dry_run,
           "status" => status,

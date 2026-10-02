@@ -93,7 +93,7 @@ module Workspace
       by_directory = token.start_with?("/", "~", ".") && File.directory?(File.expand_path(token)) && for_directory(token)
       return by_directory if by_directory
 
-      raise Error, "Unknown project '#{token}'"
+      raise Error.new("Unknown project '#{token}'", code: "unknown_workspace", details: {"name" => token})
     end
 
     # Finds the project a directory belongs to. A directory inside a git

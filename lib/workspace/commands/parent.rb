@@ -48,7 +48,7 @@ module Workspace
         return Dir.pwd if name.nil?
 
         root = @project_config.project_root_for(name)
-        raise Workspace::Error, "Unknown project '#{name}'" unless root
+        raise Workspace::Error.new("Unknown project '#{name}'", code: "unknown_workspace", details: {"name" => name}) unless root
         root
       end
     end

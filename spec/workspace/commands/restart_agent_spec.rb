@@ -98,7 +98,7 @@ RSpec.describe Workspace::Commands::RestartAgent do
   it "prints the JSON reply with a schema version" do
     with_daemon(started) { call(json: true) }
 
-    expect(JSON.parse(output.string)).to eq("schema_version" => 1, "status" => "started", "pane" => "0.1",
+    expect(JSON.parse(output.string)).to eq("schema_version" => 1, "ok" => true, "status" => "started", "pane" => "0.1",
       "pane_id" => "%18", "context_pct" => 42)
   end
 
@@ -118,10 +118,24 @@ RSpec.describe Workspace::Commands::RestartAgent do
       result = with_daemon(refusal) { call(json: true) }
 
       expect(result).to eq(exit_code: 1)
-      expect(JSON.parse(output.string)).to eq("schema_version" => 1, "error" => "can't read context usage for pane 0.1",
+      expect(JSON.parse(output.string)).to eq("schema_version" => 1, "ok" => false, "error" => "can't read context usage for pane 0.1",
         "code" => "context_unknown", "pane" => "0.1", "reason" => "no reading recorded",
         "fix" => "Fix: add a statusLine entry")
     end
+  end
+
+  it "emits only registered codes for the daemon's refusals" do
+    refusal = {"ok" => false, "error" => "pane_busy", "message" => "busy"}
+    with_daemon(refusal) { call(json: true) }
+
+    expect(Workspace::ErrorCodes.known?(JSON.parse(output.string)["code"])).to be true
+  end
+
+  it "does not let extra reply keys overwrite the envelope's own" do
+    refusal = {"ok" => false, "error" => "pane_busy", "message" => "busy", "code" => "x", "schema_version" => 9, "details" => {"a" => 1}}
+    with_daemon(refusal) { call(json: true) }
+
+    expect(JSON.parse(output.string)).to eq("schema_version" => 1, "ok" => false, "error" => "busy", "code" => "pane_busy")
   end
 
   context "when no daemon is running" do

@@ -70,7 +70,7 @@ RSpec.describe Workspace::Commands::Sessions do
       with_daemon { command.call(name: "proj", json: true) }
 
       expected = payload.merge("panes" => payload["panes"].map { |pane| pane.merge("open_questions" => 0) })
-      expect(JSON.parse(output.string)).to eq({"schema_version" => 1}.merge(expected))
+      expect(JSON.parse(output.string)).to eq({"schema_version" => 1, "ok" => true}.merge(expected))
     end
 
     it "puts schema_version as the first key of the --json payload" do
@@ -90,7 +90,7 @@ RSpec.describe Workspace::Commands::Sessions do
       result = command.call(name: "proj", json: true)
 
       expect(JSON.parse(output.string)).to eq(
-        "schema_version" => 1,
+        "schema_version" => 1, "ok" => false, "code" => "no_daemon",
         "error" => "No agent daemon for 'proj'.\nStart one with:  workspace agentd proj"
       )
       expect(result).to eq({exit_code: 1})
@@ -164,7 +164,7 @@ RSpec.describe Workspace::Commands::Sessions do
         with_hung_daemon { result = command.call(name: "proj", json: true) }
 
         expect(result).to eq(exit_code: 1)
-        expect(JSON.parse(output.string)).to eq("schema_version" => 1, "error" => "Agent daemon for 'proj' did not answer within 0.03s.")
+        expect(JSON.parse(output.string)).to eq("schema_version" => 1, "ok" => false, "code" => "no_daemon", "error" => "Agent daemon for 'proj' did not answer within 0.03s.")
       end
     end
 
@@ -193,7 +193,7 @@ RSpec.describe Workspace::Commands::Sessions do
       with_raw_daemon("not json") { result = command.call(name: "proj", json: true) }
 
       expect(JSON.parse(output.string)).to eq(
-        "schema_version" => 1,
+        "schema_version" => 1, "ok" => false, "code" => "error",
         "error" => "Malformed reply from session monitor for 'proj'."
       )
       expect(result).to eq({exit_code: 1})
@@ -205,7 +205,7 @@ RSpec.describe Workspace::Commands::Sessions do
       with_raw_daemon("not json") { watcher.call(name: "proj", watch: true, json: true) }
 
       expect(JSON.parse(output.string)).to eq(
-        "schema_version" => 1,
+        "schema_version" => 1, "ok" => false, "code" => "error",
         "error" => "Malformed reply from session monitor for 'proj'."
       )
     end
@@ -552,7 +552,7 @@ RSpec.describe Workspace::Commands::Sessions do
       end
 
       expect(JSON.parse(output.string)).to eq(
-        "schema_version" => 1,
+        "schema_version" => 1, "ok" => false, "code" => "no_daemon",
         "error" => "No agent daemon for 'proj'.\nStart one with:  workspace agentd proj"
       )
       expect(result).to eq({exit_code: 1})

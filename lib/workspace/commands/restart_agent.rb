@@ -44,7 +44,7 @@ module Workspace
       # @param json [Boolean] print the daemon's reply as JSON
       # @return [Hash] {exit_code:} — 0 when the restart started (or, with
       #   +wait+, finished), 1 when it was refused or failed. With +json+,
-      #   errors go to stdout as `{"schema_version":1,"error":...,"code":...}`,
+      #   errors go to stdout as `{"schema_version":1,"ok":false,"error":...,"code":...}`,
       #   where "code" is the daemon's error code, or "no_daemon",
       #   "connection_failed" or "unreadable_reply" when it couldn't answer.
       # @raise [Workspace::Error] when it was refused or failed and +json+ is false
@@ -56,15 +56,14 @@ module Workspace
         return failure(reply, json) unless reply["ok"]
 
         if json
-          @output.puts JSON.generate({"schema_version" => JSON_SCHEMA_VERSION}.merge(reply.except("ok")))
+          @output.puts JSON.generate({"schema_version" => JSON_SCHEMA_VERSION, "ok" => true}.merge(reply.except("ok")))
         else
           render(reply)
         end
         {exit_code: 0}
       rescue Workspace::Error => e
         raise unless json
-        code = e.respond_to?(:code) ? e.code : "error"
-        @output.puts JSON.generate({"schema_version" => JSON_SCHEMA_VERSION, "error" => e.message, "code" => code})
+        @output.puts JSON.generate(Workspace::JsonEnvelope.from_exception(JSON_SCHEMA_VERSION, e))
         {exit_code: 1}
       end
 
@@ -76,8 +75,8 @@ module Workspace
         message = reply["message"] || reply["error"]
         raise Workspace::Error, [message, reply["fix"]].compact.join("\n") unless json
 
-        extra = reply.except("ok", "error", "message")
-        @output.puts JSON.generate({"schema_version" => JSON_SCHEMA_VERSION, "error" => message, "code" => reply["error"]}.merge(extra))
+        extra = reply.except("ok", "error", "message", "code", "schema_version", "details", "retry")
+        @output.puts JSON.generate(Workspace::JsonEnvelope.error(JSON_SCHEMA_VERSION, message, code: reply["error"]).merge(extra))
         {exit_code: 1}
       end
 

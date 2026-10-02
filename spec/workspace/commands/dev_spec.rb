@@ -304,7 +304,7 @@ RSpec.describe Workspace::Commands::Dev do
       it "returns the --json payload without printing it" do
         payload = dev.status_payload(working_dir: main)
 
-        expect(payload).to eq("schema_version" => 1, "running" => false, "holder" => nil, "ready" => nil, "queue" => [])
+        expect(payload).to eq("schema_version" => 1, "ok" => true, "running" => false, "holder" => nil, "ready" => nil, "queue" => [])
         expect(output.string).to eq("")
       end
 
@@ -334,7 +334,7 @@ RSpec.describe Workspace::Commands::Dev do
         dev.status(working_dir: main, json: true)
 
         expect(JSON.parse(output.string)).to eq(
-          "schema_version" => 1, "running" => false, "holder" => nil, "ready" => nil, "queue" => []
+          "schema_version" => 1, "ok" => true, "running" => false, "holder" => nil, "ready" => nil, "queue" => []
         )
       end
 

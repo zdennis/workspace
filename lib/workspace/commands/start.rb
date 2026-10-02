@@ -48,7 +48,7 @@ module Workspace
       # @param headless [Boolean] launch the session in the background with plain
       #   tmux instead of in iTerm2 (see Commands::Launch#call)
       # @param json [Boolean] emit the documented JSON schema instead of plain text; on
-      #   an error, prints `{"schema_version":1,"error":"..."}` to stdout and returns
+      #   an error, prints `{"schema_version":1,"ok":false,"error":"..."}` to stdout and returns
       #   +{exit_code: 1}+ instead of raising
       # @return [Hash, nil] the launch result (+{exit_code:, prompt_failures:}+) merged
       #   with the JSON payload when +json+ is true, or nil if branch selection was
@@ -69,7 +69,7 @@ module Workspace
         @output.puts JSON.generate(payload[:json])
         {exit_code: payload[:exit_code]}
       rescue Workspace::Error, SystemCallError => e
-        @output.puts JSON.generate({"schema_version" => JSON_SCHEMA_VERSION, "error" => e.message})
+        @output.puts JSON.generate(Workspace::JsonEnvelope.from_exception(JSON_SCHEMA_VERSION, e))
         {exit_code: 1}
       end
 
@@ -177,7 +177,7 @@ module Workspace
 
         exit_code = result ? result[:exit_code] : 0
         json = {
-          "schema_version" => JSON_SCHEMA_VERSION,
+          "schema_version" => JSON_SCHEMA_VERSION, "ok" => true,
           "project" => project_name,
           "workspace" => config_name,
           "path" => worktree_path,

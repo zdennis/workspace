@@ -82,7 +82,7 @@ RSpec.describe "T9 adversarial CLI specs" do
     cli = build_test_cli(output: output, error_output: error_output)
     allow(Kernel).to receive(:exit)
 
-    cli.run(["--headless", "--json", "launch"])
+    cli.run(["--headless", "--bogus", "launch"])
 
     expect(error_output.string).to include("workspace launch --headless")
   end

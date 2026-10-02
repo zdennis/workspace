@@ -53,7 +53,7 @@ module Workspace
         notifier = notify(name, record)
 
         if json
-          @output.puts JSON.generate({"schema_version" => JSON_SCHEMA_VERSION, "question" => record})
+          @output.puts JSON.generate({"schema_version" => JSON_SCHEMA_VERSION, "ok" => true, "question" => record})
         else
           @output.puts "Recorded question #{record["id"]} for #{name} (took default: #{default})"
         end
@@ -63,7 +63,7 @@ module Workspace
         {exit_code: 0}
       rescue Workspace::Error => e
         raise unless json
-        @output.puts JSON.generate({"schema_version" => JSON_SCHEMA_VERSION, "error" => e.message})
+        @output.puts JSON.generate(Workspace::JsonEnvelope.from_exception(JSON_SCHEMA_VERSION, e))
         {exit_code: 1}
       end
 
@@ -75,7 +75,7 @@ module Workspace
         records = store_for(name).list(open_only: true)
 
         if json
-          @output.puts JSON.generate({"schema_version" => JSON_SCHEMA_VERSION, "workspace" => name, "questions" => records})
+          @output.puts JSON.generate({"schema_version" => JSON_SCHEMA_VERSION, "ok" => true, "workspace" => name, "questions" => records})
         elsif records.empty?
           @output.puts "No open questions for #{name}"
         else
@@ -85,7 +85,7 @@ module Workspace
         {exit_code: 0}
       rescue Workspace::Error => e
         raise unless json
-        @output.puts JSON.generate({"schema_version" => JSON_SCHEMA_VERSION, "error" => e.message})
+        @output.puts JSON.generate(Workspace::JsonEnvelope.from_exception(JSON_SCHEMA_VERSION, e))
         {exit_code: 1}
       end
 
@@ -107,14 +107,14 @@ module Workspace
         end
 
         if json
-          @output.puts JSON.generate({"schema_version" => JSON_SCHEMA_VERSION, "question" => record})
+          @output.puts JSON.generate({"schema_version" => JSON_SCHEMA_VERSION, "ok" => true, "question" => record})
         else
           @output.puts "Answered #{id}"
         end
         {exit_code: 0}
       rescue Workspace::Error => e
         raise unless json
-        @output.puts JSON.generate({"schema_version" => JSON_SCHEMA_VERSION, "error" => e.message})
+        @output.puts JSON.generate(Workspace::JsonEnvelope.from_exception(JSON_SCHEMA_VERSION, e))
         {exit_code: 1}
       end
 
@@ -122,7 +122,7 @@ module Workspace
 
       def workspace_for(working_dir)
         name = @project_detector.detect(working_dir)
-        raise Workspace::Error, "Could not detect a workspace at #{working_dir}." unless name
+        raise Workspace::Error.new("Could not detect a workspace at #{working_dir}.", code: "not_in_workspace", details: {"path" => working_dir}) unless name
         name
       end
 

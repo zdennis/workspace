@@ -226,7 +226,7 @@ RSpec.describe Workspace::Commands::Lock do
       it "emits an empty locks object for an empty store" do
         command_for(FakeLockIdentity.new(pid: 100)).status(json: true)
 
-        expect(JSON.parse(output.string)).to eq("schema_version" => 1, "locks" => {})
+        expect(JSON.parse(output.string)).to eq("schema_version" => 1, "ok" => true, "locks" => {})
       end
 
       it "emits the holder and queue for a held lock" do
@@ -290,7 +290,7 @@ RSpec.describe Workspace::Commands::Lock do
 
         expect(result).to eq(exit_code: 0)
         parsed = JSON.parse(output.string)
-        expect(parsed).to eq("schema_version" => Workspace::Commands::Lock::JSON_SCHEMA_VERSION, "name" => "edit", "result" => "not_held")
+        expect(parsed).to eq("schema_version" => Workspace::Commands::Lock::JSON_SCHEMA_VERSION, "ok" => true, "name" => "edit", "result" => "not_held")
       end
 
       it "emits a results array for --all" do

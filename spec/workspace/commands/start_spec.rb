@@ -872,7 +872,7 @@ RSpec.describe Workspace::Commands::Start do
         result = command.call("PROJ-123", json: true)
 
         expect(result).to eq({exit_code: 1})
-        expect(JSON.parse(output.string)).to eq({"schema_version" => 1, "error" => "Not inside a git repository."})
+        expect(JSON.parse(output.string)).to eq({"schema_version" => 1, "ok" => false, "code" => "error", "error" => "Not inside a git repository."})
       end
 
       it "never prompts, even when stdin is a TTY" do

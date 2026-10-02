@@ -205,7 +205,7 @@ RSpec.describe Workspace::Commands::Projects do
       allow(catalog).to receive(:all).and_raise(NoMethodError, "boom")
 
       expect(command.list(json: true)).to eq(exit_code: 1)
-      expect(JSON.parse(output.string)).to eq("schema_version" => 1, "error" => "boom")
+      expect(JSON.parse(output.string)).to eq("schema_version" => 1, "ok" => false, "code" => "error", "error" => "boom")
     end
 
     it "lets an unexpected failure raise without --json" do
@@ -247,7 +247,7 @@ RSpec.describe Workspace::Commands::Projects do
 
         command.list(running_only: true, json: true)
 
-        expect(JSON.parse(output.string)).to eq("schema_version" => 1, "projects" => [])
+        expect(JSON.parse(output.string)).to eq("schema_version" => 1, "ok" => true, "projects" => [])
       end
     end
 
@@ -271,7 +271,7 @@ RSpec.describe Workspace::Commands::Projects do
         command.list(json: true)
 
         expect(JSON.parse(output.string)).to eq(
-          "schema_version" => 1,
+          "schema_version" => 1, "ok" => true,
           "projects" => [{
             "name" => "app",
             "id" => File.join(main, ".git"),
@@ -286,7 +286,7 @@ RSpec.describe Workspace::Commands::Projects do
       it "prints an empty projects array with no projects" do
         command.list(json: true)
 
-        expect(JSON.parse(output.string)).to eq("schema_version" => 1, "projects" => [])
+        expect(JSON.parse(output.string)).to eq("schema_version" => 1, "ok" => true, "projects" => [])
       end
 
       it "reports vcs none for a non-git workspace and unknown for a missing checkout" do
@@ -304,7 +304,7 @@ RSpec.describe Workspace::Commands::Projects do
         result = command.list(json: true)
 
         expect(result).to eq(exit_code: 1)
-        expect(JSON.parse(output.string)).to eq("schema_version" => 1, "error" => "boom")
+        expect(JSON.parse(output.string)).to eq("schema_version" => 1, "ok" => false, "code" => "error", "error" => "boom")
       end
     end
 
@@ -343,7 +343,7 @@ RSpec.describe Workspace::Commands::Projects do
         command.members(name: "app", json: true)
 
         expect(payload).to eq(
-          "schema_version" => 1,
+          "schema_version" => 1, "ok" => true,
           "project" => {"name" => "app", "id" => File.join(main, ".git"), "path" => main, "vcs" => "git"},
           "members" => [
             {"workspace" => "app", "path" => main, "kind" => "main", "configured" => true, "exists" => true},
@@ -468,7 +468,7 @@ RSpec.describe Workspace::Commands::Projects do
 
       it "prints an unknown project as a JSON error with exit code 1" do
         expect(command.members(name: "nope", json: true)).to eq(exit_code: 1)
-        expect(payload).to eq("schema_version" => 1, "error" => "Unknown project 'nope'")
+        expect(payload).to eq("schema_version" => 1, "ok" => false, "code" => "unknown_workspace", "details" => {"name" => "nope"}, "error" => "Unknown project 'nope'")
       end
 
       it "reports a directory in no project as an error" do
@@ -483,7 +483,7 @@ RSpec.describe Workspace::Commands::Projects do
 
         expect { command.members }.to raise_error(NoMethodError)
         expect(command.members(json: true)).to eq(exit_code: 1)
-        expect(payload).to eq("schema_version" => 1, "error" => "boom")
+        expect(payload).to eq("schema_version" => 1, "ok" => false, "code" => "error", "error" => "boom")
       end
     end
 
@@ -813,7 +813,7 @@ RSpec.describe Workspace::Commands::Projects do
 
       it "prints an unknown project as a JSON error with exit code 1" do
         expect(command.show(name: "nope", json: true)).to eq(exit_code: 1)
-        expect(payload).to eq("schema_version" => 1, "error" => "Unknown project 'nope'")
+        expect(payload).to eq("schema_version" => 1, "ok" => false, "code" => "unknown_workspace", "details" => {"name" => "nope"}, "error" => "Unknown project 'nope'")
       end
 
       it "prints a JSON error when the working directory is in no project" do
@@ -1031,7 +1031,7 @@ RSpec.describe Workspace::Commands::Projects do
 
       command.show(name: "app", json: true)
 
-      expect(payload.keys).to eq(%w[schema_version project members locks dev summary])
+      expect(payload.keys).to eq(%w[schema_version ok project members locks dev summary])
     end
 
     describe "agents" do

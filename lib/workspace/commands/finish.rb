@@ -51,10 +51,10 @@ module Workspace
 
       def call_json(project, pr:, working_dir:, &after_remove)
         finished = finish!(project, pr: pr, working_dir: working_dir, quiet: true, &after_remove)
-        @output.puts JSON.generate({"schema_version" => JSON_SCHEMA_VERSION, "project" => finished})
+        @output.puts JSON.generate({"schema_version" => JSON_SCHEMA_VERSION, "ok" => true, "project" => finished})
         {exit_code: 0}
       rescue Workspace::Error => e
-        @output.puts JSON.generate({"schema_version" => JSON_SCHEMA_VERSION, "error" => e.message})
+        @output.puts JSON.generate(Workspace::JsonEnvelope.from_exception(JSON_SCHEMA_VERSION, e))
         {exit_code: 1}
       end
 

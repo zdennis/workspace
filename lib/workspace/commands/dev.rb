@@ -146,7 +146,7 @@ module Workspace
         entry = entry(ctx[:store])
         holder = entry["holder"]
         {
-          "schema_version" => JSON_SCHEMA_VERSION,
+          "schema_version" => JSON_SCHEMA_VERSION, "ok" => true,
           "running" => !holder.nil? && !holder["stale"],
           "holder" => holder,
           "ready" => (holder && !holder["stale"] && ctx[:settings][:ready]) ? ready?(ctx[:settings][:ready], ctx[:worktree]) : nil,
@@ -312,7 +312,7 @@ module Workspace
         @output.puts JSON.generate(status_payload(working_dir: working_dir))
         {exit_code: 0}
       rescue Workspace::Error => e
-        @output.puts JSON.generate({"schema_version" => JSON_SCHEMA_VERSION, "error" => e.message})
+        @output.puts JSON.generate(Workspace::JsonEnvelope.from_exception(JSON_SCHEMA_VERSION, e))
         {exit_code: 1}
       end
 

@@ -277,7 +277,7 @@ RSpec.describe Workspace::Commands::Finish do
 
         expect(result).to eq({exit_code: 0})
         parsed = JSON.parse(output.string)
-        expect(parsed).to eq({"schema_version" => 1, "project" => "myproject.worktree-PROJ-123"})
+        expect(parsed).to eq({"schema_version" => 1, "ok" => true, "project" => "myproject.worktree-PROJ-123"})
       end
 
       it "emits an error envelope on stdout and exit_code 1, without raising" do
