@@ -16,8 +16,11 @@ workspace agentd [PROJECT] [options]
 | `--name NAME` | Same as the positional PROJECT argument |
 | `--wc-socket PATH` | Override the path to the work-coordinator socket |
 | `-f`, `--force` | Terminate a running agent for this workspace and take its place |
+| `--ensure` | Start the agent in the background unless one is already answering, then return. Can't be combined with `--force` |
 
 ## Details
+
+**`--ensure`** — makes sure the workspace has an agent without taking the terminal: if one answers on the socket it prints `agentd for <name> is already running` and exits 0; otherwise it starts one detached (output in the daemon log, `~/.local/workspace/run/workspace-<name>.log`), waits up to 5 seconds for it to answer, prints `Started agentd for <name>` and exits 0. A leftover socket file from a dead agent doesn't count as running. Concurrent calls, including `workspace launch` starting the same workspace, are serialized on `workspace-<name>.lock` in that directory, so they never start two agents. It exits 1 with the reason when the agent can't be started or doesn't answer in time, or when the project's pipeline config is invalid. `workspace launch` runs the same check for each project it launches; a failure there is a warning and the launch carries on. `--wc-socket` is passed through to a newly started agent. Only `--ensure` callers take the lock: a plain `workspace agentd` started by hand at the same instant can still race one.
 
 **One agent per workspace** — on startup the agent probes its own socket at `~/.local/workspace/run/workspace-<name>.sock`. With a very long workspace name the filename is truncated with a short hash suffix (derived deterministically from the name) so the path stays within a 100-byte cap (headroom under the OS's 104-byte socket path limit); the daemon log filename is truncated the same way, against a 250-byte cap (headroom under the 255-byte per-component limit). If something answers, it refuses to start rather than stealing the socket from a running agent. A socket left behind by an unclean shutdown does not answer, so it is removed and the agent starts normally.
 

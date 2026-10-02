@@ -25,12 +25,14 @@ module Workspace
       #   agent in a pane to be ready before a prompt is sent
       # @param prompt_timeout [Numeric] seconds to wait for the agents to be
       #   ready, shared by every project in one launch
+      # @param agent_ensurer [Workspace::Commands::EnsureAgent, nil] starts each project's agent daemon
+      #   when none is running (built from +config+ and +pipeline_config+ when nil)
       # @param sleeper [#call] sleeps the given seconds, injected for fast tests
       # @param clock [#call] monotonic seconds, bounding the wait for sessions
       # @param output [IO] output stream for user-facing messages
       # @param error_output [IO] error output stream for warnings
       def initialize(state:, iterm:, window_manager:, tmux:, project_config:, window_layout:, config:, pipeline_config: nil,
-        agent_readiness: nil, prompt_timeout: AgentReadiness::DEFAULT_TIMEOUT, sleeper: ->(seconds) { sleep(seconds) },
+        agent_ensurer: nil, agent_readiness: nil, prompt_timeout: AgentReadiness::DEFAULT_TIMEOUT, sleeper: ->(seconds) { sleep(seconds) },
         clock: -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) }, output: $stdout, error_output: $stderr)
         @state = state
         @iterm = iterm
@@ -40,6 +42,7 @@ module Workspace
         @window_layout = window_layout
         @config = config
         @pipeline_config = pipeline_config || PipelineConfig.new(config: config)
+        @agent_ensurer = agent_ensurer || EnsureAgent.new(config: config, pipeline_config: @pipeline_config, sleeper: sleeper, clock: clock, error_output: error_output)
         @agent_readiness = agent_readiness || AgentReadiness.new(tmux: tmux, process_tree: ProcessTree.new)
         @prompt_timeout = prompt_timeout
         @sleeper = sleeper
@@ -390,30 +393,16 @@ module Workspace
         [session_names, not_found]
       end
 
-      # Starts the session-monitor agent daemon for each project that doesn't
-      # already have one running, so `workspace sessions` has something to show
-      # without requiring a separate `workspace agentd` invocation.
+      # Ensures each project has a session-monitor agent daemon, so
+      # `workspace sessions` has something to show without a separate
+      # `workspace agentd` invocation. A daemon that can't be started is a
+      # warning, never a failed launch.
       def start_session_monitors(projects)
         projects.each do |project|
-          next if @config.agent_running?(project)
+          result = @agent_ensurer.call(name: project)
+          next if result.ok? || result.status == :invalid_config
 
-          log_path = @config.agent_log_path(project)
-
-          begin
-            @pipeline_config.stages_for(project)
-          rescue Workspace::Error => e
-            @error_output.puts "Warning: #{project}'s pipeline config is invalid (#{e.message}); " \
-              "not starting its session monitor. See #{log_path} once fixed."
-            next
-          end
-
-          @pipeline_config.literal_sentinel_warnings(project).each { |warning| @error_output.puts "Warning: #{warning}" }
-
-          pid = Process.spawn($PROGRAM_NAME, "agentd", "--name", project,
-            out: log_path, err: log_path, in: File::NULL)
-          Process.detach(pid)
-        rescue SystemCallError => e
-          @error_output.puts "Warning: Could not start session monitor for #{project}: #{e.message}"
+          @error_output.puts "Warning: Could not start session monitor for #{project}: #{result.detail}"
         end
       end
 

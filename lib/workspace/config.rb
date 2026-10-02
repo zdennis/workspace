@@ -102,6 +102,15 @@ module Workspace
       agent_file_path(name, ".log", MAX_LOG_PATH_BYTES, component_only: true)
     end
 
+    # Held while `agentd --ensure` checks for, starts, and waits on a daemon,
+    # so concurrent callers never start two.
+    #
+    # @param name [String] the workspace name
+    # @return [String] path to the lock file guarding daemon startup
+    def agent_lock_path(name)
+      agent_file_path(name, ".lock", MAX_LOG_PATH_BYTES, component_only: true)
+    end
+
     # @param name [String] the workspace name
     # @return [Boolean] whether an agent is currently listening on this workspace's socket
     def agent_running?(name)

@@ -26,6 +26,23 @@ RSpec.describe Workspace::Commands::Launch do
   let(:window_layout) { double("window_layout") }
   let(:pipeline_config) { double("pipeline_config", stages_for: nil, literal_sentinel_warnings: []) }
 
+  let(:agent_ensurer) do
+    Class.new do
+      attr_reader :calls
+      attr_accessor :result
+
+      def initialize
+        @calls = []
+        @result = Workspace::Commands::EnsureAgent::Result.new(:started)
+      end
+
+      def call(name:, wc_socket: nil)
+        @calls << name
+        @result
+      end
+    end.new
+  end
+
   subject(:command) do
     described_class.new(
       state: state,
@@ -36,6 +53,7 @@ RSpec.describe Workspace::Commands::Launch do
       window_layout: window_layout,
       config: config,
       pipeline_config: pipeline_config,
+      agent_ensurer: agent_ensurer,
       sleeper: ->(_seconds) {},
       output: output,
       error_output: error_output
@@ -99,62 +117,27 @@ RSpec.describe Workspace::Commands::Launch do
         expect(output.string).to eq("")
       end
 
-      it "starts the session monitor daemon for the project" do
-        allow(config).to receive(:agent_running?).with("proj1").and_return(false)
-        allow(config).to receive(:agent_log_path).with("proj1").and_return("/tmp/workspace-proj1.log")
-
+      it "ensures a session monitor daemon for the project" do
         command.call(["proj1"])
 
-        expect(Process).to have_received(:spawn).with(
-          $PROGRAM_NAME, "agentd", "--name", "proj1",
-          out: "/tmp/workspace-proj1.log", err: "/tmp/workspace-proj1.log", in: File::NULL
-        )
-        expect(Process).to have_received(:detach).with(999)
+        expect(agent_ensurer.calls).to eq(["proj1"])
       end
 
-      it "skips starting the daemon when one is already running" do
-        allow(config).to receive(:agent_running?).with("proj1").and_return(true)
+      it "warns and continues when the daemon can't be started" do
+        agent_ensurer.result = Workspace::Commands::EnsureAgent::Result.new(:failed, "No such file or directory - workspace")
 
         command.call(["proj1"])
 
-        expect(Process).not_to have_received(:spawn)
+        expect(error_output.string).to include("Warning: Could not start session monitor for proj1: No such file or directory - workspace")
+        expect(output.string).to include("Done!")
       end
 
-      it "warns and continues when the daemon fails to start" do
-        allow(config).to receive(:agent_running?).with("proj1").and_return(false)
-        allow(Process).to receive(:spawn).and_raise(Errno::ENOENT, "workspace")
+      it "adds no warning of its own when the ensurer already reported an invalid pipeline config" do
+        agent_ensurer.result = Workspace::Commands::EnsureAgent::Result.new(:invalid_config)
 
         command.call(["proj1"])
 
-        expect(error_output.string).to include("Could not start session monitor for proj1")
-      end
-
-      it "warns but still starts the daemon when a stage names the bare completion sentinel" do
-        allow(config).to receive(:agent_running?).with("proj1").and_return(false)
-        allow(config).to receive(:agent_log_path).with("proj1").and_return("/tmp/workspace-proj1.log")
-        allow(pipeline_config).to receive(:literal_sentinel_warnings).with("proj1")
-          .and_return(["proj1's pipeline stage implementer (pane 0) names the bare WORKSPACE_DONE: marker"])
-        allow(Process).to receive(:spawn).and_return(999)
-        allow(Process).to receive(:detach)
-
-        command.call(["proj1"])
-
-        expect(Process).to have_received(:spawn)
-        expect(error_output.string).to include("names the bare WORKSPACE_DONE: marker")
-      end
-
-      it "warns and skips the daemon when the project's pipeline config is invalid" do
-        allow(config).to receive(:agent_running?).with("proj1").and_return(false)
-        allow(config).to receive(:agent_log_path).with("proj1").and_return("/tmp/workspace-proj1.log")
-        allow(pipeline_config).to receive(:stages_for).with("proj1")
-          .and_raise(Workspace::Error, "Invalid pipeline.panes[0].timeout in /tmp/proj1.yml: must be greater than 0")
-
-        command.call(["proj1"])
-
-        expect(Process).not_to have_received(:spawn)
-        expect(error_output.string).to include("proj1's pipeline config is invalid")
-        expect(error_output.string).to include("must be greater than 0")
-        expect(error_output.string).to include("/tmp/workspace-proj1.log")
+        expect(error_output.string).not_to include("Could not start session monitor")
       end
     end
 

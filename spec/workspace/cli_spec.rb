@@ -93,6 +93,7 @@ RSpec.describe Workspace::CLI do
       statusline_command: overrides[:statusline_command] || CLITestHelpers::FakeStatuslineCommand.new,
       ask_command: ask_command,
       restart_agent_command: overrides[:restart_agent_command],
+      ensure_agent_command: overrides[:ensure_agent_command],
       handoff_command: overrides[:handoff_command],
       projects_command: overrides[:projects_command],
       project_actions_command: overrides[:project_actions_command],
@@ -2491,6 +2492,70 @@ RSpec.describe Workspace::CLI do
         expect(error_output.string).to include("Unknown agent subcommand: status")
         expect(error_output.string).to include("workspace agentd")
         expect(agent_command.calls).to be_empty
+      end
+    end
+
+    describe "#run agentd --ensure" do
+      let(:ensure_command) do
+        Class.new do
+          attr_reader :calls
+          attr_accessor :result
+
+          def initialize
+            @calls = []
+            @result = Workspace::Commands::EnsureAgent::Result.new(:started)
+          end
+
+          def call(name:, wc_socket: nil)
+            @calls << {name: name, wc_socket: wc_socket}
+            @result
+          end
+        end.new
+      end
+
+      it "ensures instead of running the daemon, passing --wc-socket through" do
+        agent_command = CLITestHelpers::FakeAgentCommand.new
+        cli, output, _ = build_test_cli(agent_command: agent_command, ensure_agent_command: ensure_command)
+
+        cli.run(["agentd", "--ensure", "myapp", "--wc-socket", "/tmp/wc.sock"])
+
+        expect(ensure_command.calls).to eq([{name: "myapp", wc_socket: "/tmp/wc.sock"}])
+        expect(agent_command.calls).to be_empty
+        expect(output.string).to eq("Started agentd for myapp\n")
+      end
+
+      it "says so and exits 0 when one is already running" do
+        ensure_command.result = Workspace::Commands::EnsureAgent::Result.new(:running)
+        cli, output, _ = build_test_cli(ensure_agent_command: ensure_command)
+
+        cli.run(["agentd", "--ensure", "--name", "myapp"])
+
+        expect(output.string).to eq("agentd for myapp is already running\n")
+      end
+
+      it "exits 1 with the reason when the daemon can't be started" do
+        ensure_command.result = Workspace::Commands::EnsureAgent::Result.new(:failed, "it did not answer within 5s")
+        cli, _, error_output = build_test_cli(ensure_agent_command: ensure_command)
+
+        expect { cli.run(["agentd", "--ensure", "myapp"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+        expect(error_output.string).to include("Could not start the agent daemon for myapp: it did not answer within 5s")
+      end
+
+      it "exits 1 quietly when the pipeline config was invalid (the warning is already printed)" do
+        ensure_command.result = Workspace::Commands::EnsureAgent::Result.new(:invalid_config)
+        cli, output, error_output = build_test_cli(ensure_agent_command: ensure_command)
+
+        expect { cli.run(["agentd", "--ensure", "myapp"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+        expect(output.string).to eq("")
+        expect(error_output.string).to eq("")
+      end
+
+      it "refuses to combine --ensure with --force" do
+        cli, _, error_output = build_test_cli(ensure_agent_command: ensure_command)
+
+        expect { cli.run(["agentd", "--ensure", "--force", "myapp"]) }.to raise_error(FakeSystemExit)
+        expect(error_output.string).to include("--ensure and --force can't be combined")
+        expect(ensure_command.calls).to be_empty
       end
     end
 

@@ -148,6 +148,10 @@ RSpec.describe Workspace::Config do
       )
     end
 
+    it "puts the startup lock beside the socket and log" do
+      expect(config.agent_lock_path("myapp")).to eq(File.join(socket_dir, "workspace-myapp.lock"))
+    end
+
     it "caps a long name's socket path at the byte limit" do
       path = config.agent_socket_path("a" * 200)
 
@@ -160,6 +164,13 @@ RSpec.describe Workspace::Config do
 
       expect(File.basename(path).bytesize).to be <= described_class::MAX_LOG_PATH_BYTES
       expect(path).to start_with(File.join(socket_dir, "workspace-"))
+    end
+
+    it "caps a long name's lock filename component at the byte limit" do
+      path = config.agent_lock_path("a" * 300)
+
+      expect(File.basename(path).bytesize).to be <= described_class::MAX_LOG_PATH_BYTES
+      expect(path).to end_with(".lock")
     end
 
     it "keeps distinct long names on distinct socket paths" do

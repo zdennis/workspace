@@ -49,6 +49,8 @@ module Workspace
     # @param capture_command [Workspace::Commands::Capture] pre-built capture command
     # @param wait_until_content_command [Workspace::Commands::WaitUntilContent] pre-built wait-until-content command
     # @param agent_command [Workspace::Commands::Agent] pre-built agent command
+    # @param ensure_agent_command [Workspace::Commands::EnsureAgent, nil] pre-built
+    #   `agentd --ensure` command
     # @param restart_agent_command [Workspace::Commands::RestartAgent, nil] pre-built
     #   `agent-run restart` command; optional so test builders need not wire it
     # @param handoff_command [Workspace::Commands::Handoff, nil] pre-built
@@ -68,7 +70,7 @@ module Workspace
     #   reports every project as unknown
     # @param launch_mode [Workspace::LaunchMode, nil] decides whether launch/start
     #   run headless when no --[no-]headless flag is given; nil builds one
-    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, restart_agent_command: nil, handoff_command: nil, projects_command: nil, project_actions_command: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil, liveness: nil)
+    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, restart_agent_command: nil, ensure_agent_command: nil, handoff_command: nil, projects_command: nil, project_actions_command: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil, liveness: nil)
       @config = config
       @state = state
       @project_config = project_config
@@ -109,6 +111,7 @@ module Workspace
       @statusline_command = statusline_command
       @ask_command = ask_command
       @restart_agent_command = restart_agent_command
+      @ensure_agent_command = ensure_agent_command
       @handoff_command = handoff_command
       @projects_command = projects_command
       @project_actions_command = project_actions_command
@@ -1152,6 +1155,7 @@ module Workspace
       name = nil
       wc_socket = nil
       force = false
+      ensure_running = false
 
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: workspace agentd [PROJECT] [options]"
@@ -1163,11 +1167,13 @@ module Workspace
         opts.on("--name NAME", "Workspace name (defaults to the detected project or PROJECT)") { |v| name = v }
         opts.on("--wc-socket PATH", "Path to the work-coordinator socket") { |v| wc_socket = v }
         opts.on("-f", "--force", "Kill any running agent for this workspace before starting") { force = true }
+        opts.on("--ensure", "Start the agent in the background unless one is already running (safe to repeat)") { ensure_running = true }
         opts.separator ""
         opts.separator "Examples:"
         opts.separator "  workspace agentd    # run for the project detected from the current directory"
         opts.separator "  workspace agentd scooter --wc-socket /tmp/wc-dev.sock    # named project, non-default coordinator"
         opts.separator "  workspace agentd --force    # replace the agent already running for this workspace"
+        opts.separator "  workspace agentd --ensure   # make sure one is running; exits 0 if it already was"
       end
       parser.parse!(args)
 
@@ -1176,7 +1182,26 @@ module Workspace
       name ||= @project_detector.detect(@working_dir)
       raise UsageError, parser.help if name.nil?
 
+      if ensure_running
+        raise UsageError, "--ensure and --force can't be combined: --ensure never replaces a running agent.\n\n#{parser.help}" if force
+        return ensure_agent(name, wc_socket)
+      end
+
       @exit_handler.exit(1) unless @agent_command.call(name: name, wc_socket: wc_socket, force: force)
+    end
+
+    def ensure_agent(name, wc_socket)
+      raise Error, "workspace agentd --ensure is not available in this build" unless @ensure_agent_command
+
+      result = @ensure_agent_command.call(name: name, wc_socket: wc_socket)
+      case result.status
+      when :running then @output.puts "agentd for #{name} is already running"
+      when :started then @output.puts "Started agentd for #{name}"
+      when :invalid_config then @exit_handler.exit(1)
+      else
+        @error_output.puts "Error: Could not start the agent daemon for #{name}: #{result.detail}"
+        @exit_handler.exit(1)
+      end
     end
 
     def cmd_ask(args)
