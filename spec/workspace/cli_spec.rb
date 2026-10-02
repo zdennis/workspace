@@ -99,6 +99,8 @@ RSpec.describe Workspace::CLI do
       projects_command: overrides[:projects_command],
       capabilities_command: overrides[:capabilities_command],
       project_actions_command: overrides[:project_actions_command],
+      config_report: overrides[:config_report],
+      tmuxinator_report: overrides[:tmuxinator_report],
       logger: logger,
       output: output,
       error_output: error_output,
@@ -1538,6 +1540,147 @@ RSpec.describe Workspace::CLI do
       cli.run(["ask", "answer", "q_7", "yes"])
 
       expect(ask_command.calls).to contain_exactly(a_hash_including(action: :answer, deliver: false))
+    end
+  end
+
+  describe "#run with config show/validate --json" do
+    let(:report) do
+      Class.new do
+        attr_reader :calls
+
+        def initialize(valid: true)
+          @calls = []
+          @valid = valid
+        end
+
+        def show(name)
+          @calls << [:show, name]
+          {"schema_version" => 1, "ok" => true, "workspace" => name, "keys" => []}
+        end
+
+        def validate(name)
+          @calls << [:validate, name]
+          problems = @valid ? [] : [{"severity" => "error", "code" => "yaml_syntax", "file" => "/c/p.yml", "line" => 3, "column" => 1, "message" => "bad"}]
+          {"schema_version" => 1, "ok" => true, "valid" => @valid, "workspace" => name, "problems" => problems}
+        end
+      end
+    end
+
+    it "prints the show document for --name" do
+      fake = report.new
+      cli, output, _ = build_test_cli(config_report: fake)
+
+      cli.run(["config", "show", "--name", "api", "--json"])
+
+      expect(JSON.parse(output.string)).to include("ok" => true, "workspace" => "api")
+      expect(fake.calls).to eq([[:show, "api"]])
+    end
+
+    it "accepts --json without the show word and a positional project" do
+      fake = report.new
+      cli, output, _ = build_test_cli(config_report: fake)
+
+      cli.run(["config", "--json", "api"])
+
+      expect(JSON.parse(output.string)["workspace"]).to eq("api")
+    end
+
+    it "uses the workspace detected from the working directory without --name" do
+      fake = report.new
+      detector = instance_double(Workspace::ProjectDetector, detect: "detected")
+      cli, _, _ = build_test_cli(config_report: fake, project_detector: detector)
+
+      cli.run(["config", "show", "--json"])
+
+      expect(fake.calls).to eq([[:show, "detected"]])
+    end
+
+    it "refuses --json with --global as a usage error envelope" do
+      cli, output, _ = build_test_cli(config_report: report.new)
+
+      expect { cli.run(["config", "show", "--global", "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+
+      expect(JSON.parse(output.string)).to include("ok" => false, "code" => "usage")
+    end
+
+    it "still shows a project literally named show through --" do
+      project_settings = CLITestHelpers::FakeProjectSettings.new
+      project_settings.define_singleton_method(:load) { |name| {"dev" => {"up" => name}} }
+      cli, output, _ = build_test_cli(project_settings: project_settings)
+
+      cli.run(["config", "--", "show"])
+
+      expect(output.string).to include("up: show")
+    end
+
+    it "validate prints the document and exits 0 when valid" do
+      cli, output, _ = build_test_cli(config_report: report.new)
+
+      cli.run(["config", "validate", "--name", "api", "--json"])
+
+      expect(JSON.parse(output.string)).to include("valid" => true, "problems" => [])
+    end
+
+    it "validate exits 1 after printing the document when a problem is an error" do
+      cli, output, _ = build_test_cli(config_report: report.new(valid: false))
+
+      expect { cli.run(["config", "validate", "--name", "api", "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+
+      expect(JSON.parse(output.string)).to include("ok" => true, "valid" => false)
+    end
+
+    it "validate prints one line per problem without --json" do
+      cli, output, _ = build_test_cli(config_report: report.new(valid: false))
+
+      expect { cli.run(["config", "validate", "--name", "api"]) }.to raise_error(FakeSystemExit)
+
+      expect(output.string).to eq("error: /c/p.yml:3:1: bad\n")
+    end
+
+    it "validate says so when there is nothing to report" do
+      cli, output, _ = build_test_cli(config_report: report.new)
+
+      cli.run(["config", "validate", "--name", "api"])
+
+      expect(output.string).to eq("No problems found in the config for 'api'.\n")
+    end
+  end
+
+  describe "#run with tmux show" do
+    let(:reporter) do
+      Class.new do
+        def show(name)
+          {"schema_version" => 1, "ok" => true, "workspace" => name, "file" => "/t/workspace.#{name}.yml", "parse_error" => nil,
+           "session" => {"name" => name, "root" => "/src"}, "running" => false,
+           "windows" => [{"index" => 0, "name" => "w", "layout" => "even-vertical",
+                          "panes" => [{"index" => 0, "kind" => "claude", "command" => "claude --continue\nmore"}]}]}
+        end
+      end
+    end
+
+    it "prints the document with --json" do
+      cli, output, _ = build_test_cli(tmuxinator_report: reporter.new)
+
+      cli.run(["tmux", "show", "--name", "api", "--json"])
+
+      expect(JSON.parse(output.string)).to include("ok" => true, "workspace" => "api")
+    end
+
+    it "prints a readable summary without --json" do
+      cli, output, _ = build_test_cli(tmuxinator_report: reporter.new)
+
+      cli.run(["tmux", "show", "--name", "api"])
+
+      expect(output.string).to include("session api", "window 0 w (even-vertical)", "pane 0 [claude] claude --continue")
+      expect(output.string).not_to include("more")
+    end
+
+    it "prints usage for a bare tmux and rejects an unknown action" do
+      cli, output, _ = build_test_cli(tmuxinator_report: reporter.new)
+      cli.run(["tmux"])
+      expect(output.string).to include("Usage: workspace tmux show")
+
+      expect { cli.run(["tmux", "bogus"]) }.to raise_error(FakeSystemExit)
     end
   end
 

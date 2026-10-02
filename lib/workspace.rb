@@ -140,6 +140,9 @@ require_relative "workspace/iterm"
 require_relative "workspace/window_manager"
 require_relative "workspace/window_layout"
 require_relative "workspace/project_settings"
+require_relative "workspace/config_file"
+require_relative "workspace/config_report"
+require_relative "workspace/tmuxinator_report"
 require_relative "workspace/process_tree"
 require_relative "workspace/liveness"
 require_relative "workspace/agent_readiness"
@@ -351,6 +354,8 @@ module Workspace
       state: state, tmux: tmux, git: git, lock_namespace: lock_namespace, lock_holder: lock_holder,
       hook_runner: hook_runner, json_hook_runner: json_hook_runner, output: output, error_output: error_output, input: input)
     config_command = Commands::Config.new(project_settings: project_settings, lineage: lineage, file_backup: file_backup, output: output)
+    config_report = ConfigReport.new(project_settings: project_settings, project_config: project_config)
+    tmuxinator_report = TmuxinatorReport.new(config: config, tmux: tmux)
 
     context_store = ContextStore.new(path: config.context_store_path, logger: logger)
     context_reader = ContextReader.new(context_store: context_store, project_settings: project_settings, tmux: tmux, logger: logger,
@@ -435,6 +440,8 @@ module Workspace
       sessions_command: sessions_command,
       session_event_command: session_event_command,
       config_command: config_command,
+      config_report: config_report,
+      tmuxinator_report: tmuxinator_report,
       statusline_command: statusline_command,
       ask_command: ask_command,
       launch_mode: launch_mode,

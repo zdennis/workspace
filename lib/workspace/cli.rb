@@ -18,7 +18,7 @@ module Workspace
       init doctor launch start stop add add-project kill finish relaunch
       focus deactivate reactivate tile resize capture agent agentd lock dev parent projects
       capabilities sessions ask session-event agent-run handoff pipeline run
-      run-and-report report-run-status layout config statusline current
+      run-and-report report-run-status layout config tmux statusline current
       list-projects list status repair cleanup prune set-command event-log
       whereis lookup dir alfred version help
     ].freeze
@@ -66,6 +66,8 @@ module Workspace
     # @param dev_command [Workspace::Commands::Dev] pre-built dev command
     # @param projects_command [Workspace::Commands::Projects, nil] pre-built projects command
     # @param capabilities_command [Workspace::Commands::Capabilities, nil] pre-built capabilities command
+    # @param config_report [Workspace::ConfigReport, nil] builds the `config show/validate --json` documents
+    # @param tmuxinator_report [Workspace::TmuxinatorReport, nil] builds the `tmux show --json` document
     # @param project_actions_command [Workspace::Commands::ProjectActions, nil] pre-built project-wide actions command
     # @param clock [#call] returns the current Time, for relative deadline display
     # @param liveness [#call, nil] maps project names to true, false, or nil
@@ -73,7 +75,7 @@ module Workspace
     #   reports every project as unknown
     # @param launch_mode [Workspace::LaunchMode, nil] decides whether launch/start
     #   run headless when no --[no-]headless flag is given; nil builds one
-    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, restart_agent_command: nil, send_command: nil, ensure_agent_command: nil, handoff_command: nil, projects_command: nil, capabilities_command: nil, project_actions_command: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil, liveness: nil)
+    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, restart_agent_command: nil, send_command: nil, ensure_agent_command: nil, handoff_command: nil, projects_command: nil, capabilities_command: nil, project_actions_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil, liveness: nil)
       @config = config
       @state = state
       @project_config = project_config
@@ -119,6 +121,8 @@ module Workspace
       @handoff_command = handoff_command
       @projects_command = projects_command
       @capabilities_command = capabilities_command
+      @config_report = config_report
+      @tmuxinator_report = tmuxinator_report
       @project_actions_command = project_actions_command
       @exit_handler = exit_handler
       @logger = logger
@@ -211,6 +215,8 @@ module Workspace
         cmd_layout(args)
       when "config"
         cmd_config(args)
+      when "tmux"
+        cmd_tmux(args)
       when "statusline"
         cmd_statusline(args)
       when "current"
@@ -356,7 +362,7 @@ module Workspace
           capabilities    Print what this CLI supports, as feature revisions (for scripts and the UI)
           capture         Print a tmux pane's scrollback buffer to stdout
           cleanup         Detect and remove zombie sessions from state
-          config          Show project or global configuration
+          config          Show, validate, set, get or unset project or global configuration
           current         Print the workspace project name for the current directory
           dev             Start, stop, or inspect this repo's dev environment (devenv lock)
           deactivate      Deactivate Claude in a project's tmux pane (sends Ctrl-C)
@@ -393,6 +399,7 @@ module Workspace
           statusline      Render Claude Code's status line (install as its statusLine command)
           stop            Stop active workspace projects and their tmux sessions
           tile            Tile all windows for a project across the screen
+          tmux            Show a workspace's tmuxinator file as windows and panes (tmux show --json)
           wait-until-content  Block until a pane shows content, then exec a command
           whereis         Print the workspace installation directory
 
@@ -3126,6 +3133,12 @@ module Workspace
       when "unset"
         args.shift
         cmd_config_unset(args)
+      when "show"
+        args.shift
+        cmd_config_show(args)
+      when "validate"
+        args.shift
+        cmd_config_validate(args)
       else
         cmd_config_show(args)
       end
@@ -3211,10 +3224,120 @@ module Workspace
       @config_command.unset(key, project: project, cwd: @working_dir)
     end
 
+    def cmd_config_validate(args)
+      json = false
+      name = nil
+      parser = OptionParser.new do |opts|
+        opts.banner = "Usage: workspace config validate [--name NAME] [--json]"
+        opts.separator ""
+        opts.separator "Check the config files a workspace reads (its own, its parent project's when it is"
+        opts.separator "a worktree, and the global one): YAML syntax, key types and values, and keys"
+        opts.separator "nothing reads. A file that can't be parsed is reported with its line and column"
+        opts.separator "rather than failing the command. Exits 0 when there are no errors, 1 otherwise;"
+        opts.separator "warnings and notes don't change the exit status."
+        opts.separator ""
+        opts.separator "Options:"
+        opts.on("--name NAME", "--project NAME", "Workspace to check instead of the one inferred from cwd") { |v| name = v }
+        opts.on("--json", "Print one document with a `valid` flag and the problems (see docs/README.config.md)") { json = true }
+        opts.separator ""
+        opts.separator "Examples:"
+        opts.separator "  workspace config validate"
+        opts.separator "  workspace config validate --name myproject.worktree-PROJ-123 --json"
+      end
+      parser.parse!(args)
+      raise UsageError, parser.help if args.any?
+
+      doc = config_report.validate(config_workspace(name, parser))
+      if json
+        @output.puts JSON.generate(doc)
+      elsif doc["problems"].empty?
+        @output.puts "No problems found in the config for '#{doc["workspace"]}'."
+      else
+        doc["problems"].each do |problem|
+          place = [problem["file"], problem["line"], problem["column"]].compact.join(":")
+          @output.puts "#{problem["severity"]}: #{place}: #{problem["message"]}"
+        end
+      end
+      @exit_handler.exit(1) unless doc["valid"]
+    end
+
+    def config_report
+      @config_report || raise(Error, "config reports are not available: no config report was wired")
+    end
+
+    # The workspace `config show/validate` act on: the named one, else the one detected from cwd.
+    def config_workspace(name, parser)
+      name || @project_detector.detect(@working_dir) || raise(UsageError, parser.help)
+    end
+
+    def cmd_tmux(args)
+      usage = "Usage: workspace tmux show [--name NAME] [--json]"
+      case args.first
+      when "show"
+        args.shift
+        cmd_tmux_show(args)
+      when nil, "-h", "--help"
+        @output.puts usage
+        @output.puts
+        @output.puts "  show    A workspace's tmuxinator file as session fields, windows and panes"
+      else
+        raise UsageError, usage
+      end
+    end
+
+    def cmd_tmux_show(args)
+      json = false
+      name = nil
+      parser = OptionParser.new do |opts|
+        opts.banner = "Usage: workspace tmux show [--name NAME] [--json]"
+        opts.separator ""
+        opts.separator "Show a workspace's tmuxinator file (~/.config/tmuxinator/workspace.<name>.yml) as"
+        opts.separator "session fields, windows and panes. Each pane has its command, a kind (claude,"
+        opts.separator "agentd, banner, shell or command) and its line in the file; when the session is"
+        opts.separator "running, each pane also has its tmux pane id and start command. Read-only: an"
+        opts.separator "edit to the file takes effect the next time the session is launched."
+        opts.separator ""
+        opts.separator "Options:"
+        opts.on("--name NAME", "--project NAME", "Workspace to show instead of the one inferred from cwd") { |v| name = v }
+        opts.on("--json", "Print one document (see docs/README.tmux.md)") { json = true }
+        opts.separator ""
+        opts.separator "Examples:"
+        opts.separator "  workspace tmux show"
+        opts.separator "  workspace tmux show --name myproject --json"
+      end
+      parser.parse!(args)
+      raise UsageError, parser.help if args.any?
+      raise Error, "tmux show is not available: no tmuxinator report was wired" unless @tmuxinator_report
+
+      doc = @tmuxinator_report.show(config_workspace(name, parser))
+      return @output.puts(JSON.generate(doc)) if json
+
+      print_tmux_show(doc)
+    end
+
+    def print_tmux_show(doc)
+      @output.puts "# #{doc["file"]}"
+      if doc["parse_error"]
+        place = [doc["parse_error"]["line"], doc["parse_error"]["column"]].compact.join(":")
+        @output.puts "Cannot parse (#{place}): #{doc["parse_error"]["message"]}"
+        return
+      end
+      session = doc["session"]
+      @output.puts "session #{session["name"]}  root #{session["root"]}  #{doc["running"] ? "running" : "not running"}"
+      doc["windows"].each do |window|
+        @output.puts "window #{window["index"]} #{window["name"]} (#{window["layout"]})"
+        window["panes"].each do |pane|
+          @output.puts "  pane #{pane["index"]} [#{pane["kind"]}] #{pane["command"].to_s.lines.first&.strip}"
+        end
+      end
+    end
+
     def cmd_config_show(args)
       global = false
+      json = false
+      name = nil
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace config [options] [project]"
+        opts.banner = "Usage: workspace config [show] [options] [project]"
         opts.separator ""
         opts.separator "Show project or global workspace configuration."
         opts.separator ""
@@ -3222,6 +3345,8 @@ module Workspace
         opts.on("--global", "Show global configuration instead of project config") do
           global = true
         end
+        opts.on("--name NAME", "Workspace to show instead of the one inferred from cwd (the same as the project argument)") { |v| name = v }
+        opts.on("--json", "Print every config key with its effective value, source layer and files (see docs/README.config.md)") { json = true }
         opts.separator ""
         opts.separator "Config files:"
         opts.separator "  Global:  #{@project_settings.global_config_path}"
@@ -3268,15 +3393,17 @@ module Workspace
         opts.separator "                                 alerts (default: 10m, must be > 0). Both take"
         opts.separator "                                 effect next time the monitor starts"
         opts.separator ""
-        opts.separator "Note: 'set', 'get', and 'unset' are reserved as the first argument"
-        opts.separator "here and are always treated as subcommands, so a project literally"
-        opts.separator "named 'set', 'get', or 'unset' can't be shown this way (see"
-        opts.separator "docs/README.config.md for the workaround)."
+        opts.separator "Note: 'show', 'validate', 'set', 'get', and 'unset' are reserved as the first"
+        opts.separator "argument here and are always treated as subcommands, so a project literally"
+        opts.separator "named one of them can't be shown this way (see docs/README.config.md for"
+        opts.separator "the workaround)."
         opts.separator ""
         opts.separator "Examples:"
         opts.separator "  workspace config myproject     # show project config"
         opts.separator "  workspace config               # show config for project in current dir"
         opts.separator "  workspace config --global      # show global config"
+        opts.separator "  workspace config show --name myproject --json    # every key, its value and where it comes from"
+        opts.separator "  workspace config validate --name myproject --json    # problems, with line and column"
         opts.separator "  workspace config set dev.up \"./start-dev\""
         opts.separator "  workspace config get dev.up"
         opts.separator "  workspace config unset dev.ready"
@@ -3288,6 +3415,12 @@ module Workspace
       end
       parser.parse!(args)
 
+      if json
+        raise UsageError, "--json can't be combined with --global: the global file is one of the layers in the document" if global
+        @output.puts JSON.generate(config_report.show(config_workspace(name || args.first, parser)))
+        return
+      end
+
       if global
         data = @project_settings.load_global
         path = @project_settings.global_config_path
@@ -3298,7 +3431,7 @@ module Workspace
           @output.puts YAML.dump(data)
         end
       else
-        project = args.first || @project_detector.detect(@working_dir)
+        project = name || args.first || @project_detector.detect(@working_dir)
         raise UsageError, parser.help unless project
         data = @project_settings.load(project)
         path = @project_settings.project_config_path(project)

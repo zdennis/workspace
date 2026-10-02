@@ -23,7 +23,7 @@ It reads constants, config paths and the `PATH`. It starts no process and touche
  "features":{"envelope":1,"error_codes":1,"name_scope":1,"no_input":1,"action_json":1,
    "sessions":1,"locks_json":1,"git_facts":1,"prune_safe":1,"snapshot":1,"events_follow":0,
    "actions_manifest":0,"agent_send":1,"agent_spawn":0,"focus_pane":1,"state_done":0,
-   "doctor_json":0,"daemon_control":0},
+   "doctor_json":0,"daemon_control":0,"config_json":1,"tmux_show":1},
  "exit_codes":{"ok":0,"failed":1,"not_submitted":2,"partial":3,"lock_cleared":4,"timeout":75},
  "paths":{"event_log":"/Users/me/.workspace-events.jsonl","run_dir":"/Users/me/.local/workspace/run"},
  "dependencies":{"window_tool":{"path":"/opt/homebrew/bin/window-tool"},
@@ -57,6 +57,8 @@ It reads constants, config paths and the `PATH`. It starts no process and touche
 | `state_done` | Not available yet |
 | `doctor_json` | Not available yet |
 | `daemon_control` | Not available yet |
+| `config_json` | `config show --json` and `config validate --json` (see [`config`](README.config.md)) |
+| `tmux_show` | `tmux show --json` (see [`tmux`](README.tmux.md)) |
 
 ## Examples
 

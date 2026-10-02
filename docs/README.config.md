@@ -1,11 +1,13 @@
 # workspace config
 
-Show, set, get, or unset project or global workspace configuration.
+Show, validate, set, get, or unset project or global workspace configuration.
 
 ## Usage
 
 ```sh
-workspace config [options] [project]
+workspace config [show] [options] [project]
+workspace config show [--name NAME] --json
+workspace config validate [--name NAME] [--json]
 workspace config set <key> <value> [--project NAME]
 workspace config get <key> [--project NAME]
 workspace config unset <key> [--project NAME]
@@ -16,6 +18,8 @@ workspace config unset <key> [--project NAME]
 | Option | Description |
 |--------|-------------|
 | `--global` | Show global configuration instead of project config |
+| `--name NAME` | (`show`, `validate`) The workspace to report on instead of the one inferred from cwd; for `show` the same as the project argument |
+| `--json` | (`show`, `validate`) Print one JSON document (below) instead of text |
 | `--project NAME`, `--name NAME` | (`set`/`get`/`unset`) Configure this project instead of the one inferred from cwd; the two are the same option |
 
 ## Details
@@ -24,7 +28,7 @@ With no subcommand, displays the YAML configuration for a project or the global 
 
 `set`, `get`, and `unset` manage a project's config by dotted key, without needing to open the YAML file by hand. `get` prints the value and exits 0; if the key has no value, it prints nothing on stdout, a short note on stderr, and exits 1. The project is inferred from cwd via the same resolver used by `workspace parent`, `workspace lock`, and `dev`: a worktree resolves to its parent project. Pass `--project NAME` to target a different project explicitly.
 
-`set`, `get`, and `unset` are reserved as the first argument to `workspace config`: they are always treated as subcommands, not as a project name. A project literally named `set`, `get`, or `unset` can't be shown via `workspace config <name>`; it would need a different name, or reading its YAML file directly.
+`show`, `validate`, `set`, `get`, and `unset` are reserved as the first argument to `workspace config`: they are always treated as subcommands, not as a project name. `workspace config show <name>` is the same as `workspace config <name>`. A project literally named one of them can be shown with `workspace config -- <name>` (everything after `--` is a name), or by reading its YAML file directly.
 
 <!-- The tables between GENERATED markers are rendered from lib/workspace/config_schema.rb; edit the schema and run script/generate-config-docs. -->
 
@@ -71,6 +75,71 @@ Before writing, `set` and `unset` back up the project's config file (via the sam
 
 If the file isn't valid YAML (or isn't a mapping at the top level), `set` and `unset` stop with `Cannot parse <path>: ...` and leave it as written; fix or remove it and retry. Readers that run in the background (lock, alert, and handoff settings) warn and use their defaults instead of failing.
 
+### `config show --json`
+
+```sh
+workspace config show --name api.worktree-fix --json
+```
+
+Prints one document with every key in the table above, the value each reader would use, and the file it comes from. It reads the layers the workspace reads, which is not always the file `workspace config` prints: `dev`, `locks`, `alerts` and `handoff` come from the **parent project's** file even in a worktree (the same file `config set` writes), `hooks` and `pipeline` from the workspace's own file, and `statusline`, `context`, `launch` and `event_log_compact_threshold` from the global file.
+
+```json
+{"schema_version":1,"ok":true,"workspace":"api.worktree-fix","parent":"api",
+ "files":[
+  {"layer":"worktree","path":"/Users/me/.config/workspace/projects/api.worktree-fix.yml","exists":true,"etag":"sha256:9be0...","parse_error":null},
+  {"layer":"project","path":"/Users/me/.config/workspace/projects/api.yml","exists":true,"etag":"sha256:3f9a...","parse_error":null},
+  {"layer":"global","path":"/Users/me/.config/workspace/config.yml","exists":false,"etag":null,"parse_error":null}],
+ "keys":[
+  {"key":"dev.ready_timeout","scope":"project","type":"duration","value":"90s","masked":false,"default":120,"effective":90,
+   "source":"project","source_file":"/Users/me/.config/workspace/projects/api.yml","line":10,"column":3,
+   "resolve":"parent","target_layer":"project","affects":["api","api.worktree-fix","api.worktree-search"],
+   "applies":"next_call","settable":true,"sensitive":false,"problems":[]},
+  {"key":"dev.up","scope":"project","type":"command","value":null,"masked":true,"default":null,"effective":null,
+   "source":"project","source_file":"/Users/me/.config/workspace/projects/api.yml","line":9,"column":3,
+   "resolve":"parent","target_layer":"project","affects":["api","api.worktree-fix","api.worktree-search"],
+   "applies":"next_call","settable":true,"sensitive":true,"problems":[]}],
+ "unknown_keys":[{"key":"deploy_url","layer":"project","line":14,"column":1}]}
+```
+
+- `files` lists the worktree's own file (only for a worktree), the project's, and the global one, in that order. `etag` is `sha256:` and the hash of the file's bytes, or null when the file is missing. `parse_error` is null, or `{"message", "line", "column"}` for a file that can't be parsed (`line` and `column` are omitted for an error without a position, such as a disallowed alias).
+- `keys` has one row per schema key, in schema order. `hooks` and `layouts` appear twice, once per `scope`.
+- `value` is what the file holds, as written. `effective` is what a reader uses: the stored value as parsed (durations are in seconds), or `default` when the key is unset or its stored value is invalid (see `problems`). It is null for a `sensitive` key and when the key's file is `unreadable`. `default` is null when the reader has none. A value in a layer the key's readers don't consult (a `dev` key in a worktree's file) isn't checked and doesn't change `effective`; `config validate` notes it as `not_read`.
+- `source` is `project`, `worktree` or `global` (the layer the value is in), `default`, or `unreadable` when the file that would hold it can't be parsed; the other layers stay readable. `source_file`, `line` and `column` are null unless the value is in a file.
+- `resolve` says whose file the readers consult: `parent`, `own`, `merge` (global, then the workspace's own; the row reports one scope's file), `global`, or `none` (nothing reads it; today that is global `hooks`). `target_layer` is where `config set` writes the key, and null for a key edited by hand. `affects` lists the workspaces that read the file a change lands in. `applies` is `next_call`, `next_event` or `daemon_restart`; treat an unknown value as plain text.
+- `sensitive` keys are commands and hooks. Their `value` and `effective` are always null; `masked` is true when the key has a value. Neither `problems` nor `unknown_keys` ever quote a value.
+- `problems` holds the problems `config validate` reports for that key, with `severity`, `code`, `message`, `line` and `column`.
+- `type` is `command`, `duration`, `percent`, `text`, `enum`, `regex`, `boolean` or `mapping`.
+
+A file that can't be parsed doesn't fail `config show --json`: it is reported in `files` and its keys are `unreadable`. (Plain `workspace config` still refuses and prints the error.) `--json` can't be combined with `--global`; the global file is one of the layers. An unknown workspace is an error document with code `unknown_workspace`.
+
+### `config validate`
+
+```sh
+workspace config validate [--name NAME] [--json]
+```
+
+Checks the files `config show --json` lists, without writing anything: YAML syntax, the type and value of each key (the same checks `config set` makes), keys nothing reads, and keys set in a layer where they have no effect. Exits 0 when no problem is an error, 1 when one is. Warnings and notes don't change the exit status. A file that can't be parsed is a problem with a position, not a crash.
+
+```json
+{"schema_version":1,"ok":true,"valid":false,"workspace":"api",
+ "problems":[
+  {"severity":"error","code":"invalid_value","layer":"project","file":"/Users/me/.config/workspace/projects/api.yml",
+   "line":3,"column":3,"key":"dev.ready_timeout","message":"dev.ready_timeout: expected a duration like \"20\", \"20s\", \"5m\" or \"1h\", got \"soon\""},
+  {"severity":"warning","code":"unknown_key","layer":"project","file":"...","line":14,"column":1,"key":"deploy_url",
+   "message":"deploy_url isn't a known project config key. Nothing reads it here."}]}
+```
+
+`ok` means the command ran; `valid` means there are no errors. Problems are ordered worktree file, project file, global file, then by line. `line` and `column` are 1-based and point at the key, and are null when the problem has no position. Without `--json`, each problem prints as `severity: file:line:column: message`.
+
+| `code` | `severity` | Meaning |
+|---|---|---|
+| `yaml_syntax` | error | The file isn't valid YAML, isn't a mapping at the top level, or uses an alias or tag a config file may not use |
+| `invalid_value` | error | A key's value fails the check `config set` would make, or a section isn't a mapping |
+| `unknown_key` | warning | Nothing reads the key in this file; the message says when it is a setting of the other scope |
+| `not_read` | info | The key is set where no reader looks: a parent-scoped key in a worktree's file, or global `hooks` |
+
+New codes may be added; treat an unknown one by its `severity`.
+
 ### Config file locations
 
 - **Global:** `~/.config/workspace/config.yml`
@@ -94,6 +163,7 @@ If the file isn't valid YAML (or isn't a mapping at the top level), `set` and `u
 | `hooks` | Project-specific hooks (e.g., `post_launch`) |
 | `layouts` | Project-specific tmux pane layouts |
 | `worktree_hooks` | Hooks seeded into new worktrees created from this project |
+| `pipeline` | Pipeline stages (`pipeline.panes`: role, timeout) the agent daemon dispatches work through |
 <!-- END GENERATED: project-settings -->
 
 Keys you can set with `workspace config set` are listed in the table above; the settings here are edited by hand.

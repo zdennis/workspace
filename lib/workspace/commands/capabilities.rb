@@ -28,7 +28,9 @@ module Workspace
         "focus_pane" => 1,
         "state_done" => 0,
         "doctor_json" => 0,
-        "daemon_control" => 0
+        "daemon_control" => 0,
+        "config_json" => 1,
+        "tmux_show" => 1
       }.freeze
 
       # The exit statuses commands use, by meaning.

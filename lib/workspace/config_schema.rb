@@ -35,7 +35,20 @@ module Workspace
     # @!attribute restart [Boolean] true when a running session-monitor daemon only reads it at startup
     # @!attribute settable [Boolean] true when `config set/get/unset` accept it
     # @!attribute parser [#call, nil] returns the parsed value or raises ArgumentError/RegexpError
-    Key = Struct.new(:name, :scope, :doc, :default, :restart, :settable, :parser, keyword_init: true) do
+    # @!attribute resolve [Symbol] whose file the readers consult: :parent (the parent project's file, even from a
+    #   worktree), :own (the workspace's own file), :merge (global, then the workspace's own), :global (the global
+    #   file) or :none (no reader reads it). Defaults to :global for a global key, else :parent.
+    # @!attribute applies [Symbol] when a change takes effect: :next_call, :next_event or :daemon_restart.
+    #   Defaults to :daemon_restart for a restart key, else :next_call.
+    # @!attribute sensitive [Boolean] true when the value is a command or other text `config show --json` must not print
+    # @!attribute type [Symbol] :command, :duration, :percent, :text, :enum, :regex, :boolean or :mapping
+    Key = Struct.new(:name, :scope, :doc, :default, :restart, :settable, :parser, :resolve, :applies, :sensitive, :type, keyword_init: true) do
+      def initialize(scope:, restart: nil, resolve: nil, applies: nil, sensitive: false, type: :text, **rest)
+        resolve ||= (scope == :global) ? :global : :parent
+        applies ||= restart ? :daemon_restart : :next_call
+        super
+      end
+
       # @return [Boolean]
       def settable? = settable
 
@@ -148,49 +161,51 @@ module Workspace
     # Every key, settable ones first in the order `config set` lists them,
     # then keys that are documented but edited by hand.
     KEYS = [
-      Key.new(name: "dev.up", scope: :project, settable: true, doc: "Command that starts the project's dev environment"),
-      Key.new(name: "dev.ready", scope: :project, settable: true, doc: "Readiness probe for the dev environment"),
-      Key.new(name: "dev.stop_timeout", scope: :project, settable: true, default: 20, parser: DURATION,
+      Key.new(name: "dev.up", scope: :project, type: :command, sensitive: true, settable: true, doc: "Command that starts the project's dev environment"),
+      Key.new(name: "dev.ready", scope: :project, type: :command, sensitive: true, settable: true, doc: "Readiness probe for the dev environment"),
+      Key.new(name: "dev.stop_timeout", scope: :project, type: :duration, settable: true, default: 20, parser: DURATION,
         doc: "Grace period before force-stopping the dev environment, e.g. `20s` or `20`"),
-      Key.new(name: "dev.startup_timeout", scope: :project, settable: true, default: 30, parser: POSITIVE_DURATION,
+      Key.new(name: "dev.startup_timeout", scope: :project, type: :duration, settable: true, default: 30, parser: POSITIVE_DURATION,
         doc: "How long `dev up` waits for the wrapper to take a free lock, e.g. `30s` (default `30s`)"),
-      Key.new(name: "dev.ready_timeout", scope: :project, settable: true, default: 120, parser: POSITIVE_DURATION,
+      Key.new(name: "dev.ready_timeout", scope: :project, type: :duration, settable: true, default: 120, parser: POSITIVE_DURATION,
         doc: "How long `dev up` waits for the `dev.ready` check to pass, e.g. `2m` (default `120s`)"),
-      Key.new(name: "dev.kill_grace", scope: :project, settable: true, default: 2,
+      Key.new(name: "dev.kill_grace", scope: :project, type: :duration, settable: true, default: 2,
         parser: ->(value) { Duration.parse_capped(value, max: MAX_KILL_GRACE) },
         doc: "How long `lock clear devenv`, `dev down` and `dev up --force` wait for a SIGKILLed dev environment's process group to disappear before keeping its lock (default `2s`, capped at `60s`)"),
-      Key.new(name: "locks.idle_grace", scope: :project, settable: true, default: 300, parser: POSITIVE_DURATION,
+      Key.new(name: "locks.idle_grace", scope: :project, type: :duration, settable: true, default: 300, parser: POSITIVE_DURATION,
         doc: "How long an idle agent keeps a lock before the first waiter may take it over (default `5m`; see [`workspace lock`](README.lock.md))"),
-      Key.new(name: "locks.ps_timeout", scope: :project, settable: true, default: 5, restart: true,
+      Key.new(name: "locks.ps_timeout", scope: :project, type: :duration, settable: true, default: 5, restart: true,
         parser: ->(value) { Duration.parse_ranged(value, min: MIN_PS_TIMEOUT, max: MAX_PS_TIMEOUT) },
         doc: "How long to wait for `ps` when reading the process table for lock/session checks, before giving up (default `5s`, must be between `1s` and `60s`)"),
-      Key.new(name: "locks.reap_interval", scope: :project, settable: true, default: 30, restart: true, parser: POSITIVE_DURATION,
+      Key.new(name: "locks.reap_interval", scope: :project, type: :duration, settable: true, default: 30, restart: true, parser: POSITIVE_DURATION,
         doc: "How often the session-monitor daemon sweeps for stale lock holders and waiters (default `30s`)"),
-      Key.new(name: "alerts.notify", scope: :project, settable: true, restart: true, parser: COMMAND,
+      Key.new(name: "alerts.notify", scope: :project, type: :command, sensitive: true, settable: true, restart: true, parser: COMMAND,
         doc: "Command the session-monitor daemon runs when an agent pane starts waiting on a person or stays idle past `alerts.idle_after` (unset: no alerts; see [`workspace sessions`](README.sessions.md#alerts))"),
-      Key.new(name: "alerts.idle_after", scope: :project, settable: true, default: 600, restart: true, parser: POSITIVE_DURATION,
+      Key.new(name: "alerts.idle_after", scope: :project, type: :duration, settable: true, default: 600, restart: true, parser: POSITIVE_DURATION,
         doc: "How long an agent pane may sit idle before `alerts.notify` runs (default `10m`)"),
-      Key.new(name: "handoff.threshold", scope: :project, settable: true, default: 11, parser: PERCENT,
+      Key.new(name: "handoff.threshold", scope: :project, type: :percent, settable: true, default: 11, parser: PERCENT,
         doc: "Context-usage percent, 1 to 100, that triggers a handoff in [`workspace handoff check`](README.handoff.md) (default `11`)"),
       Key.new(name: "handoff.check_prompt", scope: :project, settable: true, parser: PROMPT,
         doc: "Overrides the built-in save-state prompt `handoff check --handoff-doc` sends; must not be blank (see [`workspace handoff`](README.handoff.md))"),
       Key.new(name: "handoff.resume_prompt", scope: :project, settable: true, parser: PROMPT,
         doc: "Overrides the built-in resume prompt `handoff new` sends; must not be blank (see [`workspace handoff`](README.handoff.md))"),
-      Key.new(name: "statusline.command", scope: :global, settable: true,
+      Key.new(name: "statusline.command", scope: :global, type: :command, sensitive: true, settable: true,
         doc: "Delegates [`workspace statusline`](README.statusline.md) rendering to another command instead of the built-in renderer"),
-      Key.new(name: "context.source", scope: :global, settable: true, parser: CONTEXT_SOURCE,
+      Key.new(name: "context.source", scope: :global, type: :enum, settable: true, parser: CONTEXT_SOURCE,
         doc: "`statusline` (default) or `scrape` — where `workspace sessions` reads a pane's context usage; see [`workspace statusline`](README.statusline.md)"),
-      Key.new(name: "context.pattern", scope: :global, settable: true, parser: ONE_GROUP_REGEX,
+      Key.new(name: "context.pattern", scope: :global, type: :regex, settable: true, parser: ONE_GROUP_REGEX,
         doc: "Regex with exactly one capture group, used when `context.source` is `scrape`"),
-      Key.new(name: "launch.headless", scope: :global, settable: true, parser: HEADLESS,
+      Key.new(name: "launch.headless", scope: :global, type: :boolean, settable: true, parser: HEADLESS,
         doc: "`true` or `false`: whether `launch`, `start` and `doctor` run [headless](README.launch.md#headless) on this machine when no `--headless`/`--no-headless` flag is given. Unset, they pick headless off macOS, without `osascript`, or when `CI` is set"),
-      Key.new(name: "hooks", scope: :global, settable: false, doc: "Global hooks applied to all projects"),
-      Key.new(name: "layouts", scope: :global, settable: false, doc: "Default tmux pane layouts"),
-      Key.new(name: "event_log_compact_threshold", scope: :global, settable: false,
+      Key.new(name: "hooks", scope: :global, type: :mapping, sensitive: true, resolve: :none, settable: false, doc: "Global hooks applied to all projects"),
+      Key.new(name: "layouts", scope: :global, type: :mapping, resolve: :merge, settable: false, doc: "Default tmux pane layouts"),
+      Key.new(name: "event_log_compact_threshold", scope: :global, type: :text, settable: false,
         doc: "Size warning threshold (e.g., \"10kb\", \"1mb\"). Default: 1mb"),
-      Key.new(name: "hooks", scope: :project, settable: false, doc: "Project-specific hooks (e.g., `post_launch`)"),
-      Key.new(name: "layouts", scope: :project, settable: false, doc: "Project-specific tmux pane layouts"),
-      Key.new(name: "worktree_hooks", scope: :project, settable: false, doc: "Hooks seeded into new worktrees created from this project")
+      Key.new(name: "hooks", scope: :project, type: :mapping, sensitive: true, resolve: :own, applies: :next_event, settable: false, doc: "Project-specific hooks (e.g., `post_launch`)"),
+      Key.new(name: "layouts", scope: :project, type: :mapping, resolve: :merge, settable: false, doc: "Project-specific tmux pane layouts"),
+      Key.new(name: "worktree_hooks", scope: :project, type: :mapping, sensitive: true, settable: false, doc: "Hooks seeded into new worktrees created from this project"),
+      Key.new(name: "pipeline", scope: :project, settable: false, type: :mapping, sensitive: true, resolve: :own, applies: :daemon_restart,
+        doc: "Pipeline stages (`pipeline.panes`: role, timeout) the agent daemon dispatches work through")
     ].each(&:freeze).freeze
 
     # @return [Array<Key>] every key
@@ -211,10 +226,15 @@ module Workspace
     # @return [Array<String>] settable keys a running daemon only reads at startup
     def self.restart_required_names = settable.select(&:restart_required?).map(&:name)
 
+    # `hooks` and `layouts` are declared under both scopes, so a caller that
+    # knows which file it is reading passes the scope.
+    #
     # @param name [String] dotted key
+    # @param scope [Symbol, nil] :project or :global to pick that scope's key; nil for either
     # @return [Key, nil] the key, preferring a settable one
-    def self.key(name)
-      KEYS.find { |key| key.name == name && key.settable? } || KEYS.find { |key| key.name == name }
+    def self.key(name, scope: nil)
+      candidates = KEYS.select { |key| key.name == name && (scope.nil? || key.scope == scope) }
+      candidates.find(&:settable?) || candidates.first
     end
 
     # @param name [String] dotted key

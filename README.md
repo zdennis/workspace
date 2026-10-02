@@ -77,7 +77,7 @@ workspace <subcommand> [options]
 | capabilities | [README](docs/README.capabilities.md) | Print what this CLI supports, as feature revisions (for scripts and the UI) |
 | capture | [README](docs/README.capture.md) | Print a tmux pane's scrollback buffer to stdout |
 | cleanup | [README](docs/README.cleanup.md) | Detect and remove zombie sessions from state |
-| config | [README](docs/README.config.md) | Show, set, get, or unset project or global configuration |
+| config | [README](docs/README.config.md) | Show, validate, set, get, or unset project or global configuration |
 | current | [README](docs/README.current.md) | Print the workspace project name for the current directory |
 | deactivate | [README](docs/README.deactivate.md) | Deactivate Claude in a project's tmux pane (sends Ctrl-C) |
 | dev | [README](docs/README.dev.md) | Start, stop, or inspect the repo's single dev environment (devenv lock) |
@@ -113,6 +113,7 @@ workspace <subcommand> [options]
 | statusline | [README](docs/README.statusline.md) | Render Claude Code's status line (install as its statusLine command) |
 | stop | [README](docs/README.stop.md) | Stop active workspace projects and their tmux sessions |
 | tile | [README](docs/README.tile.md) | Tile windows across the screen (`--all` for all projects) |
+| tmux | [README](docs/README.tmux.md) | Show a workspace's tmuxinator file as windows and panes |
 | version | [README](docs/README.version.md) | Print the workspace version |
 | wait-until-content | [README](docs/README.wait-until-content.md) | Block until a pane shows content, then exec a command |
 | whereis | [README](docs/README.whereis.md) | Print the workspace installation directory |

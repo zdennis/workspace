@@ -22,6 +22,55 @@ RSpec.describe Workspace::ConfigSchema do
     expect(described_class.all).to all(satisfy { |key| !key.doc.to_s.strip.empty? })
   end
 
+  describe "reading attributes" do
+    it "resolves a project key from the parent project's file and a global key from the global file" do
+      expect(described_class.key("dev.up").resolve).to eq(:parent)
+      expect(described_class.key("context.source").resolve).to eq(:global)
+      expect(described_class.key("hooks", scope: :project).resolve).to eq(:own)
+      expect(described_class.key("layouts", scope: :project).resolve).to eq(:merge)
+    end
+
+    it "says global hooks are read by nothing" do
+      expect(described_class.key("hooks", scope: :global).resolve).to eq(:none)
+    end
+
+    it "applies keys the daemon reads at startup on a daemon restart, hooks on the next event, the rest on the next call" do
+      expect(described_class.key("alerts.notify").applies).to eq(:daemon_restart)
+      expect(described_class.key("locks.ps_timeout").applies).to eq(:daemon_restart)
+      expect(described_class.key("hooks", scope: :project).applies).to eq(:next_event)
+      expect(described_class.key("dev.ready_timeout").applies).to eq(:next_call)
+      expect(described_class.all.select { |key| key.applies == :daemon_restart }.map(&:name)).to include(*described_class.restart_required_names)
+    end
+
+    it "marks every key that holds a command or hook as sensitive and no duration or prompt" do
+      sensitive = described_class.all.select(&:sensitive).map { |key| [key.name, key.scope] }
+      expect(sensitive).to contain_exactly(
+        ["dev.up", :project], ["dev.ready", :project], ["alerts.notify", :project], ["statusline.command", :global],
+        ["hooks", :global], ["hooks", :project], ["worktree_hooks", :project], ["pipeline", :project]
+      )
+    end
+
+    it "gives every key a type" do
+      expect(described_class.all.map(&:type).uniq - %i[command duration percent text enum regex boolean mapping]).to eq([])
+      expect(described_class.key("dev.stop_timeout").type).to eq(:duration)
+    end
+  end
+
+  describe ".key" do
+    it "picks the key of the given scope when a name is declared under both" do
+      expect(described_class.key("hooks", scope: :global).scope).to eq(:global)
+      expect(described_class.key("hooks", scope: :project).scope).to eq(:project)
+    end
+
+    it "returns nil for a name not declared under that scope" do
+      expect(described_class.key("dev.up", scope: :global)).to be_nil
+    end
+
+    it "prefers a settable key when no scope is given" do
+      expect(described_class.key("dev.up")).to be_settable
+    end
+  end
+
   describe ".default" do
     it "holds the default every reader falls back to" do
       expect(described_class.default("dev.stop_timeout")).to eq(20)

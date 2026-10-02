@@ -494,6 +494,28 @@ module Workspace
       end
     end
 
+    # Lists every pane in a session with the command tmux started it with.
+    #
+    # `pane_start_command` is empty for a pane that started its default shell,
+    # which is every tmuxinator pane (tmuxinator types the command into the
+    # shell), so the value is nil far more often than not.
+    #
+    # @param session_name [String] tmux session name
+    # @return [Array<Hash>] :window, :index, :id, :start_command (String or nil) per pane;
+    #   empty when the session isn't there or tmux fails
+    def pane_start_commands(session_name)
+      format = ["window_index", "pane_index", "pane_id", "pane_start_command"].map { |f| "\#{#{f}}" }.join("\t")
+      @logger.debug { "tmux: listing pane start commands for #{session_name}" }
+      stdout, _, status = Open3.capture3("tmux", "list-panes", "-s", "-t", session_name, "-F", format)
+      return [] unless status.success?
+
+      stdout.lines.filter_map do |line|
+        window, index, id, command = line.chomp.split("\t", 4)
+        next if id.nil? || id.empty?
+        {window: window.to_i, index: index.to_i, id: id, start_command: (command.nil? || command.empty?) ? nil : command}
+      end
+    end
+
     # Finds the first pane whose title contains the given string (case-insensitive).
     # Useful for locating panes by process name or displayed title.
     #

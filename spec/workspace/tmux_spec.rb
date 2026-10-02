@@ -479,6 +479,33 @@ RSpec.describe Workspace::Tmux do
     end
   end
 
+  describe "#pane_start_commands" do
+    let(:tmux) { described_class.new(config: config) }
+    let(:ok) { instance_double(Process::Status, success?: true) }
+
+    # Real `tmux list-panes -s -F` output: tab-separated, and the start
+    # command is empty for a pane that started its default shell.
+    it "lists every pane in the session, nil for a pane that started the default shell" do
+      stdout = "0\t0\t%24\t\n0\t1\t%25\tclaude --continue || claude\n1\t0\t%30\t\n"
+      allow(Open3).to receive(:capture3).and_return([stdout, "", ok])
+
+      panes = tmux.pane_start_commands("proj")
+
+      expect(Open3).to have_received(:capture3).with("tmux", "list-panes", "-s", "-t", "proj", "-F", anything)
+      expect(panes).to eq([
+        {window: 0, index: 0, id: "%24", start_command: nil},
+        {window: 0, index: 1, id: "%25", start_command: "claude --continue || claude"},
+        {window: 1, index: 0, id: "%30", start_command: nil}
+      ])
+    end
+
+    it "is empty when tmux fails, as for a session that isn't there" do
+      allow(Open3).to receive(:capture3).and_return(["", "can't find session: proj", instance_double(Process::Status, success?: false)])
+
+      expect(tmux.pane_start_commands("proj")).to eq([])
+    end
+  end
+
   describe "#capture_screen" do
     let(:tmux) { described_class.new(config: config) }
 
