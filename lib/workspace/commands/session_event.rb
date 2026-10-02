@@ -29,6 +29,10 @@ module Workspace
       # one is cut rather than dropped.
       MAX_MESSAGE_LENGTH = SessionMonitor::MAX_MESSAGE_LENGTH
 
+      # Longest user prompt forwarded to the daemon. A prompt can be a pasted
+      # file; a label only needs its opening, so the rest is cut.
+      MAX_PROMPT_LENGTH = 1000
+
       # @param config [Workspace::Config] socket path lookups
       # @param tmux [Workspace::Tmux] resolves the pane's session name
       # @param input [IO] stream the hook payload arrives on
@@ -120,11 +124,13 @@ module Workspace
           "pane_id" => pane_id,
           "session_id" => payload["session_id"],
           "cwd" => payload["cwd"],
+          "transcript_path" => text_field(payload, "transcript_path"),
           # Set only when the hook fired inside a sub-agent, so the daemon can
           # tell its events from the main agent's.
           "agent_id" => payload["agent_id"],
           "agent" => agent_for(payload),
-          "message" => message_for(payload)
+          "message" => message_for(payload),
+          "prompt" => prompt_for(payload)
         }.compact
       end
 
@@ -133,6 +139,18 @@ module Workspace
         return nil unless payload["hook_event_name"] == "Notification" && message.is_a?(String)
 
         message[0, MAX_MESSAGE_LENGTH]
+      end
+
+      def text_field(payload, key)
+        value = payload[key]
+        value.is_a?(String) ? value : nil
+      end
+
+      def prompt_for(payload)
+        prompt = payload["prompt"]
+        return nil unless payload["hook_event_name"] == "UserPromptSubmit" && prompt.is_a?(String)
+
+        prompt[0, MAX_PROMPT_LENGTH]
       end
 
       def agent_for(payload)

@@ -26,6 +26,8 @@ It also enforces the `edit` lock: a `PreToolUse` for `Edit`, `Write`, `MultiEdit
 
 Exits 2, with the deny message on stderr, when an edit is denied. Otherwise always exits 0, whether or not a daemon is listening, so a missing daemon never fails an agent's turn. Currently understands Claude Code's hook events (`SessionStart`, `SessionEnd`, `UserPromptSubmit`, `Stop`, `SubagentStop`, `PreToolUse` for every tool — the `Task` tool marks a sub-agent starting; `Edit`/`Write`/`MultiEdit`/`NotebookEdit` are checked against the edit lock — `Notification`, which marks the pane `waiting` in [`workspace sessions`](README.sessions.md) and carries the agent's message (cut to 200 characters), and `PostToolUse`, which ends that wait once a tool runs after a permission prompt). Every event it forwards, except `Notification`, ends a wait (a `PreToolUse` for a tool other than `Task` is not forwarded to the daemon).
 
+Every forwarded event also carries the agent's `transcript_path` when the payload has one, and a `UserPromptSubmit` carries the user's `prompt` (cut to 1000 characters). The prompt is forwarded as typed, so anything pasted into it travels to the daemon too. The daemon does not yet surface either, and keeps neither beyond the event it receives; they are there for labels in `workspace sessions`.
+
 ## Examples
 
 ```sh

@@ -87,6 +87,46 @@ RSpec.describe Workspace::Commands::SessionEvent do
       expect(event["message"].length).to eq(described_class::MAX_MESSAGE_LENGTH)
     end
 
+    it "forwards the transcript path the agent reports, and none when it reports none" do
+      expect(deliver("hook_event_name" => "Stop", "transcript_path" => "/home/u/.claude/projects/p/sess-1.jsonl"))
+        .to include("transcript_path" => "/home/u/.claude/projects/p/sess-1.jsonl")
+      expect(deliver("hook_event_name" => "Stop")).not_to have_key("transcript_path")
+    end
+
+    it "drops a transcript path that is not text" do
+      expect(deliver("hook_event_name" => "Stop", "transcript_path" => ["a"])).not_to have_key("transcript_path")
+    end
+
+    it "cuts a multibyte prompt by character" do
+      event = deliver("hook_event_name" => "UserPromptSubmit", "prompt" => "é" * 2000)
+
+      expect(event["prompt"]).to eq("é" * described_class::MAX_PROMPT_LENGTH)
+    end
+
+    it "forwards the prompt a user submits" do
+      event = deliver("hook_event_name" => "UserPromptSubmit", "prompt" => "fix the login bug")
+
+      expect(event).to include("event" => "user_prompt", "prompt" => "fix the login bug")
+    end
+
+    it "cuts a long prompt instead of dropping it" do
+      event = deliver("hook_event_name" => "UserPromptSubmit", "prompt" => "x" * 5000)
+
+      expect(event["prompt"].length).to eq(described_class::MAX_PROMPT_LENGTH)
+    end
+
+    it "forwards a prompt only from a UserPromptSubmit" do
+      event = deliver("hook_event_name" => "PostToolUse", "tool_name" => "Bash", "prompt" => "not a prompt")
+
+      expect(event).not_to have_key("prompt")
+    end
+
+    it "drops a prompt that is not text" do
+      event = deliver("hook_event_name" => "UserPromptSubmit", "prompt" => {"a" => 1})
+
+      expect(event).not_to have_key("prompt")
+    end
+
     it "forwards a PostToolUse as tool use, which ends a wait for permission" do
       event = deliver("hook_event_name" => "PostToolUse", "tool_name" => "Bash", "message" => "not a notification")
 
