@@ -14,7 +14,33 @@ RSpec.describe Workspace::Git do
 
     it "parses a GitHub PR URL" do
       result = git.parse_start_input("https://github.com/owner/repo/pull/471")
-      expect(result).to eq({type: :pr_url, value: "https://github.com/owner/repo/pull/471"})
+      expect(result).to eq({type: :pr_url, value: "https://github.com/owner/repo/pull/471", repo: "owner/repo", number: "471"})
+    end
+
+    it "parses a GitHub PR URL with a trailing path" do
+      result = git.parse_start_input("https://github.com/owner/repo/pull/471/files")
+      expect(result).to include(type: :pr_url, repo: "owner/repo", number: "471")
+    end
+
+    it "parses a bare #n PR ref with no repo" do
+      result = git.parse_start_input("#835")
+      expect(result).to eq({type: :pr_url, value: "#835", repo: nil, number: "835"})
+    end
+
+    it "parses an owner/repo#n PR ref" do
+      result = git.parse_start_input("acme/api#835")
+      expect(result).to eq({type: :pr_url, value: "acme/api#835", repo: "acme/api", number: "835"})
+    end
+
+    it "allows dots, dashes and underscores in an owner/repo#n ref" do
+      result = git.parse_start_input("my-org/my_repo.js#7")
+      expect(result).to include(type: :pr_url, repo: "my-org/my_repo.js", number: "7")
+    end
+
+    it "treats a branch containing # but not shaped like a PR ref as a branch" do
+      expect(git.parse_start_input("fix#12-thing")).to eq({type: :branch, value: "fix#12-thing"})
+      expect(git.parse_start_input("a/b/c#12")).to eq({type: :branch, value: "a/b/c#12"})
+      expect(git.parse_start_input("#12abc")).to eq({type: :branch, value: "#12abc"})
     end
 
     it "parses a GitHub issue URL" do
@@ -211,6 +237,105 @@ RSpec.describe Workspace::Git do
 
       expect { git.remove_worktree(worktree_path, force: true) }
         .to raise_error(Workspace::Error, /fatal: not a worktree/)
+    end
+  end
+
+  describe "#checkout_pr_worktree" do
+    # A stand-in `gh` on PATH that behaves like `gh pr checkout`: progress on
+    # stderr, the worktree directory created on success, GraphQL errors on
+    # stderr with exit 1, and cobra's "unknown flag" for a gh without --worktree.
+    let(:bin_dir) { Dir.mktmpdir }
+    let(:argv_log) { File.join(bin_dir, "argv.log") }
+    let(:cwd_log) { File.join(bin_dir, "cwd.log") }
+    let(:repo_dir) { Dir.mktmpdir }
+    let(:worktree_path) { File.join(repo_dir, ".worktrees", "pr-835") }
+
+    def install_fake_gh(mode: "ok")
+      path = File.join(bin_dir, "gh")
+      File.write(path, <<~SH)
+        #!/bin/sh
+        echo "$@" >> "#{argv_log}"
+        echo "prompt_disabled=$GH_PROMPT_DISABLED" >> "#{argv_log}"
+        pwd >> "#{cwd_log}"
+        case "#{mode}" in
+          ok)
+            while [ $# -gt 0 ]; do
+              if [ "$1" = "--worktree" ]; then mkdir -p "$2"; fi
+              shift
+            done
+            echo "Switched to a new branch 'pr-835'" >&2
+            exit 0 ;;
+          missing_pr)
+            echo "GraphQL: Could not resolve to a PullRequest with the number of 835. (repository.pullRequest)" >&2
+            exit 1 ;;
+          old_gh)
+            echo "unknown flag: --worktree" >&2
+            echo "Usage:  gh pr checkout [<number> | <url> | <branch>] [flags]" >&2
+            exit 1 ;;
+        esac
+      SH
+      File.chmod(0o755, path)
+    end
+
+    around do |example|
+      original_path = ENV["PATH"]
+      ENV["PATH"] = "#{bin_dir}:#{original_path}"
+      example.run
+    ensure
+      ENV["PATH"] = original_path
+      FileUtils.remove_entry(bin_dir)
+      FileUtils.remove_entry(repo_dir)
+    end
+
+    it "runs gh pr checkout with --worktree and --branch from the repo root and creates the worktree" do
+      install_fake_gh
+
+      git.checkout_pr_worktree(worktree_path, number: "835", repo: nil, branch: "pr-835", chdir: repo_dir, quiet: true)
+
+      expect(File.read(argv_log).lines.first.strip).to eq("pr checkout 835 --worktree #{worktree_path} --branch pr-835")
+      expect(File.read(argv_log)).to include("prompt_disabled=1")
+      expect(File.realpath(File.read(cwd_log).strip)).to eq(File.realpath(repo_dir))
+      expect(File.directory?(worktree_path)).to be(true)
+    end
+
+    it "passes --repo when the ref names a repository" do
+      install_fake_gh
+
+      git.checkout_pr_worktree(worktree_path, number: "835", repo: "acme/api", branch: "pr-835", chdir: repo_dir, quiet: true)
+
+      expect(File.read(argv_log).lines.first.strip).to eq("pr checkout 835 --repo acme/api --worktree #{worktree_path} --branch pr-835")
+    end
+
+    it "echoes the command it runs unless quiet" do
+      install_fake_gh
+
+      git.checkout_pr_worktree(worktree_path, number: "835", repo: nil, branch: "pr-835", chdir: repo_dir)
+
+      expect(output.string).to include("Running: gh pr checkout 835 --worktree #{worktree_path} --branch pr-835")
+    end
+
+    it "raises with gh's message when the PR can't be found" do
+      install_fake_gh(mode: "missing_pr")
+
+      expect {
+        git.checkout_pr_worktree(worktree_path, number: "835", repo: nil, branch: "pr-835", chdir: repo_dir, quiet: true)
+      }.to raise_error(Workspace::Error, /Could not check out PR #835.*Could not resolve to a PullRequest/m)
+    end
+
+    it "says to upgrade gh when it doesn't know --worktree" do
+      install_fake_gh(mode: "old_gh")
+
+      expect {
+        git.checkout_pr_worktree(worktree_path, number: "835", repo: nil, branch: "pr-835", chdir: repo_dir, quiet: true)
+      }.to raise_error(Workspace::Error, /too old.*--worktree/m)
+    end
+
+    it "raises an install hint when gh is not on PATH" do
+      ENV["PATH"] = repo_dir
+
+      expect {
+        git.checkout_pr_worktree(worktree_path, number: "835", repo: nil, branch: "pr-835", chdir: repo_dir, quiet: true)
+      }.to raise_error(Workspace::Error, /`gh` is not installed/)
     end
   end
 

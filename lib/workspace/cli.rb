@@ -322,7 +322,7 @@ module Workspace
           report-run-status  Internal: write run result for --wait (called by shell wrapper)
           session-event   Forward one agent hook event to its daemon (installed by init)
           sessions        Show coding-agent sessions and sub-agents in a workspace
-          start           Create a worktree and launch it (from JIRA key, PR URL, or branch)
+          start           Create a worktree and launch it (from JIRA key, PR URL or #n, or branch)
           status          Show detailed state of tracked launcher sessions
           set-command     Set the shell command for a pane in a project config (--pane <N>)
           statusline      Render Claude Code's status line (install as its statusLine command)
@@ -430,14 +430,16 @@ module Workspace
       headless = nil
       json = false
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace start [options] <jira-key|jira-url|pr-url|branch>"
+        opts.banner = "Usage: workspace start [options] <jira-key|jira-url|pr-url|pr-ref|branch>"
         opts.separator ""
         opts.separator "Create a git worktree and launch it as a workspace project."
         opts.separator ""
         opts.separator "Accepts:"
         opts.separator "  PROJ-123                                  JIRA issue key (used as branch name)"
         opts.separator "  https://mycompany.atlassian.net/.../123   JIRA URL (extracts issue key)"
-        opts.separator "  https://github.com/.../pull/471           GitHub PR URL (fetches branch name)"
+        opts.separator "  https://github.com/.../pull/471           GitHub PR URL (works for PRs from forks)"
+        opts.separator "  '#471', owner/repo#471                    GitHub PR ref ('#n' is a PR of the current repo; quote it,"
+        opts.separator "                                            or your shell treats # as a comment)"
         opts.separator "  https://github.com/.../issues/123         GitHub issue URL (branch: issue-123)"
         opts.separator "  user/PROJ-123                             Branch name (used as-is)"
         opts.separator ""
@@ -468,12 +470,15 @@ module Workspace
         opts.separator ""
         opts.separator "The worktree is created in .worktrees/ under the project root (when run from"
         opts.separator "inside a linked worktree, the parent repo's root is used)."
+        opts.separator "A pull request is checked out with `gh pr checkout --worktree` as branch pr-<n>"
+        opts.separator "in .worktrees/pr-<n>, so PRs from forks work (needs a recent `gh`)."
         opts.separator "Never blocks on stdin when stdin isn't a TTY: pass --base/--yes, or it exits with"
         opts.separator "a usage error naming the flag it needed."
         opts.separator ""
         opts.separator "Examples:"
         opts.separator "  workspace start PROJ-123    # from a JIRA issue key (used as the branch name)"
         opts.separator "  workspace start feature/my-feature    # from an existing branch name"
+        opts.separator "  workspace start '#471'    # check out PR 471 of the current repo, fork or not"
         opts.separator "  workspace start PROJ-123 --prompt \"Fix the login bug\"    # with an initial agent prompt"
         opts.separator "  workspace start PROJ-123 --headless --yes --json    # non-interactive, e.g. from CI"
         opts.separator "  workspace start PROJ-123 --base main --yes --json    # non-interactive, branch from main, not the default base"

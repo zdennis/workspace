@@ -189,8 +189,12 @@ RSpec.describe "workspace start adversarial CLI specs" do
       launch_command = double("launch_command")
 
       allow(git).to receive(:root).and_return(tmpdir)
-      allow(git).to receive(:parse_start_input).and_return({type: :pr_url, value: "https://github.com/org/repo/pull/1"})
-      allow(git).to receive(:resolve_branch_from_pr).and_raise(Errno::ENOENT, "No such file or directory - gh")
+      allow(git).to receive(:parse_start_input).and_return({type: :pr_url, value: "https://github.com/org/repo/pull/1", repo: "org/repo", number: "1"})
+      allow(git).to receive(:sanitize_for_filesystem).with("pr-1").and_return("pr-1")
+      allow(git).to receive(:worktree_exists?).and_return(false)
+      allow(git).to receive(:find_worktree_by_branch).and_return(nil)
+      allow(git).to receive(:local_branch_exists?).and_return(false)
+      allow(git).to receive(:checkout_pr_worktree).and_raise(Errno::ENOENT, "No such file or directory - gh")
 
       command = Workspace::Commands::Start.new(
         git: git, project_config: project_config, project_settings: project_settings,

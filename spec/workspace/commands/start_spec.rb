@@ -33,26 +33,133 @@ RSpec.describe Workspace::Commands::Start do
       )
     end
 
-    context "with a PR URL" do
-      it "resolves branch via git and launches" do
+    context "with a PR ref" do
+      let(:pr_worktree_path) { File.join(tmpdir, ".worktrees", "pr-123") }
+
+      def stub_pr(parsed)
         allow(git).to receive(:root).and_return(tmpdir)
-        allow(git).to receive(:parse_start_input).with("https://github.com/org/repo/pull/123").and_return({type: :pr_url, value: "https://github.com/org/repo/pull/123"})
-        allow(git).to receive(:resolve_branch_from_pr).and_return("feature/PROJ-123")
-        allow(git).to receive(:sanitize_for_filesystem).with("feature/PROJ-123").and_return("feature-PROJ-123")
+        allow(git).to receive(:parse_start_input).and_return(parsed)
+        allow(git).to receive(:sanitize_for_filesystem).with("pr-123").and_return("pr-123")
         allow(git).to receive(:worktree_exists?).and_return(false)
         allow(git).to receive(:find_worktree_by_branch).and_return(nil)
-        allow(git).to receive(:branch_exists?).with("feature/PROJ-123").and_return(true)
-        allow(git).to receive(:create_worktree)
-        allow(project_config).to receive(:create_worktree).and_return("myproject.worktree-feature-PROJ-123")
+        allow(git).to receive(:local_branch_exists?).with("pr-123").and_return(false)
+        allow(git).to receive(:checkout_pr_worktree)
+        allow(project_config).to receive(:create_worktree).and_return("myproject.worktree-pr-123")
         allow(launch_command).to receive(:call)
+      end
 
-        # Create .worktrees parent
+      it "checks the PR out into a worktree with gh and launches it" do
+        stub_pr({type: :pr_url, value: "https://github.com/org/repo/pull/123", repo: "org/repo", number: "123"})
+
         command.call("https://github.com/org/repo/pull/123")
 
-        expect(git).to have_received(:resolve_branch_from_pr)
-        expect(launch_command).to have_received(:call).with(["myproject.worktree-feature-PROJ-123"], prompts: {})
-        expect(output.string).to include("Fetching PR details")
-        expect(output.string).to include("PR branch: feature/PROJ-123")
+        expect(git).to have_received(:checkout_pr_worktree)
+          .with(pr_worktree_path, number: "123", repo: "org/repo", branch: "pr-123", chdir: tmpdir, quiet: false)
+        expect(project_config).to have_received(:create_worktree)
+          .with(File.basename(tmpdir), "pr-123", pr_worktree_path, "pr-123", quiet: false)
+        expect(launch_command).to have_received(:call).with(["myproject.worktree-pr-123"], prompts: {})
+      end
+
+      it "never resolves the head branch name or creates the worktree itself, which is wrong for forks" do
+        stub_pr({type: :pr_url, value: "https://github.com/org/repo/pull/123", repo: "org/repo", number: "123"})
+        allow(git).to receive(:branch_exists?)
+        allow(git).to receive(:create_worktree)
+
+        command.call("https://github.com/org/repo/pull/123")
+
+        expect(git).not_to have_received(:create_worktree)
+        expect(git).not_to have_received(:branch_exists?)
+      end
+
+      it "accepts a bare #n ref, leaving the repo to gh" do
+        stub_pr({type: :pr_url, value: "#123", repo: nil, number: "123"})
+
+        command.call("#123")
+
+        expect(git).to have_received(:checkout_pr_worktree)
+          .with(pr_worktree_path, number: "123", repo: nil, branch: "pr-123", chdir: tmpdir, quiet: false)
+      end
+
+      it "accepts an owner/repo#n ref" do
+        stub_pr({type: :pr_url, value: "org/repo#123", repo: "org/repo", number: "123"})
+
+        command.call("org/repo#123")
+
+        expect(git).to have_received(:checkout_pr_worktree)
+          .with(pr_worktree_path, number: "123", repo: "org/repo", branch: "pr-123", chdir: tmpdir, quiet: false)
+      end
+
+      it "reuses an existing worktree for the PR without calling gh" do
+        stub_pr({type: :pr_url, value: "#123", repo: nil, number: "123"})
+        allow(git).to receive(:worktree_exists?).with(pr_worktree_path).and_return(true)
+
+        command.call("#123")
+
+        expect(git).not_to have_received(:checkout_pr_worktree)
+        expect(output.string).to include("Worktree already exists at: #{pr_worktree_path}")
+        expect(launch_command).to have_received(:call)
+      end
+
+      it "adopts a worktree that already has the PR branch checked out elsewhere" do
+        stub_pr({type: :pr_url, value: "#123", repo: nil, number: "123"})
+        elsewhere = File.join(tmpdir, "elsewhere")
+        allow(git).to receive(:find_worktree_by_branch).with("pr-123", repo: tmpdir).and_return(elsewhere)
+
+        command.call("#123")
+
+        expect(git).not_to have_received(:checkout_pr_worktree)
+        expect(output.string).to include("Adopting existing worktree at: #{elsewhere}")
+      end
+
+      it "stops with a clear error when a stale pr-<n> branch has no worktree, instead of letting gh reset it" do
+        stub_pr({type: :pr_url, value: "#123", repo: nil, number: "123"})
+        allow(git).to receive(:local_branch_exists?).with("pr-123").and_return(true)
+
+        expect { command.call("#123") }.to raise_error(Workspace::Error, /Branch 'pr-123' already exists but has no worktree.*git branch -D pr-123/m)
+
+        expect(git).not_to have_received(:checkout_pr_worktree)
+        expect(launch_command).not_to have_received(:call)
+      end
+
+      it "notes that --base is ignored when reusing an existing PR worktree" do
+        stub_pr({type: :pr_url, value: "#123", repo: nil, number: "123"})
+        allow(git).to receive(:worktree_exists?).with(pr_worktree_path).and_return(true)
+
+        command.call("#123", base: "main")
+
+        expect(error_output.string).to include("--base ignored")
+      end
+
+      it "notes that --base is ignored for a PR" do
+        stub_pr({type: :pr_url, value: "#123", repo: nil, number: "123"})
+
+        command.call("#123", base: "main")
+
+        expect(error_output.string).to include("--base ignored")
+        expect(git).to have_received(:checkout_pr_worktree)
+      end
+
+      it "reports the PR branch, a nil base and the created worktree in --json" do
+        stub_pr({type: :pr_url, value: "#123", repo: nil, number: "123"})
+
+        result = command.call("#123", json: true)
+
+        expect(result[:exit_code]).to eq(0)
+        payload = JSON.parse(output.string)
+        expect(payload).to include("branch" => "pr-123", "base" => nil, "created" => true, "path" => pr_worktree_path)
+        expect(git).to have_received(:checkout_pr_worktree).with(anything, hash_including(quiet: true))
+      end
+
+      it "emits the JSON error payload and launches nothing when gh fails" do
+        stub_pr({type: :pr_url, value: "#123", repo: nil, number: "123"})
+        allow(git).to receive(:checkout_pr_worktree).and_raise(Workspace::Error, "Could not check out PR #123")
+
+        result = command.call("#123", json: true)
+
+        expect(result[:exit_code]).to eq(1)
+        expect(JSON.parse(output.string)).to include("error" => "Could not check out PR #123")
+        expect(project_config).not_to have_received(:create_worktree)
+        expect(launch_command).not_to have_received(:call)
       end
     end
 

@@ -89,7 +89,7 @@ init, doctor, launch, start, add, stop, kill, finish, relaunch, focus, list, sta
 
 - **tmux / tmuxinator**: Session management (required)
 - **window-tool**: Screen geometry and window positioning (required) — https://github.com/zdennis/window-tool
-- **gh**: GitHub CLI for PR branch resolution in `start` (optional)
+- **gh**: GitHub CLI for PR checkout (`gh pr checkout --worktree`) in `start` (optional)
 - **ascii-banner**: Cosmetic banner in launcher pane (optional)
 - **git**: Version control operations (required)
 - **iTerm2**: Terminal emulator, controlled via AppleScript (required)

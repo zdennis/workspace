@@ -185,16 +185,21 @@ module Workspace
       name.gsub(%r{[/\\:*?"<>|]}, "-").gsub(/-{2,}/, "-").gsub(/^-|-$/, "")
     end
 
-    # @param input [String] user input (JIRA URL, PR URL, JIRA key, or branch name)
-    # @return [Hash] parsed result with :type and :value keys
+    # @param input [String] user input (JIRA URL, PR URL, +#n+ or +owner/repo#n+ PR ref, JIRA key, or branch name)
+    # @return [Hash] parsed result with :type and :value keys; a +:pr_url+ result also has
+    #   +:repo+ (+"owner/repo"+, or nil for a bare +#n+) and +:number+
     def parse_start_input(input)
       if input.match?(%r{https?://.*atlassian\.net/browse/([A-Z]+-\d+)})
         key = input.match(%r{/browse/([A-Z]+-\d+)})[1]
         return {type: :jira_key, value: key}
       end
 
-      if input.match?(%r{https?://github\.com/.+/.+/pull/\d+})
-        return {type: :pr_url, value: input}
+      if (match = input.match(%r{https?://github\.com/([^/]+/[^/]+)/pull/(\d+)}))
+        return {type: :pr_url, value: input, repo: match[1], number: match[2]}
+      end
+
+      if (match = input.match(/\A([\w.-]+\/[\w.-]+)?#(\d+)\z/))
+        return {type: :pr_url, value: input, repo: match[1], number: match[2]}
       end
 
       if (match = input.match(%r{https?://github\.com/.+/.+/issues/(\d+)}))
@@ -208,30 +213,39 @@ module Workspace
       {type: :branch, value: input}
     end
 
-    # @param pr_url [String] GitHub pull request URL
-    # @return [String] the head branch name
-    # @raise [Workspace::Error] if the PR URL cannot be parsed or fetched
-    def resolve_branch_from_pr(pr_url)
-      match = pr_url.match(%r{github\.com/([^/]+/[^/]+)/pull/(\d+)})
-      unless match
-        raise Workspace::Error, "Could not parse PR URL: #{pr_url}"
-      end
-      repo = match[1]
-      pr_number = match[2]
+    # Checks a pull request out into a new worktree with `gh pr checkout`, which
+    # fetches the PR's own head, so it works for PRs from forks as well as
+    # same-repo branches.
+    #
+    # @param path [String] directory for the new worktree
+    # @param number [String] pull request number
+    # @param repo [String, nil] "owner/repo" the PR belongs to; nil lets gh use the repo in +chdir+
+    # @param branch [String] local branch name for the checkout
+    # @param chdir [String] directory gh runs in (the repo the worktree is added to)
+    # @param quiet [Boolean] suppress the echoed command
+    # @return [void] (gh never prompts: GH_PROMPT_DISABLED is set)
+    # @raise [Workspace::Error] if gh is missing, too old for `--worktree`, or the checkout fails
+    def checkout_pr_worktree(path, number:, repo:, branch:, chdir:, quiet: false)
+      cmd = ["gh", "pr", "checkout", number]
+      cmd += ["--repo", repo] if repo
+      cmd += ["--worktree", path, "--branch", branch]
 
-      @logger.debug { "git: fetching PR ##{pr_number} from #{repo} via gh" }
+      @logger.debug { "git: #{cmd.join(" ")} (in #{chdir})" }
+      @output.puts "Running: #{cmd.join(" ")}" unless quiet
       begin
-        stdout, _, status = Open3.capture3("gh", "pr", "view", pr_number, "--repo", repo, "--json", "headRefName", "--jq", ".headRefName")
+        _, stderr, status = Open3.capture3({"GH_PROMPT_DISABLED" => "1"}, *cmd, chdir: chdir)
       rescue Errno::ENOENT
-        raise Workspace::Error, "`gh` is not installed, but is required to resolve a PR URL. " \
-          "Install it, or pass the branch name directly instead of the PR URL."
+        raise Workspace::Error, "`gh` is not installed, but is required to check out a PR. " \
+          "Install it, or pass the branch name directly instead of the PR."
       end
-      output = status.success? ? stdout.strip : ""
-      if output.empty?
-        raise Workspace::Error, "Could not fetch PR ##{pr_number} from #{repo}\nMake sure you have access and `gh` is authenticated."
+      return if status.success?
+
+      if stderr.include?("unknown flag: --worktree")
+        raise Workspace::Error, "Your `gh` is too old: it has no `gh pr checkout --worktree`. " \
+          "Upgrade it (brew upgrade gh)."
       end
-      @logger.debug { "git: PR branch resolved to #{output}" }
-      output
+      raise Workspace::Error, "Could not check out PR ##{number}#{" from #{repo}" if repo}\n#{stderr.strip}\n" \
+        "Make sure you have access and `gh` is authenticated."
     end
 
     # @param matches [Array<String>] matching branch names

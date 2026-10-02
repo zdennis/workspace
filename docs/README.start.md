@@ -5,7 +5,7 @@ Create a git worktree and launch it as a workspace project.
 ## Usage
 
 ```sh
-workspace start [options] <jira-key|jira-url|pr-url|issue-url|branch>
+workspace start [options] <jira-key|jira-url|pr-url|pr-ref|issue-url|branch>
 ```
 
 ## Options
@@ -25,11 +25,14 @@ workspace start [options] <jira-key|jira-url|pr-url|issue-url|branch>
 |-------|---------|----------|
 | JIRA issue key | `PROJ-123` | Used as branch name |
 | JIRA URL | `https://mycompany.atlassian.net/browse/PROJ-123` | Extracts issue key |
-| GitHub PR URL | `https://github.com/owner/repo/pull/471` | Fetches branch name via `gh` |
+| GitHub PR URL | `https://github.com/owner/repo/pull/471` | Checks the PR out with `gh pr checkout --worktree` as branch `pr-471` in `.worktrees/pr-471`; works for PRs from forks |
+| GitHub PR ref | `#471` or `owner/repo#471` | Same as the PR URL; `#471` means a PR of the current repo. Quote `#n` (`'#471'`), or your shell treats it as a comment. Run it from a checkout of the repo the PR belongs to |
 | GitHub issue URL | `https://github.com/owner/repo/issues/123` | Creates branch `issue-123` |
 | Branch name | `user/PROJ-123` | Used as-is |
 
 ## Details
+
+A pull request is always checked out by `gh pr checkout <n> --worktree <path> --branch pr-<n>`, never by its head branch name, so a PR from a fork can't be mistaken for a branch of your repo. The local branch is `pr-<n>`; `--base` is ignored (with a note). Re-running `start` for the same PR reuses its worktree. Needs a `gh` recent enough to have `--worktree` (the error says so if not).
 
 Must be run from within a git repository. Creates a worktree in `.worktrees/` under the project root, generates a tmuxinator config, and launches it. When run from inside a linked worktree, `start` resolves the parent repo first — the worktree is created under the parent repo's `.worktrees/` and named after the parent project, so an existing session is reused rather than a nested workspace created (this applies when the worktree belongs to the surrounding repo; a standalone repo nested inside a worktree, and worktrees of a bare clone, keep the cwd repo's own root).
 
@@ -119,6 +122,10 @@ workspace start PROJ-123
 
 # Start from a GitHub PR
 workspace start https://github.com/org/repo/pull/471
+
+# Start from a PR ref of the current repo, or of another repo
+workspace start '#471'
+workspace start org/repo#471
 
 # Start from a GitHub issue
 workspace start https://github.com/org/repo/issues/42

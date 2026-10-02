@@ -25,7 +25,7 @@ A [headless](docs/README.launch.md#headless) launch needs only Ruby, tmux, tmuxi
 - **[tmux](https://github.com/tmux/tmux)** — terminal multiplexer
 - **[tmuxinator](https://github.com/tmuxinator/tmuxinator)** — tmux session manager
 - **[window-tool](https://github.com/zdennis/window-tool)** — fast window management via Accessibility API (must be on PATH)
-- **[gh](https://cli.github.com/)** — GitHub CLI (for `workspace start` with PR URLs)
+- **[gh](https://cli.github.com/)** — GitHub CLI (for `workspace start` with PR URLs and `#n` refs; needs a version with `gh pr checkout --worktree`)
 - **git** — version control
 - **[ascii-banner](https://github.com/zdennis/homebrew-bin/blob/main/docs/README.ascii-banner.md)** — terminal banner display (optional, used in tmuxinator templates)
 

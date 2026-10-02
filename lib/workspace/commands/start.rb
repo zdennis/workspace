@@ -4,7 +4,9 @@ require "fileutils"
 module Workspace
   module Commands
     # Creates a git worktree and launches it as a workspace project.
-    # Accepts JIRA keys, GitHub PR/issue URLs, or branch names as input.
+    # Accepts JIRA keys, GitHub PR/issue URLs, PR refs (`#n`, `owner/repo#n`), or
+    # branch names as input. A PR is checked out with `gh pr checkout --worktree`
+    # as branch `pr-<n>`, which is safe for PRs from forks.
     class Start
       JSON_SCHEMA_VERSION = 1
 
@@ -36,7 +38,7 @@ module Workspace
 
       # Creates a worktree from the given input and launches it.
       #
-      # @param input_string [String] JIRA key, PR URL, or branch name
+      # @param input_string [String] JIRA key, PR URL, PR ref (`#n`, `owner/repo#n`), or branch name
       # @param prompt [String, nil] optional prompt to send to the coding agent after launching
       # @param prompt_timeout [Numeric, nil] seconds to wait for the agent to be
       #   ready before giving up on the prompt; nil uses the launch command's default
@@ -93,22 +95,31 @@ module Workspace
         end
         parsed = @git.parse_start_input(input_string)
 
-        branch_name = resolve_branch_name(parsed, quiet: quiet)
+        # A PR is checked out by `gh pr checkout` under its own number, never by
+        # its head branch name, which for a fork PR can name an unrelated branch
+        # of this repo (`main`).
+        pr = (parsed if parsed[:type] == :pr_url)
+        branch_name = pr ? "pr-#{pr[:number]}" : resolve_branch_name(parsed)
+        note_pr_base_ignored(branch_name, quiet: quiet) if pr && base
         worktree_dir_name = @git.sanitize_for_filesystem(branch_name)
         worktree_path = File.join(root, ".worktrees", worktree_dir_name)
 
         if @git.worktree_exists?(worktree_path)
-          note_base_ignored(branch_name, quiet: quiet) if base
+          note_base_ignored(branch_name, quiet: quiet) if base && !pr
           return finish_worktree(project_name, worktree_dir_name, worktree_path, branch_name,
             base: nil, created: false, prompt: prompt, prompt_timeout: prompt_timeout, headless: headless, quiet: quiet, already_exists: true)
         end
 
-        result = resolve_or_create_branch(branch_name, base: base, yes: yes, interactive: interactive, quiet: quiet)
-        return if result == :cancelled
+        if pr
+          result = {branch_name: branch_name, base_branch: nil}
+        else
+          result = resolve_or_create_branch(branch_name, base: base, yes: yes, interactive: interactive, quiet: quiet)
+          return if result == :cancelled
 
-        branch_name = result[:branch_name]
-        worktree_dir_name = @git.sanitize_for_filesystem(branch_name)
-        worktree_path = File.join(root, ".worktrees", worktree_dir_name)
+          branch_name = result[:branch_name]
+          worktree_dir_name = @git.sanitize_for_filesystem(branch_name)
+          worktree_path = File.join(root, ".worktrees", worktree_dir_name)
+        end
 
         # Check if a worktree for this branch exists at a non-standard location
         existing_path = @git.find_worktree_by_branch(branch_name, repo: root)
@@ -117,9 +128,23 @@ module Workspace
             base: nil, created: false, prompt: prompt, prompt_timeout: prompt_timeout, headless: headless, quiet: quiet, adopted: true)
         end
 
+        # gh would otherwise reuse or reset a stale pr-<n> branch (left by a
+        # removed worktree) in ways that can drop local commits.
+        if pr && @git.local_branch_exists?(branch_name)
+          raise Workspace::Error,
+            "Branch '#{branch_name}' already exists but has no worktree here.\n" \
+            "Delete it with `git branch -D #{branch_name}` and rerun, or check it out yourself " \
+            "with `git worktree add #{worktree_path} #{branch_name}`."
+        end
+
         create_worktree_directory(root)
         begin
-          @git.create_worktree(worktree_path, branch_name, base: result[:base_branch], quiet: quiet)
+          if pr
+            log(quiet, "Checking out PR ##{pr[:number]}...")
+            @git.checkout_pr_worktree(worktree_path, number: pr[:number], repo: pr[:repo], branch: branch_name, chdir: root, quiet: quiet)
+          else
+            @git.create_worktree(worktree_path, branch_name, base: result[:base_branch], quiet: quiet)
+          end
         rescue Errno::EEXIST
           # A concurrent `start` finished creating .worktrees/ at the same moment; harmless.
         end
@@ -186,6 +211,15 @@ module Workspace
         end
       end
 
+      def note_pr_base_ignored(branch_name, quiet:)
+        message = "Note: --base ignored; a pull request is checked out as its own branch '#{branch_name}'."
+        if quiet
+          @warnings << message
+        else
+          @error_output.puts message
+        end
+      end
+
       # A lineage result is only trusted when git's own common dir confirms it:
       # the common dir must be a normal ".git" directory (a bare repo's common
       # dir is the bare repo itself, whose parent directory is not a checkout),
@@ -239,16 +273,8 @@ module Workspace
         @launch_command.call([config_name], **kwargs)
       end
 
-      def resolve_branch_name(parsed, quiet:)
-        case parsed[:type]
-        when :pr_url
-          log(quiet, "Fetching PR details...")
-          branch = @git.resolve_branch_from_pr(parsed[:value])
-          log(quiet, "PR branch: #{branch}")
-          branch
-        when :issue_url, :jira_key, :branch
-          parsed[:value]
-        end
+      def resolve_branch_name(parsed)
+        parsed[:value]
       end
 
       def resolve_or_create_branch(branch_name, base:, yes:, interactive:, quiet:)
