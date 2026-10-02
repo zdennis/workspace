@@ -104,7 +104,7 @@ module Workspace
         "key" => key.name,
         "scope" => key.scope.to_s,
         "type" => key.type.to_s,
-        "value" => masked ? nil : stored,
+        "value" => masked ? nil : ConfigFile.json_safe(stored),
         "masked" => masked,
         "default" => key.default,
         "effective" => effective(key, stored, source, own_problems),
@@ -180,7 +180,9 @@ module Workspace
         next if bad_sections.include?(key.name.split(".").first)
         stored = dig(file.data, key.name.split("."))
         next if stored.nil?
-        if key.type == :mapping
+        if ConfigFile.non_finite?(stored)
+          problems << located(file, "error", "invalid_value", key.name, "#{key.name} must be a finite number, not .inf, -.inf or .nan")
+        elsif key.type == :mapping
           problems << located(file, "error", "invalid_value", key.name, "#{key.name} must be a mapping") unless stored.is_a?(Hash)
         elsif key.parser
           begin

@@ -37,6 +37,29 @@ module Workspace
       Result.new(layer: layer, path: path, exists: true, etag: nil, data: {}, parse_error: {"message" => e.message}, locations: {})
     end
 
+    # @param value [Object] a value from parsed YAML
+    # @return [Boolean] whether it is, or holds, a Float JSON can't carry (.inf, -.inf, .nan)
+    def self.non_finite?(value)
+      case value
+      when Float then !value.finite?
+      when Hash then value.any? { |k, v| non_finite?(k) || non_finite?(v) }
+      when Array then value.any? { |v| non_finite?(v) }
+      else false
+      end
+    end
+
+    # @param value [Object] a value from parsed YAML
+    # @return [Object] the value with each non-finite Float replaced by its name as a string
+    #   ("Infinity", "-Infinity", "NaN"), so `JSON.generate` accepts it
+    def self.json_safe(value)
+      case value
+      when Float then value.finite? ? value : value.to_s
+      when Hash then value.to_h { |k, v| [json_safe(k), json_safe(v)] }
+      when Array then value.map { |v| json_safe(v) }
+      else value
+      end
+    end
+
     def self.parse(text, result)
       data = YAML.safe_load(text)
       if data.is_a?(Hash)

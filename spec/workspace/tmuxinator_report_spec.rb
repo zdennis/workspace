@@ -31,6 +31,18 @@ RSpec.describe Workspace::TmuxinatorReport do
     File.write(File.join(dir, "workspace.#{name}.yml"), text)
   end
 
+  it "renders non-finite numbers in the file as strings so the document is JSON-safe" do
+    write("api", "name: .nan\nroot: .inf\nwindows:\n  - .inf:\n      layout: -.inf\n      panes:\n        - .nan: .inf\n")
+
+    doc = report.show("api")
+
+    expect { JSON.generate(doc) }.not_to raise_error
+    expect(doc["session"]).to include("name" => "NaN", "root" => "Infinity")
+    window = doc["windows"].first
+    expect(window).to include("name" => "Infinity", "layout" => "-Infinity")
+    expect(window["panes"].first).to include("title" => "NaN", "command" => "Infinity")
+  end
+
   let(:template) do
     <<~YAML
       # header

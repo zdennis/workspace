@@ -23,6 +23,37 @@ RSpec.describe Workspace::ConfigReport do
     doc["keys"].find { |row| row["key"] == name && (scope.nil? || row["scope"] == scope) }
   end
 
+  describe "non-finite numbers" do
+    it "reports .inf, -.inf and .nan as invalid_value problems and keeps every document JSON-safe" do
+      path = write("api", "dev:\n  ready_timeout: .inf\n  kill_grace: -.inf\n  stop_timeout: .nan\n")
+
+      show = report.show("api")
+      validate = report.validate("api")
+
+      expect { JSON.generate(show) }.not_to raise_error
+      expect { JSON.generate(validate) }.not_to raise_error
+      rows = %w[dev.ready_timeout dev.kill_grace dev.stop_timeout].map { |name| key_row(show, name) }
+      expect(rows.map { |r| r["value"] }).to eq(%w[Infinity -Infinity NaN])
+      expect(rows.map { |r| r["problems"].map { |p| p["code"] } }).to eq([["invalid_value"]] * 3)
+      expect(rows.first).to include("effective" => 120, "line" => 2, "column" => 3)
+      expect(validate["valid"]).to be(false)
+      expect(validate["problems"].map { |p| [p["key"], p["code"], p["file"], p["line"]] }).to eq(
+        [["dev.ready_timeout", "invalid_value", path, 2], ["dev.kill_grace", "invalid_value", path, 3], ["dev.stop_timeout", "invalid_value", path, 4]]
+      )
+    end
+
+    it "never prints a sensitive key's value, finite or not" do
+      write("api", "dev:\n  up: .inf\n")
+
+      show = report.show("api")
+      row = key_row(show, "dev.up")
+
+      expect(row).to include("value" => nil, "masked" => true, "effective" => nil)
+      expect(row["problems"].map { |p| p["code"] }).to eq(["invalid_value"])
+      expect(JSON.generate(show)).not_to match(/Infinity/)
+    end
+  end
+
   describe "#show" do
     it "describes every schema key, in schema order, under the documented envelope" do
       doc = report.show("api")

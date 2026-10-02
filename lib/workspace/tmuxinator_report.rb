@@ -37,12 +37,12 @@ module Workspace
       }
       return doc.merge("session" => nil, "windows" => [], "running" => nil, "applies" => "relaunch") unless file.readable?
 
-      session_name = file.data["name"] || workspace
+      session_name = file.data["name"]&.to_s || workspace
       running = running?(session_name)
       live = running ? live_panes(session_name) : []
       doc.merge(
-        "session" => session(file.data),
-        "windows" => windows(file.data["windows"], pane_lines(File.read(path)), live),
+        "session" => session(ConfigFile.json_safe(file.data)),
+        "windows" => windows(ConfigFile.json_safe(file.data["windows"]), pane_lines(File.read(path)), live),
         "running" => running,
         "applies" => "relaunch"
       )
