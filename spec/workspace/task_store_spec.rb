@@ -70,6 +70,22 @@ RSpec.describe Workspace::TaskStore do
     end
   end
 
+  describe "warnings" do
+    it "warn once per version of a bad file, again after it changes" do
+      FileUtils.mkdir_p(dir)
+      bad = File.join(dir, "bad.json")
+      File.write(bad, "{nope")
+
+      3.times { store.active_for("w") }
+      expect(error_output.string.scan("bad.json").size).to eq(1)
+
+      File.write(bad, "{still nope")
+      File.utime(Time.now + 5, Time.now + 5, bad)
+      store.active_for("w")
+      expect(error_output.string.scan("bad.json").size).to eq(2)
+    end
+  end
+
   describe "#archive" do
     it "moves the task to archive/ with its outcome and removes it from the active set" do
       task = store.start(workspace: "w", title: "A")

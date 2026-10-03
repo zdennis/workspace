@@ -60,11 +60,11 @@ and/or `--yes` alongside it when the branch might need to be created.
 
 ### Tasks
 
-`start` records a task for the new workspace: its title (`--title`, optional), the input it started from (`ref`), its branch and worktree path. The record is one JSON file, `<id>.json`, under `~/.local/state/workspace/tasks/` (`$XDG_STATE_HOME/workspace/tasks/`), mode 0600, written under a lock so concurrent `start`s never clobber each other. It lives there rather than in the worktree because removing a worktree deletes its untracked files.
+`start` records a task for the new workspace: its title (`--title`, optional), the input it started from (`ref`), its branch and worktree path. The record is one JSON file, `<id>.json`, under `~/.local/state/workspace/.tasks/` (`$XDG_STATE_HOME/workspace/.tasks/`), mode 0600, written under a lock so concurrent `start`s never clobber each other. It lives there rather than in the worktree because removing a worktree deletes its untracked files.
 
 The task id is exported as `WORKSPACE_TASK` in every pane of the workspace, through a `pre_window:` line the worktree template writes into the workspace's tmuxinator config. Run `workspace init --force` once to refresh an installed template that predates it; a workspace whose config already exists keeps the config it has, so its panes get no `WORKSPACE_TASK`. Starting a workspace that already has an active task keeps that task, and a `--title` replaces its title.
 
-[`finish`](README.finish.md) and [`kill`](README.kill.md) archive the task, moving it to `tasks/archive/` with an `outcome` (`merged` for `finish`, `abandoned` for `kill`, `discarded` for `kill --force`) and `archived_at`. The newest 200 archived tasks are kept. [`sessions --json`](README.sessions.md) reports the active task and a status derived from the panes' states.
+[`finish`](README.finish.md) and [`kill`](README.kill.md) archive the task, moving it to `.tasks/archive/` with an `outcome` (`merged` for `finish`, `abandoned` for `kill`, `discarded` for `kill --force`) and `archived_at`. The newest 200 archived tasks are kept. [`sessions --json`](README.sessions.md) reports the active task and a status derived from the panes' states.
 
 ### `--json` output
 

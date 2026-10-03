@@ -85,7 +85,7 @@ module Workspace
 
         interactive = !quiet && !yes && stdin_tty?
         @warnings = []
-        @task_title = title
+        @task_title = title&.strip&.then { |t| t unless t.empty? }
         @task_ref = input_string
 
         info = @lineage.resolve(cwd: root)
@@ -274,7 +274,6 @@ module Workspace
         @output.puts message unless quiet
       end
 
-      # @param prompt_timeout [Numeric, nil] nil defers to the launch command's own default
       # Records the workspace's task (or finds the one it already has) before
       # its config is written, so the id can go into the panes' environment.
       def start_task(project_name, worktree_dir_name, worktree_path, branch_name)
@@ -284,6 +283,7 @@ module Workspace
         @task_store.start(workspace: workspace, title: @task_title, ref: @task_ref, branch: branch_name, path: worktree_path)
       end
 
+      # @param prompt_timeout [Numeric, nil] nil defers to the launch command's own default
       def launch(config_name, prompts, prompt_timeout, headless:, quiet:)
         kwargs = {prompts: prompts}
         kwargs[:headless] = true if headless

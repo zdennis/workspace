@@ -35,8 +35,8 @@ module Workspace
       # 3. remove the worktree; Git#remove_worktree re-checks for unsaved work
       #    right before removing (unless force), so an edit made while the
       #    prompt waited is refused rather than deleted
-      # 4. archive the project's task, then yield to the caller's block (the post_kill hook), then remove the
-      #    config and settings
+      # 4. archive the project's task, then yield to the caller's block (the
+      #    post_kill hook), then remove the config and settings
       # 5. stop the session last: this may run inside the very session it
       #    kills, which ends this process before any later statement runs
       #
@@ -107,7 +107,7 @@ module Workspace
           end
         end
 
-        @task_store&.archive(project, outcome: outcome || (force ? "discarded" : "abandoned"))
+        archive_task(project, outcome || (force ? "discarded" : "abandoned"), out)
         yield project if block_given?
         @project_config.remove(project, quiet: quiet)
         @project_settings.remove(project)
@@ -118,6 +118,14 @@ module Workspace
       end
 
       private
+
+      # The worktree is already gone, so a task store that can't be written
+      # must not stop the config, settings and session from being cleaned up.
+      def archive_task(project, outcome, out)
+        @task_store&.archive(project, outcome: outcome)
+      rescue Workspace::Error => e
+        out.puts "Warning: could not archive the task for #{project}: #{e.message}"
+      end
 
       def raise_unsaved_work!(project, worktree_path, unsaved)
         message = if unsaved == :unknown

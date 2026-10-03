@@ -158,9 +158,11 @@ module Workspace
       File.join(state_dir, "context.json")
     end
 
+    # Dotted, so no workspace name (whose state directory sits beside it) can produce it.
+    #
     # @return [String] path to the directory holding one JSON file per task
     def task_dir
-      File.join(state_dir, "tasks")
+      File.join(state_dir, ".tasks")
     end
 
     # @param name [String] the workspace name

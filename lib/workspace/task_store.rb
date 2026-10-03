@@ -32,6 +32,7 @@ module Workspace
       @lockfile_path = File.join(dir, ".lock")
       @clock = clock
       @error_output = error_output
+      @warned = {}
     end
 
     # Creates the task for a workspace, or returns the one already active
@@ -110,14 +111,25 @@ module Workspace
       Dir.glob(File.join(dir, "*.json")).filter_map { |path| read_record(path) }
     end
 
-    # Anything that isn't a task object is skipped, with a warning, and left on disk.
+    # Anything that isn't a task object is skipped and left on disk, with a
+    # warning once per version of the file: a daemon reads the store on every
+    # snapshot and must not repeat it.
     def read_record(path)
       parsed = JSON.parse(File.read(path))
       return parsed if parsed.is_a?(Hash) && parsed["id"].is_a?(String) && parsed["workspace"].is_a?(String)
-      @error_output.puts "workspace: ignoring task file #{path} (not a task record)"
-      nil
+      warn_once(path, "not a task record")
     rescue JSON::ParserError
-      @error_output.puts "workspace: ignoring task file #{path} (not valid JSON)"
+      warn_once(path, "not valid JSON")
+    rescue Errno::ENOENT
+      nil
+    end
+
+    def warn_once(path, reason)
+      mtime = File.mtime(path)
+      unless @warned[path] == mtime
+        @warned[path] = mtime
+        @error_output.puts "workspace: ignoring task file #{path} (#{reason})"
+      end
       nil
     rescue Errno::ENOENT
       nil

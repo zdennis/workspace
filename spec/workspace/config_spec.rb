@@ -127,6 +127,15 @@ RSpec.describe Workspace::Config do
     end
   end
 
+  describe "#task_dir" do
+    it "is a dotted directory under the state directory, which no workspace's state directory can be" do
+      config = described_class.new
+
+      expect(config.task_dir).to eq(File.join(config.state_dir, ".tasks"))
+      expect(Workspace::WorkspaceLineage.name_from_path("/src/.tasks")).to eq("tasks")
+    end
+  end
+
   describe "length-capped agent runtime paths" do
     subject(:config) { described_class.new }
 

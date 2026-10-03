@@ -439,6 +439,20 @@ RSpec.describe Workspace::Commands::Kill, "task archiving" do
     expect(task_store).not_to have_received(:archive)
   end
 
+  it "still removes the config, settings and session, with a warning, when the task can't be archived" do
+    out = StringIO.new
+    command = described_class.new(git: git, project_config: project_config, project_settings: (settings = double("settings", remove: nil)),
+      stop_command: stop_command, project_detector: double("detector"), task_store: task_store, output: out, input: StringIO.new)
+    allow(task_store).to receive(:archive).and_raise(Workspace::Error, "Could not access task store at /x")
+
+    expect(command.call(name, confirm: false)).to eq(name)
+
+    expect(out.string).to include("Warning: could not archive the task for #{name}: Could not access task store at /x")
+    expect(project_config).to have_received(:remove).with(name, quiet: false)
+    expect(settings).to have_received(:remove).with(name)
+    expect(stop_command).to have_received(:call)
+  end
+
   it "keeps the task when the user cancels" do
     command = described_class.new(git: git, project_config: project_config, project_settings: double("settings"),
       stop_command: stop_command, project_detector: double("detector"), task_store: task_store,

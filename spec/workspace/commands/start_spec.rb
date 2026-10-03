@@ -866,6 +866,12 @@ RSpec.describe Workspace::Commands::Start do
           expect(task_store.active_for("myproject.worktree-PROJ-123")["title"]).to eq("B")
         end
 
+        it "treats a blank title as no title" do
+          task_command.call("PROJ-123", json: true, title: "  ")
+
+          expect(task_store.active_for("myproject.worktree-PROJ-123")["title"]).to be_nil
+        end
+
         it "starts with no title when none is given" do
           task_command.call("PROJ-123", json: true)
 
