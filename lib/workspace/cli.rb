@@ -17,7 +17,7 @@ module Workspace
     SUBCOMMANDS = %w[
       init doctor launch start stop add add-project kill finish relaunch
       focus deactivate reactivate tile resize capture agent agentd lock dev parent projects
-      capabilities sessions ask session-event agent-run handoff pipeline run
+      capabilities sessions review ask session-event agent-run handoff pipeline run
       run-and-report report-run-status layout config tmux statusline current
       list-projects list status repair cleanup prune set-command event-log
       whereis lookup dir alfred version help
@@ -66,6 +66,7 @@ module Workspace
     # @param dev_command [Workspace::Commands::Dev] pre-built dev command
     # @param projects_command [Workspace::Commands::Projects, nil] pre-built projects command
     # @param capabilities_command [Workspace::Commands::Capabilities, nil] pre-built capabilities command
+    # @param review_command [Workspace::Commands::Review, nil] pre-built review command
     # @param config_report [Workspace::ConfigReport, nil] builds the `config show/validate --json` documents
     # @param tmuxinator_report [Workspace::TmuxinatorReport, nil] builds the `tmux show --json` document
     # @param project_actions_command [Workspace::Commands::ProjectActions, nil] pre-built project-wide actions command
@@ -75,7 +76,7 @@ module Workspace
     #   reports every project as unknown
     # @param launch_mode [Workspace::LaunchMode, nil] decides whether launch/start
     #   run headless when no --[no-]headless flag is given; nil builds one
-    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, restart_agent_command: nil, send_command: nil, ensure_agent_command: nil, handoff_command: nil, projects_command: nil, capabilities_command: nil, project_actions_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil, liveness: nil)
+    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, restart_agent_command: nil, send_command: nil, ensure_agent_command: nil, handoff_command: nil, projects_command: nil, capabilities_command: nil, review_command: nil, project_actions_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil, liveness: nil)
       @config = config
       @state = state
       @project_config = project_config
@@ -121,6 +122,7 @@ module Workspace
       @handoff_command = handoff_command
       @projects_command = projects_command
       @capabilities_command = capabilities_command
+      @review_command = review_command
       @config_report = config_report
       @tmuxinator_report = tmuxinator_report
       @project_actions_command = project_actions_command
@@ -195,6 +197,8 @@ module Workspace
         cmd_capabilities(args)
       when "sessions"
         cmd_sessions(args)
+      when "review"
+        cmd_review(args)
       when "ask"
         cmd_ask(args)
       when "session-event"
@@ -392,6 +396,7 @@ module Workspace
           run-and-report  Run a command as a subprocess, capture stdout/stderr/exit status
           report-run-status  Internal: write run result for --wait (called by shell wrapper)
           session-event   Forward one agent hook event to its daemon (installed by init)
+          review          Show a workspace's finished work for review, or list the ones ready
           sessions        Show coding-agent sessions and sub-agents in a workspace
           start           Create a worktree and launch it (from JIRA key, PR URL or #n, or branch)
           status          Show detailed state of tracked launcher sessions
@@ -2969,6 +2974,63 @@ module Workspace
 
       result = @sessions_command.call(name: project, json: json, watch: watch, interval: interval, worktrees: worktrees)
       @exit_handler.exit(result[:exit_code]) if result && !result[:exit_code].zero?
+    end
+
+    def review_parser(options)
+      OptionParser.new do |opts|
+        opts.banner = "Usage: workspace review [show] [WORKSPACE] [--json]\n       workspace review list [PROJECT] [--json]"
+        opts.separator ""
+        opts.separator "Collect what you need to review a coding agent's finished work. A workspace is ready"
+        opts.separator "when its agent is done (the Stop hook fired and no pane is working or waiting) and its"
+        opts.separator "branch has commits its base branch (origin's default branch) lacks."
+        opts.separator ""
+        opts.separator "  show [WORKSPACE]  One workspace's packet: agent state, task, diffstat and commits against the"
+        opts.separator "                    base, the pull request and its checks (read with `gh pr view`), open"
+        opts.separator "                    questions, session count and the agent's last message. WORKSPACE"
+        opts.separator "                    defaults to the one for the current directory. A workspace named"
+        opts.separator "                    \"list\" is reviewed with `review show list`."
+        opts.separator "  list [PROJECT]    The project's workspaces that are ready. PROJECT is a project name, a"
+        opts.separator "                    member workspace name or a path; it defaults to the current directory's."
+        opts.separator "                    Runs git only for workspaces whose agent is done, and never calls gh."
+        opts.separator ""
+        opts.separator "Reads only; nothing is written. A source that can't answer (no agent daemon, git or gh"
+        opts.separator "failing or too slow) is reported as unavailable, never as clean."
+        opts.separator ""
+        opts.on("--json", "Print schema-versioned JSON (see docs/README.review.md)") { options[:json] = true }
+        opts.on("-h", "--help", "Show this help") { options[:help] = true }
+        opts.separator ""
+        opts.separator "Examples:"
+        opts.separator "  workspace review list    # what is ready in this project"
+        opts.separator "  workspace review my-app.worktree-fix-login --json"
+        opts.separator "  workspace review    # the packet for the workspace in the current directory"
+      end
+    end
+
+    def cmd_review(args)
+      options = {json: false}
+      given = args.dup
+      parser = review_parser(options)
+      parser.parse!(args)
+      return @output.puts(parser.help) if options[:help]
+
+      raise Error, "review is not available: no review command was wired" unless @review_command
+
+      subcommand = args.first if %w[show list].include?(args.first)
+      args.shift if subcommand
+      raise UsageError, "Unexpected argument: #{args[1]}. Run 'workspace review --help'." if args.size > 1
+
+      result = if subcommand == "list"
+        @review_command.list(project: args.first, json: options[:json])
+      else
+        name = args.first || @project_detector.detect(@working_dir)
+        raise UsageError, "Missing workspace name.\n\n#{parser.help}" unless name
+
+        @review_command.show(name: name, json: options[:json])
+      end
+      @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
+    rescue OptionParser::ParseError, UsageError => e
+      raise unless json_requested?(options[:json], given)
+      emit_json_error(Commands::Review::JSON_SCHEMA_VERSION, e, message: e.message.lines.first.strip)
     end
 
     def cmd_session_event(args)

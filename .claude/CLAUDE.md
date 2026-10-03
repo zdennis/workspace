@@ -24,7 +24,7 @@ A macOS CLI (Ruby) for managing tmuxinator-based development workspaces in iTerm
 - `lib/workspace/output_gate.rb` — The stdout every collaborator writes through; `--json` actions divert it to stderr so stdout holds one document
 - `lib/workspace/error_codes.rb` — Registry of the stable error `code` values, mirrored in `docs/README.json.md`
 - `lib/workspace/pane_locator.rb` — Strict pane resolver for `agent-run send`, `focus --pane` and `ask answer --deliver`: only a pane id or `window.pane`, and only a pane of the workspace's own tmux session
-- `lib/workspace/commands/` — Complex command objects (launch, kill, focus, start, agent, ensure_agent, lock, dev, projects, capabilities, send)
+- `lib/workspace/commands/` — Complex command objects (launch, kill, focus, start, agent, ensure_agent, lock, dev, projects, capabilities, send, review)
 - `lib/workspace/work_coordinator_client.rb` — JSONL client for work-coordinator sockets
 - `lib/workspace/pipeline_config.rb` — Reads per-project pipeline stage config from `~/.config/workspace/projects/<name>.yml`
 - `lib/workspace/pipeline_state.rb` — In-flight work item tracking, disk-persisted to `~/.local/state/workspace/<name>/pipeline.json`
@@ -35,6 +35,8 @@ A macOS CLI (Ruby) for managing tmuxinator-based development workspaces in iTerm
 - `lib/workspace/notifier.rb` — Runs the notify command in the background with a timeout, details in `WORKSPACE_ALERT_*` env vars
 - `lib/workspace/ask_store.rb` — Flock-guarded append-only store for `workspace ask` questions, one `asks.json` per workspace under its XDG state dir
 - `lib/workspace/task_store.rb` — Flock-guarded one-file-per-task store under `~/.local/state/workspace/.tasks/`: `start` creates, `finish`/`kill` archive (newest 200 kept); the task id is `WORKSPACE_TASK` in panes
+- `lib/workspace/pull_request_status.rb` — Read-only `gh pr view` for a checkout's branch (state, review decision, check counts); `gh` missing or failing is a fact, not an error
+- `lib/workspace/transcript_summary.rb` — Reads the last main-thread assistant message from the tail of a Claude Code transcript
 - `lib/workspace/process_tree.rb` — One-shot `ps` snapshot with parent/child lookups
 - `lib/workspace/workspace_lineage.rb` — Resolves a workspace's parent project (marker, then git common dir); shared by locks, `dev`, `config set`, and `parent`
 - `lib/workspace/lock_namespace.rb` — Resolves the shared lock namespace (git common dir) from a cwd
@@ -68,7 +70,7 @@ A macOS CLI (Ruby) for managing tmuxinator-based development workspaces in iTerm
 
 ## Subcommands
 
-init, doctor, launch, start, add, stop, kill, finish, relaunch, focus, list, status, whereis, agent, pipeline, sessions, session-event, lock, dev, parent, projects, ask, capabilities
+init, doctor, launch, start, add, stop, kill, finish, relaunch, focus, list, status, whereis, agent, pipeline, sessions, review, session-event, lock, dev, parent, projects, ask, capabilities
 
 ## Adding a Subcommand
 

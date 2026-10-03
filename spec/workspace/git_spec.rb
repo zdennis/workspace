@@ -487,6 +487,100 @@ RSpec.describe Workspace::Git do
         expect(git.commits_ahead_of_upstream(@repo_dir)).to be_nil
       end
     end
+
+    describe "review reads" do
+      def commit_file(name, content)
+        File.write(File.join(@repo_dir, name), content)
+        run!("git", "add", name, chdir: @repo_dir)
+        run!("git", "commit", "-m", "add #{name}", chdir: @repo_dir)
+      end
+
+      describe "#base_ref" do
+        it "falls back to origin/main when origin/HEAD is not set" do
+          expect(git.base_ref(@repo_dir)).to eq("origin/main")
+        end
+
+        it "prefers the remote default branch named by origin/HEAD" do
+          run!("git", "branch", "trunk", chdir: @repo_dir)
+          run!("git", "push", "origin", "trunk", chdir: @repo_dir)
+          run!("git", "remote", "set-head", "origin", "trunk", chdir: @repo_dir)
+
+          expect(git.base_ref(@repo_dir)).to eq("origin/trunk")
+        end
+
+        it "ignores an origin/HEAD that points at a missing branch" do
+          run!("git", "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/gone", chdir: @repo_dir)
+
+          expect(git.base_ref(@repo_dir)).to eq("origin/main")
+        end
+
+        it "is nil in a directory that is not a repository" do
+          Dir.mktmpdir { |dir| expect(git.base_ref(dir)).to be_nil }
+        end
+      end
+
+      describe "#commits_ahead_of, #commits_since and #diff_stat" do
+        before do
+          run!("git", "checkout", "-b", "feature", chdir: @repo_dir)
+          commit_file("a.txt", "one\ntwo\n")
+          commit_file("b.txt", "x\n")
+          File.binwrite(File.join(@repo_dir, "img.bin"), "\x00\x01\x02")
+          run!("git", "add", "img.bin", chdir: @repo_dir)
+          run!("git", "commit", "-m", "add img.bin", chdir: @repo_dir)
+        end
+
+        it "counts the commits the base lacks" do
+          expect(git.commits_ahead_of(@repo_dir, "origin/main")).to eq(3)
+        end
+
+        it "is nil for a base git can't resolve" do
+          expect(git.commits_ahead_of(@repo_dir, "origin/nope")).to be_nil
+          expect(git.diff_stat(@repo_dir, "origin/nope")).to be_nil
+          expect(git.commits_since(@repo_dir, "origin/nope", limit: 5)).to be_nil
+        end
+
+        it "lists subjects newest first, up to the limit" do
+          commits = git.commits_since(@repo_dir, "origin/main", limit: 2)
+
+          expect(commits.map { |c| c["subject"] }).to eq(["add img.bin", "add b.txt"])
+          expect(commits.first["sha"]).to match(/\A\h+\z/)
+        end
+
+        it "reports added and removed lines per file, nil counts for a binary file" do
+          stat = git.diff_stat(@repo_dir, "origin/main")
+
+          expect(stat).to contain_exactly(
+            {"path" => "a.txt", "added" => 2, "removed" => 0},
+            {"path" => "b.txt", "added" => 1, "removed" => 0},
+            {"path" => "img.bin", "added" => nil, "removed" => nil}
+          )
+        end
+
+        it "diffs from the merge base, so work that landed on the base since is not counted" do
+          run!("git", "checkout", "main", chdir: @repo_dir)
+          commit_file("landed.txt", "later\n")
+          run!("git", "push", "origin", "main", chdir: @repo_dir)
+          run!("git", "checkout", "feature", chdir: @repo_dir)
+
+          expect(git.diff_stat(@repo_dir, "origin/main").map { |e| e["path"] }).not_to include("landed.txt")
+        end
+
+        it "scrubs bytes that aren't valid UTF-8 so the result can be encoded as JSON" do
+          File.write(File.join(@repo_dir, "c.txt"), "x\n")
+          run!("git", "add", "c.txt", chdir: @repo_dir)
+          File.binwrite(File.join(@repo_dir, ".msg"), "bad \xFF subject\n")
+          run!("git", "commit", "-F", ".msg", chdir: @repo_dir)
+
+          expect { JSON.generate(git.commits_since(@repo_dir, "origin/main", limit: 1)) }.not_to raise_error
+        end
+
+        it "keeps a file name with spaces intact" do
+          commit_file("with space.txt", "x\n")
+
+          expect(git.diff_stat(@repo_dir, "origin/main").map { |e| e["path"] }).to include("with space.txt")
+        end
+      end
+    end
   end
 
   describe "#find_worktree_by_branch" do

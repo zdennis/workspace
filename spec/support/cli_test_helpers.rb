@@ -551,6 +551,26 @@ module CLITestHelpers
     end
   end
 
+  class FakeReviewCommand
+    attr_reader :calls
+    attr_accessor :result
+
+    def initialize
+      @calls = []
+      @result = {exit_code: 0}
+    end
+
+    def show(name:, json: false)
+      @calls << {show: name, json: json}
+      @result
+    end
+
+    def list(project: nil, json: false)
+      @calls << {list: project, json: json}
+      @result
+    end
+  end
+
   class FakeProjectActionsCommand
     attr_reader :calls
     attr_accessor :result

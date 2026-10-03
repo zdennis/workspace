@@ -98,6 +98,7 @@ RSpec.describe Workspace::CLI do
       handoff_command: overrides[:handoff_command],
       projects_command: overrides[:projects_command],
       capabilities_command: overrides[:capabilities_command],
+      review_command: overrides[:review_command],
       project_actions_command: overrides[:project_actions_command],
       config_report: overrides[:config_report],
       tmuxinator_report: overrides[:tmuxinator_report],
@@ -3207,6 +3208,88 @@ RSpec.describe Workspace::CLI do
       expect(JSON.parse(output.string)).to include("ok" => false, "code" => "usage", "error" => "--path and --json cannot be used together.")
       expect(error_output.string).to eq("")
       expect(parent_command.calls).to be_empty
+    end
+  end
+
+  describe "#run with review" do
+    let(:review_command) { CLITestHelpers::FakeReviewCommand.new }
+    let(:detector) { instance_double(Workspace::ProjectDetector, detect: "detected-ws") }
+    let(:built) { build_test_cli(review_command: review_command, project_detector: detector, working_dir: "/some/dir") }
+    let(:cli) { built[0] }
+    let(:output) { built[1] }
+    let(:error_output) { built[2] }
+
+    it "shows the named workspace" do
+      cli.run(["review", "app.worktree-fix"])
+      cli.run(["review", "show", "app", "--json"])
+      cli.run(["review", "--json", "show", "app"])
+
+      expect(review_command.calls).to eq([{show: "app.worktree-fix", json: false}, {show: "app", json: true}, {show: "app", json: true}])
+    end
+
+    it "lists, for the current project or a named one, with flags before or after" do
+      cli.run(["review", "list"])
+      cli.run(["review", "list", "app", "--json"])
+      cli.run(["review", "--json", "list"])
+
+      expect(review_command.calls).to eq([{list: nil, json: false}, {list: "app", json: true}, {list: nil, json: true}])
+    end
+
+    it "uses the detected workspace when none is named" do
+      cli.run(["review"])
+
+      expect(detector).to have_received(:detect).with("/some/dir")
+      expect(review_command.calls).to eq([{show: "detected-ws", json: false}])
+    end
+
+    it "exits with the command's non-zero code" do
+      review_command.result = {exit_code: 1}
+
+      expect { cli.run(["review", "app", "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+    end
+
+    it "rejects extra arguments, as a usage JSON error under --json" do
+      expect { cli.run(["review", "a", "b"]) }.to raise_error(FakeSystemExit)
+      expect(error_output.string).to include("Unexpected argument: b")
+      output.truncate(0)
+      expect { cli.run(["review", "a", "b", "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+
+      expect(JSON.parse(output.string)).to include("ok" => false, "code" => "usage")
+      expect(review_command.calls).to eq([])
+    end
+
+    it "emits the JSON envelope for a usage error raised after --json was parsed" do
+      allow(detector).to receive(:detect).and_return(nil)
+
+      expect { cli.run(["review", "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+
+      expect(JSON.parse(output.string)).to include("ok" => false, "code" => "usage")
+    end
+
+    it "reports a missing workspace when none can be detected" do
+      allow(detector).to receive(:detect).and_return(nil)
+
+      expect { cli.run(["review"]) }.to raise_error(FakeSystemExit)
+      expect(error_output.string).to include("Missing workspace name")
+    end
+
+    it "reviews a workspace named list through `show`" do
+      cli.run(["review", "show", "list"])
+
+      expect(review_command.calls).to eq([{show: "list", json: false}])
+    end
+
+    it "prints its help without running anything" do
+      cli.run(["review", "--help"])
+
+      expect(output.string).to include("Usage: workspace review [show] [WORKSPACE] [--json]", "review show list")
+      expect(review_command.calls).to eq([])
+    end
+
+    it "names review in the main help" do
+      cli.run(["help"])
+
+      expect(output.string).to include("review          Show a workspace's finished work for review")
     end
   end
 

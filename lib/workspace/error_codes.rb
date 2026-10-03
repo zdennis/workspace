@@ -21,6 +21,7 @@ module Workspace
       "no_pane" => "The question wasn't asked from a tmux pane, so there is nowhere to deliver an answer.",
       "stale_pane" => "The question's pane may not be the one that asked (tmux restarted since, or the question predates the check).",
       "focus_failed" => "tmux couldn't select the pane; the window is already in front.",
+      "checkout_missing" => "The workspace's checkout directory no longer exists.",
       "config_parse" => "A config file exists but can't be parsed as a YAML mapping.",
       # Codes the agent daemon puts in its replies; `agent-run` passes them through.
       "malformed_message" => "The daemon couldn't parse the request.",

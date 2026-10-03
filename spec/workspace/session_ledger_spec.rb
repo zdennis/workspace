@@ -57,3 +57,40 @@ RSpec.describe Workspace::SessionLedger do
     expect(ledger.record("event" => "session_start")).to be(false)
   end
 end
+
+RSpec.describe Workspace::SessionLedger, "#entries_for" do
+  let(:tmpdir) { Dir.mktmpdir }
+  let(:path) { File.join(tmpdir, "ledger.jsonl") }
+  let(:ledger) { described_class.new(path: path, logger: Workspace::Logger.new) }
+
+  after { FileUtils.remove_entry(tmpdir) }
+
+  it "returns one workspace's entries, oldest first" do
+    ledger.record("event" => "session_start", "workspace" => "a", "session_id" => "1")
+    ledger.record("event" => "session_start", "workspace" => "b", "session_id" => "2")
+    ledger.record("event" => "session_end", "workspace" => "a", "session_id" => "1")
+
+    expect(ledger.entries_for("a").map { |e| [e["event"], e["session_id"]] }).to eq([%w[session_start 1], %w[session_end 1]])
+  end
+
+  it "skips a torn line and lines that aren't objects" do
+    ledger.record("event" => "session_start", "workspace" => "a")
+    File.open(path, "a") { |f| f.write("{\"workspace\":\"a\", torn\n[1,2]\n\"a\"\n") }
+    ledger.record("event" => "session_end", "workspace" => "a")
+
+    expect(ledger.entries_for("a").map { |e| e["event"] }).to eq(%w[session_start session_end])
+  end
+
+  it "raises rather than read as empty when the ledger exists but can't be read" do
+    ledger.record("event" => "session_start", "workspace" => "a")
+    File.chmod(0o000, path)
+
+    expect { ledger.entries_for("a") }.to raise_error(Errno::EACCES)
+  ensure
+    File.chmod(0o600, path)
+  end
+
+  it "is empty when there is no ledger" do
+    expect(ledger.entries_for("a")).to eq([])
+  end
+end

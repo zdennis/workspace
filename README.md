@@ -107,6 +107,7 @@ workspace <subcommand> [options]
 | repair | [README](docs/README.repair.md) | Rebuild state from live iTerm windows |
 | resize | [README](docs/README.resize.md) | Resize tmux panes for a running project |
 | session-event | [README](docs/README.session-event.md) | Forward one coding-agent hook event to a workspace's agent daemon |
+| review | [README](docs/README.review.md) | Show a workspace's finished work for review, or list the workspaces that are ready |
 | sessions | [README](docs/README.sessions.md) | Show coding-agent sessions and sub-agents running in a project's panes |
 | start | [README](docs/README.start.md) | Create a git worktree and launch it (from JIRA key, PR/issue URL, or branch) |
 | status | [README](docs/README.status.md) | Show detailed state of tracked launcher sessions |

@@ -171,6 +171,8 @@ require_relative "workspace/context_reader"
 require_relative "workspace/statusline_renderer"
 require_relative "workspace/ask_store"
 require_relative "workspace/task_store"
+require_relative "workspace/pull_request_status"
+require_relative "workspace/transcript_summary"
 require_relative "workspace/session_ledger"
 require_relative "workspace/transcript_label"
 require_relative "workspace/session_monitor"
@@ -208,6 +210,7 @@ require_relative "workspace/commands/dev"
 require_relative "workspace/commands/capabilities"
 require_relative "workspace/commands/parent"
 require_relative "workspace/commands/projects"
+require_relative "workspace/commands/review"
 require_relative "workspace/commands/project_actions"
 require_relative "workspace/commands/config"
 require_relative "workspace/commands/statusline"
@@ -350,6 +353,9 @@ module Workspace
       lock_holder: lock_holder, dev: dev_command, agents: ProjectAgents.new(client: agent_snapshot_client),
       git: git, catalog: project_catalog, error_output: error_output)
     projects_command = Commands::Projects.new(catalog: project_catalog, tmux: tmux, facts: project_facts, output: output, error_output: error_output)
+    review_command = Commands::Review.new(catalog: project_catalog, git: git, snapshot_client: agent_snapshot_client, task_store: task_store,
+      ask_store_for: ->(workspace) { AskStore.new(path: config.ask_state_path(workspace), error_output: error_output) }, session_ledger: session_ledger, transcript_summary: TranscriptSummary.new, pull_request_status: PullRequestStatus.new,
+      output: output, error_output: error_output)
     # Hook output goes to stderr so it never lands in the JSON on stdout.
     json_hook_runner = HookRunner.new(project_settings: project_settings, project_config: project_config, output: error_output, error_output: error_output, logger: logger)
     project_actions_command = Commands::ProjectActions.new(catalog: project_catalog, stop_command: stop_command, kill_command: kill_command,
@@ -438,6 +444,7 @@ module Workspace
       parent_command: parent_command,
       projects_command: projects_command,
       capabilities_command: capabilities_command,
+      review_command: review_command,
       project_actions_command: project_actions_command,
       agent_command: agent_command,
       sessions_command: sessions_command,

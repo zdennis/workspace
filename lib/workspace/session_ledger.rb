@@ -39,5 +39,23 @@ module Workspace
       @logger.debug { "session_ledger: record failed (#{e.class}: #{e.message})" }
       false
     end
+
+    # Streams the file line by line (only the workspace's entries are kept); a line that
+    # isn't a JSON object (a torn or foreign line) is skipped.
+    #
+    # @param workspace [String]
+    # @return [Array<Hash>] the workspace's entries, oldest first; empty when
+    #   there is no ledger
+    # @raise [SystemCallError] if the ledger exists but can't be read
+    def entries_for(workspace)
+      File.foreach(@path).filter_map do |line|
+        entry = JSON.parse(line)
+        entry if entry.is_a?(Hash) && entry["workspace"] == workspace
+      rescue JSON::ParserError
+        nil
+      end
+    rescue Errno::ENOENT
+      []
+    end
   end
 end

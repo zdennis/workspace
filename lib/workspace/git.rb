@@ -135,7 +135,7 @@ module Workspace
     def worktree_branch(path)
       stdout, _, status = capture_git("-C", path, "rev-parse", "--abbrev-ref", "HEAD")
       return nil unless status.success?
-      result = stdout.strip
+      result = stdout.scrub.strip
       (result == "HEAD") ? nil : result
     end
 
@@ -372,6 +372,54 @@ module Workspace
       status.success? ? stdout.strip.to_i : nil
     end
 
+    # The ref a checkout is measured against for review: the remote default
+    # branch (`origin/HEAD`), else the first of `origin/main`, `main`,
+    # `origin/master`, `master` that exists.
+    #
+    # @param path [String] worktree directory path
+    # @return [String, nil] a ref name such as "origin/main", or nil when none exists
+    def base_ref(path)
+      stdout, _, status = capture_git("-C", path, "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD")
+      head = stdout.scrub.strip
+      return head if status.success? && !head.empty? && ref_exists?(path, head)
+      %w[origin/main main origin/master master].find { |ref| ref_exists?(path, ref) }
+    end
+
+    # @param path [String] worktree directory path
+    # @param base [String] a ref, see {#base_ref}
+    # @return [Integer, nil] commits on HEAD that are not on +base+, or nil if git could not answer
+    def commits_ahead_of(path, base)
+      stdout, _, status = capture_git("-C", path, "rev-list", "--count", "#{base}..HEAD")
+      status.success? ? stdout.strip.to_i : nil
+    end
+
+    # @param path [String] worktree directory path
+    # @param base [String] a ref, see {#base_ref}
+    # @param limit [Integer] most commits returned
+    # @return [Array<Hash>, nil] newest first, each `{"sha" =>, "subject" =>}`, or nil if git could not answer
+    def commits_since(path, base, limit:)
+      stdout, _, status = capture_git("-C", path, "log", "--no-color", "--format=%h%x09%s", "-n", limit.to_s, "#{base}..HEAD")
+      return nil unless status.success?
+      stdout.scrub.lines.map { |line| line.chomp.split("\t", 2) }.map { |sha, subject| {"sha" => sha, "subject" => subject.to_s} }
+    end
+
+    # Per-file changes from the merge base of +base+ and HEAD to HEAD (what a
+    # pull request shows). Committed work only.
+    #
+    # @param path [String] worktree directory path
+    # @param base [String] a ref, see {#base_ref}
+    # @return [Array<Hash>, nil] `{"path" =>, "added" =>, "removed" =>}` per file, the counts nil for a
+    #   binary file; nil if git could not answer
+    def diff_stat(path, base)
+      stdout, _, status = capture_git("-C", path, "diff", "--numstat", "--no-renames", "-z", "#{base}...HEAD")
+      return nil unless status.success?
+      stdout.scrub.split("\0").filter_map do |entry|
+        added, removed, file = entry.split("\t", 3)
+        next unless file
+        {"path" => file, "added" => count_or_nil(added), "removed" => count_or_nil(removed)}
+      end
+    end
+
     # Removes a worktree, untracked files included. Unless force is set, it
     # first re-checks for unsaved work (see #unsaved_work) and refuses, so the
     # check sits right next to the removal rather than minutes before it.
@@ -423,6 +471,16 @@ module Workspace
     end
 
     private
+
+    def ref_exists?(path, ref)
+      _, _, status = capture_git("-C", path, "rev-parse", "--verify", "--quiet", "#{ref}^{commit}")
+      status.success?
+    end
+
+    # numstat prints "-" for a binary file.
+    def count_or_nil(text)
+      text.match?(/\A\d+\z/) ? text.to_i : nil
+    end
 
     def layout_from_git_file(dir, dot_git)
       gitdir = File.read(dot_git)[/\Agitdir:\s*(.+?)\s*\z/, 1]
