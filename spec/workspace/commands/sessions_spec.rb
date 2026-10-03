@@ -654,4 +654,16 @@ RSpec.describe Workspace::Commands::Sessions do
       expect(output.string).to include("\e[2J")
     end
   end
+
+  describe "#annotate" do
+    it "stamps a snapshot in place with cleaned waiting messages and open-question counts, and returns it" do
+      store = Workspace::AskStore.new(path: File.join(tmpdir, "asks.json"))
+      store.add(question: "q", default: "d", pane: "%1")
+      snapshot = {"panes" => [{"pane_id" => "%1", "waiting_message" => "Allow\n  Bash?"}, {"pane_id" => "%2"}]}
+
+      expect(command.annotate("proj", snapshot)).to equal(snapshot)
+      expect(snapshot["panes"].map { |p| p["open_questions"] }).to eq([1, 0])
+      expect(snapshot["panes"].first["waiting_message"]).to eq("Allow Bash?")
+    end
+  end
 end

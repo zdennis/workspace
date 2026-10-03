@@ -551,6 +551,21 @@ module CLITestHelpers
     end
   end
 
+  class FakeSnapshotCommand
+    attr_reader :calls
+    attr_accessor :result
+
+    def initialize
+      @calls = []
+      @result = {exit_code: 0}
+    end
+
+    def call(names: [], pr: false)
+      @calls << {names: names, pr: pr}
+      @result
+    end
+  end
+
   class FakeReviewCommand
     attr_reader :calls
     attr_accessor :result

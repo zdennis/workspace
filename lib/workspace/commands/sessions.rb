@@ -96,6 +96,18 @@ module Workspace
         {exit_code: 1}
       end
 
+      # Stamps a daemon snapshot, in place, with what `call` adds to it: each
+      # pane's cleaned waiting message, its lock columns and its open-question
+      # count. A column that can't be read is left off the panes, never zeroed.
+      #
+      # @param name [String] workspace name
+      # @param snapshot [Hash] a daemon snapshot, as {Workspace::AgentSnapshotClient#fetch} returns it
+      # @return [Hash] +snapshot+
+      def annotate(name, snapshot)
+        prepare(name, snapshot)
+        snapshot
+      end
+
       private
 
       def call_once(json)

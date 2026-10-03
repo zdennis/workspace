@@ -17,7 +17,7 @@ module Workspace
     SUBCOMMANDS = %w[
       init doctor launch start stop add add-project kill finish relaunch
       focus deactivate reactivate tile resize capture agent agentd lock dev parent projects
-      capabilities sessions review ask session-event agent-run handoff pipeline run
+      capabilities sessions review snapshot ask session-event agent-run handoff pipeline run
       run-and-report report-run-status layout config tmux statusline current
       list-projects list status repair cleanup prune set-command event-log
       whereis lookup dir alfred version help
@@ -67,6 +67,7 @@ module Workspace
     # @param projects_command [Workspace::Commands::Projects, nil] pre-built projects command
     # @param capabilities_command [Workspace::Commands::Capabilities, nil] pre-built capabilities command
     # @param review_command [Workspace::Commands::Review, nil] pre-built review command
+    # @param snapshot_command [Workspace::Commands::Snapshot, nil] pre-built snapshot command
     # @param config_report [Workspace::ConfigReport, nil] builds the `config show/validate --json` documents
     # @param tmuxinator_report [Workspace::TmuxinatorReport, nil] builds the `tmux show --json` document
     # @param project_actions_command [Workspace::Commands::ProjectActions, nil] pre-built project-wide actions command
@@ -76,7 +77,7 @@ module Workspace
     #   reports every project as unknown
     # @param launch_mode [Workspace::LaunchMode, nil] decides whether launch/start
     #   run headless when no --[no-]headless flag is given; nil builds one
-    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, restart_agent_command: nil, send_command: nil, ensure_agent_command: nil, handoff_command: nil, projects_command: nil, capabilities_command: nil, review_command: nil, project_actions_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil, liveness: nil)
+    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, restart_agent_command: nil, send_command: nil, ensure_agent_command: nil, handoff_command: nil, projects_command: nil, capabilities_command: nil, review_command: nil, snapshot_command: nil, project_actions_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil, liveness: nil)
       @config = config
       @state = state
       @project_config = project_config
@@ -123,6 +124,7 @@ module Workspace
       @projects_command = projects_command
       @capabilities_command = capabilities_command
       @review_command = review_command
+      @snapshot_command = snapshot_command
       @config_report = config_report
       @tmuxinator_report = tmuxinator_report
       @project_actions_command = project_actions_command
@@ -199,6 +201,8 @@ module Workspace
         cmd_sessions(args)
       when "review"
         cmd_review(args)
+      when "snapshot"
+        cmd_snapshot(args)
       when "ask"
         cmd_ask(args)
       when "session-event"
@@ -398,6 +402,7 @@ module Workspace
           session-event   Forward one agent hook event to its daemon (installed by init)
           review          Show a workspace's finished work for review, or list the ones ready
           sessions        Show coding-agent sessions and sub-agents in a workspace
+          snapshot        Print everything a UI polls (projects, panes, git, asks, locks, dev) as one JSON document
           start           Create a worktree and launch it (from JIRA key, PR URL or #n, or branch)
           status          Show detailed state of tracked launcher sessions
           set-command     Set the shell command for a pane in a project config (--pane <N>)
@@ -3031,6 +3036,47 @@ module Workspace
     rescue OptionParser::ParseError, UsageError => e
       raise unless json_requested?(options[:json], given)
       emit_json_error(Commands::Review::JSON_SCHEMA_VERSION, e, message: e.message.lines.first.strip)
+    end
+
+    def snapshot_parser(options)
+      OptionParser.new do |opts|
+        opts.banner = "Usage: workspace snapshot --json [--name WORKSPACE]... [--pr]"
+        opts.separator ""
+        opts.separator "Print one JSON document with everything a UI polls: each project's workspaces (running"
+        opts.separator "state, git facts, agent panes, open questions, pipeline entries), the repo-wide locks"
+        opts.separator "and the dev environment, plus a cursor into the event log taken before anything is read."
+        opts.separator ""
+        opts.separator "Reads only; nothing is written. A source that can't answer (tmux, an agent daemon, git,"
+        opts.separator "gh) is reported as unavailable, never as clean. Agent daemons are read in parallel,"
+        opts.separator "1 second each; a running workspace without one is listed in daemons_unavailable."
+        opts.separator ""
+        opts.on("--json", "Print schema-versioned JSON (see docs/README.snapshot.md); required") { options[:json] = true }
+        opts.on("--name WORKSPACE", "Only this workspace (repeatable); its project's locks and dev are still included") { |v| options[:names] << v }
+        opts.on("--pr", "Also read each branch's pull request with `gh pr view` (adds git.pr; slower)") { options[:pr] = true }
+        opts.on("-h", "--help", "Show this help") { options[:help] = true }
+        opts.separator ""
+        opts.separator "Examples:"
+        opts.separator "  workspace snapshot --json"
+        opts.separator "  workspace snapshot --json --name my-app.worktree-fix-login --pr"
+      end
+    end
+
+    def cmd_snapshot(args)
+      options = {json: false, names: [], pr: false}
+      given = args.dup
+      parser = snapshot_parser(options)
+      parser.parse!(args)
+      return @output.puts(parser.help) if options[:help]
+
+      raise Error, "snapshot is not available: no snapshot command was wired" unless @snapshot_command
+      raise UsageError, "Unexpected argument: #{args.first}. Run 'workspace snapshot --help'." unless args.empty?
+      raise UsageError, "snapshot only has JSON output: pass --json." unless options[:json]
+
+      result = @snapshot_command.call(names: options[:names], pr: options[:pr])
+      @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
+    rescue OptionParser::ParseError, UsageError => e
+      raise unless json_requested?(options[:json], given)
+      emit_json_error(Commands::Snapshot::JSON_SCHEMA_VERSION, e, message: e.message.lines.first.strip)
     end
 
     def cmd_session_event(args)

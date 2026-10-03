@@ -99,6 +99,7 @@ RSpec.describe Workspace::CLI do
       projects_command: overrides[:projects_command],
       capabilities_command: overrides[:capabilities_command],
       review_command: overrides[:review_command],
+      snapshot_command: overrides[:snapshot_command],
       project_actions_command: overrides[:project_actions_command],
       config_report: overrides[:config_report],
       tmuxinator_report: overrides[:tmuxinator_report],
@@ -3208,6 +3209,45 @@ RSpec.describe Workspace::CLI do
       expect(JSON.parse(output.string)).to include("ok" => false, "code" => "usage", "error" => "--path and --json cannot be used together.")
       expect(error_output.string).to eq("")
       expect(parent_command.calls).to be_empty
+    end
+  end
+
+  describe "#run with snapshot" do
+    let(:snapshot_command) { CLITestHelpers::FakeSnapshotCommand.new }
+    let(:built) { build_test_cli(snapshot_command: snapshot_command) }
+    let(:cli) { built[0] }
+    let(:output) { built[1] }
+
+    it "passes repeated --name values and --pr" do
+      cli.run(["snapshot", "--json"])
+      cli.run(["snapshot", "--json", "--name", "a", "--name", "b", "--pr"])
+
+      expect(snapshot_command.calls).to eq([{names: [], pr: false}, {names: %w[a b], pr: true}])
+    end
+
+    it "refuses to run without --json, as a usage error" do
+      expect { cli.run(["snapshot"]) }.to raise_error(FakeSystemExit)
+      expect(built[2].string).to include("pass --json")
+      expect(snapshot_command.calls).to be_empty
+    end
+
+    it "emits the JSON usage envelope for an extra argument" do
+      expect { cli.run(["snapshot", "--json", "extra"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+
+      expect(JSON.parse(output.string)).to include("ok" => false, "code" => "usage")
+      expect(snapshot_command.calls).to be_empty
+    end
+
+    it "exits with the command's non-zero code" do
+      snapshot_command.result = {exit_code: 1}
+
+      expect { cli.run(["snapshot", "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+    end
+
+    it "prints help" do
+      cli.run(["snapshot", "--help"])
+
+      expect(output.string).to include("Usage: workspace snapshot --json").and include("daemons_unavailable")
     end
   end
 

@@ -39,7 +39,7 @@ RSpec.describe Workspace::Commands::Capabilities do
       expect(features.values).to all(be_a(Integer))
       expect(features).to include("prune_safe" => 1)
       expect(features).to include("envelope" => 1, "error_codes" => 1, "no_input" => 1, "name_scope" => 1, "action_json" => 1, "sessions" => 1)
-      expect(features).to include("snapshot" => 1, "agent_send" => 1, "focus_pane" => 1, "actions_manifest" => 0)
+      expect(features).to include("snapshot" => 2, "agent_send" => 1, "focus_pane" => 1, "actions_manifest" => 0)
       expect(features).to include("config_json" => 1, "tmux_show" => 1, "state_done" => 1, "tasks" => 1)
     end
 
@@ -114,7 +114,7 @@ RSpec.describe Workspace::Commands::Capabilities do
 
       expect(output.string).to include("workspace #{Workspace::VERSION}")
       expect(output.string).to match(/^  envelope +1$/)
-      expect(output.string).to match(/^  snapshot +1$/)
+      expect(output.string).to match(/^  snapshot +2$/)
       expect(output.string).to include("  gh          #{File.join(bin_dir, "gh")}")
       expect(output.string).to include("  tmux        not found")
     end

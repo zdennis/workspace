@@ -46,6 +46,10 @@ These commands take `--json` and print one action document: `launch`, `stop`, `k
 - `stop` with `--json` does not warn about a named workspace that isn't active; it gives that workspace a `not_running` row.
 - `agent run --json` is not an action document. It prints `{"schema_version":1,"ok":true,"workspace":"api","work_item_ref":"wi_12","dispatch_id":"agent-run-ab12cd34","dry_run":false,"reply":{...}}`, where `reply` is the agent's reply as is, including its own `ok`. The exit code is 0 whatever the reply says; read `reply.ok`. With `--dry-run` there is `message` (what would be sent) and no `reply`.
 
+## Snapshot
+
+`snapshot --json` prints one read-only document of everything a UI polls (see [`snapshot`](README.snapshot.md)). `--json` is required; a source that can't answer is reported as unavailable (null fields, `daemons_unavailable` rows, `warnings`) rather than as clean, and the command still succeeds. Its `cursor` is `ev:<inode>:<byte offset>` of the event log.
+
 ## Failure
 
 ```json
