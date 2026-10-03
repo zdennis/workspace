@@ -56,7 +56,7 @@ The daemons are read in parallel, one second each: a daemon serves one connectio
 - Panes are as in [`sessions --json`](README.sessions.md), reduced to the fields a UI shows. `lock` is the name of the lock the pane holds or queues for, `lock_state` is `held` or `queued`, and `open_questions` is the pane's open `ask` questions (null when the store can't be read). `task` is the active task, present with `panes`.
 - `pipeline.entries` is the number of in-flight work items.
 - `locks` is the project's repo-wide lock list; a holder's `workspace` is null when its worktree belongs to no member.
-- `daemons_unavailable[].code` is `no_daemon`, `timeout` or `unreadable_reply` (any other failure reading or stamping the reply, with a `detail`). These are row codes, not error envelope codes.
+- `daemons_unavailable[].code` is `no_daemon`, `timeout` or `unreadable_reply` (any other failure reading or stamping the reply). These are row codes, not error envelope codes.
 - There is no per-target `actions` map; the command doesn't say what each workspace may do.
 - `warnings` entries are `{"code","message"}` (and `workspace` for `checkout_missing` and `questions_unavailable`).
 

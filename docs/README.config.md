@@ -6,9 +6,9 @@ Show, validate, set, get, or unset project or global workspace configuration.
 
 ```sh
 workspace config [show] [options] [project]
-workspace config show [--name NAME] --json
+workspace config show [--name NAME] [--json]
 workspace config validate [--name NAME] [--json]
-workspace config set <key> <value> [--project NAME]
+workspace config set <key> <value> [--project NAME] [--json]
 workspace config get <key> [--project NAME]
 workspace config unset <key> [--project NAME]
 ```
@@ -19,7 +19,7 @@ workspace config unset <key> [--project NAME]
 |--------|-------------|
 | `--global` | Show global configuration instead of project config |
 | `--name NAME` | (`show`, `validate`) The workspace to report on instead of the one inferred from cwd; for `show` the same as the project argument |
-| `--json` | (`show`, `validate`) Print one JSON document (below) instead of text |
+| `--json` | (`show`, `validate`, `set`) Print one JSON document (below) instead of text |
 | `--project NAME`, `--name NAME` | (`set`/`get`/`unset`) Configure this project instead of the one inferred from cwd; the two are the same option |
 
 ## Details

@@ -27,7 +27,7 @@ workspace ask answer <id> "<answer>" [--deliver] [--json]
 
 **Blank input** — a question or default that is empty or only whitespace is rejected (exit 1; with `--json`, an `error` payload).
 
-**Workspace detection** — same as other commands: the marker file, then the active project for the current directory. `ask`, `ask list`, and `ask answer` all act on the workspace detected from the current directory.
+**Workspace detection** — same as other commands: the marker file, then the active project for the current directory. `ask`, `ask list`, and `ask answer` all act on the workspace detected from the current directory, or the one named with `--name` (every `ask` subcommand takes it).
 
 **Storage** — questions are appended to `~/.local/state/workspace/<workspace>/asks.json`, guarded by `flock` so concurrent invocations (multiple panes or agents in the same workspace) never clobber each other's writes. The file survives an agent-daemon restart; it isn't daemon state. If the file can't be parsed, `ask` and `ask answer` fail without recording anything and leave the file unchanged, while `ask list` and `sessions` warn on stderr and show no questions.
 
@@ -52,7 +52,7 @@ workspace ask answer <id> "<answer>" [--deliver] [--json]
 
 `WORKSPACE_ALERT_KIND` (the agent kind, e.g. `claude`, used by `sessions`'s waiting/idle alerts) is deliberately not set here — a question has no agent kind of its own, and reusing that variable for something else would make a notify script that switches on it see two unrelated things through the same value. With no `alerts.notify` configured, the question is recorded and nothing else happens; that is not an error.
 
-**`--json` schema** — `{"schema_version":1,"question":{...}}` for `ask`/`ask answer`, `{"schema_version":1,"workspace":"...","questions":[...]}` for `ask list`. Each question record: `id`, `question`, `default`, `context`, `pane`, `worktree`, `tmux_server` (the tmux server's process id, when asked from tmux), `asked_at` (ISO 8601 UTC), `status` (`"open"` or `"answered"`), `answer`, `answered_at`. A failure writes `{"schema_version":1,"ok":false,"error":"..."}` to stdout and exits 1, whether the failure is a bad invocation or the workspace couldn't be detected — matching [`workspace lock`](README.lock.md)'s `--json` contract.
+**`--json` schema** — `{"schema_version":1,"ok":true,"question":{...}}` for `ask`/`ask answer`, `{"schema_version":1,"ok":true,"workspace":"...","questions":[...]}` for `ask list`. Each question record: `id`, `question`, `default`, `context`, `pane`, `worktree`, `tmux_server` (the tmux server's process id, when asked from tmux), `asked_at` (ISO 8601 UTC), `status` (`"open"` or `"answered"`), `answer`, `answered_at`. A failure writes `{"schema_version":1,"ok":false,"error":"..."}` to stdout and exits 1, whether the failure is a bad invocation or the workspace couldn't be detected — matching [`workspace lock`](README.lock.md)'s `--json` contract.
 
 ## Examples
 

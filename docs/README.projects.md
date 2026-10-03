@@ -97,9 +97,9 @@ joins its main checkout wherever it lives and whatever its config is called.
   Both show `(same name)` and their own paths. A command that takes a project
   name gives a usage error listing the candidate paths, and accepts a path to
   pick one.
-- Configs that share a directory but aren't in git are one project each: with no
-  git dir to key on, every config is its own project, so the same path can list
-  twice (both flagged `(same name)` only if their names match).
+- Configs that share a directory but aren't in git are one project, not one
+  each: with no git dir to key on, the project is keyed by the config's path,
+  so two configs with the same root list once, as one project with two members.
 - Configs whose roots are gone are matched by name. When several projects share
   the matched name, the config joins one only if its old root was inside that
   project's main checkout; otherwise it stands alone.

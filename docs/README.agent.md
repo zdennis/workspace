@@ -21,6 +21,7 @@ workspace agent run Add OAuth support
 | `--name NAME` | Workspace name (default: detected from current directory) |
 | `--work-item REF` | Work item reference, e.g. `WC-42` (default: random UUID) |
 | `--dry-run` | Print the message without sending it |
+| `--json` | Print one JSON document with the reply (see [JSON output](#json-output)) instead of text |
 
 ## Details
 

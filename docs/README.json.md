@@ -26,7 +26,7 @@ To ask which of these a given CLI supports, run `workspace capabilities --json` 
 
 ## Actions
 
-These commands take `--json` and print one action document: `launch`, `stop`, `kill`, `relaunch`, `focus`, `repair`, `cleanup`, `deactivate`, `reactivate`, `dev up`, `dev down`, `lock release`, `config set`, `pipeline start`, `pipeline advance`, `pipeline reset`, `ui open`, `binding set`, `binding show` and `binding clear`. (`finish`, `start`, `lock clear` and `projects stop|kill` have their own pages; `projects stop|kill` use the same shape.)
+These commands take `--json` and print one action document: `launch`, `stop`, `kill`, `relaunch`, `focus`, `repair`, `cleanup`, `deactivate`, `reactivate`, `dev up`, `dev down`, `lock release`, `config set`, `daemon restart`, `pipeline start`, `pipeline advance`, `pipeline reset`, `ui open`, `binding set`, `binding show` and `binding clear`. (`finish`, `start`, `lock clear` and `projects stop|kill` have their own pages; `projects stop|kill` use the same shape.)
 
 ```json
 {"schema_version":1,"ok":true,"action":"stop","status":"ok",
@@ -37,10 +37,10 @@ These commands take `--json` and print one action document: `launch`, `stop`, `k
 - `action` is the command's words: `launch`, `dev up`, `lock release`, `config set`, `pipeline start`.
 - `results` has one row per target with `workspace` (null when the command has none, such as a global `config set`), `outcome`, `reason` (a short machine-readable cause, or null) and `message`. A row may carry more keys, named on the command's page (`iterm_window_id` for `launch` and `focus`, `key` and `value` for `config set`, `work_item_ref` for `pipeline`).
 - `outcome` is per command (see its page). `failed` and `refused` count as failures.
-- `status` is `ok` (no row failed), `partial` (some did), `failed` (all did, or the command exited non-zero), or `cancelled` (a prompt was declined; nothing changed).
+- `status` is `ok` (no row failed), `partial` (some did), `failed` (all did, or the command exited non-zero), `cancelled` (a prompt was declined; nothing changed), `dry_run` (`--dry-run` reported the plan; nothing changed), or `refused` (a preflight check refused every target; nothing changed).
 - `ok` is `true` for every action document, including `failed`: it means the command ran and reports per-row outcomes. Check `status` and the exit code. A refusal or usage error is the failure envelope above, with `ok: false`.
 - `summary` counts rows by `outcome`. `warnings` is a list of `{code, message}` (empty for now).
-- The exit code is 0 for `ok` and `cancelled`, 3 for `partial`, and 1 for `failed`, except that a command that exits with its own code (`dev up` exits 75 after `--max-wait`) keeps it.
+- The exit code is 0 for `ok`, `cancelled` and `dry_run`, 3 for `partial`, and 1 for `failed` and `refused`, except that a command that exits with its own code (`dev up` exits 75 after `--max-wait`) keeps it.
 - The progress text a command prints goes to stderr, so stdout holds the one document. A command that reports only an exit code (`dev up`, `dev down`, `lock release`) gives a `failed` row with `reason: "exit_code"` and `exit_code`; the explanation is on stderr.
 - `kill` ends the tmux session last. Run it from outside the session it kills, or the process can end before the document prints.
 - `stop` with `--json` does not warn about a named workspace that isn't active; it gives that workspace a `not_running` row.

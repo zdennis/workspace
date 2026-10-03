@@ -41,7 +41,7 @@ The link is passed to the system `open` as a single argument (no shell). The wor
  "warnings":[],"summary":{"opened":1}}
 ```
 
-`action` is `ui open`, like `dev up` and `lock release`. `reason` is the stable machine field; `message` is for people and its text may change. `outcome` is `opened`, `printed` or `failed`. `reason` on a failure is `open_failed` (`open` exited non-zero; `message` is its first line of stderr) or `open_unavailable` (`open` could not be run). `workspace` is `null` for `inbox`. An unknown view, a missing workspace, or a workspace given to `inbox` is a `usage` error (exit 1; with `--json` the error envelope).
+`action` is `ui open`, like `dev up` and `lock release`. `reason` is the stable machine field; `message` is for people and its text may change. `outcome` is `opened`, `printed` or `failed`. `reason` on a failure is `open_failed` (`open` exited non-zero; `message` is its first line of stderr, with a reminder to use `--print` appended) or `open_unavailable` (`open` could not be run). `workspace` is `null` for `inbox`. An unknown view, a missing workspace, or a workspace given to `inbox` is a `usage` error (exit 1; with `--json` the error envelope).
 
 ## Examples
 

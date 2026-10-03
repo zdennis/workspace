@@ -72,9 +72,10 @@ On success, one line of JSON on stdout (nothing else is written to stdout under
 `--json`):
 
 ```json
-{"schema_version":1,"project":"myproject","workspace":"myproject.worktree-PROJ-123","path":"/path/to/.worktrees/PROJ-123","branch":"PROJ-123","base":null,"created":true,"headless":false}
+{"schema_version":1,"ok":true,"project":"myproject","workspace":"myproject.worktree-PROJ-123","path":"/path/to/.worktrees/PROJ-123","branch":"PROJ-123","base":null,"created":true,"headless":false}
 ```
 
+- `ok` — `true` for the success doc, even one carrying `error`/`prompt_failures`
 - `project` — the parent project name
 - `workspace` — the generated tmuxinator config name
 - `path` — the worktree's filesystem path
@@ -100,7 +101,7 @@ On a hard error (bad input, `--base`/`--yes` needed, git failure), exits 1 with
 the error on stdout instead of the success doc:
 
 ```json
-{"schema_version":1,"ok":false,"error":"..."}
+{"schema_version":1,"ok":false,"error":"...","code":"..."}
 ```
 
 The worktree can also be created successfully but the `--prompt` fail to reach
@@ -108,7 +109,7 @@ the coding agent. In that case the success doc above is still emitted, but with
 `error` and `prompt_failures` added and exit code 1:
 
 ```json
-{"schema_version":1,"project":"myproject","workspace":"myproject.worktree-PROJ-123","path":"/path/to/.worktrees/PROJ-123","branch":"PROJ-123","base":null,"created":true,"headless":false,"error":"Prompt was not sent to every workspace.","prompt_failures":{"myproject.worktree-PROJ-123":"agent never became ready"}}
+{"schema_version":1,"ok":true,"project":"myproject","workspace":"myproject.worktree-PROJ-123","path":"/path/to/.worktrees/PROJ-123","branch":"PROJ-123","base":null,"created":true,"headless":false,"error":"Prompt was not sent to every workspace.","prompt_failures":{"myproject.worktree-PROJ-123":"agent never became ready"}}
 ```
 
 Headless, when tmuxinator can't start the session (it fails, times out after 60
@@ -121,7 +122,7 @@ already existed — the success doc includes a `warnings` array instead of print
 to stderr:
 
 ```json
-{"schema_version":1,"project":"myproject","workspace":"myproject.worktree-PROJ-123","path":"/path/to/.worktrees/PROJ-123","branch":"PROJ-123","base":null,"created":false,"headless":false,"warnings":["Note: --base ignored; branch 'PROJ-123' already exists."]}
+{"schema_version":1,"ok":true,"project":"myproject","workspace":"myproject.worktree-PROJ-123","path":"/path/to/.worktrees/PROJ-123","branch":"PROJ-123","base":null,"created":false,"headless":false,"warnings":["Note: --base ignored; branch 'PROJ-123' already exists."]}
 ```
 
 ## Examples

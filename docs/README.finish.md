@@ -57,17 +57,17 @@ Under `--json`, the `post_kill` hook doesn't run, so stdout carries only the JSO
 Success:
 
 ```json
-{"schema_version": 1, "project": "myproject.worktree-PROJ-123"}
+{"schema_version": 1, "ok": true, "project": "myproject.worktree-PROJ-123"}
 ```
 
 Error (nothing was removed):
 
 ```json
-{"schema_version": 1, "error": "'myproject.worktree-PROJ-123' has 2 changed file(s) at /path/to/worktree.\nCommit or stash them before finishing."}
+{"schema_version": 1, "ok": false, "error": "'myproject.worktree-PROJ-123' has 2 changed file(s) at /path/to/worktree.\nCommit or stash them before finishing.", "code": "unsaved_work"}
 ```
 
 - `schema_version` is bumped only on a breaking change to this shape.
-- Usage/validation errors (an unknown flag, extra arguments) get the same treatment when `--json` is present: `{"schema_version": 1, "error": "<message>"}` on stdout, exit 1 — never plain text on stderr.
+- Usage/validation errors (an unknown flag, extra arguments) get the same treatment when `--json` is present: `{"schema_version": 1, "ok": false, "error": "<message>", "code": "<code>"}` on stdout, exit 1 — never plain text on stderr.
 - Exit codes: `0` on success, `1` on any error (see above).
 
 ## Examples

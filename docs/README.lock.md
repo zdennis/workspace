@@ -32,7 +32,7 @@ workspace lock instructions [<name>]
 | Option | Description |
 |--------|-------------|
 | `--all` | `release`: release every lock this agent holds. `clear`: clear every lock in this namespace |
-| `--json` | `clear` only: emit the documented JSON schema instead of text (see `--json (clear)` below) |
+| `--json` | `release`: print the action document (see [JSON output](#json-output) below); `clear`: emit the documented JSON schema instead of text (see `--json (clear)` below) |
 
 ## Options (status)
 
@@ -126,6 +126,7 @@ Before editing files, run `workspace lock acquire edit --wait --task "<your task
 ```json
 {
   "schema_version": 1,
+  "ok": true,
   "locks": {
     "edit": {
       "holder": {
@@ -143,13 +144,13 @@ Before editing files, run `workspace lock acquire edit --wait --task "<your task
 ```
 
 - `schema_version` is bumped only on a breaking change to this shape; new optional fields may be added without bumping it.
-- An empty store is `{"schema_version": 1, "locks": {}}` — never an error.
+- An empty store is `{"schema_version": 1, "ok": true, "locks": {}}` — never an error.
 - `holder` is `null` when the lock is free; `queue` is `[]` when no one is waiting.
 - A `devenv` waiter queued by `workspace dev up --force` carries `"takeover": true`; `clear` keeps it (see `clear` below).
 - A `devenv` holder or waiter being stopped by a `clear` (or `dev down`/`dev up --force`) carries `"clearing": {"pid", "started"}` naming that process — but only while it's still running, or unknown (unreadable process table), the same "alive-or-unknown" rule `clear` itself uses; a marker left by a clearer that has since died is dropped from the JSON, matching the plain-text `CLEARING` tag and `clear`'s own "already being cleared" check.
 - `stale` marks a holder or waiter that the next mutating op (`acquire`, `release`, `clear`) would reap as dead — the same annotation the table's `STALE` marker comes from. A kept `devenv` holder (`"kept": true`, see `clear`) is marked stale once its wrapper is gone, but is not reaped while its process group still runs.
-- A corrupt `locks.json` becomes `{"schema_version": 1, "error": "<message>"}` on stdout, exit 1 — the JSON error stays on the same stream as a successful payload, so a caller only ever needs to read stdout and check for an `"error"` key, never stderr, to tell the two apart.
-- Usage/validation errors (a bad lock name, an unknown flag, extra arguments) get the same treatment: `{"schema_version": 1, "error": "<message>"}` on stdout, exit 1 — never plain text on stderr — as long as `--json` was present on the command line. A caller that always passes `--json` and always reads stdout never needs to special-case argument mistakes.
+- A corrupt `locks.json` becomes `{"schema_version": 1, "ok": false, "error": "<message>", "code": "error"}` on stdout, exit 1 — the JSON error stays on the same stream as a successful payload, so a caller only ever needs to read stdout and check for an `"error"` key, never stderr, to tell the two apart.
+- Usage/validation errors (a bad lock name, an unknown flag, extra arguments) get the same treatment: `{"schema_version": 1, "ok": false, "error": "<message>", "code": "usage"}` on stdout, exit 1 — never plain text on stderr — as long as `--json` was present on the command line. A caller that always passes `--json` and always reads stdout never needs to special-case argument mistakes.
 - Exit codes: `0` on success (including an empty store or a free lock), `1` for a store error or a usage/validation error.
 
 ### `--json` (clear)
@@ -157,16 +158,16 @@ Before editing files, run `workspace lock acquire edit --wait --task "<your task
 `workspace lock clear --json` (and `clear --all --json`) emits one JSON object on stdout instead of the text messages below, for every outcome:
 
 ```json
-{"schema_version": 1, "name": "devenv", "result": "cleared", "queue_size": 1, "holder": {"kind": "process", "pid": 4242, "pgid": 4242, "worktree": "app.worktree-login"}}
-{"schema_version": 1, "name": "devenv", "result": "kept", "reason": "process_group_not_stopped", "holder": {"kind": "process", "pid": 4242, "pgid": 4242}}
-{"schema_version": 1, "name": "devenv", "result": "in_progress", "clearer_pid": 998, "holder": {"kind": "process", "pid": 4242, "pgid": 4242}}
-{"schema_version": 1, "name": "edit", "result": "not_held"}
+{"schema_version": 1, "ok": true, "name": "devenv", "result": "cleared", "queue_size": 1, "holder": {"kind": "process", "pid": 4242, "pgid": 4242, "worktree": "app.worktree-login"}}
+{"schema_version": 1, "ok": true, "name": "devenv", "result": "kept", "reason": "process_group_not_stopped", "holder": {"kind": "process", "pid": 4242, "pgid": 4242}}
+{"schema_version": 1, "ok": true, "name": "devenv", "result": "in_progress", "clearer_pid": 998, "holder": {"kind": "process", "pid": 4242, "pgid": 4242}}
+{"schema_version": 1, "ok": true, "name": "edit", "result": "not_held"}
 ```
 
 - `result` is one of: `"cleared"` (nothing was held, or it was held and is now free — check `holder` to tell those apart), `"kept"` (a `devenv` holder's process group couldn't be stopped, or someone else took the lock while it was being stopped — see `reason`), `"in_progress"` (another live `clear` is already stopping this lock's holder; `clearer_pid` names it), or `"not_held"` (nothing to clear because the name has no entry at all).
 - `holder` is the holder record being cleared, kept, or already being cleared — omitted when there was none. `queue_size` (only on `"cleared"`) is how many waiters were removed. `kept_takeover` (only on `"cleared"`, when present) names a queued `dev up --force` this clear kept instead of removing, exactly as the text mode's `kept the queued takeover by ...` does.
-- With `--all`, the payload is `{"schema_version": 1, "results": [...]}`, one entry per lock in the namespace, each shaped like the single-lock object above minus the top-level `schema_version`.
-- Usage/validation errors (a bad lock name, an unknown flag, extra or missing arguments) and a corrupt `locks.json` become `{"schema_version": 1, "error": "<message>"}` on stdout, exit 1 — never plain text on stderr — as long as `--json` was present on the command line, regardless of where in the arguments it appeared.
+- With `--all`, the payload is `{"schema_version": 1, "ok": true, "results": [...]}`, one entry per lock in the namespace, each shaped like the single-lock object above minus the top-level `schema_version`.
+- Usage/validation errors (a bad lock name, an unknown flag, extra or missing arguments) and a corrupt `locks.json` become `{"schema_version": 1, "ok": false, "error": "<message>", "code": "<code>"}` on stdout, exit 1 — never plain text on stderr — as long as `--json` was present on the command line, regardless of where in the arguments it appeared.
 - Exit codes: `0` once everything named was cleared, `1` if any lock was kept (`"kept"` or `"in_progress"`) or a usage/store error occurred — same as text mode.
 
 **`clear`** — removes a lock's holder and queue unconditionally, with no liveness check and no confirmation prompt. Use it to recover from a stuck lock. Clearing a plain lock (not `devenv`) always just removes it; the outcomes below only branch for `devenv`, because clearing it also has to stop the dev environment first. With `--all`, every other lock in the namespace is cleared the same way regardless of what happens to `devenv`.

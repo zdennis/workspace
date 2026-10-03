@@ -19,7 +19,7 @@ Open questions (`workspace ask`) don't make a workspace not ready. They are the 
 
 ## Reads only
 
-`review` never writes. It reads the agent daemon's pane states, the task store, git, the question store, the session ledger, the last assistant message in the transcript, and (`show` only) `gh pr view`. A source that can't answer is reported as unavailable with a reason, never as clean or zero: a daemon that isn't running or is too slow, git failing or running over its 10 second limit, `gh` missing or failing.
+`review` never writes. It reads the agent daemon's pane states, the task store, git, and the question store; `show` also reads the session ledger, the last assistant message in the transcript, and `gh pr view`. A source that can't answer is reported as unavailable with a reason, never as clean or zero: a daemon that isn't running or is too slow, git failing or running over its 10 second limit, `gh` missing or failing.
 
 ## `review list`
 

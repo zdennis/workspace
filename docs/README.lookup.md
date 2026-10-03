@@ -10,14 +10,14 @@ workspace lookup <path|branch|project>
 
 ## Details
 
-Searches for a workspace project using one of three methods:
+Searches for a workspace project using one of these methods, in order:
 
-1. **Worktree directory path** — Extract the worktree name from a path and find the corresponding project
-   - Example: `/path/to/.worktrees/pr-123` → finds `project.worktree-pr-123`
-
-2. **Project root directory** — Match a directory path to a project's root
+1. **Project root directory** — Match a directory path to a project's root, or any subdirectory of it. A path under a configured project's root resolves to that project — a worktree under `<root>/.worktrees/` included, even when the worktree has its own config
    - Example: `~/Documents/Obsidian-LocalOnly/Zendesk` → finds `work-notes`
    - Also works with subdirectories: `~/Documents/Obsidian-LocalOnly/Zendesk/Engineering` → finds `work-notes`
+
+2. **Worktree directory path** — When no configured root contains the path, extract the worktree name from its basename and find the corresponding project
+   - Example: `/path/to/.worktrees/pr-123` → finds `project.worktree-pr-123`
 
 3. **Branch name or project key** — Find a project by its branch name or project name
    - Example: `PUFFINS-1876-use-lock-version` → finds `growth-engine.worktree-PUFFINS-1876-use-lock-version`
@@ -26,9 +26,9 @@ Searches for a workspace project using one of three methods:
 ## Examples
 
 ```sh
-# Find by worktree path
+# Find the project whose root contains a path (a worktree path included)
 $ workspace lookup ~/Code/zendesk/growth-engine/.worktrees/growth-engine-kick-test
-growth-engine.worktree-growth-engine-kick-test
+growth-engine
 
 # Find by branch name
 $ workspace lookup PUFFINS-1876-use-lock-version
