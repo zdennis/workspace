@@ -5,7 +5,7 @@ require "fileutils"
 
 RSpec.describe Workspace::Commands::Capabilities do
   let(:output) { StringIO.new }
-  let(:config) { instance_double(Workspace::Config, event_log_file: "/home/z/.workspace-events.jsonl", run_dir: "/home/z/.local/workspace/run") }
+  let(:config) { instance_double(Workspace::Config, event_log_file: "/home/z/.workspace-events.jsonl", run_dir: "/home/z/.local/workspace/run", library_dir: "/home/z/.config/workspace/library") }
   let(:bin_dir) { Dir.mktmpdir("capabilities-bin") }
   let(:path_env) { bin_dir }
   subject(:command) { described_class.new(config: config, path_env: path_env, output: output) }
@@ -40,7 +40,7 @@ RSpec.describe Workspace::Commands::Capabilities do
       expect(features).to include("prune_safe" => 1)
       expect(features).to include("envelope" => 1, "error_codes" => 1, "no_input" => 1, "name_scope" => 1, "action_json" => 1, "sessions" => 1)
       expect(features).to include("snapshot" => 2, "agent_send" => 1, "focus_pane" => 1, "actions_manifest" => 0)
-      expect(features).to include("config_json" => 1, "tmux_show" => 1, "state_done" => 1, "tasks" => 1, "event_emitters" => 1, "ui_open" => 1, "pane_bindings" => 1)
+      expect(features).to include("config_json" => 1, "tmux_show" => 1, "state_done" => 1, "tasks" => 1, "event_emitters" => 1, "ui_open" => 1, "pane_bindings" => 1, "library" => 1)
     end
 
     it "reports the exit codes the CLI uses" do
@@ -49,10 +49,10 @@ RSpec.describe Workspace::Commands::Capabilities do
       expect(document["exit_codes"]).to eq("ok" => 0, "failed" => 1, "not_submitted" => 2, "partial" => 3, "lock_cleared" => 4, "timeout" => 75)
     end
 
-    it "reports the event log and run directory from config" do
+    it "reports the event log, run and library directories from config" do
       command.call(json: true)
 
-      expect(document["paths"]).to eq("event_log" => "/home/z/.workspace-events.jsonl", "run_dir" => "/home/z/.local/workspace/run")
+      expect(document["paths"]).to eq("event_log" => "/home/z/.workspace-events.jsonl", "run_dir" => "/home/z/.local/workspace/run", "library" => "/home/z/.config/workspace/library")
     end
 
     it "reports the path of each dependency found on PATH" do

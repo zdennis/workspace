@@ -67,6 +67,11 @@ module Workspace
       File.join(workspace_projects_dir, "#{name}.yml")
     end
 
+    # @return [String] path to the library of named plays and prompts (`library`)
+    def library_dir
+      File.join(workspace_config_dir, "library")
+    end
+
     # Handoff files carry one pipeline stage's output to the next, so they live
     # under the user's own config directory rather than in shared /tmp.
     #

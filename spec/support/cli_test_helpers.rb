@@ -655,6 +655,39 @@ module CLITestHelpers
     end
   end
 
+  # Records each library verb with its keyword arguments; writes return a
+  # Commands::Library::Result like the real command, reads print a line.
+  class FakeLibraryCommand
+    attr_reader :calls
+    attr_accessor :error, :result
+
+    def initialize
+      @calls = []
+      @entry = {"kind" => "play", "name" => "kickoff", "ref" => "play/kickoff", "scope" => "global", "project" => nil}
+      @result = Workspace::Commands::Library::Result.new("added", nil, @entry, "Added play/kickoff in the global library.")
+    end
+
+    def list(**kw) = record(:list, kw)
+
+    def show(ref, **kw) = record(:show, {ref: ref}.merge(kw))
+
+    def info(ref, **kw) = record(:info, {ref: ref}.merge(kw))
+
+    def add(**kw) = record(:add, kw)
+
+    def update(ref, **kw) = record(:update, {ref: ref}.merge(kw))
+
+    def remove(ref, **kw) = record(:remove, {ref: ref}.merge(kw))
+
+    private
+
+    def record(name, args)
+      @calls << [name, args]
+      raise @error if @error
+      @result
+    end
+  end
+
   class FakeReviewCommand
     attr_reader :calls
     attr_accessor :result

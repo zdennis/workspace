@@ -101,6 +101,7 @@ RSpec.describe Workspace::CLI do
       daemon_command: overrides[:daemon_command],
       ui_command: overrides[:ui_command],
       binding_command: overrides[:binding_command],
+      library_command: overrides[:library_command],
       review_command: overrides[:review_command],
       snapshot_command: overrides[:snapshot_command],
       project_actions_command: overrides[:project_actions_command],
@@ -3251,6 +3252,150 @@ RSpec.describe Workspace::CLI do
       cli.run(["snapshot", "--help"])
 
       expect(output.string).to include("Usage: workspace snapshot --json").and include("daemons_unavailable")
+    end
+  end
+
+  describe "#run with library" do
+    let(:library_command) { CLITestHelpers::FakeLibraryCommand.new }
+    let(:tty_input) { Class.new(StringIO) { def tty? = true }.new("") }
+    let(:built) { build_test_cli(library_command: library_command, working_dir: "/some/dir", input: tty_input) }
+    let(:cli) { built[0] }
+    let(:output) { built[1] }
+    let(:where) { {scope: nil, project: nil, cwd: "/some/dir"} }
+
+    it "lists by default, through the lib alias, with a kind filter and a scope" do
+      cli.run(["library"])
+      cli.run(["lib", "list", "--kind", "play", "--global", "--json"])
+      cli.run(["library", "list", "--project"])
+      cli.run(["library", "list", "--project", "api"])
+
+      expect(library_command.calls).to eq([
+        [:list, where.merge(kind: nil, json: false)],
+        [:list, where.merge(kind: "play", scope: "global", json: true)],
+        [:list, where.merge(scope: "project", kind: nil, json: false)],
+        [:list, where.merge(scope: "project", project: "api", kind: nil, json: false)]
+      ])
+    end
+
+    it "routes show and info with the ref" do
+      cli.run(["library", "show", "play/kickoff"])
+      cli.run(["library", "info", "kickoff", "--name", "api", "--json"])
+
+      expect(library_command.calls).to eq([
+        [:show, where.merge(ref: "play/kickoff", json: false)],
+        [:info, where.merge(ref: "kickoff", scope: "project", project: "api", json: true)]
+      ])
+    end
+
+    it "routes add with a path, a name, link, force, project and dry-run" do
+      cli.run(["library", "add", "Play.md", "--kind", "play", "--as", "my-play", "--link", "--force", "--project", "--dry-run"])
+
+      expect(library_command.calls).to eq([[:add, where.merge(scope: "project", kind: "play", path: "Play.md", body: nil, name: "my-play",
+        link: true, force: true, dry_run: true)]])
+      expect(output.string).to eq("")
+    end
+
+    it "reads the body from stdin for add - and update -" do
+      input = Class.new(StringIO) { def tty? = true }.new("typed body\n")
+      cli, output = build_test_cli(library_command: library_command, working_dir: "/some/dir", input: input)
+
+      cli.run(["library", "add", "-", "--kind", "prompt", "--as", "typed"])
+      input.rewind
+      cli.run(["library", "update", "prompt/typed", "-"])
+
+      expect(library_command.calls).to eq([
+        [:add, where.merge(kind: "prompt", path: nil, body: "typed body\n", name: "typed", link: false, force: false, dry_run: false)],
+        [:update, where.merge(ref: "prompt/typed", path: nil, body: "typed body\n", link: false, dry_run: false)]
+      ])
+      expect(output.string).to eq("")
+    end
+
+    it "prints an action document for add, with dry_run status under --dry-run" do
+      cli.run(["library", "add", "x.md", "--kind", "play", "--json"])
+      doc = JSON.parse(output.string)
+      expect(doc).to include("ok" => true, "action" => "library add", "status" => "ok", "summary" => {"added" => 1})
+      expect(doc["results"].first).to include("workspace" => nil, "outcome" => "added", "message" => "Added play/kickoff in the global library.",
+        "entry" => include("ref" => "play/kickoff"))
+
+      output.truncate(0)
+      output.rewind
+      cli.run(["library", "add", "x.md", "--kind", "play", "--json", "--dry-run"])
+      expect(JSON.parse(output.string)).to include("status" => "dry_run")
+    end
+
+    it "routes remove with --yes and prints a removed row" do
+      library_command.result = Workspace::Commands::Library::Result.new("removed", "api", {"ref" => "play/kickoff"}, "Removed play/kickoff from project api.")
+
+      cli.run(["library", "remove", "play/kickoff", "--yes", "--project", "api", "--json"])
+
+      expect(library_command.calls).to eq([[:remove, where.merge(ref: "play/kickoff", scope: "project", project: "api", yes: true, dry_run: false)]])
+      expect(JSON.parse(output.string)).to include("action" => "library remove", "status" => "ok",
+        "results" => [include("workspace" => "api", "outcome" => "removed")])
+    end
+
+    it "prompts for remove on a terminal and reports cancelled when declined" do
+      library_command.result = nil
+
+      cli.run(["library", "remove", "play/kickoff"])
+
+      expect(library_command.calls).to eq([[:remove, where.merge(ref: "play/kickoff", yes: false, dry_run: false)]])
+    end
+
+    it "never prompts for remove under --json, --no-input or without a terminal" do
+      expect { cli.run(["library", "remove", "play/kickoff", "--json"]) }.to raise_error(FakeSystemExit)
+      expect(JSON.parse(output.string.lines.last)).to include("code" => "usage", "error" => a_string_matching(/--yes/))
+
+      cli, _, error_output = build_test_cli(library_command: library_command, input: StringIO.new("y\n"))
+      expect { cli.run(["library", "remove", "play/kickoff"]) }.to raise_error(FakeSystemExit)
+      expect(error_output.string).to include("without a terminal: pass --yes")
+
+      cli, output = build_test_cli(library_command: library_command, input: Workspace::PromptInput.new(tty_input))
+      expect { cli.run(["library", "remove", "play/kickoff", "--no-input", "--json"]) }.to raise_error(FakeSystemExit)
+      expect(JSON.parse(output.string)).to include("code" => "confirmation_required", "retry" => {"flags" => ["--yes"], "destructive" => true})
+      expect(library_command.calls).to be_empty
+    end
+
+    it "emits the command's error envelope under --json" do
+      library_command.error = Workspace::Error.new("No library entry 'x'.", code: "unknown_library_entry", details: {"ref" => "x", "scopes" => ["global"]})
+
+      expect { cli.run(["library", "show", "x", "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+      expect(JSON.parse(output.string)).to include("ok" => false, "code" => "unknown_library_entry", "details" => {"ref" => "x", "scopes" => ["global"]})
+    end
+
+    it "rejects bad usage, as an envelope under --json" do
+      {
+        ["library", "show"] => /needs a REF/,
+        ["library", "add", "--kind", "play"] => /needs a PATH/,
+        ["library", "add", "x.md"] => /needs --kind/,
+        ["library", "update", "play/x"] => /needs a REF and a PATH/,
+        ["library", "remove"] => /needs a REF/,
+        ["library", "list", "--global", "--project", "api"] => /--global and --project/,
+        ["library", "show", "a", "b"] => /Unexpected argument: b/,
+        ["library", "bogus"] => /Unknown library subcommand: bogus/,
+        ["library", "list", "--nope"] => /invalid option/
+      }.each do |argv, message|
+        cli, _, error_output = build_test_cli(library_command: library_command, input: tty_input)
+        expect { cli.run(argv) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+        expect(error_output.string).to match(message)
+
+        cli, output = build_test_cli(library_command: library_command, input: tty_input)
+        expect { cli.run(argv + ["--json"]) }.to raise_error(FakeSystemExit)
+        expect(JSON.parse(output.string)).to include("ok" => false, "code" => "usage")
+      end
+      expect(library_command.calls).to be_empty
+    end
+
+    it "prints help" do
+      cli.run(["library", "--help"])
+
+      expect(output.string).to include("Usage: workspace library list").and include("workspace library remove REF").and include("docs/README.library.md")
+    end
+
+    it "fails when no library command was wired" do
+      cli, _, error_output = build_test_cli(library_command: nil)
+
+      expect { cli.run(["library", "list"]) }.to raise_error(FakeSystemExit)
+      expect(error_output.string).to include("no library command was wired")
     end
   end
 

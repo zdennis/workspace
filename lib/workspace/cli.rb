@@ -17,7 +17,7 @@ module Workspace
     SUBCOMMANDS = %w[
       init doctor launch start stop add add-project kill finish relaunch
       focus deactivate reactivate tile resize capture agent agentd lock dev parent projects
-      capabilities daemon sessions review snapshot ask session-event agent-run handoff pipeline run
+      capabilities daemon sessions review snapshot ask session-event agent-run handoff pipeline run library lib
       run-and-report report-run-status layout config tmux statusline current
       list-projects list status repair cleanup prune set-command event-log
       whereis lookup dir alfred version help
@@ -69,6 +69,7 @@ module Workspace
     # @param daemon_command [Workspace::Commands::Daemon, nil] pre-built daemon command
     # @param ui_command [Workspace::Commands::Ui, nil] pre-built ui command
     # @param binding_command [Workspace::Commands::Binding, nil] pre-built binding command
+    # @param library_command [Workspace::Commands::Library, nil] pre-built library command
     # @param review_command [Workspace::Commands::Review, nil] pre-built review command
     # @param snapshot_command [Workspace::Commands::Snapshot, nil] pre-built snapshot command
     # @param config_report [Workspace::ConfigReport, nil] builds the `config show/validate --json` documents
@@ -80,7 +81,7 @@ module Workspace
     #   reports every project as unknown
     # @param launch_mode [Workspace::LaunchMode, nil] decides whether launch/start
     #   run headless when no --[no-]headless flag is given; nil builds one
-    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, restart_agent_command: nil, send_command: nil, ensure_agent_command: nil, handoff_command: nil, projects_command: nil, capabilities_command: nil, daemon_command: nil, ui_command: nil, binding_command: nil, review_command: nil, snapshot_command: nil, project_actions_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil, liveness: nil)
+    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, restart_agent_command: nil, send_command: nil, ensure_agent_command: nil, handoff_command: nil, projects_command: nil, capabilities_command: nil, daemon_command: nil, ui_command: nil, binding_command: nil, library_command: nil, review_command: nil, snapshot_command: nil, project_actions_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil, liveness: nil)
       @config = config
       @state = state
       @project_config = project_config
@@ -129,6 +130,7 @@ module Workspace
       @daemon_command = daemon_command
       @ui_command = ui_command
       @binding_command = binding_command
+      @library_command = library_command
       @review_command = review_command
       @snapshot_command = snapshot_command
       @config_report = config_report
@@ -211,6 +213,8 @@ module Workspace
         cmd_ui(args)
       when "binding"
         cmd_binding(args)
+      when "library", "lib"
+        cmd_library(args)
       when "review"
         cmd_review(args)
       when "snapshot"
@@ -399,6 +403,7 @@ module Workspace
           kill            Kill a worktree project and remove its worktree (auto-detects from cwd)
           launch          Launch tmuxinator projects in iTerm windows, or headless in plain tmux
           layout          Save/restore tmux pane layouts (auto-saved before resize)
+          library         Store named plays and prompts, globally or per project (alias: lib)
           list            List currently active (launched) projects (--all for all available)
           lock            Acquire, release, inspect, or clear a shared repo-wide lock
           lookup          Find a workspace project by worktree path, branch, or project name
@@ -3261,6 +3266,126 @@ module Workspace
     rescue OptionParser::ParseError, UsageError => e
       raise unless json_requested?(options[:json], given)
       emit_json_error(ACTION_JSON_SCHEMA_VERSION, e, message: e.message.lines.first.strip)
+    end
+
+    LIBRARY_SUBCOMMANDS = %w[list show info add update remove].freeze
+
+    def library_parser(options)
+      OptionParser.new do |opts|
+        opts.banner = "Usage: workspace library list [--kind KIND] [--global | --project [NAME]] [--json]\n" \
+          "       workspace library show REF [--global | --project [NAME]] [--json]\n" \
+          "       workspace library info REF [--global | --project [NAME]] [--json]\n" \
+          "       workspace library add PATH|- --kind KIND [--as NAME] [--link] [--force] [--project [NAME]] [--dry-run] [--json]\n" \
+          "       workspace library update REF PATH|- [--link] [--project [NAME]] [--dry-run] [--json]\n" \
+          "       workspace library remove REF [--yes] [--project [NAME]] [--dry-run] [--json]"
+        opts.separator ""
+        opts.separator "A store of named play and prompt files under #{@config.library_dir}. A play is a"
+        opts.separator "document an agent reads and follows; a prompt is short text sent as typed. Entries are"
+        opts.separator "global unless --project narrows them to one project; a project entry hides a global one"
+        opts.separator "of the same name. REF is kind/name, or a bare name when one kind has it. `lib` is an"
+        opts.separator "alias for `library`, and `workspace library` alone lists."
+        opts.separator ""
+        opts.separator "  list      every entry visible from here, sorted by kind then name"
+        opts.separator "  show      print the body, so --prompt \"$(workspace library show prompt/kickoff)\" works"
+        opts.separator "  info      kind, name, scope, path, link target, description, modified time, effective"
+        opts.separator "  add       copy PATH in (or link it with --link, or read - from stdin with --as NAME);"
+        opts.separator "            the name defaults to the file name in kebab case; identical content is a no-op,"
+        opts.separator "            different content under the same name needs --force"
+        opts.separator "  update    replace an existing entry's content, or repoint its link"
+        opts.separator "  remove    delete the entry or its link from the store; the source file is never touched"
+        opts.separator ""
+        opts.on("--kind KIND", "play or prompt (add: required; list: a filter)") { |v| options[:kind] = v }
+        opts.on("--as NAME", "add: the entry name (lowercase letters, digits and hyphens)") { |v| options[:name] = v }
+        opts.on("--link", "add, update: store a symlink to PATH instead of a copy") { options[:link] = true }
+        opts.on("--force", "add: replace an entry that has different content") { options[:force] = true }
+        opts.on("--yes", "remove: don't ask") { options[:yes] = true }
+        opts.on("--global", "reads: only the global store") { options[:scope] = "global" }
+        opts.on("--project [NAME]", "--name [NAME]", "the project's store (NAME, or the project of the current directory)") { |v| options[:project] = v || true }
+        opts.on("--dry-run", "add, update, remove: report what would happen and write nothing") { options[:dry_run] = true }
+        opts.on("--json", "Print one JSON document (see docs/README.library.md)") { options[:json] = true }
+        opts.on("-h", "--help", "Show this help") { options[:help] = true }
+        opts.separator ""
+        opts.separator "Examples:"
+        opts.separator "  workspace library add --kind play --link ~/Notes/Agent\\ Orchestration\\ Playbook.md"
+        opts.separator "  workspace library add kickoff.md --kind prompt --project"
+        opts.separator "  workspace library list --kind play --json"
+        opts.separator "  workspace start feature/x --prompt \"$(workspace library show prompt/kickoff)\""
+        opts.separator "  workspace library remove play/agent-orchestration-playbook --yes"
+      end
+    end
+
+    def cmd_library(args)
+      options = {json: false, link: false, force: false, yes: false, dry_run: false}
+      given = args.dup
+      parser = library_parser(options)
+      subcommand = args.shift if LIBRARY_SUBCOMMANDS.include?(args.first)
+      parser.parse!(args)
+      subcommand ||= args.shift if LIBRARY_SUBCOMMANDS.include?(args.first)
+      return @output.puts(parser.help) if options[:help]
+
+      subcommand ||= "list" if args.empty?
+      raise UsageError, "Unknown library subcommand: #{args.first}. One of #{LIBRARY_SUBCOMMANDS.join(", ")}. Run 'workspace library --help'." unless subcommand
+      raise Error, "library is not available: no library command was wired" unless @library_command
+      raise UsageError, "--global and --project can't be combined." if options[:scope] && options[:project]
+
+      scope = options[:project] ? "project" : options[:scope]
+      project = options[:project].is_a?(String) ? options[:project] : nil
+      where = {scope: scope, project: project, cwd: @working_dir}
+      ref = args.shift unless subcommand == "list" || subcommand == "add"
+
+      case subcommand
+      when "list"
+        raise UsageError, "Unexpected argument: #{args.first}. Run 'workspace library --help'." if args.any?
+        @library_command.list(kind: options[:kind], json: options[:json], **where)
+      when "show", "info"
+        raise UsageError, "library #{subcommand} needs a REF (kind/name or name)." unless ref
+        raise UsageError, "Unexpected argument: #{args.first}. Run 'workspace library --help'." if args.any?
+        @library_command.public_send(subcommand, ref, json: options[:json], **where)
+      when "add"
+        path = args.shift
+        raise UsageError, "library add needs a PATH, or - for stdin." unless path
+        raise UsageError, "library add needs --kind play or --kind prompt." unless options[:kind]
+        raise UsageError, "Unexpected argument: #{args.first}. Run 'workspace library --help'." if args.any?
+        path, body = (path == "-") ? [nil, @input.read] : [path, nil]
+        library_action("library add", options) do
+          @library_command.add(kind: options[:kind], path: path, body: body, name: options[:name], link: options[:link],
+            force: options[:force], dry_run: options[:dry_run], **where)
+        end
+      when "update"
+        path = args.shift
+        raise UsageError, "library update needs a REF and a PATH (or - for stdin)." unless ref && path
+        raise UsageError, "Unexpected argument: #{args.first}. Run 'workspace library --help'." if args.any?
+        path, body = (path == "-") ? [nil, @input.read] : [path, nil]
+        library_action("library update", options) do
+          @library_command.update(ref, path: path, body: body, link: options[:link], dry_run: options[:dry_run], **where)
+        end
+      when "remove"
+        raise UsageError, "library remove needs a REF (kind/name or name)." unless ref
+        raise UsageError, "Unexpected argument: #{args.first}. Run 'workspace library --help'." if args.any?
+        unless options[:yes] || options[:dry_run]
+          Prompt.refuse_if_no_input!(@input, "Remove #{ref} from the library?", retry_flags: ["--yes"], destructive: true)
+          raise UsageError, "library remove --json never prompts: pass --yes to remove, or --dry-run to preview." if options[:json]
+          unless @input.respond_to?(:tty?) && @input.tty?
+            raise UsageError, "library remove can't ask for confirmation without a terminal: pass --yes (or --dry-run)."
+          end
+        end
+        library_action("library remove", options) do
+          @library_command.remove(ref, yes: options[:yes], dry_run: options[:dry_run], **where)
+        end
+      end
+    rescue OptionParser::ParseError, UsageError => e
+      raise unless json_requested?(options[:json], given)
+      emit_json_error(JsonEnvelope::SCHEMA_VERSION, e, message: e.message.lines.first.strip)
+    end
+
+    # Runs a library write under {#run_action}; a nil result is a declined prompt.
+    def library_action(action, options)
+      run_action(action, json: options[:json]) do
+        result = yield
+        next {exit_code: 0, results: [], status: "cancelled"} unless result
+        row = action_row(result.workspace, result.outcome, message: result.message, entry: result.entry)
+        {exit_code: 0, results: [row], status: options[:dry_run] ? "dry_run" : nil}
+      end
     end
 
     def snapshot_parser(options)

@@ -48,7 +48,11 @@ module Workspace
       "clear_not_confirmed" => "/clear was typed but a new conversation didn't appear.",
       "restart_in_progress" => "A restart is already running on the pane.",
       "agent_stopped" => "The agent stopped during the restart.",
-      "not_bound" => "The pane isn't bound to a run or review."
+      "not_bound" => "The pane isn't bound to a run or review.",
+      "unknown_library_entry" => "No library entry has that name in the scopes searched.",
+      "ambiguous_library_entry" => "A bare library name matches more than one kind.",
+      "library_entry_exists" => "library add would replace an entry with different content; pass --force.",
+      "library_source_missing" => "The file to add doesn't exist, or a linked entry's target can't be read."
     }.freeze
 
     # @param code [String]

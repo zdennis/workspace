@@ -26,7 +26,7 @@ To ask which of these a given CLI supports, run `workspace capabilities --json` 
 
 ## Actions
 
-These commands take `--json` and print one action document: `launch`, `stop`, `kill`, `relaunch`, `focus`, `repair`, `cleanup`, `deactivate`, `reactivate`, `dev up`, `dev down`, `lock release`, `config set`, `daemon restart`, `pipeline start`, `pipeline advance`, `pipeline reset`, `ui open`, `binding set`, `binding show` and `binding clear`. (`finish`, `start`, `lock clear` and `projects stop|kill` have their own pages; `projects stop|kill` use the same shape.)
+These commands take `--json` and print one action document: `launch`, `stop`, `kill`, `relaunch`, `focus`, `repair`, `cleanup`, `deactivate`, `reactivate`, `dev up`, `dev down`, `lock release`, `config set`, `daemon restart`, `pipeline start`, `pipeline advance`, `pipeline reset`, `ui open`, `binding set`, `binding show`, `binding clear`, `library add`, `library update` and `library remove`. (`finish`, `start`, `lock clear` and `projects stop|kill` have their own pages; `projects stop|kill` use the same shape.)
 
 ```json
 {"schema_version":1,"ok":true,"action":"stop","status":"ok",
@@ -125,3 +125,7 @@ The registry lives in `Workspace::ErrorCodes`; a spec checks that every code a r
 | `restart_in_progress` | A restart is already running on the pane. |
 | `agent_stopped` | The agent stopped during the restart. |
 | `not_bound` | The pane isn't bound to a run or review (`binding show`, `binding clear`). |
+| `unknown_library_entry` | No library entry has that name in the scopes searched. `details.ref`, `details.scopes` (see [`library`](README.library.md)). |
+| `ambiguous_library_entry` | A bare library name matches more than one kind. `details.ref`, `details.candidates`. |
+| `library_entry_exists` | `library add` would replace an entry with different content. `details.ref`, `details.scope`; `retry` names `--force` (destructive). |
+| `library_source_missing` | The file to add doesn't exist, or a linked entry's target can't be read. `details.ref`, `details.path`. |

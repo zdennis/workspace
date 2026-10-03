@@ -34,7 +34,8 @@ module Workspace
         "tasks" => 1,
         "event_emitters" => 1,
         "ui_open" => 1,
-        "pane_bindings" => 1
+        "pane_bindings" => 1,
+        "library" => 1
       }.freeze
 
       # The exit statuses commands use, by meaning.
@@ -78,7 +79,7 @@ module Workspace
           "version" => Workspace::VERSION,
           "features" => FEATURES,
           "exit_codes" => EXIT_CODES,
-          "paths" => {"event_log" => @config.event_log_file, "run_dir" => @config.run_dir},
+          "paths" => {"event_log" => @config.event_log_file, "run_dir" => @config.run_dir, "library" => @config.library_dir},
           "dependencies" => dependencies.transform_values { |path| {"path" => path} }
         }
       end
