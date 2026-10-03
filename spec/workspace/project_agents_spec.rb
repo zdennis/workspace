@@ -38,15 +38,21 @@ RSpec.describe Workspace::ProjectAgents do
         {"pane_id" => "%1", "kind" => "claude", "state" => "waiting", "idle_seconds" => 4, "agents" => [{"name" => "eval", "state" => "running"}]},
         {"pane_id" => "%2", "kind" => "shell", "state" => "idle", "idle_seconds" => 9, "agents" => []}
       ],
-      "counts" => {"working" => 0, "idle" => 1, "waiting" => 1}
+      "counts" => {"working" => 0, "idle" => 1, "waiting" => 1, "done" => 0}
     )
+  end
+
+  it "counts a done pane" do
+    allow(client).to receive(:fetch).and_return("panes" => [{"pane_id" => "%1", "kind" => "claude", "state" => "done"}])
+
+    expect(agents.facts("app")["counts"]).to eq("working" => 0, "idle" => 0, "waiting" => 0, "done" => 1)
   end
 
   context "with a daemon that has no panes" do
     let(:reply) { {"workspace" => "app"} }
 
     it "reports available with zero counts" do
-      expect(agents.facts("app")).to eq("available" => true, "panes" => [], "counts" => {"working" => 0, "idle" => 0, "waiting" => 0})
+      expect(agents.facts("app")).to eq("available" => true, "panes" => [], "counts" => {"working" => 0, "idle" => 0, "waiting" => 0, "done" => 0})
     end
   end
 

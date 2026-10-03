@@ -4,7 +4,7 @@ module Workspace
   # too slow is a fact ("available": false), never an error.
   class ProjectAgents
     # Pane states the counts report, in display order.
-    STATES = %w[working idle waiting].freeze
+    STATES = %w[working idle waiting done].freeze
 
     # @param client [Workspace::AgentSnapshotClient] fetches the snapshot
     def initialize(client:)

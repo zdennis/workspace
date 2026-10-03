@@ -3,8 +3,8 @@ require "digest"
 
 module Workspace
   # Tracks which panes in a workspace are running a coding agent, whether each
-  # one is working, idle, or waiting on a person, and what sub-agents they have
-  # started.
+  # one is working, idle, waiting on a person, or done with its turn, and what
+  # sub-agents they have started.
   #
   # Two sources feed it, and neither is sufficient alone:
   #
@@ -19,7 +19,7 @@ module Workspace
   # whole life. Pane indices shift as panes are split and closed, so an entry
   # keyed on one would silently follow the wrong pane.
   #
-  # Each agent pane's state changes (working, idle, waiting, and exited or
+  # Each agent pane's state changes (working, idle, waiting, done, and exited or
   # closed once its agent goes) are appended to the event log. A monitor
   # started after a daemon restart reads each pane's last logged state back,
   # so the state and when it began carry over rather than starting afresh.
@@ -337,11 +337,24 @@ module Workspace
       pane[:logged_state] = logged["state"]
       pane[:state_since] = since
       case logged["state"]
+      when "done" then restore_done(pane, detail, since, logged["stop_reason"], alerts["idle"])
       when "idle" then restore_idle(pane, detail, since, alerts["idle"])
       when "waiting" then restore_waits(pane, detail, since, alerts["waiting"] || {})
       end
     rescue ArgumentError
       nil
+    end
+
+    # A done pane still alerts for its quiet stretch, so the stretch the last
+    # daemon already alerted for is not alerted for again.
+    def restore_done(pane, detail, since, stop_reason, alert)
+      pane[:done] = {since: since, stop_reason: stop_reason || "end_turn"}
+      at = alert_time(detail, alert, "idle_since")
+      return unless at
+
+      pane[:last_activity_at] = at
+      pane[:alerted_idle_since] = at
+      pane[:quiet_since_restore] = true
     end
 
     def restore_idle(pane, detail, since, alert)
@@ -399,7 +412,7 @@ module Workspace
     def state_change(pane, now)
       return nil if pane[:kind] == "unknown"
       return gone_change(pane, "exited", now) if pane[:kind] == "shell"
-      state = state_of(pane, now - (pane[:last_activity_at] || now))
+      state = reported_state(pane, now - (pane[:last_activity_at] || now))
       return nil if state == pane[:logged_state]
       mark_state(pane, state, since_for(pane, state, now))
     end
@@ -413,13 +426,15 @@ module Workspace
       pane[:logged_state] = state
       pane[:state_since] = since
       {"pane_id" => pane[:pane_id], "pane_pid" => pane[:pid], "index" => pane[:index],
-       "kind" => pane[:kind], "state" => state, "since" => since.utc.iso8601(3)}
+       "kind" => pane[:kind], "state" => state, "since" => since.utc.iso8601(3),
+       "stop_reason" => pane[:done] && pane[:done][:stop_reason]}.compact
     end
 
     # When the pane entered +state+: a wait from when it was raised, idle from
     # when the output had been quiet long enough, working from its last change.
     def since_for(pane, state, now)
       case state
+      when "done" then pane[:done][:since]
       when "waiting" then oldest_wait(pane)[:since]
       when "idle" then pane[:last_activity_at] + @idle_after
       else pane[:last_activity_at] || now
@@ -506,7 +521,10 @@ module Workspace
       pane[:label] = agent ? agent[:provider].label : detail[:command]
       pane[:agent_pid] = agent && agent[:pid]
       # Nobody is left to answer a prompt once the agent has exited.
-      clear_waiting(pane) unless agent
+      unless agent
+        clear_waiting(pane)
+        pane.delete(:done)
+      end
 
       refresh_activity(pane, now)
     end
@@ -557,7 +575,13 @@ module Workspace
       end
 
       case event["event"]
+      when "stop" then pane[:done] = done_mark(event) unless event["agent_id"]
+      when "user_prompt", "session_start", "session_end", "tool_use" then pane.delete(:done)
+      end
+
+      case event["event"]
       when "subagent_start"
+        pane.delete(:done)
         pane[:agents] << {name: agent_name(event), state: "running", started_at: @clock.now}
       when "subagent_stop"
         # Claude Code's SubagentStop does not say which sub-agent finished, so
@@ -571,6 +595,13 @@ module Workspace
           agent.merge!(state: "done", ended_at: @clock.now) if agent[:state] == "running"
         end
       end
+    end
+
+    # The Stop hook says whether the turn ended normally; Claude Code's does
+    # not carry a reason today, so a bare Stop is an end of turn.
+    def done_mark(event)
+      reason = self.class.clean_message(event["stop_reason"])
+      {since: @clock.now, stop_reason: reason || "end_turn"}
     end
 
     def clear_waiting(pane)
@@ -599,6 +630,13 @@ module Workspace
       event.dig("agent", "name") || "agent"
     end
 
+    # What `sessions` reports. A finished turn is "done" whatever the screen
+    # or a late idle notification says; {#restart_state} and {#pane_state}
+    # keep going by activity and waits.
+    def reported_state(pane, idle_for)
+      pane[:done] ? "done" : state_of(pane, idle_for)
+    end
+
     def state_of(pane, idle_for)
       return "waiting" unless pane[:waits].empty?
       (idle_for < @idle_after) ? "working" : "idle"
@@ -608,7 +646,7 @@ module Workspace
       idle_for = now - (pane[:last_activity_at] || now)
       wait = oldest_wait(pane)
       waiting_since = wait&.dig(:since)
-      state = state_of(pane, idle_for)
+      state = reported_state(pane, idle_for)
       state_since = (state == pane[:logged_state]) ? pane[:state_since] : since_for(pane, state, now)
       result = {
         "pane_id" => pane[:pane_id],
@@ -623,6 +661,7 @@ module Workspace
         "waiting_since" => waiting_since&.utc&.iso8601,
         "waiting_seconds" => waiting_since && (now - waiting_since).round,
         "waiting_message" => wait&.dig(:message),
+        "stop_reason" => pane[:done]&.dig(:stop_reason),
         "session_id" => pane[:session_id],
         "display_label" => display_label(pane),
         "agents" => pane[:agents].map { |agent|

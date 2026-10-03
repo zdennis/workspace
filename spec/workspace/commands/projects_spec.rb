@@ -1039,7 +1039,7 @@ RSpec.describe Workspace::Commands::Projects do
 
       def available(*states)
         panes = states.each_with_index.map { |state, i| pane(state, id: "%#{i}") }
-        counts = %w[working idle waiting].to_h { |state| [state, states.count(state)] }
+        counts = %w[working idle waiting done].to_h { |state| [state, states.count(state)] }
         {"available" => true, "panes" => panes, "counts" => counts}
       end
 
@@ -1069,7 +1069,7 @@ RSpec.describe Workspace::Commands::Projects do
         command.show(name: "app", json: true)
 
         expect(member("app")["agents"]).to eq(agent_facts["app"])
-        expect(member("app.worktree-login")["agents"]["counts"]).to eq("working" => 1, "idle" => 0, "waiting" => 2)
+        expect(member("app.worktree-login")["agents"]["counts"]).to eq("working" => 1, "idle" => 0, "waiting" => 2, "done" => 0)
         expect(payload["summary"]["waiting_agents"]).to eq(2)
         expect(payload["summary"]["agents_unavailable"]).to eq(0)
         expect(payload["errors"]).to be_nil
@@ -1117,6 +1117,15 @@ RSpec.describe Workspace::Commands::Projects do
           expect(lines.find { |l| l.start_with?("app ") }).to include("1 waiting, 1 working, 1 idle")
           expect(lines.find { |l| l.start_with?("app.worktree-login") }).to include("no daemon")
           expect(lines.find { |l| l.start_with?("app.worktree-old") }).to match(/\s-\s+-\s+-\s+MISSING/)
+        end
+
+        it "lists done panes last in the AGENTS column" do
+          sessions.replace(%w[app])
+          agent_facts["app"] = available("done", "working", "done")
+
+          command.show(name: "app", git: false)
+
+          expect(output.string.lines.find { |l| l.start_with?("app ") }).to include("1 working, 2 done")
         end
 
         it "says none for a daemon with no panes and a dash for a stopped workspace" do

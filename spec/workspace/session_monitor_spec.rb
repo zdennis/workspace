@@ -193,6 +193,99 @@ RSpec.describe Workspace::SessionMonitor do
     end
   end
 
+  describe "done" do
+    before { monitor.scan }
+
+    def stop(extra = {})
+      monitor.record({"event" => "stop", "pane_id" => "%2"}.merge(extra))
+    end
+
+    it "reports done with the default stop reason once the Stop hook fires" do
+      allow(clock).to receive(:now).and_return(now + 5)
+      stop
+
+      expect(pane("%2")).to include("state" => "done", "stop_reason" => "end_turn", "state_since" => (now + 5).iso8601)
+    end
+
+    it "reports the stop reason the hook carries" do
+      stop("stop_reason" => "max_tokens")
+
+      expect(pane("%2")).to include("state" => "done", "stop_reason" => "max_tokens")
+    end
+
+    it "stays done however long the pane is quiet" do
+      stop
+      allow(clock).to receive(:now).and_return(now + 600)
+
+      expect(pane("%2")).to include("state" => "done", "idle_seconds" => 600)
+    end
+
+    it "leaves stop_reason null while the pane is not done" do
+      expect(pane("%2")).to include("state" => "working", "stop_reason" => nil)
+    end
+
+    it "leaves done on the next prompt" do
+      stop
+      monitor.record("event" => "user_prompt", "pane_id" => "%2", "prompt" => "next")
+
+      expect(pane("%2")).to include("state" => "working", "stop_reason" => nil)
+    end
+
+    it "leaves done when a session starts or ends in the pane" do
+      ["session_start", "session_end"].each do |name|
+        stop
+        monitor.record("event" => name, "pane_id" => "%2")
+
+        expect(pane("%2")["state"]).not_to eq("done")
+      end
+    end
+
+    it "leaves done when the agent works again without a prompt" do
+      stop
+      monitor.record("event" => "tool_use", "pane_id" => "%2")
+
+      expect(pane("%2")["state"]).not_to eq("done")
+    end
+
+    it "leaves done when a sub-agent starts" do
+      stop
+      monitor.record("event" => "subagent_start", "pane_id" => "%2", "agent" => {"name" => "x"})
+
+      expect(pane("%2")["state"]).not_to eq("done")
+    end
+
+    it "stays done when the agent's idle notification arrives after the turn ended" do
+      stop
+      monitor.record("event" => "notification", "pane_id" => "%2", "message" => "Claude is waiting for your input")
+
+      expect(pane("%2")).to include("state" => "done", "waiting_message" => "Claude is waiting for your input")
+    end
+
+    it "is not set by a sub-agent stopping, or by a Stop from a sub-agent" do
+      monitor.record("event" => "subagent_stop", "pane_id" => "%2")
+      expect(pane("%2")["state"]).to eq("working")
+
+      stop("agent_id" => "sub-1")
+      expect(pane("%2")["state"]).to eq("working")
+    end
+
+    it "is dropped when the agent leaves the pane" do
+      stop
+      allow(snapshot).to receive(:find_descendant).and_return(nil)
+      monitor.scan
+
+      expect(pane("%2")["state"]).not_to eq("done")
+      expect(pane("%2")["stop_reason"]).to be_nil
+    end
+
+    it "does not change the restart busy check" do
+      stop
+
+      expect(monitor.pane_state("%2")).to eq("working")
+      expect(monitor.restart_state("%2")).to eq("idle")
+    end
+  end
+
   describe "waiting" do
     before { monitor.scan }
 
@@ -696,6 +789,27 @@ RSpec.describe Workspace::SessionMonitor do
       expect(logged_states.map { |_, state, _| state }).to eq(["working", "exited"])
     end
 
+    it "records done with its stop reason, and takes it up after a restart without logging it again" do
+      first = logging_monitor
+      first.scan
+      allow(clock).to receive(:now).and_return(now + 5)
+      first.record("event" => "stop", "pane_id" => "%2", "stop_reason" => "end_turn")
+      first.scan
+
+      expect(logged_states.map { |_, state, since| [state, since] }).to eq([
+        ["working", "2026-09-26T12:00:00.000Z"], ["done", "2026-09-26T12:00:05.000Z"]
+      ])
+      expect(event_log.events.last["data"]).to include("stop_reason" => "end_turn")
+
+      allow(clock).to receive(:now).and_return(now + 100)
+      restarted = logging_monitor
+      restarted.scan
+      pane = restarted.snapshot["panes"].find { |p| p["pane_id"] == "%2" }
+
+      expect(pane).to include("state" => "done", "state_since" => "2026-09-26T12:00:05Z", "stop_reason" => "end_turn")
+      expect(logged_states.size).to eq(2)
+    end
+
     it "picks up an idle pane's state and start time after a restart, without logging it again" do
       first = logging_monitor
       first.scan
@@ -746,6 +860,23 @@ RSpec.describe Workspace::SessionMonitor do
         restarted = alerting_monitor
         restarted.scan
 
+        expect(restarted.send_alerts).to be_empty
+      end
+
+      it "does not alert again for a done pane's quiet stretch the last daemon alerted for" do
+        at(95)
+        done = alerting_monitor
+        done.scan
+        done.record("event" => "stop", "pane_id" => "%2")
+        done.scan
+
+        at(120)
+        restarted = alerting_monitor
+        restarted.scan
+        at(300)
+        restarted.scan
+
+        expect(restarted.snapshot["panes"].find { |p| p["pane_id"] == "%2" }["state"]).to eq("done")
         expect(restarted.send_alerts).to be_empty
       end
 

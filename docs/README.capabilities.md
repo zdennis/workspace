@@ -22,7 +22,7 @@ It reads constants, config paths and the `PATH`. It starts no process and touche
 {"schema_version":1,"ok":true,"version":"0.27.1",
  "features":{"envelope":1,"error_codes":1,"name_scope":1,"no_input":1,"action_json":1,
    "sessions":1,"locks_json":1,"git_facts":1,"prune_safe":1,"snapshot":1,"events_follow":0,
-   "actions_manifest":0,"agent_send":1,"agent_spawn":0,"focus_pane":1,"state_done":0,
+   "actions_manifest":0,"agent_send":1,"agent_spawn":0,"focus_pane":1,"state_done":1,
    "doctor_json":0,"daemon_control":0,"config_json":1,"tmux_show":1},
  "exit_codes":{"ok":0,"failed":1,"not_submitted":2,"partial":3,"lock_cleared":4,"timeout":75},
  "paths":{"event_log":"/Users/me/.workspace-events.jsonl","run_dir":"/Users/me/.local/workspace/run"},
@@ -54,7 +54,7 @@ It reads constants, config paths and the `PATH`. It starts no process and touche
 | `agent_send` | `agent-run send --pane` types text or tmux keys into one named pane; `ask answer --deliver` types an answer into the asking pane |
 | `agent_spawn` | Not available yet |
 | `focus_pane` | `focus --pane` selects a pane after focusing the window |
-| `state_done` | Not available yet |
+| `state_done` | `sessions --json` panes can report `state: "done"` with a `stop_reason` (see [`sessions`](README.sessions.md)) |
 | `doctor_json` | Not available yet |
 | `daemon_control` | Not available yet |
 | `config_json` | `config show --json` and `config validate --json` (see [`config`](README.config.md)) |

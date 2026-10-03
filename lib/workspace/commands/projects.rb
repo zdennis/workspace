@@ -332,7 +332,7 @@ module Workspace
       def agents_label(agents)
         return "-" if agents.nil? || agents["reason"] == "not_running"
         return UNAVAILABLE_LABELS.fetch(agents["reason"], "unavailable") unless agents["available"]
-        parts = %w[waiting working idle].filter_map do |state|
+        parts = %w[waiting working idle done].filter_map do |state|
           count = agents.dig("counts", state).to_i
           "#{count} #{state}" if count.positive?
         end

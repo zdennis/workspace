@@ -36,6 +36,9 @@ module Workspace
       # file; a label only needs its opening, so the rest is cut.
       MAX_PROMPT_LENGTH = 1000
 
+      # Longest stop reason forwarded to the daemon.
+      MAX_STOP_REASON_LENGTH = 64
+
       # @param config [Workspace::Config] socket path lookups
       # @param tmux [Workspace::Tmux] resolves the pane's session name
       # @param input [IO] stream the hook payload arrives on
@@ -167,7 +170,8 @@ module Workspace
           "agent_id" => payload["agent_id"],
           "agent" => agent_for(payload),
           "message" => message_for(payload),
-          "prompt" => prompt_for(payload)
+          "prompt" => prompt_for(payload),
+          "stop_reason" => stop_reason_for(payload)
         }.compact
       end
 
@@ -176,6 +180,12 @@ module Workspace
         return nil unless payload["hook_event_name"] == "Notification" && message.is_a?(String)
 
         message[0, MAX_MESSAGE_LENGTH]
+      end
+
+      def stop_reason_for(payload)
+        return nil unless payload["hook_event_name"] == "Stop"
+
+        text_field(payload, "stop_reason")&.then { |reason| reason[0, MAX_STOP_REASON_LENGTH] }
       end
 
       def text_field(payload, key)

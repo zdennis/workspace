@@ -173,7 +173,7 @@ Dev env   running in app.worktree-login, ready
 | Column | Meaning |
 |--------|---------|
 | `RUN` | The workspace's tmux session is running (`yes (headless)` when launched headless). `-` for a missing checkout |
-| `AGENTS` | Panes by state, waiting first, from the workspace's agent daemon. `-` when the workspace isn't running, `none` when its daemon reports no panes, `no daemon`, `timed out` or `bad reply` when the daemon couldn't be read. Absent with `--no-agents` |
+| `AGENTS` | Panes by state, waiting first and done last, from the workspace's agent daemon. `-` when the workspace isn't running, `none` when its daemon reports no panes, `no daemon`, `timed out` or `bad reply` when the daemon couldn't be read. Absent with `--no-agents` |
 | `BRANCH` | The checked-out branch, `-` when detached or unknown. Absent with `--no-git` |
 | `ASKS` | Open `workspace ask` questions. `?` if the store can't be read |
 | `PIPE` | Work items in flight in the workspace's pipeline. `?` if the file can't be read |
@@ -244,7 +244,7 @@ succeeds and says so in place of the locks and dev lines.
     "agents":{"available":true,
              "panes":[{"pane_id":"%3","kind":"claude","state":"waiting","idle_seconds":120,
                       "agents":[{"name":"eval","state":"running"}]}],
-             "counts":{"working":0,"idle":0,"waiting":1}},
+             "counts":{"working":0,"idle":0,"waiting":1,"done":0}},
     "open_asks":1,"pipeline":{"entries":0},
     "git":{"available":true,"branch":"login","changed_files":3,"ahead":2,"upstream":"origin/login",
           "unpushed_commits":2,"unsaved":"yes"}},
@@ -263,7 +263,7 @@ succeeds and says so in place of the locks and dev lines.
 | `members[]` for an unconfigured worktree | `workspace: null`, `configured: false`, `running: false`, `open_asks` and `pipeline` `null`. Present unless `--no-git` |
 | `members[].running` | The workspace has a running tmux session and its checkout exists |
 | `members[].headless` | Launched headless, from the session state |
-| `members[].agents` | `{"available":true,"panes":[...],"counts":{"working","idle","waiting"}}` from the daemon. `{"available":false,"reason":...}` when it can't be read: `not_running` (never asked), `no_daemon`, `timeout` or `error` (bad reply, with the message in `detail`). This is never an `errors` entry and never changes the exit code. `null` with `--no-agents` |
+| `members[].agents` | `{"available":true,"panes":[...],"counts":{"working","idle","waiting","done"}}` from the daemon. `{"available":false,"reason":...}` when it can't be read: `not_running` (never asked), `no_daemon`, `timeout` or `error` (bad reply, with the message in `detail`). This is never an `errors` entry and never changes the exit code. `null` with `--no-agents` |
 | `members[].git` | `{"available","branch","changed_files","ahead","upstream","unpushed_commits","unsaved"}`. `unsaved` is always present: `"no"`, `"yes"`, `"unknown"` (git couldn't answer, with `available: false` and `reason` `timeout` or `error`; `detail` carries an error message) or `"missing"` (checkout gone). `branch` is `null` when detached; `ahead` and `upstream` are `null` without an upstream. `null` with `--no-git` (the key is always present) and for every member of a project with no git repository |
 | `members[].open_asks`, `pipeline` | `null` for a missing checkout, or when the file can't be read. `pipeline` is `{"entries": N}` |
 | `locks` | Lock name to `holder` (or `null`) and `queue`. `{}` when nothing is locked or every checkout is gone. `null` if the store can't be read |

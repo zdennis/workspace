@@ -127,6 +127,27 @@ RSpec.describe Workspace::Commands::SessionEvent do
       expect(event).not_to have_key("prompt")
     end
 
+    it "forwards the stop reason of a Stop hook" do
+      event = deliver("hook_event_name" => "Stop", "stop_reason" => "max_tokens")
+
+      expect(event).to include("event" => "stop", "stop_reason" => "max_tokens")
+    end
+
+    it "sends no stop reason when the Stop hook has none, or it is not text" do
+      expect(deliver("hook_event_name" => "Stop")).not_to have_key("stop_reason")
+      expect(deliver("hook_event_name" => "Stop", "stop_reason" => 3)).not_to have_key("stop_reason")
+    end
+
+    it "cuts a long stop reason" do
+      event = deliver("hook_event_name" => "Stop", "stop_reason" => "x" * 200)
+
+      expect(event["stop_reason"].length).to eq(described_class::MAX_STOP_REASON_LENGTH)
+    end
+
+    it "forwards a stop reason only from a Stop" do
+      expect(deliver("hook_event_name" => "SubagentStop", "stop_reason" => "end_turn")).not_to have_key("stop_reason")
+    end
+
     it "forwards a PostToolUse as tool use, which ends a wait for permission" do
       event = deliver("hook_event_name" => "PostToolUse", "tool_name" => "Bash", "message" => "not a notification")
 

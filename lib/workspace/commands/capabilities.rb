@@ -26,7 +26,7 @@ module Workspace
         "agent_send" => 1,
         "agent_spawn" => 0,
         "focus_pane" => 1,
-        "state_done" => 0,
+        "state_done" => 1,
         "doctor_json" => 0,
         "daemon_control" => 0,
         "config_json" => 1,

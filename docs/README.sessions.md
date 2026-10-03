@@ -37,6 +37,7 @@ Each pane shows its index, kind, title, state, how long it's been idle, a LOCK c
 |-------|---------|
 | `working` | The pane's output changed in the last 30 seconds |
 | `idle` | The pane's output has not changed for 30 seconds or more |
+| `done` | The agent's turn ended (Claude Code's `Stop` hook) and nothing has happened since. It outranks `working`, `idle` and `waiting`: a quiet screen or the agent's own "waiting for your input" notification a minute later leaves it `done`. A new prompt, a tool call, a sub-agent starting, a session starting or ending, or the agent leaving the pane ends it. A `Stop` from inside a sub-agent does not set it |
 | `waiting` | The agent asked for permission or for input (Claude Code's `Notification` hook) and nothing has happened since. The agent's message is shown on the line below the pane |
 
 A pane leaves `waiting` on the agent's next hook event: a submitted prompt, a finished tool (`PostToolUse`, which follows an approved permission prompt), or the turn or session ending. It also leaves `waiting` when the pane no longer runs an agent. The main agent and each sub-agent keep their own wait: two sub-agents can wait on a person at once, each alerting once, and an event from one agent (main or sub-agent) ends only that agent's wait, never another's. A new prompt, stop, or session start/end clears all of a pane's waits at once. `sessions` shows the pane's oldest wait (its time and message) when more than one is active. `waiting` needs the `Notification` and `PostToolUse` hooks, which `workspace init` installs; a project whose hooks predate them shows only `working`/`idle` until `workspace init` is re-run (`workspace doctor` reports the hooks as not installed until then).
@@ -44,6 +45,8 @@ A pane leaves `waiting` on the agent's next hook event: a submitted prompt, a fi
 `waiting` is detected for Claude Code only. Other agents (Codex, OpenCode, Pi) have no equivalent hook wired up, so their panes only ever show `working` or `idle`, never `waiting`.
 
 The waiting message is cleaned before it is shown or passed on: each run of whitespace and control characters becomes a single space, and it is cut to 200 characters. `sessions --json` and the `WORKSPACE_ALERT_*` variables get the same cleaned text; the table further shortens it to 60 characters for display.
+
+**`--json` `stop_reason`** — each pane carries `stop_reason`: the reason the `Stop` hook reported (cut to 64 characters), or `end_turn` when the hook carries none, which is what Claude Code sends today. It is `null` unless `state` is `"done"`. `state_since` is when the turn ended. Idle alerts are unchanged: a `done` pane still alerts once its output has been quiet for `alerts.idle_after`, since alerts go by screen activity. `workspace agent restart` still treats a done pane as idle.
 
 **`--json` waiting fields** — each pane carries `waiting_since` (ISO 8601 UTC, or `null`), `waiting_seconds` (integer, or `null`) and `waiting_message` (the agent's cleaned message, cut to 200 characters, or `null`). All three are `null` unless `state` is `"waiting"`. `state_since` (ISO 8601 UTC) is when the pane entered its current `state`.
 
