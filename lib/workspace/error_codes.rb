@@ -47,7 +47,8 @@ module Workspace
       "context_unknown" => "The agent's context usage couldn't be read.",
       "clear_not_confirmed" => "/clear was typed but a new conversation didn't appear.",
       "restart_in_progress" => "A restart is already running on the pane.",
-      "agent_stopped" => "The agent stopped during the restart."
+      "agent_stopped" => "The agent stopped during the restart.",
+      "not_bound" => "The pane isn't bound to a run or review."
     }.freeze
 
     # @param code [String]

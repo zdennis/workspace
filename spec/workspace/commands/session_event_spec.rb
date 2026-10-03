@@ -39,6 +39,99 @@ RSpec.describe Workspace::Commands::SessionEvent do
     server&.close
   end
 
+  describe "pane bindings" do
+    let(:bindings) { instance_double(Workspace::PaneBindings) }
+    let(:output) { StringIO.new }
+    let(:entry) { {"kind" => "run", "id" => "wr_1", "session" => "proj"} }
+
+    before do
+      allow(bindings).to receive(:binding_for).with("%2").and_return(entry)
+      allow(bindings).to receive(:context_for).with(entry).and_return("This pane is bound to workflow run wr_1.")
+    end
+
+    def fire(payload, pane_bindings: bindings)
+      described_class.new(config: config, tmux: tmux, input: StringIO.new(JSON.generate(payload)), env: env,
+        output: output, pane_bindings: pane_bindings).call
+    end
+
+    it "prints additionalContext on SessionStart for a bound pane, for every source" do
+      %w[startup clear resume compact].each do |source|
+        output.reopen(+"")
+        result = fire({"hook_event_name" => "SessionStart", "source" => source})
+
+        expect(result).to eq(exit_code: 0)
+        expect(JSON.parse(output.string)).to eq("hookSpecificOutput" => {
+          "hookEventName" => "SessionStart", "additionalContext" => "This pane is bound to workflow run wr_1."
+        })
+      end
+    end
+
+    it "prints nothing for other events and for unbound panes" do
+      fire({"hook_event_name" => "Stop"})
+      allow(bindings).to receive(:binding_for).with("%2").and_return(nil)
+      fire({"hook_event_name" => "SessionStart"})
+
+      expect(output.string).to eq("")
+    end
+
+    it "ignores a binding made for another tmux session, as a reused pane id would be" do
+      allow(tmux).to receive(:session_name_for_pane).with("%2").and_return("other")
+      allow(config).to receive(:agent_socket_path).with("other").and_return(socket_path)
+
+      fire({"hook_event_name" => "SessionStart"})
+
+      expect(output.string).to eq("")
+    end
+
+    it "ignores a binding made for another pane slot, as a pane id reused after a tmux restart would be" do
+      entry["pane_slot"] = "proj:0.1"
+      allow(tmux).to receive(:pane_slot).with("%2").and_return("proj:0.3")
+
+      fire({"hook_event_name" => "SessionStart"})
+
+      expect(output.string).to eq("")
+    end
+
+    it "prints the binding when the pane is still in its slot" do
+      entry["pane_slot"] = "proj:0.1"
+      allow(tmux).to receive(:pane_slot).with("%2").and_return("proj:0.1")
+
+      fire({"hook_event_name" => "SessionStart"})
+
+      expect(output.string).to include("additionalContext")
+    end
+
+    it "never fails the hook when the session lookup raises" do
+      allow(tmux).to receive(:session_name_for_pane).with("%2").and_invoke(->(_) { "proj" }, ->(_) { raise Errno::ENOENT })
+
+      expect(fire({"hook_event_name" => "SessionStart"})).to eq(exit_code: 0)
+    end
+
+    it "never fails the hook when the bindings can't be read" do
+      allow(bindings).to receive(:binding_for).and_raise(Errno::EACCES)
+
+      expect(fire({"hook_event_name" => "SessionStart"})).to eq(exit_code: 0)
+      expect(output.string).to eq("")
+    end
+
+    it "still forwards the event to the daemon" do
+      File.unlink(socket_path) if File.exist?(socket_path)
+      server = UNIXServer.new(socket_path)
+      received = nil
+      listener = Thread.new do
+        client = server.accept
+        received = JSON.parse(client.gets)
+        client.puts(JSON.generate("ok" => true))
+        client.close
+      end
+      fire({"hook_event_name" => "SessionStart"})
+      listener.join(2)
+      server.close
+
+      expect(received).to include("event" => "session_start", "pane_id" => "%2")
+    end
+  end
+
   describe "#call" do
     it "forwards a sub-agent start with the pane it came from" do
       event = deliver("hook_event_name" => "PreToolUse", "tool_name" => "Task",

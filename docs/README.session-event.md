@@ -30,6 +30,8 @@ Every forwarded event also carries the agent's `transcript_path` when the payloa
 
 It also appends every `SessionStart` and `SessionEnd` to `ledger.jsonl` in workspace's state directory (`$XDG_STATE_HOME/workspace`, default `~/.local/state/workspace`), mode 0600. Each line is JSON: `at`, `event` (`session_start` or `session_end`), `workspace`, `pane_slot` (`session:window.index`, which survives a tmux restart), `pane_id`, `session_id`, `transcript_path`, `cwd`, and the payload's `source` or `reason`; missing fields are left out. The file is append-only and nothing reads it yet; it exists so a later `restore` can recreate panes and resume sessions. It is written before the event goes to the daemon, so a missing daemon doesn't lose it, and a failed write never fails the hook. Outside tmux nothing is recorded.
 
+A `SessionStart` for a pane bound with [`workspace binding`](README.binding.md) also prints the binding's `additionalContext` on stdout, for every `source`, so the agent knows its run or review again after a restart, `/clear`, resume or compaction. Nothing is printed for an unbound pane, or for a binding made in another tmux session or pane slot. A lookup that fails prints nothing and never fails the hook.
+
 ## Examples
 
 ```sh

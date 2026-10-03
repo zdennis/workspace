@@ -100,6 +100,7 @@ RSpec.describe Workspace::CLI do
       capabilities_command: overrides[:capabilities_command],
       daemon_command: overrides[:daemon_command],
       ui_command: overrides[:ui_command],
+      binding_command: overrides[:binding_command],
       review_command: overrides[:review_command],
       snapshot_command: overrides[:snapshot_command],
       project_actions_command: overrides[:project_actions_command],
@@ -3250,6 +3251,75 @@ RSpec.describe Workspace::CLI do
       cli.run(["snapshot", "--help"])
 
       expect(output.string).to include("Usage: workspace snapshot --json").and include("daemons_unavailable")
+    end
+  end
+
+  describe "#run with binding" do
+    let(:binding_command) { CLITestHelpers::FakeBindingCommand.new }
+    let(:detector) { instance_double(Workspace::ProjectDetector, detect: "detected-ws") }
+    let(:built) { build_test_cli(binding_command: binding_command, project_detector: detector, working_dir: "/some/dir") }
+    let(:cli) { built[0] }
+    let(:output) { built[1] }
+
+    it "routes set with the workspace positional, the pane and the subject" do
+      cli.run(["binding", "set", "app", "--pane", "%5", "--kind", "run", "--id", "wr_1", "--step", "implement", "--attempt", "2"])
+
+      expect(binding_command.calls).to eq([[:set, {workspace: "app", pane: "%5", kind: "run", id: "wr_1", step: "implement", attempt: 2}]])
+    end
+
+    it "uses the detected workspace for set when none is named" do
+      cli.run(["binding", "set", "--pane", "0.1", "--kind", "review", "--id", "acme/api#835", "--focus", "security"])
+
+      expect(binding_command.calls).to eq([[:set, {workspace: "detected-ws", pane: "0.1", kind: "review", id: "acme/api#835", focus: "security"}]])
+    end
+
+    it "defaults show and clear to $TMUX_PANE and takes --pane" do
+      stub_const("ENV", ENV.to_h.merge("TMUX_PANE" => "%9"))
+      cli.run(["binding", "show"])
+      cli.run(["binding", "clear", "--pane", "%5"])
+
+      expect(binding_command.calls).to eq([[:show, {pane: "%9"}], [:clear, {pane: "%5"}]])
+    end
+
+    it "prints an action document under --json" do
+      cli.run(["binding", "show", "--pane", "%5", "--json"])
+
+      doc = JSON.parse(output.string)
+      expect(doc).to include("ok" => true, "action" => "binding show", "status" => "ok")
+      expect(doc["results"].first).to include("workspace" => "app", "outcome" => "shown", "binding" => include("id" => "wr_1"))
+    end
+
+    it "prints a cleared action document for clear under --json" do
+      cli.run(["binding", "clear", "--pane", "%5", "--json"])
+
+      doc = JSON.parse(output.string)
+      expect(doc).to include("action" => "binding clear", "status" => "ok")
+      expect(doc["results"].first).to include("outcome" => "cleared", "binding" => include("id" => "wr_1"))
+    end
+
+    it "emits a JSON error envelope with the command's code" do
+      binding_command.error = Workspace::Error.new("Pane %5 is not bound.", code: "not_bound")
+
+      expect { cli.run(["binding", "show", "--pane", "%5", "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+      expect(JSON.parse(output.string)).to include("ok" => false, "code" => "not_bound")
+    end
+
+    it "rejects a set without a pane, kind or id as a usage error" do
+      {
+        ["binding", "set", "app", "--kind", "run", "--id", "x"] => /--pane/,
+        ["binding", "set", "app", "--pane", "%5"] => /--kind and --id/,
+        ["binding"] => /Missing subcommand/
+      }.each do |args, message|
+        expect { cli.run(args) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+        expect(built[2].string).to match(message)
+      end
+      expect(binding_command.calls).to be_empty
+    end
+
+    it "prints help" do
+      cli.run(["binding", "--help"])
+
+      expect(output.string).to include("Usage: workspace binding set").and include("$TMUX_PANE")
     end
   end
 

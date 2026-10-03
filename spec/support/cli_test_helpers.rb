@@ -626,6 +626,35 @@ module CLITestHelpers
     end
   end
 
+  class FakeBindingCommand
+    attr_reader :calls
+    attr_accessor :error
+
+    def initialize
+      @calls = []
+    end
+
+    def set(workspace:, pane:, **fields)
+      record(:set, {workspace: workspace, pane: pane}.merge(fields))
+    end
+
+    def show(pane:)
+      record(:show, {pane: pane})
+    end
+
+    def clear(pane:)
+      record(:clear, {pane: pane})
+    end
+
+    private
+
+    def record(name, args)
+      @calls << [name, args]
+      raise @error if @error
+      {"kind" => "run", "id" => "wr_1", "workspace" => "app", "pane_id" => args[:pane]}
+    end
+  end
+
   class FakeReviewCommand
     attr_reader :calls
     attr_accessor :result

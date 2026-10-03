@@ -165,6 +165,11 @@ module Workspace
       File.join(state_dir, ".tasks")
     end
 
+    # @return [String] path to the JSON file binding tmux panes to a run or review
+    def pane_bindings_path
+      File.join(state_dir, "bindings.json")
+    end
+
     # @param name [String] the workspace name
     # @return [String] path to the workspace's recorded-question store
     def ask_state_path(name)

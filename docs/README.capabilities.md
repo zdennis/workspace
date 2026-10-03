@@ -24,7 +24,7 @@ It reads constants, config paths and the `PATH`. It starts no process and touche
    "sessions":1,"locks_json":1,"git_facts":1,"prune_safe":1,"snapshot":2,"events_follow":0,
    "actions_manifest":0,"agent_send":1,"agent_spawn":0,"focus_pane":1,"state_done":1,
    "doctor_json":0,"daemon_control":1,"config_json":1,"tmux_show":1,"tasks":1,"event_emitters":1,
-   "ui_open":1},
+   "ui_open":1,"pane_bindings":1},
  "exit_codes":{"ok":0,"failed":1,"not_submitted":2,"partial":3,"lock_cleared":4,"timeout":75},
  "paths":{"event_log":"/Users/me/.workspace-events.jsonl","run_dir":"/Users/me/.local/workspace/run"},
  "dependencies":{"window_tool":{"path":"/opt/homebrew/bin/window-tool"},
@@ -62,6 +62,7 @@ It reads constants, config paths and the `PATH`. It starts no process and touche
 | `tmux_show` | `tmux show --json` (see [`tmux`](README.tmux.md)) |
 | `tasks` | `start` records a task per worktree workspace (`--title`, `WORKSPACE_TASK` in its panes); `sessions --json` reports it as `task` and uses its title as the first `display_label` (see [`start`](README.start.md#tasks)); `finish` and `kill` archive it |
 | `ui_open` | `ui open task\|review\|inbox` opens a `workspace-ui://` link (see [`ui`](README.ui.md)) |
+| `pane_bindings` | `binding set\|show\|clear` binds a pane to a run or review, and `session-event` prints it as `additionalContext` on `SessionStart` (see [`binding`](README.binding.md)) |
 | `event_emitters` | The event log records `ask_created`, `ask_answered`, `lock_released`, `lock_cleared`, `worktree_started`, `worktree_finished`, `daemon_started`, `daemon_stopped` and `config_changed` (see [`event-log`](README.event-log.md#state-and-lifecycle-events)) |
 
 ## Examples

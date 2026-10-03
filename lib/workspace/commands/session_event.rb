@@ -43,6 +43,7 @@ module Workspace
       # @param tmux [Workspace::Tmux] resolves the pane's session name
       # @param input [IO] stream the hook payload arrives on
       # @param env [Hash] process environment, for TMUX_PANE
+      # @param output [IO] stream a bound pane's SessionStart context is written to
       # @param error_output [IO] stream a deny message is written to
       # @param logger [Workspace::Logger] debug logger
       # @param lock_idle_tracker [Workspace::LockIdleTracker, nil] marks the
@@ -52,17 +53,21 @@ module Workspace
       #   nil skips enforcement
       # @param session_ledger [Workspace::SessionLedger, nil] records each
       #   SessionStart and SessionEnd; nil skips the ledger
-      def initialize(config:, tmux:, input: $stdin, env: ENV, error_output: $stderr, logger: Workspace::Logger.new,
-        lock_idle_tracker: nil, lock_enforcer: nil, session_ledger: nil)
+      # @param pane_bindings [Workspace::PaneBindings, nil] looked up on SessionStart to
+      #   remind a bound pane of its subject; nil skips bindings
+      def initialize(config:, tmux:, input: $stdin, env: ENV, output: $stdout, error_output: $stderr, logger: Workspace::Logger.new,
+        lock_idle_tracker: nil, lock_enforcer: nil, session_ledger: nil, pane_bindings: nil)
         @config = config
         @tmux = tmux
         @input = input
         @env = env
+        @output = output
         @error_output = error_output
         @logger = logger
         @lock_idle_tracker = lock_idle_tracker
         @lock_enforcer = lock_enforcer
         @session_ledger = session_ledger
+        @pane_bindings = pane_bindings
       end
 
       # Reads a hook payload, updates the agent's lock idle state, enforces
@@ -97,6 +102,7 @@ module Workspace
         return ok { "session-event: no session for #{pane_id}, dropped" } unless name
 
         record_in_ledger(payload, pane_id, name)
+        announce_binding(payload, pane_id)
 
         event = translate(payload, pane_id, name)
         return ok { "session-event: ignoring #{hook}" } unless event
@@ -147,6 +153,25 @@ module Workspace
         )
       rescue => e
         @logger.debug { "session-event: ledger write failed (#{e.class}: #{e.message})" }
+      end
+
+      # A SessionStart for a bound pane prints Claude Code's `additionalContext`, so the
+      # agent knows its subject again after startup, clear, resume and compact. Only a
+      # binding made for this pane's own tmux session and slot counts, so a pane id
+      # reused after a tmux restart doesn't inherit another pane's subject.
+      def announce_binding(payload, pane_id)
+        return unless @pane_bindings && payload["hook_event_name"] == "SessionStart"
+
+        entry = @pane_bindings.binding_for(pane_id)
+        return unless entry && entry["session"] == @tmux.session_name_for_pane(pane_id)
+        return if entry["pane_slot"] && entry["pane_slot"] != @tmux.pane_slot(pane_id)
+
+        @output.puts JSON.generate("hookSpecificOutput" => {
+          "hookEventName" => "SessionStart",
+          "additionalContext" => @pane_bindings.context_for(entry)
+        })
+      rescue => e
+        @logger.debug { "session-event: binding context failed (#{e.class}: #{e.message})" }
       end
 
       def translate(payload, pane_id, workspace)

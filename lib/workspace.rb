@@ -135,6 +135,7 @@ require_relative "workspace/doctor"
 require_relative "workspace/tmux"
 require_relative "workspace/tmux_pane"
 require_relative "workspace/pane_locator"
+require_relative "workspace/pane_bindings"
 require_relative "workspace/project_config"
 require_relative "workspace/iterm"
 require_relative "workspace/window_manager"
@@ -219,6 +220,7 @@ require_relative "workspace/commands/restart_agent"
 require_relative "workspace/commands/ensure_agent"
 require_relative "workspace/commands/daemon"
 require_relative "workspace/commands/ui"
+require_relative "workspace/commands/binding"
 require_relative "workspace/commands/handoff"
 require_relative "workspace/commands/ask"
 require_relative "workspace/commands/wait_until_content"
@@ -329,8 +331,9 @@ module Workspace
     lock_idle_tracker = LockIdleTracker.new(config: config, lock_namespace: lock_namespace, lock_holder: lock_holder, logger: logger)
     lock_enforcer = LockEnforcer.new(config: config, lock_namespace: lock_namespace, lock_holder: lock_holder, logger: logger)
     session_ledger = SessionLedger.new(path: File.join(config.state_dir, "ledger.jsonl"), logger: logger)
-    session_event_command = Commands::SessionEvent.new(config: config, tmux: tmux, input: input, error_output: error_output, logger: logger,
-      lock_idle_tracker: lock_idle_tracker, lock_enforcer: lock_enforcer, session_ledger: session_ledger)
+    pane_bindings = PaneBindings.new(path: config.pane_bindings_path, logger: logger, error_output: error_output)
+    session_event_command = Commands::SessionEvent.new(config: config, tmux: tmux, input: input, output: output, error_output: error_output, logger: logger,
+      lock_idle_tracker: lock_idle_tracker, lock_enforcer: lock_enforcer, session_ledger: session_ledger, pane_bindings: pane_bindings)
     process_group_terminator = ProcessGroupTerminator.new
     lock_command = Commands::Lock.new(config: config, lock_namespace: lock_namespace, lock_holder: lock_holder,
       terminator: process_group_terminator, dev_config: dev_config, lock_config: lock_config, event_log: event_log,
@@ -352,6 +355,7 @@ module Workspace
     capabilities_command = Commands::Capabilities.new(config: config, output: output)
     daemon_command = Commands::Daemon.new(config: config, project_config: project_config, ensure_agent: ensure_agent_command, process_tree: ProcessTree.new(logger: logger), output: output)
     ui_command = Commands::Ui.new(output: output)
+    binding_command = Commands::Binding.new(bindings: pane_bindings, locator: pane_locator, tmux: tmux, output: output)
     parent_command = Commands::Parent.new(lineage: lineage, project_config: project_config, output: output)
     project_catalog = ProjectCatalog.new(project_config: project_config, git: git)
     project_facts = ProjectFacts.new(tmux: tmux, state: state, config: config, lock_namespace: lock_namespace,
@@ -455,6 +459,7 @@ module Workspace
       capabilities_command: capabilities_command,
       daemon_command: daemon_command,
       ui_command: ui_command,
+      binding_command: binding_command,
       review_command: review_command,
       snapshot_command: snapshot_command,
       project_actions_command: project_actions_command,

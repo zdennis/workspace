@@ -33,7 +33,8 @@ module Workspace
         "tmux_show" => 1,
         "tasks" => 1,
         "event_emitters" => 1,
-        "ui_open" => 1
+        "ui_open" => 1,
+        "pane_bindings" => 1
       }.freeze
 
       # The exit statuses commands use, by meaning.

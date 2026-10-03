@@ -68,6 +68,7 @@ module Workspace
     # @param capabilities_command [Workspace::Commands::Capabilities, nil] pre-built capabilities command
     # @param daemon_command [Workspace::Commands::Daemon, nil] pre-built daemon command
     # @param ui_command [Workspace::Commands::Ui, nil] pre-built ui command
+    # @param binding_command [Workspace::Commands::Binding, nil] pre-built binding command
     # @param review_command [Workspace::Commands::Review, nil] pre-built review command
     # @param snapshot_command [Workspace::Commands::Snapshot, nil] pre-built snapshot command
     # @param config_report [Workspace::ConfigReport, nil] builds the `config show/validate --json` documents
@@ -79,7 +80,7 @@ module Workspace
     #   reports every project as unknown
     # @param launch_mode [Workspace::LaunchMode, nil] decides whether launch/start
     #   run headless when no --[no-]headless flag is given; nil builds one
-    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, restart_agent_command: nil, send_command: nil, ensure_agent_command: nil, handoff_command: nil, projects_command: nil, capabilities_command: nil, daemon_command: nil, ui_command: nil, review_command: nil, snapshot_command: nil, project_actions_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil, liveness: nil)
+    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, restart_agent_command: nil, send_command: nil, ensure_agent_command: nil, handoff_command: nil, projects_command: nil, capabilities_command: nil, daemon_command: nil, ui_command: nil, binding_command: nil, review_command: nil, snapshot_command: nil, project_actions_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil, liveness: nil)
       @config = config
       @state = state
       @project_config = project_config
@@ -127,6 +128,7 @@ module Workspace
       @capabilities_command = capabilities_command
       @daemon_command = daemon_command
       @ui_command = ui_command
+      @binding_command = binding_command
       @review_command = review_command
       @snapshot_command = snapshot_command
       @config_report = config_report
@@ -207,6 +209,8 @@ module Workspace
         cmd_daemon(args)
       when "ui"
         cmd_ui(args)
+      when "binding"
+        cmd_binding(args)
       when "review"
         cmd_review(args)
       when "snapshot"
@@ -375,6 +379,7 @@ module Workspace
           agent-run       Send a message to a running agent, or type into a pane (command, inject, restart, send)
           alfred          Manage the Alfred workflow for workspace focus
           ask             Record a question an unattended agent hit, with its default
+          binding         Bind a pane to a workflow run or a PR review, so it survives /clear and compaction
           capabilities    Print what this CLI supports, as feature revisions (for scripts and the UI)
           capture         Print a tmux pane's scrollback buffer to stdout
           cleanup         Detect and remove zombie sessions from state
@@ -3180,6 +3185,78 @@ module Workspace
         @error_output.puts "Error: #{opened.message}" unless opened.ok?
         row = action_row(name, opened.outcome, reason: opened.reason, message: opened.message, view: opened.view, url: opened.url)
         {exit_code: opened.ok? ? 0 : 1, results: [row]}
+      end
+    rescue OptionParser::ParseError, UsageError => e
+      raise unless json_requested?(options[:json], given)
+      emit_json_error(ACTION_JSON_SCHEMA_VERSION, e, message: e.message.lines.first.strip)
+    end
+
+    def binding_parser(options)
+      OptionParser.new do |opts|
+        opts.banner = "Usage: workspace binding set [WORKSPACE] --pane PANE --kind run|review --id ID [options]\n" \
+          "       workspace binding show [--pane %ID] [--json]\n" \
+          "       workspace binding clear [--pane %ID] [--json]"
+        opts.separator ""
+        opts.separator "Bind a tmux pane to a workflow run or a PR review. When the agent in a bound pane"
+        opts.separator "starts a session (startup, /clear, resume or compact), session-event reminds it of"
+        opts.separator "its subject, so it survives a lost context. Nothing is typed into the pane."
+        opts.separator ""
+        opts.separator "A pane is stored by its tmux pane id (%19) and only counts in the tmux session it"
+        opts.separator "was bound in. set takes a pane id or window.pane of the workspace's own session;"
+        opts.separator "show and clear take a pane id, defaulting to $TMUX_PANE. WORKSPACE (or --name)"
+        opts.separator "defaults to the project detected from the current directory."
+        opts.separator ""
+        opts.on("--name NAME", "Workspace name (set)") { |v| options[:name] = v }
+        opts.on("--pane PANE", "Pane id (%19) or, for set, window.pane (0.1)") { |v| options[:pane] = v }
+        opts.on("--kind KIND", "run or review (set)") { |v| options[:kind] = v }
+        opts.on("--id ID", "Run id or review id such as acme/api#835 (set)") { |v| options[:id] = v }
+        opts.on("--step STEP", "Step name (set)") { |v| options[:step] = v }
+        opts.on("--attempt N", Integer, "Step attempt, 1 or more (set)") { |v| options[:attempt] = v }
+        opts.on("--focus TEXT", "Review focus, e.g. security (set)") { |v| options[:focus] = v }
+        opts.on("--instructions PATH", "File holding the pane's instructions (set)") { |v| options[:instructions] = v }
+        opts.on("--artifacts PATH", "Directory holding the subject's artifacts (set)") { |v| options[:artifacts] = v }
+        opts.on("--json", "Print one JSON action document") { options[:json] = true }
+        opts.on("-h", "--help", "Show this help") { options[:help] = true }
+        opts.separator ""
+        opts.separator "Examples:"
+        opts.separator "  workspace binding set my-app --pane %5 --kind run --id wr_01 --step implement --attempt 2"
+        opts.separator "  workspace binding show"
+        opts.separator "  workspace binding clear --pane %5"
+      end
+    end
+
+    def cmd_binding(args)
+      options = {json: false}
+      given = args.dup
+      parser = binding_parser(options)
+      subcommand = args.shift if %w[set show clear].include?(args.first)
+      parser.parse!(args)
+      subcommand ||= args.shift if %w[set show clear].include?(args.first)
+      return @output.puts(parser.help) if options[:help]
+
+      raise UsageError, "Missing subcommand: set, show or clear.\n\n#{parser.help}" unless subcommand
+      raise Error, "binding is not available: no binding command was wired" unless @binding_command
+
+      if subcommand == "set"
+        name = options[:name] || args.shift || @project_detector.detect(@working_dir)
+        raise UsageError, "binding set needs a workspace: name one, pass --name, or run from inside a project." unless name
+        raise UsageError, "binding set needs --pane." unless options[:pane]
+        raise UsageError, "binding set needs --kind and --id." unless options[:kind] && options[:id]
+        raise UsageError, "Unexpected argument: #{args.first}. Run 'workspace binding --help'." if args.any?
+
+        run_action("binding set", json: options[:json]) do
+          entry = @binding_command.set(workspace: name, pane: options[:pane], **options.slice(:kind, :id, :step, :attempt, :focus, :instructions, :artifacts))
+          {exit_code: 0, results: [action_row(name, "bound", binding: entry)]}
+        end
+      else
+        pane = options[:pane] || ENV["TMUX_PANE"]
+        raise UsageError, "binding #{subcommand} needs --pane (or to run inside a tmux pane)." unless pane
+        raise UsageError, "Unexpected argument: #{args.first}. Run 'workspace binding --help'." if args.any?
+
+        run_action("binding #{subcommand}", json: options[:json]) do
+          entry = (subcommand == "show") ? @binding_command.show(pane: pane) : @binding_command.clear(pane: pane)
+          {exit_code: 0, results: [action_row(entry["workspace"], (subcommand == "show") ? "shown" : "cleared", binding: entry)]}
+        end
       end
     rescue OptionParser::ParseError, UsageError => e
       raise unless json_requested?(options[:json], given)
