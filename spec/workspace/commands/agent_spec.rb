@@ -1736,7 +1736,10 @@ RSpec.describe Workspace::Commands::Agent do
       UNIXSocket.open(agent_socket_path) { |s| s.puts(message.to_json) }
     end
 
-    def types = recorded.map { |event| event[:type] }
+    # The dispatch and stage events, without the daemon's own start and stop.
+    def activity = recorded.reject { |event| event[:type].start_with?("daemon_") }
+
+    def types = activity.map { |event| event[:type] }
 
     before do
       coordinator.start
@@ -1759,11 +1762,11 @@ RSpec.describe Workspace::Commands::Agent do
         wait_until { types.count("stage_completed") == 2 }
       end
 
-      expect(recorded.map { |e| e[:project] }.uniq).to eq(["myapp"])
-      expect(recorded[0]).to include(type: "dispatched",
+      expect(activity.map { |e| e[:project] }.uniq).to eq(["myapp"])
+      expect(activity[0]).to include(type: "dispatched",
         data: include("work_item_ref" => "WC-42", "dispatch_id" => "d-7a1", "stage" => "researcher", "pane" => 0, "delivery" => "submitted"))
-      expect(recorded[1][:data]).to include("pane" => 0, "next_stage" => "implementer", "next_pane" => 1, "summary" => "research done")
-      expect(recorded[2][:data]).to include("pane" => 1, "next_stage" => nil, "summary" => "all done")
+      expect(activity[1][:data]).to include("pane" => 0, "next_stage" => "implementer", "next_pane" => 1, "summary" => "research done")
+      expect(activity[2][:data]).to include("pane" => 1, "next_stage" => nil, "summary" => "all done")
     end
 
     it "records a stage that runs past its deadline as stage_timed_out" do
@@ -1774,7 +1777,7 @@ RSpec.describe Workspace::Commands::Agent do
         wait_until { types.include?("stage_timed_out") }
       end
 
-      event = recorded.find { |e| e[:type] == "stage_timed_out" }
+      event = activity.find { |e| e[:type] == "stage_timed_out" }
       expect(event[:data]).to include("work_item_ref" => "WC-42", "pane" => 0, "message" => a_string_starting_with("timed out after 30m"))
     end
 
@@ -1787,7 +1790,54 @@ RSpec.describe Workspace::Commands::Agent do
       end
 
       expect(types).to eq(["dispatch_failed"])
-      expect(recorded.first[:data]).to include("work_item_ref" => "WC-42", "message" => "fake not_delivered")
+      expect(activity.first[:data]).to include("work_item_ref" => "WC-42", "message" => "fake not_delivered")
+    end
+  end
+
+  describe "recording daemon_started and daemon_stopped" do
+    let(:recorded) { [] }
+    let(:event_log) do
+      events = recorded
+      Object.new.tap do |log|
+        log.define_singleton_method(:record) { |type:, project:, data: {}| events << {type: type, project: project, data: data} }
+      end
+    end
+    let(:quiet_monitor) do
+      Object.new.tap do |monitor|
+        monitor.define_singleton_method(:start) {}
+        monitor.define_singleton_method(:stop) {}
+      end
+    end
+
+    subject(:agent) do
+      described_class.new(
+        config: config, tmux: tmux, work_coordinator_client: client,
+        pipeline_config: pipeline_config, pipeline_state: pipeline_state,
+        epoch_generator: -> { "wa-TESTEPOCH" }, signal_trapper: signal_trapper,
+        sentinel_poller_factory: sentinel_poller_factory, token_generator: token_generator,
+        clock: -> { now }, retry_backoff: 0, session_monitor_factory: ->(_name) { quiet_monitor },
+        event_log: event_log, output: output, error_output: error_output
+      )
+    end
+
+    before { coordinator.start }
+
+    it "records the start once the agent is ready, and the stop once it has shut down, with its pid" do
+      run_agent do
+        expect(recorded.map { |e| e[:type] }).to eq(["daemon_started"])
+        expect(recorded.first).to eq({type: "daemon_started", project: "myapp", data: {"workspace" => "myapp", "daemon" => "agent", "pid" => Process.pid}})
+      end
+
+      expect(recorded.map { |e| e[:type] }).to eq(%w[daemon_started daemon_stopped])
+      expect(recorded.last[:data]).to eq("workspace" => "myapp", "daemon" => "agent", "pid" => Process.pid)
+    end
+
+    it "records no stop for an agent that refused to start" do
+      allow(agent).to receive(:claim_socket).and_return(false)
+
+      expect(agent.call(name: "myapp")).to be false
+
+      expect(recorded).to be_empty
     end
   end
 end

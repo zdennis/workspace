@@ -12,12 +12,15 @@ module Workspace
       # @param project_settings [Workspace::ProjectSettings] reads/writes project YAML
       # @param lineage [Workspace::WorkspaceLineage] resolves a project from cwd (worktree -> parent)
       # @param file_backup [Workspace::FileBackup] backs up the config file before it's rewritten
+      # @param event_log [Workspace::EventLog, nil] records `config_changed` after each
+      #   write (key names only, never values); nil records nothing
       # @param output [IO] output stream for user-facing messages
       # @param error_output [IO] output stream for user-facing errors
-      def initialize(project_settings:, lineage:, file_backup:, output: $stdout, error_output: $stderr)
+      def initialize(project_settings:, lineage:, file_backup:, event_log: nil, output: $stdout, error_output: $stderr)
         @project_settings = project_settings
         @lineage = lineage
         @file_backup = file_backup
+        @event_log = event_log
         @output = output
         @error_output = error_output
       end
@@ -34,6 +37,7 @@ module Workspace
 
         if ConfigSchema.key(key).global?
           set_global(key, value)
+          record_change("global", "set", key, nil)
           return
         end
 
@@ -52,6 +56,7 @@ module Workspace
           cursor[segments.last] = value
           write(path, data)
         end
+        record_change("project", "set", key, name)
         @output.puts "Set #{key} = #{value} for '#{name}'."
         if ConfigSchema.key(key).restart_required?
           daemon_name = (project.nil? && lineage.worktree) ? lineage.worktree : name
@@ -105,6 +110,7 @@ module Workspace
             cursor.delete(segments.last) if cursor.is_a?(Hash)
             data
           end
+          record_change("global", "unset", key, nil)
           @output.puts "Unset #{key}."
           return
         end
@@ -119,10 +125,21 @@ module Workspace
           cursor.delete(segments.last) if cursor.is_a?(Hash)
           write(path, data)
         end
+        record_change("project", "unset", key, name)
         @output.puts "Unset #{key} for '#{name}'."
       end
 
       private
+
+      # The key's name goes in the log, never its value: values can be commands
+      # or tokens. A global change has no project: it is logged with project ""
+      # (readers drop an event without a project string) and data.scope "global".
+      # EventLog#record never raises.
+      def record_change(layer, via, key, project)
+        data = {"layer" => layer, "via" => via, "keys" => [key]}
+        project ? data["workspace"] = project : data["scope"] = "global"
+        @event_log&.record(type: "config_changed", project: project || "", data: data)
+      end
 
       def load_for_edit(name)
         @project_settings.load(name)

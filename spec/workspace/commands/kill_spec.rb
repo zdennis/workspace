@@ -385,6 +385,86 @@ RSpec.describe Workspace::Commands::Kill do
       end
     end
   end
+
+  describe "recording worktree_finished" do
+    let(:event_log) { CLITestHelpers::FakeEventLog.new }
+    let(:name) { "myproject.worktree-PROJ-123" }
+
+    subject(:command) do
+      described_class.new(git: git, project_config: project_config, project_settings: project_settings,
+        stop_command: stop_command, project_detector: project_detector, event_log: event_log, output: output, input: input)
+    end
+
+    before do
+      File.write(config_path, YAML.dump("name" => "myproject-wt-PROJ-123", "root" => "/path/to/worktree"))
+      allow(git).to receive(:worktree_exists?).with("/path/to/worktree").and_return(true)
+      allow(git).to receive(:unsaved_work).and_return(nil)
+      allow(git).to receive(:remove_worktree)
+      allow(stop_command).to receive(:call).and_return([])
+      allow(project_config).to receive(:remove)
+      allow(project_settings).to receive(:remove)
+    end
+
+    it "records the outcome under the workspace once the worktree is removed, with no path" do
+      command.call(name, confirm: false)
+
+      expect(event_log.events).to eq([{"type" => "worktree_finished", "project" => name, "data" => {"workspace" => name, "outcome" => "abandoned"}}])
+    end
+
+    it "records the event only after the worktree, config and settings are removed, and before the session stops" do
+      order = []
+      allow(git).to receive(:remove_worktree) { order << :worktree }
+      allow(project_config).to receive(:remove) { order << :config }
+      allow(project_settings).to receive(:remove) { order << :settings }
+      allow(stop_command).to receive(:call) {
+        order << :stop
+        []
+      }
+      allow(event_log).to receive(:record).and_wrap_original { |m, **kw|
+        order << :event
+        m.call(**kw)
+      }
+
+      command.call(name, confirm: false)
+
+      expect(order).to eq(%i[worktree config settings event stop])
+    end
+
+    it "records discarded for a forced kill and the caller's outcome otherwise" do
+      command.call(name, force: true)
+      command.call(name, confirm: false, outcome: "merged")
+
+      expect(event_log.events.map { |e| e["data"]["outcome"] }).to eq(%w[discarded merged])
+    end
+
+    it "records nothing when the user cancels" do
+      input.puts "n"
+      input.rewind
+
+      command.call(name)
+
+      expect(event_log.events).to be_empty
+    end
+
+    it "records nothing when git refuses to remove the worktree" do
+      allow(git).to receive(:remove_worktree).and_raise(Workspace::UnsavedWorkError.new("x", unsaved: {changed_files: 1, unpushed_commits: 0, branch: "b"}))
+
+      expect { command.call(name, confirm: false) }.to raise_error(Workspace::UnsavedWorkError)
+
+      expect(event_log.events).to be_empty
+    end
+
+    it "still removes the config and stops the session when the log can't be written" do
+      broken = described_class.new(git: git, project_config: project_config, project_settings: project_settings,
+        stop_command: stop_command, project_detector: project_detector,
+        event_log: CLITestHelpers.unwritable_event_log(tmpdir), output: output, input: input)
+
+      expect(broken.call(name, force: true)).to eq(name)
+
+      expect(project_config).to have_received(:remove)
+      expect(stop_command).to have_received(:call)
+    end
+  end
 end
 
 RSpec.describe Workspace::Commands::Kill, "task archiving" do

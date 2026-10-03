@@ -941,4 +941,74 @@ RSpec.describe Workspace::Commands::Start do
       end
     end
   end
+
+  describe "recording worktree_started" do
+    let(:event_log) { CLITestHelpers::FakeEventLog.new }
+    let(:task_store) { Workspace::TaskStore.new(dir: File.join(tmpdir, "tasks")) }
+    let(:worktree_path) { File.join(tmpdir, ".worktrees", "feature") }
+
+    subject(:command) do
+      described_class.new(git: git, project_config: project_config, project_settings: project_settings,
+        launch_command: launch_command, task_store: task_store, event_log: event_log,
+        output: output, error_output: error_output, input: input)
+    end
+
+    before do
+      allow(git).to receive(:root).and_return(tmpdir)
+      allow(git).to receive(:parse_start_input).and_return({type: :branch, value: "feature"})
+      allow(git).to receive(:sanitize_for_filesystem).with("feature").and_return("feature")
+      allow(git).to receive(:worktree_exists?).and_return(false)
+      allow(git).to receive(:find_worktree_by_branch).and_return(nil)
+      allow(git).to receive(:branch_exists?).with("feature").and_return(true)
+      allow(git).to receive(:create_worktree)
+      allow(project_config).to receive(:worktree_config_name).and_return("app.worktree-feature")
+      allow(project_config).to receive(:create_worktree).and_return("app.worktree-feature")
+      allow(launch_command).to receive(:call)
+    end
+
+    it "records the branch, parent project, created and task id, and no path or title" do
+      command.call("feature", title: "Secret title", yes: true)
+
+      event = event_log.events.fetch(0)
+      expect(event).to include("type" => "worktree_started", "project" => "app.worktree-feature")
+      expect(event["data"]).to eq("workspace" => "app.worktree-feature", "parent" => File.basename(tmpdir), "branch" => "feature", "created" => true,
+        "task" => task_store.active_for("app.worktree-feature")["id"])
+      expect(event.to_s).not_to include("Secret title")
+      expect(event.to_s).not_to include(tmpdir + "/.worktrees")
+    end
+
+    it "records created false for a worktree that already exists" do
+      allow(git).to receive(:worktree_exists?).with(worktree_path).and_return(true)
+
+      command.call("feature", yes: true)
+
+      expect(event_log.events.map { |e| e["data"]["created"] }).to eq([false])
+    end
+
+    it "records the event before launching, so a launch failure still shows the worktree" do
+      allow(launch_command).to receive(:call).and_raise(Workspace::Error, "no tmux")
+
+      expect { command.call("feature", yes: true) }.to raise_error(Workspace::Error, "no tmux")
+
+      expect(event_log.events.map { |e| e["type"] }).to eq(["worktree_started"])
+    end
+
+    it "records nothing when start stops before the worktree is configured" do
+      allow(git).to receive(:root).and_return(nil)
+
+      expect { command.call("feature", yes: true) }.to raise_error(Workspace::Error)
+
+      expect(event_log.events).to be_empty
+    end
+
+    it "starts and launches when the log can't be written" do
+      broken = described_class.new(git: git, project_config: project_config, project_settings: project_settings,
+        launch_command: launch_command, event_log: CLITestHelpers.unwritable_event_log(tmpdir),
+        output: output, error_output: error_output, input: input)
+
+      broken.call("feature", yes: true)
+
+      expect(launch_command).to have_received(:call)
+    end
+  end
 end

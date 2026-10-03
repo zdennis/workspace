@@ -137,6 +137,15 @@ RSpec.describe Workspace::EventLog do
       expect(event_log.reconstruct).to eq({"proj1" => {"unique_id" => "uid1"}})
     end
 
+    it "writes nothing for an event whose project is not a string, which readers would drop" do
+      [nil, :sym].each do |project|
+        expect(event_log.record(type: "ask_created", project: project)).to be false
+      end
+
+      expect(event_log.events).to be_empty
+      expect(output.string).to eq("")
+    end
+
     it "warns once on the error stream and carries on when the log can't be written" do
       allow(config).to receive(:event_log_file).and_return(File.join(tmpdir, "missing-dir", "events.jsonl"))
 

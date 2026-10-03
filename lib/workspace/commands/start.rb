@@ -24,8 +24,10 @@ module Workspace
       # @param which [#call] returns true when an executable is on PATH
       # @param task_store [Workspace::TaskStore, nil] records the workspace's task and
       #   exports its id as `WORKSPACE_TASK` in the panes; nil starts without a task
+      # @param event_log [Workspace::EventLog, nil] records `worktree_started` once the
+      #   worktree's config is written; nil records nothing
       def initialize(git:, project_config:, project_settings:, launch_command:, lineage: WorkspaceLineage.new,
-        hook_installer: nil, which: nil, task_store: nil, output: $stdout, input: $stdin, error_output: $stderr)
+        hook_installer: nil, which: nil, task_store: nil, event_log: nil, output: $stdout, input: $stdin, error_output: $stderr)
         @git = git
         @project_config = project_config
         @project_settings = project_settings
@@ -34,6 +36,7 @@ module Workspace
         @hook_installer = hook_installer
         @which = which || Workspace::Which
         @task_store = task_store
+        @event_log = event_log
         @output = output
         @input = input
         @error_output = error_output
@@ -177,6 +180,7 @@ module Workspace
         seed_worktree_hooks(project_name, config_name)
         install_agent_hooks(worktree_path, quiet: quiet)
         write_project_marker(worktree_path, config_name)
+        record_started(config_name, project_name, branch_name, created: created, task: task)
         log(quiet, "Launching #{config_name}...")
         prompts = prompt ? {config_name => prompt} : {}
         result = launch(config_name, prompts, prompt_timeout, headless: headless, quiet: quiet)
@@ -210,6 +214,14 @@ module Workspace
         json["warnings"] = @warnings if @warnings&.any?
 
         {exit_code: exit_code, json: json}
+      end
+
+      # Branch, parent project and task id only: no path, title or prompt.
+      # EventLog#record never raises.
+      def record_started(config_name, project_name, branch_name, created:, task:)
+        data = {"workspace" => config_name, "parent" => project_name, "branch" => branch_name, "created" => created}
+        data["task"] = task["id"] if task
+        @event_log&.record(type: "worktree_started", project: config_name, data: data)
       end
 
       def note_base_ignored(branch_name, quiet:)

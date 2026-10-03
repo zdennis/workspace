@@ -165,6 +165,8 @@ module Workspace
         @session_monitor.start
 
         @output.puts "workspace agent '#{name}' ready"
+        log_activity("daemon_started", "workspace" => name, "daemon" => "agent", "pid" => Process.pid)
+        @daemon_started = true
         watcher = start_socket_watcher(socket_path, needs_registration: !registered)
         serve
 
@@ -177,6 +179,8 @@ module Workspace
         watcher&.join(1)
         watcher&.kill
         shutdown(name, socket_path) if @server
+        log_activity("daemon_stopped", "workspace" => name, "daemon" => "agent", "pid" => Process.pid) if @daemon_started
+        @daemon_started = false
       end
 
       # Accepts and dispatches one JSON message per connection until the server

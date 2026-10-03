@@ -134,9 +134,13 @@ module Workspace
           if released.empty?
             @output.puts "No locks held."
           else
-            released.each { |n| @output.puts "Released #{n} lock." }
+            released.each do |n|
+              record_lock_event("lock_released", working_dir, n)
+              @output.puts "Released #{n} lock."
+            end
           end
         elsif store.release(name, identity[:pid])
+          record_lock_event("lock_released", working_dir, name)
           @output.puts "Released #{name} lock."
         elsif displaced.empty?
           @output.puts "#{name} lock is not held by this agent."
@@ -231,7 +235,11 @@ module Workspace
 
         label = cleared_by_label
         clearer = @holder_stopper.clearer(@pid_provider.call)
-        results = names.map { |lock_name| clear_one(store, lock_name, label, clearer, namespace[:display], json: json, &on_holder) }
+        results = names.map do |lock_name|
+          clear_one(store, lock_name, label, clearer, namespace[:display], json: json, &on_holder).tap do |result|
+            record_lock_event("lock_cleared", working_dir, lock_name) if result[:cleared] && result[:json]["result"] == "cleared"
+          end
+        end
         kept = results.reject { |r| r[:cleared] }
 
         if json
@@ -385,6 +393,16 @@ module Workspace
         end
       rescue Workspace::Error
         ->(*) {}
+      end
+
+      # `lock_released` and `lock_cleared`: the lock's name and this process's pid
+      # only (no task text). Releases by the reaper, a dev wrapper or a SessionEnd
+      # hook don't pass through here. EventLog#record never raises.
+      def record_lock_event(type, working_dir, name)
+        wait_logger(working_dir, name, @pid_provider.call).call(type, {})
+      rescue => e
+        # The lock is already released or cleared; no event problem may fail the command.
+        @error_output.puts "Warning: could not record #{type} (#{e.message})" if ENV.key?("WORKSPACE_DEBUG")
       end
 
       def holder_summary(holder)

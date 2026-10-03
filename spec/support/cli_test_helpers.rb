@@ -22,6 +22,12 @@ module CLITestHelpers
       @events << {"type" => type, "project" => project, "data" => data}
     end
 
+    # Like EventLog#record: the write is reported, never raised.
+    def record(type:, project:, data: {})
+      append(type: type, project: project, data: data)
+      true
+    end
+
     def reconstruct
       state = {}
       @events.each do |event|
@@ -40,6 +46,16 @@ module CLITestHelpers
     def size = 0
     def warn_if_large = nil
     def compact = reconstruct
+  end
+
+  # A real EventLog whose file can't be written (its directory is a regular
+  # file), to prove an emitter never fails the command that calls it.
+  def self.unwritable_event_log(dir, error_output: StringIO.new)
+    blocker = File.join(dir, "not-a-directory")
+    File.write(blocker, "")
+    config = Workspace::Config.new(workspace_dir: dir)
+    config.define_singleton_method(:event_log_file) { File.join(blocker, "events.jsonl") }
+    Workspace::EventLog.new(config: config, error_output: error_output)
   end
 
   class FakeState

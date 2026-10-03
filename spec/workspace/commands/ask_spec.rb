@@ -344,4 +344,68 @@ RSpec.describe Workspace::Commands::Ask do
       expect { plain.answer("x", "y", working_dir: "/app", deliver: true) }.to raise_error(Workspace::Error, /not available in this build/)
     end
   end
+
+  describe "recording events" do
+    let(:event_log) { CLITestHelpers::FakeEventLog.new }
+    let(:env) { {"TMUX_PANE" => "%7"} }
+
+    subject(:command) do
+      described_class.new(config: config, project_detector: project_detector, notifier_factory: notifier_factory,
+        event_log: event_log, env: env, output: output, error_output: error_output)
+    end
+
+    def asked_id
+      JSON.parse(output.string)["question"]["id"]
+    end
+
+    it "records ask_created with the id and pane, and none of the question text" do
+      command.call(question: "pg or sqlite?", default: "sqlite", context: "lib/x.rb:1", working_dir: "/app", json: true)
+
+      expect(event_log.events).to eq([{"type" => "ask_created", "project" => "myapp", "data" => {"id" => asked_id, "workspace" => "myapp", "pane_id" => "%7"}}])
+    end
+
+    it "records ask_answered with the id and pane, and not the answer" do
+      command.call(question: "q1", default: "d1", working_dir: "/app", json: true)
+      id = asked_id
+
+      command.answer(id, "use postgres", working_dir: "/app")
+
+      expect(event_log.events.last).to eq({"type" => "ask_answered", "project" => "myapp", "data" => {"id" => id, "workspace" => "myapp", "pane_id" => "%7"}})
+      expect(event_log.events.to_s).not_to include("use postgres")
+    end
+
+    it "records ask_answered before typing the answer, so a failed delivery still shows as answered" do
+      sender = instance_double(Workspace::Commands::Send)
+      allow(sender).to receive_messages(locate: nil, server_pid: "4242")
+      allow(sender).to receive(:deliver).and_raise(Workspace::Error, "tmux said no")
+      tmux_env = env.merge("TMUX" => "/tmp/sock,4242,0")
+      delivering = described_class.new(config: config, project_detector: project_detector, notifier_factory: notifier_factory,
+        pane_sender: sender, event_log: event_log, env: tmux_env, output: output, error_output: error_output)
+      delivering.call(question: "q1", default: "d1", working_dir: "/app", json: true)
+      id = asked_id
+
+      expect { delivering.answer(id, "yes", working_dir: "/app", deliver: true) }.to raise_error(Workspace::Error)
+
+      expect(event_log.events.map { |e| e["type"] }).to eq(%w[ask_created ask_answered])
+    end
+
+    it "records nothing for an answer that finds no question" do
+      expect { command.answer("nope", "a", working_dir: "/app") }.to raise_error(Workspace::Error)
+
+      expect(event_log.events).to be_empty
+    end
+
+    it "keeps its exit code and output when the log can't be written" do
+      warnings = StringIO.new
+      broken = described_class.new(config: config, project_detector: project_detector, notifier_factory: notifier_factory,
+        event_log: CLITestHelpers.unwritable_event_log(tmpdir, error_output: warnings), env: env, output: output,
+        error_output: error_output)
+
+      result = broken.call(question: "q", default: "d", working_dir: "/app", json: true)
+
+      expect(result).to eq(exit_code: 0)
+      expect(JSON.parse(output.string)["ok"]).to be(true)
+      expect(warnings.string.lines.size).to eq(1)
+    end
+  end
 end

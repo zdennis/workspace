@@ -532,4 +532,59 @@ RSpec.describe Workspace::Commands::Config do
       expect(%w[cmd-0 cmd-1 cmd-2 cmd-3 cmd-4]).to include(project_settings.load_global.dig("statusline", "command"))
     end
   end
+
+  describe "recording config_changed" do
+    let(:event_log) { CLITestHelpers::FakeEventLog.new }
+
+    def build_logged_command(log = event_log)
+      dir = Dir.mktmpdir("ws-config-events")
+      settings = Workspace::ProjectSettings.new(config: Struct.new(:workspace_config_dir).new(dir))
+      output = StringIO.new
+      described_class.new(project_settings: settings, lineage: Workspace::WorkspaceLineage.new,
+        file_backup: Workspace::FileBackup.new(output: output), event_log: log, output: output)
+    end
+
+    it "records a project set with the key name and not the value" do
+      build_logged_command.set("dev.up", "SECRET_TOKEN=abc ./go", project: "api", cwd: Dir.pwd)
+
+      expect(event_log.events).to eq([{"type" => "config_changed", "project" => "api",
+                                       "data" => {"workspace" => "api", "layer" => "project", "via" => "set", "keys" => ["dev.up"]}}])
+      expect(event_log.events.to_s).not_to include("SECRET_TOKEN")
+    end
+
+    it "records a project unset" do
+      command = build_logged_command
+      command.set("dev.up", "x", project: "api", cwd: Dir.pwd)
+      command.unset("dev.up", project: "api", cwd: Dir.pwd)
+
+      expect(event_log.events.last).to eq({"type" => "config_changed", "project" => "api",
+        "data" => {"workspace" => "api", "layer" => "project", "via" => "unset", "keys" => ["dev.up"]}})
+    end
+
+    it "records a global set and unset with an empty project string and scope global" do
+      command = build_logged_command
+      command.set("launch.headless", "true")
+      command.unset("launch.headless")
+
+      expect(event_log.events.map { |e| [e["project"], e["data"]["layer"], e["data"]["via"]] })
+        .to eq([["", "global", "set"], ["", "global", "unset"]])
+      expect(event_log.events.map { |e| e["data"]["scope"] }).to eq(["global", "global"])
+      expect(event_log.events.map { |e| e["data"].key?("workspace") }).to eq([false, false])
+    end
+
+    it "records nothing for a rejected key, value or unparseable file" do
+      command = build_logged_command
+      expect { command.set("dev.bogus", "x", project: "api", cwd: Dir.pwd) }.to raise_error(Workspace::UsageError)
+      expect { command.set("dev.stop_timeout", "soon", project: "api", cwd: Dir.pwd) }.to raise_error(Workspace::UsageError)
+
+      expect(event_log.events).to be_empty
+    end
+
+    it "writes the config and prints its message when the log can't be written" do
+      broken = CLITestHelpers.unwritable_event_log(Dir.mktmpdir("ws-config-broken"))
+      command = build_logged_command(broken)
+
+      expect(command.set("dev.up", "./go", project: "api", cwd: Dir.pwd)).to eq("api")
+    end
+  end
 end

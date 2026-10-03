@@ -270,8 +270,8 @@ module Workspace
     launch_command = Commands::Launch.new(state: state, iterm: iterm, window_manager: window_manager, tmux: tmux, project_config: project_config, window_layout: window_layout, config: config, pipeline_config: pipeline_config, agent_ensurer: ensure_agent_command, agent_readiness: agent_readiness, output: output, error_output: error_output)
     lineage = WorkspaceLineage.new
     task_store = TaskStore.new(dir: config.task_dir, error_output: error_output)
-    start_command = Commands::Start.new(git: git, project_config: project_config, project_settings: project_settings, launch_command: launch_command, lineage: lineage, hook_installer: hook_installer, task_store: task_store, output: output, input: input)
-    kill_command = Commands::Kill.new(git: git, project_config: project_config, project_settings: project_settings, stop_command: stop_command, project_detector: project_detector, task_store: task_store, output: output, input: input)
+    start_command = Commands::Start.new(git: git, project_config: project_config, project_settings: project_settings, launch_command: launch_command, lineage: lineage, hook_installer: hook_installer, task_store: task_store, event_log: event_log, output: output, input: input)
+    kill_command = Commands::Kill.new(git: git, project_config: project_config, project_settings: project_settings, stop_command: stop_command, project_detector: project_detector, task_store: task_store, event_log: event_log, output: output, input: input)
     finish_command = Commands::Finish.new(git: git, project_config: project_config, kill_command: kill_command, project_detector: project_detector, output: output, error_output: error_output, input: input)
     pane_locator = PaneLocator.new(tmux: tmux)
     send_command = Commands::Send.new(locator: pane_locator, tmux: tmux, output: output)
@@ -366,7 +366,7 @@ module Workspace
     project_actions_command = Commands::ProjectActions.new(catalog: project_catalog, stop_command: stop_command, kill_command: kill_command,
       state: state, tmux: tmux, git: git, lock_namespace: lock_namespace, lock_holder: lock_holder,
       hook_runner: hook_runner, json_hook_runner: json_hook_runner, output: output, error_output: error_output, input: input)
-    config_command = Commands::Config.new(project_settings: project_settings, lineage: lineage, file_backup: file_backup, output: output)
+    config_command = Commands::Config.new(project_settings: project_settings, lineage: lineage, file_backup: file_backup, event_log: event_log, output: output)
     config_report = ConfigReport.new(project_settings: project_settings, project_config: project_config)
     tmuxinator_report = TmuxinatorReport.new(config: config, tmux: tmux)
 
@@ -380,7 +380,7 @@ module Workspace
     alert_config = AlertConfig.new(project_settings: project_settings, project_config: project_config,
       lineage: lineage, error_output: error_output)
     ask_command = Commands::Ask.new(config: config, project_detector: project_detector, alert_config: alert_config,
-      pane_sender: send_command, output: output, error_output: error_output)
+      pane_sender: send_command, event_log: event_log, output: output, error_output: error_output)
 
     work_coordinator_client = WorkCoordinatorClient.new(
       socket_path: config.work_coordinator_socket,

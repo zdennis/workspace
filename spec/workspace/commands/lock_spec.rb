@@ -387,10 +387,10 @@ RSpec.describe Workspace::Commands::Lock do
           waiter_pid: 4242, waiter_started: "start-4242")
       end
 
-      def clear_command(dev_config: nil, pid: 999, output: self.output, error_output: self.error_output)
+      def clear_command(dev_config: nil, pid: 999, output: self.output, error_output: self.error_output, event_log: nil)
         described_class.new(config: config, lock_namespace: lock_namespace, lock_holder: FakeLockIdentity.new(pid: pid), output: output,
           error_output: error_output, terminator: terminator, clock: mono_clock, trap: ->(*) {}, pid_provider: -> { pid },
-          sleeper: ->(seconds) { mono[0] += seconds }, dev_config: dev_config)
+          sleeper: ->(seconds) { mono[0] += seconds }, dev_config: dev_config, event_log: event_log)
       end
 
       def devenv_holder_pid
@@ -412,6 +412,16 @@ RSpec.describe Workspace::Commands::Lock do
         expect(error_output.string).to include("Could not stop process group 4242 (pid 4242): process group 4242",
           "owned by alice", "Kept devenv lock", "kill -TERM -4242", "workspace lock clear devenv")
         expect(output.string).not_to include("Cleared devenv")
+      end
+
+      it "records no lock_cleared for a lock it kept because the group could not be stopped" do
+        hold_devenv
+        allow(terminator).to receive(:stop_holder).and_raise(not_permitted)
+        event_log = CLITestHelpers::FakeEventLog.new
+
+        expect(clear_command(event_log: event_log).clear("devenv")).to eq(exit_code: 1)
+
+        expect(event_log.events).to be_empty
       end
 
       it "keeps the lock when the group is still running after SIGKILL" do

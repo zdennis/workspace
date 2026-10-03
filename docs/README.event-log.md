@@ -56,6 +56,32 @@ The same log records what agents and pipelines do. `reconstruct` ignores these e
 
 An acquire that doesn't wait records nothing here; `locks.jsonl` in the lock store already audits every acquire and release.
 
+### State and lifecycle events
+
+These record that something changed, so a reader can refetch (`snapshot --json`) instead of polling. They carry identifiers and names, never the user's text: no question, answer, prompt, task title, path or config value. Like every activity event, `reconstruct` ignores them. Every event has a string `project` (an event with a nil one is not written; the global `config_changed` uses an empty string), and the workspace name also sits in `data.workspace` where one applies.
+
+| Type | `project` | Written by | `data` |
+|------|-----------|-----------|--------|
+| `ask_created` | the asking workspace | `ask`, once the question is stored | `id`, `workspace`, `pane_id` (the tmux pane id, or `null`) |
+| `ask_answered` | the asking workspace | `ask answer`, once the answer is stored and before `--deliver` types it | `id`, `workspace`, `pane_id` |
+| `lock_released` | the lock namespace's project, as for the lock waits | `lock release`, once per lock released | `lock`, `pid`, and `workspace` from a worktree |
+| `lock_cleared` | the lock namespace's project | `lock clear`, for each lock it cleared; a lock kept for a process group it could not stop writes nothing | `lock`, `pid` (the clearer's), and `workspace` from a worktree |
+| `worktree_started` | the worktree's workspace name | `start`, once the worktree's config is written and before it launches | `workspace`, `parent` (the main workspace's name), `branch`, `created` (`false` for an existing or adopted worktree), `task` (the task id, when a task store is wired) |
+| `worktree_finished` | the worktree's workspace name | `kill`, `finish` and the project actions built on them, once the worktree, its config and its settings are removed, as the session stops | `workspace`, `outcome` (`merged`, `abandoned` or `discarded`) |
+| `daemon_started` | the workspace the daemon serves | `agentd`, once it is ready | `workspace`, `daemon` (`agent`), `pid` |
+| `daemon_stopped` | the workspace the daemon served | `agentd`, as it shuts down | `workspace`, `daemon`, `pid` |
+| `config_changed` | the project, or `""` (empty) for the global file | `config set` and `config unset` | `workspace` (project layer) or `scope` (`global`, global layer), `layer` (`project` or `global`), `via` (`set` or `unset`), `keys` (the key names written) |
+
+Not every change is covered:
+
+- A lock released by the reaper, by `dev down`, by a SessionEnd hook or by `dev up --force` passes through none of these, so a reader should treat `lock_released` as a hint to refetch, not as a full record. `locks.jsonl` still audits every one.
+- `prune` removes worktrees itself, so it writes no `worktree_finished`.
+- A daemon killed with SIGKILL writes no `daemon_stopped`; its pid is gone from `snapshot --json`.
+- `config_changed` comes from the CLI only. Edits made in an editor, and the richer shape the config editor will add (`file`, `affects`), are not written yet.
+- `dev_started`, `dev_ready`, `dev_stopped` and `pipeline_status` are not written yet.
+
+These are written by whichever process makes the change: a short-lived CLI command or the agent daemon. Both go through the same append (one `write` to a file opened with `O_APPEND`, under the shared lock), so they land in one log without interleaving and a rotation never loses one.
+
 A restarted agent daemon reads each pane's last `agent_state` back, so `workspace sessions` keeps each pane's state and `state_since` instead of starting afresh. The pane's pid must match, so a pane id reused by a new tmux server starts fresh. A pending wait is not restored. It also reads each pane's last `agent_alert` of each kind back, so a restart doesn't send an alert again: a pane still idle in the same quiet stretch isn't alerted again, and an agent that was waiting when the daemon stopped isn't alerted again when it asks again, as long as it sent no other hook event in between. A new quiet stretch or a new wait alerts as usual.
 
 Recording activity never fails the command doing it: if the log can't be written, one warning goes to stderr and the command carries on. Nothing is written to stdout, so `--json` output stays JSON-only.

@@ -60,10 +60,11 @@ RSpec.describe Workspace::Commands::Lock, "recording lock waits in the event log
     result = command_for(waiter_identity).acquire("edit", task: "PROJ-2", wait: true, poll: 0.25, working_dir: tmpdir)
 
     expect(result).to eq(exit_code: 0)
-    expect(logged.map { |project, type, _| [project, type] }).to eq([["app", "lock_wait_started"], ["app", "lock_acquired"]])
+    expect(logged.map { |project, type, _| [project, type] })
+      .to eq([["app", "lock_wait_started"], ["app", "lock_released"], ["app", "lock_acquired"]])
     expect(logged[0][2]).to include("lock" => "edit", "pid" => 200, "task" => "PROJ-2", "position" => 1,
       "holder" => include("pane" => "%1", "pid" => 100, "task" => "PROJ-1"))
-    expect(logged[1][2]).to include("lock" => "edit", "pid" => 200, "waited_seconds" => 5.0)
+    expect(logged[2][2]).to include("lock" => "edit", "pid" => 200, "waited_seconds" => 5.0)
   end
 
   it "records giving up after --max-wait" do
@@ -118,5 +119,74 @@ RSpec.describe Workspace::Commands::Lock, "recording lock waits in the event log
     expect(result).to eq(exit_code: 0)
     expect(output.string).not_to include("event log")
     expect(log_errors.string.lines.size).to eq(1)
+  end
+
+  describe "lock_released and lock_cleared" do
+    def released_and_cleared
+      logged.select { |_, type, _| %w[lock_released lock_cleared].include?(type) }
+    end
+
+    it "records a release with the lock, the pid and the worktree, and no task text" do
+      command_for(holder_identity).acquire("edit", task: "PROJ-1", working_dir: tmpdir)
+
+      command_for(holder_identity).release("edit", working_dir: tmpdir)
+
+      expect(released_and_cleared).to eq([["app", "lock_released", {"lock" => "edit", "pid" => 100}]])
+    end
+
+    it "records a release for the lock a release --all drops (an agent holds one lock at a time)" do
+      store = Workspace::LockStore.new(dir: store_dir, liveness: holder_identity)
+      store.acquire("edit", identity: holder_identity.current, waiter_pid: 100, waiter_started: 1)
+
+      command_for(holder_identity).release(nil, all: true, working_dir: tmpdir)
+
+      expect(released_and_cleared.map { |_, type, data| [type, data["lock"]] }).to eq([["lock_released", "edit"]])
+    end
+
+    it "records nothing for a release of a lock the agent doesn't hold" do
+      command_for(holder_identity).acquire("edit", working_dir: tmpdir)
+
+      command_for(waiter_identity).release("edit", working_dir: tmpdir)
+
+      expect(released_and_cleared).to be_empty
+    end
+
+    it "records a clear of a held lock, with the clearer's pid" do
+      command_for(holder_identity).acquire("edit", working_dir: tmpdir)
+
+      command_for(waiter_identity).clear("edit", working_dir: tmpdir)
+
+      expect(released_and_cleared).to eq([["app", "lock_cleared", {"lock" => "edit", "pid" => 200}]])
+    end
+
+    it "records nothing for a clear of a lock that doesn't exist" do
+      command_for(waiter_identity).clear("edit", working_dir: tmpdir)
+
+      expect(released_and_cleared).to be_empty
+    end
+
+    it "keeps its output and exit code when resolving the event's namespace raises" do
+      command_for(holder_identity).acquire("edit", working_dir: tmpdir)
+      calls = 0
+      allow(lock_namespace).to receive(:resolve) do
+        calls += 1
+        raise IOError, "cwd gone" if calls > 2
+        {key: "ns", display: "app", dir: store_dir}
+      end
+
+      expect(command_for(holder_identity).release("edit", working_dir: tmpdir)).to eq(exit_code: 0)
+      expect(output.string).to include("Released edit lock.")
+    end
+
+    it "keeps its output and exit code when the log can't be written" do
+      broken = CLITestHelpers.unwritable_event_log(tmpdir)
+      command = described_class.new(config: Workspace::Config.new, lock_namespace: lock_namespace, lock_holder: holder_identity,
+        output: output, error_output: error_output, pid_provider: -> { 100 }, event_log: broken,
+        lock_config: instance_double(Workspace::LockConfig, idle_grace_for: 300), wall_clock: -> { now[0] })
+      command.acquire("edit", working_dir: tmpdir)
+
+      expect(command.release("edit", working_dir: tmpdir)).to eq(exit_code: 0)
+      expect(output.string).to include("Released edit lock.")
+    end
   end
 end

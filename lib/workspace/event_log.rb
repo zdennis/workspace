@@ -106,10 +106,15 @@ module Workspace
     # warns once on the error stream and the caller carries on.
     #
     # @param type [String] event type (e.g., "dispatched", "lock_wait_started")
-    # @param project [String] project the activity belongs to
+    # @param project [String] project the activity belongs to; an event whose
+    #   project is not a String (nil) is not written, since readers drop lines without one
     # @param data [Hash] event payload
     # @return [Boolean] whether the event was written
     def record(type:, project:, data: {})
+      unless project.is_a?(String)
+        @logger.debug { "event_log: not recording #{type}: no project" }
+        return false
+      end
       append(type: type, project: project, data: data)
       true
     rescue SystemCallError, IOError, JSON::GeneratorError, EncodingError => e

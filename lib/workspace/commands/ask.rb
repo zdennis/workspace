@@ -21,17 +21,20 @@ module Workspace
       # @param notifier_factory [#call] builds a {Workspace::Notifier} for a notify command string
       # @param pane_sender [Workspace::Commands::Send, nil] types an answer into the
       #   asking pane for `answer --deliver`; nil refuses `--deliver`
+      # @param event_log [Workspace::EventLog, nil] records `ask_created` and `ask_answered`
+      #   (ids and pane only, never the text); nil records nothing
       # @param env [Hash] process environment, for `TMUX_PANE`
       # @param output [IO] stream for the recorded/listed/answered question
       # @param error_output [IO]
       def initialize(config:, project_detector:, alert_config: nil, notifier_factory: nil,
-        pane_sender: nil, env: ENV, output: $stdout, error_output: $stderr)
+        pane_sender: nil, event_log: nil, env: ENV, output: $stdout, error_output: $stderr)
         @config = config
         @project_detector = project_detector
         @alert_config = alert_config
         @notifier_factory = notifier_factory ||
           ->(command) { Notifier.new(command: command, error_output: error_output, label: "workspace ask") }
         @pane_sender = pane_sender
+        @event_log = event_log
         @env = env
         @output = output
         @error_output = error_output
@@ -53,6 +56,7 @@ module Workspace
         name = workspace_for(working_dir)
         record = store_for(name).add(question: question, default: default, context: context,
           pane: @env["TMUX_PANE"], worktree: working_dir, tmux_server: tmux_server_pid)
+        record_event("ask_created", name, record)
         notifier = notify(name, record)
 
         if json
@@ -116,6 +120,7 @@ module Workspace
           message = already_answered ? "Question '#{id}' was already answered for #{name}." : "No question '#{id}' for #{name}."
           raise Workspace::Error, message
         end
+        record_event("ask_answered", name, record)
         delivered = pane ? deliver_answer(name, pane, answer, id) : nil
 
         if json
@@ -181,6 +186,13 @@ module Workspace
         name = @project_detector.detect(working_dir)
         raise Workspace::Error.new("Could not detect a workspace at #{working_dir}.", code: "not_in_workspace", details: {"path" => working_dir}) unless name
         name
+      end
+
+      # Only the id and the asking pane go in the log: the question, default,
+      # context and answer are the user's text and stay in the ask store.
+      # EventLog#record never raises.
+      def record_event(type, name, record)
+        @event_log&.record(type: type, project: name, data: {"id" => record["id"], "workspace" => name, "pane_id" => record["pane"]})
       end
 
       def store_for(name)

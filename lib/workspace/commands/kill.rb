@@ -13,14 +13,17 @@ module Workspace
       # @param output [IO] output stream for user-facing messages
       # @param task_store [Workspace::TaskStore, nil] archives the project's task
       #   once its worktree is removed; nil leaves tasks alone
+      # @param event_log [Workspace::EventLog, nil] records `worktree_finished` once the
+      #   worktree is removed; nil records nothing
       # @param input [IO] input stream for interactive prompts
-      def initialize(git:, project_config:, project_settings:, stop_command:, project_detector:, task_store: nil, output: $stdout, input: $stdin)
+      def initialize(git:, project_config:, project_settings:, stop_command:, project_detector:, task_store: nil, event_log: nil, output: $stdout, input: $stdin)
         @git = git
         @project_config = project_config
         @project_settings = project_settings
         @stop_command = stop_command
         @project_detector = project_detector
         @task_store = task_store
+        @event_log = event_log
         @output = output
         @input = input
       end
@@ -107,10 +110,13 @@ module Workspace
           end
         end
 
-        archive_task(project, outcome || (force ? "discarded" : "abandoned"), out)
+        outcome ||= force ? "discarded" : "abandoned"
+        archive_task(project, outcome, out)
         yield project if block_given?
         @project_config.remove(project, quiet: quiet)
         @project_settings.remove(project)
+        # EventLog#record never raises.
+        @event_log&.record(type: "worktree_finished", project: project, data: {"workspace" => project, "outcome" => outcome})
 
         out.puts "Killing session..."
         @stop_command.call([project], quiet: quiet, warn_inactive: warn_inactive)
