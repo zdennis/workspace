@@ -117,6 +117,33 @@ RSpec.describe Workspace::ProjectConfig do
       expect(content).to include("display: myapp/PROJ-123")
     end
 
+    context "with a {{PRE_WINDOW}} line in the template" do
+      before do
+        template_path = File.join(tmpdir, "project-worktree-template.yml")
+        File.write(template_path, "name: {{TMUX_SESSION_NAME}}\n{{PRE_WINDOW}}\nwindows: []\n")
+        allow(config).to receive(:worktree_template_path).and_return(template_path)
+      end
+
+      def written = File.read(File.join(tmpdir, "workspace.myapp.worktree-PROJ-123.yml"))
+
+      it "exports WORKSPACE_TASK in every pane when given a task id" do
+        pc.create_worktree("myapp", "PROJ-123", "/tmp/wt", "PROJ-123", task_id: "ab12cd34")
+
+        expect(written).to eq("name: myapp-wt-PROJ-123\npre_window: export WORKSPACE_TASK=ab12cd34\nwindows: []\n")
+        expect(YAML.safe_load(written)["pre_window"]).to eq("export WORKSPACE_TASK=ab12cd34")
+      end
+
+      it "drops the line without a task id" do
+        pc.create_worktree("myapp", "PROJ-123", "/tmp/wt", "PROJ-123")
+
+        expect(written).to eq("name: myapp-wt-PROJ-123\nwindows: []\n")
+      end
+    end
+
+    it "names a worktree's config the way create_worktree does" do
+      expect(pc.worktree_config_name("myapp", "PROJ-123")).to eq("myapp.worktree-PROJ-123")
+    end
+
     it "raises error when worktree template is missing" do
       allow(config).to receive(:worktree_template_path).and_return(File.join(tmpdir, "nonexistent.yml"))
       expect {

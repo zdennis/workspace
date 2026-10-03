@@ -386,3 +386,66 @@ RSpec.describe Workspace::Commands::Kill do
     end
   end
 end
+
+RSpec.describe Workspace::Commands::Kill, "task archiving" do
+  let(:tmpdir) { Dir.mktmpdir }
+  let(:project_config) { double("project_config", remove: nil) }
+  let(:git) { double("git", worktree_exists?: true, unsaved_work: nil, remove_worktree: nil) }
+  let(:stop_command) { double("stop_command", call: []) }
+  let(:task_store) { double("task_store", archive: nil) }
+  let(:name) { "myproject.worktree-PROJ-123" }
+  let(:config_path) { File.join(tmpdir, "workspace.#{name}.yml") }
+
+  subject(:command) do
+    described_class.new(git: git, project_config: project_config, project_settings: double("settings", remove: nil),
+      stop_command: stop_command, project_detector: double("detector"), task_store: task_store,
+      output: StringIO.new, input: StringIO.new)
+  end
+
+  before do
+    File.write(config_path, YAML.dump("root" => "/path/to/worktree"))
+    allow(project_config).to receive(:config_path_for).with(name).and_return(config_path)
+  end
+
+  after { FileUtils.remove_entry(tmpdir) }
+
+  it "archives the task as abandoned after removing the worktree" do
+    order = []
+    allow(git).to receive(:remove_worktree) { order << :remove }
+    allow(task_store).to receive(:archive) { order << :archive }
+
+    command.call(name, confirm: false)
+
+    expect(task_store).to have_received(:archive).with(name, outcome: "abandoned")
+    expect(order).to eq([:remove, :archive])
+  end
+
+  it "archives the task as discarded under --force" do
+    command.call(name, force: true)
+
+    expect(task_store).to have_received(:archive).with(name, outcome: "discarded")
+  end
+
+  it "archives with the outcome the caller gives" do
+    command.call(name, confirm: false, outcome: "merged")
+
+    expect(task_store).to have_received(:archive).with(name, outcome: "merged")
+  end
+
+  it "keeps the task when the worktree can't be removed" do
+    allow(git).to receive(:remove_worktree).and_raise(Workspace::UnsavedWorkError.new("x", unsaved: :unknown))
+
+    expect { command.call(name, confirm: false) }.to raise_error(Workspace::UnsavedWorkError)
+    expect(task_store).not_to have_received(:archive)
+  end
+
+  it "keeps the task when the user cancels" do
+    command = described_class.new(git: git, project_config: project_config, project_settings: double("settings"),
+      stop_command: stop_command, project_detector: double("detector"), task_store: task_store,
+      output: StringIO.new, input: StringIO.new("n\n"))
+
+    command.call(name)
+
+    expect(task_store).not_to have_received(:archive)
+  end
+end

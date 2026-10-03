@@ -24,7 +24,7 @@ Removes the git worktree, cleans up the tmuxinator config, project settings and 
 
 1. Check for unsaved work (skipped with `--force`).
 2. Ask for confirmation (skipped with `--force`).
-3. Check for unsaved work again, then remove the worktree with `git worktree remove --force`, so untracked files go with it. An edit made while the prompt waited is refused here, not deleted.
+3. Check for unsaved work again, then remove the worktree with `git worktree remove --force`, so untracked files go with it. An edit made while the prompt waited is refused here, not deleted. Once the worktree is gone, the workspace's [task](README.start.md#tasks) is archived as `abandoned` (`discarded` with `--force`).
 4. Run the `post_kill` hook.
 5. Remove the tmuxinator config and project settings.
 6. Remove the state entry, then kill the tmux session.

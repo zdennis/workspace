@@ -85,7 +85,7 @@ module Workspace
         # which Git#remove_worktree repeats right before removing: anything
         # committed or edited since the check above is refused, not deleted.
         begin
-          @kill_command.call(project, confirm: false, quiet: quiet, working_dir: working_dir, &after_remove)
+          @kill_command.call(project, confirm: false, quiet: quiet, working_dir: working_dir, outcome: "merged", &after_remove)
         rescue Workspace::UnsavedWorkError => e
           raise Workspace::Error,
             "'#{project}' has unsaved work: #{e.summary}.\n" \

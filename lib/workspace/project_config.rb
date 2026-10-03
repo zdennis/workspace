@@ -50,14 +50,23 @@ module Workspace
 
     # @param project_name [String] parent project name
     # @param worktree_name [String] worktree directory name
+    # @return [String] the config name {#create_worktree} gives that worktree
+    def worktree_config_name(project_name, worktree_name)
+      "#{project_name}.worktree-#{@git.sanitize_for_filesystem(worktree_name)}"
+    end
+
+    # @param project_name [String] parent project name
+    # @param worktree_name [String] worktree directory name
     # @param worktree_path [String] full path to the worktree
     # @param branch_name [String] git branch name
+    # @param task_id [String, nil] the workspace's task id; exported as `WORKSPACE_TASK`
+    #   in every pane through the template's `{{PRE_WINDOW}}` line, which is dropped without one
     # @return [String] the config name
     # @raise [Workspace::Error] if the worktree template is missing
-    def create_worktree(project_name, worktree_name, worktree_path, branch_name, quiet: false)
+    def create_worktree(project_name, worktree_name, worktree_path, branch_name, quiet: false, task_id: nil)
       tmux_session_name = "#{project_name}.wt-#{@git.sanitize_for_filesystem(worktree_name)}"
         .tr(".", "-")
-      config_name = "#{project_name}.worktree-#{@git.sanitize_for_filesystem(worktree_name)}"
+      config_name = worktree_config_name(project_name, worktree_name)
       config_path = @config.config_path_for(config_name)
 
       if File.exist?(config_path)
@@ -77,6 +86,7 @@ module Workspace
         .gsub("{{WORKTREE_BRANCH}}", branch_name)
         .gsub("{{DISPLAY_NAME}}", "#{project_name}/#{worktree_name}")
         .gsub("{{CONFIG_PATH}}", config_path)
+        .sub(/^\{\{PRE_WINDOW\}\}\n/, task_id ? "pre_window: export WORKSPACE_TASK=#{task_id}\n" : "")
 
       File.write(config_path, content)
       @output.puts "Created config: #{config_path}" unless quiet

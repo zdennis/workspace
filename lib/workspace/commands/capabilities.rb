@@ -30,7 +30,8 @@ module Workspace
         "doctor_json" => 0,
         "daemon_control" => 0,
         "config_json" => 1,
-        "tmux_show" => 1
+        "tmux_show" => 1,
+        "tasks" => 1
       }.freeze
 
       # The exit statuses commands use, by meaning.

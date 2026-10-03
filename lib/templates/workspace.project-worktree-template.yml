@@ -4,6 +4,7 @@ name: {{TMUX_SESSION_NAME}}
 root: {{WORKTREE_PATH}}
 tmux_options: -CC
 attach: false
+{{PRE_WINDOW}}
 
 on_project_start: |
   tmux resize-pane -t {{TMUX_SESSION_NAME}}:0.0 -y 15%

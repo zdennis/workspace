@@ -34,6 +34,7 @@ A macOS CLI (Ruby) for managing tmuxinator-based development workspaces in iTerm
 - `lib/workspace/alert_config.rb` — Reads a project's `alerts.notify` and `alerts.idle_after`
 - `lib/workspace/notifier.rb` — Runs the notify command in the background with a timeout, details in `WORKSPACE_ALERT_*` env vars
 - `lib/workspace/ask_store.rb` — Flock-guarded append-only store for `workspace ask` questions, one `asks.json` per workspace under its XDG state dir
+- `lib/workspace/task_store.rb` — Flock-guarded one-file-per-task store under `~/.local/state/workspace/tasks/`: `start` creates, `finish`/`kill` archive (newest 200 kept); the task id is `WORKSPACE_TASK` in panes
 - `lib/workspace/process_tree.rb` — One-shot `ps` snapshot with parent/child lookups
 - `lib/workspace/workspace_lineage.rb` — Resolves a workspace's parent project (marker, then git common dir); shared by locks, `dev`, `config set`, and `parent`
 - `lib/workspace/lock_namespace.rb` — Resolves the shared lock namespace (git common dir) from a cwd

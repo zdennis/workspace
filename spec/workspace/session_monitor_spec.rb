@@ -1189,3 +1189,120 @@ RSpec.describe Workspace::SessionMonitor, "display_label" do
     expect(written.to_s).not_to include("secret text")
   end
 end
+
+RSpec.describe Workspace::SessionMonitor, "task" do
+  let(:tmux) { instance_double(Workspace::Tmux) }
+  let(:process_tree) { instance_double(Workspace::ProcessTree) }
+  let(:snapshot) { instance_double(Workspace::ProcessTree::Snapshot) }
+  let(:clock) { class_double(Time, now: Time.utc(2026, 9, 26, 12, 0, 0)) }
+  let(:label_reader) { instance_double(Workspace::TranscriptLabel) }
+  let(:task) { {"id" => "ab12cd34", "workspace" => "proj", "title" => "Fix login", "ref" => "PROJ-1", "branch" => "PROJ-1"} }
+  let(:task_reader) { ->(_workspace) { task } }
+  let(:panes) do
+    [
+      {id: "%1", index: 0, pid: 100, command: "zsh", cwd: "/project", title: "shell"},
+      {id: "%2", index: 1, pid: 200, command: "node", cwd: "/project", title: "Claude"}
+    ]
+  end
+
+  subject(:monitor) do
+    described_class.new(tmux: tmux, process_tree: process_tree, session_name: "proj-session", project: "proj",
+      idle_after: 30, clock: clock, label_reader: label_reader, task_reader: task_reader)
+  end
+
+  before do
+    allow(tmux).to receive(:pane_details).and_return(panes)
+    allow(process_tree).to receive(:snapshot).and_return(snapshot)
+    allow(snapshot).to receive(:find_descendant).and_return(nil)
+    allow(snapshot).to receive(:find_descendant)
+      .with(200, ["claude"], hash_including(include_root: true))
+      .and_return({pid: 250, command: "claude", args: "claude"})
+    allow(tmux).to receive(:capture_pane).and_return("output")
+    allow(label_reader).to receive(:read).and_return(title: "Transcript title", last_prompt: nil)
+    monitor.scan
+  end
+
+  def pane(id) = monitor.snapshot["panes"].find { |p| p["pane_id"] == id }
+
+  def record(event, **fields) = monitor.record({"event" => event, "pane_id" => "%2", "session_id" => "s1", "transcript_path" => "/t/a.jsonl"}.merge(fields.transform_keys(&:to_s)))
+
+  it "reports the task and puts its title first in display_label, ahead of the transcript title" do
+    record("user_prompt", prompt: "typed")
+
+    expect(pane("%2")["display_label"]).to eq("Fix login")
+    expect(monitor.snapshot["task"]).to include("id" => "ab12cd34", "title" => "Fix login", "ref" => "PROJ-1", "branch" => "PROJ-1")
+  end
+
+  it "leaves a shell pane's display_label null" do
+    expect(pane("%1")["display_label"]).to be_nil
+  end
+
+  it "reads the task by the project name" do
+    asked = []
+    reader = ->(workspace) { asked << workspace and nil }
+    described_class.new(tmux: tmux, process_tree: process_tree, session_name: "proj-session", project: "proj",
+      clock: clock, task_reader: reader).snapshot
+
+    expect(asked).to eq(["proj"])
+  end
+
+  context "when the task has no title" do
+    let(:task) { {"id" => "ab12cd34", "workspace" => "proj", "title" => nil} }
+
+    it "falls back to the transcript title" do
+      record("user_prompt", prompt: "typed")
+
+      expect(pane("%2")["display_label"]).to eq("Transcript title")
+      expect(monitor.snapshot["task"]).to include("id" => "ab12cd34", "title" => nil)
+    end
+  end
+
+  context "without a task" do
+    let(:task) { nil }
+
+    it "reports task null and keeps the transcript title" do
+      record("user_prompt", prompt: "typed")
+
+      expect(monitor.snapshot["task"]).to be_nil
+      expect(pane("%2")["display_label"]).to eq("Transcript title")
+    end
+  end
+
+  context "when the task reader raises" do
+    let(:task_reader) { ->(_workspace) { raise Errno::EACCES, "tasks" } }
+
+    it "reads as no task instead of failing the snapshot" do
+      expect(monitor.snapshot["task"]).to be_nil
+    end
+  end
+
+  describe "derived status" do
+    def status = monitor.snapshot["task"]["status"]
+
+    it "is idle when no agent has reported and the pane is quiet" do
+      allow(clock).to receive(:now).and_return(Time.utc(2026, 9, 26, 12, 5, 0))
+      monitor.scan
+
+      expect(status).to eq("idle")
+    end
+
+    it "is working while an agent works" do
+      record("user_prompt", prompt: "go")
+
+      expect(status).to eq("working")
+    end
+
+    it "is done once the Stop hook fires" do
+      record("stop")
+
+      expect(status).to eq("done")
+    end
+
+    it "is blocked while an agent waits for permission" do
+      record("user_prompt", prompt: "go")
+      record("notification", message: "needs permission")
+
+      expect(status).to eq("blocked")
+    end
+  end
+end

@@ -22,8 +22,10 @@ module Workspace
       # @param hook_installer [Workspace::HookInstaller, nil] installs agent hooks
       #   (edit lock enforcement, session monitoring) into the new worktree; nil skips it
       # @param which [#call] returns true when an executable is on PATH
+      # @param task_store [Workspace::TaskStore, nil] records the workspace's task and
+      #   exports its id as `WORKSPACE_TASK` in the panes; nil starts without a task
       def initialize(git:, project_config:, project_settings:, launch_command:, lineage: WorkspaceLineage.new,
-        hook_installer: nil, which: nil, output: $stdout, input: $stdin, error_output: $stderr)
+        hook_installer: nil, which: nil, task_store: nil, output: $stdout, input: $stdin, error_output: $stderr)
         @git = git
         @project_config = project_config
         @project_settings = project_settings
@@ -31,6 +33,7 @@ module Workspace
         @lineage = lineage
         @hook_installer = hook_installer
         @which = which || Workspace::Which
+        @task_store = task_store
         @output = output
         @input = input
         @error_output = error_output
@@ -45,6 +48,7 @@ module Workspace
       # @param base [String, nil] branch/ref to create a new branch from, skipping the
       #   base-branch prompt
       # @param yes [Boolean] accept every default instead of prompting
+      # @param title [String, nil] a human title for the workspace's task
       # @param headless [Boolean] launch the session in the background with plain
       #   tmux instead of in iTerm2 (see Commands::Launch#call)
       # @param json [Boolean] emit the documented JSON schema instead of plain text; on
@@ -56,16 +60,16 @@ module Workspace
       # @raise [Workspace::Error] if not in a git repository (unless +json+ is true)
       # @raise [Workspace::UsageError] if a prompt would block on a non-TTY stdin and
       #   neither +base+ nor +yes+ resolves it (unless +json+ is true)
-      def call(input_string, prompt: nil, prompt_timeout: nil, base: nil, yes: false, headless: false, json: false)
-        return call_json(input_string, prompt: prompt, prompt_timeout: prompt_timeout, base: base, yes: yes, headless: headless) if json
+      def call(input_string, prompt: nil, prompt_timeout: nil, base: nil, yes: false, headless: false, json: false, title: nil)
+        return call_json(input_string, prompt: prompt, prompt_timeout: prompt_timeout, base: base, yes: yes, headless: headless, title: title) if json
 
-        start!(input_string, prompt: prompt, prompt_timeout: prompt_timeout, base: base, yes: yes, headless: headless, quiet: false)
+        start!(input_string, prompt: prompt, prompt_timeout: prompt_timeout, base: base, yes: yes, headless: headless, quiet: false, title: title)
       end
 
       private
 
-      def call_json(input_string, prompt:, prompt_timeout:, base:, yes:, headless:)
-        payload = start!(input_string, prompt: prompt, prompt_timeout: prompt_timeout, base: base, yes: yes, headless: headless, quiet: true)
+      def call_json(input_string, prompt:, prompt_timeout:, base:, yes:, headless:, title:)
+        payload = start!(input_string, prompt: prompt, prompt_timeout: prompt_timeout, base: base, yes: yes, headless: headless, quiet: true, title: title)
         @output.puts JSON.generate(payload[:json])
         {exit_code: payload[:exit_code]}
       rescue Workspace::Error, SystemCallError => e
@@ -75,12 +79,14 @@ module Workspace
 
       # @return [Hash] when quiet is true, +{exit_code:, json:}+; otherwise the
       #   launch result, or nil if branch selection was cancelled
-      def start!(input_string, prompt:, prompt_timeout:, base:, yes:, headless:, quiet:)
+      def start!(input_string, prompt:, prompt_timeout:, base:, yes:, headless:, quiet:, title: nil)
         root = @git.root
         raise Workspace::Error, "Not inside a git repository." unless root
 
         interactive = !quiet && !yes && stdin_tty?
         @warnings = []
+        @task_title = title
+        @task_ref = input_string
 
         info = @lineage.resolve(cwd: root)
         if parent_repo?(root, info)
@@ -163,7 +169,10 @@ module Workspace
         log(quiet, "Worktree already exists at: #{worktree_path}") if already_exists
         log(quiet, "Adopting existing worktree at: #{worktree_path}") if adopted
 
-        config_name = @project_config.create_worktree(project_name, worktree_dir_name, worktree_path, branch_name, quiet: quiet)
+        task = start_task(project_name, worktree_dir_name, worktree_path, branch_name)
+        worktree_options = {quiet: quiet}
+        worktree_options[:task_id] = task["id"] if task
+        config_name = @project_config.create_worktree(project_name, worktree_dir_name, worktree_path, branch_name, **worktree_options)
         @project_settings.ensure_exists(project_name)
         seed_worktree_hooks(project_name, config_name)
         install_agent_hooks(worktree_path, quiet: quiet)
@@ -186,6 +195,7 @@ module Workspace
           "created" => created,
           "headless" => headless
         }
+        json["task"] = {"id" => task["id"], "title" => task["title"]} if task
         json["session_reused"] = result[:reused].include?(config_name) if result && result[:reused]
         if exit_code != 0
           prompt_failures = result && result[:prompt_failures]
@@ -265,6 +275,15 @@ module Workspace
       end
 
       # @param prompt_timeout [Numeric, nil] nil defers to the launch command's own default
+      # Records the workspace's task (or finds the one it already has) before
+      # its config is written, so the id can go into the panes' environment.
+      def start_task(project_name, worktree_dir_name, worktree_path, branch_name)
+        return unless @task_store
+
+        workspace = @project_config.worktree_config_name(project_name, worktree_dir_name)
+        @task_store.start(workspace: workspace, title: @task_title, ref: @task_ref, branch: branch_name, path: worktree_path)
+      end
+
       def launch(config_name, prompts, prompt_timeout, headless:, quiet:)
         kwargs = {prompts: prompts}
         kwargs[:headless] = true if headless

@@ -31,6 +31,8 @@ If git can't answer one of these checks, `finish` refuses rather than guess. The
 
 `finish` checks against the upstream branch as it was last fetched; it doesn't fetch first. If a teammate pushed to the same branch since your last fetch, run `git fetch` before `finish` to get an accurate check.
 
+`finish` removes the worktree through `kill` and archives the workspace's [task](README.start.md#tasks) with outcome `merged`: it has verified the work is clean and pushed, not that it merged.
+
 With `--pr`, `finish` looks for an existing PR for the branch (`gh pr view`) and prints its URL if found, or opens one (`gh pr create --fill`) otherwise. If `gh` isn't installed, this step is skipped with a one-line note and `finish` keeps going. If `gh` fails (not authenticated, no fill-able commits, etc.), `finish` reports the error and stops — the worktree is *not* removed.
 
 Once the checks (and optional PR step) pass, `finish` removes the project the same way `workspace kill` does, without the confirmation prompt but *with* its unsaved-work check (`finish` never uses `--force`). That check runs again right before the worktree is removed, so work committed or edited after the checks above (while the PR step ran, say) is refused rather than deleted. The worktree is then removed with `git worktree remove --force`, so untracked files go with it.

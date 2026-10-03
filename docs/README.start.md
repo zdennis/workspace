@@ -16,6 +16,7 @@ workspace start [options] <jira-key|jira-url|pr-url|pr-ref|issue-url|branch>
 | `--prompt-timeout DURATION` | How long to wait for the coding agent to be ready for `--prompt` (e.g. `90s`, `2m`, or a plain number of seconds); default 60s |
 | `--base REF` | Branch/ref a new branch is created from, instead of prompting |
 | `--yes` | Accept every default instead of prompting (e.g. the default base branch) |
+| `--title TITLE` | A human title for the workspace's task; it is the first `display_label` of its panes in [`sessions --json`](README.sessions.md). See [Tasks](#tasks) |
 | `--headless` / `--no-headless` | Start the session in the background with plain tmux instead of iTerm2; the default follows [`launch`](README.launch.md#headless) |
 | `--json` | Emit the JSON schema below instead of plain text; never prompts. Only the JSON document goes to stdout — progress and warnings go to stderr or the `warnings` field (see [`--json` output](#--json-output)) |
 
@@ -57,6 +58,14 @@ prompt, it instead:
 `--json` never prompts either, regardless of whether stdin is a TTY — pass `--base`
 and/or `--yes` alongside it when the branch might need to be created.
 
+### Tasks
+
+`start` records a task for the new workspace: its title (`--title`, optional), the input it started from (`ref`), its branch and worktree path. The record is one JSON file, `<id>.json`, under `~/.local/state/workspace/tasks/` (`$XDG_STATE_HOME/workspace/tasks/`), mode 0600, written under a lock so concurrent `start`s never clobber each other. It lives there rather than in the worktree because removing a worktree deletes its untracked files.
+
+The task id is exported as `WORKSPACE_TASK` in every pane of the workspace, through a `pre_window:` line the worktree template writes into the workspace's tmuxinator config. Run `workspace init --force` once to refresh an installed template that predates it; a workspace whose config already exists keeps the config it has, so its panes get no `WORKSPACE_TASK`. Starting a workspace that already has an active task keeps that task, and a `--title` replaces its title.
+
+[`finish`](README.finish.md) and [`kill`](README.kill.md) archive the task, moving it to `tasks/archive/` with an `outcome` (`merged` for `finish`, `abandoned` for `kill`, `discarded` for `kill --force`) and `archived_at`. The newest 200 archived tasks are kept. [`sessions --json`](README.sessions.md) reports the active task and a status derived from the panes' states.
+
 ### `--json` output
 
 On success, one line of JSON on stdout (nothing else is written to stdout under
@@ -74,6 +83,7 @@ On success, one line of JSON on stdout (nothing else is written to stdout under
   worktree) already existed
 - `created` — whether the worktree was created by this run, as opposed to reused
   or adopted
+- `task` — the workspace's task, `{"id", "title"}` (see [Tasks](#tasks))
 - `headless` — whether the session was started headless (see
   [`launch`](README.launch.md#headless))
 - `session_reused` — present only when the workspace's tmux session was

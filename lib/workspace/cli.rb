@@ -534,6 +534,7 @@ module Workspace
       yes = false
       headless = nil
       json = false
+      title = nil
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: workspace start [options] <jira-key|jira-url|pr-url|pr-ref|branch>"
         opts.separator ""
@@ -560,6 +561,10 @@ module Workspace
         opts.on("--base REF", "Branch/ref to create a new branch from, instead of prompting") do |v|
           base = v
         end
+        opts.on("--title TITLE", "A human title for the workspace's task; it labels the agent panes in",
+          "`workspace sessions --json`. The panes also get WORKSPACE_TASK=<task id>") do |v|
+          title = v
+        end
         opts.on("--yes", "Accept every default instead of prompting (e.g. the default base branch)") do
           yes = true
         end
@@ -585,6 +590,7 @@ module Workspace
         opts.separator "  workspace start feature/my-feature    # from an existing branch name"
         opts.separator "  workspace start '#471'    # check out PR 471 of the current repo, fork or not"
         opts.separator "  workspace start PROJ-123 --prompt \"Fix the login bug\"    # with an initial agent prompt"
+        opts.separator "  workspace start PROJ-123 --title \"Fix the login bug\"    # name the task shown in `workspace sessions`"
         opts.separator "  workspace start PROJ-123 --headless --yes --json    # non-interactive, e.g. from CI"
         opts.separator "  workspace start PROJ-123 --base main --yes --json    # non-interactive, branch from main, not the default base"
       end
@@ -596,6 +602,7 @@ module Workspace
       end
 
       start_options = {prompt: prompt, prompt_timeout: prompt_timeout, base: base, yes: yes, json: json}
+      start_options[:title] = title if title
       start_options[:headless] = true if @launch_mode.resolve(headless).headless?
       result = @start_command.call(args.first, **start_options)
       @exit_handler.exit(result[:exit_code]) if result && !result[:exit_code].zero?

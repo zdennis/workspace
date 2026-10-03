@@ -158,6 +158,11 @@ module Workspace
       File.join(state_dir, "context.json")
     end
 
+    # @return [String] path to the directory holding one JSON file per task
+    def task_dir
+      File.join(state_dir, "tasks")
+    end
+
     # @param name [String] the workspace name
     # @return [String] path to the workspace's recorded-question store
     def ask_state_path(name)

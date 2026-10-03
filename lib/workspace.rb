@@ -170,6 +170,7 @@ require_relative "workspace/context_store"
 require_relative "workspace/context_reader"
 require_relative "workspace/statusline_renderer"
 require_relative "workspace/ask_store"
+require_relative "workspace/task_store"
 require_relative "workspace/session_ledger"
 require_relative "workspace/transcript_label"
 require_relative "workspace/session_monitor"
@@ -264,8 +265,9 @@ module Workspace
     ensure_agent_command = Commands::EnsureAgent.new(config: config, pipeline_config: pipeline_config, error_output: error_output)
     launch_command = Commands::Launch.new(state: state, iterm: iterm, window_manager: window_manager, tmux: tmux, project_config: project_config, window_layout: window_layout, config: config, pipeline_config: pipeline_config, agent_ensurer: ensure_agent_command, agent_readiness: agent_readiness, output: output, error_output: error_output)
     lineage = WorkspaceLineage.new
-    start_command = Commands::Start.new(git: git, project_config: project_config, project_settings: project_settings, launch_command: launch_command, lineage: lineage, hook_installer: hook_installer, output: output, input: input)
-    kill_command = Commands::Kill.new(git: git, project_config: project_config, project_settings: project_settings, stop_command: stop_command, project_detector: project_detector, output: output, input: input)
+    task_store = TaskStore.new(dir: config.task_dir, error_output: error_output)
+    start_command = Commands::Start.new(git: git, project_config: project_config, project_settings: project_settings, launch_command: launch_command, lineage: lineage, hook_installer: hook_installer, task_store: task_store, output: output, input: input)
+    kill_command = Commands::Kill.new(git: git, project_config: project_config, project_settings: project_settings, stop_command: stop_command, project_detector: project_detector, task_store: task_store, output: output, input: input)
     finish_command = Commands::Finish.new(git: git, project_config: project_config, kill_command: kill_command, project_detector: project_detector, output: output, error_output: error_output, input: input)
     pane_locator = PaneLocator.new(tmux: tmux)
     send_command = Commands::Send.new(locator: pane_locator, tmux: tmux, output: output)
@@ -388,6 +390,7 @@ module Workspace
       event_log: event_log,
       context_reader: context_reader,
       label_reader: TranscriptLabel.new,
+      task_store: task_store,
       logger: logger,
       output: output,
       error_output: error_output

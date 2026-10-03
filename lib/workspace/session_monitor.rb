@@ -82,11 +82,14 @@ module Workspace
     # @param label_reader [Workspace::TranscriptLabel, nil] reads a pane's
     #   transcript for its `display_label`; nil falls back to the last prompt
     #   the daemon saw
+    # @param task_reader [#call, nil] given the project name, returns its active task
+    #   record (a Hash with `id` and `title`) or nil; its title is the first
+    #   `display_label` source and the snapshot reports the task. nil reports none.
     def initialize(tmux:, process_tree:, session_name:,
       providers: AgentProvider.all, poll_interval: 2, idle_after: DEFAULT_IDLE_AFTER,
       clock: Time, logger: Workspace::Logger.new, error_output: $stderr, lock_reaper: nil,
       notifier: nil, idle_alert_after: nil, event_log: nil, project: nil,
-      context_reader: nil, label_reader: nil)
+      context_reader: nil, label_reader: nil, task_reader: nil)
       @tmux = tmux
       @process_tree = process_tree
       @session_name = session_name
@@ -105,6 +108,7 @@ module Workspace
       @alert_history = {}
       @context_reader = context_reader
       @label_reader = label_reader
+      @task_reader = task_reader
       @panes = {}
       @failed_scans = 0
       @lock = Mutex.new
@@ -198,10 +202,12 @@ module Workspace
     # @return [Hash] the current view, as `workspace sessions --json` prints it
     def snapshot
       now = @clock.now
-      panes = @lock.synchronize { @panes.values.map { |pane| present(pane, now) } }
+      task = active_task
+      panes = @lock.synchronize { @panes.values.map { |pane| present(pane, now, task) } }
       {
         "workspace" => @session_name,
         "updated_at" => now.utc.iso8601,
+        "task" => present_task(task, panes),
         "panes" => panes.sort_by { |p| p["index"] || 0 }
       }
     end
@@ -642,7 +648,7 @@ module Workspace
       (idle_for < @idle_after) ? "working" : "idle"
     end
 
-    def present(pane, now)
+    def present(pane, now, task = nil)
       idle_for = now - (pane[:last_activity_at] || now)
       wait = oldest_wait(pane)
       waiting_since = wait&.dig(:since)
@@ -663,7 +669,7 @@ module Workspace
         "waiting_message" => wait&.dig(:message),
         "stop_reason" => pane[:done]&.dig(:stop_reason),
         "session_id" => pane[:session_id],
-        "display_label" => display_label(pane),
+        "display_label" => display_label(pane, task),
         "agents" => pane[:agents].map { |agent|
           {"name" => agent[:name], "state" => agent[:state],
            "started_at" => agent[:started_at]&.utc&.iso8601,
@@ -697,13 +703,41 @@ module Workspace
       pane[:last_prompt] = self.class.clean_message(prompt)&.slice(0, LABEL_PROMPT_LENGTH)
     end
 
-    # What a person would call this pane: the transcript's AI title, else the
-    # last prompt, else nil. A shell pane has none.
-    def display_label(pane)
+    # What a person would call this pane: the task's title, else the transcript's
+    # AI title, else the last prompt, else nil. A shell pane has none.
+    def display_label(pane, task = nil)
       return nil if pane[:kind] == "shell"
 
       transcript = pane[:transcript_path] && @label_reader&.read(pane[:transcript_path])
-      transcript&.dig(:title) || pane[:last_prompt] || transcript&.dig(:last_prompt)
+      task_title(task) || transcript&.dig(:title) || pane[:last_prompt] || transcript&.dig(:last_prompt)
+    end
+
+    # The project's active task, or nil. A failing reader reads as no task: the
+    # snapshot must never fail over a task file.
+    def active_task
+      @task_reader&.call(@project)
+    rescue => e
+      @logger.debug { "session monitor: task read failed (#{e.class}: #{e.message})" }
+      nil
+    end
+
+    def task_title(task)
+      title = task&.dig("title")
+      title.is_a?(String) ? self.class.clean_message(title)&.slice(0, LABEL_PROMPT_LENGTH) : nil
+    end
+
+    # The task's identity plus a status derived from the coding-agent panes
+    # when read, never stored: blocked when any agent waits, else working when
+    # any works, else done when any has ended its turn, else idle.
+    def present_task(task, panes)
+      return nil unless task
+
+      states = panes.reject { |p| p["kind"] == "shell" }.map { |p| p["state"] }
+      status = %w[waiting working done].find { |s| states.include?(s) }
+      {
+        "id" => task["id"], "title" => task["title"], "ref" => task["ref"], "branch" => task["branch"],
+        "status" => (status == "waiting") ? "blocked" : (status || "idle")
+      }
     end
 
     # Stamps `context_pct`/`context_error`/`context_updated_at` onto a

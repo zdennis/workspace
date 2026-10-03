@@ -137,14 +137,14 @@ RSpec.describe Workspace::Commands::Finish do
 
             it "passes quiet: true to Kill under --json" do
               allow(git).to receive(:commits_ahead_of_upstream).with(worktree_path).and_return(0)
-              expect(kill_command).to receive(:call).with("myproject.worktree-PROJ-123", confirm: false, quiet: true, working_dir: tmpdir)
+              expect(kill_command).to receive(:call).with("myproject.worktree-PROJ-123", confirm: false, quiet: true, working_dir: tmpdir, outcome: "merged")
 
               command.call("myproject.worktree-PROJ-123", json: true, working_dir: tmpdir)
             end
 
             it "reuses Kill for cleanup when clean and pushed" do
               allow(git).to receive(:commits_ahead_of_upstream).with(worktree_path).and_return(0)
-              expect(kill_command).to receive(:call).with("myproject.worktree-PROJ-123", confirm: false, quiet: false, working_dir: tmpdir)
+              expect(kill_command).to receive(:call).with("myproject.worktree-PROJ-123", confirm: false, quiet: false, working_dir: tmpdir, outcome: "merged")
 
               result = command.call("myproject.worktree-PROJ-123", working_dir: tmpdir)
               expect(result).to eq("myproject.worktree-PROJ-123")
@@ -230,7 +230,7 @@ RSpec.describe Workspace::Commands::Finish do
 
         command.call(nil, working_dir: marker_dir)
 
-        expect(kill_command).to have_received(:call).with("myproject.worktree-PROJ-123", confirm: false, quiet: false, working_dir: marker_dir)
+        expect(kill_command).to have_received(:call).with("myproject.worktree-PROJ-123", confirm: false, quiet: false, working_dir: marker_dir, outcome: "merged")
       end
 
       it "raises error when no marker file found and no project given" do

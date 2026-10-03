@@ -833,6 +833,56 @@ RSpec.describe Workspace::Commands::Start do
         expect(launch_command).to have_received(:call).with(["myproject.worktree-PROJ-123"], prompts: {}, quiet: true)
       end
 
+      context "with a task store" do
+        let(:task_store) { Workspace::TaskStore.new(dir: File.join(tmpdir, "tasks")) }
+        let(:task_command) do
+          described_class.new(git: git, project_config: project_config, project_settings: project_settings,
+            launch_command: launch_command, task_store: task_store, output: output, error_output: error_output, input: input)
+        end
+
+        before do
+          allow(project_config).to receive(:worktree_config_name).and_return("myproject.worktree-PROJ-123")
+          allow(launch_command).to receive(:call).and_return({exit_code: 0, prompt_failures: {}})
+        end
+
+        it "records the task before the config is written, and passes its id and title through" do
+          task_command.call("PROJ-123", json: true, title: "Fix login")
+
+          task = task_store.active_for("myproject.worktree-PROJ-123")
+          expect(task).to include("title" => "Fix login", "ref" => "PROJ-123", "branch" => "PROJ-123",
+            "path" => File.join(tmpdir, ".worktrees", "PROJ-123"))
+          expect(project_config).to have_received(:create_worktree)
+            .with(Workspace::WorkspaceLineage.name_from_path(tmpdir), "PROJ-123", anything, "PROJ-123", quiet: true, task_id: task["id"])
+          expect(JSON.parse(output.string)["task"]).to eq("id" => task["id"], "title" => "Fix login")
+        end
+
+        it "keeps the task of a workspace that is started again and updates its title" do
+          first = task_command.call("PROJ-123", json: true, title: "A")
+          output.truncate(0)
+          task_command.call("PROJ-123", json: true, title: "B")
+
+          expect(first).to eq(exit_code: 0)
+          expect(Dir.glob(File.join(tmpdir, "tasks", "*.json")).size).to eq(1)
+          expect(task_store.active_for("myproject.worktree-PROJ-123")["title"]).to eq("B")
+        end
+
+        it "starts with no title when none is given" do
+          task_command.call("PROJ-123", json: true)
+
+          expect(task_store.active_for("myproject.worktree-PROJ-123")["title"]).to be_nil
+          expect(JSON.parse(output.string)["task"]["title"]).to be_nil
+        end
+      end
+
+      it "reports no task and passes no task id without a task store" do
+        allow(launch_command).to receive(:call).and_return({exit_code: 0, prompt_failures: {}})
+
+        command.call("PROJ-123", json: true)
+
+        expect(JSON.parse(output.string)).not_to have_key("task")
+        expect(project_config).to have_received(:create_worktree).with(Workspace::WorkspaceLineage.name_from_path(tmpdir), "PROJ-123", anything, "PROJ-123", quiet: true)
+      end
+
       it "reports headless: false in the JSON by default" do
         allow(launch_command).to receive(:call).and_return({exit_code: 0, prompt_failures: {}})
 

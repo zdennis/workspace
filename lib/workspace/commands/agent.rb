@@ -54,6 +54,8 @@ module Workspace
       # @param error_output [IO] error output stream for errors
       # @param label_reader [Workspace::TranscriptLabel, nil] reads each pane's
       #   transcript title for `sessions --json`; nil leaves transcripts unread
+      # @param task_store [Workspace::TaskStore, nil] the workspace's task, for `sessions --json`'s
+      #   `task` and first `display_label` source; nil reports no task
       def initialize(config:, tmux:, work_coordinator_client:, pipeline_config:, pipeline_state: nil,
         epoch_generator: -> { "wa-#{Agent.ulid}" },
         signal_trapper: Signal,
@@ -69,6 +71,7 @@ module Workspace
         event_log: nil,
         context_reader: nil,
         label_reader: nil,
+        task_store: nil,
         agent_restart_factory: nil,
         logger: Workspace::Logger.new, output: $stdout, error_output: $stderr)
         @config = config
@@ -87,6 +90,7 @@ module Workspace
         @alert_config = alert_config
         @context_reader = context_reader
         @label_reader = label_reader
+        @task_store = task_store
         @agent_restart_factory = agent_restart_factory || method(:build_agent_restart)
         # Restart workers by pane id, so one pane is restarted once at a time.
         @restarts = {}
@@ -1089,7 +1093,8 @@ module Workspace
           event_log: @event_log,
           project: name,
           context_reader: @context_reader,
-          label_reader: @label_reader
+          label_reader: @label_reader,
+          task_reader: @task_store && ->(workspace) { @task_store.active_for(workspace) }
         )
       end
 

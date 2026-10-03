@@ -11,13 +11,16 @@ module Workspace
       # @param project_config [Workspace::ProjectConfig] config management
       # @param stop_command [Commands::Stop] stop command for session teardown
       # @param output [IO] output stream for user-facing messages
+      # @param task_store [Workspace::TaskStore, nil] archives the project's task
+      #   once its worktree is removed; nil leaves tasks alone
       # @param input [IO] input stream for interactive prompts
-      def initialize(git:, project_config:, project_settings:, stop_command:, project_detector:, output: $stdout, input: $stdin)
+      def initialize(git:, project_config:, project_settings:, stop_command:, project_detector:, task_store: nil, output: $stdout, input: $stdin)
         @git = git
         @project_config = project_config
         @project_settings = project_settings
         @stop_command = stop_command
         @project_detector = project_detector
+        @task_store = task_store
         @output = output
         @input = input
       end
@@ -32,7 +35,7 @@ module Workspace
       # 3. remove the worktree; Git#remove_worktree re-checks for unsaved work
       #    right before removing (unless force), so an edit made while the
       #    prompt waited is refused rather than deleted
-      # 4. yield to the caller's block (the post_kill hook), then remove the
+      # 4. archive the project's task, then yield to the caller's block (the post_kill hook), then remove the
       #    config and settings
       # 5. stop the session last: this may run inside the very session it
       #    kills, which ends this process before any later statement runs
@@ -51,12 +54,14 @@ module Workspace
       #   project and raises
       # @param warn_inactive [Boolean] warn on the error stream when the project
       #   is not active, so there is no session to stop
+      # @param outcome [String, nil] the outcome the project's task is archived with
+      #   (`merged`, `discarded`, `abandoned`); nil is `discarded` with force, else `abandoned`
       # @yieldparam project [String] the project, after its worktree is removed and
       #   before its config, settings and session go
       # @return [String, nil] the project name, or nil if the user cancelled
       # @raise [Workspace::UnsavedWorkError] if it has unsaved work and force is false
       # @raise [Workspace::Error] if the project config is not a worktree project
-      def call(project = nil, force: false, confirm: true, quiet: false, working_dir: Dir.pwd, missing_ok: false, warn_inactive: true)
+      def call(project = nil, force: false, confirm: true, quiet: false, working_dir: Dir.pwd, missing_ok: false, warn_inactive: true, outcome: nil)
         out = quiet ? StringIO.new : @output
         project ||= @project_detector.detect_from_marker(working_dir)
         unless project
@@ -102,6 +107,7 @@ module Workspace
           end
         end
 
+        @task_store&.archive(project, outcome: outcome || (force ? "discarded" : "abandoned"))
         yield project if block_given?
         @project_config.remove(project, quiet: quiet)
         @project_settings.remove(project)
