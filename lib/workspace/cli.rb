@@ -67,6 +67,7 @@ module Workspace
     # @param projects_command [Workspace::Commands::Projects, nil] pre-built projects command
     # @param capabilities_command [Workspace::Commands::Capabilities, nil] pre-built capabilities command
     # @param daemon_command [Workspace::Commands::Daemon, nil] pre-built daemon command
+    # @param ui_command [Workspace::Commands::Ui, nil] pre-built ui command
     # @param review_command [Workspace::Commands::Review, nil] pre-built review command
     # @param snapshot_command [Workspace::Commands::Snapshot, nil] pre-built snapshot command
     # @param config_report [Workspace::ConfigReport, nil] builds the `config show/validate --json` documents
@@ -78,7 +79,7 @@ module Workspace
     #   reports every project as unknown
     # @param launch_mode [Workspace::LaunchMode, nil] decides whether launch/start
     #   run headless when no --[no-]headless flag is given; nil builds one
-    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, restart_agent_command: nil, send_command: nil, ensure_agent_command: nil, handoff_command: nil, projects_command: nil, capabilities_command: nil, daemon_command: nil, review_command: nil, snapshot_command: nil, project_actions_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil, liveness: nil)
+    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, restart_agent_command: nil, send_command: nil, ensure_agent_command: nil, handoff_command: nil, projects_command: nil, capabilities_command: nil, daemon_command: nil, ui_command: nil, review_command: nil, snapshot_command: nil, project_actions_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil, liveness: nil)
       @config = config
       @state = state
       @project_config = project_config
@@ -125,6 +126,7 @@ module Workspace
       @projects_command = projects_command
       @capabilities_command = capabilities_command
       @daemon_command = daemon_command
+      @ui_command = ui_command
       @review_command = review_command
       @snapshot_command = snapshot_command
       @config_report = config_report
@@ -203,6 +205,8 @@ module Workspace
         cmd_sessions(args)
       when "daemon"
         cmd_daemon(args)
+      when "ui"
+        cmd_ui(args)
       when "review"
         cmd_review(args)
       when "snapshot"
@@ -415,6 +419,7 @@ module Workspace
           stop            Stop active workspace projects and their tmux sessions
           tile            Tile all windows for a project across the screen
           tmux            Show a workspace's tmuxinator file as windows and panes (tmux show --json)
+          ui              Open a workspace-ui:// link: a task, a review or the inbox
           wait-until-content  Block until a pane shows content, then exec a command
           whereis         Print the workspace installation directory
 
@@ -3116,6 +3121,69 @@ module Workspace
           old_pid: restarted.old_pid, pid: restarted.pid)
         {exit_code: restarted.ok? ? 0 : 1, results: [row]}
       end
+    end
+
+    def ui_parser(options)
+      OptionParser.new do |opts|
+        opts.banner = "Usage: workspace ui open task|review [WORKSPACE] [--print] [--json]\n" \
+          "       workspace ui open inbox [--print] [--json]"
+        opts.separator ""
+        opts.separator "Open a view of the workspace UI through its workspace-ui:// link:"
+        opts.separator "  task WORKSPACE     workspace-ui://task/WORKSPACE"
+        opts.separator "  review WORKSPACE   workspace-ui://review/WORKSPACE"
+        opts.separator "  inbox              workspace-ui://inbox"
+        opts.separator ""
+        opts.separator "A link only opens a view; it never starts an agent or runs a command. WORKSPACE (or --name)"
+        opts.separator "defaults to the project detected from the current directory. Opening needs the UI app"
+        opts.separator "installed, since it registers the scheme; without it `open` fails, the exit status is 1, and"
+        opts.separator "--print still shows the link."
+        opts.separator ""
+        opts.on("--name NAME", "Workspace name (task and review)") { |v| options[:name] = v }
+        opts.on("--print", "Print the link and open nothing") { options[:print] = true }
+        opts.on("--json", "Print one JSON action document (see docs/README.ui.md)") { options[:json] = true }
+        opts.on("-h", "--help", "Show this help") { options[:help] = true }
+        opts.separator ""
+        opts.separator "Examples:"
+        opts.separator "  workspace ui open task my-app"
+        opts.separator "  workspace ui open review my-app.worktree-fix-login"
+        opts.separator "  workspace ui open inbox --print"
+      end
+    end
+
+    def cmd_ui(args)
+      options = {json: false, print: false}
+      given = args.dup
+      parser = ui_parser(options)
+      subcommand = args.shift if args.first == "open"
+      parser.parse!(args)
+      subcommand ||= args.shift if args.first == "open"
+      return @output.puts(parser.help) if options[:help]
+
+      if !subcommand && args.any?
+        hint = " Did you mean: workspace ui open #{args.join(" ")}?" if Commands::Ui::VIEWS.key?(args.first)
+        raise UsageError, "Unknown ui subcommand: #{args.first}.#{hint} Run 'workspace ui --help'."
+      end
+      raise UsageError, "Missing subcommand: open.\n\n#{parser.help}" unless subcommand
+      raise Error, "ui is not available: no ui command was wired" unless @ui_command
+
+      view = args.shift
+      raise UsageError, "Missing view: one of #{Commands::Ui::VIEWS.keys.join(", ")}.\n\n#{parser.help}" unless view
+      name = options[:name] || args.shift
+      raise UsageError, "Unexpected argument: #{args.first}. Run 'workspace ui --help'." if args.any?
+      if Commands::Ui::VIEWS[view]
+        name ||= @project_detector.detect(@working_dir)
+        raise UsageError, "#{view} needs a workspace: name one, pass --name, or run from inside a project." unless name
+      end
+
+      run_action("ui open", json: options[:json]) do
+        opened = @ui_command.open(view: view, workspace: name, print_only: options[:print])
+        @error_output.puts "Error: #{opened.message}" unless opened.ok?
+        row = action_row(name, opened.outcome, reason: opened.reason, message: opened.message, view: opened.view, url: opened.url)
+        {exit_code: opened.ok? ? 0 : 1, results: [row]}
+      end
+    rescue OptionParser::ParseError, UsageError => e
+      raise unless json_requested?(options[:json], given)
+      emit_json_error(ACTION_JSON_SCHEMA_VERSION, e, message: e.message.lines.first.strip)
     end
 
     def snapshot_parser(options)

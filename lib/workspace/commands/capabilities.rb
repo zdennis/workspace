@@ -32,7 +32,8 @@ module Workspace
         "config_json" => 1,
         "tmux_show" => 1,
         "tasks" => 1,
-        "event_emitters" => 1
+        "event_emitters" => 1,
+        "ui_open" => 1
       }.freeze
 
       # The exit statuses commands use, by meaning.

@@ -99,6 +99,7 @@ RSpec.describe Workspace::CLI do
       projects_command: overrides[:projects_command],
       capabilities_command: overrides[:capabilities_command],
       daemon_command: overrides[:daemon_command],
+      ui_command: overrides[:ui_command],
       review_command: overrides[:review_command],
       snapshot_command: overrides[:snapshot_command],
       project_actions_command: overrides[:project_actions_command],
@@ -3249,6 +3250,116 @@ RSpec.describe Workspace::CLI do
       cli.run(["snapshot", "--help"])
 
       expect(output.string).to include("Usage: workspace snapshot --json").and include("daemons_unavailable")
+    end
+  end
+
+  describe "#run with ui" do
+    let(:ui_command) { CLITestHelpers::FakeUiCommand.new }
+    let(:detector) { instance_double(Workspace::ProjectDetector, detect: "detected-ws") }
+    let(:built) { build_test_cli(ui_command: ui_command, project_detector: detector, working_dir: "/some/dir") }
+    let(:cli) { built[0] }
+    let(:output) { built[1] }
+    let(:error_output) { built[2] }
+
+    it "routes open with the workspace positional or by --name" do
+      cli.run(["ui", "open", "task", "app"])
+      cli.run(["ui", "open", "review", "--name", "other", "--print"])
+      cli.run(["ui", "open", "inbox"])
+
+      expect(ui_command.calls).to eq([
+        {view: "task", workspace: "app", print_only: false},
+        {view: "review", workspace: "other", print_only: true},
+        {view: "inbox", workspace: nil, print_only: false}
+      ])
+    end
+
+    it "uses the detected workspace for task and review but not inbox" do
+      cli.run(["ui", "open", "review"])
+      cli.run(["ui", "open", "inbox"])
+
+      expect(detector).to have_received(:detect).with("/some/dir").once
+      expect(ui_command.calls.map { |c| c[:workspace] }).to eq(["detected-ws", nil])
+    end
+
+    it "prints an action document under --json, text on stderr" do
+      cli.run(["ui", "open", "task", "app", "--json"])
+
+      doc = JSON.parse(output.string)
+      expect(doc).to include("ok" => true, "action" => "ui open", "status" => "ok")
+      expect(doc["results"]).to eq([{"workspace" => "app", "outcome" => "opened", "reason" => nil, "message" => nil, "view" => "task", "url" => "workspace-ui://task/app"}])
+    end
+
+    it "exits 1 with open's message on stderr when the link can't be opened" do
+      ui_command.result = Workspace::Commands::Ui::Result.new("failed", "task", "workspace-ui://task/app", "open_failed", "no handler")
+
+      expect { cli.run(["ui", "open", "task", "app"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+      expect(error_output.string).to include("Error: no handler")
+    end
+
+    it "reports a failed open as a failed action document under --json" do
+      ui_command.result = Workspace::Commands::Ui::Result.new("failed", "inbox", "workspace-ui://inbox", "open_failed", "no handler")
+
+      expect { cli.run(["ui", "open", "inbox", "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+      expect(JSON.parse(output.string)).to include("status" => "failed")
+    end
+
+    it "shows help" do
+      cli.run(["ui", "--help"])
+
+      expect(output.string).to include("workspace ui open").and include("workspace-ui://")
+    end
+
+    it "rejects a missing subcommand, missing view and extra arguments as usage errors" do
+      [["ui"], ["ui", "bogus"], ["ui", "open"], ["ui", "open", "task", "a", "b"]].each do |argv|
+        expect { cli.run(argv) }.to raise_error(FakeSystemExit), argv.inspect
+      end
+      expect(ui_command.calls).to eq([])
+    end
+
+    it "names an unknown subcommand, and says how to give the missing workspace" do
+      expect { cli.run(["ui", "bogus", "task"]) }.to raise_error(FakeSystemExit)
+      expect(error_output.string).to include("Unknown ui subcommand: bogus")
+      expect(error_output.string).not_to include("Missing subcommand")
+      error_output.truncate(0)
+      expect { cli.run(["ui"]) }.to raise_error(FakeSystemExit)
+      expect(error_output.string).to include("Missing subcommand: open")
+      error_output.truncate(0)
+      allow(detector).to receive(:detect).and_return(nil)
+      expect { cli.run(["ui", "open", "task"]) }.to raise_error(FakeSystemExit)
+      expect(error_output.string).to include("task needs a workspace: name one, pass --name")
+      expect(ui_command.calls).to eq([])
+    end
+
+    it "suggests `ui open` when a view comes first" do
+      expect { cli.run(["ui", "task", "foo"]) }.to raise_error(FakeSystemExit)
+      expect(error_output.string).to include("Did you mean: workspace ui open task foo?")
+    end
+
+    it "answers CLI-raised usage errors as the usage envelope under --json" do
+      [["ui", "bogus", "--json"], ["ui", "open", "--json"], ["ui", "--json"]].each do |argv|
+        output.truncate(0)
+        output.rewind
+        expect { cli.run(argv) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }, argv.inspect
+        expect(JSON.parse(output.string)).to include("ok" => false, "code" => "usage"), argv.inspect
+      end
+      allow(detector).to receive(:detect).and_return(nil)
+      output.truncate(0)
+      output.rewind
+      expect { cli.run(["ui", "open", "task", "--json"]) }.to raise_error(FakeSystemExit)
+      expect(JSON.parse(output.string)).to include("code" => "usage", "error" => a_string_including("pass --name"))
+    end
+
+    it "answers a view the command rejects with the usage error envelope under --json" do
+      ui_command.error = Workspace::UsageError.new("Unknown view 'x': one of task, review, inbox.")
+
+      expect { cli.run(["ui", "open", "x", "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+      expect(JSON.parse(output.string)).to include("ok" => false, "code" => "usage")
+    end
+
+    it "lists ui in the main help" do
+      cli.run(["--help"])
+
+      expect(output.string).to match(/^\s+ui\s+Open a workspace-ui:\/\/ link/)
     end
   end
 

@@ -610,6 +610,22 @@ module CLITestHelpers
     end
   end
 
+  class FakeUiCommand
+    attr_reader :calls
+    attr_accessor :result, :error
+
+    def initialize
+      @calls = []
+      @result = Workspace::Commands::Ui::Result.new("opened", "task", "workspace-ui://task/app")
+    end
+
+    def open(view:, workspace: nil, print_only: false)
+      @calls << {view: view, workspace: workspace, print_only: print_only}
+      raise @error if @error
+      @result
+    end
+  end
+
   class FakeReviewCommand
     attr_reader :calls
     attr_accessor :result

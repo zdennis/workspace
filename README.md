@@ -117,6 +117,7 @@ workspace <subcommand> [options]
 | stop | [README](docs/README.stop.md) | Stop active workspace projects and their tmux sessions |
 | tile | [README](docs/README.tile.md) | Tile windows across the screen (`--all` for all projects) |
 | tmux | [README](docs/README.tmux.md) | Show a workspace's tmuxinator file as windows and panes |
+| ui | [README](docs/README.ui.md) | Open a `workspace-ui://` link: a task, a review or the inbox |
 | version | [README](docs/README.version.md) | Print the workspace version |
 | wait-until-content | [README](docs/README.wait-until-content.md) | Block until a pane shows content, then exec a command |
 | whereis | [README](docs/README.whereis.md) | Print the workspace installation directory |
