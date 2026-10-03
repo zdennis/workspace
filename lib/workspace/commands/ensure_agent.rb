@@ -96,10 +96,11 @@ module Workspace
         end
       end
 
+      # Appends to the log so a restart keeps what the previous daemon wrote.
       def spawn_agentd(name, wc_socket, log_path)
         args = ["agentd", "--name", name]
         args += ["--wc-socket", wc_socket] if wc_socket
-        pid = Process.spawn($PROGRAM_NAME, *args, out: log_path, err: log_path, in: File::NULL)
+        pid = Process.spawn($PROGRAM_NAME, *args, out: [log_path, "a"], err: [log_path, "a"], in: File::NULL)
         Process.detach(pid)
       end
     end

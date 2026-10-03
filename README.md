@@ -79,6 +79,7 @@ workspace <subcommand> [options]
 | cleanup | [README](docs/README.cleanup.md) | Detect and remove zombie sessions from state |
 | config | [README](docs/README.config.md) | Show, validate, set, get, or unset project or global configuration |
 | current | [README](docs/README.current.md) | Print the workspace project name for the current directory |
+| daemon | [README](docs/README.daemon.md) | Show, restart or read the log of a workspace's agent daemon |
 | deactivate | [README](docs/README.deactivate.md) | Deactivate Claude in a project's tmux pane (sends Ctrl-C) |
 | dev | [README](docs/README.dev.md) | Start, stop, or inspect the repo's single dev environment (devenv lock) |
 | dir | [README](docs/README.dir.md) | Print the root directory of a workspace project |

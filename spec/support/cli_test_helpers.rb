@@ -582,6 +582,34 @@ module CLITestHelpers
     end
   end
 
+  class FakeDaemonCommand
+    attr_reader :calls
+    attr_accessor :result, :restart_result, :error
+
+    def initialize
+      @calls = []
+      @result = {exit_code: 0}
+      @restart_result = Workspace::Commands::Daemon::Result.new("restarted", 11, 22)
+    end
+
+    def status(name:, json: false)
+      @calls << {status: name, json: json}
+      raise @error if @error
+      @result
+    end
+
+    def log(name:, lines: nil, json: false)
+      @calls << {log: name, lines: lines, json: json}
+      raise @error if @error
+      @result
+    end
+
+    def restart(name:, wc_socket: nil)
+      @calls << {restart: name, wc_socket: wc_socket}
+      @restart_result
+    end
+  end
+
   class FakeReviewCommand
     attr_reader :calls
     attr_accessor :result

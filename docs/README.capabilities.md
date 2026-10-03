@@ -23,7 +23,7 @@ It reads constants, config paths and the `PATH`. It starts no process and touche
  "features":{"envelope":1,"error_codes":1,"name_scope":1,"no_input":1,"action_json":1,
    "sessions":1,"locks_json":1,"git_facts":1,"prune_safe":1,"snapshot":2,"events_follow":0,
    "actions_manifest":0,"agent_send":1,"agent_spawn":0,"focus_pane":1,"state_done":1,
-   "doctor_json":0,"daemon_control":0,"config_json":1,"tmux_show":1,"tasks":1,"event_emitters":1},
+   "doctor_json":0,"daemon_control":1,"config_json":1,"tmux_show":1,"tasks":1,"event_emitters":1},
  "exit_codes":{"ok":0,"failed":1,"not_submitted":2,"partial":3,"lock_cleared":4,"timeout":75},
  "paths":{"event_log":"/Users/me/.workspace-events.jsonl","run_dir":"/Users/me/.local/workspace/run"},
  "dependencies":{"window_tool":{"path":"/opt/homebrew/bin/window-tool"},
@@ -56,7 +56,7 @@ It reads constants, config paths and the `PATH`. It starts no process and touche
 | `focus_pane` | `focus --pane` selects a pane after focusing the window |
 | `state_done` | `sessions --json` panes can report `state: "done"` with a `stop_reason` (see [`sessions`](README.sessions.md)) |
 | `doctor_json` | Not available yet |
-| `daemon_control` | Not available yet |
+| `daemon_control` | `daemon status`, `daemon restart` and `daemon log` (see [`daemon`](README.daemon.md)) |
 | `config_json` | `config show --json` and `config validate --json` (see [`config`](README.config.md)) |
 | `tmux_show` | `tmux show --json` (see [`tmux`](README.tmux.md)) |
 | `tasks` | `start` records a task per worktree workspace (`--title`, `WORKSPACE_TASK` in its panes); `sessions --json` reports it as `task` and uses its title as the first `display_label` (see [`start`](README.start.md#tasks)); `finish` and `kill` archive it |

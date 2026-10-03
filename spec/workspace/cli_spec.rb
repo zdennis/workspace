@@ -98,6 +98,7 @@ RSpec.describe Workspace::CLI do
       handoff_command: overrides[:handoff_command],
       projects_command: overrides[:projects_command],
       capabilities_command: overrides[:capabilities_command],
+      daemon_command: overrides[:daemon_command],
       review_command: overrides[:review_command],
       snapshot_command: overrides[:snapshot_command],
       project_actions_command: overrides[:project_actions_command],
@@ -3248,6 +3249,142 @@ RSpec.describe Workspace::CLI do
       cli.run(["snapshot", "--help"])
 
       expect(output.string).to include("Usage: workspace snapshot --json").and include("daemons_unavailable")
+    end
+  end
+
+  describe "#run with daemon" do
+    let(:daemon_command) { CLITestHelpers::FakeDaemonCommand.new }
+    let(:detector) { instance_double(Workspace::ProjectDetector, detect: "detected-ws") }
+    let(:built) { build_test_cli(daemon_command: daemon_command, project_detector: detector, working_dir: "/some/dir") }
+    let(:cli) { built[0] }
+    let(:output) { built[1] }
+    let(:error_output) { built[2] }
+
+    it "routes status, log and restart, taking the workspace positionally or by --name" do
+      cli.run(["daemon", "status", "app", "--json"])
+      cli.run(["daemon", "--json", "status", "--name", "other"])
+      cli.run(["daemon", "log", "app", "--lines", "5"])
+      cli.run(["daemon", "restart", "app", "--wc-socket", "/tmp/wc.sock"])
+
+      expect(daemon_command.calls).to eq([
+        {status: "app", json: true}, {status: "other", json: true},
+        {log: "app", lines: 5, json: false}, {restart: "app", wc_socket: "/tmp/wc.sock"}
+      ])
+    end
+
+    it "uses the detected workspace when none is named" do
+      cli.run(["daemon", "log"])
+
+      expect(detector).to have_received(:detect).with("/some/dir")
+      expect(daemon_command.calls).to eq([{log: "detected-ws", lines: nil, json: false}])
+    end
+
+    it "prints the restart in text" do
+      cli.run(["daemon", "restart", "app"])
+
+      expect(output.string).to eq("Restarted agentd for app (pid 11 -> 22)\n")
+    end
+
+    it "prints a restart that found nothing running as started" do
+      daemon_command.restart_result = Workspace::Commands::Daemon::Result.new("started", nil, 22)
+
+      cli.run(["daemon", "restart", "app"])
+
+      expect(output.string).to eq("Started agentd for app (pid 22)\n")
+    end
+
+    it "prints the restart as an action document under --json, with the text on stderr" do
+      cli.run(["daemon", "restart", "app", "--json"])
+
+      doc = JSON.parse(output.string.lines.last)
+      expect(doc).to include("ok" => true, "action" => "restart", "status" => "ok")
+      expect(doc["results"]).to eq([{"workspace" => "app", "outcome" => "restarted", "reason" => nil, "message" => nil, "old_pid" => 11, "pid" => 22}])
+    end
+
+    it "exits 1 with the reason on stderr when the restart fails" do
+      daemon_command.restart_result = Workspace::Commands::Daemon::Result.new("failed", 11, nil, "not_stopped", "still answering after 5s")
+
+      expect { cli.run(["daemon", "restart", "app"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+      expect(error_output.string).to include("Error: still answering after 5s")
+      expect(output.string).to eq("")
+    end
+
+    it "reports a failed restart as a failed action document under --json" do
+      daemon_command.restart_result = Workspace::Commands::Daemon::Result.new("failed", nil, nil, "start_failed", "no")
+
+      expect { cli.run(["daemon", "restart", "app", "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+      expect(JSON.parse(output.string.lines.last)).to include("ok" => true, "status" => "failed")
+    end
+
+    it "shows help without a subcommand being needed" do
+      cli.run(["daemon", "--help"])
+
+      expect(output.string).to include("workspace daemon restart")
+    end
+
+    it "rejects a missing subcommand, extra arguments and misplaced options as usage errors" do
+      [
+        ["daemon"],
+        ["daemon", "bogus"],
+        ["daemon", "status", "a", "b"],
+        ["daemon", "status", "a", "--lines", "3"],
+        ["daemon", "log", "a", "--wc-socket", "/x"],
+        ["daemon", "log", "a", "--lines", "many"]
+      ].each do |argv|
+        expect { cli.run(argv) }.to raise_error(FakeSystemExit), argv.inspect
+      end
+      expect(daemon_command.calls).to eq([])
+    end
+
+    it "rejects a non-numeric --lines, in text and as a usage JSON error" do
+      expect { cli.run(["daemon", "log", "app", "--lines", "abc"]) }.to raise_error(FakeSystemExit)
+      expect(error_output.string).to include("invalid argument: --lines abc")
+      output.truncate(0)
+      expect { cli.run(["daemon", "log", "app", "--lines", "abc", "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+
+      expect(JSON.parse(output.string)).to include("ok" => false, "code" => "usage")
+      expect(daemon_command.calls).to eq([])
+    end
+
+    it "rejects --lines out of range in text and as a usage JSON error" do
+      daemon_command.error = Workspace::UsageError.new("--lines must be a whole number from 1 to 10000")
+      expect { cli.run(["daemon", "log", "app", "--lines", "0"]) }.to raise_error(FakeSystemExit)
+      expect(error_output.string).to include("--lines must be a whole number from 1 to 10000")
+      output.truncate(0)
+      expect { cli.run(["daemon", "log", "app", "--lines", "10001", "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+
+      expect(JSON.parse(output.string)).to include("ok" => false, "code" => "usage")
+    end
+
+    it "prints the unknown_workspace envelope on stdout and exits 1 for status and log under --json" do
+      daemon_command.error = Workspace::Error.new("Unknown workspace 'nope'", code: "unknown_workspace", details: {"name" => "nope"})
+
+      %w[status log].each do |sub|
+        output.truncate(0)
+        output.rewind
+        expect { cli.run(["daemon", sub, "nope", "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+
+        expect(JSON.parse(output.string)).to include("ok" => false, "code" => "unknown_workspace", "details" => {"name" => "nope"})
+      end
+    end
+
+    it "gives usage errors as JSON envelopes under --json, whatever the flag order" do
+      expect { cli.run(["daemon", "--bogus", "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+
+      expect(JSON.parse(output.string)).to include("ok" => false, "code" => "usage")
+    end
+
+    it "says so when no daemon command was wired" do
+      bare, _output, bare_errors = build_test_cli(project_detector: detector)
+
+      expect { bare.run(["daemon", "status", "app"]) }.to raise_error(FakeSystemExit)
+      expect(bare_errors.string).to include("no daemon command was wired")
+    end
+
+    it "lists daemon in the main help" do
+      cli.run(["help"])
+
+      expect(output.string).to match(/^\s+daemon\s+Show, restart or read the log/)
     end
   end
 

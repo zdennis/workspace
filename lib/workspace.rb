@@ -217,6 +217,7 @@ require_relative "workspace/commands/config"
 require_relative "workspace/commands/statusline"
 require_relative "workspace/commands/restart_agent"
 require_relative "workspace/commands/ensure_agent"
+require_relative "workspace/commands/daemon"
 require_relative "workspace/commands/handoff"
 require_relative "workspace/commands/ask"
 require_relative "workspace/commands/wait_until_content"
@@ -348,6 +349,7 @@ module Workspace
       error_output: error_output
     )
     capabilities_command = Commands::Capabilities.new(config: config, output: output)
+    daemon_command = Commands::Daemon.new(config: config, project_config: project_config, ensure_agent: ensure_agent_command, process_tree: ProcessTree.new(logger: logger), output: output)
     parent_command = Commands::Parent.new(lineage: lineage, project_config: project_config, output: output)
     project_catalog = ProjectCatalog.new(project_config: project_config, git: git)
     project_facts = ProjectFacts.new(tmux: tmux, state: state, config: config, lock_namespace: lock_namespace,
@@ -449,6 +451,7 @@ module Workspace
       parent_command: parent_command,
       projects_command: projects_command,
       capabilities_command: capabilities_command,
+      daemon_command: daemon_command,
       review_command: review_command,
       snapshot_command: snapshot_command,
       project_actions_command: project_actions_command,

@@ -145,7 +145,7 @@ RSpec.describe Workspace::Commands::EnsureAgent do
   end
 
   describe "default spawner" do
-    it "starts the CLI's agentd detached with its output in the log file" do
+    it "starts the CLI's agentd detached, appending its output to the log file" do
       ensurer = described_class.new(config: config, pipeline_config: pipeline_config, sleeper: sleeper, clock: -> { now[0] }, error_output: error_output)
       allow(Process).to receive(:spawn).and_return(4242)
       allow(Process).to receive(:detach) { daemon_up[0] = true }
@@ -153,7 +153,7 @@ RSpec.describe Workspace::Commands::EnsureAgent do
       ensurer.call(name: "myapp", wc_socket: "/tmp/wc.sock")
 
       expect(Process).to have_received(:spawn).with($PROGRAM_NAME, "agentd", "--name", "myapp", "--wc-socket", "/tmp/wc.sock",
-        out: log_path, err: log_path, in: File::NULL)
+        out: [log_path, "a"], err: [log_path, "a"], in: File::NULL)
       expect(Process).to have_received(:detach).with(4242)
     end
   end

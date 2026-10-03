@@ -17,7 +17,7 @@ module Workspace
     SUBCOMMANDS = %w[
       init doctor launch start stop add add-project kill finish relaunch
       focus deactivate reactivate tile resize capture agent agentd lock dev parent projects
-      capabilities sessions review snapshot ask session-event agent-run handoff pipeline run
+      capabilities daemon sessions review snapshot ask session-event agent-run handoff pipeline run
       run-and-report report-run-status layout config tmux statusline current
       list-projects list status repair cleanup prune set-command event-log
       whereis lookup dir alfred version help
@@ -66,6 +66,7 @@ module Workspace
     # @param dev_command [Workspace::Commands::Dev] pre-built dev command
     # @param projects_command [Workspace::Commands::Projects, nil] pre-built projects command
     # @param capabilities_command [Workspace::Commands::Capabilities, nil] pre-built capabilities command
+    # @param daemon_command [Workspace::Commands::Daemon, nil] pre-built daemon command
     # @param review_command [Workspace::Commands::Review, nil] pre-built review command
     # @param snapshot_command [Workspace::Commands::Snapshot, nil] pre-built snapshot command
     # @param config_report [Workspace::ConfigReport, nil] builds the `config show/validate --json` documents
@@ -77,7 +78,7 @@ module Workspace
     #   reports every project as unknown
     # @param launch_mode [Workspace::LaunchMode, nil] decides whether launch/start
     #   run headless when no --[no-]headless flag is given; nil builds one
-    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, restart_agent_command: nil, send_command: nil, ensure_agent_command: nil, handoff_command: nil, projects_command: nil, capabilities_command: nil, review_command: nil, snapshot_command: nil, project_actions_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil, liveness: nil)
+    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, restart_agent_command: nil, send_command: nil, ensure_agent_command: nil, handoff_command: nil, projects_command: nil, capabilities_command: nil, daemon_command: nil, review_command: nil, snapshot_command: nil, project_actions_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil, liveness: nil)
       @config = config
       @state = state
       @project_config = project_config
@@ -123,6 +124,7 @@ module Workspace
       @handoff_command = handoff_command
       @projects_command = projects_command
       @capabilities_command = capabilities_command
+      @daemon_command = daemon_command
       @review_command = review_command
       @snapshot_command = snapshot_command
       @config_report = config_report
@@ -199,6 +201,8 @@ module Workspace
         cmd_capabilities(args)
       when "sessions"
         cmd_sessions(args)
+      when "daemon"
+        cmd_daemon(args)
       when "review"
         cmd_review(args)
       when "snapshot"
@@ -372,6 +376,7 @@ module Workspace
           cleanup         Detect and remove zombie sessions from state
           config          Show, validate, set, get or unset project or global configuration
           current         Print the workspace project name for the current directory
+          daemon          Show, restart or read the log of a workspace's agent daemon
           dev             Start, stop, or inspect this repo's dev environment (devenv lock)
           deactivate      Deactivate Claude in a project's tmux pane (sends Ctrl-C)
           dir             Print the root directory of a workspace project
@@ -3036,6 +3041,81 @@ module Workspace
     rescue OptionParser::ParseError, UsageError => e
       raise unless json_requested?(options[:json], given)
       emit_json_error(Commands::Review::JSON_SCHEMA_VERSION, e, message: e.message.lines.first.strip)
+    end
+
+    DAEMON_SUBCOMMANDS = %w[status restart log].freeze
+
+    def daemon_parser(options)
+      OptionParser.new do |opts|
+        opts.banner = "Usage: workspace daemon status [WORKSPACE] [--json]\n" \
+          "       workspace daemon restart [WORKSPACE] [--wc-socket PATH] [--json]\n" \
+          "       workspace daemon log [WORKSPACE] [--lines N] [--json]"
+        opts.separator ""
+        opts.separator "Inspect or control a workspace's agent daemon (see `workspace agentd`)."
+        opts.separator "  status    whether the daemon answers on its socket, its pid, and its socket and log paths"
+        opts.separator "  restart   stop the daemon holding the socket (SIGTERM, even a hung one) and start a new one in the"
+        opts.separator "            background; a daemon run in a terminal is replaced by a detached one. With none"
+        opts.separator "            running, just start one"
+        opts.separator "  log       the last lines of the log a background daemon writes; a daemon run in a"
+        opts.separator "            terminal logs to that terminal instead"
+        opts.separator ""
+        opts.on("--name NAME", "Workspace name (defaults to WORKSPACE or the project detected from the current directory)") { |v| options[:name] = v }
+        opts.on("--lines N", Integer, "log: how many trailing lines (default #{Commands::Daemon::DEFAULT_LINES})") { |v| options[:lines] = v }
+        opts.on("--wc-socket PATH", "restart: work-coordinator socket for the new daemon") { |v| options[:wc_socket] = v }
+        opts.on("--json", "Print one JSON document (see docs/README.daemon.md)") { options[:json] = true }
+        opts.on("-h", "--help", "Show this help") { options[:help] = true }
+        opts.separator ""
+        opts.separator "Examples:"
+        opts.separator "  workspace daemon status my-app"
+        opts.separator "  workspace daemon log my-app --lines 100"
+        opts.separator "  workspace daemon restart my-app --json"
+      end
+    end
+
+    def cmd_daemon(args)
+      options = {json: false}
+      given = args.dup
+      parser = daemon_parser(options)
+      subcommand = args.shift if DAEMON_SUBCOMMANDS.include?(args.first)
+      parser.parse!(args)
+      subcommand ||= args.shift if DAEMON_SUBCOMMANDS.include?(args.first)
+      return @output.puts(parser.help) if options[:help]
+
+      raise UsageError, "Missing subcommand: one of #{DAEMON_SUBCOMMANDS.join(", ")}.\n\n#{parser.help}" unless subcommand
+      raise Error, "daemon is not available: no daemon command was wired" unless @daemon_command
+
+      name = options[:name] || args.shift
+      raise UsageError, "Unexpected argument: #{args.first}. Run 'workspace daemon --help'." if args.any?
+      name ||= @project_detector.detect(@working_dir)
+      raise UsageError, "Missing workspace name.\n\n#{parser.help}" unless name
+      raise UsageError, "--lines only applies to `daemon log`." if options[:lines] && subcommand != "log"
+      raise UsageError, "--wc-socket only applies to `daemon restart`." if options[:wc_socket] && subcommand != "restart"
+
+      result = case subcommand
+      when "status" then @daemon_command.status(name: name, json: options[:json])
+      when "log" then @daemon_command.log(name: name, lines: options[:lines], json: options[:json])
+      else daemon_restart(name, options)
+      end
+      @exit_handler.exit(result[:exit_code]) if result && !result[:exit_code].to_i.zero?
+    rescue OptionParser::ParseError, UsageError => e
+      raise unless json_requested?(options[:json], given)
+      emit_json_error(Commands::Daemon::JSON_SCHEMA_VERSION, e, message: e.message.lines.first.strip)
+    end
+
+    def daemon_restart(name, options)
+      run_action("restart", json: options[:json]) do
+        restarted = @daemon_command.restart(name: name, wc_socket: options[:wc_socket])
+        if restarted.ok?
+          verb = (restarted.outcome == "restarted") ? "Restarted" : "Started"
+          pids = [restarted.old_pid, restarted.pid].compact.join(" -> ")
+          @output.puts "#{verb} agentd for #{name}#{" (pid #{pids})" unless pids.empty?}"
+        else
+          @error_output.puts "Error: #{restarted.message}"
+        end
+        row = action_row(name, restarted.outcome, reason: restarted.reason, message: restarted.message,
+          old_pid: restarted.old_pid, pid: restarted.pid)
+        {exit_code: restarted.ok? ? 0 : 1, results: [row]}
+      end
     end
 
     def snapshot_parser(options)
