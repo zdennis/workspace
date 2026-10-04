@@ -17,7 +17,7 @@ module Workspace
         "no_input" => 1,
         "action_json" => 1,
         "sessions" => 1,
-        "locks_json" => 1,
+        "locks_json" => 2,
         "git_facts" => 1,
         "prune_safe" => 1,
         "snapshot" => 2,

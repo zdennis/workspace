@@ -320,6 +320,9 @@ module Workspace
           check = unsaved[m].merge(dev_env: false, locks: [])
           (status || {}).each do |lock, entry|
             holder = entry["holder"]
+            # A workflow run's lock is the run's, not the session's: only a dev
+            # environment running under it counts against the worktree.
+            holder = holder["delegate"] if LockStore.run?(holder)
             next unless holder && !holder["stale"]
             next unless @catalog.member_at(project, holder["worktree"]).equal?(m)
             if lock == DevRunner::LOCK_NAME

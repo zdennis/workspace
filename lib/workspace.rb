@@ -161,6 +161,8 @@ require_relative "workspace/project_facts"
 require_relative "workspace/duration"
 require_relative "workspace/dev_config"
 require_relative "workspace/lock_namespace"
+require_relative "workspace/bound_run"
+require_relative "workspace/run_liveness"
 require_relative "workspace/lock_holder"
 require_relative "workspace/lock_audit_log"
 require_relative "workspace/lock_store"
@@ -187,6 +189,7 @@ require_relative "workspace/file_backup"
 require_relative "workspace/process_group_terminator"
 require_relative "workspace/process_holder_stopper"
 require_relative "workspace/dev_runner"
+require_relative "workspace/run_resources"
 require_relative "workspace/hook_installer"
 require_relative "workspace/hook_runner"
 require_relative "workspace/project_detector"
@@ -336,7 +339,8 @@ module Workspace
     ps_timeout = cwd_project_name ? lock_config.ps_timeout_for(cwd_project_name) : ProcessTree::DEFAULT_TIMEOUT
     reap_interval = cwd_project_name ? lock_config.reap_interval_for(cwd_project_name) : LockReaper::DEFAULT_INTERVAL
     process_tree = ProcessTree.new(logger: logger, timeout: ps_timeout)
-    lock_holder = LockHolder.new(process_tree: process_tree)
+    run_liveness = RunLiveness.new(dir: config.workflow_runs_dir)
+    lock_holder = LockHolder.new(process_tree: process_tree, run_liveness: run_liveness)
     agent_snapshot_client = AgentSnapshotClient.new(config: config)
     sessions_command = Commands::Sessions.new(config: config, lock_namespace: lock_namespace, lock_holder: lock_holder,
       project_config: project_config, snapshot_client: agent_snapshot_client, output: output, error_output: error_output)
@@ -346,9 +350,10 @@ module Workspace
     session_event_command = Commands::SessionEvent.new(config: config, tmux: tmux, input: input, output: output, error_output: error_output, logger: logger,
       lock_idle_tracker: lock_idle_tracker, lock_enforcer: lock_enforcer, session_ledger: session_ledger, pane_bindings: pane_bindings)
     process_group_terminator = ProcessGroupTerminator.new
+    bound_run = BoundRun.new(pane_bindings: pane_bindings, tmux: tmux)
     lock_command = Commands::Lock.new(config: config, lock_namespace: lock_namespace, lock_holder: lock_holder,
       terminator: process_group_terminator, dev_config: dev_config, lock_config: lock_config, event_log: event_log,
-      output: output, error_output: error_output)
+      bound_run: bound_run, output: output, error_output: error_output)
     dev_runner = DevRunner.new(liveness: lock_holder, output: output)
     dev_command = Commands::Dev.new(
       lock_namespace: lock_namespace,
@@ -360,6 +365,7 @@ module Workspace
       tmux: tmux,
       executable: File.expand_path("../bin/workspace", __dir__),
       event_log: event_log,
+      bound_run: bound_run,
       output: output,
       error_output: error_output
     )
@@ -419,7 +425,7 @@ module Workspace
       pipeline_config: pipeline_config,
       # Its own LockHolder: the reaper runs on the monitor thread, and a
       # LockHolder's snapshot scope is per-instance, not per-thread.
-      lock_reaper: LockReaper.new(lock_namespace: lock_namespace, lock_holder: LockHolder.new(process_tree: process_tree),
+      lock_reaper: LockReaper.new(lock_namespace: lock_namespace, lock_holder: LockHolder.new(process_tree: process_tree, run_liveness: run_liveness),
         terminator: process_group_terminator, interval: reap_interval, logger: logger, error_output: error_output),
       alert_config: alert_config,
       ps_timeout: ps_timeout,

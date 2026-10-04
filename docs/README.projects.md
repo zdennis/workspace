@@ -266,7 +266,7 @@ succeeds and says so in place of the locks and dev lines.
 | `members[].agents` | `{"available":true,"panes":[...],"counts":{"working","idle","waiting","done"}}` from the daemon. `{"available":false,"reason":...}` when it can't be read: `not_running` (never asked), `no_daemon`, `timeout` or `error` (bad reply, with the message in `detail`). This is never an `errors` entry and never changes the exit code. `null` with `--no-agents` |
 | `members[].git` | `{"available","branch","changed_files","ahead","upstream","unpushed_commits","unsaved"}`. `unsaved` is always present: `"no"`, `"yes"`, `"unknown"` (git couldn't answer, with `available: false` and `reason` `timeout` or `error`; `detail` carries an error message) or `"missing"` (checkout gone). `branch` is `null` when detached; `ahead` and `upstream` are `null` without an upstream. `null` with `--no-git` (the key is always present) and for every member of a project with no git repository |
 | `members[].open_asks`, `pipeline` | `null` for a missing checkout, or when the file can't be read. `pipeline` is `{"entries": N}` |
-| `locks` | Lock name to `holder` (or `null`) and `queue`. `{}` when nothing is locked or every checkout is gone. `null` if the store can't be read |
+| `locks` | Lock name to `holder` (or `null`) and `queue`. A holder or waiter that is a workflow run has `"pid": null` and a `run_id`. `{}` when nothing is locked or every checkout is gone. `null` if the store can't be read |
 | `dev` | Same facts as `workspace dev status --json`, for the project. `holder_workspace` is set only while running. `null` if every checkout is gone or the store can't be read |
 | `errors` | Present only when `locks` or `dev` couldn't be read, or listing worktrees timed out: `{"locks": "...", "dev": "...", "worktrees": "..."}` |
 | `summary` | Totals across the workspaces. `waiting_agents` counts panes waiting on a person. `agents_unavailable` counts running workspaces whose daemon couldn't be read (`no_daemon`, `timeout`, `error`), so `waiting_agents: 0` with `agents_unavailable: 0` means none waiting, while a nonzero `agents_unavailable` means the count may be low. Both are `null` with `--no-agents`. `workspaces` counts configured workspaces only. `unsaved_members` counts members whose `git.unsaved` is `"yes"` or `"unknown"` (a missing checkout isn't counted); `null` with `--no-git` or for a project with no git repository |
@@ -409,13 +409,15 @@ path), so a group removal never depends on the current directory.
 | Unsaved work: changed tracked files or commits not pushed anywhere (`unsaved: "yes"`) | `unsaved` | `--discard-unsaved` |
 | Git couldn't answer, or took longer than `--timeout` (default 5s) for all worktrees together (`unsaved: "unknown"`) | `unknown` | `--force`, or retry with a longer `--timeout` |
 | The checkout directory is gone (`unsaved: "missing"`) | `missing` | `--force` |
-| The worktree runs the dev environment (it holds the `devenv` lock) | `dev_env` | nothing: run `workspace dev down` first |
+| The worktree runs the dev environment (it holds the `devenv` lock, or a workflow run's dev environment runs in it) | `dev_env` | nothing: run `workspace dev down` first |
 | The repository's lock store can't be read, so a running dev env can't be ruled out | `lock_store` | nothing: remove worktrees one at a time with `workspace kill NAME` |
 
 If any worktree has a check that isn't overridden, nothing is removed: those
 worktrees report `refused` with every reason listed, the rest `not_attempted`,
 and the command exits 1. Other locks a worktree holds are listed under
-`warnings` but don't refuse; their holders end with the session.
+`warnings` but don't refuse; their holders end with the session. A lock a
+workflow run holds is the run's, not the session's: it is not listed, and only a
+dev environment running under it counts as `dev_env`.
 
 The dev environment is checked only here, before the prompt. A `workspace dev
 up` started in a worktree while the prompt waits is not caught.

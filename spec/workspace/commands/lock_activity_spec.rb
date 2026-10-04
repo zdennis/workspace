@@ -143,6 +143,27 @@ RSpec.describe Workspace::Commands::Lock, "recording lock waits in the event log
       expect(released_and_cleared.map { |_, type, data| [type, data["lock"]] }).to eq([["lock_released", "edit"]])
     end
 
+    it "records one release per lock when a release --all drops several, and none for a run's locks" do
+      store = Workspace::LockStore.new(dir: store_dir, liveness: holder_identity)
+      store.acquire_run(%w[devenv test-db], run: {run_id: "wr_1", step: "verify", pane: "%1"})
+      store.acquire("edit", identity: holder_identity.current, waiter_pid: 100, waiter_started: 1)
+      path = File.join(store_dir, "locks.json")
+      data = JSON.parse(File.read(path))
+      data["lint"] = {"holder" => data["edit"]["holder"].dup, "queue" => []}
+      File.write(path, JSON.generate(data))
+
+      result = command_for(holder_identity).release(nil, all: true, working_dir: tmpdir)
+
+      expect(result).to eq(exit_code: 0)
+      expect(output.string).to eq("Released edit lock.\nReleased lint lock.\n")
+      expect(released_and_cleared).to eq([
+        ["app", "lock_released", {"lock" => "edit", "pid" => 100}],
+        ["app", "lock_released", {"lock" => "lint", "pid" => 100}]
+      ])
+      expect(store.status.transform_values { |entry| entry.dig("holder", "run_id") })
+        .to eq("devenv" => "wr_1", "test-db" => "wr_1", "edit" => nil, "lint" => nil)
+    end
+
     it "records nothing for a release of a lock the agent doesn't hold" do
       command_for(holder_identity).acquire("edit", working_dir: tmpdir)
 

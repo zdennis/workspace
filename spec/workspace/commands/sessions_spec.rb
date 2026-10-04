@@ -351,6 +351,18 @@ RSpec.describe Workspace::Commands::Sessions do
       store.acquire(name, identity: identity, waiter_pid: pid, waiter_started: "start-#{pid}", wait: wait)
     end
 
+    it "shows a workflow run's locks in the pane its step runs in, held and queued" do
+      store = Workspace::LockStore.new(dir: lock_dir, liveness: lock_holder)
+      store.acquire_run(%w[devenv test-db], run: {run_id: "wr_1", step: "verify", pane: "%1"})
+      store.acquire_run(%w[test-db], run: {run_id: "wr_2", step: "verify", pane: "%2"})
+
+      with_daemon { command.call(name: "proj", json: true) }
+
+      panes = JSON.parse(output.string)["panes"]
+      expect(panes.find { |p| p["pane_id"] == "%1" }["lock"]).to eq("devenv ✓ test-db ✓")
+      expect(panes.find { |p| p["pane_id"] == "%2" }["lock"]).to eq("test-db #1")
+    end
+
     it "shows every lock a pane holds or waits on, edit first then alphabetical" do
       acquire_lock("devenv", pid: 300, pane: "%1")
       acquire(pid: 100, pane: "%1")

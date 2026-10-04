@@ -4,6 +4,9 @@ module Workspace
   # Identifies the coding agent calling `workspace lock`, and checks whether a
   # previously recorded holder or waiter is still alive.
   #
+  # A lock held by a workflow run has no process to check: {#run_alive?} asks
+  # the run itself.
+  #
   # Identity is the agent process's pid plus its `ps` start time (`lstart`),
   # never a heartbeat: the start time guards against PID reuse without
   # costing the agent any tokens. Any registered {AgentProvider} counts as an
@@ -27,7 +30,10 @@ module Workspace
     # @param providers [Array<Workspace::AgentProvider>] agent CLIs to look for
     #   (defaults to every registered provider)
     # @param env [Hash] environment lookup, injectable for tests
-    def initialize(process_tree: Workspace::ProcessTree.new, providers: AgentProvider.all, env: ENV)
+    # @param run_liveness [Workspace::RunLiveness, nil] answers {#run_alive?};
+    #   without one every run counts as alive
+    def initialize(process_tree: Workspace::ProcessTree.new, providers: AgentProvider.all, env: ENV, run_liveness: nil)
+      @run_liveness = run_liveness
       @process_tree = process_tree
       @executables = providers.map(&:executable)
       duplicates = @executables.tally.select { |_, count| count > 1 }.keys
@@ -87,6 +93,17 @@ module Workspace
       return false unless pid
       process = process_snapshot.find(pid.to_i)
       !process.nil? && process[:lstart] == started
+    end
+
+    # A `kind: "run"` holder or waiter is alive for as long as its workflow
+    # run is, whichever processes come and go under it.
+    #
+    # @param run_id [String]
+    # @return [Boolean]
+    # @raise [Workspace::Error] if the run's state cannot be read, since
+    #   liveness is then unknown rather than false
+    def run_alive?(run_id)
+      @run_liveness.nil? || @run_liveness.alive?(run_id)
     end
 
     private

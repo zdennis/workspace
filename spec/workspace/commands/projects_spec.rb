@@ -891,6 +891,48 @@ RSpec.describe Workspace::Commands::Projects do
         expect(output.string).to include("  deploy   STALE holder app (pid 999)\n")
       end
 
+      it "names the workflow run that holds or waits for a lock" do
+        lock_store.acquire_run(["test-db"], run: {run_id: "wr_1", step: "verify", worktree: login})
+        lock_store.acquire_run(["test-db"], run: {run_id: "wr_2", step: "verify", worktree: main})
+
+        command.show(name: "app", json: true)
+
+        expect(payload["locks"]["test-db"]["holder"]).to eq("workspace" => "app.worktree-login", "path" => login, "pid" => nil,
+          "stale" => false, "run_id" => "wr_1")
+        expect(payload["locks"]["test-db"]["queue"]).to eq([{"workspace" => "app", "path" => main, "pid" => nil, "stale" => false, "run_id" => "wr_2"}])
+        output.truncate(0)
+        output.rewind
+        command.show(name: "app")
+        expect(output.string).to include("  test-db   held by app.worktree-login (run wr_1)   queue: 1\n")
+      end
+
+      context "when dev status reports a workflow run holding devenv with nothing under it" do
+        let(:dev_payload) do
+          {"schema_version" => 1, "running" => false, "ready" => nil, "queue" => [],
+           "holder" => {"kind" => "run", "run_id" => "wr_1", "worktree" => login, "stale" => false}}
+        end
+
+        it "reports the dev env as not running, in no workspace" do
+          command.show(name: "app", json: true)
+
+          expect(payload["dev"]).to eq("running" => false, "ready" => nil, "holder_workspace" => nil)
+        end
+      end
+
+      context "when dev status reports a run's dev env running in another worktree than the run's" do
+        let(:dev_payload) do
+          {"schema_version" => 1, "running" => true, "ready" => true, "queue" => [],
+           "holder" => {"kind" => "run", "run_id" => "wr_1", "worktree" => main, "stale" => true,
+                        "delegate" => {"kind" => "process", "pid" => 101, "worktree" => login, "stale" => false}}}
+        end
+
+        it "names the workspace the environment runs in, not the run's" do
+          command.show(name: "app", json: true)
+
+          expect(payload["dev"]).to eq("running" => true, "ready" => true, "holder_workspace" => "app.worktree-login")
+        end
+      end
+
       it "reads the lock store of the project's main checkout without writing to it" do
         resolved = []
         allow(lock_namespace).to receive(:resolve) { |cwd:| resolved << cwd and {dir: lock_dir} }

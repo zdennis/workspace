@@ -237,6 +237,8 @@ module Workspace
       return nil unless project_dir?(project)
       payload = @dev.status_payload(working_dir: project.path)
       holder = payload["holder"]
+      # Under a workflow run the environment is the run's delegate.
+      holder = holder["delegate"] if payload["running"] && LockStore.run?(holder)
       {
         "running" => payload["running"],
         "ready" => payload["ready"],
@@ -257,7 +259,7 @@ module Workspace
         "path" => record["worktree"],
         "pid" => record["pid"] || record["waiter_pid"],
         "stale" => record["stale"] ? true : false
-      }
+      }.merge(record.slice("run_id"))
     end
 
     def workspace_at(path, project)

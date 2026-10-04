@@ -187,6 +187,140 @@ RSpec.describe Workspace::Commands::Lock do
     end
   end
 
+  describe "a lock held by a workflow run" do
+    let(:store) { Workspace::LockStore.new(dir: tmpdir, liveness: FakeLockLiveness.new) }
+    let(:run) { {run_id: "wr_1", step: "verify", workflow: "rpiv", workspace: "app.worktree-a", worktree: "/src/app-a", pane: "%4"} }
+    let(:agent) { FakeLockIdentity.new(pid: 100, pane: "%4", worktree: "/src/app-a") }
+
+    before { store.acquire_run(%w[test-db], run: run) }
+
+    def bound_command(run_id)
+      described_class.new(config: config, lock_namespace: lock_namespace, lock_holder: agent, output: output, error_output: error_output,
+        sleeper: sleeper, clock: clock, pid_provider: -> { 100 }, trap: ->(*) {},
+        bound_run: instance_double(Workspace::BoundRun, run_id: run_id))
+    end
+
+    it "tells the run's own agent the lock is already held for it, instead of queueing behind its run" do
+      result = bound_command("wr_1").acquire("test-db", wait: true, task: "run the suite")
+
+      expect(result).to eq(exit_code: 0)
+      expect(output.string).to eq("test-db lock is already held for this pane by run wr_1; there is nothing to acquire or release.\n")
+      expect(store.status("test-db")["test-db"]).to include("holder" => include("run_id" => "wr_1"), "queue" => [])
+    end
+
+    it "refuses an agent in a pane bound to another run, or to none, naming the run" do
+      [bound_command("wr_2"), bound_command(nil), command_for(agent)].each do |command|
+        expect(command.acquire("test-db")).to eq(exit_code: 1)
+      end
+
+      expect(error_output.string.lines.uniq).to eq(["test-db lock is held by run wr_1 (step verify) in /src/app-a.\n"])
+    end
+
+    it "still acquires a lock the pane's run does not hold" do
+      expect(bound_command("wr_1").acquire("edit")).to eq(exit_code: 0)
+      expect(output.string).to include("Acquired edit lock.")
+    end
+
+    it "does not count a run that has ended as holding it for the pane" do
+      agent.end_run("wr_1")
+
+      expect(bound_command("wr_1").acquire("test-db")).to eq(exit_code: 0)
+      expect(output.string).to include("Acquired test-db lock.")
+    end
+
+    it "is not released by an agent's release" do
+      command_for(agent).release("test-db")
+
+      expect(output.string).to eq("test-db lock is not held by this agent.\n")
+      expect(store.status("test-db").dig("test-db", "holder", "run_id")).to eq("wr_1")
+    end
+
+    it "shows the run, its step, its delegate and a queued run in status" do
+      store.acquire_run(%w[devenv], run: run)
+      store.delegate("devenv", run_id: "wr_1", identity: {kind: "process", pid: 700, started: "start-700", pgid: 700})
+      store.acquire_run(%w[devenv], run: run.merge(run_id: "wr_2", step: "implement", worktree: "/src/app-b"))
+
+      command_for(agent).status("devenv")
+
+      expect(output.string.lines.map(&:chomp)).to match([
+        a_string_matching(%r{\Adevenv: held by run wr_1 \(step verify\) in /src/app-a \(since \d{4}-[^)]+\) DELEGATE pid 700\z}),
+        "  1. run wr_2 (step implement) in /src/app-b"
+      ])
+    end
+
+    it "tags a delegate whose wrapper is gone as STALE" do
+      store.acquire_run(%w[devenv test-db], run: run)
+      store.delegate("devenv", run_id: "wr_1", identity: {kind: "process", pid: 700, started: "start-700", pgid: 700})
+      agent.kill(700)
+
+      command_for(agent).status("devenv")
+
+      expect(output.string).to match(/\Adevenv: held by run wr_1 \(step verify\) in \/src\/app-a \(since [^)]+\) DELEGATE pid 700 STALE\n\z/)
+    end
+
+    it "stops a run's dev environment on clear, like any devenv holder, and the lock is freed" do
+      terminator = instance_double(Workspace::ProcessGroupTerminator, stop_holder: :terminated, running?: false, orphan_running?: false)
+      store.acquire_run(%w[devenv test-db], run: run)
+      store.delegate("devenv", run_id: "wr_1", identity: {kind: "process", pid: 700, started: "start-700", pgid: 700, worktree: "/src/app-a"})
+      clearer = FakeLockIdentity.new(pid: 999)
+      command = described_class.new(config: config, lock_namespace: lock_namespace, lock_holder: clearer, output: output,
+        error_output: error_output, sleeper: sleeper, clock: Workspace::Commands::Lock::MonotonicClock, pid_provider: -> { 999 },
+        trap: ->(*) {}, terminator: terminator)
+
+      expect(command.clear("devenv")).to eq(exit_code: 0)
+
+      expect(terminator).to have_received(:stop_holder).with(hash_including("kind" => "process", "pid" => 700), liveness: clearer, stop_timeout: anything)
+      expect(output.string).to include("Stopped process group 700 (pid 700).", "Cleared devenv: was held by ? in /src/app-a")
+      expect(store.status("devenv")).to eq({})
+      expect(store.status("test-db").dig("test-db", "holder", "run_id")).to eq("wr_1")
+    end
+
+    it "names the run, with no blank pid, when a run takes the lock while a clear stops its holder" do
+      terminator = instance_double(Workspace::ProcessGroupTerminator, running?: false, orphan_running?: false)
+      store.acquire("devenv", identity: {kind: "process", pid: 700, started: "start-700", pgid: 700, worktree: "/w"}, waiter_pid: 700, waiter_started: "start-700")
+      allow(terminator).to receive(:stop_holder) do
+        store.release("devenv", 700)
+        store.acquire_run(%w[devenv], run: run.merge(run_id: "wr_3"))
+        :terminated
+      end
+      clearer = FakeLockIdentity.new(pid: 999)
+      command = described_class.new(config: config, lock_namespace: lock_namespace, lock_holder: clearer, output: output,
+        error_output: error_output, sleeper: sleeper, clock: Workspace::Commands::Lock::MonotonicClock, pid_provider: -> { 999 },
+        trap: ->(*) {}, terminator: terminator)
+
+      expect(command.clear("devenv")).to eq(exit_code: 1)
+
+      expect(error_output.string).to include("devenv lock is now held by run wr_3 (step verify) in /src/app-a, so it was not cleared.")
+    end
+
+    it "carries the run's fields in status --json" do
+      command_for(agent).status("test-db", json: true)
+
+      holder = JSON.parse(output.string).dig("locks", "test-db", "holder")
+      expect(holder).to include("kind" => "run", "run_id" => "wr_1", "step" => "verify", "workflow" => "rpiv",
+        "workspace" => "app.worktree-a", "worktree" => "/src/app-a", "pane" => "%4", "stale" => false)
+      expect(holder).not_to include("pid")
+    end
+
+    it "is cleared like any other holder, and the result names the run" do
+      command_for(FakeLockIdentity.new(pid: 999)).clear("test-db")
+      store.acquire_run(%w[test-db], run: run)
+      output.truncate(0)
+      output.rewind
+      command_for(FakeLockIdentity.new(pid: 999)).clear("test-db", json: true)
+
+      expect(JSON.parse(output.string)).to include("result" => "cleared",
+        "holder" => include("kind" => "run", "run_id" => "wr_1", "step" => "verify", "workspace" => "app.worktree-a"))
+      expect(store.status("test-db")).to eq({})
+    end
+
+    it "says in text which run a cleared lock was held by" do
+      command_for(FakeLockIdentity.new(pid: 999)).clear("test-db")
+
+      expect(output.string).to eq("Cleared test-db: was held by run wr_1 (step verify) in /src/app-a, 0 waiter(s) removed.\n")
+    end
+  end
+
   describe "#status" do
     it "reports a free lock" do
       command_for(FakeLockIdentity.new(pid: 100)).status("edit")

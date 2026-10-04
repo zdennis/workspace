@@ -64,21 +64,30 @@ module Workspace
     # @param branch [String, nil] branch recorded in the lock holder
     # @param wait [Boolean] queue FIFO behind the current holder instead of failing
     # @param priority [Boolean] queue ahead of everyone already waiting (`dev up --force`)
+    # @param delegate_for [String, nil] the workflow run this wrapper was
+    #   started for by `dev up` in that run's pane. While that run holds the
+    #   lock the wrapper is recorded on the run's hold as its delegate and
+    #   runs at once, and the lock stays with the run when the command exits;
+    #   if the run no longer holds it, the lock is taken the usual way
     # @return [Integer] the child's exit status, 128 + signal number if it was
     #   killed (or the wait was interrupted), or 4 if the lock was cleared while queued
     # @raise [Workspace::Error] if the lock is held by someone else (without
-    #   +wait+), the wrapper does not lead its process group, or the command
-    #   cannot be started
-    def call(store:, command:, worktree:, branch: nil, wait: false, priority: false)
+    #   +wait+), the run already has a delegate, the wrapper does not lead
+    #   its process group, or the command cannot be started
+    def call(store:, command:, worktree:, branch: nil, wait: false, priority: false, delegate_for: nil)
       holder = identity(worktree, branch)
-      waited = acquire!(store, holder, wait, priority)
-      return waited if waited
-      begin
-        code = run(command, worktree)
-      ensure
-        store.release(LOCK_NAME, holder[:pid])
+      delegated = !delegate_for.nil? && delegate!(store, holder, delegate_for)
+      unless delegated
+        waited = acquire!(store, holder, wait, priority)
+        return waited if waited
       end
-      @output.puts "[workspace] #{command} #{describe_exit(code)}; #{LOCK_NAME} lock released"
+      begin
+        code = run(command, worktree, held_by: delegated ? "by run #{delegate_for}" : "for #{worktree}")
+      ensure
+        ended = delegated ? store.end_delegate(LOCK_NAME, holder[:pid]) : store.release(LOCK_NAME, holder[:pid])
+      end
+      outcome = (ended == :ended) ? "stays with run #{delegate_for}" : "released"
+      @output.puts "[workspace] #{command} #{describe_exit(code)}; #{LOCK_NAME} lock #{outcome}"
       code
     end
 
@@ -107,6 +116,17 @@ module Workspace
     end
 
     private
+
+    # @return [Boolean] true once this wrapper is the run's delegate; false
+    #   when the lock is free or someone else's to queue for the usual way
+    def delegate!(store, holder, run_id)
+      result = store.delegate(LOCK_NAME, run_id: run_id, identity: holder)
+      case result[:status]
+      when :delegated then true
+      when :busy then raise Workspace::Error, "run #{run_id} already has a dev environment running (pid #{result[:delegate]["pid"]})"
+      else false
+      end
+    end
 
     # @return [Integer, nil] an exit code if the wrapper should stop without running
     def acquire!(store, holder, wait, priority)
@@ -150,12 +170,13 @@ module Workspace
 
     def held_message(other)
       return "#{LOCK_NAME} lock is not free: others are queued for it" unless other
+      return "#{LOCK_NAME} lock is held by run #{other["run_id"]}#{" (#{other["worktree"]})" if other["worktree"]}" if LockStore.run?(other)
       details = {"pane" => other["pane"], "worktree" => other["worktree"], "branch" => other["branch"]}
         .filter_map { |k, v| "#{k} #{v}" if v }
       "#{LOCK_NAME} lock is held by pid #{other["pid"]}#{" (#{details.join(", ")})" unless details.empty?}"
     end
 
-    def run(command, worktree)
+    def run(command, worktree, held_by:)
       @child_pid = nil
       @pending_signal = nil
       @termsig = nil
@@ -170,7 +191,7 @@ module Workspace
         @termsig = Signal.list[@pending_signal]
         return 128 + @termsig
       end
-      @output.puts "[workspace] #{LOCK_NAME} lock held for #{worktree}; running: #{command}"
+      @output.puts "[workspace] #{LOCK_NAME} lock held #{held_by}; running: #{command}"
       @output.flush
       @child_pid = spawn_child(command, worktree)
       forward(@pending_signal) if @pending_signal

@@ -17,9 +17,8 @@ module Workspace
       # head waiter while the agent sat idle, leaving nothing to release.
       # `acquire` reports such a takeover too, then carries on as usual.
       EXIT_DISPLACED = 3
-      # Lock names end up in file keys and in commands an agent is told to run
-      # verbatim, so they are limited to characters that need no shell quoting.
-      NAME_PATTERN = /\A[A-Za-z0-9][A-Za-z0-9._-]*\z/
+      # The lock store's rule for a lock name.
+      NAME_PATTERN = LockStore::NAME_PATTERN
       # `workspace lock status --json`'s schema version (see docs/README.lock.md).
       JSON_SCHEMA_VERSION = 1
       # Default seconds `clear` waits for a SIGKILLed process group to disappear
@@ -54,10 +53,13 @@ module Workspace
       # @param wall_clock [#call] current epoch seconds, for idle tracking in the store
       # @param event_log [Workspace::EventLog, nil] records lock waits (start,
       #   acquired, takeover, gave up, cleared, abandoned); nil records nothing
+      # @param bound_run [Workspace::BoundRun, nil] names the workflow run the calling pane is
+      #   bound to; nil means no pane counts as bound
       def initialize(config:, lock_namespace:, lock_holder:, output: $stdout, error_output: $stderr,
         sleeper: ->(seconds) { sleep(seconds) }, clock: MonotonicClock, pid_provider: -> { Process.pid },
         trap: ->(signal, handler) { Signal.trap(signal, handler) }, terminator: ProcessGroupTerminator.new, dev_config: nil,
-        lock_config: nil, wall_clock: -> { Time.now.to_i }, event_log: nil)
+        lock_config: nil, wall_clock: -> { Time.now.to_i }, event_log: nil, bound_run: nil)
+        @bound_run = bound_run
         @config = config
         @lock_namespace = lock_namespace
         @lock_holder = lock_holder
@@ -76,6 +78,10 @@ module Workspace
           clock: clock, sleeper: sleeper)
       end
 
+      # A lock the calling pane's own workflow run already holds is reported
+      # as held for it (exit 0), since waiting for it would mean waiting for
+      # the run this agent is working for.
+      #
       # @param name [String] lock name
       # @param task [String, nil] free-text description shown to other waiters
       # @param wait [Boolean] enqueue and poll instead of refusing when busy
@@ -89,6 +95,10 @@ module Workspace
         raise Workspace::UsageError, "--max-wait must be greater than 0." if max_wait && max_wait.to_f <= 0
         wait ||= !max_wait.nil?
         store = store_for(working_dir)
+        if (run_id = own_run_holding(store, name))
+          @output.puts "#{name} lock is already held for this pane by run #{run_id}; there is nothing to acquire or release."
+          return {exit_code: 0}
+        end
         identity = require_identity!
         waiter_pid = @pid_provider.call
         waiter_started = @lock_holder.start_time(waiter_pid)
@@ -284,6 +294,15 @@ module Workspace
         LockStore.new(dir: namespace[:dir], liveness: @lock_holder, clock: @wall_clock, idle_grace: idle_grace, terminator: @terminator)
       end
 
+      # @return [String, nil] the id of the run this pane is bound to, when
+      #   that run holds +name+
+      def own_run_holding(store, name)
+        run_id = @bound_run&.run_id
+        return nil unless run_id
+        holder = store.status(name).dig(name, "holder")
+        run_id if LockStore.run?(holder) && holder["run_id"] == run_id && !holder["stale"]
+      end
+
       def report_displaced(records, advice)
         records.each do |record|
           by = record["by"] || {}
@@ -406,7 +425,7 @@ module Workspace
       end
 
       def holder_summary(holder)
-        holder&.slice("pane", "pid", "worktree", "task")
+        holder&.slice("pane", "pid", "worktree", "task", "run_id", "step")
       end
 
       # Sleeps in short slices so a signal is acted on promptly: a trap handler
@@ -427,6 +446,9 @@ module Workspace
 
       def describe_holder(holder)
         return "no one (about to be reaped)" unless holder
+        if LockStore.run?(holder)
+          return "run #{holder["run_id"]}#{" (step #{holder["step"]})" if holder["step"]} in #{holder["worktree"] || "?"}"
+        end
         pane = holder["pane"] || "?"
         task = holder["task"]
         worktree = holder["worktree"] || "?"
@@ -450,15 +472,25 @@ module Workspace
           stale = holder["stale"] ? " STALE" : ""
           idle = holder["idle_since"] ? " IDLE since #{format_epoch(holder["idle_since"])}" : ""
           clearing = clearing_tag(holder)
-          @output.puts "#{name}: held by #{describe_holder(holder)} (pid #{holder["pid"]}, since #{holder["acquired_at"]})#{idle}#{stale}#{clearing}"
+          pid = LockStore.run?(holder) ? "" : "pid #{holder["pid"]}, "
+          @output.puts "#{name}: held by #{describe_holder(holder)} (#{pid}since #{holder["acquired_at"]})#{idle}#{stale}#{clearing}#{delegate_tag(holder)}"
         else
           @output.puts "#{name}: free"
         end
 
         queue.each_with_index do |waiter, i|
           stale = waiter["stale"] ? " STALE" : ""
-          @output.puts "  #{i + 1}. #{waiter["pane"]} \"#{waiter["task"]}\" in #{waiter["worktree"]} (pid #{waiter["agent_pid"]})#{stale}"
+          who = LockStore.run?(waiter) ? describe_holder(waiter) : "#{waiter["pane"]} \"#{waiter["task"]}\" in #{waiter["worktree"]} (pid #{waiter["agent_pid"]})"
+          @output.puts "  #{i + 1}. #{who}#{stale}"
         end
+      end
+
+      # @return [String] " DELEGATE pid N" for a run holder with a process
+      #   working under its hold (the dev wrapper), else ""
+      def delegate_tag(holder)
+        delegate = holder["delegate"]
+        return "" unless delegate
+        " DELEGATE pid #{delegate["pid"]}#{" STALE" if delegate["stale"]}"
       end
 
       # @return [Hash] {cleared:, json:} — cleared is false when the lock was
@@ -477,7 +509,7 @@ module Workspace
           if other && !kept_takeover?(removed, other)
             unless json
               @error_output.puts "Stopped process group #{holder["pgid"] || holder["pid"]} (pid #{holder["pid"]}), but the " \
-                "#{name} lock is now held by #{describe_holder(other)} (pid #{other["pid"]}), so it was not cleared."
+                "#{name} lock is now held by #{describe_holder(other)}#{" (pid #{other["pid"]})" unless LockStore.run?(other)}, so it was not cleared."
             end
             return {cleared: false, json: {"name" => name, "result" => "kept", "reason" => "taken_by_other", "holder" => json_holder(other)}}
           end
@@ -569,7 +601,7 @@ module Workspace
       # @return [Hash, nil] a trimmed holder/waiter record safe for `--json`
       def json_holder(holder)
         return nil unless holder
-        holder.slice("kind", "pid", "pgid", "pane", "worktree", "task", "acquired_at", "waiter_pid")
+        holder.slice("kind", "pid", "pgid", "pane", "worktree", "task", "acquired_at", "waiter_pid", "run_id", "step", "workflow", "workspace")
       end
     end
   end

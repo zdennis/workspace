@@ -55,7 +55,7 @@ The daemons are read in parallel, one second each: a daemon serves one connectio
 - `git` is null only when the project has no usable git repository (no git, a broken checkout, or an unknown one); git failing or timing out for a checkout is `git.available: false`, never null. `git.base` is the base branch `review` compares against, null when it can't be found. `git.pr` is present only with `--pr`: `{"available":false,"reason":"gh_missing"|"timeout"|"error"|"git_unavailable"}`, `{"available":true,"found":false}`, or the pull request, with `state` lowercased and `checks` one of `failing`, `pending`, `passing` or `none`.
 - Panes are as in [`sessions --json`](README.sessions.md), reduced to the fields a UI shows. `lock` is the name of the lock the pane holds or queues for, `lock_state` is `held` or `queued`, and `open_questions` is the pane's open `ask` questions (null when the store can't be read). `task` is the active task, present with `panes`.
 - `pipeline.entries` is the number of in-flight work items.
-- `locks` is the project's repo-wide lock list; a holder's `workspace` is null when its worktree belongs to no member.
+- `locks` is the project's repo-wide lock list; a holder's `workspace` is null when its worktree belongs to no member. A holder or waiter that is a workflow run has `"pid": null` and a `run_id`.
 - `daemons_unavailable[].code` is `no_daemon`, `timeout` or `unreadable_reply` (any other failure reading or stamping the reply). These are row codes, not error envelope codes.
 - There is no per-target `actions` map; the command doesn't say what each workspace may do.
 - `warnings` entries are `{"code","message"}` (and `workspace` for `checkout_missing` and `questions_unavailable`).

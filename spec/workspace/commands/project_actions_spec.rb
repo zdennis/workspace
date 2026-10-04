@@ -744,6 +744,50 @@ RSpec.describe Workspace::Commands::ProjectActions do
           "message" => "the dev environment is running in it; run 'workspace dev down' first")
       end
 
+      it "does not refuse for a devenv lock a workflow run holds with no dev env running" do
+        drop_old
+        Workspace::LockStore.new(dir: lock_dir, liveness: liveness).acquire_run(["devenv"], run: {run_id: "wr_1", worktree: login})
+
+        result, payload = kill_json
+
+        expect(result).to eq({exit_code: 0})
+        expect(row(payload, "app.worktree-login")).to include("dev_env" => false)
+        expect(payload["warnings"].to_a.grep(/devenv/)).to eq([])
+      end
+
+      it "refuses the worktree where a workflow run's dev env is running" do
+        drop_old
+        store = Workspace::LockStore.new(dir: lock_dir, liveness: liveness)
+        store.acquire_run(["devenv"], run: {run_id: "wr_1", worktree: login})
+        store.delegate("devenv", run_id: "wr_1", identity: {kind: "process", pid: 101, started: "s", pgid: 101, worktree: login})
+
+        _, payload = kill_json
+
+        expect(row(payload, "app.worktree-login")).to include("outcome" => "refused", "reason" => "dev_env", "dev_env" => true)
+      end
+
+      it "refuses the worktree where the dev env of a run that has ended is still running" do
+        drop_old
+        store = Workspace::LockStore.new(dir: lock_dir, liveness: liveness)
+        store.acquire_run(["devenv"], run: {run_id: "wr_1", worktree: main})
+        store.delegate("devenv", run_id: "wr_1", identity: {kind: "process", pid: 101, started: "s", pgid: 101, worktree: login})
+        liveness.end_run("wr_1")
+
+        _, payload = kill_json
+
+        expect(row(payload, "app.worktree-login")).to include("outcome" => "refused", "reason" => "dev_env", "dev_env" => true)
+      end
+
+      it "does not refuse for a run's dev env whose wrapper is gone" do
+        drop_old
+        store = Workspace::LockStore.new(dir: lock_dir, liveness: liveness)
+        store.acquire_run(["devenv"], run: {run_id: "wr_1", worktree: login})
+        store.delegate("devenv", run_id: "wr_1", identity: {kind: "process", pid: 101, started: "s", pgid: 101, worktree: login})
+        liveness.kill(101)
+
+        expect(kill_json.first).to eq({exit_code: 0})
+      end
+
       it "ignores a stale dev env holder" do
         drop_old
         hold_lock("devenv", login, 101)

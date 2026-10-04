@@ -150,4 +150,43 @@ RSpec.describe Workspace::LockEnforcer do
       expect(enforcer(lock_holder: holder_agent).release_all).to eq([])
     end
   end
+
+  describe "a workflow run's locks when the session hook releases the agent's" do
+    let(:run) { {run_id: "wr_1", step: "implement", worktree: "app", pane: "%1"} }
+
+    def session_event(payload)
+      Workspace::Commands::SessionEvent.new(
+        config: config, tmux: instance_double(Workspace::Tmux), env: {}, input: StringIO.new(JSON.generate(payload)),
+        error_output: StringIO.new, lock_enforcer: enforcer(lock_holder: holder_agent)
+      ).call
+    end
+
+    before do
+      store.acquire_run(%w[devenv test-db], run: run)
+      hold(holder_agent)
+      store.acquire_run(%w[devenv test-db], run: run.merge(run_id: "wr_2"))
+    end
+
+    [
+      {"hook_event_name" => "SessionEnd", "reason" => "other"},
+      {"hook_event_name" => "SessionStart", "source" => "clear"}
+    ].each do |payload|
+      it "keeps them through #{payload["hook_event_name"]} (#{payload.values.last}), in the run's own pane" do
+        session_event(payload.merge("cwd" => "/project"))
+
+        status = store.status
+        expect(status["devenv"]["holder"]).to include("kind" => "run", "run_id" => "wr_1")
+        expect(status["test-db"]["holder"]).to include("kind" => "run", "run_id" => "wr_1")
+        expect(status["devenv"]["queue"].map { |w| w["run_id"] }).to eq(["wr_2"])
+        expect(status["edit"]["holder"]).to be_nil
+      end
+    end
+
+    it "releases nothing on a SessionStart that is not a clear" do
+      session_event("hook_event_name" => "SessionStart", "source" => "resume", "cwd" => "/project")
+
+      expect(store.status["edit"]["holder"]).to include("pid" => 100)
+      expect(store.status["devenv"]["holder"]).to include("run_id" => "wr_1")
+    end
+  end
 end

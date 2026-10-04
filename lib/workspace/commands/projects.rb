@@ -370,7 +370,8 @@ module Workspace
         holder = entry["holder"]
         queue = entry["queue"].empty? ? "" : "   queue: #{entry["queue"].size}"
         return "#{name}   free#{queue}" unless holder
-        who = "#{holder["workspace"] || File.basename(holder["path"].to_s)} (pid #{holder["pid"]})"
+        by = holder["run_id"] ? "run #{holder["run_id"]}" : "pid #{holder["pid"]}"
+        who = "#{holder["workspace"] || File.basename(holder["path"].to_s)} (#{by})"
         holder["stale"] ? "#{name}   STALE holder #{who}#{queue}" : "#{name}   held by #{who}#{queue}"
       end
 

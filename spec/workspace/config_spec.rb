@@ -132,6 +132,15 @@ RSpec.describe Workspace::Config do
     end
   end
 
+  describe "#workflow_runs_dir" do
+    it "sits under a dotted directory of the state dir, where no workspace name can be" do
+      config = described_class.new
+
+      expect(config.workflow_runs_dir).to eq(File.join(config.state_dir, ".workflows", "runs"))
+      expect(Workspace::WorkspaceLineage.name_from_path("/src/.workflows")).to eq("workflows")
+    end
+  end
+
   describe "#task_dir" do
     it "is a dotted directory under the state directory, which no workspace's state directory can be" do
       config = described_class.new

@@ -21,7 +21,7 @@ It reads constants, config paths and the `PATH`. It starts no process and touche
 ```json
 {"schema_version":1,"ok":true,"version":"0.27.1",
  "features":{"envelope":1,"error_codes":1,"name_scope":1,"no_input":1,"action_json":1,
-   "sessions":1,"locks_json":1,"git_facts":1,"prune_safe":1,"snapshot":2,"events_follow":0,
+   "sessions":1,"locks_json":2,"git_facts":1,"prune_safe":1,"snapshot":2,"events_follow":0,
    "actions_manifest":0,"agent_send":1,"agent_spawn":0,"focus_pane":1,"state_done":1,
    "doctor_json":0,"daemon_control":2,"config_json":1,"tmux_show":1,"tasks":1,"event_emitters":1,
    "ui_open":1,"pane_bindings":2,"library":3,"library_play":2,"library_copy":1,"instructions":1,"restore":1},
@@ -47,7 +47,7 @@ It reads constants, config paths and the `PATH`. It starts no process and touche
 | `no_input` | `--no-input` and `WORKSPACE_NO_INPUT` |
 | `action_json` | `--json` action documents on the lifecycle commands, `dev up|down`, `lock release`, `config set`, `pipeline start|advance|reset`, and `agent run --json` |
 | `sessions` | `sessions --json` |
-| `locks_json` | `lock status --json` and `lock clear --json` |
+| `locks_json` | `lock status --json` and `lock clear --json`. Revision 2: a holder or waiter can be a workflow run (`"kind": "run"` with `run_id` and `step`, and no `pid`), a run holder can carry a `delegate`, and `dev status --json` reports `running: false` for a run that holds `devenv` with no dev environment under it (see [`lock`](README.lock.md) and [`dev`](README.dev.md)) |
 | `git_facts` | `projects show` reports git facts per workspace |
 | `prune_safe` | `prune` skips a worktree with unsaved work and reports it, rather than removing it |
 | `snapshot` | `snapshot --json` (see [`snapshot`](README.snapshot.md)); `sessions --json` panes carry `display_label` (see [`sessions`](README.sessions.md)). Revision 1 was `display_label` alone |

@@ -74,6 +74,12 @@ RSpec.describe Workspace::Commands::Capabilities do
       expect(document["features"]).to include("restore" => 1)
     end
 
+    it "reports lock JSON at the revision that can carry a workflow run as a holder" do
+      command.call(json: true)
+
+      expect(document["features"]).to include("locks_json" => 2)
+    end
+
     it "ignores a PATH entry that is not executable or is a directory" do
       install("gh", mode: 0o644)
       FileUtils.mkdir_p(File.join(bin_dir, "tmux"))

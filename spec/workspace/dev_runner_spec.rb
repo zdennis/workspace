@@ -142,6 +142,79 @@ RSpec.describe Workspace::DevRunner do
       expect(devenv_holder).to be_nil
     end
 
+    context "as a delegate of the run that holds the lock" do
+      let(:run) { {run_id: "wr_1", step: "implement", worktree: worktree, pane: "%4"} }
+
+      before { fake_store.acquire_run(["devenv"], run: run) }
+
+      it "records itself on the run's hold instead of queueing, and leaves the lock with the run when it exits" do
+        seen = nil
+        spawner = lambda do |command, chdir|
+          seen = devenv_holder
+          Process.spawn("/bin/sh", "-c", command, chdir: chdir)
+        end
+
+        code = run_with(spawner: spawner, command: "exit 3", worktree: worktree, branch: "login", delegate_for: "wr_1")
+
+        expect(code).to eq(3)
+        expect(seen).to include("kind" => "run", "run_id" => "wr_1")
+        expect(seen["delegate"]).to include("kind" => "process", "pid" => Process.pid, "started" => "start-#{Process.pid}",
+          "pgid" => Process.pid, "pane" => "%7", "worktree" => worktree, "branch" => "login")
+        expect(fake_store.status("devenv").dig("devenv", "queue")).to eq([])
+        expect(devenv_holder).to include("kind" => "run", "run_id" => "wr_1")
+        expect(devenv_holder).not_to include("delegate")
+        expect(output.string.lines).to eq([
+          "[workspace] devenv lock held by run wr_1; running: exit 3\n",
+          "[workspace] exit 3 exited with status 3; devenv lock stays with run wr_1\n"
+        ])
+      end
+
+      it "releases the lock itself when the run gave it up while the command ran" do
+        spawner = lambda do |command, chdir|
+          fake_store.release_run("wr_1")
+          Process.spawn("/bin/sh", "-c", command, chdir: chdir)
+        end
+
+        run_with(spawner: spawner, command: "exit 0", worktree: worktree, delegate_for: "wr_1")
+
+        expect(devenv_holder).to be_nil
+        expect(output.string.lines.last).to eq("[workspace] exit 0 exited with status 0; devenv lock released\n")
+      end
+
+      it "drops the delegate record when the command cannot be started" do
+        expect { run_with(command: "true", worktree: File.join(tmpdir, "missing"), delegate_for: "wr_1") }
+          .to raise_error(Workspace::Error, /cannot run true/)
+        expect(devenv_holder).to include("run_id" => "wr_1")
+        expect(devenv_holder).not_to include("delegate")
+      end
+
+      it "refuses to start beside the dev environment the run already has" do
+        fake_store.delegate("devenv", run_id: "wr_1", identity: {kind: "process", pid: 4242, started: "start-4242", pgid: 4242})
+
+        expect { run_with(command: "true", worktree: worktree, delegate_for: "wr_1") }
+          .to raise_error(Workspace::Error, "run wr_1 already has a dev environment running (pid 4242)")
+        expect(devenv_holder["delegate"]).to include("pid" => 4242)
+      end
+
+      it "takes the lock the usual way when its run no longer holds it" do
+        fake_store.release_run("wr_1")
+
+        code = run_with(command: "exit 0", worktree: worktree, delegate_for: "wr_1")
+
+        expect(code).to eq(0)
+        expect(output.string.lines).to eq([
+          "[workspace] devenv lock held for #{worktree}; running: exit 0\n",
+          "[workspace] exit 0 exited with status 0; devenv lock released\n"
+        ])
+      end
+
+      it "does not run under another run's hold" do
+        expect { run_with(command: "true", worktree: worktree, delegate_for: "wr_2") }
+          .to raise_error(Workspace::Error, /devenv lock is held by run wr_1/)
+        expect(devenv_holder).not_to include("delegate")
+      end
+    end
+
     it "releases the lock when the command cannot be started" do
       expect { run_with(command: "true", worktree: File.join(tmpdir, "missing")) }
         .to raise_error(Workspace::Error, /cannot run true/)

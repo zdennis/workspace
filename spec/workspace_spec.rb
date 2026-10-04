@@ -83,6 +83,40 @@ RSpec.describe Workspace do
       expect(terminator).to equal(lock_command.instance_variable_get(:@terminator))
     end
 
+    it "gives lock and dev the same view of which run a pane is bound to, from the bindings `binding set` writes" do
+      cli = Workspace.build_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new)
+
+      bound_run = cli.instance_variable_get(:@lock_command).instance_variable_get(:@bound_run)
+      binding_command = cli.instance_variable_get(:@binding_command)
+
+      expect(bound_run).to be_a(Workspace::BoundRun)
+      expect(cli.instance_variable_get(:@dev_command).instance_variable_get(:@bound_run)).to equal(bound_run)
+      expect(bound_run.instance_variable_get(:@pane_bindings)).to equal(binding_command.instance_variable_get(:@bindings))
+    end
+
+    it "checks a run holder's liveness against the run files in the state directory, in the CLI and in the daemon's reaper" do
+      Dir.mktmpdir("ws-run-wiring") do |state|
+        allow(ENV).to receive(:fetch).and_call_original
+        allow(ENV).to receive(:fetch).with("XDG_STATE_HOME", anything).and_return(state)
+        cli = Workspace.build_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new)
+        runs = File.join(state, "workspace", ".workflows", "runs")
+        FileUtils.mkdir_p(runs)
+        File.write(File.join(runs, "wr_live.json"), JSON.generate("state" => "running"))
+        File.write(File.join(runs, "wr_done.json"), JSON.generate("state" => "completed"))
+
+        holders = [
+          cli.instance_variable_get(:@lock_command).instance_variable_get(:@lock_holder),
+          cli.instance_variable_get(:@agent_command).instance_variable_get(:@lock_reaper).instance_variable_get(:@lock_holder)
+        ]
+
+        holders.each do |holder|
+          expect(holder.run_alive?("wr_live")).to be(true)
+          expect(holder.run_alive?("wr_done")).to be(false)
+          expect(holder.run_alive?("wr_none")).to be(false)
+        end
+      end
+    end
+
     it "wires the binding command into launch, so a delivered play binds the pane binding set and session-event use" do
       cli = Workspace.build_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new)
 

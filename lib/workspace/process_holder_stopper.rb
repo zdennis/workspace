@@ -57,12 +57,27 @@ module Workspace
     def stop(store, name, holder, stop_timeout:, retry_command:, cleared_by: nil, kill_grace: KILL_GRACE_SECONDS, clearer: nil)
       pid = holder["pid"]
       pgid = holder["pgid"] || pid
-      result, reason = attempt(holder, pgid, pid, stop_timeout, kill_grace)
+      result, reason = stop_group(holder, stop_timeout: stop_timeout, kill_grace: kill_grace)
       return result unless reason
 
       @error_output.puts "Could not stop process group #{pgid} (pid #{pid}): #{reason}"
       keep(store, name, holder, pgid, pid, retry_command, cleared_by, clearer)
       :kept
+    end
+
+    # Stops the process group of +holder+ (a process holder, or the delegate
+    # record of a run's hold) and says whether anything it started may still
+    # be running, without touching the lock store.
+    #
+    # @param holder [Hash] a record with "pid", "started" and "pgid"
+    # @param stop_timeout [Numeric] seconds between SIGTERM and SIGKILL
+    # @param kill_grace [Numeric] seconds the group may take to disappear after SIGKILL
+    # @return [Array(Symbol, String)] :terminated, :killed or :gone (nil when
+    #   the stop raised), and why the group can't be counted as stopped (nil
+    #   when it was)
+    def stop_group(holder, stop_timeout:, kill_grace: KILL_GRACE_SECONDS)
+      pid = holder["pid"]
+      attempt(holder, holder["pgid"] || pid, pid, stop_timeout, kill_grace)
     end
 
     # The `clearing` marker naming the process +pid+, recorded on a process
@@ -108,7 +123,8 @@ module Workspace
     def keep(store, name, holder, pgid, pid, retry_command, cleared_by, clearer)
       other = store.keep_process_holder(name, holder, cleared_by: cleared_by, clearer: clearer)
       if other
-        @error_output.puts "Could not keep #{name} lock for process group #{pgid}: it is now held by pid #{other["pid"]}" \
+        by = LockStore.run?(other) ? "run #{other["run_id"]}" : "pid #{other["pid"]}"
+        @error_output.puts "Could not keep #{name} lock for process group #{pgid}: it is now held by #{by}" \
           "#{" (#{other["worktree"]})" if other["worktree"]}, while process group #{pgid} may still be running. " \
           "Have its owner run `kill -TERM -#{pgid}`; the lock frees on its own once the group is empty."
       else

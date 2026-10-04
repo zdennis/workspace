@@ -14,6 +14,12 @@ module Workspace
     # dev command runs), waits for the wrapper to hold the lock, then waits
     # for the configured `ready` probe. Every public method returns
     # `{exit_code:}` so `CLI#cmd_dev` picks the process exit code.
+    #
+    # A workflow run can hold `devenv` for a step (see {RunResources}). The
+    # lock then says who may start the environment, not that one is running:
+    # `up` from the pane bound to that run starts the wrapper as the run's
+    # delegate, `down` stops the delegate and leaves the lock with the run,
+    # and everyone else queues behind the run with `up --wait`.
     class Dev
       LOCK_NAME = DevRunner::LOCK_NAME
       WINDOW_NAME = "devenv"
@@ -24,6 +30,10 @@ module Workspace
       PASSTHROUGH_ENV = %w[XDG_STATE_HOME WORKSPACE_DEBUG].freeze
       # Set in a takeover wrapper's window: its `dev __run` queues ahead of everyone.
       TAKEOVER_ENV = "WORKSPACE_DEV_TAKEOVER"
+      # Set in a wrapper's window to the workflow run it was started for: its
+      # `dev __run` works under that run's hold of the lock instead of queueing.
+      RUN_ENV = "WORKSPACE_DEV_RUN"
+      RUN_GONE_ADVICE = "If that run is no longer going, free the lock with: workspace lock clear #{LOCK_NAME}"
       NO_COMMAND = %(No dev command configured. Set one with: workspace config set dev.up "<command>")
 
       # @param lock_namespace [Workspace::LockNamespace] resolves the repo's lock store directory
@@ -45,10 +55,13 @@ module Workspace
       # @param pid_provider [#call] returns this invocation's own pid, recorded on a holder it is stopping
       # @param event_log [Workspace::EventLog, nil] records waits for the devenv lock and
       #   takeovers; nil records nothing
+      # @param bound_run [Workspace::BoundRun, nil] names the workflow run the calling pane is
+      #   bound to; nil means no pane counts as bound
       def initialize(lock_namespace:, lock_holder:, lineage:, dev_config:, dev_runner:, terminator:, tmux:, executable:,
         output: $stdout, error_output: $stderr, env: ENV, sleeper: ->(seconds) { sleep(seconds) }, clock: Lock::MonotonicClock,
         poll: POLL_SECONDS,
-        kill: ->(signal, pid) { Process.kill(signal, pid) }, pid_provider: -> { Process.pid }, event_log: nil)
+        kill: ->(signal, pid) { Process.kill(signal, pid) }, pid_provider: -> { Process.pid }, event_log: nil, bound_run: nil)
+        @bound_run = bound_run
         @lock_namespace = lock_namespace
         @event_log = event_log
         @lock_holder = lock_holder
@@ -70,6 +83,10 @@ module Workspace
           clock: clock, sleeper: sleeper)
       end
 
+      # While a workflow run holds the lock: from the pane bound to that run
+      # the environment starts at once as the run's delegate; from anywhere
+      # else +takeover+ is refused, and without +wait+ so is `up`.
+      #
       # @param wait [Boolean] queue FIFO behind another worktree's env instead of refusing
       # @param takeover [Boolean] stop another worktree's env first
       # @param ready [Boolean] run the `dev.ready` probe before returning
@@ -85,9 +102,12 @@ module Workspace
         ctx = context(working_dir)
         raise Workspace::Error, NO_COMMAND unless command?(ctx)
 
-        entry = entry(ctx[:store])
+        entry = settled_entry(ctx[:store])
         holder = entry["holder"]
-        if holder && !holder["stale"] && holder["worktree"] == ctx[:worktree]
+        if run?(holder)
+          result = up_under_run(ctx, holder, wait: wait, takeover: takeover, ready: ready)
+          return result if result
+        elsif holder && !holder["stale"] && holder["worktree"] == ctx[:worktree]
           @output.puts "Dev environment is already running for #{describe(holder)}."
           return {exit_code: 0}
         end
@@ -106,17 +126,19 @@ module Workspace
       end
 
       # Stops this repository's dev environment, whichever worktree holds it.
+      # One a workflow run started is stopped too, and the lock stays with the run.
       #
       # @param force [Boolean] also kill the process group left behind by a dead wrapper
       # @param working_dir [String] any directory inside the repository
       # @return [Hash] {exit_code:}
       def down(force: false, working_dir: Dir.pwd)
         ctx = context(working_dir, tolerate_bad_config: true)
-        holder = entry(ctx[:store])["holder"]
+        holder = settled_entry(ctx[:store])["holder"]
         unless holder
           @output.puts "No dev environment is running."
           return {exit_code: 0}
         end
+        return down_under_run(ctx, holder) if run?(holder)
 
         if holder["stale"]
           result = stop_orphan(ctx, holder, force: force)
@@ -136,7 +158,9 @@ module Workspace
       end
 
       # The dev environment's state as the `dev status --json` payload, without
-      # printing it. The ready probe runs only while the environment is held.
+      # printing it. The ready probe runs only while the environment is running.
+      # A `kind: "run"` holder is a workflow run holding the lock: the
+      # environment is running only while that holder has a live `delegate`.
       #
       # @param working_dir [String] any directory inside the repository
       # @return [Hash] `schema_version`, `running`, `holder`, `ready` and `queue`
@@ -145,11 +169,12 @@ module Workspace
         ctx = context(working_dir)
         entry = entry(ctx[:store])
         holder = entry["holder"]
+        running = run?(holder) ? !running_delegate(holder).nil? : (!holder.nil? && !holder["stale"])
         {
           "schema_version" => JSON_SCHEMA_VERSION, "ok" => true,
-          "running" => !holder.nil? && !holder["stale"],
+          "running" => running,
           "holder" => holder,
-          "ready" => (holder && !holder["stale"] && ctx[:settings][:ready]) ? ready?(ctx[:settings][:ready], ctx[:worktree]) : nil,
+          "ready" => (running && ctx[:settings][:ready]) ? ready?(ctx[:settings][:ready], ctx[:worktree]) : nil,
           "queue" => entry["queue"] || []
         }
       end
@@ -168,24 +193,27 @@ module Workspace
 
         if holder.nil?
           @output.puts "No dev environment is running."
+        elsif run?(holder)
+          print_run_status(ctx, holder)
         elsif holder["stale"]
           @output.puts "Dev environment: STALE for #{describe(holder)} (wrapper pid #{holder["pid"]} is gone#{orphan_note(holder)})"
         else
           @output.puts "Dev environment: running for #{describe(holder)}"
-          @output.puts "  pid #{holder["pid"]}, pgid #{holder["pgid"]}, pane #{holder["pane"] || "?"}, up #{uptime(holder)}"
-          @output.puts "  ready: #{readiness(ctx)}"
+          print_running_details(ctx, holder)
         end
 
         (entry["queue"] || []).each_with_index do |waiter, i|
           stale = waiter["stale"] ? " STALE" : ""
-          @output.puts "  #{i + 1}. queued: #{describe(waiter)} (pid #{waiter["waiter_pid"]})#{stale}"
+          pid = run?(waiter) ? "" : " (pid #{waiter["waiter_pid"]})"
+          @output.puts "  #{i + 1}. queued: #{describe(waiter)}#{pid}#{stale}"
         end
         {exit_code: 0}
       end
 
       # The hidden `dev __run` entry point: runs {DevRunner} in the current
       # pane with this worktree's configured command. A wrapper opened by
-      # `up --force` (TAKEOVER_ENV set) queues ahead of everyone waiting.
+      # `up --force` (TAKEOVER_ENV set) queues ahead of everyone waiting; one
+      # opened from a workflow run's pane (RUN_ENV set) works under that run's hold.
       #
       # @param wait [Boolean] queue for the lock instead of failing when it is held
       # @param working_dir [String] directory inside the worktree
@@ -193,12 +221,135 @@ module Workspace
       def run(wait: false, working_dir: Dir.pwd)
         ctx = context(working_dir)
         raise Workspace::Error, NO_COMMAND unless command?(ctx)
+        run_id = @env[RUN_ENV].to_s
         code = @dev_runner.call(store: ctx[:store], command: ctx[:settings][:up], worktree: ctx[:worktree],
-          branch: ctx[:branch], wait: wait, priority: @env[TAKEOVER_ENV] == "1")
+          branch: ctx[:branch], wait: wait, priority: @env[TAKEOVER_ENV] == "1", delegate_for: run_id.empty? ? nil : run_id)
         {exit_code: code}
       end
 
       private
+
+      def run?(record)
+        LockStore.run?(record)
+      end
+
+      # The dev environment a run holder's delegate is running, if it still is.
+      def running_delegate(holder)
+        delegate = holder["delegate"]
+        delegate unless delegate.nil? || delegate["stale"]
+      end
+
+      # A delegate whose group could not be stopped: it stays on the lock
+      # after its wrapper is gone, until the group is.
+      def kept_delegate(holder)
+        delegate = holder["delegate"]
+        delegate if delegate && delegate["kept"]
+      end
+
+      # The lock's entry, once a run that has ended is off it: its hold is
+      # reaped (as any mutating op would), which frees the lock or hands it
+      # to the environment still running under it.
+      def settled_entry(store)
+        current = entry(store)
+        return current unless run?(current["holder"]) && current["holder"]["stale"]
+        store.current_holder(LOCK_NAME)
+        entry(store)
+      end
+
+      # @return [Hash, nil] an exit result, or nil when `up` should go on to
+      #   queue behind the run like any other waiter
+      def up_under_run(ctx, holder, wait:, takeover:, ready:)
+        delegate = running_delegate(holder)
+        unless @bound_run && @bound_run.run_id == holder["run_id"]
+          if takeover
+            @error_output.puts "The #{LOCK_NAME} lock is held by #{describe(holder)}; --force does not take a lock from a run. " \
+              "Use --wait to queue behind it. #{RUN_GONE_ADVICE}"
+            return {exit_code: 1}
+          end
+          return nil if wait
+          running = delegate ? ", with a dev environment running for #{describe(delegate)}" : ""
+          @error_output.puts "The #{LOCK_NAME} lock is held by #{describe(holder)}#{running}. Use --wait to queue. #{RUN_GONE_ADVICE}"
+          return {exit_code: 1}
+        end
+
+        left = kept_delegate(holder)
+        if delegate.nil? && left
+          @error_output.puts "A previous dev environment's process group #{left["pgid"]} is still running under run #{holder["run_id"]} " \
+            "(its wrapper pid #{left["pid"]} is gone). Have its owner run `kill -TERM -#{left["pgid"]}`, then run `workspace dev up` again."
+          return {exit_code: 1}
+        end
+        if delegate
+          @output.puts "Dev environment is already running for #{describe(delegate)} under run #{holder["run_id"]}."
+          return {exit_code: 0}
+        end
+        session = session_for(ctx)
+        wrapper = open_wrapper(ctx, session, wait: false, delegate_for: holder["run_id"])
+        code = await_wrapper(ctx, wrapper, limit: ctx[:settings][:startup_timeout], limit_name: "startup timeout")
+        finish_up(ctx, session, wrapper, code, ready: ready)
+      end
+
+      def down_under_run(ctx, holder)
+        delegate = running_delegate(holder) || kept_delegate(holder)
+        unless delegate
+          @output.puts "No dev environment is running; the #{LOCK_NAME} lock is held by #{describe(holder)}."
+          return {exit_code: 0}
+        end
+
+        result = stop_delegate(ctx, delegate)
+        return {exit_code: 1} if result == :kept
+        close_window(delegate)
+        killed = (result == :killed) ? " (SIGKILL after #{format_seconds(ctx[:settings][:stop_timeout])})" : ""
+        what = (result == :gone) ? "Dev environment for #{describe(delegate)} was not running" : "Stopped dev environment for #{describe(delegate)}#{killed}"
+        @output.puts "#{what}; the #{LOCK_NAME} lock stays with #{describe(holder)}."
+        {exit_code: 0}
+      end
+
+      # Stops the wrapper a run's delegate record names, as {#stop} stops a
+      # holder, and drops the record; the run keeps the lock. A wrapper that
+      # can't be stopped stays recorded, so the lock goes on naming it.
+      #
+      # @return [Symbol] :terminated, :killed, :gone, or :kept (reported on stderr)
+      def stop_delegate(ctx, delegate)
+        store = ctx[:store]
+        pid = delegate["pid"]
+        result, reason = @holder_stopper.stop_group(delegate, stop_timeout: ctx[:settings][:stop_timeout], kill_grace: kill_grace_for(ctx))
+        if reason
+          pgid = delegate["pgid"] || pid
+          store.keep_delegate(LOCK_NAME, pid)
+          @error_output.puts "Could not stop process group #{pgid} (pid #{pid}): #{reason}"
+          @error_output.puts "The #{LOCK_NAME} lock still names it, so no second dev environment starts while process group #{pgid} runs. " \
+            "Have its owner run `kill -TERM -#{pgid}`, then run: workspace dev down"
+          return :kept
+        end
+        deadline = @clock.now + RELEASE_MARGIN
+        @sleeper.call(@poll) while @lock_holder.alive?(pid: pid, started: delegate["started"]) && @clock.now < deadline
+        store.end_delegate(LOCK_NAME, pid) unless @lock_holder.alive?(pid: pid, started: delegate["started"])
+        result
+      end
+
+      def print_run_status(ctx, holder)
+        ended = holder["stale"] ? " (the run has ended; the next lock or dev command frees it)" : ""
+        delegate = running_delegate(holder)
+        unless delegate
+          @output.puts "Dev environment: not running; the #{LOCK_NAME} lock is held by #{describe(holder)}#{ended}"
+          return
+        end
+        @output.puts "Dev environment: running for #{describe(delegate)} under run #{holder["run_id"]}#{ended}"
+        print_running_details(ctx, delegate)
+      end
+
+      def print_running_details(ctx, record)
+        @output.puts "  pid #{record["pid"]}, pgid #{record["pgid"]}, pane #{record["pane"] || "?"}, up #{uptime(record)}"
+        @output.puts "  ready: #{readiness(ctx)}"
+      end
+
+      # Whether the wrapper +pid+ now runs the environment: as the lock's
+      # holder, or as the delegate of the run that holds it.
+      def running_as?(entry, pid)
+        holder = entry["holder"]
+        return false if holder.nil? || holder["stale"]
+        holder["pid"] == pid || running_delegate(holder)&.dig("pid") == pid
+      end
 
       # Stops another worktree's env and hands its lock straight to this one,
       # ahead of anyone already queued: the new wrapper joins the queue at its
@@ -238,9 +389,10 @@ module Workspace
         finish_up(ctx, session, wrapper, code, ready: ready)
       end
 
-      def open_wrapper(ctx, session, wait:, takeover: false)
+      def open_wrapper(ctx, session, wait:, takeover: false, delegate_for: nil)
         env = passthrough_env
         env[TAKEOVER_ENV] = "1" if takeover
+        env[RUN_ENV] = delegate_for if delegate_for
         wrapper = @tmux.new_window(session, name: WINDOW_NAME, cwd: ctx[:worktree], command: run_argv(wait), env: env,
           remain_on_exit: true)
         raise Workspace::Error, "Could not open a #{WINDOW_NAME} window in tmux session #{session}." unless wrapper
@@ -446,7 +598,7 @@ module Workspace
         loop do
           entry = entry(store)
           holder = entry["holder"]
-          if holder && holder["pid"] == pid && !holder["stale"]
+          if running_as?(entry, pid)
             log_activity(ctx, "lock_acquired", pid, waited.call) if seen_queued
             return 0
           end
@@ -454,7 +606,7 @@ module Workspace
           queued = (entry["queue"] || []).any? { |w| w["waiter_pid"] == pid }
           if queued && !seen_queued
             @output.puts "Trying to obtain workspace #{LOCK_NAME} lock (held by #{holder ? describe(holder) : "no one"})..."
-            log_activity(ctx, "lock_wait_started", pid, "holder" => holder&.slice("pid", "worktree", "branch"))
+            log_activity(ctx, "lock_wait_started", pid, "holder" => holder&.slice("pid", "worktree", "branch", "run_id"))
             seen_queued = true
           end
           if seen_queued && !queued
@@ -544,14 +696,16 @@ module Workspace
         deadline = @clock.now + ready_timeout
         loop do
           return 0 if ready?(spec, ctx[:worktree])
-          holder = entry(ctx[:store])["holder"]
-          unless holder && holder["pid"] == pid && !holder["stale"]
+          entry = entry(ctx[:store])
+          holder = entry["holder"]
+          unless running_as?(entry, pid)
             @error_output.puts "The dev command exited before its ready check (#{spec}) passed; see the #{WINDOW_NAME} window."
             return 6
           end
           if @clock.now >= deadline
-            outcome = (stop(ctx, holder) == :kept) ? "its process group could not be stopped (see above)" :
-              "stopped the dev environment and released the #{LOCK_NAME} lock"
+            stopped = run?(holder) ? stop_delegate(ctx, running_delegate(holder)) : stop(ctx, holder)
+            released = run?(holder) ? "; the #{LOCK_NAME} lock stays with its run" : " and released the #{LOCK_NAME} lock"
+            outcome = (stopped == :kept) ? "its process group could not be stopped (see above)" : "stopped the dev environment#{released}"
             @error_output.puts "Ready check (#{spec}) did not pass within #{format_seconds(ready_timeout)}; #{outcome}."
             return 6
           end
@@ -585,6 +739,7 @@ module Workspace
       end
 
       def describe(record)
+        return "#{label(record["worktree"])} (run #{record["run_id"]}#{", step #{record["step"]}" if record["step"]})" if run?(record)
         branch = record["branch"]
         "#{label(record["worktree"])}#{" (#{branch})" if branch}"
       end
@@ -594,7 +749,7 @@ module Workspace
       end
 
       def uptime(holder)
-        seconds = (Time.now - Time.iso8601(holder["acquired_at"])).to_i
+        seconds = (Time.now - Time.iso8601(holder["acquired_at"] || holder["since"])).to_i
         format_seconds([seconds, 0].max)
       rescue ArgumentError, TypeError
         "?"

@@ -184,6 +184,29 @@ RSpec.describe Workspace::LockHolder do
     end
   end
 
+  describe "#run_alive?" do
+    it "counts every run as alive without a run liveness checker" do
+      expect(holder.run_alive?("wr_1")).to be true
+    end
+
+    it "asks its run liveness checker" do
+      runs = instance_double(Workspace::RunLiveness)
+      allow(runs).to receive(:alive?).with("wr_1").and_return(false)
+      allow(runs).to receive(:alive?).with("wr_2").and_return(true)
+      with_runs = described_class.new(process_tree: process_tree, run_liveness: runs)
+
+      expect(with_runs.run_alive?("wr_1")).to be false
+      expect(with_runs.run_alive?("wr_2")).to be true
+    end
+
+    it "lets an unreadable run state raise, so the lock store counts the run as alive" do
+      runs = instance_double(Workspace::RunLiveness)
+      allow(runs).to receive(:alive?).and_raise(Workspace::Error, "could not read")
+
+      expect { described_class.new(process_tree: process_tree, run_liveness: runs).run_alive?("wr_1") }.to raise_error(Workspace::Error)
+    end
+  end
+
   describe "#alive?" do
     it "is true when the pid is running with a matching start time" do
       allow(snapshot).to receive(:find).with(100).and_return({pid: 100, lstart: "start-100"})

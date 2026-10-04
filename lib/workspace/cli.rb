@@ -1699,6 +1699,12 @@ module Workspace
         next acquire or release; acquire then carries on as usual, while
         release exits 3. The dev environment lock is never taken over this way.
 
+        Workflow runs: a run can hold locks for a step. `status` shows such a
+        holder as `run <id> (step <name>)`. It is not tied to an agent's
+        session, is never idle and is never taken over; it is released when
+        the run moves on or ends. `acquire` from the pane bound to that run
+        reports the lock as already held for it (exit 0) instead of waiting.
+
         Note: `lock release`/`lock clear` exit 0 even when nothing was
         held/cleared, except that `release` exits 3 when it reports an idle
         takeover, and `clear` exits 1 when it keeps the devenv lock because
@@ -1985,6 +1991,12 @@ module Workspace
 
         Note: `up` from the worktree that already holds the devenv lock is
         a no-op (exit 0); it doesn't restart the dev command.
+
+        Workflow runs: while a run holds the devenv lock, `up` from the pane
+        bound to that run starts the dev env at once, under the run's lock;
+        `down` stops it and the lock stays with the run. From anywhere else
+        `up` is refused (exit 1): --wait queues behind the run, and --force
+        does not take the lock from a run.
 
         Exit codes (up):
           0   running (or already running for this worktree)

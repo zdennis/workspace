@@ -7,6 +7,7 @@ class FakeLockIdentity
     @pane = pane
     @worktree = worktree
     @dead = []
+    @ended_runs = []
   end
 
   def current
@@ -24,6 +25,16 @@ class FakeLockIdentity
   def kill(pid)
     @dead << pid
   end
+
+  # A run counts as alive until the spec ends it, as a run does until its run
+  # file is terminal or gone.
+  def run_alive?(run_id)
+    !@ended_runs.include?(run_id)
+  end
+
+  def end_run(run_id)
+    @ended_runs << run_id
+  end
 end
 
 # A fake liveness checker driven by an explicit set of dead pids, rather than
@@ -31,6 +42,7 @@ end
 class FakeLockLiveness
   def initialize(dead: [])
     @dead = dead
+    @ended_runs = []
   end
 
   def alive?(pid:, started:)
@@ -43,5 +55,15 @@ class FakeLockLiveness
 
   def kill(pid)
     @dead << pid
+  end
+
+  # A run counts as alive until the spec ends it, as a run does until its run
+  # file is terminal or gone.
+  def run_alive?(run_id)
+    !@ended_runs.include?(run_id)
+  end
+
+  def end_run(run_id)
+    @ended_runs << run_id
   end
 end

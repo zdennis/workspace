@@ -30,11 +30,35 @@ module Workspace
   # `displaced` list until it next runs `acquire` or `release`, which read it
   # back through {#pop_displaced}. `kind: "process"` holders are never marked
   # idle and never taken over.
+  #
+  # A `kind: "run"` holder is a workflow run, not a process: it is keyed on
+  # its "run_id" and carries no pid, so it outlives the agent sessions of
+  # its steps ({#release_all} leaves it alone) and one run may hold several
+  # locks ({#acquire_run}). It is alive for as long as its run is, which
+  # +liveness+ answers through `run_alive?`. Like a process holder it is
+  # never marked idle or taken over. A process working for the run that
+  # holds a lock (the dev wrapper started from the run's pane) is recorded
+  # on that hold as its "delegate" instead of queueing behind its own run;
+  # when the run gives the lock up while the delegate still runs, the
+  # delegate becomes the holder, so the lock goes on naming it.
   class LockStore
     DEFAULT_IDLE_GRACE = ConfigSchema.default("locks.idle_grace")
+    RUN_KIND = "run"
+    private_constant :RUN_KIND
+
+    # Lock names end up in file keys and in commands an agent is told to run
+    # verbatim, so they are limited to characters that need no shell quoting.
+    NAME_PATTERN = /\A[A-Za-z0-9][A-Za-z0-9._-]*\z/
+
+    # @param record [Hash, nil] a holder or waiter record, as stored or as {#status} returns it
+    # @return [Boolean] whether it is a workflow run's (it then has a "run_id" and no pid)
+    def self.run?(record)
+      record.is_a?(Hash) && record["kind"] == RUN_KIND
+    end
 
     # @param dir [String] this namespace's lock store directory
-    # @param liveness [Workspace::LockHolder] checks whether a recorded pid is still alive
+    # @param liveness [Workspace::LockHolder] checks whether a recorded pid is still alive, and
+    #   (when it answers `run_alive?`) whether a run is; without that, every run counts as alive
     # @param logger [Workspace::Logger] debug logger
     # @param clock [#call] returns the current wall-clock time in epoch seconds, for idle tracking
     # @param idle_grace [Numeric] seconds an agent holder may stay idle before the head waiter may take over
@@ -136,7 +160,7 @@ module Workspace
         next claimed if claimed
 
         holder = entry["holder"]
-        index = entry["queue"].index { |w| w["waiter_pid"] == waiter_pid }
+        index = waiter_pid && entry["queue"].index { |w| w["waiter_pid"] == waiter_pid }
         next {status: :cleared} unless index
         {status: :queued, position: index + 1, total: entry["queue"].size + (holder ? 1 : 0), holder: holder}
       end
@@ -154,11 +178,172 @@ module Workspace
         entry = data[name]
         next false unless entry
         holder = entry["holder"]
-        next false unless holder && holder["pid"] == pid
+        next false unless holder && pid && holder["pid"] == pid
         entry["holder"] = nil
         audit(:release, name, holder: holder_summary(holder))
         promote!(entry, name)
         true
+      end
+    end
+
+    # Makes +run+ the holder of every lock in +names+, or queues it for the
+    # first one it can't have yet. Never blocks: a waiting run calls this
+    # again (with the same names) to see whether it has been promoted.
+    #
+    # Locks are taken in sorted name order, and a run waits for one lock at
+    # a time while holding only names sorted before it, so two runs that
+    # want the same locks can't deadlock. A run's holdings are its current
+    # step's: anything it holds or waits for outside +names+ is released
+    # here, and so is a lock it holds that sorts after the one it has to
+    # wait for. The one-lock-per-agent rule doesn't apply to a run.
+    #
+    # A run that heads the queue behind an agent idle past the grace period
+    # takes the lock over, as a waiting agent's {#poll} does.
+    #
+    # A lock the run gives up here while its delegate still runs goes to
+    # that delegate, not to the next waiter (:handed_over names it). If the
+    # run then asks for that lock again it gets it back, with the process as
+    # its delegate again, ahead of anyone queued behind that process. Until
+    # then everyone queued for that lock waits for that process to stop,
+    # which is the one way two runs can still block each other: the caller
+    # has to stop the process a handed-over lock names.
+    #
+    # A run that is not alive (no run file, or a finished one) gets nothing:
+    # its hold would be reaped by the next op.
+    #
+    # @param names [Array<String>] lock names, in any order
+    # @param run [Hash] the run: :run_id, and optionally :step, :workflow,
+    #   :workspace, :worktree, :pane and :task
+    # @return [Hash] :status is :acquired, :waiting or :not_alive; :held
+    #   (names the run holds now, sorted), :acquired (names that became its
+    #   in this call), :released (names it gave up in this call),
+    #   :handed_over (those of :released that went to the run's delegate),
+    #   :took_over (name => the displaced holder record), and :waiting (nil,
+    #   or :name, :position, :total, :holder, and :queued, true when this
+    #   call joined the queue)
+    def acquire_run(names, run:)
+      names = names.uniq.sort
+      run_id = run[:run_id]
+      with_lock do |data|
+        reap!(data)
+        unless run_alive?("run_id" => run_id)
+          next {status: :not_alive, held: [], acquired: [], released: [], handed_over: [], took_over: {}, waiting: nil}
+        end
+        handed_over = []
+        released = leave_run!(data, run_id, data.keys - names, handed_over)
+        acquired = []
+        took_over = {}
+        waiting = nil
+        names.each_with_index do |name, i|
+          entry = data[name] ||= empty_entry
+          holder = entry["holder"]
+          if same_run?(holder, run_id)
+            acquired << name if holder.delete("unclaimed")
+            holder.merge!(run_fields(run))
+            next
+          end
+
+          index = entry["queue"].index { |w| same_run?(w, run_id) }
+          if holder.nil? && entry["queue"].empty?
+            entry["holder"] = run_holder(run)
+            audit(:acquire, name, holder: holder_summary(entry["holder"]))
+            acquired << name
+            next
+          end
+          if readoptable?(entry, run_id)
+            entry["queue"].delete_at(index) if index
+            entry["holder"] = run_holder(run).merge("delegate" => delegate_record(holder, holder["acquired_at"]))
+            audit(:readopt, name, holder: holder_summary(entry["holder"]), delegate: holder_summary(holder))
+            acquired << name
+            next
+          end
+          if index == 0 && holder && idle_expired?(holder)
+            displace!(entry, holder, name)
+            entry["queue"].shift
+            entry["holder"] = run_holder(run)
+            audit(:takeover, name, from: holder_summary(holder), to: holder_summary(entry["holder"]))
+            took_over[name] = holder
+            acquired << name
+            next
+          end
+
+          entry["queue"] << run_waiter(run) unless index
+          entry["queue"][index].merge!(run_fields(run)) if index
+          position = (index || entry["queue"].size - 1) + 1
+          released.concat(leave_run!(data, run_id, names[(i + 1)..], handed_over))
+          waiting = {name: name, position: position, total: entry["queue"].size + (holder ? 1 : 0), holder: holder, queued: index.nil?}
+          break
+        end
+        held = names.select { |name| same_run?(data.dig(name, "holder"), run_id) }
+        {status: waiting ? :waiting : :acquired, held: held, acquired: acquired, released: released, handed_over: handed_over,
+         took_over: took_over, waiting: waiting}
+      end
+    end
+
+    # Releases the locks +run_id+ holds and takes it out of the queues it
+    # waits in. A released lock with a live delegate goes to that delegate
+    # (see the class comment); otherwise the next waiter is promoted.
+    #
+    # @param run_id [String]
+    # @param names [Array<String>, nil] only these locks; nil for every lock
+    # @return [Array<String>] names of the locks the run held and released
+    def release_run(run_id, names = nil)
+      with_lock do |data|
+        reap!(data)
+        leave_run!(data, run_id, names || data.keys)
+      end
+    end
+
+    # Records the process +identity+ as the delegate of the run holding
+    # +name+, so a process the run's own agent starts (the dev wrapper)
+    # works under the run's hold instead of queueing behind it.
+    #
+    # @param name [String] lock name
+    # @param run_id [String] the run the process works for
+    # @param identity [Hash] a `kind: "process"` identity (:pid, :started, :pgid, :pane, :worktree, :branch)
+    # @return [Hash] :status is :delegated; :not_holder (with :holder, whoever
+    #   holds the lock instead, or nil); or :busy (with :delegate, another
+    #   live process already recorded)
+    def delegate(name, run_id:, identity:)
+      with_lock do |data|
+        reap!(data)
+        holder = data.dig(name, "holder")
+        next {status: :not_holder, holder: holder} unless same_run?(holder, run_id)
+        current = holder["delegate"]
+        next {status: :delegated} if current && current["pid"] == identity[:pid] && current["started"] == identity[:started]
+        next {status: :busy, delegate: current} if current
+
+        holder["delegate"] = delegate_record(identity.transform_keys(&:to_s), now_iso)
+        audit(:delegate, name, holder: holder_summary(holder), delegate: holder_summary(holder["delegate"]))
+        {status: :delegated}
+      end
+    end
+
+    # Ends the work of the delegate with +pid+: drops it from the run's
+    # hold, which the run keeps. If the lock was handed to that process
+    # meanwhile (its run released the lock or ended), its hold is released
+    # as {#release} would.
+    #
+    # @param name [String] lock name
+    # @param pid [Integer] the delegate's pid
+    # @return [Symbol] :ended (the run keeps the lock), :released (the
+    #   process held the lock itself), or :absent
+    def end_delegate(name, pid)
+      with_lock do |data|
+        reap!(data)
+        entry = data[name]
+        holder = entry && entry["holder"]
+        next :absent unless holder && pid
+        if run?(holder) && holder.dig("delegate", "pid") == pid
+          delegate = holder.delete("delegate")
+          audit(:delegate_end, name, holder: holder_summary(holder), delegate: holder_summary(delegate))
+          next :ended
+        end
+        next :absent unless holder["pid"] == pid
+        entry["holder"] = nil
+        audit(:release, name, holder: holder_summary(holder))
+        promote!(entry, name)
+        :released
       end
     end
 
@@ -167,6 +352,10 @@ module Workspace
     # not the waiter pid, since a queued wait runs in its own background
     # process; that orphaned waiter then sees :cleared on its next {#poll}.
     #
+    # A run's holds and queue entries are never touched, whatever
+    # +identity+ is: this runs when an agent's session ends or is cleared,
+    # and a run's locks have to outlive every one of its agents' sessions.
+    #
     # @param identity [Hash] the agent, from {LockHolder#current}
     # @return [Array<String>] names of locks actually released
     def release_all(identity)
@@ -174,7 +363,8 @@ module Workspace
         reap!(data)
         released = []
         data.each do |name, entry|
-          entry["queue"].reject! { |w| w["agent_pid"] == identity[:pid] && w["agent_started"] == identity[:started] }
+          entry["queue"].reject! { |w| !run?(w) && w["agent_pid"] == identity[:pid] && w["agent_started"] == identity[:started] }
+          next if run?(entry["holder"])
           next unless LockHolder.same_agent?(entry["holder"], identity)
           holder = entry["holder"]
           entry["holder"] = nil
@@ -247,7 +437,7 @@ module Workspace
     def dequeue(name, waiter_pid)
       with_lock do |data|
         entry = data[name]
-        next :absent unless entry
+        next :absent unless entry && waiter_pid
         if entry["holder"] && entry["holder"]["waiter_pid"] == waiter_pid
           entry["holder"] = nil
           promote!(entry, name)
@@ -273,7 +463,7 @@ module Workspace
         next {status: :dequeued} unless entry
         claimed = claim!(entry, waiter_pid, name)
         next claimed if claimed
-        entry["queue"].reject! { |w| w["waiter_pid"] == waiter_pid }
+        entry["queue"].reject! { |w| waiter_pid && w["waiter_pid"] == waiter_pid }
         {status: :dequeued}
       end
     end
@@ -297,7 +487,9 @@ module Workspace
     # dev environment could start beside one that is still running. The
     # caller then removes it with {#finish_clear}, or keeps it with
     # {#keep_process_holder}. The `clear` audit event is written here either
-    # way, with `holder_kept` when the holder was left in place.
+    # way, with `holder_kept` when the holder was left in place. A run
+    # holder with a live delegate is treated as that delegate: the lock is
+    # handed to it first, so its process group is stopped like any other.
     #
     # A kept holder is marked `clearing` with +clearer+ (the `lock clear`
     # process's pid and start time) until {#finish_clear} or
@@ -324,6 +516,7 @@ module Workspace
       with_lock(lenient: true) do |data|
         entry = data[name]
         next nil unless entry
+        hand_over!(entry, name, cleared_by: cleared_by, evicted: true) if keep_process_holder && run?(entry["holder"]) && live_delegate(entry["holder"])
         holder = entry["holder"]
         keep = keep_process_holder && holder && holder["kind"] == "process"
         if keep && (marker = live_clearing_marker(holder))
@@ -468,6 +661,24 @@ module Workspace
       end
     end
 
+    # Marks the delegate with +pid+ `kept`, for one whose process group
+    # could not be stopped: it then stays on the run's hold after its
+    # wrapper is gone, for as long as its group runs, so no second dev
+    # environment starts beside it. When the run gives the lock up, it is
+    # handed to that delegate as a kept `kind: "process"` holder.
+    #
+    # @param name [String] lock name
+    # @param pid [Integer] the delegate's pid
+    # @return [Boolean] whether a delegate with that pid was marked
+    def keep_delegate(name, pid)
+      with_lock(lenient: true) do |data|
+        delegate = data.dig(name, "holder", "delegate")
+        next false unless pid && delegate.is_a?(Hash) && delegate["pid"] == pid
+        delegate["kept"] = true
+        true
+      end
+    end
+
     # Marks every lock held by +identity+ idle (its agent finished a turn) or
     # active again. Only `kind: "agent"` holders matching both pid and start
     # time are touched, so another pane's or agent's hold is never changed.
@@ -480,7 +691,7 @@ module Workspace
       with_lock do |data|
         data.filter_map do |name, entry|
           holder = entry["holder"]
-          next unless LockHolder.same_agent?(holder, identity) && holder["kind"] != "process"
+          next unless LockHolder.same_agent?(holder, identity) && !never_idle?(holder)
           clamp_idle_since!(holder)
           next if idle == !holder["idle_since"].nil?
           holder["idle_since"] = idle ? @clock.call : nil
@@ -503,7 +714,7 @@ module Workspace
       return false unless data.is_a?(Hash)
       data.each_value.any? do |entry|
         holder = entry.is_a?(Hash) && entry["holder"]
-        next false unless holder.is_a?(Hash) && holder["kind"] != "process"
+        next false unless holder.is_a?(Hash) && !never_idle?(holder)
         next false if pane && holder["pane"] != pane
         idle == !holder["idle_since"].is_a?(Numeric)
       end
@@ -623,19 +834,29 @@ module Workspace
     # `idle_since` reads as active, so {#mark_idle} can record a real one.
     def normalize_holder(holder)
       return nil if holder.nil?
-      unless holder.is_a?(Hash) && holder["pid"] && holder["started"]
+      unless holder_record?(holder)
         @logger.debug { "lock: dropping malformed holder entry: #{holder.inspect}" }
         return nil
       end
       holder["idle_since"] = nil unless holder["idle_since"].is_a?(Numeric)
+      delegate = holder["delegate"]
+      holder.delete("delegate") unless delegate.is_a?(Hash) && delegate["pid"] && delegate["started"]
       holder
+    end
+
+    def holder_record?(holder)
+      holder.is_a?(Hash) && (valid_run?(holder) || (holder["pid"] && holder["started"]))
+    end
+
+    def valid_run?(record)
+      run?(record) && record["run_id"].is_a?(String) && !record["run_id"].empty?
     end
 
     # Drops queue entries missing the fields liveness/promotion require.
     def normalize_queue(queue)
       return [] unless queue.is_a?(Array)
       queue.select do |w|
-        valid = w.is_a?(Hash) && w["waiter_pid"] && w["waiter_started"]
+        valid = w.is_a?(Hash) && (valid_run?(w) || (w["waiter_pid"] && w["waiter_started"]))
         @logger.debug { "lock: dropping malformed queue entry: #{w.inspect}" } unless valid
         valid
       end
@@ -707,9 +928,9 @@ module Workspace
     end
 
     # An agent holder idle for at least the grace period. A process holder
-    # (the dev environment) is never idle in this sense.
+    # (the dev environment) or a run is never idle in this sense.
     def idle_expired?(holder)
-      return false if holder["kind"] == "process"
+      return false if never_idle?(holder)
       idle_since = clamp_idle_since!(holder)
       !idle_since.nil? && @clock.call - idle_since >= @idle_grace
     end
@@ -731,7 +952,7 @@ module Workspace
     #   takeover, or nil when the lock is not this waiter's
     def claim!(entry, waiter_pid, name = nil)
       holder = entry["holder"]
-      return unless holder
+      return unless holder && waiter_pid
       if holder["waiter_pid"] == waiter_pid
         holder.delete("unclaimed")
         holder.delete("takeover")
@@ -756,11 +977,11 @@ module Workspace
         "task" => holder["task"],
         "idle_since" => holder["idle_since"],
         "at" => @clock.call,
-        "by" => {"pane" => head["pane"], "task" => head["task"], "worktree" => head["worktree"]}
+        "by" => {"pane" => head["pane"], "task" => head["task"], "worktree" => head["worktree"]}.merge(run_identity(head))
       }
       records = (entry["displaced"] || []).reject { |r| r["pid"] == holder["pid"] && r["started"] == holder["started"] }
       entry["displaced"] = records << record
-      @logger.debug { "lock: waiter #{head["waiter_pid"]} took over from idle pid #{holder["pid"]}" }
+      @logger.debug { "lock: waiter #{head["waiter_pid"] || "run #{head["run_id"]}"} took over from idle pid #{holder["pid"]}" }
     end
 
     # Buffers one audit event, unless +name+ is nil (a caller with no lock
@@ -789,11 +1010,13 @@ module Workspace
     def holder_summary(holder)
       return nil unless holder
       {"pid" => holder["pid"], "pane" => holder["pane"], "worktree" => holder["worktree"], "task" => holder["task"], "kind" => holder["kind"]}
+        .merge(holder.slice("run_id", "step"))
     end
 
     def waiter_summary(waiter)
       return nil unless waiter
       {"agent_pid" => waiter["agent_pid"], "pane" => waiter["pane"], "worktree" => waiter["worktree"], "task" => waiter["task"]}
+        .merge(waiter.slice("run_id", "step"))
     end
 
     def identity_summary(identity)
@@ -811,6 +1034,7 @@ module Workspace
     # +kept_group+ is false (the `stale` annotation, which reports the
     # wrapper itself as gone).
     def holder_alive?(holder, kept_group: true)
+      return run_alive?(holder) if run?(holder)
       unless alive_or_unknown?(holder["pid"], holder["started"])
         return kept_group && !!holder["kept"] && kept_group_running?(holder)
       end
@@ -828,7 +1052,116 @@ module Workspace
     end
 
     def waiter_alive?(waiter)
+      return run_alive?(waiter) if run?(waiter)
       alive_or_unknown?(waiter["waiter_pid"], waiter["waiter_started"])
+    end
+
+    # A run whose state can't be read counts as alive, as a pid does: reaping
+    # a live run's hold would grant its lock twice.
+    def run_alive?(record)
+      return true unless @liveness.respond_to?(:run_alive?)
+      @liveness.run_alive?(record["run_id"])
+    rescue Workspace::Error => e
+      @logger.debug { "lock: liveness unknown for run #{record["run_id"]}, not reaping: #{e.message}" }
+      true
+    end
+
+    def run?(record)
+      self.class.run?(record)
+    end
+
+    # What marks a record written about a run (a displacement's "by") as a run's.
+    def run_identity(record)
+      run?(record) ? record.slice("kind", "run_id", "step") : {}
+    end
+
+    def same_run?(record, run_id)
+      run?(record) && record["run_id"] == run_id
+    end
+
+    def never_idle?(holder)
+      holder["kind"] == "process" || run?(holder)
+    end
+
+    def run_fields(run)
+      {"step" => run[:step], "workflow" => run[:workflow], "workspace" => run[:workspace], "pane" => run[:pane],
+       "worktree" => run[:worktree], "task" => run[:task]}
+    end
+
+    def run_holder(run)
+      {"kind" => RUN_KIND, "run_id" => run[:run_id]}.merge(run_fields(run), "acquired_at" => now_iso, "idle_since" => nil)
+    end
+
+    def run_waiter(run)
+      {"kind" => RUN_KIND, "run_id" => run[:run_id]}.merge(run_fields(run), "enqueued_at" => now_iso)
+    end
+
+    # Takes +run_id+ out of +names+: its queue entries go, and each lock it
+    # holds is released, to its live delegate if it has one.
+    #
+    # @param handed_over [Array<String>] gains the names that went to a delegate
+    # @return [Array<String>] names of the locks it held
+    def leave_run!(data, run_id, names, handed_over = [])
+      names.select do |name|
+        entry = data[name]
+        next false unless entry
+        entry["queue"].reject! { |w| same_run?(w, run_id) }
+        next false unless same_run?(entry["holder"], run_id)
+        audit(:release, name, holder: holder_summary(entry["holder"]))
+        handed_over << name if hand_over!(entry, name)
+        promote!(entry, name)
+        true
+      end
+    end
+
+    # The process a run holder recorded as working under its hold, while
+    # that process still runs (or can't be checked). One marked `kept` (its
+    # group could not be stopped) counts for as long as its group runs.
+    def live_delegate(holder)
+      delegate = holder["delegate"]
+      return nil unless delegate.is_a?(Hash)
+      return delegate if alive_or_unknown?(delegate["pid"], delegate["started"])
+      delegate if delegate["kept"] && kept_group_running?(delegate)
+    end
+
+    def delegate_record(process, since)
+      {"kind" => "process"}.merge(process.slice("pid", "started", "pgid", "pane", "worktree", "branch", "kept"), "since" => since).compact
+    end
+
+    # Ends a run's hold: the lock goes to the run's live delegate, which
+    # holds it from then on like any dev wrapper, or is left free. The new
+    # holder remembers the run it came from ("from_run"), so that run can
+    # take the lock back (see {#readoptable?}), unless the run was +evicted+
+    # by a clear.
+    #
+    # @return [Boolean] whether a delegate took the lock
+    def hand_over!(entry, name, cleared_by: nil, evicted: false)
+      run = entry["holder"]
+      delegate = live_delegate(run)
+      unless delegate
+        entry["holder"] = nil
+        return false
+      end
+      identity = {kind: "process", pid: delegate["pid"], started: delegate["started"], pane: delegate["pane"],
+                  worktree: delegate["worktree"], pgid: delegate["pgid"], branch: delegate["branch"]}
+      entry["holder"] = build_holder(identity, nil, waiter_pid: delegate["pid"]).merge("acquired_at" => delegate["since"])
+      entry["holder"]["kept"] = true if delegate["kept"]
+      entry["holder"]["from_run"] = run["run_id"] unless evicted
+      audit(:acquire, name, holder: holder_summary(entry["holder"]), handed_over_from: holder_summary(run), cleared_by: cleared_by)
+      true
+    end
+
+    # Whether +run_id+ may take +entry+'s lock back from the process it was
+    # handed to: its own former delegate, still running, that nobody is
+    # stopping or about to replace. A `kept` holder (its wrapper may be
+    # gone), one a clear is stopping, and one a `dev up --force` waiter is
+    # queued to replace are left as they are, and the run queues instead.
+    def readoptable?(entry, run_id)
+      holder = entry["holder"]
+      return false unless holder && holder["kind"] == "process" && holder["from_run"] == run_id
+      return false if holder["kept"] || live_clearing_marker(holder)
+      head = entry["queue"].first
+      !(head && head["takeover"] && waiter_alive?(head))
     end
 
     # Unknown liveness (the process table could not be read) counts as alive:
@@ -882,12 +1215,13 @@ module Workspace
     end
 
     def same_process?(current, holder)
-      !current.nil? && current["pid"] == holder["pid"] && current["started"] == holder["started"]
+      !current.nil? && !holder["pid"].nil? && current["pid"] == holder["pid"] && current["started"] == holder["started"]
     end
 
     # The inverse of {#holder_from_waiter}, for a promotion taken back
     # before its waiter learned of it.
     def waiter_from_holder(holder)
+      return holder.except("acquired_at", "idle_since", "unclaimed", "delegate").merge("enqueued_at" => holder["acquired_at"]) if run?(holder)
       {
         "waiter_pid" => holder["waiter_pid"],
         "waiter_started" => holder["waiter_started"],
@@ -901,6 +1235,7 @@ module Workspace
     end
 
     def holder_from_waiter(waiter)
+      return waiter.except("enqueued_at", "clearing").merge("acquired_at" => now_iso, "idle_since" => nil) if run?(waiter)
       build_holder(
         {
           kind: waiter["kind"] || "agent",
@@ -918,6 +1253,10 @@ module Workspace
 
     def annotate_entry(entry)
       holder = entry["holder"]
+      if holder && holder["delegate"]
+        delegate = holder["delegate"]
+        holder = holder.merge("delegate" => delegate.merge("stale" => !alive_or_unknown?(delegate["pid"], delegate["started"])))
+      end
       {
         "holder" => holder && strip_dead_clearing_marker(holder.merge("stale" => !holder_alive?(holder, kept_group: false))),
         "queue" => entry["queue"].map { |w| strip_dead_clearing_marker(w.merge("stale" => !waiter_alive?(w))) }
@@ -935,9 +1274,11 @@ module Workspace
 
     def reap!(data, source: nil)
       data.each do |name, entry|
-        if entry["holder"] && !holder_alive?(entry["holder"])
-          audit(:reap, name, holder: holder_summary(entry["holder"]), source: source)
-          entry["holder"] = nil
+        holder = entry["holder"]
+        holder.delete("delegate") if run?(holder) && holder["delegate"] && !live_delegate(holder)
+        if holder && !holder_alive?(holder)
+          audit(:reap, name, holder: holder_summary(holder), source: source)
+          run?(holder) ? hand_over!(entry, name) : entry["holder"] = nil
         end
         dead, alive = entry["queue"].partition { |w| !waiter_alive?(w) }
         dead.each { |w| audit(:reap, name, waiter: waiter_summary(w), source: source) }

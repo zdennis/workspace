@@ -175,6 +175,14 @@ module Workspace
       File.join(state_dir, ".tasks")
     end
 
+    # Dotted, like {#task_dir}, so no workspace name can produce it. A run
+    # that holds locks is alive while its `<run id>.json` here is not finished.
+    #
+    # @return [String] path to the directory holding one JSON file per workflow run
+    def workflow_runs_dir
+      File.join(state_dir, ".workflows", "runs")
+    end
+
     # @return [String] path to the JSON file binding tmux panes to a run, review or play
     def pane_bindings_path
       File.join(state_dir, "bindings.json")
