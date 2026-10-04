@@ -277,7 +277,8 @@ module Workspace
     launch_command = Commands::Launch.new(state: state, iterm: iterm, window_manager: window_manager, tmux: tmux, project_config: project_config, window_layout: window_layout, config: config, pipeline_config: pipeline_config, agent_ensurer: ensure_agent_command, agent_readiness: agent_readiness, output: output, error_output: error_output)
     lineage = WorkspaceLineage.new
     task_store = TaskStore.new(dir: config.task_dir, error_output: error_output)
-    start_command = Commands::Start.new(git: git, project_config: project_config, project_settings: project_settings, launch_command: launch_command, lineage: lineage, hook_installer: hook_installer, task_store: task_store, event_log: event_log, output: output, input: input)
+    library = Library.new(config: config, lineage: lineage, project_config: project_config)
+    start_command = Commands::Start.new(git: git, project_config: project_config, project_settings: project_settings, launch_command: launch_command, lineage: lineage, hook_installer: hook_installer, task_store: task_store, event_log: event_log, library: library, output: output, input: input)
     kill_command = Commands::Kill.new(git: git, project_config: project_config, project_settings: project_settings, stop_command: stop_command, project_detector: project_detector, task_store: task_store, event_log: event_log, output: output, input: input)
     finish_command = Commands::Finish.new(git: git, project_config: project_config, kill_command: kill_command, project_detector: project_detector, output: output, error_output: error_output, input: input)
     pane_locator = PaneLocator.new(tmux: tmux)
@@ -359,7 +360,7 @@ module Workspace
     daemon_command = Commands::Daemon.new(config: config, project_config: project_config, ensure_agent: ensure_agent_command, process_tree: ProcessTree.new(logger: logger), output: output)
     ui_command = Commands::Ui.new(output: output)
     binding_command = Commands::Binding.new(bindings: pane_bindings, locator: pane_locator, tmux: tmux, output: output)
-    library_command = Commands::Library.new(library: Library.new(config: config, lineage: lineage, project_config: project_config), output: output, input: input)
+    library_command = Commands::Library.new(library: library, output: output, input: input)
     parent_command = Commands::Parent.new(lineage: lineage, project_config: project_config, output: output)
     project_catalog = ProjectCatalog.new(project_config: project_config, git: git)
     project_facts = ProjectFacts.new(tmux: tmux, state: state, config: config, lock_namespace: lock_namespace,
@@ -465,6 +466,7 @@ module Workspace
       ui_command: ui_command,
       binding_command: binding_command,
       library_command: library_command,
+      library: library,
       review_command: review_command,
       snapshot_command: snapshot_command,
       project_actions_command: project_actions_command,

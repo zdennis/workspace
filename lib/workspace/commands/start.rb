@@ -26,8 +26,9 @@ module Workspace
       #   exports its id as `WORKSPACE_TASK` in the panes; nil starts without a task
       # @param event_log [Workspace::EventLog, nil] records `worktree_started` once the
       #   worktree's config is written; nil records nothing
+      # @param library [Workspace::Library, nil] resolves `play:`; nil refuses a play
       def initialize(git:, project_config:, project_settings:, launch_command:, lineage: WorkspaceLineage.new,
-        hook_installer: nil, which: nil, task_store: nil, event_log: nil, output: $stdout, input: $stdin, error_output: $stderr)
+        hook_installer: nil, which: nil, task_store: nil, event_log: nil, library: nil, output: $stdout, input: $stdin, error_output: $stderr)
         @git = git
         @project_config = project_config
         @project_settings = project_settings
@@ -37,6 +38,7 @@ module Workspace
         @which = which || Workspace::Which
         @task_store = task_store
         @event_log = event_log
+        @library = library
         @output = output
         @input = input
         @error_output = error_output
@@ -52,6 +54,9 @@ module Workspace
       #   base-branch prompt
       # @param yes [Boolean] accept every default instead of prompting
       # @param title [String, nil] a human title for the workspace's task
+      # @param play [String, nil] a library play (`name` or `play/name`) to send ahead of
+      #   +prompt+, resolved from the parent project's library, then global, before
+      #   anything is created; the JSON payload reports it as `play`
       # @param headless [Boolean] launch the session in the background with plain
       #   tmux instead of in iTerm2 (see Commands::Launch#call)
       # @param json [Boolean] emit the documented JSON schema instead of plain text; on
@@ -63,16 +68,16 @@ module Workspace
       # @raise [Workspace::Error] if not in a git repository (unless +json+ is true)
       # @raise [Workspace::UsageError] if a prompt would block on a non-TTY stdin and
       #   neither +base+ nor +yes+ resolves it (unless +json+ is true)
-      def call(input_string, prompt: nil, prompt_timeout: nil, base: nil, yes: false, headless: false, json: false, title: nil)
-        return call_json(input_string, prompt: prompt, prompt_timeout: prompt_timeout, base: base, yes: yes, headless: headless, title: title) if json
+      def call(input_string, prompt: nil, prompt_timeout: nil, base: nil, yes: false, headless: false, json: false, title: nil, play: nil)
+        return call_json(input_string, prompt: prompt, prompt_timeout: prompt_timeout, base: base, yes: yes, headless: headless, title: title, play: play) if json
 
-        start!(input_string, prompt: prompt, prompt_timeout: prompt_timeout, base: base, yes: yes, headless: headless, quiet: false, title: title)
+        start!(input_string, prompt: prompt, prompt_timeout: prompt_timeout, base: base, yes: yes, headless: headless, quiet: false, title: title, play: play)
       end
 
       private
 
-      def call_json(input_string, prompt:, prompt_timeout:, base:, yes:, headless:, title:)
-        payload = start!(input_string, prompt: prompt, prompt_timeout: prompt_timeout, base: base, yes: yes, headless: headless, quiet: true, title: title)
+      def call_json(input_string, prompt:, prompt_timeout:, base:, yes:, headless:, title:, play:)
+        payload = start!(input_string, prompt: prompt, prompt_timeout: prompt_timeout, base: base, yes: yes, headless: headless, quiet: true, title: title, play: play)
         @output.puts JSON.generate(payload[:json])
         {exit_code: payload[:exit_code]}
       rescue Workspace::Error, SystemCallError => e
@@ -82,7 +87,7 @@ module Workspace
 
       # @return [Hash] when quiet is true, +{exit_code:, json:}+; otherwise the
       #   launch result, or nil if branch selection was cancelled
-      def start!(input_string, prompt:, prompt_timeout:, base:, yes:, headless:, quiet:, title: nil)
+      def start!(input_string, prompt:, prompt_timeout:, base:, yes:, headless:, quiet:, title: nil, play: nil)
         root = @git.root
         raise Workspace::Error, "Not inside a git repository." unless root
 
@@ -102,6 +107,7 @@ module Workspace
         else
           project_name = WorkspaceLineage.name_from_path(root)
         end
+        @play = play && resolve_play(play, root)
         parsed = @git.parse_start_input(input_string)
 
         # A PR is checked out by `gh pr checkout` under its own number, never by
@@ -182,7 +188,8 @@ module Workspace
         write_project_marker(worktree_path, config_name)
         record_started(config_name, project_name, branch_name, created: created, task: task)
         log(quiet, "Launching #{config_name}...")
-        prompts = prompt ? {config_name => prompt} : {}
+        text = @play ? @library.play_prompt(@play, prompt) : prompt
+        prompts = text ? {config_name => text} : {}
         result = launch(config_name, prompts, prompt_timeout, headless: headless, quiet: quiet)
         @project_settings.ensure_exists(config_name)
 
@@ -200,6 +207,7 @@ module Workspace
           "headless" => headless
         }
         json["task"] = {"id" => task["id"], "title" => task["title"]} if task
+        json["play"] = @play.merge("delivered" => delivered?(result, config_name)) if @play
         json["session_reused"] = result[:reused].include?(config_name) if result && result[:reused]
         if exit_code != 0
           prompt_failures = result && result[:prompt_failures]
@@ -214,6 +222,19 @@ module Workspace
         json["warnings"] = @warnings if @warnings&.any?
 
         {exit_code: exit_code, json: json}
+      end
+
+      # The play is checked before anything is created, so an unknown name or an
+      # unreadable file changes nothing.
+      def resolve_play(play, root)
+        raise Workspace::Error, "--play is not available: no library was wired." unless @library
+        @library.play(play, cwd: root)
+      end
+
+      # Whether launch sent the prompt carrying the play.
+      def delivered?(result, config_name)
+        return false unless result
+        !(result[:prompt_failures] || {}).key?(config_name) && !(result[:start_failures] || {}).key?(config_name)
       end
 
       # Branch, parent project and task id only: no path, title or prompt.

@@ -312,6 +312,107 @@ RSpec.describe Workspace::Commands::Start do
       end
     end
 
+    context "with a play" do
+      let(:library_dir) { File.join(tmpdir, "library") }
+      let(:library) do
+        Workspace::Library.new(config: instance_double(Workspace::Config, library_dir: library_dir),
+          lineage: Workspace::WorkspaceLineage.new, project_config: project_config)
+      end
+      let(:project_name) { Workspace::WorkspaceLineage.name_from_path(tmpdir) }
+      let(:global_path) { library.global_store.path_for("play", "kickoff") }
+      let(:play_command) do
+        described_class.new(git: git, project_config: project_config, project_settings: project_settings,
+          launch_command: launch_command, library: library, output: output, error_output: error_output, input: input)
+      end
+
+      before do
+        allow(git).to receive(:root).and_return(tmpdir)
+        allow(git).to receive(:parse_start_input).with("PROJ-123").and_return({type: :jira_key, value: "PROJ-123"})
+        allow(git).to receive(:sanitize_for_filesystem).with("PROJ-123").and_return("PROJ-123")
+        allow(git).to receive(:worktree_exists?).and_return(false)
+        allow(git).to receive(:find_worktree_by_branch).and_return(nil)
+        allow(git).to receive(:branch_exists?).with("PROJ-123").and_return(true)
+        allow(git).to receive(:create_worktree)
+        allow(project_config).to receive(:exists?).and_return(false)
+        allow(project_config).to receive(:create_worktree).and_return("myproject.worktree-PROJ-123")
+        allow(launch_command).to receive(:call).and_return({exit_code: 0, prompt_failures: {}})
+        library.global_store.write("play", "kickoff", "# Kickoff\n")
+      end
+
+      it "sends a line pointing at the play, then the --prompt text" do
+        play_command.call("PROJ-123", play: "kickoff", prompt: "Start at CLI27.")
+
+        expect(launch_command).to have_received(:call).with(["myproject.worktree-PROJ-123"],
+          prompts: {"myproject.worktree-PROJ-123" => "Read \"#{global_path}\" and follow it.\n\nStart at CLI27."})
+      end
+
+      it "sends only the line pointing at the play without --prompt" do
+        play_command.call("PROJ-123", play: "kickoff")
+
+        expect(launch_command).to have_received(:call).with(["myproject.worktree-PROJ-123"],
+          prompts: {"myproject.worktree-PROJ-123" => "Read \"#{global_path}\" and follow it."})
+      end
+
+      it "uses the parent project's play over the global one" do
+        allow(project_config).to receive(:exists?).with(project_name).and_return(true)
+        library.project_store(project_name).write("play", "kickoff", "# Project kickoff\n")
+
+        play_command.call("PROJ-123", play: "kickoff", json: true)
+
+        expect(JSON.parse(output.string)["play"]).to include("scope" => "project",
+          "path" => library.project_store(project_name).path_for("play", "kickoff"))
+      end
+
+      it "reports the play it sent in --json" do
+        play_command.call("PROJ-123", play: "play/kickoff", json: true)
+
+        expect(JSON.parse(output.string)["play"]).to eq("ref" => "play/kickoff", "scope" => "global", "path" => global_path,
+          "sha256" => Digest::SHA256.hexdigest("# Kickoff\n"), "delivered" => true)
+      end
+
+      it "reports the play as not delivered, with exit 1, when the prompt was not sent" do
+        allow(launch_command).to receive(:call)
+          .and_return({exit_code: 1, prompt_failures: {"myproject.worktree-PROJ-123" => "no coding agent"}})
+
+        result = play_command.call("PROJ-123", play: "kickoff", json: true)
+
+        payload = JSON.parse(output.string)
+        expect(result).to eq({exit_code: 1})
+        expect(payload["play"]).to include("delivered" => false)
+        expect(payload["prompt_failures"]).to eq("myproject.worktree-PROJ-123" => "no coding agent")
+      end
+
+      it "reports the play as not delivered when the session did not start" do
+        allow(launch_command).to receive(:call)
+          .and_return({exit_code: 1, prompt_failures: {}, start_failures: {"myproject.worktree-PROJ-123" => "tmux refused"}})
+
+        play_command.call("PROJ-123", play: "kickoff", json: true)
+
+        expect(JSON.parse(output.string)["play"]).to include("delivered" => false)
+      end
+
+      it "fails an unknown play before creating anything" do
+        expect { play_command.call("PROJ-123", play: "nope") }.to raise_error(Workspace::Error) { |e|
+          expect(e.code).to eq("unknown_library_entry")
+        }
+        expect(git).not_to have_received(:parse_start_input)
+        expect(git).not_to have_received(:create_worktree)
+        expect(project_config).not_to have_received(:create_worktree)
+        expect(launch_command).not_to have_received(:call)
+      end
+
+      it "fails an unreadable play before creating anything, as a --json error" do
+        library.global_store.link("play", "gone", File.join(tmpdir, "evicted.md"))
+
+        result = play_command.call("PROJ-123", play: "gone", json: true)
+
+        expect(result).to eq({exit_code: 1})
+        expect(JSON.parse(output.string)).to include("ok" => false, "code" => "library_source_missing")
+        expect(git).not_to have_received(:create_worktree)
+        expect(launch_command).not_to have_received(:call)
+      end
+    end
+
     context "with an existing worktree" do
       it "skips creation and launches directly" do
         allow(git).to receive(:root).and_return(tmpdir)

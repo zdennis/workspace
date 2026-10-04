@@ -53,6 +53,10 @@ The store is a directory of files with no index: `add` copies the file in, or `a
 
 Reads (`list`, `show`, `info`) search the project of the current directory first (when it is a known workspace), then global, so a project entry hides a global one of the same kind and name. `--global` or `--project` limits a read to that scope. Writes go to the global store unless `--project` is given. `--global` with `--project` is a usage error.
 
+## Using a play
+
+`workspace start --play NAME` and `workspace launch --play NAME` point the coding agent at a play by path: "Read `<path>` and follow it.", then any `--prompt` text. They look the play up as reads do, and fail before creating anything when it is missing or unreadable. See [`start`](README.start.md#plays).
+
 ## remove
 
 `remove` asks before deleting. `--yes` skips the question. With `--json`, or under `--no-input` (`WORKSPACE_NO_INPUT`), it needs `--yes` or `--dry-run`, as `projects kill` does: `--json` without them is a `usage` error, `--no-input` without them is `confirmation_required` with `retry.flags: ["--yes"]`.

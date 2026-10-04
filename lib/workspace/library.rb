@@ -1,3 +1,5 @@
+require "digest"
+
 module Workspace
   # Resolves library entries across scopes. The lookup order lives in
   # {#stores}: a project's store first, then the global one, so a project
@@ -95,6 +97,39 @@ module Workspace
       matches.first
     end
 
+    # The play `start --play` and `launch --play` send, looked up from `cwd`
+    # (its project, then global) and read once to prove it is readable: a
+    # link into iCloud can leave only a placeholder behind. A bare name means
+    # a play, so a prompt of the same name doesn't make it ambiguous.
+    #
+    # @param ref [String] `name` or `play/name`
+    # @param cwd [String, nil] the project's directory; nil searches global only
+    # @return [Hash] "ref", "scope", "path" and the body's "sha256"
+    # @raise [Workspace::UsageError] for a bad name or a kind other than play
+    # @raise [Workspace::Error] code `unknown_library_entry`, or `library_source_missing` when the file can't be read
+    def play(ref, cwd:)
+      kind, name = parse_ref(ref)
+      if kind && kind != "play"
+        raise UsageError, "--play takes a play, and '#{ref}' is a #{kind}. " \
+          "Send its text with --prompt \"$(workspace library show #{ref})\"."
+      end
+      # A tmuxinator `root:` is often written `~/...`, which git -C won't expand.
+      entry = resolve("play/#{name}", stores(cwd: cwd && File.expand_path(cwd)))
+      {"ref" => entry["ref"], "scope" => entry["scope"], "path" => entry["path"],
+       "sha256" => Digest::SHA256.hexdigest(read_play(entry))}
+    end
+
+    # The text sent to the agent for a play: one line pointing at its file,
+    # so the agent can read it again after `/clear`, then any prompt text.
+    #
+    # @param play [Hash] from {#play}
+    # @param prompt [String, nil] `--prompt` text
+    # @return [String]
+    def play_prompt(play, prompt)
+      text = "Read \"#{play["path"]}\" and follow it."
+      prompt.to_s.strip.empty? ? text : "#{text}\n\n#{prompt}"
+    end
+
     # @param ref [String] `kind/name` or `name`
     # @return [Array(String, String)] the kind (nil for a bare name) and the name
     # @raise [Workspace::UsageError] for an unknown kind or a bad name
@@ -122,6 +157,14 @@ module Workspace
     end
 
     private
+
+    def read_play(entry)
+      raise Errno::EACCES, entry["path"] unless entry["readable"]
+      File.read(entry["path"])
+    rescue SystemCallError
+      raise Error.new("Can't read #{entry["ref"]} at #{entry["path"]}: the file, or the file its link points to, " \
+        "is missing or unreadable.", code: "library_source_missing", details: {"ref" => entry["ref"], "path" => entry["path"]})
+    end
 
     # The project of `cwd` when it is a workspace `list` knows, else nil.
     def known_project(cwd)

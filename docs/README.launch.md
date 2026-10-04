@@ -15,6 +15,7 @@ workspace launch [options] <project1> [project2] ...
 | `--reattach` | Reattach to an existing pane's tmux session instead of relaunching tmuxinator into it, preserving session state (a new pane already does this on its own when its session is running; `--reattach` matters for a pane `launch` is reusing) |
 | `--headless` / `--no-headless` | Start each session in the background with plain tmux (no iTerm2, AppleScript or window-tool), or force iTerm2. See [Headless](#headless) for the default |
 | `--prompt PROMPT` | Send an initial prompt to the coding agent in each project, once it is ready (up to 60s); exits 1 if it can't be sent |
+| `--play NAME` | Send each project's agent a line pointing at a [library](README.library.md) play, then any `--prompt` text; the play is looked up per project. See [Plays](#details) |
 | `--prompt-timeout DURATION` | How long to wait for the coding agent to be ready for `--prompt` (e.g. `90s`, `2m`, or a plain number of seconds); default 60s |
 
 ## Details
@@ -35,6 +36,8 @@ Also starts the [session-monitoring agent daemon](README.agentd.md) for each lau
 If a project's [pipeline config](README.pipeline.md) has an invalid `timeout:`, the daemon would otherwise exit right after starting with nothing visible on your screen. `launch` checks the config first and, if it's invalid, skips starting that project's daemon and prints a warning on stderr naming the bad key and the daemon's log path, without aborting the rest of the launch. Once the config is fixed, start the daemon with `workspace agentd --name <project>` rather than relaunching the whole window.
 
 **Prompts** — with `--prompt`, `launch` waits for each project's coding agent before typing anything. An agent counts as ready once its process is running in any window of the session (not just window 0), in one of its panes (Claude Code first, then Codex, OpenCode and Pi, then the lowest window and pane), its screen has stayed the same for 2 seconds, and — for Claude Code specifically — that settled screen shows its input prompt box, not a startup dialog such as "Do you trust the files in this folder?". Agents without a recognized prompt box (Codex, OpenCode, Pi) still count as ready on a quiet screen alone. All projects share one wait (60s by default, or `--prompt-timeout`'s value), since their agents start at the same time. The prompt is then pasted and submitted, and `launch` reads the pane back to check it arrived (see [`workspace run`](README.run.md) for how). A paste that never shows up in the pane is tried again, up to three times in all. A paste that shows up but may not have been submitted is not sent again, so it can't be typed twice. A paste that shows up only after a retry already sent a fresh copy is submitted with Enter instead ("The prompt to `<project>` arrived late; submitting it...") rather than pasted a second time.
+
+**Plays** — with `--play NAME`, each project's agent gets `Read "<path>" and follow it.`, then any `--prompt` text after a blank line, sent the way `--prompt` is. The play is looked up for each project on its own: that project's [library](README.library.md#scopes), then the global one. Every project's play is found and read before anything launches or a config is created, so an unknown name (`unknown_library_entry`) or an unreadable file (`library_source_missing`) fails with nothing changed. A project whose session is already running gets the play typed into its agent, which may be in the middle of a task. See [`start`](README.start.md#plays) for the details they share.
 
 If a prompt can't be sent, `launch` still finishes the launch and runs `post_launch` hooks. It then prints `Error: prompt not sent to <project>: <reason>` on stderr for each project and exits 1. The reason names the actual paste failure — for example "...it may not have arrived" for an unverified delivery — rather than reporting that the agent is still starting up when a retry simply ran out of time.
 
@@ -83,6 +86,9 @@ workspace launch ~/Code/my-project
 # Launch with a prompt for the coding agent
 workspace launch --prompt "Review the README" my-project
 
+# Point each project's agent at a library play
+workspace launch --play kickoff my-project other-project
+
 # Launch in the background with plain tmux (e.g. over SSH or in CI)
 workspace launch --headless my-project
 tmux attach -t my-project
@@ -90,4 +96,4 @@ tmux attach -t my-project
 
 ## JSON output
 
-`--json` prints an action document (see [README.json.md](README.json.md#actions)) with one row per project: `launched` or `reused` (a headless session that was already running) with `iterm_window_id` and `headless`, or `failed` with `reason` `session_not_started`, `not_launched` or `prompt_not_sent`. The progress text goes to stderr. Exit 0, 3 when some projects failed, 1 when all did.
+`--json` prints an action document (see [README.json.md](README.json.md#actions)) with one row per project: `launched` or `reused` (a headless session that was already running) with `iterm_window_id` and `headless`, or `failed` with `reason` `session_not_started`, `not_launched` or `prompt_not_sent`. With `--play`, every row has a `play` object (`ref`, `scope`, `path`, `sha256`, `delivered`) for the play that project resolved; see [`start`](README.start.md#--json-output). The progress text goes to stderr. Exit 0, 3 when some projects failed, 1 when all did.

@@ -14,6 +14,7 @@ workspace start [options] <jira-key|jira-url|pr-url|pr-ref|issue-url|branch>
 |--------|-------------|
 | `--prompt PROMPT` | Send an initial prompt to the coding agent once it is ready (up to 60s); exits 1 if it can't be sent. See [`launch`](README.launch.md#details) |
 | `--prompt-timeout DURATION` | How long to wait for the coding agent to be ready for `--prompt` (e.g. `90s`, `2m`, or a plain number of seconds); default 60s |
+| `--play NAME` | Send the agent a line pointing at a [library](README.library.md) play, then any `--prompt` text. See [Plays](#plays) |
 | `--base REF` | Branch/ref a new branch is created from, instead of prompting |
 | `--yes` | Accept every default instead of prompting (e.g. the default base branch) |
 | `--title TITLE` | A human title for the workspace's task; it is the first `display_label` of its panes in [`sessions --json`](README.sessions.md). See [Tasks](#tasks) |
@@ -58,6 +59,22 @@ prompt, it instead:
 `--json` never prompts either, regardless of whether stdin is a TTY — pass `--base`
 and/or `--yes` alongside it when the branch might need to be created.
 
+### Plays
+
+`--play NAME` sends the coding agent one line, then any `--prompt` text after a blank line:
+
+```
+Read "/Users/me/.config/workspace/library/global/play/kickoff.md" and follow it.
+
+Start at step 2.
+```
+
+The play is looked up the way [`library`](README.library.md#scopes) reads are: the parent project's library first, then the global one. `NAME` is a bare name or `play/NAME`; a prompt of the same name doesn't get in the way, and `--play prompt/NAME` is a usage error. The play is found and read before the worktree is created, so an unknown name (`unknown_library_entry`) or a file that can't be read (`library_source_missing`, e.g. a link to a note iCloud has evicted) fails with nothing changed.
+
+The agent gets the path rather than the text, so it can read the play again after `/clear`. The play is sent the way `--prompt` is, with the same wait and `--prompt-timeout`, and one that isn't sent fails the same way (`prompt_failures`, exit 1). If the workspace's session is already running, the play is typed into its agent, which may be in the middle of a task.
+
+The file lives outside the worktree. An agent started without `--dangerously-skip-permissions` (the stock template passes it) asks before reading it.
+
 ### Tasks
 
 `start` records a task for the new workspace: its title (`--title`, optional), the input it started from (`ref`), its branch and worktree path. The record is one JSON file, `<id>.json`, under `~/.local/state/workspace/.tasks/` (`$XDG_STATE_HOME/workspace/.tasks/`), mode 0600, written under a lock so concurrent `start`s never clobber each other. It lives there rather than in the worktree because removing a worktree deletes its untracked files.
@@ -85,6 +102,11 @@ On success, one line of JSON on stdout (nothing else is written to stdout under
 - `created` — whether the worktree was created by this run, as opposed to reused
   or adopted
 - `task` — the workspace's task, `{"id", "title"}` (see [Tasks](#tasks))
+- `play` — present only with `--play`: `{"ref", "scope", "path", "sha256", "delivered"}`. `ref` is
+  `play/<name>`, `scope` is `project` or `global`, `path` is the file the agent was
+  told to read, `sha256` is the hash of its body when `start` read it (so a caller
+  can tell which version of a linked play the agent was pointed at), and
+  `delivered` is whether the prompt carrying it was sent
 - `headless` — whether the session was started headless (see
   [`launch`](README.launch.md#headless))
 - `session_reused` — present only when the workspace's tmux session was
@@ -146,6 +168,9 @@ workspace start feature/my-feature
 
 # Start with an initial prompt for Claude
 workspace start PROJ-123 --prompt "Fix the login bug"
+
+# Point the agent at a library play, with a note after it
+workspace start PROJ-123 --play kickoff --prompt "Start at step 2."
 
 # Start in the background with plain tmux, e.g. from CI
 workspace start PROJ-123 --headless --yes --json

@@ -70,6 +70,7 @@ module Workspace
     # @param ui_command [Workspace::Commands::Ui, nil] pre-built ui command
     # @param binding_command [Workspace::Commands::Binding, nil] pre-built binding command
     # @param library_command [Workspace::Commands::Library, nil] pre-built library command
+    # @param library [Workspace::Library, nil] resolves `launch --play` per project
     # @param review_command [Workspace::Commands::Review, nil] pre-built review command
     # @param snapshot_command [Workspace::Commands::Snapshot, nil] pre-built snapshot command
     # @param config_report [Workspace::ConfigReport, nil] builds the `config show/validate --json` documents
@@ -81,7 +82,7 @@ module Workspace
     #   reports every project as unknown
     # @param launch_mode [Workspace::LaunchMode, nil] decides whether launch/start
     #   run headless when no --[no-]headless flag is given; nil builds one
-    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, restart_agent_command: nil, send_command: nil, ensure_agent_command: nil, handoff_command: nil, projects_command: nil, capabilities_command: nil, daemon_command: nil, ui_command: nil, binding_command: nil, library_command: nil, review_command: nil, snapshot_command: nil, project_actions_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil, liveness: nil)
+    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, restart_agent_command: nil, send_command: nil, ensure_agent_command: nil, handoff_command: nil, projects_command: nil, capabilities_command: nil, daemon_command: nil, ui_command: nil, binding_command: nil, library_command: nil, library: nil, review_command: nil, snapshot_command: nil, project_actions_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil, liveness: nil)
       @config = config
       @state = state
       @project_config = project_config
@@ -131,6 +132,7 @@ module Workspace
       @ui_command = ui_command
       @binding_command = binding_command
       @library_command = library_command
+      @library = library
       @review_command = review_command
       @snapshot_command = snapshot_command
       @config_report = config_report
@@ -452,6 +454,7 @@ module Workspace
       headless = nil
       prompt = nil
       prompt_timeout = nil
+      play = nil
       json = false
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: workspace launch [options] <project1> [project2] ..."
@@ -478,6 +481,11 @@ module Workspace
           "(e.g. \"90s\", or a plain number of seconds); default #{AgentReadiness::DEFAULT_TIMEOUT}s") do |v|
           prompt_timeout = parse_duration_option("--prompt-timeout", v, positive: true)
         end
+        opts.on("--play NAME", "Send each project's agent 'Read \"<path>\" and follow it.' for a library play,",
+          "then any --prompt text. Looked up per project (its library, then global);",
+          "an unknown or unreadable play fails before anything launches") do |v|
+          play = v
+        end
         opts.on("--json", "Print one action document (see docs/README.json.md) instead of progress text;",
           "the text goes to stderr. Exit 0, 3 when some projects failed, 1 when all did") do
           json = true
@@ -496,33 +504,33 @@ module Workspace
         opts.separator "  workspace launch ~/Code/my-project    # launch from a directory path (creates a config)"
         opts.separator "  workspace launch --reattach my-project    # reuse the pane's existing tmux session"
         opts.separator "  workspace launch --prompt \"Review the README\" my-project    # send the agent an initial prompt"
+        opts.separator "  workspace launch --play kickoff my-project    # point the agent at a library play"
       end
       parser.parse!(args)
 
       raise UsageError, parser.help if args.empty?
 
       run_action("launch", json: json) do
-        launched = launch_projects(args, reattach: reattach, headless: headless, prompt: prompt, prompt_timeout: prompt_timeout)
-        {exit_code: launched[:exit_code], results: json ? launch_rows(launched[:projects], launched[:result]) : []}
+        launched = launch_projects(args, reattach: reattach, headless: headless, prompt: prompt, prompt_timeout: prompt_timeout, play: play)
+        {exit_code: launched[:exit_code], results: json ? launch_rows(launched[:projects], launched[:result], plays: launched[:plays]) : []}
       end
     end
 
     # Launches the given project args (already parsed, no leading flags) and
-    # returns `{exit_code:, projects:, result:}` (the project names and Launch's
-    # own result) without exiting -- so callers with
-    # multiple batches to run (e.g. cmd_relaunch) can attempt every batch
-    # before deciding whether to exit.
-    def launch_projects(args, reattach: false, headless: nil, prompt: nil, prompt_timeout: nil)
-      projects = args.map do |arg|
-        name, root = @project_config.resolve_project_arg(arg)
-        if root
-          @project_config.create(name, root)
-        else
-          name
-        end
-      end
+    # returns `{exit_code:, projects:, result:, plays:}` (the project names,
+    # Launch's own result, and each project's resolved play) without exiting
+    # -- so callers with multiple batches to run (e.g. cmd_relaunch) can
+    # attempt every batch before deciding whether to exit. A play is resolved
+    # for every project before any config is created.
+    def launch_projects(args, reattach: false, headless: nil, prompt: nil, prompt_timeout: nil, play: nil)
+      resolved = args.map { |arg| @project_config.resolve_project_arg(arg) }
+      plays = play ? resolved.to_h { |name, root| [name, resolve_play(play, root || @project_config.project_root_for(name))] } : {}
+      projects = resolved.map { |name, root| root ? @project_config.create(name, root) : name }
 
-      prompts = prompt ? projects.each_with_object({}) { |p, h| h[p] = prompt } : {}
+      prompts = projects.each_with_object({}) do |p, h|
+        text = plays[p] ? @library.play_prompt(plays[p], prompt) : prompt
+        h[p] = text if text
+      end
 
       call_options = {reattach: reattach, prompts: prompts}
       call_options[:prompt_timeout] = prompt_timeout if prompt_timeout
@@ -533,11 +541,17 @@ module Workspace
         @project_settings.ensure_exists(p)
         @hook_runner.run(p, "post_launch")
       end
-      {exit_code: result && result[:exit_code], projects: projects, result: result}
+      {exit_code: result && result[:exit_code], projects: projects, result: result, plays: plays}
+    end
+
+    # The play `launch --play` sends one project, from its root's library, then global.
+    def resolve_play(play, root)
+      raise Error, "--play is not available: no library was wired." unless @library
+      @library.play(play, cwd: root)
     end
 
     # One `results` row per launched project, from the state Launch wrote.
-    def launch_rows(projects, result, ok_outcome: "launched")
+    def launch_rows(projects, result, ok_outcome: "launched", plays: {})
       @state.load
       reused = result&.dig(:reused) || []
       prompt_failures = result&.dig(:prompt_failures) || {}
@@ -545,6 +559,9 @@ module Workspace
       projects.map do |project|
         entry = @state[project]
         details = {iterm_window_id: entry.is_a?(Hash) ? entry["iterm_window_id"] : nil, headless: entry.is_a?(Hash) && entry["headless"] == true}
+        if plays[project]
+          details[:play] = plays[project].merge("delivered" => !result.nil? && !prompt_failures.key?(project) && !start_failures.key?(project))
+        end
         if start_failures[project]
           action_row(project, "failed", reason: "session_not_started", message: start_failures[project].to_s, **details)
         elsif entry.nil?
@@ -565,6 +582,7 @@ module Workspace
       headless = nil
       json = false
       title = nil
+      play = nil
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: workspace start [options] <jira-key|jira-url|pr-url|pr-ref|branch>"
         opts.separator ""
@@ -587,6 +605,11 @@ module Workspace
         opts.on("--prompt-timeout DURATION", "How long to wait for the coding agent to be ready for --prompt",
           "(e.g. \"90s\", or a plain number of seconds); default #{AgentReadiness::DEFAULT_TIMEOUT}s") do |v|
           prompt_timeout = parse_duration_option("--prompt-timeout", v, positive: true)
+        end
+        opts.on("--play NAME", "Send the agent 'Read \"<path>\" and follow it.' for a library play,",
+          "then any --prompt text. Looked up in the project's library, then global;",
+          "an unknown or unreadable play fails before the worktree is created") do |v|
+          play = v
         end
         opts.on("--base REF", "Branch/ref to create a new branch from, instead of prompting") do |v|
           base = v
@@ -620,6 +643,7 @@ module Workspace
         opts.separator "  workspace start feature/my-feature    # from an existing branch name"
         opts.separator "  workspace start '#471'    # check out PR 471 of the current repo, fork or not"
         opts.separator "  workspace start PROJ-123 --prompt \"Fix the login bug\"    # with an initial agent prompt"
+        opts.separator "  workspace start PROJ-123 --play kickoff --prompt \"Start at step 2.\"    # point the agent at a library play"
         opts.separator "  workspace start PROJ-123 --title \"Fix the login bug\"    # name the task shown in `workspace sessions`"
         opts.separator "  workspace start PROJ-123 --headless --yes --json    # non-interactive, e.g. from CI"
         opts.separator "  workspace start PROJ-123 --base main --yes --json    # non-interactive, branch from main, not the default base"
@@ -633,6 +657,7 @@ module Workspace
 
       start_options = {prompt: prompt, prompt_timeout: prompt_timeout, base: base, yes: yes, json: json}
       start_options[:title] = title if title
+      start_options[:play] = play if play
       start_options[:headless] = true if @launch_mode.resolve(headless).headless?
       result = @start_command.call(args.first, **start_options)
       @exit_handler.exit(result[:exit_code]) if result && !result[:exit_code].zero?

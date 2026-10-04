@@ -35,7 +35,7 @@ These commands take `--json` and print one action document: `launch`, `stop`, `k
 ```
 
 - `action` is the command's words: `launch`, `dev up`, `lock release`, `config set`, `pipeline start`.
-- `results` has one row per target with `workspace` (null when the command has none, such as a global `config set`), `outcome`, `reason` (a short machine-readable cause, or null) and `message`. A row may carry more keys, named on the command's page (`iterm_window_id` for `launch` and `focus`, `key` and `value` for `config set`, `work_item_ref` for `pipeline`).
+- `results` has one row per target with `workspace` (null when the command has none, such as a global `config set`), `outcome`, `reason` (a short machine-readable cause, or null) and `message`. A row may carry more keys, named on the command's page (`iterm_window_id` for `launch` and `focus`, `play` for `launch --play`, `key` and `value` for `config set`, `work_item_ref` for `pipeline`).
 - `outcome` is per command (see its page). `failed` and `refused` count as failures.
 - `status` is `ok` (no row failed), `partial` (some did), `failed` (all did, or the command exited non-zero), `cancelled` (a prompt was declined; nothing changed), `dry_run` (`--dry-run` reported the plan; nothing changed), or `refused` (a preflight check refused every target; nothing changed).
 - `ok` is `true` for every action document, including `failed`: it means the command ran and reports per-row outcomes. Check `status` and the exit code. A refusal or usage error is the failure envelope above, with `ok: false`.

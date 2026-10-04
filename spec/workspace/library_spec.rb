@@ -114,4 +114,75 @@ RSpec.describe Workspace::Library do
       expect { library.resolve("", [global]) }.to raise_error(Workspace::UsageError, /not a valid library name/)
     end
   end
+  describe "#play and #play_prompt" do
+    let(:global) { library.global_store }
+    let(:project) { library.project_store("app") }
+
+    before do
+      resolve_cwd_to("app")
+      global.write("play", "kickoff", "# Global kickoff\n")
+      global.write("prompt", "kickoff", "Prompt kickoff\n")
+      global.write("play", "review", "# Review\n")
+    end
+
+    it "resolves a bare name to the effective play, project before global, with the body hash" do
+      project.write("play", "kickoff", "# Project kickoff\n")
+
+      play = library.play("kickoff", cwd: "/work/app")
+
+      expect(play).to eq("ref" => "play/kickoff", "scope" => "project", "path" => project.path_for("play", "kickoff"),
+        "sha256" => Digest::SHA256.hexdigest("# Project kickoff\n"))
+      expect(library.play("play/review", cwd: "/work/app")).to include("scope" => "global", "path" => global.path_for("play", "review"))
+    end
+
+    it "expands a ~ root before naming its project" do
+      project.write("play", "kickoff", "# Project kickoff\n")
+      allow(lineage).to receive(:resolve).with(cwd: File.expand_path("~/Code/app"))
+        .and_return(Workspace::WorkspaceLineage::Lineage.new(name: "app"))
+
+      expect(library.play("kickoff", cwd: "~/Code/app")).to include("scope" => "project")
+    end
+
+    it "searches only global without a cwd" do
+      project.write("play", "kickoff", "# Project kickoff\n")
+
+      expect(library.play("kickoff", cwd: nil)).to include("scope" => "global")
+    end
+
+    it "refuses a prompt as usage, pointing at --prompt" do
+      expect { library.play("prompt/kickoff", cwd: "/work/app") }
+        .to raise_error(Workspace::UsageError, /--play takes a play.*--prompt "\$\(workspace library show prompt\/kickoff\)"/m)
+    end
+
+    it "fails an unknown play with unknown_library_entry" do
+      expect { library.play("nope", cwd: "/work/app") }.to raise_error(Workspace::Error) { |e|
+        expect(e.code).to eq("unknown_library_entry")
+        expect(e.details).to eq("ref" => "play/nope", "scopes" => ["project:app", "global"])
+      }
+    end
+
+    it "fails a play whose link target is gone with library_source_missing" do
+      global.link("play", "gone", File.join(@dir, "evicted.md"))
+
+      expect { library.play("gone", cwd: "/work/app") }.to raise_error(Workspace::Error) { |e|
+        expect(e.code).to eq("library_source_missing")
+        expect(e.details).to eq("ref" => "play/gone", "path" => global.path_for("play", "gone"))
+      }
+    end
+
+    it "fails a play that exists but can not be read" do
+      global.write("play", "locked", "secret\n")
+      File.chmod(0o000, global.path_for("play", "locked"))
+      skip "running as root reads anything" if File.readable?(global.path_for("play", "locked"))
+
+      expect { library.play("locked", cwd: "/work/app") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("library_source_missing") }
+    end
+
+    it "points the agent at the path, then adds the prompt text after a blank line" do
+      play = {"path" => "/lib/play/kickoff.md"}
+
+      expect(library.play_prompt(play, nil)).to eq("Read \"/lib/play/kickoff.md\" and follow it.")
+      expect(library.play_prompt(play, "Start at CLI27.")).to eq("Read \"/lib/play/kickoff.md\" and follow it.\n\nStart at CLI27.")
+    end
+  end
 end

@@ -102,6 +102,7 @@ RSpec.describe Workspace::CLI do
       ui_command: overrides[:ui_command],
       binding_command: overrides[:binding_command],
       library_command: overrides[:library_command],
+      library: overrides[:library],
       review_command: overrides[:review_command],
       snapshot_command: overrides[:snapshot_command],
       project_actions_command: overrides[:project_actions_command],
@@ -1305,6 +1306,23 @@ RSpec.describe Workspace::CLI do
 
       expect(start_command).to have_received(:call).with("PROJ-1", prompt: "go", prompt_timeout: 120.0,
         base: nil, yes: false, json: false)
+    end
+
+    it "passes --play through to start" do
+      start_command = double("start", call: {exit_code: 0, prompt_failures: {}})
+      cli, = build_test_cli(start_command: start_command)
+
+      cli.run(["start", "--play", "kickoff", "PROJ-1"])
+
+      expect(start_command).to have_received(:call).with("PROJ-1", prompt: nil, prompt_timeout: nil,
+        base: nil, yes: false, json: false, play: "kickoff")
+    end
+
+    it "documents --play in launch and start help" do
+      cli, _, error_output = build_test_cli
+      expect { cli.run(["launch"]) }.to raise_error(FakeSystemExit)
+      expect { cli.run(["start"]) }.to raise_error(FakeSystemExit)
+      expect(error_output.string.scan("--play NAME").size).to eq(2)
     end
 
     it "passes --base and --yes through to start" do
@@ -5575,6 +5593,84 @@ RSpec.describe Workspace::CLI do
         expect(status).to eq(3)
         expect(doc["status"]).to eq("partial")
         expect(doc["results"].last).to include("workspace" => "web", "outcome" => "failed", "reason" => "prompt_not_sent", "message" => "agent not ready")
+      end
+
+      context "with --play" do
+        around do |example|
+          Dir.mktmpdir("play") do |dir|
+            @play_dir = dir
+            example.run
+          end
+        end
+
+        let(:project_config) { CLITestHelpers::FakeProjectConfig.new("api" => "/work/api", "web" => "/work/web") }
+        let(:lineage) { instance_double(Workspace::WorkspaceLineage) }
+        let(:library) do
+          Workspace::Library.new(config: instance_double(Workspace::Config, library_dir: @play_dir),
+            lineage: lineage, project_config: project_config)
+        end
+        let(:api_path) { library.project_store("api").path_for("play", "kickoff") }
+        let(:global_path) { library.global_store.path_for("play", "kickoff") }
+
+        before do
+          allow(lineage).to receive(:resolve) { |cwd:| Workspace::WorkspaceLineage::Lineage.new(name: File.basename(cwd)) }
+          library.global_store.write("play", "kickoff", "# Global\n")
+          library.project_store("api").write("play", "kickoff", "# Api\n")
+        end
+
+        it "resolves the play per project and reports it in each row" do
+          state = CLITestHelpers::FakeState.new
+          cli, raw, = action_cli(state: state, project_config: project_config, library: library,
+            &launching(state, result: {exit_code: 1, prompt_failures: {"web" => "agent not ready"}}))
+
+          exit_status { cli.run(["launch", "api", "web", "--play", "kickoff", "--prompt", "Go.", "--json"]) }
+
+          rows = parse_one(raw)["results"]
+          expect(rows.first["play"]).to eq("ref" => "play/kickoff", "scope" => "project", "path" => api_path,
+            "sha256" => Digest::SHA256.hexdigest("# Api\n"), "delivered" => true)
+          expect(rows.last["play"]).to include("scope" => "global", "path" => global_path, "delivered" => false)
+        end
+
+        it "sends each project a line pointing at its own play, then the prompt" do
+          launch_command = double("launch", call: {exit_code: 0, prompt_failures: {}})
+          cli, = build_test_cli(launch_command: launch_command, project_config: project_config, library: library)
+
+          cli.run(["launch", "--play", "kickoff", "--prompt", "Go.", "api", "web"])
+
+          expect(launch_command).to have_received(:call).with(["api", "web"], reattach: false, prompts: {
+            "api" => "Read \"#{api_path}\" and follow it.\n\nGo.",
+            "web" => "Read \"#{global_path}\" and follow it.\n\nGo."
+          })
+        end
+
+        it "looks a directory argument's play up from that directory" do
+          launch_command = double("launch", call: {exit_code: 0, prompt_failures: {}})
+          allow(project_config).to receive(:resolve_project_arg).with("/work/new").and_return(["new", "/work/new"])
+          allow(project_config).to receive(:project_root_for).and_call_original
+          library.project_store("new").write("play", "kickoff", "# New\n")
+          cli, = build_test_cli(launch_command: launch_command, project_config: project_config, library: library)
+
+          cli.run(["launch", "--play", "kickoff", "/work/new"])
+
+          expect(launch_command).to have_received(:call).with(["new"], reattach: false,
+            prompts: {"new" => "Read \"#{library.project_store("new").path_for("play", "kickoff")}\" and follow it."})
+          expect(project_config).not_to have_received(:project_root_for)
+        end
+
+        it "fails an unknown play with nothing launched or created" do
+          launch_command = double("launch", call: {exit_code: 0})
+          allow(project_config).to receive(:resolve_project_arg).and_call_original
+          allow(project_config).to receive(:resolve_project_arg).with("/work/new").and_return(["new", "/work/new"])
+          allow(project_config).to receive(:create).and_call_original
+          cli, raw, = action_cli(launch_command: launch_command, project_config: project_config, library: library)
+
+          status = exit_status { cli.run(["launch", "api", "/work/new", "--play", "nope", "--json"]) }
+
+          expect(status).to eq(1)
+          expect(parse_one(raw)).to include("ok" => false, "code" => "unknown_library_entry")
+          expect(project_config).not_to have_received(:create)
+          expect(launch_command).not_to have_received(:call)
+        end
       end
 
       it "fails (exit 1) when no project got a session" do
