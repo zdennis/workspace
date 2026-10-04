@@ -15,7 +15,7 @@ module Workspace
     # is mistaken for one (see the "Unknown option before the subcommand"
     # hint).
     SUBCOMMANDS = %w[
-      init doctor launch start stop add add-project kill finish relaunch
+      init doctor launch start stop add add-project kill finish relaunch restore
       focus deactivate reactivate tile resize capture agent agentd lock dev parent projects
       capabilities daemon sessions review snapshot ask session-event agent-run handoff pipeline run library lib instructions
       run-and-report report-run-status layout config tmux statusline current
@@ -73,6 +73,7 @@ module Workspace
     # @param library [Workspace::Library, nil] resolves `launch --play` per project
     # @param instructions_command [Workspace::Commands::Instructions, nil] pre-built instructions command
     # @param review_command [Workspace::Commands::Review, nil] pre-built review command
+    # @param restore_command [Workspace::Commands::Restore, nil] pre-built restore command
     # @param snapshot_command [Workspace::Commands::Snapshot, nil] pre-built snapshot command
     # @param config_report [Workspace::ConfigReport, nil] builds the `config show/validate --json` documents
     # @param tmuxinator_report [Workspace::TmuxinatorReport, nil] builds the `tmux show --json` document
@@ -83,7 +84,7 @@ module Workspace
     #   reports every project as unknown
     # @param launch_mode [Workspace::LaunchMode, nil] decides whether launch/start
     #   run headless when no --[no-]headless flag is given; nil builds one
-    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, restart_agent_command: nil, send_command: nil, ensure_agent_command: nil, handoff_command: nil, projects_command: nil, capabilities_command: nil, daemon_command: nil, ui_command: nil, binding_command: nil, library_command: nil, library: nil, instructions_command: nil, review_command: nil, snapshot_command: nil, project_actions_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil, liveness: nil)
+    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, restart_agent_command: nil, send_command: nil, ensure_agent_command: nil, handoff_command: nil, projects_command: nil, capabilities_command: nil, daemon_command: nil, ui_command: nil, binding_command: nil, library_command: nil, library: nil, instructions_command: nil, review_command: nil, restore_command: nil, snapshot_command: nil, project_actions_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil, liveness: nil)
       @config = config
       @state = state
       @project_config = project_config
@@ -136,6 +137,7 @@ module Workspace
       @library = library
       @instructions_command = instructions_command
       @review_command = review_command
+      @restore_command = restore_command
       @snapshot_command = snapshot_command
       @config_report = config_report
       @tmuxinator_report = tmuxinator_report
@@ -181,6 +183,8 @@ module Workspace
         cmd_finish(args)
       when "relaunch"
         cmd_relaunch(args)
+      when "restore"
+        cmd_restore(args)
       when "focus"
         cmd_focus(args)
       when "deactivate"
@@ -422,6 +426,7 @@ module Workspace
           relaunch        Stop and relaunch all active workspace projects
           repair          Rebuild state from live iTerm windows
           resize          Resize tmux panes for a running project
+          restore         Bring back agent panes after a reboot: recreate them and resume their sessions
           run             Send a shell command to a pane in a running project's tmux session
           run-and-report  Run a command as a subprocess, capture stdout/stderr/exit status
           report-run-status  Internal: write run result for --wait (called by shell wrapper)
@@ -3734,6 +3739,76 @@ module Workspace
       failed = launches.any? { |l| l[:exit_code] && !l[:exit_code].zero? }
       rows = json ? launches.flat_map { |l| launch_rows(l[:projects], l[:result], ok_outcome: "relaunched") } : []
       {exit_code: failed ? 1 : 0, results: rows}
+    end
+
+    def cmd_restore(args)
+      dry_run = false
+      json = false
+      parser = OptionParser.new do |opts|
+        opts.banner = "Usage: workspace restore [WORKSPACE...] [--dry-run] [--json]"
+        opts.separator ""
+        opts.separator "Bring back the coding-agent panes a reboot or a tmux restart took. For each"
+        opts.separator "workspace (default: every active one), restore reads the session ledger, launches"
+        opts.separator "the workspace if its tmux session is not running, recreates each recorded agent"
+        opts.separator "pane that is gone (including panes you split by hand), and types"
+        opts.separator "`claude --resume <session id>` into it from the session's directory."
+        opts.separator ""
+        opts.separator "It never types into a pane that already runs an agent or another program, and it"
+        opts.separator "leaves the panes a workspace's config starts to the config. A session you ended"
+        opts.separator "yourself (/exit, /clear) is not restored. Pane bindings move to the new panes."
+        opts.separator ""
+        opts.on("--dry-run", "Show what would be restored and which recorded panes can't be matched; change nothing") { dry_run = true }
+        opts.on("--json", "Print one action document (see docs/README.restore.md) instead of text;",
+          "the text goes to stderr. Exit 0, 3 when some rows failed, 1 when all did") { json = true }
+        opts.separator ""
+        opts.separator "Without --json the exit status is 1 when any workspace or pane failed, else 0."
+        opts.separator "A recorded pane that could not be matched is reported, not a failure."
+        opts.separator ""
+        opts.separator "Examples:"
+        opts.separator "  workspace restore --dry-run    # what would come back, and what can't"
+        opts.separator "  workspace restore    # restore every active workspace"
+        opts.separator "  workspace restore my-app --json"
+      end
+      parser.parse!(args)
+      raise Error, "restore is not available: no restore command was wired" unless @restore_command
+
+      names = restore_targets(args)
+      run_action("restore", json: json) do
+        @restore_command.call(names, dry_run: dry_run) { |missing| launch_for_restore(missing) }
+      end
+    end
+
+    # The workspaces `restore` acts on: the ones named, else the active set.
+    def restore_targets(names)
+      @state.load
+      unless names.empty?
+        names.each do |name|
+          next if @project_config.project_root_for(name)
+          raise Error.new("Unknown project '#{name}'", code: "unknown_workspace", details: {"name" => name})
+        end
+        return names.uniq
+      end
+      raise Error, "No active workspace projects to restore. Name one: workspace restore WORKSPACE" if @state.empty?
+
+      @state.keys.dup
+    end
+
+    # Launches the workspaces whose session is gone, each the way it was last
+    # launched (headless ones stay headless), as `relaunch` does.
+    #
+    # @return [Hash{String=>String}] workspace => why it could not be launched
+    def launch_for_restore(names)
+      headless, windowed = names.partition { |name| @state.dig(name, "headless") }
+      [[windowed, nil], [headless, true]].each_with_object({}) do |(batch, mode), failures|
+        next if batch.empty?
+
+        launch = launch_projects(batch.dup, headless: mode)
+        launch_rows(launch[:projects], launch[:result]).each do |row|
+          failures[row["workspace"]] = row["message"] || row["reason"] if row["outcome"] == "failed"
+        end
+      rescue Workspace::Error => e
+        batch.each { |name| failures[name] = e.message }
+      end
     end
 
     def cmd_add(args)

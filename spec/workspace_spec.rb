@@ -92,6 +92,21 @@ RSpec.describe Workspace do
       expect(launch_command.instance_variable_get(:@binder)).to equal(binding_command)
     end
 
+    it "wires restore to the ledger session-event writes and the bindings binding set writes" do
+      cli = Workspace.build_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new)
+
+      restore = cli.instance_variable_get(:@restore_command)
+      session_event = cli.instance_variable_get(:@session_event_command)
+      binding_command = cli.instance_variable_get(:@binding_command)
+
+      expect(restore).to be_a(Workspace::Commands::Restore)
+      expect(restore.instance_variable_get(:@ledger)).to equal(session_event.instance_variable_get(:@session_ledger))
+      expect(restore.instance_variable_get(:@pane_bindings)).to equal(binding_command.instance_variable_get(:@bindings))
+      expect(restore.instance_variable_get(:@tmuxinator_report)).to equal(cli.instance_variable_get(:@tmuxinator_report))
+      expect(restore.instance_variable_get(:@process_tree)).to be_a(Workspace::ProcessTree)
+      expect(restore.instance_variable_get(:@agent_ensurer)).to equal(cli.instance_variable_get(:@ensure_agent_command))
+    end
+
     it "wires instructions compose to the library start uses and the binding command binding show uses" do
       cli = Workspace.build_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new)
 

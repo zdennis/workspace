@@ -134,8 +134,10 @@ module Workspace
       end
 
       # Written before delivery so a missing daemon doesn't lose the record. The
-      # slot lookup shells out to tmux, so it runs only for the two events that
-      # are recorded.
+      # slot, server and layout lookups shell out to tmux, so they run only for
+      # the two events that are recorded. The layout lets `restore` put a pane
+      # split by hand back where it was; the server's pid tells it whether the
+      # recorded pane id can still name the pane.
       def record_in_ledger(payload, pane_id, workspace)
         hook = payload["hook_event_name"]
         return unless @session_ledger && LEDGER_EVENTS.key?(hook)
@@ -145,6 +147,8 @@ module Workspace
           "workspace" => workspace,
           "pane_slot" => @tmux.pane_slot(pane_id),
           "pane_id" => pane_id,
+          "tmux_server" => @tmux.server_pid_for_pane(pane_id),
+          "layout" => @tmux.pane_layout(pane_id),
           "session_id" => text_field(payload, "session_id"),
           "transcript_path" => text_field(payload, "transcript_path"),
           "cwd" => text_field(payload, "cwd"),

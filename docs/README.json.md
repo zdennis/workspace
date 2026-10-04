@@ -26,7 +26,7 @@ To ask which of these a given CLI supports, run `workspace capabilities --json` 
 
 ## Actions
 
-These commands take `--json` and print one action document: `launch`, `stop`, `kill`, `relaunch`, `focus`, `repair`, `cleanup`, `deactivate`, `reactivate`, `dev up`, `dev down`, `lock release`, `config set`, `daemon restart`, `agentd restart`, `pipeline start`, `pipeline advance`, `pipeline reset`, `ui open`, `binding set`, `binding show`, `binding clear`, `library add`, `library update` and `library remove`. (`finish`, `start`, `lock clear` and `projects stop|kill` have their own pages; `projects stop|kill` use the same shape.)
+These commands take `--json` and print one action document: `launch`, `stop`, `kill`, `relaunch`, `restore`, `focus`, `repair`, `cleanup`, `deactivate`, `reactivate`, `dev up`, `dev down`, `lock release`, `config set`, `daemon restart`, `agentd restart`, `pipeline start`, `pipeline advance`, `pipeline reset`, `ui open`, `binding set`, `binding show`, `binding clear`, `library add`, `library update` and `library remove`. (`finish`, `start`, `lock clear` and `projects stop|kill` have their own pages; `projects stop|kill` use the same shape.)
 
 ```json
 {"schema_version":1,"ok":true,"action":"stop","status":"ok",
@@ -39,7 +39,7 @@ These commands take `--json` and print one action document: `launch`, `stop`, `k
 - `outcome` is per command (see its page). `failed` and `refused` count as failures.
 - `status` is `ok` (no row failed), `partial` (some did), `failed` (all did, or the command exited non-zero), `cancelled` (a prompt was declined; nothing changed), `dry_run` (`--dry-run` reported the plan; nothing changed), or `refused` (a preflight check refused every target; nothing changed).
 - `ok` is `true` for every action document, including `failed`: it means the command ran and reports per-row outcomes. Check `status` and the exit code. A refusal or usage error is the failure envelope above, with `ok: false`.
-- `summary` counts rows by `outcome`. `warnings` is a list of `{code, message}` (empty for now).
+- `summary` counts rows by `outcome`. `warnings` is a list of strings, each a sentence for a person to read; it is empty when there is nothing to say.
 - The exit code is 0 for `ok`, `cancelled` and `dry_run`, 3 for `partial`, and 1 for `failed` and `refused`, except that a command that exits with its own code (`dev up` exits 75 after `--max-wait`) keeps it.
 - The progress text a command prints goes to stderr, so stdout holds the one document. A command that reports only an exit code (`dev up`, `dev down`, `lock release`) gives a `failed` row with `reason: "exit_code"` and `exit_code`; the explanation is on stderr.
 - `kill` ends the tmux session last. Run it from outside the session it kills, or the process can end before the document prints.

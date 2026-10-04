@@ -161,4 +161,112 @@ RSpec.describe Workspace::PaneBindings do
         .to eq("This pane is bound to review acme/api#835.\nFocus: security.")
     end
   end
+
+  describe "#move" do
+    def bound(pane_id, id, slot)
+      store.bind(pane_id, "kind" => "run", "id" => id, "workspace" => "api", "session" => "api", "pane_slot" => slot)
+    end
+
+    def move(from, to, from_slot, to_slot = from_slot)
+      {from: from, to: to, session: "api", from_slot: from_slot, to_slot: to_slot}
+    end
+
+    it "moves a binding to the pane that replaced its own, with the new pane id and slot" do
+      bound("%5", "wr_1", "api:0.1")
+
+      moved = store.move([move("%5", "%1", "api:0.1", "api:0.4")])
+
+      expect(moved.keys).to eq(["%1"])
+      expect(store.binding_for("%5")).to be_nil
+      expect(store.binding_for("%1")).to include("id" => "wr_1", "pane_id" => "%1", "pane_slot" => "api:0.4", "bound_at" => "2026-10-03T12:00:00Z")
+    end
+
+    it "keeps both bindings when a new pane got the old id of another moved pane, in either order" do
+      [[0, 1], [1, 0]].each do |order|
+        bound("%5", "wr_1", "api:0.1")
+        bound("%7", "wr_2", "api:0.4")
+        moves = [move("%5", "%1", "api:0.1"), move("%7", "%5", "api:0.4")]
+
+        store.move(moves.values_at(*order))
+
+        expect(store.binding_for("%1")).to include("id" => "wr_1", "pane_slot" => "api:0.1")
+        expect(store.binding_for("%5")).to include("id" => "wr_2", "pane_slot" => "api:0.4", "pane_id" => "%5")
+        expect(store.binding_for("%7")).to be_nil
+        FileUtils.rm_f(path)
+      end
+    end
+
+    it "leaves a binding made for another slot, as on a pane id reused since" do
+      bound("%5", "wr_new", "api:0.2")
+
+      expect(store.move([move("%5", "%1", "api:0.4")])).to eq({})
+      expect(store.binding_for("%5")).to include("id" => "wr_new")
+      expect(store.binding_for("%1")).to be_nil
+    end
+
+    it "leaves a binding made in another session, and one with no recorded slot" do
+      store.bind("%5", "kind" => "run", "id" => "wr_1", "session" => "other", "pane_slot" => "api:0.1")
+      store.bind("%6", "kind" => "run", "id" => "wr_2", "session" => "api")
+
+      expect(store.move([move("%5", "%1", "api:0.1"), move("%6", "%2", nil, "api:0.2")])).to eq({})
+      expect(store.binding_for("%5")).to include("id" => "wr_1")
+      expect(store.binding_for("%6")).to include("id" => "wr_2")
+    end
+
+    it "takes the place of a leftover binding under the new pane's id, and keeps the leftover under its slot" do
+      bound("%5", "wr_1", "api:0.1")
+      bound("%1", "wr_old", "api:0.3")
+
+      store.move([move("%5", "%1", "api:0.1")])
+
+      expect(store.binding_for("%1")).to include("id" => "wr_1")
+      expect(JSON.parse(File.read(path))["slot:api:0.3"]).to include("id" => "wr_old", "pane_slot" => "api:0.3")
+    end
+
+    it "finds a binding kept under its slot when a later move asks for that slot" do
+      bound("%5", "wr_1", "api:0.1")
+      store.bind("%1", "kind" => "run", "id" => "wr_web", "workspace" => "web", "session" => "web", "pane_slot" => "web:0.4")
+      store.move([move("%5", "%1", "api:0.1")])
+
+      moved = store.move([{from: "%1", to: "%9", session: "web", from_slot: "web:0.4", to_slot: "web:0.4"}])
+
+      expect(moved.keys).to eq(["%9"])
+      expect(store.binding_for("%9")).to include("id" => "wr_web", "session" => "web", "pane_id" => "%9")
+      expect(store.binding_for("%1")).to include("id" => "wr_1", "session" => "api")
+      expect(JSON.parse(File.read(path)).keys).to contain_exactly("%1", "%9")
+    end
+
+    it "does not move onto a pane that has its own binding for that slot, and keeps the binding it would have moved" do
+      bound("%5", "wr_1", "api:0.1")
+      bound("%1", "wr_own", "api:0.1")
+      store.bind("%2", "kind" => "run", "id" => "wr_plain", "session" => "api")
+
+      expect(store.move([move("%5", "%1", "api:0.1"), move("%5", "%2", "api:0.1")])).to eq({})
+      expect(store.binding_for("%1")).to include("id" => "wr_own")
+      expect(store.binding_for("%2")).to include("id" => "wr_plain")
+      expect(store.binding_for("%5")).to include("id" => "wr_1", "pane_slot" => "api:0.1")
+    end
+
+    it "updates the slot of a pane that kept its id" do
+      bound("%5", "wr_1", "api:0.4")
+
+      store.move([move("%5", "%5", "api:0.4", "api:0.3")])
+
+      expect(store.binding_for("%5")).to include("id" => "wr_1", "pane_slot" => "api:0.3")
+    end
+
+    it "writes nothing when no binding moves" do
+      expect(store.move([move("%5", "%1", "api:0.1")])).to eq({})
+      expect(store.move([])).to eq({})
+      expect(File.exist?(path)).to be(false)
+    end
+
+    it "leaves a corrupt file alone" do
+      FileUtils.mkdir_p(File.dirname(path))
+      File.write(path, "{not json")
+
+      expect(store.move([move("%5", "%1", "api:0.1")])).to eq({})
+      expect(File.read(path)).to eq("{not json")
+    end
+  end
 end

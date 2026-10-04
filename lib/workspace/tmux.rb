@@ -420,6 +420,19 @@ module Workspace
       slot.empty? ? nil : slot
     end
 
+    # Reads the layout of the window a pane is in, as tmux's layout string
+    # (e.g. "7f6f,122x58,0,0[122x29,0,0,6,122x28,0,30,7]"). The ledger records
+    # it with each session so `restore` can put a recreated pane back where it was.
+    #
+    # @param pane_id [String] a tmux pane id (e.g. "%23")
+    # @return [String, nil] the layout, or nil if the pane is gone
+    def pane_layout(pane_id)
+      stdout, _, status = Open3.capture3("tmux", "display-message", "-p", "-t", pane_id, "\#{window_layout}")
+      return nil unless status.success?
+      layout = stdout.strip
+      layout.empty? ? nil : layout
+    end
+
     # Opens a background window running +command+ directly (no shell), so the
     # command itself is the pane's process and leads its own process group.
     #

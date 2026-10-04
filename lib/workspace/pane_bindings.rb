@@ -20,6 +20,10 @@ module Workspace
     # Optional single-line text fields of an entry.
     TEXT_FIELDS = %w[step focus instructions artifacts].freeze
 
+    # Key prefix of a binding whose pane id was taken by another pane (see {#move}).
+    PARKED = "slot:"
+    private_constant :PARKED
+
     # Longest value stored for `id` or any text field.
     MAX_FIELD_LENGTH = 200
 
@@ -65,6 +69,49 @@ module Workspace
       removed
     end
 
+    # Moves bindings to the panes that replaced theirs, for `restore`: after a
+    # tmux restart a pane has a new id, and the binding follows its slot. A
+    # binding is moved only if it was made for the move's session and old
+    # slot; one without a recorded slot is left alone.
+    #
+    # Pane ids start over when tmux restarts, so a new pane can carry the id
+    # another bound pane had. All moves happen in one write and every binding
+    # is picked before any is placed, so moves never replace each other. A
+    # binding found at a new pane's id that no move picked is not lost while
+    # it can still be used: if it is that pane's own (same session and slot)
+    # it stays and the move is not made; otherwise it belongs to a pane that
+    # is gone, and it is kept under `slot:<its slot>` until a later move for
+    # that slot claims it. Only one with no recorded slot, which no move
+    # could ever claim, is replaced.
+    #
+    # @param moves [Array<Hash>] `:from` and `:to` pane ids, the tmux `:session`,
+    #   and the pane's `:from_slot` and `:to_slot`
+    # @return [Hash{String=>Hash}] new pane id => the binding now stored for it
+    # @raise [SystemCallError] if the file can't be written
+    def move(moves)
+      current = read
+      return {} unless moves.any? { |move| source_key(current, move) }
+
+      moved = {}
+      update do |all|
+        picked = moves.filter_map do |move|
+          key = source_key(all, move)
+          [move, key, all[key]] if key
+        end
+        picked.each { |_, key, _| all.delete(key) }
+        picked.each do |move, key, entry|
+          resident = all[move[:to]]
+          if resident.is_a?(Hash) && resident["session"] == move[:session] && [nil, move[:to_slot]].include?(resident["pane_slot"])
+            all[key] ||= entry
+            next
+          end
+          all["#{PARKED}#{resident["pane_slot"]}"] = resident if resident.is_a?(Hash) && resident["pane_slot"]
+          moved[move[:to]] = all[move[:to]] = entry.merge("pane_id" => move[:to], "pane_slot" => move[:to_slot])
+        end
+      end
+      moved
+    end
+
     # A binding only counts for the tmux session and pane slot it was made in:
     # a pane id from another session, or one reused after a tmux restart, is
     # not the same pane. The SessionStart hook stays quiet for a stale binding,
@@ -105,6 +152,16 @@ module Workspace
       lines = ["This pane is following play #{entry["id"]}#{where}."]
       lines << "Instructions: #{entry["instructions"]}. Read it again and keep following it if it is no longer in your context." if entry["instructions"]
       lines.join("\n")
+    end
+
+    # Where the binding a move is for sits: under its old pane id, or under
+    # its slot if a pane that took that id displaced it.
+    def source_key(all, move)
+      [move[:from], "#{PARKED}#{move[:from_slot]}"].find { |key| movable?(all[key], move) }
+    end
+
+    def movable?(entry, move)
+      entry.is_a?(Hash) && entry["session"] == move[:session] && !entry["pane_slot"].nil? && entry["pane_slot"] == move[:from_slot]
     end
 
     def validate(fields)

@@ -217,6 +217,7 @@ require_relative "workspace/commands/capabilities"
 require_relative "workspace/commands/parent"
 require_relative "workspace/commands/projects"
 require_relative "workspace/commands/review"
+require_relative "workspace/commands/restore"
 require_relative "workspace/commands/snapshot"
 require_relative "workspace/commands/project_actions"
 require_relative "workspace/commands/config"
@@ -391,6 +392,8 @@ module Workspace
     config_command = Commands::Config.new(project_settings: project_settings, lineage: lineage, file_backup: file_backup, event_log: event_log, output: output)
     config_report = ConfigReport.new(project_settings: project_settings, project_config: project_config)
     tmuxinator_report = TmuxinatorReport.new(config: config, tmux: tmux)
+    restore_command = Commands::Restore.new(ledger: session_ledger, tmux: tmux, pane_bindings: pane_bindings, tmuxinator_report: tmuxinator_report,
+      process_tree: process_tree, agent_ensurer: ensure_agent_command, output: output, error_output: error_output)
 
     context_store = ContextStore.new(path: config.context_store_path, logger: logger)
     context_reader = ContextReader.new(context_store: context_store, project_settings: project_settings, tmux: tmux, logger: logger,
@@ -478,6 +481,7 @@ module Workspace
       library: library,
       instructions_command: instructions_command,
       review_command: review_command,
+      restore_command: restore_command,
       snapshot_command: snapshot_command,
       project_actions_command: project_actions_command,
       agent_command: agent_command,

@@ -13,6 +13,8 @@ RSpec.describe Workspace::Commands::SessionEvent do
   before do
     allow(config).to receive(:agent_socket_path).with("proj").and_return(socket_path)
     allow(tmux).to receive(:session_name_for_pane).with("%2").and_return("proj")
+    allow(tmux).to receive(:pane_layout).and_return(nil)
+    allow(tmux).to receive(:server_pid_for_pane).and_return(nil)
   end
 
   def invoke(payload, workspace: nil)
@@ -398,9 +400,41 @@ RSpec.describe Workspace::Commands::SessionEvent do
         "transcript_path" => "/t.jsonl", "source" => "resume"})
 
       expect(ledger).to have_received(:record).with(
-        "event" => "session_start", "workspace" => "proj", "pane_slot" => "proj:0.1", "pane_id" => "%2",
+        "event" => "session_start", "workspace" => "proj", "pane_slot" => "proj:0.1", "pane_id" => "%2", "tmux_server" => nil, "layout" => nil,
         "session_id" => "s1", "transcript_path" => "/t.jsonl", "cwd" => "/p", "source" => "resume", "reason" => nil
       )
+    end
+
+    it "records the layout of the pane's window with both events, so restore can put a pane back" do
+      allow(tmux).to receive(:pane_layout).with("%2").and_return("b25f,80x24,0,0[80x12,0,0,1,80x11,0,13,2]")
+
+      invoke_with_ledger({"hook_event_name" => "SessionStart", "session_id" => "s1"})
+      invoke_with_ledger({"hook_event_name" => "SessionEnd", "session_id" => "s1"})
+
+      expect(ledger).to have_received(:record).with(hash_including("event" => "session_start", "layout" => "b25f,80x24,0,0[80x12,0,0,1,80x11,0,13,2]"))
+      expect(ledger).to have_received(:record).with(hash_including("event" => "session_end", "layout" => "b25f,80x24,0,0[80x12,0,0,1,80x11,0,13,2]"))
+    end
+
+    it "records the tmux server's pid with both events, so restore knows whether the pane id still names the pane" do
+      allow(tmux).to receive(:server_pid_for_pane).with("%2").and_return("14794")
+
+      invoke_with_ledger({"hook_event_name" => "SessionStart", "session_id" => "s1"})
+      invoke_with_ledger({"hook_event_name" => "SessionEnd", "session_id" => "s1"})
+
+      expect(ledger).to have_received(:record).with(hash_including("event" => "session_start", "tmux_server" => "14794"))
+      expect(ledger).to have_received(:record).with(hash_including("event" => "session_end", "tmux_server" => "14794"))
+    end
+
+    it "still exits 0 when the server lookup raises" do
+      allow(tmux).to receive(:server_pid_for_pane).and_raise(Errno::ENOENT, "tmux")
+
+      expect(invoke_with_ledger({"hook_event_name" => "SessionStart"})).to eq(exit_code: 0)
+    end
+
+    it "still exits 0 when the layout lookup raises" do
+      allow(tmux).to receive(:pane_layout).and_raise(Errno::ENOENT, "tmux")
+
+      expect(invoke_with_ledger({"hook_event_name" => "SessionStart"})).to eq(exit_code: 0)
     end
 
     it "records a SessionEnd with its reason" do
@@ -427,6 +461,8 @@ RSpec.describe Workspace::Commands::SessionEvent do
 
       expect(ledger).not_to have_received(:record)
       expect(tmux).not_to have_received(:pane_slot)
+      expect(tmux).not_to have_received(:pane_layout)
+      expect(tmux).not_to have_received(:server_pid_for_pane)
     end
 
     it "does not record outside tmux" do

@@ -98,6 +98,7 @@ RSpec.describe Workspace::CLI do
       handoff_command: overrides[:handoff_command],
       projects_command: overrides[:projects_command],
       capabilities_command: overrides[:capabilities_command],
+      restore_command: overrides[:restore_command],
       daemon_command: overrides[:daemon_command],
       ui_command: overrides[:ui_command],
       binding_command: overrides[:binding_command],
@@ -3632,6 +3633,173 @@ RSpec.describe Workspace::CLI do
     end
   end
 
+  describe "#run with restore" do
+    # Answers like Commands::Restore: asks its block to launch the workspaces
+    # whose session is gone, then returns its rows.
+    let(:restore_class) do
+      Class.new do
+        attr_reader :calls, :launch_failures
+
+        def initialize(result: {exit_code: 0, results: [], warnings: [], extra: {"dry_run" => false, "unmatched" => []}}, missing: [])
+          @result = result
+          @missing = missing
+          @calls = []
+        end
+
+        def call(names, dry_run: false)
+          @calls << {names: names, dry_run: dry_run}
+          @launch_failures = yield(@missing) unless @missing.empty?
+          @result
+        end
+      end
+    end
+    let(:state) { CLITestHelpers::FakeState.new }
+    let(:project_config) { CLITestHelpers::FakeProjectConfig.new("api" => "/code/api", "web" => "/code/web") }
+
+    def restore_cli(restore_command, **overrides)
+      build_test_cli(restore_command: restore_command, state: state, project_config: project_config, **overrides)
+    end
+
+    it "restores the active set by default" do
+      state["api"] = {"iterm_window_id" => 1}
+      state["web"] = {"headless" => true}
+      restore = restore_class.new
+      cli, = restore_cli(restore)
+
+      cli.run(["restore"])
+      cli.run(["restore", "--dry-run"])
+
+      expect(restore.calls).to eq([{names: %w[api web], dry_run: false}, {names: %w[api web], dry_run: true}])
+    end
+
+    it "restores only the workspaces named, each once" do
+      state["api"] = {"iterm_window_id" => 1}
+      restore = restore_class.new
+      cli, = restore_cli(restore)
+
+      cli.run(["restore", "web", "web", "--dry-run"])
+
+      expect(restore.calls).to eq([{names: %w[web], dry_run: true}])
+    end
+
+    it "refuses an unknown workspace before anything runs" do
+      restore = restore_class.new
+      cli, _, error_output = restore_cli(restore)
+
+      expect { cli.run(["restore", "nope"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+      expect(error_output.string).to include("Unknown project 'nope'")
+      expect(restore.calls).to eq([])
+    end
+
+    it "fails when nothing is active and nothing is named" do
+      restore = restore_class.new
+      cli, _, error_output = restore_cli(restore)
+
+      expect { cli.run(["restore"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+      expect(error_output.string).to include("No active workspace projects to restore. Name one: workspace restore WORKSPACE")
+      expect(restore.calls).to eq([])
+    end
+
+    it "exits 1 when a row failed" do
+      state["api"] = {}
+      cli, = restore_cli(restore_class.new(result: {exit_code: 1, results: [], warnings: [], extra: {}}))
+
+      expect { cli.run(["restore"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+    end
+
+    it "fails when no restore command was wired" do
+      cli, _, error_output = build_test_cli(restore_command: nil)
+
+      expect { cli.run(["restore"]) }.to raise_error(FakeSystemExit)
+      expect(error_output.string).to include("no restore command was wired")
+    end
+
+    it "is listed in the main help" do
+      cli, output, = build_test_cli
+
+      cli.run(["help"])
+
+      expect(output.string).to match(/^\s+restore\s+Bring back agent panes after a reboot/)
+    end
+
+    it "explains itself with a usage error's help" do
+      cli, _, error_output = restore_cli(restore_class.new)
+
+      expect { cli.run(["restore", "--bogus"]) }.to raise_error(FakeSystemExit)
+      expect(error_output.string).to include("invalid option: --bogus")
+    end
+
+    describe "launching the sessions that are gone" do
+      let(:launch) do
+        Class.new do
+          attr_reader :calls
+
+          def initialize(state, fail: [], raise_for: nil)
+            @state = state
+            @fail = fail
+            @raise_for = raise_for
+            @calls = []
+          end
+
+          def call(projects, **options)
+            @calls << [projects, options[:headless] == true]
+            raise Workspace::Error, "Missing config for #{projects.join(", ")}" if @raise_for == ((options[:headless] == true) ? :headless : :windowed)
+            start_failures = projects.select { |p| @fail.include?(p) }.to_h { |p| [p, "tmuxinator exited 1"] }
+            projects.each { |p| @state[p] = {"iterm_window_id" => 7, "headless" => options[:headless] == true} unless @fail.include?(p) }
+            {exit_code: start_failures.empty? ? 0 : 1, prompt_failures: {}, reused: [], start_failures: start_failures}
+          end
+        end
+      end
+
+      before do
+        state["api"] = {"iterm_window_id" => 1}
+        state["web"] = {"headless" => true}
+      end
+
+      it "launches each the way it was last launched and reports no failures" do
+        launcher = launch.new(state)
+        restore = restore_class.new(missing: %w[api web])
+        cli, = restore_cli(restore, launch_command: launcher, launch_mode: CLITestHelpers.launch_mode(headless: false))
+
+        cli.run(["restore"])
+
+        expect(launcher.calls).to eq([[%w[api], false], [%w[web], true]])
+        expect(restore.launch_failures).to eq({})
+      end
+
+      it "hands back why a workspace could not be launched" do
+        launcher = launch.new(state, fail: %w[web])
+        restore = restore_class.new(missing: %w[api web])
+        cli, = restore_cli(restore, launch_command: launcher, launch_mode: CLITestHelpers.launch_mode(headless: false))
+
+        cli.run(["restore"])
+
+        expect(restore.launch_failures).to eq("web" => "tmuxinator exited 1")
+      end
+
+      it "names the reason when a failed launch row has no message" do
+        restore = restore_class.new(missing: %w[api])
+        cli, = restore_cli(restore, launch_command: launch.new(state), launch_mode: CLITestHelpers.launch_mode(headless: false))
+        allow(cli).to receive(:launch_rows).and_return([{"workspace" => "api", "outcome" => "failed", "reason" => "session_not_started", "message" => nil}])
+
+        cli.run(["restore"])
+
+        expect(restore.launch_failures).to eq("api" => "session_not_started")
+      end
+
+      it "fails a whole batch whose launch raised, and still launches the other" do
+        launcher = launch.new(state, raise_for: :windowed)
+        restore = restore_class.new(missing: %w[api web])
+        cli, = restore_cli(restore, launch_command: launcher, launch_mode: CLITestHelpers.launch_mode(headless: false))
+
+        cli.run(["restore"])
+
+        expect(launcher.calls.size).to eq(2)
+        expect(restore.launch_failures).to eq("api" => "Missing config for api")
+      end
+    end
+  end
+
   describe "#run with binding" do
     let(:binding_command) { CLITestHelpers::FakeBindingCommand.new }
     let(:detector) { instance_double(Workspace::ProjectDetector, detect: "detected-ws") }
@@ -6144,6 +6312,64 @@ RSpec.describe Workspace::CLI do
         expect(exit_status { cli.run(["relaunch", "--json"]) }).to eq(1)
 
         expect(parse_one(raw)).to include("ok" => false, "error" => "No active workspace projects to relaunch.")
+        expect(err.string).to eq("")
+      end
+    end
+
+    describe "restore" do
+      let(:restore_class) do
+        Class.new do
+          def initialize(result) = @result = result
+
+          def call(_names, dry_run: false) = @result
+        end
+      end
+      let(:row) { {"workspace" => "api", "kind" => "pane", "outcome" => "restored", "reason" => nil, "slot" => "api:0.4"} }
+
+      def restore_cli(result)
+        state = CLITestHelpers::FakeState.new
+        state["api"] = {"iterm_window_id" => 1}
+        action_cli(state: state, restore_command: restore_class.new(result))
+      end
+
+      it "prints one action document with dry_run and unmatched beside the rows" do
+        unmatched = [{"workspace" => "api", "slot" => "api:1.0", "reason" => "no_window"}]
+        rows = [row.merge("outcome" => "would_restore"), row.merge("outcome" => "unmatched", "reason" => "no_window", "slot" => "api:1.0")]
+        cli, raw, = restore_cli({exit_code: 0, results: rows, warnings: ["w"], status: "dry_run", extra: {"dry_run" => true, "unmatched" => unmatched}})
+
+        expect(exit_status { cli.run(["restore", "--dry-run", "--json"]) }).to eq(0)
+
+        expect(parse_one(raw)).to include("schema_version" => 1, "ok" => true, "action" => "restore", "status" => "dry_run", "dry_run" => true,
+          "unmatched" => unmatched, "results" => rows, "warnings" => ["w"], "summary" => {"would_restore" => 1, "unmatched" => 1})
+      end
+
+      it "is ok with exit 0 when panes were restored and some could not be matched" do
+        rows = [row, row.merge("outcome" => "unmatched", "reason" => "pane_busy")]
+        cli, raw, = restore_cli({exit_code: 0, results: rows, warnings: [], extra: {"dry_run" => false, "unmatched" => []}})
+
+        expect(exit_status { cli.run(["restore", "--json"]) }).to eq(0)
+        expect(parse_one(raw)).to include("status" => "ok", "dry_run" => false)
+      end
+
+      it "is partial with exit 3 when some rows failed, and failed with exit 1 when all did" do
+        failed = row.merge("outcome" => "failed", "reason" => "split_failed")
+        cli, raw, = restore_cli({exit_code: 1, results: [row, failed], warnings: [], extra: {}})
+        expect(exit_status { cli.run(["restore", "--json"]) }).to eq(3)
+        expect(parse_one(raw)).to include("status" => "partial")
+
+        cli, raw, = restore_cli({exit_code: 1, results: [failed], warnings: [], extra: {}})
+        expect(exit_status { cli.run(["restore", "--json"]) }).to eq(1)
+        expect(parse_one(raw)).to include("status" => "failed")
+      end
+
+      it "answers an unknown workspace and an empty active set with the error envelope" do
+        cli, raw, = action_cli(restore_command: restore_class.new({}))
+        expect(exit_status { cli.run(["restore", "nope", "--json"]) }).to eq(1)
+        expect(parse_one(raw)).to include("ok" => false, "code" => "unknown_workspace", "details" => {"name" => "nope"})
+
+        cli, raw, err = action_cli(restore_command: restore_class.new({}))
+        expect(exit_status { cli.run(["restore", "--json"]) }).to eq(1)
+        expect(parse_one(raw)).to include("ok" => false, "error" => "No active workspace projects to restore. Name one: workspace restore WORKSPACE")
         expect(err.string).to eq("")
       end
     end

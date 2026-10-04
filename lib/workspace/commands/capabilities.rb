@@ -38,7 +38,8 @@ module Workspace
         "library" => 3,
         "library_play" => 2,
         "library_copy" => 1,
-        "instructions" => 1
+        "instructions" => 1,
+        "restore" => 1
       }.freeze
 
       # The exit statuses commands use, by meaning.
