@@ -65,6 +65,9 @@ module Workspace
       #   transcript title for `sessions --json`; nil leaves transcripts unread
       # @param task_store [Workspace::TaskStore, nil] the workspace's task, for `sessions --json`'s
       #   `task` and first `display_label` source; nil reports no task
+      # @param scan_slots [Workspace::ScanSlotLimiter, nil] bounds how many
+      #   monitors scan at once, machine-wide; nil builds one from config
+      #   when the session monitor starts
       def initialize(config:, tmux:, work_coordinator_client:, pipeline_config:, pipeline_state: nil,
         epoch_generator: -> { "wa-#{Agent.ulid}" },
         signal_trapper: Signal,
@@ -83,6 +86,7 @@ module Workspace
         label_reader: nil,
         task_store: nil,
         workflow_nudger: nil,
+        scan_slots: nil,
         agent_restart_factory: nil,
         logger: Workspace::Logger.new, output: $stdout, error_output: $stderr)
         @config = config
@@ -104,6 +108,7 @@ module Workspace
         @label_reader = label_reader
         @task_store = task_store
         @workflow_nudger = workflow_nudger
+        @scan_slots = scan_slots
         @agent_restart_factory = agent_restart_factory || method(:build_agent_restart)
         # Restart workers by pane id, so one pane is restarted once at a time.
         @restarts = {}
@@ -1115,7 +1120,11 @@ module Workspace
           project: name,
           context_reader: @context_reader,
           label_reader: @label_reader,
-          task_reader: @task_store && ->(workspace) { @task_store.active_for(workspace) }
+          task_reader: @task_store && ->(workspace) { @task_store.active_for(workspace) },
+          scan_slots: @scan_slots || ScanSlotLimiter.new(
+            dir: File.join(@config.state_dir, "scan-slots"),
+            logger: @logger
+          )
         )
       end
 

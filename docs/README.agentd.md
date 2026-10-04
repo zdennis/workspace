@@ -48,6 +48,8 @@ To check on or read the log of a running agent without holding a terminal, use [
 
 **Workflow runs** — when the main agent's turn ends in a pane bound to a [workflow run](README.workflow.md) (a `Stop` hook event with no sub-agent id), the daemon starts `workspace workflow advance RUN --turn-ended --pane ID [--turn-started AT]` as its own process, which decides the run's step. `AT` is when the pane's last prompt was submitted, when this daemon saw it; the run ignores the end of a turn that began before its step did. Every 15 seconds it starts `workspace workflow advance RUN` for each of the workspace's runs that waits for a lock, or whose check never reported back. Those processes write to the daemon's log. A workflow needs the daemon: without one, a run only moves on `workflow resume`.
 
+**Scan concurrency** — each agent's session monitor polls its tmux session every couple of seconds, spawning a handful of processes per poll (`tmux list-panes`, a `ps` snapshot, one `tmux capture-pane` per pane). `WORKSPACE_SCAN_CONCURRENCY` bounds how many agents' monitors may scan at once, machine-wide (default `1`), shared through slot files under `~/.local/state/workspace/scan-slots`. A monitor that can't take a slot skips that tick; it never waits. Values that are not a positive integer fall back to the default.
+
 **Pipeline** (deprecated, see [`pipeline`](README.pipeline.md)) — a project's stages come from `pipeline.panes` in `~/.config/workspace/projects/<name>.yml`. Each entry's position is its pane index:
 
 ```yaml
