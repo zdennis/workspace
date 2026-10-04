@@ -3547,6 +3547,22 @@ RSpec.describe Workspace::CLI do
       end
     end
 
+    %w[--instructions --artifacts].each do |flag|
+      it "refuses a #{flag} path under an unknown ~user as a usage error, binding nothing" do
+        argv = ["binding", "set", "app", "--pane", "%5", "--kind", "run", "--id", "wr_1", flag, "~no-such-user-cli27/plan.md"]
+
+        expect { cli.run(argv) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+        expect(built[2].string).to include("#{flag}: can't make ~no-such-user-cli27/plan.md an absolute path")
+        expect(built[2].string).not_to include("ArgumentError")
+
+        json_cli, json_output = build_test_cli(binding_command: binding_command, project_detector: detector, working_dir: "/some/dir")
+        expect { json_cli.run(argv + ["--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+        expect(JSON.parse(json_output.string)).to include("ok" => false, "code" => "usage",
+          "error" => a_string_including("#{flag}: can't make ~no-such-user-cli27/plan.md an absolute path"))
+        expect(binding_command.calls).to be_empty
+      end
+    end
+
     it "reports a stale binding in the show document" do
       Dir.mktmpdir do |dir|
         store = Workspace::PaneBindings.new(path: File.join(dir, "bindings.json"))

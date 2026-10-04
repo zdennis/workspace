@@ -3266,8 +3266,8 @@ module Workspace
         opts.on("--step STEP", "Step name (set)") { |v| options[:step] = v }
         opts.on("--attempt N", Integer, "Step attempt, 1 or more (set)") { |v| options[:attempt] = v }
         opts.on("--focus TEXT", "Review focus, e.g. security (set)") { |v| options[:focus] = v }
-        opts.on("--instructions PATH", "File holding the pane's instructions (set); stored as an absolute path") { |v| options[:instructions] = absolute_unless_blank(v) }
-        opts.on("--artifacts PATH", "Directory holding the subject's artifacts (set); stored as an absolute path") { |v| options[:artifacts] = absolute_unless_blank(v) }
+        opts.on("--instructions PATH", "File holding the pane's instructions (set); stored as an absolute path") { |v| options[:instructions] = absolute_unless_blank("--instructions", v) }
+        opts.on("--artifacts PATH", "Directory holding the subject's artifacts (set); stored as an absolute path") { |v| options[:artifacts] = absolute_unless_blank("--artifacts", v) }
         opts.on("--json", "Print one JSON action document") { options[:json] = true }
         opts.on("-h", "--help", "Show this help") { options[:help] = true }
         opts.separator ""
@@ -3280,8 +3280,11 @@ module Workspace
 
     # A path from the directory the command runs in; a blank one is left for
     # the command to refuse.
-    def absolute_unless_blank(path)
+    def absolute_unless_blank(flag, path)
       path.strip.empty? ? path : File.expand_path(path, @working_dir)
+    rescue ArgumentError => e
+      # A path under a ~user that doesn't exist can't be expanded.
+      raise UsageError, "#{flag}: can't make #{path} an absolute path: #{e.message}"
     end
 
     def cmd_binding(args)
