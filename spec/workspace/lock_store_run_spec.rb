@@ -24,6 +24,11 @@ RSpec.describe Workspace::LockStore, "run holders" do
     {kind: "process", pid: pid, started: "start-#{pid}", pgid: pid, pane: "%9", worktree: "/src/app-a", branch: "feat/a"}
   end
 
+  # A delegate or holder record of that process, as a stop is handed one.
+  def record(pid)
+    {"kind" => "process", "pid" => pid, "started" => "start-#{pid}", "pgid" => pid}
+  end
+
   def hold(name, pid, wait: false)
     store.acquire(name, identity: agent(pid), waiter_pid: pid, waiter_started: "start-#{pid}", wait: wait)
   end
@@ -286,6 +291,29 @@ RSpec.describe Workspace::LockStore, "run holders" do
       expect(store.poll("lint", nil)).to eq(status: :cleared)
       expect(store.claim_or_dequeue("lint", nil)).to eq(status: :dequeued)
       expect(holder("test-db")).to include("run_id" => "wr_1")
+      expect(queue("lint").map { |w| w["run_id"] }).to eq(%w[wr_2])
+    end
+
+    it "is not claimed by a poll with no pid when it was promoted, though neither has a waiter pid" do
+      hold("lint", 100)
+      store.acquire_run(%w[lint], run: run("wr_2"))
+      store.release("lint", 100)
+      expect(holder("lint")).to include("run_id" => "wr_2", "unclaimed" => true)
+
+      expect(store.poll("lint", nil)).to eq(status: :cleared)
+      expect(store.claim_or_dequeue("lint", nil)).to eq(status: :dequeued)
+      expect(holder("lint")).to include("run_id" => "wr_2", "unclaimed" => true)
+    end
+
+    it "does not take a lock over as the head waiter on a poll with no pid" do
+      s = store(idle_grace: 1)
+      hold("lint", 100)
+      s.acquire_run(%w[lint], run: run("wr_2"))
+      s.mark_idle(agent(100), idle: true)
+      now[0] += 10
+
+      expect(s.poll("lint", nil)).to eq(status: :cleared)
+      expect(holder("lint")).to include("pid" => 100)
       expect(queue("lint").map { |w| w["run_id"] }).to eq(%w[wr_2])
     end
 
@@ -569,6 +597,69 @@ RSpec.describe Workspace::LockStore, "run holders" do
       expect(holder("devenv")).to include("kind" => "process", "pid" => 500, "kept" => true)
     end
 
+    it "is marked kept as the holder when the run gave the lock up to it before its stop failed" do
+      store.delegate("devenv", run_id: "wr_1", identity: process(500))
+      store.release_run("wr_1")
+
+      expect(store.keep_delegate("devenv", record(500))).to be(true)
+
+      expect(holder("devenv")).to include("kind" => "process", "pid" => 500, "kept" => true)
+      expect(store.keep_delegate("devenv", record(501))).to be(false)
+    end
+
+    it "is put back on the run's hold, kept, when it was dropped before its failed stop could mark it" do
+      store.delegate("devenv", run_id: "wr_1", identity: process(500))
+      stopped = holder("devenv")["delegate"]
+      liveness.kill(500)
+      store.reap
+      expect(holder("devenv")).not_to include("delegate")
+
+      expect(store.keep_delegate("devenv", stopped, run_id: "wr_1")).to be(true)
+
+      expect(holder("devenv")).to include("run_id" => "wr_1", "delegate" => include("pid" => 500, "started" => "start-500", "pgid" => 500, "kept" => true))
+    end
+
+    it "is not put back on another run's hold, on a hold with another delegate, or with no run named" do
+      store.delegate("devenv", run_id: "wr_1", identity: process(500))
+      stopped = holder("devenv")["delegate"]
+      liveness.kill(500)
+      store.reap
+
+      expect(store.keep_delegate("devenv", stopped)).to be(false)
+      expect(store.keep_delegate("devenv", stopped, run_id: "wr_2")).to be(false)
+      store.delegate("devenv", run_id: "wr_1", identity: process(600))
+      expect(store.keep_delegate("devenv", stopped, run_id: "wr_1")).to be(false)
+      expect(holder("devenv")["delegate"]).to include("pid" => 600)
+      expect(holder("devenv")["delegate"]).not_to include("kept")
+    end
+
+    it "does not mark an agent holder with that pid kept" do
+      hold("lint", 500)
+
+      expect(store.keep_delegate("lint", record(500))).to be(false)
+      expect(holder("lint")).not_to include("kept")
+    end
+
+    it "is marked kept as the delegate when the run took the lock back before its stop as a holder failed" do
+      store.delegate("devenv", run_id: "wr_1", identity: process(500))
+      store.release_run("wr_1")
+      record = holder("devenv")
+      store.acquire_run(%w[devenv], run: run)
+
+      expect(store.keep_process_holder("devenv", record)).to be_nil
+
+      expect(holder("devenv")).to include("run_id" => "wr_1", "delegate" => include("pid" => 500, "kept" => true))
+    end
+
+    it "is left alone by a kept holder that is some other process: the run's hold is returned instead" do
+      store.delegate("devenv", run_id: "wr_1", identity: process(500))
+
+      other = store.keep_process_holder("devenv", process(600).transform_keys(&:to_s))
+
+      expect(other).to include("run_id" => "wr_1")
+      expect(holder("devenv")["delegate"]).not_to include("kept")
+    end
+
     it "queues behind its former delegate while a clear is stopping it" do
       store.delegate("devenv", run_id: "wr_1", identity: process(500))
       store.release_run("wr_1")
@@ -627,7 +718,7 @@ RSpec.describe Workspace::LockStore, "run holders" do
 
       before do
         store.delegate("devenv", run_id: "wr_1", identity: process(500))
-        expect(store.keep_delegate("devenv", 500)).to be(true)
+        expect(store.keep_delegate("devenv", record(500))).to be(true)
         liveness.kill(500)
       end
 
@@ -656,9 +747,13 @@ RSpec.describe Workspace::LockStore, "run holders" do
       end
 
       it "marks nothing for a pid that is not the delegate's" do
-        expect(store.keep_delegate("devenv", 999)).to be(false)
-        expect(store.keep_delegate("devenv", nil)).to be(false)
-        expect(store.keep_delegate("nope", 500)).to be(false)
+        expect(store.keep_delegate("devenv", record(999))).to be(false)
+        expect(store.keep_delegate("devenv", {})).to be(false)
+        expect(store.keep_delegate("nope", record(500))).to be(false)
+      end
+
+      it "marks nothing for a process that reused the delegate's pid" do
+        expect(store.keep_delegate("devenv", record(500).merge("started" => "start-later"))).to be(false)
       end
     end
 

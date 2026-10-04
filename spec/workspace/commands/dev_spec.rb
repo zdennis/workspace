@@ -1128,6 +1128,19 @@ RSpec.describe Workspace::Commands::Dev, "with fake processes and clock" do
         expect(holder).to include("run_id" => "wr_1")
         expect(holder).not_to include("delegate")
       end
+
+      it "reports the environment it started when the run ends during start-up" do
+        allow(tmux).to receive(:new_window) do |_session, env:, **|
+          store.delegate("devenv", run_id: env.fetch("WORKSPACE_DEV_RUN"), identity: process_identity(700, worktree: worktree, branch: "feat/a"))
+          liveness.end_run("wr_1")
+          700
+        end
+
+        expect(dev(bound_run: bound_run).up(working_dir: worktree)).to eq(exit_code: 0)
+
+        expect(output.string).to include("Dev environment running for")
+        expect(signals).to eq([])
+      end
     end
 
     describe "#up from anywhere else" do
@@ -1162,6 +1175,27 @@ RSpec.describe Workspace::Commands::Dev, "with fake processes and clock" do
         expect(signals).to eq([])
         expect(error_output.string).to eq("The devenv lock is held by #{File.basename(worktree)} (run wr_1, step implement); " \
           "--force does not take a lock from a run. Use --wait to queue behind it. If that run is no longer going, free the lock with: workspace lock clear devenv\n")
+      end
+
+      it "refuses --force when the run takes the lock back while the new wrapper queues, and stops only that wrapper" do
+        store.delegate("devenv", run_id: "wr_1", identity: process_identity(700))
+        store.release_run("wr_1")
+        allow(tmux).to receive(:new_window) do
+          store.acquire_run(["devenv"], run: run)
+          store.acquire("devenv", identity: process_identity(555, worktree: worktree, branch: nil), waiter_pid: 555,
+            waiter_started: "s-555", wait: true, priority: true)
+          555
+        end
+        allow(terminator).to receive(:stop_holder)
+
+        expect(dev.up(takeover: true, working_dir: worktree)).to eq(exit_code: 1)
+
+        expect(terminator).not_to have_received(:stop_holder)
+        expect(signals).to eq([["TERM", 555]])
+        expect(error_output.string).to eq("The devenv lock is held by #{File.basename(worktree)} (run wr_1, step implement); " \
+          "--force does not take a lock from a run. Use --wait to queue behind it. If that run is no longer going, free the lock with: workspace lock clear devenv\n")
+        expect(output.string).not_to include("Taking over")
+        expect(holder).to include("run_id" => "wr_1", "delegate" => include("pid" => 700))
       end
 
       it "queues behind the run with --wait and starts once the run releases the lock" do
@@ -1281,7 +1315,8 @@ RSpec.describe Workspace::Commands::Dev, "with fake processes and clock" do
 
           expect(tmux).not_to have_received(:new_window)
           expect(error_output.string).to include("A previous dev environment's process group 700 is still running under run wr_1 " \
-            "(its wrapper pid 700 is gone). Have its owner run `kill -TERM -700`, then run `workspace dev up` again.")
+            "(its wrapper pid 700 is gone). Stop it with: workspace dev down --force (for another user's processes, " \
+            "have its owner run `kill -TERM -700`), then run `workspace dev up` again.")
         end
 
         it "is not reported as running, and `down` drops it once the group is gone" do
@@ -1296,6 +1331,173 @@ RSpec.describe Workspace::Commands::Dev, "with fake processes and clock" do
           expect(holder).to include("run_id" => "wr_1")
           expect(holder).not_to include("delegate")
         end
+
+        it "`status` says its process group is still running, where --json has `running` false and the kept delegate" do
+          dev.down(working_dir: worktree)
+
+          dev.status(working_dir: worktree)
+
+          name = File.basename(worktree)
+          expect(output.string).to eq("Dev environment: STALE for #{name} (feat/a) under run wr_1 (wrapper pid 700 is gone; " \
+            "its process group 700 is still running — stop it with `workspace dev down --force`); " \
+            "the devenv lock is held by #{name} (run wr_1, step implement)\n")
+          payload = dev.status_payload(working_dir: worktree)
+          expect(payload).to include("running" => false, "ready" => nil)
+          expect(payload["holder"]["delegate"]).to include("pid" => 700, "kept" => true, "stale" => true)
+        end
+
+        it "`status` says the group is gone once it is, before any command has dropped the record" do
+          dev.down(working_dir: worktree)
+          allow(terminator).to receive(:orphan_running?).and_return(false)
+
+          dev.status(working_dir: worktree)
+
+          expect(output.string).to start_with("Dev environment: STALE for #{File.basename(worktree)} (feat/a) under run wr_1 (wrapper pid 700 is gone); the devenv lock is held by")
+        end
+
+        it "`down --force` kills the group left behind and drops it from the run's hold" do
+          dev.down(working_dir: worktree)
+          dead_pids << 700
+          allow(terminator).to receive(:terminate).and_return(:killed)
+
+          expect(dev.down(force: true, working_dir: worktree)).to eq(exit_code: 0)
+
+          expect(terminator).to have_received(:terminate).with(700, hash_including(stop_timeout: 2))
+          expect(output.string).to eq("Killed orphaned dev process group 700 (wrapper pid 700 was gone); " \
+            "the devenv lock stays with #{File.basename(worktree)} (run wr_1, step implement).\n")
+          expect(holder).to include("run_id" => "wr_1")
+          expect(holder).not_to include("delegate")
+        end
+
+        it "`down` without --force still only reports it, and says `down --force` kills the group" do
+          dev.down(working_dir: worktree)
+          allow(terminator).to receive(:terminate)
+
+          expect(dev.down(working_dir: worktree)).to eq(exit_code: 1)
+
+          expect(terminator).not_to have_received(:terminate)
+          expect(holder["delegate"]).to include("pid" => 700, "kept" => true)
+          expect(error_output.string).to end_with("Stop it with: workspace dev down --force (for another user's processes, " \
+            "have its owner run `kill -TERM -700`, then run: workspace dev down)\n")
+        end
+
+        it "`down --force` closes the environment's window once the group is killed" do
+          dev.down(working_dir: worktree)
+          dead_pids << 700
+          allow(terminator).to receive(:terminate).and_return(:killed)
+
+          dev.down(force: true, working_dir: worktree)
+
+          expect(tmux).to have_received(:close_dead_pane).with("%7", pid: 700)
+        end
+
+        it "`down --force` says the group was not running when it exits before the kill, checking first that its id was not reused" do
+          dev.down(working_dir: worktree)
+          dead_pids << 700
+          guarded = []
+          allow(terminator).to receive(:pgid_reused?).and_return(false)
+          allow(terminator).to receive(:terminate) do |_pgid, guard:, **|
+            guarded << guard.call
+            :not_running
+          end
+
+          expect(dev.down(force: true, working_dir: worktree)).to eq(exit_code: 0)
+
+          expect(guarded).to eq([true])
+          expect(output.string).to eq("Dev environment for #{File.basename(worktree)} (feat/a) was not running; " \
+            "the devenv lock stays with #{File.basename(worktree)} (run wr_1, step implement).\n")
+          expect(holder).not_to include("delegate")
+        end
+
+        it "`down --force` raises, signals nothing and leaves the record kept when the group is another user's" do
+          dev.down(working_dir: worktree)
+          allow(terminator).to receive(:orphan_running?).and_raise(Workspace::Error, "process group 700 has live members owned by root")
+          allow(terminator).to receive(:terminate)
+
+          expect { dev.down(force: true, working_dir: worktree) }.to raise_error(Workspace::Error, /owned by root/)
+
+          expect(terminator).not_to have_received(:terminate)
+          expect(holder["delegate"]).to include("pid" => 700, "kept" => true)
+        end
+
+        it "`down --force` drops a kept delegate whose group is already gone, without a kill" do
+          dev.down(working_dir: worktree)
+          allow(terminator).to receive(:stop_holder).and_return(:gone)
+          allow(terminator).to receive_messages(orphan_running?: false, pgid_reused?: false)
+          allow(terminator).to receive(:terminate)
+
+          expect(dev.down(force: true, working_dir: worktree)).to eq(exit_code: 0)
+
+          expect(terminator).not_to have_received(:terminate)
+          expect(output.string).to include("was not running; the devenv lock stays with")
+          expect(holder).not_to include("delegate")
+        end
+      end
+
+      it "`down --force` stops a live delegate the usual way, through its wrapper" do
+        delegate(700)
+        allow(terminator).to receive(:terminate)
+        allow(terminator).to receive(:stop_holder) do
+          liveness.kill(700)
+          :terminated
+        end
+
+        expect(dev.down(force: true, working_dir: worktree)).to eq(exit_code: 0)
+
+        expect(terminator).not_to have_received(:terminate)
+        expect(output.string).to start_with("Stopped dev environment for #{File.basename(worktree)} (feat/a); the devenv lock stays with")
+      end
+
+      it "puts the delegate back on the run's hold, kept, when it was dropped while its failed stop waited out the kill" do
+        delegate(700)
+        allow(terminator).to receive(:stop_holder) do
+          liveness.kill(700)
+          # Another lock command lands here: the wrapper is dead and not yet marked kept, so its record is dropped.
+          store.reap
+          :killed
+        end
+        allow(terminator).to receive(:running?).with(700).and_return(true)
+        allow(terminator).to receive(:orphan_running?).and_return(true)
+
+        expect(dev.down(working_dir: worktree)).to eq(exit_code: 1)
+
+        expect(error_output.string).to include("The devenv lock still names it")
+        expect(holder).to include("run_id" => "wr_1", "delegate" => include("pid" => 700, "kept" => true))
+      end
+
+      it "says the lock no longer names the environment when it changed hands for good during a stop that fails" do
+        delegate(700)
+        allow(terminator).to receive(:stop_holder) do
+          store.release_run("wr_1")
+          liveness.kill(700)
+          store.reap
+          :killed
+        end
+        allow(terminator).to receive(:running?).with(700).and_return(true)
+        allow(terminator).to receive(:orphan_running?).and_return(true)
+
+        expect(dev.down(working_dir: worktree)).to eq(exit_code: 1)
+
+        expect(error_output.string).to include("The devenv lock no longer names it (the lock changed hands during the stop), while process group 700 " \
+          "may still be running. Have its owner run `kill -TERM -700`, and see: workspace dev status")
+        expect(error_output.string).not_to include("still names it")
+        expect(holder).to be_nil
+      end
+
+      it "keeps the lock naming the environment when the run gives the lock up during a stop that fails" do
+        delegate(700)
+        allow(terminator).to receive(:stop_holder) do
+          store.release_run("wr_1")
+          liveness.kill(700)
+          :killed
+        end
+        allow(terminator).to receive(:running?).with(700).and_return(true)
+        allow(terminator).to receive(:orphan_running?).and_return(true)
+
+        expect(dev.down(working_dir: worktree)).to eq(exit_code: 1)
+
+        Workspace::LockStore.new(dir: lock_dir, liveness: liveness, terminator: terminator).reap
+        expect(holder).to include("kind" => "process", "pid" => 700, "kept" => true)
       end
 
       it "frees the lock of a run that has ended" do

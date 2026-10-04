@@ -235,43 +235,9 @@ module Workspace
         took_over = {}
         waiting = nil
         names.each_with_index do |name, i|
-          entry = data[name] ||= empty_entry
-          holder = entry["holder"]
-          if same_run?(holder, run_id)
-            acquired << name if holder.delete("unclaimed")
-            holder.merge!(run_fields(run))
-            next
-          end
-
-          index = entry["queue"].index { |w| same_run?(w, run_id) }
-          if holder.nil? && entry["queue"].empty?
-            entry["holder"] = run_holder(run)
-            audit(:acquire, name, holder: holder_summary(entry["holder"]))
-            acquired << name
-            next
-          end
-          if readoptable?(entry, run_id)
-            entry["queue"].delete_at(index) if index
-            entry["holder"] = run_holder(run).merge("delegate" => delegate_record(holder, holder["acquired_at"]))
-            audit(:readopt, name, holder: holder_summary(entry["holder"]), delegate: holder_summary(holder))
-            acquired << name
-            next
-          end
-          if index == 0 && holder && idle_expired?(holder)
-            displace!(entry, holder, name)
-            entry["queue"].shift
-            entry["holder"] = run_holder(run)
-            audit(:takeover, name, from: holder_summary(holder), to: holder_summary(entry["holder"]))
-            took_over[name] = holder
-            acquired << name
-            next
-          end
-
-          entry["queue"] << run_waiter(run) unless index
-          entry["queue"][index].merge!(run_fields(run)) if index
-          position = (index || entry["queue"].size - 1) + 1
+          waiting = take_for_run!(data[name] ||= empty_entry, name, run, acquired, took_over)
+          next unless waiting
           released.concat(leave_run!(data, run_id, names[(i + 1)..], handed_over))
-          waiting = {name: name, position: position, total: entry["queue"].size + (holder ? 1 : 0), holder: holder, queued: index.nil?}
           break
         end
         held = names.select { |name| same_run?(data.dig(name, "holder"), run_id) }
@@ -584,7 +550,10 @@ module Workspace
     # group runs. The holder is marked `kept`, so it is not reaped once its
     # wrapper is gone while its group still runs (see {#holder_alive?}). If
     # its hold ended in the meantime, it is restored, and a waiter promoted
-    # since but not yet told goes back to the head of the queue.
+    # since but not yet told goes back to the head of the queue. If the run
+    # it came from took the lock back in the meantime, with +holder+ as its
+    # delegate again, that delegate is marked `kept` instead (see
+    # {#keep_delegate}).
     #
     # Only a `clearing` marker naming +clearer+ is dropped: one left by
     # another clearer that is still stopping the group stays in place. The
@@ -595,9 +564,10 @@ module Workspace
     # @param holder [Hash] the holder record {#clear} returned
     # @param cleared_by [String, nil] identity recorded for logging
     # @param clearer [Hash, nil] "pid" and "started" of the process ending its stop
-    # @return [Hash, nil] nil once the lock names +holder+ again, or the
-    #   record of whoever holds it instead and already knows it (a hold that
-    #   cannot be taken back)
+    # @return [Hash, nil] nil once the lock names +holder+ again (as its
+    #   holder, or as the delegate of the run holding it), or the record of
+    #   whoever holds it instead and already knows it (a hold that cannot be
+    #   taken back)
     def keep_process_holder(name, holder, cleared_by: nil, clearer: nil)
       with_lock(lenient: true) do |data|
         entry = data[name] ||= empty_entry
@@ -606,6 +576,10 @@ module Workspace
         if same_process?(current, holder)
           current["kept"] = true
           drop_clearing_marker!(current, clearer)
+          next nil
+        end
+        if run?(current) && same_process?(current["delegate"], holder)
+          current["delegate"]["kept"] = true
           next nil
         end
         next current if current && !current["unclaimed"]
@@ -661,20 +635,31 @@ module Workspace
       end
     end
 
-    # Marks the delegate with +pid+ `kept`, for one whose process group
-    # could not be stopped: it then stays on the run's hold after its
-    # wrapper is gone, for as long as its group runs, so no second dev
-    # environment starts beside it. When the run gives the lock up, it is
-    # handed to that delegate as a kept `kind: "process"` holder.
+    # Marks +delegate+ `kept`, for one whose process group could not be
+    # stopped: it then stays on the run's hold after its wrapper is gone,
+    # for as long as its group runs, so no second dev environment starts
+    # beside it. When the run gives the lock up, it is handed to that
+    # delegate as a kept `kind: "process"` holder. If the run already gave
+    # the lock up, while the group was being stopped, the `kind: "process"`
+    # holder that is the same process is marked instead. If the record was
+    # dropped in the meantime (its wrapper died before this mark) and
+    # +run_id+ still holds the lock with no delegate, it is put back, kept.
     #
     # @param name [String] lock name
-    # @param pid [Integer] the delegate's pid
-    # @return [Boolean] whether a delegate with that pid was marked
-    def keep_delegate(name, pid)
+    # @param delegate [Hash] the delegate record that was being stopped ("pid", "started", ...)
+    # @param run_id [String, nil] the run it was stopped under
+    # @return [Boolean] whether the lock names that process, kept, now
+    def keep_delegate(name, delegate, run_id: nil)
       with_lock(lenient: true) do |data|
-        delegate = data.dig(name, "holder", "delegate")
-        next false unless pid && delegate.is_a?(Hash) && delegate["pid"] == pid
-        delegate["kept"] = true
+        holder = data.dig(name, "holder")
+        next false unless holder
+        record = run?(holder) ? holder["delegate"] : holder
+        if record.is_a?(Hash) && record["kind"] == "process" && same_process?(record, delegate)
+          record["kept"] = true
+          next true
+        end
+        next false unless run_id && same_run?(holder, run_id) && record.nil?
+        holder["delegate"] = delegate_record(delegate, delegate["since"]).merge("kept" => true)
         true
       end
     end
@@ -1094,6 +1079,53 @@ module Workspace
 
     def run_waiter(run)
       {"kind" => RUN_KIND, "run_id" => run[:run_id]}.merge(run_fields(run), "enqueued_at" => now_iso)
+    end
+
+    # One lock of {#acquire_run}: makes +run+ the holder of +name+ (it holds
+    # it already, the lock is free, it is taking it back from its former
+    # delegate, or it takes over from an idle agent), or queues it.
+    #
+    # @param acquired [Array<String>] gains +name+ when it became the run's here
+    # @param took_over [Hash] gains +name+ => the displaced holder after a takeover
+    # @return [Hash, nil] nil when the run holds +name+ now, or what it waits
+    #   for (the :waiting of {#acquire_run})
+    def take_for_run!(entry, name, run, acquired, took_over)
+      run_id = run[:run_id]
+      holder = entry["holder"]
+      if same_run?(holder, run_id)
+        acquired << name if holder.delete("unclaimed")
+        holder.merge!(run_fields(run))
+        return nil
+      end
+
+      index = entry["queue"].index { |w| same_run?(w, run_id) }
+      if holder.nil? && entry["queue"].empty?
+        entry["holder"] = run_holder(run)
+        audit(:acquire, name, holder: holder_summary(entry["holder"]))
+        acquired << name
+        return nil
+      end
+      if readoptable?(entry, run_id)
+        entry["queue"].delete_at(index) if index
+        entry["holder"] = run_holder(run).merge("delegate" => delegate_record(holder, holder["acquired_at"]))
+        audit(:readopt, name, holder: holder_summary(entry["holder"]), delegate: holder_summary(holder))
+        acquired << name
+        return nil
+      end
+      if index == 0 && holder && idle_expired?(holder)
+        displace!(entry, holder, name)
+        entry["queue"].shift
+        entry["holder"] = run_holder(run)
+        audit(:takeover, name, from: holder_summary(holder), to: holder_summary(entry["holder"]))
+        took_over[name] = holder
+        acquired << name
+        return nil
+      end
+
+      entry["queue"] << run_waiter(run) unless index
+      entry["queue"][index].merge!(run_fields(run)) if index
+      position = (index || entry["queue"].size - 1) + 1
+      {name: name, position: position, total: entry["queue"].size + (holder ? 1 : 0), holder: holder, queued: index.nil?}
     end
 
     # Takes +run_id+ out of +names+: its queue entries go, and each lock it

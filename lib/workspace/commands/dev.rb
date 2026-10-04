@@ -138,7 +138,7 @@ module Workspace
           @output.puts "No dev environment is running."
           return {exit_code: 0}
         end
-        return down_under_run(ctx, holder) if run?(holder)
+        return down_under_run(ctx, holder, force: force) if run?(holder)
 
         if holder["stale"]
           result = stop_orphan(ctx, holder, force: force)
@@ -261,11 +261,7 @@ module Workspace
       def up_under_run(ctx, holder, wait:, takeover:, ready:)
         delegate = running_delegate(holder)
         unless @bound_run && @bound_run.run_id == holder["run_id"]
-          if takeover
-            @error_output.puts "The #{LOCK_NAME} lock is held by #{describe(holder)}; --force does not take a lock from a run. " \
-              "Use --wait to queue behind it. #{RUN_GONE_ADVICE}"
-            return {exit_code: 1}
-          end
+          return refuse_force_against_run(holder) if takeover
           return nil if wait
           running = delegate ? ", with a dev environment running for #{describe(delegate)}" : ""
           @error_output.puts "The #{LOCK_NAME} lock is held by #{describe(holder)}#{running}. Use --wait to queue. #{RUN_GONE_ADVICE}"
@@ -275,7 +271,8 @@ module Workspace
         left = kept_delegate(holder)
         if delegate.nil? && left
           @error_output.puts "A previous dev environment's process group #{left["pgid"]} is still running under run #{holder["run_id"]} " \
-            "(its wrapper pid #{left["pid"]} is gone). Have its owner run `kill -TERM -#{left["pgid"]}`, then run `workspace dev up` again."
+            "(its wrapper pid #{left["pid"]} is gone). Stop it with: workspace dev down --force (for another user's processes, " \
+            "have its owner run `kill -TERM -#{left["pgid"]}`), then run `workspace dev up` again."
           return {exit_code: 1}
         end
         if delegate
@@ -288,18 +285,37 @@ module Workspace
         finish_up(ctx, session, wrapper, code, ready: ready)
       end
 
-      def down_under_run(ctx, holder)
+      def refuse_force_against_run(holder)
+        @error_output.puts "The #{LOCK_NAME} lock is held by #{describe(holder)}; --force does not take a lock from a run. " \
+          "Use --wait to queue behind it. #{RUN_GONE_ADVICE}"
+        {exit_code: 1}
+      end
+
+      def down_under_run(ctx, holder, force:)
         delegate = running_delegate(holder) || kept_delegate(holder)
         unless delegate
           @output.puts "No dev environment is running; the #{LOCK_NAME} lock is held by #{describe(holder)}."
           return {exit_code: 0}
         end
+        return kill_orphaned_delegate(ctx, holder, delegate) if force && delegate["stale"] && orphan_running?(delegate)
 
-        result = stop_delegate(ctx, delegate)
+        result = stop_delegate(ctx, delegate, holder["run_id"])
         return {exit_code: 1} if result == :kept
         close_window(delegate)
         killed = (result == :killed) ? " (SIGKILL after #{format_seconds(ctx[:settings][:stop_timeout])})" : ""
         what = (result == :gone) ? "Dev environment for #{describe(delegate)} was not running" : "Stopped dev environment for #{describe(delegate)}#{killed}"
+        @output.puts "#{what}; the #{LOCK_NAME} lock stays with #{describe(holder)}."
+        {exit_code: 0}
+      end
+
+      # `down --force` of a delegate whose wrapper is gone while its group
+      # runs on: kills the group as {#stop_orphan} does and drops its record;
+      # the run keeps the lock.
+      def kill_orphaned_delegate(ctx, holder, delegate)
+        killed = kill_orphan_group(ctx, delegate)
+        ctx[:store].end_delegate(LOCK_NAME, delegate["pid"])
+        close_window(delegate)
+        what = killed ? "Killed orphaned dev process group #{delegate["pgid"]} (wrapper pid #{delegate["pid"]} was gone)" : "Dev environment for #{describe(delegate)} was not running"
         @output.puts "#{what}; the #{LOCK_NAME} lock stays with #{describe(holder)}."
         {exit_code: 0}
       end
@@ -309,16 +325,26 @@ module Workspace
       # can't be stopped stays recorded, so the lock goes on naming it.
       #
       # @return [Symbol] :terminated, :killed, :gone, or :kept (reported on stderr)
-      def stop_delegate(ctx, delegate)
+      def stop_delegate(ctx, delegate, run_id)
         store = ctx[:store]
         pid = delegate["pid"]
         result, reason = @holder_stopper.stop_group(delegate, stop_timeout: ctx[:settings][:stop_timeout], kill_grace: kill_grace_for(ctx))
         if reason
           pgid = delegate["pgid"] || pid
-          store.keep_delegate(LOCK_NAME, pid)
+          named = store.keep_delegate(LOCK_NAME, delegate, run_id: run_id)
           @error_output.puts "Could not stop process group #{pgid} (pid #{pid}): #{reason}"
-          @error_output.puts "The #{LOCK_NAME} lock still names it, so no second dev environment starts while process group #{pgid} runs. " \
-            "Have its owner run `kill -TERM -#{pgid}`, then run: workspace dev down"
+          if named && delegate["stale"]
+            # Its wrapper was already gone: `down --force` kills what is left of the group.
+            @error_output.puts "The #{LOCK_NAME} lock still names it, so no second dev environment starts while process group #{pgid} runs. " \
+              "Stop it with: workspace dev down --force (for another user's processes, have its owner run `kill -TERM -#{pgid}`, " \
+              "then run: workspace dev down)"
+          elsif named
+            @error_output.puts "The #{LOCK_NAME} lock still names it, so no second dev environment starts while process group #{pgid} runs. " \
+              "Have its owner run `kill -TERM -#{pgid}`, then run: workspace dev down"
+          else
+            @error_output.puts "The #{LOCK_NAME} lock no longer names it (the lock changed hands during the stop), while process group #{pgid} " \
+              "may still be running. Have its owner run `kill -TERM -#{pgid}`, and see: workspace dev status"
+          end
           return :kept
         end
         deadline = @clock.now + RELEASE_MARGIN
@@ -331,7 +357,9 @@ module Workspace
         ended = holder["stale"] ? " (the run has ended; the next lock or dev command frees it)" : ""
         delegate = running_delegate(holder)
         unless delegate
-          @output.puts "Dev environment: not running; the #{LOCK_NAME} lock is held by #{describe(holder)}#{ended}"
+          left = kept_delegate(holder)
+          state = left ? "STALE for #{describe(left)} under run #{holder["run_id"]} (wrapper pid #{left["pid"]} is gone#{orphan_note(left)})" : "not running"
+          @output.puts "Dev environment: #{state}; the #{LOCK_NAME} lock is held by #{describe(holder)}#{ended}"
           return
         end
         @output.puts "Dev environment: running for #{describe(delegate)} under run #{holder["run_id"]}#{ended}"
@@ -344,11 +372,14 @@ module Workspace
       end
 
       # Whether the wrapper +pid+ now runs the environment: as the lock's
-      # holder, or as the delegate of the run that holds it.
+      # holder, or as the delegate of the run that holds it. A delegate
+      # counts while its run's hold is stale: the run has ended, and the
+      # next lock op hands the lock to that wrapper.
       def running_as?(entry, pid)
         holder = entry["holder"]
-        return false if holder.nil? || holder["stale"]
-        holder["pid"] == pid || running_delegate(holder)&.dig("pid") == pid
+        return false if holder.nil?
+        return true if running_delegate(holder)&.dig("pid") == pid
+        !holder["stale"] && holder["pid"] == pid
       end
 
       # Stops another worktree's env and hands its lock straight to this one,
@@ -357,12 +388,20 @@ module Workspace
       # A +max_wait+ deadline covers the whole takeover. Once it passes, the
       # queued wrapper is stopped (so it leaves the queue) and up exits 75,
       # as with `--wait --max-wait`; a holder not yet stopped is left running.
+      # If a run has the lock by the time the wrapper is queued (it took the
+      # lock back from the environment it had handed it to), the takeover is
+      # refused as any `--force` against a run is, and the wrapper is stopped.
       def take_over(ctx, holder, ready:, max_wait:)
         deadline = max_wait && @clock.now + max_wait
         session = session_for(ctx)
         wrapper = open_wrapper(ctx, session, wait: true, takeover: true)
         code = await_queued(ctx, wrapper, max_wait: max_wait, deadline: deadline)
         return {exit_code: code} unless code.zero?
+        current = settled_entry(ctx[:store])["holder"]
+        if run?(current)
+          signal_wrapper(wrapper)
+          return refuse_force_against_run(current)
+        end
         if deadline && @clock.now >= deadline && entry(ctx[:store]).dig("holder", "pid") != wrapper
           return {exit_code: give_up(wrapper, true, max_wait, limit_name: "--max-wait")}
         end
@@ -507,10 +546,7 @@ module Workspace
         running = orphan_running?(holder)
         return orphan_refusal(holder) if running && !force
 
-        # The group can exit and its id be reused at any point up to SIGKILL,
-        # stop_timeout later: the reuse check is repeated just before every signal.
-        if running && @terminator.terminate(holder["pgid"], stop_timeout: ctx[:settings][:stop_timeout],
-          guard: -> { !pgid_reused?(holder) }) != :not_running
+        if running && kill_orphan_group(ctx, holder)
           @output.puts "Killed orphaned dev process group #{holder["pgid"]} (wrapper pid #{holder["pid"]} was gone)."
         elsif holder["pgid"] && pgid_reused?(holder)
           @output.puts "Dev environment for #{describe(holder)} was not running (its pid #{holder["pid"]} now belongs " \
@@ -521,6 +557,17 @@ module Workspace
         # A dead holder is reaped by any mutating op; releasing its pid does exactly that.
         ctx[:store].release(LOCK_NAME, holder["pid"])
         {exit_code: 0}
+      end
+
+      # Kills the process group a gone wrapper left running.
+      #
+      # @param record [Hash] the holder or delegate record of that wrapper
+      # @return [Boolean] whether a signal was sent
+      def kill_orphan_group(ctx, record)
+        # The group can exit and its id be reused at any point up to SIGKILL,
+        # stop_timeout later: the reuse check is repeated just before every signal.
+        @terminator.terminate(record["pgid"], stop_timeout: ctx[:settings][:stop_timeout],
+          guard: -> { !pgid_reused?(record) }) != :not_running
       end
 
       # SIGTERM to the wrapper, which forwards it once to its group; SIGKILL to
@@ -703,7 +750,7 @@ module Workspace
             return 6
           end
           if @clock.now >= deadline
-            stopped = run?(holder) ? stop_delegate(ctx, running_delegate(holder)) : stop(ctx, holder)
+            stopped = run?(holder) ? stop_delegate(ctx, running_delegate(holder), holder["run_id"]) : stop(ctx, holder)
             released = run?(holder) ? "; the #{LOCK_NAME} lock stays with its run" : " and released the #{LOCK_NAME} lock"
             outcome = (stopped == :kept) ? "its process group could not be stopped (see above)" : "stopped the dev environment#{released}"
             @error_output.puts "Ready check (#{spec}) did not pass within #{format_seconds(ready_timeout)}; #{outcome}."
