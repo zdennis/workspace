@@ -27,11 +27,14 @@ module Workspace
     #   @return [Boolean] whether the agent is ready for input
     # @!attribute pane
     #   @return [String, nil] the agent's pane as a "window.pane" target
+    # @!attribute pane_id
+    #   @return [String, nil] the agent's tmux pane id ("%5"), which stays with the
+    #     pane when panes are split, closed or moved
     # @!attribute label
     #   @return [String, nil] the agent's name, e.g. "Claude Code"
     # @!attribute reason
     #   @return [String, nil] why the agent is not ready, when it isn't
-    Result = Struct.new(:ready, :pane, :label, :reason, keyword_init: true) do
+    Result = Struct.new(:ready, :pane, :pane_id, :label, :reason, keyword_init: true) do
       # @return [Boolean]
       def ready?
         ready
@@ -99,7 +102,7 @@ module Workspace
             pattern = found[:provider]&.ready_pattern
             if pattern.nil? || pattern.match?(current)
               @logger.debug { "agent readiness: #{found[:label]} ready in #{session_name}:#{found[:target]}" }
-              return Result.new(ready: true, pane: found[:target], label: found[:label])
+              return Result.new(ready: true, pane: found[:target], pane_id: found[:id], label: found[:label])
             end
             found[:reason] = "#{found[:label]} (pane #{found[:target]}) agent prompt never appeared"
           end

@@ -184,5 +184,11 @@ RSpec.describe Workspace::Library do
       expect(library.play_prompt(play, nil)).to eq("Read \"/lib/play/kickoff.md\" and follow it.")
       expect(library.play_prompt(play, "Start at CLI27.")).to eq("Read \"/lib/play/kickoff.md\" and follow it.\n\nStart at CLI27.")
     end
+
+    it "binds the pane a play was sent to by the play ref, with its path as the instructions" do
+      play = {"ref" => "play/kickoff", "scope" => "global", "path" => "/lib/play/kickoff.md", "sha256" => "abc"}
+
+      expect(library.play_binding(play)).to eq("kind" => "play", "id" => "play/kickoff", "instructions" => "/lib/play/kickoff.md")
+    end
   end
 end

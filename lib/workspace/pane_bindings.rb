@@ -3,8 +3,8 @@ require "fileutils"
 require "time"
 
 module Workspace
-  # Maps a tmux pane to the subject it works on (a workflow run or a PR
-  # review), in `bindings.json` under workspace's state directory.
+  # Maps a tmux pane to the subject it works on (a workflow run, a PR
+  # review, or a library play sent by `start --play`/`launch --play`), in `bindings.json` under workspace's state directory.
   #
   # The `session-event` hook reads it on every SessionStart, so a bound pane
   # gets a short reminder of its subject after a restart, `/clear`, resume or
@@ -15,7 +15,7 @@ module Workspace
   # Only short structured fields are stored, never prompt text.
   class PaneBindings
     # Subjects a pane can be bound to.
-    KINDS = %w[run review].freeze
+    KINDS = %w[run review play].freeze
 
     # Optional single-line text fields of an entry.
     TEXT_FIELDS = %w[step focus instructions artifacts].freeze
@@ -71,8 +71,11 @@ module Workspace
     # @param entry [Hash{String=>Object}] a binding
     # @return [String]
     def context_for(entry)
+      where = (" in #{entry["workspace"]}" if entry["workspace"])
+      return play_context(entry, where) if entry["kind"] == "play"
+
       subject = (entry["kind"] == "review") ? "review" : "workflow run"
-      lines = ["This pane is bound to #{subject} #{entry["id"]}#{" in #{entry["workspace"]}" if entry["workspace"]}."]
+      lines = ["This pane is bound to #{subject} #{entry["id"]}#{where}."]
       lines << "Step: #{entry["step"]}#{" (attempt #{entry["attempt"]})" if entry["attempt"]}." if entry["step"]
       lines << "Focus: #{entry["focus"]}." if entry["focus"]
       lines << "Instructions: #{entry["instructions"]}. Reread them if your context was compacted." if entry["instructions"]
@@ -81,6 +84,14 @@ module Workspace
     end
 
     private
+
+    # A play is a file the agent was told to read and follow; after `/clear` it
+    # has to read it again to keep following it.
+    def play_context(entry, where)
+      lines = ["This pane is following play #{entry["id"]}#{where}."]
+      lines << "Instructions: #{entry["instructions"]}. Read it again and keep following it if it is no longer in your context." if entry["instructions"]
+      lines.join("\n")
+    end
 
     def validate(fields)
       kind = fields["kind"]

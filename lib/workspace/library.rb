@@ -130,6 +130,15 @@ module Workspace
       prompt.to_s.strip.empty? ? text : "#{text}\n\n#{prompt}"
     end
 
+    # The pane binding recorded for a delivered play, so the SessionStart hook
+    # points the agent back at the play after `/clear`. See {Workspace::PaneBindings}.
+    #
+    # @param play [Hash] from {#play}
+    # @return [Hash{String=>String}] `kind`, `id` (the play ref) and `instructions` (its path)
+    def play_binding(play)
+      {"kind" => "play", "id" => play["ref"], "instructions" => play["path"]}
+    end
+
     # @param ref [String] `kind/name` or `name`
     # @return [Array(String, String)] the kind (nil for a bare name) and the name
     # @raise [Workspace::UsageError] for an unknown kind or a bad name

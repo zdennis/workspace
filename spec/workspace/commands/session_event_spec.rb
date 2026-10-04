@@ -66,6 +66,19 @@ RSpec.describe Workspace::Commands::SessionEvent do
       end
     end
 
+    it "points the agent back at a play bound to its pane after /clear" do
+      store = Workspace::PaneBindings.new(path: File.join(tmpdir, "bindings.json"))
+      store.bind("%2", "kind" => "play", "id" => "play/kickoff", "instructions" => "/lib/play/kickoff.md",
+        "workspace" => "proj", "session" => "proj", "pane_slot" => "proj:0.1")
+      allow(tmux).to receive(:pane_slot).with("%2").and_return("proj:0.1")
+
+      fire({"hook_event_name" => "SessionStart", "source" => "clear"}, pane_bindings: store)
+
+      expect(JSON.parse(output.string).dig("hookSpecificOutput", "additionalContext")).to eq(
+        "This pane is following play play/kickoff in proj.\nInstructions: /lib/play/kickoff.md. Read it again and keep following it if it is no longer in your context."
+      )
+    end
+
     it "prints nothing for other events and for unbound panes" do
       fire({"hook_event_name" => "Stop"})
       allow(bindings).to receive(:binding_for).with("%2").and_return(nil)

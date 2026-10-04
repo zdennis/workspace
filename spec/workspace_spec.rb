@@ -82,5 +82,14 @@ RSpec.describe Workspace do
       expect(terminator).to be_a(Workspace::ProcessGroupTerminator)
       expect(terminator).to equal(lock_command.instance_variable_get(:@terminator))
     end
+
+    it "wires the binding command into launch, so a delivered play binds the pane binding set and session-event use" do
+      cli = Workspace.build_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new)
+
+      binding_command = cli.instance_variable_get(:@binding_command)
+      launch_command = cli.instance_variable_get(:@launch_command)
+
+      expect(launch_command.instance_variable_get(:@binder)).to equal(binding_command)
+    end
   end
 end

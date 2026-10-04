@@ -190,7 +190,8 @@ module Workspace
         log(quiet, "Launching #{config_name}...")
         text = @play ? @library.play_prompt(@play, prompt) : prompt
         prompts = text ? {config_name => text} : {}
-        result = launch(config_name, prompts, prompt_timeout, headless: headless, quiet: quiet)
+        bindings = @play ? {config_name => @library.play_binding(@play)} : {}
+        result = launch(config_name, prompts, prompt_timeout, headless: headless, quiet: quiet, bindings: bindings)
         @project_settings.ensure_exists(config_name)
 
         return result unless quiet
@@ -207,7 +208,7 @@ module Workspace
           "headless" => headless
         }
         json["task"] = {"id" => task["id"], "title" => task["title"]} if task
-        json["play"] = @play.merge("delivered" => delivered?(result, config_name)) if @play
+        json["play"] = @play.merge("delivered" => delivered?(result, config_name), "pane" => result&.dig(:bound_panes, config_name)) if @play
         json["session_reused"] = result[:reused].include?(config_name) if result && result[:reused]
         if exit_code != 0
           prompt_failures = result && result[:prompt_failures]
@@ -317,8 +318,9 @@ module Workspace
       end
 
       # @param prompt_timeout [Numeric, nil] nil defers to the launch command's own default
-      def launch(config_name, prompts, prompt_timeout, headless:, quiet:)
+      def launch(config_name, prompts, prompt_timeout, headless:, quiet:, bindings:)
         kwargs = {prompts: prompts}
+        kwargs[:bindings] = bindings if bindings.any?
         kwargs[:headless] = true if headless
         kwargs[:prompt_timeout] = prompt_timeout unless prompt_timeout.nil?
         kwargs[:quiet] = true if quiet

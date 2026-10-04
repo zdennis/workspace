@@ -1,6 +1,6 @@
 module Workspace
   module Commands
-    # Binds a tmux pane to a workflow run or a PR review, so the SessionStart
+    # Binds a tmux pane to a workflow run, a PR review or a library play, so the SessionStart
     # hook can remind the agent in that pane of its subject after a restart,
     # `/clear`, resume or compaction. See {Workspace::PaneBindings}.
     class Binding
@@ -24,12 +24,23 @@ module Workspace
       # @raise [Workspace::UsageError] for fields {Workspace::PaneBindings#bind} refuses
       # @raise [Workspace::Error] see {Workspace::PaneLocator#locate}
       def set(workspace:, pane:, **fields)
+        entry = bind(workspace: workspace, pane: pane, **fields)
+        @output.puts "Bound pane #{entry["pane_id"]} to #{entry["kind"]} #{entry["id"]}."
+        entry
+      end
+
+      # Binds a pane like {#set}, printing nothing; `launch` uses it for the
+      # pane it sent a play to.
+      #
+      # @param (see #set)
+      # @return (see #set)
+      # @raise (see #set)
+      # @raise [SystemCallError] if `bindings.json` can not be written
+      def bind(workspace:, pane:, **fields)
         located = @locator.locate(workspace, pane)
-        entry = @bindings.bind(located.fetch(:id), fields.transform_keys(&:to_s).merge(
+        @bindings.bind(located.fetch(:id), fields.transform_keys(&:to_s).merge(
           "workspace" => workspace, "session" => located.fetch(:session), "pane_slot" => @tmux.pane_slot(located.fetch(:id))
         ))
-        @output.puts "Bound pane #{located.fetch(:id)} to #{entry["kind"]} #{entry["id"]}."
-        entry
       end
 
       # @param pane [String] a pane id ("%19")

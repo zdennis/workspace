@@ -343,14 +343,16 @@ RSpec.describe Workspace::Commands::Start do
         play_command.call("PROJ-123", play: "kickoff", prompt: "Start at CLI27.")
 
         expect(launch_command).to have_received(:call).with(["myproject.worktree-PROJ-123"],
-          prompts: {"myproject.worktree-PROJ-123" => "Read \"#{global_path}\" and follow it.\n\nStart at CLI27."})
+          prompts: {"myproject.worktree-PROJ-123" => "Read \"#{global_path}\" and follow it.\n\nStart at CLI27."},
+          bindings: {"myproject.worktree-PROJ-123" => {"kind" => "play", "id" => "play/kickoff", "instructions" => global_path}})
       end
 
       it "sends only the line pointing at the play without --prompt" do
         play_command.call("PROJ-123", play: "kickoff")
 
         expect(launch_command).to have_received(:call).with(["myproject.worktree-PROJ-123"],
-          prompts: {"myproject.worktree-PROJ-123" => "Read \"#{global_path}\" and follow it."})
+          prompts: {"myproject.worktree-PROJ-123" => "Read \"#{global_path}\" and follow it."},
+          bindings: {"myproject.worktree-PROJ-123" => {"kind" => "play", "id" => "play/kickoff", "instructions" => global_path}})
       end
 
       it "uses the parent project's play over the global one" do
@@ -367,7 +369,16 @@ RSpec.describe Workspace::Commands::Start do
         play_command.call("PROJ-123", play: "play/kickoff", json: true)
 
         expect(JSON.parse(output.string)["play"]).to eq("ref" => "play/kickoff", "scope" => "global", "path" => global_path,
-          "sha256" => Digest::SHA256.hexdigest("# Kickoff\n"), "delivered" => true)
+          "sha256" => Digest::SHA256.hexdigest("# Kickoff\n"), "delivered" => true, "pane" => nil)
+      end
+
+      it "reports the pane the play was bound to in --json" do
+        allow(launch_command).to receive(:call)
+          .and_return({exit_code: 0, prompt_failures: {}, bound_panes: {"myproject.worktree-PROJ-123" => "%5"}})
+
+        play_command.call("PROJ-123", play: "kickoff", json: true)
+
+        expect(JSON.parse(output.string)["play"]).to include("delivered" => true, "pane" => "%5")
       end
 
       it "reports the play as not delivered, with exit 1, when the prompt was not sent" do

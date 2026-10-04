@@ -36,7 +36,7 @@ module Workspace
         "ui_open" => 1,
         "pane_bindings" => 1,
         "library" => 1,
-        "library_play" => 1
+        "library_play" => 2
       }.freeze
 
       # The exit statuses commands use, by meaning.

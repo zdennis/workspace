@@ -1,11 +1,11 @@
 # workspace binding
 
-Bind a tmux pane to a workflow run or a PR review, so the agent in it is reminded of its subject after a restart, `/clear`, resume or compaction.
+Bind a tmux pane to a workflow run, a PR review or a library play, so the agent in it is reminded of its subject after a restart, `/clear`, resume or compaction.
 
 ## Usage
 
 ```sh
-workspace binding set [WORKSPACE] --pane PANE --kind run|review --id ID [--step STEP] [--attempt N] [--focus TEXT] [--instructions PATH] [--artifacts PATH] [--json]
+workspace binding set [WORKSPACE] --pane PANE --kind run|review|play --id ID [--step STEP] [--attempt N] [--focus TEXT] [--instructions PATH] [--artifacts PATH] [--json]
 workspace binding show [--pane %ID] [--json]
 workspace binding clear [--pane %ID] [--json]
 ```
@@ -15,8 +15,8 @@ workspace binding clear [--pane %ID] [--json]
 | Option | Description |
 |--------|-------------|
 | `--pane PANE` | The pane to bind, show or clear |
-| `--kind KIND` | `run` (a workflow run) or `review` (a PR review) |
-| `--id ID` | The run id, or the review id such as `acme/api#835` |
+| `--kind KIND` | `run` (a workflow run), `review` (a PR review) or `play` (a [library](README.library.md) play) |
+| `--id ID` | The run id, the review id such as `acme/api#835`, or the play ref such as `play/kickoff` |
 | `--step STEP` | The step the pane is working on |
 | `--attempt N` | The step's attempt, 1 or more |
 | `--focus TEXT` | What a review concentrates on, such as `security` |
@@ -25,6 +25,17 @@ workspace binding clear [--pane %ID] [--json]
 | `--json` | Print one action document |
 
 Every text value is one line of at most 200 characters. Nothing is typed into the pane, and no prompt text is stored.
+
+## Plays
+
+[`start --play`](README.start.md#plays) and [`launch --play`](README.launch.md) bind the pane they delivered a play to, with kind `play`, the play ref as `id` and the play file as `instructions`. After `/clear` the agent is told to read the play again:
+
+```text
+This pane is following play play/kickoff in api.
+Instructions: /Users/me/.config/workspace/library/global/play/kickoff.md. Read it again and keep following it if it is no longer in your context.
+```
+
+The binding replaces any earlier binding of that pane, and stays until `binding clear --pane %ID` or a new binding; clear it when you give the pane other work, or the agent is pointed back at the play after its next `/clear`. Only a play that was delivered binds its pane. A pane that can't be bound, such as one whose play path is longer than 200 characters, gets a warning on stderr; the play was still sent.
 
 ## SessionStart
 

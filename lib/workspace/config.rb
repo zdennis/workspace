@@ -170,7 +170,7 @@ module Workspace
       File.join(state_dir, ".tasks")
     end
 
-    # @return [String] path to the JSON file binding tmux panes to a run or review
+    # @return [String] path to the JSON file binding tmux panes to a run, review or play
     def pane_bindings_path
       File.join(state_dir, "bindings.json")
     end

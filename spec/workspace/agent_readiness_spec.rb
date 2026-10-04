@@ -28,6 +28,7 @@ RSpec.describe Workspace::AgentReadiness do
 
     expect(result).to be_ready
     expect(result.pane).to eq("0.1")
+    expect(result.pane_id).to eq("%2")
     expect(result.label).to eq("Claude Code")
     expect(now[0]).to eq(2.0)
     expect(tmux).to have_received(:capture_screen).with("%2").at_least(:once)
@@ -41,6 +42,7 @@ RSpec.describe Workspace::AgentReadiness do
     expect(tmux).to have_received(:pane_details).with("proj", window: nil).at_least(:once)
     expect(result).to be_ready
     expect(result.pane).to eq("2.1")
+    expect(result.pane_id).to eq("%7")
   end
 
   it "waits while the screen is still changing" do

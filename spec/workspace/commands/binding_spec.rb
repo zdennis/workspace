@@ -37,6 +37,16 @@ RSpec.describe Workspace::Commands::Binding do
     end
   end
 
+  describe "#bind" do
+    it "binds like set without printing anything" do
+      entry = command.bind(workspace: "app", pane: "0.1", kind: "play", id: "play/kickoff", instructions: "/lib/play/kickoff.md")
+
+      expect(entry).to include("pane_id" => "%5", "kind" => "play", "session" => "app", "pane_slot" => "app:0.1")
+      expect(bindings.binding_for("%5")["instructions"]).to eq("/lib/play/kickoff.md")
+      expect(output.string).to be_empty
+    end
+  end
+
   describe "#show and #clear" do
     before { command.set(workspace: "app", pane: "%5", kind: "review", id: "acme/api#835", focus: "security") }
 

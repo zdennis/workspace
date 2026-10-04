@@ -3430,6 +3430,22 @@ RSpec.describe Workspace::CLI do
       expect(binding_command.calls).to eq([[:set, {workspace: "app", pane: "%5", kind: "run", id: "wr_1", step: "implement", attempt: 2}]])
     end
 
+    it "binds a pane to a play through the real binding command and store" do
+      Dir.mktmpdir do |dir|
+        store = Workspace::PaneBindings.new(path: File.join(dir, "bindings.json"))
+        locator = instance_double(Workspace::PaneLocator)
+        allow(locator).to receive(:locate).with("app", "%5").and_return({id: "%5", window: 0, index: 1, session: "app"})
+        tmux = instance_double(Workspace::Tmux, pane_slot: "app:0.1")
+        out = StringIO.new
+        real_cli, = build_test_cli(output: out, binding_command: Workspace::Commands::Binding.new(bindings: store, locator: locator, tmux: tmux, output: out))
+
+        real_cli.run(["binding", "set", "app", "--pane", "%5", "--kind", "play", "--id", "play/kickoff", "--instructions", "/lib/play/kickoff.md"])
+
+        expect(store.binding_for("%5")).to include("kind" => "play", "id" => "play/kickoff", "instructions" => "/lib/play/kickoff.md")
+        expect(out.string).to include("Bound pane %5 to play play/kickoff.")
+      end
+    end
+
     it "uses the detected workspace for set when none is named" do
       cli.run(["binding", "set", "--pane", "0.1", "--kind", "review", "--id", "acme/api#835", "--focus", "security"])
 
@@ -5621,14 +5637,14 @@ RSpec.describe Workspace::CLI do
         it "resolves the play per project and reports it in each row" do
           state = CLITestHelpers::FakeState.new
           cli, raw, = action_cli(state: state, project_config: project_config, library: library,
-            &launching(state, result: {exit_code: 1, prompt_failures: {"web" => "agent not ready"}}))
+            &launching(state, result: {exit_code: 1, prompt_failures: {"web" => "agent not ready"}, bound_panes: {"api" => "%5"}}))
 
           exit_status { cli.run(["launch", "api", "web", "--play", "kickoff", "--prompt", "Go.", "--json"]) }
 
           rows = parse_one(raw)["results"]
           expect(rows.first["play"]).to eq("ref" => "play/kickoff", "scope" => "project", "path" => api_path,
-            "sha256" => Digest::SHA256.hexdigest("# Api\n"), "delivered" => true)
-          expect(rows.last["play"]).to include("scope" => "global", "path" => global_path, "delivered" => false)
+            "sha256" => Digest::SHA256.hexdigest("# Api\n"), "delivered" => true, "pane" => "%5")
+          expect(rows.last["play"]).to include("scope" => "global", "path" => global_path, "delivered" => false, "pane" => nil)
         end
 
         it "reports the play as not delivered on a project that never launched or whose session did not start" do
@@ -5651,6 +5667,9 @@ RSpec.describe Workspace::CLI do
           expect(launch_command).to have_received(:call).with(["api", "web"], reattach: false, prompts: {
             "api" => "Read \"#{api_path}\" and follow it.\n\nGo.",
             "web" => "Read \"#{global_path}\" and follow it.\n\nGo."
+          }, bindings: {
+            "api" => {"kind" => "play", "id" => "play/kickoff", "instructions" => api_path},
+            "web" => {"kind" => "play", "id" => "play/kickoff", "instructions" => global_path}
           })
         end
 
@@ -5664,7 +5683,8 @@ RSpec.describe Workspace::CLI do
           cli.run(["launch", "--play", "kickoff", "/work/new"])
 
           expect(launch_command).to have_received(:call).with(["new"], reattach: false,
-            prompts: {"new" => "Read \"#{library.project_store("new").path_for("play", "kickoff")}\" and follow it."})
+            prompts: {"new" => "Read \"#{library.project_store("new").path_for("play", "kickoff")}\" and follow it."},
+            bindings: {"new" => {"kind" => "play", "id" => "play/kickoff", "instructions" => library.project_store("new").path_for("play", "kickoff")}})
           expect(project_config).not_to have_received(:project_root_for)
         end
 

@@ -28,6 +28,12 @@ RSpec.describe Workspace::PaneBindings do
       expect(store.binding_for("%6")["id"]).to eq("acme/api#835")
     end
 
+    it "binds a pane to a play" do
+      entry = store.bind("%5", "kind" => "play", "id" => "play/kickoff", "instructions" => "/lib/play/kickoff.md")
+
+      expect(entry).to include("kind" => "play", "id" => "play/kickoff", "instructions" => "/lib/play/kickoff.md")
+    end
+
     it "refuses an unknown kind, a bad id, a bad attempt and a multi-line field" do
       expect { store.bind("%5", "kind" => "pr", "id" => "x") }.to raise_error(Workspace::UsageError, /kind/)
       expect { store.bind("%5", "kind" => "run", "id" => " ") }.to raise_error(Workspace::UsageError, /id/)
@@ -118,6 +124,16 @@ RSpec.describe Workspace::PaneBindings do
         Step: implement (attempt 2).
         Instructions: .workflow/wr_1/steps/implement.2.prompt.md. Reread them if your context was compacted.
         Artifacts: .workflow/wr_1/.
+      TEXT
+    end
+
+    it "points a play pane back at the play file, so the agent rereads it after /clear" do
+      text = store.context_for("kind" => "play", "id" => "play/kickoff", "workspace" => "api",
+        "instructions" => "/lib/play/kickoff.md")
+
+      expect(text).to eq(<<~TEXT.chomp)
+        This pane is following play play/kickoff in api.
+        Instructions: /lib/play/kickoff.md. Read it again and keep following it if it is no longer in your context.
       TEXT
     end
 

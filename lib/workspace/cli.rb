@@ -385,7 +385,7 @@ module Workspace
           agent-run       Send a message to a running agent, or type into a pane (command, inject, restart, send)
           alfred          Manage the Alfred workflow for workspace focus
           ask             Record a question an unattended agent hit, with its default
-          binding         Bind a pane to a workflow run or a PR review, so it survives /clear and compaction
+          binding         Bind a pane to a workflow run, a PR review or a play, so it survives /clear and compaction
           capabilities    Print what this CLI supports, as feature revisions (for scripts and the UI)
           capture         Print a tmux pane's scrollback buffer to stdout
           cleanup         Detect and remove zombie sessions from state
@@ -533,6 +533,7 @@ module Workspace
       end
 
       call_options = {reattach: reattach, prompts: prompts}
+      call_options[:bindings] = plays.transform_values { |p| @library.play_binding(p) } if plays.any?
       call_options[:prompt_timeout] = prompt_timeout if prompt_timeout
       call_options[:headless] = true if @launch_mode.resolve(headless).headless?
       result = @launch_command.call(projects, **call_options)
@@ -560,7 +561,8 @@ module Workspace
         entry = @state[project]
         details = {iterm_window_id: entry.is_a?(Hash) ? entry["iterm_window_id"] : nil, headless: entry.is_a?(Hash) && entry["headless"] == true}
         if plays[project]
-          details[:play] = plays[project].merge("delivered" => !result.nil? && !entry.nil? && !prompt_failures.key?(project) && !start_failures.key?(project))
+          details[:play] = plays[project].merge("delivered" => !result.nil? && !entry.nil? && !prompt_failures.key?(project) && !start_failures.key?(project),
+            "pane" => result&.dig(:bound_panes, project))
         end
         if start_failures[project]
           action_row(project, "failed", reason: "session_not_started", message: start_failures[project].to_s, **details)
@@ -3223,23 +3225,24 @@ module Workspace
 
     def binding_parser(options)
       OptionParser.new do |opts|
-        opts.banner = "Usage: workspace binding set [WORKSPACE] --pane PANE --kind run|review --id ID [options]\n" \
+        opts.banner = "Usage: workspace binding set [WORKSPACE] --pane PANE --kind run|review|play --id ID [options]\n" \
           "       workspace binding show [--pane %ID] [--json]\n" \
           "       workspace binding clear [--pane %ID] [--json]"
         opts.separator ""
-        opts.separator "Bind a tmux pane to a workflow run or a PR review. When the agent in a bound pane"
-        opts.separator "starts a session (startup, /clear, resume or compact), session-event reminds it of"
-        opts.separator "its subject, so it survives a lost context. Nothing is typed into the pane."
+        opts.separator "Bind a tmux pane to a workflow run, a PR review or a library play. When the agent"
+        opts.separator "in a bound pane starts a session (startup, /clear, resume or compact), session-event"
+        opts.separator "reminds it of its subject, so it survives a lost context. Nothing is typed into the pane."
         opts.separator ""
         opts.separator "A pane is stored by its tmux pane id (%19) and only counts in the tmux session it"
         opts.separator "was bound in. set takes a pane id or window.pane of the workspace's own session;"
         opts.separator "show and clear take a pane id, defaulting to $TMUX_PANE. WORKSPACE (or --name)"
-        opts.separator "defaults to the project detected from the current directory."
+        opts.separator "defaults to the project detected from the current directory. start --play and"
+        opts.separator "launch --play bind the pane they sent a play to (kind play)."
         opts.separator ""
         opts.on("--name NAME", "Workspace name (set)") { |v| options[:name] = v }
         opts.on("--pane PANE", "Pane id (%19) or, for set, window.pane (0.1)") { |v| options[:pane] = v }
-        opts.on("--kind KIND", "run or review (set)") { |v| options[:kind] = v }
-        opts.on("--id ID", "Run id or review id such as acme/api#835 (set)") { |v| options[:id] = v }
+        opts.on("--kind KIND", "run, review or play (set)") { |v| options[:kind] = v }
+        opts.on("--id ID", "Run id, review id such as acme/api#835, or play/NAME (set)") { |v| options[:id] = v }
         opts.on("--step STEP", "Step name (set)") { |v| options[:step] = v }
         opts.on("--attempt N", Integer, "Step attempt, 1 or more (set)") { |v| options[:attempt] = v }
         opts.on("--focus TEXT", "Review focus, e.g. security (set)") { |v| options[:focus] = v }

@@ -339,6 +339,109 @@ RSpec.describe Workspace::Commands::Launch do
         expect(command.call(["proj1"])).to eq(exit_code: 0, prompt_failures: {}, reused: [])
         expect(agent_readiness).not_to have_received(:wait)
       end
+
+      context "with pane bindings" do
+        let(:bindings_store) { Workspace::PaneBindings.new(path: File.join(tmpdir, "bindings.json")) }
+        let(:locator) { instance_double(Workspace::PaneLocator) }
+        let(:binder) { Workspace::Commands::Binding.new(bindings: bindings_store, locator: locator, tmux: tmux, output: output) }
+        let(:play_fields) { {"kind" => "play", "id" => "play/kickoff", "instructions" => "/lib/play/kickoff.md"} }
+
+        subject(:command) do
+          described_class.new(
+            state: state, iterm: iterm, window_manager: window_manager, tmux: tmux,
+            project_config: project_config, window_layout: window_layout, config: config,
+            pipeline_config: pipeline_config, agent_readiness: agent_readiness, prompt_timeout: 60,
+            binder: binder, output: output, error_output: error_output
+          )
+        end
+
+        before do
+          allow(agent_readiness).to receive(:wait).with("tmux-proj1", deadline: 60.0)
+            .and_return(Workspace::AgentReadiness::Result.new(ready: true, pane: "0.1", pane_id: "%5", label: "Claude Code"))
+          allow(agent_readiness).to receive(:wait).with("tmux-proj2", deadline: 60.0)
+            .and_return(Workspace::AgentReadiness::Result.new(ready: true, pane: "0.1", pane_id: "%8", label: "Claude Code"))
+          allow(locator).to receive(:locate).with("proj1", "%5").and_return({id: "%5", window: 0, index: 1, session: "tmux-proj1"})
+          allow(locator).to receive(:locate).with("proj2", "%8").and_return({id: "%8", window: 0, index: 1, session: "tmux-proj2"})
+          allow(tmux).to receive(:pane_slot) { |id| (id == "%5") ? "tmux-proj1:0.1" : "tmux-proj2:0.1" }
+        end
+
+        it "binds the pane each prompt was delivered to and reports it" do
+          result = command.call(["proj1", "proj2"], prompts: {"proj1" => "fix it", "proj2" => "test it"},
+            bindings: {"proj1" => play_fields, "proj2" => play_fields})
+
+          expect(result[:bound_panes]).to eq("proj1" => "%5", "proj2" => "%8")
+          expect(bindings_store.binding_for("%5")).to include("kind" => "play", "id" => "play/kickoff",
+            "instructions" => "/lib/play/kickoff.md", "workspace" => "proj1", "session" => "tmux-proj1", "pane_slot" => "tmux-proj1:0.1")
+          expect(output.string).to include("Bound pane %5 to play play/kickoff.")
+          expect(error_output.string).to be_empty
+        end
+
+        it "binds no pane for a project whose prompt was not sent" do
+          allow(agent_readiness).to receive(:wait).with("tmux-proj1", deadline: 60.0)
+            .and_return(Workspace::AgentReadiness::Result.new(ready: false, reason: "no coding agent yet"))
+
+          result = command.call(["proj1", "proj2"], prompts: {"proj1" => "fix it", "proj2" => "test it"},
+            bindings: {"proj1" => play_fields, "proj2" => play_fields})
+
+          expect(result[:bound_panes]).to eq("proj2" => "%8")
+          expect(bindings_store.binding_for("%5")).to be_nil
+        end
+
+        it "binds the pane after a late paste is submitted" do
+          allow(tmux).to receive(:deliver).and_return(delivery(:not_landed), delivery(:submitted))
+          allow(tmux).to receive(:shows_text?).with("tmux-proj1", "0.1", "fix it").and_return(true)
+
+          result = command.call(["proj1"], prompts: {"proj1" => "fix it"}, bindings: {"proj1" => play_fields})
+
+          expect(result[:bound_panes]).to eq("proj1" => "%5")
+        end
+
+        it "binds only the projects it was given fields for" do
+          result = command.call(["proj1", "proj2"], prompts: {"proj1" => "fix it", "proj2" => "test it"}, bindings: {"proj2" => play_fields})
+
+          expect(result[:bound_panes]).to eq("proj2" => "%8")
+          expect(locator).not_to have_received(:locate).with("proj1", anything)
+        end
+
+        it "binds the agent's pane by its id, not the window.pane it was pasted into" do
+          command.call(["proj1"], prompts: {"proj1" => "fix it"}, bindings: {"proj1" => play_fields})
+
+          expect(locator).to have_received(:locate).with("proj1", "%5")
+          expect(locator).not_to have_received(:locate).with("proj1", "0.1")
+        end
+
+        it "warns, and still exits 0, when the pane can not be bound" do
+          allow(locator).to receive(:locate).with("proj1", "%5")
+            .and_raise(Workspace::Error.new("No pane %5 in tmux session tmux-proj1", code: "no_such_pane"))
+
+          result = command.call(["proj1"], prompts: {"proj1" => "fix it"}, bindings: {"proj1" => play_fields})
+
+          expect(result).to include(exit_code: 0, prompt_failures: {}, bound_panes: {})
+          expect(error_output.string).to include("Warning: the play sent to proj1 was not bound to its pane: No pane %5 in tmux session tmux-proj1")
+        end
+
+        it "warns when the bindings file can not be written" do
+          allow(bindings_store).to receive(:bind).and_raise(Errno::EACCES, "bindings.json")
+
+          result = command.call(["proj1"], prompts: {"proj1" => "fix it"}, bindings: {"proj1" => play_fields})
+
+          expect(result).to include(exit_code: 0, bound_panes: {})
+          expect(error_output.string).to include("was not bound to its pane: Permission denied")
+        end
+
+        it "says nothing about binding when quiet" do
+          command.call(["proj1"], prompts: {"proj1" => "fix it"}, bindings: {"proj1" => play_fields}, quiet: true)
+
+          expect(output.string).not_to include("Bound pane")
+          expect(bindings_store.binding_for("%5")).not_to be_nil
+        end
+      end
+
+      it "leaves bindings alone when no binder was wired" do
+        result = command.call(["proj1"], prompts: {"proj1" => "fix it"}, bindings: {"proj1" => {"kind" => "play", "id" => "play/x"}})
+
+        expect(result).to include(exit_code: 0, bound_panes: {})
+      end
     end
   end
 end

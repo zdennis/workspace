@@ -171,6 +171,28 @@ RSpec.describe Workspace::Commands::Launch, "headless" do
     expect(tmux).to have_received(:deliver).with("tmux-proj1", "0.1", "do it")
   end
 
+  it "binds the pane a headless prompt was delivered to" do
+    allow(tmux).to receive(:sessions).and_return(["tmux-proj1"])
+    allow(agent_readiness).to receive(:wait)
+      .and_return(Workspace::AgentReadiness::Result.new(ready: true, pane: "0.1", pane_id: "%5", label: "Claude Code"))
+    allow(tmux).to receive(:deliver).and_return(Workspace::Tmux::Delivery.new(status: :submitted, message: "ok"))
+    allow(tmux).to receive(:pane_slot).with("%5").and_return("tmux-proj1:0.1")
+    locator = instance_double(Workspace::PaneLocator)
+    allow(locator).to receive(:locate).with("proj1", "%5").and_return({id: "%5", window: 0, index: 1, session: "tmux-proj1"})
+    store = Workspace::PaneBindings.new(path: File.join(tmpdir, "bindings.json"))
+    binder = Workspace::Commands::Binding.new(bindings: store, locator: locator, tmux: tmux, output: output)
+    command = described_class.new(state: state, iterm: iterm, window_manager: window_manager, tmux: tmux,
+      project_config: project_config, window_layout: window_layout, config: config,
+      pipeline_config: pipeline_config, agent_readiness: agent_readiness, prompt_timeout: 60, binder: binder,
+      sleeper: ->(_seconds) {}, output: output, error_output: error_output)
+
+    result = command.call(["proj1"], headless: true, prompts: {"proj1" => "do it"},
+      bindings: {"proj1" => {"kind" => "play", "id" => "play/kickoff", "instructions" => "/lib/play/kickoff.md"}})
+
+    expect(result).to include(exit_code: 0, bound_panes: {"proj1" => "%5"})
+    expect(store.binding_for("%5")).to include("kind" => "play", "session" => "tmux-proj1")
+  end
+
   it "prints nothing on stdout when quiet" do
     allow(tmux).to receive(:sessions).and_return(["tmux-proj1"])
 

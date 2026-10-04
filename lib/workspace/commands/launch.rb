@@ -27,12 +27,14 @@ module Workspace
       #   ready, shared by every project in one launch
       # @param agent_ensurer [Workspace::Commands::EnsureAgent, nil] starts each project's agent daemon
       #   when none is running (built from +config+ and +pipeline_config+ when nil)
+      # @param binder [Workspace::Commands::Binding, nil] binds the pane a prompt was
+      #   delivered to, for the projects +bindings:+ names; nil binds nothing
       # @param sleeper [#call] sleeps the given seconds, injected for fast tests
       # @param clock [#call] monotonic seconds, bounding the wait for sessions
       # @param output [IO] output stream for user-facing messages
       # @param error_output [IO] error output stream for warnings
       def initialize(state:, iterm:, window_manager:, tmux:, project_config:, window_layout:, config:, pipeline_config: nil,
-        agent_ensurer: nil, agent_readiness: nil, prompt_timeout: AgentReadiness::DEFAULT_TIMEOUT, sleeper: ->(seconds) { sleep(seconds) },
+        agent_ensurer: nil, agent_readiness: nil, prompt_timeout: AgentReadiness::DEFAULT_TIMEOUT, binder: nil, sleeper: ->(seconds) { sleep(seconds) },
         clock: -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) }, output: $stdout, error_output: $stderr)
         @state = state
         @iterm = iterm
@@ -45,6 +47,7 @@ module Workspace
         @agent_ensurer = agent_ensurer || EnsureAgent.new(config: config, pipeline_config: @pipeline_config, sleeper: sleeper, clock: clock, error_output: error_output)
         @agent_readiness = agent_readiness || AgentReadiness.new(tmux: tmux, process_tree: ProcessTree.new)
         @prompt_timeout = prompt_timeout
+        @binder = binder
         @sleeper = sleeper
         @clock = clock
         @output = output
@@ -63,6 +66,9 @@ module Workspace
       # @param quiet [Boolean] suppress the progress messages normally written to
       #   +output+ (warnings still go to +error_output+); for callers building a
       #   machine-readable payload of their own, such as `start --json`
+      # @param bindings [Hash{String => Hash}] project => pane binding fields (see
+      #   {Workspace::PaneBindings#bind}) for the pane its prompt is delivered to,
+      #   such as a play from {Workspace::Library#play_binding}
       # @return [Hash] +{exit_code:, prompt_failures:}+; exit_code is 1 when any
       #   prompt was not sent, and prompt_failures maps each such project to why.
       #   A headless launch adds +headless: true+, +reused:+ (projects whose
@@ -70,9 +76,13 @@ module Workspace
       #   its session could not be started, which also makes exit_code 1).
       #   The windowed path also adds +reused:+ (projects whose tmux session
       #   was already running and so was attached to instead of started).
+      #   With +bindings+, +bound_panes:+ maps each project whose pane was bound
+      #   to that pane id; one that could not be bound is a warning, not a failure.
       # @raise [Workspace::Error] if any project configs are missing
-      def call(projects, reattach: false, prompts: {}, prompt_timeout: @prompt_timeout, headless: false, quiet: false)
+      def call(projects, reattach: false, prompts: {}, prompt_timeout: @prompt_timeout, headless: false, quiet: false, bindings: {})
         @quiet = quiet
+        @bindings = bindings
+        @bound_panes = {}
         validate_configs(projects)
         return call_headless(projects, prompts: prompts, prompt_timeout: prompt_timeout) if headless
 
@@ -116,7 +126,7 @@ module Workspace
         unless failures.empty?
           @error_output.puts "Error: the prompt was not sent to: #{failures.keys.join(", ")}"
         end
-        {exit_code: failures.empty? ? 0 : 1, prompt_failures: failures, reused: reused}
+        with_bound_panes(exit_code: failures.empty? ? 0 : 1, prompt_failures: failures, reused: reused)
       end
 
       private
@@ -172,7 +182,11 @@ module Workspace
           @error_output.puts "Error: the prompt was not sent to: #{prompt_failures.keys.join(", ")}"
         end
         ok = prompt_failures.empty? && start_failures.empty?
-        {exit_code: ok ? 0 : 1, prompt_failures: prompt_failures, headless: true, reused: reused, start_failures: start_failures}
+        with_bound_panes(exit_code: ok ? 0 : 1, prompt_failures: prompt_failures, headless: true, reused: reused, start_failures: start_failures)
+      end
+
+      def with_bound_panes(result)
+        @bindings.empty? ? result : result.merge(bound_panes: @bound_panes)
       end
 
       # Reuses the project's running session, or starts it. A session missing
@@ -487,7 +501,9 @@ module Workspace
         deadline = @agent_readiness.deadline_in(prompt_timeout)
         prompts.each_with_object({}) do |(project, prompt_text), failures|
           log("Waiting for the coding agent in #{project} to be ready (up to #{prompt_timeout}s)...")
-          failure = deliver_prompt(project, session_names.fetch(project, project), prompt_text, deadline, prompt_timeout)
+          failure = deliver_prompt(project, session_names.fetch(project, project), prompt_text, deadline, prompt_timeout) do |pane_id|
+            bind_pane(project, pane_id, @bindings[project]) if @bindings[project]
+          end
           next unless failure
           @error_output.puts "Error: prompt not sent to #{project}: #{failure}"
           failures[project] = failure
@@ -500,6 +516,7 @@ module Workspace
       # it again would type it twice. A paste that turns up only after the
       # check gave up is submitted with Enter rather than pasted again.
       #
+      # @yieldparam pane_id [String] the tmux pane id the prompt was delivered to
       # @return [String, nil] why the prompt was not sent, or nil once it was
       def deliver_prompt(project, tmux_name, prompt_text, deadline, prompt_timeout)
         last = nil
@@ -516,11 +533,27 @@ module Workspace
             log("Sending prompt to #{project} (#{ready.label}, pane #{ready.pane})...")
             delivery = @tmux.deliver(tmux_name, ready.pane, prompt_text)
           end
-          return nil if delivery.ok?
+          if delivery.ok?
+            yield ready.pane_id
+            return nil
+          end
           return delivery.message if delivery.landed? || attempt == MAX_PROMPT_ATTEMPTS - 1
           last = delivery
           @error_output.puts "Warning: prompt to #{project} did not arrive (#{delivery.message}); trying again"
         end
+      end
+
+      # Records what the agent in +pane_id+ was sent, so the SessionStart hook can
+      # remind it after `/clear`. The pane is named by its id, not its index, so
+      # a pane split or closed since the paste can not be bound in its place.
+      # The prompt is already delivered, so a pane that can not be bound is a warning.
+      def bind_pane(project, pane_id, fields)
+        return unless @binder
+        entry = @binder.bind(workspace: project, pane: pane_id, **fields.transform_keys(&:to_sym))
+        @bound_panes[project] = entry["pane_id"]
+        log("Bound pane #{entry["pane_id"]} to #{entry["kind"]} #{entry["id"]}.")
+      rescue Workspace::Error, SystemCallError => e
+        @error_output.puts "Warning: the #{fields["kind"]} sent to #{project} was not bound to its pane: #{e.message}"
       end
 
       def arrange_windows(projects)
