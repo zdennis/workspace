@@ -112,6 +112,78 @@ RSpec.describe Workspace::SessionMonitor do
     end
   end
 
+  describe "scan slots" do
+    let(:scan_slots) { instance_double(Workspace::ScanSlotLimiter) }
+
+    subject(:slotted) do
+      described_class.new(tmux: tmux, process_tree: process_tree, session_name: "proj",
+        idle_after: 30, clock: clock, scan_slots: scan_slots)
+    end
+
+    it "scans under a slot when one is available" do
+      allow(scan_slots).to receive(:with_scan_slot).and_yield
+
+      slotted.scan
+
+      expect(slotted.snapshot["panes"].map { |p| p["pane_id"] }).to eq(["%1", "%2"])
+    end
+
+    it "skips the scan when no slot is available" do
+      allow(scan_slots).to receive(:with_scan_slot).and_return(nil)
+
+      slotted.scan
+
+      expect(slotted.snapshot["panes"]).to eq([])
+    end
+
+    it "keeps the last scanned state when a tick is skipped" do
+      allow(scan_slots).to receive(:with_scan_slot).and_yield
+      slotted.scan
+      allow(scan_slots).to receive(:with_scan_slot).and_return(nil)
+      allow(tmux).to receive(:capture_pane).and_return("new output")
+
+      slotted.scan
+
+      # The pane's output changed, but no scan ran under a slot, so the pane
+      # is reported from its last scanned state.
+      pane = slotted.snapshot["panes"].find { |p| p["pane_id"] == "%1" }
+      expect(pane["state"]).to eq("working")
+      expect(pane["idle_seconds"]).to eq(0)
+    end
+
+    it "bounds concurrent scans across monitors sharing one slot directory" do
+      slot_dir = Dir.mktmpdir("ws-scan-slots")
+      begin
+        limit = 2
+        active = 0
+        peak = 0
+        peak_lock = Mutex.new
+        allow(process_tree).to receive(:snapshot) do
+          peak_lock.synchronize do
+            active += 1
+            peak = [peak, active].max
+          end
+          sleep 0.05
+          peak_lock.synchronize { active -= 1 }
+          snapshot
+        end
+
+        monitors = Array.new(6) do
+          described_class.new(tmux: tmux, process_tree: process_tree, session_name: "proj",
+            idle_after: 30, clock: clock,
+            scan_slots: Workspace::ScanSlotLimiter.new(dir: File.join(slot_dir, "scan-slots"), limit: limit))
+        end
+
+        Array.new(monitors.size) { |i| Thread.new { monitors[i].scan } }.each(&:join)
+
+        expect(peak).to be <= limit
+        expect(peak).to be > 1
+      ensure
+        FileUtils.remove_entry(slot_dir)
+      end
+    end
+  end
+
   describe "activity" do
     it "reports a pane as working while its output changes" do
       monitor.scan

@@ -85,11 +85,14 @@ module Workspace
     # @param task_reader [#call, nil] given the project name, returns its active task
     #   record (a Hash with `id` and `title`) or nil; its title is the first
     #   `display_label` source and the snapshot reports the task. nil reports none.
+    # @param scan_slots [Workspace::ScanSlotLimiter, nil] bounds how many
+    #   monitors scan at once, machine-wide; a scan that can't take a slot is
+    #   skipped rather than waited out. nil scans without a limit.
     def initialize(tmux:, process_tree:, session_name:,
       providers: AgentProvider.all, poll_interval: 2, idle_after: DEFAULT_IDLE_AFTER,
       clock: Time, logger: Workspace::Logger.new, error_output: $stderr, lock_reaper: nil,
       notifier: nil, idle_alert_after: nil, event_log: nil, project: nil,
-      context_reader: nil, label_reader: nil, task_reader: nil)
+      context_reader: nil, label_reader: nil, task_reader: nil, scan_slots: nil)
       @tmux = tmux
       @process_tree = process_tree
       @session_name = session_name
@@ -109,6 +112,7 @@ module Workspace
       @context_reader = context_reader
       @label_reader = label_reader
       @task_reader = task_reader
+      @scan_slots = scan_slots
       @panes = {}
       @failed_scans = 0
       @lock = Mutex.new
@@ -148,37 +152,15 @@ module Workspace
     end
 
     # Refreshes every pane's kind and activity from tmux and the process table.
+    # With a limiter injected, the scan runs under one of its machine-wide
+    # slots; a scan that can't take a slot is skipped, so other monitors'
+    # scans, alerts and lock reaps go ahead regardless.
     #
     # @return [void]
     def scan
-      details = @tmux.pane_details(@session_name)
-      begin
-        tree = @process_tree.snapshot
-      rescue Workspace::Error => e
-        # The panes' output was not captured this time, so their activity is
-        # stale; idle alerts wait for a scan that succeeds.
-        @activity_stale = true
-        @failed_scans += 1
-        warn_failed_scans(e) if @failed_scans == FAILED_SCANS_WARNING
-        return @logger.debug { "session monitor: skipping scan: #{e.message}" }
-      end
-      @activity_stale = false
-      @failed_scans = 0
-      now = @clock.now
-      @history ||= load_history
+      return perform_scan unless @scan_slots
 
-      changes = @lock.synchronize do
-        seen = details.map { |d| d[:id] }
-        # A closed pane takes its sub-agent history with it; keeping the entry
-        # would leave a row that can never update again.
-        closed = @panes.except(*seen)
-        closed.each_key { |id| @panes.delete(id) }
-
-        details.each { |detail| refresh_pane(detail, tree, now) }
-        closed.values.filter_map { |pane| gone_change(pane, "closed", now) } +
-          @panes.values.filter_map { |pane| state_change(pane, now) }
-      end
-      record_changes(changes)
+      @scan_slots.with_scan_slot { perform_scan }
     end
 
     # Records a hook event reported by an agent.
@@ -310,6 +292,39 @@ module Workspace
     end
 
     private
+
+    # The body of {#scan}, run under a machine-wide scan slot when a limiter
+    # is injected.
+    def perform_scan
+      details = @tmux.pane_details(@session_name)
+      begin
+        tree = @process_tree.snapshot
+      rescue Workspace::Error => e
+        # The panes' output was not captured this time, so their activity is
+        # stale; idle alerts wait for a scan that succeeds.
+        @activity_stale = true
+        @failed_scans += 1
+        warn_failed_scans(e) if @failed_scans == FAILED_SCANS_WARNING
+        return @logger.debug { "session monitor: skipping scan: #{e.message}" }
+      end
+      @activity_stale = false
+      @failed_scans = 0
+      now = @clock.now
+      @history ||= load_history
+
+      changes = @lock.synchronize do
+        seen = details.map { |d| d[:id] }
+        # A closed pane takes its sub-agent history with it; keeping the entry
+        # would leave a row that can never update again.
+        closed = @panes.except(*seen)
+        closed.each_key { |id| @panes.delete(id) }
+
+        details.each { |detail| refresh_pane(detail, tree, now) }
+        closed.values.filter_map { |pane| gone_change(pane, "closed", now) } +
+          @panes.values.filter_map { |pane| state_change(pane, now) }
+      end
+      record_changes(changes)
+    end
 
     NOT_AGENTS = ["shell", "unknown"].freeze
     private_constant :NOT_AGENTS

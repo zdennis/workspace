@@ -28,6 +28,8 @@ To check on, restart or read the log of a running agent without holding a termin
 
 `--force` turns that refusal into a handover: the agent finds the process holding the socket with `lsof`, sends it `SIGTERM`, and waits up to 5 seconds for it to exit before binding the socket itself. In-flight state is already on disk, so the replacement picks the pipeline back up as it would after any other restart.
 
+**Scan concurrency** — each agent's session monitor polls its tmux session every couple of seconds, spawning a handful of processes per poll (`tmux list-panes`, a `ps` snapshot, one `tmux capture-pane` per pane). `WORKSPACE_SCAN_CONCURRENCY` bounds how many agents' monitors may scan at once, machine-wide (default `4`), shared through slot files under `~/.local/state/workspace/scan-slots`. A monitor that can't take a slot skips that tick; it never waits. Values that are not a positive integer fall back to the default.
+
 **Pipeline** — a project's stages come from `pipeline.panes` in `~/.config/workspace/projects/<name>.yml`. Each entry's position is its pane index:
 
 ```yaml

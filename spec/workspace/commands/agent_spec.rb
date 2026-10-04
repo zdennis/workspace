@@ -69,6 +69,7 @@ RSpec.describe Workspace::Commands::Agent do
       allow(c).to receive(:work_coordinator_status_socket).and_return(wc_status_socket_path)
       allow(c).to receive(:project_config_path).with("myapp").and_return(project_config_path)
       allow(c).to receive(:handoff_dir).and_return(File.join(tmpdir, "handoffs"))
+      allow(c).to receive(:state_dir).and_return(File.join(tmpdir, "state"))
     end
   end
 
@@ -1551,6 +1552,37 @@ RSpec.describe Workspace::Commands::Agent do
       monitor = agent_without.send(:build_session_monitor, "myapp")
 
       expect(monitor.send_alerts).to eq([])
+    end
+  end
+
+  describe "wiring the scan slot limiter into its session monitor" do
+    # Goes through the real (private) session monitor factory rather than
+    # stubbing it, so dropping the `scan_slots:` kwarg from the
+    # `SessionMonitor.new` call in `build_session_monitor` fails both examples.
+    it "passes its scan_slots to the session monitor it builds" do
+      scan_slots = instance_double(Workspace::ScanSlotLimiter)
+      agent_with_limiter = described_class.new(
+        config: config,
+        tmux: tmux,
+        work_coordinator_client: client,
+        pipeline_config: pipeline_config,
+        pipeline_state: pipeline_state,
+        scan_slots: scan_slots,
+        output: output,
+        error_output: error_output
+      )
+
+      monitor = agent_with_limiter.send(:build_session_monitor, "myapp")
+
+      expect(monitor.instance_variable_get(:@scan_slots)).to be(scan_slots)
+    end
+
+    it "builds its default limiter under the config state dir when none is injected" do
+      monitor = agent.send(:build_session_monitor, "myapp")
+
+      limiter = monitor.instance_variable_get(:@scan_slots)
+      expect(limiter).to be_a(Workspace::ScanSlotLimiter)
+      expect(limiter.instance_variable_get(:@dir)).to eq(File.join(config.state_dir, "scan-slots"))
     end
   end
 
