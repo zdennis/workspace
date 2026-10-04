@@ -560,7 +560,7 @@ module Workspace
         entry = @state[project]
         details = {iterm_window_id: entry.is_a?(Hash) ? entry["iterm_window_id"] : nil, headless: entry.is_a?(Hash) && entry["headless"] == true}
         if plays[project]
-          details[:play] = plays[project].merge("delivered" => !result.nil? && !prompt_failures.key?(project) && !start_failures.key?(project))
+          details[:play] = plays[project].merge("delivered" => !result.nil? && !entry.nil? && !prompt_failures.key?(project) && !start_failures.key?(project))
         end
         if start_failures[project]
           action_row(project, "failed", reason: "session_not_started", message: start_failures[project].to_s, **details)

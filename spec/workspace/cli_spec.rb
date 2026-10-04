@@ -5631,6 +5631,17 @@ RSpec.describe Workspace::CLI do
           expect(rows.last["play"]).to include("scope" => "global", "path" => global_path, "delivered" => false)
         end
 
+        it "reports the play as not delivered on a project that never launched or whose session did not start" do
+          state = CLITestHelpers::FakeState.new
+          cli, raw, = action_cli(state: state, project_config: project_config, library: library,
+            &launching(state, fail: ["api", "web"], result: {exit_code: 1, prompt_failures: {}, start_failures: {"web" => "tmux refused"}}))
+
+          exit_status { cli.run(["launch", "api", "web", "--play", "kickoff", "--json"]) }
+
+          rows = parse_one(raw)["results"]
+          expect(rows.map { |r| [r["reason"], r["play"]["delivered"]] }).to eq([["not_launched", false], ["session_not_started", false]])
+        end
+
         it "sends each project a line pointing at its own play, then the prompt" do
           launch_command = double("launch", call: {exit_code: 0, prompt_failures: {}})
           cli, = build_test_cli(launch_command: launch_command, project_config: project_config, library: library)
