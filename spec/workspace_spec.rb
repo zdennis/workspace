@@ -92,6 +92,19 @@ RSpec.describe Workspace do
       expect(launch_command.instance_variable_get(:@binder)).to equal(binding_command)
     end
 
+    it "wires instructions compose to the library start uses and the binding command binding show uses" do
+      cli = Workspace.build_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new)
+
+      instructions = cli.instance_variable_get(:@instructions_command)
+      composer = instructions.instance_variable_get(:@composer)
+
+      expect(instructions).to be_a(Workspace::Commands::Instructions)
+      expect(instructions.instance_variable_get(:@bindings)).to equal(cli.instance_variable_get(:@binding_command))
+      expect(composer.instance_variable_get(:@library)).to equal(cli.instance_variable_get(:@library))
+      expect(composer.instance_variable_get(:@commands_config)).to be_a(Workspace::CommandsConfig)
+      expect(composer.instance_variable_get(:@pane_bindings)).to be_a(Workspace::PaneBindings)
+    end
+
     it "gives start a library installer that checks tracked files with the shared git" do
       cli = Workspace.build_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new)
 

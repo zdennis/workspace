@@ -5,19 +5,19 @@ Store named plays, prompts, agents and skills, globally or for one project, and 
 ## Usage
 
 ```sh
-workspace library list   [--kind KIND] [--global | --project [NAME]] [--json]
-workspace library show   REF [--global | --project [NAME]] [--json]
-workspace library info   REF [--global | --project [NAME]] [--json]
+workspace library list   [--kind KIND] [--global | --builtin | --project [NAME]] [--json]
+workspace library show   REF [--global | --builtin | --project [NAME]] [--json]
+workspace library info   REF [--global | --builtin | --project [NAME]] [--json]
 workspace library add    PATH|- --kind KIND [--as NAME] [--link] [--force] [--project [NAME]] [--dry-run] [--json]
 workspace library update REF PATH|- [--link] [--project [NAME]] [--dry-run] [--json]
 workspace library remove REF [--yes] [--project [NAME]] [--dry-run] [--json]
 ```
 
-`REF` is `kind/name` or a bare `name`. A bare name works when one kind has it; when two do, the command fails with `ambiguous_library_entry` and lists both. Scripts should pass `kind/name`. Names are lowercase letters, digits and hyphens.
+`REF` is `kind/name` or a bare `name`. A bare name works when one kind has it; when two do, the command fails with `ambiguous_library_entry` and lists both. A built-in play never makes a bare name ambiguous: with your own `prompt/review`, `show review` prints the prompt, and `show play/review` the built-in play. Scripts should pass `kind/name`. Names are lowercase letters, digits and hyphens.
 
 | Verb | What it does |
 |---|---|
-| `list` | Every entry visible from here, sorted by kind then name, with the project's entry before the global one of the same name and a hidden global one marked `(hidden)` |
+| `list` | Every entry visible from here, sorted by kind then name, with the project's entry before the global one of the same name, the built-in one last, and a hidden one marked `(hidden)` |
 | `show` | Prints the body as it is, so `--prompt "$(workspace library show prompt/kickoff)"` works with every command that takes text |
 | `info` | Kind, name, scope, path, whether it is a link and to what, description, modified time, and whether it is the entry in effect |
 | `add` | Copies `PATH` into the store, or links it with `--link`. `-` reads the body from stdin and needs `--as`. The name defaults to the file name in kebab case (`Agent Orchestration Playbook.md` becomes `agent-orchestration-playbook`). Adding identical content again succeeds and changes nothing; different content under an existing name is refused unless `--force` is given |
@@ -32,6 +32,7 @@ workspace library remove REF [--yes] [--project [NAME]] [--dry-run] [--json]
 | `--force` | `add`: replace an entry that has different content |
 | `--yes` | `remove`: don't ask |
 | `--global` | Reads: only the global store |
+| `--builtin` | Reads: only the entries that ship with workspace |
 | `--project [NAME]` | The project's store: `NAME`, or the project of the current directory (`--name` is the same) |
 | `--dry-run` | `add`, `update`, `remove`: report what would happen and write nothing |
 | `--json` | Print one JSON document |
@@ -46,6 +47,7 @@ The description is the `description:` frontmatter key if the file has one, else 
 |---|---|---|
 | Global (default for writes) | none, or `--global` | `~/.config/workspace/library/global/<kind>/<name>.md` |
 | Project | `--project [NAME]` | `~/.config/workspace/library/projects/<project>/<kind>/<name>.md` |
+| Built-in (read-only) | `--builtin` | `lib/library/<kind>/<name>.md` inside workspace |
 
 A skill is stored as a directory, `skill/<name>/`, holding `SKILL.md` and any other files it came with. `add --kind skill PATH` takes a directory with a `SKILL.md` in it (a file is a usage error) and copies the whole tree, or with `--link` links the directory. `add - --kind skill --as NAME` stores stdin as the `SKILL.md` of a new directory. A skill entry's `path` is the directory, `show` prints its `SKILL.md`, and `remove` deletes the directory, or only the link. Two copies of a skill hold the same content when they have the same files with the same bytes.
 
@@ -53,15 +55,21 @@ The store is a directory of files with no index: `add` copies the file in, or `a
 
 `--project` without a name means the project of the current directory, resolved the way `config set` and `parent` resolve it, so every worktree of a repo shares one project library. The name has to be a workspace `workspace list --all` knows, or the command fails with `unknown_workspace`; `library add --project` in `~/Downloads` does not create a "Downloads" library.
 
-Reads (`list`, `show`, `info`) search the project of the current directory first (when it is a known workspace), then global, so a project entry hides a global one of the same kind and name. `--global` or `--project` limits a read to that scope. Writes go to the global store unless `--project` is given. `--global` with `--project` is a usage error.
+Reads (`list`, `show`, `info`) search the project of the current directory first (when it is a known workspace), then global, then built-in, so a project entry hides a global one of the same kind and name, and either hides a built-in one. `--global`, `--builtin` or `--project` limits a read to that scope. Writes go to the global store unless `--project` is given. Two of the three scope flags together are a usage error, and so is `--builtin` on `add`, `update` or `remove`.
+
+## Built-in plays
+
+workspace ships four plays, the instruction packs [`workspace instructions compose`](README.instructions.md) builds its output from: `binding`, `orchestrator`, `commits` and `review`. `workspace library list --builtin` lists them and `workspace library show orchestrator --builtin` prints one. They can't be changed, and there are no built-in prompts, agents or skills.
+
+The built-in scope is searched last here and by `--play`, so `workspace start --play orchestrator` sends the built-in play unless you have a project or global play of that name. `instructions compose --pack NAME` is the one lookup that searches built-in first: a play of yours named `review` never takes the place of the `review` pack. `start --agent` and `--skill` search the project and global stores only.
 
 ## Using a play
 
-`workspace start --play NAME` and `workspace launch --play NAME` point the coding agent at a play by path: "Read `<path>` and follow it.", then any `--prompt` text. They look the play up as reads do, and fail before creating anything when it is missing or unreadable. See [`start`](README.start.md#plays).
+`workspace start --play NAME` and `workspace launch --play NAME` point the coding agent at a play by path: "Read `<path>` and follow it.", then any `--prompt` text. They look the play up as reads do (project, global, then built-in), and fail before creating anything when it is missing or unreadable. See [`start`](README.start.md#plays).
 
 ## Using agents and skills
 
-`workspace start --agent NAME --skill NAME` copies library agents and skills into the new worktree, where Claude Code loads them: `.claude/agents/<name>.md` and `.claude/skills/<name>/`. Both flags repeat. They are looked up as reads are and fail before anything is created when missing or unreadable. Each copy is listed in the repo's `info/exclude`, and a path the repo tracks is never overwritten. See [`start`](README.start.md#agents-and-skills).
+`workspace start --agent NAME --skill NAME` copies library agents and skills into the new worktree, where Claude Code loads them: `.claude/agents/<name>.md` and `.claude/skills/<name>/`. Both flags repeat. They are looked up in the project's store, then global, and fail before anything is created when missing or unreadable. Each copy is listed in the repo's `info/exclude`, and a path the repo tracks is never overwritten. See [`start`](README.start.md#agents-and-skills).
 
 ## remove
 

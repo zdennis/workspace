@@ -217,6 +217,22 @@ RSpec.describe Workspace::Commands::Config do
                                                                "resume_prompt" => "Resume %{doc}"}})
     end
 
+    it "accepts commands.test and commands.lint, reads them back, and refuses a blank one" do
+      output = StringIO.new
+      command, project_settings = build_command(output: output)
+      project_dir = Dir.mktmpdir("ws-config-project")
+      name = File.basename(project_dir)
+
+      command.set("commands.test", "bundle exec rspec", cwd: project_dir)
+      command.set("commands.lint", "bundle exec standardrb lib/ spec/", cwd: project_dir)
+
+      expect(project_settings.load(name)).to eq({"commands" => {"test" => "bundle exec rspec", "lint" => "bundle exec standardrb lib/ spec/"}})
+      expect(Workspace::CommandsConfig.new(project_settings: project_settings).for_project(name))
+        .to eq(test: "bundle exec rspec", lint: "bundle exec standardrb lib/ spec/")
+      expect { command.set("commands.test", "  ", cwd: project_dir) }.to raise_error(Workspace::UsageError, /Invalid commands.test/)
+      expect(project_settings.load(name)["commands"]["test"]).to eq("bundle exec rspec")
+    end
+
     ["0", "101", "soon"].each do |bad|
       it "rejects handoff.threshold #{bad.inspect} without writing it" do
         command, project_settings = build_command

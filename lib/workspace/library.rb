@@ -2,9 +2,11 @@ require "digest"
 
 module Workspace
   # Resolves library entries across scopes. The lookup order lives in
-  # {#stores}: a project's store first, then the global one, so a project
-  # entry hides a global one of the same kind and name. A later item adds a
-  # built-in scope there, after global.
+  # {#stores}: a project's store first, then the global one, then the
+  # built-in one that ships with workspace, so a project entry hides a global
+  # one of the same kind and name, and either hides a built-in one. {#pack}
+  # is the one exception: an instruction pack is looked up built-in first, so
+  # no entry can replace a pack workspace ships.
   class Library
     # @param config [Workspace::Config] for {Config#library_dir}
     # @param lineage [Workspace::WorkspaceLineage] names the project of a directory
@@ -17,9 +19,10 @@ module Workspace
 
     # The stores to search, in lookup order. With no `scope`, the project of
     # `project` (or of `cwd`, when it is a known workspace) comes before
-    # global; `"global"` or `"project"` narrows it to that one store.
+    # global, and the built-in store comes last; `"global"`, `"project"` or
+    # `"builtin"` narrows it to that one store.
     #
-    # @param scope [String, nil] "global", "project" or nil for both
+    # @param scope [String, nil] "global", "project", "builtin" or nil for all
     # @param project [String, nil] the project name; nil resolves it from `cwd`
     # @param cwd [String, nil] where the command runs
     # @return [Array<Workspace::LibraryStore>]
@@ -28,9 +31,10 @@ module Workspace
       case scope
       when "global" then [global_store]
       when "project" then [project_store(project || require_project(cwd))]
+      when "builtin" then [builtin_store]
       else
         name = project || known_project(cwd)
-        [name && project_store(name), global_store].compact
+        [name && project_store(name), global_store, builtin_store].compact
       end
     end
 
@@ -40,14 +44,24 @@ module Workspace
     # @param project [String, nil]
     # @param cwd [String, nil]
     # @return [Workspace::LibraryStore]
+    # @raise [Workspace::UsageError] for the built-in scope, which is read-only
     # @raise [Workspace::Error] code `unknown_workspace`
     def write_store(scope: nil, project: nil, cwd: nil)
+      raise UsageError, "The built-in entries ship with workspace and can't be changed." if scope == "builtin"
       (scope == "project") ? project_store(project || require_project(cwd)) : global_store
     end
 
     # @return [Workspace::LibraryStore]
     def global_store
       LibraryStore.new(dir: File.join(@config.library_dir, "global"), scope: "global")
+    end
+
+    # The entries that ship with workspace: the instruction packs, as plays.
+    # Read-only; {#write_store} never returns it.
+    #
+    # @return [Workspace::LibraryStore]
+    def builtin_store
+      LibraryStore.new(dir: @config.builtin_library_dir, scope: "builtin")
     end
 
     # @param name [String] a known workspace
@@ -75,7 +89,9 @@ module Workspace
         end
     end
 
-    # The entry a `REF` names: `kind/name`, or a bare `name` when one kind has it.
+    # The entry a `REF` names: `kind/name`, or a bare `name` when one kind has
+    # it. A bare name that a project or global entry has is never made
+    # ambiguous by a built-in entry of another kind.
     #
     # @param ref [String]
     # @param stores [Array<Workspace::LibraryStore>] in lookup order
@@ -85,6 +101,8 @@ module Workspace
     def resolve(ref, stores)
       kind, name = parse_ref(ref)
       matches = entries(stores).select { |e| e["effective"] && e["name"] == name && (kind.nil? || e["kind"] == kind) }
+      own = matches.reject { |e| e["scope"] == "builtin" }
+      matches = own if kind.nil? && own.any?
       scopes = stores.map { |s| s.project ? "project:#{s.project}" : s.scope }
       if matches.empty?
         raise Error.new("No library entry '#{ref}' in #{scopes.join(", ")}.", code: "unknown_library_entry",
@@ -98,7 +116,7 @@ module Workspace
     end
 
     # The play `start --play` and `launch --play` send, looked up from `cwd`
-    # (its project, then global) and read once to prove it is readable: a
+    # (its project, then global, then built-in) and read once to prove it is readable: a
     # link into iCloud can leave only a placeholder behind. A bare name means
     # a play, so a prompt of the same name doesn't make it ambiguous.
     #
@@ -108,22 +126,29 @@ module Workspace
     # @raise [Workspace::UsageError] for a bad name or a kind other than play
     # @raise [Workspace::Error] code `unknown_library_entry`, or `library_source_missing` when the file can't be read
     def play(ref, cwd:)
-      kind, name = parse_ref(ref)
-      if kind && kind != "play"
-        hint = (kind == "prompt") ? " Send its text with --prompt \"$(workspace library show #{ref})\"." : ""
-        raise UsageError, "--play takes a play, and '#{ref}' is a #{kind}.#{hint}"
-      end
-      # A tmuxinator `root:` is often written `~/...`, which git -C won't expand.
-      entry = resolve("play/#{name}", stores(cwd: cwd && File.expand_path(cwd)))
-      {"ref" => entry["ref"], "scope" => entry["scope"], "path" => entry["path"],
-       "sha256" => Digest::SHA256.hexdigest(read_play(entry))}
+      find_play(ref, stores(cwd: expand(cwd)), "--play").first.slice("ref", "scope", "path", "sha256")
+    end
+
+    # The play `instructions compose --pack` composes, with its body. Unlike
+    # every other lookup, the built-in store is searched first: a project or
+    # global play named like a pack workspace ships (`review`, say) never takes
+    # that pack's place. Any other play can be named as a pack.
+    #
+    # @param ref [String] `name` or `play/name`
+    # @param cwd [String, nil] the project's directory; nil searches built-in and global only
+    # @return [Array(Hash, String)] "ref", "scope", "project", "path" and the body's "sha256", then the body
+    # @raise [Workspace::UsageError] for a bad name or a kind other than play
+    # @raise [Workspace::Error] code `unknown_library_entry`, or `library_source_missing` when the file can't be read
+    def pack(ref, cwd:)
+      find_play(ref, [builtin_store] + user_stores(cwd), "--pack")
     end
 
     # The kinds `start --agent` and `--skill` copy into a worktree, and the article for each.
     COPY_KINDS = {"agent" => "an agent", "skill" => "a skill"}.freeze
 
     # The agent or skill `start --agent`/`--skill` copies into a worktree,
-    # looked up from `cwd` (its project, then global) and checked readable
+    # looked up from `cwd` (its project, then global; the built-in store holds
+    # plays only and is not searched) and checked readable
     # before anything is created. A bare name means the flag's kind.
     #
     # @param kind [String] "agent" or "skill"
@@ -139,7 +164,7 @@ module Workspace
       if given && given != kind
         raise UsageError, "--#{kind} takes #{article}, and '#{ref}' is a #{given}."
       end
-      entry = resolve("#{kind}/#{name}", stores(cwd: cwd && File.expand_path(cwd)))
+      entry = resolve("#{kind}/#{name}", user_stores(cwd))
       raise source_missing(entry) unless entry["readable"]
       entry.slice("ref", "kind", "name", "scope", "path")
     end
@@ -191,6 +216,29 @@ module Workspace
     end
 
     private
+
+    # A tmuxinator `root:` is often written `~/...`, which git -C won't expand.
+    def expand(cwd)
+      cwd && File.expand_path(cwd)
+    end
+
+    # The project's store (when `cwd` is a known workspace), then global.
+    def user_stores(cwd)
+      stores(cwd: expand(cwd)).reject { |store| store.scope == "builtin" }
+    end
+
+    # The play `ref` names in `stores`, read once, and its body. `flag` is the
+    # option the name was given to.
+    def find_play(ref, stores, flag)
+      kind, name = parse_ref(ref)
+      if kind && kind != "play"
+        hint = (kind == "prompt" && flag == "--play") ? " Send its text with --prompt \"$(workspace library show #{ref})\"." : ""
+        raise UsageError, "#{flag} takes a play, and '#{ref}' is a #{kind}.#{hint}"
+      end
+      entry = resolve("play/#{name}", stores)
+      body = read_play(entry)
+      [entry.slice("ref", "scope", "project", "path").merge("sha256" => Digest::SHA256.hexdigest(body)), body]
+    end
 
     def read_play(entry)
       raise Errno::EACCES, entry["path"] unless entry["readable"]

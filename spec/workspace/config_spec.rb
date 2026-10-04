@@ -6,6 +6,11 @@ RSpec.describe Workspace::Config do
       expect(config.workspace_dir).to eq(File.expand_path("../..", __dir__))
     end
 
+    it "returns the built-in library directory inside the installation, and honours a workspace_dir override" do
+      expect(config.builtin_library_dir).to eq(File.join(File.expand_path("../..", __dir__), "lib", "library"))
+      expect(described_class.new(workspace_dir: "/opt/ws").builtin_library_dir).to eq("/opt/ws/lib/library")
+    end
+
     it "returns the run directory without creating it" do
       expect(config.run_dir).to eq(File.expand_path("~/.local/workspace/run"))
     end

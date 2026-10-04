@@ -114,6 +114,25 @@ RSpec.describe Workspace::PaneBindings do
     end
   end
 
+  describe "#stale?" do
+    let(:entry) { {"kind" => "run", "id" => "wr_1", "session" => "app", "pane_slot" => "app:0.1"} }
+
+    it "is false in the session and slot the binding was made in" do
+      expect(store.stale?(entry, session: "app", pane_slot: "app:0.1")).to be false
+    end
+
+    it "is true in another session, in another slot, or when tmux can't find the pane" do
+      expect(store.stale?(entry, session: "other", pane_slot: "app:0.1")).to be true
+      expect(store.stale?(entry, session: "app", pane_slot: "app:0.2")).to be true
+      expect(store.stale?(entry, session: nil, pane_slot: nil)).to be true
+    end
+
+    it "judges a binding stored without a slot by its session alone" do
+      expect(store.stale?(entry.merge("pane_slot" => nil), session: "app", pane_slot: "app:9.9")).to be false
+      expect(store.stale?(entry.merge("pane_slot" => nil), session: "other", pane_slot: nil)).to be true
+    end
+  end
+
   describe "#context_for" do
     it "names the run, step, attempt and where the instructions are" do
       text = store.context_for("kind" => "run", "id" => "wr_1", "workspace" => "api", "step" => "implement",

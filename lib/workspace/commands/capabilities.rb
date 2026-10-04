@@ -34,10 +34,11 @@ module Workspace
         "tasks" => 1,
         "event_emitters" => 1,
         "ui_open" => 1,
-        "pane_bindings" => 1,
-        "library" => 2,
+        "pane_bindings" => 2,
+        "library" => 3,
         "library_play" => 2,
-        "library_copy" => 1
+        "library_copy" => 1,
+        "instructions" => 1
       }.freeze
 
       # The exit statuses commands use, by meaning.

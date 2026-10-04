@@ -24,7 +24,7 @@ It reads constants, config paths and the `PATH`. It starts no process and touche
    "sessions":1,"locks_json":1,"git_facts":1,"prune_safe":1,"snapshot":2,"events_follow":0,
    "actions_manifest":0,"agent_send":1,"agent_spawn":0,"focus_pane":1,"state_done":1,
    "doctor_json":0,"daemon_control":1,"config_json":1,"tmux_show":1,"tasks":1,"event_emitters":1,
-   "ui_open":1,"pane_bindings":1,"library":2,"library_play":2,"library_copy":1},
+   "ui_open":1,"pane_bindings":2,"library":3,"library_play":2,"library_copy":1,"instructions":1},
  "exit_codes":{"ok":0,"failed":1,"not_submitted":2,"partial":3,"lock_cleared":4,"timeout":75},
  "paths":{"event_log":"/Users/me/.workspace-events.jsonl","run_dir":"/Users/me/.local/workspace/run",
    "library":"/Users/me/.config/workspace/library"},
@@ -63,10 +63,11 @@ It reads constants, config paths and the `PATH`. It starts no process and touche
 | `tmux_show` | `tmux show --json` (see [`tmux`](README.tmux.md)) |
 | `tasks` | `start` records a task per worktree workspace (`--title`, `WORKSPACE_TASK` in its panes); `sessions --json` reports it as `task` and uses its title as the first `display_label` (see [`start`](README.start.md#tasks)); `finish` and `kill` archive it |
 | `ui_open` | `ui open task\|review\|inbox` opens a `workspace-ui://` link (see [`ui`](README.ui.md)) |
-| `pane_bindings` | `binding set\|show\|clear` binds a pane to a run, review or play, and `session-event` prints it as `additionalContext` on `SessionStart` (see [`binding`](README.binding.md)) |
-| `library` | `library list\|show\|info\|add\|update\|remove` stores named plays and prompts, globally or per project; `paths.library` is the store (see [`library`](README.library.md)). Revision 2 adds the `agent` and `skill` kinds; a skill is a directory, so its entry's `path` names a directory |
+| `pane_bindings` | `binding set\|show\|clear` binds a pane to a run, review or play, and `session-event` prints it as `additionalContext` on `SessionStart` (see [`binding`](README.binding.md)). Revision 2: `binding show --json` adds `stale` to the `binding` object, `set` defaults `--pane` to `$TMUX_PANE`, and `--instructions` and `--artifacts` are stored as absolute paths |
+| `library` | `library list\|show\|info\|add\|update\|remove` stores named plays and prompts, globally or per project; `paths.library` is the store (see [`library`](README.library.md)). Revision 2 adds the `agent` and `skill` kinds; a skill is a directory, so its entry's `path` names a directory. Revision 3 adds the built-in scope: `list`, `show` and `info` return the plays workspace ships with `scope` `builtin`, `--builtin` narrows a read to them, and `unknown_library_entry` can name `builtin` in `details.scopes` |
 | `library_play` | `start --play NAME` and `launch --play NAME` point the agent at a library play and report a `play` object in `--json` (see [`start`](README.start.md#plays)). Revision 2 binds the pane a play was delivered to, so `session-event` reminds the agent of the play after `/clear`, and adds `pane` to the `play` object |
 | `library_copy` | `start --agent NAME` and `start --skill NAME` copy library agents and skills into the new worktree's `.claude/`, list them in the repo's `info/exclude`, never overwrite a tracked file, and report `agents` and `skills` in `--json` (see [`start`](README.start.md#agents-and-skills)) |
+| `instructions` | `instructions compose [--pack NAME]...` prints the instructions built from library packs, with `--json` (see [`instructions`](README.instructions.md)); the `commands.test` and `commands.lint` config keys exist |
 | `event_emitters` | The event log records `ask_created`, `ask_answered`, `lock_released`, `lock_cleared`, `worktree_started`, `worktree_finished`, `daemon_started`, `daemon_stopped` and `config_changed` (see [`event-log`](README.event-log.md#state-and-lifecycle-events)) |
 
 ## Examples

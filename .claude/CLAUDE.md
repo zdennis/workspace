@@ -26,9 +26,12 @@ A macOS CLI (Ruby) for managing tmuxinator-based development workspaces in iTerm
 - `lib/workspace/pane_locator.rb` — Strict pane resolver for `agent-run send`, `focus --pane` and `ask answer --deliver`: only a pane id or `window.pane`, and only a pane of the workspace's own tmux session
 - `lib/workspace/pane_bindings.rb` — `bindings.json`: tmux pane id to the run, review or play it works on, with the session it was made in; `session-event` prints it as `additionalContext` on SessionStart
 - `lib/workspace/library_store.rb` — The files of one library scope (`<kind>/<name>.md`, or a `skill/<name>/` directory holding `SKILL.md`; a copy or a symlink), written through a temp file or directory and rename
-- `lib/workspace/library.rb` — Resolves a library `REF` across scopes; `#stores` is the one lookup order (project, then global) a built-in scope joins later; `#play` checks the play `start --play`/`launch --play` point the agent at; `#copyable` checks a `start --agent`/`--skill` entry
+- `lib/workspace/library.rb` — Resolves a library `REF` across scopes; `#stores` is the one lookup order (project, global, then the built-in store `lib/library/`); `#pack` looks an instruction pack up built-in first; `#play` checks the play `start --play`/`launch --play` point the agent at; `#copyable` checks a `start --agent`/`--skill` entry
 - `lib/workspace/library_installer.rb` — Copies a library agent or skill into a checkout's `.claude/agents/` or `.claude/skills/`, never over a tracked path, and lists it in the common dir's `info/exclude`
-- `lib/workspace/commands/` — Complex command objects (launch, kill, focus, start, agent, ensure_agent, lock, dev, projects, capabilities, send, review, snapshot, daemon, ui, binding, library)
+- `lib/workspace/instruction_composer.rb` — Builds an agent's instructions from library packs under a heading per pack; adds the pane's binding after `binding` and the project's `commands.test`/`commands.lint` after `commits`
+- `lib/workspace/commands_config.rb` — Reads a project's `commands.test` and `commands.lint`
+- `lib/library/play/` — The built-in instruction packs (`binding`, `orchestrator`, `commits`, `review`), read through `Library#builtin_store`
+- `lib/workspace/commands/` — Complex command objects (launch, kill, focus, start, agent, ensure_agent, lock, dev, projects, capabilities, send, review, snapshot, daemon, ui, binding, library, instructions)
 - `lib/workspace/work_coordinator_client.rb` — JSONL client for work-coordinator sockets
 - `lib/workspace/pipeline_config.rb` — Reads per-project pipeline stage config from `~/.config/workspace/projects/<name>.yml`
 - `lib/workspace/pipeline_state.rb` — In-flight work item tracking, disk-persisted to `~/.local/state/workspace/<name>/pipeline.json`
@@ -74,7 +77,7 @@ A macOS CLI (Ruby) for managing tmuxinator-based development workspaces in iTerm
 
 ## Subcommands
 
-init, doctor, launch, start, add, stop, kill, finish, relaunch, focus, list, status, whereis, agent, daemon, pipeline, sessions, review, snapshot, session-event, lock, dev, parent, projects, ask, capabilities, ui, binding, library
+init, doctor, launch, start, add, stop, kill, finish, relaunch, focus, list, status, whereis, agent, daemon, pipeline, sessions, review, snapshot, session-event, lock, dev, parent, projects, ask, capabilities, ui, binding, library, instructions
 
 ## Adding a Subcommand
 

@@ -72,6 +72,11 @@ module Workspace
       File.join(workspace_config_dir, "library")
     end
 
+    # @return [String] path to the library entries that ship with workspace (the instruction packs)
+    def builtin_library_dir
+      File.join(workspace_dir, "lib", "library")
+    end
+
     # Handoff files carry one pipeline stage's output to the next, so they live
     # under the user's own config directory rather than in shared /tmp.
     #

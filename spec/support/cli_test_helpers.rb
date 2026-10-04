@@ -688,6 +688,20 @@ module CLITestHelpers
     end
   end
 
+  class FakeInstructionsCommand
+    attr_reader :calls
+    attr_accessor :error
+
+    def initialize
+      @calls = []
+    end
+
+    def compose(**kw)
+      @calls << [:compose, kw]
+      raise @error if @error
+    end
+  end
+
   class FakeReviewCommand
     attr_reader :calls
     attr_accessor :result

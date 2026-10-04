@@ -138,7 +138,9 @@ module Workspace
     def tracked?(dir, path)
       # A case-insensitive volume (the macOS default) puts `Reviewer.md` at
       # the path of `reviewer.md`, so match the way the file system does.
-      stdout, stderr, status = capture_git("-C", dir, "ls-files", "-z", "--", ":(icase)#{path}")
+      # GIT_LITERAL_PATHSPECS=1 in the environment would read `:(icase)` as part of
+      # the file name and answer "not tracked" for every path.
+      stdout, stderr, status = capture_git("--no-literal-pathspecs", "-C", dir, "ls-files", "-z", "--", ":(icase)#{path}")
       raise Workspace::Error, "Can't tell whether git tracks #{path} in #{dir}: #{stderr.strip}" unless status.success?
       !stdout.empty?
     end

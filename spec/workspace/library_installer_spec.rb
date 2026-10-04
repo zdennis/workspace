@@ -69,6 +69,20 @@ RSpec.describe Workspace::LibraryInstaller do
     expect(status).to eq("")
   end
 
+  it "leaves a tracked file alone when GIT_LITERAL_PATHSPECS is set in the environment" do
+    store.write("agent", "tracked", "from the library\n")
+    old = ENV["GIT_LITERAL_PATHSPECS"]
+    ENV["GIT_LITERAL_PATHSPECS"] = "1"
+
+    result = installer.copy(entry("agent", "tracked"), worktree: worktree)
+
+    expect(result["outcome"]).to eq("skipped_tracked")
+    expect(File.read(File.join(worktree, ".claude", "agents", "tracked.md"))).to eq("the repo's own\n")
+    expect(status).to eq("")
+  ensure
+    ENV["GIT_LITERAL_PATHSPECS"] = old
+  end
+
   it "copies the file a linked entry points to, not the link" do
     source = File.join(@dir, "Linked.md")
     File.write(source, "linked body\n")

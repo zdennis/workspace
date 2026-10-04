@@ -5,26 +5,26 @@ Bind a tmux pane to a workflow run, a PR review or a library play, so the agent 
 ## Usage
 
 ```sh
-workspace binding set [WORKSPACE] --pane PANE --kind run|review|play --id ID [--step STEP] [--attempt N] [--focus TEXT] [--instructions PATH] [--artifacts PATH] [--json]
+workspace binding set [WORKSPACE] [--pane PANE] --kind run|review|play --id ID [--step STEP] [--attempt N] [--focus TEXT] [--instructions PATH] [--artifacts PATH] [--json]
 workspace binding show [--pane %ID] [--json]
 workspace binding clear [--pane %ID] [--json]
 ```
 
-`set` takes a pane id (`%19`) or `window.pane` (`0.1`) of the workspace's own tmux session, and stores the binding under the pane id. `WORKSPACE` (or `--name`) defaults to the project detected from the current directory. `show` and `clear` take a pane id and default to `$TMUX_PANE`, so an agent can ask what it is bound to.
+`set` takes a pane id (`%19`) or `window.pane` (`0.1`) of the workspace's own tmux session, and stores the binding under the pane id. `WORKSPACE` (or `--name`) defaults to the project detected from the current directory. `show` and `clear` take a pane id. All three default to `$TMUX_PANE`, the pane the command runs in, so an agent can bind its own pane and ask what it is bound to.
 
 | Option | Description |
 |--------|-------------|
-| `--pane PANE` | The pane to bind, show or clear |
+| `--pane PANE` | The pane to bind, show or clear (default `$TMUX_PANE`) |
 | `--kind KIND` | `run` (a workflow run), `review` (a PR review) or `play` (a [library](README.library.md) play) |
 | `--id ID` | The run id, the review id such as `acme/api#835`, or the play ref such as `play/kickoff` |
 | `--step STEP` | The step the pane is working on |
 | `--attempt N` | The step's attempt, 1 or more |
 | `--focus TEXT` | What a review concentrates on, such as `security` |
-| `--instructions PATH` | A file holding the pane's instructions |
-| `--artifacts PATH` | A directory holding the subject's artifacts |
+| `--instructions PATH` | A file holding the pane's instructions; a relative path is stored as an absolute one, from the directory the command runs in; a blank value is a usage error |
+| `--artifacts PATH` | A directory holding the subject's artifacts; stored as an absolute path, like `--instructions` |
 | `--json` | Print one action document |
 
-Every text value is one line of at most 200 characters. Nothing is typed into the pane, and no prompt text is stored.
+Every text value is one line of at most 200 characters, counted after a path is made absolute. Nothing is typed into the pane, and no prompt text is stored.
 
 ## Plays
 
@@ -45,7 +45,7 @@ The binding replaces any earlier binding of that pane, and stays until `binding 
 {"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"This pane is bound to workflow run wr_01 in api.\nStep: implement (attempt 2).\nInstructions: .workflow/wr_01/steps/implement.2.prompt.md. Reread them if your context was compacted."}}
 ```
 
-A binding only counts in the tmux session it was made in: a pane id from another session gets nothing. It also has to be in the pane slot (`session:window.pane`) it was made in, so a pane id reused after a tmux restart gets nothing. A binding whose pane has since moved to another slot needs a new `binding set`. Bindings live in `bindings.json` in workspace's state directory (`$XDG_STATE_HOME/workspace`), mode 0600, and stay until `binding clear` or a new `binding set` for the pane. A lookup that fails is skipped; it never fails the hook. If `bindings.json` can't be parsed, the next `binding set` copies it to `bindings.json.corrupt`, warns on stderr, and starts a fresh file.
+A binding only counts in the tmux session it was made in: a pane id from another session gets nothing. It also has to be in the pane slot (`session:window.pane`) it was made in, so a pane id reused after a tmux restart gets nothing. A binding whose pane has since moved to another slot needs a new `binding set`. `binding show` says when a binding is stale in this way: it prints a `Stale:` line after the binding, and `--json` reports `"stale": true` in the `binding` object. [`instructions compose`](README.instructions.md) leaves a stale binding out. Bindings live in `bindings.json` in workspace's state directory (`$XDG_STATE_HOME/workspace`), mode 0600, and stay until `binding clear` or a new `binding set` for the pane. A lookup that fails is skipped; it never fails the hook. If `bindings.json` can't be parsed, the next `binding set` copies it to `bindings.json.corrupt`, warns on stderr, and starts a fresh file.
 
 ## --json
 
@@ -57,13 +57,14 @@ A binding only counts in the tmux session it was made in: a pane id from another
  "warnings":[],"summary":{"bound":1}}
 ```
 
-`outcome` is `bound`, `shown` or `cleared`. `show` and `clear` on a pane with no binding fail with the `not_bound` code; a bad kind, id or attempt is a `usage` error. `set` fails with `no_session`, `wrong_session` or `no_such_pane` like the other commands that take a pane.
+`outcome` is `bound`, `shown` or `cleared`. `show` adds `stale` (true or false) to `binding`; `set` and `clear` don't. `show` and `clear` on a pane with no binding fail with the `not_bound` code; a bad kind, id or attempt is a `usage` error. `set` fails with `no_session`, `wrong_session` or `no_such_pane` like the other commands that take a pane.
 
 ## Examples
 
 ```sh
 workspace binding set my-app --pane %5 --kind run --id wr_01 --step implement --attempt 2
 workspace binding set --pane 0.1 --kind review --id acme/api#835 --focus security
+workspace binding set --kind run --id wr_01 --instructions plan.md    # this pane, inside tmux
 workspace binding show
 workspace binding clear --pane %5
 ```

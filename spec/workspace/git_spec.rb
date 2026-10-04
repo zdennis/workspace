@@ -904,6 +904,23 @@ RSpec.describe Workspace::Git, "checkout layout" do
       expect(git.tracked?(main, "agents")).to be true
     end
 
+    it "still reads the pathspec as one when GIT_LITERAL_PATHSPECS is set in the environment" do
+      main = File.join(@root, "real")
+      FileUtils.mkdir_p(File.join(main, "Agents"))
+      File.write(File.join(main, "Agents", "Reviewer.md"), "x")
+      File.write(File.join(main, "loose.md"), "x")
+      system("git", "-C", main, "init", "--quiet")
+      system("git", "-C", main, "add", "Agents/Reviewer.md")
+      old = ENV["GIT_LITERAL_PATHSPECS"]
+      ENV["GIT_LITERAL_PATHSPECS"] = "1"
+
+      expect(git.tracked?(main, "Agents/Reviewer.md")).to be true
+      expect(git.tracked?(main, "agents/reviewer.md")).to be true
+      expect(git.tracked?(main, "loose.md")).to be false
+    ensure
+      ENV["GIT_LITERAL_PATHSPECS"] = old
+    end
+
     it "raises when git can't answer, so nothing is overwritten on a guess" do
       expect { git.tracked?(@root, "a.md") }.to raise_error(Workspace::Error, /Can't tell whether git tracks a.md/)
     end

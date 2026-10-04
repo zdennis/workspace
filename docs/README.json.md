@@ -125,7 +125,7 @@ The registry lives in `Workspace::ErrorCodes`; a spec checks that every code a r
 | `restart_in_progress` | A restart is already running on the pane. |
 | `agent_stopped` | The agent stopped during the restart. |
 | `not_bound` | The pane isn't bound to a run, review or play (`binding show`, `binding clear`). |
-| `unknown_library_entry` | No library entry has that name in the scopes searched. `details.ref`, `details.scopes` (see [`library`](README.library.md)). |
+| `unknown_library_entry` | No library entry has that name in the scopes searched. `details.ref`, `details.scopes` in the order searched, e.g. `["project:api", "global", "builtin"]` (see [`library`](README.library.md)). |
 | `ambiguous_library_entry` | A bare library name matches more than one kind. `details.ref`, `details.candidates`. |
 | `library_entry_exists` | `library add` would replace an entry with different content. `details.ref`, `details.scope`; `retry` names `--force` (destructive). |
 | `library_source_missing` | The file to add doesn't exist, or a linked entry's target can't be read. `details.ref`, `details.path`. |

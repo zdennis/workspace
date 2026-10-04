@@ -17,7 +17,7 @@ module Workspace
     SUBCOMMANDS = %w[
       init doctor launch start stop add add-project kill finish relaunch
       focus deactivate reactivate tile resize capture agent agentd lock dev parent projects
-      capabilities daemon sessions review snapshot ask session-event agent-run handoff pipeline run library lib
+      capabilities daemon sessions review snapshot ask session-event agent-run handoff pipeline run library lib instructions
       run-and-report report-run-status layout config tmux statusline current
       list-projects list status repair cleanup prune set-command event-log
       whereis lookup dir alfred version help
@@ -71,6 +71,7 @@ module Workspace
     # @param binding_command [Workspace::Commands::Binding, nil] pre-built binding command
     # @param library_command [Workspace::Commands::Library, nil] pre-built library command
     # @param library [Workspace::Library, nil] resolves `launch --play` per project
+    # @param instructions_command [Workspace::Commands::Instructions, nil] pre-built instructions command
     # @param review_command [Workspace::Commands::Review, nil] pre-built review command
     # @param snapshot_command [Workspace::Commands::Snapshot, nil] pre-built snapshot command
     # @param config_report [Workspace::ConfigReport, nil] builds the `config show/validate --json` documents
@@ -82,7 +83,7 @@ module Workspace
     #   reports every project as unknown
     # @param launch_mode [Workspace::LaunchMode, nil] decides whether launch/start
     #   run headless when no --[no-]headless flag is given; nil builds one
-    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, restart_agent_command: nil, send_command: nil, ensure_agent_command: nil, handoff_command: nil, projects_command: nil, capabilities_command: nil, daemon_command: nil, ui_command: nil, binding_command: nil, library_command: nil, library: nil, review_command: nil, snapshot_command: nil, project_actions_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil, liveness: nil)
+    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, restart_agent_command: nil, send_command: nil, ensure_agent_command: nil, handoff_command: nil, projects_command: nil, capabilities_command: nil, daemon_command: nil, ui_command: nil, binding_command: nil, library_command: nil, library: nil, instructions_command: nil, review_command: nil, snapshot_command: nil, project_actions_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil, liveness: nil)
       @config = config
       @state = state
       @project_config = project_config
@@ -133,6 +134,7 @@ module Workspace
       @binding_command = binding_command
       @library_command = library_command
       @library = library
+      @instructions_command = instructions_command
       @review_command = review_command
       @snapshot_command = snapshot_command
       @config_report = config_report
@@ -217,6 +219,8 @@ module Workspace
         cmd_binding(args)
       when "library", "lib"
         cmd_library(args)
+      when "instructions"
+        cmd_instructions(args)
       when "review"
         cmd_review(args)
       when "snapshot"
@@ -402,10 +406,11 @@ module Workspace
           handoff         Check context usage and hand off to a fresh conversation
           help            Show this help message
           init            Install tmuxinator templates and create config directory
+          instructions    Print the instructions built from library packs (binding, orchestrator, commits, review)
           kill            Kill a worktree project and remove its worktree (auto-detects from cwd)
           launch          Launch tmuxinator projects in iTerm windows, or headless in plain tmux
           layout          Save/restore tmux pane layouts (auto-saved before resize)
-          library         Store named plays, prompts, agents and skills (alias: lib)
+          library         Store named plays, prompts, agents and skills, beside the built-in packs (alias: lib)
           list            List currently active (launched) projects (--all for all available)
           lock            Acquire, release, inspect, or clear a shared repo-wide lock
           lookup          Find a workspace project by worktree path, branch, or project name
@@ -3238,7 +3243,7 @@ module Workspace
 
     def binding_parser(options)
       OptionParser.new do |opts|
-        opts.banner = "Usage: workspace binding set [WORKSPACE] --pane PANE --kind run|review|play --id ID [options]\n" \
+        opts.banner = "Usage: workspace binding set [WORKSPACE] [--pane PANE] --kind run|review|play --id ID [options]\n" \
           "       workspace binding show [--pane %ID] [--json]\n" \
           "       workspace binding clear [--pane %ID] [--json]"
         opts.separator ""
@@ -3248,9 +3253,11 @@ module Workspace
         opts.separator ""
         opts.separator "A pane is stored by its tmux pane id (%19) and only counts in the tmux session it"
         opts.separator "was bound in. set takes a pane id or window.pane of the workspace's own session;"
-        opts.separator "show and clear take a pane id, defaulting to $TMUX_PANE. WORKSPACE (or --name)"
-        opts.separator "defaults to the project detected from the current directory. start --play and"
-        opts.separator "launch --play bind the pane they sent a play to (kind play)."
+        opts.separator "show and clear take a pane id. All three default to $TMUX_PANE, the pane the"
+        opts.separator "command runs in. WORKSPACE (or --name) defaults to the project detected from the"
+        opts.separator "current directory. start --play and launch --play bind the pane they sent a play"
+        opts.separator "to (kind play). show marks a binding stale when the pane is no longer in the tmux"
+        opts.separator "session and slot it was bound in; a stale binding is not announced."
         opts.separator ""
         opts.on("--name NAME", "Workspace name (set)") { |v| options[:name] = v }
         opts.on("--pane PANE", "Pane id (%19) or, for set, window.pane (0.1)") { |v| options[:pane] = v }
@@ -3259,8 +3266,8 @@ module Workspace
         opts.on("--step STEP", "Step name (set)") { |v| options[:step] = v }
         opts.on("--attempt N", Integer, "Step attempt, 1 or more (set)") { |v| options[:attempt] = v }
         opts.on("--focus TEXT", "Review focus, e.g. security (set)") { |v| options[:focus] = v }
-        opts.on("--instructions PATH", "File holding the pane's instructions (set)") { |v| options[:instructions] = v }
-        opts.on("--artifacts PATH", "Directory holding the subject's artifacts (set)") { |v| options[:artifacts] = v }
+        opts.on("--instructions PATH", "File holding the pane's instructions (set); stored as an absolute path") { |v| options[:instructions] = absolute_unless_blank(v) }
+        opts.on("--artifacts PATH", "Directory holding the subject's artifacts (set); stored as an absolute path") { |v| options[:artifacts] = absolute_unless_blank(v) }
         opts.on("--json", "Print one JSON action document") { options[:json] = true }
         opts.on("-h", "--help", "Show this help") { options[:help] = true }
         opts.separator ""
@@ -3269,6 +3276,12 @@ module Workspace
         opts.separator "  workspace binding show"
         opts.separator "  workspace binding clear --pane %5"
       end
+    end
+
+    # A path from the directory the command runs in; a blank one is left for
+    # the command to refuse.
+    def absolute_unless_blank(path)
+      path.strip.empty? ? path : File.expand_path(path, @working_dir)
     end
 
     def cmd_binding(args)
@@ -3286,12 +3299,13 @@ module Workspace
       if subcommand == "set"
         name = options[:name] || args.shift || @project_detector.detect(@working_dir)
         raise UsageError, "binding set needs a workspace: name one, pass --name, or run from inside a project." unless name
-        raise UsageError, "binding set needs --pane." unless options[:pane]
+        pane = options[:pane] || ENV["TMUX_PANE"]
+        raise UsageError, "binding set needs --pane (or to run inside a tmux pane)." unless pane
         raise UsageError, "binding set needs --kind and --id." unless options[:kind] && options[:id]
         raise UsageError, "Unexpected argument: #{args.first}. Run 'workspace binding --help'." if args.any?
 
         run_action("binding set", json: options[:json]) do
-          entry = @binding_command.set(workspace: name, pane: options[:pane], **options.slice(:kind, :id, :step, :attempt, :focus, :instructions, :artifacts))
+          entry = @binding_command.set(workspace: name, pane: pane, **options.slice(:kind, :id, :step, :attempt, :focus, :instructions, :artifacts))
           {exit_code: 0, results: [action_row(name, "bound", binding: entry)]}
         end
       else
@@ -3313,9 +3327,9 @@ module Workspace
 
     def library_parser(options)
       OptionParser.new do |opts|
-        opts.banner = "Usage: workspace library list [--kind KIND] [--global | --project [NAME]] [--json]\n" \
-          "       workspace library show REF [--global | --project [NAME]] [--json]\n" \
-          "       workspace library info REF [--global | --project [NAME]] [--json]\n" \
+        opts.banner = "Usage: workspace library list [--kind KIND] [--global | --builtin | --project [NAME]] [--json]\n" \
+          "       workspace library show REF [--global | --builtin | --project [NAME]] [--json]\n" \
+          "       workspace library info REF [--global | --builtin | --project [NAME]] [--json]\n" \
           "       workspace library add PATH|- --kind KIND [--as NAME] [--link] [--force] [--project [NAME]] [--dry-run] [--json]\n" \
           "       workspace library update REF PATH|- [--link] [--project [NAME]] [--dry-run] [--json]\n" \
           "       workspace library remove REF [--yes] [--project [NAME]] [--dry-run] [--json]"
@@ -3327,6 +3341,11 @@ module Workspace
         opts.separator "global unless --project narrows them to one project; a project entry hides a global one"
         opts.separator "of the same name. REF is kind/name, or a bare name when one kind has it. `lib` is an"
         opts.separator "alias for `library`, and `workspace library` alone lists."
+        opts.separator ""
+        opts.separator "workspace ships built-in plays, the instruction packs binding, orchestrator, commits"
+        opts.separator "and review (see `workspace instructions --help`). They can't be changed. --play and"
+        opts.separator "show search them last, so a project or global play of the same name comes first there;"
+        opts.separator "`instructions compose --pack` always uses the built-in one."
         opts.separator ""
         opts.separator "  list      every entry visible from here, sorted by kind then name"
         opts.separator "  show      print the body, so --prompt \"$(workspace library show prompt/kickoff)\" works"
@@ -3343,7 +3362,8 @@ module Workspace
         opts.on("--link", "add, update: store a symlink to PATH instead of a copy") { options[:link] = true }
         opts.on("--force", "add: replace an entry that has different content") { options[:force] = true }
         opts.on("--yes", "remove: don't ask") { options[:yes] = true }
-        opts.on("--global", "reads: only the global store") { options[:scope] = "global" }
+        opts.on("--global", "reads: only the global store") { options[:global] = true }
+        opts.on("--builtin", "reads: only the entries that ship with workspace") { options[:builtin] = true }
         opts.on("--project [NAME]", "--name [NAME]", "the project's store (NAME, or the project of the current directory)") { |v| options[:project] = v || true }
         opts.on("--dry-run", "add, update, remove: report what would happen and write nothing") { options[:dry_run] = true }
         opts.on("--json", "Print one JSON document (see docs/README.library.md)") { options[:json] = true }
@@ -3370,9 +3390,13 @@ module Workspace
       subcommand ||= "list" if args.empty?
       raise UsageError, "Unknown library subcommand: #{args.first}. One of #{LIBRARY_SUBCOMMANDS.join(", ")}. Run 'workspace library --help'." unless subcommand
       raise Error, "library is not available: no library command was wired" unless @library_command
-      raise UsageError, "--global and --project can't be combined." if options[:scope] && options[:project]
+      scopes = [("global" if options[:global]), ("builtin" if options[:builtin]), ("project" if options[:project])].compact
+      raise UsageError, "--global, --builtin and --project can't be combined." if scopes.size > 1
+      if scopes == ["builtin"] && %w[add update remove].include?(subcommand)
+        raise UsageError, "library #{subcommand} can't change the built-in entries, which ship with workspace."
+      end
 
-      scope = options[:project] ? "project" : options[:scope]
+      scope = scopes.first
       project = options[:project].is_a?(String) ? options[:project] : nil
       where = {scope: scope, project: project, cwd: @working_dir}
       ref = args.shift unless subcommand == "list" || subcommand == "add"
@@ -3430,6 +3454,66 @@ module Workspace
         row = action_row(result.workspace, result.outcome, message: result.message, entry: result.entry)
         {exit_code: 0, results: [row], status: options[:dry_run] ? "dry_run" : nil}
       end
+    end
+
+    def instructions_parser(options)
+      OptionParser.new do |opts|
+        opts.banner = "Usage: workspace instructions compose [--pack NAME]... [--pane %ID] [--name WORKSPACE] [--json]"
+        opts.separator ""
+        opts.separator "Print the instructions an agent is given, built from library packs. A pack is a"
+        opts.separator "library play; workspace ships four: binding (how to work in a bound pane),"
+        opts.separator "orchestrator (delegate to sub-agents), commits (how to commit) and review (review a"
+        opts.separator "diff with reviewer sub-agents). With no --pack, binding, orchestrator and commits are"
+        opts.separator "composed, in that order. Each pack is printed under a heading that names where it"
+        opts.separator "came from."
+        opts.separator ""
+        opts.separator "Any other library play can be named as a pack too: the project's library is searched,"
+        opts.separator "then global. A play named like a built-in pack never takes its place here; give your"
+        opts.separator "own another name. `workspace library list --builtin` lists the built-in packs and"
+        opts.separator "`workspace library show NAME --builtin` prints one."
+        opts.separator ""
+        opts.separator "Two packs get lines for the caller. binding is followed by the binding of --pane"
+        opts.separator "when that pane is bound, and commits by the project's commands.test and"
+        opts.separator "commands.lint when they are set (workspace config set commands.test ...)."
+        opts.separator "--pane defaults to $TMUX_PANE, the pane the command runs in, unless --name is given."
+        opts.separator "Text composed for another pane, as in start --prompt \"$(...)\", would carry this"
+        opts.separator "pane's binding: name the packs and leave binding out, or bind that pane first."
+        opts.separator ""
+        opts.on("--pack NAME", "A pack to compose (repeatable, composed in the order given)") { |v| options[:packs] << v }
+        opts.on("--pane PANE", "Pane id (%19) whose binding follows the binding pack (default $TMUX_PANE without --name)") { |v| options[:pane] = v }
+        opts.on("--name WORKSPACE", "Compose for this workspace instead of the current directory") { |v| options[:name] = v }
+        opts.on("--json", "Print one JSON document (see docs/README.instructions.md)") { options[:json] = true }
+        opts.on("-h", "--help", "Show this help") { options[:help] = true }
+        opts.separator ""
+        opts.separator "Examples:"
+        opts.separator "  workspace instructions compose"
+        opts.separator "  workspace instructions compose --pack orchestrator"
+        opts.separator "  workspace instructions compose --pack commits --pack review --name my-app --json"
+        opts.separator "  workspace start feature/x --prompt \"$(workspace instructions compose --pack orchestrator)\""
+      end
+    end
+
+    def cmd_instructions(args)
+      options = {json: false, packs: []}
+      given = args.dup
+      parser = instructions_parser(options)
+      subcommand = args.shift if args.first == "compose"
+      parser.parse!(args)
+      subcommand ||= args.shift if args.first == "compose"
+      return @output.puts(parser.help) if options[:help]
+
+      unless subcommand
+        raise UsageError, args.empty? ? "Missing subcommand: compose.\n\n#{parser.help}" : "Unknown instructions subcommand: #{args.first}. Run 'workspace instructions --help'."
+      end
+      raise UsageError, "Unexpected argument: #{args.first}. Run 'workspace instructions --help'." if args.any?
+      raise Error, "instructions is not available: no instructions command was wired" unless @instructions_command
+
+      # $TMUX_PANE is the caller's pane, which is not a pane of a workspace named with --name.
+      pane = options[:pane] || (ENV["TMUX_PANE"] unless options[:name])
+      @instructions_command.compose(packs: options[:packs], cwd: working_dir_for(options[:name]), pane: pane, json: options[:json])
+    rescue OptionParser::ParseError, UsageError => e
+      raise unless json_requested?(options[:json], given)
+      emit_json_error(JsonEnvelope::SCHEMA_VERSION, e, message: e.message.lines.first.strip)
     end
 
     def snapshot_parser(options)

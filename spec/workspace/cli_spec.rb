@@ -102,6 +102,7 @@ RSpec.describe Workspace::CLI do
       ui_command: overrides[:ui_command],
       binding_command: overrides[:binding_command],
       library_command: overrides[:library_command],
+      instructions_command: overrides[:instructions_command],
       library: overrides[:library],
       review_command: overrides[:review_command],
       snapshot_command: overrides[:snapshot_command],
@@ -3307,6 +3308,16 @@ RSpec.describe Workspace::CLI do
       ])
     end
 
+    it "narrows a read to the built-in entries with --builtin" do
+      cli.run(["library", "list", "--builtin", "--json"])
+      cli.run(["library", "show", "orchestrator", "--builtin"])
+
+      expect(library_command.calls).to eq([
+        [:list, where.merge(scope: "builtin", kind: nil, json: true)],
+        [:show, where.merge(ref: "orchestrator", scope: "builtin", json: false)]
+      ])
+    end
+
     it "routes show and info with the ref" do
       cli.run(["library", "show", "play/kickoff"])
       cli.run(["library", "info", "kickoff", "--name", "api", "--json"])
@@ -3399,7 +3410,11 @@ RSpec.describe Workspace::CLI do
         ["library", "add", "x.md"] => /needs --kind/,
         ["library", "update", "play/x"] => /needs a REF and a PATH/,
         ["library", "remove"] => /needs a REF/,
-        ["library", "list", "--global", "--project", "api"] => /--global and --project/,
+        ["library", "list", "--global", "--project", "api"] => /--global, --builtin and --project/,
+        ["library", "list", "--global", "--builtin"] => /can.t be combined/,
+        ["library", "add", "x.md", "--kind", "play", "--builtin"] => /can.t change the built-in entries/,
+        ["library", "update", "play/x", "x.md", "--builtin"] => /library update can.t change the built-in entries/,
+        ["library", "remove", "play/x", "--yes", "--builtin"] => /can.t change the built-in entries/,
         ["library", "show", "a", "b"] => /Unexpected argument: b/,
         ["library", "bogus"] => /Unknown library subcommand: bogus/,
         ["library", "list", "--nope"] => /invalid option/
@@ -3495,7 +3510,59 @@ RSpec.describe Workspace::CLI do
       expect(JSON.parse(output.string)).to include("ok" => false, "code" => "not_bound")
     end
 
+    it "defaults set to $TMUX_PANE, the pane the command runs in" do
+      stub_const("ENV", ENV.to_h.merge("TMUX_PANE" => "%9"))
+      cli.run(["binding", "set", "app", "--kind", "run", "--id", "wr_1"])
+      cli.run(["binding", "set", "app", "--pane", "0.1", "--kind", "run", "--id", "wr_1"])
+
+      expect(binding_command.calls.map { |_, args| args[:pane] }).to eq(["%9", "0.1"])
+    end
+
+    it "stores --instructions and --artifacts as absolute paths, from the directory the command runs in" do
+      cli.run(["binding", "set", "app", "--pane", "%5", "--kind", "run", "--id", "wr_1", "--instructions", "runs/plan.md", "--artifacts", "../out"])
+      cli.run(["binding", "set", "app", "--pane", "%5", "--kind", "run", "--id", "wr_1", "--instructions", "/abs/plan.md", "--artifacts", "~/out"])
+
+      expect(binding_command.calls.map { |_, args| args.values_at(:instructions, :artifacts) }).to eq([
+        ["/some/dir/runs/plan.md", "/some/out"],
+        ["/abs/plan.md", File.expand_path("~/out")]
+      ])
+    end
+
+    it "leaves a blank --instructions or --artifacts blank, for the command to refuse" do
+      cli.run(["binding", "set", "app", "--pane", "%5", "--kind", "run", "--id", "wr_1", "--instructions", "", "--artifacts", "  "])
+
+      expect(binding_command.calls.first.last.values_at(:instructions, :artifacts)).to eq(["", "  "])
+    end
+
+    it "refuses a blank --artifacts through the real command, storing nothing" do
+      Dir.mktmpdir do |dir|
+        store = Workspace::PaneBindings.new(path: File.join(dir, "bindings.json"))
+        locator = instance_double(Workspace::PaneLocator, locate: {id: "%5", window: 0, index: 1, session: "app"})
+        tmux = instance_double(Workspace::Tmux, pane_slot: "app:0.1")
+        real_cli, _, err = build_test_cli(binding_command: Workspace::Commands::Binding.new(bindings: store, locator: locator, tmux: tmux, output: StringIO.new))
+
+        expect { real_cli.run(["binding", "set", "app", "--pane", "%5", "--kind", "run", "--id", "wr_1", "--artifacts", ""]) }.to raise_error(FakeSystemExit)
+        expect(err.string).to include("artifacts must be one line of text")
+        expect(store.binding_for("%5")).to be_nil
+      end
+    end
+
+    it "reports a stale binding in the show document" do
+      Dir.mktmpdir do |dir|
+        store = Workspace::PaneBindings.new(path: File.join(dir, "bindings.json"))
+        store.bind("%5", "kind" => "run", "id" => "wr_1", "workspace" => "app", "session" => "app", "pane_slot" => "app:0.1")
+        tmux = instance_double(Workspace::Tmux, session_name_for_pane: "app", pane_slot: "app:0.2")
+        real_cli, out = build_test_cli(binding_command: Workspace::Commands::Binding.new(bindings: store,
+          locator: instance_double(Workspace::PaneLocator), tmux: tmux, output: StringIO.new))
+
+        real_cli.run(["binding", "show", "--pane", "%5", "--json"])
+
+        expect(JSON.parse(out.string)["results"].first).to include("outcome" => "shown", "binding" => include("id" => "wr_1", "stale" => true))
+      end
+    end
+
     it "rejects a set without a pane, kind or id as a usage error" do
+      stub_const("ENV", ENV.to_h.except("TMUX_PANE"))
       {
         ["binding", "set", "app", "--kind", "run", "--id", "x"] => /--pane/,
         ["binding", "set", "app", "--pane", "%5"] => /--kind and --id/,
@@ -3511,6 +3578,104 @@ RSpec.describe Workspace::CLI do
       cli.run(["binding", "--help"])
 
       expect(output.string).to include("Usage: workspace binding set").and include("$TMUX_PANE")
+    end
+  end
+
+  describe "#run with instructions" do
+    let(:instructions_command) { CLITestHelpers::FakeInstructionsCommand.new }
+    let(:project_config) { CLITestHelpers::FakeProjectConfig.new("api" => "/work/api") }
+    let(:built) { build_test_cli(instructions_command: instructions_command, project_config: project_config, working_dir: "/some/dir") }
+    let(:cli) { built[0] }
+    let(:output) { built[1] }
+    let(:error_output) { built[2] }
+
+    before { stub_const("ENV", ENV.to_h.except("TMUX_PANE")) }
+
+    it "composes the default packs for the current directory, with no pane outside tmux" do
+      cli.run(["instructions", "compose"])
+
+      expect(instructions_command.calls).to eq([[:compose, {packs: [], cwd: "/some/dir", pane: nil, json: false}]])
+    end
+
+    it "takes --pack more than once, in order, with --json before or after the subcommand" do
+      cli.run(["instructions", "compose", "--pack", "review", "--pack", "play/orchestrator", "--json"])
+      cli.run(["instructions", "--json", "compose", "--pack", "commits"])
+
+      expect(instructions_command.calls).to eq([
+        [:compose, {packs: %w[review play/orchestrator], cwd: "/some/dir", pane: nil, json: true}],
+        [:compose, {packs: %w[commits], cwd: "/some/dir", pane: nil, json: true}]
+      ])
+    end
+
+    it "defaults the pane to $TMUX_PANE and takes --pane" do
+      stub_const("ENV", ENV.to_h.merge("TMUX_PANE" => "%9"))
+      cli.run(["instructions", "compose"])
+      cli.run(["instructions", "compose", "--pane", "%5"])
+
+      expect(instructions_command.calls.map { |_, args| args[:pane] }).to eq(["%9", "%5"])
+    end
+
+    it "composes for a named workspace from its root, without the caller's pane unless --pane names one" do
+      stub_const("ENV", ENV.to_h.merge("TMUX_PANE" => "%9"))
+      cli.run(["instructions", "compose", "--name", "api"])
+      cli.run(["instructions", "compose", "--name", "api", "--pane", "%5"])
+
+      expect(instructions_command.calls.map(&:last)).to eq([
+        {packs: [], cwd: "/work/api", pane: nil, json: false},
+        {packs: [], cwd: "/work/api", pane: "%5", json: false}
+      ])
+    end
+
+    it "fails an unknown workspace with unknown_workspace, composing nothing" do
+      expect { cli.run(["instructions", "compose", "--name", "nope", "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+
+      expect(JSON.parse(output.string)).to include("ok" => false, "code" => "unknown_workspace")
+      expect(instructions_command.calls).to be_empty
+    end
+
+    it "emits the command's error envelope under --json, and its message without" do
+      instructions_command.error = Workspace::Error.new("No library entry 'play/nope' in builtin, global.", code: "unknown_library_entry",
+        details: {"ref" => "play/nope", "scopes" => %w[builtin global]})
+
+      expect { cli.run(["instructions", "compose", "--pack", "nope", "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+      expect(JSON.parse(output.string)).to include("ok" => false, "code" => "unknown_library_entry",
+        "details" => {"ref" => "play/nope", "scopes" => %w[builtin global]})
+
+      expect { cli.run(["instructions", "compose", "--pack", "nope"]) }.to raise_error(FakeSystemExit)
+      expect(error_output.string).to include("No library entry 'play/nope'")
+    end
+
+    it "rejects bad usage, as an envelope under --json" do
+      {
+        ["instructions"] => /Missing subcommand: compose/,
+        ["instructions", "list"] => /Unknown instructions subcommand: list/,
+        ["instructions", "compose", "extra"] => /Unexpected argument: extra/,
+        ["instructions", "compose", "--nope"] => /invalid option/
+      }.each do |argv, message|
+        cli, _, error_output = build_test_cli(instructions_command: instructions_command)
+        expect { cli.run(argv) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+        expect(error_output.string).to match(message)
+
+        cli, output = build_test_cli(instructions_command: instructions_command)
+        expect { cli.run(argv + ["--json"]) }.to raise_error(FakeSystemExit)
+        expect(JSON.parse(output.string.lines.last)).to include("ok" => false, "code" => "usage")
+      end
+      expect(instructions_command.calls).to be_empty
+    end
+
+    it "prints help, also from the main help" do
+      cli.run(["instructions", "--help"])
+      expect(output.string).to include("Usage: workspace instructions compose").and include("--pack NAME").and include("commands.test")
+
+      cli.run(["help"])
+      expect(output.string).to match(/^\s+instructions\s+Print the instructions built from library packs/)
+    end
+
+    it "says so when no instructions command was wired" do
+      cli, _, error_output = build_test_cli(instructions_command: nil)
+
+      expect { cli.run(["instructions", "compose"]) }.to raise_error(FakeSystemExit)
+      expect(error_output.string).to include("no instructions command was wired")
     end
   end
 
@@ -5634,7 +5799,7 @@ RSpec.describe Workspace::CLI do
         let(:project_config) { CLITestHelpers::FakeProjectConfig.new("api" => "/work/api", "web" => "/work/web") }
         let(:lineage) { instance_double(Workspace::WorkspaceLineage) }
         let(:library) do
-          Workspace::Library.new(config: instance_double(Workspace::Config, library_dir: @play_dir),
+          Workspace::Library.new(config: instance_double(Workspace::Config, library_dir: @play_dir, builtin_library_dir: File.join(@play_dir, "builtin")),
             lineage: lineage, project_config: project_config)
         end
         let(:api_path) { library.project_store("api").path_for("play", "kickoff") }

@@ -43,13 +43,39 @@ module Workspace
         ))
       end
 
+      # Prints what the agent is told, and says so when the binding is stale.
+      #
       # @param pane [String] a pane id ("%19")
-      # @return [Hash{String=>Object}] the pane's binding
+      # @return [Hash{String=>Object}] the pane's binding, plus "stale" (see {#stale?})
       # @raise [Workspace::Error] code `not_bound` when the pane has none
       def show(pane:)
         entry = require_binding(pane)
+        stale = stale?(entry)
         @output.puts @bindings.context_for(entry)
-        entry
+        if stale
+          @output.puts "Stale: pane #{pane} is no longer at #{entry["pane_slot"] || entry["session"]}, where it was bound, " \
+            "so the agent in it is not reminded. Bind it again, or clear it."
+        end
+        entry.merge("stale" => stale)
+      end
+
+      # The pane's binding when the SessionStart hook would announce it.
+      #
+      # @param pane [String] a pane id ("%19")
+      # @return [Hash{String=>Object}, nil] nil when the pane is not bound or its binding is stale
+      # @raise [Workspace::UsageError] when `pane` is not a pane id
+      def live(pane:)
+        require_pane_id(pane)
+        entry = @bindings.binding_for(pane)
+        (entry && !stale?(entry)) ? entry : nil
+      end
+
+      # @param entry [Hash{String=>Object}] a binding
+      # @return [Boolean] true when the pane is now in another session or slot, or
+      #   tmux can't find it (see {Workspace::PaneBindings#stale?})
+      def stale?(entry)
+        pane = entry["pane_id"]
+        @bindings.stale?(entry, session: @tmux.session_name_for_pane(pane), pane_slot: @tmux.pane_slot(pane))
       end
 
       # @param pane [String] a pane id ("%19")
@@ -64,10 +90,12 @@ module Workspace
 
       private
 
+      def require_pane_id(pane)
+        raise UsageError, "#{pane.to_s.inspect} is not a pane id (%19)." unless pane.to_s.match?(TmuxPane::PANE_ID)
+      end
+
       def require_binding(pane)
-        unless pane.to_s.match?(TmuxPane::PANE_ID)
-          raise UsageError, "#{pane.to_s.inspect} is not a pane id (%19)."
-        end
+        require_pane_id(pane)
         @bindings.binding_for(pane) || raise(Workspace::Error.new("Pane #{pane} is not bound.", code: "not_bound", details: {"pane" => pane}))
       end
     end

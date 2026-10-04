@@ -261,7 +261,7 @@ module Workspace
 
       def print_table(entries)
         rows = entries.map do |e|
-          scope = e["project"] ? "project:#{e["project"]}" : "global"
+          scope = e["project"] ? "project:#{e["project"]}" : e["scope"]
           scope += " (hidden)" unless e["effective"]
           [e["kind"], e["name"], scope, e["readable"] ? e["description"].to_s : "(unreadable)"]
         end

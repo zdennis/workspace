@@ -47,6 +47,10 @@ RSpec.describe Workspace::Commands::SessionEvent do
     before do
       allow(bindings).to receive(:binding_for).with("%2").and_return(entry)
       allow(bindings).to receive(:context_for).with(entry).and_return("This pane is bound to workflow run wr_1.")
+      # The staleness rule is PaneBindings' own, so the hook and `binding show` can't disagree.
+      rule = Workspace::PaneBindings.new(path: "/nonexistent/bindings.json")
+      allow(bindings).to receive(:stale?) { |bound, **now| rule.stale?(bound, **now) }
+      allow(tmux).to receive(:pane_slot).with("%2").and_return(nil)
     end
 
     def fire(payload, pane_bindings: bindings)

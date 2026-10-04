@@ -65,6 +65,20 @@ module Workspace
       removed
     end
 
+    # A binding only counts for the tmux session and pane slot it was made in:
+    # a pane id from another session, or one reused after a tmux restart, is
+    # not the same pane. The SessionStart hook stays quiet for a stale binding,
+    # `binding show` marks it, and `instructions compose` leaves it out.
+    #
+    # @param entry [Hash{String=>Object}] a binding
+    # @param session [String, nil] the tmux session the pane is in now; nil when tmux can't find it
+    # @param pane_slot [String, nil] the pane's slot now (`session:window.pane`)
+    # @return [Boolean] true when the pane is in another session or slot than the binding's
+    def stale?(entry, session:, pane_slot:)
+      return true unless entry["session"] == session
+      !entry["pane_slot"].nil? && entry["pane_slot"] != pane_slot
+    end
+
     # The block the SessionStart hook hands the agent as `additionalContext`.
     # Short on purpose: the instructions file holds the bulk.
     #

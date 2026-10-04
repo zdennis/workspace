@@ -139,6 +139,8 @@ require_relative "workspace/pane_bindings"
 require_relative "workspace/library_store"
 require_relative "workspace/library"
 require_relative "workspace/library_installer"
+require_relative "workspace/commands_config"
+require_relative "workspace/instruction_composer"
 require_relative "workspace/project_config"
 require_relative "workspace/iterm"
 require_relative "workspace/window_manager"
@@ -225,6 +227,7 @@ require_relative "workspace/commands/daemon"
 require_relative "workspace/commands/ui"
 require_relative "workspace/commands/binding"
 require_relative "workspace/commands/library"
+require_relative "workspace/commands/instructions"
 require_relative "workspace/commands/handoff"
 require_relative "workspace/commands/ask"
 require_relative "workspace/commands/wait_until_content"
@@ -363,6 +366,10 @@ module Workspace
     daemon_command = Commands::Daemon.new(config: config, project_config: project_config, ensure_agent: ensure_agent_command, process_tree: ProcessTree.new(logger: logger), output: output)
     ui_command = Commands::Ui.new(output: output)
     library_command = Commands::Library.new(library: library, output: output, input: input)
+    commands_config = CommandsConfig.new(project_settings: project_settings)
+    instruction_composer = InstructionComposer.new(library: library, lineage: lineage,
+      commands_config: commands_config, pane_bindings: pane_bindings)
+    instructions_command = Commands::Instructions.new(composer: instruction_composer, bindings: binding_command, output: output)
     parent_command = Commands::Parent.new(lineage: lineage, project_config: project_config, output: output)
     project_catalog = ProjectCatalog.new(project_config: project_config, git: git)
     project_facts = ProjectFacts.new(tmux: tmux, state: state, config: config, lock_namespace: lock_namespace,
@@ -469,6 +476,7 @@ module Workspace
       binding_command: binding_command,
       library_command: library_command,
       library: library,
+      instructions_command: instructions_command,
       review_command: review_command,
       snapshot_command: snapshot_command,
       project_actions_command: project_actions_command,

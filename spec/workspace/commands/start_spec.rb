@@ -315,7 +315,7 @@ RSpec.describe Workspace::Commands::Start do
     context "with a play" do
       let(:library_dir) { File.join(tmpdir, "library") }
       let(:library) do
-        Workspace::Library.new(config: instance_double(Workspace::Config, library_dir: library_dir),
+        Workspace::Library.new(config: instance_double(Workspace::Config, library_dir: library_dir, builtin_library_dir: File.join(library_dir, "builtin")),
           lineage: Workspace::WorkspaceLineage.new, project_config: project_config)
       end
       let(:project_name) { Workspace::WorkspaceLineage.name_from_path(tmpdir) }
@@ -427,7 +427,7 @@ RSpec.describe Workspace::Commands::Start do
     context "with agents and skills" do
       let(:library_dir) { File.join(tmpdir, "library") }
       let(:library) do
-        Workspace::Library.new(config: instance_double(Workspace::Config, library_dir: library_dir),
+        Workspace::Library.new(config: instance_double(Workspace::Config, library_dir: library_dir, builtin_library_dir: File.join(library_dir, "builtin")),
           lineage: Workspace::WorkspaceLineage.new, project_config: project_config)
       end
       let(:installer) { instance_double(Workspace::LibraryInstaller) }

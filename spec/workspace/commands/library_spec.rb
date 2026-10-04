@@ -11,7 +11,7 @@ RSpec.describe Workspace::Commands::Library do
     end
   end
 
-  let(:config) { instance_double(Workspace::Config, library_dir: File.join(@dir, "library")) }
+  let(:config) { instance_double(Workspace::Config, library_dir: File.join(@dir, "library"), builtin_library_dir: File.join(@dir, "builtin")) }
   let(:lineage) { instance_double(Workspace::WorkspaceLineage) }
   let(:project_config) { instance_double(Workspace::ProjectConfig) }
   let(:library) { Workspace::Library.new(config: config, lineage: lineage, project_config: project_config) }
@@ -327,6 +327,49 @@ RSpec.describe Workspace::Commands::Library do
         "No library entries. Add one with: workspace library add PATH --kind play\n",
         "play  kickoff  global  Global kickoff\n"
       ])
+    end
+
+    it "lists, shows and describes the built-in plays, last and hidden by a global play of the same name" do
+      library.builtin_store.write("play", "orchestrator", "---\ndescription: Delegate to sub-agents\n---\nDelegate.\n")
+      library.builtin_store.write("play", "kickoff", "Built-in kickoff.\n")
+
+      command.list(kind: "play", cwd: cwd)
+      expect(output.string).to eq(<<~TEXT)
+        play  kickoff       project:app       Project kickoff
+        play  kickoff       global (hidden)   Global kickoff
+        play  kickoff       builtin (hidden)
+        play  orchestrator  builtin           Delegate to sub-agents
+      TEXT
+
+      output.truncate(0)
+      output.rewind
+      command.list(scope: "builtin", json: true, cwd: cwd)
+      expect(JSON.parse(output.string)["entries"].map { |e| e.slice("ref", "scope", "project", "effective") }).to eq([
+        {"ref" => "play/kickoff", "scope" => "builtin", "project" => nil, "effective" => true},
+        {"ref" => "play/orchestrator", "scope" => "builtin", "project" => nil, "effective" => true}
+      ])
+
+      output.truncate(0)
+      output.rewind
+      command.show("kickoff", scope: "builtin", cwd: cwd)
+      command.show("play/orchestrator", cwd: cwd)
+      expect(output.string).to eq("Built-in kickoff.\n---\ndescription: Delegate to sub-agents\n---\nDelegate.\n")
+
+      output.truncate(0)
+      output.rewind
+      command.info("orchestrator", json: true, cwd: cwd)
+      expect(JSON.parse(output.string)["entry"]).to include("scope" => "builtin", "path" => library.builtin_store.path_for("play", "orchestrator"))
+    end
+
+    it "never writes to the built-in store: update and remove look in the global or project store only" do
+      library.builtin_store.write("play", "orchestrator", "Delegate.\n")
+
+      expect { command.update("play/orchestrator", body: "mine\n", cwd: cwd) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("unknown_library_entry") }
+      expect { command.remove("play/orchestrator", yes: true, cwd: cwd) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("unknown_library_entry") }
+      command.add(kind: "play", body: "mine\n", name: "orchestrator", cwd: cwd)
+
+      expect(library.builtin_store.read("play", "orchestrator")).to eq("Delegate.\n")
+      expect(library.global_store.read("play", "orchestrator")).to eq("mine\n")
     end
 
     it "rejects a bad kind filter" do

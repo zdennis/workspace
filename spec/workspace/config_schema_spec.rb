@@ -4,7 +4,7 @@ RSpec.describe Workspace::ConfigSchema do
   let(:root) { File.expand_path("../..", __dir__) }
 
   it "lists the settable keys in the order `config set` has always reported them" do
-    expect(described_class.project_keys.map(&:name)).to eq(%w[dev.up dev.ready dev.stop_timeout dev.startup_timeout dev.ready_timeout dev.kill_grace locks.idle_grace locks.ps_timeout locks.reap_interval alerts.notify alerts.idle_after handoff.threshold handoff.check_prompt handoff.resume_prompt])
+    expect(described_class.project_keys.map(&:name)).to eq(%w[dev.up dev.ready dev.stop_timeout dev.startup_timeout dev.ready_timeout dev.kill_grace locks.idle_grace locks.ps_timeout locks.reap_interval alerts.notify alerts.idle_after handoff.threshold handoff.check_prompt handoff.resume_prompt commands.test commands.lint])
     expect(described_class.global_keys.map(&:name)).to eq(%w[statusline.command context.source context.pattern launch.headless])
   end
 
@@ -45,7 +45,7 @@ RSpec.describe Workspace::ConfigSchema do
     it "marks every key that holds a command or hook as sensitive and no duration or prompt" do
       sensitive = described_class.all.select(&:sensitive).map { |key| [key.name, key.scope] }
       expect(sensitive).to contain_exactly(
-        ["dev.up", :project], ["dev.ready", :project], ["alerts.notify", :project], ["statusline.command", :global],
+        ["dev.up", :project], ["dev.ready", :project], ["alerts.notify", :project], ["commands.test", :project], ["commands.lint", :project], ["statusline.command", :global],
         ["hooks", :global], ["hooks", :project], ["worktree_hooks", :project], ["pipeline", :project]
       )
     end
