@@ -110,13 +110,38 @@ module Workspace
     def play(ref, cwd:)
       kind, name = parse_ref(ref)
       if kind && kind != "play"
-        raise UsageError, "--play takes a play, and '#{ref}' is a #{kind}. " \
-          "Send its text with --prompt \"$(workspace library show #{ref})\"."
+        hint = (kind == "prompt") ? " Send its text with --prompt \"$(workspace library show #{ref})\"." : ""
+        raise UsageError, "--play takes a play, and '#{ref}' is a #{kind}.#{hint}"
       end
       # A tmuxinator `root:` is often written `~/...`, which git -C won't expand.
       entry = resolve("play/#{name}", stores(cwd: cwd && File.expand_path(cwd)))
       {"ref" => entry["ref"], "scope" => entry["scope"], "path" => entry["path"],
        "sha256" => Digest::SHA256.hexdigest(read_play(entry))}
+    end
+
+    # The kinds `start --agent` and `--skill` copy into a worktree, and the article for each.
+    COPY_KINDS = {"agent" => "an agent", "skill" => "a skill"}.freeze
+
+    # The agent or skill `start --agent`/`--skill` copies into a worktree,
+    # looked up from `cwd` (its project, then global) and checked readable
+    # before anything is created. A bare name means the flag's kind.
+    #
+    # @param kind [String] "agent" or "skill"
+    # @param ref [String] `name` or `kind/name`
+    # @param cwd [String, nil] the project's directory; nil searches global only
+    # @return [Hash] "ref", "kind", "name", "scope" and "path" (the store's file, or a skill's directory)
+    # @raise [ArgumentError] for a kind that is not copied
+    # @raise [Workspace::UsageError] for a bad name or an entry of another kind
+    # @raise [Workspace::Error] code `unknown_library_entry`, or `library_source_missing` when it can't be read
+    def copyable(kind, ref, cwd:)
+      article = COPY_KINDS.fetch(kind) { raise ArgumentError, "#{kind} entries are not copied into a worktree" }
+      given, name = parse_ref(ref)
+      if given && given != kind
+        raise UsageError, "--#{kind} takes #{article}, and '#{ref}' is a #{given}."
+      end
+      entry = resolve("#{kind}/#{name}", stores(cwd: cwd && File.expand_path(cwd)))
+      raise source_missing(entry) unless entry["readable"]
+      entry.slice("ref", "kind", "name", "scope", "path")
     end
 
     # The text sent to the agent for a play: one line pointing at its file,
@@ -171,7 +196,11 @@ module Workspace
       raise Errno::EACCES, entry["path"] unless entry["readable"]
       File.read(entry["path"])
     rescue SystemCallError
-      raise Error.new("Can't read #{entry["ref"]} at #{entry["path"]}: the file, or the file its link points to, " \
+      raise source_missing(entry)
+    end
+
+    def source_missing(entry)
+      Error.new("Can't read #{entry["ref"]} at #{entry["path"]}: the file, or the file its link points to, " \
         "is missing or unreadable.", code: "library_source_missing", details: {"ref" => entry["ref"], "path" => entry["path"]})
     end
 

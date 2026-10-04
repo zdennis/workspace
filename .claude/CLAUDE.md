@@ -25,8 +25,9 @@ A macOS CLI (Ruby) for managing tmuxinator-based development workspaces in iTerm
 - `lib/workspace/error_codes.rb` — Registry of the stable error `code` values, mirrored in `docs/README.json.md`
 - `lib/workspace/pane_locator.rb` — Strict pane resolver for `agent-run send`, `focus --pane` and `ask answer --deliver`: only a pane id or `window.pane`, and only a pane of the workspace's own tmux session
 - `lib/workspace/pane_bindings.rb` — `bindings.json`: tmux pane id to the run, review or play it works on, with the session it was made in; `session-event` prints it as `additionalContext` on SessionStart
-- `lib/workspace/library_store.rb` — The files of one library scope (`<kind>/<name>.md`, a copy or a symlink), written through a temp file and rename
-- `lib/workspace/library.rb` — Resolves a library `REF` across scopes; `#stores` is the one lookup order (project, then global) a built-in scope joins later; `#play` checks the play `start --play`/`launch --play` point the agent at
+- `lib/workspace/library_store.rb` — The files of one library scope (`<kind>/<name>.md`, or a `skill/<name>/` directory holding `SKILL.md`; a copy or a symlink), written through a temp file or directory and rename
+- `lib/workspace/library.rb` — Resolves a library `REF` across scopes; `#stores` is the one lookup order (project, then global) a built-in scope joins later; `#play` checks the play `start --play`/`launch --play` point the agent at; `#copyable` checks a `start --agent`/`--skill` entry
+- `lib/workspace/library_installer.rb` — Copies a library agent or skill into a checkout's `.claude/agents/` or `.claude/skills/`, never over a tracked path, and lists it in the common dir's `info/exclude`
 - `lib/workspace/commands/` — Complex command objects (launch, kill, focus, start, agent, ensure_agent, lock, dev, projects, capabilities, send, review, snapshot, daemon, ui, binding, library)
 - `lib/workspace/work_coordinator_client.rb` — JSONL client for work-coordinator sockets
 - `lib/workspace/pipeline_config.rb` — Reads per-project pipeline stage config from `~/.config/workspace/projects/<name>.yml`

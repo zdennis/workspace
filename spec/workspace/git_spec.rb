@@ -877,4 +877,35 @@ RSpec.describe Workspace::Git, "checkout layout" do
       expect(git.common_dir_from_files(@root)).to be_nil
     end
   end
+
+  describe "#tracked?" do
+    it "is true for a tracked file, or a directory holding one, and false otherwise" do
+      main = File.join(@root, "real")
+      FileUtils.mkdir_p(File.join(main, "dir"))
+      File.write(File.join(main, "dir", "a.md"), "x")
+      File.write(File.join(main, "loose.md"), "x")
+      system("git", "-C", main, "init", "--quiet")
+      system("git", "-C", main, "add", "dir/a.md")
+
+      expect(git.tracked?(main, "dir/a.md")).to be true
+      expect(git.tracked?(main, "dir")).to be true
+      expect(git.tracked?(main, "loose.md")).to be false
+      expect(git.tracked?(main, "missing")).to be false
+    end
+
+    it "ignores case, as a case-insensitive volume does" do
+      main = File.join(@root, "real")
+      FileUtils.mkdir_p(File.join(main, "Agents"))
+      File.write(File.join(main, "Agents", "Reviewer.md"), "x")
+      system("git", "-C", main, "init", "--quiet")
+      system("git", "-C", main, "add", "Agents/Reviewer.md")
+
+      expect(git.tracked?(main, "agents/reviewer.md")).to be true
+      expect(git.tracked?(main, "agents")).to be true
+    end
+
+    it "raises when git can't answer, so nothing is overwritten on a guess" do
+      expect { git.tracked?(@root, "a.md") }.to raise_error(Workspace::Error, /Can't tell whether git tracks a.md/)
+    end
+  end
 end

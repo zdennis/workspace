@@ -26,9 +26,11 @@ module Workspace
       #   exports its id as `WORKSPACE_TASK` in the panes; nil starts without a task
       # @param event_log [Workspace::EventLog, nil] records `worktree_started` once the
       #   worktree's config is written; nil records nothing
-      # @param library [Workspace::Library, nil] resolves `play:`; nil refuses a play
+      # @param library [Workspace::Library, nil] resolves `play:`, `agents:` and `skills:`; nil refuses them
+      # @param library_installer [Workspace::LibraryInstaller, nil] copies `agents:` and `skills:` into the worktree
       def initialize(git:, project_config:, project_settings:, launch_command:, lineage: WorkspaceLineage.new,
-        hook_installer: nil, which: nil, task_store: nil, event_log: nil, library: nil, output: $stdout, input: $stdin, error_output: $stderr)
+        hook_installer: nil, which: nil, task_store: nil, event_log: nil, library: nil, library_installer: nil,
+        output: $stdout, input: $stdin, error_output: $stderr)
         @git = git
         @project_config = project_config
         @project_settings = project_settings
@@ -39,6 +41,7 @@ module Workspace
         @task_store = task_store
         @event_log = event_log
         @library = library
+        @library_installer = library_installer
         @output = output
         @input = input
         @error_output = error_output
@@ -57,6 +60,9 @@ module Workspace
       # @param play [String, nil] a library play (`name` or `play/name`) to send ahead of
       #   +prompt+, resolved from the parent project's library, then global, before
       #   anything is created; the JSON payload reports it as `play`
+      # @param agents [Array<String>] library agents to copy into the worktree's `.claude/agents/`
+      # @param skills [Array<String>] library skills to copy into the worktree's `.claude/skills/`; both are
+      #   resolved like +play+ before anything is created, and reported as `agents` and `skills`
       # @param headless [Boolean] launch the session in the background with plain
       #   tmux instead of in iTerm2 (see Commands::Launch#call)
       # @param json [Boolean] emit the documented JSON schema instead of plain text; on
@@ -68,16 +74,19 @@ module Workspace
       # @raise [Workspace::Error] if not in a git repository (unless +json+ is true)
       # @raise [Workspace::UsageError] if a prompt would block on a non-TTY stdin and
       #   neither +base+ nor +yes+ resolves it (unless +json+ is true)
-      def call(input_string, prompt: nil, prompt_timeout: nil, base: nil, yes: false, headless: false, json: false, title: nil, play: nil)
-        return call_json(input_string, prompt: prompt, prompt_timeout: prompt_timeout, base: base, yes: yes, headless: headless, title: title, play: play) if json
+      def call(input_string, prompt: nil, prompt_timeout: nil, base: nil, yes: false, headless: false, json: false, title: nil, play: nil,
+        agents: [], skills: [])
+        options = {prompt: prompt, prompt_timeout: prompt_timeout, base: base, yes: yes, headless: headless, title: title, play: play,
+                   agents: agents, skills: skills}
+        return call_json(input_string, **options) if json
 
-        start!(input_string, prompt: prompt, prompt_timeout: prompt_timeout, base: base, yes: yes, headless: headless, quiet: false, title: title, play: play)
+        start!(input_string, quiet: false, **options)
       end
 
       private
 
-      def call_json(input_string, prompt:, prompt_timeout:, base:, yes:, headless:, title:, play:)
-        payload = start!(input_string, prompt: prompt, prompt_timeout: prompt_timeout, base: base, yes: yes, headless: headless, quiet: true, title: title, play: play)
+      def call_json(input_string, **options)
+        payload = start!(input_string, quiet: true, **options)
         @output.puts JSON.generate(payload[:json])
         {exit_code: payload[:exit_code]}
       rescue Workspace::Error, SystemCallError => e
@@ -87,7 +96,7 @@ module Workspace
 
       # @return [Hash] when quiet is true, +{exit_code:, json:}+; otherwise the
       #   launch result, or nil if branch selection was cancelled
-      def start!(input_string, prompt:, prompt_timeout:, base:, yes:, headless:, quiet:, title: nil, play: nil)
+      def start!(input_string, prompt:, prompt_timeout:, base:, yes:, headless:, quiet:, title: nil, play: nil, agents: [], skills: [])
         root = @git.root
         raise Workspace::Error, "Not inside a git repository." unless root
 
@@ -108,6 +117,7 @@ module Workspace
           project_name = WorkspaceLineage.name_from_path(root)
         end
         @play = play && resolve_play(play, root)
+        @copies = resolve_copies({"agent" => agents, "skill" => skills}, root)
         parsed = @git.parse_start_input(input_string)
 
         # A PR is checked out by `gh pr checkout` under its own number, never by
@@ -185,6 +195,7 @@ module Workspace
         @project_settings.ensure_exists(project_name)
         seed_worktree_hooks(project_name, config_name)
         install_agent_hooks(worktree_path, quiet: quiet)
+        copied = copy_library_entries(worktree_path, quiet: quiet)
         write_project_marker(worktree_path, config_name)
         record_started(config_name, project_name, branch_name, created: created, task: task)
         log(quiet, "Launching #{config_name}...")
@@ -208,6 +219,7 @@ module Workspace
           "headless" => headless
         }
         json["task"] = {"id" => task["id"], "title" => task["title"]} if task
+        %w[agent skill].each { |kind| json["#{kind}s"] = copied[kind] if copied.key?(kind) }
         json["play"] = @play.merge("delivered" => delivered?(result, config_name), "pane" => result&.dig(:bound_panes, config_name)) if @play
         json["session_reused"] = result[:reused].include?(config_name) if result && result[:reused]
         if exit_code != 0
@@ -230,6 +242,38 @@ module Workspace
       def resolve_play(play, root)
         raise Workspace::Error, "--play is not available: no library was wired." unless @library
         @library.play(play, cwd: root)
+      end
+
+      # Agents and skills are checked before anything is created, like the
+      # play. A name given twice is copied once.
+      def resolve_copies(refs_by_kind, root)
+        refs_by_kind.reject { |_, refs| refs.nil? || refs.empty? }.to_h do |kind, refs|
+          raise Workspace::Error, "--#{kind} is not available: no library was wired." unless @library && @library_installer
+          [kind, refs.map { |ref| @library.copyable(kind, ref, cwd: root) }.uniq { |e| e["ref"] }]
+        end
+      end
+
+      # @return [Hash{String=>Array<Hash>}] each kind asked for, to the copy results
+      def copy_library_entries(worktree_path, quiet:)
+        @copies.transform_values do |entries|
+          entries.map do |entry|
+            @library_installer.copy(entry, worktree: worktree_path).tap { |result| report_copy(result, quiet: quiet) }
+          end
+        end
+      end
+
+      def report_copy(result, quiet:)
+        notes = {
+          "skipped_tracked" => "kept the repo's tracked #{result["path"]}",
+          "skipped_linked" => "#{result["path"]} is under a symlinked directory, where git can't tell what it tracks"
+        }
+        if (note = notes[result["outcome"]])
+          message = "Note: #{note}; #{result["ref"]} was not copied."
+          quiet ? @warnings << message : @error_output.puts(message)
+        else
+          verb = {"copied" => "Copied", "replaced" => "Replaced", "unchanged" => "Unchanged"}.fetch(result["outcome"])
+          log(quiet, "#{verb} #{result["ref"]} #{(verb == "Unchanged") ? "at" : "to"} #{result["path"]}")
+        end
       end
 
       # Whether launch sent the prompt carrying the play.

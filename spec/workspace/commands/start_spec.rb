@@ -424,6 +424,166 @@ RSpec.describe Workspace::Commands::Start do
       end
     end
 
+    context "with agents and skills" do
+      let(:library_dir) { File.join(tmpdir, "library") }
+      let(:library) do
+        Workspace::Library.new(config: instance_double(Workspace::Config, library_dir: library_dir),
+          lineage: Workspace::WorkspaceLineage.new, project_config: project_config)
+      end
+      let(:installer) { instance_double(Workspace::LibraryInstaller) }
+      let(:worktree_path) { File.join(tmpdir, ".worktrees", "PROJ-123") }
+      let(:kit_command) do
+        described_class.new(git: git, project_config: project_config, project_settings: project_settings,
+          launch_command: launch_command, library: library, library_installer: installer,
+          output: output, error_output: error_output, input: input)
+      end
+
+      def copied(ref, outcome = "copied")
+        kind, name = ref.split("/")
+        rel = (kind == "agent") ? ".claude/agents/#{name}.md" : ".claude/skills/#{name}"
+        {"ref" => ref, "scope" => "global", "source" => library.global_store.path_for(kind, name),
+         "path" => File.join(worktree_path, rel), "outcome" => outcome}
+      end
+
+      before do
+        allow(git).to receive(:root).and_return(tmpdir)
+        allow(git).to receive(:parse_start_input).with("PROJ-123").and_return({type: :jira_key, value: "PROJ-123"})
+        allow(git).to receive(:sanitize_for_filesystem).with("PROJ-123").and_return("PROJ-123")
+        allow(git).to receive(:worktree_exists?).and_return(false)
+        allow(git).to receive(:find_worktree_by_branch).and_return(nil)
+        allow(git).to receive(:branch_exists?).with("PROJ-123").and_return(true)
+        allow(git).to receive(:create_worktree)
+        allow(project_config).to receive(:exists?).and_return(false)
+        allow(project_config).to receive(:create_worktree).and_return("myproject.worktree-PROJ-123")
+        allow(launch_command).to receive(:call).and_return({exit_code: 0, prompt_failures: {}})
+        allow(installer).to receive(:copy) { |entry, worktree:| copied(entry["ref"]) }
+        library.global_store.write("agent", "reviewer", "You review.\n")
+        library.global_store.write("agent", "planner", "You plan.\n")
+        library.global_store.write("skill", "write-tests", "# Tests\n")
+        library.global_store.write("play", "kickoff", "# Kickoff\n")
+      end
+
+      it "copies each entry into the worktree after its config is written and before launch" do
+        expect(project_config).to receive(:create_worktree).ordered.and_return("myproject.worktree-PROJ-123")
+        expect(installer).to receive(:copy).with(hash_including("ref" => "agent/reviewer"), worktree: worktree_path).ordered
+          .and_return(copied("agent/reviewer"))
+        expect(installer).to receive(:copy).with(hash_including("ref" => "agent/planner"), worktree: worktree_path).ordered
+          .and_return(copied("agent/planner"))
+        expect(installer).to receive(:copy).with(hash_including("ref" => "skill/write-tests"), worktree: worktree_path).ordered
+          .and_return(copied("skill/write-tests"))
+        expect(launch_command).to receive(:call).ordered.and_return({exit_code: 0, prompt_failures: {}})
+
+        kit_command.call("PROJ-123", agents: ["reviewer", "agent/planner"], skills: ["write-tests"])
+
+        expect(output.string).to include("Copied agent/reviewer to #{File.join(worktree_path, ".claude/agents/reviewer.md")}")
+          .and include("Copied skill/write-tests to #{File.join(worktree_path, ".claude/skills/write-tests")}")
+      end
+
+      it "copies a name given twice once" do
+        kit_command.call("PROJ-123", agents: ["reviewer", "agent/reviewer"])
+
+        expect(installer).to have_received(:copy).once
+      end
+
+      it "reports agents and skills in --json alongside the play, not inside it" do
+        kit_command.call("PROJ-123", agents: ["reviewer"], skills: ["write-tests"], play: "kickoff", json: true)
+
+        payload = JSON.parse(output.string)
+        expect(payload["agents"]).to eq([copied("agent/reviewer")])
+        expect(payload["skills"]).to eq([copied("skill/write-tests")])
+        expect(payload["play"].keys).not_to include("agents", "skills")
+      end
+
+      it "leaves agents and skills out of --json, and copies nothing, when none are asked for" do
+        kit_command.call("PROJ-123", json: true)
+
+        expect(JSON.parse(output.string).keys).not_to include("agents", "skills")
+        expect(installer).not_to have_received(:copy)
+      end
+
+      it "warns, without failing, when the repo tracks the file" do
+        allow(installer).to receive(:copy).and_return(copied("agent/reviewer", "skipped_tracked"))
+
+        result = kit_command.call("PROJ-123", agents: ["reviewer"], json: true)
+
+        payload = JSON.parse(output.string)
+        expect(result).to eq({exit_code: 0})
+        expect(payload["agents"].first["outcome"]).to eq("skipped_tracked")
+        expect(payload["warnings"]).to include(a_string_matching(/kept the repo's tracked .*reviewer\.md; agent\/reviewer was not copied/))
+      end
+
+      it "notes a tracked file on stderr without --json" do
+        allow(installer).to receive(:copy).and_return(copied("agent/reviewer", "skipped_tracked"))
+
+        kit_command.call("PROJ-123", agents: ["reviewer"])
+
+        expect(error_output.string).to match(/kept the repo's tracked .*reviewer\.md; agent\/reviewer was not copied/)
+      end
+
+      it "notes an entry it did not copy because the destination is under a symlinked directory" do
+        allow(installer).to receive(:copy).and_return(copied("skill/write-tests", "skipped_linked"))
+
+        kit_command.call("PROJ-123", skills: ["write-tests"], json: true)
+
+        expect(JSON.parse(output.string)["warnings"])
+          .to include(a_string_matching(/write-tests is under a symlinked directory.*skill\/write-tests was not copied/))
+      end
+
+      it "fails as a --json error, without launching, when git can't tell what is tracked" do
+        allow(installer).to receive(:copy).and_raise(Workspace::Error, "Can't tell whether git tracks .claude/agents/reviewer.md")
+
+        result = kit_command.call("PROJ-123", agents: ["reviewer"], json: true)
+
+        expect(result).to eq({exit_code: 1})
+        expect(JSON.parse(output.string)).to include("ok" => false, "error" => a_string_matching(/Can't tell whether git tracks/))
+        expect(launch_command).not_to have_received(:call)
+      end
+
+      it "copies into an existing worktree too" do
+        allow(git).to receive(:worktree_exists?).and_return(true)
+
+        kit_command.call("PROJ-123", skills: ["write-tests"])
+
+        expect(installer).to have_received(:copy).with(hash_including("ref" => "skill/write-tests"), worktree: worktree_path)
+        expect(git).not_to have_received(:create_worktree)
+      end
+
+      it "copies into an adopted worktree at its own path" do
+        elsewhere = File.join(tmpdir, "elsewhere")
+        allow(git).to receive(:find_worktree_by_branch).and_return(elsewhere)
+        allow(project_config).to receive(:create_worktree).and_return("myproject.worktree-elsewhere")
+
+        kit_command.call("PROJ-123", agents: ["reviewer"])
+
+        expect(installer).to have_received(:copy).with(hash_including("ref" => "agent/reviewer"), worktree: elsewhere)
+      end
+
+      it "fails an unknown agent or skill before creating anything" do
+        [{agents: ["nope"]}, {skills: ["nope"]}].each do |options|
+          expect { kit_command.call("PROJ-123", **options) }.to raise_error(Workspace::Error) { |e|
+            expect(e.code).to eq("unknown_library_entry")
+          }
+        end
+        expect(git).not_to have_received(:parse_start_input)
+        expect(project_config).not_to have_received(:create_worktree)
+        expect(installer).not_to have_received(:copy)
+        expect(launch_command).not_to have_received(:call)
+      end
+
+      it "fails an entry of the wrong kind as usage, and an unreadable skill as a --json error, before creating anything" do
+        expect { kit_command.call("PROJ-123", skills: ["agent/reviewer"]) }
+          .to raise_error(Workspace::UsageError, /--skill takes a skill/)
+        library.global_store.link("skill", "gone", File.join(tmpdir, "evicted"))
+
+        result = kit_command.call("PROJ-123", skills: ["gone"], json: true)
+
+        expect(result).to eq({exit_code: 1})
+        expect(JSON.parse(output.string)).to include("ok" => false, "code" => "library_source_missing")
+        expect(git).not_to have_received(:parse_start_input)
+        expect(installer).not_to have_received(:copy)
+      end
+    end
+
     context "with an existing worktree" do
       it "skips creation and launches directly" do
         allow(git).to receive(:root).and_return(tmpdir)

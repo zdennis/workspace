@@ -108,7 +108,7 @@ RSpec.describe Workspace::Library do
     end
 
     it "rejects a bad kind or name as usage" do
-      expect { library.resolve("skill/x", [global]) }.to raise_error(Workspace::UsageError, /Unknown kind 'skill'/)
+      expect { library.resolve("tool/x", [global]) }.to raise_error(Workspace::UsageError, /Unknown kind 'tool'/)
       expect { library.resolve("play/Bad Name", [global]) }.to raise_error(Workspace::UsageError, /not a valid library name/)
       expect { library.resolve("../x", [global]) }.to raise_error(Workspace::UsageError, /Unknown kind/)
       expect { library.resolve("", [global]) }.to raise_error(Workspace::UsageError, /not a valid library name/)
@@ -154,6 +154,14 @@ RSpec.describe Workspace::Library do
         .to raise_error(Workspace::UsageError, /--play takes a play.*--prompt "\$\(workspace library show prompt\/kickoff\)"/m)
     end
 
+    it "refuses an agent or skill as usage, without the --prompt hint" do
+      global.write("skill", "kickoff", "# Skill\n")
+
+      expect { library.play("skill/kickoff", cwd: "/work/app") }.to raise_error(Workspace::UsageError) { |e|
+        expect(e.message).to eq("--play takes a play, and 'skill/kickoff' is a skill.")
+      }
+    end
+
     it "fails an unknown play with unknown_library_entry" do
       expect { library.play("nope", cwd: "/work/app") }.to raise_error(Workspace::Error) { |e|
         expect(e.code).to eq("unknown_library_entry")
@@ -189,6 +197,50 @@ RSpec.describe Workspace::Library do
       play = {"ref" => "play/kickoff", "scope" => "global", "path" => "/lib/play/kickoff.md", "sha256" => "abc"}
 
       expect(library.play_binding(play)).to eq("kind" => "play", "id" => "play/kickoff", "instructions" => "/lib/play/kickoff.md")
+    end
+  end
+
+  describe "#copyable" do
+    let(:global) { library.global_store }
+    let(:project) { library.project_store("app") }
+
+    before do
+      resolve_cwd_to("app")
+      global.write("agent", "reviewer", "global\n")
+      global.write("skill", "tests", "# Tests\n")
+      global.write("play", "tests", "# A play\n")
+    end
+
+    it "resolves a bare name in the flag's kind, project before global" do
+      project.write("agent", "reviewer", "project\n")
+
+      expect(library.copyable("agent", "reviewer", cwd: "/work/app")).to eq("ref" => "agent/reviewer", "kind" => "agent",
+        "name" => "reviewer", "scope" => "project", "path" => project.path_for("agent", "reviewer"))
+      expect(library.copyable("skill", "tests", cwd: "/work/app")).to include("ref" => "skill/tests",
+        "path" => global.path_for("skill", "tests"))
+      expect(library.copyable("skill", "skill/tests", cwd: nil)).to include("scope" => "global")
+    end
+
+    it "refuses an entry of another kind as usage" do
+      expect { library.copyable("agent", "play/tests", cwd: "/work/app") }
+        .to raise_error(Workspace::UsageError, /--agent takes an agent, and 'play\/tests' is a play/)
+      expect { library.copyable("play", "tests", cwd: "/work/app") }.to raise_error(ArgumentError)
+    end
+
+    it "fails an unknown name with unknown_library_entry" do
+      expect { library.copyable("skill", "nope", cwd: "/work/app") }.to raise_error(Workspace::Error) { |e|
+        expect(e.code).to eq("unknown_library_entry")
+        expect(e.details).to eq("ref" => "skill/nope", "scopes" => ["project:app", "global"])
+      }
+    end
+
+    it "fails an entry whose link target is gone with library_source_missing" do
+      global.link("skill", "gone", File.join(@dir, "evicted"))
+
+      expect { library.copyable("skill", "gone", cwd: "/work/app") }.to raise_error(Workspace::Error) { |e|
+        expect(e.code).to eq("library_source_missing")
+        expect(e.details).to eq("ref" => "skill/gone", "path" => global.path_for("skill", "gone"))
+      }
     end
   end
 end

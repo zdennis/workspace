@@ -2,7 +2,7 @@ require "json"
 
 module Workspace
   module Commands
-    # The six `workspace library` verbs over named play and prompt files, in
+    # The six `workspace library` verbs over named plays, prompts, agents and skills, in
     # the global store or one project's. Reads print their own document;
     # writes return a {Result} for `CLI#run_action`.
     class Library
@@ -86,9 +86,10 @@ module Workspace
       end
 
       # Copies a file (or a body read from stdin) into the store, or links it.
+      # A skill is copied or linked from a directory holding `SKILL.md`.
       #
       # @param kind [String]
-      # @param path [String, nil] the source file; nil with `body`
+      # @param path [String, nil] the source file, or a skill's directory; nil with `body`
       # @param body [String, nil] the content, when read from stdin
       # @param name [String, nil] the entry name; defaults to the file name in kebab case
       # @param link [Boolean] store a symlink to `path` instead of a copy
@@ -107,10 +108,10 @@ module Workspace
         @library.validate_name!(name)
         store = @library.write_store(scope: scope, project: project, cwd: cwd)
         source = path && File.expand_path(path, cwd)
-        body, target = source_for(source, body, link, "#{kind}/#{name}")
+        content = source_for(kind, source, body, link, "#{kind}/#{name}")
 
         outcome = if (existing = store.find(kind, name))
-          if same?(existing, store, body, target)
+          if same?(existing, content)
             "unchanged"
           elsif force
             "replaced"
@@ -122,7 +123,7 @@ module Workspace
         else
           "added"
         end
-        put(store, kind, name, body, target) unless dry_run || outcome == "unchanged"
+        put(store, kind, name, content) unless dry_run || outcome == "unchanged"
         finish(outcome, store, kind, name, dry_run)
       end
 
@@ -143,10 +144,10 @@ module Workspace
         entry = @library.resolve(ref, [store])
         kind, name = entry.values_at("kind", "name")
         source = path && File.expand_path(path, cwd)
-        body, target = source_for(source, body, link, entry["ref"])
+        content = source_for(kind, source, body, link, entry["ref"])
 
-        outcome = same?(entry, store, body, target) ? "unchanged" : "updated"
-        put(store, kind, name, body, target) unless dry_run || outcome == "unchanged"
+        outcome = same?(entry, content) ? "unchanged" : "updated"
+        put(store, kind, name, content) unless dry_run || outcome == "unchanged"
         finish(outcome, store, kind, name, dry_run)
       end
 
@@ -194,36 +195,50 @@ module Workspace
         [entry, stores.find { |s| s.scope == entry["scope"] && s.project == entry["project"] }]
       end
 
-      # The body to copy, or the target to link: `[body, nil]` or `[nil, target]`.
-      def source_for(source, body, link, ref)
-        if link
-          raise UsageError, "--link needs a file path, not stdin (-)." unless source
+      # What to store: `{target:}` to link, `{tree:}` to copy a skill's
+      # directory, or `{body:}` to write a file (a skill's `SKILL.md`).
+      def source_for(kind, source, body, link, ref)
+        return {body: body} if body && !link
+        raise UsageError, "--link needs a file path, not stdin (-)." unless source
+        if (body_file = Workspace::LibraryStore::DIRECTORY_KINDS[kind])
+          raise Errno::ENOENT, source unless File.exist?(source)
+          raise UsageError, "#{source} is a file, and a #{kind} is a directory holding #{body_file}." unless File.directory?(source)
+          inside = File.join(source, body_file)
+          raise Errno::ENOENT, inside unless File.file?(inside) && File.readable?(inside)
+          link ? {target: source} : {tree: source}
+        elsif link
           raise Errno::ENOENT, source unless File.file?(source) && File.readable?(source)
-          [nil, source]
-        elsif body
-          [body, nil]
+          {target: source}
         else
-          [File.read(source), nil]
+          {body: File.read(source)}
         end
       rescue SystemCallError => e
         raise Error.new("Can't read #{source}: #{e.message}", code: "library_source_missing", details: {"ref" => ref, "path" => source})
       end
 
       # Whether the stored entry already is what this write would store: the
-      # same link target, or the same body in a copy.
-      def same?(existing, store, body, target)
-        if target
-          existing["link"] && File.expand_path(existing["link"]) == File.expand_path(target)
+      # same link target, or the same files in a copy.
+      def same?(existing, content)
+        if content[:target]
+          existing["link"] && File.expand_path(existing["link"]) == File.expand_path(content[:target])
         else
-          existing["link"].nil? && existing["readable"] && store.read(existing["kind"], existing["name"]) == body
+          existing["link"].nil? && existing["readable"] && Workspace::LibraryStore.snapshot(existing["path"]) == expected(existing, content)
         end
       end
 
-      def put(store, kind, name, body, target)
-        if target
-          store.link(kind, name, target)
+      def expected(existing, content)
+        return Workspace::LibraryStore.snapshot(content[:tree]) if content[:tree]
+        body_file = Workspace::LibraryStore::DIRECTORY_KINDS[existing["kind"]]
+        body_file ? {body_file => content[:body].b} : content[:body].b
+      end
+
+      def put(store, kind, name, content)
+        if content[:target]
+          store.link(kind, name, content[:target])
+        elsif content[:tree]
+          store.copy_tree(kind, name, content[:tree])
         else
-          store.write(kind, name, body)
+          store.write(kind, name, content[:body])
         end
       end
 

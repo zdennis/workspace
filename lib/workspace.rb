@@ -138,6 +138,7 @@ require_relative "workspace/pane_locator"
 require_relative "workspace/pane_bindings"
 require_relative "workspace/library_store"
 require_relative "workspace/library"
+require_relative "workspace/library_installer"
 require_relative "workspace/project_config"
 require_relative "workspace/iterm"
 require_relative "workspace/window_manager"
@@ -281,7 +282,8 @@ module Workspace
     lineage = WorkspaceLineage.new
     task_store = TaskStore.new(dir: config.task_dir, error_output: error_output)
     library = Library.new(config: config, lineage: lineage, project_config: project_config)
-    start_command = Commands::Start.new(git: git, project_config: project_config, project_settings: project_settings, launch_command: launch_command, lineage: lineage, hook_installer: hook_installer, task_store: task_store, event_log: event_log, library: library, output: output, input: input)
+    library_installer = LibraryInstaller.new(git: git)
+    start_command = Commands::Start.new(git: git, project_config: project_config, project_settings: project_settings, launch_command: launch_command, lineage: lineage, hook_installer: hook_installer, task_store: task_store, event_log: event_log, library: library, library_installer: library_installer, output: output, input: input)
     kill_command = Commands::Kill.new(git: git, project_config: project_config, project_settings: project_settings, stop_command: stop_command, project_detector: project_detector, task_store: task_store, event_log: event_log, output: output, input: input)
     finish_command = Commands::Finish.new(git: git, project_config: project_config, kill_command: kill_command, project_detector: project_detector, output: output, error_output: error_output, input: input)
     send_command = Commands::Send.new(locator: pane_locator, tmux: tmux, output: output)

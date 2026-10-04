@@ -1,6 +1,6 @@
 # workspace library
 
-Store named plays and prompts, globally or for one project, and read them back by name. A play is a document an agent reads and follows; a prompt is short text sent as typed. `lib` is an alias for `library`, and `workspace library` alone lists.
+Store named plays, prompts, agents and skills, globally or for one project, and read them back by name. A play is a document an agent reads and follows; a prompt is short text sent as typed; an agent is a Claude Code subagent file; a skill is a directory holding `SKILL.md`. `start --agent` and `--skill` copy agents and skills into a new worktree. `lib` is an alias for `library`, and `workspace library` alone lists.
 
 ## Usage
 
@@ -26,7 +26,7 @@ workspace library remove REF [--yes] [--project [NAME]] [--dry-run] [--json]
 
 | Option | Description |
 |--------|-------------|
-| `--kind KIND` | `play` or `prompt`; required for `add`, a filter for `list` |
+| `--kind KIND` | `agent`, `play`, `prompt` or `skill`; required for `add`, a filter for `list` |
 | `--as NAME` | `add`: the entry name |
 | `--link` | `add`, `update`: store a symlink to `PATH` instead of a copy, so the store always reads the current source |
 | `--force` | `add`: replace an entry that has different content |
@@ -36,7 +36,7 @@ workspace library remove REF [--yes] [--project [NAME]] [--dry-run] [--json]
 | `--dry-run` | `add`, `update`, `remove`: report what would happen and write nothing |
 | `--json` | Print one JSON document |
 
-The description is the `description:` frontmatter key if the file has one, else its first heading.
+The description is the `description:` frontmatter key if the file has one, else its first heading. For a skill, that file is its `SKILL.md`.
 
 `--project` takes the next word as the name unless it is last or starts with `-`, so put `--project` after the positional arguments or write `--project=NAME`.
 
@@ -47,6 +47,8 @@ The description is the `description:` frontmatter key if the file has one, else 
 | Global (default for writes) | none, or `--global` | `~/.config/workspace/library/global/<kind>/<name>.md` |
 | Project | `--project [NAME]` | `~/.config/workspace/library/projects/<project>/<kind>/<name>.md` |
 
+A skill is stored as a directory, `skill/<name>/`, holding `SKILL.md` and any other files it came with. `add --kind skill PATH` takes a directory with a `SKILL.md` in it (a file is a usage error) and copies the whole tree, or with `--link` links the directory. `add - --kind skill --as NAME` stores stdin as the `SKILL.md` of a new directory. A skill entry's `path` is the directory, `show` prints its `SKILL.md`, and `remove` deletes the directory, or only the link. Two copies of a skill hold the same content when they have the same files with the same bytes.
+
 The store is a directory of files with no index: `add` copies the file in, or `add --link` makes a symlink, and `info` reports which. Link a note in Obsidian or iCloud and edits to it take effect on the next read; an evicted or deleted target is reported as unreadable, and `show` fails with `library_source_missing`.
 
 `--project` without a name means the project of the current directory, resolved the way `config set` and `parent` resolve it, so every worktree of a repo shares one project library. The name has to be a workspace `workspace list --all` knows, or the command fails with `unknown_workspace`; `library add --project` in `~/Downloads` does not create a "Downloads" library.
@@ -56,6 +58,10 @@ Reads (`list`, `show`, `info`) search the project of the current directory first
 ## Using a play
 
 `workspace start --play NAME` and `workspace launch --play NAME` point the coding agent at a play by path: "Read `<path>` and follow it.", then any `--prompt` text. They look the play up as reads do, and fail before creating anything when it is missing or unreadable. See [`start`](README.start.md#plays).
+
+## Using agents and skills
+
+`workspace start --agent NAME --skill NAME` copies library agents and skills into the new worktree, where Claude Code loads them: `.claude/agents/<name>.md` and `.claude/skills/<name>/`. Both flags repeat. They are looked up as reads are and fail before anything is created when missing or unreadable. Each copy is listed in the repo's `info/exclude`, and a path the repo tracks is never overwritten. See [`start`](README.start.md#agents-and-skills).
 
 ## remove
 
@@ -113,7 +119,7 @@ Each command acts on one entry, so a failure is the error envelope, never a `ref
 | `library_entry_exists` | `add` would replace different content | `ref`, `scope`; `retry` with `--force`, marked `destructive` |
 | `library_source_missing` | `PATH` does not exist, or a link's target can't be read | `ref`, `path` |
 
-A bad name, an unknown kind, or a missing `--kind` is `usage`. `capabilities` reports `"library": 1` and `paths.library`.
+A bad name, an unknown kind, or a missing `--kind` is `usage`. `capabilities` reports `"library": 2` (revision 2 adds the `agent` and `skill` kinds; a skill's `path` is a directory) and `paths.library`.
 
 ## Examples
 
@@ -122,6 +128,8 @@ workspace library add --kind play --link ~/Notes/Projects/Workspace/Agent\ Orche
 workspace library add kickoff.md --kind prompt --project
 echo "Start at CLI27." | workspace library add - --kind prompt --as start-cli27
 workspace library list --kind play --json
+workspace library add ~/.claude/agents/reviewer.md --kind agent
+workspace library add ~/src/skills/write-tests --kind skill --link
 workspace library info play/agent-orchestration-playbook
 workspace start feature/x --prompt "$(workspace library show prompt/kickoff)"
 workspace library update prompt/kickoff kickoff-v2.md

@@ -93,7 +93,7 @@ workspace <subcommand> [options]
 | kill | [README](docs/README.kill.md) | Kill a worktree project and remove its worktree |
 | launch | [README](docs/README.launch.md) | Launch tmuxinator projects in iTerm2 windows, or headless in plain tmux |
 | layout | [README](docs/README.layout.md) | Save/restore tmux pane layouts (auto-saved before resize) |
-| library | [README](docs/README.library.md) | Store named plays and prompts, globally or per project (alias: `lib`) |
+| library | [README](docs/README.library.md) | Store named plays, prompts, agents and skills, globally or per project (alias: `lib`) |
 | list | [README](docs/README.list.md) | List active projects (`--all` for all available) |
 | list-projects | [README](docs/README.list-projects.md) | Alias for `list --all` |
 | lock | [README](docs/README.lock.md) | Acquire, release, inspect, or clear a shared repo-wide lock; print agent instructions |

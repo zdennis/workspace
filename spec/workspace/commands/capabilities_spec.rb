@@ -40,7 +40,7 @@ RSpec.describe Workspace::Commands::Capabilities do
       expect(features).to include("prune_safe" => 1)
       expect(features).to include("envelope" => 1, "error_codes" => 1, "no_input" => 1, "name_scope" => 1, "action_json" => 1, "sessions" => 1)
       expect(features).to include("snapshot" => 2, "agent_send" => 1, "focus_pane" => 1, "actions_manifest" => 0)
-      expect(features).to include("config_json" => 1, "tmux_show" => 1, "state_done" => 1, "tasks" => 1, "event_emitters" => 1, "ui_open" => 1, "pane_bindings" => 1, "library" => 1, "library_play" => 2)
+      expect(features).to include("config_json" => 1, "tmux_show" => 1, "state_done" => 1, "tasks" => 1, "event_emitters" => 1, "ui_open" => 1, "pane_bindings" => 1, "library" => 2, "library_play" => 2, "library_copy" => 1)
     end
 
     it "reports the exit codes the CLI uses" do

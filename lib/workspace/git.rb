@@ -127,6 +127,22 @@ module Workspace
       checkout_layout(path)&.fetch(:common_dir)
     end
 
+    # Whether the index of the checkout at +dir+ holds +path+, or any file
+    # under it when +path+ is a directory, whether or not it is on disk.
+    # Case is ignored, so it errs toward "tracked".
+    #
+    # @param dir [String] the checkout
+    # @param path [String] relative to +dir+
+    # @return [Boolean]
+    # @raise [Workspace::Error] when git can't answer, so a caller never overwrites a file on a guess
+    def tracked?(dir, path)
+      # A case-insensitive volume (the macOS default) puts `Reviewer.md` at
+      # the path of `reviewer.md`, so match the way the file system does.
+      stdout, stderr, status = capture_git("-C", dir, "ls-files", "-z", "--", ":(icase)#{path}")
+      raise Workspace::Error, "Can't tell whether git tracks #{path} in #{dir}: #{stderr.strip}" unless status.success?
+      !stdout.empty?
+    end
+
     # Returns the current branch name for a worktree directory.
     # Returns nil if the HEAD is detached or an error occurs.
     #

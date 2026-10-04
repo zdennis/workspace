@@ -91,5 +91,15 @@ RSpec.describe Workspace do
 
       expect(launch_command.instance_variable_get(:@binder)).to equal(binding_command)
     end
+
+    it "gives start a library installer that checks tracked files with the shared git" do
+      cli = Workspace.build_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new)
+
+      start_command = cli.instance_variable_get(:@start_command)
+      installer = start_command.instance_variable_get(:@library_installer)
+
+      expect(installer).to be_a(Workspace::LibraryInstaller)
+      expect(installer.instance_variable_get(:@git)).to equal(start_command.instance_variable_get(:@git))
+    end
   end
 end

@@ -89,6 +89,131 @@ RSpec.describe Workspace::LibraryStore do
     end
   end
 
+  describe "an agent" do
+    it "is a file like a play" do
+      store.write("agent", "reviewer", "---\ndescription: Reviews diffs\n---\nYou review.\n")
+
+      expect(store.find("agent", "reviewer")).to include("ref" => "agent/reviewer",
+        "path" => File.join(@dir, "global/agent/reviewer.md"), "readable" => true, "description" => "Reviews diffs")
+    end
+  end
+
+  describe "a skill" do
+    def skill_source(name = "src-skill", body = "---\ndescription: Writes tests\n---\n# Tests\n")
+      File.join(@dir, name).tap do |dir|
+        FileUtils.mkdir_p(File.join(dir, "scripts"))
+        File.write(File.join(dir, "SKILL.md"), body)
+        File.write(File.join(dir, "scripts", "run.sh"), "echo hi\n")
+      end
+    end
+
+    it "is a directory holding SKILL.md, described and read from that file" do
+      store.copy_tree("skill", "tests", skill_source)
+
+      entry = store.find("skill", "tests")
+      expect(entry).to include("ref" => "skill/tests", "path" => File.join(@dir, "global/skill/tests"),
+        "link" => nil, "readable" => true, "description" => "Writes tests")
+      expect(store.read("skill", "tests")).to eq("---\ndescription: Writes tests\n---\n# Tests\n")
+      expect(File.read(File.join(@dir, "global/skill/tests/scripts/run.sh"))).to eq("echo hi\n")
+    end
+
+    it "is written from a body as a directory with only SKILL.md" do
+      store.write("skill", "tests", "# Tests\n")
+
+      expect(Dir.children(store.path_for("skill", "tests"))).to eq(["SKILL.md"])
+      expect(store.read("skill", "tests")).to eq("# Tests\n")
+    end
+
+    it "replaces a copied directory as a whole, leaving no old file behind" do
+      store.copy_tree("skill", "tests", skill_source)
+      store.write("skill", "tests", "# New\n")
+
+      expect(Dir.children(store.path_for("skill", "tests"))).to eq(["SKILL.md"])
+      expect(Dir.children(File.join(@dir, "global/skill"))).to eq(["tests"])
+    end
+
+    it "keeps the old directory when the new one can't be renamed into place" do
+      store.copy_tree("skill", "tests", skill_source)
+      allow(File).to receive(:rename).and_call_original
+      allow(File).to receive(:rename).with(/tests\.tmp-/, store.path_for("skill", "tests")).and_raise(Errno::EACCES)
+
+      expect { store.write("skill", "tests", "# New\n") }.to raise_error(Errno::EACCES)
+      expect(store.read("skill", "tests")).to eq("---\ndescription: Writes tests\n---\n# Tests\n")
+      expect(Dir.children(File.join(@dir, "global/skill"))).to eq(["tests"])
+    end
+
+    it "replaces a link with a copied directory or a body, leaving the link's target alone" do
+      source = skill_source("linked")
+      store.link("skill", "tests", source)
+
+      store.copy_tree("skill", "tests", skill_source("other", "# Other\n"))
+      expect(store.find("skill", "tests")).to include("link" => nil, "description" => "Other")
+      store.link("skill", "tests", source)
+      store.write("skill", "tests", "# Body\n")
+      expect(store.find("skill", "tests")).to include("link" => nil)
+      expect(store.read("skill", "tests")).to eq("# Body\n")
+      expect(File.read(File.join(source, "SKILL.md"))).to eq("---\ndescription: Writes tests\n---\n# Tests\n")
+      expect(Dir.children(File.join(@dir, "global/skill"))).to eq(["tests"])
+    end
+
+    it "links the source directory and replaces a copy with the link" do
+      store.copy_tree("skill", "tests", skill_source)
+      source = skill_source("other", "# Other\n")
+
+      store.link("skill", "tests", source)
+
+      expect(store.find("skill", "tests")).to include("link" => source, "readable" => true, "description" => "Other")
+    end
+
+    it "is unreadable without a SKILL.md" do
+      FileUtils.mkdir_p(File.join(@dir, "global/skill/empty"))
+
+      expect(store.find("skill", "empty")).to include("readable" => false, "description" => nil)
+      expect { store.read("skill", "empty") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("library_source_missing") }
+    end
+
+    it "is listed by its directory name" do
+      store.copy_tree("skill", "tests", skill_source)
+      store.write("agent", "reviewer", "x")
+      store.write("play", "kickoff", "x")
+
+      expect(store.entries.map { |e| e["ref"] }).to eq(%w[agent/reviewer play/kickoff skill/tests])
+    end
+
+    it "ignores a stray file in the skill directory, and lists a broken link to a skill as unreadable" do
+      FileUtils.mkdir_p(File.join(@dir, "global/skill"))
+      File.write(File.join(@dir, "global/skill/stray.md"), "x")
+      store.link("skill", "gone", File.join(@dir, "missing"))
+
+      expect(store.entries.map { |e| [e["ref"], e["readable"]] }).to eq([["skill/gone", false]])
+    end
+
+    it "deletes a copied directory, or only the link to one" do
+      store.copy_tree("skill", "tests", skill_source)
+      source = skill_source("linked")
+      store.link("skill", "linked", source)
+
+      store.delete("skill", "tests")
+      store.delete("skill", "linked")
+
+      expect(store.entries).to eq([])
+      expect(File.exist?(File.join(source, "SKILL.md"))).to be true
+    end
+  end
+
+  describe ".snapshot" do
+    it "maps a file to its bytes and a directory to its files by relative path, through links" do
+      dir = File.join(@dir, "tree")
+      FileUtils.mkdir_p(File.join(dir, "a"))
+      File.write(File.join(dir, "SKILL.md"), "x")
+      File.write(File.join(dir, "a", ".hidden"), "y")
+      File.symlink(dir, File.join(@dir, "link"))
+
+      expect(described_class.snapshot(File.join(dir, "SKILL.md"))).to eq("x")
+      expect(described_class.snapshot(File.join(@dir, "link"))).to eq("SKILL.md" => "x", "a/.hidden" => "y")
+    end
+  end
+
   describe "#delete" do
     it "removes a link without touching its target" do
       source = File.join(@dir, "Source.md")

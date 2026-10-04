@@ -75,7 +75,7 @@ RSpec.describe Workspace::Commands::Library do
 
     it "rejects a bad kind or name as usage before touching the store" do
       path = source("x.md", "x")
-      expect { command.add(kind: "skill", path: path, cwd: cwd) }.to raise_error(Workspace::UsageError, /Unknown kind 'skill'/)
+      expect { command.add(kind: "tool", path: path, cwd: cwd) }.to raise_error(Workspace::UsageError, /Unknown kind 'tool'/)
       expect { command.add(kind: "play", path: path, name: "Bad_Name", cwd: cwd) }.to raise_error(Workspace::UsageError, /not a valid library name/)
       expect(Dir.exist?(File.join(@dir, "library"))).to be false
     end
@@ -131,6 +131,87 @@ RSpec.describe Workspace::Commands::Library do
       expect { command.add(kind: "play", path: source("x.md", "two"), dry_run: true, cwd: cwd) }.not_to raise_error
       command.add(kind: "play", path: source("x.md", "one"), cwd: cwd)
       expect { command.add(kind: "play", path: source("x.md", "two"), dry_run: true, cwd: cwd) }.to raise_error(Workspace::Error, /--force/)
+    end
+  end
+
+  describe "agents and skills" do
+    def skill_dir(name, body = "# Skill\n", extra: {})
+      File.join(@dir, name).tap do |dir|
+        FileUtils.mkdir_p(dir)
+        File.write(File.join(dir, "SKILL.md"), body)
+        extra.each do |rel, text|
+          FileUtils.mkdir_p(File.dirname(File.join(dir, rel)))
+          File.write(File.join(dir, rel), text)
+        end
+      end
+    end
+    let(:skill_path) { File.join(@dir, "library/global/skill/write-tests") }
+
+    it "adds an agent file like a play" do
+      result = command.add(kind: "agent", path: source("Code Reviewer.md", "You review.\n"), cwd: cwd)
+
+      expect(result.entry).to include("ref" => "agent/code-reviewer", "path" => File.join(@dir, "library/global/agent/code-reviewer.md"))
+    end
+
+    it "copies a skill directory, named after the directory, with every file in it" do
+      source_dir = skill_dir("Write Tests", "# Write tests\n", extra: {"scripts/run.sh" => "echo\n"})
+
+      result = command.add(kind: "skill", path: source_dir, cwd: cwd)
+
+      expect(result.outcome).to eq("added")
+      expect(result.entry).to include("ref" => "skill/write-tests", "path" => skill_path, "link" => nil, "description" => "Write tests")
+      expect(File.read(File.join(skill_path, "scripts/run.sh"))).to eq("echo\n")
+    end
+
+    it "is unchanged for the same tree, and refuses a changed one without --force" do
+      source_dir = skill_dir("write-tests", extra: {"a.txt" => "one"})
+      command.add(kind: "skill", path: source_dir, cwd: cwd)
+
+      expect(command.add(kind: "skill", path: source_dir, cwd: cwd).outcome).to eq("unchanged")
+      File.write(File.join(source_dir, "a.txt"), "two")
+      expect { command.add(kind: "skill", path: source_dir, cwd: cwd) }.to raise_error(Workspace::Error) { |e|
+        expect(e.code).to eq("library_entry_exists")
+      }
+      expect(command.add(kind: "skill", path: source_dir, force: true, cwd: cwd).outcome).to eq("replaced")
+      expect(File.read(File.join(skill_path, "a.txt"))).to eq("two")
+    end
+
+    it "links a skill directory with --link" do
+      source_dir = skill_dir("write-tests")
+
+      result = command.add(kind: "skill", path: source_dir, link: true, cwd: cwd)
+
+      expect(result.entry).to include("link" => source_dir, "readable" => true)
+      expect(File.symlink?(skill_path)).to be true
+    end
+
+    it "stores a skill from stdin as a directory holding SKILL.md" do
+      command.add(kind: "skill", body: "# From stdin\n", name: "write-tests", cwd: cwd)
+
+      expect(File.read(File.join(skill_path, "SKILL.md"))).to eq("# From stdin\n")
+    end
+
+    it "refuses a file as a skill and a directory without SKILL.md" do
+      expect { command.add(kind: "skill", path: source("x.md", "x"), cwd: cwd) }
+        .to raise_error(Workspace::UsageError, /a skill is a directory holding SKILL.md/)
+      FileUtils.mkdir_p(File.join(@dir, "empty"))
+      expect { command.add(kind: "skill", path: File.join(@dir, "empty"), cwd: cwd) }.to raise_error(Workspace::Error) { |e|
+        expect(e.code).to eq("library_source_missing")
+      }
+      expect { command.add(kind: "skill", path: File.join(@dir, "empty"), link: true, cwd: cwd) }.to raise_error(Workspace::Error) { |e|
+        expect(e.code).to eq("library_source_missing")
+      }
+    end
+
+    it "shows a skill's SKILL.md, updates it from a directory, and removes the directory" do
+      command.add(kind: "skill", path: skill_dir("write-tests", "# One\n"), cwd: cwd)
+
+      command.show("skill/write-tests", cwd: cwd)
+      expect(output.string).to end_with("# One\n")
+      expect(command.update("write-tests", path: skill_dir("v2", "# Two\n"), cwd: cwd).outcome).to eq("updated")
+      expect(File.read(File.join(skill_path, "SKILL.md"))).to eq("# Two\n")
+      expect(command.remove("skill/write-tests", yes: true, cwd: cwd).outcome).to eq("removed")
+      expect(File.exist?(skill_path)).to be false
     end
   end
 
@@ -249,7 +330,7 @@ RSpec.describe Workspace::Commands::Library do
     end
 
     it "rejects a bad kind filter" do
-      expect { command.list(kind: "skill", cwd: cwd) }.to raise_error(Workspace::UsageError, /Unknown kind 'skill'/)
+      expect { command.list(kind: "tool", cwd: cwd) }.to raise_error(Workspace::UsageError, /Unknown kind 'tool'/)
     end
 
     it "shows the effective body as is, and the global one with --global" do

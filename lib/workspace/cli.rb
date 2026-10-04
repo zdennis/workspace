@@ -405,7 +405,7 @@ module Workspace
           kill            Kill a worktree project and remove its worktree (auto-detects from cwd)
           launch          Launch tmuxinator projects in iTerm windows, or headless in plain tmux
           layout          Save/restore tmux pane layouts (auto-saved before resize)
-          library         Store named plays and prompts, globally or per project (alias: lib)
+          library         Store named plays, prompts, agents and skills (alias: lib)
           list            List currently active (launched) projects (--all for all available)
           lock            Acquire, release, inspect, or clear a shared repo-wide lock
           lookup          Find a workspace project by worktree path, branch, or project name
@@ -585,6 +585,8 @@ module Workspace
       json = false
       title = nil
       play = nil
+      agents = []
+      skills = []
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: workspace start [options] <jira-key|jira-url|pr-url|pr-ref|branch>"
         opts.separator ""
@@ -612,6 +614,14 @@ module Workspace
           "then any --prompt text. Looked up in the project's library, then global;",
           "an unknown or unreadable play fails before the worktree is created") do |v|
           play = v
+        end
+        opts.on("--agent NAME", "Copy a library agent into the worktree's .claude/agents/ (repeatable).",
+          "Listed in the repo's info/exclude; a file the repo tracks there is kept") do |v|
+          agents << v
+        end
+        opts.on("--skill NAME", "Copy a library skill directory into the worktree's .claude/skills/",
+          "(repeatable), the same way. Unknown names fail before the worktree is created") do |v|
+          skills << v
         end
         opts.on("--base REF", "Branch/ref to create a new branch from, instead of prompting") do |v|
           base = v
@@ -646,6 +656,7 @@ module Workspace
         opts.separator "  workspace start '#471'    # check out PR 471 of the current repo, fork or not"
         opts.separator "  workspace start PROJ-123 --prompt \"Fix the login bug\"    # with an initial agent prompt"
         opts.separator "  workspace start PROJ-123 --play kickoff --prompt \"Start at step 2.\"    # point the agent at a library play"
+        opts.separator "  workspace start PROJ-123 --agent reviewer --skill write-tests    # copy library entries into the worktree"
         opts.separator "  workspace start PROJ-123 --title \"Fix the login bug\"    # name the task shown in `workspace sessions`"
         opts.separator "  workspace start PROJ-123 --headless --yes --json    # non-interactive, e.g. from CI"
         opts.separator "  workspace start PROJ-123 --base main --yes --json    # non-interactive, branch from main, not the default base"
@@ -660,6 +671,8 @@ module Workspace
       start_options = {prompt: prompt, prompt_timeout: prompt_timeout, base: base, yes: yes, json: json}
       start_options[:title] = title if title
       start_options[:play] = play if play
+      start_options[:agents] = agents if agents.any?
+      start_options[:skills] = skills if skills.any?
       start_options[:headless] = true if @launch_mode.resolve(headless).headless?
       result = @start_command.call(args.first, **start_options)
       @exit_handler.exit(result[:exit_code]) if result && !result[:exit_code].zero?
@@ -3307,8 +3320,10 @@ module Workspace
           "       workspace library update REF PATH|- [--link] [--project [NAME]] [--dry-run] [--json]\n" \
           "       workspace library remove REF [--yes] [--project [NAME]] [--dry-run] [--json]"
         opts.separator ""
-        opts.separator "A store of named play and prompt files under #{@config.library_dir}. A play is a"
-        opts.separator "document an agent reads and follows; a prompt is short text sent as typed. Entries are"
+        opts.separator "A store of named plays, prompts, agents and skills under #{@config.library_dir}."
+        opts.separator "A play is a document an agent reads and follows; a prompt is short text sent as typed;"
+        opts.separator "an agent is a Claude Code subagent file; a skill is a directory holding SKILL.md, and"
+        opts.separator "`workspace start --agent/--skill` copies them into a new worktree. Entries are"
         opts.separator "global unless --project narrows them to one project; a project entry hides a global one"
         opts.separator "of the same name. REF is kind/name, or a bare name when one kind has it. `lib` is an"
         opts.separator "alias for `library`, and `workspace library` alone lists."
@@ -3322,7 +3337,8 @@ module Workspace
         opts.separator "  update    replace an existing entry's content, or repoint its link"
         opts.separator "  remove    delete the entry or its link from the store; the source file is never touched"
         opts.separator ""
-        opts.on("--kind KIND", "play or prompt (add: required; list: a filter)") { |v| options[:kind] = v }
+        opts.on("--kind KIND", "agent, play, prompt or skill (add: required; list: a filter);",
+          "add --kind skill takes a directory holding SKILL.md") { |v| options[:kind] = v }
         opts.on("--as NAME", "add: the entry name (lowercase letters, digits and hyphens)") { |v| options[:name] = v }
         opts.on("--link", "add, update: store a symlink to PATH instead of a copy") { options[:link] = true }
         opts.on("--force", "add: replace an entry that has different content") { options[:force] = true }

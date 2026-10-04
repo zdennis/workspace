@@ -1318,6 +1318,18 @@ RSpec.describe Workspace::CLI do
         base: nil, yes: false, json: false, play: "kickoff")
     end
 
+    it "passes repeated --agent and --skill through to start" do
+      start_command = double("start", call: {exit_code: 0, prompt_failures: {}})
+      cli, _, error_output = build_test_cli(start_command: start_command)
+
+      cli.run(["start", "--agent", "reviewer", "--skill", "write-tests", "--agent", "agent/planner", "PROJ-1"])
+
+      expect(start_command).to have_received(:call).with("PROJ-1", prompt: nil, prompt_timeout: nil,
+        base: nil, yes: false, json: false, agents: ["reviewer", "agent/planner"], skills: ["write-tests"])
+      expect { cli.run(["start"]) }.to raise_error(FakeSystemExit)
+      expect(error_output.string).to include("--agent NAME").and include("--skill NAME")
+    end
+
     it "documents --play in launch and start help" do
       cli, _, error_output = build_test_cli
       expect { cli.run(["launch"]) }.to raise_error(FakeSystemExit)

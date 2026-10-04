@@ -3,13 +3,18 @@ require "time"
 
 module Workspace
   # The files of one library scope: a directory holding `<kind>/<name>.md`
-  # entries, each a copied file or a symlink to its source. There is no
-  # index; the directory is the store. Writes go through a temp file and a
-  # rename, so a reader never sees a half-written entry.
+  # entries and `skill/<name>/` directories, each a copy or a symlink to its
+  # source. There is no index; the directory is the store. Writes go through
+  # a temp file or directory and a rename, so a reader never sees a
+  # half-written entry.
   class LibraryStore
-    # The kinds an entry can have. A play is a document an agent reads and
-    # follows; a prompt is short text sent as typed.
-    KINDS = %w[play prompt].freeze
+    # The kinds an entry can have. An agent is a Claude Code subagent file; a
+    # play is a document an agent reads and follows; a prompt is short text
+    # sent as typed; a skill is a directory holding `SKILL.md`.
+    KINDS = %w[agent play prompt skill].freeze
+
+    # Kinds stored as a directory, and the file inside it that holds the body.
+    DIRECTORY_KINDS = {"skill" => "SKILL.md"}.freeze
 
     # Entry names: lowercase letters, digits and hyphens.
     NAME = /\A[a-z0-9]+(-[a-z0-9]+)*\z/
@@ -34,9 +39,17 @@ module Workspace
 
     # @param kind [String]
     # @param name [String]
-    # @return [String] where the entry lives, whether or not it exists
+    # @return [String] where the entry lives, whether or not it exists: the
+    #   file, or a skill's directory
     def path_for(kind, name)
-      File.join(@dir, kind, "#{name}.md")
+      DIRECTORY_KINDS.key?(kind) ? File.join(@dir, kind, name) : File.join(@dir, kind, "#{name}.md")
+    end
+
+    # @param kind [String]
+    # @param name [String]
+    # @return [String] the file holding the entry's body: the entry itself, or a skill's `SKILL.md`
+    def body_path(kind, name)
+      DIRECTORY_KINDS.key?(kind) ? File.join(path_for(kind, name), DIRECTORY_KINDS[kind]) : path_for(kind, name)
     end
 
     # @param kind [String, nil] only this kind
@@ -44,7 +57,8 @@ module Workspace
     def entries(kind: nil)
       kinds = kind ? [kind] : KINDS
       kinds.flat_map do |k|
-        Dir.glob(File.join(@dir, k, "*.md")).map { |path| File.basename(path, ".md") }
+        ext = DIRECTORY_KINDS.key?(k) ? "" : ".md"
+        Dir.glob(File.join(@dir, k, "*#{ext}")).map { |path| File.basename(path, ext) }
           .select { |name| name.match?(NAME) }.sort
           .map { |name| entry(k, name) }
       end
@@ -60,30 +74,48 @@ module Workspace
 
     # @param kind [String]
     # @param name [String]
-    # @return [String] the entry's body
+    # @return [String] the entry's body (a skill's `SKILL.md`)
     # @raise [Workspace::Error] code `library_source_missing` when the file (or a link's target) can't be read
     def read(kind, name)
-      File.read(path_for(kind, name))
+      File.read(body_path(kind, name))
     rescue SystemCallError => e
       raise Error.new("Can't read #{kind}/#{name}: #{e.message}", code: "library_source_missing",
         details: {"ref" => "#{kind}/#{name}", "path" => path_for(kind, name)})
     end
 
-    # Stores `body` as the entry, replacing a copy or a link.
+    # Stores `body` as the entry, replacing a copy or a link. A skill becomes
+    # a directory holding only `SKILL.md`.
     #
     # @param kind [String]
     # @param name [String]
     # @param body [String]
     # @return [void]
     def write(kind, name, body)
-      replace(kind, name) { |tmp| File.write(tmp, body) }
+      replace(kind, name) do |tmp|
+        if DIRECTORY_KINDS.key?(kind)
+          FileUtils.mkdir_p(tmp)
+          File.write(File.join(tmp, DIRECTORY_KINDS[kind]), body)
+        else
+          File.write(tmp, body)
+        end
+      end
+    end
+
+    # Stores a copy of the directory `source`, replacing a copy or a link.
+    #
+    # @param kind [String] a directory kind
+    # @param name [String]
+    # @param source [String] a directory; a link to one is followed
+    # @return [void]
+    def copy_tree(kind, name, source)
+      replace(kind, name) { |tmp| FileUtils.cp_r(File.realpath(source), tmp) }
     end
 
     # Stores a symlink to `target` as the entry, replacing a copy or a link.
     #
     # @param kind [String]
     # @param name [String]
-    # @param target [String] an absolute path
+    # @param target [String] an absolute path: a file, or a skill's directory
     # @return [void]
     def link(kind, name, target)
       replace(kind, name) { |tmp| File.symlink(target, tmp) }
@@ -95,25 +127,65 @@ module Workspace
     # @param name [String]
     # @return [void]
     def delete(kind, name)
-      File.unlink(path_for(kind, name))
+      self.class.remove(path_for(kind, name))
+    end
+
+    # What a file or a directory holds, to tell whether two are the same: a
+    # file's bytes, or a directory's files by relative path. Links are followed.
+    #
+    # @param path [String]
+    # @return [String, Hash{String=>String}]
+    def self.snapshot(path)
+      return File.binread(path) unless File.directory?(path)
+      root = File.realpath(path)
+      Dir.glob("**/*", File::FNM_DOTMATCH, base: root).sort
+        .select { |rel| File.file?(File.join(root, rel)) }
+        .to_h { |rel| [rel, File.binread(File.join(root, rel))] }
+    end
+
+    # Removes a file, a symlink (never its target) or a directory tree.
+    #
+    # @param path [String]
+    # @return [void]
+    def self.remove(path)
+      if File.directory?(path) && !File.symlink?(path)
+        FileUtils.rm_rf(path)
+      else
+        File.unlink(path)
+      end
     end
 
     private
 
+    # Builds the new entry at a temp path, then renames it into place. A
+    # directory can't be renamed over a link or a directory, so whatever is there
+    # is moved aside first, and put back if the rename fails.
     def replace(kind, name)
       path = path_for(kind, name)
       FileUtils.mkdir_p(File.dirname(path))
       tmp = "#{path}.tmp-#{Process.pid}"
       yield tmp
-      File.rename(tmp, path)
+      if File.exist?(path) || File.symlink?(path)
+        old = "#{path}.old-#{Process.pid}"
+        File.rename(path, old)
+      end
+      begin
+        File.rename(tmp, path)
+      rescue SystemCallError
+        File.rename(old, path) if old
+        old = nil
+        raise
+      end
+      self.class.remove(old) if old
     ensure
-      File.unlink(tmp) if tmp && (File.symlink?(tmp) || File.exist?(tmp))
+      self.class.remove(tmp) if tmp && (File.symlink?(tmp) || File.exist?(tmp))
     end
 
     def entry(kind, name)
       path = path_for(kind, name)
       link = File.symlink?(path) ? File.readlink(path) : nil
-      readable = File.file?(path) && File.readable?(path)
+      body = body_path(kind, name)
+      readable = File.file?(body) && File.readable?(body)
       stat = begin
         File.stat(path)
       rescue SystemCallError
@@ -123,7 +195,7 @@ module Workspace
         "kind" => kind, "name" => name, "ref" => "#{kind}/#{name}",
         "scope" => @scope, "project" => @project,
         "path" => path, "link" => link, "readable" => readable,
-        "description" => readable ? description(File.read(path)) : nil,
+        "description" => readable ? description(File.read(body)) : nil,
         "updated_at" => stat.mtime.utc.iso8601
       }
     end

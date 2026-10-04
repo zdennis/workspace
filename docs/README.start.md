@@ -15,6 +15,8 @@ workspace start [options] <jira-key|jira-url|pr-url|pr-ref|issue-url|branch>
 | `--prompt PROMPT` | Send an initial prompt to the coding agent once it is ready (up to 60s); exits 1 if it can't be sent. See [`launch`](README.launch.md#details) |
 | `--prompt-timeout DURATION` | How long to wait for the coding agent to be ready for `--prompt` (e.g. `90s`, `2m`, or a plain number of seconds); default 60s |
 | `--play NAME` | Send the agent a line pointing at a [library](README.library.md) play, then any `--prompt` text. See [Plays](#plays) |
+| `--agent NAME` | Copy a [library](README.library.md) agent into the worktree's `.claude/agents/`; repeatable. See [Agents and skills](#agents-and-skills) |
+| `--skill NAME` | Copy a library skill directory into the worktree's `.claude/skills/`; repeatable |
 | `--base REF` | Branch/ref a new branch is created from, instead of prompting |
 | `--yes` | Accept every default instead of prompting (e.g. the default base branch) |
 | `--title TITLE` | A human title for the workspace's task; it is the first `display_label` of its panes in [`sessions --json`](README.sessions.md). See [Tasks](#tasks) |
@@ -75,6 +77,19 @@ The agent gets the path rather than the text, so it can read the play again afte
 
 The file lives outside the worktree. An agent started without `--dangerously-skip-permissions` (the stock template passes it) asks before reading it.
 
+### Agents and skills
+
+`--agent NAME` and `--skill NAME` copy [library](README.library.md) entries into the worktree, where Claude Code loads them when the agent starts:
+
+| Kind | Copied to |
+|---|---|
+| agent | `.claude/agents/<name>.md` |
+| skill | `.claude/skills/<name>/`, every file in the skill's directory |
+
+Both flags repeat, and a name given twice is copied once. `NAME` is a bare name, or `agent/NAME` and `skill/NAME`; an entry of another kind is a usage error. Entries are looked up like `--play`, the parent project's library first, then global, and checked before the worktree is created, so an unknown name (`unknown_library_entry`) or an unreadable one (`library_source_missing`) fails with nothing changed.
+
+A linked entry is copied too, from the file it points to: change the library entry and run `start` again to refresh the copy. An untracked file or directory already at that path is replaced. One the repo tracks, compared ignoring case as macOS volumes do, is never touched: `start` notes that it kept it, on stderr or in `warnings` under `--json`, and does not fail. Nothing is copied when `.claude`, `.claude/agents` or `.claude/skills` is a symlink, since git can not see tracked files through it and the copy would land outside the worktree; that is noted the same way. If git can not say whether a path is tracked, `start` stops with an error after the worktree and its config are made, before launching; run it again once git works. Each path copied is added to the repo's `info/exclude` so `git status` stays clean. For a worktree that is the main checkout's `.git/info/exclude`, which every worktree of the repo shares. An existing or adopted worktree gets the same copies. The exclude lines stay after the worktree is removed, so a file of the same name that you later create in the main checkout is hidden from `git status` until you delete its line. Symlinks inside a skill directory are copied as symlinks, so a relative one may not resolve in the worktree.
+
 ### Tasks
 
 `start` records a task for the new workspace: its title (`--title`, optional), the input it started from (`ref`), its branch and worktree path. The record is one JSON file, `<id>.json`, under `~/.local/state/workspace/.tasks/` (`$XDG_STATE_HOME/workspace/.tasks/`), mode 0600, written under a lock so concurrent `start`s never clobber each other. It lives there rather than in the worktree because removing a worktree deletes its untracked files.
@@ -109,6 +124,13 @@ On success, one line of JSON on stdout (nothing else is written to stdout under
   `delivered` is whether the prompt carrying it was sent, and `pane` is the tmux
   pane id (`%5`) bound to the play, or `null` when it was not delivered or the
   pane could not be bound
+- `agents`, `skills` — present only with `--agent` or `--skill`: one object per entry,
+  `{"ref", "scope", "source", "path", "outcome"}`. `source` is the library path
+  (a skill's directory), `path` is where it was copied in the worktree, and `outcome` is
+  `copied`, `replaced` (an untracked copy was there), `unchanged`, `skipped_tracked`
+  (the repo tracks that path, so it was kept), or `skipped_linked` (`.claude` or the
+  directory under it is a symlink); each skip also adds a `warnings` line. They sit beside
+  `play`, not inside it (see [Agents and skills](#agents-and-skills))
 - `headless` — whether the session was started headless (see
   [`launch`](README.launch.md#headless))
 - `session_reused` — present only when the workspace's tmux session was
@@ -173,6 +195,9 @@ workspace start PROJ-123 --prompt "Fix the login bug"
 
 # Point the agent at a library play, with a note after it
 workspace start PROJ-123 --play kickoff --prompt "Start at step 2."
+
+# Copy a library agent and skill into the worktree
+workspace start PROJ-123 --agent reviewer --skill write-tests
 
 # Start in the background with plain tmux, e.g. from CI
 workspace start PROJ-123 --headless --yes --json
