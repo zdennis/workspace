@@ -6,6 +6,7 @@ Run the long-lived agent for a project. The agent registers with work-coordinato
 
 ```sh
 workspace agentd [PROJECT] [options]
+workspace agentd restart [PROJECT] [--wc-socket PATH] [--json]
 ```
 
 ## Options
@@ -17,10 +18,27 @@ workspace agentd [PROJECT] [options]
 | `--wc-socket PATH` | Override the path to the work-coordinator socket |
 | `-f`, `--force` | Terminate a running agent for this workspace and take its place |
 | `--ensure` | Start the agent in the background unless one is already answering, then return. Can't be combined with `--force` |
+| `restart` | Subcommand: stop the running agent and start a new one in the background (see [restart](#restart)) |
+
+## restart
+
+```sh
+workspace agentd restart [PROJECT] [--name NAME] [--wc-socket PATH] [--json]
+```
+
+`agentd restart` stops the agent running for the workspace and starts a new one in the background. It is the same command as [`workspace daemon restart`](README.daemon.md#restart) under the name people look for, and that page has the details: which process is stopped and when nothing is, the `--json` action document (`restarted` with `old_pid`, or `started` when none was running), and the failure reasons.
+
+It differs from `--force` in one way: it does not hold the terminal. `--force` replaces the running agent with one that runs in your terminal until you stop it; `restart` starts the new agent detached, the way `--ensure` does, with its output in the daemon log (`workspace daemon log`), and returns.
+
+The new agent keeps the work-coordinator socket the old one was started with. `--wc-socket PATH` gives it another; a relative path is made absolute from the current directory.
+
+`restart` is the subcommand only as the first word that isn't an option. A workspace that is itself named `restart` is reached with `--name`: `workspace agentd --name restart` runs its agent, and `workspace agentd restart --name restart` or `workspace agentd restart restart` restarts it.
+
+`restart` takes neither `--force` nor `--ensure`. With either one the word is a workspace name, as it was before the subcommand existed: `workspace agentd --ensure restart` and `workspace agentd -f restart` start the agent for a workspace named `restart`.
 
 ## Details
 
-To check on, restart or read the log of a running agent without holding a terminal, use [`workspace daemon`](README.daemon.md).
+To check on or read the log of a running agent without holding a terminal, use [`workspace daemon`](README.daemon.md).
 
 **`--ensure`** — makes sure the workspace has an agent without taking the terminal: if one answers on the socket it prints `agentd for <name> is already running` and exits 0; otherwise it starts one detached (output in the daemon log, `~/.local/workspace/run/workspace-<name>.log`), waits up to 5 seconds for it to answer, prints `Started agentd for <name>` and exits 0. A leftover socket file from a dead agent doesn't count as running. Concurrent calls, including `workspace launch` starting the same workspace, are serialized on `workspace-<name>.lock` in that directory, so they never start two agents. It exits 1 with the reason when the agent can't be started or doesn't answer in time, or when the project's pipeline config is invalid. `workspace launch` runs the same check for each project it launches; a failure there is a warning and the launch carries on. `--wc-socket` is passed through to a newly started agent. Only `--ensure` callers take the lock: a plain `workspace agentd` started by hand at the same instant can still race one.
 
@@ -169,4 +187,10 @@ workspace agentd --name scooter --wc-socket /tmp/wc-dev.sock
 
 # Replace the agent already running for this workspace
 workspace agentd --force
+
+# Replace it with one running in the background, and get the terminal back
+workspace agentd restart
+
+# The same for a named project, as one JSON action document
+workspace agentd restart scooter --json
 ```

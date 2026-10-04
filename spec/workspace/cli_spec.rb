@@ -3079,6 +3079,194 @@ RSpec.describe Workspace::CLI do
       end
     end
 
+    describe "#run agentd restart" do
+      let(:daemon_command) { CLITestHelpers::FakeDaemonCommand.new }
+      let(:agent_command) { CLITestHelpers::FakeAgentCommand.new }
+      let(:detector) { instance_double(Workspace::ProjectDetector, detect: "detected-ws") }
+      let(:built) { build_test_cli(daemon_command: daemon_command, agent_command: agent_command, project_detector: detector, working_dir: "/some/dir") }
+      let(:cli) { built[0] }
+      let(:output) { built[1] }
+      let(:error_output) { built[2] }
+
+      it "restarts through the daemon command, the way `daemon restart` does, and never runs a daemon in the terminal" do
+        cli.run(["agentd", "restart", "app"])
+        cli.run(["agentd", "restart", "--name", "other", "--wc-socket", "/tmp/wc.sock"])
+        cli.run(["agentd", "--name", "third", "restart"])
+
+        expect(daemon_command.calls).to eq([
+          {restart: "app", wc_socket: nil}, {restart: "other", wc_socket: "/tmp/wc.sock"}, {restart: "third", wc_socket: nil}
+        ])
+        expect(agent_command.calls).to eq([])
+        expect(output.string.lines.first).to eq("Restarted agentd for app (pid 11 -> 22)\n")
+      end
+
+      it "restarts the detected workspace when none is named" do
+        cli.run(["agentd", "restart"])
+
+        expect(detector).to have_received(:detect).with("/some/dir")
+        expect(daemon_command.calls).to eq([{restart: "detected-ws", wc_socket: nil}])
+      end
+
+      it "keeps a workspace named restart reachable through --name" do
+        cli.run(["agentd", "--name", "restart"])
+        cli.run(["agentd", "restart", "--name", "restart"])
+        cli.run(["agentd", "restart", "restart"])
+
+        expect(agent_command.calls).to eq([{name: "restart", wc_socket: nil}])
+        expect(daemon_command.calls).to eq([{restart: "restart", wc_socket: nil}, {restart: "restart", wc_socket: nil}])
+      end
+
+      it "says which work-coordinator socket the new daemon kept when the caller named none" do
+        daemon_command.restart_result = Workspace::Commands::Daemon::Result.new("restarted", 11, 22, nil, nil, "/tmp/wc-dev.sock")
+
+        cli.run(["agentd", "restart", "app"])
+
+        expect(output.string).to eq("Restarted agentd for app (pid 11 -> 22)\nKept its work-coordinator socket: /tmp/wc-dev.sock\n")
+      end
+
+      it "doesn't repeat a socket the caller named" do
+        daemon_command.restart_result = Workspace::Commands::Daemon::Result.new("restarted", 11, 22, nil, nil, "/tmp/wc.sock")
+
+        cli.run(["agentd", "restart", "app", "--wc-socket", "/tmp/wc.sock"])
+
+        expect(output.string).to eq("Restarted agentd for app (pid 11 -> 22)\n")
+      end
+
+      it "prints one action document under --json, with the old pid, the new pid and the socket" do
+        daemon_command.restart_result = Workspace::Commands::Daemon::Result.new("restarted", 11, 22, nil, nil, "/tmp/wc-dev.sock")
+
+        cli.run(["agentd", "restart", "app", "--json"])
+
+        doc = JSON.parse(output.string.lines.last)
+        expect(doc).to include("ok" => true, "action" => "restart", "status" => "ok", "summary" => {"restarted" => 1})
+        expect(doc["results"]).to eq([{"workspace" => "app", "outcome" => "restarted", "reason" => nil, "message" => nil,
+                                       "old_pid" => 11, "pid" => 22, "wc_socket" => "/tmp/wc-dev.sock"}])
+      end
+
+      it "reports a start with nothing to stop as started, with a null old pid" do
+        daemon_command.restart_result = Workspace::Commands::Daemon::Result.new("started", nil, 22)
+
+        cli.run(["agentd", "--json", "restart", "app"])
+
+        expect(JSON.parse(output.string.lines.last)["results"].first).to include("outcome" => "started", "old_pid" => nil, "pid" => 22, "wc_socket" => nil)
+      end
+
+      it "exits 1 with the reason on stderr when the restart fails, and as a failed document under --json" do
+        daemon_command.restart_result = Workspace::Commands::Daemon::Result.new("failed", 11, nil, "not_stopped", "still running")
+
+        expect { cli.run(["agentd", "restart", "app"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+        expect(error_output.string).to include("Error: still running")
+        expect(output.string).to eq("")
+
+        expect { cli.run(["agentd", "restart", "app", "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+        doc = JSON.parse(output.string)
+        expect(doc).to include("ok" => true, "status" => "failed")
+        expect(doc["results"].first).to include("outcome" => "failed", "reason" => "not_stopped", "old_pid" => 11)
+      end
+
+      it "takes restart for the workspace's name with --force or --ensure, as before the subcommand existed" do
+        ensure_command = double("ensure_agent", call: Workspace::Commands::EnsureAgent::Result.new(:started))
+        cli, output, _ = build_test_cli(daemon_command: daemon_command, agent_command: agent_command, ensure_agent_command: ensure_command)
+
+        cli.run(["agentd", "--ensure", "restart"])
+        cli.run(["agentd", "restart", "--ensure"])
+        cli.run(["agentd", "-f", "restart"])
+        cli.run(["agentd", "restart", "--force"])
+
+        expect(ensure_command).to have_received(:call).with(name: "restart", wc_socket: nil).twice
+        expect(output.string).to eq("Started agentd for restart\n" * 2)
+        expect(agent_command.calls).to eq([{name: "restart", wc_socket: nil}] * 2)
+        expect(daemon_command.calls).to eq([])
+      end
+
+      it "takes a restart that is --wc-socket's value for the socket, not the subcommand" do
+        cli.run(["agentd", "--wc-socket", "restart"])
+
+        expect(agent_command.calls).to eq([{name: "detected-ws", wc_socket: "restart"}])
+        expect(daemon_command.calls).to eq([])
+      end
+
+      it "refuses an extra argument, also beside --force or --ensure" do
+        {
+          ["agentd", "restart", "app", "extra"] => "Unexpected argument: extra",
+          ["agentd", "restart", "app", "--name", "other"] => "Unexpected argument: app",
+          ["agentd", "restart", "app", "--force"] => "Unexpected argument: app",
+          ["agentd", "restart", "app", "--ensure"] => "Unexpected argument: app"
+        }.each do |argv, message|
+          expect { cli.run(argv) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }, argv.inspect
+          expect(error_output.string).to include(message), argv.inspect
+        end
+        expect(daemon_command.calls).to eq([])
+        expect(agent_command.calls).to eq([])
+      end
+
+      it "makes a relative --wc-socket absolute, for agentd restart and daemon restart alike" do
+        cli.run(["agentd", "restart", "app", "--wc-socket", "run/wc.sock"])
+        cli.run(["daemon", "restart", "app", "--wc-socket", "./wc.sock"])
+
+        expect(daemon_command.calls).to eq([{restart: "app", wc_socket: "/some/dir/run/wc.sock"}, {restart: "app", wc_socket: "/some/dir/wc.sock"}])
+      end
+
+      it "reports an unknown workspace as a JSON error document under --json" do
+        daemon_command.error = Workspace::Error.new("Unknown workspace 'nope'", code: "unknown_workspace", details: {"name" => "nope"})
+
+        expect { cli.run(["agentd", "restart", "nope", "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+
+        expect(JSON.parse(output.string)).to include("ok" => false, "code" => "unknown_workspace", "details" => {"name" => "nope"})
+      end
+
+      it "puts the socket to name on the retry in the failed row" do
+        daemon_command.restart_result = Workspace::Commands::Daemon::Result.new("failed", 11, nil, "not_stopped", "still running", "/tmp/wc-dev.sock")
+
+        expect { cli.run(["agentd", "restart", "app", "--json"]) }.to raise_error(FakeSystemExit)
+
+        expect(JSON.parse(output.string.lines.last)["results"].first).to include("outcome" => "failed", "wc_socket" => "/tmp/wc-dev.sock")
+        expect(error_output.string).not_to include("Kept its work-coordinator socket")
+      end
+
+      it "reports a usage error as a JSON error document under --json" do
+        expect { cli.run(["agentd", "restart", "app", "--bogus", "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+
+        expect(JSON.parse(output.string)).to include("ok" => false, "code" => "usage", "error" => "invalid option: --bogus")
+        expect(daemon_command.calls).to eq([])
+      end
+
+      it "asks for a workspace when none is named or detected" do
+        allow(detector).to receive(:detect).and_return(nil)
+
+        expect { cli.run(["agentd", "restart"]) }.to raise_error(FakeSystemExit)
+        expect(error_output.string).to include("Missing workspace name", "workspace agentd restart [PROJECT]")
+      end
+
+      it "keeps --json for restart: plain agentd refuses it" do
+        expect { cli.run(["agentd", "app", "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+        expect(JSON.parse(output.string)).to include("ok" => false, "code" => "usage", "error" => "invalid option: --json")
+        expect(agent_command.calls).to eq([])
+      end
+
+      it "shows its own help, and agentd's help and the main help name it" do
+        cli.run(["agentd", "restart", "--help"])
+        expect(output.string).to include("Usage: workspace agentd restart [PROJECT]", "--wc-socket PATH", "--json")
+        expect(daemon_command.calls).to eq([])
+
+        output.truncate(0)
+        cli.run(["help"])
+        expect(output.string).to match(/^\s+agentd\s.*agentd restart/)
+
+        # agentd's own help, as its usage error prints it: OptionParser's built-in --help exits the process.
+        allow(detector).to receive(:detect).and_return(nil)
+        expect { cli.run(["agentd"]) }.to raise_error(FakeSystemExit)
+        expect(error_output.string).to include("workspace agentd restart [PROJECT] [--wc-socket PATH] [--json]", "workspace agentd restart --help")
+      end
+
+      it "says so when no daemon command is wired" do
+        cli, _, error_output = build_test_cli
+
+        expect { cli.run(["agentd", "restart", "app"]) }.to raise_error(FakeSystemExit)
+        expect(error_output.string).to include("agentd restart is not available")
+      end
+    end
+
     it "dispatches to capture_command with explicit project and default options" do
       capture_command = CLITestHelpers::FakeCaptureCommand.new
       cli, _, _ = build_test_cli(capture_command: capture_command)
@@ -3851,7 +4039,7 @@ RSpec.describe Workspace::CLI do
 
       doc = JSON.parse(output.string.lines.last)
       expect(doc).to include("ok" => true, "action" => "restart", "status" => "ok")
-      expect(doc["results"]).to eq([{"workspace" => "app", "outcome" => "restarted", "reason" => nil, "message" => nil, "old_pid" => 11, "pid" => 22}])
+      expect(doc["results"]).to eq([{"workspace" => "app", "outcome" => "restarted", "reason" => nil, "message" => nil, "old_pid" => 11, "pid" => 22, "wc_socket" => nil}])
     end
 
     it "exits 1 with the reason on stderr when the restart fails" do

@@ -385,7 +385,7 @@ module Workspace
         Subcommands:
           add             Add a tmuxinator config for a project directory
           agent           Drive a workspace agent: agent run "prompt" (umbrella)
-          agentd          Run the long-lived workspace agent daemon for a project
+          agentd          Run the long-lived workspace agent daemon for a project, or replace it (agentd restart)
           agent-run       Send a message to a running agent, or type into a pane (command, inject, restart, send)
           alfred          Manage the Alfred workflow for workspace focus
           ask             Record a question an unattended agent hit, with its default
@@ -1366,17 +1366,34 @@ module Workspace
       HELP
     end
 
+    AGENTD_RUN_FLAGS = %w[-f --force --ensure].freeze
+
+    # `restart` is a subcommand only as the first word that isn't a flag or a
+    # flag's value, so `--name restart` still names a workspace. With --force
+    # or --ensure, which restart doesn't take, it is the workspace's name, as
+    # it was before the subcommand existed (`agentd --ensure restart`).
     def cmd_agentd(args)
+      index = agent_subcommand_index(args)
+      if index && args[index] == "restart" && (args & AGENTD_RUN_FLAGS).empty?
+        return cmd_agentd_restart(args[0...index] + args[(index + 1)..])
+      end
+
       name = nil
       wc_socket = nil
       force = false
       ensure_running = false
 
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace agentd [PROJECT] [options]"
+        opts.banner = "Usage: workspace agentd [PROJECT] [options]\n" \
+          "       workspace agentd restart [PROJECT] [--wc-socket PATH] [--json]"
         opts.separator ""
         opts.separator "Run the long-lived workspace agent daemon for a project."
         opts.separator "Registers with the work-coordinator and serves commands until terminated."
+        opts.separator ""
+        opts.separator "Subcommands:"
+        opts.separator "  restart    Stop the agent running for the workspace and start a new one in the background;"
+        opts.separator "             see `workspace agentd restart --help`. A workspace named restart needs --name,"
+        opts.separator "             except with --force or --ensure, where restart is the workspace"
         opts.separator ""
         opts.separator "Options:"
         opts.on("--name NAME", "Workspace name (defaults to the detected project or PROJECT)") { |v| name = v }
@@ -1389,6 +1406,7 @@ module Workspace
         opts.separator "  workspace agentd scooter --wc-socket /tmp/wc-dev.sock    # named project, non-default coordinator"
         opts.separator "  workspace agentd --force    # replace the agent already running for this workspace"
         opts.separator "  workspace agentd --ensure   # make sure one is running; exits 0 if it already was"
+        opts.separator "  workspace agentd restart    # stop the running agent and start a new one in the background"
       end
       parser.parse!(args)
 
@@ -1403,6 +1421,54 @@ module Workspace
       end
 
       @exit_handler.exit(1) unless @agent_command.call(name: name, wc_socket: wc_socket, force: force)
+    end
+
+    def agentd_restart_parser(options)
+      OptionParser.new do |opts|
+        opts.banner = "Usage: workspace agentd restart [PROJECT] [--wc-socket PATH] [--json]"
+        opts.separator ""
+        opts.separator "Stop the agent daemon running for the workspace (SIGTERM, even one that no longer answers) and"
+        opts.separator "start a new one in the background, the way --ensure does: the terminal is not held, and the"
+        opts.separator "new agent's output goes to the daemon log (`workspace daemon log`). An agent run in a terminal"
+        opts.separator "is replaced by a background one. With none running, just start one. The same as"
+        opts.separator "`workspace daemon restart`."
+        opts.separator ""
+        opts.separator "The new agent keeps the work-coordinator socket the old one was started with, unless"
+        opts.separator "--wc-socket names another."
+        opts.separator ""
+        opts.on("--name NAME", "Workspace name (defaults to PROJECT or the project detected from the current directory)") { |v| options[:name] = v }
+        opts.on("--wc-socket PATH", "Work-coordinator socket for the new agent (default: the old agent's)") { |v| options[:wc_socket] = v }
+        opts.on("--json", "Print one JSON action document (see docs/README.daemon.md)") { options[:json] = true }
+        opts.on("-h", "--help", "Show this help") { options[:help] = true }
+        opts.separator ""
+        opts.separator "restart takes neither --force nor --ensure: with either one, `agentd restart` runs the agent"
+        opts.separator "for a workspace named restart."
+        opts.separator ""
+        opts.separator "Examples:"
+        opts.separator "  workspace agentd restart    # the project detected from the current directory"
+        opts.separator "  workspace agentd restart scooter --json"
+        opts.separator "  workspace agentd restart --name restart    # a workspace that is itself named restart"
+      end
+    end
+
+    def cmd_agentd_restart(args)
+      options = {json: false}
+      given = args.dup
+      parser = agentd_restart_parser(options)
+      parser.parse!(args)
+      return @output.puts(parser.help) if options[:help]
+
+      raise Error, "agentd restart is not available: no daemon command was wired" unless @daemon_command
+
+      name = options[:name] || args.shift
+      raise UsageError, "Unexpected argument: #{args.first}. Run 'workspace agentd restart --help'." if args.any?
+      name ||= @project_detector.detect(@working_dir)
+      raise UsageError, "Missing workspace name.\n\n#{parser.help}" unless name
+
+      daemon_restart(name, options)
+    rescue OptionParser::ParseError, UsageError => e
+      raise unless json_requested?(options[:json], given)
+      emit_json_error(Commands::Daemon::JSON_SCHEMA_VERSION, e, message: e.message.lines.first.strip)
     end
 
     def ensure_agent(name, wc_socket)
@@ -3121,7 +3187,7 @@ module Workspace
         opts.separator ""
         opts.on("--name NAME", "Workspace name (defaults to WORKSPACE or the project detected from the current directory)") { |v| options[:name] = v }
         opts.on("--lines N", Integer, "log: how many trailing lines (default #{Commands::Daemon::DEFAULT_LINES})") { |v| options[:lines] = v }
-        opts.on("--wc-socket PATH", "restart: work-coordinator socket for the new daemon") { |v| options[:wc_socket] = v }
+        opts.on("--wc-socket PATH", "restart: work-coordinator socket for the new daemon (default: the old daemon's)") { |v| options[:wc_socket] = v }
         opts.on("--json", "Print one JSON document (see docs/README.daemon.md)") { options[:json] = true }
         opts.on("-h", "--help", "Show this help") { options[:help] = true }
         opts.separator ""
@@ -3162,18 +3228,23 @@ module Workspace
       emit_json_error(Commands::Daemon::JSON_SCHEMA_VERSION, e, message: e.message.lines.first.strip)
     end
 
+    # Shared by `daemon restart` and `agentd restart`. The caller's socket
+    # path is made absolute so a later restart can read it back from the
+    # daemon's command line.
     def daemon_restart(name, options)
+      wc_socket = options[:wc_socket] && File.expand_path(options[:wc_socket], @working_dir)
       run_action("restart", json: options[:json]) do
-        restarted = @daemon_command.restart(name: name, wc_socket: options[:wc_socket])
+        restarted = @daemon_command.restart(name: name, wc_socket: wc_socket)
         if restarted.ok?
           verb = (restarted.outcome == "restarted") ? "Restarted" : "Started"
           pids = [restarted.old_pid, restarted.pid].compact.join(" -> ")
           @output.puts "#{verb} agentd for #{name}#{" (pid #{pids})" unless pids.empty?}"
+          @output.puts "Kept its work-coordinator socket: #{restarted.wc_socket}" if restarted.wc_socket && !options[:wc_socket]
         else
           @error_output.puts "Error: #{restarted.message}"
         end
         row = action_row(name, restarted.outcome, reason: restarted.reason, message: restarted.message,
-          old_pid: restarted.old_pid, pid: restarted.pid)
+          old_pid: restarted.old_pid, pid: restarted.pid, wc_socket: restarted.wc_socket)
         {exit_code: restarted.ok? ? 0 : 1, results: [row]}
       end
     end

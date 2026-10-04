@@ -606,6 +606,7 @@ module CLITestHelpers
 
     def restart(name:, wc_socket: nil)
       @calls << {restart: name, wc_socket: wc_socket}
+      raise @error if @error
       @restart_result
     end
   end

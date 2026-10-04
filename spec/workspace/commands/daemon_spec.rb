@@ -120,6 +120,13 @@ RSpec.describe Workspace::Commands::Daemon do
       expect(document["pid"]).to be_nil
     end
 
+    it "gives a null pid, and still answers, when lsof doesn't answer in time" do
+      up[0] = true
+
+      expect(build(pid_finder: ->(_path) {}).status(name: "api", json: true)).to eq(exit_code: 0)
+      expect(document).to include("running" => true, "pid" => nil)
+    end
+
     it "prints text for a person, with the next step when stopped" do
       command.status(name: "api")
 
@@ -418,6 +425,213 @@ RSpec.describe Workspace::Commands::Daemon do
       pids.replace([[4242], []])
 
       expect(command.restart(name: "api")).to have_attributes(outcome: "restarted", old_pid: 4242, pid: nil)
+    end
+
+    it "refuses, signalling and starting nothing, when lsof doesn't answer in time" do
+      [true, false].each do |answering|
+        up[0] = answering
+
+        result = build(pid_finder: ->(_path) {}).restart(name: "api")
+
+        expect(result).to have_attributes(outcome: "failed", reason: "not_stopped", old_pid: nil)
+        expect(result.message).to include("lsof did not answer within 2s", "nothing was stopped")
+      end
+      expect(signals).to eq([])
+      expect(ensure_calls).to eq([])
+    end
+
+    describe "the work-coordinator socket" do
+      def restart_with(args, **options)
+        process_table[4242] = {pid: 4242, args: args}
+        command.restart(name: "api", **options)
+      end
+
+      it "starts the new daemon with the socket the old one was started with" do
+        result = restart_with("#{agentd_args} --wc-socket /tmp/wc-dev.sock")
+
+        expect(ensure_calls).to eq([{name: "api", wc_socket: "/tmp/wc-dev.sock"}])
+        expect(result).to have_attributes(outcome: "restarted", wc_socket: "/tmp/wc-dev.sock")
+      end
+
+      it "reads the --wc-socket=PATH form and a flag that follows the path" do
+        restart_with("ruby /opt/bin/workspace agentd --wc-socket=/tmp/wc-dev.sock --name api")
+        expect(ensure_calls.last).to eq(name: "api", wc_socket: "/tmp/wc-dev.sock")
+
+        up[0] = true
+        alive_pids << 4242
+        restart_with("ruby /opt/bin/workspace agentd --wc-socket /tmp/wc-dev.sock --force --name api")
+        expect(ensure_calls.last).to eq(name: "api", wc_socket: "/tmp/wc-dev.sock")
+      end
+
+      it "does not take a positional workspace name after the path for part of it" do
+        restart_with("ruby /opt/bin/workspace agentd --wc-socket /tmp/wc-dev.sock api")
+
+        expect(ensure_calls).to eq([{name: "api", wc_socket: "/tmp/wc-dev.sock"}])
+      end
+
+      it "prefers the socket the caller names over the old daemon's" do
+        result = restart_with("#{agentd_args} --wc-socket /tmp/old.sock", wc_socket: "/tmp/new.sock")
+
+        expect(ensure_calls).to eq([{name: "api", wc_socket: "/tmp/new.sock"}])
+        expect(result.wc_socket).to eq("/tmp/new.sock")
+      end
+
+      it "starts the new daemon on the default socket when the old one named none" do
+        result = restart_with(agentd_args)
+
+        expect(ensure_calls).to eq([{name: "api", wc_socket: nil}])
+        expect(result.wc_socket).to be_nil
+      end
+
+      it "refuses, stopping nothing, when the old daemon's socket path can't be read back" do
+        {
+          "a path with a space" => "#{agentd_args} --wc-socket /tmp/my sockets/wc.sock",
+          "a relative path" => "#{agentd_args} --wc-socket wc.sock",
+          "no value" => "#{agentd_args} --wc-socket"
+        }.each do |label, args|
+          result = restart_with(args)
+
+          expect(result).to have_attributes(outcome: "failed", reason: "wc_socket_unknown", old_pid: 4242), label
+          expect(result.message).to include("nothing was stopped", "workspace daemon restart api --wc-socket PATH"), label
+          expect(result.wc_socket).to be_nil, label
+        end
+        expect(signals).to eq([])
+        expect(ensure_calls).to eq([])
+      end
+
+      it "reads the flag in the abbreviations the daemon's own parser takes" do
+        ["--wc /tmp/wc-dev.sock", "--wc-sock=/tmp/wc-dev.sock", "--w /tmp/wc-dev.sock"].each do |flag|
+          up[0] = true
+          alive_pids << 4242 unless alive_pids.include?(4242)
+          restart_with("ruby /opt/bin/workspace agentd --name api #{flag}")
+
+          expect(ensure_calls.last).to eq({name: "api", wc_socket: "/tmp/wc-dev.sock"}), flag
+        end
+      end
+
+      it "reads the last --wc-socket when the flag was given twice, as the daemon did" do
+        restart_with("#{agentd_args} --wc-socket /tmp/first.sock --wc-socket /tmp/last.sock")
+
+        expect(ensure_calls).to eq([{name: "api", wc_socket: "/tmp/last.sock"}])
+      end
+
+      # ps joins argv with spaces, so these can't be told from the shapes they
+      # look like. Documented in docs/README.daemon.md; --wc-socket PATH is the way out.
+      it "misreads a path with a space whose tail looks like the workspace name or a flag" do
+        restart_with("ruby /opt/bin/workspace agentd api --wc-socket /tmp/wc api")
+        expect(ensure_calls.last).to eq(name: "api", wc_socket: "/tmp/wc")
+
+        up[0] = true
+        alive_pids << 4242
+        restart_with("#{agentd_args} --wc-socket /a -b/wc.sock")
+        expect(ensure_calls.last).to eq(name: "api", wc_socket: "/a")
+      end
+
+      it "keeps a trailing word that equals the name as part of the path when --name gave the name, and refuses" do
+        result = restart_with("#{agentd_args} --wc-socket /tmp/wc api")
+
+        expect(result.reason).to eq("wc_socket_unknown")
+        expect(signals).to eq([])
+      end
+
+      it "names the socket in the message and the result when the old daemon doesn't stop in time" do
+        process_table[4242] = {pid: 4242, args: "#{agentd_args} --wc-socket /tmp/wc-dev.sock"}
+
+        result = build(signaller: ->(*) {}).restart(name: "api")
+
+        expect(result).to have_attributes(outcome: "failed", reason: "not_stopped", wc_socket: "/tmp/wc-dev.sock")
+        expect(result.message).to include("workspace daemon restart api --wc-socket /tmp/wc-dev.sock")
+      end
+
+      it "names the socket when the old daemon was stopped and the new one didn't start" do
+        {invalid_config: "invalid_config", failed: "start_failed"}.each do |status, reason|
+          up[0] = true
+          alive_pids << 4242 unless alive_pids.include?(4242)
+          allow(ensure_agent).to receive(:call).and_return(Workspace::Commands::EnsureAgent::Result.new(status, "no answer"))
+
+          result = restart_with("#{agentd_args} --wc-socket /tmp/wc-dev.sock")
+
+          expect(result).to have_attributes(outcome: "failed", reason: reason, wc_socket: "/tmp/wc-dev.sock"), reason
+          expect(result.message).to include("workspace daemon restart api --wc-socket /tmp/wc-dev.sock"), reason
+        end
+      end
+
+      it "adds no socket hint to a failure when there is no socket to name" do
+        result = build(signaller: ->(*) {}).restart(name: "api")
+
+        expect(result).to have_attributes(reason: "not_stopped", wc_socket: nil)
+        expect(result.message).not_to include("--wc-socket")
+      end
+
+      it "reports no socket when another caller started the daemon between the stop and the start" do
+        allow(ensure_agent).to receive(:call) do
+          up[0] = true
+          Workspace::Commands::EnsureAgent::Result.new(:running)
+        end
+
+        result = restart_with("#{agentd_args} --wc-socket /tmp/wc-dev.sock")
+
+        expect(result).to have_attributes(outcome: "restarted", old_pid: 4242, wc_socket: nil)
+      end
+
+      it "restarts a daemon whose socket path can't be read back when the caller names one" do
+        result = restart_with("#{agentd_args} --wc-socket /tmp/my sockets/wc.sock", wc_socket: "/tmp/my sockets/wc.sock")
+
+        expect(result).to have_attributes(outcome: "restarted", wc_socket: "/tmp/my sockets/wc.sock")
+        expect(signals).to eq([["TERM", 4242]])
+      end
+    end
+  end
+
+  describe "finding the socket's processes with lsof" do
+    let(:pid_file) { File.join(tmpdir, "lsof.pid") }
+
+    def fake_lsof(body)
+      File.join(tmpdir, "lsof").tap do |path|
+        File.write(path, "#!/bin/sh\n#{body}\n")
+        File.chmod(0o755, path)
+      end
+    end
+
+    def status_pid(**overrides)
+      up[0] = true
+      described_class.new(config: config, project_config: project_config, ensure_agent: ensure_agent, output: output, **overrides)
+        .status(name: "api", json: true)
+      document["pid"]
+    end
+
+    it "asks `lsof -t SOCKET` and reads the pid it prints" do
+      lsof = fake_lsof(%([ "$1" = "-t" ] && [ "$2" = "#{socket_path}" ] || exit 1\necho 4242))
+
+      expect(status_pid(lsof_command: [lsof, "-t"])).to eq(4242)
+    end
+
+    it "takes no output and exit status 1, as lsof gives when no process has the file open, for no pid" do
+      expect(status_pid(lsof_command: [fake_lsof("exit 1"), "-t"])).to be_nil
+    end
+
+    it "reads every pid when lsof prints several, one per line, and refuses to pick one" do
+      lsof = fake_lsof("echo 4242\necho 5000")
+      up[0] = true
+      command = described_class.new(config: config, project_config: project_config, ensure_agent: ensure_agent, process_tree: process_tree,
+        signaller: signaller, lsof_command: [lsof, "-t"], output: output)
+
+      result = command.restart(name: "api")
+
+      expect(result.reason).to eq("not_stopped")
+      expect(result.message).to include("2 processes have its socket open")
+      expect(signals).to eq([])
+    end
+
+    it "takes a missing lsof for no pid" do
+      expect(status_pid(lsof_command: [File.join(tmpdir, "no-such-lsof"), "-t"])).to be_nil
+    end
+
+    it "gives up on an lsof that hangs, kills it, and reports no pid" do
+      lsof = fake_lsof("echo $$ > #{pid_file}\nexec sleep 30")
+
+      expect(status_pid(lsof_command: [lsof, "-t"], lsof_timeout: 0.5)).to be_nil
+      expect { Process.kill(0, File.read(pid_file).to_i) }.to raise_error(Errno::ESRCH)
     end
   end
 end
