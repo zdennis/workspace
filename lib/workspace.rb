@@ -463,8 +463,11 @@ module Workspace
       process_tree: process_tree, agent_ensurer: ensure_agent_command, output: output, error_output: error_output)
 
     context_store = ContextStore.new(path: config.context_store_path, logger: logger)
+    # The reader takes its own limiter, separate from the monitor's: it serves
+    # `sessions` requests rather than polls, and its busy reads fall back to a
+    # cached reading instead of skipping.
     context_reader = ContextReader.new(context_store: context_store, project_settings: project_settings, tmux: tmux, logger: logger,
-      lock_holder: lock_holder)
+      lock_holder: lock_holder, scan_slots: ScanSlotLimiter.new(dir: File.join(config.state_dir, "scan-slots"), logger: logger))
     statusline_command = Commands::Statusline.new(context_store: context_store, renderer: StatuslineRenderer.new(logger: logger),
       project_settings: project_settings, logger: logger, output: output, input: input, terminator: process_group_terminator,
       lock_holder: lock_holder)

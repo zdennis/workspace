@@ -21,6 +21,11 @@ module Workspace
     # scrape mode is configured but `context.pattern` isn't set.
     NO_PATTERN = "no context.pattern configured (scrape mode)"
 
+    # scrape mode: every machine-wide scan slot was held, so the pane wasn't
+    # captured this time, and no reading from it fresh enough to serve
+    # (within the scrape cache window) was left to fall back on.
+    SCAN_BUSY = "couldn't scrape the pane (every scan slot busy) and no fresh reading is cached"
+
     # No pane id was available to look the reading up with (the status-line
     # process ran without $TMUX_PANE set), and no agent pid fallback found a
     # reading either.

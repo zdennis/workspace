@@ -1622,6 +1622,27 @@ RSpec.describe Workspace::Commands::Agent do
     end
   end
 
+  describe "wiring the scan slot limiter into the daemon's context reader" do
+    # The reader is built in Workspace.build_cli (not inside the agent
+    # command), so this goes through the real composition root rather than
+    # stubbing it: the reader the agent's `sessions` requests scrape through
+    # gets its own limiter, under the same state dir as the monitor's.
+    it "builds the reader's limiter under the config state dir" do
+      Dir.mktmpdir("ws-reader-wiring") do |state|
+        allow(ENV).to receive(:fetch).and_call_original
+        allow(ENV).to receive(:fetch).with("XDG_STATE_HOME", anything).and_return(state)
+
+        cli = Workspace.build_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new)
+
+        reader = cli.instance_variable_get(:@agent_command).instance_variable_get(:@context_reader)
+        limiter = reader.instance_variable_get(:@scan_slots)
+
+        expect(limiter).to be_a(Workspace::ScanSlotLimiter)
+        expect(limiter.instance_variable_get(:@dir)).to eq(File.join(state, "workspace", "scan-slots"))
+      end
+    end
+  end
+
   describe "when text can't be delivered to a pane" do
     def send_message(message)
       UNIXSocket.open(agent_socket_path) do |s|
