@@ -15,8 +15,10 @@ module Workspace
       #   once its worktree is removed; nil leaves tasks alone
       # @param event_log [Workspace::EventLog, nil] records `worktree_finished` once the
       #   worktree is removed; nil records nothing
+      # @param workflow_runs [#workspace_killed, nil] ends the project's workflow runs once its
+      #   worktree is removed, so none goes on holding a lock; nil leaves runs alone
       # @param input [IO] input stream for interactive prompts
-      def initialize(git:, project_config:, project_settings:, stop_command:, project_detector:, task_store: nil, event_log: nil, output: $stdout, input: $stdin)
+      def initialize(git:, project_config:, project_settings:, stop_command:, project_detector:, task_store: nil, event_log: nil, workflow_runs: nil, output: $stdout, input: $stdin)
         @git = git
         @project_config = project_config
         @project_settings = project_settings
@@ -24,6 +26,7 @@ module Workspace
         @project_detector = project_detector
         @task_store = task_store
         @event_log = event_log
+        @workflow_runs = workflow_runs
         @output = output
         @input = input
       end
@@ -38,7 +41,7 @@ module Workspace
       # 3. remove the worktree; Git#remove_worktree re-checks for unsaved work
       #    right before removing (unless force), so an edit made while the
       #    prompt waited is refused rather than deleted
-      # 4. archive the project's task, then yield to the caller's block (the
+      # 4. end the project's workflow runs, archive its task, then yield to the caller's block (the
       #    post_kill hook), then remove the config and settings
       # 5. stop the session last: this may run inside the very session it
       #    kills, which ends this process before any later statement runs
@@ -111,6 +114,7 @@ module Workspace
         end
 
         outcome ||= force ? "discarded" : "abandoned"
+        end_workflow_runs(project, out)
         archive_task(project, outcome, out)
         yield project if block_given?
         @project_config.remove(project, quiet: quiet)
@@ -127,6 +131,17 @@ module Workspace
 
       # The worktree is already gone, so a task store that can't be written
       # must not stop the config, settings and session from being cleaned up.
+      # WorkflowEngine#workspace_killed never raises.
+      def end_workflow_runs(project, out)
+        ended = @workflow_runs&.workspace_killed(project)
+        return unless ended
+        ended["cancelled"].each { |run| out.puts "Cancelled workflow run #{run}." }
+        ended["failed"].each do |run|
+          out.puts "Warning: workflow run #{run} could not be ended (its run file may be malformed). " \
+            "If it holds a lock, free it with `workspace lock clear NAME`."
+        end
+      end
+
       def archive_task(project, outcome, out)
         @task_store&.archive(project, outcome: outcome)
       rescue Workspace::Error => e

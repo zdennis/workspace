@@ -1072,6 +1072,55 @@ RSpec.describe Workspace::Commands::Dev, "with fake processes and clock" do
       store.delegate("devenv", run_id: "wr_1", identity: process_identity(pid, worktree: worktree, branch: "feat/a"))
     end
 
+    describe "#down_for_run" do
+      before { allow(terminator).to receive_messages(orphan_running?: false, pgid_reused?: false) }
+
+      it "stops the environment the run left running when it gave the lock up, and frees the lock" do
+        delegate(700)
+        store.release_run("wr_1")
+        allow(terminator).to receive(:stop_holder) do
+          liveness.kill(700)
+          :terminated
+        end
+
+        expect(dev.down_for_run("wr_1", working_dir: worktree)).to eq(exit_code: 0)
+
+        expect(output.string).to eq("Stopped dev environment for #{File.basename(worktree)} (feat/a), which run wr_1 no longer uses.\n")
+        expect(holder).to be_nil
+        expect(tmux).to have_received(:close_dead_pane).with("%7", pid: 700)
+      end
+
+      it "leaves alone an environment another run left, one started outside a run, and a lock a run holds" do
+        delegate(700)
+        allow(terminator).to receive(:stop_holder)
+
+        expect(dev.down_for_run("wr_1", working_dir: worktree)).to eq(exit_code: 0)
+        store.release_run("wr_1")
+        expect(dev.down_for_run("wr_2", working_dir: worktree)).to eq(exit_code: 0)
+
+        expect(terminator).not_to have_received(:stop_holder)
+        expect(holder).to include("kind" => "process", "pid" => 700, "from_run" => "wr_1")
+        expect(output.string).to eq("")
+      end
+
+      it "exits 1 and keeps the lock naming an environment it could not stop" do
+        delegate(700)
+        store.release_run("wr_1")
+        allow(terminator).to receive(:stop_holder).and_raise(Workspace::Error, "Operation not permitted")
+        allow(terminator).to receive(:running?).and_return(true)
+
+        expect(dev.down_for_run("wr_1", working_dir: worktree)).to eq(exit_code: 1)
+
+        expect(holder).to include("pid" => 700, "kept" => true)
+      end
+
+      it "does nothing when the lock is free" do
+        store.release_run("wr_1")
+
+        expect(dev.down_for_run("wr_1", working_dir: worktree)).to eq(exit_code: 0)
+      end
+    end
+
     describe "#up from the pane bound to that run" do
       it "opens the wrapper with the run's id and no --wait, and returns once it is the run's delegate" do
         delegate_joins(700)

@@ -68,6 +68,12 @@ RSpec.describe Workspace::Commands::Capabilities do
       )
     end
 
+    it "reports the workflow feature" do
+      command.call(json: true)
+
+      expect(document["features"]).to include("workflow" => 1)
+    end
+
     it "reports the restore feature" do
       command.call(json: true)
 

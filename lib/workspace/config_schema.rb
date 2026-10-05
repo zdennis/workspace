@@ -158,6 +158,18 @@ module Workspace
     end
     private_constant :HEADLESS
 
+    # The instruction packs every composed set of instructions starts with, unless `workflows.defaults.include` names others.
+    DEFAULT_PACKS = %w[binding orchestrator commits].freeze
+
+    PACK_LIST = lambda do |value|
+      names = value.is_a?(Array) ? value : value.to_s.split(/[\s,]+/).reject(&:empty?)
+      unless names.any? && names.all? { |name| name.is_a?(String) && name.match?(%r{\A(?:play/)?[a-z0-9][a-z0-9-]*\z}) }
+        raise ArgumentError, "must be one or more pack names separated by commas, e.g. \"binding, commits\""
+      end
+      names
+    end
+    private_constant :PACK_LIST
+
     # Every key, settable ones first in the order `config set` lists them,
     # then keys that are documented but edited by hand.
     KEYS = [
@@ -201,6 +213,9 @@ module Workspace
         doc: "Regex with exactly one capture group, used when `context.source` is `scrape`"),
       Key.new(name: "launch.headless", scope: :global, type: :boolean, settable: true, parser: HEADLESS,
         doc: "`true` or `false`: whether `launch`, `start` and `doctor` run [headless](README.launch.md#headless) on this machine when no `--headless`/`--no-headless` flag is given. Unset, they pick headless off macOS, without `osascript`, or when `CI` is set"),
+      Key.new(name: "workflows.defaults.include", scope: :global, type: :text, settable: true, default: DEFAULT_PACKS, parser: PACK_LIST,
+        doc: "Instruction packs every workflow step and [`workspace instructions compose`](README.instructions.md) start with, " \
+          "as names separated by commas (default `binding, orchestrator, commits`)"),
       Key.new(name: "hooks", scope: :global, type: :mapping, sensitive: true, resolve: :none, settable: false, doc: "Global hooks applied to all projects"),
       Key.new(name: "layouts", scope: :global, type: :mapping, resolve: :merge, settable: false, doc: "Default tmux pane layouts"),
       Key.new(name: "event_log_compact_threshold", scope: :global, type: :text, settable: false,
@@ -209,7 +224,7 @@ module Workspace
       Key.new(name: "layouts", scope: :project, type: :mapping, resolve: :merge, settable: false, doc: "Project-specific tmux pane layouts"),
       Key.new(name: "worktree_hooks", scope: :project, type: :mapping, sensitive: true, settable: false, doc: "Hooks seeded into new worktrees created from this project"),
       Key.new(name: "pipeline", scope: :project, settable: false, type: :mapping, sensitive: true, resolve: :own, applies: :daemon_restart,
-        doc: "Pipeline stages (`pipeline.panes`: role, timeout) the agent daemon dispatches work through")
+        doc: "Deprecated (use [`workspace workflow`](README.workflow.md)): pipeline stages (`pipeline.panes`: role, timeout) the agent daemon dispatches work through")
     ].each(&:freeze).freeze
 
     # @return [Array<Key>] every key

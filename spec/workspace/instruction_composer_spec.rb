@@ -216,6 +216,89 @@ RSpec.describe Workspace::InstructionComposer do
 
     expect { composer.compose(cwd: "/work/app", packs: %w[commits]) }.to raise_error(Workspace::ConfigParseError)
   end
+  describe "the layers of a workflow step" do
+    let(:workflow) { {"name" => "rpiv", "include" => %w[review], "text" => "You are working on PROJ-1.\n"} }
+    let(:step) { {"name" => "plan", "include" => %w[commits review], "text" => "Write plan.md.\n"} }
+
+    it "puts the default packs first, then the workflow's packs and text, the step's packs and prompt, and the attempt's context" do
+      result = composer.compose(cwd: "/work/app", packs: %w[binding], workflow: workflow, step: step,
+        attempt: ["The plan step was rejected at its gate: too big.", "Note for this run: keep it small."])
+
+      expect(result["text"]).to eq(<<~TEXT)
+        ## From pack binding (built-in)
+
+        Read your instructions file.
+
+        ## From pack review (built-in)
+
+        Review the diff.
+
+        ## From workflow rpiv
+
+        You are working on PROJ-1.
+
+        ## From pack commits (built-in)
+
+        Run the tests before committing.
+
+        ## From step plan
+
+        Write plan.md.
+
+        ## For this attempt
+
+        The plan step was rejected at its gate: too big.
+
+        Note for this run: keep it small.
+      TEXT
+      expect(result["packs"].map { |pack| pack["ref"] }).to eq(%w[play/binding play/review play/commits])
+    end
+
+    it "composes a pack once, where it is first named, across the layers" do
+      result = composer.compose(cwd: "/work/app", packs: %w[binding review], workflow: workflow.merge("include" => %w[binding]),
+        step: step.merge("include" => %w[review]))
+
+      expect(result["text"].scan(/^## From .*$/)).to eq(["## From pack binding (built-in)", "## From pack review (built-in)", "## From workflow rpiv", "## From step plan"])
+    end
+
+    it "leaves out a workflow with no instructions of its own, and an attempt with nothing to say" do
+      result = composer.compose(cwd: "/work/app", packs: %w[binding], workflow: {"name" => "rpiv", "include" => [], "text" => nil},
+        step: {"name" => "plan", "include" => [], "text" => "Write plan.md."}, attempt: [])
+
+      expect(result["text"]).to eq("## From pack binding (built-in)\n\nRead your instructions file.\n\n## From step plan\n\nWrite plan.md.\n")
+    end
+
+    it "fails for a pack a layer names that doesn't exist" do
+      expect { composer.compose(cwd: "/work/app", packs: %w[binding], step: step.merge("include" => %w[ghost])) }
+        .to raise_error(Workspace::Error) { |error| expect(error.code).to eq("unknown_library_entry") }
+    end
+  end
+
+  describe "the default packs" do
+    let(:global) { {} }
+    let(:settings) { instance_double(Workspace::ProjectSettings, load: {}, load_global: global) }
+    subject(:composer) do
+      described_class.new(library: library, lineage: lineage, commands_config: commands_config, pane_bindings: pane_bindings,
+        workflow_config: Workspace::WorkflowConfig.new(project_settings: settings))
+    end
+
+    it "are binding, orchestrator and commits when no pack is named and workflows.defaults.include is unset" do
+      expect(composer.compose(cwd: "/work/app", packs: nil)["packs"].map { |pack| pack["ref"] }).to eq(%w[play/binding play/orchestrator play/commits])
+    end
+
+    it "are the packs workflows.defaults.include names" do
+      global["workflows"] = {"defaults" => {"include" => "binding, review"}}
+
+      expect(composer.default_packs).to eq(%w[binding review])
+      expect(composer.compose(cwd: "/work/app", packs: nil)["packs"].map { |pack| pack["ref"] }).to eq(%w[play/binding play/review])
+    end
+
+    it "are the built-in three for a composer with no config to read" do
+      plain = described_class.new(library: library, lineage: lineage, commands_config: commands_config, pane_bindings: pane_bindings)
+
+      expect(plain.compose(cwd: "/work/app", packs: nil)["packs"].size).to eq(3)
+    end
+  end
 end
 
 RSpec.describe Workspace::InstructionComposer, "with the packs workspace ships" do
@@ -244,6 +327,12 @@ RSpec.describe Workspace::InstructionComposer, "with the packs workspace ships" 
     expect(text.scan(/^## From pack (\S+) \(built-in\)$/).flatten).to eq(%w[binding orchestrator commits review])
     expect(text).not_to match(/^---$|^description:/)
     expect(text).to include("workspace ask").and include("`model:` on every Agent call").and include("Co-Authored-By").and include("PASS or BLOCKING")
+  end
+
+  it "tells an agent in a workflow run about `step status` and `step done`, in the binding pack" do
+    text = composer.compose(cwd: "/work/app", packs: %w[binding])["text"]
+
+    expect(text).to include("`workspace step status`").and include("`workspace step done --status fail --summary")
   end
 
   it "composes the default packs from the shipped ones" do

@@ -489,6 +489,36 @@ RSpec.describe Workspace::Commands::Kill, "task archiving" do
 
   after { FileUtils.remove_entry(tmpdir) }
 
+  it "ends the project's workflow runs once the worktree is removed, before the session stops, and says which" do
+    order = []
+    out = StringIO.new
+    runs = double("workflow_runs")
+    allow(runs).to receive(:workspace_killed) do |workspace|
+      order << [:runs, workspace]
+      {"cancelled" => %w[wr_1 wr_2], "failed" => ["wr_3"]}
+    end
+    allow(git).to receive(:remove_worktree) { order << :remove }
+    allow(stop_command).to receive(:call) { order << :stop }
+    with_runs = described_class.new(git: git, project_config: project_config, project_settings: double("settings", remove: nil),
+      stop_command: stop_command, project_detector: double("detector"), workflow_runs: runs, output: out, input: StringIO.new)
+
+    with_runs.call(name, confirm: false)
+
+    expect(order).to eq([:remove, [:runs, name], :stop])
+    expect(out.string).to include("Cancelled workflow run wr_1.\nCancelled workflow run wr_2.\n" \
+      "Warning: workflow run wr_3 could not be ended (its run file may be malformed). If it holds a lock, free it with `workspace lock clear NAME`.\n")
+  end
+
+  it "ends no run when the kill is refused for unsaved work" do
+    runs = double("workflow_runs", workspace_killed: {"cancelled" => [], "failed" => []})
+    allow(git).to receive(:unsaved_work).and_return(changed_files: 1, unpushed_commits: 0, branch: "x")
+    with_runs = described_class.new(git: git, project_config: project_config, project_settings: double("settings", remove: nil),
+      stop_command: stop_command, project_detector: double("detector"), workflow_runs: runs, output: StringIO.new, input: StringIO.new)
+
+    expect { with_runs.call(name, confirm: false) }.to raise_error(Workspace::UnsavedWorkError)
+    expect(runs).not_to have_received(:workspace_killed)
+  end
+
   it "archives the task as abandoned after removing the worktree" do
     order = []
     allow(git).to receive(:remove_worktree) { order << :remove }

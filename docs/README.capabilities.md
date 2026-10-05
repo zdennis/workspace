@@ -24,7 +24,8 @@ It reads constants, config paths and the `PATH`. It starts no process and touche
    "sessions":1,"locks_json":2,"git_facts":1,"prune_safe":1,"snapshot":2,"events_follow":0,
    "actions_manifest":0,"agent_send":1,"agent_spawn":0,"focus_pane":1,"state_done":1,
    "doctor_json":0,"daemon_control":2,"config_json":1,"tmux_show":1,"tasks":1,"event_emitters":1,
-   "ui_open":1,"pane_bindings":2,"library":3,"library_play":2,"library_copy":1,"instructions":1,"restore":1},
+   "ui_open":1,"pane_bindings":2,"library":3,"library_play":2,"library_copy":1,"instructions":1,"restore":1,
+   "workflow":1},
  "exit_codes":{"ok":0,"failed":1,"not_submitted":2,"partial":3,"lock_cleared":4,"timeout":75},
  "paths":{"event_log":"/Users/me/.workspace-events.jsonl","run_dir":"/Users/me/.local/workspace/run",
    "library":"/Users/me/.config/workspace/library"},
@@ -69,6 +70,7 @@ It reads constants, config paths and the `PATH`. It starts no process and touche
 | `library_copy` | `start --agent NAME` and `start --skill NAME` copy library agents and skills into the new worktree's `.claude/`, list them in the repo's `info/exclude`, never overwrite a tracked file, and report `agents` and `skills` in `--json` (see [`start`](README.start.md#agents-and-skills)) |
 | `instructions` | `instructions compose [--pack NAME]...` prints the instructions built from library packs, with `--json` (see [`instructions`](README.instructions.md)); the `commands.test` and `commands.lint` config keys exist |
 | `restore` | `restore [WORKSPACE...] [--dry-run] [--json]` recreates the agent panes the session ledger recorded and resumes their sessions; ledger entries carry the window `layout` and the `tmux_server` pid (see [`restore`](README.restore.md)) |
+| `workflow` | `workflow show\|run\|status\|resume\|cancel\|approve\|reject` runs a workflow (ordered steps, the `rpiv` preset) in a workspace's agent pane, with `--json`; `step done\|status` for the agent on a step; the event log records `workflow_changed`, and `lock_wait_started`, `lock_acquired` and `lock_released` with `run_id` for a run's locks; `pipeline` is deprecated (see [`workflow`](README.workflow.md)) |
 | `event_emitters` | The event log records `ask_created`, `ask_answered`, `lock_released`, `lock_cleared`, `worktree_started`, `worktree_finished`, `daemon_started`, `daemon_stopped` and `config_changed` (see [`event-log`](README.event-log.md#state-and-lifecycle-events)) |
 
 ## Examples

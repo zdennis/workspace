@@ -61,11 +61,36 @@ module Workspace
       entry.is_a?(Hash) ? entry : nil
     end
 
+    # Finds the pane bound to a subject, wherever `restore` moved its binding.
+    # A binding kept under its slot (see {#move}) has no pane and is skipped.
+    #
+    # @param kind [String] one of {KINDS}
+    # @param id [String] the subject's id
+    # @return [String, nil] the pane id; nil when no pane is bound to it
+    def pane_for(kind, id)
+      read.find { |key, entry| !key.start_with?(PARKED) && entry.is_a?(Hash) && entry["kind"] == kind && entry["id"] == id }&.first
+    end
+
     # @param pane_id [String]
     # @return [Hash{String=>Object}, nil] the binding that was removed, nil if there was none
     def unbind(pane_id)
       removed = nil
       update { |all| removed = all.delete(pane_id) }
+      removed
+    end
+
+    # Removes every binding to a subject, the ones kept under a slot (see
+    # {#move}) included, so `restore` can't bind a pane to it again.
+    #
+    # @param kind [String] one of {KINDS}
+    # @param id [String] the subject's id
+    # @return [Array<String>] the keys removed (pane ids and slot keys)
+    def unbind_all(kind, id)
+      removed = []
+      update do |all|
+        removed = all.select { |_, entry| entry.is_a?(Hash) && entry["kind"] == kind && entry["id"] == id }.keys
+        removed.each { |key| all.delete(key) }
+      end
       removed
     end
 

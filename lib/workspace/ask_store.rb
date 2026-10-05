@@ -102,7 +102,8 @@ module Workspace
 
     def read_data(readonly:)
       return [] unless File.exist?(@path)
-      content = File.read(@path)
+      # Written as UTF-8 JSON; read as that whatever the locale of the process.
+      content = File.read(@path, encoding: Encoding::UTF_8)
       return [] if content.strip.empty?
       parsed = JSON.parse(content)
       return parsed if parsed.is_a?(Array)

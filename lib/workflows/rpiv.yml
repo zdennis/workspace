@@ -1,0 +1,70 @@
+schema_version: 1
+id: rpiv
+title: Research, Plan, Implement, Verify
+description: One feature end to end in one workspace, with a plan gate and a test-backed verify loop.
+
+inputs:
+  task:
+    description: What to build. A ticket key with a sentence, or a path to a spec in the worktree.
+    required: true
+  spec:
+    description: Optional spec or ticket file to read first.
+
+instructions: |
+  You are working on {{inputs.task}} in workspace {{workspace}}, branch {{branch}}.
+  Spec (may be empty): {{inputs.spec}}
+  Every artifact for this run goes under {{artifacts}}/. Earlier steps' artifacts are
+  inputs; read them before you start.
+
+# Four steps, one plan rejection and three trips back from verify fit in ten.
+max_attempts: 10
+
+steps:
+  research:
+    title: Research
+    prompt: |
+      Research {{inputs.task}}. Read the code it touches, the tests that cover it, and
+      related docs. Don't change code or commit.
+      Write {{artifacts}}/research.md with: what exists (file:line), what has to change,
+      constraints, open questions, risks.
+    produces: [research.md]
+    timeout: 45m
+
+  plan:
+    title: Plan
+    prompt: |
+      Using {{artifacts}}/research.md, write {{artifacts}}/plan.md: the change as a list
+      of commits, each with files touched, tests to add, and how you'll know it works.
+      Call out anything that needs the dev environment or the test database.
+      Don't change code.
+    produces: [plan.md]
+    gate: approve
+    timeout: 45m
+
+  implement:
+    title: Implement
+    prompt: |
+      Implement {{artifacts}}/plan.md one commit at a time. Run the relevant tests
+      before each commit. If the plan turns out wrong, update plan.md and say why.
+      Write {{artifacts}}/implement.md listing the commits you made.
+    produces: [implement.md]
+    timeout: 3h
+
+  verify:
+    title: Verify
+    include: [review]
+    prompt: |
+      Verify the work against {{artifacts}}/plan.md. Run the full test suite and the
+      linter, then review the branch's diff against its base.
+      Write {{artifacts}}/verify.md: test results, review findings, and what you fixed.
+      If anything blocking remains, run `workspace step done --status fail --summary "<what is left>"`
+      and end your turn.
+    produces: [verify.md]
+    uses: [test-db]
+    status:
+      command: test
+    timeout: 90m
+    on_fail:
+      goto: implement
+      max: 3
+      context: continue

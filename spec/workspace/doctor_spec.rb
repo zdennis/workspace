@@ -248,6 +248,34 @@ RSpec.describe Workspace::Doctor do
       expect(output.string).to include("must be greater than 0")
     end
 
+    it "says pipeline is deprecated for a project that configures one, without counting it as an issue" do
+      pipeline_config = double("pipeline_config", literal_sentinel_warnings: [])
+      allow(pipeline_config).to receive(:stages_for).with("myapp").and_return([{role: "researcher", pane_index: 0, timeout: nil}])
+
+      doctor = build_doctor(which: ->(_exe) { false }, pipeline_config: pipeline_config)
+      begin
+        doctor.run
+      rescue Workspace::Error
+        # Expected from the unrelated hooks/agent checks in this scenario
+      end
+
+      expect(output.string).to include("⚠  pipeline is deprecated and will be removed in a later release; use `workspace workflow`")
+      expect(output.string).not_to include("pipeline config invalid")
+    end
+
+    it "says nothing about pipeline for a project that configures none" do
+      pipeline_config = double("pipeline_config", stages_for: nil, declared_but_empty?: false, literal_sentinel_warnings: [])
+
+      doctor = build_doctor(which: ->(_exe) { false }, pipeline_config: pipeline_config)
+      begin
+        doctor.run
+      rescue Workspace::Error
+        # Expected from the unrelated hooks/agent checks in this scenario
+      end
+
+      expect(output.string).not_to include("pipeline")
+    end
+
     it "is silent when the pipeline config is valid" do
       pipeline_config = double("pipeline_config")
       allow(pipeline_config).to receive(:stages_for).with("myapp").and_return([{role: "researcher", pane_index: 0, timeout: nil}])

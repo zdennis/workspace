@@ -18,12 +18,12 @@ RSpec.describe Workspace::Commands::Instructions do
     expect(output.string).to eq("## From pack orchestrator (built-in)\n\nDelegate.\n")
   end
 
-  it "composes the default packs when none is named" do
+  it "leaves the choice of packs to the composer when none is named" do
     allow(composer).to receive(:compose).and_return(result)
 
     command.compose(packs: [], cwd: "/work/app")
 
-    expect(composer).to have_received(:compose).with(packs: %w[binding orchestrator commits], cwd: "/work/app", binding: nil)
+    expect(composer).to have_received(:compose).with(packs: nil, cwd: "/work/app", binding: nil)
   end
 
   it "hands the composer the pane's live binding, and none for a pane that is unbound or stale" do

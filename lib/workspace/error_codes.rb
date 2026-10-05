@@ -52,7 +52,19 @@ module Workspace
       "unknown_library_entry" => "No library entry has that name in the scopes searched.",
       "ambiguous_library_entry" => "A bare library name matches more than one kind.",
       "library_entry_exists" => "library add would replace an entry with different content; pass --force.",
-      "library_source_missing" => "The file to add doesn't exist, or a linked entry's target can't be read."
+      "library_source_missing" => "The file to add doesn't exist, or a linked entry's target can't be read.",
+      "unknown_workflow" => "No workflow definition has that id.",
+      "invalid_workflow" => "A workflow definition file doesn't pass the checks.",
+      "input_required" => "workflow run is missing a required input.",
+      "workflow_command_unset" => "A step's check names the project's test or lint command and the project has none.",
+      "no_agent_pane" => "No pane of the workspace runs Claude Code, so a workflow has nowhere to run.",
+      "pane_has_run" => "The pane already runs another workflow run.",
+      "unknown_run" => "No workflow run has that id.",
+      "run_not_active" => "The workflow run has finished, so nothing more can happen to it.",
+      "gate_not_waiting" => "workflow approve or reject named a run that isn't waiting at a gate.",
+      "gate_waiting" => "workflow resume named a run that waits at a gate; approve or reject it.",
+      "bound_pane" => "workflow approve, or resume --from at a waiting gate, was run from a pane bound to a workflow run; a gate is passed by a person.",
+      "step_not_running" => "step done was run while the run's step isn't being worked on."
     }.freeze
 
     # @param code [String]

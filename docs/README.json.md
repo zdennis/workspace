@@ -26,7 +26,7 @@ To ask which of these a given CLI supports, run `workspace capabilities --json` 
 
 ## Actions
 
-These commands take `--json` and print one action document: `launch`, `stop`, `kill`, `relaunch`, `restore`, `focus`, `repair`, `cleanup`, `deactivate`, `reactivate`, `dev up`, `dev down`, `lock release`, `config set`, `daemon restart`, `agentd restart`, `pipeline start`, `pipeline advance`, `pipeline reset`, `ui open`, `binding set`, `binding show`, `binding clear`, `library add`, `library update` and `library remove`. (`finish`, `start`, `lock clear` and `projects stop|kill` have their own pages; `projects stop|kill` use the same shape.)
+These commands take `--json` and print one action document: `launch`, `stop`, `kill`, `relaunch`, `restore`, `focus`, `repair`, `cleanup`, `deactivate`, `reactivate`, `dev up`, `dev down`, `lock release`, `config set`, `daemon restart`, `agentd restart`, `pipeline start`, `pipeline advance`, `pipeline reset`, `ui open`, `binding set`, `binding show`, `binding clear`, `library add`, `library update`, `library remove`, `workflow run`, `workflow resume`, `workflow cancel`, `workflow approve`, `workflow reject` and `step done`. (`finish`, `start`, `lock clear` and `projects stop|kill` have their own pages; `projects stop|kill` use the same shape.)
 
 ```json
 {"schema_version":1,"ok":true,"action":"stop","status":"ok",
@@ -35,7 +35,7 @@ These commands take `--json` and print one action document: `launch`, `stop`, `k
 ```
 
 - `action` is the command's words: `launch`, `dev up`, `lock release`, `config set`, `pipeline start`.
-- `results` has one row per target with `workspace` (null when the command has none, such as a global `config set`), `outcome`, `reason` (a short machine-readable cause, or null) and `message`. A row may carry more keys, named on the command's page (`iterm_window_id` for `launch` and `focus`, `play` for `launch --play`, `key` and `value` for `config set`, `work_item_ref` for `pipeline`).
+- `results` has one row per target with `workspace` (null when the command has none, such as a global `config set`), `outcome`, `reason` (a short machine-readable cause, or null) and `message`. A row may carry more keys, named on the command's page (`iterm_window_id` for `launch` and `focus`, `play` for `launch --play`, `key` and `value` for `config set`, `work_item_ref` for `pipeline`, `run` for `workflow`, and `run_id`, `step`, `attempt` and `reported` for `step done`).
 - `outcome` is per command (see its page). `failed` and `refused` count as failures.
 - `status` is `ok` (no row failed), `partial` (some did), `failed` (all did, or the command exited non-zero), `cancelled` (a prompt was declined; nothing changed), `dry_run` (`--dry-run` reported the plan; nothing changed), or `refused` (a preflight check refused every target; nothing changed).
 - `ok` is `true` for every action document, including `failed`: it means the command ran and reports per-row outcomes. Check `status` and the exit code. A refusal or usage error is the failure envelope above, with `ok: false`.
@@ -124,8 +124,20 @@ The registry lives in `Workspace::ErrorCodes`; a spec checks that every code a r
 | `clear_not_confirmed` | /clear was typed but a new conversation didn't appear. |
 | `restart_in_progress` | A restart is already running on the pane. |
 | `agent_stopped` | The agent stopped during the restart. |
-| `not_bound` | The pane isn't bound to a run, review or play (`binding show`, `binding clear`). |
+| `not_bound` | The pane isn't bound to a run, review or play (`binding show`, `binding clear`), or not to a workflow run (`step done`, `step status`). |
 | `unknown_library_entry` | No library entry has that name in the scopes searched. `details.ref`, `details.scopes` in the order searched, e.g. `["project:api", "global", "builtin"]` (see [`library`](README.library.md)). |
 | `ambiguous_library_entry` | A bare library name matches more than one kind. `details.ref`, `details.candidates`. |
 | `library_entry_exists` | `library add` would replace an entry with different content. `details.ref`, `details.scope`; `retry` names `--force` (destructive). |
 | `library_source_missing` | The file to add doesn't exist, or a linked entry's target can't be read. `details.ref`, `details.path`. |
+| `unknown_workflow` | No workflow definition has that id. `details.workflow`, `details.known`. |
+| `invalid_workflow` | A workflow definition file doesn't pass the checks. `details.workflow`, `details.path`, `details.problems`. |
+| `input_required` | workflow run is missing a required input. `details.workflow`, `details.inputs` (each `name` and `description`). |
+| `workflow_command_unset` | A step's check names the project's test or lint command and the project has none. `details.workflow`, `details.project`, `details.commands`. |
+| `no_agent_pane` | No pane of the workspace runs Claude Code, so a workflow has nowhere to run. `details.workspace`. |
+| `pane_has_run` | The pane already runs another workflow run. `details.pane`, `details.run_id`. |
+| `unknown_run` | No workflow run has that id. `details.run_id`; `details.path` when a run file of that id exists and can't be read as a run. |
+| `run_not_active` | The workflow run has finished, so nothing more can happen to it. `details.run_id`, `details.state`. |
+| `gate_not_waiting` | workflow approve or reject named a run that isn't waiting at a gate. `details.run_id`, `details.step`, `details.state`. |
+| `gate_waiting` | workflow resume named a run that waits at a gate; approve or reject it. `details.run_id`, `details.step`. |
+| `bound_pane` | workflow approve, or resume --from at a waiting gate, was run from a pane bound to a workflow run; a gate is passed by a person. `details.pane`, `details.run_id`. |
+| `step_not_running` | step done was run while the run's step isn't being worked on. `details.run_id`, `details.step`, `details.state`. |

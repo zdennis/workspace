@@ -57,6 +57,7 @@ Only an allowlisted set of keys can be written this way, so a typo doesn't silen
 | `context.source` | Global. `statusline` (default) or `scrape` — where `workspace sessions` reads a pane's context usage; see [`workspace statusline`](README.statusline.md) |
 | `context.pattern` | Global. Regex with exactly one capture group, used when `context.source` is `scrape` |
 | `launch.headless` | Global. `true` or `false`: whether `launch`, `start` and `doctor` run [headless](README.launch.md#headless) on this machine when no `--headless`/`--no-headless` flag is given. Unset, they pick headless off macOS, without `osascript`, or when `CI` is set |
+| `workflows.defaults.include` | Global. Instruction packs every workflow step and [`workspace instructions compose`](README.instructions.md) start with, as names separated by commas (default `binding, orchestrator, commits`) |
 <!-- END GENERATED: keys -->
 
 `statusline.command`, `context.source`, `context.pattern`, and `launch.headless` are always written to the global config, never a project's — there's one status line, one context source and one launch mode per machine. `context.source` must be `statusline` or `scrape`; `context.pattern` must be a valid regex with exactly one capture group. `launch.headless` must be `true` or `false`.
@@ -165,7 +166,7 @@ New codes may be added; treat an unknown one by its `severity`.
 | `hooks` | Project-specific hooks (e.g., `post_launch`) |
 | `layouts` | Project-specific tmux pane layouts |
 | `worktree_hooks` | Hooks seeded into new worktrees created from this project |
-| `pipeline` | Pipeline stages (`pipeline.panes`: role, timeout) the agent daemon dispatches work through |
+| `pipeline` | Deprecated (use [`workspace workflow`](README.workflow.md)): pipeline stages (`pipeline.panes`: role, timeout) the agent daemon dispatches work through |
 <!-- END GENERATED: project-settings -->
 
 Keys you can set with `workspace config set` are listed in the table above; the settings here are edited by hand.

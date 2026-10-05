@@ -19,6 +19,10 @@ module Workspace
       # How often the socket watcher checks that the agent's socket file is still there.
       SOCKET_POLL_INTERVAL = 5
 
+      # How many socket watcher passes go by between looks at the workspace's
+      # workflow runs (one waiting for a lock is woken to ask for it again).
+      WORKFLOW_TICK_PASSES = 3
+
       # Longest stage summary written to the event log.
       MAX_LOGGED_SUMMARY = 500
 
@@ -47,6 +51,8 @@ module Workspace
       # @param context_reader [Workspace::ContextReader, nil] resolves each
       #   coding-agent pane's context usage for `sessions --json` and
       #   `restart_agent`; nil omits context fields and refuses restarts
+      # @param workflow_nudger [Workspace::WorkflowNudger, nil] wakes a workflow run when a turn ends in
+      #   its pane, and on a timer; nil leaves workflow runs alone
       # @param agent_restart_factory [#call] builds the {Workspace::AgentRestart}
       #   that runs one `restart_agent` message
       # @param logger [Workspace::Logger] debug logger
@@ -72,6 +78,7 @@ module Workspace
         context_reader: nil,
         label_reader: nil,
         task_store: nil,
+        workflow_nudger: nil,
         agent_restart_factory: nil,
         logger: Workspace::Logger.new, output: $stdout, error_output: $stderr)
         @config = config
@@ -91,9 +98,12 @@ module Workspace
         @context_reader = context_reader
         @label_reader = label_reader
         @task_store = task_store
+        @workflow_nudger = workflow_nudger
         @agent_restart_factory = agent_restart_factory || method(:build_agent_restart)
         # Restart workers by pane id, so one pane is restarted once at a time.
         @restarts = {}
+        # When the main agent's current turn began, by pane id, for the workflow nudger.
+        @turn_starts = {}
         @notifier_factory = notifier_factory || ->(command) { Notifier.new(command: command, error_output: @error_output) }
         @ps_timeout = ps_timeout
         @retry_backoff = retry_backoff
@@ -323,6 +333,7 @@ module Workspace
         when "restart_agent" then handle_restart_agent(message, client)
         when "session_event"
           @session_monitor&.record(message)
+          nudge_workflow(message) if @workflow_nudger && message["agent_id"].nil?
           reply_to(client, "ok" => true)
         when "sessions"
           reply_to(client, @session_monitor&.snapshot || {"workspace" => @current_name, "panes" => []})
@@ -1102,13 +1113,32 @@ module Workspace
         )
       end
 
+      # The main agent's turn ended: a workflow run bound to the pane decides
+      # its step now. The run is told when that turn began (the prompt that
+      # started it), so a turn already under way when the step's line was
+      # typed does not decide the step; a turn whose start this daemon did
+      # not see is sent without one.
+      def nudge_workflow(message)
+        pane_id = message["pane_id"]
+        case message["event"]
+        when "user_prompt" then @turn_starts[pane_id] = @clock.call
+        # A new conversation: a prompt this daemon then fails to see leaves no start, so its turn's end counts.
+        when "session_start", "session_end" then @turn_starts.delete(pane_id)
+        when "stop" then @workflow_nudger.turn_ended(@current_name, pane_id, turn_started: @turn_starts[pane_id])
+        end
+      end
+
       def start_socket_watcher(socket_path, needs_registration: false)
         Thread.new do
+          passes = 0
           loop do
             # Woken by shutdown rather than slept through, so a terminating
             # agent does not wait out a whole poll interval to exit.
             @shutdown_signal.pop(timeout: SOCKET_POLL_INTERVAL)
             break if @shutting_down
+
+            passes += 1
+            @workflow_nudger&.tick(@current_name) if (passes % WORKFLOW_TICK_PASSES).zero?
 
             unless File.socket?(socket_path)
               @logger.debug { "agent socket at #{socket_path} has disappeared; rebinding" }

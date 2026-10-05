@@ -1840,4 +1840,125 @@ RSpec.describe Workspace::Commands::Agent do
       expect(recorded).to be_empty
     end
   end
+
+  describe "waking workflow runs" do
+    let(:recorded_events) { [] }
+    let(:monitor) do
+      events = recorded_events
+      Object.new.tap do |monitor|
+        monitor.define_singleton_method(:start) {}
+        monitor.define_singleton_method(:stop) {}
+        monitor.define_singleton_method(:record) { |message| events << message["event"] }
+      end
+    end
+    let(:nudger) do
+      Class.new do
+        attr_reader :turns, :ticks
+
+        def initialize
+          @turns = []
+          @ticks = []
+        end
+
+        def turn_ended(workspace, pane, turn_started: nil) = @turns << [workspace, pane, turn_started]
+
+        def tick(workspace) = @ticks << workspace
+      end.new
+    end
+
+    subject(:agent) do
+      described_class.new(
+        config: config, tmux: tmux, work_coordinator_client: client,
+        pipeline_config: pipeline_config, pipeline_state: pipeline_state,
+        epoch_generator: -> { "wa-TESTEPOCH" }, signal_trapper: signal_trapper,
+        sentinel_poller_factory: sentinel_poller_factory, token_generator: token_generator,
+        clock: -> { now }, retry_backoff: 0, session_monitor_factory: ->(_name) { monitor },
+        workflow_nudger: nudger, output: output, error_output: error_output
+      )
+    end
+
+    def send_event(event, **extra)
+      message = {"type" => "session_event", "workspace" => "myapp", "event" => event, "pane_id" => "%5"}.merge(extra.transform_keys(&:to_s))
+      UNIXSocket.open(agent_socket_path) do |socket|
+        socket.puts(message.to_json)
+        JSON.parse(socket.gets)
+      end
+    end
+
+    before { coordinator.start }
+
+    it "tells the nudger when the main agent's turn ends in a pane, after the monitor has the event" do
+      run_agent do
+        expect(send_event("stop")).to eq("ok" => true)
+
+        # This daemon did not see the turn begin, so it names no start: the end counts, as it always did.
+        expect(nudger.turns).to eq([["myapp", "%5", nil]])
+        expect(recorded_events).to eq(["stop"])
+      end
+    end
+
+    it "tells the nudger when the turn that ended began: the pane's last prompt, whatever other panes and sub-agents did" do
+      run_agent do
+        send_event("user_prompt")
+        send_event("user_prompt", pane_id: "%6")
+        send_event("user_prompt", agent_id: "sub-1")
+        send_event("stop")
+        send_event("stop")
+
+        expect(nudger.turns).to eq([["myapp", "%5", now], ["myapp", "%5", now]])
+      end
+    end
+
+    it "forgets when a turn began once the pane's session ends, or a new one starts (a /clear)" do
+      run_agent do
+        %w[session_end session_start].each do |event|
+          send_event("user_prompt")
+          send_event(event)
+          send_event("stop")
+        end
+
+        expect(nudger.turns).to eq([["myapp", "%5", nil]] * 2)
+      end
+    end
+
+    it "says nothing for a sub-agent's stop, or for any other event" do
+      run_agent do
+        send_event("stop", agent_id: "sub-1")
+        send_event("subagent_stop")
+        send_event("user_prompt")
+        send_event("session_start")
+
+        expect(nudger.turns).to eq([])
+        expect(recorded_events.size).to eq(4)
+      end
+    end
+
+    it "has the nudger look at the workspace's runs on a timer" do
+      stub_const("#{described_class}::SOCKET_POLL_INTERVAL", 0.02)
+      stub_const("#{described_class}::WORKFLOW_TICK_PASSES", 2)
+
+      run_agent do
+        wait_until { nudger.ticks.size >= 2 }
+
+        expect(nudger.ticks.uniq).to eq(["myapp"])
+      end
+    end
+
+    it "serves hook events as before with no nudger wired" do
+      plain = described_class.new(
+        config: config, tmux: tmux, work_coordinator_client: client,
+        pipeline_config: pipeline_config, pipeline_state: pipeline_state,
+        epoch_generator: -> { "wa-TESTEPOCH" }, signal_trapper: signal_trapper,
+        clock: -> { now }, retry_backoff: 0, session_monitor_factory: ->(_name) { monitor },
+        output: output, error_output: error_output
+      )
+      thread = Thread.new { plain.call(name: "myapp") }
+      wait_until { output.string.include?("ready") || !thread.alive? }
+
+      expect(send_event("stop")).to eq("ok" => true)
+    ensure
+      signal_trapper.handlers["TERM"]&.call
+      thread&.join(2)
+    end
+  end
 end

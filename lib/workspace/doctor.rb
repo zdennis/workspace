@@ -267,6 +267,7 @@ module Workspace
       stages = @pipeline_config.stages_for(project)
       if stages
         @output.puts "  ✓  pipeline config valid for #{project}"
+        @output.puts "  ⚠  pipeline is deprecated and will be removed in a later release; use `workspace workflow` (see `workspace workflow --help`)"
       elsif @pipeline_config.declared_but_empty?(project)
         @output.puts "  ⚠  pipeline config for #{project} has no panes; it won't start a pipeline"
       end

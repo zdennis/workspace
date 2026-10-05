@@ -17,7 +17,7 @@ module Workspace
     SUBCOMMANDS = %w[
       init doctor launch start stop add add-project kill finish relaunch restore
       focus deactivate reactivate tile resize capture agent agentd lock dev parent projects
-      capabilities daemon sessions review snapshot ask session-event agent-run handoff pipeline run library lib instructions
+      capabilities daemon sessions review snapshot ask session-event agent-run handoff pipeline run library lib instructions workflow step
       run-and-report report-run-status layout config tmux statusline current
       list-projects list status repair cleanup prune set-command event-log
       whereis lookup dir alfred version help
@@ -72,6 +72,7 @@ module Workspace
     # @param library_command [Workspace::Commands::Library, nil] pre-built library command
     # @param library [Workspace::Library, nil] resolves `launch --play` per project
     # @param instructions_command [Workspace::Commands::Instructions, nil] pre-built instructions command
+    # @param workflow_command [Workspace::Commands::Workflow, nil] pre-built `workflow` and `step` command
     # @param review_command [Workspace::Commands::Review, nil] pre-built review command
     # @param restore_command [Workspace::Commands::Restore, nil] pre-built restore command
     # @param snapshot_command [Workspace::Commands::Snapshot, nil] pre-built snapshot command
@@ -84,7 +85,7 @@ module Workspace
     #   reports every project as unknown
     # @param launch_mode [Workspace::LaunchMode, nil] decides whether launch/start
     #   run headless when no --[no-]headless flag is given; nil builds one
-    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, restart_agent_command: nil, send_command: nil, ensure_agent_command: nil, handoff_command: nil, projects_command: nil, capabilities_command: nil, daemon_command: nil, ui_command: nil, binding_command: nil, library_command: nil, library: nil, instructions_command: nil, review_command: nil, restore_command: nil, snapshot_command: nil, project_actions_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil, liveness: nil)
+    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, restart_agent_command: nil, send_command: nil, ensure_agent_command: nil, handoff_command: nil, projects_command: nil, capabilities_command: nil, daemon_command: nil, ui_command: nil, binding_command: nil, library_command: nil, library: nil, instructions_command: nil, workflow_command: nil, review_command: nil, restore_command: nil, snapshot_command: nil, project_actions_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil, liveness: nil)
       @config = config
       @state = state
       @project_config = project_config
@@ -134,6 +135,7 @@ module Workspace
       @ui_command = ui_command
       @binding_command = binding_command
       @library_command = library_command
+      @workflow_command = workflow_command
       @library = library
       @instructions_command = instructions_command
       @review_command = review_command
@@ -225,6 +227,10 @@ module Workspace
         cmd_library(args)
       when "instructions"
         cmd_instructions(args)
+      when "workflow"
+        cmd_workflow(args)
+      when "step"
+        cmd_step(args)
       when "review"
         cmd_review(args)
       when "snapshot"
@@ -419,7 +425,7 @@ module Workspace
           lock            Acquire, release, inspect, or clear a shared repo-wide lock
           lookup          Find a workspace project by worktree path, branch, or project name
           parent          Print the parent workspace of the current (or given) workspace
-          pipeline        Inspect and drive a project's agent pipeline
+          pipeline        Deprecated (use workflow): inspect and drive a project's agent pipeline
           projects        Group workspaces by repository (main checkout + worktrees)
           prune           Remove worktree projects whose PR is closed or merged
           reactivate      Reactivate Claude in a project's tmux pane
@@ -434,6 +440,7 @@ module Workspace
           review          Show a workspace's finished work for review, or list the ones ready
           sessions        Show coding-agent sessions and sub-agents in a workspace
           snapshot        Print everything a UI polls (projects, panes, git, asks, locks, dev) as one JSON document
+          step            For the agent on a workflow step: report on it (done), or see what it is (status)
           start           Create a worktree and launch it (from JIRA key, PR URL or #n, or branch)
           status          Show detailed state of tracked launcher sessions
           set-command     Set the shell command for a pane in a project config (--pane <N>)
@@ -444,6 +451,7 @@ module Workspace
           ui              Open a workspace-ui:// link: a task, a review or the inbox
           wait-until-content  Block until a pane shows content, then exec a command
           whereis         Print the workspace installation directory
+          workflow        Run a workflow (ordered steps, e.g. rpiv) in a workspace's agent pane, and see where it stands
 
         Global options:
           --debug         Print detailed debug output to stderr
@@ -2700,6 +2708,8 @@ module Workspace
       subcommand = index && args[index]
       rest = index ? args[0...index] + args[(index + 1)..] : args
 
+      # With --json the notice is in an action document's `warnings` instead, and stderr stays empty.
+      @error_output.puts "Warning: #{PIPELINE_DEPRECATION}" if %w[start advance status reset].include?(subcommand) && !rest.include?("--json")
       case subcommand
       when "start" then cmd_pipeline_start(rest)
       when "advance" then cmd_pipeline_advance(rest)
@@ -2711,9 +2721,16 @@ module Workspace
       end
     end
 
+    # Printed by every `pipeline` subcommand and in its help.
+    PIPELINE_DEPRECATION = "`workspace pipeline` is deprecated and will be removed in a later release. " \
+      "Use `workspace workflow` (see `workspace workflow --help`)."
+
     def pipeline_help
       <<~HELP
         Usage: workspace pipeline <subcommand> [options]
+
+        Deprecated: use `workspace workflow`, which runs ordered steps in a workspace's agent pane
+        and shows where a run is stuck. `pipeline` will be removed in a later release.
 
         Subcommands:
           start <project> --work-item REF    Send a work item into the project's pipeline
@@ -2748,7 +2765,7 @@ module Workspace
           "body" => body || "Begin work on #{work_item}.")
         raise Error, "The agent for #{project} refused the work item: #{reply["error"]}" unless reply["ok"]
         @output.puts "Sent #{work_item} into #{project}'s pipeline"
-        {results: json ? [action_row(project, "started", work_item_ref: work_item)] : []}
+        {results: json ? [action_row(project, "started", work_item_ref: work_item)] : [], warnings: [PIPELINE_DEPRECATION]}
       end
     end
 
@@ -2774,7 +2791,7 @@ module Workspace
           raise Error, "The agent for #{project} refused the advance: #{reply["error"]}"
         end
         @output.puts "Nudged #{project}/#{work_item} to advance"
-        {results: json ? [action_row(project, "advanced", work_item_ref: work_item)] : []}
+        {results: json ? [action_row(project, "advanced", work_item_ref: work_item)] : [], warnings: [PIPELINE_DEPRECATION]}
       end
     end
 
@@ -2854,7 +2871,7 @@ module Workspace
         state_path = @config.pipeline_state_path(project)
         File.unlink(state_path) if File.exist?(state_path)
         @output.puts "Cleared pipeline state for #{project}"
-        {results: json ? [action_row(project, "reset")] : []}
+        {results: json ? [action_row(project, "reset")] : [], warnings: [PIPELINE_DEPRECATION]}
       end
     end
 
@@ -3602,6 +3619,208 @@ module Workspace
       # $TMUX_PANE is the caller's pane, which is not a pane of a workspace named with --name.
       pane = options[:pane] || (ENV["TMUX_PANE"] unless options[:name])
       @instructions_command.compose(packs: options[:packs], cwd: working_dir_for(options[:name]), pane: pane, json: options[:json])
+    rescue OptionParser::ParseError, UsageError => e
+      raise unless json_requested?(options[:json], given)
+      emit_json_error(JsonEnvelope::SCHEMA_VERSION, e, message: e.message.lines.first.strip)
+    end
+
+    WORKFLOW_SUBCOMMANDS = %w[show run status resume cancel approve reject advance].freeze
+
+    def workflow_parser(options)
+      OptionParser.new do |opts|
+        opts.banner = "Usage: workspace workflow show [ID] [--json]\n" \
+          "       workspace workflow run ID [--name WORKSPACE] [--input KEY=VALUE]... [--note TEXT] [--pane PANE] [--dry-run] [--json]\n" \
+          "       workspace workflow status [RUN] [--name WORKSPACE] [--all] [--json]\n" \
+          "       workspace workflow resume RUN [--from STEP] [--note TEXT] [--pane PANE] [--json]\n" \
+          "       workspace workflow cancel RUN [--json]\n" \
+          "       workspace workflow approve RUN [--note TEXT] [--json]\n" \
+          "       workspace workflow reject RUN --note TEXT [--to STEP] [--json]"
+        opts.separator ""
+        opts.separator "Run a workflow in a workspace: an ordered list of steps, each done by the agent in the"
+        opts.separator "workspace's Claude pane. A step gets its instructions in a file under .workflow/ in the"
+        opts.separator "checkout and one typed line pointing at it, in a fresh conversation unless the step says"
+        opts.separator "context: continue. A step is done when the agent's turn ends, every file it produces:"
+        opts.separator "exists, and its status: check passes; the agent daemon (agentd) sees the turn end and"
+        opts.separator "moves the run on. A failed step goes back along its on_fail: {goto, max}; a step with"
+        opts.separator "gate: approve waits for `workflow approve`. Resources a step uses: are locks the run"
+        opts.separator "holds, in the same queue as `lock acquire` and `dev up`."
+        opts.separator ""
+        opts.separator "Definitions are YAML files: #{@config.workflows_dir}/ID.yml, then the presets that"
+        opts.separator "ship with workspace (rpiv: research, plan, implement, verify). See docs/README.workflow.md."
+        opts.separator ""
+        opts.separator "  show      list the definitions, or print one (inputs, steps)"
+        opts.separator "  run       start a run in a workspace (the current one, or --name); --dry-run checks"
+        opts.separator "            the inputs, the project's commands and the pane, and starts nothing"
+        opts.separator "  status    the runs still going (or one run, or --all), each with its step and, when it"
+        opts.separator "            is not moving, why: waiting_lock, waiting_you, turn_ended_incomplete,"
+        opts.separator "            failed_check or pane_gone, with the commands that resolve it"
+        opts.separator "  resume    get a run going again: ask for its lock again, run a failed or undelivered"
+        opts.separator "            step again, look again at a step whose files were missing, or move it to the"
+        opts.separator "            workspace's Claude pane when its own is gone; --from STEP starts again there"
+        opts.separator "  cancel    end a run and release what it holds"
+        opts.separator "  approve   pass a gate; refused from a pane a run is bound to (as is resume --from at"
+        opts.separator "            a gate), so an agent doesn't pass its own plan by mistake"
+        opts.separator "  reject    turn a gate down: the gated step (or --to an earlier one) runs again with the note"
+        opts.separator ""
+        opts.separator "`workflow advance RUN [--turn-ended --pane ID [--turn-started AT]]` is what the agent daemon runs to move a run"
+        opts.separator "on when a turn ends; it is not meant to be typed."
+        opts.separator ""
+        opts.on("--name WORKSPACE", "run: the workspace to run in; status: only this workspace's runs") { |v| options[:name] = v }
+        opts.on("--input KEY=VALUE", "run: a value for one of the workflow's inputs (repeatable)") { |v| options[:inputs] << v }
+        opts.on("--note TEXT", "run: added to every step's instructions; resume, approve, reject: to the next attempt's") { |v| options[:note] = v }
+        opts.on("--pane PANE", "run, resume: the pane to run in (%19 or 0.1) instead of the workspace's Claude pane") { |v| options[:pane] = v }
+        opts.on("--from STEP", "resume: start again at this step") { |v| options[:from] = v }
+        opts.on("--to STEP", "reject: the step to run again (the gated step, or one before it)") { |v| options[:to] = v }
+        opts.on("--all", "status: finished runs too") { options[:all] = true }
+        opts.on("--dry-run", "run: report what would start and start nothing") { options[:dry_run] = true }
+        opts.on("--turn-ended", "advance: a turn ended in the run's pane") { options[:turn_ended] = true }
+        opts.on("--turn-started AT", "advance: when that turn began (ISO 8601)") { |v| options[:turn_started] = v }
+        opts.on("--json", "Print one JSON document (see docs/README.workflow.md)") { options[:json] = true }
+        opts.on("-h", "--help", "Show this help") { options[:help] = true }
+        opts.separator ""
+        opts.separator "Examples:"
+        opts.separator "  workspace workflow show rpiv"
+        opts.separator "  workspace workflow run rpiv --name my-app.worktree-pdf --input task=\"PROJ-101 invoice PDF export\" --dry-run"
+        opts.separator "  workspace workflow run rpiv --input task=\"PROJ-101 invoice PDF export\""
+        opts.separator "  workspace workflow status --json"
+        opts.separator "  workspace workflow approve wr_2610041230559x3k --note \"Skip the migration.\""
+        opts.separator "  workspace workflow reject wr_2610041230559x3k --note \"Too big; split it.\""
+        opts.separator "  workspace workflow resume wr_2610041230559x3k --from implement"
+      end
+    end
+
+    def cmd_workflow(args)
+      options = {json: false, inputs: [], all: false, dry_run: false, turn_ended: false}
+      given = args.dup
+      parser = workflow_parser(options)
+      refuse_bad_bytes!(args)
+      subcommand = args.shift if WORKFLOW_SUBCOMMANDS.include?(args.first)
+      parser.parse!(args)
+      subcommand ||= args.shift if WORKFLOW_SUBCOMMANDS.include?(args.first)
+      return @output.puts(parser.help) if options[:help]
+
+      unless subcommand
+        raise UsageError, args.empty? ? "Missing subcommand: show, run, status, resume, cancel, approve or reject.\n\n#{parser.help}" : "Unknown workflow subcommand: #{args.first}. Run 'workspace workflow --help'."
+      end
+      raise Error, "workflow is not available: no workflow command was wired" unless @workflow_command
+      subject = args.shift
+      raise UsageError, "Unexpected argument: #{args.first}. Run 'workspace workflow --help'." if args.any?
+      needs = {"run" => "an ID (see `workspace workflow show`)", "resume" => "a RUN id", "cancel" => "a RUN id", "approve" => "a RUN id",
+               "reject" => "a RUN id", "advance" => "a RUN id"}[subcommand]
+      raise UsageError, "workflow #{subcommand} needs #{needs}." if needs && subject.nil?
+
+      case subcommand
+      when "show" then @workflow_command.show(id: subject, json: options[:json])
+      when "status"
+        @workflow_command.status(run: subject, workspace: options[:name], all: options[:all], json: options[:json])
+      when "advance"
+        @workflow_command.advance(run: subject, turn_ended: options[:turn_ended], pane: options[:pane], turn_started: workflow_time(options[:turn_started]))
+      when "run"
+        name = options[:name] || @project_detector.detect(@working_dir)
+        raise UsageError, "workflow run needs a workspace: pass --name, or run from inside a project." unless name
+        inputs = workflow_inputs(options[:inputs])
+        workflow_action("workflow run", options) do
+          # The checkout's root, where the run's files go: the named workspace's, or the detected one's.
+          root = options[:name] ? working_dir_for(name) : @project_config.project_root_for(name)
+          @workflow_command.run(id: subject, workspace: name, worktree: root ? File.expand_path(root) : @working_dir, inputs: inputs,
+            pane: options[:pane], note: options[:note], dry_run: options[:dry_run])
+        end
+      when "resume"
+        workflow_action("workflow resume", options) { @workflow_command.resume(run: subject, from: options[:from], note: options[:note], pane: options[:pane], caller_pane: ENV["TMUX_PANE"]) }
+      when "cancel" then workflow_action("workflow cancel", options) { @workflow_command.cancel(run: subject) }
+      when "approve"
+        workflow_action("workflow approve", options) { @workflow_command.approve(run: subject, note: options[:note], caller_pane: ENV["TMUX_PANE"]) }
+      when "reject"
+        raise UsageError, "workflow reject needs --note TEXT: the step runs again with it." if options[:note].to_s.strip.empty?
+        workflow_action("workflow reject", options) { @workflow_command.reject(run: subject, note: options[:note], to: options[:to]) }
+      end
+    rescue OptionParser::ParseError, UsageError => e
+      raise unless json_requested?(options[:json], given)
+      emit_json_error(JsonEnvelope::SCHEMA_VERSION, e, message: e.message.lines.first.strip)
+    end
+
+    # Text that is not valid in its encoding can't be parsed as an option or stored in a
+    # run's file; it is refused here, before a pane is typed into or a lock taken.
+    # Arguments are read as UTF-8 whatever the locale: with none (cron, an app started by
+    # launchd) Ruby tags them binary, which calls any bytes valid and can't be joined
+    # with a definition's text.
+    def refuse_bad_bytes!(args)
+      args.map! { |arg| arg.dup.force_encoding(Encoding::UTF_8) }
+      index = args.index { |arg| !arg.valid_encoding? }
+      return unless index
+      flag = (index.positive? && args[index - 1].start_with?("--")) ? args[index - 1] : "An argument"
+      raise UsageError, "#{flag} holds bytes that are not valid UTF-8 text (was it cut in the middle of a character?)."
+    end
+
+    def workflow_time(text)
+      text && Time.iso8601(text)
+    rescue ArgumentError
+      raise UsageError, "--turn-started takes an ISO 8601 time, got #{text[0, 40].inspect}."
+    end
+
+    def workflow_inputs(pairs)
+      pairs.to_h do |pair|
+        key, value = pair.split("=", 2)
+        raise UsageError, "--input takes KEY=VALUE, got #{pair[0, 60].inspect}." if value.nil? || key.empty?
+        [key, value]
+      end
+    end
+
+    # Runs a workflow or step mutation under {#run_action}, with the command's row as the one result.
+    def workflow_action(action, options)
+      run_action(action, json: options[:json]) do
+        row = yield
+        {exit_code: (row["outcome"] == "failed") ? 1 : 0, results: [row], status: (row["outcome"] == "dry_run") ? "dry_run" : nil}
+      end
+    end
+
+    def step_parser(options)
+      OptionParser.new do |opts|
+        opts.banner = "Usage: workspace step done [--status pass|fail] [--summary TEXT] [--json]\n" \
+          "       workspace step status [--json]"
+        opts.separator ""
+        opts.separator "For the agent working on a workflow step, run from the pane the run is bound to."
+        opts.separator "Neither is required: a step is decided when the agent's turn ends, from the files it"
+        opts.separator "was told to leave and the step's check (see `workspace workflow --help`)."
+        opts.separator ""
+        opts.separator "  done      record what you say about the step, then end your turn. --status fail fails"
+        opts.separator "            the step at the turn's end without running its check"
+        opts.separator "  status    which run, step and attempt this pane is on, where its instructions are,"
+        opts.separator "            and whether the files the step must leave exist"
+        opts.separator ""
+        opts.on("--status STATUS", "done: pass (default) or fail") { |v| options[:status] = v }
+        opts.on("--summary TEXT", "done: one line about what was done, or what is left") { |v| options[:summary] = v }
+        opts.on("--json", "Print one JSON document (see docs/README.workflow.md)") { options[:json] = true }
+        opts.on("-h", "--help", "Show this help") { options[:help] = true }
+        opts.separator ""
+        opts.separator "Examples:"
+        opts.separator "  workspace step status"
+        opts.separator "  workspace step done --summary \"Plan written; three commits.\""
+        opts.separator "  workspace step done --status fail --summary \"Two specs still fail in billing.\""
+      end
+    end
+
+    def cmd_step(args)
+      options = {json: false, status: "pass"}
+      given = args.dup
+      parser = step_parser(options)
+      refuse_bad_bytes!(args)
+      subcommand = args.shift if %w[done status].include?(args.first)
+      parser.parse!(args)
+      subcommand ||= args.shift if %w[done status].include?(args.first)
+      return @output.puts(parser.help) if options[:help]
+
+      unless subcommand
+        raise UsageError, args.empty? ? "Missing subcommand: done or status.\n\n#{parser.help}" : "Unknown step subcommand: #{args.first}. Run 'workspace step --help'."
+      end
+      raise UsageError, "Unexpected argument: #{args.first}. Run 'workspace step --help'." if args.any?
+      raise Error, "step is not available: no workflow command was wired" unless @workflow_command
+
+      if subcommand == "status"
+        @workflow_command.step_status(pane: ENV["TMUX_PANE"], json: options[:json])
+      else
+        workflow_action("step done", options) { @workflow_command.step_done(pane: ENV["TMUX_PANE"], status: options[:status], summary: options[:summary]) }
+      end
     rescue OptionParser::ParseError, UsageError => e
       raise unless json_requested?(options[:json], given)
       emit_json_error(JsonEnvelope::SCHEMA_VERSION, e, message: e.message.lines.first.strip)

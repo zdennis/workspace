@@ -190,6 +190,16 @@ require_relative "workspace/process_group_terminator"
 require_relative "workspace/process_holder_stopper"
 require_relative "workspace/dev_runner"
 require_relative "workspace/run_resources"
+require_relative "workspace/git_exclude"
+require_relative "workspace/workflow_config"
+require_relative "workspace/workflow_definition"
+require_relative "workspace/workflow_catalog"
+require_relative "workspace/workflow_run_store"
+require_relative "workspace/workflow_check"
+require_relative "workspace/workflow_panes"
+require_relative "workspace/workflow_engine"
+require_relative "workspace/workflow_status"
+require_relative "workspace/workflow_nudger"
 require_relative "workspace/hook_installer"
 require_relative "workspace/hook_runner"
 require_relative "workspace/project_detector"
@@ -232,6 +242,7 @@ require_relative "workspace/commands/ui"
 require_relative "workspace/commands/binding"
 require_relative "workspace/commands/library"
 require_relative "workspace/commands/instructions"
+require_relative "workspace/commands/workflow"
 require_relative "workspace/commands/handoff"
 require_relative "workspace/commands/ask"
 require_relative "workspace/commands/wait_until_content"
@@ -291,8 +302,6 @@ module Workspace
     library = Library.new(config: config, lineage: lineage, project_config: project_config)
     library_installer = LibraryInstaller.new(git: git)
     start_command = Commands::Start.new(git: git, project_config: project_config, project_settings: project_settings, launch_command: launch_command, lineage: lineage, hook_installer: hook_installer, task_store: task_store, event_log: event_log, library: library, library_installer: library_installer, output: output, input: input)
-    kill_command = Commands::Kill.new(git: git, project_config: project_config, project_settings: project_settings, stop_command: stop_command, project_detector: project_detector, task_store: task_store, event_log: event_log, output: output, input: input)
-    finish_command = Commands::Finish.new(git: git, project_config: project_config, kill_command: kill_command, project_detector: project_detector, output: output, error_output: error_output, input: input)
     send_command = Commands::Send.new(locator: pane_locator, tmux: tmux, output: output)
     focus_command = Commands::Focus.new(state: state, window_manager: window_manager, tmux: tmux, pane_locator: pane_locator, output: output)
     tile_command = Commands::Tile.new(state: state, window_manager: window_manager, window_layout: window_layout, output: output)
@@ -375,8 +384,38 @@ module Workspace
     library_command = Commands::Library.new(library: library, output: output, input: input)
     commands_config = CommandsConfig.new(project_settings: project_settings)
     instruction_composer = InstructionComposer.new(library: library, lineage: lineage,
-      commands_config: commands_config, pane_bindings: pane_bindings)
+      commands_config: commands_config, pane_bindings: pane_bindings, workflow_config: WorkflowConfig.new(project_settings: project_settings))
     instructions_command = Commands::Instructions.new(composer: instruction_composer, bindings: binding_command, output: output)
+    ask_store_for = ->(workspace) { AskStore.new(path: config.ask_state_path(workspace), error_output: error_output) }
+    workflow_store = WorkflowRunStore.new(dir: config.workflow_runs_dir, archive_dir: config.workflow_archive_dir)
+    workflow_panes = WorkflowPanes.new(config: config, bindings: pane_bindings, tmux: tmux, locator: pane_locator, binder: binding_command,
+      snapshot_client: agent_snapshot_client, agent_ensurer: ensure_agent_command)
+    workflow_engine = WorkflowEngine.new(
+      store: workflow_store,
+      resources: RunResources.new(lock_namespace: lock_namespace, lock_holder: lock_holder, lock_config: lock_config, terminator: process_group_terminator),
+      composer: instruction_composer,
+      panes: workflow_panes,
+      checker: WorkflowCheck.new,
+      commands_config: commands_config,
+      lineage: lineage,
+      git: git,
+      excludes: GitExclude.new(git: git),
+      env_stopper: ->(run_id:, worktree:) { dev_command.down_for_run(run_id, working_dir: worktree) },
+      event_log: event_log,
+      task_store: task_store
+    )
+    workflow_command = Commands::Workflow.new(
+      catalog: WorkflowCatalog.new(config: config),
+      engine: workflow_engine,
+      status: WorkflowStatus.new(store: workflow_store, panes: workflow_panes, snapshot_client: agent_snapshot_client, ask_store_for: ask_store_for),
+      store: workflow_store,
+      panes: workflow_panes,
+      output: output
+    )
+    workflow_nudger = WorkflowNudger.new(store: workflow_store, panes: workflow_panes, executable: File.expand_path("../bin/workspace", __dir__),
+      log_path: ->(workspace) { config.agent_log_path(workspace) }, logger: logger, error_output: error_output)
+    kill_command = Commands::Kill.new(git: git, project_config: project_config, project_settings: project_settings, stop_command: stop_command, project_detector: project_detector, task_store: task_store, event_log: event_log, workflow_runs: workflow_engine, output: output, input: input)
+    finish_command = Commands::Finish.new(git: git, project_config: project_config, kill_command: kill_command, project_detector: project_detector, output: output, error_output: error_output, input: input)
     parent_command = Commands::Parent.new(lineage: lineage, project_config: project_config, output: output)
     project_catalog = ProjectCatalog.new(project_config: project_config, git: git)
     project_facts = ProjectFacts.new(tmux: tmux, state: state, config: config, lock_namespace: lock_namespace,
@@ -385,10 +424,10 @@ module Workspace
     projects_command = Commands::Projects.new(catalog: project_catalog, tmux: tmux, facts: project_facts, output: output, error_output: error_output)
     snapshot_command = Commands::Snapshot.new(catalog: project_catalog, facts: project_facts, tmux: tmux, state: state, config: config,
       snapshot_client: agent_snapshot_client, sessions: sessions_command, git: git, pull_request_status: PullRequestStatus.new,
-      ask_store_for: ->(workspace) { AskStore.new(path: config.ask_state_path(workspace), error_output: error_output) },
+      ask_store_for: ask_store_for,
       output: output, error_output: error_output)
     review_command = Commands::Review.new(catalog: project_catalog, git: git, snapshot_client: agent_snapshot_client, task_store: task_store,
-      ask_store_for: ->(workspace) { AskStore.new(path: config.ask_state_path(workspace), error_output: error_output) }, session_ledger: session_ledger, transcript_summary: TranscriptSummary.new, pull_request_status: PullRequestStatus.new,
+      ask_store_for: ask_store_for, session_ledger: session_ledger, transcript_summary: TranscriptSummary.new, pull_request_status: PullRequestStatus.new,
       output: output, error_output: error_output)
     # Hook output goes to stderr so it never lands in the JSON on stdout.
     json_hook_runner = HookRunner.new(project_settings: project_settings, project_config: project_config, output: error_output, error_output: error_output, logger: logger)
@@ -433,6 +472,7 @@ module Workspace
       context_reader: context_reader,
       label_reader: TranscriptLabel.new,
       task_store: task_store,
+      workflow_nudger: workflow_nudger,
       logger: logger,
       output: output,
       error_output: error_output
@@ -486,6 +526,7 @@ module Workspace
       library_command: library_command,
       library: library,
       instructions_command: instructions_command,
+      workflow_command: workflow_command,
       review_command: review_command,
       restore_command: restore_command,
       snapshot_command: snapshot_command,

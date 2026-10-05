@@ -46,7 +46,9 @@ To check on or read the log of a running agent without holding a terminal, use [
 
 `--force` turns that refusal into a handover: the agent finds the process holding the socket with `lsof`, sends it `SIGTERM`, and waits up to 5 seconds for it to exit before binding the socket itself. In-flight state is already on disk, so the replacement picks the pipeline back up as it would after any other restart.
 
-**Pipeline** — a project's stages come from `pipeline.panes` in `~/.config/workspace/projects/<name>.yml`. Each entry's position is its pane index:
+**Workflow runs** — when the main agent's turn ends in a pane bound to a [workflow run](README.workflow.md) (a `Stop` hook event with no sub-agent id), the daemon starts `workspace workflow advance RUN --turn-ended --pane ID [--turn-started AT]` as its own process, which decides the run's step. `AT` is when the pane's last prompt was submitted, when this daemon saw it; the run ignores the end of a turn that began before its step did. Every 15 seconds it starts `workspace workflow advance RUN` for each of the workspace's runs that waits for a lock, or whose check never reported back. Those processes write to the daemon's log. A workflow needs the daemon: without one, a run only moves on `workflow resume`.
+
+**Pipeline** (deprecated, see [`pipeline`](README.pipeline.md)) — a project's stages come from `pipeline.panes` in `~/.config/workspace/projects/<name>.yml`. Each entry's position is its pane index:
 
 ```yaml
 pipeline:

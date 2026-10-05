@@ -77,6 +77,16 @@ module Workspace
       File.join(workspace_dir, "lib", "library")
     end
 
+    # @return [String] path to the user's workflow definitions, one `<id>.yml` each
+    def workflows_dir
+      File.join(workspace_config_dir, "workflows")
+    end
+
+    # @return [String] path to the workflow presets that ship with workspace
+    def builtin_workflows_dir
+      File.join(workspace_dir, "lib", "workflows")
+    end
+
     # Handoff files carry one pipeline stage's output to the next, so they live
     # under the user's own config directory rather than in shared /tmp.
     #
@@ -181,6 +191,13 @@ module Workspace
     # @return [String] path to the directory holding one JSON file per workflow run
     def workflow_runs_dir
       File.join(state_dir, ".workflows", "runs")
+    end
+
+    # Finished runs are moved here, so the runs directory holds only runs still going.
+    #
+    # @return [String] path to the directory holding finished workflow runs
+    def workflow_archive_dir
+      File.join(state_dir, ".workflows", "archive")
     end
 
     # @return [String] path to the JSON file binding tmux panes to a run, review or play

@@ -703,6 +703,32 @@ module CLITestHelpers
     end
   end
 
+  # Records each `workflow`/`step` call; mutations return the row the real command returns.
+  class FakeWorkflowCommand
+    attr_reader :calls
+    attr_accessor :error, :row
+
+    def initialize
+      @calls = []
+      @row = {"workspace" => "app", "outcome" => "started", "reason" => nil, "message" => nil, "run" => {"id" => "wr_1", "state" => "running"}}
+    end
+
+    %i[show status advance step_status].each do |name|
+      define_method(name) do |**kw|
+        @calls << [name, kw]
+        raise @error if @error
+      end
+    end
+
+    %i[run resume cancel approve reject step_done].each do |name|
+      define_method(name) do |**kw|
+        @calls << [name, kw]
+        raise @error if @error
+        @row
+      end
+    end
+  end
+
   class FakeReviewCommand
     attr_reader :calls
     attr_accessor :result

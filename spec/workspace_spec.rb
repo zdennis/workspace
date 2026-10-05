@@ -154,6 +154,56 @@ RSpec.describe Workspace do
       expect(composer.instance_variable_get(:@pane_bindings)).to be_a(Workspace::PaneBindings)
     end
 
+    it "wires one workflow engine into the workflow command and kill, over the run files the lock store reads" do
+      Dir.mktmpdir("ws-workflow-wiring") do |state|
+        allow(ENV).to receive(:fetch).and_call_original
+        allow(ENV).to receive(:fetch).with("XDG_STATE_HOME", anything).and_return(state)
+        cli = Workspace.build_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new)
+
+        workflow = cli.instance_variable_get(:@workflow_command)
+        engine = workflow.instance_variable_get(:@engine)
+        store = engine.instance_variable_get(:@store)
+        panes = engine.instance_variable_get(:@panes)
+
+        expect(workflow).to be_a(Workspace::Commands::Workflow)
+        expect(cli.instance_variable_get(:@kill_command).instance_variable_get(:@workflow_runs)).to equal(engine)
+        expect(workflow.instance_variable_get(:@store)).to equal(store)
+        expect(workflow.instance_variable_get(:@status).instance_variable_get(:@store)).to equal(store)
+        expect(engine.instance_variable_get(:@resources)).to be_a(Workspace::RunResources)
+        expect(engine.instance_variable_get(:@composer)).to equal(cli.instance_variable_get(:@instructions_command).instance_variable_get(:@composer))
+        expect(engine.instance_variable_get(:@composer).instance_variable_get(:@workflow_config)).to be_a(Workspace::WorkflowConfig)
+        expect(panes.instance_variable_get(:@bindings)).to equal(cli.instance_variable_get(:@binding_command).instance_variable_get(:@bindings))
+        expect(panes.instance_variable_get(:@agent_ensurer)).to equal(cli.instance_variable_get(:@ensure_agent_command))
+
+        # The engine's events go to the one shared log, and the environment a run left is stopped through `dev`.
+        dev = cli.instance_variable_get(:@dev_command)
+        expect(engine.instance_variable_get(:@event_log)).to be_a(Workspace::EventLog)
+        expect(engine.instance_variable_get(:@event_log)).to equal(cli.instance_variable_get(:@kill_command).instance_variable_get(:@event_log))
+        allow(dev).to receive(:down_for_run).and_return(exit_code: 0)
+        engine.instance_variable_get(:@env_stopper).call(run_id: "wr_1", worktree: "/src/app")
+        expect(dev).to have_received(:down_for_run).with("wr_1", working_dir: "/src/app")
+
+        # A run the store creates is alive to the lock holder the run's locks are checked with.
+        run = store.create("state" => "running", "workspace" => "app", "current" => "a", "steps" => {"a" => {"state" => "running", "attempts" => []}},
+          "definition" => {"steps" => [{"id" => "a"}]})
+        lock_holder = engine.instance_variable_get(:@resources).instance_variable_get(:@lock_holder)
+        expect(lock_holder.run_alive?(run["id"])).to be true
+        expect(File.dirname(File.dirname(store.events_path(run["id"])))).to eq(File.join(state, "workspace", ".workflows"))
+      end
+    end
+
+    it "gives the agent daemon a nudger over the same run files and bindings, which starts this checkout's bin/workspace" do
+      cli = Workspace.build_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new)
+
+      nudger = cli.instance_variable_get(:@agent_command).instance_variable_get(:@workflow_nudger)
+      engine = cli.instance_variable_get(:@workflow_command).instance_variable_get(:@engine)
+
+      expect(nudger).to be_a(Workspace::WorkflowNudger)
+      expect(nudger.instance_variable_get(:@store)).to equal(engine.instance_variable_get(:@store))
+      expect(nudger.instance_variable_get(:@panes)).to equal(engine.instance_variable_get(:@panes))
+      expect(nudger.instance_variable_get(:@executable)).to eq(File.expand_path("../bin/workspace", __dir__))
+    end
+
     it "gives start a library installer that checks tracked files with the shared git" do
       cli = Workspace.build_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new)
 

@@ -10,7 +10,8 @@ A macOS CLI for managing tmuxinator-based development workspaces in iTerm2. Laun
 - **Kill** and **relaunch** workspace projects with session state preservation
 - **Add** new projects from any directory
 - **Agent** — run a long-lived daemon that registers with [work-coordinator](https://github.com/zdennis/work-coordinator), routes commands to the right pane, and drives multi-step pipelines
-- **Pipeline** — sequence panes as a staged pipeline (researcher → implementer → reviewer) with automatic handoff and sentinel-based completion detection
+- **Workflow** — run ordered steps (the `rpiv` preset: research, plan, implement, verify) in a workspace's agent pane, with gates, checks, locks the run holds, and a reason whenever a run is stuck
+- **Pipeline** (deprecated, use Workflow) — sequence panes as a staged pipeline (researcher → implementer → reviewer) with automatic handoff and sentinel-based completion detection
 - Reuses existing launcher panes instead of creating new windows
 - Tracks iTerm window IDs for reliable window management across tab switches
 - Positions windows left-to-right on the active display
@@ -100,7 +101,7 @@ workspace <subcommand> [options]
 | lock | [README](docs/README.lock.md) | Acquire, release, inspect, or clear a shared repo-wide lock; print agent instructions |
 | lookup | [README](docs/README.lookup.md) | Find a workspace project by worktree path, branch, or project name |
 | parent | [README](docs/README.parent.md) | Print the parent workspace of the current (or given) workspace |
-| pipeline | [README](docs/README.pipeline.md) | Inspect and drive a project's agent pipeline |
+| pipeline | [README](docs/README.pipeline.md) | Deprecated (use `workflow`): inspect and drive a project's agent pipeline |
 | projects | [README](docs/README.projects.md) | Group workspaces by repository: main checkout plus worktrees (`list` for running counts, `list --git` for unsaved work, `show` for one project's agents, git state, asks, pipeline, locks and dev env, `members` for a script-friendly list of its workspaces, `stop` to stop them all, `kill` to remove all its worktrees) |
 | prune | [README](docs/README.prune.md) | Remove worktree projects whose PR is closed or merged |
 | reactivate | [README](docs/README.reactivate.md) | Reactivate Claude in a project's tmux pane |
@@ -119,6 +120,7 @@ workspace <subcommand> [options]
 | start | [README](docs/README.start.md) | Create a git worktree and launch it (from JIRA key, PR/issue URL, or branch) |
 | status | [README](docs/README.status.md) | Show detailed state of tracked launcher sessions |
 | statusline | [README](docs/README.statusline.md) | Render Claude Code's status line (install as its statusLine command) |
+| step | [README](docs/README.workflow.md) | For the agent on a workflow step: report on it (`done`) or see what it is (`status`) |
 | stop | [README](docs/README.stop.md) | Stop active workspace projects and their tmux sessions |
 | tile | [README](docs/README.tile.md) | Tile windows across the screen (`--all` for all projects) |
 | tmux | [README](docs/README.tmux.md) | Show a workspace's tmuxinator file as windows and panes |
@@ -126,6 +128,7 @@ workspace <subcommand> [options]
 | version | [README](docs/README.version.md) | Print the workspace version |
 | wait-until-content | [README](docs/README.wait-until-content.md) | Block until a pane shows content, then exec a command |
 | whereis | [README](docs/README.whereis.md) | Print the workspace installation directory |
+| workflow | [README](docs/README.workflow.md) | Run a workflow (ordered steps, e.g. `rpiv`) in a workspace's agent pane: `show`, `run`, `status`, `resume`, `cancel`, `approve`, `reject` |
 
 Run `workspace <subcommand> --help` for subcommand-specific help. Scripts and agents: every `--json` result is one object with `schema_version` and `ok`, and failures carry a stable `code`; see [`--json` output](docs/README.json.md).
 

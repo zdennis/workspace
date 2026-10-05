@@ -53,6 +53,7 @@ The same log records what agents and pipelines do. `reconstruct` ignores these e
 | `lock_wait_gave_up` | `--max-wait` or the startup timeout passed while queued | `lock`, `pid`, `waited_seconds` |
 | `lock_wait_cleared` | `lock clear` removed the waiter | `lock`, `pid`, `waited_seconds` |
 | `lock_wait_abandoned` | `lock acquire --wait` interrupted | `lock`, `pid`, `waited_seconds`, `exit_code` |
+| `lock_wait_started`, `lock_acquired`, `lock_released` | a [workflow run](README.workflow.md) taking, getting or giving up a lock a step uses | `lock`, `run_id`, `step`, `workspace`; `position` and `holder` for a wait (the holder's `run_id` and `step` when a run holds the lock, else its `pid`; `pane`, `worktree` and `task` when known); `waited_seconds` for an acquire that ended a wait |
 
 An acquire that doesn't wait records nothing here; `locks.jsonl` in the lock store already audits every acquire and release.
 
@@ -71,6 +72,7 @@ These record that something changed, so a reader can refetch (`snapshot --json`)
 | `daemon_started` | the workspace the daemon serves | `agentd`, once it is ready | `workspace`, `daemon` (`agent`), `pid` |
 | `daemon_stopped` | the workspace the daemon served | `agentd`, as it shuts down | `workspace`, `daemon`, `pid` |
 | `config_changed` | the project, or `""` (empty) for the global file | `config set` and `config unset` | `workspace` (project layer) or `scope` (`global`, global layer), `layer` (`project` or `global`), `via` (`set` or `unset`), `keys` (the key names written) |
+| `workflow_changed` | the run's workspace | `workflow run`, `resume`, `cancel`, `approve`, `reject`, `kill` (for the runs it cancels) and the `workflow advance` the agent daemon starts, each time a run's state, step or reason changes | `run_id`, `workflow`, `workspace`, `state`, `step`, `reason` (the stored reason code, or `null`). Refetch `workflow status --json` |
 
 Not every change is covered:
 

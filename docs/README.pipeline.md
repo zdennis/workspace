@@ -1,5 +1,7 @@
 # workspace pipeline
 
+> **Deprecated.** Use [`workspace workflow`](README.workflow.md), which runs ordered steps in a workspace's agent pane and shows where a run is stuck. `pipeline` still works and will be removed in a later release. Each subcommand that acts prints a warning on stderr; with `--json` the notice is in the action document's `warnings` instead (`pipeline status --json` is not an action document and carries no notice), and `workspace doctor` warns for a project that configures `pipeline.panes`.
+
 Inspect and drive a project's agent pipeline by hand. These are operator tools for watching a pipeline and nudging it when something needs a push — the day-to-day driving is done by work-coordinator through [`workspace agentd`](README.agentd.md).
 
 ## Usage

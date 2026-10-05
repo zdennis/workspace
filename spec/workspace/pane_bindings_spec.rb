@@ -99,6 +99,55 @@ RSpec.describe Workspace::PaneBindings do
     end
   end
 
+  describe "#pane_for" do
+    it "finds the pane bound to a subject" do
+      store.bind("%5", "kind" => "run", "id" => "wr_1", "session" => "app")
+      store.bind("%6", "kind" => "review", "id" => "wr_1", "session" => "app")
+
+      expect(store.pane_for("run", "wr_1")).to eq("%5")
+      expect(store.pane_for("review", "wr_1")).to eq("%6")
+      expect(store.pane_for("run", "wr_2")).to be_nil
+    end
+
+    it "follows a binding to the pane `restore` moved it to" do
+      store.bind("%5", "kind" => "run", "id" => "wr_1", "session" => "app", "pane_slot" => "app:0.1")
+      store.move([{from: "%5", to: "%12", session: "app", from_slot: "app:0.1", to_slot: "app:0.1"}])
+
+      expect(store.pane_for("run", "wr_1")).to eq("%12")
+    end
+
+    it "skips a binding kept under its slot, which has no pane" do
+      store.bind("%5", "kind" => "run", "id" => "wr_1", "session" => "app", "pane_slot" => "app:0.1")
+      store.bind("%6", "kind" => "play", "id" => "p", "session" => "app", "pane_slot" => "app:0.2")
+      # After a tmux restart pane %5 is the old slot 0.2: wr_1's binding is parked under its slot until 0.1 is restored.
+      store.move([{from: "%6", to: "%5", session: "app", from_slot: "app:0.2", to_slot: "app:0.2"}])
+
+      expect(JSON.parse(File.read(path)).keys).to include("slot:app:0.1")
+      expect(store.pane_for("run", "wr_1")).to be_nil
+    end
+
+    it "is nil when the file is missing" do
+      expect(store.pane_for("run", "wr_1")).to be_nil
+    end
+  end
+
+  describe "#unbind_all" do
+    it "removes every binding to the subject, one kept under its slot included, and leaves the others" do
+      store.bind("%5", "kind" => "run", "id" => "wr_1", "session" => "app", "pane_slot" => "app:0.1")
+      store.bind("%6", "kind" => "play", "id" => "p", "session" => "app", "pane_slot" => "app:0.2")
+      store.bind("%7", "kind" => "run", "id" => "wr_2", "session" => "app", "pane_slot" => "app:0.3")
+      store.bind("%8", "kind" => "review", "id" => "wr_1", "session" => "app", "pane_slot" => "app:0.4")
+      # wr_1's binding is parked under its slot: pane %5 is now the old slot 0.2.
+      store.move([{from: "%6", to: "%5", session: "app", from_slot: "app:0.2", to_slot: "app:0.2"}])
+      store.bind("%9", "kind" => "run", "id" => "wr_1", "session" => "app", "pane_slot" => "app:0.5")
+
+      expect(store.unbind_all("run", "wr_1").sort).to eq(["%9", "slot:app:0.1"])
+
+      expect(JSON.parse(File.read(path)).keys.sort).to eq(%w[%5 %7 %8])
+      expect(store.unbind_all("run", "wr_1")).to eq([])
+    end
+  end
+
   describe "#unbind" do
     it "returns the removed binding and leaves the others" do
       store.bind("%5", "kind" => "run", "id" => "wr_1")

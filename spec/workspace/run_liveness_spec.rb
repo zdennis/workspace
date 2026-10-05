@@ -27,6 +27,20 @@ RSpec.describe Workspace::RunLiveness do
     end
   end
 
+  it "reads a run file holding non-ASCII text from a process with no UTF-8 locale" do
+    File.write(File.join(dir, "wr_1.json"), JSON.generate("id" => "wr_1", "state" => "running", "note" => "café"), encoding: "UTF-8")
+
+    without_utf8_locale { expect(liveness.alive?("wr_1")).to be(true) }
+  end
+
+  it "says it could not read a run file whose bytes are not UTF-8, whatever the locale" do
+    File.binwrite(File.join(dir, "wr_1.json"), "{\"id\":\"wr_1\",\"state\":\"running\",\"note\":\"caf\xC3\"}".b)
+
+    [-> { without_utf8_locale { liveness.alive?("wr_1") } }, -> { liveness.alive?("wr_1") }].each do |call|
+      expect(&call).to raise_error(Workspace::Error, /could not read .*wr_1\.json/)
+    end
+  end
+
   it "is not alive without a run file" do
     expect(liveness.alive?("wr_gone")).to be(false)
   end

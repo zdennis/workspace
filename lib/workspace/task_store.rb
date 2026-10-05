@@ -115,7 +115,8 @@ module Workspace
     # warning once per version of the file: a daemon reads the store on every
     # snapshot and must not repeat it.
     def read_record(path)
-      parsed = JSON.parse(File.read(path))
+      # Written as UTF-8 JSON; read as that whatever the locale of the process.
+      parsed = JSON.parse(File.read(path, encoding: Encoding::UTF_8))
       return parsed if parsed.is_a?(Hash) && parsed["id"].is_a?(String) && parsed["workspace"].is_a?(String)
       warn_once(path, "not a task record")
     rescue JSON::ParserError

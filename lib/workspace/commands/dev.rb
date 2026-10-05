@@ -157,6 +157,27 @@ module Workspace
         {exit_code: 0}
       end
 
+      # Stops the dev environment a workflow run left running when it gave up
+      # the lock: the lock then names that environment, with the run it came
+      # from, and everyone queued for it waits until it stops. Whatever else
+      # holds the lock is left alone.
+      #
+      # @param run_id [String] the run that gave the lock up
+      # @param working_dir [String] any directory inside the repository
+      # @return [Hash] {exit_code:} — 0 when it was stopped or the lock names
+      #   nothing of that run's, 1 when it could not be stopped
+      def down_for_run(run_id, working_dir: Dir.pwd)
+        ctx = context(working_dir, tolerate_bad_config: true)
+        holder = settled_entry(ctx[:store])["holder"]
+        return {exit_code: 0} unless holder && !run?(holder) && holder["from_run"] == run_id
+
+        result = stop(ctx, holder)
+        return {exit_code: 1} if result == :kept || result == :in_progress
+        close_window(holder)
+        @output.puts "Stopped dev environment for #{describe(holder)}, which run #{run_id} no longer uses."
+        {exit_code: 0}
+      end
+
       # The dev environment's state as the `dev status --json` payload, without
       # printing it. The ready probe runs only while the environment is running.
       # A `kind: "run"` holder is a workflow run holding the lock: the

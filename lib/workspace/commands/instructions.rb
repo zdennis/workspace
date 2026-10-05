@@ -18,7 +18,7 @@ module Workspace
         @output = output
       end
 
-      # @param packs [Array<String>] pack names; empty composes the default packs
+      # @param packs [Array<String>] pack names; empty composes the default packs (`workflows.defaults.include`)
       # @param cwd [String] the project's directory
       # @param pane [String, nil] a pane id ("%19") whose binding follows the `binding` pack
       # @param json [Boolean] print one JSON document instead of the text
@@ -26,7 +26,7 @@ module Workspace
       # @raise [Workspace::UsageError] for a bad pack name or a pane that is not a pane id
       # @raise [Workspace::Error] see {Workspace::InstructionComposer#compose}
       def compose(packs:, cwd:, pane: nil, json: false)
-        packs = InstructionComposer::DEFAULT_PACKS if packs.empty?
+        packs = nil if packs.empty?
         binding = pane && @bindings.live(pane: pane)
         result = @composer.compose(packs: packs, cwd: cwd, binding: binding)
         if json

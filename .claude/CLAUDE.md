@@ -28,12 +28,12 @@ A macOS CLI (Ruby) for managing tmuxinator-based development workspaces in iTerm
 - `lib/workspace/library_store.rb` — The files of one library scope (`<kind>/<name>.md`, or a `skill/<name>/` directory holding `SKILL.md`; a copy or a symlink), written through a temp file or directory and rename
 - `lib/workspace/library.rb` — Resolves a library `REF` across scopes; `#stores` is the one lookup order (project, global, then the built-in store `lib/library/`); `#pack` looks an instruction pack up built-in first; `#play` checks the play `start --play`/`launch --play` point the agent at; `#copyable` checks a `start --agent`/`--skill` entry
 - `lib/workspace/library_installer.rb` — Copies a library agent or skill into a checkout's `.claude/agents/` or `.claude/skills/`, never over a tracked path, and lists it in the common dir's `info/exclude`
-- `lib/workspace/instruction_composer.rb` — Builds an agent's instructions from library packs under a heading per pack; adds the pane's binding after `binding` and the project's `commands.test`/`commands.lint` after `commits`
+- `lib/workspace/instruction_composer.rb` — Builds an agent's instructions from library packs under a heading per pack, and a workflow step's four layers (default packs, workflow, step, attempt); adds the pane's binding after `binding` and the project's `commands.test`/`commands.lint` after `commits`
 - `lib/workspace/commands_config.rb` — Reads a project's `commands.test` and `commands.lint`
 - `lib/library/play/` — The built-in instruction packs (`binding`, `orchestrator`, `commits`, `review`), read through `Library#builtin_store`
-- `lib/workspace/commands/` — Complex command objects (launch, kill, focus, start, agent, ensure_agent, lock, dev, projects, capabilities, send, review, restore, snapshot, daemon, ui, binding, library, instructions)
+- `lib/workspace/commands/` — Complex command objects (launch, kill, focus, start, agent, ensure_agent, lock, dev, projects, capabilities, send, review, restore, snapshot, daemon, ui, binding, library, instructions, workflow)
 - `lib/workspace/work_coordinator_client.rb` — JSONL client for work-coordinator sockets
-- `lib/workspace/pipeline_config.rb` — Reads per-project pipeline stage config from `~/.config/workspace/projects/<name>.yml`
+- `lib/workspace/pipeline_config.rb` — (`pipeline` is deprecated in favor of `workflow`) Reads per-project pipeline stage config from `~/.config/workspace/projects/<name>.yml`
 - `lib/workspace/pipeline_state.rb` — In-flight work item tracking, disk-persisted to `~/.local/state/workspace/<name>/pipeline.json`
 - `lib/workspace/sentinel_poller.rb` — Background poller watching tmux panes for `WORKSPACE_DONE:` sentinel
 - `lib/workspace/session_monitor.rb` — Per-pane coding-agent and sub-agent state (working/idle/waiting), keyed on tmux pane id; fires alerts
@@ -50,7 +50,18 @@ A macOS CLI (Ruby) for managing tmuxinator-based development workspaces in iTerm
 - `lib/workspace/lock_holder.rb` — Identifies the calling agent's pid/start time and checks holder/waiter liveness; `#run_alive?` asks `RunLiveness` about a run holder
 - `lib/workspace/lock_store.rb` — Flock-guarded JSON lock store (acquire/release/status/clear), reaped on every op; `#acquire_run`/`#release_run` hold locks for a workflow run (`kind: "run"`, keyed on the run id, exempt from `release_all`, taken in sorted order), and `#delegate`/`#end_delegate`/`#keep_delegate` record the dev wrapper working under a run's hold; `LockStore.run?` is the one check for a run record
 - `lib/workspace/run_liveness.rb` — A run is alive while `~/.local/state/workspace/.workflows/runs/<id>.json` exists and its `state` is not `completed`, `failed` or `cancelled`
-- `lib/workspace/run_resources.rb` — Holds a workflow step's `uses:` for the run: resolves the names (`dev-env` is `devenv`, `edit` is refused), acquires through `LockStore#acquire_run` without blocking, releases; not built in `build_cli` yet (the workflow runner will be its first caller)
+- `lib/workspace/run_resources.rb` — Holds a workflow step's `uses:` for the run: resolves the names (`dev-env` is `devenv`, `edit` is refused), acquires through `LockStore#acquire_run` without blocking, releases; `WorkflowEngine` is its caller
+- `lib/workspace/workflow_definition.rb` — One workflow definition (YAML): checks every key, collects every problem (`invalid_workflow`), fills defaults; `#to_h` is the copy a run keeps; `.render` fills `{{placeholders}}`
+- `lib/workspace/workflow_catalog.rb` — Finds a definition by id: `~/.config/workspace/workflows/`, then the presets in `lib/workflows/` (`rpiv`)
+- `lib/workspace/workflow_run_store.rb` — Run files under `~/.local/state/workspace/.workflows/`: `runs/<id>.json` and `<id>.events.jsonl` while a run is going (what `RunLiveness` reads), `archive/` once finished; `#update` is the one way a run changes, under the run's own flock
+- `lib/workspace/workflow_engine.rb` — Every transition of a run: `start`, `turn_ended` (derived done: files exist, check passes), `report`, `approve`, `reject`, `resume`, `cancel`, `tick`, `workspace_killed`; stores the reasons `waiting_lock`, `waiting_you`, `turn_ended_incomplete`, `failed_check`; emits `workflow_changed` and the run's lock events
+- `lib/workspace/workflow_panes.rb` — The run's pane: default Claude pane from the daemon, binding through `Commands::Binding`, and the one typed line (`restart_agent` for a fresh conversation, `Tmux#deliver` to continue)
+- `lib/workspace/workflow_check.rb` — Runs a step's `status:` command in the checkout with a time limit, output to a log
+- `lib/workspace/workflow_status.rb` — What `workflow status` shows: the stored run plus what is read at the time (`pane_gone`, a permission prompt or open ask as `waiting_you`, the `timed_out` flag) and each reason's `actions`
+- `lib/workspace/workflow_nudger.rb` — The daemon's part: starts `workspace workflow advance` as its own process when a turn ends in a bound pane, and on a timer for runs waiting on a lock
+- `lib/workspace/workflow_config.rb` — Reads the global `workflows.defaults.include` (the default packs)
+- `lib/workspace/git_exclude.rb` — Lists a path in a repository's `info/exclude`; keeps `.workflow/` out of `git status`
+- `lib/workflows/` — The workflow presets that ship (`rpiv.yml`)
 - `lib/workspace/bound_run.rb` — The run the calling pane is bound to (a non-stale `kind: run` binding of `$TMUX_PANE`); lets `dev up` and `lock acquire` tell the run's own agent from anyone else
 - `lib/workspace/lock_config.rb` — Reads a project's `locks.idle_grace` (falls back to 5m with a warning)
 - `lib/workspace/lock_idle_tracker.rb` — Marks an agent's lock idle/active from `session-event` hooks, for idle takeover
@@ -80,7 +91,7 @@ A macOS CLI (Ruby) for managing tmuxinator-based development workspaces in iTerm
 
 ## Subcommands
 
-init, doctor, launch, start, add, stop, kill, finish, relaunch, restore, focus, list, status, whereis, agent, daemon, pipeline, sessions, review, snapshot, session-event, lock, dev, parent, projects, ask, capabilities, ui, binding, library, instructions
+init, doctor, launch, start, add, stop, kill, finish, relaunch, restore, focus, list, status, whereis, agent, daemon, pipeline, sessions, review, snapshot, session-event, lock, dev, parent, projects, ask, capabilities, ui, binding, library, instructions, workflow, step
 
 ## Adding a Subcommand
 

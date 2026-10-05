@@ -26,12 +26,15 @@ module Workspace
     def alive?(run_id)
       return false unless run_id.is_a?(String) && ID_PATTERN.match?(run_id)
       path = File.join(@dir, "#{run_id}.json")
-      run = JSON.parse(File.read(path))
+      # Read as UTF-8, which is what the run store writes, whatever this process's locale.
+      text = File.read(path, encoding: Encoding::UTF_8)
+      raise Workspace::Error, "could not read #{path} (it is not valid UTF-8 text)" unless text.valid_encoding?
+      run = JSON.parse(text)
       raise Workspace::Error, "#{path} is not a run file" unless run.is_a?(Hash)
       !TERMINAL_STATES.include?(run["state"])
     rescue Errno::ENOENT, Errno::ENOTDIR
       false
-    rescue JSON::ParserError, SystemCallError => e
+    rescue JSON::ParserError, EncodingError, SystemCallError => e
       raise Workspace::Error, "could not read #{path} (#{e.class})"
     end
   end

@@ -5,7 +5,7 @@ RSpec.describe Workspace::ConfigSchema do
 
   it "lists the settable keys in the order `config set` has always reported them" do
     expect(described_class.project_keys.map(&:name)).to eq(%w[dev.up dev.ready dev.stop_timeout dev.startup_timeout dev.ready_timeout dev.kill_grace locks.idle_grace locks.ps_timeout locks.reap_interval alerts.notify alerts.idle_after handoff.threshold handoff.check_prompt handoff.resume_prompt commands.test commands.lint])
-    expect(described_class.global_keys.map(&:name)).to eq(%w[statusline.command context.source context.pattern launch.headless])
+    expect(described_class.global_keys.map(&:name)).to eq(%w[statusline.command context.source context.pattern launch.headless workflows.defaults.include])
   end
 
   it "names the keys a running daemon only reads at startup" do
@@ -120,6 +120,16 @@ RSpec.describe Workspace::ConfigSchema do
       expect { described_class.parse("context.pattern", "(") }.to raise_error(RegexpError)
       expect(described_class.parse("context.pattern", "(\\d+)% ctx")).to eq("(\\d+)% ctx")
       expect { described_class.parse("context.pattern", "[(]x(a)(b)") }.to raise_error(ArgumentError, /exactly one/)
+    end
+
+    it "reads workflows.defaults.include as pack names separated by commas or spaces, or as a list" do
+      expect(described_class.parse("workflows.defaults.include", "binding, commits")).to eq(%w[binding commits])
+      expect(described_class.parse("workflows.defaults.include", "binding play/house-rules")).to eq(%w[binding play/house-rules])
+      expect(described_class.parse("workflows.defaults.include", %w[binding review])).to eq(%w[binding review])
+      expect(described_class.default("workflows.defaults.include")).to eq(%w[binding orchestrator commits])
+      ["", " , ", "Binding", "agent/x", "../x", [], [1], ["ok", ""]].each do |bad|
+        expect { described_class.parse("workflows.defaults.include", bad) }.to raise_error(ArgumentError, /one or more pack names/)
+      end
     end
 
     it "passes free-text keys through" do

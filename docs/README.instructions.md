@@ -17,7 +17,7 @@ A pack is a [library](README.library.md) play. workspace ships four:
 | `commits` | Cohesive commits, tests and lint before each one, messages about why, no attribution lines, no push or merge unless told |
 | `review` | Run reviewer sub-agents over the diff, fix or answer every finding, write `review.md` |
 
-With no `--pack`, `binding`, `orchestrator` and `commits` are composed, in that order. `--pack` repeats, and packs are composed in the order given; a name given twice is composed once.
+With no `--pack`, the default packs are composed: `binding`, `orchestrator` and `commits`, in that order, or the ones the global key `workflows.defaults.include` names (`workspace config set workflows.defaults.include "binding, commits"`). `--pack` repeats, and packs are composed in the order given; a name given twice is composed once.
 
 | Option | Description |
 |--------|-------------|
@@ -56,6 +56,17 @@ Two built-in packs get lines for the caller:
   ```
 
   A worktree reads its parent project's commands. A command holding a backtick gets a longer code fence, and one of several lines a fenced block. See [`config`](README.config.md).
+
+## Workflow steps
+
+A [workflow](README.workflow.md) step's instructions file is composed the same way, in four layers, each under its own heading:
+
+1. the default packs (`workflows.defaults.include`, else `binding`, `orchestrator`, `commits`);
+2. the workflow's `include:` packs, then its `instructions:` under `## From workflow <id>`;
+3. the step's `include:` packs, then its prompt under `## From step <id>`;
+4. `## For this attempt`: what the runner knows about this attempt, such as why the last one failed (with the check's log), a reject or approve note, and the `--note` of `workflow run` or `workflow resume`.
+
+A pack named in more than one layer is composed once, where it is first named. The `binding` pack tells the agent about `workspace step status` and `workspace step done`. In a step's file it is followed by the binding the pane gets for that step: the run, step, attempt, instructions file and artifacts directory.
 
 ## Your own packs
 
