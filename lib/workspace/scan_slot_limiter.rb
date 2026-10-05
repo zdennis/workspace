@@ -22,10 +22,15 @@ module Workspace
     # daemons polling, one scan at a time keeps their spawn pressure flat.
     DEFAULT_LIMIT = 1
 
+    # Largest limit honored, however the limit was given. A mistyped value
+    # must not materialize thousands of slot files in the shared state dir,
+    # opened and closed by every daemon on every tick.
+    MAX_LIMIT = 64
+
     # @param dir [String] shared directory holding the slot files
     # @param limit [Integer, nil] how many scans may run at once. A positive
-    #   integer wins; otherwise WORKSPACE_SCAN_CONCURRENCY is read (a positive
-    #   integer there wins too), falling back to {DEFAULT_LIMIT}.
+    #   integer wins (values above {MAX_LIMIT} are clamped); otherwise
+    #   WORKSPACE_SCAN_CONCURRENCY is read, falling back to {DEFAULT_LIMIT}.
     # @param logger [Workspace::Logger] debug logger
     def initialize(dir:, limit: nil, logger: Workspace::Logger.new)
       @dir = dir
@@ -37,15 +42,16 @@ module Workspace
     # @return [Integer] how many scans may run at once
     attr_reader :limit
 
-    # Parses a scan concurrency limit. Anything that is not a positive
-    # integer reads as nil, so its caller falls back to the default.
+    # Parses a scan concurrency limit. Positive integers are capped at
+    # {MAX_LIMIT}; anything else reads as nil, so its caller falls back to the
+    # default.
     #
     # @param value [String, Integer, nil] the limit to parse
     # @return [Integer, nil] the limit, or nil when it is not usable
     def self.parse_limit(value)
       return nil if value.nil? || value.to_s.strip.empty?
       parsed = Integer(value.to_s)
-      parsed if parsed.positive?
+      parsed.clamp(1, MAX_LIMIT) if parsed.positive?
     rescue ArgumentError, TypeError
       nil
     end

@@ -88,6 +88,12 @@ RSpec.describe Workspace::ScanSlotLimiter do
       end
     end
 
+    it "caps an environment value above the maximum" do
+      ENV["WORKSPACE_SCAN_CONCURRENCY"] = "65"
+
+      expect(limiter.limit).to eq(described_class::MAX_LIMIT)
+    end
+
     it "is ignored when a limit is given" do
       ENV["WORKSPACE_SCAN_CONCURRENCY"] = "8"
 
@@ -101,31 +107,15 @@ RSpec.describe Workspace::ScanSlotLimiter do
     end
   end
 
-  it "bounds concurrent scans to the limit across threads" do
-    limit = 2
-    scans = 6
-    active = 0
-    peak = 0
-    peak_lock = Mutex.new
+  it "skips a scan when all configured slots are held" do
+    first = described_class.new(dir: dir, limit: 2, logger: logger).send(:take_slot)
+    second = described_class.new(dir: dir, limit: 2, logger: logger).send(:take_slot)
 
-    run = lambda do
-      limiter(limit: limit).with_scan_slot do
-        peak_lock.synchronize do
-          active += 1
-          peak = [peak, active].max
-        end
-        sleep 0.05
-        peak_lock.synchronize { active -= 1 }
-        :scanned
-      end
-    end
-
-    results = Array.new(scans) { Thread.new { run.call } }.map(&:value)
-
-    # At least a full set of slots' worth of scans ran; any that arrived while
-    # every slot was held were skipped, never queued or blocked.
-    expect(results.count(:scanned)).to be >= limit
-    expect(peak).to be <= limit
-    expect(peak).to be > 1
+    expect(first).not_to be_nil
+    expect(second).not_to be_nil
+    expect(limiter(limit: 2).with_scan_slot { :scanned }).to be_nil
+  ensure
+    first&.close
+    second&.close
   end
 end
