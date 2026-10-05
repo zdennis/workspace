@@ -146,16 +146,17 @@ RSpec.describe Workspace::SessionMonitor do
     it "keeps the last scanned state when a tick is skipped" do
       allow(scan_slots).to receive(:with_scan_slot).and_yield
       slotted.scan
+      allow(clock).to receive(:now).and_return(now + 31)
       allow(scan_slots).to receive(:with_scan_slot).and_return(nil)
       allow(tmux).to receive(:capture_pane).and_return("new output")
 
       slotted.scan
 
-      # The pane's output changed, but no scan ran under a slot, so the pane
-      # is reported from its last scanned state.
+      # The pane's output changed, but no scan ran under a slot. If it had,
+      # the changed output would reset last_activity_at and report working.
       pane = slotted.snapshot["panes"].find { |p| p["pane_id"] == "%1" }
-      expect(pane["state"]).to eq("working")
-      expect(pane["idle_seconds"]).to eq(0)
+      expect(pane["state"]).to eq("idle")
+      expect(pane["idle_seconds"]).to eq(31)
     end
 
     it "bounds concurrent scans across monitors sharing one slot directory" do
