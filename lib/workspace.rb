@@ -3,6 +3,23 @@ require "json"
 require "fileutils"
 require "time"
 
+# Every file workspace reads and every command's output it captures is UTF-8,
+# whatever the locale of the process: with none (cron, an app started by
+# launchd, `env -i`) Ruby would tag that text US-ASCII, and the first
+# non-ASCII character in a state file, a template or a branch name would
+# raise. Set here, when the library is loaded, so `bin/workspace`, the daemon
+# it starts and `script/` all get it before anything is read. It does not
+# touch text that is already in the process: arguments and environment
+# values keep the locale's tag. Bytes that are not UTF-8 are still not UTF-8,
+# and fail where they are parsed.
+unless Encoding.default_external == Encoding::UTF_8
+  # Ruby warns about the assignment when warnings are on; it is meant.
+  verbose = $VERBOSE
+  $VERBOSE = nil
+  Encoding.default_external = Encoding::UTF_8
+  $VERBOSE = verbose
+end
+
 # Workspace CLI for managing tmuxinator-based development workspaces in iTerm2.
 module Workspace
   # Raised for runtime errors in workspace operations.

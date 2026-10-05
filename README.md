@@ -180,6 +180,10 @@ bundle exec yard
 open doc/index.html
 ```
 
+## Text encoding
+
+Workspace reads its files (state, config, templates, library entries) and the output of the commands it runs as UTF-8, whatever the locale of the process. A caller with no UTF-8 locale (cron, an app started by launchd, `env -i`) gets the same results as a terminal. Two things this does not cover: command-line arguments and environment values keep the locale's encoding (`workflow` and `step` read their own arguments as UTF-8; other commands given non-ASCII text with no UTF-8 locale may still fail), and a file whose bytes are not UTF-8 still fails where it is parsed.
+
 ## State
 
 Workspace tracks launcher pane UUIDs and iTerm window IDs in `~/.workspace-state.json`. This file is managed automatically.

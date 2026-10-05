@@ -88,6 +88,7 @@ A macOS CLI (Ruby) for managing tmuxinator-based development workspaces in iTerm
 - Uses AppleScript for iTerm2 automation
 - Uses `window-tool` binary for window positioning
 - Templates use `{{PLACEHOLDER}}` syntax for variable substitution
+- `lib/workspace.rb` sets `Encoding.default_external` to UTF-8 when it is loaded, so file reads and captured command output are UTF-8 whatever the locale; ARGV and ENV values keep the locale's tag
 
 ## Subcommands
 
