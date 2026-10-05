@@ -191,6 +191,102 @@ RSpec.describe Workspace::ContextReader do
       expect(result[:pct]).to be_nil
       expect(result[:error]).to eq(Workspace::ContextReasons::PATTERN_NO_MATCH)
     end
+
+    describe "scan slot gating" do
+      let(:scan_slots) { instance_double(Workspace::ScanSlotLimiter) }
+      let(:now) { [Time.utc(2026, 10, 5, 12, 0, 0)] }
+      let(:gated_reader) do
+        described_class.new(context_store: context_store, project_settings: project_settings, tmux: tmux,
+          lock_holder: lock_holder, scan_slots: scan_slots, clock: -> { now[0] })
+      end
+
+      it "scrapes under a slot and caches the reading for a later busy read" do
+        allow(scan_slots).to receive(:with_scan_slot).and_yield
+        allow(tmux).to receive(:capture_screen).with("%1").and_return("37% ctx")
+
+        first = gated_reader.read(pane_id: "%1")
+        expect(first).to include(pct: 37, error: nil, updated_at: "2026-10-05T12:00:00Z")
+
+        # Every slot busy, and the cached reading still fresh at the TTL edge.
+        allow(scan_slots).to receive(:with_scan_slot).and_return(nil)
+        now[0] += described_class::SCRAPE_CACHE_TTL
+
+        expect(gated_reader.read(pane_id: "%1")).to eq(first)
+        expect(tmux).to have_received(:capture_screen).with("%1").exactly(1).time
+      end
+
+      it "reports undetermined when every slot is busy and the pane was never scraped" do
+        allow(tmux).to receive(:capture_screen).and_return("37% ctx")
+        allow(scan_slots).to receive(:with_scan_slot).and_return(nil)
+
+        result = gated_reader.read(pane_id: "%1")
+        expect(result[:pct]).to be_nil
+        expect(result[:error]).to eq(Workspace::ContextReasons::SCAN_BUSY)
+        expect(tmux).not_to have_received(:capture_screen)
+      end
+
+      it "reports undetermined when every slot is busy and the cached reading is stale" do
+        allow(scan_slots).to receive(:with_scan_slot).and_yield
+        allow(tmux).to receive(:capture_screen).with("%1").and_return("37% ctx")
+        gated_reader.read(pane_id: "%1")
+
+        allow(scan_slots).to receive(:with_scan_slot).and_return(nil)
+        now[0] += described_class::SCRAPE_CACHE_TTL + 1
+
+        result = gated_reader.read(pane_id: "%1")
+        expect(result[:pct]).to be_nil
+        expect(result[:error]).to eq(Workspace::ContextReasons::SCAN_BUSY)
+      end
+
+      it "caches only per pane, so one pane's busy read doesn't serve another's reading" do
+        allow(scan_slots).to receive(:with_scan_slot).and_yield
+        allow(tmux).to receive(:capture_screen).with("%1").and_return("37% ctx")
+        allow(tmux).to receive(:capture_screen).with("%2").and_return(nil)
+        gated_reader.read(pane_id: "%1")
+
+        allow(scan_slots).to receive(:with_scan_slot).and_return(nil)
+
+        result = gated_reader.read(pane_id: "%2")
+        expect(result[:error]).to eq(Workspace::ContextReasons::SCAN_BUSY)
+      end
+
+      it "reports a pattern mismatch, not busy, when the slot was taken and the capture returned no text" do
+        allow(scan_slots).to receive(:with_scan_slot).and_yield
+        allow(tmux).to receive(:capture_screen).with("%1").and_return(nil)
+
+        result = gated_reader.read(pane_id: "%1")
+        expect(result[:error]).to eq(Workspace::ContextReasons::PATTERN_NO_MATCH)
+      end
+
+      it "caches only successful scrapes, so a busy read after a mismatch reports undetermined" do
+        allow(scan_slots).to receive(:with_scan_slot).and_yield
+        allow(tmux).to receive(:capture_screen).with("%1").and_return("nothing here")
+        gated_reader.read(pane_id: "%1")
+
+        allow(scan_slots).to receive(:with_scan_slot).and_return(nil)
+
+        result = gated_reader.read(pane_id: "%1")
+        expect(result[:error]).to eq(Workspace::ContextReasons::SCAN_BUSY)
+      end
+
+      it "refreshes the cache on a later successful scrape, so the window counts from it" do
+        allow(scan_slots).to receive(:with_scan_slot).and_yield
+        allow(tmux).to receive(:capture_screen).with("%1").and_return("37% ctx")
+        gated_reader.read(pane_id: "%1")
+
+        now[0] += 60
+        allow(tmux).to receive(:capture_screen).with("%1").and_return("82% ctx")
+        second = gated_reader.read(pane_id: "%1")
+        expect(second[:pct]).to eq(82)
+
+        # 85s past the first scrape (stale), 25s past the second: the second
+        # keeps the reading fresh.
+        now[0] += 25
+        allow(scan_slots).to receive(:with_scan_slot).and_return(nil)
+
+        expect(gated_reader.read(pane_id: "%1")).to eq(second)
+      end
+    end
   end
 
   it "treats an unreadable global config as empty rather than raising" do

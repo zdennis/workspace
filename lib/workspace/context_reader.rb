@@ -14,19 +14,34 @@ module Workspace
   # * `scrape` — reads the pane's own visible text and applies
   #   `context.pattern` (a regex with one capture group).
   class ContextReader
+    # How long a successfully scraped reading stays fresh enough to serve
+    # while every scan slot is busy, so a `sessions` request under load still
+    # answers with something true rather than an error.
+    SCRAPE_CACHE_TTL = 30
+
     # @param context_store [Workspace::ContextStore]
     # @param project_settings [Workspace::ProjectSettings] reads the global config
     # @param tmux [Workspace::Tmux, nil] required for scrape mode
     # @param logger [Workspace::Logger] debug logger
     # @param lock_holder [Workspace::LockHolder] checks a pid-keyed reading's
     #   pid and start time against the process table
+    # @param scan_slots [Workspace::ScanSlotLimiter, nil] bounds how many
+    #   scrapes run at once, machine-wide; nil scrapes ungated
+    # @param clock [#call] returns the current time, which stamps scraped
+    #   readings and clocks the scrape cache's freshness window
     def initialize(context_store:, project_settings:, tmux: nil, logger: Workspace::Logger.new,
-      lock_holder: Workspace::LockHolder.new)
+      lock_holder: Workspace::LockHolder.new, scan_slots: nil,
+      clock: -> { Time.now.utc })
       @context_store = context_store
       @lock_holder = lock_holder
       @project_settings = project_settings
       @tmux = tmux
       @logger = logger
+      @scan_slots = scan_slots
+      @clock = clock
+      # Last successful scrape per pane id: {reading:, recorded_at:}. Held in
+      # memory only — the daemon keeps one reader for its lifetime.
+      @scrape_cache = {}
     end
 
     # @param pane_id [String, nil] tmux pane id
@@ -78,15 +93,58 @@ module Workspace
       return absent(ContextReasons::NO_PATTERN) if pattern.nil? || pattern.empty?
       return absent(ContextReasons::PATTERN_NO_MATCH) unless @tmux
 
-      text = @tmux.capture_screen(pane_id)
-      match = text && Regexp.new(pattern).match(text)
+      scraped = scrape_pane(pane_id)
+      # Every slot busy already answered with a result of its own.
+      return scraped if scraped.is_a?(Hash)
+
+      match = scraped && Regexp.new(pattern).match(scraped)
       return absent(ContextReasons::PATTERN_NO_MATCH) unless match && match[1]
 
-      now = Time.now.utc
-      {pct: match[1].to_i, error: nil, updated_at: now.iso8601, recorded_at: now, session_id: nil}
+      now = @clock.call
+      reading = {pct: match[1].to_i, error: nil, updated_at: now.utc.iso8601, recorded_at: now, session_id: nil}
+      @scrape_cache[pane_id] = {reading: reading, recorded_at: now} if @scan_slots
+      reading
     rescue RegexpError => e
       @logger.debug { "context_reader: invalid context.pattern (#{e.message})" }
       absent(ContextReasons::PATTERN_NO_MATCH)
+    end
+
+    # Captures the pane's text, through one of the machine-wide scan slots
+    # when a limiter is injected; without one it is a plain capture, as
+    # before. One non-blocking slot attempt — a request never waits out
+    # another's capture.
+    #
+    # @param pane_id [String] tmux pane id
+    # @return [String, nil, Hash] the captured text (nil when the pane
+    #   couldn't be captured), or, when every slot was busy, the busy result:
+    #   the pane's last successful reading when it is still fresh, absent
+    #   with {ContextReasons::SCAN_BUSY} otherwise
+    def scrape_pane(pane_id)
+      return @tmux.capture_screen(pane_id) unless @scan_slots
+
+      # Wrapped in an array: a busy read of every slot reads as nil, apart
+      # from a capture that itself returned no text.
+      captured = @scan_slots.with_scan_slot { [@tmux.capture_screen(pane_id)] }
+      return busy_result(pane_id) unless captured
+
+      captured.first
+    end
+
+    # Answers a busy read from the pane's cached last successful scrape,
+    # while that reading is no older than {SCRAPE_CACHE_TTL}; past that, or
+    # with nothing cached, the reading is undetermined rather than guessed.
+    #
+    # @param pane_id [String] tmux pane id
+    # @return [Hash] the cached reading, or absent with
+    #   {ContextReasons::SCAN_BUSY}
+    def busy_result(pane_id)
+      cached = @scrape_cache[pane_id]
+      return absent(ContextReasons::SCAN_BUSY) unless cached
+
+      now = @clock.call
+      return absent(ContextReasons::SCAN_BUSY) if now - cached[:recorded_at] > SCRAPE_CACHE_TTL
+
+      cached[:reading]
     end
 
     def present(reading, current_session_id = nil)
