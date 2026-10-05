@@ -37,6 +37,11 @@ module Workspace
     # signal; changing output is.
     DEFAULT_IDLE_AFTER = 30
 
+    # Seconds between scans when no `agentd.poll_interval` says otherwise.
+    # Each scan is one `tmux list-panes`, one `ps` snapshot and a
+    # `capture-pane` per pane, so a short interval is real recurring CPU.
+    DEFAULT_POLL_INTERVAL = 10
+
     # Longest waiting message kept. A long one is cut rather than dropped.
     MAX_MESSAGE_LENGTH = 200
 
@@ -86,7 +91,7 @@ module Workspace
     #   record (a Hash with `id` and `title`) or nil; its title is the first
     #   `display_label` source and the snapshot reports the task. nil reports none.
     def initialize(tmux:, process_tree:, session_name:,
-      providers: AgentProvider.all, poll_interval: 2, idle_after: DEFAULT_IDLE_AFTER,
+      providers: AgentProvider.all, poll_interval: DEFAULT_POLL_INTERVAL, idle_after: DEFAULT_IDLE_AFTER,
       clock: Time, logger: Workspace::Logger.new, error_output: $stderr, lock_reaper: nil,
       notifier: nil, idle_alert_after: nil, event_log: nil, project: nil,
       context_reader: nil, label_reader: nil, task_reader: nil)

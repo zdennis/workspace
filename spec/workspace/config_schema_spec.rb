@@ -4,12 +4,12 @@ RSpec.describe Workspace::ConfigSchema do
   let(:root) { File.expand_path("../..", __dir__) }
 
   it "lists the settable keys in the order `config set` has always reported them" do
-    expect(described_class.project_keys.map(&:name)).to eq(%w[dev.up dev.ready dev.stop_timeout dev.startup_timeout dev.ready_timeout dev.kill_grace locks.idle_grace locks.ps_timeout locks.reap_interval alerts.notify alerts.idle_after handoff.threshold handoff.check_prompt handoff.resume_prompt commands.test commands.lint])
+    expect(described_class.project_keys.map(&:name)).to eq(%w[dev.up dev.ready dev.stop_timeout dev.startup_timeout dev.ready_timeout dev.kill_grace locks.idle_grace locks.ps_timeout locks.reap_interval alerts.notify alerts.idle_after agentd.poll_interval handoff.threshold handoff.check_prompt handoff.resume_prompt commands.test commands.lint])
     expect(described_class.global_keys.map(&:name)).to eq(%w[statusline.command context.source context.pattern launch.headless workflows.defaults.include])
   end
 
   it "names the keys a running daemon only reads at startup" do
-    expect(described_class.restart_required_names).to eq(%w[locks.ps_timeout locks.reap_interval alerts.notify alerts.idle_after])
+    expect(described_class.restart_required_names).to eq(%w[locks.ps_timeout locks.reap_interval alerts.notify alerts.idle_after agentd.poll_interval])
   end
 
   it "tells settable keys from keys that are only documented" do
@@ -81,6 +81,7 @@ RSpec.describe Workspace::ConfigSchema do
       expect(described_class.default("locks.ps_timeout")).to eq(5)
       expect(described_class.default("locks.reap_interval")).to eq(30)
       expect(described_class.default("alerts.idle_after")).to eq(600)
+      expect(described_class.default("agentd.poll_interval")).to eq(10)
       expect(described_class.default("handoff.threshold")).to eq(11)
       expect(described_class.default("alerts.notify")).to be_nil
     end
@@ -95,6 +96,8 @@ RSpec.describe Workspace::ConfigSchema do
     it "requires positive durations where the key says so" do
       expect { described_class.parse("dev.ready_timeout", "0") }.to raise_error(ArgumentError, /greater than 0/)
       expect { described_class.parse("locks.idle_grace", "0") }.to raise_error(ArgumentError, /greater than 0/)
+      expect { described_class.parse("agentd.poll_interval", "0") }.to raise_error(ArgumentError, /greater than 0/)
+      expect(described_class.parse("agentd.poll_interval", "15s")).to eq(15.0)
     end
 
     it "caps and ranges durations" do
@@ -139,9 +142,10 @@ RSpec.describe Workspace::ConfigSchema do
 
   describe "readers" do
     it "declares every key a reader fetches" do
-      reader_keys = %w[dev_config lock_config alert_config handoff_config].flat_map do |file|
+      reader_keys = %w[dev_config lock_config alert_config agentd_config handoff_config].flat_map do |file|
         source = File.read(File.join(root, "lib/workspace/#{file}.rb"))
-        section = {"dev_config" => "dev", "lock_config" => "locks", "alert_config" => "alerts", "handoff_config" => "handoff"}.fetch(file)
+        section = {"dev_config" => "dev", "lock_config" => "locks", "alert_config" => "alerts",
+                   "agentd_config" => "agentd", "handoff_config" => "handoff"}.fetch(file)
         source.scan(/ConfigSchema\.(?:key|default|parse)\("([a-z_.]+)"/).flatten.tap do |names|
           expect(names).to all(start_with("#{section}."))
         end

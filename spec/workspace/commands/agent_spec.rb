@@ -1507,6 +1507,42 @@ RSpec.describe Workspace::Commands::Agent do
       expect(monitor.instance_variable_get(:@process_tree).instance_variable_get(:@timeout)).to eq(42)
     end
 
+    it "gives the session monitor the workspace's configured scan interval" do
+      agentd_config = instance_double(Workspace::AgentdConfig)
+      allow(agentd_config).to receive(:poll_interval_for).with("myapp").and_return(45)
+      agent_with_interval = described_class.new(
+        config: config,
+        tmux: tmux,
+        work_coordinator_client: client,
+        pipeline_config: pipeline_config,
+        pipeline_state: pipeline_state,
+        agentd_config: agentd_config,
+        output: output,
+        error_output: error_output
+      )
+
+      monitor = agent_with_interval.send(:build_session_monitor, "myapp")
+
+      expect(monitor.instance_variable_get(:@poll_interval)).to eq(45)
+      expect(agentd_config).to have_received(:poll_interval_for).with("myapp")
+    end
+
+    it "scans at the SessionMonitor default when no agentd config is wired" do
+      agent_default = described_class.new(
+        config: config,
+        tmux: tmux,
+        work_coordinator_client: client,
+        pipeline_config: pipeline_config,
+        pipeline_state: pipeline_state,
+        output: output,
+        error_output: error_output
+      )
+
+      monitor = agent_default.send(:build_session_monitor, "myapp")
+
+      expect(monitor.instance_variable_get(:@poll_interval)).to eq(Workspace::SessionMonitor::DEFAULT_POLL_INTERVAL)
+    end
+
     it "gives the session monitor a notifier and idle threshold from the workspace's alert config" do
       alert_config = instance_double(Workspace::AlertConfig)
       allow(alert_config).to receive(:for_workspace).with("myapp").and_return(notify: "say hi", idle_after: 900)

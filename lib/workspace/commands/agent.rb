@@ -41,6 +41,9 @@ module Workspace
       # @param lock_reaper [Workspace::LockReaper, nil] reaps stale lock holds from the session monitor's scan thread
       # @param alert_config [Workspace::AlertConfig, nil] reads the workspace's
       #   notify command and idle alert threshold; nil sends no alerts
+      # @param agentd_config [Workspace::AgentdConfig, nil] reads the workspace's
+      #   session-monitor scan interval; nil scans at
+      #   {SessionMonitor::DEFAULT_POLL_INTERVAL}
       # @param notifier_factory [#call] builds a {Workspace::Notifier} for a command
       # @param ps_timeout [Numeric] seconds to wait for `ps` before killing it, for
       #   the session monitor's {Workspace::ProcessTree}
@@ -71,6 +74,7 @@ module Workspace
         session_monitor_factory: nil,
         lock_reaper: nil,
         alert_config: nil,
+        agentd_config: nil,
         notifier_factory: nil,
         ps_timeout: Workspace::ProcessTree::DEFAULT_TIMEOUT,
         retry_backoff: 0.5,
@@ -95,6 +99,7 @@ module Workspace
         @session_monitor = nil
         @lock_reaper = lock_reaper
         @alert_config = alert_config
+        @agentd_config = agentd_config
         @context_reader = context_reader
         @label_reader = label_reader
         @task_store = task_store
@@ -1092,14 +1097,15 @@ module Workspace
       # caller can reach it; rebinding and re-registering is what actually
       # restores it.
       def build_session_monitor(name)
-        # Alert settings are read once, here, so a change takes effect the
-        # next time the daemon starts.
+        # Alert and scan settings are read once, here, so a change takes
+        # effect the next time the daemon starts.
         alerts = @alert_config&.for_workspace(name) || {}
         notifier = alerts[:notify] && @notifier_factory.call(alerts[:notify])
         SessionMonitor.new(
           tmux: @tmux,
           process_tree: ProcessTree.new(logger: @logger, timeout: @ps_timeout),
           session_name: @tmux.session_name_for(name),
+          poll_interval: @agentd_config&.poll_interval_for(name) || SessionMonitor::DEFAULT_POLL_INTERVAL,
           logger: @logger,
           error_output: @error_output,
           lock_reaper: @lock_reaper,

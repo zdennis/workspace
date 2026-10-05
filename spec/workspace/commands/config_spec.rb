@@ -265,6 +265,31 @@ RSpec.describe Workspace::Commands::Config do
       expect(project_settings.load(name)).to eq({"locks" => {"reap_interval" => "45"}})
     end
 
+    it "accepts agentd.poll_interval as seconds or a duration, with a restart hint" do
+      output = StringIO.new
+      command, project_settings = build_command(output: output)
+      project_dir = Dir.mktmpdir("ws-config-project")
+      name = File.basename(project_dir)
+
+      command.set("agentd.poll_interval", "45", cwd: project_dir)
+
+      expect(project_settings.load(name)).to eq({"agentd" => {"poll_interval" => "45"}})
+      expect(output.string).to include("Takes effect the next time the session monitor starts")
+      command.set("agentd.poll_interval", "1m", cwd: project_dir)
+      expect(project_settings.load(name)).to eq({"agentd" => {"poll_interval" => "1m"}})
+    end
+
+    ["0", "0s", "-5", "soon", "5d", ""].each do |bad|
+      it "rejects agentd.poll_interval #{bad.inspect} without writing it" do
+        command, project_settings = build_command
+        project_dir = Dir.mktmpdir("ws-config-project")
+
+        expect { command.set("agentd.poll_interval", bad, cwd: project_dir) }
+          .to raise_error(Workspace::UsageError, /Invalid agentd.poll_interval/)
+        expect(project_settings.load(File.basename(project_dir))).to eq({})
+      end
+    end
+
     ["0", "0s", "-5", "soon", "5d", ""].each do |bad|
       it "rejects locks.reap_interval #{bad.inspect} without writing it" do
         command, project_settings = build_command
@@ -421,6 +446,19 @@ RSpec.describe Workspace::Commands::Config do
       expect(result).to eq(true)
     end
 
+    it "gets a previously set agentd.poll_interval" do
+      output = StringIO.new
+      command, project_settings = build_command(output: output)
+      project_dir = Dir.mktmpdir("ws-config-project")
+      name = File.basename(project_dir)
+      project_settings.save(name, {"agentd" => {"poll_interval" => "45"}})
+
+      result = command.get("agentd.poll_interval", cwd: project_dir)
+
+      expect(output.string.strip).to eq("45")
+      expect(result).to eq(true)
+    end
+
     it "prints nothing on stdout, a note on stderr, and returns false for a key with no value" do
       output = StringIO.new
       error_output = StringIO.new
@@ -457,6 +495,18 @@ RSpec.describe Workspace::Commands::Config do
       command.unset("dev.ready", cwd: project_dir)
 
       expect(project_settings.load(name)).to eq({"dev" => {"up" => "bin/dev"}})
+    end
+
+    it "unsets agentd.poll_interval without disturbing a neighboring alerts block" do
+      command, project_settings = build_command
+      project_dir = Dir.mktmpdir("ws-config-project")
+      name = File.basename(project_dir)
+      project_settings.save(name, {"agentd" => {"poll_interval" => "45"}, "alerts" => {"idle_after" => "15m"}})
+
+      command.unset("agentd.poll_interval", cwd: project_dir)
+
+      # The emptied `agentd` block stays behind, like every other unset leaf.
+      expect(project_settings.load(name)).to eq({"agentd" => {}, "alerts" => {"idle_after" => "15m"}})
     end
 
     it "backs up the project config file before writing to it" do

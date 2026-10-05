@@ -195,6 +195,8 @@ module Workspace
         doc: "Command the session-monitor daemon runs when an agent pane starts waiting on a person or stays idle past `alerts.idle_after` (unset: no alerts; see [`workspace sessions`](README.sessions.md#alerts))"),
       Key.new(name: "alerts.idle_after", scope: :project, type: :duration, settable: true, default: 600, restart: true, parser: POSITIVE_DURATION,
         doc: "How long an agent pane may sit idle before `alerts.notify` runs (default `10m`)"),
+      Key.new(name: "agentd.poll_interval", scope: :project, type: :duration, settable: true, default: 10, restart: true, parser: POSITIVE_DURATION,
+        doc: "How often the session-monitor daemon scans panes for agent state, alerts and stale locks (default `10s`)"),
       Key.new(name: "handoff.threshold", scope: :project, type: :percent, settable: true, default: 11, parser: PERCENT,
         doc: "Context-usage percent, 1 to 100, that triggers a handoff in [`workspace handoff check`](README.handoff.md) (default `11`)"),
       Key.new(name: "handoff.check_prompt", scope: :project, settable: true, parser: PROMPT,

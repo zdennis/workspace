@@ -189,6 +189,7 @@ require_relative "workspace/lock_reaper"
 require_relative "workspace/lock_enforcer"
 require_relative "workspace/notifier"
 require_relative "workspace/alert_config"
+require_relative "workspace/agentd_config"
 require_relative "workspace/handoff_config"
 require_relative "workspace/context_reasons"
 require_relative "workspace/context_store"
@@ -466,6 +467,8 @@ module Workspace
 
     alert_config = AlertConfig.new(project_settings: project_settings, project_config: project_config,
       lineage: lineage, error_output: error_output)
+    agentd_config = AgentdConfig.new(project_settings: project_settings, project_config: project_config,
+      lineage: lineage, error_output: error_output)
     ask_command = Commands::Ask.new(config: config, project_detector: project_detector, alert_config: alert_config,
       pane_sender: send_command, event_log: event_log, output: output, error_output: error_output)
 
@@ -484,6 +487,7 @@ module Workspace
       lock_reaper: LockReaper.new(lock_namespace: lock_namespace, lock_holder: LockHolder.new(process_tree: process_tree, run_liveness: run_liveness),
         terminator: process_group_terminator, interval: reap_interval, logger: logger, error_output: error_output),
       alert_config: alert_config,
+      agentd_config: agentd_config,
       ps_timeout: ps_timeout,
       event_log: event_log,
       context_reader: context_reader,

@@ -18,7 +18,7 @@ RSpec.describe Workspace::ConfigSchemaDocs do
 
   it "marks global keys and names the restart-only keys" do
     expect(described_class.render("keys")).to include("| `launch.headless` | Global. ")
-    expect(described_class.render("restart")).to include("`locks.ps_timeout`, `locks.reap_interval`, `alerts.notify` and `alerts.idle_after`")
+    expect(described_class.render("restart")).to include("`locks.ps_timeout`, `locks.reap_interval`, `alerts.notify`, `alerts.idle_after` and `agentd.poll_interval`")
   end
 
   it "replaces only the text between markers" do

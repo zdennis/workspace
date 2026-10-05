@@ -31,6 +31,13 @@ RSpec.describe Workspace::SessionMonitor do
     monitor.snapshot["panes"].find { |p| p["pane_id"] == id }
   end
 
+  describe "the default poll interval" do
+    it "matches the agentd.poll_interval default the config schema declares" do
+      expect(monitor.instance_variable_get(:@poll_interval)).to eq(Workspace::SessionMonitor::DEFAULT_POLL_INTERVAL)
+      expect(Workspace::SessionMonitor::DEFAULT_POLL_INTERVAL).to eq(Workspace::ConfigSchema.default("agentd.poll_interval"))
+    end
+  end
+
   describe "#scan" do
     it "labels a pane running an agent by its provider" do
       monitor.scan
