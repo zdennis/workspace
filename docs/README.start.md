@@ -40,7 +40,7 @@ A pull request is always checked out by `gh pr checkout <n> --worktree <path> --
 
 Must be run from within a git repository. Creates a worktree in `.worktrees/` under the project root, generates a tmuxinator config, and launches it. When run from inside a linked worktree, `start` resolves the parent repo first — the worktree is created under the parent repo's `.worktrees/` and named after the parent project, so an existing session is reused rather than a nested workspace created (this applies when the worktree belongs to the surrounding repo; a standalone repo nested inside a worktree, and worktrees of a bare clone, keep the cwd repo's own root).
 
-If the branch already exists (locally or remotely), it checks it out. If not, it prompts you to choose a base branch for creation.
+If the branch already exists (locally or remotely), it checks it out. A branch that exists only on `origin` is created locally with `origin/<branch>` as its upstream, so `git pull` and `git push` work in the new worktree without further setup. If not, it prompts you to choose a base branch for creation.
 
 If multiple remote branches match your input, you'll be prompted to select one or create a new branch.
 

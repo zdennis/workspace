@@ -471,10 +471,16 @@ module Workspace
     # @param base [String, nil] base branch for new branch creation
     # @return [void]
     # @raise [Workspace::Error] if worktree creation fails
+    # @note A branch that exists only on origin is created locally tracking
+    #   +origin/<branch>+.
     def create_worktree(path, branch, base: nil, quiet: false)
       cmd = ["git", "worktree", "add"]
-      if branch_exists?(branch)
+      if local_branch_exists?(branch)
         cmd += [path, branch]
+      elsif remote_branch_exists?(branch)
+        # Named outright: git only guesses the upstream when exactly one remote
+        # has the branch, and refuses the checkout when several do.
+        cmd += ["--track", "-b", branch, path, "origin/#{branch}"]
       else
         cmd += ["-b", branch, path]
         cmd << base if base

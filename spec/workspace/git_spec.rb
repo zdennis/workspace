@@ -368,6 +368,68 @@ RSpec.describe Workspace::Git do
       FileUtils.remove_entry(@repo_dir) if @repo_dir && File.exist?(@repo_dir)
     end
 
+    describe "#create_worktree" do
+      def upstream_of(path)
+        stdout, _ = Open3.capture3("git", "-C", path, "rev-parse", "--abbrev-ref", "@{upstream}")
+        stdout.strip
+      end
+
+      def create(branch, **options)
+        path = File.join(@repo_dir, ".worktrees", branch.tr("/", "-"))
+        Dir.chdir(@repo_dir) { git.create_worktree(path, branch, quiet: true, **options) }
+        path
+      end
+
+      before do
+        run!("git", "push", "origin", "main:feature/remote-only", chdir: @repo_dir)
+      end
+
+      it "sets a branch that exists only on origin to track origin" do
+        path = create("feature/remote-only")
+
+        expect(git.worktree_branch(path)).to eq("feature/remote-only")
+        expect(upstream_of(path)).to eq("origin/feature/remote-only")
+      end
+
+      it "tracks origin even when branch.autoSetupMerge is off" do
+        run!("git", "config", "branch.autoSetupMerge", "false", chdir: @repo_dir)
+
+        expect(upstream_of(create("feature/remote-only"))).to eq("origin/feature/remote-only")
+      end
+
+      it "tracks origin when another remote has a branch of the same name" do
+        run!("git", "remote", "add", "fork", @remote_dir, chdir: @repo_dir)
+        run!("git", "fetch", "fork", chdir: @repo_dir)
+
+        expect(upstream_of(create("feature/remote-only"))).to eq("origin/feature/remote-only")
+      end
+
+      it "checks out an existing local branch as it is" do
+        run!("git", "branch", "local-only", chdir: @repo_dir)
+
+        path = create("local-only")
+
+        expect(git.worktree_branch(path)).to eq("local-only")
+        expect(upstream_of(path)).to eq("")
+      end
+
+      it "leaves a local branch alone when origin has one of the same name" do
+        run!("git", "branch", "--no-track", "feature/remote-only", "main", chdir: @repo_dir)
+
+        path = create("feature/remote-only")
+
+        expect(git.worktree_branch(path)).to eq("feature/remote-only")
+        expect(upstream_of(path)).to eq("")
+      end
+
+      it "creates a new branch from the base" do
+        path = create("brand-new", base: "main")
+
+        expect(git.worktree_branch(path)).to eq("brand-new")
+        expect(upstream_of(path)).to eq("")
+      end
+    end
+
     describe "#changed_files_count" do
       it "returns 0 for a clean repo" do
         expect(git.changed_files_count(@repo_dir)).to eq(0)
