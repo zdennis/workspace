@@ -4571,6 +4571,63 @@ RSpec.describe Workspace::CLI do
       expect(JSON.parse(output.string.lines.last)).to include("ok" => true, "status" => "failed")
     end
 
+    describe "list and restart --all" do
+      let(:result_class) { Workspace::Commands::Daemon::Result }
+
+      it "lists through the daemon command, with --json passed on and no workspace looked up" do
+        cli.run(["daemon", "list"])
+        cli.run(["daemon", "list", "--json"])
+
+        expect(daemon_command.calls).to eq([{list: true, json: false}, {list: true, json: true}])
+        expect(detector).not_to have_received(:detect)
+      end
+
+      it "restarts every daemon and prints one line per workspace" do
+        daemon_command.restart_all_results = [["api", result_class.new("restarted", 1, 2)], ["web", result_class.new("restarted", 3, 4)]]
+
+        cli.run(["daemon", "restart", "--all"])
+
+        expect(daemon_command.calls).to eq([{restart_all: true}])
+        expect(output.string).to eq("Restarted agentd for api (pid 1 -> 2)\nRestarted agentd for web (pid 3 -> 4)\n")
+      end
+
+      it "says plainly that there is nothing to restart, and exits 0" do
+        cli.run(["daemon", "restart", "--all"])
+
+        expect(output.string).to eq("No agentd processes are running.\n")
+      end
+
+      it "exits 1 when any workspace failed, after reporting every one" do
+        daemon_command.restart_all_results = [["api", result_class.new("failed", 1, nil, "not_stopped", "stuck")], ["web", result_class.new("restarted", 3, 4)]]
+
+        expect { cli.run(["daemon", "restart", "--all"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+        expect(error_output.string).to include("Error: api: stuck")
+        expect(output.string).to include("Restarted agentd for web")
+      end
+
+      it "prints a partial action document under --json when one of several failed" do
+        daemon_command.restart_all_results = [["api", result_class.new("failed", 1, nil, "not_stopped", "stuck")], ["web", result_class.new("restarted", 3, 4)]]
+
+        expect { cli.run(["daemon", "restart", "--all", "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(3) }
+        doc = JSON.parse(output.string.lines.last)
+        expect(doc).to include("action" => "restart", "status" => "partial", "summary" => {"failed" => 1, "restarted" => 1})
+        expect(doc["results"].map { |r| [r["workspace"], r["outcome"], r["reason"]] }).to eq([["api", "failed", "not_stopped"], ["web", "restarted", nil]])
+      end
+
+      it "refuses a workspace with --all or list, and --all or --wc-socket where they don't belong, as usage errors" do
+        [%w[daemon restart --all app], %w[daemon restart --all --name app], %w[daemon list app], %w[daemon list --wc-socket /x],
+          %w[daemon restart --all --wc-socket /x], %w[daemon status --all], %w[daemon list --lines 3]].each do |argv|
+          expect { cli.run(argv) }.to raise_error(FakeSystemExit), argv.join(" ")
+        end
+        expect(daemon_command.calls).to eq([])
+      end
+
+      it "gives the usage error as an envelope under --json" do
+        expect { cli.run(["daemon", "restart", "--all", "app", "--json"]) }.to raise_error(FakeSystemExit)
+        expect(JSON.parse(output.string)).to include("ok" => false, "code" => "usage")
+      end
+    end
+
     it "shows help without a subcommand being needed" do
       cli.run(["daemon", "--help"])
 
@@ -4639,7 +4696,7 @@ RSpec.describe Workspace::CLI do
     it "lists daemon in the main help" do
       cli.run(["help"])
 
-      expect(output.string).to match(/^\s+daemon\s+Show, restart or read the log/)
+      expect(output.string).to match(/^\s+daemon\s+List, show, restart/)
     end
   end
 

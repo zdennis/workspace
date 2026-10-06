@@ -1,4 +1,5 @@
 require "json"
+require "time"
 
 module Workspace
   module Commands
@@ -45,6 +46,11 @@ module Workspace
         end
       end
 
+      # One running agent daemon, as `list` reports it. `pid` and `started_at`
+      # are nil when they can't be read; `answering` is false for a daemon that
+      # holds its socket but no longer replies (a hung one).
+      Entry = Struct.new(:workspace, :pid, :socket, :log, :started_at, :wc_socket, :answering)
+
       # @param config [Workspace::Config] socket and log paths, liveness probe
       # @param project_config [Workspace::ProjectConfig] knows which workspaces exist
       # @param ensure_agent [Workspace::Commands::EnsureAgent] starts the new daemon, detached, under its lock
@@ -73,6 +79,46 @@ module Workspace
         @lsof_command = lsof_command
         @lsof_timeout = lsof_timeout
         @output = output
+      end
+
+      # Finds every running agent daemon and prints it: the workspace it
+      # serves, its pid, start time, work-coordinator socket and paths. The
+      # workspaces come from the tmuxinator configs, and each one's daemon
+      # from its socket: a daemon counts when it answers on the socket, or
+      # holds it but is hung and is an `agentd` process. A socket file with no
+      # process behind it is stale and is ignored.
+      #
+      # @param json [Boolean] print one JSON document
+      # @return [Hash] `{exit_code: 0}`; none running is an answer, not a failure
+      def list(json: false)
+        entries = running_daemons
+        if json
+          @output.puts JSON.generate({"schema_version" => JSON_SCHEMA_VERSION, "ok" => true, "daemons" => entries.map { |e| entry_hash(e) }, "warnings" => []})
+        elsif entries.empty?
+          @output.puts "No agentd processes are running."
+        else
+          rows = entries.map do |e|
+            [e.workspace, e.pid.to_s, e.started_at.to_s, e.answering ? "yes" : "no (hung)", e.socket]
+          end
+          table = [%w[WORKSPACE PID STARTED ANSWERING SOCKET]] + rows
+          widths = table.transpose.map { |column| column.map(&:length).max }
+          table.each { |row| @output.puts row.each_with_index.map { |cell, i| cell.ljust(widths[i]) }.join("  ").rstrip }
+        end
+        {exit_code: 0}
+      end
+
+      # Restarts every running agent daemon, one after another, with {#restart}.
+      # One failing does not stop the rest; an error a restart raises becomes that
+      # workspace's failed row, with the error's code as the reason (`restart_failed`
+      # when it carries none).
+      #
+      # @return [Array<Array(String, Result)>] workspace name and what its restart did
+      def restart_all
+        running_daemons.map do |entry|
+          [entry.workspace, restart(name: entry.workspace)]
+        rescue Workspace::Error => e
+          [entry.workspace, failed((e.code.to_s == "error") ? "restart_failed" : e.code, entry.pid, e.message)]
+        end
       end
 
       # Prints whether the workspace's daemon answers on its socket.
@@ -185,6 +231,47 @@ module Workspace
       end
 
       private
+
+      # @return [Array<Entry>] the running daemons, by workspace name
+      def running_daemons
+        candidates = @project_config.available_projects.filter_map do |name|
+          socket = @config.agent_socket_path(name)
+          [name, socket] if File.exist?(socket)
+        rescue Workspace::Error
+          nil
+        end
+        return [] if candidates.empty?
+
+        snapshot = begin
+          @process_tree.snapshot
+        rescue Workspace::Error
+          nil
+        end
+        candidates.filter_map { |name, socket| daemon_entry(name, socket, snapshot) }
+      end
+
+      def daemon_entry(name, socket, snapshot)
+        answering = @config.agent_running?(name)
+        pids = socket_pids(name)
+        pid = (pids&.size == 1) ? pids.first : nil
+        process = pid && snapshot&.find(pid)
+        agentd = process && process[:args].to_s.split.drop(1).include?("agentd")
+        return nil unless answering || agentd || pids&.size.to_i > 1
+
+        wc_socket = agentd ? old_wc_socket(process[:args].to_s.split, name) : nil
+        Entry.new(name, pid, socket, @config.agent_log_path(name), started_at(process), wc_socket.is_a?(String) ? wc_socket : nil, answering)
+      end
+
+      def started_at(process)
+        process && Time.strptime("#{process[:lstart].to_s.squeeze(" ")} +0000", "%a %b %d %H:%M:%S %Y %z").utc.iso8601
+      rescue ArgumentError
+        nil
+      end
+
+      def entry_hash(entry)
+        {"workspace" => entry.workspace, "pid" => entry.pid, "started_at" => entry.started_at, "answering" => entry.answering,
+         "socket" => entry.socket, "log" => entry.log, "wc_socket" => entry.wc_socket}
+      end
 
       def require_workspace!(name)
         return if @project_config.exists?(name)

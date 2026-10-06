@@ -28,7 +28,7 @@ module Workspace
         "focus_pane" => 1,
         "state_done" => 1,
         "doctor_json" => 0,
-        "daemon_control" => 2,
+        "daemon_control" => 3,
         "config_json" => 1,
         "tmux_show" => 1,
         "tasks" => 1,

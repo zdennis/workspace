@@ -405,7 +405,7 @@ module Workspace
           cleanup         Detect and remove zombie sessions from state
           config          Show, validate, set, get or unset project or global configuration
           current         Print the workspace project name for the current directory
-          daemon          Show, restart or read the log of a workspace's agent daemon
+          daemon          List, show, restart (one or all) or read the log of agent daemons
           dev             Start, stop, or inspect this repo's dev environment (devenv lock)
           deactivate      Deactivate Claude in a project's tmux pane (sends Ctrl-C)
           dir             Print the root directory of a workspace project
@@ -3203,12 +3203,14 @@ module Workspace
       emit_json_error(Commands::Review::JSON_SCHEMA_VERSION, e, message: e.message.lines.first.strip)
     end
 
-    DAEMON_SUBCOMMANDS = %w[status restart log].freeze
+    DAEMON_SUBCOMMANDS = %w[status restart log list].freeze
 
     def daemon_parser(options)
       OptionParser.new do |opts|
         opts.banner = "Usage: workspace daemon status [WORKSPACE] [--json]\n" \
           "       workspace daemon restart [WORKSPACE] [--wc-socket PATH] [--json]\n" \
+          "       workspace daemon restart --all [--json]\n" \
+          "       workspace daemon list [--json]\n" \
           "       workspace daemon log [WORKSPACE] [--lines N] [--json]"
         opts.separator ""
         opts.separator "Inspect or control a workspace's agent daemon (see `workspace agentd`)."
@@ -3216,16 +3218,22 @@ module Workspace
         opts.separator "  restart   stop the daemon holding the socket (SIGTERM, even a hung one) and start a new one in the"
         opts.separator "            background; a daemon run in a terminal is replaced by a detached one. With none"
         opts.separator "            running, just start one"
+        opts.separator "            --all restarts every running daemon, one after another, so each runs the code that is"
+        opts.separator "            installed now; one that fails does not stop the rest, and the exit status is non-zero if any failed"
+        opts.separator "  list      every running daemon: its workspace, pid, start time and socket"
         opts.separator "  log       the last lines of the log a background daemon writes; a daemon run in a"
         opts.separator "            terminal logs to that terminal instead"
         opts.separator ""
         opts.on("--name NAME", "Workspace name (defaults to WORKSPACE or the project detected from the current directory)") { |v| options[:name] = v }
         opts.on("--lines N", Integer, "log: how many trailing lines (default #{Commands::Daemon::DEFAULT_LINES})") { |v| options[:lines] = v }
         opts.on("--wc-socket PATH", "restart: work-coordinator socket for the new daemon (default: the old daemon's)") { |v| options[:wc_socket] = v }
+        opts.on("--all", "restart: restart every running daemon instead of one workspace") { options[:all] = true }
         opts.on("--json", "Print one JSON document (see docs/README.daemon.md)") { options[:json] = true }
         opts.on("-h", "--help", "Show this help") { options[:help] = true }
         opts.separator ""
         opts.separator "Examples:"
+        opts.separator "  workspace daemon list"
+        opts.separator "  workspace daemon restart --all    # after installing a new version"
         opts.separator "  workspace daemon status my-app"
         opts.separator "  workspace daemon log my-app --lines 100"
         opts.separator "  workspace daemon restart my-app --json"
@@ -3244,11 +3252,21 @@ module Workspace
       raise UsageError, "Missing subcommand: one of #{DAEMON_SUBCOMMANDS.join(", ")}.\n\n#{parser.help}" unless subcommand
       raise Error, "daemon is not available: no daemon command was wired" unless @daemon_command
 
+      raise UsageError, "--all only applies to `daemon restart`." if options[:all] && subcommand != "restart"
+      raise UsageError, "--lines only applies to `daemon log`." if options[:lines] && subcommand != "log"
+      if subcommand == "list" || options[:all]
+        what = (subcommand == "list") ? "daemon list" : "daemon restart --all"
+        raise UsageError, "#{what} takes no workspace: it covers every running daemon." if options[:name] || args.any?
+        raise UsageError, "--wc-socket can't be combined with --all: each daemon keeps its own." if options[:all] && options[:wc_socket]
+        raise UsageError, "--wc-socket only applies to `daemon restart`." if options[:wc_socket]
+
+        return (subcommand == "list") ? @daemon_command.list(json: options[:json]) : daemon_restart_all(options)
+      end
+
       name = options[:name] || args.shift
       raise UsageError, "Unexpected argument: #{args.first}. Run 'workspace daemon --help'." if args.any?
       name ||= @project_detector.detect(@working_dir)
       raise UsageError, "Missing workspace name.\n\n#{parser.help}" unless name
-      raise UsageError, "--lines only applies to `daemon log`." if options[:lines] && subcommand != "log"
       raise UsageError, "--wc-socket only applies to `daemon restart`." if options[:wc_socket] && subcommand != "restart"
 
       result = case subcommand
@@ -3280,6 +3298,28 @@ module Workspace
         row = action_row(name, restarted.outcome, reason: restarted.reason, message: restarted.message,
           old_pid: restarted.old_pid, pid: restarted.pid, wc_socket: restarted.wc_socket)
         {exit_code: restarted.ok? ? 0 : 1, results: [row]}
+      end
+    end
+
+    # `daemon restart --all`: restarts every running daemon and reports a row
+    # for each. Any failed row makes the exit status non-zero.
+    def daemon_restart_all(options)
+      run_action("restart", json: options[:json]) do
+        restarted = @daemon_command.restart_all
+        @output.puts "No agentd processes are running." if restarted.empty?
+        restarted.each do |name, r|
+          if r.ok?
+            verb = (r.outcome == "restarted") ? "Restarted" : "Started"
+            pids = [r.old_pid, r.pid].compact.join(" -> ")
+            @output.puts "#{verb} agentd for #{name}#{" (pid #{pids})" unless pids.empty?}"
+          else
+            @error_output.puts "Error: #{name}: #{r.message}"
+          end
+        end
+        rows = restarted.map do |name, r|
+          action_row(name, r.outcome, reason: r.reason, message: r.message, old_pid: r.old_pid, pid: r.pid, wc_socket: r.wc_socket)
+        end
+        {exit_code: (restarted.all? { |_, r| r.ok? }) ? 0 : 1, results: rows}
       end
     end
 

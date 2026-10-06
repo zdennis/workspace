@@ -1,23 +1,45 @@
 # workspace daemon
 
-Inspect and control a workspace's agent daemon from outside it: whether it answers, its process, the tail of its log, and a restart that doesn't hold the terminal. The daemon itself is `workspace agentd` (see [README.agentd.md](README.agentd.md)).
+Inspect and control agent daemons from outside them: which are running, whether one answers, its process, the tail of its log, and a restart (of one workspace's daemon, or of all of them) that doesn't hold the terminal. The daemon itself is `workspace agentd` (see [README.agentd.md](README.agentd.md)).
 
 ## Usage
 
 ```sh
 workspace daemon status [WORKSPACE] [--json]
 workspace daemon restart [WORKSPACE] [--wc-socket PATH] [--json]
+workspace daemon restart --all [--json]
+workspace daemon list [--json]
 workspace daemon log [WORKSPACE] [--lines N] [--json]
 ```
 
-`WORKSPACE` (or `--name WORKSPACE`) defaults to the project detected from the current directory. A workspace with no tmuxinator config is an `unknown_workspace` error (exit 1) for every subcommand.
+`list` and `restart --all` cover every running daemon and take no workspace. For the others, `WORKSPACE` (or `--name WORKSPACE`) defaults to the project detected from the current directory. A workspace with no tmuxinator config is an `unknown_workspace` error (exit 1) for every subcommand.
 
 | Option | Description |
 |--------|-------------|
 | `--name NAME` | Same as the positional workspace |
 | `--lines N` | `log` only: how many trailing lines, 1 to 10000 (default 40) |
 | `--wc-socket PATH` | `restart` only: work-coordinator socket for the new daemon (default: the one the old daemon was started with). A relative path is made absolute from the current directory |
+| `--all` | `restart` only: restart every running daemon. Can't be combined with a workspace or `--wc-socket` |
 | `--json` | Print one JSON document |
+
+## list
+
+Lists every running agent daemon, so you can see what is still running old code after installing a new version. Only workspaces that still have a tmuxinator config are found (a daemon left running for a workspace whose config was deleted is not listed), and each one's daemon is found from its socket (`~/.local/workspace/run/workspace-<name>.sock`), not from the process list. A daemon is listed when it answers on its socket, or when it holds the socket without answering (hung) and its command line is a `workspace agentd`. A hung daemon whose socket more than one process has open is listed too, with `pid: null`, so it isn't hidden. A socket file with no process behind it is stale and is left out. With none running it prints `No agentd processes are running.` and exits 0.
+
+```
+WORKSPACE  PID   STARTED               ANSWERING  SOCKET
+api        4242  2026-09-24T09:12:03Z  yes        /Users/me/.local/workspace/run/workspace-api.sock
+```
+
+`list --json` is a read-only document like `status --json`: `schema_version`, `ok`, then `daemons` and `warnings`, with no `action` or `status`.
+
+```json
+{"schema_version":1,"ok":true,"daemons":[{"workspace":"api","pid":4242,"started_at":"2026-09-24T09:12:03Z","answering":true,
+ "socket":"/Users/me/.local/workspace/run/workspace-api.sock","log":"/Users/me/.local/workspace/run/workspace-api.log","wc_socket":null}],
+ "warnings":[]}
+```
+
+`pid` and `started_at` (UTC, from the process table) are `null` when they can't be read: more than one process has the socket open, `lsof` doesn't answer within 2 seconds, or the process table can't be read. `answering` is `false` for a hung daemon. `wc_socket` is the `--wc-socket` the daemon was started with, read from its command line; `null` when it has none or the path can't be read back. The version a daemon runs isn't recorded anywhere, so it isn't shown: compare `started_at` with when you installed.
 
 ## status
 
@@ -57,6 +79,12 @@ Once the old daemon has stopped, its command line is gone. So when a restart fai
 
 `outcome` is `restarted`, `started` or `failed`. `reason` on a failure is `not_agentd`, `not_stopped`, `wc_socket_unknown`, `invalid_config` or `start_failed`. `old_pid` is `null` when none was running; `pid` is `null` when the new daemon's process can't be identified, which can be the case right after it starts. `wc_socket` is the work-coordinator socket the new daemon was started with, whether `--wc-socket` named it or the old daemon had it; `null` means the default socket, or that another caller started the daemon. On a `failed` row it is the socket to pass with `--wc-socket` when running `restart` again, and `null` when there is none to pass (none was named, the old daemon had none, or it couldn't be read: `wc_socket_unknown`, `not_agentd`, an unidentified holder).
 
+### restart --all
+
+Restarts every daemon `list` finds, one after another, each the way a single `restart` does: stopped with `SIGTERM` only after its command line is confirmed to be an `agentd`, waited for (up to 5 seconds) until it lets go of its socket, then started again by the currently installed `workspace` with the same work-coordinator socket. Run it after installing a new version, so every daemon runs the new code. One workspace failing doesn't stop the rest (an error raised for one, such as the process table being unreadable, is its row too, with the error's code as `reason`, or `restart_failed` when it has none): each gets its own row, with the failure `reason` and `message` as for a single restart. The exit status is 1 if any row failed (with `--json`, 3 when only some did and 1 when all did, as for other actions). With none running it says so and exits 0. `restart --all` takes no workspace and no `--wc-socket`; each daemon keeps its own.
+
+With `--json` it prints the same action document with one row per workspace; `status` is `partial` when some rows failed.
+
 ## log
 
 Prints the last lines of the daemon log, `~/.local/workspace/run/workspace-<name>.log` (the path is computed by workspace, including the truncation applied to long names, so use `path` rather than rebuilding it). Only a daemon started in the background (`agentd --ensure`, `daemon restart`, `launch`) writes this file; one run in a terminal writes to that terminal. Only the last megabyte is read, and invalid UTF-8 is replaced with `?`.
@@ -70,4 +98,4 @@ Prints the last lines of the daemon log, `~/.local/workspace/run/workspace-<name
 
 ## Errors
 
-With `--json`, failures are the usual error envelope (see [README.json.md](README.json.md)): `usage` for a bad option, a missing subcommand or workspace, or a `--lines` out of range; `unknown_workspace` from all three subcommands when the workspace has no tmuxinator config (a typo is never reported as a stopped daemon).
+With `--json`, failures are the usual error envelope (see [README.json.md](README.json.md)): `usage` for a bad option, a missing subcommand or workspace, a `--lines` out of range, a workspace given to `list` or `restart --all`, or `--all` where it doesn't apply; `unknown_workspace` from all three subcommands when the workspace has no tmuxinator config (a typo is never reported as a stopped daemon).
