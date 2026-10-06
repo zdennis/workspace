@@ -233,6 +233,83 @@ RSpec.describe Workspace::Commands::Config do
       expect(project_settings.load(name)["commands"]["test"]).to eq("bundle exec rspec")
     end
 
+    it "sets, gets and unsets notes.dir as the raw absolute path" do
+      output = StringIO.new
+      command, project_settings = build_command(output: output)
+      project_dir = Dir.mktmpdir("ws-config-project")
+      name = File.basename(project_dir)
+
+      command.set("notes.dir", "/Users/me/My Notes", cwd: project_dir)
+      expect(project_settings.load(name)).to eq({"notes" => {"dir" => "/Users/me/My Notes"}})
+
+      output.truncate(0)
+      output.rewind
+      expect(command.get("notes.dir", cwd: project_dir)).to eq(true)
+      expect(output.string.strip).to eq("/Users/me/My Notes")
+
+      command.unset("notes.dir", cwd: project_dir)
+      expect(project_settings.load(name).dig("notes", "dir")).to be_nil
+    end
+
+    it "get on an unset notes.dir returns false and writes nothing to stdout" do
+      output = StringIO.new
+      error_output = StringIO.new
+      dir = Dir.mktmpdir("ws-config")
+      project_settings = Workspace::ProjectSettings.new(config: Struct.new(:workspace_config_dir).new(dir))
+      command = described_class.new(project_settings: project_settings, lineage: Workspace::WorkspaceLineage.new, file_backup: Workspace::FileBackup.new(output: output), output: output, error_output: error_output)
+
+      expect(command.get("notes.dir", cwd: Dir.mktmpdir("ws-config-project"))).to eq(false)
+      expect(output.string).to eq("")
+      expect(error_output.string).to include("is not set")
+    end
+
+    it "get inside a worktree returns the parent project\x27s notes.dir" do
+      output = StringIO.new
+      command, project_settings = build_command(output: output)
+      root = Dir.mktmpdir("ws-config-repo")
+      system("git", "init", "-q", root, out: File::NULL, err: File::NULL)
+      system("git", "-C", root, "commit", "--allow-empty", "-q", "-m", "init", out: File::NULL, err: File::NULL)
+      worktree_path = File.join(root, ".worktrees", "wt1")
+      FileUtils.mkdir_p(File.dirname(worktree_path))
+      system("git", "-C", root, "worktree", "add", "-q", "-b", "wt1-branch", worktree_path, out: File::NULL, err: File::NULL)
+      File.write(File.join(worktree_path, ".workspace-project"), "myapp.worktree-wt1")
+      project_settings.save("myapp", {"notes" => {"dir" => "/parent/notes"}})
+
+      expect(command.get("notes.dir", cwd: worktree_path)).to eq(true)
+      expect(output.string.strip).to eq("/parent/notes")
+    ensure
+      FileUtils.remove_entry(root) if root && File.directory?(root)
+    end
+
+    it "refuses a notes.dir with a newline and writes nothing" do
+      command, project_settings = build_command
+      project_dir = Dir.mktmpdir("ws-config-project")
+
+      expect { command.set("notes.dir", "/x\ny", cwd: project_dir) }
+        .to raise_error(Workspace::UsageError, /newline or other control character/)
+      expect(project_settings.load(File.basename(project_dir))).to eq({})
+    end
+
+    it "refuses a padded absolute notes.dir and writes nothing" do
+      command, project_settings = build_command
+      project_dir = Dir.mktmpdir("ws-config-project")
+
+      expect { command.set("notes.dir", "  /pad ", cwd: project_dir) }
+        .to raise_error(Workspace::UsageError, /leading or trailing whitespace/)
+      expect(project_settings.load(File.basename(project_dir))).to eq({})
+    end
+
+    ["notes/app", "~/notes", " "].each do |bad|
+      it "refuses notes.dir #{bad.inspect} and writes nothing" do
+        command, project_settings = build_command
+        project_dir = Dir.mktmpdir("ws-config-project")
+
+        expect { command.set("notes.dir", bad, cwd: project_dir) }
+          .to raise_error(Workspace::UsageError, /Invalid notes.dir/)
+        expect(project_settings.load(File.basename(project_dir))).to eq({})
+      end
+    end
+
     ["0", "101", "soon"].each do |bad|
       it "rejects handoff.threshold #{bad.inspect} without writing it" do
         command, project_settings = build_command

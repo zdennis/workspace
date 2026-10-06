@@ -54,6 +54,7 @@ Only an allowlisted set of keys can be written this way, so a typo doesn't silen
 | `handoff.resume_prompt` | Overrides the built-in resume prompt `handoff new` sends; must not be blank (see [`workspace handoff`](README.handoff.md)) |
 | `commands.test` | Command that runs the project's tests, e.g. `bundle exec rspec`; [`workspace instructions compose`](README.instructions.md) names it in the `commits` pack |
 | `commands.lint` | Command that lints the project, e.g. `bundle exec standardrb lib/ spec/`; named in the `commits` pack beside `commands.test` |
+| `notes.dir` | Directory where notes for the project's workspaces are kept, as an absolute path; other tools read it to know where to store notes (unset: no notes directory) |
 | `statusline.command` | Global. Delegates [`workspace statusline`](README.statusline.md) rendering to another command instead of the built-in renderer |
 | `context.source` | Global. `statusline` (default) or `scrape` — where `workspace sessions` reads a pane's context usage; see [`workspace statusline`](README.statusline.md) |
 | `context.pattern` | Global. Regex with exactly one capture group, used when `context.source` is `scrape` |
@@ -63,7 +64,7 @@ Only an allowlisted set of keys can be written this way, so a typo doesn't silen
 
 `statusline.command`, `context.source`, `context.pattern`, and `launch.headless` are always written to the global config, never a project's — there's one status line, one context source and one launch mode per machine. `context.source` must be `statusline` or `scrape`; `context.pattern` must be a valid regex with exactly one capture group. `launch.headless` must be `true` or `false`.
 
-`dev.stop_timeout`, `dev.startup_timeout`, `dev.ready_timeout`, `dev.kill_grace`, `locks.idle_grace`, `locks.ps_timeout`, `locks.reap_interval`, `alerts.idle_after`, and `agentd.poll_interval` must parse as a duration: a plain number of seconds, or a number with an `s`, `m` or `h` suffix (`20`, `20s`, `5m`, `1h`). `dev.startup_timeout`, `dev.ready_timeout`, `dev.kill_grace`, `locks.idle_grace`, `locks.ps_timeout`, `locks.reap_interval`, `alerts.idle_after`, and `agentd.poll_interval` must also be greater than 0. `alerts.notify` must not be blank. `dev.kill_grace` is also capped at 60s. `locks.ps_timeout` must be between 1s and 60s: too small and `ps` times out on nearly every call, which makes liveness checks come back unknown (treated as alive) and can stall a lock queue behind a clearing marker that never gets to show dead. Anything else is rejected before it's written.
+`dev.stop_timeout`, `dev.startup_timeout`, `dev.ready_timeout`, `dev.kill_grace`, `locks.idle_grace`, `locks.ps_timeout`, `locks.reap_interval`, `alerts.idle_after`, and `agentd.poll_interval` must parse as a duration: a plain number of seconds, or a number with an `s`, `m` or `h` suffix (`20`, `20s`, `5m`, `1h`). `dev.startup_timeout`, `dev.ready_timeout`, `dev.kill_grace`, `locks.idle_grace`, `locks.ps_timeout`, `locks.reap_interval`, `alerts.idle_after`, and `agentd.poll_interval` must also be greater than 0. `alerts.notify` must not be blank. `dev.kill_grace` is also capped at 60s. `locks.ps_timeout` must be between 1s and 60s: too small and `ps` times out on nearly every call, which makes liveness checks come back unknown (treated as alive) and can stall a lock queue behind a clearing marker that never gets to show dead. Anything else is rejected before it's written. `notes.dir` must be an absolute path with no leading or trailing whitespace, and no newline or other control character. A relative path is rejected, and so is a literal `~`, which is not expanded. The value is otherwise stored as given: a trailing slash or `..` segments are not normalized. `config get` prints the stored string, so a client can use it as a path with no further processing. The directory doesn't have to exist.
 
 <!-- BEGIN GENERATED: restart -->
 `locks.ps_timeout`, `locks.reap_interval`, `alerts.notify`, `alerts.idle_after` and `agentd.poll_interval` only take effect the next time the session-monitor daemon starts (`workspace launch`/`workspace agentd --force`); a daemon already running keeps the values it started with. `workspace config set` prints a reminder of this after setting any of these five keys.
@@ -75,6 +76,16 @@ Only an allowlisted set of keys can be written this way, so a typo doesn't silen
 workspace config set dev.up 'FOO="bar baz" ./start-dev'
 ```
 
+A client that wants to know where to keep notes for a workspace reads `notes.dir`; a worktree workspace gets its parent project's value:
+
+```sh
+workspace config set notes.dir /Users/me/notes/api
+workspace config get notes.dir          # /Users/me/notes/api
+workspace config show --json --name api  # the `notes.dir` row has the value in `value` and `effective`
+```
+
+`config get` prints nothing on stdout and exits 1 when the key is unset, so a client that finds no output should pick its own location. The "is not set" message on stderr marks that case, and `config show --name N --json` gives `value: null` for an unset key.
+
 Before writing, `set` and `unset` back up the project's config file (via the same backup mechanism used elsewhere in workspace) and then rewrite it through a temp file and rename. **`YAML.dump` drops comments** — if you've hand-edited the file with comments, they will be lost the first time `set` or `unset` touches it.
 
 If the file isn't valid YAML (or isn't a mapping at the top level), `set` and `unset` stop with `Cannot parse <path>: ...` and leave it as written; fix or remove it and retry. Readers that run in the background (lock, alert, and handoff settings) warn and use their defaults instead of failing.
@@ -85,7 +96,7 @@ If the file isn't valid YAML (or isn't a mapping at the top level), `set` and `u
 workspace config show --name api.worktree-fix --json
 ```
 
-Prints one document with every key in the table above, the value each reader would use, and the file it comes from. It reads the layers the workspace reads, which is not always the file `workspace config` prints: `dev`, `locks`, `alerts` and `handoff` come from the **parent project's** file even in a worktree (the same file `config set` writes), `hooks` and `pipeline` from the workspace's own file, and `statusline`, `context`, `launch` and `event_log_compact_threshold` from the global file.
+Prints one document with every key in the table above, the value each reader would use, and the file it comes from. It reads the layers the workspace reads, which is not always the file `workspace config` prints: `dev`, `locks`, `alerts`, `handoff`, `commands` and `notes` come from the **parent project's** file even in a worktree (the same file `config set` writes), `hooks` and `pipeline` from the workspace's own file, and `statusline`, `context`, `launch` and `event_log_compact_threshold` from the global file.
 
 ```json
 {"schema_version":1,"ok":true,"workspace":"api.worktree-fix","parent":"api",

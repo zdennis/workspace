@@ -4,7 +4,7 @@ RSpec.describe Workspace::ConfigSchema do
   let(:root) { File.expand_path("../..", __dir__) }
 
   it "lists the settable keys in the order `config set` has always reported them" do
-    expect(described_class.project_keys.map(&:name)).to eq(%w[dev.up dev.ready dev.stop_timeout dev.startup_timeout dev.ready_timeout dev.kill_grace locks.idle_grace locks.ps_timeout locks.reap_interval alerts.notify alerts.idle_after agentd.poll_interval handoff.threshold handoff.check_prompt handoff.resume_prompt commands.test commands.lint])
+    expect(described_class.project_keys.map(&:name)).to eq(%w[dev.up dev.ready dev.stop_timeout dev.startup_timeout dev.ready_timeout dev.kill_grace locks.idle_grace locks.ps_timeout locks.reap_interval alerts.notify alerts.idle_after agentd.poll_interval handoff.threshold handoff.check_prompt handoff.resume_prompt commands.test commands.lint notes.dir])
     expect(described_class.global_keys.map(&:name)).to eq(%w[statusline.command context.source context.pattern launch.headless workflows.defaults.include])
   end
 
@@ -88,6 +88,27 @@ RSpec.describe Workspace::ConfigSchema do
   end
 
   describe ".parse" do
+    it "accepts an absolute notes.dir unchanged, keeping inner spaces" do
+      expect(described_class.parse("notes.dir", "/Users/me/notes")).to eq("/Users/me/notes")
+      expect(described_class.parse("notes.dir", "/Users/me/My Notes")).to eq("/Users/me/My Notes")
+    end
+
+    it "rejects a padded absolute notes.dir" do
+      expect { described_class.parse("notes.dir", " /x ") }.to raise_error(ArgumentError, /leading or trailing whitespace/)
+      expect { described_class.parse("notes.dir", "/x ") }.to raise_error(ArgumentError, /leading or trailing whitespace/)
+    end
+
+    it "rejects a notes.dir with a newline or other control character" do
+      expect { described_class.parse("notes.dir", "/x\ny") }.to raise_error(ArgumentError, /newline or other control character/)
+      expect { described_class.parse("notes.dir", "/x\ty") }.to raise_error(ArgumentError, /newline or other control character/)
+    end
+
+    it "rejects a blank, relative or tilde notes.dir" do
+      expect { described_class.parse("notes.dir", "  ") }.to raise_error(ArgumentError, /must not be blank/)
+      expect { described_class.parse("notes.dir", "notes/app") }.to raise_error(ArgumentError, /absolute path/)
+      expect { described_class.parse("notes.dir", "~/notes") }.to raise_error(ArgumentError, /absolute path.*"~" is not expanded/)
+    end
+
     it "parses durations and returns seconds" do
       expect(described_class.parse("dev.stop_timeout", "5m")).to eq(300.0)
       expect(described_class.parse("dev.stop_timeout", "0")).to eq(0.0)

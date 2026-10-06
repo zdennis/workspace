@@ -130,6 +130,16 @@ module Workspace
     end
     private_constant :PROMPT
 
+    ABSOLUTE_PATH = lambda do |value|
+      path = value.to_s
+      raise ArgumentError, "must not be blank" if path.strip.empty?
+      raise ArgumentError, "has leading or trailing whitespace; remove it" unless path == path.strip
+      raise ArgumentError, "must not contain a newline or other control character" if path.match?(/[[:cntrl:]]/)
+      raise ArgumentError, "must be an absolute path starting with \"/\"; a literal \"~\" is not expanded, so write out the home directory" unless path.start_with?("/")
+      path
+    end
+    private_constant :ABSOLUTE_PATH
+
     PERCENT = lambda do |value|
       pct = Integer(value)
       raise ArgumentError, "must be between 1 and 100" unless pct.between?(1, 100)
@@ -207,6 +217,8 @@ module Workspace
         doc: "Command that runs the project's tests, e.g. `bundle exec rspec`; [`workspace instructions compose`](README.instructions.md) names it in the `commits` pack"),
       Key.new(name: "commands.lint", scope: :project, type: :command, sensitive: true, settable: true, parser: COMMAND,
         doc: "Command that lints the project, e.g. `bundle exec standardrb lib/ spec/`; named in the `commits` pack beside `commands.test`"),
+      Key.new(name: "notes.dir", scope: :project, settable: true, parser: ABSOLUTE_PATH,
+        doc: "Directory where notes for the project's workspaces are kept, as an absolute path; other tools read it to know where to store notes (unset: no notes directory)"),
       Key.new(name: "statusline.command", scope: :global, type: :command, sensitive: true, settable: true,
         doc: "Delegates [`workspace statusline`](README.statusline.md) rendering to another command instead of the built-in renderer"),
       Key.new(name: "context.source", scope: :global, type: :enum, settable: true, parser: CONTEXT_SOURCE,
