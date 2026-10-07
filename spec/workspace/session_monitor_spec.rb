@@ -1097,6 +1097,48 @@ RSpec.describe Workspace::SessionMonitor do
       expect { monitor.scan }.not_to raise_error
       expect(pane("%2")["context_error"]).to eq(Workspace::ContextReasons::NO_READING)
     end
+
+    describe "serving from the scan's cache" do
+      before do
+        allow(context_reader).to receive(:read).and_return(pct: 55, error: nil, updated_at: "2026-09-27T00:00:00Z")
+      end
+
+      it "reads once per scan however many snapshots ask, not once per request" do
+        monitor.scan
+
+        3.times { expect(pane("%2")["context_pct"]).to eq(55) }
+
+        expect(context_reader).to have_received(:read).exactly(:once)
+      end
+
+      it "reads per request before the first scan has run" do
+        monitor.record({"pane_id" => "%2", "event" => "user_prompt", "session_id" => "s-1"})
+
+        2.times { pane("%2") }
+
+        expect(context_reader).to have_received(:read).with(pane_id: "%2", agent_pid: nil, current_session_id: "s-1")
+          .exactly(2).times
+      end
+
+      it "reads again once the scan is overdue past its freshness grace" do
+        monitor.scan
+        overdue = now + (Workspace::SessionMonitor::DEFAULT_POLL_INTERVAL * Workspace::SessionMonitor::CACHE_GRACE_INTERVALS) + 1
+        allow(clock).to receive(:now).and_return(overdue)
+
+        expect(pane("%2")["context_pct"]).to eq(55)
+
+        expect(context_reader).to have_received(:read).exactly(2).times
+      end
+
+      it "reads again when the pane reports a different session, however fresh the cache" do
+        monitor.scan
+        monitor.record({"pane_id" => "%2", "event" => "session_start", "session_id" => "s-2"})
+
+        expect(pane("%2")["context_pct"]).to eq(55)
+
+        expect(context_reader).to have_received(:read).with(pane_id: "%2", agent_pid: 250, current_session_id: "s-2")
+      end
+    end
   end
 end
 
@@ -1172,6 +1214,51 @@ RSpec.describe Workspace::SessionMonitor, "display_label" do
     monitor.record("event" => "user_prompt", "pane_id" => "%2", "session_id" => "s1", "prompt" => "keep me")
     monitor.record("event" => "notification", "pane_id" => "%2", "message" => "hello")
 
+    expect(pane("%2")["display_label"]).to eq("keep me")
+  end
+
+  it "reads the transcript once per scan however many snapshots ask, not once per request" do
+    allow(label_reader).to receive(:read).with("/t/a.jsonl").and_return(title: "Fix the build", last_prompt: nil)
+    monitor.record("event" => "session_start", "pane_id" => "%2", "session_id" => "s1", "transcript_path" => "/t/a.jsonl")
+    monitor.scan
+
+    3.times { expect(pane("%2")["display_label"]).to eq("Fix the build") }
+
+    expect(label_reader).to have_received(:read).with("/t/a.jsonl").exactly(:once)
+  end
+
+  it "reads the transcript again when the pane reports a new prompt, however fresh the cache" do
+    allow(label_reader).to receive(:read).with("/t/a.jsonl").and_return(title: "Fix the build", last_prompt: nil)
+    monitor.record("event" => "session_start", "pane_id" => "%2", "session_id" => "s1", "transcript_path" => "/t/a.jsonl")
+    monitor.scan
+    expect(pane("%2")["display_label"]).to eq("Fix the build")
+
+    monitor.record("event" => "user_prompt", "pane_id" => "%2", "session_id" => "s1",
+      "transcript_path" => "/t/a.jsonl", "prompt" => "typed")
+
+    expect(pane("%2")["display_label"]).to eq("Fix the build")
+    expect(label_reader).to have_received(:read).with("/t/a.jsonl").twice
+  end
+
+  it "reads the transcript again once the scan is overdue past its freshness grace" do
+    allow(label_reader).to receive(:read).with("/t/a.jsonl").and_return(title: "Fix the build", last_prompt: nil)
+    monitor.record("event" => "session_start", "pane_id" => "%2", "session_id" => "s1", "transcript_path" => "/t/a.jsonl")
+    monitor.scan
+
+    allow(clock).to receive(:now).and_return(Time.utc(2026, 9, 26, 12, 0, 31))
+    expect(pane("%2")["display_label"]).to eq("Fix the build")
+    allow(clock).to receive(:now).and_return(Time.utc(2026, 9, 26, 12, 1, 1))
+    expect(pane("%2")["display_label"]).to eq("Fix the build")
+
+    expect(label_reader).to have_received(:read).with("/t/a.jsonl").twice
+  end
+
+  it "never lets a label_reader failure raise out of a scan" do
+    monitor.record("event" => "session_start", "pane_id" => "%2", "session_id" => "s1", "transcript_path" => "/t/a.jsonl")
+    monitor.record("event" => "user_prompt", "pane_id" => "%2", "session_id" => "s1", "prompt" => "keep me")
+    allow(label_reader).to receive(:read).and_raise(StandardError, "boom")
+
+    expect { monitor.scan }.not_to raise_error
     expect(pane("%2")["display_label"]).to eq("keep me")
   end
 
