@@ -15,6 +15,8 @@ workspace start [options] <jira-key|jira-url|pr-url|pr-ref|issue-url|branch>
 | `--prompt PROMPT` | Send an initial prompt to the coding agent once it is ready (up to 60s); exits 1 if it can't be sent. See [`launch`](README.launch.md#details) |
 | `--prompt-timeout DURATION` | How long to wait for the coding agent to be ready for `--prompt` (e.g. `90s`, `2m`, or a plain number of seconds); default 60s |
 | `--play NAME` | Send the agent a line pointing at a [library](README.library.md) play, then any `--prompt` text. See [Plays](#plays) |
+| `--pack NAME` | Also send the agent a library pack's text with the first prompt; repeatable. See [Packs](#packs) |
+| `--no-packs` | Send no automatic packs; cannot be combined with `--pack` |
 | `--agent NAME` | Copy a [library](README.library.md) agent into the worktree's `.claude/agents/`; repeatable. See [Agents and skills](#agents-and-skills) |
 | `--skill NAME` | Copy a library skill directory into the worktree's `.claude/skills/`; repeatable |
 | `--base REF` | Branch/ref a new branch is created from, instead of prompting |
@@ -66,6 +68,10 @@ prompt, it instead:
 
 `--json` never prompts either, regardless of whether stdin is a TTY — pass `--base`
 and/or `--yes` alongside it when the branch might need to be created.
+
+### Packs
+
+`start` also sends the agent the instruction packs that apply, in one send: the `--play` line, then the packs (one `## From pack <name>` heading each), then the `--prompt` text. The automatic pack is `notes` (where working notes go; `start` has already set the notes directory up), unless the project's `notes.instructions` key is `false`. `--pack NAME` adds a pack (repeatable; any library play can be named, see [`instructions`](README.instructions.md)), and `--no-packs` drops the automatic ones for this run; the two together are a usage error. Packs are composed before the worktree is created, so an unknown name fails with `unknown_library_entry` and changes nothing. `workspace instructions compose --start` prints the same text and sends nothing.
 
 ### Plays
 
@@ -131,6 +137,7 @@ On success, one line of JSON on stdout (nothing else is written to stdout under
   `delivered` is whether the prompt carrying it was sent, and `pane` is the tmux
   pane id (`%5`) bound to the play, or `null` when it was not delivered or the
   pane could not be bound
+- `packs` — always present: one `{"name", "source", "delivered", "pane"}` object per pack sent, in order, `[]` when none applied. `source` is `config` (automatic) or `flag` (`--pack`); `delivered` is whether the prompt carrying it was sent, and `pane` the tmux pane id it went to (`null` when not delivered). A pack that was not delivered rides the same `prompt_not_sent` failure as the prompt
 - `agents`, `skills` — present only with `--agent` or `--skill`: one object per entry,
   `{"ref", "scope", "source", "path", "outcome"}`. `source` is the library path
   (a skill's directory), `path` is where it was copied in the worktree, and `outcome` is

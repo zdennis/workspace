@@ -106,6 +106,7 @@ RSpec.describe Workspace::CLI do
       binding_command: overrides[:binding_command],
       library_command: overrides[:library_command],
       instructions_command: overrides[:instructions_command],
+      instruction_composer: overrides[:instruction_composer],
       workflow_command: overrides[:workflow_command],
       library: overrides[:library],
       review_command: overrides[:review_command],
@@ -1407,6 +1408,22 @@ RSpec.describe Workspace::CLI do
         base: nil, yes: false, json: false, play: "kickoff")
     end
 
+    it "passes --pack and --no-packs through to start, and refuses both together" do
+      start_command = double("start", call: {exit_code: 0, prompt_failures: {}})
+      cli, _, error_output = build_test_cli(start_command: start_command)
+
+      cli.run(["start", "--pack", "review", "--pack", "commits", "PROJ-1"])
+      cli.run(["start", "--no-packs", "PROJ-2"])
+
+      expect(start_command).to have_received(:call).with("PROJ-1", prompt: nil, prompt_timeout: nil,
+        base: nil, yes: false, json: false, packs: %w[review commits])
+      expect(start_command).to have_received(:call).with("PROJ-2", prompt: nil, prompt_timeout: nil,
+        base: nil, yes: false, json: false, no_packs: true)
+      expect { cli.run(["start", "--no-packs", "--pack", "review", "PROJ-3"]) }.to raise_error(FakeSystemExit)
+      expect(error_output.string).to include("--no-packs cannot be combined with --pack")
+      expect(start_command).not_to have_received(:call).with("PROJ-3", any_args)
+    end
+
     it "passes repeated --agent and --skill through to start" do
       start_command = double("start", call: {exit_code: 0, prompt_failures: {}})
       cli, _, error_output = build_test_cli(start_command: start_command)
@@ -1424,6 +1441,7 @@ RSpec.describe Workspace::CLI do
       expect { cli.run(["launch"]) }.to raise_error(FakeSystemExit)
       expect { cli.run(["start"]) }.to raise_error(FakeSystemExit)
       expect(error_output.string.scan("--play NAME").size).to eq(2)
+      expect(error_output.string.scan("--no-packs").size).to eq(2)
     end
 
     it "passes --base and --yes through to start" do
@@ -4467,6 +4485,26 @@ RSpec.describe Workspace::CLI do
       expect(instructions_command.calls).to be_empty
     end
 
+    it "passes --start and --no-packs through, and refuses the bad combinations" do
+      cli.run(["instructions", "compose", "--start", "--pack", "review", "--json"])
+      cli.run(["instructions", "compose", "--start", "--no-packs", "--name", "api"])
+
+      expect(instructions_command.calls.map(&:last)).to eq([
+        {packs: %w[review], cwd: "/some/dir", pane: nil, json: true, start: true, no_packs: false},
+        {packs: [], cwd: "/work/api", pane: nil, json: false, start: true, no_packs: true}
+      ])
+      {
+        ["instructions", "compose", "--no-packs"] => /--no-packs only works with --start/,
+        ["instructions", "compose", "--start", "--no-packs", "--pack", "review"] => /--no-packs cannot be combined with --pack/,
+        ["instructions", "compose", "--start", "--pane", "%5"] => /--pane has no effect with --start/
+      }.each do |argv, message|
+        cli, _, error_output = build_test_cli(instructions_command: instructions_command)
+        expect { cli.run(argv) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+        expect(error_output.string).to match(message)
+      end
+      expect(instructions_command.calls.size).to eq(2)
+    end
+
     it "prints help, also from the main help" do
       cli.run(["instructions", "--help"])
       expect(output.string).to include("Usage: workspace instructions compose").and include("--pack NAME").and include("commands.test")
@@ -6807,6 +6845,95 @@ RSpec.describe Workspace::CLI do
             "api" => {"kind" => "play", "id" => "play/kickoff", "instructions" => api_path},
             "web" => {"kind" => "play", "id" => "play/kickoff", "instructions" => global_path}
           })
+        end
+
+        context "with packs" do
+          let(:project_settings) { instance_double(Workspace::ProjectSettings, load: {}) }
+          let(:composer) do
+            Workspace::InstructionComposer.new(library: library, lineage: lineage, commands_config: Workspace::CommandsConfig.new(project_settings: project_settings),
+              pane_bindings: instance_double(Workspace::PaneBindings), notes_config: Workspace::NotesConfig.new(project_settings: project_settings))
+          end
+          let(:notes_text) { "## From pack notes (built-in)\n\nNotes go in the notes directory.\n" }
+
+          before do
+            library.builtin_store.write("play", "notes", "Notes go in the notes directory.\n")
+            library.builtin_store.write("play", "review", "Review the diff.\n")
+          end
+
+          it "sends the notes pack to every project with no flags at all, ahead of the prompt" do
+            launch_command = double("launch", call: {exit_code: 0, prompt_failures: {}})
+            cli, = build_test_cli(launch_command: launch_command, project_config: project_config, library: library, instruction_composer: composer)
+
+            cli.run(["launch", "--prompt", "Go.", "api", "web"])
+
+            expect(launch_command).to have_received(:call).with(["api", "web"], reattach: false, report_panes: true,
+              prompts: {"api" => "#{notes_text.strip}\n\nGo.", "web" => "#{notes_text.strip}\n\nGo."})
+          end
+
+          it "sends the play line, then the packs, then the prompt, and adds --pack after the automatic ones" do
+            launch_command = double("launch", call: {exit_code: 0, prompt_failures: {}})
+            cli, = build_test_cli(launch_command: launch_command, project_config: project_config, library: library, instruction_composer: composer)
+
+            cli.run(["launch", "--play", "kickoff", "--pack", "review", "--prompt", "Go.", "api"])
+
+            expect(launch_command).to have_received(:call) do |_projects, **options|
+              expect(options[:prompts]).to eq("api" => "Read \"#{api_path}\" and follow it.\n\n#{notes_text}\n## From pack review (built-in)\n\nReview the diff.\n\nGo.")
+            end
+          end
+
+          it "leaves out the automatic pack with --no-packs or notes.instructions false, sending no prompt at all" do
+            launch_command = double("launch", call: {exit_code: 0, prompt_failures: {}})
+            cli, = build_test_cli(launch_command: launch_command, project_config: project_config, library: library, instruction_composer: composer)
+            allow(project_settings).to receive(:load).with("web").and_return({"notes" => {"instructions" => "false"}})
+
+            cli.run(["launch", "--no-packs", "api"])
+            cli.run(["launch", "web"])
+
+            expect(launch_command).to have_received(:call).with(["api"], reattach: false, prompts: {})
+            expect(launch_command).to have_received(:call).with(["web"], reattach: false, prompts: {})
+          end
+
+          it "refuses --no-packs with --pack, and an unknown pack before anything is created" do
+            launch_command = double("launch", call: {exit_code: 0})
+            allow(project_config).to receive(:resolve_project_arg).and_call_original
+            allow(project_config).to receive(:resolve_project_arg).with("/work/new").and_return(["new", "/work/new"])
+            allow(project_config).to receive(:create).and_call_original
+            cli, raw, = action_cli(launch_command: launch_command, project_config: project_config, library: library, instruction_composer: composer)
+
+            expect(exit_status { cli.run(["launch", "api", "--no-packs", "--pack", "review", "--json"]) }).to eq(1)
+            expect(parse_one(raw)).to include("ok" => false, "code" => "usage")
+
+            cli, raw, = action_cli(launch_command: launch_command, project_config: project_config, library: library, instruction_composer: composer)
+            expect(exit_status { cli.run(["launch", "api", "/work/new", "--pack", "nope", "--json"]) }).to eq(1)
+            expect(parse_one(raw)).to include("ok" => false, "code" => "unknown_library_entry")
+            expect(project_config).not_to have_received(:create)
+            expect(launch_command).not_to have_received(:call)
+          end
+
+          it "reports each project's packs in its row, empty when none applied" do
+            state = CLITestHelpers::FakeState.new
+            allow(project_settings).to receive(:load).with("web").and_return({"notes" => {"instructions" => false}})
+            cli, raw, = action_cli(state: state, project_config: project_config, library: library, instruction_composer: composer,
+              &launching(state, result: {exit_code: 1, prompt_failures: {"api" => "agent not ready"}, delivered_panes: {}}))
+
+            exit_status { cli.run(["launch", "api", "web", "--json"]) }
+
+            rows = parse_one(raw)["results"]
+            expect(rows.first["packs"]).to eq([{"name" => "notes", "source" => "config", "delivered" => false, "pane" => nil}])
+            expect(rows.last["packs"]).to eq([])
+          end
+
+          it "reports the pane a delivered pack went to" do
+            state = CLITestHelpers::FakeState.new
+            cli, raw, = action_cli(state: state, project_config: project_config, library: library, instruction_composer: composer,
+              &launching(state, result: {exit_code: 0, prompt_failures: {}, delivered_panes: {"api" => "%4", "web" => "%6"}}))
+
+            exit_status { cli.run(["launch", "api", "web", "--pack", "review", "--json"]) }
+
+            rows = parse_one(raw)["results"]
+            expect(rows.first["packs"]).to eq([{"name" => "notes", "source" => "config", "delivered" => true, "pane" => "%4"},
+              {"name" => "review", "source" => "flag", "delivered" => true, "pane" => "%4"}])
+          end
         end
 
         it "looks a directory argument's play up from that directory" do

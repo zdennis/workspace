@@ -376,6 +376,22 @@ RSpec.describe Workspace::Commands::Launch do
           expect(error_output.string).to be_empty
         end
 
+        it "reports the pane each prompt went to, bound or not, only when asked to" do
+          result = command.call(["proj1", "proj2"], prompts: {"proj1" => "fix it", "proj2" => "test it"}, report_panes: true)
+
+          expect(result[:delivered_panes]).to eq("proj1" => "%5", "proj2" => "%8")
+          expect(command.call(["proj1"], prompts: {"proj1" => "fix it"})).not_to have_key(:delivered_panes)
+        end
+
+        it "leaves out the pane of a prompt that was not sent" do
+          allow(agent_readiness).to receive(:wait).with("tmux-proj1", deadline: 60.0)
+            .and_return(Workspace::AgentReadiness::Result.new(ready: false, reason: "no coding agent yet"))
+
+          result = command.call(["proj1", "proj2"], prompts: {"proj1" => "fix it", "proj2" => "test it"}, report_panes: true)
+
+          expect(result[:delivered_panes]).to eq("proj2" => "%8")
+        end
+
         it "binds no pane for a project whose prompt was not sent" do
           allow(agent_readiness).to receive(:wait).with("tmux-proj1", deadline: 60.0)
             .and_return(Workspace::AgentReadiness::Result.new(ready: false, reason: "no coding agent yet"))

@@ -157,6 +157,7 @@ require_relative "workspace/library_store"
 require_relative "workspace/library"
 require_relative "workspace/library_installer"
 require_relative "workspace/commands_config"
+require_relative "workspace/notes_config"
 require_relative "workspace/instruction_composer"
 require_relative "workspace/project_config"
 require_relative "workspace/osascript_runner"
@@ -329,7 +330,11 @@ module Workspace
     notes_command = Commands::Notes.new(notes_dir: NotesDir.new(git: git), project_config: project_config, project_settings: project_settings,
       git_exclude: GitExclude.new(git: git), output: output)
     notes_setup = NotesSetup.new(notes: notes_command, project_settings: project_settings)
-    start_command = Commands::Start.new(git: git, project_config: project_config, project_settings: project_settings, launch_command: launch_command, lineage: lineage, hook_installer: hook_installer, task_store: task_store, event_log: event_log, library: library, library_installer: library_installer, notes_setup: notes_setup, output: output, input: input)
+    commands_config = CommandsConfig.new(project_settings: project_settings)
+    instruction_composer = InstructionComposer.new(library: library, lineage: lineage,
+      commands_config: commands_config, pane_bindings: pane_bindings, workflow_config: WorkflowConfig.new(project_settings: project_settings),
+      notes_config: NotesConfig.new(project_settings: project_settings))
+    start_command = Commands::Start.new(git: git, project_config: project_config, project_settings: project_settings, launch_command: launch_command, lineage: lineage, hook_installer: hook_installer, task_store: task_store, event_log: event_log, library: library, library_installer: library_installer, notes_setup: notes_setup, instruction_composer: instruction_composer, output: output, input: input)
     send_command = Commands::Send.new(locator: pane_locator, tmux: tmux, output: output)
     focus_command = Commands::Focus.new(state: state, window_manager: window_manager, tmux: tmux, pane_locator: pane_locator, output: output)
     tile_command = Commands::Tile.new(state: state, window_manager: window_manager, window_layout: window_layout, output: output)
@@ -410,9 +415,6 @@ module Workspace
     daemon_command = Commands::Daemon.new(config: config, project_config: project_config, ensure_agent: ensure_agent_command, process_tree: ProcessTree.new(logger: logger), output: output)
     ui_command = Commands::Ui.new(output: output)
     library_command = Commands::Library.new(library: library, output: output, input: input)
-    commands_config = CommandsConfig.new(project_settings: project_settings)
-    instruction_composer = InstructionComposer.new(library: library, lineage: lineage,
-      commands_config: commands_config, pane_bindings: pane_bindings, workflow_config: WorkflowConfig.new(project_settings: project_settings))
     instructions_command = Commands::Instructions.new(composer: instruction_composer, bindings: binding_command, output: output)
     ask_store_for = ->(workspace) { AskStore.new(path: config.ask_state_path(workspace), error_output: error_output) }
     workflow_store = WorkflowRunStore.new(dir: config.workflow_runs_dir, archive_dir: config.workflow_archive_dir)
@@ -562,6 +564,7 @@ module Workspace
       library_command: library_command,
       library: library,
       instructions_command: instructions_command,
+      instruction_composer: instruction_composer,
       workflow_command: workflow_command,
       review_command: review_command,
       restore_command: restore_command,

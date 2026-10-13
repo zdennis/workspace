@@ -402,6 +402,93 @@ RSpec.describe Workspace::Commands::Start do
         expect(JSON.parse(output.string)["play"]).to include("delivered" => false)
       end
 
+      context "with packs" do
+        let(:composer) do
+          Workspace::InstructionComposer.new(library: library, lineage: Workspace::WorkspaceLineage.new, commands_config: Workspace::CommandsConfig.new(project_settings: project_settings),
+            pane_bindings: instance_double(Workspace::PaneBindings), notes_config: Workspace::NotesConfig.new(project_settings: project_settings))
+        end
+        let(:packs_command) do
+          described_class.new(git: git, project_config: project_config, project_settings: project_settings,
+            launch_command: launch_command, library: library, instruction_composer: composer, output: output, error_output: error_output, input: input)
+        end
+        let(:notes_text) { "## From pack notes (built-in)\n\nNotes go in the notes directory.\n" }
+
+        before do
+          library.builtin_store.write("play", "notes", "Notes go in the notes directory.\n")
+          library.builtin_store.write("play", "review", "Review the diff.\n")
+        end
+
+        it "sends the notes pack before the prompt with no flags" do
+          packs_command.call("PROJ-123", prompt: "Go.")
+
+          expect(launch_command).to have_received(:call).with(["myproject.worktree-PROJ-123"], prompts: {"myproject.worktree-PROJ-123" => "#{notes_text.strip}\n\nGo."}, report_panes: true)
+        end
+
+        it "sends the play line, then the packs, then the prompt, with --pack after the automatic pack" do
+          packs_command.call("PROJ-123", play: "kickoff", packs: %w[review], prompt: "Go.")
+
+          expect(launch_command).to have_received(:call).with(["myproject.worktree-PROJ-123"], hash_including(
+            prompts: {"myproject.worktree-PROJ-123" => "Read \"#{global_path}\" and follow it.\n\n#{notes_text}\n## From pack review (built-in)\n\nReview the diff.\n\nGo."}
+          ))
+        end
+
+        it "sends only the packs when there is no prompt" do
+          packs_command.call("PROJ-123")
+
+          expect(launch_command).to have_received(:call).with(anything, hash_including(prompts: {"myproject.worktree-PROJ-123" => notes_text.strip}))
+        end
+
+        it "sends no automatic pack with no_packs, or when notes.instructions is false" do
+          packs_command.call("PROJ-123", no_packs: true)
+          expect(launch_command).to have_received(:call).with(["myproject.worktree-PROJ-123"], prompts: {})
+
+          project_settings.data[project_name] = {"notes" => {"instructions" => "false"}} if project_settings.respond_to?(:data)
+          allow(project_settings).to receive(:load).with(project_name).and_return({"notes" => {"instructions" => "false"}})
+          packs_command.call("PROJ-123")
+          expect(launch_command).to have_received(:call).with(["myproject.worktree-PROJ-123"], prompts: {}).twice
+        end
+
+        it "reports the packs, where each went, in --json" do
+          allow(launch_command).to receive(:call).and_return({exit_code: 0, prompt_failures: {}, delivered_panes: {"myproject.worktree-PROJ-123" => "%4"}})
+
+          packs_command.call("PROJ-123", packs: %w[review], json: true)
+
+          expect(JSON.parse(output.string)["packs"]).to eq([
+            {"name" => "notes", "source" => "config", "delivered" => true, "pane" => "%4"},
+            {"name" => "review", "source" => "flag", "delivered" => true, "pane" => "%4"}
+          ])
+        end
+
+        it "reports the packs as not delivered when the prompt was not sent" do
+          allow(launch_command).to receive(:call).and_return({exit_code: 1, prompt_failures: {"myproject.worktree-PROJ-123" => "agent not ready"}, delivered_panes: {}})
+
+          packs_command.call("PROJ-123", json: true)
+
+          expect(JSON.parse(output.string)["packs"]).to eq([{"name" => "notes", "source" => "config", "delivered" => false, "pane" => nil}])
+        end
+
+        it "reports an empty packs list when none applied" do
+          packs_command.call("PROJ-123", no_packs: true, json: true)
+
+          expect(JSON.parse(output.string)["packs"]).to eq([])
+        end
+
+        it "fails an unknown pack before creating anything, as a --json error" do
+          result = packs_command.call("PROJ-123", packs: %w[nope], json: true)
+
+          expect(result).to eq({exit_code: 1})
+          expect(JSON.parse(output.string)).to include("ok" => false, "code" => "unknown_library_entry")
+          expect(git).not_to have_received(:create_worktree)
+          expect(project_config).not_to have_received(:create_worktree)
+          expect(launch_command).not_to have_received(:call)
+        end
+
+        it "refuses --pack when no composer is wired" do
+          expect { play_command.call("PROJ-123", packs: %w[review]) }.to raise_error(Workspace::Error, /--pack is not available/)
+          expect(project_config).not_to have_received(:create_worktree)
+        end
+      end
+
       it "fails an unknown play before creating anything" do
         expect { play_command.call("PROJ-123", play: "nope") }.to raise_error(Workspace::Error) { |e|
           expect(e.code).to eq("unknown_library_entry")

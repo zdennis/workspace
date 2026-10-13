@@ -25,6 +25,8 @@ With no `--pack`, the default packs are composed: `binding`, `orchestrator` and 
 | `--pack NAME` | A pack to compose: `NAME` or `play/NAME` |
 | `--pane PANE` | The pane id (`%19`) whose binding follows the `binding` pack (default `$TMUX_PANE`, unless `--name` is given) |
 | `--name WORKSPACE` | Compose for this workspace instead of the current directory |
+| `--start` | Print what [`start`](README.start.md#packs) and [`launch`](README.launch.md#details) send with the first prompt, and send nothing: the automatic packs (`notes`, unless `notes.instructions` is `false`), then each `--pack`. Without `--pack` the default packs are not used; `--pane` is refused |
+| `--no-packs` | With `--start`: leave out the automatic packs; cannot be combined with `--pack` |
 | `--json` | Print one JSON document |
 
 ## Output
@@ -87,7 +89,7 @@ The built-in packs can't be replaced. `--pack` searches the built-in plays first
  "text":"## From pack orchestrator (built-in)\n\nYou are an orchestrator. ...\n"}
 ```
 
-`packs` lists what was composed, in order: `scope` is `builtin`, `global` or `project` (with `project` naming it), and `sha256` is the hash of the pack file, frontmatter included. `binding` is the pane's binding when one was found and is not stale, else null; it is reported whether or not the `binding` pack was composed. `text` is what the command prints without `--json`.
+`packs` lists what was composed, in order (with `--start`, each also has `source`: `config` for an automatic pack, `flag` for `--pack`; `binding` is `null`): `scope` is `builtin`, `global` or `project` (with `project` naming it), and `sha256` is the hash of the pack file, frontmatter included. `binding` is the pane's binding when one was found and is not stale, else null; it is reported whether or not the `binding` pack was composed. `text` is what the command prints without `--json`.
 
 Errors use the [envelope](README.json.md): `unknown_library_entry` for a pack no searched scope has (`details.scopes` lists them in the order searched, `builtin` first), `library_source_missing` for a pack that can't be read, `unknown_workspace` for a bad `--name`, and `usage` for a bad name, a pack that is not a play, or a `--pane` that is not a pane id. Nothing is printed on stdout but the envelope.
 
@@ -97,5 +99,6 @@ Errors use the [envelope](README.json.md): `unknown_library_entry` for a pack no
 workspace instructions compose
 workspace instructions compose --pack orchestrator
 workspace instructions compose --pack commits --pack review --name my-app --json
+workspace instructions compose --start --name my-app    # what start and launch would send
 workspace start feature/x --prompt "$(workspace instructions compose --pack orchestrator)"
 ```

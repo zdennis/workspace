@@ -66,4 +66,39 @@ RSpec.describe Workspace::Commands::Instructions do
     expect { command.compose(packs: %w[nope], cwd: "/work/app", json: true) }.to raise_error(Workspace::Error)
     expect(output.string).to be_empty
   end
+  describe "compose --start" do
+    let(:started) do
+      {"packs" => [{"ref" => "play/notes", "scope" => "builtin", "project" => nil, "path" => "/lib/play/notes.md", "sha256" => "abc", "source" => "config"}],
+       "text" => "## From pack notes (built-in)\n\nNotes.\n"}
+    end
+
+    it "prints the text start would send, and reads no binding" do
+      allow(composer).to receive(:compose_start).with(cwd: "/work/app", packs: %w[review], none: false).and_return(started)
+
+      command.compose(packs: %w[review], cwd: "/work/app", pane: "%5", start: true)
+
+      expect(output.string).to eq("## From pack notes (built-in)\n\nNotes.\n")
+      expect(bindings).not_to have_received(:live) if bindings.respond_to?(:live)
+    end
+
+    it "passes --no-packs on as none" do
+      allow(composer).to receive(:compose_start).and_return("packs" => [], "text" => nil)
+
+      command.compose(packs: [], cwd: "/work/app", start: true, no_packs: true)
+
+      expect(composer).to have_received(:compose_start).with(cwd: "/work/app", packs: [], none: true)
+      expect(output.string).to eq("")
+    end
+
+    it "keeps the document's shape and adds source to each pack" do
+      allow(composer).to receive(:compose_start).and_return(started)
+
+      command.compose(packs: [], cwd: "/work/app", start: true, json: true)
+
+      doc = JSON.parse(output.string)
+      expect(doc.keys).to eq(%w[schema_version ok packs binding text])
+      expect(doc["packs"].first).to include("ref" => "play/notes", "source" => "config")
+      expect(doc["binding"]).to be_nil
+    end
+  end
 end

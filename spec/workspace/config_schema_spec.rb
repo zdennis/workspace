@@ -4,7 +4,7 @@ RSpec.describe Workspace::ConfigSchema do
   let(:root) { File.expand_path("../..", __dir__) }
 
   it "lists the settable keys in the order `config set` has always reported them" do
-    expect(described_class.project_keys.map(&:name)).to eq(%w[dev.up dev.ready dev.stop_timeout dev.startup_timeout dev.ready_timeout dev.kill_grace locks.idle_grace locks.ps_timeout locks.reap_interval alerts.notify alerts.idle_after agentd.poll_interval handoff.threshold handoff.check_prompt handoff.resume_prompt commands.test commands.lint notes.dir notes.default_dir])
+    expect(described_class.project_keys.map(&:name)).to eq(%w[dev.up dev.ready dev.stop_timeout dev.startup_timeout dev.ready_timeout dev.kill_grace locks.idle_grace locks.ps_timeout locks.reap_interval alerts.notify alerts.idle_after agentd.poll_interval handoff.threshold handoff.check_prompt handoff.resume_prompt commands.test commands.lint notes.dir notes.default_dir notes.instructions])
     expect(described_class.global_keys.map(&:name)).to eq(%w[statusline.command context.source context.pattern launch.headless workflows.defaults.include])
   end
 
@@ -169,6 +169,10 @@ RSpec.describe Workspace::ConfigSchema do
       expect { described_class.parse("handoff.check_prompt", " ") }.to raise_error(ArgumentError, /blank/)
       expect(described_class.parse("launch.headless", "true")).to eq("true")
       expect { described_class.parse("launch.headless", "yes") }.to raise_error(ArgumentError, /"true" or "false"/)
+      expect(described_class.parse("notes.instructions", "false")).to eq("false")
+      expect(described_class.parse("notes.instructions", true)).to eq("true")
+      expect { described_class.parse("notes.instructions", "maybe") }.to raise_error(ArgumentError, /"true" or "false"/)
+      expect(described_class.default("notes.instructions")).to be(true)
     end
 
     it "checks context.source and context.pattern" do

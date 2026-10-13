@@ -169,15 +169,18 @@ module Workspace
       entry.slice("ref", "kind", "name", "scope", "path")
     end
 
-    # The text sent to the agent for a play: one line pointing at its file,
-    # so the agent can read it again after `/clear`, then any prompt text.
+    # The text sent to the agent when it starts: one line pointing at the
+    # play's file, so the agent can read it again after `/clear`, then the
+    # composed packs, then any prompt text, each part separated by a blank line.
     #
-    # @param play [Hash] from {#play}
+    # @param play [Hash, nil] from {#play}
     # @param prompt [String, nil] `--prompt` text
-    # @return [String]
-    def play_prompt(play, prompt)
-      text = "Read \"#{play["path"]}\" and follow it."
-      prompt.to_s.strip.empty? ? text : "#{text}\n\n#{prompt}"
+    # @param packs [String, nil] text from {Workspace::InstructionComposer#compose_start}
+    # @return [String, nil] nil when there is no play, no packs and no prompt
+    def play_prompt(play, prompt, packs: nil)
+      parts = [("Read \"#{play["path"]}\" and follow it." if play), packs&.strip, prompt.to_s.strip.empty? ? nil : prompt]
+      parts = parts.reject { |part| part.to_s.empty? }
+      parts.empty? ? nil : parts.join("\n\n")
     end
 
     # The pane binding recorded for a delivered play, so the SessionStart hook

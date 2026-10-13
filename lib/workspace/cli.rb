@@ -74,6 +74,7 @@ module Workspace
     # @param library_command [Workspace::Commands::Library, nil] pre-built library command
     # @param library [Workspace::Library, nil] resolves `launch --play` per project
     # @param instructions_command [Workspace::Commands::Instructions, nil] pre-built instructions command
+    # @param instruction_composer [Workspace::InstructionComposer, nil] composes the packs `launch` sends with the first prompt
     # @param workflow_command [Workspace::Commands::Workflow, nil] pre-built `workflow` and `step` command
     # @param review_command [Workspace::Commands::Review, nil] pre-built review command
     # @param restore_command [Workspace::Commands::Restore, nil] pre-built restore command
@@ -90,7 +91,7 @@ module Workspace
     #   `list --liveness --json` and `status --json`; takes name => state entry
     # @param launch_mode [Workspace::LaunchMode, nil] decides whether launch/start
     #   run headless when no --[no-]headless flag is given; nil builds one
-    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, restart_agent_command: nil, send_command: nil, ensure_agent_command: nil, handoff_command: nil, notes_command: nil, notes_setup: nil, projects_command: nil, capabilities_command: nil, daemon_command: nil, ui_command: nil, binding_command: nil, library_command: nil, library: nil, instructions_command: nil, workflow_command: nil, review_command: nil, restore_command: nil, snapshot_command: nil, project_actions_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil, liveness: nil, window_liveness: nil)
+    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, restart_agent_command: nil, send_command: nil, ensure_agent_command: nil, handoff_command: nil, notes_command: nil, notes_setup: nil, projects_command: nil, capabilities_command: nil, daemon_command: nil, ui_command: nil, binding_command: nil, library_command: nil, library: nil, instructions_command: nil, instruction_composer: nil, workflow_command: nil, review_command: nil, restore_command: nil, snapshot_command: nil, project_actions_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil, liveness: nil, window_liveness: nil)
       @config = config
       @state = state
       @project_config = project_config
@@ -145,6 +146,7 @@ module Workspace
       @workflow_command = workflow_command
       @library = library
       @instructions_command = instructions_command
+      @instruction_composer = instruction_composer
       @review_command = review_command
       @restore_command = restore_command
       @snapshot_command = snapshot_command
@@ -484,6 +486,8 @@ module Workspace
       prompt = nil
       prompt_timeout = nil
       play = nil
+      packs = []
+      no_packs = false
       json = false
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: workspace launch [options] <project1> [project2] ..."
@@ -515,6 +519,14 @@ module Workspace
           "an unknown or unreadable play fails before anything launches") do |v|
           play = v
         end
+        opts.on("--pack NAME", "Also send the agent a library pack's text with the first prompt (repeatable; see",
+          "'workspace instructions compose --help'). An unknown pack fails before anything launches") do |v|
+          packs << v
+        end
+        opts.on("--no-packs", "Send no automatic packs (the notes pack, unless notes.instructions is false);",
+          "cannot be combined with --pack") do
+          no_packs = true
+        end
         opts.on("--json", "Print one action document (see docs/README.json.md) instead of progress text;",
           "the text goes to stderr. Exit 0, 3 when some projects failed, 1 when all did") do
           json = true
@@ -538,31 +550,37 @@ module Workspace
       parser.parse!(args)
 
       raise UsageError, parser.help if args.empty?
+      raise UsageError, "--no-packs cannot be combined with --pack." if no_packs && packs.any?
 
       run_action("launch", json: json) do
-        launched = launch_projects(args, reattach: reattach, headless: headless, prompt: prompt, prompt_timeout: prompt_timeout, play: play)
-        {exit_code: launched[:exit_code], results: json ? launch_rows(launched[:projects], launched[:result], plays: launched[:plays]) : []}
+        launched = launch_projects(args, reattach: reattach, headless: headless, prompt: prompt, prompt_timeout: prompt_timeout, play: play,
+          packs: packs, no_packs: no_packs, with_packs: true)
+        {exit_code: launched[:exit_code], results: json ? launch_rows(launched[:projects], launched[:result], plays: launched[:plays], packs: launched[:packs]) : []}
       end
     end
 
     # Launches the given project args (already parsed, no leading flags) and
-    # returns `{exit_code:, projects:, result:, plays:}` (the project names,
-    # Launch's own result, and each project's resolved play) without exiting
-    # -- so callers with multiple batches to run (e.g. cmd_relaunch) can
-    # attempt every batch before deciding whether to exit. A play is resolved
-    # for every project before any config is created.
-    def launch_projects(args, reattach: false, headless: nil, prompt: nil, prompt_timeout: nil, play: nil)
+    # returns `{exit_code:, projects:, result:, plays:, packs:}` (the project names,
+    # Launch's own result, each project's resolved play, and each project's
+    # composed packs) without exiting -- so callers with multiple batches to run
+    # (e.g. cmd_relaunch) can attempt every batch before deciding whether to exit.
+    # A play and the packs are resolved for every project before any config is
+    # created. Packs are sent only when +with_packs+ is true (`launch` itself), so
+    # `relaunch` and `restore` do not type them into an agent again.
+    def launch_projects(args, reattach: false, headless: nil, prompt: nil, prompt_timeout: nil, play: nil, packs: [], no_packs: false, with_packs: false)
       resolved = args.map { |arg| @project_config.resolve_project_arg(arg) }
       plays = play ? resolved.to_h { |name, root| [name, resolve_play(play, root || @project_config.project_root_for(name))] } : {}
+      composed = with_packs ? compose_launch_packs(resolved, packs, no_packs) : {}
       projects = resolved.map { |name, root| root ? @project_config.create(name, root) : name }
 
       prompts = projects.each_with_object({}) do |p, h|
-        text = plays[p] ? @library.play_prompt(plays[p], prompt) : prompt
+        text = (plays[p] || composed[p]) ? @library.play_prompt(plays[p], prompt, packs: composed[p]&.fetch("text")) : prompt
         h[p] = text if text
       end
 
       call_options = {reattach: reattach, prompts: prompts}
       call_options[:bindings] = plays.transform_values { |p| @library.play_binding(p) } if plays.any?
+      call_options[:report_panes] = true if composed.any?
       call_options[:prompt_timeout] = prompt_timeout if prompt_timeout
       call_options[:headless] = true if @launch_mode.resolve(headless).headless?
       result = @launch_command.call(projects, **call_options)
@@ -571,7 +589,22 @@ module Workspace
         @project_settings.ensure_exists(p)
         @hook_runner.run(p, "post_launch")
       end
-      {exit_code: result && result[:exit_code], projects: projects, result: result, plays: plays}
+      {exit_code: result && result[:exit_code], projects: projects, result: result, plays: plays, packs: composed}
+    end
+
+    # The packs `launch` sends each project, from its root's library and config; a
+    # project with none has no entry. An unknown pack fails before any config is created.
+    def compose_launch_packs(resolved, packs, no_packs)
+      resolved.each_with_object({}) do |(name, root), composed|
+        cwd = root || @project_config.project_root_for(name)
+        next if cwd.nil? && packs.empty?
+        if @instruction_composer.nil?
+          raise Error, "--pack is not available: no library was wired." if packs.any?
+          next
+        end
+        result = @instruction_composer.compose_start(cwd: cwd || @working_dir, packs: packs, none: no_packs)
+        composed[name] = result unless result["packs"].empty?
+      end
     end
 
     # The play `launch --play` sends one project, from its root's library, then global.
@@ -581,17 +614,22 @@ module Workspace
     end
 
     # One `results` row per launched project, from the state Launch wrote.
-    def launch_rows(projects, result, ok_outcome: "launched", plays: {})
+    def launch_rows(projects, result, ok_outcome: "launched", plays: {}, packs: nil)
       @state.load
       reused = result&.dig(:reused) || []
       prompt_failures = result&.dig(:prompt_failures) || {}
       start_failures = result&.dig(:start_failures) || {}
       projects.map do |project|
         entry = @state[project]
+        sent = !result.nil? && !entry.nil? && !prompt_failures.key?(project) && !start_failures.key?(project)
         details = {iterm_window_id: entry.is_a?(Hash) ? entry["iterm_window_id"] : nil, headless: entry.is_a?(Hash) && entry["headless"] == true}
         if plays[project]
-          details[:play] = plays[project].merge("delivered" => !result.nil? && !entry.nil? && !prompt_failures.key?(project) && !start_failures.key?(project),
+          details[:play] = plays[project].merge("delivered" => sent,
             "pane" => result&.dig(:bound_panes, project))
+        end
+        if packs
+          details[:packs] = packs[project] ? InstructionComposer.delivery_rows(packs[project]["packs"], delivered: sent,
+            pane: result&.dig(:delivered_panes, project)) : []
         end
         if start_failures[project]
           action_row(project, "failed", reason: "session_not_started", message: start_failures[project].to_s, **details)
@@ -614,6 +652,8 @@ module Workspace
       json = false
       title = nil
       play = nil
+      packs = []
+      no_packs = false
       agents = []
       skills = []
       parser = OptionParser.new do |opts|
@@ -643,6 +683,14 @@ module Workspace
           "then any --prompt text. Looked up in the project's library, then global;",
           "an unknown or unreadable play fails before the worktree is created") do |v|
           play = v
+        end
+        opts.on("--pack NAME", "Also send the agent a library pack's text with the first prompt (repeatable; see",
+          "'workspace instructions compose --help'). An unknown pack fails before the worktree is created") do |v|
+          packs << v
+        end
+        opts.on("--no-packs", "Send no automatic packs (the notes pack, unless notes.instructions is false);",
+          "cannot be combined with --pack") do
+          no_packs = true
         end
         opts.on("--agent NAME", "Copy a library agent into the worktree's .claude/agents/ (repeatable).",
           "Listed in the repo's info/exclude; a file the repo tracks there is kept") do |v|
@@ -700,6 +748,9 @@ module Workspace
       start_options = {prompt: prompt, prompt_timeout: prompt_timeout, base: base, yes: yes, json: json}
       start_options[:title] = title if title
       start_options[:play] = play if play
+      raise UsageError, "--no-packs cannot be combined with --pack." if no_packs && packs.any?
+      start_options[:packs] = packs if packs.any?
+      start_options[:no_packs] = true if no_packs
       start_options[:agents] = agents if agents.any?
       start_options[:skills] = skills if skills.any?
       start_options[:headless] = true if @launch_mode.resolve(headless).headless?
@@ -3632,7 +3683,7 @@ module Workspace
 
     def instructions_parser(options)
       OptionParser.new do |opts|
-        opts.banner = "Usage: workspace instructions compose [--pack NAME]... [--pane %ID] [--name WORKSPACE] [--json]"
+        opts.banner = "Usage: workspace instructions compose [--pack NAME]... [--pane %ID] [--name WORKSPACE] [--json]\n       workspace instructions compose --start [--pack NAME]... [--no-packs] [--name WORKSPACE] [--json]"
         opts.separator ""
         opts.separator "Print the instructions an agent is given, built from library packs. A pack is a"
         opts.separator "library play; workspace ships five: binding (how to work in a bound pane),"
@@ -3656,6 +3707,9 @@ module Workspace
         opts.on("--pack NAME", "A pack to compose (repeatable, composed in the order given)") { |v| options[:packs] << v }
         opts.on("--pane PANE", "Pane id (%19) whose binding follows the binding pack (default $TMUX_PANE without --name)") { |v| options[:pane] = v }
         opts.on("--name WORKSPACE", "Compose for this workspace instead of the current directory") { |v| options[:name] = v }
+        opts.on("--start", "Print what start and launch send with the first prompt, and send nothing: the automatic",
+          "packs (notes, unless notes.instructions is false) then each --pack. Each pack in --json has a source") { options[:start] = true }
+        opts.on("--no-packs", "With --start: leave out the automatic packs (cannot be combined with --pack)") { options[:no_packs] = true }
         opts.on("--json", "Print one JSON document (see docs/README.instructions.md)") { options[:json] = true }
         opts.on("-h", "--help", "Show this help") { options[:help] = true }
         opts.separator ""
@@ -3663,12 +3717,13 @@ module Workspace
         opts.separator "  workspace instructions compose"
         opts.separator "  workspace instructions compose --pack orchestrator"
         opts.separator "  workspace instructions compose --pack commits --pack review --name my-app --json"
+        opts.separator "  workspace instructions compose --start --name my-app    # what start and launch send"
         opts.separator "  workspace start feature/x --prompt \"$(workspace instructions compose --pack orchestrator)\""
       end
     end
 
     def cmd_instructions(args)
-      options = {json: false, packs: []}
+      options = {json: false, packs: [], start: false, no_packs: false}
       given = args.dup
       parser = instructions_parser(options)
       subcommand = args.shift if args.first == "compose"
@@ -3684,7 +3739,11 @@ module Workspace
 
       # $TMUX_PANE is the caller's pane, which is not a pane of a workspace named with --name.
       pane = options[:pane] || (ENV["TMUX_PANE"] unless options[:name])
-      @instructions_command.compose(packs: options[:packs], cwd: working_dir_for(options[:name]), pane: pane, json: options[:json])
+      raise UsageError, "--no-packs only works with --start." if options[:no_packs] && !options[:start]
+      raise UsageError, "--no-packs cannot be combined with --pack." if options[:no_packs] && options[:packs].any?
+      raise UsageError, "--pane has no effect with --start: the packs are composed for a pane that does not exist yet." if options[:start] && options[:pane]
+      start = options[:start] ? {start: true, no_packs: options[:no_packs]} : {}
+      @instructions_command.compose(packs: options[:packs], cwd: working_dir_for(options[:name]), pane: pane, json: options[:json], **start)
     rescue OptionParser::ParseError, UsageError => e
       raise unless json_requested?(options[:json], given)
       emit_json_error(JsonEnvelope::SCHEMA_VERSION, e, message: e.message.lines.first.strip)

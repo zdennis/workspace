@@ -30,9 +30,11 @@ module Workspace
       # @param library_installer [Workspace::LibraryInstaller, nil] copies `agents:` and `skills:` into the worktree
       # @param notes_setup [Workspace::NotesSetup, nil] fixes the worktree's notes directory (its own `notes.dir`,
       #   the directory, its exclude line); nil sets nothing up
+      # @param instruction_composer [Workspace::InstructionComposer, nil] composes the packs sent with the first
+      #   prompt (the automatic `notes` pack, and `packs:`); nil sends none
       def initialize(git:, project_config:, project_settings:, launch_command:, lineage: WorkspaceLineage.new,
         hook_installer: nil, which: nil, task_store: nil, event_log: nil, library: nil, library_installer: nil,
-        notes_setup: nil, output: $stdout, input: $stdin, error_output: $stderr)
+        notes_setup: nil, instruction_composer: nil, output: $stdout, input: $stdin, error_output: $stderr)
         @git = git
         @project_config = project_config
         @project_settings = project_settings
@@ -45,6 +47,7 @@ module Workspace
         @library = library
         @library_installer = library_installer
         @notes_setup = notes_setup
+        @instruction_composer = instruction_composer
         @output = output
         @input = input
         @error_output = error_output
@@ -78,9 +81,9 @@ module Workspace
       # @raise [Workspace::UsageError] if a prompt would block on a non-TTY stdin and
       #   neither +base+ nor +yes+ resolves it (unless +json+ is true)
       def call(input_string, prompt: nil, prompt_timeout: nil, base: nil, yes: false, headless: false, json: false, title: nil, play: nil,
-        agents: [], skills: [])
+        agents: [], skills: [], packs: [], no_packs: false)
         options = {prompt: prompt, prompt_timeout: prompt_timeout, base: base, yes: yes, headless: headless, title: title, play: play,
-                   agents: agents, skills: skills}
+                   agents: agents, skills: skills, packs: packs, no_packs: no_packs}
         return call_json(input_string, **options) if json
 
         start!(input_string, quiet: false, **options)
@@ -99,7 +102,7 @@ module Workspace
 
       # @return [Hash] when quiet is true, +{exit_code:, json:}+; otherwise the
       #   launch result, or nil if branch selection was cancelled
-      def start!(input_string, prompt:, prompt_timeout:, base:, yes:, headless:, quiet:, title: nil, play: nil, agents: [], skills: [])
+      def start!(input_string, prompt:, prompt_timeout:, base:, yes:, headless:, quiet:, title: nil, play: nil, agents: [], skills: [], packs: [], no_packs: false)
         root = @git.root
         raise Workspace::Error, "Not inside a git repository." unless root
 
@@ -120,6 +123,7 @@ module Workspace
           project_name = WorkspaceLineage.name_from_path(root)
         end
         @play = play && resolve_play(play, root)
+        @packs = resolve_packs(root, packs, no_packs)
         @copies = resolve_copies({"agent" => agents, "skill" => skills}, root)
         parsed = @git.parse_start_input(input_string)
 
@@ -203,7 +207,7 @@ module Workspace
         write_project_marker(worktree_path, config_name)
         record_started(config_name, project_name, branch_name, created: created, task: task)
         log(quiet, "Launching #{config_name}...")
-        text = @play ? @library.play_prompt(@play, prompt) : prompt
+        text = (@play || @packs) ? @library.play_prompt(@play, prompt, packs: @packs&.fetch("text")) : prompt
         prompts = text ? {config_name => text} : {}
         bindings = @play ? {config_name => @library.play_binding(@play)} : {}
         result = launch(config_name, prompts, prompt_timeout, headless: headless, quiet: quiet, bindings: bindings)
@@ -226,6 +230,7 @@ module Workspace
         json["task"] = {"id" => task["id"], "title" => task["title"]} if task
         %w[agent skill].each { |kind| json["#{kind}s"] = copied[kind] if copied.key?(kind) }
         json["play"] = @play.merge("delivered" => delivered?(result, config_name), "pane" => result&.dig(:bound_panes, config_name)) if @play
+        json["packs"] = @packs ? InstructionComposer.delivery_rows(@packs["packs"], delivered: delivered?(result, config_name), pane: result&.dig(:delivered_panes, config_name)) : []
         json["session_reused"] = result[:reused].include?(config_name) if result && result[:reused]
         if exit_code != 0
           prompt_failures = result && result[:prompt_failures]
@@ -247,6 +252,19 @@ module Workspace
       def resolve_play(play, root)
         raise Workspace::Error, "--play is not available: no library was wired." unless @library
         @library.play(play, cwd: root)
+      end
+
+      # The packs sent with the prompt, composed before anything is created so an
+      # unknown name or an unreadable pack changes nothing.
+      #
+      # @return [Hash, nil] from {Workspace::InstructionComposer#compose_start}; nil when none applies
+      def resolve_packs(root, packs, none)
+        unless @instruction_composer
+          raise Workspace::Error, "--pack is not available: no library was wired." if packs.any?
+          return nil
+        end
+        composed = @instruction_composer.compose_start(cwd: root, packs: packs, none: none)
+        composed["packs"].empty? ? nil : composed
       end
 
       # Agents and skills are checked before anything is created, like the
@@ -369,6 +387,7 @@ module Workspace
       # @param prompt_timeout [Numeric, nil] nil defers to the launch command's own default
       def launch(config_name, prompts, prompt_timeout, headless:, quiet:, bindings:)
         kwargs = {prompts: prompts}
+        kwargs[:report_panes] = true if @packs
         kwargs[:bindings] = bindings if bindings.any?
         kwargs[:headless] = true if headless
         kwargs[:prompt_timeout] = prompt_timeout unless prompt_timeout.nil?

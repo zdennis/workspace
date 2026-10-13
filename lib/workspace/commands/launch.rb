@@ -69,6 +69,8 @@ module Workspace
       # @param bindings [Hash{String => Hash}] project => pane binding fields (see
       #   {Workspace::PaneBindings#bind}) for the pane its prompt is delivered to,
       #   such as a play from {Workspace::Library#play_binding}
+      # @param report_panes [Boolean] add +delivered_panes:+ to the result: project => the pane id its
+      #   prompt was delivered to, bound or not
       # @return [Hash] +{exit_code:, prompt_failures:}+; exit_code is 1 when any
       #   prompt was not sent, and prompt_failures maps each such project to why.
       #   A headless launch adds +headless: true+, +reused:+ (projects whose
@@ -79,10 +81,12 @@ module Workspace
       #   With +bindings+, +bound_panes:+ maps each project whose pane was bound
       #   to that pane id; one that could not be bound is a warning, not a failure.
       # @raise [Workspace::Error] if any project configs are missing
-      def call(projects, reattach: false, prompts: {}, prompt_timeout: @prompt_timeout, headless: false, quiet: false, bindings: {})
+      def call(projects, reattach: false, prompts: {}, prompt_timeout: @prompt_timeout, headless: false, quiet: false, bindings: {}, report_panes: false)
         @quiet = quiet
         @bindings = bindings
+        @report_panes = report_panes
         @bound_panes = {}
+        @delivered_panes = {}
         validate_configs(projects)
         return call_headless(projects, prompts: prompts, prompt_timeout: prompt_timeout) if headless
 
@@ -186,7 +190,9 @@ module Workspace
       end
 
       def with_bound_panes(result)
-        @bindings.empty? ? result : result.merge(bound_panes: @bound_panes)
+        result = result.merge(bound_panes: @bound_panes) unless @bindings.empty?
+        result = result.merge(delivered_panes: @delivered_panes) if @report_panes
+        result
       end
 
       # Reuses the project's running session, or starts it. A session missing
@@ -502,6 +508,7 @@ module Workspace
         prompts.each_with_object({}) do |(project, prompt_text), failures|
           log("Waiting for the coding agent in #{project} to be ready (up to #{prompt_timeout}s)...")
           failure = deliver_prompt(project, session_names.fetch(project, project), prompt_text, deadline, prompt_timeout) do |pane_id|
+            @delivered_panes[project] = pane_id
             bind_pane(project, pane_id, @bindings[project]) if @bindings[project]
           end
           next unless failure

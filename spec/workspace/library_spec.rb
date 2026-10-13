@@ -211,6 +211,15 @@ RSpec.describe Workspace::Library do
       expect(library.play_prompt(play, "Start at CLI27.")).to eq("Read \"/lib/play/kickoff.md\" and follow it.\n\nStart at CLI27.")
     end
 
+    it "puts the play line first, then the packs, then the prompt" do
+      play = {"path" => "/lib/play/kickoff.md"}
+      expect(library.play_prompt(play, "Start at CLI27.", packs: "## From pack notes (built-in)\n\nNotes.\n"))
+        .to eq("Read \"/lib/play/kickoff.md\" and follow it.\n\n## From pack notes (built-in)\n\nNotes.\n\nStart at CLI27.")
+      expect(library.play_prompt(nil, nil, packs: "## Pack\n")).to eq("## Pack")
+      expect(library.play_prompt(nil, "Go.", packs: "## Pack\n")).to eq("## Pack\n\nGo.")
+      expect(library.play_prompt(nil, "  ")).to be_nil
+    end
+
     it "binds the pane a play was sent to by the play ref, with its path as the instructions" do
       play = {"ref" => "play/kickoff", "scope" => "global", "path" => "/lib/play/kickoff.md", "sha256" => "abc"}
 

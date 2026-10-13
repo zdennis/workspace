@@ -24,12 +24,15 @@ module Workspace
     # @param pane_bindings [Workspace::PaneBindings] words a binding for the agent
     # @param workflow_config [Workspace::WorkflowConfig, nil] reads `workflows.defaults.include`;
     #   nil composes {DEFAULT_PACKS} when no pack is named
-    def initialize(library:, lineage:, commands_config:, pane_bindings:, workflow_config: nil)
+    # @param notes_config [Workspace::NotesConfig, nil] reads `notes.instructions`; nil adds no
+    #   automatic `notes` pack to {#start_packs}
+    def initialize(library:, lineage:, commands_config:, pane_bindings:, workflow_config: nil, notes_config: nil)
       @library = library
       @lineage = lineage
       @commands_config = commands_config
       @pane_bindings = pane_bindings
       @workflow_config = workflow_config
+      @notes_config = notes_config
     end
 
     # @param packs [Array<String>, nil] pack names (`name` or `play/name`), in the order
@@ -60,6 +63,48 @@ module Workspace
       {"packs" => seen, "text" => sections.join("\n\n") + "\n"}
     end
 
+    # The packs `start` and `launch` send an agent with its first prompt: the
+    # automatic ones the config asks for (`notes`, unless `notes.instructions`
+    # is false), then the ones named with `--pack`. A pack named twice is
+    # listed once, where it is first named.
+    #
+    # @param cwd [String] the project's directory
+    # @param packs [Array<String>] names given with `--pack`
+    # @param none [Boolean] drop the automatic packs (`--no-packs`)
+    # @return [Array<Hash{String=>String}>] each pack's "name" and "source" ("config" or "flag")
+    # @raise [Workspace::UsageError] for +none+ together with +packs+
+    # @raise [Workspace::ConfigParseError] if the project's config file can't be parsed
+    def start_packs(cwd:, packs: [], none: false)
+      raise UsageError, "--no-packs cannot be combined with --pack." if none && packs.any?
+      automatic = (none ? [] : automatic_start_packs(cwd)).map { |name| {"name" => name, "source" => "config"} }
+      flagged = packs.map { |name| {"name" => name.sub(%r{\Aplay/}, ""), "source" => "flag"} }
+      (automatic + flagged).uniq { |pack| pack["name"] }
+    end
+
+    # Composes the {#start_packs}. Every pack is read here, so an unknown name
+    # fails before the caller creates anything.
+    #
+    # @return [Hash{String=>Object}] "packs" (as {#compose} gives them, each with
+    #   "source") and the composed "text"; nil text and no packs when none applies
+    # @raise [Workspace::UsageError, Workspace::Error] see {#start_packs} and {#compose}
+    def compose_start(cwd:, packs: [], none: false)
+      entries = start_packs(cwd: cwd, packs: packs, none: none)
+      return {"packs" => [], "text" => nil} if entries.empty?
+      result = compose(packs: entries.map { |entry| entry["name"] }, cwd: cwd)
+      sources = entries.to_h { |entry| [entry["name"], entry["source"]] }
+      {"packs" => result["packs"].map { |play| play.merge("source" => sources[play["ref"].split("/", 2).last]) }, "text" => result["text"]}
+    end
+
+    # The `packs` rows `start --json` and `launch --json` report for one workspace.
+    #
+    # @param packs [Array<Hash>] "packs" from {#compose_start}
+    # @param delivered [Boolean] whether the prompt carrying them was sent
+    # @param pane [String, nil] the pane id it was sent to
+    # @return [Array<Hash{String=>Object}>] "name", "source", "delivered" and "pane" of each
+    def self.delivery_rows(packs, delivered:, pane:)
+      packs.map { |pack| {"name" => pack["ref"].split("/", 2).last, "source" => pack["source"], "delivered" => delivered, "pane" => pane} }
+    end
+
     # @return [Array<String>] the packs composed when a caller names none
     # @raise [Workspace::ConfigParseError] if the global config file can't be parsed
     def default_packs
@@ -67,6 +112,11 @@ module Workspace
     end
 
     private
+
+    def automatic_start_packs(cwd)
+      return [] unless @notes_config
+      @notes_config.instructions?(@lineage.resolve(cwd: cwd).name) ? ["notes"] : []
+    end
 
     # One section per pack not composed yet; each play read is added to +seen+.
     def pack_sections(names, cwd, binding, seen)

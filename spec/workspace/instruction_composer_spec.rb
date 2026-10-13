@@ -299,6 +299,74 @@ RSpec.describe Workspace::InstructionComposer do
       expect(plain.compose(cwd: "/work/app", packs: nil)["packs"].size).to eq(3)
     end
   end
+
+  describe "#start_packs and #compose_start" do
+    let(:notes_config) { Workspace::NotesConfig.new(project_settings: project_settings) }
+    subject(:composer) do
+      described_class.new(library: library, lineage: lineage, commands_config: commands_config, pane_bindings: pane_bindings, notes_config: notes_config)
+    end
+
+    before { library.builtin_store.write("play", "notes", "Notes go in the notes directory.\n") }
+
+    it "lists the notes pack as coming from config when notes.instructions is unset" do
+      expect(composer.start_packs(cwd: "/work/app")).to eq([{"name" => "notes", "source" => "config"}])
+    end
+
+    it "lists no automatic pack when notes.instructions is false, as a string or a boolean" do
+      [false, "false"].each do |value|
+        allow(project_settings).to receive(:load).with("app").and_return({"notes" => {"instructions" => value}})
+        expect(composer.start_packs(cwd: "/work/app")).to eq([])
+      end
+    end
+
+    it "keeps the notes pack when notes.instructions is true" do
+      allow(project_settings).to receive(:load).with("app").and_return({"notes" => {"instructions" => "true"}})
+
+      expect(composer.start_packs(cwd: "/work/app")).to eq([{"name" => "notes", "source" => "config"}])
+    end
+
+    it "adds --pack names after the automatic ones, once each, with the play/ prefix dropped" do
+      packs = composer.start_packs(cwd: "/work/app", packs: %w[review play/notes review])
+
+      expect(packs).to eq([{"name" => "notes", "source" => "config"}, {"name" => "review", "source" => "flag"}])
+    end
+
+    it "drops the automatic packs with none: true, and refuses it beside named packs" do
+      expect(composer.start_packs(cwd: "/work/app", none: true)).to eq([])
+      expect(composer.start_packs(cwd: "/work/app", packs: %w[review], none: false).map { |p| p["name"] }).to eq(%w[notes review])
+      expect { composer.start_packs(cwd: "/work/app", packs: %w[review], none: true) }.to raise_error(Workspace::UsageError, /--no-packs cannot be combined with --pack/)
+    end
+
+    it "adds no automatic pack when no notes config is wired" do
+      bare = described_class.new(library: library, lineage: lineage, commands_config: commands_config, pane_bindings: pane_bindings)
+
+      expect(bare.start_packs(cwd: "/work/app")).to eq([])
+    end
+
+    it "composes the packs under their headings and marks each with its source" do
+      result = composer.compose_start(cwd: "/work/app", packs: %w[review])
+
+      expect(result["text"]).to eq("## From pack notes (built-in)\n\nNotes go in the notes directory.\n\n## From pack review (built-in)\n\nReview the diff.\n")
+      expect(result["packs"].map { |p| [p["ref"], p["source"]] }).to eq([["play/notes", "config"], ["play/review", "flag"]])
+    end
+
+    it "has no text and no packs when none applies" do
+      expect(composer.compose_start(cwd: "/work/app", none: true)).to eq("packs" => [], "text" => nil)
+    end
+
+    it "fails with unknown_library_entry for a pack that does not exist" do
+      expect { composer.compose_start(cwd: "/work/app", packs: %w[nope]) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("unknown_library_entry") }
+    end
+
+    it "builds the rows start --json and launch --json report" do
+      packs = composer.compose_start(cwd: "/work/app", packs: %w[review])["packs"]
+
+      expect(described_class.delivery_rows(packs, delivered: true, pane: "%4")).to eq([
+        {"name" => "notes", "source" => "config", "delivered" => true, "pane" => "%4"},
+        {"name" => "review", "source" => "flag", "delivered" => true, "pane" => "%4"}
+      ])
+    end
+  end
 end
 
 RSpec.describe Workspace::InstructionComposer, "with the packs workspace ships" do

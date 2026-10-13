@@ -192,6 +192,12 @@ module Workspace
     end
     private_constant :HEADLESS
 
+    BOOLEAN = lambda do |value|
+      return value.to_s if %w[true false].include?(value.to_s)
+      raise ArgumentError, "must be \"true\" or \"false\""
+    end
+    private_constant :BOOLEAN
+
     # The instruction packs every composed set of instructions starts with, unless `workflows.defaults.include` names others.
     DEFAULT_PACKS = %w[binding orchestrator commits].freeze
 
@@ -245,6 +251,8 @@ module Workspace
         doc: "Directory where one workspace's notes are kept, as an absolute path; other tools read it to know where to store notes. A worktree reads only its own value (set it with `--name`), never the project's; the main checkout reads the project's (unset: the directory `notes.default_dir` gives it)"),
       Key.new(name: "notes.default_dir", scope: :project, type: :path, settable: true, parser: NOTES_DEFAULT_DIR,
         doc: "The rule that gives each workspace its notes directory when it has no `notes.dir`: an absolute path, `~/…`, or a path relative to the worktree with no `..`; `{workspace}` and `{branch}` are filled in per workspace, so give an outside-the-repo path one or the other (unset: `tmp/workspace-notes` inside the worktree)"),
+      Key.new(name: "notes.instructions", scope: :project, type: :boolean, settable: true, default: true, parser: BOOLEAN,
+        doc: "`true` or `false`: whether `start` and `launch` send the agent the built-in `notes` pack (where working notes go) with its first prompt (default `true`); `--no-packs` skips it for one run"),
       Key.new(name: "statusline.command", scope: :global, type: :command, sensitive: true, settable: true,
         doc: "Delegates [`workspace statusline`](README.statusline.md) rendering to another command instead of the built-in renderer"),
       Key.new(name: "context.source", scope: :global, type: :enum, settable: true, parser: CONTEXT_SOURCE,
