@@ -235,7 +235,7 @@ module Workspace
 
     def dev_facts(project, errors)
       return nil unless project_dir?(project)
-      payload = @dev.status_payload(working_dir: project.path)
+      payload = @dev.status_payload(working_dir: project.path, agent_state: false)
       holder = payload["holder"]
       # Under a workflow run the environment is the run's delegate.
       holder = holder["delegate"] if payload["running"] && LockStore.run?(holder)

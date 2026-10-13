@@ -104,10 +104,10 @@ RSpec.describe Workspace::Commands::Capabilities do
       expect(document["features"]).to include("cleanup_dry_run" => 1)
     end
 
-    it "reports dev_queue once dev can queue without blocking" do
+    it "reports dev_queue 2 once dev status carries queue positions, agent state and events" do
       command.call(json: true)
 
-      expect(document["features"]).to include("dev_queue" => 1)
+      expect(document["features"]).to include("dev_queue" => 2)
     end
 
     it "ignores a PATH entry that is not executable or is a directory" do

@@ -66,8 +66,12 @@ module Workspace
     # @param terminator [Workspace::ProcessGroupTerminator, nil] checks whether a
     #   kept process holder's group still runs; without one, such a group
     #   always counts as running
+    # @param on_reap [#call, nil] called as `on_reap.call(name, holder)` once per dead holder a
+    #   pass removed (+holder+ is the summary the audit log keeps), after the store is unlocked;
+    #   an error it raises is only logged
     def initialize(dir:, liveness:, logger: Workspace::Logger.new, clock: -> { Time.now.to_i }, idle_grace: DEFAULT_IDLE_GRACE,
-      audit_log: nil, terminator: nil)
+      audit_log: nil, terminator: nil, on_reap: nil)
+      @on_reap = on_reap
       @dir = dir
       @liveness = liveness
       @logger = logger
@@ -760,6 +764,7 @@ module Workspace
       FileUtils.mkdir_p(@dir, mode: 0o700)
       File.chmod(0o700, @dir)
       result = nil
+      reaped = []
       lock_mode = readonly ? File::RDONLY : (File::RDWR | File::CREAT)
       File.open(@lockfile_path, lock_mode | File::CREAT, 0o600) do |f|
         flock_mode = readonly ? File::LOCK_SH : File::LOCK_EX
@@ -771,12 +776,26 @@ module Workspace
         unchanged = !write_unchanged && data == original
         write_data(data) unless readonly || unchanged
         flush_audit_events
+        reaped = reaped_holders
       end
+      notify_reaped(reaped)
       result
     rescue SystemCallError => e
       raise Workspace::Error, "Could not access lock store at #{@dir} (#{e.class}: errno #{e.errno})"
     ensure
       @pending_events = nil
+    end
+
+    # The dead holders the pass just audited, for {#notify_reaped}.
+    def reaped_holders
+      return [] unless @on_reap
+      @pending_events.filter_map { |e| [e[:name], e[:data][:holder]] if e[:event] == "reap" && e[:data][:holder] }
+    end
+
+    def notify_reaped(reaped)
+      reaped.each { |name, holder| @on_reap.call(name, holder) }
+    rescue => e
+      @logger.debug { "lock: on_reap failed (#{e.class}: #{e.message})" }
     end
 
     def read_data

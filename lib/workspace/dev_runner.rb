@@ -37,13 +37,16 @@ module Workspace
     #   waiting for the process group to empty
     # @param group_members [#call] called with a pgid, returns the pids of that
     #   group's live (non-zombie) members, whoever owns them
+    # @param events [Workspace::DevEvents, nil] told when the command starts and when it ends
+    #   on its own; nil records nothing
     def initialize(liveness:, output: $stdout, env: ENV,
       trap: ->(signal, handler) { Signal.trap(signal, handler) },
       spawner: ->(command, chdir) { Process.spawn("/bin/sh", "-c", command, chdir: chdir) },
       kill: ->(signal, target) { Process.kill(signal, target) },
       pgrp: -> { Process.getpgrp },
       sleeper: ->(seconds) { sleep(seconds) }, poll: DEFAULT_POLL_SECONDS,
-      group_members: ->(pgid) { ProcessGroupTerminator.new.live_member_pids(pgid) })
+      group_members: ->(pgid) { ProcessGroupTerminator.new.live_member_pids(pgid) }, events: nil)
+      @events = events
       @liveness = liveness
       @output = output
       @env = env
@@ -69,13 +72,16 @@ module Workspace
     #   lock the wrapper is recorded on the run's hold as its delegate and
     #   runs at once, and the lock stays with the run when the command exits;
     #   if the run no longer holds it, the lock is taken the usual way
+    # @param project [String, nil] the project's name, for the `dev_started` and `dev_stopped` events
+    # @param workspace [String, nil] the workspace's name, for the same events
     # @return [Integer] the child's exit status, 128 + signal number if it was
     #   killed (or the wait was interrupted), or 4 if the lock was cleared while queued
     # @raise [Workspace::Error] if the lock is held by someone else (without
     #   +wait+), the run already has a delegate, the wrapper does not lead
     #   its process group, or the command cannot be started
-    def call(store:, command:, worktree:, branch: nil, wait: false, priority: false, delegate_for: nil)
+    def call(store:, command:, worktree:, branch: nil, wait: false, priority: false, delegate_for: nil, project: nil, workspace: nil)
       holder = identity(worktree, branch)
+      @event_names = {project: project, workspace: workspace || project}
       delegated = !delegate_for.nil? && delegate!(store, holder, delegate_for)
       unless delegated
         waited = acquire!(store, holder, wait, priority)
@@ -87,6 +93,7 @@ module Workspace
         ended = delegated ? store.end_delegate(LOCK_NAME, holder[:pid]) : store.release(LOCK_NAME, holder[:pid])
       end
       outcome = (ended == :ended) ? "stays with run #{delegate_for}" : "released"
+      announce_exit
       @output.puts "[workspace] #{command} #{describe_exit(code)}; #{LOCK_NAME} lock #{outcome}"
       code
     end
@@ -181,6 +188,7 @@ module Workspace
       @pending_signal = nil
       @termsig = nil
       @skipped = false
+      @started = false
       @forwarded = []
       previous = {"INT" => @trap.call("INT", proc {})}
       %w[TERM HUP].each { |sig| previous[sig] = @trap.call(sig, proc { forward(sig) }) }
@@ -194,6 +202,7 @@ module Workspace
       @output.puts "[workspace] #{LOCK_NAME} lock held #{held_by}; running: #{command}"
       @output.flush
       @child_pid = spawn_child(command, worktree)
+      announce_start
       forward(@pending_signal) if @pending_signal
       _, status = Process.wait2(@child_pid)
       @termsig = status.termsig
@@ -201,6 +210,18 @@ module Workspace
       status.exitstatus || 128 + status.termsig
     ensure
       previous&.each { |sig, handler| @trap.call(sig, handler) }
+    end
+
+    def announce_start
+      @started = true
+      @events&.started(**@event_names) if @event_names[:project]
+    end
+
+    # A stop that `dev down` or `dev up --force` asked for is written by whoever asked;
+    # the wrapper writes only the end it was not asked to make.
+    def announce_exit
+      return unless @started && @forwarded.empty? && @event_names[:project]
+      @events&.stopped(**@event_names, reason: "exit")
     end
 
     # Runs with the stop-signal handlers still in place, so a SIGTERM that

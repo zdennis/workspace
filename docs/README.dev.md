@@ -103,6 +103,8 @@ workspace config set dev.ready_timeout 2m         # wait for the dev.ready check
 }
 ```
 
+Under `holder` there are two more keys, `agent_state` and `idle_since`, and each `queue` entry has `position` and `waiting_seconds` (see [Following the dev environment](#following-the-dev-environment)).
+
 - `schema_version` is bumped only on a breaking change to this shape.
 - No environment running: `{"schema_version": 1, "running": false, "holder": null, "ready": null, "queue": []}` — never an error.
 - `ready` is `true`/`false` when `dev.ready` is configured and the environment is running (not stale), otherwise `null` (not configured, or nothing to check).
@@ -133,7 +135,28 @@ workspace dev leave                     # gives up the place in line
 - `status` is `"running"` when this worktree holds the lock, `"queued"` when it is in line, and `null` when the command failed before either was true.
 - `position` is the worktree's place in line: `1` is next to run, `null` unless `status` is `"queued"`.
 
-`up --queue` rows have outcome `started` (running) or `queued`; `wait` rows have outcome `started` (exit 0) or `failed` with `exit_code` (a 75 keeps `status: "queued"` and its `position`). `leave` rows have outcome `left` or `not_queued`. `workspace capabilities --json` reports `dev_queue: 1` when these exist.
+`up --queue` rows have outcome `started` (running) or `queued`; `wait` rows have outcome `started` (exit 0) or `failed` with `exit_code` (a 75 keeps `status: "queued"` and its `position`). `leave` rows have outcome `left` or `not_queued`. `workspace capabilities --json` reports `dev_queue: 1` or more when these exist.
+
+## Following the dev environment
+
+A reader that follows `dev` (the app, a script) can wait for an event-log line instead of polling `dev status --json` every few seconds, and `status` says more than who holds the lock.
+
+`dev status --json` adds these keys (`workspace capabilities --json` reports `dev_queue: 2`):
+
+- Each `queue` entry gains `position` (1 is next to run, the same number `up --queue` and `wait` report) and `waiting_seconds` (whole seconds since it joined the line; `null` when its time cannot be read).
+- `holder` gains `agent_state` and `idle_since`, read from the agent daemon of the holder's worktree. `agent_state` is `"working"` while any coding-agent pane there works, `"idle"` once none does (a pane waiting for the person counts as idle), and `"none"` when the worktree has no agent pane or its daemon is down or does not answer. `idle_since` is the ISO 8601 time the agent last stopped working when `agent_state` is `idle`, otherwise `null`. A holder that is a workflow run gets the same two keys, read from the run's worktree. A holder of any other kind (an agent that took `devenv` with `lock acquire`) keeps its own `idle_since` and gets only `agent_state`. `idle_since` was always `null` on a `devenv` holder before, so its meaning does not change for any existing reader.
+
+The event log (`workspace event-log show`) gains two lines under the project's name, each with `data` of `workspace` (the worktree's own name, or the project's for its main checkout), `lock` (`"devenv"`) and, on a stop, `reason`:
+
+| Event | Written when |
+|-------|--------------|
+| `dev_started` | the wrapper's command is running |
+| `dev_stopped`, `reason: "exit"` | the command ended on its own and the wrapper released the lock |
+| `dev_stopped`, `reason: "down"` | `dev down` stopped it |
+| `dev_stopped`, `reason: "forced"` | `dev up --force` stopped it for another worktree, or `dev down --force` killed a process group a dead wrapper left |
+| `dev_stopped`, `reason: "reaped"` | the wrapper was found dead and its lock removed (by `dev down`, or by the agent daemon's reaper) |
+
+These are hints to refetch `dev status --json`, not a full record: `lock clear devenv`, a signal sent by hand, and a dead wrapper first found by some other lock command write no `dev_stopped` (see [event log](README.event-log.md)).
 
 ## Instructions for agents
 

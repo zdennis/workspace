@@ -76,7 +76,7 @@ RSpec.describe Workspace::DevRunner do
     end
 
     def run_with(store: fake_store, **opts)
-      seams = %i[spawner kill pgrp sleeper group_members]
+      seams = %i[spawner kill pgrp sleeper group_members events]
       runner(**opts.slice(*seams)).call(store: store, **opts.except(*seams))
     end
 
@@ -108,6 +108,65 @@ RSpec.describe Workspace::DevRunner do
         "[workspace] devenv lock held for #{worktree}; running: exit 0\n",
         "[workspace] exit 0 exited with status 0; devenv lock released\n"
       ])
+    end
+
+    describe "events" do
+      let(:event_log) { instance_double(Workspace::EventLog, record: true) }
+      let(:events) { Workspace::DevEvents.new(event_log: event_log, lineage: nil) }
+
+      it "writes dev_started once the command runs and dev_stopped with reason exit after the lock is released" do
+        seen = []
+        allow(event_log).to receive(:record) { |type:, **| seen << [type, devenv_holder&.dig("pid")] }
+
+        run_with(events: events, command: "exit 0", worktree: worktree, project: "app", workspace: "app.worktree-login")
+
+        expect(event_log).to have_received(:record)
+          .with(type: "dev_started", project: "app", data: {"workspace" => "app.worktree-login", "lock" => "devenv"})
+        expect(event_log).to have_received(:record)
+          .with(type: "dev_stopped", project: "app", data: {"workspace" => "app.worktree-login", "lock" => "devenv", "reason" => "exit"})
+        expect(seen).to eq([["dev_started", Process.pid], ["dev_stopped", nil]])
+      end
+
+      it "names the project's own workspace when run from the main checkout" do
+        run_with(events: events, command: "exit 0", worktree: worktree, project: "app")
+
+        expect(event_log).to have_received(:record)
+          .with(type: "dev_started", project: "app", data: {"workspace" => "app", "lock" => "devenv"})
+      end
+
+      it "writes dev_stopped for a command that exits non-zero or dies on a signal" do
+        run_with(events: events, command: "kill -USR1 $$", worktree: worktree, project: "app")
+
+        expect(event_log).to have_received(:record).with(hash_including(type: "dev_stopped", data: hash_including("reason" => "exit")))
+      end
+
+      it "leaves the stop to whoever asked for it when a TERM was forwarded" do
+        child = nil
+        spawner = lambda do |command, chdir|
+          traps["TERM"].call
+          child = Process.spawn("/bin/sh", "-c", command, chdir: chdir)
+        end
+        kill = ->(signal, _target) { Process.kill(signal, child) }
+
+        run_with(events: events, spawner: spawner, kill: kill, command: "exec sleep 5", worktree: worktree, project: "app")
+
+        expect(event_log).to have_received(:record).with(hash_including(type: "dev_started")).once
+        expect(event_log).not_to have_received(:record).with(hash_including(type: "dev_stopped"))
+      end
+
+      it "writes nothing when the command cannot be started" do
+        expect { run_with(events: events, command: "true", worktree: File.join(tmpdir, "missing"), project: "app") }
+          .to raise_error(Workspace::Error)
+
+        expect(event_log).not_to have_received(:record)
+      end
+
+      it "writes nothing without a project name or without events" do
+        run_with(events: events, command: "exit 0", worktree: worktree)
+        run_with(command: "exit 0", worktree: worktree, project: "app")
+
+        expect(event_log).not_to have_received(:record)
+      end
     end
 
     it "releases the lock when the child crashes" do
@@ -167,6 +226,17 @@ RSpec.describe Workspace::DevRunner do
           "[workspace] devenv lock held by run wr_1; running: exit 3\n",
           "[workspace] exit 3 exited with status 3; devenv lock stays with run wr_1\n"
         ])
+      end
+
+      it "writes dev_started and dev_stopped with reason exit as the run's delegate" do
+        event_log = instance_double(Workspace::EventLog, record: true)
+        events = Workspace::DevEvents.new(event_log: event_log, lineage: nil)
+
+        run_with(events: events, command: "exit 0", worktree: worktree, delegate_for: "wr_1", project: "app", workspace: "app.worktree-login")
+
+        expect(event_log).to have_received(:record).with(hash_including(type: "dev_started", project: "app")).once
+        expect(event_log).to have_received(:record)
+          .with(hash_including(type: "dev_stopped", data: hash_including("reason" => "exit", "workspace" => "app.worktree-login"))).once
       end
 
       it "releases the lock itself when the run gave it up while the command ran" do

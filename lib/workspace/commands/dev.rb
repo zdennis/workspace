@@ -34,6 +34,9 @@ module Workspace
       # `dev __run` works under that run's hold of the lock instead of queueing.
       RUN_ENV = "WORKSPACE_DEV_RUN"
       RUN_GONE_ADVICE = "If that run is no longer going, free the lock with: workspace lock clear #{LOCK_NAME}"
+      # Pane kinds that run no coding agent, and the states of one that does (a pane that closed has neither).
+      AGENTLESS_KINDS = ["shell", "unknown"].freeze
+      AGENT_STATES = ["working", "idle", "waiting", "done"].freeze
       NO_COMMAND = %(No dev command configured. Set one with: workspace config set dev.up "<command>")
 
       # @param lock_namespace [Workspace::LockNamespace] resolves the repo's lock store directory
@@ -57,11 +60,20 @@ module Workspace
       #   takeovers; nil records nothing
       # @param bound_run [Workspace::BoundRun, nil] names the workflow run the calling pane is
       #   bound to; nil means no pane counts as bound
+      # @param dev_events [Workspace::DevEvents, nil] records `dev_stopped` for the stops this command makes
+      #   (`dev_started` and an exit on its own come from the wrapper); nil records nothing
+      # @param snapshot_client [Workspace::AgentSnapshotClient, nil] asks the holder's agent daemon
+      #   whether its agent is working, for `dev status --json`; nil reports `none`
+      # @param wall_clock [#call] returns the current Time, for how long each waiter has waited
       def initialize(lock_namespace:, lock_holder:, lineage:, dev_config:, dev_runner:, terminator:, tmux:, executable:,
         output: $stdout, error_output: $stderr, env: ENV, sleeper: ->(seconds) { sleep(seconds) }, clock: Lock::MonotonicClock,
         poll: POLL_SECONDS,
-        kill: ->(signal, pid) { Process.kill(signal, pid) }, pid_provider: -> { Process.pid }, event_log: nil, bound_run: nil)
+        kill: ->(signal, pid) { Process.kill(signal, pid) }, pid_provider: -> { Process.pid }, event_log: nil, bound_run: nil,
+        dev_events: nil, snapshot_client: nil, wall_clock: -> { Time.now })
         @bound_run = bound_run
+        @dev_events = dev_events
+        @snapshot_client = snapshot_client
+        @wall_clock = wall_clock
         @lock_namespace = lock_namespace
         @event_log = event_log
         @lock_holder = lock_holder
@@ -224,6 +236,7 @@ module Workspace
 
         result = stop(ctx, holder)
         return {exit_code: 1} if result == :kept || result == :in_progress
+        log_stop(holder, result, "down")
         close_window(holder)
         if result == :gone
           @output.puts "Dev environment for #{describe(holder)} was not running; removed its stale lock."
@@ -249,6 +262,7 @@ module Workspace
 
         result = stop(ctx, holder)
         return {exit_code: 1} if result == :kept || result == :in_progress
+        log_stop(holder, result, "down")
         close_window(holder)
         @output.puts "Stopped dev environment for #{describe(holder)}, which run #{run_id} no longer uses."
         {exit_code: 0}
@@ -259,10 +273,19 @@ module Workspace
       # A `kind: "run"` holder is a workflow run holding the lock: the
       # environment is running only while that holder has a live `delegate`.
       #
+      # Each `queue` entry carries its `position` (1 is next) and `waiting_seconds`. The
+      # `holder` carries `agent_state` (`working`, `idle` or `none`) and `idle_since`, read from
+      # its worktree's agent daemon: `working` while any agent pane there works, `idle` once none
+      # does (a pane waiting for the person counts as idle), `none` with no agent pane or no
+      # daemon answering. `idle_since` is when the agent last stopped working, else nil. For a
+      # holder of any other kind than a process or a run, an `idle_since` it already has is kept.
+      #
       # @param working_dir [String] any directory inside the repository
+      # @param agent_state [Boolean] ask the holder's agent daemon; false leaves `agent_state`
+      #   and `idle_since` off the holder (the daemon is not asked)
       # @return [Hash] `schema_version`, `running`, `holder`, `ready` and `queue`
       # @raise [Workspace::Error] if the lock store can't be read
-      def status_payload(working_dir: Dir.pwd)
+      def status_payload(working_dir: Dir.pwd, agent_state: true)
         ctx = context(working_dir)
         entry = entry(ctx[:store])
         holder = entry["holder"]
@@ -270,9 +293,9 @@ module Workspace
         {
           "schema_version" => JSON_SCHEMA_VERSION, "ok" => true,
           "running" => running,
-          "holder" => holder,
+          "holder" => holder && (agent_state ? with_agent_state(holder) : holder),
           "ready" => (running && ctx[:settings][:ready]) ? ready?(ctx[:settings][:ready], ctx[:worktree]) : nil,
-          "queue" => entry["queue"] || []
+          "queue" => numbered(entry["queue"] || [])
         }
       end
 
@@ -320,11 +343,48 @@ module Workspace
         raise Workspace::Error, NO_COMMAND unless command?(ctx)
         run_id = @env[RUN_ENV].to_s
         code = @dev_runner.call(store: ctx[:store], command: ctx[:settings][:up], worktree: ctx[:worktree],
-          branch: ctx[:branch], wait: wait, priority: @env[TAKEOVER_ENV] == "1", delegate_for: run_id.empty? ? nil : run_id)
+          branch: ctx[:branch], wait: wait, priority: @env[TAKEOVER_ENV] == "1", delegate_for: run_id.empty? ? nil : run_id,
+          project: ctx[:project], workspace: ctx[:workspace])
         {exit_code: code}
       end
 
       private
+
+      # The queue as `status --json` reports it: each waiter with its place and how long it has waited.
+      def numbered(queue)
+        now = @wall_clock.call
+        queue.each_with_index.map do |waiter, index|
+          waiter.merge("position" => index + 1, "waiting_seconds" => seconds_since(waiter["enqueued_at"], now))
+        end
+      end
+
+      def seconds_since(iso, now)
+        [(now - Time.iso8601(iso)).round, 0].max
+      rescue ArgumentError, TypeError
+        nil
+      end
+
+      def with_agent_state(holder)
+        state, since = agent_state_of(holder)
+        marked = holder.merge("agent_state" => state)
+        marked["idle_since"] = since if holder["kind"] == "process" || run?(holder)
+        marked
+      end
+
+      # @return [Array(String, String)] `working`, `idle` or `none`, and the time the agent
+      #   stopped working when idle
+      def agent_state_of(holder)
+        none = ["none", nil]
+        return none unless @snapshot_client && holder["worktree"].is_a?(String)
+        lineage = @lineage.resolve(cwd: holder["worktree"])
+        panes = Array(@snapshot_client.fetch(lineage.worktree || lineage.name)["panes"])
+          .select { |pane| !AGENTLESS_KINDS.include?(pane["kind"]) && AGENT_STATES.include?(pane["state"]) }
+        return none if panes.empty?
+        return ["working", nil] if panes.any? { |pane| pane["state"] == "working" }
+        ["idle", panes.filter_map { |pane| pane["state_since"] }.max]
+      rescue AgentSnapshotClient::Unavailable, Workspace::Error
+        none
+      end
 
       def run?(record)
         LockStore.run?(record)
@@ -457,6 +517,7 @@ module Workspace
 
         result = stop_delegate(ctx, delegate, holder["run_id"])
         return {exit_code: 1} if result == :kept
+        log_stop(delegate, result, "down")
         close_window(delegate)
         killed = (result == :killed) ? " (SIGKILL after #{format_seconds(ctx[:settings][:stop_timeout])})" : ""
         what = (result == :gone) ? "Dev environment for #{describe(delegate)} was not running" : "Stopped dev environment for #{describe(delegate)}#{killed}"
@@ -470,6 +531,7 @@ module Workspace
       def kill_orphaned_delegate(ctx, holder, delegate)
         killed = kill_orphan_group(ctx, delegate)
         ctx[:store].end_delegate(LOCK_NAME, delegate["pid"])
+        @dev_events&.holder_stopped(delegate, reason: "forced") if killed
         close_window(delegate)
         what = killed ? "Killed orphaned dev process group #{delegate["pgid"]} (wrapper pid #{delegate["pid"]} was gone)" : "Dev environment for #{describe(delegate)} was not running"
         @output.puts "#{what}; the #{LOCK_NAME} lock stays with #{describe(holder)}."
@@ -564,7 +626,9 @@ module Workspace
 
         @output.puts "Taking over: stopping dev environment for #{describe(holder)}..."
         log_activity(ctx, "lock_takeover", wrapper, "from" => holder.slice("pid", "pgid", "worktree", "branch"))
-        case stop(ctx, holder)
+        stopped = stop(ctx, holder)
+        log_stop(holder, stopped, "forced")
+        case stopped
         when :kept
           @error_output.puts "This worktree's dev environment stays queued first for the #{LOCK_NAME} lock in its #{WINDOW_NAME} window. " \
             "Run `workspace dev status` to watch it. Have its owner run `kill -TERM -#{holder["pgid"]}`; " \
@@ -702,7 +766,8 @@ module Workspace
         running = orphan_running?(holder)
         return orphan_refusal(holder) if running && !force
 
-        if running && kill_orphan_group(ctx, holder)
+        killed = running && kill_orphan_group(ctx, holder)
+        if killed
           @output.puts "Killed orphaned dev process group #{holder["pgid"]} (wrapper pid #{holder["pid"]} was gone)."
         elsif holder["pgid"] && pgid_reused?(holder)
           @output.puts "Dev environment for #{describe(holder)} was not running (its pid #{holder["pid"]} now belongs " \
@@ -712,6 +777,7 @@ module Workspace
         end
         # A dead holder is reaped by any mutating op; releasing its pid does exactly that.
         ctx[:store].release(LOCK_NAME, holder["pid"])
+        @dev_events&.holder_stopped(holder, reason: killed ? "forced" : "reaped")
         {exit_code: 0}
       end
 
@@ -757,6 +823,16 @@ module Workspace
           result
         ensure
           store.unmark_clearing(LOCK_NAME, holder, clearer)
+        end
+      end
+
+      # Writes the `dev_stopped` for a stop this command made: +reason+ when the wrapper was
+      # stopped, `reaped` when it was already gone (+result+ is {#stop}'s answer).
+      def log_stop(holder, result, reason)
+        return unless @dev_events
+        case result
+        when :terminated, :killed then @dev_events.holder_stopped(holder, reason: reason)
+        when :gone then @dev_events.holder_stopped(holder, reason: "reaped")
         end
       end
 

@@ -249,6 +249,47 @@ RSpec.describe Workspace::LockStore do
       expect(reaps.map { |e| e["lock"] }).to eq(["edit", "test"])
     end
 
+    it "tells on_reap about each dead holder, after the store is unlocked, and never about a waiter" do
+      reported = []
+      unlocked = []
+      lockfile = File.join(tmpdir, "locks.lock")
+      watcher = lambda do |name, holder|
+        File.open(lockfile) { |f| unlocked << f.flock(File::LOCK_EX | File::LOCK_NB) }
+        reported << [name, holder["pid"], holder["kind"], holder["worktree"]]
+      end
+      s = described_class.new(dir: tmpdir, liveness: liveness, on_reap: watcher)
+      s.acquire("edit", identity: identity(pid: 100), waiter_pid: 100, waiter_started: "start-100")
+      s.acquire("edit", identity: identity(pid: 200), waiter_pid: 200, waiter_started: "start-200", wait: true)
+      s.acquire("test", identity: identity(pid: 300), waiter_pid: 300, waiter_started: "start-300")
+      s.acquire("test", identity: identity(pid: 400), waiter_pid: 400, waiter_started: "start-400", wait: true)
+      [100, 400].each { |pid| liveness.kill(pid) }
+
+      s.reap
+
+      expect(reported).to eq([["edit", 100, "agent", "app"]])
+      expect(unlocked).to eq([0])
+    end
+
+    it "keeps the reap when on_reap raises" do
+      s = described_class.new(dir: tmpdir, liveness: liveness, on_reap: ->(*) { raise "boom" })
+      s.acquire("edit", identity: identity(pid: 100), waiter_pid: 100, waiter_started: "start-100")
+      liveness.kill(100)
+
+      expect(s.reap).to eq(1)
+      expect(s.status("edit")["edit"]["holder"]).to be_nil
+    end
+
+    it "tells on_reap when an ordinary lock op reaps the holder" do
+      reported = []
+      s = described_class.new(dir: tmpdir, liveness: liveness, on_reap: ->(name, holder) { reported << [name, holder["pid"]] })
+      s.acquire("edit", identity: identity(pid: 100), waiter_pid: 100, waiter_started: "start-100")
+      liveness.kill(100)
+
+      s.acquire("edit", identity: identity(pid: 200), waiter_pid: 200, waiter_started: "start-200")
+
+      expect(reported).to eq([["edit", 100]])
+    end
+
     it "returns zero when nothing is stale" do
       store.acquire("edit", identity: identity(pid: 100), waiter_pid: 100, waiter_started: "start-100")
 

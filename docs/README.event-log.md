@@ -72,6 +72,8 @@ These record that something changed, so a reader can refetch (`snapshot --json`)
 | `daemon_started` | the workspace the daemon serves | `agentd`, once it is ready | `workspace`, `daemon` (`agent`), `pid` |
 | `daemon_stopped` | the workspace the daemon served | `agentd`, as it shuts down | `workspace`, `daemon`, `pid` |
 | `config_changed` | the project, or `""` (empty) for the global file | `config set` and `config unset` | `workspace` (project layer) or `scope` (`global`, global layer), `layer` (`project` or `global`), `via` (`set` or `unset`), `keys` (the key names written) |
+| `dev_started` | the project | the `dev __run` wrapper, once its command is running (also as a workflow run's delegate) | `workspace` (the worktree's own name, or the project's for its main checkout), `lock` (`devenv`) |
+| `dev_stopped` | the project | the wrapper when its command ends on its own (`exit`); `dev down`, `dev up --force` and `down --force` when they stop it (`down`, `forced`); `dev down` or the daemon's reaper finding the wrapper dead (`reaped`) | `workspace`, `lock` (`devenv`), `reason` (`down`, `exit`, `reaped` or `forced`). Refetch `dev status --json` |
 | `workflow_changed` | the run's workspace | `workflow run`, `resume`, `cancel`, `approve`, `reject`, `kill` (for the runs it cancels) and the `workflow advance` the agent daemon starts, each time a run's state, step or reason changes | `run_id`, `workflow`, `workspace`, `state`, `step`, `reason` (the stored reason code, or `null`). Refetch `workflow status --json` |
 
 Not every change is covered:
@@ -80,7 +82,8 @@ Not every change is covered:
 - `prune` removes worktrees itself, so it writes no `worktree_finished`.
 - A daemon killed with SIGKILL writes no `daemon_stopped`; its pid is gone from `snapshot --json`.
 - `config_changed` comes from the CLI only. Edits made in an editor, and the richer shape the config editor will add (`file`, `affects`), are not written yet.
-- `dev_started`, `dev_ready`, `dev_stopped` and `pipeline_status` are not written yet.
+- `dev_ready` and `pipeline_status` are not written yet.
+- `dev_stopped` is not written when `lock clear devenv` or a signal sent by hand stops the wrapper (the stop is not one `dev` made, and the wrapper only writes an end it was not asked to make). Only `dev down` and the agent daemon's reaper write `reaped`, so a dead wrapper first found by another lock command gets no `dev_stopped` until one of those sees it. Treat both events as a hint to refetch, not a full record; `locks.jsonl` audits every change.
 
 These are written by whichever process makes the change: a short-lived CLI command or the agent daemon. Both go through the same append (one `write` to a file opened with `O_APPEND`, under the shared lock), so they land in one log without interleaving and a rotation never loses one.
 

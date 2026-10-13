@@ -378,7 +378,7 @@ RSpec.describe Workspace::Commands::Dev do
 
       expect(result).to eq(exit_code: 3)
       expect(runner).to have_received(:call).with(store: an_instance_of(Workspace::LockStore), command: "exec sleep 30",
-        worktree: login, branch: "feat/login", wait: true, priority: false, delegate_for: nil)
+        worktree: login, branch: "feat/login", wait: true, priority: false, delegate_for: nil, project: "app", workspace: nil)
     end
 
     it "queues ahead of everyone when its window was opened by a takeover" do
@@ -1298,8 +1298,30 @@ RSpec.describe Workspace::Commands::Dev, "with fake processes and clock" do
       store.delegate("devenv", run_id: "wr_1", identity: process_identity(pid, worktree: worktree, branch: "feat/a"))
     end
 
+    let(:recorded) { [] }
+    let(:dev_events) do
+      events = recorded
+      log = Object.new.tap { |l| l.define_singleton_method(:record) { |type:, project:, data: {}| events << [type, data["reason"]] } }
+      Workspace::DevEvents.new(event_log: log, lineage: lineage)
+    end
+
     describe "#down_for_run" do
       before { allow(terminator).to receive_messages(orphan_running?: false, pgid_reused?: false) }
+
+      it "writes dev_stopped with reason down for the environment it stops, and nothing when it cannot" do
+        delegate(700)
+        store.release_run("wr_1")
+        allow(terminator).to receive(:stop_holder).and_return(:kept)
+        dev(dev_events: dev_events).down_for_run("wr_1", working_dir: worktree)
+        expect(recorded).to be_empty
+
+        allow(terminator).to receive(:stop_holder) do
+          liveness.kill(700)
+          :terminated
+        end
+        dev(dev_events: dev_events).down_for_run("wr_1", working_dir: worktree)
+        expect(recorded).to eq([["dev_stopped", "down"]])
+      end
 
       it "stops the environment the run left running when it gave the lock up, and frees the lock" do
         delegate(700)
@@ -1314,6 +1336,19 @@ RSpec.describe Workspace::Commands::Dev, "with fake processes and clock" do
         expect(output.string).to eq("Stopped dev environment for #{File.basename(worktree)} (feat/a), which run wr_1 no longer uses.\n")
         expect(holder).to be_nil
         expect(tmux).to have_received(:close_dead_pane).with("%7", pid: 700)
+      end
+
+      it "writes one dev_stopped with reason reaped when the environment's wrapper exited just before the stop" do
+        delegate(700)
+        store.release_run("wr_1")
+        allow(terminator).to receive(:stop_holder) do
+          liveness.kill(700)
+          :not_running
+        end
+
+        dev(dev_events: dev_events).down_for_run("wr_1", working_dir: worktree)
+
+        expect(recorded).to eq([["dev_stopped", "reaped"]])
       end
 
       it "leaves alone an environment another run left, one started outside a run, and a lock a run holds" do
@@ -1601,6 +1636,52 @@ RSpec.describe Workspace::Commands::Dev, "with fake processes and clock" do
         expect(tmux).to have_received(:close_dead_pane).with("%7", pid: 700)
       end
 
+      it "writes dev_stopped with reason down for the delegate it stops" do
+        delegate(700)
+        allow(terminator).to receive(:stop_holder) do
+          liveness.kill(700)
+          :terminated
+        end
+
+        dev(dev_events: dev_events).down(working_dir: worktree)
+
+        expect(recorded).to eq([["dev_stopped", "down"]])
+      end
+
+      it "writes dev_stopped with reason down when the delegate had to be killed" do
+        delegate(700)
+        allow(terminator).to receive(:stop_holder) do
+          liveness.kill(700)
+          :killed
+        end
+
+        dev(dev_events: dev_events).down(working_dir: worktree)
+
+        expect(recorded).to eq([["dev_stopped", "down"]])
+      end
+
+      it "writes one dev_stopped with reason reaped when the delegate's wrapper exited just before the stop" do
+        delegate(700)
+        allow(terminator).to receive(:stop_holder) do
+          liveness.kill(700)
+          :not_running
+        end
+        allow(terminator).to receive_messages(orphan_running?: false, pgid_reused?: false)
+
+        dev(dev_events: dev_events).down(working_dir: worktree)
+
+        expect(recorded).to eq([["dev_stopped", "reaped"]])
+      end
+
+      it "writes nothing for a delegate it could not stop" do
+        delegate(700)
+        allow(terminator).to receive(:stop_holder).and_raise(Workspace::Error, "live members owned by root")
+
+        dev(dev_events: dev_events).down(working_dir: worktree)
+
+        expect(recorded).to be_empty
+      end
+
       it "says the environment was not running when its wrapper exited just before the stop" do
         delegate(700)
         allow(terminator).to receive(:stop_holder) do
@@ -1724,6 +1805,26 @@ RSpec.describe Workspace::Commands::Dev, "with fake processes and clock" do
             "the devenv lock stays with #{File.basename(worktree)} (run wr_1, step implement).\n")
           expect(holder).to include("run_id" => "wr_1")
           expect(holder).not_to include("delegate")
+        end
+
+        it "`down --force` writes dev_stopped with reason forced for the group it kills" do
+          dev.down(working_dir: worktree)
+          dead_pids << 700
+          allow(terminator).to receive(:terminate).and_return(:killed)
+
+          dev(dev_events: dev_events).down(force: true, working_dir: worktree)
+
+          expect(recorded).to eq([["dev_stopped", "forced"]])
+        end
+
+        it "`down --force` writes nothing when there was no group left to kill" do
+          dev.down(working_dir: worktree)
+          dead_pids << 700
+          allow(terminator).to receive_messages(orphan_running?: false, pgid_reused?: false)
+
+          dev(dev_events: dev_events).down(force: true, working_dir: worktree)
+
+          expect(recorded).to be_empty
         end
 
         it "`down` without --force still only reports it, and says `down --force` kills the group" do
@@ -1954,6 +2055,252 @@ RSpec.describe Workspace::Commands::Dev, "with fake processes and clock" do
         expect(runner).to have_received(:call).with(hash_including(delegate_for: "wr_1")).once
         expect(runner).to have_received(:call).with(hash_including(delegate_for: nil)).once
       end
+    end
+  end
+
+  describe "#status_payload for a reader that follows along" do
+    let(:wall) { [Time.at(Time.now.to_i)] }
+    let(:snapshot_client) { double("snapshot_client") }
+    let(:panes) { [] }
+
+    before { allow(snapshot_client).to receive(:fetch).with("app").and_return("panes" => panes) }
+
+    def payload(**opts)
+      dev(snapshot_client: snapshot_client, wall_clock: -> { wall[0] }).status_payload(working_dir: worktree, **opts)
+    end
+
+    def edit_enqueued_at(pid, time)
+      path = File.join(lock_dir, "locks.json")
+      data = JSON.parse(File.read(path))
+      data["devenv"]["queue"].find { |w| w["waiter_pid"] == pid }["enqueued_at"] = time.utc.iso8601
+      File.write(path, JSON.generate(data))
+    end
+
+    it "numbers each queue entry from 1 and says how long it has waited" do
+      hold(700)
+      enqueue(800)
+      enqueue(801)
+      edit_enqueued_at(800, wall[0] - 140)
+      edit_enqueued_at(801, wall[0] - 20)
+
+      queue = payload["queue"]
+
+      expect(queue.map { |w| w["position"] }).to eq([1, 2])
+      expect(queue.map { |w| w["waiting_seconds"] }).to eq([140, 20])
+    end
+
+    it "leaves waiting_seconds null for a waiter with no readable enqueue time" do
+      hold(700)
+      enqueue(800)
+      edit_enqueued_at(800, wall[0])
+      path = File.join(lock_dir, "locks.json")
+      data = JSON.parse(File.read(path))
+      data["devenv"]["queue"][0]["enqueued_at"] = "not a time"
+      File.write(path, JSON.generate(data))
+
+      expect(payload["queue"][0]).to include("position" => 1, "waiting_seconds" => nil)
+    end
+
+    it "keeps an empty queue empty" do
+      expect(payload).to include("holder" => nil, "queue" => [])
+    end
+
+    it "reports the holder's agent as working while any agent pane there works" do
+      hold(700, worktree: worktree)
+      panes.push({"kind" => "claude", "state" => "idle", "state_since" => "2026-10-13T10:00:00Z"},
+        {"kind" => "claude", "state" => "working", "state_since" => "2026-10-13T10:05:00Z"})
+
+      expect(payload["holder"]).to include("agent_state" => "working", "idle_since" => nil)
+    end
+
+    it "reports idle with the time the agent last stopped working" do
+      hold(700, worktree: worktree)
+      panes.push({"kind" => "claude", "state" => "idle", "state_since" => "2026-10-13T10:00:00Z"},
+        {"kind" => "codex", "state" => "done", "state_since" => "2026-10-13T10:07:00Z"})
+
+      expect(payload["holder"]).to include("agent_state" => "idle", "idle_since" => "2026-10-13T10:07:00Z")
+    end
+
+    it "counts an agent waiting for the person as idle" do
+      hold(700, worktree: worktree)
+      panes.push({"kind" => "claude", "state" => "waiting", "state_since" => "2026-10-13T10:03:00Z"})
+
+      expect(payload["holder"]).to include("agent_state" => "idle", "idle_since" => "2026-10-13T10:03:00Z")
+    end
+
+    it "reports none when the worktree has only shell panes or a closed agent" do
+      hold(700, worktree: worktree)
+      panes.push({"kind" => "shell", "state" => "idle", "state_since" => "2026-10-13T10:00:00Z"},
+        {"kind" => "claude", "state" => "closed", "state_since" => "2026-10-13T10:01:00Z"})
+
+      expect(payload["holder"]).to include("agent_state" => "none", "idle_since" => nil)
+    end
+
+    it "reports none when the daemon is down or does not answer" do
+      hold(700, worktree: worktree)
+      allow(snapshot_client).to receive(:fetch).and_raise(Workspace::AgentSnapshotClient::Unavailable.new("down", reason: :no_daemon))
+
+      expect(payload["holder"]).to include("agent_state" => "none", "idle_since" => nil)
+    end
+
+    it "reports none when it has no client to ask" do
+      hold(700, worktree: worktree)
+
+      expect(dev.status_payload(working_dir: worktree)["holder"]).to include("agent_state" => "none", "idle_since" => nil)
+    end
+
+    it "does not ask the daemon, and adds neither key, with agent_state: false" do
+      hold(700, worktree: worktree)
+
+      holder = payload(agent_state: false)["holder"]
+
+      expect(snapshot_client).not_to have_received(:fetch)
+      expect(holder).not_to have_key("agent_state")
+    end
+
+    it "prints the same payload from `status --json`" do
+      hold(700, worktree: worktree)
+      enqueue(800)
+      panes.push({"kind" => "claude", "state" => "working", "state_since" => "2026-10-13T10:00:00Z"})
+
+      dev(snapshot_client: snapshot_client, wall_clock: -> { wall[0] }).status(working_dir: worktree, json: true)
+
+      printed = JSON.parse(output.string)
+      expect(printed["holder"]).to include("agent_state" => "working")
+      expect(printed["queue"][0]).to include("position" => 1)
+    end
+  end
+
+  describe "dev_stopped events for the stops this command makes" do
+    let(:recorded) { [] }
+    let(:event_log) do
+      events = recorded
+      Object.new.tap { |log| log.define_singleton_method(:record) { |type:, project:, data: {}| events << [project, type, data] } }
+    end
+    let(:dev_events) { Workspace::DevEvents.new(event_log: event_log, lineage: lineage) }
+
+    def stops
+      recorded.select { |_, type, _| type == "dev_stopped" }.map { |project, _, data| [project, data["reason"], data["workspace"]] }
+    end
+
+    it "writes reason down when `down` stops the holder" do
+      hold(700, worktree: worktree)
+      allow(terminator).to receive(:stop_holder) do
+        liveness.kill(700)
+        :terminated
+      end
+
+      dev(dev_events: dev_events).down(working_dir: worktree)
+
+      expect(stops).to eq([["app", "down", "app"]])
+      expect(recorded.last[2]).to eq("workspace" => "app", "lock" => "devenv", "reason" => "down")
+    end
+
+    it "writes reason down when the holder had to be killed" do
+      hold(700, worktree: worktree)
+      allow(terminator).to receive(:stop_holder) do
+        liveness.kill(700)
+        :killed
+      end
+
+      dev(dev_events: dev_events).down(working_dir: worktree)
+
+      expect(stops).to eq([["app", "down", "app"]])
+    end
+
+    it "writes nothing when the holder cannot be stopped" do
+      hold(700, worktree: worktree)
+      allow(terminator).to receive(:stop_holder).and_return(:kept)
+
+      dev(dev_events: dev_events).down(working_dir: worktree)
+
+      expect(stops).to be_empty
+    end
+
+    it "writes reason reaped once, not twice, when `down` only removes a dead holder's lock" do
+      orphan_in_worktree(700)
+      allow(terminator).to receive_messages(orphan_running?: false, pgid_reused?: false)
+
+      dev(dev_events: dev_events).down(working_dir: worktree)
+
+      expect(stops).to eq([["app", "reaped", "app"]])
+    end
+
+    it "writes reason forced when `down --force` kills what a dead wrapper left running" do
+      orphan_in_worktree(700)
+      allow(terminator).to receive_messages(orphan_running?: true, pgid_reused?: false, terminate: :terminated)
+
+      dev(dev_events: dev_events).down(force: true, working_dir: worktree)
+
+      expect(stops).to eq([["app", "forced", "app"]])
+    end
+
+    it "writes reason forced for the holder `up --force` stops" do
+      other = File.join(tmpdir, "other").tap { |dir| FileUtils.mkdir_p(dir) }
+      hold(700, worktree: other)
+      wrapper_joins(555)
+      allow(terminator).to receive(:stop_holder) do
+        liveness.kill(700)
+        :terminated
+      end
+
+      dev(dev_events: dev_events).up(takeover: true, working_dir: worktree)
+
+      expect(stops).to eq([["app", "forced", "app"]])
+    end
+
+    it "writes nothing when `up --force` could not stop the holder" do
+      other = File.join(tmpdir, "other").tap { |dir| FileUtils.mkdir_p(dir) }
+      hold(700, worktree: other)
+      wrapper_joins(555)
+      allow(terminator).to receive(:stop_holder).and_return(:kept)
+
+      dev(dev_events: dev_events).up(takeover: true, working_dir: worktree)
+
+      expect(stops).to be_empty
+    end
+
+    it "writes reason reaped when the holder `up --force` meant to stop was already gone" do
+      other = File.join(tmpdir, "other").tap { |dir| FileUtils.mkdir_p(dir) }
+      hold(700, worktree: other)
+      wrapper_joins(555)
+      allow(terminator).to receive(:stop_holder) do
+        liveness.kill(700)
+        :not_running
+      end
+      allow(terminator).to receive_messages(orphan_running?: false, pgid_reused?: false)
+
+      dev(dev_events: dev_events).up(takeover: true, working_dir: worktree)
+
+      expect(stops).to eq([["app", "reaped", "app"]])
+    end
+
+    it "writes nothing when it has no events to write to" do
+      hold(700, worktree: worktree)
+      allow(terminator).to receive(:stop_holder) do
+        liveness.kill(700)
+        :terminated
+      end
+
+      expect(dev.down(working_dir: worktree)).to eq(exit_code: 0)
+    end
+
+    it "skips a holder whose worktree is gone rather than naming it wrongly" do
+      hold(700, worktree: File.join(tmpdir, "gone"))
+      allow(terminator).to receive(:stop_holder) do
+        liveness.kill(700)
+        :terminated
+      end
+
+      dev(dev_events: dev_events).down(working_dir: worktree)
+
+      expect(stops).to be_empty
+    end
+
+    def orphan_in_worktree(pid)
+      hold(pid, worktree: worktree)
+      liveness.kill(pid)
+      dead_pids << pid
     end
   end
 end

@@ -25,8 +25,11 @@ module Workspace
     # @param clock [#call] returns monotonic seconds
     # @param logger [Workspace::Logger] debug logger
     # @param error_output [IO] where a persistently failing directory is reported
+    # @param on_reap [#call, nil] told of each dead holder a pass removes, as {LockStore}'s +on_reap+ is
     def initialize(lock_namespace:, lock_holder:, terminator: nil, interval: DEFAULT_INTERVAL,
-      clock: -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) }, logger: Workspace::Logger.new, error_output: $stderr)
+      clock: -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) }, logger: Workspace::Logger.new, error_output: $stderr,
+      on_reap: nil)
+      @on_reap = on_reap
       @lock_namespace = lock_namespace
       @lock_holder = lock_holder
       @terminator = terminator
@@ -98,7 +101,7 @@ module Workspace
     # rather than having its directory created just to reap nothing.
     def reap_dir(dir)
       return 0 unless File.exist?(File.join(dir, "locks.json"))
-      reaped = LockStore.new(dir: dir, liveness: @lock_holder, terminator: @terminator, logger: @logger).reap(source: "daemon")
+      reaped = LockStore.new(dir: dir, liveness: @lock_holder, terminator: @terminator, logger: @logger, on_reap: @on_reap).reap(source: "daemon")
       @logger.debug { "lock reaper: reaped #{reaped} from #{dir}" } if reaped > 0
       succeeded(dir)
       reaped

@@ -77,6 +77,7 @@ A macOS CLI (Ruby) for managing tmuxinator-based development workspaces in iTerm
 - `lib/workspace/agent_readiness.rb` — Waits for a coding agent's pane to be quiet and (if the provider declares one) match its ready pattern before `launch --prompt`/`start --prompt` send text
 - `lib/workspace/hook_installer.rb` — Merges workspace's hooks into an agent's own settings file
 - `lib/workspace/file_backup.rb` — Copies a file aside before workspace edits it
+- `lib/workspace/dev_events.rb` — Writes `dev_started` and `dev_stopped` (reasons `down`, `exit`, `reaped`, `forced`) to the event log; `DevRunner` writes the start and an exit on its own, `Commands::Dev` the stops it makes, and `LockStore`'s `on_reap` hook reports a dead wrapper to the agent daemon's `LockReaper`
 - `lib/workspace/dev_runner.rb` — The `dev __run` wrapper: holds the `devenv` lock while the dev command runs on the pane's TTY, forwarding stop signals once to its process group; started from a run's pane while that run holds the lock, it is the run's delegate instead
 - `lib/workspace/process_group_terminator.rb` — SIGTERM then SIGKILL for a lock holder's process group, after checking pid + start time
 - `lib/workspace/process_holder_stopper.rb` — Stops a `kind: "process"` lock holder for `lock clear`/`dev down`, or keeps the lock naming it when the group can't be stopped; `#stop_group` does the stop alone, for a run's delegate

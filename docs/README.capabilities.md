@@ -26,7 +26,7 @@ It reads constants, config paths and the `PATH`. It starts no process and touche
    "doctor_json":0,"daemon_control":3,"config_json":2,"tmux_show":1,"tasks":1,"event_emitters":1,
    "ui_open":1,"pane_bindings":3,"library":3,"library_play":2,"library_copy":1,"instructions":1,"restore":1,
    "workflow":1,"window_state":1,"cleanup_dry_run":1,"notes":1,"start_packs":2,
-   "handoff_auto":2,"dev_queue":1},
+   "handoff_auto":2,"dev_queue":2},
  "exit_codes":{"ok":0,"failed":1,"not_submitted":2,"partial":3,"lock_cleared":4,"timeout":75},
  "paths":{"event_log":"/Users/me/.workspace-events.jsonl","run_dir":"/Users/me/.local/workspace/run",
    "library":"/Users/me/.config/workspace/library"},
@@ -76,7 +76,7 @@ It reads constants, config paths and the `PATH`. It starts no process and touche
 | `cleanup_dry_run` | `cleanup --dry-run` reports what it would remove without prompting or changing anything (status `dry_run`), `--tmux-dead-only` limits a run to entries whose tmux session is gone, and `cleanup --json` rows carry `tmux_alive` and `window_alive` (see [`cleanup`](README.cleanup.md#json-output)) |
 | `notes` | `notes dir [--name WS] [--create] [--json]` prints the absolute notes directory of a workspace, and `--create` makes it and keeps it out of git (see [`notes`](README.notes.md)) |
 | `handoff_auto` | `handoff check` and `handoff new` use `HANDOFF.md` in the notes directory when given neither `--handoff-doc` nor `--handoff-prompt`, `handoff check --json` carries `next` and `doc`, and `handoff.check_prompt` and `handoff.resume_prompt` report their built-in text as `default` Level 2. Level 1: `start` and `launch` take `--handoff` and `--no-handoff`, and the `handoff.auto` key turns the built-in `handoff` pack on for a project, so a Claude Code agent runs `handoff check` itself (see [`handoff`](README.handoff.md#automatic-handoff)); `--handoff` for any other main agent is refused with `handoff_unsupported_agent` |
-| `dev_queue` | `dev up --queue` returns at once with its row carrying `status` and `position`, `dev wait` blocks until this worktree holds the lock and `dev.ready` passes, and `dev leave` takes it out of the line (see [`dev`](README.dev.md#queue-without-blocking)) |
+| `dev_queue` | `dev up --queue` returns at once with its row carrying `status` and `position`, `dev wait` blocks until this worktree holds the lock and `dev.ready` passes, and `dev leave` takes it out of the line (see [`dev`](README.dev.md#queue-without-blocking)). At 2, `dev status --json` numbers each `queue` entry (`position`, `waiting_seconds`), the `holder` carries `agent_state` and `idle_since`, and `dev_started` and `dev_stopped` are written to the event log (see [`dev`](README.dev.md#following-the-dev-environment)) |
 | `start_packs` | `start` and `launch` send the instruction packs that apply (`--pack`, `--no-packs`, the `notes.instructions` key) and report `packs` rows in `--json`; `instructions compose --start` prints them (see [`start`](README.start.md#packs)). Level 2: the `dev.instructions` key and the automatic `dev` pack for a project with `dev.up`, and a `dev.configured` row in `config show --json` |
 | `event_emitters` | The event log records `ask_created`, `ask_answered`, `lock_released`, `lock_cleared`, `worktree_started`, `worktree_finished`, `daemon_started`, `daemon_stopped` and `config_changed` (see [`event-log`](README.event-log.md#state-and-lifecycle-events)) |
 

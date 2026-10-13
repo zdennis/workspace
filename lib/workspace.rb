@@ -211,6 +211,7 @@ require_relative "workspace/agent_provider"
 require_relative "workspace/file_backup"
 require_relative "workspace/process_group_terminator"
 require_relative "workspace/process_holder_stopper"
+require_relative "workspace/dev_events"
 require_relative "workspace/dev_runner"
 require_relative "workspace/run_resources"
 require_relative "workspace/git_exclude"
@@ -400,7 +401,8 @@ module Workspace
     lock_command = Commands::Lock.new(config: config, lock_namespace: lock_namespace, lock_holder: lock_holder,
       terminator: process_group_terminator, dev_config: dev_config, lock_config: lock_config, event_log: event_log,
       bound_run: bound_run, output: output, error_output: error_output)
-    dev_runner = DevRunner.new(liveness: lock_holder, output: output)
+    dev_events = DevEvents.new(event_log: event_log, lineage: lineage)
+    dev_runner = DevRunner.new(liveness: lock_holder, output: output, events: dev_events)
     dev_command = Commands::Dev.new(
       lock_namespace: lock_namespace,
       lock_holder: lock_holder,
@@ -412,6 +414,8 @@ module Workspace
       executable: File.expand_path("../bin/workspace", __dir__),
       event_log: event_log,
       bound_run: bound_run,
+      dev_events: dev_events,
+      snapshot_client: agent_snapshot_client,
       output: output,
       error_output: error_output
     )
@@ -504,7 +508,8 @@ module Workspace
       # Its own LockHolder: the reaper runs on the monitor thread, and a
       # LockHolder's snapshot scope is per-instance, not per-thread.
       lock_reaper: LockReaper.new(lock_namespace: lock_namespace, lock_holder: LockHolder.new(process_tree: process_tree, run_liveness: run_liveness),
-        terminator: process_group_terminator, interval: reap_interval, logger: logger, error_output: error_output),
+        terminator: process_group_terminator, interval: reap_interval, logger: logger, error_output: error_output,
+        on_reap: dev_events.method(:reaped)),
       alert_config: alert_config,
       agentd_config: agentd_config,
       ps_timeout: ps_timeout,

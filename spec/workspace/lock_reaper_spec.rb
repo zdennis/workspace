@@ -62,6 +62,18 @@ RSpec.describe Workspace::LockReaper do
       expect(audit_events.find { |e| e["event"] == "reap" }["holder"]).to include("pid" => 100)
     end
 
+    it "tells on_reap about the dead holders it removes" do
+      reported = []
+      hold("edit", 100)
+      liveness.kill(100)
+      watching = described_class.new(lock_namespace: lock_namespace, lock_holder: liveness, interval: 30, clock: -> { now[0] },
+        error_output: error_output, on_reap: ->(name, holder) { reported << [name, holder["pid"]] })
+
+      watching.reap([app_cwd])
+
+      expect(reported).to eq([["edit", 100]])
+    end
+
     it "drops dead waiters and leaves a live holder alone" do
       hold("edit", 100)
       wait_for("edit", 200)

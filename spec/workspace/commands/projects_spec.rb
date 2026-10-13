@@ -86,7 +86,7 @@ RSpec.describe Workspace::Commands::Projects do
     error = dev_error
     calls = dev_calls
     Class.new do
-      define_method(:status_payload) do |working_dir:|
+      define_method(:status_payload) do |working_dir:, agent_state: true|
         calls << working_dir
         raise error if error
         payload
