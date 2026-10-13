@@ -158,6 +158,7 @@ require_relative "workspace/library"
 require_relative "workspace/library_installer"
 require_relative "workspace/commands_config"
 require_relative "workspace/notes_config"
+require_relative "workspace/main_agent"
 require_relative "workspace/instruction_composer"
 require_relative "workspace/project_config"
 require_relative "workspace/osascript_runner"
@@ -333,7 +334,9 @@ module Workspace
     commands_config = CommandsConfig.new(project_settings: project_settings)
     instruction_composer = InstructionComposer.new(library: library, lineage: lineage,
       commands_config: commands_config, pane_bindings: pane_bindings, workflow_config: WorkflowConfig.new(project_settings: project_settings),
-      notes_config: NotesConfig.new(project_settings: project_settings))
+      notes_config: NotesConfig.new(project_settings: project_settings),
+      handoff_config: HandoffConfig.new(project_settings: project_settings, error_output: error_output),
+      main_agent: MainAgent.new(project_config: project_config))
     start_command = Commands::Start.new(git: git, project_config: project_config, project_settings: project_settings, launch_command: launch_command, lineage: lineage, hook_installer: hook_installer, task_store: task_store, event_log: event_log, library: library, library_installer: library_installer, notes_setup: notes_setup, instruction_composer: instruction_composer, output: output, input: input)
     send_command = Commands::Send.new(locator: pane_locator, tmux: tmux, output: output)
     focus_command = Commands::Focus.new(state: state, window_manager: window_manager, tmux: tmux, pane_locator: pane_locator, output: output)

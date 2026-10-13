@@ -112,9 +112,20 @@ The other two outcomes print `status` (`ok`, or `handoff_sent` / `handoff_send_f
 workspace config set handoff.threshold 11              # default 11
 workspace config set handoff.check_prompt "..."         # overrides the built-in save-state prompt (doc flow)
 workspace config set handoff.resume_prompt "..."        # overrides the built-in resume prompt (doc flow)
+workspace config set handoff.auto true                  # start/launch send the handoff pack (default false)
 ```
 
 `handoff.check_prompt` and `handoff.resume_prompt` only override the flow used when `--handoff-doc` is given (the common case); `--handoff-prompt` always sends its text as-is. Both may use `%{usage}`/`%{doc}`/`%{new_cmd}` and `%{doc}` respectively, matching the built-in templates.
+
+## Automatic handoff
+
+`start` and `launch` can make a Claude Code agent run the check itself. The built-in `handoff` pack (see [`instructions`](README.instructions.md)) tells the agent to run `handoff check --pane "$TMUX_PANE"` after every task, and, on exit 1, to write its state into the doc and run `handoff new` once. The doc is `IMPLEMENTATION_PLAN.md` in the workspace's [notes directory](README.notes.md) when that file exists, otherwise `HANDOFF.md` there. The pack is bound to the pane with the others, so it comes back after `/clear` and compaction.
+
+It is off by default. Turn it on for a project with `workspace config set handoff.auto true`, or for one run with `start --handoff` / `launch --handoff`; `--no-handoff` turns it off for one run. `--handoff` cannot be combined with `--no-packs`.
+
+The pack needs Claude Code. `workspace` reads the project's tmuxinator config for the first pane that runs a known coding agent. It sees through `exec`, `env`, `bundle exec`, `VAR=value` prefixes and paths, but not a wrapper script or an ERB-built command, which count as no agent. For a worktree it reads the parent project's config, not the worktree's own. With `handoff.auto` on and any other agent (or none), the pack is skipped with a warning and the run goes on: the `packs` row reads `delivered: false, pane: null, reason: "handoff_unsupported_agent"` and `warnings` says why. With `--handoff` the same case is an error, `handoff_unsupported_agent` (`details.kind` is the agent found, or `none`), raised before any worktree, config or window is created.
+
+Nothing here changes `handoff check` or `handoff new` themselves, or what they send.
 
 ## Examples
 

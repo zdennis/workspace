@@ -8,3 +8,4 @@ bin/dev/
 .workspace-project
 HANDOFF.md
 tmp
+!lib/library/play/handoff.md

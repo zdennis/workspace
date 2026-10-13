@@ -27,6 +27,7 @@ module Workspace
       "config_parse" => "A config file exists but can't be parsed as a YAML mapping.",
       "notes_dir_unresolved" => "The notes directory can't be worked out: the project's rule uses {branch} and the checkout is on no branch.",
       "notes_dir_unwritable" => "notes dir --create couldn't make the notes directory or list it in info/exclude.",
+      "handoff_unsupported_agent" => "The handoff pack was asked for, but the project's main agent is not Claude Code.",
       # Codes the agent daemon puts in its replies; `agent-run` passes them through.
       "malformed_message" => "The daemon couldn't parse the request.",
       "internal_error" => "The daemon failed while handling the request.",

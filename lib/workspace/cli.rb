@@ -488,6 +488,7 @@ module Workspace
       play = nil
       packs = []
       no_packs = false
+      handoff = nil
       json = false
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: workspace launch [options] <project1> [project2] ..."
@@ -523,9 +524,14 @@ module Workspace
           "'workspace instructions compose --help'). An unknown pack fails before anything launches") do |v|
           packs << v
         end
-        opts.on("--no-packs", "Send no automatic packs (the notes pack, unless notes.instructions is false);",
-          "cannot be combined with --pack") do
+        opts.on("--no-packs", "Send no automatic packs (the notes pack, unless notes.instructions is false;",
+          "the handoff pack, when handoff.auto is true); cannot be combined with --pack") do
           no_packs = true
+        end
+        opts.on("--[no-]handoff", "Send (or never send) the handoff pack, whatever handoff.auto says. It makes a Claude",
+          "Code agent run 'workspace handoff check' after every task. --handoff for a project",
+          "whose main agent is not Claude Code fails before anything launches (handoff_unsupported_agent)") do |v|
+          handoff = v
         end
         opts.on("--json", "Print one action document (see docs/README.json.md) instead of progress text;",
           "the text goes to stderr. Exit 0, 3 when some projects failed, 1 when all did") do
@@ -551,12 +557,13 @@ module Workspace
 
       raise UsageError, parser.help if args.empty?
       raise UsageError, "--no-packs cannot be combined with --pack." if no_packs && packs.any?
+      raise UsageError, "--no-packs cannot be combined with --handoff." if no_packs && handoff == true
 
       run_action("launch", json: json) do
         launched = launch_projects(args, reattach: reattach, headless: headless, prompt: prompt, prompt_timeout: prompt_timeout, play: play,
-          packs: packs, no_packs: no_packs, with_packs: true)
-        {exit_code: launched[:exit_code], results: json ? launch_rows(launched[:projects], launched[:result], plays: launched[:plays], packs: launched[:packs]) : [],
-         warnings: (launched[:result]&.dig(:skipped_prompts) || {}).values}
+          packs: packs, no_packs: no_packs, handoff: handoff, with_packs: true)
+        {exit_code: launched[:exit_code], results: json ? launch_rows(launched[:projects], launched[:result], plays: launched[:plays], packs: launched[:packs], skipped_packs: launched[:skipped_packs]) : [],
+         warnings: launched[:skipped_packs].values.flatten.map { |pack| pack["message"] } + (launched[:result]&.dig(:skipped_prompts) || {}).values}
       end
     end
 
@@ -568,10 +575,13 @@ module Workspace
     # A play and the packs are resolved for every project before any config is
     # created. Packs are sent only when +with_packs+ is true (`launch` itself), so
     # `relaunch` and `restore` do not type them into an agent again.
-    def launch_projects(args, reattach: false, headless: nil, prompt: nil, prompt_timeout: nil, play: nil, packs: [], no_packs: false, with_packs: false)
+    def launch_projects(args, reattach: false, headless: nil, prompt: nil, prompt_timeout: nil, play: nil, packs: [], no_packs: false, handoff: nil, with_packs: false)
       resolved = args.map { |arg| @project_config.resolve_project_arg(arg) }
       plays = play ? resolved.to_h { |name, root| [name, resolve_play(play, root || @project_config.project_root_for(name))] } : {}
-      composed = with_packs ? compose_launch_packs(resolved, packs, no_packs) : {}
+      composed = with_packs ? compose_launch_packs(resolved, packs, no_packs, handoff) : {}
+      skipped_packs = composed.transform_values { |c| c["skipped"] || [] }.reject { |_, skipped| skipped.empty? }
+      composed = composed.reject { |_, c| c["packs"].empty? }
+      skipped_packs.each_value { |skipped| skipped.each { |pack| @error_output.puts "Warning: #{pack["message"]}" } }
       projects = resolved.map { |name, root| root ? @project_config.create(name, root) : name }
 
       prompts = projects.each_with_object({}) do |p, h|
@@ -596,21 +606,22 @@ module Workspace
         @project_settings.ensure_exists(p)
         @hook_runner.run(p, "post_launch")
       end
-      {exit_code: result && result[:exit_code], projects: projects, result: result, plays: plays, packs: composed}
+      {exit_code: result && result[:exit_code], projects: projects, result: result, plays: plays, packs: composed, skipped_packs: skipped_packs}
     end
 
     # The packs `launch` sends each project, from its root's library and config; a
     # project with none has no entry. An unknown pack fails before any config is created.
-    def compose_launch_packs(resolved, packs, no_packs)
+    def compose_launch_packs(resolved, packs, no_packs, handoff = nil)
       resolved.each_with_object({}) do |(name, root), composed|
         cwd = root || @project_config.project_root_for(name)
-        next if cwd.nil? && packs.empty?
+        next if cwd.nil? && packs.empty? && handoff != true
         if @instruction_composer.nil?
           raise Error, "--pack is not available: no library was wired." if packs.any?
+          raise Error, "--handoff is not available: no library was wired." if handoff == true
           next
         end
-        result = @instruction_composer.compose_start(cwd: cwd || @working_dir, packs: packs, none: no_packs)
-        composed[name] = result unless result["packs"].empty?
+        result = @instruction_composer.compose_start(cwd: cwd || @working_dir, packs: packs, none: no_packs, handoff: handoff)
+        composed[name] = result unless result["packs"].empty? && result["skipped"].to_a.empty?
       end
     end
 
@@ -621,7 +632,7 @@ module Workspace
     end
 
     # One `results` row per launched project, from the state Launch wrote.
-    def launch_rows(projects, result, ok_outcome: "launched", plays: {}, packs: nil)
+    def launch_rows(projects, result, ok_outcome: "launched", plays: {}, packs: nil, skipped_packs: {})
       @state.load
       reused = result&.dig(:reused) || []
       prompt_failures = result&.dig(:prompt_failures) || {}
@@ -636,8 +647,8 @@ module Workspace
             "pane" => result&.dig(:bound_panes, project))
         end
         if packs
-          details[:packs] = packs[project] ? InstructionComposer.delivery_rows(packs[project]["packs"], delivered: sent && !skipped,
-            pane: result&.dig(:delivered_panes, project)) : []
+          details[:packs] = InstructionComposer.delivery_rows(packs[project] ? packs[project]["packs"] : [], delivered: sent && !skipped,
+            pane: result&.dig(:delivered_panes, project), skipped: skipped_packs[project] || [])
         end
         if start_failures[project]
           action_row(project, "failed", reason: "session_not_started", message: start_failures[project].to_s, **details)
@@ -662,6 +673,7 @@ module Workspace
       play = nil
       packs = []
       no_packs = false
+      handoff = nil
       agents = []
       skills = []
       parser = OptionParser.new do |opts|
@@ -696,9 +708,14 @@ module Workspace
           "'workspace instructions compose --help'). An unknown pack fails before the worktree is created") do |v|
           packs << v
         end
-        opts.on("--no-packs", "Send no automatic packs (the notes pack, unless notes.instructions is false);",
-          "cannot be combined with --pack") do
+        opts.on("--no-packs", "Send no automatic packs (the notes pack, unless notes.instructions is false;",
+          "the handoff pack, when handoff.auto is true); cannot be combined with --pack") do
           no_packs = true
+        end
+        opts.on("--[no-]handoff", "Send (or never send) the handoff pack, whatever handoff.auto says. It makes a Claude",
+          "Code agent run 'workspace handoff check' after every task. --handoff for a project",
+          "whose main agent is not Claude Code fails before the worktree is created (handoff_unsupported_agent)") do |v|
+          handoff = v
         end
         opts.on("--agent NAME", "Copy a library agent into the worktree's .claude/agents/ (repeatable).",
           "Listed in the repo's info/exclude; a file the repo tracks there is kept") do |v|
@@ -759,6 +776,8 @@ module Workspace
       raise UsageError, "--no-packs cannot be combined with --pack." if no_packs && packs.any?
       start_options[:packs] = packs if packs.any?
       start_options[:no_packs] = true if no_packs
+      raise UsageError, "--no-packs cannot be combined with --handoff." if no_packs && handoff == true
+      start_options[:handoff] = handoff unless handoff.nil?
       start_options[:agents] = agents if agents.any?
       start_options[:skills] = skills if skills.any?
       start_options[:headless] = true if @launch_mode.resolve(headless).headless?
@@ -3707,9 +3726,10 @@ module Workspace
         opts.banner = "Usage: workspace instructions compose [--pack NAME]... [--pane %ID] [--name WORKSPACE] [--json]\n       workspace instructions compose --start [--pack NAME]... [--no-packs] [--name WORKSPACE] [--json]"
         opts.separator ""
         opts.separator "Print the instructions an agent is given, built from library packs. A pack is a"
-        opts.separator "library play; workspace ships five: binding (how to work in a bound pane),"
+        opts.separator "library play; workspace ships six: binding (how to work in a bound pane),"
         opts.separator "orchestrator (delegate to sub-agents), commits (how to commit), review (review a"
-        opts.separator "diff with reviewer sub-agents) and notes (where working notes go). With no"
+        opts.separator "diff with reviewer sub-agents), notes (where working notes go) and handoff (run"
+        opts.separator "'workspace handoff check' after every task). With no"
         opts.separator "--pack, binding, orchestrator and commits are composed, in that order. Each"
         opts.separator "pack is printed under a heading that names where it came from."
         opts.separator ""

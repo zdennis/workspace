@@ -97,4 +97,46 @@ RSpec.describe Workspace::HandoffConfig do
       end
     end
   end
+
+  describe "#auto?" do
+    it "is off when handoff.auto is unset or the project has no handoff block" do
+      expect(handoff_config.auto?("app")).to be(false)
+      project_settings.save("app", {"handoff" => {"threshold" => "20"}})
+      expect(handoff_config.auto?("app")).to be(false)
+    end
+
+    it "is on for true, written as a boolean or as the string config set stores" do
+      [true, "true"].each do |value|
+        project_settings.save("app", {"handoff" => {"auto" => value}})
+        expect(handoff_config.auto?("app")).to be(true)
+      end
+    end
+
+    it "is off for false" do
+      project_settings.save("app", {"handoff" => {"auto" => "false"}})
+      expect(handoff_config.auto?("app")).to be(false)
+    end
+
+    it "warns and stays off for a hand-edited value that is not true or false" do
+      project_settings.save("app", {"handoff" => {"auto" => "maybe"}})
+
+      expect(handoff_config.auto?("app")).to be(false)
+      expect(error_output.string).to include("invalid handoff.auto for 'app'")
+    end
+
+    it "warns and stays off when the project config cannot be parsed" do
+      FileUtils.mkdir_p(File.join(dir, "projects"))
+      File.write(File.join(dir, "projects", "app.yml"), "a: [
+")
+
+      expect(handoff_config.auto?("app")).to be(false)
+      expect(error_output.string).to include("Cannot parse")
+    end
+
+    it "leaves the hash #for_workspace returns as it was" do
+      project_settings.save("app", {"handoff" => {"auto" => "true"}})
+
+      expect(handoff_config.for_workspace("app").keys).to eq(%i[threshold check_prompt resume_prompt])
+    end
+  end
 end

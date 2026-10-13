@@ -533,6 +533,105 @@ RSpec.describe Workspace::Commands::Start do
           expect { play_command.call("PROJ-123", packs: %w[review]) }.to raise_error(Workspace::Error, /--pack is not available/)
           expect(project_config).not_to have_received(:create_worktree)
         end
+
+        context "with the handoff pack" do
+          let(:handoff_auto) { false }
+          let(:agent_kind) { "claude" }
+          let(:handoff_config) { instance_double(Workspace::HandoffConfig, auto?: handoff_auto) }
+          let(:main_agent) { instance_double(Workspace::MainAgent, kind: agent_kind) }
+          let(:composer) do
+            Workspace::InstructionComposer.new(library: library, lineage: Workspace::WorkspaceLineage.new, commands_config: Workspace::CommandsConfig.new(project_settings: project_settings),
+              pane_bindings: instance_double(Workspace::PaneBindings), notes_config: Workspace::NotesConfig.new(project_settings: project_settings),
+              handoff_config: handoff_config, main_agent: main_agent)
+          end
+          let(:name) { "myproject.worktree-PROJ-123" }
+
+          before { library.builtin_store.write("play", "handoff", "Run the check.\n") }
+
+          it "sends nothing extra with no flag while handoff.auto is off" do
+            packs_command.call("PROJ-123", json: true)
+
+            expect(JSON.parse(output.string)["packs"].map { |row| row["name"] }).to eq(%w[notes])
+          end
+
+          context "when --handoff is given" do
+            it "sends the pack as a required flag pack, bound with the others" do
+              packs_command.call("PROJ-123", handoff: true)
+
+              expect(launch_command).to have_received(:call).with(anything, hash_including(
+                prompts: {name => a_string_including("## From pack handoff (built-in)")},
+                bindings: {name => hash_including("packs" => %w[notes handoff])}
+              ))
+              expect(launch_command).to have_received(:call).with(anything, hash_not_including(:optional))
+            end
+
+            it "reports a flag row in --json" do
+              allow(launch_command).to receive(:call).and_return({exit_code: 0, prompt_failures: {}, delivered_panes: {name => "%4"}})
+
+              packs_command.call("PROJ-123", handoff: true, json: true)
+
+              expect(JSON.parse(output.string)["packs"]).to include({"name" => "handoff", "source" => "flag", "delivered" => true, "pane" => "%4"})
+            end
+
+            context "and the main agent is not Claude Code" do
+              let(:agent_kind) { "codex" }
+
+              it "fails before anything is created, with handoff_unsupported_agent and details.kind" do
+                result = packs_command.call("PROJ-123", handoff: true, json: true)
+
+                expect(result).to eq({exit_code: 1})
+                expect(JSON.parse(output.string)).to include("ok" => false, "code" => "handoff_unsupported_agent", "details" => {"kind" => "codex"})
+                expect(git).not_to have_received(:create_worktree)
+                expect(project_config).not_to have_received(:create_worktree)
+                expect(launch_command).not_to have_received(:call)
+              end
+            end
+          end
+
+          context "when handoff.auto is on" do
+            let(:handoff_auto) { true }
+
+            it "sends the pack from config, as an optional prompt with the notes pack" do
+              packs_command.call("PROJ-123")
+
+              expect(launch_command).to have_received(:call).with(anything, hash_including(optional: {name => %w[notes handoff]}))
+            end
+
+            it "leaves it out with --no-handoff" do
+              packs_command.call("PROJ-123", handoff: false, json: true)
+
+              expect(JSON.parse(output.string)["packs"].map { |row| row["name"] }).to eq(%w[notes])
+            end
+
+            context "and the main agent is not Claude Code" do
+              let(:agent_kind) { "opencode" }
+
+              it "still starts, skips the pack, reports why, and warns" do
+                result = packs_command.call("PROJ-123", json: true)
+
+                doc = JSON.parse(output.string)
+                expect(result[:exit_code]).to eq(0)
+                expect(doc["packs"]).to include({"name" => "handoff", "source" => "config", "delivered" => false, "pane" => nil, "reason" => "handoff_unsupported_agent"})
+                expect(doc["warnings"]).to include(a_string_including("the handoff pack was not sent to #{project_name}", "opencode"))
+                expect(launch_command).to have_received(:call).with(anything, hash_including(prompts: {name => notes_text.strip}))
+              end
+
+              it "prints the warning to stderr without --json" do
+                packs_command.call("PROJ-123")
+
+                expect(error_output.string).to include("Warning: the handoff pack was not sent to #{project_name}")
+              end
+
+              it "sends no prompt at all when the skipped pack was the only one" do
+                allow(project_settings).to receive(:load).with(project_name).and_return({"notes" => {"instructions" => "false"}})
+                packs_command.call("PROJ-123", json: true)
+
+                expect(JSON.parse(output.string)["packs"]).to eq([{"name" => "handoff", "source" => "config", "delivered" => false, "pane" => nil, "reason" => "handoff_unsupported_agent"}])
+                expect(launch_command).to have_received(:call).with(["myproject.worktree-PROJ-123"], prompts: {}, quiet: true)
+              end
+            end
+          end
+        end
       end
 
       it "fails an unknown play before creating anything" do

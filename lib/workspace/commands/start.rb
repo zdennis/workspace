@@ -81,9 +81,9 @@ module Workspace
       # @raise [Workspace::UsageError] if a prompt would block on a non-TTY stdin and
       #   neither +base+ nor +yes+ resolves it (unless +json+ is true)
       def call(input_string, prompt: nil, prompt_timeout: nil, base: nil, yes: false, headless: false, json: false, title: nil, play: nil,
-        agents: [], skills: [], packs: [], no_packs: false)
+        agents: [], skills: [], packs: [], no_packs: false, handoff: nil)
         options = {prompt: prompt, prompt_timeout: prompt_timeout, base: base, yes: yes, headless: headless, title: title, play: play,
-                   agents: agents, skills: skills, packs: packs, no_packs: no_packs}
+                   agents: agents, skills: skills, packs: packs, no_packs: no_packs, handoff: handoff}
         return call_json(input_string, **options) if json
 
         start!(input_string, quiet: false, **options)
@@ -102,7 +102,7 @@ module Workspace
 
       # @return [Hash] when quiet is true, +{exit_code:, json:}+; otherwise the
       #   launch result, or nil if branch selection was cancelled
-      def start!(input_string, prompt:, prompt_timeout:, base:, yes:, headless:, quiet:, title: nil, play: nil, agents: [], skills: [], packs: [], no_packs: false)
+      def start!(input_string, prompt:, prompt_timeout:, base:, yes:, headless:, quiet:, title: nil, play: nil, agents: [], skills: [], packs: [], no_packs: false, handoff: nil)
         root = @git.root
         raise Workspace::Error, "Not inside a git repository." unless root
 
@@ -123,7 +123,7 @@ module Workspace
           project_name = WorkspaceLineage.name_from_path(root)
         end
         @play = play && resolve_play(play, root)
-        @packs = resolve_packs(root, packs, no_packs)
+        @packs = resolve_packs(root, packs, no_packs, handoff, quiet: quiet)
         @copies = resolve_copies({"agent" => agents, "skill" => skills}, root)
         parsed = @git.parse_start_input(input_string)
 
@@ -233,7 +233,7 @@ module Workspace
         json["play"] = @play.merge("delivered" => delivered?(result, config_name), "pane" => result&.dig(:bound_panes, config_name)) if @play
         skipped = result&.dig(:skipped_prompts, config_name)
         @warnings << skipped if skipped
-        json["packs"] = @packs ? InstructionComposer.delivery_rows(@packs["packs"], delivered: delivered?(result, config_name) && !skipped, pane: result&.dig(:delivered_panes, config_name)) : []
+        json["packs"] = InstructionComposer.delivery_rows(@packs ? @packs["packs"] : [], delivered: delivered?(result, config_name) && !skipped, pane: result&.dig(:delivered_panes, config_name), skipped: @skipped_packs || [])
         json["session_reused"] = result[:reused].include?(config_name) if result && result[:reused]
         if exit_code != 0
           prompt_failures = result && result[:prompt_failures]
@@ -273,12 +273,16 @@ module Workspace
       # unknown name or an unreadable pack changes nothing.
       #
       # @return [Hash, nil] from {Workspace::InstructionComposer#compose_start}; nil when none applies
-      def resolve_packs(root, packs, none)
+      def resolve_packs(root, packs, none, handoff, quiet:)
+        @skipped_packs = []
         unless @instruction_composer
           raise Workspace::Error, "--pack is not available: no library was wired." if packs.any?
+          raise Workspace::Error, "--handoff is not available: no library was wired." if handoff == true
           return nil
         end
-        composed = @instruction_composer.compose_start(cwd: root, packs: packs, none: none)
+        composed = @instruction_composer.compose_start(cwd: root, packs: packs, none: none, handoff: handoff)
+        @skipped_packs = composed["skipped"] || []
+        @skipped_packs.each { |pack| quiet ? @warnings << pack["message"] : @error_output.puts("Warning: #{pack["message"]}") }
         composed["packs"].empty? ? nil : composed
       end
 

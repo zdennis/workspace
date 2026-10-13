@@ -243,6 +243,8 @@ module Workspace
         doc: "Overrides the built-in save-state prompt `handoff check --handoff-doc` sends; must not be blank (see [`workspace handoff`](README.handoff.md))"),
       Key.new(name: "handoff.resume_prompt", scope: :project, settable: true, parser: PROMPT,
         doc: "Overrides the built-in resume prompt `handoff new` sends; must not be blank (see [`workspace handoff`](README.handoff.md))"),
+      Key.new(name: "handoff.auto", scope: :project, type: :boolean, settable: true, default: false, parser: BOOLEAN,
+        doc: "`true` or `false`: whether `start` and `launch` send a Claude Code agent the built-in `handoff` pack, which makes it run [`workspace handoff check`](README.handoff.md) after every task and hand off to a fresh conversation itself (default `false`); `--handoff` and `--no-handoff` override it for one run"),
       Key.new(name: "commands.test", scope: :project, type: :command, sensitive: true, settable: true, parser: COMMAND,
         doc: "Command that runs the project's tests, e.g. `bundle exec rspec`; [`workspace instructions compose`](README.instructions.md) names it in the `commits` pack"),
       Key.new(name: "commands.lint", scope: :project, type: :command, sensitive: true, settable: true, parser: COMMAND,

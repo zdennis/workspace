@@ -1441,6 +1441,25 @@ RSpec.describe Workspace::CLI do
       expect(start_command).not_to have_received(:call).with("PROJ-3", any_args)
     end
 
+    it "passes --handoff and --no-handoff through to start, and refuses --handoff with --no-packs" do
+      start_command = double("start", call: {exit_code: 0, prompt_failures: {}})
+      cli, _, error_output = build_test_cli(start_command: start_command)
+
+      cli.run(["start", "--handoff", "PROJ-1"])
+      cli.run(["start", "--no-handoff", "--no-packs", "PROJ-2"])
+      cli.run(["start", "PROJ-4"])
+
+      expect(start_command).to have_received(:call).with("PROJ-1", prompt: nil, prompt_timeout: nil,
+        base: nil, yes: false, json: false, handoff: true)
+      expect(start_command).to have_received(:call).with("PROJ-2", prompt: nil, prompt_timeout: nil,
+        base: nil, yes: false, json: false, no_packs: true, handoff: false)
+      expect(start_command).to have_received(:call).with("PROJ-4", prompt: nil, prompt_timeout: nil,
+        base: nil, yes: false, json: false)
+      expect { cli.run(["start", "--no-packs", "--handoff", "PROJ-3"]) }.to raise_error(FakeSystemExit)
+      expect(error_output.string).to include("--no-packs cannot be combined with --handoff")
+      expect(start_command).not_to have_received(:call).with("PROJ-3", any_args)
+    end
+
     it "passes repeated --agent and --skill through to start" do
       start_command = double("start", call: {exit_code: 0, prompt_failures: {}})
       cli, _, error_output = build_test_cli(start_command: start_command)
@@ -7018,6 +7037,107 @@ RSpec.describe Workspace::CLI do
             rows = parse_one(raw)["results"]
             expect(rows.first["packs"]).to eq([{"name" => "notes", "source" => "config", "delivered" => true, "pane" => "%4"},
               {"name" => "review", "source" => "flag", "delivered" => true, "pane" => "%4"}])
+          end
+
+          context "with the handoff pack" do
+            let(:handoff_auto) { {} }
+            let(:handoff_config) { instance_double(Workspace::HandoffConfig) }
+            let(:agent_kinds) { Hash.new("claude") }
+            let(:main_agent) { instance_double(Workspace::MainAgent) }
+            let(:composer) do
+              Workspace::InstructionComposer.new(library: library, lineage: lineage, commands_config: Workspace::CommandsConfig.new(project_settings: project_settings),
+                pane_bindings: instance_double(Workspace::PaneBindings), notes_config: Workspace::NotesConfig.new(project_settings: project_settings),
+                handoff_config: handoff_config, main_agent: main_agent)
+            end
+
+            before do
+              library.builtin_store.write("play", "handoff", "Run the check.\n")
+              allow(handoff_config).to receive(:auto?) { |name| handoff_auto.fetch(name, false) }
+              allow(main_agent).to receive(:kind) { |name| agent_kinds[name] }
+            end
+
+            it "sends nothing extra with no flag and handoff.auto unset, so a plain launch is as before" do
+              launch_command = double("launch", call: {exit_code: 0, prompt_failures: {}})
+              cli, = build_test_cli(launch_command: launch_command, project_config: project_config, library: library, instruction_composer: composer)
+
+              cli.run(["launch", "api"])
+
+              expect(launch_command).to have_received(:call).with(["api"], hash_including(optional: {"api" => ["notes"]}))
+            end
+
+            it "sends the pack to every project with --handoff, as a required prompt" do
+              launch_command = double("launch", call: {exit_code: 0, prompt_failures: {}})
+              cli, = build_test_cli(launch_command: launch_command, project_config: project_config, library: library, instruction_composer: composer)
+
+              cli.run(["launch", "--handoff", "api", "web"])
+
+              expect(launch_command).to have_received(:call) do |_projects, **options|
+                expect(options[:prompts].values).to all(include("## From pack handoff (built-in)"))
+                expect(options[:bindings].values).to all(include("packs" => %w[notes handoff]))
+                expect(options).not_to have_key(:optional)
+              end
+            end
+
+            it "follows handoff.auto per project, and --no-handoff overrides it" do
+              handoff_auto.merge!("api" => true, "web" => true)
+              launch_command = double("launch", call: {exit_code: 0, prompt_failures: {}})
+              cli, = build_test_cli(launch_command: launch_command, project_config: project_config, library: library, instruction_composer: composer)
+
+              cli.run(["launch", "api"])
+              cli.run(["launch", "--no-handoff", "web"])
+
+              expect(launch_command).to have_received(:call).with(["api"], hash_including(optional: {"api" => %w[notes handoff]}))
+              expect(launch_command).to have_received(:call).with(["web"], hash_including(optional: {"web" => %w[notes]}))
+            end
+
+            it "launches a project whose agent is not Claude Code without the pack, with a warning and a skipped row" do
+              state = CLITestHelpers::FakeState.new
+              handoff_auto["api"] = true
+              agent_kinds["api"] = "codex"
+              cli, raw, err = action_cli(state: state, project_config: project_config, library: library, instruction_composer: composer,
+                &launching(state, result: {exit_code: 0, prompt_failures: {}, delivered_panes: {"api" => "%4"}}))
+
+              status = exit_status { cli.run(["launch", "api", "--json"]) }
+
+              doc = parse_one(raw)
+              expect(status).to eq(0)
+              expect(doc["results"].first["packs"]).to eq([
+                {"name" => "notes", "source" => "config", "delivered" => true, "pane" => "%4"},
+                {"name" => "handoff", "source" => "config", "delivered" => false, "pane" => nil, "reason" => "handoff_unsupported_agent"}
+              ])
+              expect(doc["warnings"]).to eq(["the handoff pack was not sent to api: handoff.auto is on, but its main agent is codex and the pack needs Claude Code"])
+              expect(err.string).to include("Warning: the handoff pack was not sent to api")
+            end
+
+            it "refuses --handoff for a non-Claude project before anything launches or is created, with details.kind" do
+              agent_kinds["web"] = "opencode"
+              launch_command = double("launch", call: {exit_code: 0})
+              cli, raw, = action_cli(launch_command: launch_command, project_config: project_config, library: library, instruction_composer: composer)
+
+              expect(exit_status { cli.run(["launch", "api", "web", "--handoff", "--json"]) }).to eq(1)
+
+              expect(parse_one(raw)).to include("ok" => false, "code" => "handoff_unsupported_agent", "details" => {"kind" => "opencode"})
+              expect(launch_command).not_to have_received(:call)
+            end
+
+            it "refuses --no-packs with --handoff, and accepts it with --no-handoff" do
+              launch_command = double("launch", call: {exit_code: 0, prompt_failures: {}})
+              cli, raw, = action_cli(launch_command: launch_command, project_config: project_config, library: library, instruction_composer: composer)
+
+              expect(exit_status { cli.run(["launch", "api", "--no-packs", "--handoff", "--json"]) }).to eq(1)
+              expect(parse_one(raw)).to include("ok" => false, "code" => "usage")
+
+              cli, = build_test_cli(launch_command: launch_command, project_config: project_config, library: library, instruction_composer: composer)
+              cli.run(["launch", "api", "--no-packs", "--no-handoff"])
+              expect(launch_command).to have_received(:call).with(["api"], reattach: false, prompts: {})
+            end
+
+            it "lists --handoff in launch --help" do
+              cli, _, error_output = build_test_cli
+              expect { cli.run(["launch"]) }.to raise_error(FakeSystemExit)
+
+              expect(error_output.string).to include("--[no-]handoff")
+            end
           end
         end
 

@@ -59,6 +59,19 @@ module Workspace
       }
     end
 
+    # Whether the project asks for automatic handoff (`handoff.auto`): `start` and
+    # `launch` then send the agent the `handoff` pack. Off unless the project's file
+    # says `true`; a bad stored value or an unparseable file warns and counts as off.
+    #
+    # @param workspace [String] the workspace's name (a worktree reads its parent project's value)
+    # @return [Boolean]
+    def auto?(workspace)
+      name = project_name_for(workspace)
+      handoff = load_handoff(name)
+      handoff = {} unless handoff.is_a?(Hash)
+      setting(handoff, name, "auto") == "true"
+    end
+
     private
 
     def load_handoff(name)

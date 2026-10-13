@@ -351,7 +351,7 @@ RSpec.describe Workspace::InstructionComposer do
     end
 
     it "has no text and no packs when none applies" do
-      expect(composer.compose_start(cwd: "/work/app", none: true)).to eq("packs" => [], "text" => nil)
+      expect(composer.compose_start(cwd: "/work/app", none: true)).to eq("packs" => [], "text" => nil, "skipped" => [])
     end
 
     it "fails with unknown_library_entry for a pack that does not exist" do
@@ -365,6 +365,105 @@ RSpec.describe Workspace::InstructionComposer do
         {"name" => "notes", "source" => "config", "delivered" => true, "pane" => "%4"},
         {"name" => "review", "source" => "flag", "delivered" => true, "pane" => "%4"}
       ])
+    end
+
+    describe "the handoff pack" do
+      let(:handoff_config) { Workspace::HandoffConfig.new(project_settings: project_settings, error_output: StringIO.new) }
+      let(:main_agent) { instance_double(Workspace::MainAgent, kind: "claude") }
+      subject(:composer) do
+        described_class.new(library: library, lineage: lineage, commands_config: commands_config, pane_bindings: pane_bindings,
+          notes_config: notes_config, handoff_config: handoff_config, main_agent: main_agent)
+      end
+
+      def auto(value)
+        allow(project_settings).to receive(:load).with("app").and_return({"handoff" => {"auto" => value}})
+      end
+
+      before { library.builtin_store.write("play", "handoff", "Run the check after every task.\n") }
+
+      it "is not sent when handoff.auto is unset or false" do
+        expect(composer.start_packs(cwd: "/work/app").map { |p| p["name"] }).to eq(%w[notes])
+        auto("false")
+        expect(composer.start_packs(cwd: "/work/app").map { |p| p["name"] }).to eq(%w[notes])
+      end
+
+      it "comes from config, after notes, when handoff.auto is true and the main agent is Claude Code" do
+        auto("true")
+
+        expect(composer.start_packs(cwd: "/work/app")).to eq([{"name" => "notes", "source" => "config"}, {"name" => "handoff", "source" => "config"}])
+      end
+
+      it "comes from the flag with handoff: true, whatever the key says, and is left out with handoff: false" do
+        expect(composer.start_packs(cwd: "/work/app", handoff: true)).to eq([{"name" => "notes", "source" => "config"}, {"name" => "handoff", "source" => "flag"}])
+        auto("true")
+        expect(composer.start_packs(cwd: "/work/app", handoff: false).map { |p| p["name"] }).to eq(%w[notes])
+      end
+
+      it "is dropped by none: true unless the flag asks for it, which is a usage error" do
+        auto("true")
+
+        expect(composer.start_packs(cwd: "/work/app", none: true)).to eq([])
+        expect { composer.start_packs(cwd: "/work/app", none: true, handoff: true) }.to raise_error(Workspace::UsageError, /--no-packs cannot be combined with --handoff/)
+        expect(composer.start_packs(cwd: "/work/app", none: true, handoff: false)).to eq([])
+      end
+
+      it "is skipped with a reason and a warning when the config asks for it and the main agent is not Claude Code" do
+        auto("true")
+        allow(main_agent).to receive(:kind).with("app").and_return("codex")
+
+        result = composer.compose_start(cwd: "/work/app")
+
+        expect(result["packs"].map { |p| p["ref"] }).to eq(%w[play/notes])
+        expect(result["skipped"]).to eq([{"name" => "handoff", "source" => "config", "reason" => "handoff_unsupported_agent",
+                                          "message" => "the handoff pack was not sent to app: handoff.auto is on, but its main agent is codex and the pack needs Claude Code"}])
+      end
+
+      it "describes a project that runs no known agent as such" do
+        auto("true")
+        allow(main_agent).to receive(:kind).and_return("none")
+
+        expect(composer.compose_start(cwd: "/work/app")["skipped"].first["message"]).to include("runs no coding agent")
+      end
+
+      it "is refused with handoff_unsupported_agent and the agent kind when the flag asks for it" do
+        allow(main_agent).to receive(:kind).with("app").and_return("codex")
+
+        expect { composer.compose_start(cwd: "/work/app", handoff: true) }.to raise_error(Workspace::Error) { |e|
+          expect(e.code).to eq("handoff_unsupported_agent")
+          expect(e.details).to eq("kind" => "codex")
+        }
+      end
+
+      it "composes the handoff text under its heading and marks it with its source" do
+        result = composer.compose_start(cwd: "/work/app", handoff: true)
+
+        expect(result["text"]).to include("## From pack handoff (built-in)\n\nRun the check after every task.")
+        expect(result["packs"].map { |p| [p["ref"], p["source"]] }).to eq([["play/notes", "config"], ["play/handoff", "flag"]])
+      end
+
+      it "adds a skipped row beside the delivered ones" do
+        auto("true")
+        allow(main_agent).to receive(:kind).and_return("codex")
+        result = composer.compose_start(cwd: "/work/app")
+
+        expect(described_class.delivery_rows(result["packs"], delivered: true, pane: "%4", skipped: result["skipped"])).to eq([
+          {"name" => "notes", "source" => "config", "delivered" => true, "pane" => "%4"},
+          {"name" => "handoff", "source" => "config", "delivered" => false, "pane" => nil, "reason" => "handoff_unsupported_agent"}
+        ])
+      end
+
+      it "treats a flag-sourced handoff pack as required, so a failed send is an error" do
+        result = composer.compose_start(cwd: "/work/app", handoff: true)
+
+        expect(described_class.optional_prompt?(result, prompt: nil, play: nil)).to be(false)
+      end
+
+      it "refuses the flag when no handoff config or main agent was wired, and adds nothing from config" do
+        bare = described_class.new(library: library, lineage: lineage, commands_config: commands_config, pane_bindings: pane_bindings, notes_config: notes_config)
+
+        expect { bare.start_packs(cwd: "/work/app", handoff: true) }.to raise_error(Workspace::Error, /--handoff is not available/)
+        expect(bare.start_packs(cwd: "/work/app").map { |p| p["name"] }).to eq(%w[notes])
+      end
     end
   end
 end
@@ -381,11 +480,11 @@ RSpec.describe Workspace::InstructionComposer, "with the packs workspace ships" 
       pane_bindings: Workspace::PaneBindings.new(path: "/nonexistent/bindings.json"))
   end
 
-  it "ships exactly the five packs, as plays, each readable with a description" do
+  it "ships exactly the six packs, as plays, each readable with a description" do
     shipped = Workspace::LibraryStore.new(dir: builtin_dir, scope: "builtin")
 
     expect(Dir.children(builtin_dir)).to eq(["play"])
-    expect(shipped.entries.map { |e| e["ref"] }).to eq(%w[play/binding play/commits play/notes play/orchestrator play/review])
+    expect(shipped.entries.map { |e| e["ref"] }).to eq(%w[play/binding play/commits play/handoff play/notes play/orchestrator play/review])
     expect(shipped.entries).to all(include("readable" => true, "link" => nil, "description" => a_string_matching(/\A\S.{10,}/)))
   end
 
