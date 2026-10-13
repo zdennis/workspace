@@ -15,8 +15,14 @@ module Workspace
     # resume prompt) at an explicit pane and returns once it's started.
     #
     # Neither command ever guesses a pane: `--pane` names one explicitly, or
-    # the daemon's first pane of kind "claude" is used. Neither ever guesses
-    # a context percentage either -- see {#check}'s exit code 2.
+    # the daemon's first pane of kind "claude" is used. `--pane` takes a tmux
+    # pane id ("%19", what `$TMUX_PANE` holds in the pane itself), "window.pane",
+    # or a pane index in window 0. The id is the one to prefer: it names one
+    # pane for its whole life. Either way the pane is looked up in the
+    # workspace's own tmux session before anything is typed, the daemon's
+    # default pane included: a daemon can be older than this command and list
+    # another session's panes. Neither ever guesses a context percentage
+    # either -- see {#check}'s exit code 2.
     class Handoff
       # Bumped whenever the `--json` payload's shape changes incompatibly.
       JSON_SCHEMA_VERSION = 1
@@ -25,15 +31,18 @@ module Workspace
       # @param tmux [Workspace::Tmux] delivers the save-state prompt directly
       #   (no /clear involved, so this doesn't need the daemon's restart
       #   machinery)
+      # @param locator [Workspace::PaneLocator] finds the pane in the
+      #   workspace's own tmux session
       # @param handoff_config [Workspace::HandoffConfig] threshold and prompt
       #   template defaults
       # @param restart_agent_command [Workspace::Commands::RestartAgent] the
       #   H2 `/clear` + resume flow, reused verbatim by `new`
       # @param output [IO] stream for the result (and `--json` output)
       # @param error_output [IO] stream for the "undetermined" reason (non-JSON)
-      def initialize(config:, tmux:, handoff_config:, restart_agent_command:, output: $stdout, error_output: $stderr)
+      def initialize(config:, tmux:, locator:, handoff_config:, restart_agent_command:, output: $stdout, error_output: $stderr)
         @config = config
         @tmux = tmux
+        @locator = locator
         @handoff_config = handoff_config
         @restart_agent_command = restart_agent_command
         @output = output
@@ -41,8 +50,8 @@ module Workspace
       end
 
       # @param name [String] workspace name
-      # @param pane [String, nil] pane index; nil picks the daemon's first
-      #   "claude" pane
+      # @param pane [String, nil] pane id ("%19"), "window.pane" or pane
+      #   index; nil picks the daemon's first "claude" pane
       # @param threshold [Integer, nil] context-usage percent that triggers a
       #   handoff; nil uses `handoff.threshold` (default 11)
       # @param context_pct [Integer, nil] skips detection and uses this value
@@ -55,6 +64,8 @@ module Workspace
       #   project's usual `--json` error contract (exit 1): "undetermined" is
       #   a third outcome, not an error, so callers can tell it apart from
       #   "over threshold" with a plain exit-code check.
+      # @raise [Workspace::Error] see {Workspace::PaneLocator#locate}, when
+      #   the pane isn't one of the workspace's own; nothing is typed
       def check(name:, pane: nil, threshold: nil, context_pct: nil, handoff_doc: nil, handoff_prompt: nil, json: false)
         defaults = @handoff_config.for_workspace(name)
         if threshold
@@ -70,8 +81,9 @@ module Workspace
         snapshot, error = fetch_sessions(name)
         return undetermined(json, error) if error
 
-        pane_info = find_pane(snapshot, pane)
-        raise Workspace::UsageError, no_pane_message(name, pane, snapshot) unless pane_info
+        detail = locate(name, pane || default_pane(name, snapshot))
+        pane_info = (snapshot["panes"] || []).find { |p| p["pane_id"] == detail[:id] }
+        return undetermined(json, unlisted_reason(name, detail), fix: unlisted_fix(name)) unless pane_info
         raise Workspace::UsageError, not_claude_message(name, pane_info) unless pane_kind_ok?(pane_info)
 
         if context_pct && !context_pct.between?(0, 100)
@@ -85,10 +97,10 @@ module Workspace
           return ok(json, pct: pct, threshold: threshold, pane: pane_info)
         end
 
-        body = check_body(name: name, pane_index: pane_info["index"], pct: pct, threshold: threshold,
+        body = check_body(name: name, pane: pane_info, pct: pct, threshold: threshold,
           handoff_doc: handoff_doc, handoff_prompt: handoff_prompt, defaults: defaults)
         delivery = begin
-          @tmux.deliver(@tmux.session_name_for(name), "0.#{pane_info["index"]}", body)
+          @tmux.deliver(detail[:session], detail[:id], body)
         rescue Workspace::Error, SystemCallError => e
           Workspace::Tmux::Delivery.new(status: :failed, message: e.message)
         end
@@ -96,8 +108,8 @@ module Workspace
       end
 
       # @param name [String] workspace name
-      # @param pane [String, nil] pane index; nil picks the daemon's first
-      #   "claude" pane, same as {#check}
+      # @param pane [String, nil] pane id ("%19"), "window.pane" or pane
+      #   index; nil picks the daemon's first "claude" pane, same as {#check}
       # @param handoff_doc [String, nil] path the agent should resume from
       # @param handoff_prompt [String, nil] prompt sent verbatim instead
       # @param wait [Boolean] wait for the restart to finish instead of
@@ -108,9 +120,7 @@ module Workspace
         if pane.nil?
           snapshot, error = fetch_sessions(name)
           raise Workspace::Error, error if error
-          pane_info = find_pane(snapshot, nil)
-          raise Workspace::UsageError, no_pane_message(name, nil, snapshot) unless pane_info
-          pane = pane_info["index"].to_s
+          pane = default_pane(name, snapshot)
         end
 
         defaults = @handoff_config.for_workspace(name)
@@ -150,9 +160,12 @@ module Workspace
         %{new_cmd} --handoff-doc PATH
       PROMPT
 
-      def check_body(name:, pane_index:, pct:, threshold:, handoff_doc:, handoff_prompt:, defaults:)
+      # The command it tells the agent to run names the pane by its id, which
+      # stays with the pane however its window is split or renumbered. The id
+      # is quoted because `%` is special in some shells.
+      def check_body(name:, pane:, pct:, threshold:, handoff_doc:, handoff_prompt:, defaults:)
         usage = "Context usage is at #{pct}%, #{(pct > threshold) ? "over" : "at"} the #{threshold}% threshold."
-        new_cmd_base = "workspace handoff new #{[name].shelljoin} --pane #{pane_index}"
+        new_cmd_base = "workspace handoff new #{[name].shelljoin} --pane '#{pane["pane_id"]}'"
 
         if handoff_prompt
           new_cmd = "#{new_cmd_base} #{["--handoff-prompt", handoff_prompt].shelljoin}"
@@ -197,16 +210,31 @@ module Workspace
         [nil, "no agent daemon for '#{name}' (start one with: workspace agentd --name #{name})"]
       end
 
-      def find_pane(snapshot, pane)
-        panes = snapshot["panes"] || []
-        return panes.find { |p| p["kind"] == "claude" } if pane.nil?
-        return panes.find { |p| p["pane_id"] == pane.to_s } if pane.to_s.match?(Workspace::TmuxPane::PANE_ID)
-        panes.find { |p| p["index"].to_s == pane.to_s }
+      # @return [String] the pane id of the first Claude Code pane the daemon lists
+      def default_pane(name, snapshot)
+        listed = (snapshot["panes"] || []).find { |p| p["kind"] == "claude" && p["pane_id"] }
+        raise Workspace::UsageError, "No Claude Code pane found in workspace '#{name}'; pass --pane." unless listed
+        listed["pane_id"]
       end
 
-      def no_pane_message(name, pane, snapshot)
-        return "No Claude Code pane found in workspace '#{name}'; pass --pane." if pane.nil?
-        "No pane #{pane} in workspace '#{name}'. Panes: #{(snapshot["panes"] || []).map { |p| p["index"] }.join(", ")}"
+      # Finds the pane in the workspace's own tmux session. A bare index is a
+      # pane of window 0, as `agent-run restart` reads it.
+      #
+      # @return [Hash] see {Workspace::PaneLocator#locate}
+      def locate(name, spec)
+        spec = spec.to_s.strip
+        @locator.locate(name, spec.match?(/\A\d+\z/) ? "0.#{spec}" : spec)
+      end
+
+      # The pane is in the workspace's session, yet the daemon doesn't list
+      # it: the daemon is watching something else, so its readings can't be
+      # used for this pane.
+      def unlisted_reason(name, detail)
+        "the agent daemon for '#{name}' doesn't list pane #{detail[:id]} of tmux session '#{detail[:session]}'"
+      end
+
+      def unlisted_fix(name)
+        "Restart the agent daemon: workspace agentd restart #{[name].shelljoin}"
       end
 
       # Session monitor pane kinds `check` will type the save-state prompt
@@ -227,14 +255,14 @@ module Workspace
           "handoff only restarts Claude Code, whose /clear it types."
       end
 
-      def undetermined(json, reason)
+      def undetermined(json, reason, fix: ContextReasons::FIX_HINT)
         if json
           @output.puts JSON.generate({"schema_version" => JSON_SCHEMA_VERSION, "ok" => true, "status" => "undetermined",
-                                        "reason" => reason, "fix" => ContextReasons::FIX_HINT})
+                                        "reason" => reason, "fix" => fix})
         else
           @error_output.puts "workspace: could not determine context usage"
           @error_output.puts "  reason: #{reason}"
-          @error_output.puts "  #{ContextReasons::FIX_HINT.gsub("\n", "\n  ")}"
+          @error_output.puts "  #{fix.gsub("\n", "\n  ")}"
         end
         {exit_code: 2}
       end
@@ -242,7 +270,7 @@ module Workspace
       def ok(json, pct:, threshold:, pane:)
         if json
           @output.puts JSON.generate({"schema_version" => JSON_SCHEMA_VERSION, "ok" => true, "status" => "ok", "context_pct" => pct,
-                                        "threshold" => threshold, "pane" => pane["index"]})
+                                        "threshold" => threshold, "pane" => pane["index"], "pane_id" => pane["pane_id"]})
         else
           @output.puts "Context usage: #{pct}% (threshold #{threshold}%) -- under threshold, nothing to do."
         end
@@ -258,7 +286,7 @@ module Workspace
         status = delivery.landed? ? "handoff_sent" : "handoff_send_failed"
         if json
           @output.puts JSON.generate({"schema_version" => JSON_SCHEMA_VERSION, "ok" => true, "status" => status,
-                                        "context_pct" => pct, "threshold" => threshold, "pane" => pane["index"],
+                                        "context_pct" => pct, "threshold" => threshold, "pane" => pane["index"], "pane_id" => pane["pane_id"],
                                         "delivery" => delivery.status.to_s, "landed" => delivery.landed?})
         elsif delivery.landed?
           @output.puts "Context usage: #{pct}% (threshold #{threshold}%) -- at/over threshold; sent save-state prompt to pane #{pane["index"]} (#{delivery.status})."

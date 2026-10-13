@@ -8,13 +8,16 @@ RSpec.describe Workspace::Commands::Handoff do
   let(:socket_path) { File.join(tmpdir, "workspace-myapp.sock") }
   let(:config) { instance_double(Workspace::Config, agent_socket_path: socket_path) }
   let(:tmux) { instance_double(Workspace::Tmux) }
+  # Stands in for the workspace's own tmux session "myapp": a pane id is
+  # found as given, and "window.pane" is the pane whose id ends in that index.
+  let(:locator) { instance_double(Workspace::PaneLocator) }
   let(:handoff_config) { instance_double(Workspace::HandoffConfig) }
   let(:restart_agent_command) { instance_double(Workspace::Commands::RestartAgent) }
   let(:output) { StringIO.new }
   let(:error_output) { StringIO.new }
 
   subject(:command) do
-    described_class.new(config: config, tmux: tmux, handoff_config: handoff_config,
+    described_class.new(config: config, tmux: tmux, locator: locator, handoff_config: handoff_config,
       restart_agent_command: restart_agent_command, output: output, error_output: error_output)
   end
 
@@ -23,6 +26,9 @@ RSpec.describe Workspace::Commands::Handoff do
   before do
     allow(handoff_config).to receive(:for_workspace).with("myapp").and_return(defaults)
     allow(tmux).to receive(:session_name_for).with("myapp").and_return("myapp")
+    allow(locator).to receive(:locate) do |_name, spec|
+      {id: spec.start_with?("%") ? spec : "%#{spec.split(".").last}", session: "myapp"}
+    end
   end
 
   after { FileUtils.remove_entry(tmpdir) }
@@ -63,7 +69,7 @@ RSpec.describe Workspace::Commands::Handoff do
       result = with_sessions([over_pane]) { command.check(name: "myapp", handoff_doc: "HANDOFF.md") }
 
       expect(result).to eq(exit_code: 1)
-      expect(tmux).to have_received(:deliver).with("myapp", "0.1", a_string_including("HANDOFF.md", "workspace handoff new myapp --pane 1"))
+      expect(tmux).to have_received(:deliver).with("myapp", "%1", a_string_including("HANDOFF.md", "workspace handoff new myapp --pane '%1'"))
       expect(output.string).to include("42%", "sent save-state prompt")
     end
 
@@ -75,7 +81,70 @@ RSpec.describe Workspace::Commands::Handoff do
       result = with_sessions([other_pane, over_pane]) { command.check(name: "myapp", pane: "%1", handoff_doc: "HANDOFF.md") }
 
       expect(result).to eq(exit_code: 1)
-      expect(tmux).to have_received(:deliver).with("myapp", "0.7", anything)
+      expect(tmux).to have_received(:deliver).with("myapp", "%1", a_string_including("--pane '%1'"))
+    end
+
+    # The pane is looked up in the workspace's own tmux session, and the
+    # prompt goes to the pane id found there. The daemon's index for a pane
+    # is never a target: a daemon listing another session's panes would
+    # point it at the wrong one.
+    describe "finding the pane in the workspace's own session" do
+      let(:over_pane) { claude_pane.merge("index" => 2, "pane_id" => "%7", "context_pct" => 42) }
+
+      before { allow(tmux).to receive(:deliver).and_return(Workspace::Tmux::Delivery.new(status: :submitted)) }
+
+      it "reads a bare index as a pane of window 0 and types into the pane id found there" do
+        allow(locator).to receive(:locate).with("myapp", "0.3").and_return({id: "%7", session: "myapp-session"})
+
+        with_sessions([over_pane]) { command.check(name: "myapp", pane: "3", json: true) }
+
+        expect(tmux).to have_received(:deliver).with("myapp-session", "%7", a_string_including("--pane '%7'"))
+        expect(JSON.parse(output.string)).to include("pane" => 2, "pane_id" => "%7")
+      end
+
+      it "accepts window.pane, for a pane outside window 0" do
+        allow(locator).to receive(:locate).with("myapp", "1.0").and_return({id: "%7", session: "myapp"})
+
+        with_sessions([over_pane]) { command.check(name: "myapp", pane: "1.0") }
+
+        expect(tmux).to have_received(:deliver).with("myapp", "%7", anything)
+      end
+
+      it "types nothing when the daemon's default pane belongs to another session" do
+        refusal = Workspace::Error.new("Pane %7 belongs to tmux session 'myapp-ui', not 'myapp' (workspace 'myapp').", code: "wrong_session")
+        allow(locator).to receive(:locate).with("myapp", "%7").and_raise(refusal)
+
+        with_sessions([over_pane]) do
+          expect { command.check(name: "myapp") }.to raise_error(Workspace::Error, /belongs to tmux session 'myapp-ui'/) { |e| expect(e.code).to eq("wrong_session") }
+        end
+        expect(tmux).not_to have_received(:deliver)
+      end
+
+      it "types nothing when the named pane isn't in the workspace's session" do
+        refusal = Workspace::Error.new("No pane 0.9 in tmux session 'myapp' (workspace 'myapp').", code: "no_such_pane")
+        allow(locator).to receive(:locate).with("myapp", "0.9").and_raise(refusal)
+
+        with_sessions([over_pane]) do
+          expect { command.check(name: "myapp", pane: "9") }.to raise_error(Workspace::Error, /No pane 0.9/) { |e| expect(e.code).to eq("no_such_pane") }
+        end
+        expect(tmux).not_to have_received(:deliver)
+      end
+
+      it "exits 2 and types nothing when the daemon doesn't list the workspace's pane" do
+        result = with_sessions([over_pane]) { command.check(name: "myapp", pane: "%3") }
+
+        expect(result).to eq(exit_code: 2)
+        expect(error_output.string).to include("the agent daemon for 'myapp' doesn't list pane %3 of tmux session 'myapp'",
+          "workspace agentd restart myapp")
+        expect(error_output.string).not_to include("statusLine")
+        expect(tmux).not_to have_received(:deliver)
+      end
+
+      it "skips a listed Claude pane that has no pane id when picking the default" do
+        with_sessions([claude_pane.merge("pane_id" => nil)]) do
+          expect { command.check(name: "myapp") }.to raise_error(Workspace::UsageError, /No Claude Code pane found/)
+        end
+      end
     end
 
     it "sends the prompt verbatim (via --handoff-prompt) instead of a doc" do
@@ -84,7 +153,7 @@ RSpec.describe Workspace::Commands::Handoff do
 
       with_sessions([over_pane]) { command.check(name: "myapp", handoff_prompt: "Wrap up") }
 
-      expect(tmux).to have_received(:deliver).with("myapp", "0.1", a_string_including("--handoff-prompt Wrap\\ up"))
+      expect(tmux).to have_received(:deliver).with("myapp", "%1", a_string_including("--handoff-prompt Wrap\\ up"))
     end
 
     it "lets the agent pick a doc path when neither is given" do
@@ -93,7 +162,7 @@ RSpec.describe Workspace::Commands::Handoff do
 
       with_sessions([over_pane]) { command.check(name: "myapp") }
 
-      expect(tmux).to have_received(:deliver).with("myapp", "0.1", a_string_including("PATH replaced by the doc's absolute path", "--handoff-doc PATH"))
+      expect(tmux).to have_received(:deliver).with("myapp", "%1", a_string_including("PATH replaced by the doc's absolute path", "--handoff-doc PATH"))
     end
 
     it "skips detection when --context-pct is given" do
@@ -133,12 +202,6 @@ RSpec.describe Workspace::Commands::Handoff do
 
       expect(result).to eq(exit_code: 2)
       expect(error_output.string).to include("no agent daemon for 'myapp'")
-    end
-
-    it "raises a usage error when the named pane doesn't exist" do
-      with_sessions([claude_pane]) do
-        expect { command.check(name: "myapp", pane: "9") }.to raise_error(Workspace::UsageError, /No pane 9/)
-      end
     end
 
     it "picks the daemon's own threshold override" do
@@ -189,7 +252,7 @@ RSpec.describe Workspace::Commands::Handoff do
 
       with_sessions([over_pane]) { command.check(name: "myapp", handoff_doc: "HANDOFF.md") }
 
-      expect(tmux).to have_received(:deliver).with("myapp", "0.1", a_string_including("Update HANDOFF.md now"))
+      expect(tmux).to have_received(:deliver).with("myapp", "%1", a_string_including("Update HANDOFF.md now"))
       expect(error_output.string).to include("invalid prompt template")
     end
   end
@@ -202,7 +265,16 @@ RSpec.describe Workspace::Commands::Handoff do
 
       expect(result).to eq(exit_code: 0)
       expect(restart_agent_command).to have_received(:call)
-        .with(name: "myapp", pane: "1", prompt: a_string_including("HANDOFF.md", "Start here"), wait: false, json: false)
+        .with(name: "myapp", pane: "%1", prompt: a_string_including("HANDOFF.md", "Start here"), wait: false, json: false)
+    end
+
+    it "passes a pane id straight to restart_agent_command" do
+      allow(restart_agent_command).to receive(:call).and_return({exit_code: 0})
+
+      command.new(name: "myapp", pane: "%2", handoff_doc: "HANDOFF.md")
+
+      expect(restart_agent_command).to have_received(:call)
+        .with(name: "myapp", pane: "%2", prompt: a_string_including("HANDOFF.md"), wait: false, json: false)
     end
 
     it "uses an explicit --pane without needing the daemon" do
@@ -220,6 +292,12 @@ RSpec.describe Workspace::Commands::Handoff do
       command.new(name: "myapp", pane: "3", handoff_prompt: "Resume now", wait: true)
 
       expect(restart_agent_command).to have_received(:call).with(name: "myapp", pane: "3", prompt: "Resume now", wait: true, json: false)
+    end
+
+    it "raises when the daemon lists no Claude pane and no pane was given" do
+      with_sessions([claude_pane.merge("kind" => "shell")]) do
+        expect { command.new(name: "myapp", handoff_doc: "HANDOFF.md") }.to raise_error(Workspace::UsageError, /No Claude Code pane found/)
+      end
     end
 
     it "raises when no agent daemon is reachable and no pane was given" do

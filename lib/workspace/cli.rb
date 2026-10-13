@@ -2473,8 +2473,11 @@ module Workspace
         NAME defaults to the workspace detected from the current directory.
 
         Options (check):
-          --pane N               Pane index (default: the first Claude Code pane;
-                                  see `workspace sessions NAME` to list panes)
+          --pane PANE            tmux pane id ('%19'; "$TMUX_PANE" inside the pane),
+                                  window.pane (1.0), or a pane index in window 0
+                                  (default: the first Claude Code pane; `workspace
+                                  sessions NAME` lists panes). Must be a pane of
+                                  NAME's own tmux session
           --threshold PCT        Context usage percent that triggers a handoff, 1-100
                                   (default: handoff.threshold, or 11)
           --context-pct N        Skip detection and use this value (0-100)
@@ -2483,8 +2486,11 @@ module Workspace
           --json                 Print the result as JSON
 
         Options (new):
-          --pane N               Pane index (default: the first Claude Code pane;
-                                  see `workspace sessions NAME` to list panes)
+          --pane PANE            tmux pane id ('%19'; "$TMUX_PANE" inside the pane),
+                                  window.pane (1.0), or a pane index in window 0
+                                  (default: the first Claude Code pane; `workspace
+                                  sessions NAME` lists panes). Must be a pane of
+                                  NAME's own tmux session
           --handoff-doc PATH     Doc the agent reads and resumes from (one of
                                   --handoff-doc/--handoff-prompt is required)
           --handoff-prompt TEXT  Prompt sent verbatim instead of a doc (one of
@@ -2500,6 +2506,8 @@ module Workspace
           workspace handoff check myapp --handoff-doc HANDOFF.md
           workspace handoff check myapp --pane 2 --threshold 20 --json    # for scripting
           workspace handoff new myapp --pane 1 --handoff-doc HANDOFF.md    # without going through check
+          workspace handoff check myapp --pane "$TMUX_PANE" --handoff-doc HANDOFF.md    # an agent, on its own pane
+          workspace handoff new myapp --pane "$TMUX_PANE" --handoff-doc HANDOFF.md
       HELP
     end
 
@@ -2529,7 +2537,8 @@ module Workspace
 
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: workspace handoff check NAME [options]"
-        opts.on("--pane N", "Pane index or tmux pane id (e.g. '%19', from 'workspace sessions --json'); default: the first Claude Code pane") { |v| pane = v }
+        opts.on("--pane PANE", "tmux pane id ('%19'; \"$TMUX_PANE\" inside the pane), window.pane (1.0), or a pane index in window 0;",
+          "must be a pane of NAME's own tmux session; default: the first Claude Code pane") { |v| pane = v }
         opts.on("--threshold PCT", "Context usage percent that triggers a handoff") { |v| threshold = v }
         opts.on("--context-pct N", Integer, "Skip detection and use this value") { |v| context_pct = v }
         opts.on("--handoff-doc PATH", "Doc the agent updates and resumes from") { |v| handoff_doc = v }
@@ -2569,7 +2578,8 @@ module Workspace
 
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: workspace handoff new NAME [options]"
-        opts.on("--pane N", "Pane index or tmux pane id (e.g. '%19', from 'workspace sessions --json'); default: the first Claude Code pane") { |v| pane = v }
+        opts.on("--pane PANE", "tmux pane id ('%19'; \"$TMUX_PANE\" inside the pane), window.pane (1.0), or a pane index in window 0;",
+          "must be a pane of NAME's own tmux session; default: the first Claude Code pane") { |v| pane = v }
         opts.on("--handoff-doc PATH", "Doc the agent reads and resumes from") { |v| handoff_doc = v }
         opts.on("--handoff-prompt TEXT", "Prompt sent verbatim instead of a doc") { |v| handoff_prompt = v }
         opts.on("--wait", "Wait for the restart to finish and report how it went") { wait = true }

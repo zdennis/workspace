@@ -10,7 +10,13 @@ RSpec.describe Workspace::Commands::RestartAgent do
   let(:output) { StringIO.new }
   let(:received) { [] }
 
-  subject(:command) { described_class.new(config: config, output: output) }
+  let(:locator) { instance_double(Workspace::PaneLocator) }
+
+  subject(:command) { described_class.new(config: config, locator: locator, output: output) }
+
+  before do
+    allow(locator).to receive(:locate).with("myapp", "%18").and_return({id: "%18", window: 0, index: 1, session: "myapp-session"})
+  end
 
   after { FileUtils.remove_entry(tmpdir) }
 
@@ -43,6 +49,87 @@ RSpec.describe Workspace::Commands::RestartAgent do
 
     expect(received).to eq([{"type" => "restart_agent", "workspace" => "myapp", "pane" => "%18",
                              "prompt" => "Read HANDOFF.md", "force" => true, "wait" => true, "timeout" => 45}])
+    expect(locator).to have_received(:locate).with("myapp", "%18")
+  end
+
+  # The daemon is a long-lived process and may be older than this
+  # command, so the pane is resolved here, inside the workspace's own tmux
+  # session, and named to the daemon by its id: an id is one pane on the
+  # whole tmux server, where an index is a pane of whatever session the
+  # daemon lists.
+  describe "resolving the pane before the daemon is asked" do
+    def located(spec, detail)
+      allow(locator).to receive(:locate).with("myapp", spec).and_return(detail.merge(session: "myapp-session"))
+    end
+
+    it "names a pane given as window.pane by its pane id" do
+      located("0.1", {id: "%2", window: 0, index: 1})
+
+      with_daemon(started) { call(pane: "0.1") }
+
+      expect(received.first["pane"]).to eq("%2")
+    end
+
+    it "reads a bare index as a pane of window 0" do
+      located("0.1", {id: "%2", window: 0, index: 1})
+
+      with_daemon(started) { call(pane: "1") }
+
+      expect(received.first["pane"]).to eq("%2")
+    end
+
+    ["myapp:1.0", "myapp-session:1.0"].each do |spec|
+      it "accepts #{spec}, the pane prefixed with the workspace's name or its tmux session" do
+        located("1.0", {id: "%9", window: 1, index: 0})
+
+        with_daemon(started) { call(pane: spec) }
+
+        expect(received.first["pane"]).to eq("%9")
+      end
+    end
+
+    it "refuses a pane of another session without asking the daemon" do
+      located("0.1", {id: "%2", window: 0, index: 1})
+      allow(UNIXSocket).to receive(:open)
+
+      expect { call(pane: "myapp-ui:0.1") }
+        .to raise_error(Workspace::Error, "Pane myapp-ui:0.1 is not in tmux session 'myapp-session' (workspace 'myapp').") { |e| expect(e.code).to eq("wrong_session") }
+      expect(UNIXSocket).not_to have_received(:open)
+    end
+
+    # The case that went wrong: workspace "workspace" beside "workspace-ui".
+    it "refuses a pane of a session whose name only starts with the workspace's" do
+      allow(locator).to receive(:locate).with("workspace", "0.1").and_return({id: "%2", window: 0, index: 1, session: "workspace"})
+      allow(UNIXSocket).to receive(:open)
+
+      expect { command.call(name: "workspace", pane: "workspace-ui:0.1", prompt: "Read HANDOFF.md") }
+        .to raise_error(Workspace::Error, /not in tmux session 'workspace'/) { |e| expect(e.code).to eq("wrong_session") }
+      expect(UNIXSocket).not_to have_received(:open)
+    end
+
+    it "refuses a pane id the workspace's session doesn't have, without asking the daemon" do
+      allow(locator).to receive(:locate).with("myapp", "%6").and_raise(
+        Workspace::Error.new("Pane %6 belongs to tmux session 'myapp-ui', not 'myapp' (workspace 'myapp').", code: "wrong_session")
+      )
+      allow(UNIXSocket).to receive(:open)
+
+      result = call(pane: "%6", json: true)
+
+      expect(result).to eq(exit_code: 1)
+      expect(JSON.parse(output.string)).to include("ok" => false, "code" => "wrong_session",
+        "error" => "Pane %6 belongs to tmux session 'myapp-ui', not 'myapp' (workspace 'myapp').")
+      expect(UNIXSocket).not_to have_received(:open)
+    end
+
+    it "refuses anything that is not a pane id, window.pane or an index" do
+      allow(locator).to receive(:locate).with("myapp", "Claude Code").and_raise(
+        Workspace::Error.new("\"Claude Code\" is not a pane id (%19) or window.pane (0.1).", code: "bad_pane")
+      )
+      allow(UNIXSocket).to receive(:open)
+
+      expect { call(pane: "Claude Code") }.to raise_error(Workspace::Error, /not a pane id/) { |e| expect(e.code).to eq("bad_pane") }
+      expect(UNIXSocket).not_to have_received(:open)
+    end
   end
 
   it "leaves the timeout out when none is given" do

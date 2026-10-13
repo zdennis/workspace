@@ -96,7 +96,7 @@ RSpec.describe Workspace::Tmux do
       tmux = described_class.new(config: config)
       allow(tmux).to receive(:sessions).and_return(["myproject"])
       expect(tmux.command_for("myproject", reattach: true)).to eq(
-        "tmux -CC attach -t myproject || tmux has-session -t myproject 2>/dev/null || tmuxinator start workspace.myproject --attach"
+        "tmux -CC attach -t \\=myproject || tmux has-session -t \\=myproject 2>/dev/null || tmuxinator start workspace.myproject --attach"
       )
     end
 
@@ -111,7 +111,7 @@ RSpec.describe Workspace::Tmux do
       command = tmux.command_for(dangerous, reattach: true)
 
       expect(command).to eq(
-        "tmux -CC attach -t #{Shellwords.escape(dangerous)} || tmux has-session -t #{Shellwords.escape(dangerous)} 2>/dev/null || " \
+        "tmux -CC attach -t #{Shellwords.escape("=#{dangerous}")} || tmux has-session -t #{Shellwords.escape("=#{dangerous}")} 2>/dev/null || " \
         "tmuxinator start #{Shellwords.escape("workspace.#{dangerous}")} --attach"
       )
     end
@@ -121,7 +121,7 @@ RSpec.describe Workspace::Tmux do
     it "builds a plain || chain with no braces" do
       tmux = described_class.new(config: config)
       expect(tmux.reattach_or_start("myproject", "tmuxinator start workspace.myproject --attach")).to eq(
-        "tmux -CC attach -t myproject || tmux has-session -t myproject 2>/dev/null || tmuxinator start workspace.myproject --attach"
+        "tmux -CC attach -t \\=myproject || tmux has-session -t \\=myproject 2>/dev/null || tmuxinator start workspace.myproject --attach"
       )
     end
   end
@@ -207,7 +207,7 @@ RSpec.describe Workspace::Tmux do
       expect(result.status).to eq(:submitted)
       expect(result).to be_ok
       expect(tmux).to have_received(:tmux_load_buffer).with(anything, "hello world")
-      expect(tmux).to have_received(:tmux_paste_buffer).with(anything, "my-session:0.1")
+      expect(tmux).to have_received(:tmux_paste_buffer).with(anything, "=my-session:0.1")
       expect(enters).to eq(["Enter"])
     end
 
@@ -233,7 +233,7 @@ RSpec.describe Workspace::Tmux do
       tmux.deliver("my-session", "0.1", text)
 
       expect(tmux).to have_received(:tmux_load_buffer).with(anything, text).once
-      expect(tmux).to have_received(:tmux_paste_buffer).with(anything, "my-session:0.1").once
+      expect(tmux).to have_received(:tmux_paste_buffer).with(anything, "=my-session:0.1").once
       expect(enters).to eq(["Enter"])
     end
 
@@ -326,7 +326,7 @@ RSpec.describe Workspace::Tmux do
 
       expect(result.status).to eq(:pasted)
       expect(result).to be_ok
-      expect(tmux).not_to have_received(:system).with("tmux", "send-keys", "-t", "my-session:0.1", "Enter")
+      expect(tmux).not_to have_received(:system).with("tmux", "send-keys", "-t", "=my-session:0.1", "Enter")
     end
 
     it "reports :unverified, still pressing Enter, when the pane can't be read back" do
@@ -337,7 +337,7 @@ RSpec.describe Workspace::Tmux do
       expect(result.status).to eq(:unverified)
       expect(result).not_to be_ok
       expect(result).to be_landed
-      expect(tmux).to have_received(:system).with("tmux", "send-keys", "-t", "my-session:0.1", "Enter").once
+      expect(tmux).to have_received(:system).with("tmux", "send-keys", "-t", "=my-session:0.1", "Enter").once
     end
 
     it "counts a paste placeholder on screen as the text having arrived" do
@@ -382,7 +382,7 @@ RSpec.describe Workspace::Tmux do
       result = tmux.deliver("bad-session", "0.1", "text")
 
       expect(result.status).to eq(:failed)
-      expect(result.message).to eq("tmux could not paste into bad-session:0.1")
+      expect(result.message).to eq("tmux could not paste into =bad-session:0.1")
       expect(tmux).to have_received(:system).with("tmux", "delete-buffer", "-b", anything)
     end
 
@@ -396,16 +396,16 @@ RSpec.describe Workspace::Tmux do
       result = tmux.deliver("app.worktree-x", "0.1", "text")
 
       expect(result.status).to eq(:failed)
-      expect(result.message).to eq("tmux could not paste into app.worktree-x:0.1: can't find session: app.worktree-x")
+      expect(result.message).to eq("tmux could not paste into =app.worktree-x:0.1: can't find session: app.worktree-x")
     end
 
     it "runs paste-buffer as a bracketed paste and returns tmux's stderr" do
       status = instance_double(Process::Status, success?: false)
       allow(Open3).to receive(:capture3)
-        .with("tmux", "paste-buffer", "-p", "-b", "buf-1", "-t", "s:0.1")
+        .with("tmux", "paste-buffer", "-p", "-b", "buf-1", "-t", "=s:0.1")
         .and_return(["", "can't find pane: 0.1\n", status])
 
-      expect(described_class.new(config: config).send(:tmux_paste_buffer, "buf-1", "s:0.1")).to eq([false, "can't find pane: 0.1"])
+      expect(described_class.new(config: config).send(:tmux_paste_buffer, "buf-1", "=s:0.1")).to eq([false, "can't find pane: 0.1"])
     end
 
     it "reports :failed when Enter can't be pressed" do
@@ -445,7 +445,7 @@ RSpec.describe Workspace::Tmux do
     let(:tmux) { described_class.new(config: config) }
 
     it "is true when the screen shows the end of the text" do
-      allow(tmux).to receive(:capture_screen).with("proj:0.1").and_return("> ...and then please do the thing\n")
+      allow(tmux).to receive(:capture_screen).with("=proj:0.1").and_return("> ...and then please do the thing\n")
 
       expect(tmux.shows_text?("proj", "0.1", "read the notes first, and then please do the thing")).to be true
     end
@@ -467,7 +467,7 @@ RSpec.describe Workspace::Tmux do
 
       details = tmux.pane_details("proj", window: nil)
 
-      expect(Open3).to have_received(:capture3).with("tmux", "list-panes", "-s", "-t", "proj", "-F", anything)
+      expect(Open3).to have_received(:capture3).with("tmux", "list-panes", "-s", "-t", "=proj:", "-F", anything)
       expect(details).to eq([{id: "%7", window: 2, index: 1, pid: 700, command: "claude", cwd: "/src", title: "Claude Code"}])
     end
 
@@ -476,7 +476,7 @@ RSpec.describe Workspace::Tmux do
 
       tmux.pane_details("proj")
 
-      expect(Open3).to have_received(:capture3).with("tmux", "list-panes", "-t", "proj:0", "-F", anything)
+      expect(Open3).to have_received(:capture3).with("tmux", "list-panes", "-t", "=proj:0", "-F", anything)
     end
   end
 
@@ -492,7 +492,7 @@ RSpec.describe Workspace::Tmux do
 
       panes = tmux.pane_start_commands("proj")
 
-      expect(Open3).to have_received(:capture3).with("tmux", "list-panes", "-s", "-t", "proj", "-F", anything)
+      expect(Open3).to have_received(:capture3).with("tmux", "list-panes", "-s", "-t", "=proj:", "-F", anything)
       expect(panes).to eq([
         {window: 0, index: 0, id: "%24", start_command: nil},
         {window: 0, index: 1, id: "%25", start_command: "claude --continue || claude"},
@@ -534,7 +534,7 @@ RSpec.describe Workspace::Tmux do
       result = tmux.send_key("my-session", "0.1", "C-c")
 
       expect(result).to be true
-      expect(tmux).to have_received(:system).with("tmux", "send-keys", "-t", "my-session:0.1", "C-c")
+      expect(tmux).to have_received(:system).with("tmux", "send-keys", "-t", "=my-session:0.1", "C-c")
     end
 
     it "returns false when send fails" do
@@ -551,7 +551,7 @@ RSpec.describe Workspace::Tmux do
 
     it "returns the layout string on success" do
       allow(Open3).to receive(:capture3)
-        .with("tmux", "list-windows", "-t", "my-session:0", "-F", "\#{window_layout}")
+        .with("tmux", "list-windows", "-t", "=my-session:0", "-F", "\#{window_layout}")
         .and_return(["abc1,119x51,0,0[119x5,0,0]\n", "", double(success?: true)])
 
       expect(tmux.capture_layout("my-session")).to eq("abc1,119x51,0,0[119x5,0,0]")
@@ -569,7 +569,7 @@ RSpec.describe Workspace::Tmux do
 
     it "bounds the capture server-side to the requested window via -S -N" do
       allow(Open3).to receive(:capture3)
-        .with("tmux", "capture-pane", "-t", "my-session:0.2", "-p", "-S", "-100")
+        .with("tmux", "capture-pane", "-t", "=my-session:0.2", "-p", "-S", "-100")
         .and_return(["line1\nline2\nlog output\n", "", double(success?: true)])
 
       expect(tmux.capture_pane("my-session", 2)).to eq("line1\nline2\nlog output\n")
@@ -577,7 +577,7 @@ RSpec.describe Workspace::Tmux do
 
     it "always captures full history via -S -" do
       allow(Open3).to receive(:capture3)
-        .with("tmux", "capture-pane", "-t", "my-session:0.0", "-p", "-S", "-")
+        .with("tmux", "capture-pane", "-t", "=my-session:0.0", "-p", "-S", "-")
         .and_return(["full history\n", "", double(success?: true)])
 
       expect(tmux.capture_pane("my-session", 0, all: true)).to eq("full history\n")
@@ -585,7 +585,7 @@ RSpec.describe Workspace::Tmux do
 
     it "still trims to a custom lines count from the tail in Ruby" do
       allow(Open3).to receive(:capture3)
-        .with("tmux", "capture-pane", "-t", "my-session:0.1", "-p", "-S", "-2")
+        .with("tmux", "capture-pane", "-t", "=my-session:0.1", "-p", "-S", "-2")
         .and_return(["old\nrecent1\nrecent2\n", "", double(success?: true)])
 
       expect(tmux.capture_pane("my-session", 1, lines: 2)).to eq("recent1\nrecent2\n")
@@ -617,7 +617,7 @@ RSpec.describe Workspace::Tmux do
 
     it "returns empty string when buffer is empty (valid)" do
       allow(Open3).to receive(:capture3)
-        .with("tmux", "capture-pane", "-t", "my-session:0.0", "-p", "-S", "-100")
+        .with("tmux", "capture-pane", "-t", "=my-session:0.0", "-p", "-S", "-100")
         .and_return(["", "", double(success?: true)])
 
       expect(tmux.capture_pane("my-session", 0)).to eq("")
@@ -667,7 +667,7 @@ RSpec.describe Workspace::Tmux do
       result = tmux.apply_layout("my-session", "abc1,119x51,0,0[119x5,0,0]")
 
       expect(result).to be true
-      expect(tmux).to have_received(:system).with("tmux", "select-layout", "-t", "my-session:0", "abc1,119x51,0,0[119x5,0,0]")
+      expect(tmux).to have_received(:system).with("tmux", "select-layout", "-t", "=my-session:0", "abc1,119x51,0,0[119x5,0,0]")
     end
 
     it "returns false on failure" do
@@ -686,7 +686,7 @@ RSpec.describe Workspace::Tmux do
       result = tmux.resize_pane("my-session", "0.1", "50%")
 
       expect(result).to be true
-      expect(tmux).to have_received(:system).with("tmux", "resize-pane", "-t", "my-session:0.1", "-y", "50%")
+      expect(tmux).to have_received(:system).with("tmux", "resize-pane", "-t", "=my-session:0.1", "-y", "50%")
     end
 
     it "returns false when resize fails" do
@@ -703,7 +703,7 @@ RSpec.describe Workspace::Tmux do
 
     it "returns sorted pane indices on success" do
       allow(Open3).to receive(:capture3)
-        .with("tmux", "list-panes", "-t", "my-session:0", "-F", "\#{pane_index}")
+        .with("tmux", "list-panes", "-t", "=my-session:0", "-F", "\#{pane_index}")
         .and_return(["2\n0\n1\n", "", double(success?: true)])
 
       expect(tmux.panes("my-session")).to eq([0, 1, 2])
@@ -717,7 +717,7 @@ RSpec.describe Workspace::Tmux do
 
     it "accepts a window keyword argument" do
       allow(Open3).to receive(:capture3)
-        .with("tmux", "list-panes", "-t", "my-session:1", "-F", "\#{pane_index}")
+        .with("tmux", "list-panes", "-t", "=my-session:1", "-F", "\#{pane_index}")
         .and_return(["0\n1\n", "", double(success?: true)])
 
       expect(tmux.panes("my-session", window: "1")).to eq([0, 1])
@@ -734,38 +734,38 @@ RSpec.describe Workspace::Tmux do
     end
 
     it "splits vertically (top/bottom) by default and returns the new pane index" do
-      stub_split("my-session:0")
+      stub_split("=my-session:0")
 
       expect(tmux.split_window("my-session")).to eq(3)
       expect(Open3).to have_received(:capture3)
-        .with("tmux", "split-window", "-v", "-t", "my-session:0", "-P", "-F", "\#{pane_index}")
+        .with("tmux", "split-window", "-v", "-t", "=my-session:0", "-P", "-F", "\#{pane_index}")
     end
 
     it "splits horizontally (side-by-side) when vertical: true" do
-      stub_split("my-session:0")
+      stub_split("=my-session:0")
 
       expect(tmux.split_window("my-session", vertical: true)).to eq(3)
       expect(Open3).to have_received(:capture3)
-        .with("tmux", "split-window", "-h", "-t", "my-session:0", "-P", "-F", "\#{pane_index}")
+        .with("tmux", "split-window", "-h", "-t", "=my-session:0", "-P", "-F", "\#{pane_index}")
     end
 
     it "targets a specific pane when pane: is given" do
-      stub_split("my-session:0.2")
+      stub_split("=my-session:0.2")
 
       tmux.split_window("my-session", pane: 2)
 
       expect(Open3).to have_received(:capture3)
-        .with("tmux", "split-window", "-v", "-t", "my-session:0.2", "-P", "-F", "\#{pane_index}")
+        .with("tmux", "split-window", "-v", "-t", "=my-session:0.2", "-P", "-F", "\#{pane_index}")
     end
 
     it "returns nil when split fails" do
-      stub_split("my-session:0", stdout: "", success: false)
+      stub_split("=my-session:0", stdout: "", success: false)
 
       expect(tmux.split_window("my-session")).to be_nil
     end
 
     it "returns nil when tmux reports no pane index" do
-      stub_split("my-session:0", stdout: "\n")
+      stub_split("=my-session:0", stdout: "\n")
 
       expect(tmux.split_window("my-session")).to be_nil
     end
@@ -782,25 +782,25 @@ RSpec.describe Workspace::Tmux do
     end
 
     it "returns the index of the first pane whose title contains the pattern (case-insensitive)" do
-      stub_list_panes("my-session:0", stdout: "0 banner\n1 ✳ Claude Code 2.1.0\n2 zsh\n")
+      stub_list_panes("=my-session:0", stdout: "0 banner\n1 ✳ Claude Code 2.1.0\n2 zsh\n")
 
       expect(tmux.find_pane_by_title("my-session", "claude code")).to eq(1)
     end
 
     it "matches case-insensitively" do
-      stub_list_panes("my-session:0", stdout: "0 banner\n1 CLAUDE CODE 2.1.0\n")
+      stub_list_panes("=my-session:0", stdout: "0 banner\n1 CLAUDE CODE 2.1.0\n")
 
       expect(tmux.find_pane_by_title("my-session", "Claude Code")).to eq(1)
     end
 
     it "returns nil when no pane title matches" do
-      stub_list_panes("my-session:0", stdout: "0 banner\n1 zsh\n")
+      stub_list_panes("=my-session:0", stdout: "0 banner\n1 zsh\n")
 
       expect(tmux.find_pane_by_title("my-session", "Claude Code")).to be_nil
     end
 
     it "returns nil when list-panes fails" do
-      stub_list_panes("my-session:0", stdout: "", success: false)
+      stub_list_panes("=my-session:0", stdout: "", success: false)
 
       expect(tmux.find_pane_by_title("my-session", "Claude Code")).to be_nil
     end
@@ -825,7 +825,7 @@ RSpec.describe Workspace::Tmux do
       pid = tmux.new_window("app", name: "devenv", cwd: "/w/app", command: ["ruby", "ws", "dev", "__run"], env: {"XDG_STATE_HOME" => "/s"})
 
       expect(pid).to eq(4321)
-      expect(Open3).to have_received(:capture3).with("tmux", "new-window", "-d", "-P", "-F", "\#{pane_pid} \#{pane_id}", "-t", "app:",
+      expect(Open3).to have_received(:capture3).with("tmux", "new-window", "-d", "-P", "-F", "\#{pane_pid} \#{pane_id}", "-t", "=app:",
         "-n", "devenv", "-c", "/w/app", "-e", "XDG_STATE_HOME=/s", "--", "ruby", "ws", "dev", "__run")
       expect(Open3).to have_received(:capture3).once
     end
@@ -1112,7 +1112,7 @@ RSpec.describe Workspace::Tmux do
 
       expect(tmux.select_pane("my-session", detail)).to be true
 
-      expect(tmux).to have_received(:system).with("tmux", "select-window", "-t", "my-session:1").ordered
+      expect(tmux).to have_received(:system).with("tmux", "select-window", "-t", "=my-session:1").ordered
       expect(tmux).to have_received(:system).with("tmux", "select-pane", "-t", "%19").ordered
     end
 
@@ -1147,7 +1147,7 @@ RSpec.describe Workspace::Tmux do
 
       tmux.send_key("my-session", "1.2", "Escape")
 
-      expect(tmux).to have_received(:system).with("tmux", "send-keys", "-t", "my-session:1.2", "Escape")
+      expect(tmux).to have_received(:system).with("tmux", "send-keys", "-t", "=my-session:1.2", "Escape")
     end
 
     it "pastes into a pane id on its own" do
@@ -1178,6 +1178,107 @@ RSpec.describe Workspace::Tmux do
       allow(Open3).to receive(:capture3).and_return(["", "can't find pane: %19", failed])
 
       expect(tmux.server_pid_for_pane("%19")).to be_nil
+    end
+  end
+
+  # tmux reads a target loosely unless told otherwise. "workspace" as the
+  # target of `list-panes -s` is tried first as a window of whichever session
+  # was used last, by name prefix, and "workspace:0" falls back to a session
+  # whose name starts with "workspace". Either way a workspace whose name
+  # starts another session's name gets that session's panes. These run real
+  # tmux on a server of their own, reached through TMUX_TMPDIR, so the
+  # prefix rules under test are tmux's own.
+  describe "session targets against a real tmux server", skip: (system("command -v tmux >/dev/null 2>&1") ? false : "tmux is not installed") do
+    let(:tmux) { described_class.new(config: config) }
+    # Unix socket paths are short; stay under /tmp directly.
+    let(:socket_dir) { Dir.mktmpdir("ws-tmux", "/tmp") }
+    # Names no live session has, so nothing here could act on one.
+    let(:name) { "wsspec#{Process.pid}" }
+    let(:other) { "#{name}-ui" }
+    let(:private_env) { {"TMUX" => nil, "TMUX_PANE" => nil, "TMUX_TMPDIR" => socket_dir} }
+
+    def private_tmux(*args)
+      stdout, stderr, status = Open3.capture3(private_env, "tmux", "-f", File::NULL, *args)
+      raise "tmux #{args.first} failed: #{stderr}" unless status.success?
+      stdout
+    end
+
+    def pane_ids(session)
+      private_tmux("list-panes", "-s", "-t", "=#{session}:", "-F", "\#{pane_id}").split
+    end
+
+    around do |example|
+      raise "no private tmux socket directory" unless File.directory?(private_env["TMUX_TMPDIR"].to_s)
+      saved = private_env.keys.to_h { |key| [key, ENV[key]] }
+      begin
+        private_tmux("new-session", "-d", "-s", name, "-n", "#{name}-window", "-x", "80", "-y", "24")
+        private_tmux("new-session", "-d", "-s", other, "-n", "#{other}-window", "-x", "80", "-y", "24")
+        private_tmux("split-window", "-d", "-t", "=#{other}:0")
+        private_env.each { |key, value| ENV[key] = value }
+        raise "not on the private tmux server" unless tmux.sessions.sort == [name, other]
+        example.run
+      ensure
+        saved.each { |key, value| ENV[key] = value }
+        Open3.capture3(private_env, "tmux", "kill-server")
+        FileUtils.remove_entry(socket_dir)
+      end
+    end
+
+    it "lists only the named session's panes when its name starts another session's" do
+      expect(tmux.pane_details(name, window: nil).map { |d| d[:id] }).to eq(pane_ids(name))
+      expect(tmux.pane_details(other, window: nil).map { |d| d[:id] }).to eq(pane_ids(other))
+      expect(tmux.pane_start_commands(name).map { |d| d[:id] }).to eq(pane_ids(name))
+      expect(tmux.pane_details(name).map { |d| d[:id] }).to eq(pane_ids(name))
+      expect(tmux.panes(name)).to eq([0])
+    end
+
+    it "finds no panes for a name that is only the start of a session's name" do
+      private_tmux("kill-session", "-t", "=#{name}")
+
+      expect(tmux.pane_details(name, window: nil)).to eq([])
+      expect(tmux.pane_details(name)).to eq([])
+      expect(tmux.pane_start_commands(name)).to eq([])
+      expect(tmux.panes(name)).to eq([])
+      expect(tmux.capture_layout(name)).to be_nil
+      expect(tmux.capture_pane(name, 0)).to be_nil
+    end
+
+    it "reads, types into and renames only the named session's panes" do
+      private_tmux("send-keys", "-t", "=#{other}:0.0", "-l", "typed-in-other")
+      20.times do
+        break if private_tmux("capture-pane", "-p", "-t", "=#{other}:0.0").include?("typed-in-other")
+        sleep 0.05
+      end
+
+      expect(tmux.capture_pane(name, 0)).not_to include("typed-in-other")
+      expect(tmux.shows_text?(name, "0.0", "typed-in-other")).to be false
+      expect(tmux.shows_text?(other, "0.0", "typed-in-other")).to be true
+
+      tmux.rename_window(name, 0, "renamed")
+      tmux.send_key(name, "0.0", "x")
+
+      expect(private_tmux("list-windows", "-a", "-F", "\#{session_name} \#{window_name}").lines.map(&:chomp))
+        .to contain_exactly("#{name} renamed", "#{other} #{other}-window")
+      expect(private_tmux("capture-pane", "-p", "-t", "=#{other}:0.0")).not_to include("typed-in-otherx")
+    end
+
+    it "types and renames nothing when only a longer-named session exists" do
+      private_tmux("kill-session", "-t", "=#{name}")
+
+      tmux.rename_window(name, 0, "renamed")
+      delivery = tmux.deliver(name, "0.0", "hello", enter: false)
+
+      expect(delivery.status).to eq(:failed)
+      expect(private_tmux("list-windows", "-a", "-F", "\#{window_name}").strip).to eq("#{other}-window")
+      expect(private_tmux("capture-pane", "-p", "-t", "=#{other}:0.0")).not_to include("hello")
+    end
+
+    it "kills only the session with exactly that name" do
+      private_tmux("kill-session", "-t", "=#{name}")
+
+      tmux.kill_session(name)
+
+      expect(tmux.sessions).to eq([other])
     end
   end
 end

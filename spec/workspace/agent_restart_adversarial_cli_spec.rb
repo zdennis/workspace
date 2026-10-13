@@ -13,7 +13,9 @@ RSpec.describe "agent-run restart adversarial CLI behavior" do
   let(:config) { instance_double(Workspace::Config, agent_socket_path: socket_path) }
   let(:output) { StringIO.new }
 
-  subject(:command) { Workspace::Commands::RestartAgent.new(config: config, output: output) }
+  let(:locator) { instance_double(Workspace::PaneLocator, locate: {id: "%18", window: 0, index: 1, session: "myapp"}) }
+
+  subject(:command) { Workspace::Commands::RestartAgent.new(config: config, locator: locator, output: output) }
 
   after { FileUtils.remove_entry(tmpdir) if File.directory?(tmpdir) }
 

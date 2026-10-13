@@ -7,8 +7,8 @@ Watches a coding agent's context-window usage and hands off to a fresh conversat
 ## Usage
 
 ```sh
-workspace handoff check NAME [--pane N] [--threshold PCT] [--context-pct N] [--handoff-doc PATH | --handoff-prompt TEXT] [--json]
-workspace handoff new   NAME [--pane N] (--handoff-doc PATH | --handoff-prompt TEXT) [--wait] [--json]
+workspace handoff check NAME [--pane PANE] [--threshold PCT] [--context-pct N] [--handoff-doc PATH | --handoff-prompt TEXT] [--json]
+workspace handoff new   NAME [--pane PANE] (--handoff-doc PATH | --handoff-prompt TEXT) [--wait] [--json]
 ```
 
 `NAME` defaults to the workspace detected from the current directory. `new` requires either `--handoff-doc` or `--handoff-prompt`.
@@ -17,7 +17,7 @@ workspace handoff new   NAME [--pane N] (--handoff-doc PATH | --handoff-prompt T
 
 | Option | Description |
 |--------|-------------|
-| `--pane N` | Pane index or tmux pane id (e.g. `%19`, from `workspace sessions --json`); default: the daemon's first Claude Code pane |
+| `--pane PANE` | A tmux pane id (`%19`; `"$TMUX_PANE"` inside the pane, or `pane_id` in `workspace sessions --json`), `window.pane` (`1.0`), or a pane index in window 0; default: the daemon's first Claude Code pane. See [Naming the pane](#naming-the-pane) |
 | `--threshold PCT` | Context-usage percent that triggers a handoff, 1-100 (default: `handoff.threshold`, or 11) |
 | `--context-pct N` | Skip detection and use this value |
 | `--handoff-doc PATH` | Doc the agent updates and resumes from |
@@ -28,13 +28,23 @@ workspace handoff new   NAME [--pane N] (--handoff-doc PATH | --handoff-prompt T
 
 | Option | Description |
 |--------|-------------|
-| `--pane N` | Pane index or tmux pane id (e.g. `%19`, from `workspace sessions --json`); default: the daemon's first Claude Code pane |
+| `--pane PANE` | A tmux pane id (`%19`; `"$TMUX_PANE"` inside the pane, or `pane_id` in `workspace sessions --json`), `window.pane` (`1.0`), or a pane index in window 0; default: the daemon's first Claude Code pane. See [Naming the pane](#naming-the-pane) |
 | `--handoff-doc PATH` | Doc the agent reads and resumes from |
 | `--handoff-prompt TEXT` | Prompt sent verbatim instead of a doc |
 | `--wait` | Wait for the restart to finish and report how it went. Don't use it from the agent being restarted: it would block the turn the restart waits on |
 | `--json` | Print the result as JSON; errors as `{"schema_version":1,"ok":false,"error":...}` |
 
 `--handoff-doc` and `--handoff-prompt` are mutually exclusive. `new` requires one of them; `check` doesn't -- when neither is given, the save-state prompt tells the agent to pick a doc path itself.
+
+## Naming the pane
+
+Prefer the pane id. An agent handing itself off passes `--pane "$TMUX_PANE"` to both commands: the id names one pane for its whole life, where an index moves when a pane is split or closed. Quote it, since `%` is special in some shells. The command `check` types into the pane names it the same way (`workspace handoff new NAME --pane '%19' ...`).
+
+The pane must belong to `NAME`'s own tmux session. Both commands look the pane up there before anything is typed, and from then on name it by its pane id: `check` types into that id, and `new` sends it to the agent daemon. A pane id from another session fails with `wrong_session`, a pane the session doesn't have with `no_such_pane`, a workspace with no tmux session with `no_session`, and anything that isn't a pane id, `window.pane` or an index with `bad_pane`. Each exits 1 with nothing typed, and with `--json` prints the usual error document with that `code`. The session is matched by its exact name, so a workspace `app` never reaches the panes of `app-ui`.
+
+Without `--pane`, both commands use the first Claude Code pane the daemon lists, and check it against the workspace's session the same way. In a workspace with more than one Claude Code pane that may not be the caller's, so pass `--pane`.
+
+An agent daemon started by an older version of workspace can be listing another session's panes. `check` then exits 2 with the reason `the agent daemon for 'NAME' doesn't list pane %19 ...` and the restart command as the fix, or fails with `wrong_session` when `--pane` was left out, and `new` fails with the daemon's `no_such_pane`. `workspace agentd restart NAME` replaces the daemon.
 
 ## Exit codes (check)
 
@@ -90,6 +100,8 @@ With `--json`, the reason and fix go in the JSON object instead of stderr:
 
 `--context-pct N` skips detection for that call, so you can run a handoff even while detection is broken.
 
+The other two outcomes print `status` (`ok`, or `handoff_sent` / `handoff_send_failed`), `context_pct`, `threshold`, `pane` (the pane's index in its window) and `pane_id` (its tmux pane id, e.g. `%19`, which a later `--pane` accepts). At or over the threshold they add `delivery` and `landed`.
+
 ## Delivery
 
 `check` types the save-state prompt directly into the named pane and confirms it landed, the same delivery primitive the agent daemon uses for pipeline stages -- but always at the pane you named (or the daemon's first Claude pane), never a pane the daemon picks for you. `new` hands off to `workspace agent-run restart`'s `/clear` + confirm + resume flow; see [README.agent-run.md](README.agent-run.md).
@@ -115,4 +127,8 @@ workspace handoff check myapp --pane 2 --threshold 20 --json
 
 # Clear and resume pane 1 directly, without going through check
 workspace handoff new myapp --pane 1 --handoff-doc HANDOFF.md
+
+# An agent checking, then handing off, its own pane
+workspace handoff check myapp --pane "$TMUX_PANE" --handoff-doc HANDOFF.md
+workspace handoff new myapp --pane "$TMUX_PANE" --handoff-doc HANDOFF.md
 ```

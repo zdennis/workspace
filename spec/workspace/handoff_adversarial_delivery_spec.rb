@@ -13,13 +13,16 @@ RSpec.describe Workspace::Commands::Handoff do
   let(:socket_path) { File.join(tmpdir, "workspace-myapp.sock") }
   let(:config) { instance_double(Workspace::Config, agent_socket_path: socket_path) }
   let(:tmux) { instance_double(Workspace::Tmux) }
+  # Stands in for the workspace's own tmux session "myapp": a pane id is
+  # found as given, and "window.pane" is the pane whose id ends in that index.
+  let(:locator) { instance_double(Workspace::PaneLocator) }
   let(:handoff_config) { instance_double(Workspace::HandoffConfig) }
   let(:restart_agent_command) { instance_double(Workspace::Commands::RestartAgent) }
   let(:output) { StringIO.new }
   let(:error_output) { StringIO.new }
 
   subject(:command) do
-    described_class.new(config: config, tmux: tmux, handoff_config: handoff_config,
+    described_class.new(config: config, tmux: tmux, locator: locator, handoff_config: handoff_config,
       restart_agent_command: restart_agent_command, output: output, error_output: error_output)
   end
 
@@ -28,6 +31,9 @@ RSpec.describe Workspace::Commands::Handoff do
   before do
     allow(handoff_config).to receive(:for_workspace).and_return(defaults)
     allow(tmux).to receive(:session_name_for).with("myapp").and_return("myapp")
+    allow(locator).to receive(:locate) do |_name, spec|
+      {id: spec.start_with?("%") ? spec : "%#{spec.split(".").last}", session: "myapp"}
+    end
   end
 
   after { FileUtils.remove_entry(tmpdir) }

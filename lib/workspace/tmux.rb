@@ -65,7 +65,7 @@ module Workspace
     # @return [void]
     def kill_session(name)
       @logger.debug { "tmux: killing session #{name}" }
-      system("tmux", "kill-session", "-t", name)
+      system("tmux", "kill-session", "-t", "=#{name}")
     end
 
     # @param session_name [String] tmux session name
@@ -74,7 +74,7 @@ module Workspace
     # @return [void]
     def rename_window(session_name, window_index, new_name)
       @logger.debug { "tmux: renaming window #{session_name}:#{window_index} to #{new_name}" }
-      system("tmux", "rename-window", "-t", "#{session_name}:#{window_index}", new_name)
+      system("tmux", "rename-window", "-t", session_target(session_name, window_index), new_name)
     end
 
     # The outcome of {#deliver}.
@@ -206,7 +206,7 @@ module Workspace
     # @param text [String] text that was pasted
     # @return [Boolean]
     def shows_text?(session_name, pane, text)
-      screen = capture_screen("#{session_name}:#{pane}")
+      screen = capture_screen(pane_target(session_name, pane))
       !screen.nil? && shows_new_text?("", screen, text)
     end
 
@@ -245,7 +245,7 @@ module Workspace
     # @return [Boolean] true if both tmux commands succeeded
     def select_pane(session_name, detail)
       @logger.debug { "tmux: select pane #{detail[:id]} in #{session_name}:#{detail[:window]}" }
-      selected = system("tmux", "select-window", "-t", "#{session_name}:#{detail[:window]}") &&
+      selected = system("tmux", "select-window", "-t", session_target(session_name, detail[:window])) &&
         system("tmux", "select-pane", "-t", detail[:id])
       selected ? true : false
     end
@@ -261,10 +261,24 @@ module Workspace
 
     private
 
+    # Names a session, or a window or pane of it, as a tmux target that only
+    # that session can match. Left to itself tmux reads a target loosely:
+    # "app" can be taken as a window of the session used last, by the start
+    # of its name, and "app:0" as session "app-ui" when no "app" exists.
+    # "=" asks for the exact name, and the colon marks it as a session.
+    #
+    # @param session_name [String] tmux session name
+    # @param rest [String, Integer] "window", "window.pane", or nothing for
+    #   the session itself
+    # @return [String] e.g. "=app:0.1"
+    def session_target(session_name, rest = "")
+      "=#{session_name}:#{rest}"
+    end
+
     # A pane id is a target by itself and is never renumbered; any other pane
     # is qualified by its session.
     def pane_target(session_name, pane)
-      pane.to_s.match?(TmuxPane::PANE_ID) ? pane : "#{session_name}:#{pane}"
+      pane.to_s.match?(TmuxPane::PANE_ID) ? pane : session_target(session_name, pane)
     end
 
     # Presses Enter, and presses it once more only if the first left the
@@ -371,7 +385,7 @@ module Workspace
     # @param size [String] size value (e.g. "10" for rows, "50%" for percentage)
     # @return [Boolean] true if resize succeeded
     def resize_pane(session_name, pane, size)
-      target = "#{session_name}:#{pane}"
+      target = session_target(session_name, pane)
       system("tmux", "resize-pane", "-t", target, "-y", size)
     end
 
@@ -381,7 +395,7 @@ module Workspace
     # @param window [String] window index (default "0")
     # @return [Array<Integer>] sorted pane indices, empty array on failure
     def panes(session_name, window: "0")
-      target = "#{session_name}:#{window}"
+      target = session_target(session_name, window)
       @logger.debug { "tmux: listing panes for #{target}" }
       stdout, _, status = Open3.capture3("tmux", "list-panes", "-t", target, "-F", "\#{pane_index}")
       return [] unless status.success?
@@ -446,7 +460,7 @@ module Workspace
     # @return [Integer, nil] the pane's process id, or nil if tmux failed
     def new_window(session_name, name:, cwd:, command:, env: {}, remain_on_exit: false)
       @logger.debug { "tmux: new-window #{name} in #{session_name}: #{command.join(" ")}" }
-      args = ["tmux", "new-window", "-d", "-P", "-F", "\#{pane_pid} \#{pane_id}", "-t", "#{session_name}:", "-n", name, "-c", cwd]
+      args = ["tmux", "new-window", "-d", "-P", "-F", "\#{pane_pid} \#{pane_id}", "-t", session_target(session_name), "-n", name, "-c", cwd]
       env.each { |key, value| args.push("-e", "#{key}=#{value}") }
       stdout, _, status = Open3.capture3(*args, "--", *command)
       return nil unless status.success?
@@ -492,7 +506,7 @@ module Workspace
     #   every window in the session
     # @return [Array<Hash>] :id, :window, :index, :pid, :title, :command, :cwd per pane
     def pane_details(session_name, window: "0")
-      scope = window.nil? ? ["-s", "-t", session_name] : ["-t", "#{session_name}:#{window}"]
+      scope = window.nil? ? ["-s", "-t", session_target(session_name)] : ["-t", session_target(session_name, window)]
       format = ["pane_id", "window_index", "pane_index", "pane_pid", "pane_current_command",
         "pane_current_path", "pane_title"].map { |f| "\#{#{f}}" }.join("\t")
       @logger.debug { "tmux: listing pane details for #{scope.last}" }
@@ -519,7 +533,7 @@ module Workspace
     def pane_start_commands(session_name)
       format = ["window_index", "pane_index", "pane_id", "pane_start_command"].map { |f| "\#{#{f}}" }.join("\t")
       @logger.debug { "tmux: listing pane start commands for #{session_name}" }
-      stdout, _, status = Open3.capture3("tmux", "list-panes", "-s", "-t", session_name, "-F", format)
+      stdout, _, status = Open3.capture3("tmux", "list-panes", "-s", "-t", session_target(session_name), "-F", format)
       return [] unless status.success?
 
       stdout.lines.filter_map do |line|
@@ -537,7 +551,7 @@ module Workspace
     # @param window [String] window index (default "0")
     # @return [Integer, nil] pane index of the first matching pane, or nil if not found
     def find_pane_by_title(session_name, title_pattern, window: "0")
-      target = "#{session_name}:#{window}"
+      target = session_target(session_name, window)
       pattern = title_pattern.downcase
       @logger.debug { "tmux: searching for pane matching #{title_pattern.inspect} in #{target}" }
       stdout, _, status = Open3.capture3("tmux", "list-panes", "-t", target, "-F", "\#{pane_index} \#{pane_title}")
@@ -575,7 +589,7 @@ module Workspace
     # @param vertical [Boolean] true = side-by-side (-h), false = top/bottom (-v, default)
     # @return [Integer, nil] index of the newly created pane, or nil if the split failed
     def split_window(session_name, window: "0", pane: nil, vertical: false)
-      target = pane ? "#{session_name}:#{window}.#{pane}" : "#{session_name}:#{window}"
+      target = session_target(session_name, pane ? "#{window}.#{pane}" : window)
       @logger.debug { "tmux: split-window #{vertical ? "-h" : "-v"} -t #{target}" }
       stdout, _, status = Open3.capture3(
         "tmux", "split-window", (vertical ? "-h" : "-v"), "-t", target,
@@ -591,7 +605,7 @@ module Workspace
     # @param window [String] window index (default "0")
     # @return [String, nil] the layout string, or nil if capture fails
     def capture_layout(session_name, window: "0")
-      target = "#{session_name}:#{window}"
+      target = session_target(session_name, window)
       stdout, _, status = Open3.capture3("tmux", "list-windows", "-t", target, "-F", "\#{window_layout}")
       status.success? ? stdout.strip : nil
     end
@@ -604,7 +618,7 @@ module Workspace
     # @param all [Boolean] capture the full history up to history-limit (overrides lines:)
     # @return [String, nil] the captured text, or nil if tmux reported failure
     def capture_pane(session_name, pane, lines: 100, all: false)
-      capture_pane_target("#{session_name}:0.#{pane}", lines: lines, all: all)
+      capture_pane_target(session_target(session_name, "0.#{pane}"), lines: lines, all: all)
     end
 
     # Captures the scrollback buffer of a tmux pane by its pane id, which
@@ -626,7 +640,7 @@ module Workspace
     # @param window [String] window index (default "0")
     # @return [Boolean] true if apply succeeded
     def apply_layout(session_name, layout, window: "0")
-      target = "#{session_name}:#{window}"
+      target = session_target(session_name, window)
       system("tmux", "select-layout", "-t", target, layout)
     end
 
@@ -654,7 +668,7 @@ module Workspace
     # @param start [String] the tmuxinator start command to fall back to
     # @return [String] the shell command
     def reattach_or_start(session, start)
-      quoted = Shellwords.escape(session)
+      quoted = Shellwords.escape("=#{session}")
       "tmux -CC attach -t #{quoted} || tmux has-session -t #{quoted} 2>/dev/null || #{start}"
     end
 

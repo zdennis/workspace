@@ -10,6 +10,12 @@ module Workspace
     #
     # The pane is always named by the caller. Nothing picks "the Claude
     # pane" on its behalf, since a workspace can run several.
+    #
+    # The pane is found here first, in the workspace's own tmux session, and
+    # named to the daemon by its pane id. A daemon keeps running across
+    # upgrades, and one that lists the wrong session's panes can only answer
+    # that it has no such pane; given an index, it would have cleared
+    # whichever pane holds that index in the session it lists.
     class RestartAgent
       # Bumped whenever the `--json` payload's shape changes incompatibly.
       JSON_SCHEMA_VERSION = 1
@@ -28,10 +34,17 @@ module Workspace
         end
       end
 
+      # A pane named as "window.pane", optionally prefixed with its session.
+      SESSION_PANE = /\A(?:(?<session>[^:]+):)?(?<pane>\d+\.\d+)\z/
+      private_constant :SESSION_PANE
+
       # @param config [Workspace::Config] socket path lookups
+      # @param locator [Workspace::PaneLocator] finds the pane in the
+      #   workspace's own tmux session
       # @param output [IO] stream for the result (and `--json` errors)
-      def initialize(config:, output: $stdout)
+      def initialize(config:, locator:, output: $stdout)
         @config = config
+        @locator = locator
         @output = output
       end
 
@@ -46,10 +59,13 @@ module Workspace
       #   +wait+, finished), 1 when it was refused or failed. With +json+,
       #   errors go to stdout as `{"schema_version":1,"ok":false,"error":...,"code":...}`,
       #   where "code" is the daemon's error code, or "no_daemon",
-      #   "connection_failed" or "unreadable_reply" when it couldn't answer.
+      #   "connection_failed" or "unreadable_reply" when it couldn't answer,
+      #   or a {Workspace::PaneLocator} code ("bad_pane", "no_session",
+      #   "wrong_session", "no_such_pane") when the pane isn't one of the
+      #   workspace's own, in which case the daemon is never asked.
       # @raise [Workspace::Error] when it was refused or failed and +json+ is false
       def call(name:, pane:, prompt:, force: false, wait: false, timeout: nil, json: false)
-        message = {"type" => "restart_agent", "workspace" => name, "pane" => pane, "prompt" => prompt,
+        message = {"type" => "restart_agent", "workspace" => name, "pane" => pane_id(name, pane), "prompt" => prompt,
                    "force" => force, "wait" => wait}
         message["timeout"] = timeout if timeout
         reply = send_message(name, message)
@@ -68,6 +84,20 @@ module Workspace
       end
 
       private
+
+      # @return [String] the pane id of +spec+ in the workspace's own session
+      # @raise [Workspace::Error] see {Workspace::PaneLocator#locate}
+      def pane_id(name, spec)
+        spec = spec.to_s.strip
+        spec = "0.#{spec}" if spec.match?(/\A\d+\z/)
+        named = SESSION_PANE.match(spec)
+        detail = @locator.locate(name, named ? named[:pane] : spec)
+        if named && named[:session] && ![name, detail[:session]].include?(named[:session])
+          raise Workspace::Error.new("Pane #{spec} is not in tmux session '#{detail[:session]}' (workspace '#{name}').",
+            code: "wrong_session", details: {"pane" => spec, "workspace" => name, "session" => detail[:session]})
+        end
+        detail[:id]
+      end
 
       # The daemon's error code travels as "code", so "error" keeps the
       # documented shape: the message a person reads.
