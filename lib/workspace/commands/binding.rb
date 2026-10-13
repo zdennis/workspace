@@ -43,20 +43,23 @@ module Workspace
         ))
       end
 
-      # Prints what the agent is told, and says so when the binding is stale.
+      # Prints what the agent is told, and says so when the binding is stale. The packs
+      # the agent is also told (see {Workspace::PaneBindings#packs_for}) are in the result, not the printout.
       #
       # @param pane [String] a pane id ("%19")
-      # @return [Hash{String=>Object}] the pane's binding, plus "stale" (see {#stale?})
+      # @return [Hash{String=>Object}] the pane's binding, plus "stale" (see {#stale?}) and "packs" (`[]` when none)
       # @raise [Workspace::Error] code `not_bound` when the pane has none
       def show(pane:)
         entry = require_binding(pane)
         stale = stale?(entry)
         @output.puts @bindings.context_for(entry)
+        packs = @bindings.packs_for(entry)
+        @output.puts "Packs: #{packs.join(", ")}." if packs.any?
         if stale
           @output.puts "Stale: pane #{pane} is no longer at #{entry["pane_slot"] || entry["session"]}, where it was bound, " \
             "so the agent in it is not reminded. Bind it again, or clear it."
         end
-        entry.merge("stale" => stale)
+        entry.merge("stale" => stale, "packs" => packs)
       end
 
       # The pane's binding when the SessionStart hook would announce it.
@@ -85,7 +88,7 @@ module Workspace
         require_binding(pane)
         entry = @bindings.unbind(pane)
         @output.puts "Unbound pane #{pane}."
-        entry
+        entry.merge("packs" => @bindings.packs_for(entry))
       end
 
       private

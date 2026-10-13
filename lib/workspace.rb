@@ -390,7 +390,7 @@ module Workspace
     lock_enforcer = LockEnforcer.new(config: config, lock_namespace: lock_namespace, lock_holder: lock_holder, logger: logger)
     session_ledger = SessionLedger.new(path: File.join(config.state_dir, "ledger.jsonl"), logger: logger)
     session_event_command = Commands::SessionEvent.new(config: config, tmux: tmux, input: input, output: output, error_output: error_output, logger: logger,
-      lock_idle_tracker: lock_idle_tracker, lock_enforcer: lock_enforcer, session_ledger: session_ledger, pane_bindings: pane_bindings)
+      lock_idle_tracker: lock_idle_tracker, lock_enforcer: lock_enforcer, session_ledger: session_ledger, pane_bindings: pane_bindings, instruction_composer: instruction_composer)
     process_group_terminator = ProcessGroupTerminator.new
     bound_run = BoundRun.new(pane_bindings: pane_bindings, tmux: tmux)
     lock_command = Commands::Lock.new(config: config, lock_namespace: lock_namespace, lock_holder: lock_holder,

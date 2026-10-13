@@ -34,7 +34,7 @@ module Workspace
         "tasks" => 1,
         "event_emitters" => 1,
         "ui_open" => 1,
-        "pane_bindings" => 2,
+        "pane_bindings" => 3,
         "library" => 3,
         "library_play" => 2,
         "library_copy" => 1,

@@ -46,6 +46,46 @@ RSpec.describe Workspace::PaneBindings do
     end
   end
 
+  describe "packs" do
+    it "stores an empty list when none is given" do
+      expect(store.bind("%5", "kind" => "run", "id" => "wr_1")["packs"]).to eq([])
+    end
+
+    it "stores the names, bare and once each, and replaces the list when the pane is bound again" do
+      entry = store.bind("%5", "kind" => "play", "id" => "play/notes", "packs" => %w[play/notes handoff notes])
+
+      expect(entry["packs"]).to eq(%w[notes handoff])
+      expect(store.binding_for("%5")["packs"]).to eq(%w[notes handoff])
+
+      store.bind("%5", "kind" => "play", "id" => "play/review", "packs" => %w[review])
+      expect(store.binding_for("%5")["packs"]).to eq(%w[review])
+    end
+
+    it "refuses a list that is not names" do
+      expect { store.bind("%5", "kind" => "run", "id" => "x", "packs" => "notes") }.to raise_error(Workspace::UsageError, /list/)
+      expect { store.bind("%5", "kind" => "run", "id" => "x", "packs" => [3]) }.to raise_error(Workspace::UsageError, /list/)
+      expect { store.bind("%5", "kind" => "run", "id" => "x", "packs" => ["Not A Name"]) }.to raise_error(Workspace::UsageError, /pack name/)
+      expect { store.bind("%5", "kind" => "run", "id" => "x", "packs" => ["a\nb"]) }.to raise_error(Workspace::UsageError, /pack name/)
+      expect { store.bind("%5", "kind" => "run", "id" => "x", "packs" => Array.new(21) { |i| "p#{i}" }) }.to raise_error(Workspace::UsageError, /at most 20/)
+      expect(store.binding_for("%5")).to be_nil
+    end
+
+    it "reads a binding written before packs existed, or edited by hand, as having none" do
+      expect(store.packs_for("kind" => "run", "id" => "x")).to eq([])
+      expect(store.packs_for("packs" => "notes")).to eq([])
+      expect(store.packs_for("packs" => ["notes", 3])).to eq([])
+      expect(store.packs_for("packs" => ["notes"])).to eq(["notes"])
+    end
+
+    it "follows its binding when restore moves it" do
+      store.bind("%5", "kind" => "play", "id" => "play/notes", "packs" => %w[notes], "session" => "api", "pane_slot" => "api:0.1")
+
+      moved = store.move([{from: "%5", to: "%9", session: "api", from_slot: "api:0.1", to_slot: "api:0.1"}])
+
+      expect(moved["%9"]["packs"]).to eq(%w[notes])
+    end
+  end
+
   describe "a file that can't be parsed" do
     let(:warnings) { StringIO.new }
     let(:store) { described_class.new(path: path, clock: -> { now }, error_output: warnings) }

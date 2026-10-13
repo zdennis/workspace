@@ -37,6 +37,42 @@ RSpec.describe Workspace::Commands::Binding do
     end
   end
 
+  describe "packs" do
+    it "stores the packs given to set and reports them" do
+      entry = command.set(workspace: "app", pane: "%5", kind: "play", id: "play/notes", packs: %w[notes handoff])
+
+      expect(entry["packs"]).to eq(%w[notes handoff])
+      expect(bindings.binding_for("%5")["packs"]).to eq(%w[notes handoff])
+    end
+
+    it "always reports packs from show and clear, [] for a binding with none or one stored before packs" do
+      command.set(workspace: "app", pane: "%5", kind: "run", id: "wr_1")
+      File.write(File.join(dir, "bindings.json"), JSON.generate("%5" => {"kind" => "run", "id" => "wr_1", "session" => "app"}))
+
+      expect(command.show(pane: "%5")["packs"]).to eq([])
+      expect(command.clear(pane: "%5")["packs"]).to eq([])
+    end
+
+    it "prints no Packs line for a binding with none" do
+      command.set(workspace: "app", pane: "%5", kind: "run", id: "wr_1")
+      output.reopen(+"")
+
+      command.show(pane: "%5")
+
+      expect(output.string).not_to include("Packs:")
+    end
+
+    it "prints the packs after what the agent is told, and returns them" do
+      command.set(workspace: "app", pane: "%5", kind: "play", id: "play/notes", packs: %w[notes handoff])
+      output.reopen(+"")
+
+      entry = command.show(pane: "%5")
+
+      expect(entry["packs"]).to eq(%w[notes handoff])
+      expect(output.string).to end_with("Packs: notes, handoff.\n")
+    end
+  end
+
   describe "#bind" do
     it "binds like set without printing anything" do
       entry = command.bind(workspace: "app", pane: "0.1", kind: "play", id: "play/kickoff", instructions: "/lib/play/kickoff.md")

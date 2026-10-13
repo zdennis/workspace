@@ -580,7 +580,11 @@ module Workspace
       end
 
       call_options = {reattach: reattach, prompts: prompts}
-      call_options[:bindings] = plays.transform_values { |p| @library.play_binding(p) } if plays.any?
+      pane_bindings = projects.to_h do |name|
+        names = composed[name] ? InstructionComposer.pack_names(composed[name]["packs"]) : []
+        [name, plays[name] ? @library.play_binding(plays[name], packs: names) : (@library.packs_binding(names) if names.any?)]
+      end.compact
+      call_options[:bindings] = pane_bindings if pane_bindings.any?
       call_options[:report_panes] = true if composed.any?
       optional = composed.select { |name, c| InstructionComposer.optional_prompt?(c, prompt: prompt, play: plays[name]) }
       call_options[:optional] = optional.transform_values { |c| InstructionComposer.pack_names(c["packs"]) } if optional.any?
@@ -3469,7 +3473,7 @@ module Workspace
 
     def binding_parser(options)
       OptionParser.new do |opts|
-        opts.banner = "Usage: workspace binding set [WORKSPACE] [--pane PANE] --kind run|review|play --id ID [options]\n" \
+        opts.banner = "Usage: workspace binding set [WORKSPACE] [--pane PANE] --kind run|review|play --id ID [--pack NAME]... [options]\n" \
           "       workspace binding show [--pane %ID] [--json]\n" \
           "       workspace binding clear [--pane %ID] [--json]"
         opts.separator ""
@@ -3485,6 +3489,11 @@ module Workspace
         opts.separator "to (kind play). show marks a binding stale when the pane is no longer in the tmux"
         opts.separator "session and slot it was bound in; a stale binding is not announced."
         opts.separator ""
+        opts.separator "--pack lists library packs (see `workspace instructions --help`) the hook also prints, so"
+        opts.separator "they survive /clear and compaction. start and launch set it for the packs they send;"
+        opts.separator "a pane sent packs but no play is bound with kind play and id play/<first pack>. Setting"
+        opts.separator "a binding replaces the whole earlier one, its packs included."
+        opts.separator ""
         opts.on("--name NAME", "Workspace name (set)") { |v| options[:name] = v }
         opts.on("--pane PANE", "Pane id (%19) or, for set, window.pane (0.1)") { |v| options[:pane] = v }
         opts.on("--kind KIND", "run, review or play (set)") { |v| options[:kind] = v }
@@ -3494,6 +3503,7 @@ module Workspace
         opts.on("--focus TEXT", "Review focus, e.g. security (set)") { |v| options[:focus] = v }
         opts.on("--instructions PATH", "File holding the pane's instructions (set); stored as an absolute path") { |v| options[:instructions] = absolute_unless_blank("--instructions", v) }
         opts.on("--artifacts PATH", "Directory holding the subject's artifacts (set); stored as an absolute path") { |v| options[:artifacts] = absolute_unless_blank("--artifacts", v) }
+        opts.on("--pack NAME", "Library pack the agent is also reminded of (set; repeatable; replaces the stored list)") { |v| (options[:packs] ||= []) << v }
         opts.on("--json", "Print one JSON action document") { options[:json] = true }
         opts.on("-h", "--help", "Show this help") { options[:help] = true }
         opts.separator ""
@@ -3534,7 +3544,8 @@ module Workspace
         raise UsageError, "Unexpected argument: #{args.first}. Run 'workspace binding --help'." if args.any?
 
         run_action("binding set", json: options[:json]) do
-          entry = @binding_command.set(workspace: name, pane: pane, **options.slice(:kind, :id, :step, :attempt, :focus, :instructions, :artifacts))
+          check_packs(options[:packs]) if options[:packs]&.any?
+          entry = @binding_command.set(workspace: name, pane: pane, **options.slice(:kind, :id, :step, :attempt, :focus, :instructions, :artifacts).merge(options.slice(:packs)))
           {exit_code: 0, results: [action_row(name, "bound", binding: entry)]}
         end
       else
@@ -3550,6 +3561,12 @@ module Workspace
     rescue OptionParser::ParseError, UsageError => e
       raise unless json_requested?(options[:json], given)
       emit_json_error(ACTION_JSON_SCHEMA_VERSION, e, message: e.message.lines.first.strip)
+    end
+
+    # Reads each pack so a misspelt name fails now rather than silently never reminding the agent.
+    def check_packs(names)
+      return unless @instruction_composer
+      @instruction_composer.compose(packs: names, cwd: @working_dir)
     end
 
     LIBRARY_SUBCOMMANDS = %w[list show info add update remove].freeze

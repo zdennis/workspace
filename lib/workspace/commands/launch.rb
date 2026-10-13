@@ -71,7 +71,8 @@ module Workspace
       #   machine-readable payload of their own, such as `start --json`
       # @param bindings [Hash{String => Hash}] project => pane binding fields (see
       #   {Workspace::PaneBindings#bind}) for the pane its prompt is delivered to,
-      #   such as a play from {Workspace::Library#play_binding}
+      #   such as a play from {Workspace::Library#play_binding}. Fields with `"keep_existing" => true`
+      #   (see {Workspace::Library#packs_binding}) leave a pane that already has a live binding as it is
       # @param report_panes [Boolean] add +delivered_panes:+ to the result: project => the pane id its
       #   prompt was delivered to, bound or not
       # @param optional [Hash{String => Array<String>}] project => names of the automatic packs its prompt
@@ -595,6 +596,8 @@ module Workspace
       # The prompt is already delivered, so a pane that can not be bound is a warning.
       def bind_pane(project, pane_id, fields)
         return unless @binder
+        fields = fields.dup
+        return if fields.delete("keep_existing") && @binder.live(pane: pane_id)
         entry = @binder.bind(workspace: project, pane: pane_id, **fields.transform_keys(&:to_sym))
         @bound_panes[project] = entry["pane_id"]
         log("Bound pane #{entry["pane_id"]} to #{entry["kind"]} #{entry["id"]}.")

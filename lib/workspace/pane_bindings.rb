@@ -27,6 +27,9 @@ module Workspace
     # Longest value stored for `id` or any text field.
     MAX_FIELD_LENGTH = 200
 
+    # Most packs a binding can list.
+    MAX_PACKS = 20
+
     # @param path [String] path to `bindings.json`
     # @param clock [#call] returns the current Time, injected for specs
     # @param logger [Workspace::Logger] debug logger
@@ -41,7 +44,8 @@ module Workspace
     # Binds a pane, replacing any earlier binding for the same pane id.
     #
     # @param pane_id [String] a tmux pane id (e.g. "%5")
-    # @param fields [Hash{String=>Object}] `kind` and `id` (required), `attempt`,
+    # @param fields [Hash{String=>Object}] `kind` and `id` (required), `attempt`, `packs`
+    #   (names of library packs the agent was sent; stored as `[]` when absent),
     #   and any of {TEXT_FIELDS}; plus the `workspace`, tmux `session` and `pane_slot` it was made for
     # @return [Hash{String=>Object}] the stored entry
     # @raise [Workspace::UsageError] for an unknown kind, a missing or oversized id, an
@@ -169,11 +173,24 @@ module Workspace
       lines.join("\n")
     end
 
+    # The packs a binding lists, whatever an older or hand-edited file holds.
+    #
+    # @param entry [Hash{String=>Object}] a binding
+    # @return [Array<String>] pack names; empty when the entry has none or its value is not a list of names
+    def packs_for(entry)
+      packs = entry["packs"]
+      return [] unless packs.is_a?(Array) && packs.all? { |name| name.is_a?(String) && name.match?(LibraryStore::NAME) }
+      packs
+    end
+
     private
 
     # A play is a file the agent was told to read and follow; after `/clear` it
     # has to read it again to keep following it.
     def play_context(entry, where)
+      # Packs sent without a play have no file to read again; the hook prints the packs themselves.
+      return "This pane was started with instruction packs#{where}." if entry["instructions"].nil? && packs_for(entry).any?
+
       lines = ["This pane is following play #{entry["id"]}#{where}."]
       lines << "Instructions: #{entry["instructions"]}. Read it again and keep following it if it is no longer in your context." if entry["instructions"]
       lines.join("\n")
@@ -201,8 +218,23 @@ module Workspace
         entry["attempt"] = attempt
       end
       TEXT_FIELDS.each { |key| entry[key] = line!(key, fields[key]) unless fields[key].nil? }
+      entry["packs"] = packs!(fields["packs"])
       %w[workspace session pane_slot].each { |key| entry[key] = fields[key] if fields[key] }
       entry
+    end
+
+    # The pack names of a binding, as library names without a `play/` prefix, each once.
+    def packs!(value)
+      return [] if value.nil?
+      raise UsageError, "packs must be a list of pack names." unless value.is_a?(Array)
+      raise UsageError, "packs can hold at most #{MAX_PACKS} names." if value.length > MAX_PACKS
+
+      value.map do |name|
+        raise UsageError, "packs must be a list of pack names." unless name.is_a?(String)
+        bare = name.sub(%r{\Aplay/}, "")
+        raise UsageError, "#{bare[0, 40].inspect} is not a pack name: lowercase letters, digits and hyphens." unless bare.match?(LibraryStore::NAME)
+        bare
+      end.uniq
     end
 
     def line!(key, value)

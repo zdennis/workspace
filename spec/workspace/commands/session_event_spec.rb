@@ -85,6 +85,108 @@ RSpec.describe Workspace::Commands::SessionEvent do
       )
     end
 
+    context "with packs listed on the binding" do
+      let(:composer) { instance_double(Workspace::InstructionComposer) }
+      let(:store) { Workspace::PaneBindings.new(path: File.join(tmpdir, "bindings.json")) }
+      let(:payload) { {"hook_event_name" => "SessionStart", "source" => "clear", "cwd" => "/work/proj"} }
+
+      before do
+        store.bind("%2", "kind" => "play", "id" => "play/notes", "packs" => %w[notes handoff],
+          "workspace" => "proj", "session" => "proj", "pane_slot" => "proj:0.1")
+        allow(tmux).to receive(:pane_slot).with("%2").and_return("proj:0.1")
+        allow(composer).to receive(:compose).and_return({"packs" => [], "text" => "## From pack notes (built-in)\n\nKeep notes.\n"})
+      end
+
+      def fire_with(composer, source: "clear")
+        described_class.new(config: config, tmux: tmux, input: StringIO.new(JSON.generate(payload.merge("source" => source))), env: env,
+          output: output, pane_bindings: store, instruction_composer: composer).call
+      end
+
+      def context
+        JSON.parse(output.string).dig("hookSpecificOutput", "additionalContext")
+      end
+
+      it "prints the subject, then the composed packs, for every source" do
+        %w[startup clear resume compact].each do |source|
+          output.reopen(+"")
+          expect(fire_with(composer, source: source)).to eq(exit_code: 0)
+
+          expect(context).to eq("This pane was started with instruction packs in proj.\n\n" \
+            "Instructions you were sent when this pane started:\n\n## From pack notes (built-in)\n\nKeep notes.")
+        end
+        expect(composer).to have_received(:compose).with(packs: %w[notes handoff], cwd: "/work/proj", binding: hash_including("id" => "play/notes")).exactly(4).times
+      end
+
+      it "cuts packs that are longer than the limit" do
+        allow(composer).to receive(:compose).and_return({"packs" => [], "text" => "x" * 20_000})
+
+        fire_with(composer)
+
+        expect(context.length).to be < 12_500
+        expect(context).to include("[cut:")
+      end
+
+      it "composes from the current directory when the payload has no cwd" do
+        payload.delete("cwd")
+
+        fire_with(composer)
+
+        expect(composer).to have_received(:compose).with(hash_including(cwd: Dir.pwd, binding: hash_including("packs" => %w[notes handoff])))
+      end
+
+      it "prints the subject alone when a pack can no longer be read" do
+        allow(composer).to receive(:compose).and_raise(Workspace::Error.new("No pack", code: "unknown_library_entry"))
+
+        expect(fire_with(composer)).to eq(exit_code: 0)
+        expect(context).to eq("This pane was started with instruction packs in proj.")
+      end
+
+      it "prints the subject alone when composing fails in any other way" do
+        allow(composer).to receive(:compose).and_raise(Errno::EACCES)
+
+        expect(fire_with(composer)).to eq(exit_code: 0)
+        expect(context).to eq("This pane was started with instruction packs in proj.")
+      end
+
+      it "prints what it printed before when no composer was wired" do
+        expect(fire_with(nil)).to eq(exit_code: 0)
+        expect(context).to eq("This pane was started with instruction packs in proj.")
+      end
+
+      it "composes nothing for a binding with no packs" do
+        store.bind("%2", "kind" => "play", "id" => "play/kickoff", "workspace" => "proj", "session" => "proj", "pane_slot" => "proj:0.1")
+
+        fire_with(composer)
+
+        expect(composer).not_to have_received(:compose)
+        expect(context).to eq("This pane is following play play/kickoff in proj.")
+      end
+
+      it "ignores a packs value that someone edited into something else" do
+        File.write(File.join(tmpdir, "bindings.json"), JSON.generate("%2" => {"kind" => "play", "id" => "play/x", "packs" => {"a" => 1}, "session" => "proj"}))
+
+        expect(fire_with(composer)).to eq(exit_code: 0)
+        expect(composer).not_to have_received(:compose)
+        expect(context).to eq("This pane is following play play/x.")
+      end
+
+      it "prints nothing, and exits 0, when the bindings file is not JSON" do
+        File.write(File.join(tmpdir, "bindings.json"), "{not json")
+
+        expect(fire_with(composer)).to eq(exit_code: 0)
+        expect(output.string).to eq("")
+      end
+
+      it "prints nothing for a stale binding, composing nothing" do
+        allow(tmux).to receive(:pane_slot).with("%2").and_return("proj:0.7")
+
+        fire_with(composer)
+
+        expect(output.string).to eq("")
+        expect(composer).not_to have_received(:compose)
+      end
+    end
+
     it "prints nothing for other events and for unbound panes" do
       fire({"hook_event_name" => "Stop"})
       allow(bindings).to receive(:binding_for).with("%2").and_return(nil)

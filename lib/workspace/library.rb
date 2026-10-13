@@ -187,9 +187,21 @@ module Workspace
     # points the agent back at the play after `/clear`. See {Workspace::PaneBindings}.
     #
     # @param play [Hash] from {#play}
-    # @return [Hash{String=>String}] `kind`, `id` (the play ref) and `instructions` (its path)
-    def play_binding(play)
-      {"kind" => "play", "id" => play["ref"], "instructions" => play["path"]}
+    # @param packs [Array<String>] names of the packs sent with it, which the hook repeats too
+    # @return [Hash{String=>Object}] `kind`, `id` (the play ref), `instructions` (its path), and `packs` when any
+    def play_binding(play, packs: [])
+      binding = {"kind" => "play", "id" => play["ref"], "instructions" => play["path"]}
+      packs.any? ? binding.merge("packs" => packs) : binding
+    end
+
+    # The pane binding for packs sent without a play: kind `play`, the first pack as its id.
+    # `keep_existing` tells {Workspace::Commands::Launch} to leave a pane that already has a
+    # live binding (a run's, say) as it is. It is never stored.
+    #
+    # @param packs [Array<String>] pack names, at least one
+    # @return [Hash{String=>Object}] `kind`, `id`, `packs` and `keep_existing`
+    def packs_binding(packs)
+      {"kind" => "play", "id" => "play/#{packs.first}", "packs" => packs, "keep_existing" => true}
     end
 
     # @param ref [String] `kind/name` or `name`

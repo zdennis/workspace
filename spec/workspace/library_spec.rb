@@ -224,6 +224,8 @@ RSpec.describe Workspace::Library do
       play = {"ref" => "play/kickoff", "scope" => "global", "path" => "/lib/play/kickoff.md", "sha256" => "abc"}
 
       expect(library.play_binding(play)).to eq("kind" => "play", "id" => "play/kickoff", "instructions" => "/lib/play/kickoff.md")
+      expect(library.play_binding(play, packs: %w[notes])).to eq("kind" => "play", "id" => "play/kickoff", "instructions" => "/lib/play/kickoff.md", "packs" => %w[notes])
+      expect(library.packs_binding(%w[notes handoff])).to eq("kind" => "play", "id" => "play/notes", "packs" => %w[notes handoff], "keep_existing" => true)
     end
   end
 

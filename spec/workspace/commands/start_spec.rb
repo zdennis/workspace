@@ -421,7 +421,30 @@ RSpec.describe Workspace::Commands::Start do
         it "sends the notes pack before the prompt with no flags" do
           packs_command.call("PROJ-123", prompt: "Go.")
 
-          expect(launch_command).to have_received(:call).with(["myproject.worktree-PROJ-123"], prompts: {"myproject.worktree-PROJ-123" => "#{notes_text.strip}\n\nGo."}, report_panes: true)
+          expect(launch_command).to have_received(:call).with(["myproject.worktree-PROJ-123"], prompts: {"myproject.worktree-PROJ-123" => "#{notes_text.strip}\n\nGo."}, report_panes: true,
+            bindings: {"myproject.worktree-PROJ-123" => {"kind" => "play", "id" => "play/notes", "packs" => ["notes"], "keep_existing" => true}})
+        end
+
+        it "binds the pane to the packs it was sent when there is no play, and leaves a live binding alone" do
+          packs_command.call("PROJ-123", packs: %w[review])
+
+          expect(launch_command).to have_received(:call).with(anything, hash_including(
+            bindings: {"myproject.worktree-PROJ-123" => {"kind" => "play", "id" => "play/notes", "packs" => %w[notes review], "keep_existing" => true}}
+          ))
+        end
+
+        it "adds the packs to the play's binding" do
+          packs_command.call("PROJ-123", play: "kickoff", packs: %w[review])
+
+          expect(launch_command).to have_received(:call).with(anything, hash_including(
+            bindings: {"myproject.worktree-PROJ-123" => hash_including("id" => "play/kickoff", "instructions" => global_path, "packs" => %w[notes review])}
+          ))
+        end
+
+        it "binds nothing when no pack applies" do
+          packs_command.call("PROJ-123", prompt: "Go.", no_packs: true)
+
+          expect(launch_command).to have_received(:call).with(anything, hash_excluding(:bindings))
         end
 
         it "sends the play line, then the packs, then the prompt, with --pack after the automatic pack" do

@@ -3946,6 +3946,23 @@ RSpec.describe Workspace::CLI do
       expect(binding_command.calls).to eq([[:set, {workspace: "app", pane: "%5", kind: "run", id: "wr_1", step: "implement", attempt: 2}]])
     end
 
+    it "passes each --pack to set, and only when one is given" do
+      cli.run(["binding", "set", "app", "--pane", "%5", "--kind", "play", "--id", "play/notes", "--pack", "notes", "--pack", "handoff"])
+
+      expect(binding_command.calls).to eq([[:set, {workspace: "app", pane: "%5", kind: "play", id: "play/notes", packs: %w[notes handoff]}]])
+    end
+
+    it "refuses a pack that is not in the library, before binding anything" do
+      composer = instance_double(Workspace::InstructionComposer)
+      allow(composer).to receive(:compose).with(packs: ["nope"], cwd: "/some/dir")
+        .and_raise(Workspace::Error.new("No pack nope", code: "unknown_library_entry"))
+      built_cli, _, err = build_test_cli(binding_command: binding_command, instruction_composer: composer, working_dir: "/some/dir")
+
+      expect { built_cli.run(["binding", "set", "app", "--pane", "%5", "--kind", "play", "--id", "play/nope", "--pack", "nope"]) }.to raise_error(FakeSystemExit)
+      expect(binding_command.calls).to be_empty
+      expect(err.string).to include("No pack nope")
+    end
+
     it "binds a pane to a play through the real binding command and store" do
       Dir.mktmpdir do |dir|
         store = Workspace::PaneBindings.new(path: File.join(dir, "bindings.json"))
@@ -6895,7 +6912,19 @@ RSpec.describe Workspace::CLI do
             cli.run(["launch", "--prompt", "Go.", "api", "web"])
 
             expect(launch_command).to have_received(:call).with(["api", "web"], reattach: false, report_panes: true,
-              prompts: {"api" => "#{notes_text.strip}\n\nGo.", "web" => "#{notes_text.strip}\n\nGo."})
+              prompts: {"api" => "#{notes_text.strip}\n\nGo.", "web" => "#{notes_text.strip}\n\nGo."},
+              bindings: %w[api web].to_h { |name| [name, {"kind" => "play", "id" => "play/notes", "packs" => ["notes"], "keep_existing" => true}] })
+          end
+
+          it "binds a project's pane to its play with the packs, and one with no play to the packs alone" do
+            launch_command = double("launch", call: {exit_code: 0, prompt_failures: {}})
+            cli, = build_test_cli(launch_command: launch_command, project_config: project_config, library: library, instruction_composer: composer)
+
+            cli.run(["launch", "--play", "kickoff", "--pack", "review", "api"])
+
+            expect(launch_command).to have_received(:call) do |_projects, **options|
+              expect(options[:bindings]).to eq("api" => {"kind" => "play", "id" => "play/kickoff", "instructions" => api_path, "packs" => %w[notes review]})
+            end
           end
 
           it "sends the play line, then the packs, then the prompt, and adds --pack after the automatic ones" do

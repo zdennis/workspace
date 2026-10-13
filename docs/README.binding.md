@@ -5,7 +5,7 @@ Bind a tmux pane to a workflow run, a PR review or a library play, so the agent 
 ## Usage
 
 ```sh
-workspace binding set [WORKSPACE] [--pane PANE] --kind run|review|play --id ID [--step STEP] [--attempt N] [--focus TEXT] [--instructions PATH] [--artifacts PATH] [--json]
+workspace binding set [WORKSPACE] [--pane PANE] --kind run|review|play --id ID [--step STEP] [--attempt N] [--focus TEXT] [--instructions PATH] [--artifacts PATH] [--pack NAME]... [--json]
 workspace binding show [--pane %ID] [--json]
 workspace binding clear [--pane %ID] [--json]
 ```
@@ -22,6 +22,7 @@ workspace binding clear [--pane %ID] [--json]
 | `--focus TEXT` | What a review concentrates on, such as `security` |
 | `--instructions PATH` | A file holding the pane's instructions; a relative path is stored as an absolute one, from the directory the command runs in; a blank value is a usage error |
 | `--artifacts PATH` | A directory holding the subject's artifacts; stored as an absolute path, like `--instructions` |
+| `--pack NAME` | A [library pack](README.instructions.md) the agent is told again after `/clear` or compaction (`set`; repeatable). Replaces the stored list; an unknown name fails before anything is bound |
 | `--json` | Print one action document |
 
 Every text value is one line of at most 200 characters, counted after a path is made absolute. Nothing is typed into the pane, and no prompt text is stored.
@@ -36,6 +37,12 @@ Instructions: /Users/me/.config/workspace/library/global/play/kickoff.md. Read i
 ```
 
 The binding replaces any earlier binding of that pane, and stays until `binding clear --pane %ID` or a new binding; clear it when you give the pane other work, or the agent is pointed back at the play after its next `/clear`. Only a play that was delivered binds its pane. A pane that can't be bound, such as one whose play path is longer than 200 characters, gets a warning on stderr; the play was still sent.
+
+## Packs
+
+A binding lists the library packs its agent was sent, in `packs` (`[]` when none), so the reminder repeats them as well as the subject. [`start`](README.start.md#packs) and [`launch`](README.launch.md) set the list to the packs they delivered (the automatic `notes` pack and any `--pack`). Added to a play's binding, the packs follow its `instructions` line. A pane sent packs but no play is bound with kind `play` and `id` `play/<first pack>`, with no `instructions`; its subject line reads "This pane was started with instruction packs in api." Such a binding does not replace a live binding the pane already has (a run's, say); a play's does, as before.
+
+On `SessionStart` the hook composes the listed packs again from the library as it is then, with the heading each pack gets in [`instructions compose`](README.instructions.md), and prints them after the subject under "Instructions you were sent when this pane started:" (cut at 12,000 characters). If a pack can no longer be read (removed, or its file unreadable), the hook prints the subject alone, as it did before. `binding show` prints a `Packs:` line, and `restore` carries the list with the binding.
 
 ## SessionStart
 
@@ -53,11 +60,11 @@ A binding only counts in the tmux session it was made in: a pane id from another
 {"schema_version":1,"ok":true,"action":"binding set","status":"ok",
  "results":[{"workspace":"api","outcome":"bound","reason":null,"message":null,
    "binding":{"kind":"run","id":"wr_01","step":"implement","attempt":2,"workspace":"api",
-     "session":"api","pane_slot":"api:0.1","pane_id":"%5","bound_at":"2026-10-03T12:00:00Z"}}],
+     "session":"api","pane_slot":"api:0.1","packs":[],"pane_id":"%5","bound_at":"2026-10-03T12:00:00Z"}}],
  "warnings":[],"summary":{"bound":1}}
 ```
 
-`outcome` is `bound`, `shown` or `cleared`. `show` adds `stale` (true or false) to `binding`; `set` and `clear` don't. `show` and `clear` on a pane with no binding fail with the `not_bound` code; a bad kind, id or attempt is a `usage` error. `set` fails with `no_session`, `wrong_session` or `no_such_pane` like the other commands that take a pane.
+`outcome` is `bound`, `shown` or `cleared`. `show` adds `stale` (true or false) to `binding`; `set` and `clear` don't. Every `binding` object has `packs`, an array of pack names, `[]` for a binding with none or one made before packs existed. `show` and `clear` on a pane with no binding fail with the `not_bound` code; a bad kind, id or attempt is a `usage` error. `set` fails with `no_session`, `wrong_session` or `no_such_pane` like the other commands that take a pane.
 
 ## Examples
 
@@ -65,6 +72,7 @@ A binding only counts in the tmux session it was made in: a pane id from another
 workspace binding set my-app --pane %5 --kind run --id wr_01 --step implement --attempt 2
 workspace binding set --pane 0.1 --kind review --id acme/api#835 --focus security
 workspace binding set --kind run --id wr_01 --instructions plan.md    # this pane, inside tmux
+workspace binding set --pane %5 --kind play --id play/notes --pack notes --pack handoff
 workspace binding show
 workspace binding clear --pane %5
 ```

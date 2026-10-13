@@ -32,6 +32,9 @@ module Workspace
       # one is cut rather than dropped.
       MAX_MESSAGE_LENGTH = SessionMonitor::MAX_MESSAGE_LENGTH
 
+      # Longest text of composed packs added to a binding's reminder; a longer one is cut.
+      MAX_PACKS_CONTEXT = 12_000
+
       # Longest user prompt forwarded to the daemon. A prompt can be a pasted
       # file; a label only needs its opening, so the rest is cut.
       MAX_PROMPT_LENGTH = 1000
@@ -55,8 +58,10 @@ module Workspace
       #   SessionStart and SessionEnd; nil skips the ledger
       # @param pane_bindings [Workspace::PaneBindings, nil] looked up on SessionStart to
       #   remind a bound pane of its subject; nil skips bindings
+      # @param instruction_composer [Workspace::InstructionComposer, nil] composes the packs a
+      #   binding lists, added after its subject; nil leaves them out
       def initialize(config:, tmux:, input: $stdin, env: ENV, output: $stdout, error_output: $stderr, logger: Workspace::Logger.new,
-        lock_idle_tracker: nil, lock_enforcer: nil, session_ledger: nil, pane_bindings: nil)
+        lock_idle_tracker: nil, lock_enforcer: nil, session_ledger: nil, pane_bindings: nil, instruction_composer: nil)
         @config = config
         @tmux = tmux
         @input = input
@@ -68,6 +73,7 @@ module Workspace
         @lock_enforcer = lock_enforcer
         @session_ledger = session_ledger
         @pane_bindings = pane_bindings
+        @instruction_composer = instruction_composer
       end
 
       # Reads a hook payload, updates the agent's lock idle state, enforces
@@ -172,10 +178,26 @@ module Workspace
 
         @output.puts JSON.generate("hookSpecificOutput" => {
           "hookEventName" => "SessionStart",
-          "additionalContext" => @pane_bindings.context_for(entry)
+          "additionalContext" => [@pane_bindings.context_for(entry), packs_context(entry, payload)].compact.join("\n\n")
         })
       rescue => e
         @logger.debug { "session-event: binding context failed (#{e.class}: #{e.message})" }
+      end
+
+      # The packs a binding lists, composed again so `/clear` and compaction do not lose
+      # them. A pack that can no longer be read leaves them out; the subject still prints.
+      def packs_context(entry, payload)
+        return nil unless @instruction_composer
+        names = @pane_bindings.packs_for(entry)
+        return nil if names.empty?
+
+        composed = @instruction_composer.compose(packs: names, cwd: text_field(payload, "cwd") || Dir.pwd, binding: entry)
+        text = composed["text"].strip
+        text = "#{text[0, MAX_PACKS_CONTEXT]}\n[cut: run `workspace instructions compose` for the rest]" if text.length > MAX_PACKS_CONTEXT
+        "Instructions you were sent when this pane started:\n\n#{text}"
+      rescue => e
+        @logger.debug { "session-event: packs failed (#{e.class}: #{e.message})" }
+        nil
       end
 
       def translate(payload, pane_id, workspace)

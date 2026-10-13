@@ -471,6 +471,52 @@ RSpec.describe Workspace::Commands::Launch do
           expect(result[:bound_panes]).to eq("proj1" => "%5")
         end
 
+        context "with packs and no play" do
+          let(:pack_fields) { {"kind" => "play", "id" => "play/notes", "packs" => %w[notes], "keep_existing" => true} }
+
+          before do
+            allow(tmux).to receive(:session_name_for_pane).with("%5").and_return("tmux-proj1")
+          end
+
+          it "binds the pane to the packs, without storing keep_existing" do
+            result = command.call(["proj1"], prompts: {"proj1" => "## notes"}, bindings: {"proj1" => pack_fields})
+
+            expect(result[:bound_panes]).to eq("proj1" => "%5")
+            stored = bindings_store.binding_for("%5")
+            expect(stored).to include("kind" => "play", "id" => "play/notes", "packs" => %w[notes])
+            expect(stored).not_to have_key("keep_existing")
+            expect(stored).not_to have_key("instructions")
+          end
+
+          it "leaves a pane that already has a live binding as it is" do
+            binder.bind(workspace: "proj1", pane: "%5", kind: "run", id: "wr_1")
+
+            result = command.call(["proj1"], prompts: {"proj1" => "## notes"}, bindings: {"proj1" => pack_fields}, report_panes: true)
+
+            expect(result[:bound_panes]).to eq({})
+            expect(result[:delivered_panes]).to eq("proj1" => "%5")
+            expect(bindings_store.binding_for("%5")).to include("kind" => "run", "id" => "wr_1")
+            expect(error_output.string).to be_empty
+          end
+
+          it "replaces a binding that is stale" do
+            binder.bind(workspace: "proj1", pane: "%5", kind: "run", id: "wr_1")
+            allow(tmux).to receive(:session_name_for_pane).with("%5").and_return("another-session")
+
+            command.call(["proj1"], prompts: {"proj1" => "## notes"}, bindings: {"proj1" => pack_fields})
+
+            expect(bindings_store.binding_for("%5")).to include("kind" => "play", "id" => "play/notes")
+          end
+
+          it "still replaces a live binding when the fields carry a play" do
+            binder.bind(workspace: "proj1", pane: "%5", kind: "run", id: "wr_1")
+
+            command.call(["proj1"], prompts: {"proj1" => "fix it"}, bindings: {"proj1" => play_fields.merge("packs" => %w[notes])})
+
+            expect(bindings_store.binding_for("%5")).to include("id" => "play/kickoff", "packs" => %w[notes])
+          end
+        end
+
         it "binds only the projects it was given fields for" do
           result = command.call(["proj1", "proj2"], prompts: {"proj1" => "fix it", "proj2" => "test it"}, bindings: {"proj2" => play_fields})
 

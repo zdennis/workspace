@@ -209,7 +209,7 @@ module Workspace
         log(quiet, "Launching #{config_name}...")
         text = (@play || @packs) ? @library.play_prompt(@play, prompt, packs: @packs&.fetch("text")) : prompt
         prompts = text ? {config_name => text} : {}
-        bindings = @play ? {config_name => @library.play_binding(@play)} : {}
+        bindings = pane_bindings_for(config_name)
         @prompt = prompt
         result = launch(config_name, prompts, prompt_timeout, headless: headless, quiet: quiet, bindings: bindings)
         @project_settings.ensure_exists(config_name)
@@ -255,6 +255,13 @@ module Workspace
       def resolve_play(play, root)
         raise Workspace::Error, "--play is not available: no library was wired." unless @library
         @library.play(play, cwd: root)
+      end
+
+      # What to bind the prompt's pane to once it is delivered: the play with its packs, or the packs alone.
+      def pane_bindings_for(config_name)
+        names = @packs ? InstructionComposer.pack_names(@packs["packs"]) : []
+        return {config_name => @library.play_binding(@play, packs: names)} if @play
+        names.any? ? {config_name => @library.packs_binding(names)} : {}
       end
 
       # Whether the prompt is automatic packs alone, which warns instead of failing.
