@@ -33,6 +33,10 @@ The session is killed last because `kill` often runs inside that session, and ki
 
 Only works on worktree-based projects created by `workspace start`. For non-worktree projects, use `workspace stop` instead.
 
+### Notes inside the worktree
+
+If the workspace's notes directory (see [`notes`](README.notes.md)) is inside the worktree and holds files, removing the worktree deletes them. `kill` says so before it asks for confirmation: `Warning: The notes directory /path holds 3 files and is inside the worktree; removing the worktree deletes them.` It does not stop: copy the notes out first if you want to keep them. A notes directory outside the worktree is untouched.
+
 ### Unsaved-work check
 
 Before touching anything, `kill` refuses to remove a worktree that has:
@@ -63,4 +67,4 @@ workspace kill -f myproject.worktree-PROJ-123
 
 ## JSON output
 
-`--json` prints an action document (see [README.json.md](README.json.md#actions)) with one row: `killed`, or `cancelled` (status `cancelled`, exit 0) when the confirmation was declined. A refusal is the failure envelope with `code` `unsaved_work` and `retry.flags` `["--force"]`. Run it from outside the session being killed, which ends last.
+`--json` prints an action document (see [README.json.md](README.json.md#actions)) with one row: `killed`, or `cancelled` (status `cancelled`, exit 0) when the confirmation was declined. When the notes directory was inside the worktree and held files, the row also has `"notes_inside_worktree":{"dir":"/abs","files":3}` and `warnings` has the sentence above; the key is absent otherwise. A refusal is the failure envelope with `code` `unsaved_work` and `retry.flags` `["--force"]`. Run it from outside the session being killed, which ends last.

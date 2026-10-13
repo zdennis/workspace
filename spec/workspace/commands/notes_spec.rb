@@ -247,4 +247,58 @@ RSpec.describe Workspace::Commands::Notes do
       }
     end
   end
+
+  describe "#info" do
+    it "returns the answer dir prints, as a Hash, and prints nothing" do
+      expect(command.info(name: "api.worktree-x")).to eq(
+        "workspace" => "api.worktree-x", "dir" => "#{linked}/tmp/workspace-notes", "source" => "default",
+        "exists" => false, "inside_worktree" => true, "excluded" => false
+      )
+      expect(output.string).to eq("")
+    end
+
+    it "makes the directory and the exclude line with create" do
+      answer = command.info(name: "api.worktree-x", create: true)
+
+      expect(answer).to include("exists" => true, "excluded" => true)
+      expect(File.read(exclude_file).lines.map(&:chomp)).to include("/tmp/workspace-notes/")
+    end
+
+    it "raises notes_dir_unwritable when create can't make the directory" do
+      File.write("#{linked}/tmp", "a file where the directory should go")
+
+      expect { command.info(name: "api.worktree-x", create: true) }.to raise_error(Workspace::Error) { |e|
+        expect(e.code).to eq("notes_dir_unwritable")
+      }
+    end
+  end
+
+  describe "#files_inside_worktree" do
+    it "counts the files of a notes directory inside the checkout, hidden and nested ones included" do
+      FileUtils.mkdir_p("#{linked}/tmp/workspace-notes/sub")
+      File.write("#{linked}/tmp/workspace-notes/plan.md", "x")
+      File.write("#{linked}/tmp/workspace-notes/sub/a.md", "x")
+      File.write("#{linked}/tmp/workspace-notes/.hidden", "x")
+
+      expect(command.files_inside_worktree(name: "api.worktree-x")).to eq("dir" => "#{linked}/tmp/workspace-notes", "files" => 3)
+    end
+
+    it "is nil when the directory is missing or holds no files" do
+      expect(command.files_inside_worktree(name: "api.worktree-x")).to be_nil
+      FileUtils.mkdir_p("#{linked}/tmp/workspace-notes/empty")
+      expect(command.files_inside_worktree(name: "api.worktree-x")).to be_nil
+    end
+
+    it "is nil for a directory outside the checkout" do
+      write_config("api.worktree-x", "notes:\n  dir: #{@dir}/outside\n")
+      FileUtils.mkdir_p("#{@dir}/outside")
+      File.write("#{@dir}/outside/plan.md", "x")
+
+      expect(command.files_inside_worktree(name: "api.worktree-x")).to be_nil
+    end
+
+    it "is nil, not an error, when the workspace can't be resolved" do
+      expect(command.files_inside_worktree(name: "nope")).to be_nil
+    end
+  end
 end

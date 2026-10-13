@@ -65,6 +65,7 @@ module Workspace
     # @param parent_command [Workspace::Commands::Parent] pre-built parent command
     # @param dev_command [Workspace::Commands::Dev] pre-built dev command
     # @param notes_command [Workspace::Commands::Notes, nil] pre-built notes command
+    # @param notes_setup [Workspace::NotesSetup, nil] fixes the notes directory of a worktree config `add` creates; nil skips it
     # @param projects_command [Workspace::Commands::Projects, nil] pre-built projects command
     # @param capabilities_command [Workspace::Commands::Capabilities, nil] pre-built capabilities command
     # @param daemon_command [Workspace::Commands::Daemon, nil] pre-built daemon command
@@ -89,7 +90,7 @@ module Workspace
     #   `list --liveness --json` and `status --json`; takes name => state entry
     # @param launch_mode [Workspace::LaunchMode, nil] decides whether launch/start
     #   run headless when no --[no-]headless flag is given; nil builds one
-    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, restart_agent_command: nil, send_command: nil, ensure_agent_command: nil, handoff_command: nil, notes_command: nil, projects_command: nil, capabilities_command: nil, daemon_command: nil, ui_command: nil, binding_command: nil, library_command: nil, library: nil, instructions_command: nil, workflow_command: nil, review_command: nil, restore_command: nil, snapshot_command: nil, project_actions_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil, liveness: nil, window_liveness: nil)
+    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, restart_agent_command: nil, send_command: nil, ensure_agent_command: nil, handoff_command: nil, notes_command: nil, notes_setup: nil, projects_command: nil, capabilities_command: nil, daemon_command: nil, ui_command: nil, binding_command: nil, library_command: nil, library: nil, instructions_command: nil, workflow_command: nil, review_command: nil, restore_command: nil, snapshot_command: nil, project_actions_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil, liveness: nil, window_liveness: nil)
       @config = config
       @state = state
       @project_config = project_config
@@ -126,6 +127,7 @@ module Workspace
       @dev_command = dev_command
       @parent_command = parent_command
       @notes_command = notes_command
+      @notes_setup = notes_setup
       @agent_command = agent_command
       @config_command = config_command
       @statusline_command = statusline_command
@@ -776,7 +778,12 @@ module Workspace
         if !json
           {}
         elsif killed
-          {results: [action_row(killed, "killed")]}
+          held = @kill_command.notes_inside_worktree
+          if held
+            {results: [action_row(killed, "killed", notes_inside_worktree: held)], warnings: [Workspace::Commands::Kill.notes_sentence(held)]}
+          else
+            {results: [action_row(killed, "killed")]}
+          end
         else
           {results: [action_row(args.first, "cancelled", reason: "declined", message: "Not confirmed; nothing was removed.")], status: "cancelled"}
         end
@@ -4110,9 +4117,12 @@ module Workspace
         opts.separator "For paths inside .worktrees/, prefixes with the repo name"
         opts.separator "(e.g. repo/.worktrees/MYJIRA-123 → repo-MYJIRA-123)."
         opts.separator "Does nothing if a config already exists."
+        opts.separator "A new config for a path inside .worktrees/ also gets its notes directory"
+        opts.separator "set up (see 'workspace notes dir'): stored as the config's notes.dir,"
+        opts.separator "created, and kept out of git status. A problem there is a warning."
         opts.separator ""
         opts.separator "Examples:"
-        opts.separator "  workspace add ~/Code/my-project    # add a project by path"
+        opts.separator "  workspace add ~/Code/my-project   # add a project by path"
         opts.separator "  workspace add .    # add the current directory"
         opts.separator "  workspace add ~/Code/project-a ~/Code/project-b    # add multiple projects"
       end
@@ -4127,10 +4137,22 @@ module Workspace
           @error_output.puts "Error: Not a directory: #{root}"
           next
         end
+        created = !@project_config.exists?(name)
         @project_config.create(name, root)
         @project_settings.ensure_exists(name)
         @output.puts "Project name: #{name}"
+        setup_notes_for_added_worktree(name) if created && File.basename(File.dirname(root)) == ".worktrees"
       end
+    end
+
+    # A worktree config `add` just made gets its notes directory fixed the way
+    # `start` fixes one. Problems are warnings; the config is already made.
+    def setup_notes_for_added_worktree(name)
+      return unless @notes_setup
+
+      result = @notes_setup.call(name)
+      result["warnings"].each { |message| @error_output.puts message }
+      @output.puts "Notes directory: #{result["dir"]}" if result["dir"]
     end
 
     def cmd_statusline(args)

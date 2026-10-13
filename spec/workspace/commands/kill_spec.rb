@@ -10,6 +10,7 @@ RSpec.describe Workspace::Commands::Kill do
   let(:project_settings) { double("project_settings") }
   let(:stop_command) { double("stop_command") }
   let(:project_detector) { Workspace::ProjectDetector.new(state: CLITestHelpers::FakeState.new, project_config: project_config) }
+  let(:notes) { nil }
 
   subject(:command) do
     described_class.new(
@@ -18,6 +19,7 @@ RSpec.describe Workspace::Commands::Kill do
       project_settings: project_settings,
       stop_command: stop_command,
       project_detector: project_detector,
+      notes: notes,
       output: output,
       input: input
     )
@@ -65,6 +67,67 @@ RSpec.describe Workspace::Commands::Kill do
         before do
           allow(git).to receive(:worktree_exists?).with("/path/to/worktree").and_return(true)
           allow(git).to receive(:unsaved_work).with("/path/to/worktree").and_return(nil)
+        end
+
+        context "when the notes directory is inside the worktree and holds files" do
+          let(:notes) { double("notes") }
+          let(:held) { {"dir" => "/path/to/worktree/tmp/workspace-notes", "files" => 3} }
+          let(:sentence) { "The notes directory /path/to/worktree/tmp/workspace-notes holds 3 files and is inside the worktree; removing the worktree deletes them." }
+
+          before do
+            allow(notes).to receive(:files_inside_worktree).with(name: "myproject.worktree-PROJ-123").and_return(held)
+            allow(git).to receive(:remove_worktree)
+            allow(stop_command).to receive(:call).and_return([])
+            allow(project_config).to receive(:remove)
+            allow(project_settings).to receive(:remove)
+          end
+
+          it "says so before it asks to remove, and keeps the answer for the caller" do
+            input.puts "n"
+            input.rewind
+
+            command.call("myproject.worktree-PROJ-123")
+
+            expect(output.string.index("Warning: #{sentence}")).to be < output.string.index("[y/N]")
+            expect(output.string).to include("Warning: #{sentence}")
+            expect(command.notes_inside_worktree).to eq(held)
+            expect(described_class.notes_sentence(held)).to eq(sentence)
+          end
+
+          it "says it with force too, and prints nothing in quiet mode" do
+            command.call("myproject.worktree-PROJ-123", force: true, quiet: true)
+
+            expect(output.string).to eq("")
+            expect(command.notes_inside_worktree).to eq(held)
+          end
+
+          it "speaks of one file in the singular" do
+            allow(notes).to receive(:files_inside_worktree).and_return("dir" => "/n", "files" => 1)
+
+            command.call("myproject.worktree-PROJ-123", force: true)
+
+            expect(output.string).to include("holds 1 file and is")
+          end
+
+          it "forgets the answer on the next call" do
+            command.call("myproject.worktree-PROJ-123", force: true)
+            allow(notes).to receive(:files_inside_worktree).and_return(nil)
+            command.call("myproject.worktree-PROJ-123", force: true)
+
+            expect(command.notes_inside_worktree).to be_nil
+          end
+        end
+
+        it "has nothing to say about notes when none are wired or none are inside" do
+          allow(git).to receive(:remove_worktree)
+          allow(stop_command).to receive(:call).and_return([])
+          allow(project_config).to receive(:remove)
+          allow(project_settings).to receive(:remove)
+
+          command.call("myproject.worktree-PROJ-123", force: true)
+
+          expect(command.notes_inside_worktree).to be_nil
+          expect(output.string).not_to include("notes")
         end
 
         it "cancels when user declines confirmation" do

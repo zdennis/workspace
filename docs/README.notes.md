@@ -28,6 +28,8 @@ See [`config`](README.config.md) for both keys. A stored value that fails its ke
 
 Plain output is the absolute path alone, so `"$(workspace notes dir)"` works in a script. Without `--create` the command only reads: it makes nothing and edits no file.
 
+[`start`](README.start.md#notes-directory) sets the directory up for a new worktree (it writes the computed path as the worktree's own `notes.dir` and does what `--create` does), and [`kill`](README.kill.md) and [`finish`](README.finish.md) warn when they are about to delete notes that live inside the worktree.
+
 `--create` is for a workspace `start` never set up (an existing worktree, or a main checkout). It is safe to repeat. The exclude line is rooted, for example `/tmp/workspace-notes/`; git's own glob characters in the path are escaped. A directory outside the checkout needs no exclude line. In a directory that is not a git checkout there is nothing to list the line in: the command still succeeds and reports `excluded: false`.
 
 Exit 0, or 1 with an error (the [`--json` error envelope](README.json.md) under `--json`).

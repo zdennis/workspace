@@ -17,8 +17,10 @@ module Workspace
       #   worktree is removed; nil records nothing
       # @param workflow_runs [#workspace_killed, nil] ends the project's workflow runs once its
       #   worktree is removed, so none goes on holding a lock; nil leaves runs alone
+      # @param notes [Workspace::Commands::Notes, nil] says whether the project's notes directory sits inside its
+      #   worktree with files in it, so removing the worktree can warn first; nil never warns
       # @param input [IO] input stream for interactive prompts
-      def initialize(git:, project_config:, project_settings:, stop_command:, project_detector:, task_store: nil, event_log: nil, workflow_runs: nil, output: $stdout, input: $stdin)
+      def initialize(git:, project_config:, project_settings:, stop_command:, project_detector:, task_store: nil, event_log: nil, workflow_runs: nil, notes: nil, output: $stdout, input: $stdin)
         @git = git
         @project_config = project_config
         @project_settings = project_settings
@@ -27,11 +29,27 @@ module Workspace
         @task_store = task_store
         @event_log = event_log
         @workflow_runs = workflow_runs
+        @notes = notes
+        @notes_inside_worktree = nil
         @output = output
         @input = input
       end
 
       MARKER_FILE = ".workspace-project"
+
+      # What the last {#call} found: the notes directory of the project, when it was
+      # inside the worktree and held files, so removing the worktree deleted them.
+      # Reset at the start of every call.
+      #
+      # @return [Hash, nil] `{"dir" => absolute path, "files" => count}`, or nil
+      attr_reader :notes_inside_worktree
+
+      # @param held [Hash] a {#notes_inside_worktree} answer
+      # @return [String] the sentence for `warnings` and the text warning
+      def self.notes_sentence(held)
+        count = held["files"]
+        "The notes directory #{held["dir"]} holds #{count} #{(count == 1) ? "file" : "files"} and is inside the worktree; removing the worktree deletes them."
+      end
 
       # Kills a worktree project. The order is chosen so nothing is lost and
       # nothing is left half-removed:
@@ -69,6 +87,7 @@ module Workspace
       # @raise [Workspace::Error] if the project config is not a worktree project
       def call(project = nil, force: false, confirm: true, quiet: false, working_dir: Dir.pwd, missing_ok: false, warn_inactive: true, outcome: nil)
         out = quiet ? StringIO.new : @output
+        @notes_inside_worktree = nil
         project ||= @project_detector.detect_from_marker(working_dir)
         unless project
           raise Workspace::Error,
@@ -93,6 +112,7 @@ module Workspace
 
         out.puts "Stopping #{project}..."
         out.puts "  Worktree: #{worktree_path}"
+        warn_about_notes(project, missing, out)
 
         if confirm && !force
           answer = Prompt.ask(@input, out, "Remove worktree and kill session? [y/N] ", retry_flags: ["--force"], destructive: true)&.strip
@@ -128,6 +148,13 @@ module Workspace
       end
 
       private
+
+      # Before the worktree goes: afterwards its notes can no longer be counted.
+      def warn_about_notes(project, missing, out)
+        return if missing || !@notes
+        @notes_inside_worktree = @notes.files_inside_worktree(name: project)
+        out.puts "Warning: #{self.class.notes_sentence(@notes_inside_worktree)}" if @notes_inside_worktree
+      end
 
       # The worktree is already gone, so a task store that can't be written
       # must not stop the config, settings and session from being cleaned up.

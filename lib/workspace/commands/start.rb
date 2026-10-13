@@ -28,9 +28,11 @@ module Workspace
       #   worktree's config is written; nil records nothing
       # @param library [Workspace::Library, nil] resolves `play:`, `agents:` and `skills:`; nil refuses them
       # @param library_installer [Workspace::LibraryInstaller, nil] copies `agents:` and `skills:` into the worktree
+      # @param notes_setup [Workspace::NotesSetup, nil] fixes the worktree's notes directory (its own `notes.dir`,
+      #   the directory, its exclude line); nil sets nothing up
       def initialize(git:, project_config:, project_settings:, launch_command:, lineage: WorkspaceLineage.new,
         hook_installer: nil, which: nil, task_store: nil, event_log: nil, library: nil, library_installer: nil,
-        output: $stdout, input: $stdin, error_output: $stderr)
+        notes_setup: nil, output: $stdout, input: $stdin, error_output: $stderr)
         @git = git
         @project_config = project_config
         @project_settings = project_settings
@@ -42,6 +44,7 @@ module Workspace
         @event_log = event_log
         @library = library
         @library_installer = library_installer
+        @notes_setup = notes_setup
         @output = output
         @input = input
         @error_output = error_output
@@ -194,6 +197,7 @@ module Workspace
         config_name = @project_config.create_worktree(project_name, worktree_dir_name, worktree_path, branch_name, **worktree_options)
         @project_settings.ensure_exists(project_name)
         seed_worktree_hooks(project_name, config_name)
+        notes_dir = setup_notes(config_name, quiet: quiet)
         install_agent_hooks(worktree_path, quiet: quiet)
         copied = copy_library_entries(worktree_path, quiet: quiet)
         write_project_marker(worktree_path, config_name)
@@ -218,6 +222,7 @@ module Workspace
           "created" => created,
           "headless" => headless
         }
+        json["notes_dir"] = notes_dir if notes_dir
         json["task"] = {"id" => task["id"], "title" => task["title"]} if task
         %w[agent skill].each { |kind| json["#{kind}s"] = copied[kind] if copied.key?(kind) }
         json["play"] = @play.merge("delivered" => delivered?(result, config_name), "pane" => result&.dig(:bound_panes, config_name)) if @play
@@ -417,6 +422,18 @@ module Workspace
         end
 
         @git.prompt_base_branch || :cancelled
+      end
+
+      # Fixes the workspace's notes directory. A problem is a warning (stderr, or
+      # `warnings` under --json), never a failed start.
+      #
+      # @return [String, nil] the notes directory, nil when none was set up
+      def setup_notes(config_name, quiet:)
+        return unless @notes_setup
+
+        result = @notes_setup.call(config_name)
+        result["warnings"].each { |message| quiet ? @warnings << message : @error_output.puts(message) }
+        result["dir"]
       end
 
       def seed_worktree_hooks(parent_project, worktree_config_name)

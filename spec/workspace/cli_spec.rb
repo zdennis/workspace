@@ -97,6 +97,7 @@ RSpec.describe Workspace::CLI do
       ensure_agent_command: overrides[:ensure_agent_command],
       handoff_command: overrides[:handoff_command],
       notes_command: overrides[:notes_command],
+      notes_setup: overrides[:notes_setup],
       projects_command: overrides[:projects_command],
       capabilities_command: overrides[:capabilities_command],
       restore_command: overrides[:restore_command],
@@ -850,6 +851,48 @@ RSpec.describe Workspace::CLI do
       expect(doc["status"]).to eq("ok")
       expect(doc["warnings"]).to eq([message])
       expect(doc["results"].map { |r| [r["workspace"], r["outcome"]] }).to eq([["api", "stopped"]])
+    end
+  end
+
+  describe "#run with add" do
+    let(:root) { Dir.mktmpdir }
+    let(:worktree_root) { File.join(root, ".worktrees", "x").tap { |dir| FileUtils.mkdir_p(dir) } }
+    let(:project_config) { instance_double(Workspace::ProjectConfig, exists?: false, create: nil) }
+    let(:notes_setup) { instance_double(Workspace::NotesSetup) }
+
+    after { FileUtils.remove_entry(root) }
+
+    before do
+      allow(project_config).to receive(:resolve_project_arg) { |arg| [(arg == worktree_root) ? "repo-x" : "plain", File.expand_path(arg)] }
+    end
+
+    it "sets up the notes directory of a worktree config it creates" do
+      allow(notes_setup).to receive(:call).with("repo-x").and_return("dir" => "/notes/x", "warnings" => ["Warning: could not finish"])
+      cli, output, error_output = build_test_cli(project_config: project_config, notes_setup: notes_setup)
+
+      cli.run(["add", worktree_root])
+
+      expect(output.string).to include("Project name: repo-x").and include("Notes directory: /notes/x")
+      expect(error_output.string).to include("Warning: could not finish")
+    end
+
+    it "leaves a plain project's notes alone" do
+      allow(notes_setup).to receive(:call)
+      cli, = build_test_cli(project_config: project_config, notes_setup: notes_setup)
+
+      cli.run(["add", root])
+
+      expect(notes_setup).not_to have_received(:call)
+    end
+
+    it "leaves a worktree config that already exists as it is" do
+      allow(project_config).to receive(:exists?).with("repo-x").and_return(true)
+      allow(notes_setup).to receive(:call)
+      cli, = build_test_cli(project_config: project_config, notes_setup: notes_setup)
+
+      cli.run(["add", worktree_root])
+
+      expect(notes_setup).not_to have_received(:call)
     end
   end
 
@@ -6922,12 +6965,27 @@ RSpec.describe Workspace::CLI do
       it "reports killed" do
         kill = double("kill")
         allow(kill).to receive(:call).and_return("myproj.worktree-x")
+        allow(kill).to receive(:notes_inside_worktree).and_return(nil)
         cli, raw, = action_cli(kill_command: kill)
 
         cli.run(["kill", "myproj.worktree-x", "--json"])
 
-        expect(parse_one(raw)).to include("action" => "kill", "status" => "ok")
+        expect(parse_one(raw)).to include("action" => "kill", "status" => "ok", "warnings" => [])
         expect(parse_one(raw)["results"].first).to include("workspace" => "myproj.worktree-x", "outcome" => "killed")
+        expect(parse_one(raw)["results"].first).not_to have_key("notes_inside_worktree")
+      end
+
+      it "reports notes that were inside the removed worktree on the row, and in warnings" do
+        held = {"dir" => "/wt/tmp/workspace-notes", "files" => 3}
+        kill = double("kill")
+        allow(kill).to receive(:call).and_return("myproj.worktree-x")
+        allow(kill).to receive(:notes_inside_worktree).and_return(held)
+        cli, raw, = action_cli(kill_command: kill)
+
+        expect(exit_status { cli.run(["kill", "myproj.worktree-x", "--json"]) }).to eq(0)
+
+        expect(parse_one(raw)["results"].first).to include("outcome" => "killed", "notes_inside_worktree" => held)
+        expect(parse_one(raw)["warnings"]).to eq([Workspace::Commands::Kill.notes_sentence(held)])
       end
 
       it "reports a declined confirmation as cancelled with exit 0" do

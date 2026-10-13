@@ -38,6 +38,22 @@ module Workspace
       #   `notes_dir_unwritable` when `create` can't make the directory or write the exclude line,
       #   `config_parse` when a config file can't be parsed
       def dir(name:, create: false, json: false)
+        answer = info(name: name, create: create)
+        if json
+          @output.puts JSON.generate({"schema_version" => 1, "ok" => true}.merge(answer))
+        else
+          @output.puts answer["dir"]
+        end
+      end
+
+      # The answer {#dir} prints, as a Hash, so `start`, `add` and the rest ask the
+      # same code and get the same directory.
+      #
+      # @param name [String] the workspace
+      # @param create [Boolean] make the directory; inside the checkout, also list it in `info/exclude`
+      # @return [Hash] `workspace`, `dir`, `source`, `exists`, `inside_worktree`, `excluded`
+      # @raise [Workspace::Error] as {#dir}
+      def info(name:, create: false)
         root = checkout_root(name)
         result = resolve(name, root)
         path = result.path
@@ -48,12 +64,23 @@ module Workspace
         make(path, root, pattern) if create
         excluded = inside ? @git_exclude.listed?(root, pattern) : true
 
-        if json
-          @output.puts JSON.generate("schema_version" => 1, "ok" => true, "workspace" => name, "dir" => path, "source" => result.source,
-            "exists" => Dir.exist?(path), "inside_worktree" => inside, "excluded" => excluded)
-        else
-          @output.puts path
-        end
+        {"workspace" => name, "dir" => path, "source" => result.source,
+         "exists" => Dir.exist?(path), "inside_worktree" => inside, "excluded" => excluded}
+      end
+
+      # The notes a workspace would lose with its checkout: set only when the notes
+      # directory is inside the checkout and holds at least one file. Never raises
+      # for a workspace it can't resolve; the caller is about to delete, not to ask.
+      #
+      # @param name [String] the workspace
+      # @return [Hash, nil] `{"dir" => absolute path, "files" => count}`, or nil
+      def files_inside_worktree(name:)
+        answer = info(name: name)
+        return nil unless answer["inside_worktree"] && answer["exists"]
+        count = Dir.glob(File.join(answer["dir"], "**", "*"), File::FNM_DOTMATCH).count { |path| File.file?(path) }
+        count.zero? ? nil : {"dir" => answer["dir"], "files" => count}
+      rescue Workspace::Error, SystemCallError
+        nil
       end
 
       private
@@ -79,7 +106,7 @@ module Workspace
 
       # The stored `notes.<leaf>`, nil when unset or not valid for the key.
       def valid(data, leaf)
-        value = data.dig("notes", leaf)
+        value = data["notes"].is_a?(Hash) ? data["notes"][leaf] : nil
         return nil if value.nil?
         ConfigSchema.parse("notes.#{leaf}", value)
       rescue ArgumentError

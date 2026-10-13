@@ -213,6 +213,7 @@ require_relative "workspace/dev_runner"
 require_relative "workspace/run_resources"
 require_relative "workspace/git_exclude"
 require_relative "workspace/notes_dir"
+require_relative "workspace/notes_setup"
 require_relative "workspace/workflow_config"
 require_relative "workspace/workflow_definition"
 require_relative "workspace/workflow_catalog"
@@ -325,7 +326,10 @@ module Workspace
     task_store = TaskStore.new(dir: config.task_dir, error_output: error_output)
     library = Library.new(config: config, lineage: lineage, project_config: project_config)
     library_installer = LibraryInstaller.new(git: git)
-    start_command = Commands::Start.new(git: git, project_config: project_config, project_settings: project_settings, launch_command: launch_command, lineage: lineage, hook_installer: hook_installer, task_store: task_store, event_log: event_log, library: library, library_installer: library_installer, output: output, input: input)
+    notes_command = Commands::Notes.new(notes_dir: NotesDir.new(git: git), project_config: project_config, project_settings: project_settings,
+      git_exclude: GitExclude.new(git: git), output: output)
+    notes_setup = NotesSetup.new(notes: notes_command, project_settings: project_settings)
+    start_command = Commands::Start.new(git: git, project_config: project_config, project_settings: project_settings, launch_command: launch_command, lineage: lineage, hook_installer: hook_installer, task_store: task_store, event_log: event_log, library: library, library_installer: library_installer, notes_setup: notes_setup, output: output, input: input)
     send_command = Commands::Send.new(locator: pane_locator, tmux: tmux, output: output)
     focus_command = Commands::Focus.new(state: state, window_manager: window_manager, tmux: tmux, pane_locator: pane_locator, output: output)
     tile_command = Commands::Tile.new(state: state, window_manager: window_manager, window_layout: window_layout, output: output)
@@ -438,11 +442,9 @@ module Workspace
     )
     workflow_nudger = WorkflowNudger.new(store: workflow_store, panes: workflow_panes, executable: File.expand_path("../bin/workspace", __dir__),
       log_path: ->(workspace) { config.agent_log_path(workspace) }, logger: logger, error_output: error_output)
-    kill_command = Commands::Kill.new(git: git, project_config: project_config, project_settings: project_settings, stop_command: stop_command, project_detector: project_detector, task_store: task_store, event_log: event_log, workflow_runs: workflow_engine, output: output, input: input)
+    kill_command = Commands::Kill.new(git: git, project_config: project_config, project_settings: project_settings, stop_command: stop_command, notes: notes_command, project_detector: project_detector, task_store: task_store, event_log: event_log, workflow_runs: workflow_engine, output: output, input: input)
     finish_command = Commands::Finish.new(git: git, project_config: project_config, kill_command: kill_command, project_detector: project_detector, output: output, error_output: error_output, input: input)
     parent_command = Commands::Parent.new(lineage: lineage, project_config: project_config, output: output)
-    notes_command = Commands::Notes.new(notes_dir: NotesDir.new(git: git), project_config: project_config, project_settings: project_settings,
-      git_exclude: GitExclude.new(git: git), output: output)
     project_catalog = ProjectCatalog.new(project_config: project_config, git: git)
     project_facts = ProjectFacts.new(tmux: tmux, state: state, config: config, lock_namespace: lock_namespace,
       lock_holder: lock_holder, dev: dev_command, agents: ProjectAgents.new(client: agent_snapshot_client),
@@ -551,6 +553,7 @@ module Workspace
       dev_command: dev_command,
       parent_command: parent_command,
       notes_command: notes_command,
+      notes_setup: notes_setup,
       projects_command: projects_command,
       capabilities_command: capabilities_command,
       daemon_command: daemon_command,

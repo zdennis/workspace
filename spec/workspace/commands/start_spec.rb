@@ -1283,4 +1283,90 @@ RSpec.describe Workspace::Commands::Start do
       expect(launch_command).to have_received(:call)
     end
   end
+  describe "notes directory" do
+    let(:notes_setup) { double("notes_setup") }
+    let(:setup_result) { {"dir" => "/notes/myproject.worktree-feature", "warnings" => []} }
+    let(:calls) { [] }
+
+    subject(:command) do
+      described_class.new(git: git, project_config: project_config, project_settings: project_settings,
+        launch_command: launch_command, notes_setup: notes_setup, output: output, error_output: error_output, input: input)
+    end
+
+    before do
+      allow(git).to receive(:root).and_return(tmpdir)
+      allow(git).to receive(:parse_start_input).and_return({type: :branch, value: "feature"})
+      allow(git).to receive(:sanitize_for_filesystem) { |name| name }
+      allow(git).to receive(:worktree_exists?).and_return(false)
+      allow(git).to receive(:find_worktree_by_branch).and_return(nil)
+      allow(git).to receive(:branch_exists?).and_return(true)
+      allow(git).to receive(:create_worktree)
+      allow(project_config).to receive(:create_worktree).and_return("myproject.worktree-feature")
+      allow(notes_setup).to receive(:call) { |name|
+        calls << [:notes, name]
+        setup_result
+      }
+      allow(launch_command).to receive(:call) {
+        calls << :launch
+        nil
+      }
+    end
+
+    it "sets up the notes directory of the new workspace before launching it" do
+      command.call("feature", yes: true)
+
+      expect(notes_setup).to have_received(:call).with("myproject.worktree-feature")
+      expect(calls).to eq([[:notes, "myproject.worktree-feature"], :launch])
+    end
+
+    it "sets it up for a worktree that already exists too" do
+      allow(git).to receive(:worktree_exists?).and_return(true)
+
+      command.call("feature", yes: true)
+
+      expect(notes_setup).to have_received(:call).with("myproject.worktree-feature")
+    end
+
+    it "reports the directory as notes_dir under --json" do
+      command.call("feature", yes: true, json: true)
+
+      expect(JSON.parse(output.string)).to include("notes_dir" => "/notes/myproject.worktree-feature")
+    end
+
+    it "prints a setup warning on stderr, and starts anyway" do
+      setup_result["warnings"] << "Warning: could not finish setting up the notes directory for x"
+
+      command.call("feature", yes: true)
+
+      expect(error_output.string).to include("Warning: could not finish setting up the notes directory for x")
+      expect(launch_command).to have_received(:call)
+    end
+
+    it "puts a setup warning in warnings under --json and keeps the exit code 0" do
+      setup_result["warnings"] << "Warning: could not finish setting up the notes directory for x"
+
+      command.call("feature", yes: true, json: true)
+
+      document = JSON.parse(output.string)
+      expect(document["ok"]).to be true
+      expect(document["warnings"]).to include("Warning: could not finish setting up the notes directory for x")
+    end
+
+    it "leaves notes_dir out when the directory could not be worked out" do
+      setup_result.replace("dir" => nil, "warnings" => ["Warning: could not set up the notes directory for x: boom"])
+
+      command.call("feature", yes: true, json: true)
+
+      expect(JSON.parse(output.string)).not_to have_key("notes_dir")
+    end
+
+    it "sets nothing up and reports no notes_dir when no setup is wired" do
+      bare = described_class.new(git: git, project_config: project_config, project_settings: project_settings,
+        launch_command: launch_command, output: output, error_output: error_output, input: input)
+
+      bare.call("feature", yes: true, json: true)
+
+      expect(JSON.parse(output.string)).not_to have_key("notes_dir")
+    end
+  end
 end

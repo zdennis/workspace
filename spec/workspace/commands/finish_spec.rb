@@ -30,6 +30,7 @@ RSpec.describe Workspace::Commands::Finish do
   let(:worktree_path) { "/path/to/worktree" }
 
   before do
+    allow(kill_command).to receive(:notes_inside_worktree).and_return(nil)
     allow(project_config).to receive(:config_path_for)
       .with("myproject.worktree-PROJ-123")
       .and_return(config_path)
@@ -278,6 +279,35 @@ RSpec.describe Workspace::Commands::Finish do
         expect(result).to eq({exit_code: 0})
         parsed = JSON.parse(output.string)
         expect(parsed).to eq({"schema_version" => 1, "ok" => true, "project" => "myproject.worktree-PROJ-123"})
+      end
+
+      context "when the notes directory was inside the worktree and held files" do
+        let(:held) { {"dir" => "#{worktree_path}/tmp/workspace-notes", "files" => 3} }
+
+        before do
+          allow(git).to receive(:changed_files_count).with(worktree_path).and_return(0)
+          allow(git).to receive(:worktree_branch).with(worktree_path).and_return("main")
+          allow(git).to receive(:upstream_branch).with(worktree_path).and_return("origin/main")
+          allow(git).to receive(:commits_ahead_of_upstream).with(worktree_path).and_return(0)
+          allow(kill_command).to receive(:call)
+          allow(kill_command).to receive(:notes_inside_worktree).and_return(held)
+        end
+
+        it "adds notes_inside_worktree and a sentence in warnings, and the exit code stays 0" do
+          result = command.call("myproject.worktree-PROJ-123", json: true, working_dir: tmpdir)
+
+          expect(result).to eq({exit_code: 0})
+          parsed = JSON.parse(output.string)
+          expect(parsed["notes_inside_worktree"]).to eq(held)
+          expect(parsed["warnings"]).to eq([Workspace::Commands::Kill.notes_sentence(held)])
+          expect(parsed).to include("ok" => true, "project" => "myproject.worktree-PROJ-123")
+        end
+
+        it "leaves the plain-text output to Kill, which says it before removing" do
+          command.call("myproject.worktree-PROJ-123", working_dir: tmpdir)
+
+          expect(output.string).not_to include("notes")
+        end
       end
 
       it "emits an error envelope on stdout and exit_code 1, without raising" do
