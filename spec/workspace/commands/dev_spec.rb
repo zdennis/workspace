@@ -1418,6 +1418,88 @@ RSpec.describe Workspace::Commands::Dev, "with fake processes and clock" do
       end
     end
 
+    describe "#up --queue under the run" do
+      it "starts the environment as the run's delegate from the bound pane and reports running" do
+        delegate_joins(700)
+
+        result = dev(bound_run: bound_run).up(queue: true, working_dir: worktree)
+
+        expect(result).to eq(exit_code: 0, status: "running", position: nil)
+        expect(holder).to include("run_id" => "wr_1", "delegate" => include("pid" => 700))
+      end
+
+      it "reports an environment already running under the run without opening a window" do
+        delegate(700)
+        allow(tmux).to receive(:new_window)
+
+        result = dev(bound_run: bound_run).up(queue: true, working_dir: worktree)
+
+        expect(result).to eq(exit_code: 0, status: "running", position: nil)
+        expect(tmux).not_to have_received(:new_window)
+      end
+
+      it "exits 1 with no status when the run's wrapper fails to start" do
+        allow(tmux).to receive(:new_window).and_return(700)
+        dead_pids << 700
+
+        result = dev(bound_run: bound_run).up(queue: true, working_dir: worktree)
+
+        expect(result).to eq(exit_code: 1, status: nil, position: nil)
+      end
+
+      it "queues behind the run from a pane that is not bound to it, without refusing" do
+        wrapper_joins(555)
+
+        expect(dev(bound_run: other_run).up(queue: true, working_dir: worktree)).to eq(exit_code: 0, status: "queued", position: 1)
+
+        expect(error_output.string).to eq("")
+        expect(holder).to include("run_id" => "wr_1")
+      end
+    end
+
+    describe "#wait and #leave under the run" do
+      it "wait returns running for a worktree whose wrapper is the run's delegate, using the delegate's pid" do
+        settings["ready"] = "true"
+        delegate(700)
+
+        result = dev.wait(working_dir: worktree)
+
+        expect(result).to eq(exit_code: 0, status: "running", position: nil)
+        expect(error_output.string).to eq("")
+      end
+
+      it "wait exits 4 for a delegate whose wrapper has died" do
+        delegate(700)
+        liveness.kill(700)
+
+        expect(dev.wait(working_dir: worktree)).to include(exit_code: 4)
+      end
+
+      it "wait exits 4 when the run holds the lock but this worktree has no environment under it" do
+        result = dev.wait(working_dir: worktree)
+
+        expect(result).to eq(exit_code: 4, status: nil, position: nil)
+      end
+
+      it "leave reports not_queued and points at dev down when this worktree's environment runs under the run" do
+        delegate(700)
+
+        expect(dev.leave(working_dir: worktree)).to eq(exit_code: 0, outcome: "not_queued")
+        expect(output.string).to include("workspace dev down")
+        expect(signals).to be_empty
+      end
+
+      it "leave does not mistake the run's own queue entry for this worktree's wrapper" do
+        enqueue(555, worktree: worktree)
+        store.acquire_run(["devenv"], run: {run_id: "wr_2", step: "x", workflow: "rpiv", workspace: "app", worktree: worktree, pane: "%2"})
+
+        queue = store.status("devenv").dig("devenv", "queue")
+        expect(queue.map { |w| w["run_id"] }.compact).to eq(["wr_2"])
+        expect(dev.leave(working_dir: worktree)).to eq(exit_code: 0, outcome: "left")
+        expect(store.status("devenv").dig("devenv", "queue").map { |w| w["run_id"] }).to eq(["wr_2"])
+      end
+    end
+
     describe "#up from anywhere else" do
       before { allow(tmux).to receive(:new_window) }
 
