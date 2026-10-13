@@ -276,6 +276,8 @@ module Workspace
         doc: "The rule that gives each workspace its notes directory when it has no `notes.dir`: an absolute path, `~/…`, or a path relative to the worktree with no `..`; `{workspace}` and `{branch}` are filled in per workspace, so give an outside-the-repo path one or the other (unset: `tmp/workspace-notes` inside the worktree)"),
       Key.new(name: "notes.instructions", scope: :project, type: :boolean, settable: true, default: true, parser: BOOLEAN,
         doc: "`true` or `false`: whether `start` and `launch` send the agent the built-in `notes` pack (where working notes go) with its first prompt (default `true`); `--no-packs` skips it for one run"),
+      Key.new(name: "plan.stall_seconds", scope: :project, type: :duration, settable: true, default: 300, parser: POSITIVE_DURATION,
+        doc: "How long the agent pane that owns a workspace's plan may sit idle before [`workspace plan status`](README.plan.md) reads the plan as `stalled` (default `5m`)"),
       Key.new(name: "statusline.command", scope: :global, type: :command, sensitive: true, settable: true,
         doc: "Delegates [`workspace statusline`](README.statusline.md) rendering to another command instead of the built-in renderer"),
       Key.new(name: "context.source", scope: :global, type: :enum, settable: true, parser: CONTEXT_SOURCE,

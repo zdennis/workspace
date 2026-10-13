@@ -218,6 +218,9 @@ require_relative "workspace/run_resources"
 require_relative "workspace/git_exclude"
 require_relative "workspace/notes_dir"
 require_relative "workspace/notes_setup"
+require_relative "workspace/plan_file"
+require_relative "workspace/plan_state"
+require_relative "workspace/plan_config"
 require_relative "workspace/workflow_config"
 require_relative "workspace/workflow_definition"
 require_relative "workspace/workflow_catalog"
@@ -256,6 +259,7 @@ require_relative "workspace/commands/dev"
 require_relative "workspace/commands/capabilities"
 require_relative "workspace/commands/parent"
 require_relative "workspace/commands/notes"
+require_relative "workspace/commands/plan"
 require_relative "workspace/commands/projects"
 require_relative "workspace/commands/review"
 require_relative "workspace/commands/restore"
@@ -463,6 +467,9 @@ module Workspace
       lock_holder: lock_holder, dev: dev_command, agents: ProjectAgents.new(client: agent_snapshot_client),
       git: git, catalog: project_catalog, error_output: error_output)
     projects_command = Commands::Projects.new(catalog: project_catalog, tmux: tmux, facts: project_facts, output: output, error_output: error_output)
+    plan_command = Commands::Plan.new(notes: notes_command, catalog: project_catalog, plan_state: PlanState.new,
+      plan_config: PlanConfig.new(project_settings: project_settings, error_output: error_output), tmux: tmux,
+      snapshot_client: agent_snapshot_client, ask_store_for: ask_store_for, task_store: task_store, output: output)
     snapshot_command = Commands::Snapshot.new(catalog: project_catalog, facts: project_facts, tmux: tmux, state: state, config: config,
       snapshot_client: agent_snapshot_client, sessions: sessions_command, git: git, pull_request_status: PullRequestStatus.new,
       ask_store_for: ask_store_for,
@@ -568,6 +575,7 @@ module Workspace
       parent_command: parent_command,
       notes_command: notes_command,
       notes_setup: notes_setup,
+      plan_command: plan_command,
       projects_command: projects_command,
       capabilities_command: capabilities_command,
       daemon_command: daemon_command,

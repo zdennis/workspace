@@ -46,7 +46,8 @@ module Workspace
         "notes" => 1,
         "start_packs" => 2,
         "handoff_auto" => 2,
-        "dev_queue" => 2
+        "dev_queue" => 2,
+        "plan" => 1
       }.freeze
 
       # The exit statuses commands use, by meaning.

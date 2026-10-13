@@ -16,7 +16,7 @@ module Workspace
     # hint).
     SUBCOMMANDS = %w[
       init doctor launch start stop add add-project kill finish relaunch restore
-      focus deactivate reactivate tile resize capture agent agentd lock dev parent notes projects
+      focus deactivate reactivate tile resize capture agent agentd lock dev parent notes plan projects
       capabilities daemon sessions review snapshot ask session-event agent-run handoff pipeline run library lib instructions workflow step
       run-and-report report-run-status layout config tmux statusline current
       list-projects list status repair cleanup prune set-command event-log
@@ -66,6 +66,7 @@ module Workspace
     # @param dev_command [Workspace::Commands::Dev] pre-built dev command
     # @param notes_command [Workspace::Commands::Notes, nil] pre-built notes command
     # @param notes_setup [Workspace::NotesSetup, nil] fixes the notes directory of a worktree config `add` creates; nil skips it
+    # @param plan_command [Workspace::Commands::Plan, nil] pre-built plan command
     # @param projects_command [Workspace::Commands::Projects, nil] pre-built projects command
     # @param capabilities_command [Workspace::Commands::Capabilities, nil] pre-built capabilities command
     # @param daemon_command [Workspace::Commands::Daemon, nil] pre-built daemon command
@@ -91,7 +92,7 @@ module Workspace
     #   `list --liveness --json` and `status --json`; takes name => state entry
     # @param launch_mode [Workspace::LaunchMode, nil] decides whether launch/start
     #   run headless when no --[no-]headless flag is given; nil builds one
-    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, restart_agent_command: nil, send_command: nil, ensure_agent_command: nil, handoff_command: nil, notes_command: nil, notes_setup: nil, projects_command: nil, capabilities_command: nil, daemon_command: nil, ui_command: nil, binding_command: nil, library_command: nil, library: nil, instructions_command: nil, instruction_composer: nil, workflow_command: nil, review_command: nil, restore_command: nil, snapshot_command: nil, project_actions_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil, liveness: nil, window_liveness: nil)
+    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, restart_agent_command: nil, send_command: nil, ensure_agent_command: nil, handoff_command: nil, notes_command: nil, notes_setup: nil, plan_command: nil, projects_command: nil, capabilities_command: nil, daemon_command: nil, ui_command: nil, binding_command: nil, library_command: nil, library: nil, instructions_command: nil, instruction_composer: nil, workflow_command: nil, review_command: nil, restore_command: nil, snapshot_command: nil, project_actions_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil, liveness: nil, window_liveness: nil)
       @config = config
       @state = state
       @project_config = project_config
@@ -128,6 +129,7 @@ module Workspace
       @dev_command = dev_command
       @parent_command = parent_command
       @notes_command = notes_command
+      @plan_command = plan_command
       @notes_setup = notes_setup
       @agent_command = agent_command
       @config_command = config_command
@@ -223,6 +225,8 @@ module Workspace
         cmd_parent(args)
       when "notes"
         cmd_notes(args)
+      when "plan"
+        cmd_plan(args)
       when "projects"
         cmd_projects(args)
       when "capabilities"
@@ -438,6 +442,7 @@ module Workspace
           lookup          Find a workspace project by worktree path, branch, or project name
           notes           Print where a workspace's notes are kept (dir)
           parent          Print the parent workspace of the current (or given) workspace
+          plan            Show a workspace's plan (IMPLEMENTATION_PLAN.md): status, path, show, init
           pipeline        Deprecated (use workflow): inspect and drive a project's agent pipeline
           projects        Group workspaces by repository (main checkout + worktrees)
           prune           Remove worktree projects whose PR is closed or merged
@@ -5695,6 +5700,88 @@ module Workspace
       raise Error.new("No workspace found for #{@working_dir}. Run from inside a workspace or pass --name.", code: "not_in_workspace", details: {"path" => @working_dir}) unless name
 
       @notes_command.dir(name: name, create: options[:create], json: options[:json])
+    end
+
+    PLAN_FLAGS = {
+      "status" => %i[name all file json],
+      "path" => %i[name json],
+      "show" => %i[name],
+      "init" => %i[name title from force json]
+    }.freeze
+
+    def plan_parser(options)
+      OptionParser.new do |opts|
+        opts.banner = "Usage: workspace plan status [--name WORKSPACE | --all | --file PATH] [--json]\n" \
+          "       workspace plan path [--name WORKSPACE] [--json]\n" \
+          "       workspace plan show [--name WORKSPACE]\n" \
+          "       workspace plan init [--name WORKSPACE] [--title TITLE] [--from FILE] [--force] [--json]"
+        opts.separator ""
+        opts.separator "A plan is IMPLEMENTATION_PLAN.md in the workspace's notes directory: one checklist"
+        opts.separator "line per task under '## Tasks'. workspace counts it, and works out one state from the"
+        opts.separator "plan, the session and the pane that owns the plan."
+        opts.separator ""
+        opts.separator "Subcommands:"
+        opts.separator "  status   Count the plan and report its state (a workspace with no plan is a row, not an error)"
+        opts.separator "  path     Print where the plan is (or would be)"
+        opts.separator "  show     Print the plan file"
+        opts.separator "  init     Write a new plan, or import an existing document with --from"
+        opts.separator ""
+        opts.on("--name NAME", "Workspace to act on instead of the one detected from the current directory") { |v| take_plan_flag(options, :name, v) }
+        opts.on("--all", "status: every workspace") { take_plan_flag(options, :all, true) }
+        opts.on("--file PATH", "status: read any file, with no workspace and a state from the file alone") { |v| take_plan_flag(options, :file, v) }
+        opts.on("--title TITLE", "init: the plan's title (default: the workspace task's title)") { |v| take_plan_flag(options, :title, v) }
+        opts.on("--from FILE", "init: import this document as the plan") { |v| take_plan_flag(options, :from, v) }
+        opts.on("--force", "init: replace a plan that is already there") { take_plan_flag(options, :force, true) }
+        opts.on("--json", "Print one JSON document (see docs/README.plan.md)") { take_plan_flag(options, :json, true) }
+        opts.on("-h", "--help", "Show this help") { options[:help] = true }
+        opts.separator ""
+        opts.separator "Examples:"
+        opts.separator "  workspace plan status    # api.worktree-x  working  7/20 (40%)  T9 Add the token store"
+        opts.separator "  workspace plan status --all --json"
+        opts.separator "  workspace plan init --title \"Auth rewrite\""
+        opts.separator "  workspace plan path    # /src/api/tmp/workspace-notes/IMPLEMENTATION_PLAN.md"
+      end
+    end
+
+    def take_plan_flag(options, key, value)
+      options[key] = value
+      options[:given] << key
+    end
+
+    def cmd_plan(args)
+      options = {given: [], json: false, force: false}
+      parser = plan_parser(options)
+      parser.parse!(args)
+      return @output.puts(parser.help) if options[:help]
+
+      subcommand = args.shift
+      raise UsageError, "Missing subcommand: one of #{PLAN_FLAGS.keys.join(", ")}.\n\n#{parser.help}" unless subcommand
+      raise UsageError, "Unknown plan subcommand: #{subcommand}. Run 'workspace plan --help'." unless PLAN_FLAGS.key?(subcommand)
+      raise UsageError, "Unexpected argument: #{args.first}. Run 'workspace plan --help'." if args.any?
+      options[:given].uniq.each do |key|
+        raise UsageError, "--#{key} does not apply to 'plan #{subcommand}'. Run 'workspace plan --help'." unless PLAN_FLAGS[subcommand].include?(key)
+      end
+      if subcommand == "status" && options[:given].count { |key| %i[name all file].include?(key) } > 1
+        raise UsageError, "Give only one of --name, --all and --file."
+      end
+      raise Error, "plan is not available: no plan command was wired" unless @plan_command
+
+      return @plan_command.status(all: true, json: options[:json]) if options[:all]
+      return @plan_command.status(file: options[:file], json: options[:json]) if options[:file]
+
+      name = options[:name] || @project_detector.detect(@working_dir)
+      raise Error.new("No workspace found for #{@working_dir}. Run from inside a workspace or pass --name.", code: "not_in_workspace", details: {"path" => @working_dir}) unless name
+
+      case subcommand
+      when "status" then @plan_command.status(names: [name], json: options[:json])
+      when "path" then @plan_command.path(name: name, json: options[:json])
+      when "show" then @plan_command.show(name: name)
+      when "init"
+        run_action("plan init", json: options[:json]) do
+          created = @plan_command.init(name: name, title: options[:title], from: options[:from], force: options[:force])
+          {exit_code: 0, results: [action_row(name, "created", message: created["message"], path: created["path"])]}
+        end
+      end
     end
 
     def cmd_dir(args)

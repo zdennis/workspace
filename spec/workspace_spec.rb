@@ -117,6 +117,17 @@ RSpec.describe Workspace do
       end
     end
 
+    it "wires the plan command to the notes command's answer and the task store start writes" do
+      cli = Workspace.build_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new)
+
+      plan = cli.instance_variable_get(:@plan_command)
+
+      expect(plan).to be_a(Workspace::Commands::Plan)
+      expect(plan.instance_variable_get(:@notes)).to equal(cli.instance_variable_get(:@notes_command))
+      expect(plan.instance_variable_get(:@task_store)).to be_a(Workspace::TaskStore)
+      expect(plan.instance_variable_get(:@ask_store_for).call("api")).to be_a(Workspace::AskStore)
+    end
+
     it "wires the binding command into launch, so a delivered play binds the pane binding set and session-event use" do
       cli = Workspace.build_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new)
 

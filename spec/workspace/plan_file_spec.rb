@@ -1,0 +1,380 @@
+require "spec_helper"
+require "tmpdir"
+
+RSpec.describe Workspace::PlanFile do
+  def parse(text, **options) = described_class.parse(text, **options)
+
+  def plan_text(*lines) = (lines.join("\n") + "\n")
+
+  describe ".parse tasks" do
+    it "reads one task per column-0 checklist line under ## Tasks" do
+      plan = parse(plan_text("# Plan", "", "## Tasks", "", "- [ ] T1 First", "- [~] T2 Second", "- [x] T3 Third", "- [X] T4 Fourth",
+        "- [-] T5 Fifth -- not needed", "- [!] T6 Sixth -- needs a key"))
+
+      expect(plan.tasks.map { |t| [t.id, t.title, t.state, t.reason, t.line] }).to eq([
+        ["T1", "First", "todo", nil, 5], ["T2", "Second", "in_progress", nil, 6], ["T3", "Third", "done", nil, 7],
+        ["T4", "Fourth", "done", nil, 8], ["T5", "Fifth", "skipped", "not needed", 9], ["T6", "Sixth", "blocked", "needs a key", 10]
+      ])
+      expect(plan.warnings).to eq([])
+    end
+
+    it "counts the states and works out left and percent" do
+      plan = parse(plan_text("## Tasks", "- [x] T1 a", "- [x] T2 b", "- [-] T3 c -- no", "- [~] T4 d", "- [!] T5 e -- why", "- [ ] T6 f"))
+
+      expect(plan.counts).to eq("total" => 6, "done" => 2, "in_progress" => 1, "skipped" => 1, "blocked" => 1, "todo" => 1, "left" => 3)
+      expect(plan.percent).to eq(50)
+    end
+
+    it "gives zero percent and no current for a plan without tasks" do
+      plan = parse(plan_text("# Plan", "## Tasks"))
+
+      expect(plan.counts["total"]).to eq(0)
+      expect(plan.percent).to eq(0)
+      expect(plan.current).to be_nil
+    end
+
+    it "names the first in-progress task as current, else the first to do" do
+      with_progress = parse(plan_text("## Tasks", "- [ ] T1 a", "- [~] T2 b", "- [~] T3 c"))
+      without = parse(plan_text("## Tasks", "- [x] T1 a", "- [ ] T2 b", "- [ ] T3 c"))
+      finished = parse(plan_text("## Tasks", "- [x] T1 a"))
+
+      expect(with_progress.current).to eq("id" => "T2", "title" => "b", "phase" => nil)
+      expect(without.current).to eq("id" => "T2", "title" => "b", "phase" => nil)
+      expect(finished.current).to be_nil
+    end
+
+    it "takes the phase from the nearest heading above that is not Tasks" do
+      plan = parse(plan_text("## Tasks", "- [ ] T0 loose", "### Phase 1", "- [x] T1 a", "#### Step 1.1", "- [ ] T2 b", "### Phase 2", "- [ ] T3 c"))
+
+      expect(plan.tasks.map(&:phase)).to eq([nil, "Phase 1", "Step 1.1", "Phase 2"])
+      expect(plan.current).to eq("id" => "T0", "title" => "loose", "phase" => nil)
+    end
+
+    it "does not count indented checkboxes" do
+      plan = parse(plan_text("## Tasks", "- [ ] T1 a", "  - [ ] sub item", "\t- [x] tabbed"))
+
+      expect(plan.tasks.map(&:id)).to eq(["T1"])
+    end
+
+    it "does not count tasks outside ## Tasks" do
+      plan = parse(plan_text("- [ ] T0 before", "## Tasks", "- [ ] T1 a", "## Task details", "- [ ] T2 detail", "## Notes", "- [ ] T3 note"))
+
+      expect(plan.tasks.map(&:id)).to eq(["T1"])
+    end
+
+    it "does not count lines that are nearly task lines, and ends Tasks at a level-1 heading" do
+      plan = parse(plan_text("## Tasks", "- [ ]T1 a", "-  [ ] T2 b", "- [xx] T3 c", "* [ ] T4 d", "- [ ] T5 e", "# Appendix", "- [ ] T6 f"))
+
+      expect(plan.tasks.map(&:id)).to eq(["T5"])
+      expect(plan.warnings).to eq([])
+    end
+
+    it "keeps a trailing # in a phase name and ends Tasks at a bare ## heading" do
+      plan = parse(plan_text("## Tasks", "### C#", "- [ ] T1 a", "### Closed ###", "- [ ] T2 b", "##", "- [ ] T3 c"))
+
+      expect(plan.tasks.map { |t| [t.id, t.phase] }).to eq([["T1", "C#"], ["T2", "Closed"]])
+    end
+
+    it "matches the Tasks heading without regard to case" do
+      expect(parse(plan_text("## tasks", "- [ ] T1 a")).tasks.size).to eq(1)
+    end
+
+    it "does not count fenced code, of either fence character, and counts again after it" do
+      plan = parse(plan_text("## Tasks", "```", "- [ ] T1 in a fence", "```", "~~~md", "- [ ] T2 in another", "~~~", "- [ ] T3 real"))
+
+      expect(plan.tasks.map(&:id)).to eq(["T3"])
+    end
+
+    it "does not close a fence with the other fence character" do
+      plan = parse(plan_text("## Tasks", "```", "~~~", "- [ ] T1 still inside", "```", "- [ ] T2 outside"))
+
+      expect(plan.tasks.map(&:id)).to eq(["T2"])
+    end
+
+    it "skips a byte order mark at the start of the file" do
+      plan = parse("﻿---\ntitle: Hi\n---\n## Tasks\n- [ ] T1 a\n")
+
+      expect(plan.title).to eq("Hi")
+    end
+
+    it "closes frontmatter with ... as well as ---" do
+      expect(parse(plan_text("---", "title: Hi", "...", "## Tasks", "- [ ] T1 a")).title).to eq("Hi")
+    end
+
+    it "keeps a fence open until a fence at least as long closes it" do
+      plan = parse(plan_text("## Tasks", "````", "```", "- [ ] T1 inside", "```", "````", "- [ ] T2 outside"))
+
+      expect(plan.tasks.map(&:id)).to eq(["T2"])
+    end
+
+    it "reads a heading inside a fence as code, not as a heading" do
+      plan = parse(plan_text("## Tasks", "```", "## Elsewhere", "```", "- [ ] T1 still in Tasks"))
+
+      expect(plan.tasks.map(&:id)).to eq(["T1"])
+    end
+
+    it "does not count tasks inside HTML comments, on one line or several" do
+      plan = parse(plan_text("## Tasks", "<!-- - [ ] T1 hidden -->", "- [ ] T2 shown", "<!--", "- [ ] T3 hidden", "-->", "- [ ] T4 shown",
+        "text <!-- inline --> more", "- [ ] T5 shown"))
+
+      expect(plan.tasks.map(&:id)).to eq(%w[T2 T4 T5])
+    end
+
+    it "does not read a fence inside a comment" do
+      plan = parse(plan_text("## Tasks", "<!--", "```", "-->", "- [ ] T1 counted"))
+
+      expect(plan.tasks.map(&:id)).to eq(["T1"])
+    end
+
+    it "reads a comment that never closes as hiding the rest of the file" do
+      plan = parse(plan_text("## Tasks", "- [ ] T1 a", "<!-- oops", "- [ ] T2 hidden"))
+
+      expect(plan.tasks.map(&:id)).to eq(["T1"])
+    end
+
+    it "reads CRLF line endings" do
+      plan = parse("---\r\nstatus: paused\r\n---\r\n## Tasks\r\n- [ ] T1 a\r\n- [-] T2 b -- why\r\n")
+
+      expect(plan.tasks.map { |t| [t.id, t.title, t.reason] }).to eq([["T1", "a", nil], ["T2", "b", "why"]])
+      expect(plan.status).to eq("paused")
+    end
+
+    it "keeps a dash pair inside the title of a task that is not skipped or blocked" do
+      expect(parse(plan_text("## Tasks", "- [ ] T1 Split A -- B")).tasks.first.title).to eq("Split A -- B")
+    end
+
+    it "accepts ids with dots and dashes, and a trailing colon" do
+      plan = parse(plan_text("## Tasks", "- [ ] CLI-D18 a", "- [ ] 1.2 b", "- [ ] T3: c"))
+
+      expect(plan.tasks.map { |t| [t.id, t.title] }).to eq([["CLI-D18", "a"], ["1.2", "b"], ["T3", "c"]])
+    end
+
+    it "accepts the empty text and text with no newline at the end" do
+      expect(parse("").tasks).to eq([])
+      expect(parse("## Tasks\n- [ ] T1 a").tasks.size).to eq(1)
+    end
+  end
+
+  describe ".parse warnings" do
+    it "warns no_id for a task line with no id and still counts it" do
+      plan = parse(plan_text("## Tasks", "- [ ] Add the token store", "- [ ] T2 b"))
+
+      expect(plan.warnings).to contain_exactly(a_hash_including("code" => "no_id", "line" => 2, "message" => a_kind_of(String)))
+      expect(plan.tasks.first).to have_attributes(id: nil, title: "Add the token store", state: "todo")
+      expect(plan.counts["total"]).to eq(2)
+    end
+
+    it "warns no_id for a task line with nothing after the box" do
+      plan = parse(plan_text("## Tasks", "- [ ]"))
+
+      expect(plan.warnings.map { |w| w["code"] }).to eq(["no_id"])
+      expect(plan.tasks.first).to have_attributes(id: nil, title: "")
+    end
+
+    it "warns bad_state for an unknown box character and counts the task as to do" do
+      plan = parse(plan_text("## Tasks", "- [?] T1 a"))
+
+      expect(plan.warnings).to contain_exactly(a_hash_including("code" => "bad_state", "line" => 2))
+      expect(plan.tasks.first.state).to eq("todo")
+      expect(plan.counts["left"]).to eq(1)
+    end
+
+    it "warns duplicate_id on the second use of an id and counts both" do
+      plan = parse(plan_text("## Tasks", "- [ ] T1 a", "- [ ] T1 b", "- [ ] T1 c"))
+
+      expect(plan.warnings.map { |w| [w["code"], w["line"]] }).to eq([["duplicate_id", 3], ["duplicate_id", 4]])
+      expect(plan.counts["total"]).to eq(3)
+    end
+
+    it "warns missing_reason for a skipped or blocked task without one" do
+      plan = parse(plan_text("## Tasks", "- [-] T1 a", "- [!] T2 b --", "- [!] T3 c -- fine"))
+
+      expect(plan.warnings.map { |w| [w["code"], w["line"]] }).to eq([["missing_reason", 2], ["missing_reason", 3]])
+      expect(plan.tasks.map(&:reason)).to eq([nil, nil, "fine"])
+      expect(plan.tasks[1].title).to eq("b")
+    end
+
+    it "reads the reason of a task that has an id and no title" do
+      plan = parse(plan_text("## Tasks", "- [!] T1 -- waiting on X"))
+
+      expect(plan.tasks.first).to have_attributes(id: "T1", title: "", reason: "waiting on X")
+      expect(plan.warnings).to eq([])
+    end
+
+    it "keeps warnings on one line in the order they were found" do
+      plan = parse(plan_text("## Tasks", "- [?] words only"))
+
+      expect(plan.warnings.map { |w| w["code"] }).to eq(%w[bad_state no_id])
+    end
+
+    it "warns truncated when told the read stopped early" do
+      plan = parse("## Tasks\n- [ ] T1 a\n", truncated: true)
+
+      expect(plan.warnings).to contain_exactly(a_hash_including("code" => "truncated", "line" => nil))
+    end
+
+    it "lists warnings in the order of the lines" do
+      plan = parse(plan_text("## Tasks", "- [?] T1 a", "- [ ] Words only", "- [ ] T1 again"))
+
+      expect(plan.warnings.map { |w| w["line"] }).to eq([2, 3, 4])
+    end
+  end
+
+  describe ".parse frontmatter" do
+    it "reads title, status and owner_pane, and the plan version" do
+      plan = parse(plan_text("---", "plan: 1", "title: \"Auth rewrite\"", "status: paused", "owner_pane: '%19'", "---", "## Tasks", "- [ ] T1 a"))
+
+      expect(plan).to have_attributes(title: "Auth rewrite", status: "paused", owner_pane: "%19")
+      expect(plan.frontmatter["plan"]).to eq("1")
+      expect(plan.tasks.first.line).to eq(8)
+    end
+
+    it "unescapes a double-quoted title and keeps the text of one it cannot unescape" do
+      expect(parse(plan_text("---", %q(title: "Say \"hi\""), "---")).title).to eq('Say "hi"')
+      expect(parse(plan_text("---", %q(title: "C:\dir"), "---")).title).to eq(%q(C:\dir))
+    end
+
+    it "defaults the status to active and the rest to nil" do
+      plan = parse(plan_text("## Tasks", "- [ ] T1 a"))
+
+      expect(plan).to have_attributes(status: "active", title: nil, owner_pane: nil)
+    end
+
+    it "treats an unknown status as active and warns bad_state" do
+      plan = parse(plan_text("---", "status: finished", "---", "## Tasks"))
+
+      expect(plan.status).to eq("active")
+      expect(plan.warnings).to contain_exactly(a_hash_including("code" => "bad_state", "line" => 2))
+    end
+
+    it "treats a blank owner_pane as unset" do
+      expect(parse(plan_text("---", "owner_pane:", "---")).owner_pane).to be_nil
+    end
+
+    it "reads a --- line that never closes as ordinary text, not frontmatter" do
+      plan = parse(plan_text("---", "status: paused", "## Tasks", "- [ ] T1 a"))
+
+      expect(plan.status).to eq("active")
+      expect(plan.tasks.map(&:id)).to eq(["T1"])
+    end
+
+    it "reads a --- rule with no key lines before the next --- as text, so the tasks count" do
+      plan = parse(plan_text("---", "just a rule", "---", "## Tasks", "- [ ] T1 a"))
+
+      expect(plan.frontmatter).to eq({})
+      expect(plan.tasks.map(&:id)).to eq(["T1"])
+    end
+
+    it "skips lines of frontmatter that are not key: value" do
+      plan = parse(plan_text("---", "just words", "title: Hi", "---"))
+
+      expect(plan.title).to eq("Hi")
+    end
+
+    it "does not read a --- later in the file as frontmatter" do
+      plan = parse(plan_text("# Plan", "---", "status: paused", "---", "## Tasks", "- [ ] T1 a"))
+
+      expect(plan.status).to eq("active")
+    end
+  end
+
+  describe "frontmatter position" do
+    it "reports the lines between the --- lines and the status line, for a writer that changes only that line" do
+      plan = parse(plan_text("---", "plan: 1", "status: paused", "---", "## Tasks"))
+
+      expect(plan.frontmatter_lines).to eq(2..3)
+      expect(plan.status_line).to eq(3)
+    end
+
+    it "reports nothing without frontmatter or a status line" do
+      expect(parse(plan_text("## Tasks")).frontmatter_lines).to be_nil
+      expect(parse(plan_text("---", "title: x", "---")).status_line).to be_nil
+    end
+  end
+
+  describe ".path_in" do
+    it "puts the plan file in the notes directory" do
+      expect(described_class.path_in("/n")).to eq("/n/IMPLEMENTATION_PLAN.md")
+    end
+  end
+
+  describe ".read" do
+    around do |example|
+      Dir.mktmpdir("plan-file") do |dir|
+        @dir = File.realpath(dir)
+        example.run
+      end
+    end
+
+    let(:path) { File.join(@dir, "IMPLEMENTATION_PLAN.md") }
+
+    it "returns nil for a file that is not there" do
+      expect(described_class.read(path)).to be_nil
+      expect(described_class.read(File.join(@dir, "no", "such", "plan.md"))).to be_nil
+    end
+
+    it "parses the file and reports its signature and update time" do
+      File.write(path, "## Tasks\n- [ ] T1 a\n")
+      time = Time.utc(2026, 10, 12, 14, 3, 11, 123_456.789r)
+      File.utime(time, time, path)
+
+      plan = described_class.read(path)
+
+      expect(plan.tasks.size).to eq(1)
+      expect(plan.signature).to eq("#{time.to_i * 1_000_000_000 + 123_456_789}:#{File.size(path)}")
+      expect(plan.updated_at).to eq("2026-10-12T14:03:11Z")
+    end
+
+    it "returns nil for a path below a file" do
+      File.write(path, "x")
+
+      expect(described_class.read(File.join(path, "x"))).to be_nil
+    end
+
+    it "stops at 1 MB and says so, without counting a half line" do
+      count = (described_class::MAX_BYTES / 100) + 100
+      lines = Array.new(count) { |i| "- [ ] T#{i} #{"x" * 90}\n" }
+      File.write(path, "## Tasks\n" + lines.join)
+
+      plan = described_class.read(path)
+
+      expect(plan.warnings.map { |w| w["code"] }).to eq(["truncated"])
+      expect(plan.tasks.size).to be < count
+      expect(plan.tasks.last.title).to eq("x" * 90)
+    end
+
+    it "reads an empty file as an empty plan" do
+      File.write(path, "")
+
+      plan = described_class.read(path)
+
+      expect(plan.tasks).to eq([])
+      expect(plan.warnings).to eq([])
+      expect(plan.signature).to end_with(":0")
+    end
+
+    it "reads a file longer than 1 MB with no line break as an empty, truncated plan" do
+      File.write(path, "x" * (described_class::MAX_BYTES + 10))
+
+      plan = described_class.read(path)
+
+      expect(plan.tasks).to eq([])
+      expect(plan.warnings.map { |w| w["code"] }).to eq(["truncated"])
+    end
+
+    it "reads bytes that are not valid UTF-8 without failing" do
+      File.binwrite(path, "## Tasks\n- [ ] T1 caf\xE9\n".b)
+
+      expect(described_class.read(path).tasks.first.id).to eq("T1")
+    end
+
+    it "reads a file that cannot be read as an empty plan with an unreadable warning" do
+      Dir.mkdir(path)
+
+      plan = described_class.read(path)
+
+      expect(plan.tasks).to eq([])
+      expect(plan.warnings).to contain_exactly(a_hash_including("code" => "unreadable", "line" => nil))
+    end
+  end
+end

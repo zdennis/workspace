@@ -98,6 +98,7 @@ RSpec.describe Workspace::CLI do
       handoff_command: overrides[:handoff_command],
       notes_command: overrides[:notes_command],
       notes_setup: overrides[:notes_setup],
+      plan_command: overrides[:plan_command],
       projects_command: overrides[:projects_command],
       capabilities_command: overrides[:capabilities_command],
       restore_command: overrides[:restore_command],
@@ -4702,6 +4703,121 @@ RSpec.describe Workspace::CLI do
 
       expect { cli.run(["instructions", "compose"]) }.to raise_error(FakeSystemExit)
       expect(error_output.string).to include("no instructions command was wired")
+    end
+  end
+
+  describe "#run with plan" do
+    let(:plan_command) { instance_double(Workspace::Commands::Plan, status: [], path: nil, show: nil, init: {"path" => "/n/IMPLEMENTATION_PLAN.md", "message" => nil}) }
+    let(:detector) { instance_double(Workspace::ProjectDetector, detect: "detected-ws") }
+    let(:built) { build_test_cli(plan_command: plan_command, project_detector: detector, working_dir: "/some/dir") }
+    let(:cli) { built[0] }
+    let(:output) { built[1] }
+    let(:error_output) { built[2] }
+
+    it "reads the plan of the workspace detected from the working directory" do
+      cli.run(["plan", "status"])
+
+      expect(detector).to have_received(:detect).with("/some/dir")
+      expect(plan_command).to have_received(:status).with(names: ["detected-ws"], json: false)
+    end
+
+    it "passes --name and --json to status, in any order" do
+      cli.run(["plan", "--json", "status", "--name", "api.worktree-x"])
+
+      expect(plan_command).to have_received(:status).with(names: ["api.worktree-x"], json: true)
+    end
+
+    it "passes --all and --file to status without looking for a workspace" do
+      cli.run(["plan", "status", "--all", "--json"])
+      cli.run(["plan", "status", "--file", "/x/plan.md"])
+
+      expect(plan_command).to have_received(:status).with(all: true, json: true)
+      expect(plan_command).to have_received(:status).with(file: "/x/plan.md", json: false)
+      expect(detector).not_to have_received(:detect)
+    end
+
+    it "passes path and show on with the workspace" do
+      cli.run(["plan", "path", "--json"])
+      cli.run(["plan", "show", "--name", "api"])
+
+      expect(plan_command).to have_received(:path).with(name: "detected-ws", json: true)
+      expect(plan_command).to have_received(:show).with(name: "api")
+    end
+
+    it "initialises a plan and prints the action document under --json" do
+      cli.run(["plan", "init", "--title", "Auth", "--from", "/old.md", "--force", "--json", "--name", "api"])
+
+      expect(plan_command).to have_received(:init).with(name: "api", title: "Auth", from: "/old.md", force: true)
+      expect(JSON.parse(output.string)).to include("ok" => true, "action" => "plan init", "status" => "ok",
+        "results" => [{"workspace" => "api", "outcome" => "created", "reason" => nil, "message" => nil, "path" => "/n/IMPLEMENTATION_PLAN.md"}])
+    end
+
+    it "carries the import note into the action row" do
+      allow(plan_command).to receive(:init).and_return("path" => "/n/p.md", "message" => "no tasks")
+
+      cli.run(["plan", "init", "--name", "api", "--json"])
+
+      expect(JSON.parse(output.string)["results"].first).to include("message" => "no tasks")
+    end
+
+    it "initialises a plan without a document in text mode" do
+      cli.run(["plan", "init"])
+
+      expect(plan_command).to have_received(:init).with(name: "detected-ws", title: nil, from: nil, force: false)
+      expect(output.string).to eq("")
+    end
+
+    it "fails with not_in_workspace outside a workspace, as an envelope under --json" do
+      allow(detector).to receive(:detect).and_return(nil)
+
+      expect { cli.run(["plan", "path", "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+
+      expect(JSON.parse(output.string)).to include("ok" => false, "code" => "not_in_workspace")
+    end
+
+    it "prints a command's failure as the envelope under --json and on stderr without it" do
+      allow(plan_command).to receive(:init).and_raise(Workspace::Error.new("There is already a plan", code: "plan_exists", details: {"path" => "/p"}))
+
+      expect { cli.run(["plan", "init", "--json"]) }.to raise_error(FakeSystemExit)
+      expect(JSON.parse(output.string)).to include("code" => "plan_exists", "details" => {"path" => "/p"})
+
+      expect { cli.run(["plan", "init"]) }.to raise_error(FakeSystemExit)
+      expect(error_output.string).to include("Error: There is already a plan")
+    end
+
+    it "shows help" do
+      cli.run(["plan", "--help"])
+
+      expect(output.string).to include("workspace plan status").and include("--from FILE")
+      expect(plan_command).not_to have_received(:status)
+    end
+
+    it "rejects a missing subcommand, an unknown one, and extra arguments as usage errors" do
+      [["plan"], ["plan", "bogus"], ["plan", "status", "extra"]].each do |argv|
+        expect { cli.run(argv + ["--json"]) }.to raise_error(FakeSystemExit), argv.inspect
+        expect(JSON.parse(output.string.lines.last)).to include("ok" => false, "code" => "usage"), argv.inspect
+      end
+    end
+
+    it "rejects a flag that does not belong to the subcommand" do
+      expect { cli.run(["plan", "path", "--all", "--json"]) }.to raise_error(FakeSystemExit)
+
+      expect(JSON.parse(output.string)).to include("code" => "usage", "error" => a_string_including("--all does not apply to 'plan path'"))
+      expect { cli.run(["plan", "show", "--json"]) }.to raise_error(FakeSystemExit)
+    end
+
+    it "rejects more than one of --name, --all and --file" do
+      [%w[--name a --all], %w[--all --file x], %w[--name a --file x]].each do |flags|
+        expect { cli.run(["plan", "status", *flags, "--json"]) }.to raise_error(FakeSystemExit), flags.inspect
+        expect(JSON.parse(output.string.lines.last)).to include("code" => "usage"), flags.inspect
+      end
+    end
+
+    it "fails when no plan command was wired" do
+      cli, _, error_output = build_test_cli
+
+      expect { cli.run(["plan", "status", "--name", "a"]) }.to raise_error(FakeSystemExit)
+      expect(error_output.string).to include("plan is not available")
     end
   end
 
