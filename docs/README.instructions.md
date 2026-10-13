@@ -8,7 +8,7 @@ Print the instructions an agent is given, built from library packs.
 workspace instructions compose [--pack NAME]... [--pane %ID] [--name WORKSPACE] [--json]
 ```
 
-A pack is a [library](README.library.md) play. workspace ships six:
+A pack is a [library](README.library.md) play. workspace ships seven:
 
 | Pack | What it tells the agent |
 |---|---|
@@ -17,6 +17,7 @@ A pack is a [library](README.library.md) play. workspace ships six:
 | `commits` | Cohesive commits, tests and lint before each one, messages about why, no attribution lines, no push or merge unless told |
 | `review` | Run reviewer sub-agents over the diff, fix or answer every finding, write `review.md` |
 | `handoff` | Run `workspace handoff check` after every task and hand off to a fresh conversation before the context runs out; sent by `start` and `launch` only for Claude Code, with `--handoff` or `handoff.auto` (see [`handoff`](README.handoff.md#automatic-handoff)) |
+| `dev` | Queue for the project's one shared dev environment before implementing, testing or verifying (`workspace dev up --queue`, then `workspace dev wait`), never test against another worktree's server, and release it with `workspace dev down` when done; sent by `start` and `launch` when the project sets `dev.up` (see [`dev`](README.dev.md#instructions-for-agents)). A workflow step that declares `uses: [devenv]` never gets it |
 | `notes` | Where this workspace's working notes go (`workspace notes dir --create`), what belongs there, how to name files, to read the plan first, to write as you work, and never to commit them |
 
 With no `--pack`, the default packs are composed: `binding`, `orchestrator` and `commits`, in that order, or the ones the global key `workflows.defaults.include` names (`workspace config set workflows.defaults.include "binding, commits"`). `--pack` repeats, and packs are composed in the order given; a name given twice is composed once.
@@ -26,7 +27,7 @@ With no `--pack`, the default packs are composed: `binding`, `orchestrator` and 
 | `--pack NAME` | A pack to compose: `NAME` or `play/NAME` |
 | `--pane PANE` | The pane id (`%19`) whose binding follows the `binding` pack (default `$TMUX_PANE`, unless `--name` is given) |
 | `--name WORKSPACE` | Compose for this workspace instead of the current directory |
-| `--start` | Print what [`start`](README.start.md#packs) and [`launch`](README.launch.md#details) send with the first prompt, and send nothing: the automatic packs (`notes`, unless `notes.instructions` is `false`), then each `--pack`. Without `--pack` the default packs are not used; `--pane` is refused |
+| `--start` | Print what [`start`](README.start.md#packs) and [`launch`](README.launch.md#details) send with the first prompt, and send nothing: the automatic packs (`notes`, unless `notes.instructions` is `false`; `dev`, when the project sets `dev.up` and `dev.instructions` is not `false`), then each `--pack`. Without `--pack` the default packs are not used; `--pane` is refused |
 | `--no-packs` | With `--start`: leave out the automatic packs; cannot be combined with `--pack` |
 | `--json` | Print one JSON document |
 
@@ -70,7 +71,7 @@ A [workflow](README.workflow.md) step's instructions file is composed the same w
 3. the step's `include:` packs, then its prompt under `## From step <id>`;
 4. `## For this attempt`: what the runner knows about this attempt, such as why the last one failed (with the check's log), a reject or approve note, and the `--note` of `workflow run` or `workflow resume`.
 
-A pack named in more than one layer is composed once, where it is first named. The `binding` pack tells the agent about `workspace step status` and `workspace step done`. In a step's file it is followed by the binding the pane gets for that step: the run, step, attempt, instructions file and artifacts directory.
+A pack named in more than one layer is composed once, where it is first named. The `dev` pack is left out of a step that declares `uses: [devenv]`, since the run already holds the environment for it. The `binding` pack tells the agent about `workspace step status` and `workspace step done`. In a step's file it is followed by the binding the pane gets for that step: the run, step, attempt, instructions file and artifacts directory.
 
 ## Your own packs
 

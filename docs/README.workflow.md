@@ -118,7 +118,7 @@ Step keys:
 | `produces` | Files the step must write, as paths under the run's artifacts directory |
 | `status` | A check run in the checkout when the turn ends: a command line, `{run: COMMAND}`, or `{command: test}` / `{command: lint}` for the project's own [`commands.test` or `commands.lint`](README.config.md). `timeout` (default `20m`) stops it; a `timeout` with no value is refused |
 | `gate` | `approve`: wait for `workflow approve` after the step passes |
-| `uses` | Lock names the run holds for the step. `dev-env` is `devenv`; `edit` is refused (only the agent that edits can hold it) |
+| `uses` | Lock names the run holds for the step. `dev-env` is `devenv`; `edit` is refused (only the agent that edits can hold it). A step that uses `devenv` is not sent the `dev` pack, even when it is in the defaults or an `include:`: the run holds the environment for it |
 | `on_fail` | `{goto: STEP, max: N}`: on failure go back to an earlier step, at most `N` times (default 1). `context:` overrides the target step's `context` for that jump |
 | `context` | `fresh` (default): start the step in a new conversation. `continue`: keep the pane's conversation |
 | `timeout` | How long the step may take before `status` flags it `timed_out`. Nothing is stopped |

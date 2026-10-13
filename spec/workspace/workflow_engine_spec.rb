@@ -167,6 +167,18 @@ RSpec.describe Workspace::WorkflowEngine do
       expect(composer.calls.last[:step]).to include("name" => "plan", "include" => [])
     end
 
+    it "leaves the dev pack out of a step that uses devenv, which already holds the environment" do
+      start(definition("steps:\n  a:\n    prompt: P\n    uses: [dev-env]\n"), inputs: {})
+
+      expect(composer.calls.last).to include(skip: %w[dev])
+    end
+
+    it "leaves no pack out of a step that does not use devenv" do
+      start
+
+      expect(composer.calls.last).to include(skip: [])
+    end
+
     it "hands the composer the binding the pane is about to get, to follow the binding pack" do
       start
 

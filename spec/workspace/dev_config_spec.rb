@@ -27,6 +27,33 @@ RSpec.describe Workspace::DevConfig do
     end
   end
 
+  describe "#configured? and #instructions?" do
+    def config_for(dev)
+      dir = Dir.mktmpdir("ws-dev-config")
+      settings = project_settings_with(dir: dir)
+      settings.save("myapp", {"dev" => dev}) if dev
+      described_class.new(project_settings: settings)
+    end
+
+    it "is configured only when dev.up holds a command" do
+      expect(config_for(nil).configured?("myapp")).to be(false)
+      expect(config_for({"ready" => "port:3000"}).configured?("myapp")).to be(false)
+      expect(config_for({"up" => "  "}).configured?("myapp")).to be(false)
+      expect(config_for({"up" => "./start-dev"}).configured?("myapp")).to be(true)
+    end
+
+    it "is not thrown off by a bad duration elsewhere in the dev block" do
+      expect(config_for({"up" => "./start-dev", "stop_timeout" => "soon"}).configured?("myapp")).to be(true)
+    end
+
+    it "wants instructions unless dev.instructions is false, as a string or a boolean" do
+      expect(config_for(nil).instructions?("myapp")).to be(true)
+      expect(config_for({"instructions" => "true"}).instructions?("myapp")).to be(true)
+      expect(config_for({"instructions" => "false"}).instructions?("myapp")).to be(false)
+      expect(config_for({"instructions" => false}).instructions?("myapp")).to be(false)
+    end
+  end
+
   describe "#for_project" do
     it "returns nils and the default timeouts when nothing is configured" do
       dir = Dir.mktmpdir("ws-dev-config")

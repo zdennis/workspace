@@ -604,7 +604,7 @@ module Workspace
       context = context.dup
       context.unshift("Note for this run: #{run["note"]}") if run["note"]
       @composer.compose(
-        packs: nil, cwd: run["worktree"], binding: binding,
+        packs: nil, cwd: run["worktree"], binding: binding, skip: step["uses"].to_a.include?("devenv") ? ["dev"] : [],
         workflow: {"name" => data["id"], "include" => data["include"],
                    "text" => data["instructions"] && WorkflowDefinition.render(data["instructions"], filled)},
         step: {"name" => step["id"], "include" => step["include"], "text" => step_text(run, step, filled)},

@@ -44,7 +44,7 @@ module Workspace
         "window_state" => 1,
         "cleanup_dry_run" => 1,
         "notes" => 1,
-        "start_packs" => 1,
+        "start_packs" => 2,
         "handoff_auto" => 2,
         "dev_queue" => 1
       }.freeze

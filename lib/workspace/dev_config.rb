@@ -26,6 +26,26 @@ module Workspace
       build(@project_settings.load(name)["dev"] || {}, name)
     end
 
+    # Whether the project has a dev environment to run: `dev.up` holds a command. Reads only
+    # that key, so a bad duration elsewhere in the block does not matter.
+    #
+    # @param name [String] project name (already resolved to its parent, if a worktree)
+    # @return [Boolean]
+    # @raise [Workspace::ConfigParseError] if the project's config file can't be parsed
+    def configured?(name)
+      !block(name)["up"].to_s.strip.empty?
+    end
+
+    # Whether `start` and `launch` may send the built-in `dev` pack (`dev.instructions`).
+    #
+    # @param name [String] project name (already resolved to its parent, if a worktree)
+    # @return [Boolean] false only when the project sets `dev.instructions` to false;
+    #   unset, or a value `config set` would refuse, is true
+    # @raise [Workspace::ConfigParseError] if the project's config file can't be parsed
+    def instructions?(name)
+      block(name)["instructions"].to_s != "false"
+    end
+
     # Settings with every key unset, for callers that must still act when the
     # project config can't be read (e.g. `dev down`).
     #
@@ -35,6 +55,11 @@ module Workspace
     end
 
     private
+
+    def block(name)
+      dev = @project_settings.load(name)["dev"]
+      dev.is_a?(Hash) ? dev : {}
+    end
 
     def build(dev, name)
       {

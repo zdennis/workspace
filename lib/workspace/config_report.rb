@@ -18,6 +18,9 @@ module Workspace
     # A `{workspace}` or `{branch}` placeholder in a notes path.
     NOTES_PLACEHOLDER = /\{(?:workspace|branch)\}/
 
+    # The derived, read-only row: whether the project's `dev.up` is set.
+    DEV_CONFIGURED = "dev.configured".freeze
+
     # A backslash before a space or "~".
     ESCAPED_PATH = /\\[ ~]/
 
@@ -95,7 +98,7 @@ module Workspace
     # a main checkout, never from the project's file in a worktree.
     def read_layer(key, scan)
       return "global" if key.global?
-      return "project" if key.resolve == :parent
+      return "project" if key.resolve == :parent || key.name == DEV_CONFIGURED
       scan.worktree? ? "worktree" : "project"
     end
 
@@ -103,7 +106,7 @@ module Workspace
       layer = read_layer(key, scan)
       file = scan.file(layer)
       parts = key.name.split(".")
-      stored = dig(file.data, parts)
+      stored = (key.name == DEV_CONFIGURED) ? nil : dig(file.data, parts)
       layers = key.global? ? ["global"] : %w[worktree project]
       own_problems = problems.select { |p| p["key"] == key.name && layers.include?(p["layer"]) }
       masked = key.sensitive && !stored.nil?
@@ -134,7 +137,14 @@ module Workspace
         "problems" => own_problems.map { |p| p.slice("severity", "code", "message", "line", "column") }
       }
       row["effective_path"] = effective_path(key, scan, problems) if NOTES_KEYS.include?(key.name)
+      row["effective"] = dev_configured(file) if key.name == DEV_CONFIGURED
       row
+    end
+
+    # Whether the project's `dev.up` holds a command, as {DevConfig#configured?} reads it; nil when the file can't be read.
+    def dev_configured(file)
+      return nil unless file.readable?
+      !dig(file.data, %w[dev up]).to_s.strip.empty?
     end
 
     # Where the workspace's notes go (`notes.dir`) or where the project's rule puts them

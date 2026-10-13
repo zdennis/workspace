@@ -148,6 +148,12 @@ workspace config get dev.up
 workspace config unset dev.ready
 ```
 
+Once `dev.up` is set, `workspace start` and `workspace launch` also send the agent the
+built-in `dev` pack, which tells it to queue for the environment with
+`workspace dev up --queue` and `workspace dev wait` before it tests, and to run
+`workspace dev down` when it is done. Turn that off with
+`workspace config set dev.instructions false`.
+
 `workspace config` (no subcommand) shows the whole project config as YAML;
 add `--global` to see `~/.config/workspace/config.yml` instead.
 

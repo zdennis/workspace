@@ -525,7 +525,8 @@ module Workspace
           packs << v
         end
         opts.on("--no-packs", "Send no automatic packs (the notes pack, unless notes.instructions is false;",
-          "the handoff pack, when handoff.auto is true); cannot be combined with --pack") do
+          "the dev pack, when dev.up is set; the handoff pack, when handoff.auto is true);",
+          "cannot be combined with --pack") do
           no_packs = true
         end
         opts.on("--[no-]handoff", "Send (or never send) the handoff pack, whatever handoff.auto says. It makes a Claude",
@@ -709,7 +710,8 @@ module Workspace
           packs << v
         end
         opts.on("--no-packs", "Send no automatic packs (the notes pack, unless notes.instructions is false;",
-          "the handoff pack, when handoff.auto is true); cannot be combined with --pack") do
+          "the dev pack, when dev.up is set; the handoff pack, when handoff.auto is true);",
+          "cannot be combined with --pack") do
           no_packs = true
         end
         opts.on("--[no-]handoff", "Send (or never send) the handoff pack, whatever handoff.auto says. It makes a Claude",
@@ -3810,10 +3812,11 @@ module Workspace
         opts.banner = "Usage: workspace instructions compose [--pack NAME]... [--pane %ID] [--name WORKSPACE] [--json]\n       workspace instructions compose --start [--pack NAME]... [--no-packs] [--name WORKSPACE] [--json]"
         opts.separator ""
         opts.separator "Print the instructions an agent is given, built from library packs. A pack is a"
-        opts.separator "library play; workspace ships six: binding (how to work in a bound pane),"
+        opts.separator "library play; workspace ships seven: binding (how to work in a bound pane),"
         opts.separator "orchestrator (delegate to sub-agents), commits (how to commit), review (review a"
-        opts.separator "diff with reviewer sub-agents), notes (where working notes go) and handoff (run"
-        opts.separator "'workspace handoff check' after every task). With no"
+        opts.separator "diff with reviewer sub-agents), notes (where working notes go), handoff (run"
+        opts.separator "'workspace handoff check' after every task) and dev (queue for the shared dev"
+        opts.separator "environment before testing, release it when done). With no"
         opts.separator "--pack, binding, orchestrator and commits are composed, in that order. Each"
         opts.separator "pack is printed under a heading that names where it came from."
         opts.separator ""

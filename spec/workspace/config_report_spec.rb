@@ -62,6 +62,38 @@ RSpec.describe Workspace::ConfigReport do
     end
   end
 
+  describe "dev.configured" do
+    it "is a read-only derived row: true when the project's dev.up is set, with no value or masking" do
+      write("api", "dev:\n  up: ./start-dev\n")
+      row = key_row(report.show("api"), "dev.configured")
+
+      expect(row).to include("scope" => "project", "type" => "boolean", "value" => nil, "masked" => false, "default" => false,
+        "effective" => true, "source" => "default", "settable" => false, "sensitive" => false, "affects" => [], "problems" => [])
+    end
+
+    it "is false with no dev.up or a blank one, and true in a worktree whose parent sets it" do
+      expect(key_row(report.show("api"), "dev.configured")["effective"]).to be(false)
+      write("api", "dev:\n  up: \"  \"\n")
+      expect(key_row(report.show("api"), "dev.configured")["effective"]).to be(false)
+      write("api", "dev:\n  up: ./start-dev\n")
+      expect(key_row(report.show("api.worktree-fix"), "dev.configured")["effective"]).to be(true)
+    end
+
+    it "is null when the project's file can't be read" do
+      write("api", "dev: [\n")
+
+      expect(key_row(report.show("api"), "dev.configured")).to include("effective" => nil, "source" => "unreadable")
+    end
+
+    it "warns that a dev.configured written in a file is not read" do
+      write("api", "dev:\n  configured: true\n  up: ./x\n")
+      problems = report.validate("api")["problems"].select { |p| p["key"] == "dev.configured" }
+
+      expect(problems.map { |p| [p["severity"], p["code"]] }).to eq([%w[info not_read]])
+      expect(key_row(report.show("api"), "dev.configured")["effective"]).to be(true)
+    end
+  end
+
   describe "#show" do
     it "describes every schema key, in schema order, under the documented envelope" do
       doc = report.show("api")

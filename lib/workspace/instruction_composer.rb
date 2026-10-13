@@ -1,6 +1,7 @@
 module Workspace
   # Builds the instructions an agent is given from library packs. A pack is a
-  # play: the built-in ones (`binding`, `orchestrator`, `commits`, `review`, `notes`)
+  # play: the built-in ones (`binding`, `orchestrator`, `commits`, `review`, `notes`,
+  # `handoff`, `dev`)
   # ship with workspace and can't be replaced, and any other play can be
   # named as a pack too (see {Library#pack}).
   #
@@ -28,10 +29,12 @@ module Workspace
     #   automatic `notes` pack to {#start_packs}
     # @param handoff_config [Workspace::HandoffConfig, nil] reads `handoff.auto`; nil adds no
     #   automatic `handoff` pack, and refuses `handoff: true`
+    # @param dev_config [Workspace::DevConfig, nil] reads `dev.up` and `dev.instructions`; nil adds no
+    #   automatic `dev` pack
     # @param main_agent [Workspace::MainAgent, nil] says whether the project runs Claude Code,
     #   which the `handoff` pack needs
     def initialize(library:, lineage:, commands_config:, pane_bindings:, workflow_config: nil, notes_config: nil,
-      handoff_config: nil, main_agent: nil)
+      handoff_config: nil, main_agent: nil, dev_config: nil)
       @library = library
       @lineage = lineage
       @commands_config = commands_config
@@ -40,6 +43,7 @@ module Workspace
       @notes_config = notes_config
       @handoff_config = handoff_config
       @main_agent = main_agent
+      @dev_config = dev_config
     end
 
     # @param packs [Array<String>, nil] pack names (`name` or `play/name`), in the order
@@ -52,18 +56,20 @@ module Workspace
     #   (pack names) and "text" (its `instructions:`, or nil)
     # @param step [Hash{String=>Object}, nil] the step's layer: "name", "include" and "text" (its prompt)
     # @param attempt [Array<String>, nil] what the runner says about this attempt, one paragraph each
+    # @param skip [Array<String>] pack names to leave out wherever a layer names them (`dev`, for a step
+    #   that already holds the dev environment)
     # @return [Hash{String=>Object}] "packs" (each "ref", "scope", "project", "path" and
     #   "sha256") and the composed "text"
     # @raise [Workspace::UsageError] for a bad name or a kind other than play
     # @raise [Workspace::Error] code `unknown_library_entry`, or `library_source_missing`
     #   when a pack can't be read
     # @raise [Workspace::ConfigParseError] if a config file that is read can't be parsed
-    def compose(packs:, cwd:, binding: nil, workflow: nil, step: nil, attempt: nil)
+    def compose(packs:, cwd:, binding: nil, workflow: nil, step: nil, attempt: nil, skip: [])
       seen = []
-      sections = pack_sections(packs || default_packs, cwd, binding, seen)
+      sections = pack_sections(packs || default_packs, cwd, binding, seen, skip)
       [["workflow", workflow], ["step", step]].each do |kind, layer|
         next unless layer
-        sections.concat(pack_sections(layer["include"] || [], cwd, binding, seen))
+        sections.concat(pack_sections(layer["include"] || [], cwd, binding, seen, skip))
         sections << "## From #{kind} #{layer["name"]}\n\n#{layer["text"].strip}" if layer["text"]
       end
       sections << "## For this attempt\n\n#{attempt.join("\n\n")}" if attempt&.any?
@@ -72,7 +78,8 @@ module Workspace
 
     # The packs `start` and `launch` send an agent with its first prompt: the
     # automatic ones the config asks for (`notes`, unless `notes.instructions`
-    # is false; `handoff`, when `handoff.auto` is true and the main agent is
+    # is false; `dev`, when the project sets `dev.up` and `dev.instructions` is not
+    # false; `handoff`, when `handoff.auto` is true and the main agent is
     # Claude Code), then the ones named with `--pack`. A pack named twice is
     # listed once, where it is first named.
     #
@@ -153,8 +160,10 @@ module Workspace
     end
 
     def automatic_start_packs(project)
-      return [] unless @notes_config
-      @notes_config.instructions?(project) ? ["notes"] : []
+      packs = []
+      packs << "notes" if @notes_config&.instructions?(project)
+      packs << "dev" if @dev_config&.configured?(project) && @dev_config.instructions?(project)
+      packs
     end
 
     # @return [Array(Array<Hash>, Array<Hash>)] the `handoff` entry to send, and the one to report as skipped
@@ -177,8 +186,9 @@ module Workspace
     end
 
     # One section per pack not composed yet; each play read is added to +seen+.
-    def pack_sections(names, cwd, binding, seen)
+    def pack_sections(names, cwd, binding, seen, skip = [])
       names.filter_map do |ref|
+        next if skip.include?(ref.sub(%r{\Aplay/}, ""))
         play, body = @library.pack(ref, cwd: cwd)
         next if seen.any? { |earlier| earlier["ref"] == play["ref"] }
         seen << play

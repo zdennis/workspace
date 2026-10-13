@@ -367,6 +367,75 @@ RSpec.describe Workspace::InstructionComposer do
       ])
     end
 
+    describe "the dev pack" do
+      let(:dev_config) { Workspace::DevConfig.new(project_settings: project_settings) }
+      subject(:composer) do
+        described_class.new(library: library, lineage: lineage, commands_config: commands_config, pane_bindings: pane_bindings,
+          notes_config: notes_config, dev_config: dev_config)
+      end
+
+      def dev(block)
+        allow(project_settings).to receive(:load).with("app").and_return({"dev" => block})
+      end
+
+      before { library.builtin_store.write("play", "dev", "Queue for the dev environment.\n") }
+
+      it "is not sent when the project has no dev.up" do
+        expect(composer.start_packs(cwd: "/work/app").map { |p| p["name"] }).to eq(%w[notes])
+        dev("ready" => "port:3000")
+        expect(composer.start_packs(cwd: "/work/app").map { |p| p["name"] }).to eq(%w[notes])
+      end
+
+      it "comes from config, after notes, when dev.up is set" do
+        dev("up" => "./start-dev")
+
+        expect(composer.start_packs(cwd: "/work/app")).to eq([{"name" => "notes", "source" => "config"}, {"name" => "dev", "source" => "config"}])
+      end
+
+      it "is left out when dev.instructions is false, and kept when notes.instructions is false" do
+        dev("up" => "./start-dev", "instructions" => "false")
+        expect(composer.start_packs(cwd: "/work/app").map { |p| p["name"] }).to eq(%w[notes])
+        allow(project_settings).to receive(:load).with("app").and_return({"dev" => {"up" => "./start-dev"}, "notes" => {"instructions" => "false"}})
+        expect(composer.start_packs(cwd: "/work/app").map { |p| p["name"] }).to eq(%w[dev])
+      end
+
+      it "is dropped by none: true, and named once when --pack also names it (the config source wins)" do
+        dev("up" => "./start-dev")
+
+        expect(composer.start_packs(cwd: "/work/app", none: true)).to eq([])
+        expect(composer.start_packs(cwd: "/work/app", packs: %w[play/dev review])).to eq([
+          {"name" => "notes", "source" => "config"}, {"name" => "dev", "source" => "config"}, {"name" => "review", "source" => "flag"}
+        ])
+      end
+
+      it "is composed and reported like the other packs" do
+        dev("up" => "./start-dev")
+        result = composer.compose_start(cwd: "/work/app")
+
+        expect(result["text"]).to include("## From pack dev (built-in)\n\nQueue for the dev environment.")
+        expect(described_class.delivery_rows(result["packs"], delivered: true, pane: "%4").map { |r| r["name"] }).to eq(%w[notes dev])
+        expect(result["skipped"]).to eq([])
+      end
+
+      it "adds no dev pack when no dev config is wired" do
+        dev("up" => "./start-dev")
+        bare = described_class.new(library: library, lineage: lineage, commands_config: commands_config, pane_bindings: pane_bindings, notes_config: notes_config)
+
+        expect(bare.start_packs(cwd: "/work/app").map { |p| p["name"] }).to eq(%w[notes])
+      end
+
+      it "is left out of #compose by skip:, however the pack is named" do
+        result = composer.compose(cwd: "/work/app", packs: %w[review play/dev dev commits], skip: %w[dev])
+
+        expect(result["packs"].map { |p| p["ref"] }).to eq(%w[play/review play/commits])
+        expect(result["text"]).not_to include("dev environment")
+      end
+
+      it "composes dev when nothing is skipped" do
+        expect(composer.compose(cwd: "/work/app", packs: %w[dev])["packs"].map { |p| p["ref"] }).to eq(%w[play/dev])
+      end
+    end
+
     describe "the handoff pack" do
       let(:handoff_config) { Workspace::HandoffConfig.new(project_settings: project_settings, error_output: StringIO.new) }
       let(:main_agent) { instance_double(Workspace::MainAgent, kind: "claude") }
@@ -480,11 +549,11 @@ RSpec.describe Workspace::InstructionComposer, "with the packs workspace ships" 
       pane_bindings: Workspace::PaneBindings.new(path: "/nonexistent/bindings.json"))
   end
 
-  it "ships exactly the six packs, as plays, each readable with a description" do
+  it "ships exactly the seven packs, as plays, each readable with a description" do
     shipped = Workspace::LibraryStore.new(dir: builtin_dir, scope: "builtin")
 
     expect(Dir.children(builtin_dir)).to eq(["play"])
-    expect(shipped.entries.map { |e| e["ref"] }).to eq(%w[play/binding play/commits play/handoff play/notes play/orchestrator play/review])
+    expect(shipped.entries.map { |e| e["ref"] }).to eq(%w[play/binding play/commits play/dev play/handoff play/notes play/orchestrator play/review])
     expect(shipped.entries).to all(include("readable" => true, "link" => nil, "description" => a_string_matching(/\A\S.{10,}/)))
   end
 
@@ -495,6 +564,15 @@ RSpec.describe Workspace::InstructionComposer, "with the packs workspace ships" 
     expect(result["text"]).to start_with("## From pack notes (built-in)\n\nKeep your working notes in this workspace's notes directory")
     expect(result["text"]).to include("`workspace notes dir --create`").and include("`IMPLEMENTATION_PLAN.md`").and include("Never commit the notes.")
     expect(result["text"]).not_to match(/^---$|^description:/)
+  end
+
+  it "composes the dev pack by name, with the real exit codes of dev wait and the commands that release the environment" do
+    text = composer.compose(cwd: "/work/app", packs: %w[dev])["text"]
+
+    expect(text).to start_with("## From pack dev (built-in)\n\nThis project has one dev environment")
+    expect(text).not_to match(/^---$|^description:/)
+    expect(text).to include("`workspace dev up --queue`", "`workspace dev wait --max-wait 90s`", "`workspace dev status`", "`workspace dev leave`", "`workspace dev down`", "`--force`")
+    expect(text.scan(/^- (\d+):/).flatten).to eq(%w[0 75 1 4 6])
   end
 
   it "composes every shipped pack with its heading and no frontmatter" do

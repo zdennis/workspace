@@ -45,6 +45,7 @@ Only an allowlisted set of keys can be written this way, so a typo doesn't silen
 | `dev.startup_timeout` | How long `dev up` waits for the wrapper to take a free lock, e.g. `30s` (default `30s`) |
 | `dev.ready_timeout` | How long `dev up` waits for the `dev.ready` check to pass, e.g. `2m` (default `120s`) |
 | `dev.kill_grace` | How long `lock clear devenv`, `dev down` and `dev up --force` wait for a SIGKILLed dev environment's process group to disappear before keeping its lock (default `2s`, capped at `60s`) |
+| `dev.instructions` | `true` or `false`: whether `start` and `launch` send the agent the built-in `dev` pack (queue for the shared dev environment before testing, release it when done) when the project sets `dev.up` (default `true`); `--no-packs` skips it for one run. A workflow step that declares `uses: [devenv]` never gets it |
 | `locks.idle_grace` | How long an idle agent keeps a lock before the first waiter may take it over (default `5m`; see [`workspace lock`](README.lock.md)) |
 | `locks.ps_timeout` | How long to wait for `ps` when reading the process table for lock/session checks, before giving up (default `5s`, must be between `1s` and `60s`) |
 | `locks.reap_interval` | How often the session-monitor daemon sweeps for stale lock holders and waiters (default `30s`) |
@@ -138,6 +139,7 @@ Prints one document with every key in the table above, the value each reader wou
 - `problems` holds the problems `config validate` reports for that key, with `severity`, `code`, `message`, `line` and `column`.
 - `type` is `command`, `duration`, `percent`, `text`, `path`, `enum`, `regex`, `boolean` or `mapping`.
 - `effective_path` appears only on the `notes.dir` and `notes.default_dir` rows (`capabilities` reports `config_json: 2` when a client can rely on it). It is an absolute path with `~` expanded, and cleaned of `..` segments and a trailing slash, or null when it can't be worked out: the rule is relative to a checkout the workspace doesn't have, the rule uses `{branch}` and the checkout has no branch (a detached HEAD), or a file the key depends on can't be parsed. An invalid stored value is ignored, as in `effective`.
+- `dev.configured` is a derived, read-only row (it can't be set, and a value written for it in a file is ignored and reported as `not_read`): `effective` is `true` when the project's `dev.up` is set, `false` when it is not, and `null` when the project's file can't be read. It is what makes `start` and `launch` send the `dev` pack, so a reader need not infer it from `dev.up`, whose `value` and `effective` are always masked. `value` is `null`, `masked` is `false` and `source` is `default`.
 
 A file that can't be parsed doesn't fail `config show --json`: it is reported in `files` and its keys are `unreadable`. (Plain `workspace config` still refuses and prints the error.) `--json` can't be combined with `--global`; the global file is one of the layers. An unknown workspace is an error document with code `unknown_workspace`.
 
@@ -191,6 +193,7 @@ New codes may be added; treat an unknown one by its `severity`.
 <!-- BEGIN GENERATED: project-settings -->
 | Setting | Description |
 |---------|-------------|
+| `dev.configured` | Read-only, shown by `config show --json` only: `effective` is `true` when the project's `dev.up` is set, which is what makes `start` and `launch` send the `dev` pack. Not a key to write |
 | `hooks` | Project-specific hooks (e.g., `post_launch`) |
 | `layouts` | Project-specific tmux pane layouts |
 | `worktree_hooks` | Hooks seeded into new worktrees created from this project |

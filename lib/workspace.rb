@@ -335,6 +335,7 @@ module Workspace
     instruction_composer = InstructionComposer.new(library: library, lineage: lineage,
       commands_config: commands_config, pane_bindings: pane_bindings, workflow_config: WorkflowConfig.new(project_settings: project_settings),
       notes_config: NotesConfig.new(project_settings: project_settings),
+      dev_config: DevConfig.new(project_settings: project_settings),
       handoff_config: HandoffConfig.new(project_settings: project_settings, error_output: error_output),
       main_agent: MainAgent.new(project_config: project_config))
     start_command = Commands::Start.new(git: git, project_config: project_config, project_settings: project_settings, launch_command: launch_command, lineage: lineage, hook_installer: hook_installer, task_store: task_store, event_log: event_log, library: library, library_installer: library_installer, notes_setup: notes_setup, instruction_composer: instruction_composer, output: output, input: input)

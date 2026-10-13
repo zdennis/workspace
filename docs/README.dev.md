@@ -135,6 +135,14 @@ workspace dev leave                     # gives up the place in line
 
 `up --queue` rows have outcome `started` (running) or `queued`; `wait` rows have outcome `started` (exit 0) or `failed` with `exit_code` (a 75 keeps `status: "queued"` and its `position`). `leave` rows have outcome `left` or `not_queued`. `workspace capabilities --json` reports `dev_queue: 1` when these exist.
 
+## Instructions for agents
+
+`start` and `launch` send an agent the built-in `dev` pack with its first prompt when the project sets `dev.up` and `dev.instructions` is not `false` (it is `true` unless set). The pack is the habit these commands make possible: before the agent implements, tests or verifies anything that needs the running app it runs `dev up --queue`, then `dev wait --max-wait 90s` (the short limit keeps a shell tool from timing out; the agent runs `wait` again on exit 75). It never tests against another worktree's server and never passes `--force`. It runs `dev leave` if it stops waiting, and `dev down` when its work is done or it stops to wait for the person, but only when `dev status` shows its own worktree holds the environment, since `down` stops whichever one is running. It leaves the environment running when it hands off to a fresh conversation.
+
+The pack reads the exit codes of `wait` as this page gives them: 0 ready, 75 still queued, 1 the queued wrapper exited, 4 cleared or never queued (it tries `up --queue` once more), 6 ready check failed. It also tells the agent that `"running": true` with `"ready": null` in `dev status --json` means the project has no ready check.
+
+`config show --json` reports whether the pack applies as the read-only `dev.configured` row. `--no-packs` skips the pack for one run. [Workflow](README.workflow.md) steps never get it when they declare `uses: [devenv]`, because the run already holds the environment.
+
 ## Details
 
 **`up`** opens a background `devenv` window in the current tmux session and runs the hidden `workspace dev __run` wrapper there. The wrapper takes the `devenv` lock and runs `dev.up` through the shell with the worktree root as cwd. The command owns the pane's TTY: no pipes, output goes straight to the pane, and it can prompt or hit `binding.pry`. `up` returns once the wrapper holds the lock and `dev.ready` passes, printing `Dev environment running for <worktree> (<branch>) in <session>:devenv.` Running `up` again from the same worktree is a no-op.
