@@ -249,6 +249,7 @@ require_relative "workspace/commands/lock"
 require_relative "workspace/commands/dev"
 require_relative "workspace/commands/capabilities"
 require_relative "workspace/commands/parent"
+require_relative "workspace/commands/notes"
 require_relative "workspace/commands/projects"
 require_relative "workspace/commands/review"
 require_relative "workspace/commands/restore"
@@ -439,6 +440,8 @@ module Workspace
     kill_command = Commands::Kill.new(git: git, project_config: project_config, project_settings: project_settings, stop_command: stop_command, project_detector: project_detector, task_store: task_store, event_log: event_log, workflow_runs: workflow_engine, output: output, input: input)
     finish_command = Commands::Finish.new(git: git, project_config: project_config, kill_command: kill_command, project_detector: project_detector, output: output, error_output: error_output, input: input)
     parent_command = Commands::Parent.new(lineage: lineage, project_config: project_config, output: output)
+    notes_command = Commands::Notes.new(notes_dir: NotesDir.new(git: git), project_config: project_config, project_settings: project_settings,
+      git_exclude: GitExclude.new(git: git), output: output)
     project_catalog = ProjectCatalog.new(project_config: project_config, git: git)
     project_facts = ProjectFacts.new(tmux: tmux, state: state, config: config, lock_namespace: lock_namespace,
       lock_holder: lock_holder, dev: dev_command, agents: ProjectAgents.new(client: agent_snapshot_client),
@@ -543,6 +546,7 @@ module Workspace
       lock_command: lock_command,
       dev_command: dev_command,
       parent_command: parent_command,
+      notes_command: notes_command,
       projects_command: projects_command,
       capabilities_command: capabilities_command,
       daemon_command: daemon_command,

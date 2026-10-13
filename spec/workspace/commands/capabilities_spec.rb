@@ -92,6 +92,12 @@ RSpec.describe Workspace::Commands::Capabilities do
       expect(document["features"]).to include("window_state" => 1)
     end
 
+    it "reports notes once notes dir exists" do
+      command.call(json: true)
+
+      expect(document["features"]).to include("notes" => 1)
+    end
+
     it "reports cleanup_dry_run once cleanup can report without acting" do
       command.call(json: true)
 

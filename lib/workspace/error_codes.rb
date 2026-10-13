@@ -25,6 +25,8 @@ module Workspace
       "window_gone" => "The recorded iTerm window no longer exists.",
       "checkout_missing" => "The workspace's checkout directory no longer exists.",
       "config_parse" => "A config file exists but can't be parsed as a YAML mapping.",
+      "notes_dir_unresolved" => "The notes directory can't be worked out: the project's rule uses {branch} and the checkout is on no branch.",
+      "notes_dir_unwritable" => "notes dir --create couldn't make the notes directory or list it in info/exclude.",
       # Codes the agent daemon puts in its replies; `agent-run` passes them through.
       "malformed_message" => "The daemon couldn't parse the request.",
       "internal_error" => "The daemon failed while handling the request.",

@@ -25,7 +25,7 @@ It reads constants, config paths and the `PATH`. It starts no process and touche
    "actions_manifest":0,"agent_send":1,"agent_spawn":0,"focus_pane":1,"state_done":1,
    "doctor_json":0,"daemon_control":3,"config_json":2,"tmux_show":1,"tasks":1,"event_emitters":1,
    "ui_open":1,"pane_bindings":2,"library":3,"library_play":2,"library_copy":1,"instructions":1,"restore":1,
-   "workflow":1,"window_state":1,"cleanup_dry_run":1},
+   "workflow":1,"window_state":1,"cleanup_dry_run":1,"notes":1},
  "exit_codes":{"ok":0,"failed":1,"not_submitted":2,"partial":3,"lock_cleared":4,"timeout":75},
  "paths":{"event_log":"/Users/me/.workspace-events.jsonl","run_dir":"/Users/me/.local/workspace/run",
    "library":"/Users/me/.config/workspace/library"},
@@ -73,6 +73,7 @@ It reads constants, config paths and the `PATH`. It starts no process and touche
 | `workflow` | `workflow show\|run\|status\|resume\|cancel\|approve\|reject` runs a workflow (ordered steps, the `rpiv` preset) in a workspace's agent pane, with `--json`; `step done\|status` for the agent on a step; the event log records `workflow_changed`, and `lock_wait_started`, `lock_acquired` and `lock_released` with `run_id` for a run's locks; `pipeline` is deprecated (see [`workflow`](README.workflow.md)) |
 | `window_state` | `status --json` and `list --liveness --json` entries carry `window_alive` beside `alive`; `focus --json` names a missing window with `no_window` and `window_gone` (see [`status`](README.status.md#window-state)) |
 | `cleanup_dry_run` | `cleanup --dry-run` reports what it would remove without prompting or changing anything (status `dry_run`), `--tmux-dead-only` limits a run to entries whose tmux session is gone, and `cleanup --json` rows carry `tmux_alive` and `window_alive` (see [`cleanup`](README.cleanup.md#json-output)) |
+| `notes` | `notes dir [--name WS] [--create] [--json]` prints the absolute notes directory of a workspace, and `--create` makes it and keeps it out of git (see [`notes`](README.notes.md)) |
 | `event_emitters` | The event log records `ask_created`, `ask_answered`, `lock_released`, `lock_cleared`, `worktree_started`, `worktree_finished`, `daemon_started`, `daemon_stopped` and `config_changed` (see [`event-log`](README.event-log.md#state-and-lifecycle-events)) |
 
 ## Examples

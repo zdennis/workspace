@@ -26,5 +26,17 @@ module Workspace
       File.open(file, "ab") { |f| f.write("#{"\n" unless text.empty? || text.end_with?("\n")}#{pattern}\n") }
       true
     end
+
+    # @param worktree [String] the checkout root
+    # @param pattern [String] an exclude pattern, e.g. "/tmp/workspace-notes/"
+    # @return [Boolean] whether the pattern is listed; false when it is not or +worktree+ is not a git checkout
+    def listed?(worktree, pattern)
+      common = @git.common_dir_from_files(worktree)
+      return false unless common
+      file = File.join(common, "info", "exclude")
+      File.file?(file) && File.binread(file).lines.map(&:chomp).include?(pattern.b)
+    rescue SystemCallError
+      false
+    end
   end
 end

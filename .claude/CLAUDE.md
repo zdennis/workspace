@@ -8,6 +8,7 @@ A macOS CLI (Ruby) for managing tmuxinator-based development workspaces in iTerm
 - `lib/workspace.rb` — Module root, `build_cli` factory, error classes
 - `lib/workspace/cli.rb` — CLI dispatch, OptionParser definitions, simple command methods
 - `lib/workspace/config.rb` — Path constants and configuration
+- `lib/workspace/commands/notes.rb` — `notes dir`: the one answer to where a workspace's notes are, through `NotesDir`; `--create` makes the directory and lists it in `info/exclude`
 - `lib/workspace/config_schema.rb` — The one table of config keys: scope, settable, default, value parser, restart flag, doc text; readers, `config set/get/unset` and the docs take their key lists and checks from it
 - `lib/workspace/notes_dir.rb` — The one resolver for where a workspace's notes go: its own `notes.dir`, else the directory the project's `notes.default_dir` rule computes (`tmp/workspace-notes` in the checkout when unset); `config show --json` reports it as `effective_path`
 - `lib/workspace/config_schema_docs.rb` — Renders the schema into the generated blocks of `docs/README.config.md`; `script/generate-config-docs [--check]` runs it, and a spec fails on drift
@@ -34,7 +35,7 @@ A macOS CLI (Ruby) for managing tmuxinator-based development workspaces in iTerm
 - `lib/workspace/instruction_composer.rb` — Builds an agent's instructions from library packs under a heading per pack, and a workflow step's four layers (default packs, workflow, step, attempt); adds the pane's binding after `binding` and the project's `commands.test`/`commands.lint` after `commits`
 - `lib/workspace/commands_config.rb` — Reads a project's `commands.test` and `commands.lint`
 - `lib/library/play/` — The built-in instruction packs (`binding`, `orchestrator`, `commits`, `review`), read through `Library#builtin_store`
-- `lib/workspace/commands/` — Complex command objects (launch, kill, focus, start, agent, ensure_agent, lock, dev, projects, capabilities, send, review, restore, snapshot, daemon, ui, binding, library, instructions, workflow)
+- `lib/workspace/commands/` — Complex command objects (launch, kill, focus, start, agent, ensure_agent, lock, dev, notes, projects, capabilities, send, review, restore, snapshot, daemon, ui, binding, library, instructions, workflow)
 - `lib/workspace/work_coordinator_client.rb` — JSONL client for work-coordinator sockets
 - `lib/workspace/pipeline_config.rb` — (`pipeline` is deprecated in favor of `workflow`) Reads per-project pipeline stage config from `~/.config/workspace/projects/<name>.yml`
 - `lib/workspace/pipeline_state.rb` — In-flight work item tracking, disk-persisted to `~/.local/state/workspace/<name>/pipeline.json`
@@ -63,7 +64,7 @@ A macOS CLI (Ruby) for managing tmuxinator-based development workspaces in iTerm
 - `lib/workspace/workflow_status.rb` — What `workflow status` shows: the stored run plus what is read at the time (`pane_gone`, a permission prompt or open ask as `waiting_you`, the `timed_out` flag) and each reason's `actions`
 - `lib/workspace/workflow_nudger.rb` — The daemon's part: starts `workspace workflow advance` as its own process when a turn ends in a bound pane, and on a timer for runs waiting on a lock
 - `lib/workspace/workflow_config.rb` — Reads the global `workflows.defaults.include` (the default packs)
-- `lib/workspace/git_exclude.rb` — Lists a path in a repository's `info/exclude`; keeps `.workflow/` out of `git status`
+- `lib/workspace/git_exclude.rb` — Lists a path in a repository's `info/exclude` (`#add`) or reads whether it is listed (`#listed?`); keeps `.workflow/` and the notes directory out of `git status`
 - `lib/workflows/` — The workflow presets that ship (`rpiv.yml`)
 - `lib/workspace/bound_run.rb` — The run the calling pane is bound to (a non-stale `kind: run` binding of `$TMUX_PANE`); lets `dev up` and `lock acquire` tell the run's own agent from anyone else
 - `lib/workspace/lock_config.rb` — Reads a project's `locks.idle_grace` (falls back to 5m with a warning)
@@ -95,7 +96,7 @@ A macOS CLI (Ruby) for managing tmuxinator-based development workspaces in iTerm
 
 ## Subcommands
 
-init, doctor, launch, start, add, stop, kill, finish, relaunch, restore, focus, list, status, whereis, agent, daemon, pipeline, sessions, review, snapshot, session-event, lock, dev, parent, projects, ask, capabilities, ui, binding, library, instructions, workflow, step
+init, doctor, launch, start, add, stop, kill, finish, relaunch, restore, focus, list, status, whereis, agent, daemon, pipeline, sessions, review, snapshot, session-event, lock, dev, parent, notes, projects, ask, capabilities, ui, binding, library, instructions, workflow, step
 
 ## Adding a Subcommand
 

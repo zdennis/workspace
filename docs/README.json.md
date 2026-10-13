@@ -93,6 +93,8 @@ The exit code is unchanged by `--json` (1 for most failures, 2 for `not_submitte
 | `window_gone` | `focus` found that the recorded iTerm window no longer exists. `details.workspace`, `details.iterm_window_id`. |
 | `checkout_missing` | The workspace's checkout directory no longer exists. |
 | `config_parse` | A config file exists but can't be parsed as a YAML mapping. `details.path` and `details.reason`. |
+| `notes_dir_unresolved` | `notes dir` can't work out the directory: the project's `notes.default_dir` rule uses `{branch}` and the checkout is on a detached HEAD. `details.name`, `details.path` (the checkout). |
+| `notes_dir_unwritable` | `notes dir --create` couldn't make the directory, or couldn't list it in `info/exclude`. `details.path` is the directory. |
 
 The registry lives in `Workspace::ErrorCodes`; a spec checks that every code a raise site names is listed there and on this page. More codes arrive with the commands that need them.
 

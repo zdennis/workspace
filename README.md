@@ -100,6 +100,7 @@ workspace <subcommand> [options]
 | list-projects | [README](docs/README.list-projects.md) | Alias for `list --all` |
 | lock | [README](docs/README.lock.md) | Acquire, release, inspect, or clear a shared repo-wide lock; print agent instructions |
 | lookup | [README](docs/README.lookup.md) | Find a workspace project by worktree path, branch, or project name |
+| notes | [README](docs/README.notes.md) | Print where a workspace's notes are kept (`dir`; `--create` makes the directory and keeps it out of git) |
 | parent | [README](docs/README.parent.md) | Print the parent workspace of the current (or given) workspace |
 | pipeline | [README](docs/README.pipeline.md) | Deprecated (use `workflow`): inspect and drive a project's agent pipeline |
 | projects | [README](docs/README.projects.md) | Group workspaces by repository: main checkout plus worktrees (`list` for running counts, `list --git` for unsaved work, `show` for one project's agents, git state, asks, pipeline, locks and dev env, `members` for a script-friendly list of its workspaces, `stop` to stop them all, `kill` to remove all its worktrees) |

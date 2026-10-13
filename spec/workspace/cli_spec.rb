@@ -96,6 +96,7 @@ RSpec.describe Workspace::CLI do
       send_command: overrides[:send_command],
       ensure_agent_command: overrides[:ensure_agent_command],
       handoff_command: overrides[:handoff_command],
+      notes_command: overrides[:notes_command],
       projects_command: overrides[:projects_command],
       capabilities_command: overrides[:capabilities_command],
       restore_command: overrides[:restore_command],
@@ -4436,6 +4437,68 @@ RSpec.describe Workspace::CLI do
 
       expect { cli.run(["instructions", "compose"]) }.to raise_error(FakeSystemExit)
       expect(error_output.string).to include("no instructions command was wired")
+    end
+  end
+
+  describe "#run with notes" do
+    let(:notes_command) { instance_double(Workspace::Commands::Notes, dir: nil) }
+    let(:detector) { instance_double(Workspace::ProjectDetector, detect: "detected-ws") }
+    let(:built) { build_test_cli(notes_command: notes_command, project_detector: detector, working_dir: "/some/dir") }
+    let(:cli) { built[0] }
+    let(:output) { built[1] }
+    let(:error_output) { built[2] }
+
+    it "answers for the workspace detected from the working directory" do
+      cli.run(["notes", "dir"])
+
+      expect(detector).to have_received(:detect).with("/some/dir")
+      expect(notes_command).to have_received(:dir).with(name: "detected-ws", create: false, json: false)
+    end
+
+    it "passes --name, --create and --json in any order" do
+      cli.run(["notes", "dir", "--json", "--create", "--name", "api.worktree-x"])
+
+      expect(notes_command).to have_received(:dir).with(name: "api.worktree-x", create: true, json: true)
+    end
+
+    it "fails with not_in_workspace outside a workspace, as an envelope under --json" do
+      allow(detector).to receive(:detect).and_return(nil)
+
+      expect { cli.run(["notes", "dir", "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+
+      expect(JSON.parse(output.string)).to include("ok" => false, "code" => "not_in_workspace", "details" => {"path" => "/some/dir"})
+      expect(error_output.string).to eq("")
+    end
+
+    it "prints a command's failure as the envelope under --json and on stderr without it" do
+      allow(notes_command).to receive(:dir).and_raise(Workspace::Error.new("Can't set up", code: "notes_dir_unwritable", details: {"path" => "/p"}))
+
+      expect { cli.run(["notes", "dir", "--json"]) }.to raise_error(FakeSystemExit)
+      expect(JSON.parse(output.string)).to include("code" => "notes_dir_unwritable", "details" => {"path" => "/p"})
+
+      expect { cli.run(["notes", "dir"]) }.to raise_error(FakeSystemExit)
+      expect(error_output.string).to include("Error: Can't set up")
+    end
+
+    it "takes the subcommand after the options" do
+      cli.run(["notes", "--json", "dir"])
+
+      expect(notes_command).to have_received(:dir).with(name: "detected-ws", create: false, json: true)
+    end
+
+    it "shows help" do
+      cli.run(["notes", "--help"])
+
+      expect(output.string).to include("workspace notes dir").and include("--create")
+      expect(notes_command).not_to have_received(:dir)
+    end
+
+    it "rejects a missing subcommand, an unknown one, and extra arguments as usage errors" do
+      [["notes"], ["notes", "bogus"], ["notes", "dir", "extra"]].each do |argv|
+        expect { cli.run(argv + ["--json"]) }.to raise_error(FakeSystemExit), argv.inspect
+        expect(JSON.parse(output.string.lines.last)).to include("ok" => false, "code" => "usage"), argv.inspect
+      end
+      expect(notes_command).not_to have_received(:dir)
     end
   end
 

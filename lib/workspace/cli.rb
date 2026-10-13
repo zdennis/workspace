@@ -16,7 +16,7 @@ module Workspace
     # hint).
     SUBCOMMANDS = %w[
       init doctor launch start stop add add-project kill finish relaunch restore
-      focus deactivate reactivate tile resize capture agent agentd lock dev parent projects
+      focus deactivate reactivate tile resize capture agent agentd lock dev parent notes projects
       capabilities daemon sessions review snapshot ask session-event agent-run handoff pipeline run library lib instructions workflow step
       run-and-report report-run-status layout config tmux statusline current
       list-projects list status repair cleanup prune set-command event-log
@@ -64,6 +64,7 @@ module Workspace
     # @param exit_handler [#exit] callable for process exit (Kernel in production, FakeExitHandler in tests)
     # @param parent_command [Workspace::Commands::Parent] pre-built parent command
     # @param dev_command [Workspace::Commands::Dev] pre-built dev command
+    # @param notes_command [Workspace::Commands::Notes, nil] pre-built notes command
     # @param projects_command [Workspace::Commands::Projects, nil] pre-built projects command
     # @param capabilities_command [Workspace::Commands::Capabilities, nil] pre-built capabilities command
     # @param daemon_command [Workspace::Commands::Daemon, nil] pre-built daemon command
@@ -88,7 +89,7 @@ module Workspace
     #   `list --liveness --json` and `status --json`; takes name => state entry
     # @param launch_mode [Workspace::LaunchMode, nil] decides whether launch/start
     #   run headless when no --[no-]headless flag is given; nil builds one
-    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, restart_agent_command: nil, send_command: nil, ensure_agent_command: nil, handoff_command: nil, projects_command: nil, capabilities_command: nil, daemon_command: nil, ui_command: nil, binding_command: nil, library_command: nil, library: nil, instructions_command: nil, workflow_command: nil, review_command: nil, restore_command: nil, snapshot_command: nil, project_actions_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil, liveness: nil, window_liveness: nil)
+    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, restart_agent_command: nil, send_command: nil, ensure_agent_command: nil, handoff_command: nil, notes_command: nil, projects_command: nil, capabilities_command: nil, daemon_command: nil, ui_command: nil, binding_command: nil, library_command: nil, library: nil, instructions_command: nil, workflow_command: nil, review_command: nil, restore_command: nil, snapshot_command: nil, project_actions_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil, liveness: nil, window_liveness: nil)
       @config = config
       @state = state
       @project_config = project_config
@@ -124,6 +125,7 @@ module Workspace
       @lock_command = lock_command
       @dev_command = dev_command
       @parent_command = parent_command
+      @notes_command = notes_command
       @agent_command = agent_command
       @config_command = config_command
       @statusline_command = statusline_command
@@ -215,6 +217,8 @@ module Workspace
         cmd_dev(args)
       when "parent"
         cmd_parent(args)
+      when "notes"
+        cmd_notes(args)
       when "projects"
         cmd_projects(args)
       when "capabilities"
@@ -428,6 +432,7 @@ module Workspace
           list            List currently active (launched) projects (--all for all available)
           lock            Acquire, release, inspect, or clear a shared repo-wide lock
           lookup          Find a workspace project by worktree path, branch, or project name
+          notes           Print where a workspace's notes are kept (dir)
           parent          Print the parent workspace of the current (or given) workspace
           pipeline        Deprecated (use workflow): inspect and drive a project's agent pipeline
           projects        Group workspaces by repository (main checkout + worktrees)
@@ -5423,6 +5428,53 @@ module Workspace
 
       name = args.first
       @parent_command.call(name, path: path, json: json)
+    end
+
+    def notes_parser(options)
+      OptionParser.new do |opts|
+        opts.banner = "Usage: workspace notes dir [--name WORKSPACE] [--create] [--json]"
+        opts.separator ""
+        opts.separator "Notes are the working files an agent or a person keeps for a workspace (plans,"
+        opts.separator "findings, handoffs), outside the source tree."
+        opts.separator ""
+        opts.separator "Print where a workspace's notes are kept: the absolute path alone, so"
+        opts.separator "\"$(workspace notes dir)\" works. The workspace is the one detected from the"
+        opts.separator "current directory unless --name picks another."
+        opts.separator ""
+        opts.separator "The path is the workspace's own notes.dir (a worktree's own, or the project's for"
+        opts.separator "a main checkout), else the project's notes.default_dir rule, else"
+        opts.separator "tmp/workspace-notes in the checkout. Nothing is written to config."
+        opts.separator ""
+        opts.on("--name NAME", "Workspace to answer for instead of the one detected from the current directory") { |v| options[:name] = v }
+        opts.on("--create", "Make the directory; inside the checkout, also keep it out of git (info/exclude)") { options[:create] = true }
+        opts.on("--json", "Print one JSON document (see docs/README.notes.md)") { options[:json] = true }
+        opts.on("-h", "--help", "Show this help") { options[:help] = true }
+        opts.separator ""
+        opts.separator "Examples:"
+        opts.separator "  workspace notes dir    # /src/api/.worktrees/x/tmp/workspace-notes"
+        opts.separator "  cd \"$(workspace notes dir --create)\"    # make it, then go there"
+        opts.separator "  workspace notes dir --name api.worktree-x --json"
+      end
+    end
+
+    def cmd_notes(args)
+      options = {json: false, create: false}
+      parser = notes_parser(options)
+      subcommand = args.shift if args.first == "dir"
+      parser.parse!(args)
+      subcommand ||= args.shift if args.first == "dir"
+      return @output.puts(parser.help) if options[:help]
+
+      unless subcommand
+        raise UsageError, args.empty? ? "Missing subcommand: dir.\n\n#{parser.help}" : "Unknown notes subcommand: #{args.first}. Run 'workspace notes --help'."
+      end
+      raise UsageError, "Unexpected argument: #{args.first}. Run 'workspace notes --help'." if args.any?
+      raise Error, "notes is not available: no notes command was wired" unless @notes_command
+
+      name = options[:name] || @project_detector.detect(@working_dir)
+      raise Error.new("No workspace found for #{@working_dir}. Run from inside a workspace or pass --name.", code: "not_in_workspace", details: {"path" => @working_dir}) unless name
+
+      @notes_command.dir(name: name, create: options[:create], json: options[:json])
     end
 
     def cmd_dir(args)

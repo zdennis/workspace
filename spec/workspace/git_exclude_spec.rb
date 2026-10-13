@@ -79,4 +79,23 @@ RSpec.describe Workspace::GitExclude do
     expect(excludes.add(plain, "/.workflow/")).to be false
     expect(Dir.children(plain)).to eq([])
   end
+
+  describe "#listed?" do
+    it "is true once the pattern is listed, false before, and false outside a git checkout" do
+      expect(excludes.listed?(repo, "/tmp/workspace-notes/")).to be false
+      excludes.add(repo, "/tmp/workspace-notes/")
+      expect(excludes.listed?(repo, "/tmp/workspace-notes/")).to be true
+      expect(excludes.listed?(File.join(@dir, "nowhere"), "/tmp/workspace-notes/")).to be false
+    end
+
+    it "reads the common dir for a linked worktree and writes nothing" do
+      linked = File.join(@dir, "app-feature")
+      git("worktree", "add", "-q", "-b", "feature", linked)
+      excludes.add(repo, "/tmp/workspace-notes/")
+      before = File.binread(File.join(repo, ".git", "info", "exclude"))
+
+      expect(excludes.listed?(linked, "/tmp/workspace-notes/")).to be true
+      expect(File.binread(File.join(repo, ".git", "info", "exclude"))).to eq(before)
+    end
+  end
 end
