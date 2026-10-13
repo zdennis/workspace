@@ -89,6 +89,8 @@ The exit code is unchanged by `--json` (1 for most failures, 2 for `not_submitte
 | `no_pane` | The question wasn't asked from a tmux pane, so `ask answer --deliver` has nowhere to type. `details.question`. |
 | `stale_pane` | `ask answer --deliver` can't be sure the question's pane is the one that asked: tmux restarted since, or the question was recorded without the tmux server. `details.question`, `details.pane`. |
 | `focus_failed` | tmux couldn't select the pane for `focus --pane`; the window is already in front. |
+| `no_window` | `focus` found no iTerm window recorded for the workspace. `details.workspace`. |
+| `window_gone` | `focus` found that the recorded iTerm window is no longer open. `details.workspace`, `details.iterm_window_id`. |
 | `checkout_missing` | The workspace's checkout directory no longer exists. |
 | `config_parse` | A config file exists but can't be parsed as a YAML mapping. `details.path` and `details.reason`. |
 

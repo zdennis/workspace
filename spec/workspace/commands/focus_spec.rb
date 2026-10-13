@@ -74,7 +74,10 @@ RSpec.describe Workspace::Commands::Focus do
 
       expect { command.call("myproject") }.to raise_error(
         Workspace::Error, /No iTerm window found for 'myproject'/
-      )
+      ) { |error|
+        expect(error.code).to eq("no_window")
+        expect(error.details).to eq("workspace" => "myproject")
+      }
     end
 
     it "raises Workspace::Error when window no longer exists" do
@@ -85,7 +88,10 @@ RSpec.describe Workspace::Commands::Focus do
 
       expect { command.call("myproject") }.to raise_error(
         Workspace::Error, /no longer exists/
-      )
+      ) { |error|
+        expect(error.code).to eq("window_gone")
+        expect(error.details).to eq("workspace" => "myproject", "iterm_window_id" => 42)
+      }
     end
   end
 

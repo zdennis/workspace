@@ -6869,7 +6869,7 @@ RSpec.describe Workspace::CLI do
 
         expect(exit_status { cli.run(["focus", "api", "--json"]) }).to eq(1)
 
-        expect(parse_one(raw)).to include("ok" => false)
+        expect(parse_one(raw)).to include("ok" => false, "code" => "no_window", "details" => {"workspace" => "api"})
         expect(parse_one(raw)["error"]).to include("No iTerm window found for 'api'")
       end
     end

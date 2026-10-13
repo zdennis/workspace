@@ -51,4 +51,4 @@ workspace focus --highlight --color blue my-notes
 
 ## JSON output
 
-`--json` prints an action document (see [README.json.md](README.json.md#actions)) with one `focused` row carrying `iterm_window_id`, and `pane` (the pane id) with `--pane`. A missing window or a headless project is the failure envelope.
+`--json` prints an action document (see [README.json.md](README.json.md#actions)) with one `focused` row carrying `iterm_window_id`, and `pane` (the pane id) with `--pane`. A missing window or a headless project is the failure envelope. With no window recorded the `code` is `no_window` (`details.workspace`); when iTerm no longer has the recorded window it is `window_gone` (`details.workspace`, `details.iterm_window_id`). Both exit 1.

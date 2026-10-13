@@ -36,7 +36,8 @@ module Workspace
       # @param pane [String, nil] a pane id ("%19") or "window.pane" ("0.1") to select
       #   once the window is up front; checked before anything is focused
       # @return [String, nil] the selected pane's id, or nil without +pane+
-      # @raise [Workspace::Error] if no window is found, or the project runs headless;
+      # @raise [Workspace::Error] `no_window` if none is recorded, `window_gone` if iTerm no longer has it,
+      #   or the project runs headless;
       #   for +pane+, the {Workspace::PaneLocator} codes, or `focus_failed` when tmux
       #   couldn't select it (the window is already in front)
       def call(project, shake: false, highlight: nil, pane: nil)
@@ -46,16 +47,20 @@ module Workspace
         window_id = @state.dig(project, "iterm_window_id")
 
         unless window_id && window_id != 0
-          raise Workspace::Error,
+          raise Workspace::Error.new(
             "No iTerm window found for '#{project}'\n" \
-            "Run 'workspace launch #{project}' first, or 'workspace status' to see tracked projects."
+            "Run 'workspace launch #{project}' first, or 'workspace status' to see tracked projects.",
+            code: "no_window", details: {"workspace" => project}
+          )
         end
 
         @output.puts(located ? "Focusing #{project}, pane #{located[:id]}..." : "Focusing #{project}...")
         unless @window_manager.focus_by_id(window_id, highlight: highlight)
-          raise Workspace::Error,
+          raise Workspace::Error.new(
             "iTerm window #{window_id} no longer exists for '#{project}'\n" \
-            "Run 'workspace launch #{project}' to relaunch."
+            "Run 'workspace launch #{project}' to relaunch.",
+            code: "window_gone", details: {"workspace" => project, "iterm_window_id" => window_id}
+          )
         end
 
         @window_manager.shake_by_id(window_id) if shake
