@@ -115,7 +115,7 @@ RSpec.describe "T4 finish/kill/prune adversarial concurrency" do
     allow(tmux).to receive(:session_name_for).with(project).and_return("ws-#{project}")
     # tmux kill-session on our own session SIGHUPs this process: nothing after it runs.
     allow(tmux).to receive(:kill_session) { throw :caller_killed }
-    iterm = double("iterm", find_existing_sessions: {})
+    iterm = double("iterm", find_existing_sessions: {}, last_call_timed_out?: false, applescript_timeout: 5)
     stop = Workspace::Commands::Stop.new(
       state: state, iterm: iterm, window_manager: double("wm"), tmux: tmux,
       output: output, error_output: StringIO.new

@@ -159,6 +159,7 @@ require_relative "workspace/library_installer"
 require_relative "workspace/commands_config"
 require_relative "workspace/instruction_composer"
 require_relative "workspace/project_config"
+require_relative "workspace/osascript_runner"
 require_relative "workspace/iterm"
 require_relative "workspace/window_manager"
 require_relative "workspace/window_layout"
@@ -293,8 +294,9 @@ module Workspace
     project_settings = ProjectSettings.new(config: config)
     event_log = EventLog.new(config: config, project_settings: project_settings, error_output: error_output, logger: logger)
     state = State.new(config: config, event_log: event_log, logger: logger)
-    iterm = ITerm.new(config: config, output: output, logger: logger)
-    window_manager = WindowManager.new(config: config, logger: logger)
+    osascript = OsascriptRunner.new
+    iterm = ITerm.new(config: config, output: output, logger: logger, osascript: osascript)
+    window_manager = WindowManager.new(config: config, logger: logger, osascript: osascript)
     tmux = Tmux.new(config: config, logger: logger)
     git = Git.new(output: output, input: input, logger: logger)
     project_config = ProjectConfig.new(config: config, git: git, output: output)

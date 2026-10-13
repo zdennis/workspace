@@ -91,21 +91,52 @@ RSpec.describe Workspace::ITerm do
 
   describe "without osascript" do
     it "answers as if iTerm2 had no sessions instead of raising" do
-      allow(Open3).to receive(:capture3).and_raise(Errno::ENOENT, "osascript")
-      iterm = described_class.new(config: config, output: output)
+      iterm = described_class.new(config: config, output: output, osascript: Workspace::OsascriptRunner.new(command: ["/nonexistent/osascript"]))
 
       expect(iterm.session_map).to eq({})
+      expect(iterm.last_call_timed_out?).to be false
+    end
+  end
+
+  describe "when iTerm2 never answers" do
+    let(:never) do
+      Class.new do
+        def timeout = 5
+
+        def call(_script) = Workspace::OsascriptRunner::Result.new("", false, true)
+      end.new
+    end
+    let(:iterm) { described_class.new(config: config, output: output, osascript: never) }
+
+    it "answers empty and reports that the call timed out" do
+      expect(iterm.session_map).to eq({})
+      expect(iterm.last_call_timed_out?).to be true
+      expect(iterm.applescript_timeout).to eq(5)
+    end
+
+    it "clears the flag after a call that answers" do
+      iterm.session_map
+      answering = Class.new do
+        def timeout = 5
+
+        def call(_script) = Workspace::OsascriptRunner::Result.new("u1\t7\n", true, false)
+      end.new
+      iterm = described_class.new(config: config, output: output, osascript: answering)
+
+      expect(iterm.session_map).to eq("u1" => "7")
+      expect(iterm.last_call_timed_out?).to be false
     end
   end
 
   describe "AppleScript injection safety" do
-    let(:iterm) { described_class.new(config: config, output: output) }
+    let(:runner) { double("osascript", timeout: 5) }
+    let(:iterm) { described_class.new(config: config, output: output, osascript: runner) }
 
     def captured_script
       script = nil
-      allow(Open3).to receive(:capture3) do |*args|
-        script = args.last
-        ["", "", instance_double(Process::Status, success?: true)]
+      allow(runner).to receive(:call) do |source|
+        script = source
+        Workspace::OsascriptRunner::Result.new("", true, false)
       end
       yield
       script

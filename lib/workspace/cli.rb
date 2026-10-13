@@ -724,7 +724,7 @@ module Workspace
         stopped = json ? @stop_command.call(args, warn_inactive: false) : @stop_command.call(args)
         stopped.each { |p| @hook_runner.run(p, "post_stop") }
         rows = json ? stopped.map { |p| action_row(p, "stopped") } + (args - stopped).map { |p| action_row(p, "not_running", reason: "not_active", message: "'#{p}' is not an active workspace project") } : []
-        {results: rows}
+        {results: rows, warnings: @stop_command.warnings}
       end
     end
 

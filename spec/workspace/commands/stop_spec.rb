@@ -13,9 +13,9 @@ RSpec.describe Workspace::Commands::Stop do
   end
   let(:output) { StringIO.new }
   let(:error_output) { StringIO.new }
-  let(:iterm) { double("iterm") }
+  let(:iterm) { double("iterm", last_call_timed_out?: false, applescript_timeout: 5) }
   let(:window_manager) { double("window_manager") }
-  let(:tmux) { double("tmux") }
+  let(:tmux) { double("tmux", custom_socket_option: nil) }
 
   subject(:command) do
     described_class.new(
@@ -49,7 +49,7 @@ RSpec.describe Workspace::Commands::Stop do
         allow(tmux).to receive(:session_name_for).with("proj1").and_return("proj1")
         allow(tmux).to receive(:sessions).and_return(["proj1"])
         on_disk_at_kill = :not_killed
-        allow(tmux).to receive(:kill_session).with("proj1") do
+        allow(tmux).to receive(:kill_session).with("proj1", project: "proj1") do
           reloaded = Workspace::State.new(config: config, event_log: Workspace::EventLog.new(config: config))
           reloaded.load
           on_disk_at_kill = reloaded["proj1"]
@@ -80,7 +80,7 @@ RSpec.describe Workspace::Commands::Stop do
 
         result = command.call(["proj1"])
 
-        expect(tmux).to have_received(:kill_session).with("proj1")
+        expect(tmux).to have_received(:kill_session).with("proj1", project: "proj1")
         expect(result).to eq(["proj1"])
       end
 
@@ -92,7 +92,7 @@ RSpec.describe Workspace::Commands::Stop do
 
         command.call(["proj1"])
 
-        expect(tmux).to have_received(:kill_session).with("custom-session")
+        expect(tmux).to have_received(:kill_session).with("custom-session", project: "proj1")
       end
 
       it "returns killed project names" do
@@ -147,6 +147,82 @@ RSpec.describe Workspace::Commands::Stop do
       end
     end
 
+    context "when iTerm2 does not answer" do
+      before do
+        state["api"] = {"unique_id" => "uid1"}
+        state["notes"] = {"headless" => true}
+        state.save
+        allow(iterm).to receive(:find_existing_sessions).and_return({})
+        allow(iterm).to receive(:last_call_timed_out?).and_return(true)
+        allow(tmux).to receive(:session_name_for) { |p| p }
+        allow(tmux).to receive(:sessions).and_return(%w[api notes])
+        allow(tmux).to receive(:kill_session)
+      end
+
+      it "still removes and saves the entries, kills the sessions and leaves the window open" do
+        allow(window_manager).to receive(:close_window)
+
+        result = command.call(%w[api notes])
+
+        reloaded = Workspace::State.new(config: config, event_log: Workspace::EventLog.new(config: config))
+        reloaded.load
+        expect(result).to eq(%w[api notes])
+        expect(reloaded.keys).to eq([])
+        expect(tmux).to have_received(:kill_session).twice
+        expect(window_manager).not_to have_received(:close_window)
+      end
+
+      it "warns once per project that has a window, in #warnings and on the error stream" do
+        command.call(%w[api notes])
+
+        message = "iTerm did not answer in 5s; the window for api was left open."
+        expect(command.warnings).to eq([message])
+        expect(error_output.string).to include("Warning: #{message}")
+      end
+
+      it "clears the warnings on the next call" do
+        command.call(%w[api])
+        allow(iterm).to receive(:last_call_timed_out?).and_return(false)
+        state["api"] = {"unique_id" => "uid1"}
+
+        command.call(%w[api])
+
+        expect(command.warnings).to eq([])
+      end
+    end
+
+    context "with a project on a custom tmux socket" do
+      it "kills its session on that socket though the default socket does not list it" do
+        state["proj1"] = {"unique_id" => "uid1"}
+        state.save
+        allow(iterm).to receive(:find_existing_sessions).and_return({})
+        allow(tmux).to receive(:session_name_for).with("proj1").and_return("proj1")
+        allow(tmux).to receive(:sessions).and_return([])
+        allow(tmux).to receive(:custom_socket_option).with("proj1").and_return("-L")
+        allow(tmux).to receive(:kill_session)
+
+        command.call(["proj1"])
+
+        expect(tmux).to have_received(:kill_session).with("proj1", project: "proj1")
+      end
+    end
+
+    context "when iTerm2 answers but cannot close the window" do
+      it "warns that the window was left open" do
+        state["proj1"] = {"unique_id" => "uid1"}
+        state.save
+        allow(iterm).to receive(:find_existing_sessions).and_return({"proj1" => "uid1"})
+        allow(iterm).to receive(:session_map).and_return({"uid1" => "win-100"})
+        allow(window_manager).to receive(:close_window).and_return(false)
+        allow(tmux).to receive(:session_name_for).and_return("proj1")
+        allow(tmux).to receive(:sessions).and_return([])
+
+        command.call(["proj1"])
+
+        expect(command.warnings).to eq(["iTerm did not close launcher window win-100; it was left open."])
+      end
+    end
+
     context "launcher window cleanup" do
       before do
         state["proj1"] = {"unique_id" => "uid1"}
@@ -195,7 +271,7 @@ RSpec.describe Workspace::Commands::Stop do
 
       expect(command.call(["proj"])).to eq(["proj"])
 
-      expect(tmux).to have_received(:kill_session).with("proj")
+      expect(tmux).to have_received(:kill_session).with("proj", project: "proj")
       state.load
       expect(state["proj"]).to be_nil
     end

@@ -6,9 +6,11 @@ module Workspace
   class WindowManager
     # @param config [Workspace::Config] configuration for window_tool path
     # @param logger [Workspace::Logger] debug logger
-    def initialize(config:, logger: Workspace::Logger.new)
+    # @param osascript [#call] runs an AppleScript with a time limit
+    def initialize(config:, logger: Workspace::Logger.new, osascript: OsascriptRunner.new)
       @config = config
       @logger = logger
+      @osascript = osascript
     end
 
     # @param window_id [String, Integer] iTerm window ID
@@ -125,7 +127,7 @@ module Workspace
     end
 
     # @param window_id [String, Integer] iTerm window ID
-    # @return [void]
+    # @return [Boolean] whether iTerm2 ran the script within the time limit
     def close_window(window_id)
       script = <<~APPLESCRIPT
         tell application "iTerm2"
@@ -134,7 +136,7 @@ module Workspace
           end try
         end tell
       APPLESCRIPT
-      system("osascript", "-e", script)
+      @osascript.call(script).success?
     end
 
     private

@@ -121,6 +121,8 @@ module CLITestHelpers
 
   class FakeITerm
     def session_map = {}
+    def last_call_timed_out? = false
+    def applescript_timeout = 5
     def find_existing_sessions(_state, **_opts) = {}
     def find_launcher_window_id(_state, **_opts) = nil
     def create_launcher_panes(_projects, _commands, **_opts) = {}
@@ -143,7 +145,7 @@ module CLITestHelpers
   class FakeTmux
     def sessions = []
     def start_server = nil
-    def kill_session(_name) = nil
+    def kill_session(_name, project: nil) = nil
     def custom_socket_option(_config_name) = nil
     def rename_window(_session, _index, _name) = nil
     def resize_pane(_session, _pane, _size) = true

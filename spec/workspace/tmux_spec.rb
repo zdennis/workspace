@@ -1033,6 +1033,64 @@ RSpec.describe Workspace::Tmux do
       expect(tmux.custom_socket_option("proj")).to be_nil
     end
   end
+
+  describe "#socket_arguments" do
+    let(:tmux) { described_class.new(config: config) }
+    let(:source) { File.join(tmpdir, "workspace.proj.yml") }
+
+    before { allow(config).to receive(:config_path_for).with("proj").and_return(source) }
+
+    it "returns the flag and its value" do
+      File.write(source, "name: proj\ntmux_options: -CC -L mysocket\nwindows: []\n")
+
+      expect(tmux.socket_arguments("proj")).to eq(["-L", "mysocket"])
+    end
+
+    it "reads a value written right after the flag" do
+      File.write(source, "name: proj\ntmux_options: \"-S/tmp/my.sock\"\nwindows: []\n")
+
+      expect(tmux.socket_arguments("proj")).to eq(["-S", "/tmp/my.sock"])
+    end
+
+    it "returns nil without a custom socket" do
+      File.write(source, "name: proj\ntmux_options: -CC\nwindows: []\n")
+
+      expect(tmux.socket_arguments("proj")).to be_nil
+    end
+  end
+
+  describe "#kill_session" do
+    let(:tmux) { described_class.new(config: config) }
+    let(:source) { File.join(tmpdir, "workspace.proj.yml") }
+
+    before { allow(config).to receive(:config_path_for).with("proj").and_return(source) }
+
+    it "kills on the default socket when no project is given" do
+      allow(tmux).to receive(:system)
+
+      tmux.kill_session("proj")
+
+      expect(tmux).to have_received(:system).with("tmux", "kill-session", "-t", "=proj")
+    end
+
+    it "kills on the project's custom socket" do
+      File.write(source, "name: proj\ntmux_options: -CC -L mysocket\nwindows: []\n")
+      allow(tmux).to receive(:system)
+
+      tmux.kill_session("proj", project: "proj")
+
+      expect(tmux).to have_received(:system).with("tmux", "-L", "mysocket", "kill-session", "-t", "=proj")
+    end
+
+    it "kills on the default socket for a project without a custom socket" do
+      File.write(source, "name: proj\nwindows: []\n")
+      allow(tmux).to receive(:system)
+
+      tmux.kill_session("proj", project: "proj")
+
+      expect(tmux).to have_received(:system).with("tmux", "kill-session", "-t", "=proj")
+    end
+  end
   describe "#pane_slot" do
     let(:bin) { File.join(tmpdir, "bin") }
     let(:tmux) { described_class.new(config: config) }

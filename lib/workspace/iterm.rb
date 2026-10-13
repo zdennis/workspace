@@ -7,10 +7,25 @@ module Workspace
     # @param config [Workspace::Config] configuration for window_tool path
     # @param output [IO] output stream for user-facing messages
     # @param logger [Workspace::Logger] debug logger
-    def initialize(config:, output: $stdout, logger: Workspace::Logger.new)
+    # @param osascript [#call] runs an AppleScript with a time limit, answering
+    #   an {OsascriptRunner::Result}
+    def initialize(config:, output: $stdout, logger: Workspace::Logger.new, osascript: OsascriptRunner.new)
       @config = config
       @output = output
       @logger = logger
+      @osascript = osascript
+      @last_call_timed_out = false
+    end
+
+    # @return [Boolean] whether the latest AppleScript call ran out of time
+    #   (iTerm2 did not answer, so its answer was taken as empty)
+    def last_call_timed_out?
+      @last_call_timed_out
+    end
+
+    # @return [Numeric] seconds an AppleScript call waits for iTerm2
+    def applescript_timeout
+      @osascript.timeout
     end
 
     # @return [Hash{String => String}] mapping of unique_id to window_id for all iTerm sessions
@@ -165,18 +180,15 @@ module Workspace
     end
 
     # @param script [String] AppleScript code to execute
-    # @return [String] stripped output from osascript
+    # @return [String] stripped output from osascript; empty when it timed out
+    #   or could not run
     def execute_applescript(script)
       @logger.debug { "iterm: executing AppleScript (#{script.lines.first&.strip}...)" }
-      stdout, _ = begin
-        Open3.capture3("osascript", "-e", script)
-      rescue SystemCallError => e
-        # No osascript (not macOS): nothing to report, same as an empty answer.
-        @logger.debug { "iterm: could not run osascript: #{e.message}" }
-        [""]
-      end
-      @logger.debug { "iterm: AppleScript result=#{stdout.strip.inspect}" }
-      stdout.strip
+      result = @osascript.call(script)
+      @last_call_timed_out = result.timed_out?
+      @logger.debug { "iterm: AppleScript timed out after #{@osascript.timeout}s" } if result.timed_out?
+      @logger.debug { "iterm: AppleScript result=#{result.stdout.strip.inspect}" }
+      result.stdout.strip
     end
 
     # @param state [#empty?, #each] state-like object

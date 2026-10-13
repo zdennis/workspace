@@ -4,6 +4,22 @@ RSpec.describe Workspace::WindowManager do
   let(:config) { Workspace::Config.new }
   subject(:manager) { described_class.new(config: config) }
 
+  describe "#close_window" do
+    it "runs the close script through the bounded runner" do
+      runner = double("osascript")
+      allow(runner).to receive(:call).and_return(Workspace::OsascriptRunner::Result.new("", true, false))
+
+      expect(described_class.new(config: config, osascript: runner).close_window(42)).to be true
+      expect(runner).to have_received(:call).with(/close \(window id 42\)/)
+    end
+
+    it "returns false when iTerm2 does not answer in time" do
+      runner = double("osascript", call: Workspace::OsascriptRunner::Result.new("", false, true))
+
+      expect(described_class.new(config: config, osascript: runner).close_window(42)).to be false
+    end
+  end
+
   describe "#focus_by_id" do
     it "returns true on success" do
       status = instance_double(Process::Status, success?: true)

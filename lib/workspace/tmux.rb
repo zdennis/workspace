@@ -62,10 +62,13 @@ module Workspace
     end
 
     # @param name [String] tmux session name
+    # @param project [String, nil] tmuxinator config name; when its
+    #   `tmux_options` select a custom socket (-L/-S), the session is killed
+    #   on that socket instead of the default one
     # @return [void]
-    def kill_session(name)
+    def kill_session(name, project: nil)
       @logger.debug { "tmux: killing session #{name}" }
-      system("tmux", "kill-session", "-t", "=#{name}")
+      system("tmux", *(project && socket_arguments(project)), "kill-session", "-t", "=#{name}")
     end
 
     # @param session_name [String] tmux session name
@@ -704,6 +707,13 @@ module Workspace
     #   on another one would never be seen; headless launch refuses these
     #   configs rather than silently missing the session.
     def custom_socket_option(config_name)
+      socket_arguments(config_name)&.first
+    end
+
+    # @param config_name [String] tmuxinator config name (without .yml)
+    # @return [Array<String>, nil] the flag and its value (`["-L", "name"]`)
+    #   that selects the project's custom tmux socket, or nil
+    def socket_arguments(config_name)
       source = @config.config_path_for(config_name)
       return nil unless File.exist?(source)
       File.foreach(source) do |line|
@@ -717,7 +727,9 @@ module Workspace
           []
         end
         flag = options.find { |option| option.match?(/\A-[LS]/) }
-        return flag[0, 2] if flag
+        next unless flag
+        value = (flag.length > 2) ? flag[2..] : options[options.index(flag) + 1]
+        return [flag[0, 2], value].compact
       end
       nil
     end

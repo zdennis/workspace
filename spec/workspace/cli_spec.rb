@@ -808,6 +808,19 @@ RSpec.describe Workspace::CLI do
       cli.run(["stop"])
       expect(output.string).to include("No active workspace projects")
     end
+
+    it "puts the stop command's warnings in the --json document and still exits 0" do
+      message = "iTerm did not answer in 5s; the window for api was left open."
+      stop_command = instance_double(Workspace::Commands::Stop, call: ["api"], warnings: [message])
+      cli, output, _ = build_test_cli(stop_command: stop_command)
+
+      cli.run(["stop", "--json", "api"])
+
+      doc = JSON.parse(output.string)
+      expect(doc["status"]).to eq("ok")
+      expect(doc["warnings"]).to eq([message])
+      expect(doc["results"].map { |r| [r["workspace"], r["outcome"]] }).to eq([["api", "stopped"]])
+    end
   end
 
   describe "#run with kill" do
@@ -5197,7 +5210,8 @@ RSpec.describe Workspace::CLI do
             define_method(:sessions) { |strict: false| live.dup }
             define_method(:session_name_for) { |workspace| workspace.tr(".", "-") }
             define_method(:session_name_for_pane) { |_pane| own }
-            define_method(:kill_session) { |name| live.delete(name) }
+            define_method(:kill_session) { |name, project: nil| live.delete(name) }
+            define_method(:custom_socket_option) { |_workspace| nil }
           end.new
         end
         let(:fake_state) do
@@ -6284,7 +6298,7 @@ RSpec.describe Workspace::CLI do
       state = CLITestHelpers::FakeState.new
       state["proj1"] = {"unique_id" => "uid1"}
       state["proj2"] = {"headless" => true}
-      cli, = build_test_cli(state: state, launch_command: launch_command, stop_command: double("stop", call: []))
+      cli, = build_test_cli(state: state, launch_command: launch_command, stop_command: double("stop", call: [], warnings: []))
       allow(cli).to receive(:sleep)
 
       cli.run(["relaunch"])
@@ -6305,7 +6319,7 @@ RSpec.describe Workspace::CLI do
         opts[:headless] ? {exit_code: 0, prompt_failures: {}} : {exit_code: 1, prompt_failures: {"proj1" => "window never appeared"}}
       end
 
-      cli, = build_test_cli(state: state, launch_command: launch_command, stop_command: double("stop", call: []))
+      cli, = build_test_cli(state: state, launch_command: launch_command, stop_command: double("stop", call: [], warnings: []))
       allow(cli).to receive(:sleep)
 
       expect { cli.run(["relaunch"]) }.to raise_error(FakeSystemExit) { |e|

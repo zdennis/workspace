@@ -17,7 +17,8 @@ A macOS CLI (Ruby) for managing tmuxinator-based development workspaces in iTerm
 - `lib/workspace/tmux.rb` — Tmux session management
 - `lib/workspace/project_config.rb` — Tmuxinator config generation
 - `lib/workspace/project_catalog.rb` — Groups workspaces into projects (main checkout + worktrees) by the realpath of each checkout's git common dir, read from `.git` files; backs `projects`
-- `lib/workspace/iterm.rb` — iTerm2 session/pane lifecycle (AppleScript)
+- `lib/workspace/osascript_runner.rb` — Runs one AppleScript through `osascript` with a 5s limit; past it the process group is stopped and the answer is empty with `timed_out`; `ITerm` and `WindowManager#close_window` go through it
+- `lib/workspace/iterm.rb` — iTerm2 session/pane lifecycle (AppleScript); `#last_call_timed_out?` says iTerm2 did not answer, which `stop` turns into a warning
 - `lib/workspace/window_manager.rb` — iTerm2 window operations: find, focus, position, close
 - `lib/workspace/window_layout.rb` — Window positioning math
 - `lib/workspace/json_envelope.rb` — Builds the `--json` action and error documents (`ok`, `code`, `details`, `retry`); the CLI rescue funnel emits the errors, `CLI#run_action` the actions
