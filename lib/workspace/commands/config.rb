@@ -42,7 +42,7 @@ module Workspace
         end
 
         lineage = @lineage.resolve(cwd: cwd)
-        name = project || lineage.name
+        name = project || config_name(key, lineage)
         path = @project_settings.project_config_path(name)
         with_config_lock(path) do
           @file_backup.backup(path)
@@ -83,7 +83,7 @@ module Workspace
           return true
         end
 
-        name = project || @lineage.resolve(cwd: cwd).name
+        name = project || config_name(key, @lineage.resolve(cwd: cwd))
         data = @project_settings.load(name)
         value = data.dig(*key.split("."))
         if value.nil?
@@ -115,7 +115,7 @@ module Workspace
           return
         end
 
-        name = project || @lineage.resolve(cwd: cwd).name
+        name = project || config_name(key, @lineage.resolve(cwd: cwd))
         path = @project_settings.project_config_path(name)
         with_config_lock(path) do
           @file_backup.backup(path)
@@ -130,6 +130,18 @@ module Workspace
       end
 
       private
+
+      # The config file a key is written to and read from when no name is given:
+      # a worktree's own file for a key a worktree owns (`notes.dir`), else the
+      # parent project's file.
+      def config_name(key, lineage)
+        return lineage.name unless ConfigSchema.key(key).resolve == :own_then_parent
+        return lineage.worktree if lineage.worktree
+        if lineage.is_worktree
+          raise Workspace::UsageError, "This worktree has no workspace name (no .workspace-project marker), so #{key} can't tell which file is its own. Pass --name <project>.worktree-<name>."
+        end
+        lineage.name
+      end
 
       # The key's name goes in the log, never its value: values can be commands
       # or tokens. A global change has no project: it is logged with project ""

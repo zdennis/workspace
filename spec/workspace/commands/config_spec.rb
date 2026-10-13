@@ -263,22 +263,98 @@ RSpec.describe Workspace::Commands::Config do
       expect(error_output.string).to include("is not set")
     end
 
-    it "get inside a worktree returns the parent project\x27s notes.dir" do
-      output = StringIO.new
-      command, project_settings = build_command(output: output)
-      root = Dir.mktmpdir("ws-config-repo")
-      system("git", "init", "-q", root, out: File::NULL, err: File::NULL)
-      system("git", "-C", root, "commit", "--allow-empty", "-q", "-m", "init", out: File::NULL, err: File::NULL)
-      worktree_path = File.join(root, ".worktrees", "wt1")
-      FileUtils.mkdir_p(File.dirname(worktree_path))
-      system("git", "-C", root, "worktree", "add", "-q", "-b", "wt1-branch", worktree_path, out: File::NULL, err: File::NULL)
-      File.write(File.join(worktree_path, ".workspace-project"), "myapp.worktree-wt1")
-      project_settings.save("myapp", {"notes" => {"dir" => "/parent/notes"}})
+    describe "notes.dir in a worktree" do
+      let(:output) { StringIO.new }
+      let(:error_output) { StringIO.new }
+      let(:dir) { Dir.mktmpdir("ws-config") }
+      let(:project_settings) { Workspace::ProjectSettings.new(config: Struct.new(:workspace_config_dir).new(dir)) }
+      let(:command) do
+        described_class.new(project_settings: project_settings, lineage: Workspace::WorkspaceLineage.new,
+          file_backup: Workspace::FileBackup.new(output: output), output: output, error_output: error_output)
+      end
+      let(:root) { Dir.mktmpdir("ws-config-repo") }
+      let(:worktree_path) { File.join(root, ".worktrees", "wt1") }
 
-      expect(command.get("notes.dir", cwd: worktree_path)).to eq(true)
-      expect(output.string.strip).to eq("/parent/notes")
-    ensure
-      FileUtils.remove_entry(root) if root && File.directory?(root)
+      before do
+        system("git", "init", "-q", root, out: File::NULL, err: File::NULL)
+        system("git", "-C", root, "commit", "--allow-empty", "-q", "-m", "init", out: File::NULL, err: File::NULL)
+        FileUtils.mkdir_p(File.dirname(worktree_path))
+        system("git", "-C", root, "worktree", "add", "-q", "-b", "wt1-branch", worktree_path, out: File::NULL, err: File::NULL)
+        File.write(File.join(worktree_path, ".workspace-project"), "myapp.worktree-wt1")
+      end
+
+      after do
+        FileUtils.remove_entry(root) if File.directory?(root)
+        FileUtils.remove_entry(dir) if File.directory?(dir)
+      end
+
+      it "get does not return the parent project's value" do
+        project_settings.save("myapp", {"notes" => {"dir" => "/parent/notes"}})
+
+        expect(command.get("notes.dir", cwd: worktree_path)).to eq(false)
+        expect(output.string).to eq("")
+        expect(error_output.string).to include("not set for 'myapp.worktree-wt1'")
+      end
+
+      it "get returns the worktree's own value" do
+        project_settings.save("myapp", {"notes" => {"dir" => "/parent/notes"}})
+        project_settings.save("myapp.worktree-wt1", {"notes" => {"dir" => "/wt/notes"}})
+
+        expect(command.get("notes.dir", cwd: worktree_path)).to eq(true)
+        expect(output.string.strip).to eq("/wt/notes")
+      end
+
+      it "set from the worktree writes the worktree's own file and leaves the project's alone" do
+        project_settings.save("myapp", {"notes" => {"dir" => "/parent/notes"}})
+
+        expect(command.set("notes.dir", "/wt/notes", cwd: worktree_path)).to eq("myapp.worktree-wt1")
+
+        expect(project_settings.load("myapp.worktree-wt1")).to eq({"notes" => {"dir" => "/wt/notes"}})
+        expect(project_settings.load("myapp")).to eq({"notes" => {"dir" => "/parent/notes"}})
+      end
+
+      it "unset from the worktree removes only the worktree's value" do
+        project_settings.save("myapp", {"notes" => {"dir" => "/parent/notes"}})
+        project_settings.save("myapp.worktree-wt1", {"notes" => {"dir" => "/wt/notes"}})
+
+        command.unset("notes.dir", cwd: worktree_path)
+
+        expect(project_settings.load("myapp.worktree-wt1").dig("notes", "dir")).to be_nil
+        expect(project_settings.load("myapp").dig("notes", "dir")).to eq("/parent/notes")
+      end
+
+      it "set with a project name from the worktree writes that project's file" do
+        command.set("notes.dir", "/shared/notes", project: "myapp", cwd: worktree_path)
+
+        expect(project_settings.load("myapp").dig("notes", "dir")).to eq("/shared/notes")
+        expect(project_settings.load("myapp.worktree-wt1")).to eq({})
+      end
+
+      it "set with a worktree name writes that worktree's file from anywhere" do
+        command.set("notes.dir", "/wt/notes", project: "myapp.worktree-other", cwd: Dir.pwd)
+
+        expect(project_settings.load("myapp.worktree-other").dig("notes", "dir")).to eq("/wt/notes")
+      end
+
+      it "refuses to guess when a worktree has no workspace marker" do
+        File.delete(File.join(worktree_path, ".workspace-project"))
+
+        expect { command.set("notes.dir", "/wt/notes", cwd: worktree_path) }
+          .to raise_error(Workspace::UsageError, /no workspace name.*--name/)
+        expect(project_settings.load("myapp")).to eq({})
+      end
+
+      it "set from the main checkout writes the project's file" do
+        command.set("notes.dir", "/shared/notes", cwd: root)
+
+        expect(project_settings.load(File.basename(root)).dig("notes", "dir")).to eq("/shared/notes")
+      end
+
+      it "sets other project keys from the worktree in the parent project" do
+        command.set("dev.up", "bin/dev", cwd: worktree_path)
+
+        expect(project_settings.load("myapp").dig("dev", "up")).to eq("bin/dev")
+      end
     end
 
     it "refuses a notes.dir with a newline and writes nothing" do

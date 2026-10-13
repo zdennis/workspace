@@ -26,7 +26,9 @@ workspace config unset <key> [--project NAME]
 
 With no subcommand, displays the YAML configuration for a project or the global workspace config. Auto-detects the project from the current directory if not specified.
 
-`set`, `get`, and `unset` manage a project's config by dotted key, without needing to open the YAML file by hand. `get` prints the value and exits 0; if the key has no value, it prints nothing on stdout, a short note on stderr, and exits 1. The project is inferred from cwd via the same resolver used by `workspace parent`, `workspace lock`, and `dev`: a worktree resolves to its parent project. Pass `--project NAME` to target a different project explicitly.
+`set`, `get`, and `unset` manage a project's config by dotted key, without needing to open the YAML file by hand. `get` prints the value and exits 0; if the key has no value, it prints nothing on stdout, a short note on stderr, and exits 1. The project is inferred from cwd via the same resolver used by `workspace parent`, `workspace lock`, and `dev`: a worktree resolves to its parent project. Pass `--project NAME` (or `--name NAME`) to target a different workspace explicitly.
+
+`notes.dir` is the one key a worktree owns. Inside a worktree, `set`, `get` and `unset` use the worktree's own file (`~/.config/workspace/projects/<project>.worktree-<name>.yml`), and a worktree never reads the project's value: with none of its own, its `notes.dir` is unset. The main checkout reads and writes the project's file. `--name` picks the file from anywhere, so `workspace config set notes.dir /notes/api-fix --name api.worktree-fix` sets one worktree's directory and `--name api` sets the main checkout's. A value already in the project's file stays there and still applies to the main checkout only.
 
 `show`, `validate`, `set`, `get`, and `unset` are reserved as the first argument to `workspace config`: they are always treated as subcommands, not as a project name. `workspace config show <name>` is the same as `workspace config <name>`. A project literally named one of them can be shown with `workspace config -- <name>` (everything after `--` is a name), or by reading its YAML file directly.
 
@@ -54,7 +56,7 @@ Only an allowlisted set of keys can be written this way, so a typo doesn't silen
 | `handoff.resume_prompt` | Overrides the built-in resume prompt `handoff new` sends; must not be blank (see [`workspace handoff`](README.handoff.md)) |
 | `commands.test` | Command that runs the project's tests, e.g. `bundle exec rspec`; [`workspace instructions compose`](README.instructions.md) names it in the `commits` pack |
 | `commands.lint` | Command that lints the project, e.g. `bundle exec standardrb lib/ spec/`; named in the `commits` pack beside `commands.test` |
-| `notes.dir` | Directory where notes for the project's workspaces are kept, as an absolute path; other tools read it to know where to store notes (unset: no notes directory) |
+| `notes.dir` | Directory where one workspace's notes are kept, as an absolute path; other tools read it to know where to store notes. A worktree reads only its own value (set it with `--name`), never the project's; the main checkout reads the project's (unset: no notes directory) |
 | `statusline.command` | Global. Delegates [`workspace statusline`](README.statusline.md) rendering to another command instead of the built-in renderer |
 | `context.source` | Global. `statusline` (default) or `scrape` — where `workspace sessions` reads a pane's context usage; see [`workspace statusline`](README.statusline.md) |
 | `context.pattern` | Global. Regex with exactly one capture group, used when `context.source` is `scrape` |
@@ -96,7 +98,7 @@ If the file isn't valid YAML (or isn't a mapping at the top level), `set` and `u
 workspace config show --name api.worktree-fix --json
 ```
 
-Prints one document with every key in the table above, the value each reader would use, and the file it comes from. It reads the layers the workspace reads, which is not always the file `workspace config` prints: `dev`, `locks`, `alerts`, `handoff`, `commands` and `notes` come from the **parent project's** file even in a worktree (the same file `config set` writes), `hooks` and `pipeline` from the workspace's own file, and `statusline`, `context`, `launch` and `event_log_compact_threshold` from the global file.
+Prints one document with every key in the table above, the value each reader would use, and the file it comes from. It reads the layers the workspace reads, which is not always the file `workspace config` prints: `dev`, `locks`, `alerts`, `handoff`, `commands` and `notes` come from the **parent project's** file even in a worktree (the same file `config set` writes), except `notes.dir`, which a worktree reads from its own file and the main checkout from the project's, `hooks` and `pipeline` from the workspace's own file, and `statusline`, `context`, `launch` and `event_log_compact_threshold` from the global file.
 
 ```json
 {"schema_version":1,"ok":true,"workspace":"api.worktree-fix","parent":"api",
@@ -120,7 +122,7 @@ Prints one document with every key in the table above, the value each reader wou
 - `keys` has one row per schema key, in schema order. `hooks` and `layouts` appear twice, once per `scope`.
 - `value` is what the file holds, as written. `effective` is what a reader uses: the stored value as parsed (durations are in seconds), or `default` when the key is unset or its stored value is invalid (see `problems`). It is null for a `sensitive` key and when the key's file is `unreadable`. `default` is null when the reader has none. A value in a layer the key's readers don't consult (a `dev` key in a worktree's file) isn't checked and doesn't change `effective`; `config validate` notes it as `not_read`.
 - `source` is `project`, `worktree` or `global` (the layer the value is in), `default`, or `unreadable` when the file that would hold it can't be parsed; the other layers stay readable. `source_file`, `line` and `column` are null unless the value is in a file.
-- `resolve` says whose file the readers consult: `parent`, `own`, `merge` (global, then the workspace's own; the row reports one scope's file), `global`, or `none` (nothing reads it; today that is global `hooks`). `target_layer` is where `config set` writes the key, and null for a key edited by hand. `affects` lists the workspaces that read the file a change lands in. `applies` is `next_call`, `next_event` or `daemon_restart`; treat an unknown value as plain text.
+- `resolve` says whose file the readers consult: `parent`, `own`, `own_then_parent` (a worktree's own file and never the project's; a main checkout reads the project's; today that is `notes.dir`), `merge` (global, then the workspace's own; the row reports one scope's file), `global`, or `none` (nothing reads it; today that is global `hooks`). `target_layer` is where `config set` writes the key (`worktree` or `project` for a key a worktree owns, depending on the workspace asked about), and null for a key edited by hand. `affects` lists the workspaces that read the file a change lands in. `applies` is `next_call`, `next_event` or `daemon_restart`; treat an unknown value as plain text.
 - `sensitive` keys are commands and hooks. Their `value` and `effective` are always null; `masked` is true when the key has a value. Neither `problems` nor `unknown_keys` ever quote a value.
 - `problems` holds the problems `config validate` reports for that key, with `severity`, `code`, `message`, `line` and `column`.
 - `type` is `command`, `duration`, `percent`, `text`, `enum`, `regex`, `boolean` or `mapping`.
@@ -151,6 +153,7 @@ Checks the files `config show --json` lists, without writing anything: YAML synt
 | `yaml_syntax` | error | The file isn't valid YAML, isn't a mapping at the top level, or uses an alias or tag a config file may not use |
 | `invalid_value` | error | A key's value fails the check `config set` would make, or a section isn't a mapping |
 | `unknown_key` | warning | Nothing reads the key in this file; the message says when it is a setting of the other scope |
+| `escaped_path` | warning | A path key (`notes.dir`) has a backslash before a space or `~`, as if typed for a shell; config values are used as written, so the directory name would contain the backslash |
 | `not_read` | info | The key is set where no reader looks: a parent-scoped key in a worktree's file, or global `hooks` |
 
 New codes may be added; treat an unknown one by its `severity`.

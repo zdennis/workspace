@@ -112,6 +112,26 @@ RSpec.describe Workspace::ConfigReport do
       expect(key_row(doc, "hooks", scope: "project")).to include("source" => "worktree", "resolve" => "own", "applies" => "next_event", "affects" => ["api.worktree-fix"])
     end
 
+    it "reads notes.dir from a worktree's own file and never falls back to the project's value" do
+      write("api", "notes:\n  dir: /shared/notes\n")
+      write("api.worktree-fix", "notes:\n  dir: /wt/notes\n")
+
+      own = key_row(report.show("api.worktree-fix"), "notes.dir")
+      expect(own).to include("resolve" => "own_then_parent", "source" => "worktree", "effective" => "/wt/notes", "target_layer" => "worktree", "affects" => ["api.worktree-fix"])
+      expect(own["source_file"]).to eq(settings.project_config_path("api.worktree-fix"))
+
+      bare = key_row(report.show("api.worktree-search"), "notes.dir")
+      expect(bare).to include("source" => "default", "value" => nil, "effective" => nil, "target_layer" => "worktree", "source_file" => nil)
+    end
+
+    it "reads notes.dir from the project's file for a main checkout" do
+      write("api", "notes:\n  dir: /shared/notes\n")
+      write("api.worktree-fix", "notes:\n  dir: /wt/notes\n")
+
+      row = key_row(report.show("api"), "notes.dir")
+      expect(row).to include("source" => "project", "effective" => "/shared/notes", "target_layer" => "project", "affects" => ["api"])
+    end
+
     it "reports global keys from the global file" do
       write(:global, "context:\n  source: scrape\nlaunch:\n  headless: true\n")
       doc = report.show("api")
@@ -287,6 +307,33 @@ RSpec.describe Workspace::ConfigReport do
         ["worktree", "dev.up", "info", "not_read"], ["global", "hooks", "info", "not_read"]
       ])
       expect(report.validate("api.worktree-fix")["valid"]).to be true
+    end
+
+    it "checks notes.dir in a worktree's own file and does not call it unread" do
+      write("api", "")
+      write("api.worktree-fix", "notes:\n  dir: relative/notes\n")
+
+      problems = report.validate("api.worktree-fix")["problems"]
+      expect(problems.map { |p| [p["layer"], p["key"], p["code"]] }).to eq([["worktree", "notes.dir", "invalid_value"]])
+    end
+
+    it "warns about a notes.dir with a backslash before a space or a tilde" do
+      write("api", "notes:\n  dir: \"/Users/me/My\\\\ Notes\"\n")
+      write("api.worktree-fix", "notes:\n  dir: \"/x/\\\\~notes\"\n")
+
+      problems = report.validate("api.worktree-fix")["problems"]
+      expect(problems.map { |p| [p["layer"], p["key"], p["severity"], p["code"]] }).to eq([
+        ["worktree", "notes.dir", "warning", "escaped_path"], ["project", "notes.dir", "warning", "escaped_path"]
+      ])
+      expect(problems.first).to include("line" => 2)
+      expect(problems.first["message"]).to include("backslash")
+      expect(report.validate("api.worktree-fix")["valid"]).to be true
+    end
+
+    it "does not warn about a plain notes.dir with spaces" do
+      write("api", "notes:\n  dir: /Users/me/My Notes\n")
+
+      expect(report.validate("api")["problems"]).to eq([])
     end
 
     it "orders problems by layer (worktree, project, global) then line" do

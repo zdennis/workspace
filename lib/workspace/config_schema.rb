@@ -36,7 +36,8 @@ module Workspace
     # @!attribute settable [Boolean] true when `config set/get/unset` accept it
     # @!attribute parser [#call, nil] returns the parsed value or raises ArgumentError/RegexpError
     # @!attribute resolve [Symbol] whose file the readers consult: :parent (the parent project's file, even from a
-    #   worktree), :own (the workspace's own file), :merge (global, then the workspace's own), :global (the global
+    #   worktree), :own (the workspace's own file), :own_then_parent (a worktree's own file and never the project's,
+    #   where a main checkout reads the project's file), :merge (global, then the workspace's own), :global (the global
     #   file) or :none (no reader reads it). Defaults to :global for a global key, else :parent.
     # @!attribute applies [Symbol] when a change takes effect: :next_call, :next_event or :daemon_restart.
     #   Defaults to :daemon_restart for a restart key, else :next_call.
@@ -217,8 +218,8 @@ module Workspace
         doc: "Command that runs the project's tests, e.g. `bundle exec rspec`; [`workspace instructions compose`](README.instructions.md) names it in the `commits` pack"),
       Key.new(name: "commands.lint", scope: :project, type: :command, sensitive: true, settable: true, parser: COMMAND,
         doc: "Command that lints the project, e.g. `bundle exec standardrb lib/ spec/`; named in the `commits` pack beside `commands.test`"),
-      Key.new(name: "notes.dir", scope: :project, settable: true, parser: ABSOLUTE_PATH,
-        doc: "Directory where notes for the project's workspaces are kept, as an absolute path; other tools read it to know where to store notes (unset: no notes directory)"),
+      Key.new(name: "notes.dir", scope: :project, settable: true, parser: ABSOLUTE_PATH, resolve: :own_then_parent,
+        doc: "Directory where one workspace's notes are kept, as an absolute path; other tools read it to know where to store notes. A worktree reads only its own value (set it with `--name`), never the project's; the main checkout reads the project's (unset: no notes directory)"),
       Key.new(name: "statusline.command", scope: :global, type: :command, sensitive: true, settable: true,
         doc: "Delegates [`workspace statusline`](README.statusline.md) rendering to another command instead of the built-in renderer"),
       Key.new(name: "context.source", scope: :global, type: :enum, settable: true, parser: CONTEXT_SOURCE,

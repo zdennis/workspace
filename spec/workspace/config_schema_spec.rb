@@ -28,6 +28,7 @@ RSpec.describe Workspace::ConfigSchema do
       expect(described_class.key("context.source").resolve).to eq(:global)
       expect(described_class.key("hooks", scope: :project).resolve).to eq(:own)
       expect(described_class.key("layouts", scope: :project).resolve).to eq(:merge)
+      expect(described_class.key("notes.dir").resolve).to eq(:own_then_parent)
     end
 
     it "says global hooks are read by nothing" do

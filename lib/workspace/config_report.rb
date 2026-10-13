@@ -12,6 +12,12 @@ module Workspace
     # Schema version of both documents.
     JSON_SCHEMA_VERSION = 1
 
+    # Keys whose value is a path a person may have typed with shell escapes.
+    ESCAPED_PATH_KEYS = %w[notes.dir].freeze
+
+    # A backslash before a space or "~".
+    ESCAPED_PATH = /\\[ ~]/
+
     # Problem severities that make a config invalid.
     ERROR = "error".freeze
 
@@ -79,7 +85,9 @@ module Workspace
       {"layer" => file.layer, "path" => file.path, "exists" => file.exists, "etag" => file.etag, "parse_error" => file.parse_error}
     end
 
-    # The layer whose file a reader of this key consults.
+    # The layer whose file a reader of this key consults. An :own_then_parent key is
+    # read from the worktree's own file in a worktree and from the project's file in
+    # a main checkout, never from the project's file in a worktree.
     def read_layer(key, scan)
       return "global" if key.global?
       return "project" if key.resolve == :parent
@@ -113,7 +121,7 @@ module Workspace
         "line" => (source == layer) ? line : nil,
         "column" => (source == layer) ? column : nil,
         "resolve" => key.resolve.to_s,
-        "target_layer" => target_layer(key),
+        "target_layer" => target_layer(key, scan),
         "affects" => affects(key, scan),
         "applies" => key.applies.to_s,
         "settable" => key.settable?,
@@ -123,9 +131,11 @@ module Workspace
     end
 
     # The layer `config set` writes this key to, nil for a key edited by hand.
-    def target_layer(key)
+    def target_layer(key, scan)
       return nil unless key.settable?
-      key.global? ? "global" : "project"
+      return "global" if key.global?
+      return "worktree" if key.resolve == :own_then_parent && scan.worktree?
+      "project"
     end
 
     # What a reader uses: the stored value as the reader parses it, else the default.
@@ -164,7 +174,8 @@ module Workspace
 
       scope = (file.layer == "global") ? :global : :project
       declared = ConfigSchema.all.select { |key| key.scope == scope }
-      value_problems(file, declared.reject { |key| unread_here?(key, file) }) + unknown_problems(file, declared, scope) + not_read_problems(file, declared, scan)
+      read_here = declared.reject { |key| unread_here?(key, file) }
+      value_problems(file, read_here) + escaped_path_problems(file, read_here) + unknown_problems(file, declared, scope) + not_read_problems(file, declared, scan)
     end
 
     # A key whose readers look elsewhere has no effect in this file, so its value isn't checked here.
@@ -193,6 +204,17 @@ module Workspace
         end
       end
       problems
+    end
+
+    # A backslash before a space or "~" is shell quoting. Config values are taken literally, so the
+    # directory would be named with the backslash in it.
+    def escaped_path_problems(file, declared)
+      declared.select { |key| ESCAPED_PATH_KEYS.include?(key.name) }.filter_map do |key|
+        stored = dig(file.data, key.name.split("."))
+        next unless stored.is_a?(String) && stored.match?(ESCAPED_PATH)
+        located(file, "warning", "escaped_path", key.name,
+          "#{key.name} has a backslash before a space or \"~\". Config values are used as written, so the directory name would contain the backslash. Remove the backslash.")
+      end
     end
 
     def unknown_problems(file, declared, scope)
