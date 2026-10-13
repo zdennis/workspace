@@ -211,6 +211,7 @@ require_relative "workspace/process_holder_stopper"
 require_relative "workspace/dev_runner"
 require_relative "workspace/run_resources"
 require_relative "workspace/git_exclude"
+require_relative "workspace/notes_dir"
 require_relative "workspace/workflow_config"
 require_relative "workspace/workflow_definition"
 require_relative "workspace/workflow_catalog"
@@ -456,7 +457,7 @@ module Workspace
       state: state, tmux: tmux, git: git, lock_namespace: lock_namespace, lock_holder: lock_holder,
       hook_runner: hook_runner, json_hook_runner: json_hook_runner, output: output, error_output: error_output, input: input)
     config_command = Commands::Config.new(project_settings: project_settings, lineage: lineage, file_backup: file_backup, event_log: event_log, output: output)
-    config_report = ConfigReport.new(project_settings: project_settings, project_config: project_config)
+    config_report = ConfigReport.new(project_settings: project_settings, project_config: project_config, notes_dir: NotesDir.new(git: git))
     tmuxinator_report = TmuxinatorReport.new(config: config, tmux: tmux)
     restore_command = Commands::Restore.new(ledger: session_ledger, tmux: tmux, pane_bindings: pane_bindings, tmuxinator_report: tmuxinator_report,
       process_tree: process_tree, agent_ensurer: ensure_agent_command, output: output, error_output: error_output)

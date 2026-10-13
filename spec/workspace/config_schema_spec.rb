@@ -4,7 +4,7 @@ RSpec.describe Workspace::ConfigSchema do
   let(:root) { File.expand_path("../..", __dir__) }
 
   it "lists the settable keys in the order `config set` has always reported them" do
-    expect(described_class.project_keys.map(&:name)).to eq(%w[dev.up dev.ready dev.stop_timeout dev.startup_timeout dev.ready_timeout dev.kill_grace locks.idle_grace locks.ps_timeout locks.reap_interval alerts.notify alerts.idle_after agentd.poll_interval handoff.threshold handoff.check_prompt handoff.resume_prompt commands.test commands.lint notes.dir])
+    expect(described_class.project_keys.map(&:name)).to eq(%w[dev.up dev.ready dev.stop_timeout dev.startup_timeout dev.ready_timeout dev.kill_grace locks.idle_grace locks.ps_timeout locks.reap_interval alerts.notify alerts.idle_after agentd.poll_interval handoff.threshold handoff.check_prompt handoff.resume_prompt commands.test commands.lint notes.dir notes.default_dir])
     expect(described_class.global_keys.map(&:name)).to eq(%w[statusline.command context.source context.pattern launch.headless workflows.defaults.include])
   end
 
@@ -22,6 +22,37 @@ RSpec.describe Workspace::ConfigSchema do
     expect(described_class.all).to all(satisfy { |key| !key.doc.to_s.strip.empty? })
   end
 
+  describe "notes.default_dir" do
+    def parse(value) = described_class.parse("notes.default_dir", value)
+
+    it "accepts an absolute path, ~/ and a relative path, unchanged, with placeholders" do
+      expect(parse("/notes/{workspace}")).to eq("/notes/{workspace}")
+      expect(parse("~/notes/{workspace}/{branch}")).to eq("~/notes/{workspace}/{branch}")
+      expect(parse("tmp/my notes")).to eq("tmp/my notes")
+      expect(parse("/a/../b")).to eq("/a/../b")
+    end
+
+    it "rejects a relative path with .., a bare or user ~, blank, padded or control-character values" do
+      expect { parse("../x") }.to raise_error(ArgumentError, /"\.\."/)
+      expect { parse("a/../x") }.to raise_error(ArgumentError, /"\.\."/)
+      expect { parse("~") }.to raise_error(ArgumentError, /~\//)
+      expect { parse("~bob/x") }.to raise_error(ArgumentError, /~\//)
+      expect { parse("  ") }.to raise_error(ArgumentError, /blank/)
+      expect { parse(" tmp") }.to raise_error(ArgumentError, /whitespace/)
+      expect { parse("tmp\nx") }.to raise_error(ArgumentError, /control character/)
+    end
+
+    it "rejects an unbalanced brace and a value that names the worktree root, home or /" do
+      expect { parse("/n/{workspace") }.to raise_error(ArgumentError, /unbalanced brace/)
+      expect { parse("/n/workspace}") }.to raise_error(ArgumentError, /unbalanced brace/)
+      %w[. ./ ~/ /].each { |value| expect { parse(value) }.to raise_error(ArgumentError, /not the worktree root/) }
+    end
+
+    it "rejects a placeholder other than {workspace} and {branch}" do
+      expect { parse("/n/{project}") }.to raise_error(ArgumentError, /{project}.*{workspace}.*{branch}/)
+    end
+  end
+
   describe "reading attributes" do
     it "resolves a project key from the parent project's file and a global key from the global file" do
       expect(described_class.key("dev.up").resolve).to eq(:parent)
@@ -29,6 +60,8 @@ RSpec.describe Workspace::ConfigSchema do
       expect(described_class.key("hooks", scope: :project).resolve).to eq(:own)
       expect(described_class.key("layouts", scope: :project).resolve).to eq(:merge)
       expect(described_class.key("notes.dir").resolve).to eq(:own_then_parent)
+      expect(described_class.key("notes.default_dir")).to have_attributes(resolve: :parent, scope: :project, type: :path, settable: true, default: nil)
+      expect(described_class.key("notes.dir").type).to eq(:path)
     end
 
     it "says global hooks are read by nothing" do
@@ -52,7 +85,7 @@ RSpec.describe Workspace::ConfigSchema do
     end
 
     it "gives every key a type" do
-      expect(described_class.all.map(&:type).uniq - %i[command duration percent text enum regex boolean mapping]).to eq([])
+      expect(described_class.all.map(&:type).uniq - %i[command duration percent text path enum regex boolean mapping]).to eq([])
       expect(described_class.key("dev.stop_timeout").type).to eq(:duration)
     end
   end

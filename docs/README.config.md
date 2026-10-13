@@ -56,7 +56,8 @@ Only an allowlisted set of keys can be written this way, so a typo doesn't silen
 | `handoff.resume_prompt` | Overrides the built-in resume prompt `handoff new` sends; must not be blank (see [`workspace handoff`](README.handoff.md)) |
 | `commands.test` | Command that runs the project's tests, e.g. `bundle exec rspec`; [`workspace instructions compose`](README.instructions.md) names it in the `commits` pack |
 | `commands.lint` | Command that lints the project, e.g. `bundle exec standardrb lib/ spec/`; named in the `commits` pack beside `commands.test` |
-| `notes.dir` | Directory where one workspace's notes are kept, as an absolute path; other tools read it to know where to store notes. A worktree reads only its own value (set it with `--name`), never the project's; the main checkout reads the project's (unset: no notes directory) |
+| `notes.dir` | Directory where one workspace's notes are kept, as an absolute path; other tools read it to know where to store notes. A worktree reads only its own value (set it with `--name`), never the project's; the main checkout reads the project's (unset: the directory `notes.default_dir` gives it) |
+| `notes.default_dir` | The rule that gives each workspace its notes directory when it has no `notes.dir`: an absolute path, `~/…`, or a path relative to the worktree with no `..`; `{workspace}` and `{branch}` are filled in per workspace, so give an outside-the-repo path one or the other (unset: `tmp/workspace-notes` inside the worktree) |
 | `statusline.command` | Global. Delegates [`workspace statusline`](README.statusline.md) rendering to another command instead of the built-in renderer |
 | `context.source` | Global. `statusline` (default) or `scrape` — where `workspace sessions` reads a pane's context usage; see [`workspace statusline`](README.statusline.md) |
 | `context.pattern` | Global. Regex with exactly one capture group, used when `context.source` is `scrape` |
@@ -66,7 +67,7 @@ Only an allowlisted set of keys can be written this way, so a typo doesn't silen
 
 `statusline.command`, `context.source`, `context.pattern`, and `launch.headless` are always written to the global config, never a project's — there's one status line, one context source and one launch mode per machine. `context.source` must be `statusline` or `scrape`; `context.pattern` must be a valid regex with exactly one capture group. `launch.headless` must be `true` or `false`.
 
-`dev.stop_timeout`, `dev.startup_timeout`, `dev.ready_timeout`, `dev.kill_grace`, `locks.idle_grace`, `locks.ps_timeout`, `locks.reap_interval`, `alerts.idle_after`, and `agentd.poll_interval` must parse as a duration: a plain number of seconds, or a number with an `s`, `m` or `h` suffix (`20`, `20s`, `5m`, `1h`). `dev.startup_timeout`, `dev.ready_timeout`, `dev.kill_grace`, `locks.idle_grace`, `locks.ps_timeout`, `locks.reap_interval`, `alerts.idle_after`, and `agentd.poll_interval` must also be greater than 0. `alerts.notify` must not be blank. `dev.kill_grace` is also capped at 60s. `locks.ps_timeout` must be between 1s and 60s: too small and `ps` times out on nearly every call, which makes liveness checks come back unknown (treated as alive) and can stall a lock queue behind a clearing marker that never gets to show dead. Anything else is rejected before it's written. `notes.dir` must be an absolute path with no leading or trailing whitespace, and no newline or other control character. A relative path is rejected, and so is a literal `~`, which is not expanded. The value is otherwise stored as given: a trailing slash or `..` segments are not normalized. `config get` prints the stored string, so a client can use it as a path with no further processing. The directory doesn't have to exist.
+`dev.stop_timeout`, `dev.startup_timeout`, `dev.ready_timeout`, `dev.kill_grace`, `locks.idle_grace`, `locks.ps_timeout`, `locks.reap_interval`, `alerts.idle_after`, and `agentd.poll_interval` must parse as a duration: a plain number of seconds, or a number with an `s`, `m` or `h` suffix (`20`, `20s`, `5m`, `1h`). `dev.startup_timeout`, `dev.ready_timeout`, `dev.kill_grace`, `locks.idle_grace`, `locks.ps_timeout`, `locks.reap_interval`, `alerts.idle_after`, and `agentd.poll_interval` must also be greater than 0. `alerts.notify` must not be blank. `dev.kill_grace` is also capped at 60s. `locks.ps_timeout` must be between 1s and 60s: too small and `ps` times out on nearly every call, which makes liveness checks come back unknown (treated as alive) and can stall a lock queue behind a clearing marker that never gets to show dead. Anything else is rejected before it's written. `notes.dir` must be an absolute path with no leading or trailing whitespace, and no newline or other control character. A relative path is rejected, and so is a literal `~`, which is not expanded. The value is otherwise stored as given: a trailing slash or `..` segments are not normalized. `config get` prints the stored string, so a client can use it as a path with no further processing. The directory doesn't have to exist. `notes.default_dir` is stored as typed too, and must not be blank, padded, contain a control character, use a placeholder other than `{workspace}` or `{branch}`, start with `~` unless it starts with `~/`, or be a relative path with a `..` segment.
 
 <!-- BEGIN GENERATED: restart -->
 `locks.ps_timeout`, `locks.reap_interval`, `alerts.notify`, `alerts.idle_after` and `agentd.poll_interval` only take effect the next time the session-monitor daemon starts (`workspace launch`/`workspace agentd --force`); a daemon already running keeps the values it started with. `workspace config set` prints a reminder of this after setting any of these five keys.
@@ -78,13 +79,21 @@ Only an allowlisted set of keys can be written this way, so a typo doesn't silen
 workspace config set dev.up 'FOO="bar baz" ./start-dev'
 ```
 
-A client that wants to know where to keep notes for a workspace reads `notes.dir`; a worktree workspace gets its parent project's value:
+A client that wants to know where to keep notes for a workspace reads `notes.dir`; a worktree reads only its own value, and the main checkout reads the project's:
 
 ```sh
 workspace config set notes.dir /Users/me/notes/api
 workspace config get notes.dir          # /Users/me/notes/api
 workspace config show --json --name api  # the `notes.dir` row has the value in `value` and `effective`
 ```
+
+`notes.default_dir` is the project's rule for giving each workspace a directory, used when the workspace has no `notes.dir` of its own. Unset, the rule is `tmp/workspace-notes` inside the checkout. It takes an absolute path, `~/…` (expanded when the path is worked out, stored as typed), or a path relative to the worktree root with no `..`. `{workspace}` and `{branch}` are filled in for each workspace, with characters a file name can't hold (`/ \ : * ? " < > |`) replaced by `-`; no other placeholder is accepted. A path outside the repo needs `{workspace}` or `{branch}`, or every worktree gets the same directory:
+
+```sh
+workspace config set notes.default_dir '~/notes/api/{workspace}'
+```
+
+The `notes.dir` and `notes.default_dir` rows of `config show --json` carry `effective_path`, the absolute directory for the workspace asked about: `notes.dir`'s is the workspace's own value, else the rule's result; `notes.default_dir`'s is the rule's result alone.
 
 `config get` prints nothing on stdout and exits 1 when the key is unset, so a client that finds no output should pick its own location. The "is not set" message on stderr marks that case, and `config show --name N --json` gives `value: null` for an unset key.
 
@@ -125,7 +134,8 @@ Prints one document with every key in the table above, the value each reader wou
 - `resolve` says whose file the readers consult: `parent`, `own`, `own_then_parent` (a worktree's own file and never the project's; a main checkout reads the project's; today that is `notes.dir`), `merge` (global, then the workspace's own; the row reports one scope's file), `global`, or `none` (nothing reads it; today that is global `hooks`). `target_layer` is where `config set` writes the key (`worktree` or `project` for a key a worktree owns, depending on the workspace asked about), and null for a key edited by hand. `affects` lists the workspaces that read the file a change lands in. `applies` is `next_call`, `next_event` or `daemon_restart`; treat an unknown value as plain text.
 - `sensitive` keys are commands and hooks. Their `value` and `effective` are always null; `masked` is true when the key has a value. Neither `problems` nor `unknown_keys` ever quote a value.
 - `problems` holds the problems `config validate` reports for that key, with `severity`, `code`, `message`, `line` and `column`.
-- `type` is `command`, `duration`, `percent`, `text`, `enum`, `regex`, `boolean` or `mapping`.
+- `type` is `command`, `duration`, `percent`, `text`, `path`, `enum`, `regex`, `boolean` or `mapping`.
+- `effective_path` appears only on the `notes.dir` and `notes.default_dir` rows (`capabilities` reports `config_json: 2` when a client can rely on it). It is an absolute path with `~` expanded, and cleaned of `..` segments and a trailing slash, or null when it can't be worked out: the rule is relative to a checkout the workspace doesn't have, the rule uses `{branch}` and the checkout has no branch (a detached HEAD), or a file the key depends on can't be parsed. An invalid stored value is ignored, as in `effective`.
 
 A file that can't be parsed doesn't fail `config show --json`: it is reported in `files` and its keys are `unreadable`. (Plain `workspace config` still refuses and prints the error.) `--json` can't be combined with `--global`; the global file is one of the layers. An unknown workspace is an error document with code `unknown_workspace`.
 
@@ -153,7 +163,8 @@ Checks the files `config show --json` lists, without writing anything: YAML synt
 | `yaml_syntax` | error | The file isn't valid YAML, isn't a mapping at the top level, or uses an alias or tag a config file may not use |
 | `invalid_value` | error | A key's value fails the check `config set` would make, or a section isn't a mapping |
 | `unknown_key` | warning | Nothing reads the key in this file; the message says when it is a setting of the other scope |
-| `escaped_path` | warning | A path key (`notes.dir`) has a backslash before a space or `~`, as if typed for a shell; config values are used as written, so the directory name would contain the backslash |
+| `escaped_path` | warning | A path key (`notes.dir`, `notes.default_dir`) has a backslash before a space or `~`, as if typed for a shell; config values are used as written, so the directory name would contain the backslash |
+| `shared_notes_dir` | warning | `notes.default_dir` is an absolute path (or `~/…`) with no `{workspace}` or `{branch}`, in a project that has worktrees, so they would all share one notes directory |
 | `not_read` | info | The key is set where no reader looks: a parent-scoped key in a worktree's file, or global `hooks` |
 
 New codes may be added; treat an unknown one by its `severity`.

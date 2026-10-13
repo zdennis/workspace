@@ -42,7 +42,8 @@ module Workspace
     # @!attribute applies [Symbol] when a change takes effect: :next_call, :next_event or :daemon_restart.
     #   Defaults to :daemon_restart for a restart key, else :next_call.
     # @!attribute sensitive [Boolean] true when the value is a command or other text `config show --json` must not print
-    # @!attribute type [Symbol] :command, :duration, :percent, :text, :enum, :regex, :boolean or :mapping
+    # @!attribute type [Symbol] :command, :duration, :percent, :text, :path, :enum, :regex, :boolean or :mapping.
+    #   A :path value is a file system location a person may have typed with shell escapes, which `config validate` checks for.
     Key = Struct.new(:name, :scope, :doc, :default, :restart, :settable, :parser, :resolve, :applies, :sensitive, :type, keyword_init: true) do
       def initialize(scope:, restart: nil, resolve: nil, applies: nil, sensitive: false, type: :text, **rest)
         resolve ||= (scope == :global) ? :global : :parent
@@ -141,6 +142,28 @@ module Workspace
     end
     private_constant :ABSOLUTE_PATH
 
+    # Placeholders `notes.default_dir` fills in for each workspace.
+    NOTES_PLACEHOLDERS = %w[workspace branch].freeze
+
+    NOTES_DEFAULT_DIR = lambda do |value|
+      path = value.to_s
+      raise ArgumentError, "must not be blank" if path.strip.empty?
+      raise ArgumentError, "has leading or trailing whitespace; remove it" unless path == path.strip
+      raise ArgumentError, "must not contain a newline or other control character" if path.match?(/[[:cntrl:]]/)
+      raise ArgumentError, "has an unbalanced brace; write placeholders as {workspace} or {branch}" if path.count("{") != path.count("}") || path.gsub(/\{[^{}]*\}/, "").match?(/[{}]/)
+      raise ArgumentError, "must name a directory for notes, not the worktree root, the home directory or \"/\"" if %w[. ./ ~/ /].include?(path)
+      unknown = path.scan(/{([^{}]*)}/).flatten.reject { |name| NOTES_PLACEHOLDERS.include?(name) }
+      raise ArgumentError, "has an unknown placeholder {#{unknown.first}}; use {workspace} or {branch}" if unknown.any?
+      if path.start_with?("~") && !path.start_with?("~/")
+        raise ArgumentError, "must start with \"~/\" to mean the home directory; \"~user\" and a bare \"~\" are not expanded"
+      end
+      if !path.start_with?("/", "~/") && path.split("/").include?("..")
+        raise ArgumentError, "a path relative to the worktree must not contain \"..\"; use an absolute path to leave the worktree"
+      end
+      path
+    end
+    private_constant :NOTES_DEFAULT_DIR
+
     PERCENT = lambda do |value|
       pct = Integer(value)
       raise ArgumentError, "must be between 1 and 100" unless pct.between?(1, 100)
@@ -218,8 +241,10 @@ module Workspace
         doc: "Command that runs the project's tests, e.g. `bundle exec rspec`; [`workspace instructions compose`](README.instructions.md) names it in the `commits` pack"),
       Key.new(name: "commands.lint", scope: :project, type: :command, sensitive: true, settable: true, parser: COMMAND,
         doc: "Command that lints the project, e.g. `bundle exec standardrb lib/ spec/`; named in the `commits` pack beside `commands.test`"),
-      Key.new(name: "notes.dir", scope: :project, settable: true, parser: ABSOLUTE_PATH, resolve: :own_then_parent,
-        doc: "Directory where one workspace's notes are kept, as an absolute path; other tools read it to know where to store notes. A worktree reads only its own value (set it with `--name`), never the project's; the main checkout reads the project's (unset: no notes directory)"),
+      Key.new(name: "notes.dir", scope: :project, type: :path, settable: true, parser: ABSOLUTE_PATH, resolve: :own_then_parent,
+        doc: "Directory where one workspace's notes are kept, as an absolute path; other tools read it to know where to store notes. A worktree reads only its own value (set it with `--name`), never the project's; the main checkout reads the project's (unset: the directory `notes.default_dir` gives it)"),
+      Key.new(name: "notes.default_dir", scope: :project, type: :path, settable: true, parser: NOTES_DEFAULT_DIR,
+        doc: "The rule that gives each workspace its notes directory when it has no `notes.dir`: an absolute path, `~/…`, or a path relative to the worktree with no `..`; `{workspace}` and `{branch}` are filled in per workspace, so give an outside-the-repo path one or the other (unset: `tmp/workspace-notes` inside the worktree)"),
       Key.new(name: "statusline.command", scope: :global, type: :command, sensitive: true, settable: true,
         doc: "Delegates [`workspace statusline`](README.statusline.md) rendering to another command instead of the built-in renderer"),
       Key.new(name: "context.source", scope: :global, type: :enum, settable: true, parser: CONTEXT_SOURCE,

@@ -7,8 +7,16 @@ RSpec.describe Workspace::ConfigReport do
   let(:config) { instance_double(Workspace::Config, workspace_config_dir: dir) }
   let(:settings) { Workspace::ProjectSettings.new(config: config) }
   let(:available) { %w[api api.worktree-fix api.worktree-search other] }
+  let(:roots) { {"api" => "/src/api", "api.worktree-fix" => "/src/api/.worktrees/fix", "api.worktree-search" => "/src/api/.worktrees/search"} }
   let(:project_config) { instance_double(Workspace::ProjectConfig, available_projects: available) }
-  subject(:report) { described_class.new(project_settings: settings, project_config: project_config) }
+  let(:git) { Workspace::Git.new }
+  let(:notes_dir) { Workspace::NotesDir.new(git: git, home: "/home/me") }
+  subject(:report) { described_class.new(project_settings: settings, project_config: project_config, notes_dir: notes_dir) }
+
+  before do
+    allow(project_config).to receive(:project_root_for) { |name| roots[name] }
+    allow(git).to receive(:worktree_branch) { |path| "feature/#{File.basename(path)}" }
+  end
 
   after { FileUtils.rm_rf(dir) }
 
@@ -130,6 +138,45 @@ RSpec.describe Workspace::ConfigReport do
 
       row = key_row(report.show("api"), "notes.dir")
       expect(row).to include("source" => "project", "effective" => "/shared/notes", "target_layer" => "project", "affects" => ["api"])
+    end
+
+    it "gives notes.dir and notes.default_dir an effective_path computed for the workspace asked about" do
+      write("api", "notes:\n  default_dir: \"~/notes/{workspace}/{branch}\"\n")
+      write("api.worktree-fix", "notes:\n  dir: /wt/notes\n")
+
+      fix = report.show("api.worktree-fix")
+      expect(key_row(fix, "notes.dir")["effective_path"]).to eq("/wt/notes")
+      expect(key_row(fix, "notes.default_dir")).to include("effective_path" => "/home/me/notes/api.worktree-fix/feature-fix", "source" => "project", "resolve" => "parent", "type" => "path")
+
+      search = report.show("api.worktree-search")
+      expect(key_row(search, "notes.dir")).to include("source" => "default", "effective" => nil, "effective_path" => "/home/me/notes/api.worktree-search/feature-search")
+      expect(key_row(search, "dev.up")).not_to have_key("effective_path")
+    end
+
+    it "falls back to tmp/workspace-notes when no default_dir is set and to the project's notes.dir for a main checkout" do
+      expect(key_row(report.show("api.worktree-fix"), "notes.dir")["effective_path"]).to eq("/src/api/.worktrees/fix/tmp/workspace-notes")
+      expect(key_row(report.show("api.worktree-fix"), "notes.default_dir")["effective_path"]).to eq("/src/api/.worktrees/fix/tmp/workspace-notes")
+
+      write("api", "notes:\n  dir: /shared/notes\n")
+      expect(key_row(report.show("api"), "notes.dir")["effective_path"]).to eq("/shared/notes")
+    end
+
+    it "uses the computed default when the stored notes.dir is invalid" do
+      write("api.worktree-fix", "notes:\n  dir: relative/notes\n")
+
+      expect(key_row(report.show("api.worktree-fix"), "notes.dir")["effective_path"]).to eq("/src/api/.worktrees/fix/tmp/workspace-notes")
+    end
+
+    it "gives a null effective_path when the checkout is unknown, the file is unreadable, or the stored value is invalid" do
+      expect(key_row(report.show("other"), "notes.dir")["effective_path"]).to be_nil
+
+      write("api", "notes:\n  default_dir: ../up\n")
+      expect(key_row(report.show("api"), "notes.dir")["effective_path"]).to eq("/src/api/tmp/workspace-notes")
+      expect(key_row(report.show("api"), "notes.default_dir")["effective_path"]).to eq("/src/api/tmp/workspace-notes")
+
+      write("api", "notes: [\n")
+      expect(key_row(report.show("api"), "notes.dir")["effective_path"]).to be_nil
+      expect(key_row(report.show("api"), "notes.default_dir")["effective_path"]).to be_nil
     end
 
     it "reports global keys from the global file" do
@@ -328,6 +375,40 @@ RSpec.describe Workspace::ConfigReport do
       expect(problems.first).to include("line" => 2)
       expect(problems.first["message"]).to include("backslash")
       expect(report.validate("api.worktree-fix")["valid"]).to be true
+    end
+
+    it "warns about escapes in notes.default_dir too" do
+      write("api", "notes:\n  default_dir: \"/Users/me/My\\\\ Notes/{workspace}\"\n")
+
+      expect(report.validate("api")["problems"].map { |p| [p["key"], p["code"]] }).to eq([["notes.default_dir", "escaped_path"]])
+    end
+
+    it "warns shared_notes_dir when a project with worktrees has an absolute default_dir with no placeholder" do
+      path = write("api", "notes:\n  default_dir: /shared/notes\n")
+
+      problems = report.validate("api")["problems"]
+      expect(problems.map { |p| [p["severity"], p["code"], p["key"], p["layer"], p["file"], p["line"]] }).to eq([["warning", "shared_notes_dir", "notes.default_dir", "project", path, 2]])
+      expect(problems.first["message"]).to include("{workspace}")
+      expect(report.validate("api")["valid"]).to be true
+      expect(report.validate("api.worktree-fix")["problems"].map { |p| p["code"] }).to eq(["shared_notes_dir"])
+
+      write("api", "notes:\n  default_dir: \"~/notes\"\n")
+      expect(report.validate("api")["problems"].map { |p| p["code"] }).to eq(["shared_notes_dir"])
+    end
+
+    it "does not warn shared_notes_dir for a placeholder, a relative path, or a project without worktrees" do
+      write("api", "notes:\n  default_dir: /shared/{workspace}\n")
+      expect(report.validate("api")["problems"]).to eq([])
+      write("api", "notes:\n  default_dir: tmp/n\n")
+      expect(report.validate("api")["problems"]).to eq([])
+      write("other", "notes:\n  default_dir: /shared/notes\n")
+      expect(report.validate("other")["problems"]).to eq([])
+    end
+
+    it "rejects a relative default_dir with .. as an invalid_value" do
+      write("api", "notes:\n  default_dir: ../up\n")
+
+      expect(report.validate("api")["problems"].map { |p| [p["key"], p["code"], p["severity"]] }).to eq([["notes.default_dir", "invalid_value", "error"]])
     end
 
     it "does not warn about a plain notes.dir with spaces" do

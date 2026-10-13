@@ -29,7 +29,7 @@ module Workspace
         "state_done" => 1,
         "doctor_json" => 0,
         "daemon_control" => 3,
-        "config_json" => 1,
+        "config_json" => 2,
         "tmux_show" => 1,
         "tasks" => 1,
         "event_emitters" => 1,

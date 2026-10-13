@@ -12,8 +12,11 @@ module Workspace
     # Schema version of both documents.
     JSON_SCHEMA_VERSION = 1
 
-    # Keys whose value is a path a person may have typed with shell escapes.
-    ESCAPED_PATH_KEYS = %w[notes.dir].freeze
+    # Keys whose row carries an `effective_path`.
+    NOTES_KEYS = %w[notes.dir notes.default_dir].freeze
+
+    # A `{workspace}` or `{branch}` placeholder in a notes path.
+    NOTES_PLACEHOLDER = /\{(?:workspace|branch)\}/
 
     # A backslash before a space or "~".
     ESCAPED_PATH = /\\[ ~]/
@@ -22,10 +25,12 @@ module Workspace
     ERROR = "error".freeze
 
     # @param project_settings [Workspace::ProjectSettings] where each layer's file lives
-    # @param project_config [Workspace::ProjectConfig] lists the workspaces a change reaches
-    def initialize(project_settings:, project_config:)
+    # @param project_config [Workspace::ProjectConfig] lists the workspaces a change reaches and finds a checkout's root
+    # @param notes_dir [Workspace::NotesDir] computes the `effective_path` of the notes keys
+    def initialize(project_settings:, project_config:, notes_dir:)
       @project_settings = project_settings
       @project_config = project_config
+      @notes_dir = notes_dir
     end
 
     # @param workspace [String] workspace name; a worktree reads its parent project's file too
@@ -108,7 +113,7 @@ module Workspace
       else
         layer
       end
-      {
+      row = {
         "key" => key.name,
         "scope" => key.scope.to_s,
         "type" => key.type.to_s,
@@ -128,6 +133,33 @@ module Workspace
         "sensitive" => key.sensitive,
         "problems" => own_problems.map { |p| p.slice("severity", "code", "message", "line", "column") }
       }
+      row["effective_path"] = effective_path(key, scan, problems) if NOTES_KEYS.include?(key.name)
+      row
+    end
+
+    # Where the workspace's notes go (`notes.dir`) or where the project's rule puts them
+    # (`notes.default_dir`), as an absolute path. Nil when a config file can't be read or
+    # the workspace has no known checkout (or branch, for a rule that uses it).
+    def effective_path(key, scan, problems)
+      project = scan.file("project")
+      own = scan.file(read_layer(ConfigSchema.key("notes.dir"), scan))
+      return nil unless project.readable? && own.readable?
+      template = valid_value(ConfigSchema.key("notes.default_dir"), project, problems)
+      root = @project_config.project_root_for(scan.workspace)
+      if key.name == "notes.default_dir"
+        @notes_dir.default_path(template, root: root, workspace: scan.workspace)
+      else
+        stored = valid_value(key, own, problems)
+        @notes_dir.resolve(stored: stored, template: template, worktree: scan.worktree?, root: root, workspace: scan.workspace).path
+      end
+    end
+
+    # The stored value of a key in a file, nil when unset or when it has an error (as {#effective} treats it).
+    def valid_value(key, file, problems)
+      stored = dig(file.data, key.name.split("."))
+      return nil if stored.nil?
+      return nil if problems.any? { |p| p["key"] == key.name && p["layer"] == file.layer && p["severity"] == ERROR }
+      key.parse(stored)
     end
 
     # The layer `config set` writes this key to, nil for a key edited by hand.
@@ -175,7 +207,7 @@ module Workspace
       scope = (file.layer == "global") ? :global : :project
       declared = ConfigSchema.all.select { |key| key.scope == scope }
       read_here = declared.reject { |key| unread_here?(key, file) }
-      value_problems(file, read_here) + escaped_path_problems(file, read_here) + unknown_problems(file, declared, scope) + not_read_problems(file, declared, scan)
+      value_problems(file, read_here) + escaped_path_problems(file, read_here) + shared_notes_problems(file, scan) + unknown_problems(file, declared, scope) + not_read_problems(file, declared, scan)
     end
 
     # A key whose readers look elsewhere has no effect in this file, so its value isn't checked here.
@@ -209,12 +241,27 @@ module Workspace
     # A backslash before a space or "~" is shell quoting. Config values are taken literally, so the
     # directory would be named with the backslash in it.
     def escaped_path_problems(file, declared)
-      declared.select { |key| ESCAPED_PATH_KEYS.include?(key.name) }.filter_map do |key|
+      declared.select { |key| key.type == :path }.filter_map do |key|
         stored = dig(file.data, key.name.split("."))
         next unless stored.is_a?(String) && stored.match?(ESCAPED_PATH)
         located(file, "warning", "escaped_path", key.name,
           "#{key.name} has a backslash before a space or \"~\". Config values are used as written, so the directory name would contain the backslash. Remove the backslash.")
       end
+    end
+
+    # One directory for every worktree of a project means they share notes.
+    def shared_notes_problems(file, scan)
+      return [] unless file.layer == "project"
+      stored = dig(file.data, %w[notes default_dir])
+      return [] unless stored.is_a?(String) && stored.start_with?("/", "~/") && !NOTES_PLACEHOLDER.match?(stored)
+      return [] unless worktrees?(scan)
+      [located(file, "warning", "shared_notes_dir", "notes.default_dir",
+        "notes.default_dir is an absolute path with no {workspace} or {branch}, so the worktrees of this project would all use the same notes directory. Add {workspace} or {branch} to the path.")]
+    end
+
+    def worktrees?(scan)
+      root = scan.parent || scan.workspace
+      @project_config.available_projects.any? { |name| name.start_with?("#{root}#{WorkspaceLineage::WORKTREE_SEPARATOR}") }
     end
 
     def unknown_problems(file, declared, scope)
