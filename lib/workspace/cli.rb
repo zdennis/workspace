@@ -426,7 +426,7 @@ module Workspace
           handoff         Check context usage and hand off to a fresh conversation
           help            Show this help message
           init            Install tmuxinator templates and create config directory
-          instructions    Print the instructions built from library packs (binding, orchestrator, commits, review)
+          instructions    Print the instructions built from library packs (binding, orchestrator, commits, review, notes)
           kill            Kill a worktree project and remove its worktree (auto-detects from cwd)
           launch          Launch tmuxinator projects in iTerm windows, or headless in plain tmux
           layout          Save/restore tmux pane layouts (auto-saved before resize)
@@ -3635,11 +3635,11 @@ module Workspace
         opts.banner = "Usage: workspace instructions compose [--pack NAME]... [--pane %ID] [--name WORKSPACE] [--json]"
         opts.separator ""
         opts.separator "Print the instructions an agent is given, built from library packs. A pack is a"
-        opts.separator "library play; workspace ships four: binding (how to work in a bound pane),"
-        opts.separator "orchestrator (delegate to sub-agents), commits (how to commit) and review (review a"
-        opts.separator "diff with reviewer sub-agents). With no --pack, binding, orchestrator and commits are"
-        opts.separator "composed, in that order. Each pack is printed under a heading that names where it"
-        opts.separator "came from."
+        opts.separator "library play; workspace ships five: binding (how to work in a bound pane),"
+        opts.separator "orchestrator (delegate to sub-agents), commits (how to commit), review (review a"
+        opts.separator "diff with reviewer sub-agents) and notes (where working notes go). With no"
+        opts.separator "--pack, binding, orchestrator and commits are composed, in that order. Each"
+        opts.separator "pack is printed under a heading that names where it came from."
         opts.separator ""
         opts.separator "Any other library play can be named as a pack too: the project's library is searched,"
         opts.separator "then global. A play named like a built-in pack never takes its place here; give your"

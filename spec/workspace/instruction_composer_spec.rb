@@ -313,12 +313,21 @@ RSpec.describe Workspace::InstructionComposer, "with the packs workspace ships" 
       pane_bindings: Workspace::PaneBindings.new(path: "/nonexistent/bindings.json"))
   end
 
-  it "ships exactly the four packs, as plays, each readable with a description" do
+  it "ships exactly the five packs, as plays, each readable with a description" do
     shipped = Workspace::LibraryStore.new(dir: builtin_dir, scope: "builtin")
 
     expect(Dir.children(builtin_dir)).to eq(["play"])
-    expect(shipped.entries.map { |e| e["ref"] }).to eq(%w[play/binding play/commits play/orchestrator play/review])
+    expect(shipped.entries.map { |e| e["ref"] }).to eq(%w[play/binding play/commits play/notes play/orchestrator play/review])
     expect(shipped.entries).to all(include("readable" => true, "link" => nil, "description" => a_string_matching(/\A\S.{10,}/)))
+  end
+
+  it "composes the notes pack by name, telling the agent to ask workspace for the directory and never to commit it" do
+    result = composer.compose(cwd: "/work/app", packs: %w[notes])
+
+    expect(result["packs"].map { |p| [p["ref"], p["scope"]] }).to eq([["play/notes", "builtin"]])
+    expect(result["text"]).to start_with("## From pack notes (built-in)\n\nKeep your working notes in this workspace's notes directory")
+    expect(result["text"]).to include("`workspace notes dir --create`").and include("`IMPLEMENTATION_PLAN.md`").and include("Never commit the notes.")
+    expect(result["text"]).not_to match(/^---$|^description:/)
   end
 
   it "composes every shipped pack with its heading and no frontmatter" do

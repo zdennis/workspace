@@ -8,7 +8,7 @@ Print the instructions an agent is given, built from library packs.
 workspace instructions compose [--pack NAME]... [--pane %ID] [--name WORKSPACE] [--json]
 ```
 
-A pack is a [library](README.library.md) play. workspace ships four:
+A pack is a [library](README.library.md) play. workspace ships five:
 
 | Pack | What it tells the agent |
 |---|---|
@@ -16,6 +16,7 @@ A pack is a [library](README.library.md) play. workspace ships four:
 | `orchestrator` | Delegate to sub-agents, pass `model:` on every Agent call, keep tasks small and reports terse, have a separate agent check each phase |
 | `commits` | Cohesive commits, tests and lint before each one, messages about why, no attribution lines, no push or merge unless told |
 | `review` | Run reviewer sub-agents over the diff, fix or answer every finding, write `review.md` |
+| `notes` | Where this workspace's working notes go (`workspace notes dir --create`), what belongs there, how to name files, to read the plan first, to write as you work, and never to commit them |
 
 With no `--pack`, the default packs are composed: `binding`, `orchestrator` and `commits`, in that order, or the ones the global key `workflows.defaults.include` names (`workspace config set workflows.defaults.include "binding, commits"`). `--pack` repeats, and packs are composed in the order given; a name given twice is composed once.
 
