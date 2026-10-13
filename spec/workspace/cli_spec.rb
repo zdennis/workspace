@@ -1629,13 +1629,13 @@ RSpec.describe Workspace::CLI do
       expect(error_output.string).to include("Usage: workspace config")
     end
 
-    it "shows project config" do
+    it "shows project config with --name" do
       project_settings = CLITestHelpers::FakeProjectSettings.new
       project_settings.define_singleton_method(:load) { |_name| {"hooks" => {"post_launch" => "echo hi"}} }
       project_settings.define_singleton_method(:project_config_path) { |name| "/tmp/workspace/projects/#{name}.yml" }
 
       cli, output, _ = build_test_cli(project_settings: project_settings)
-      cli.run(["config", "myproject"])
+      cli.run(["config", "--name", "myproject"])
 
       expect(output.string).to include("post_launch")
       expect(output.string).to include("echo hi")
@@ -1655,9 +1655,123 @@ RSpec.describe Workspace::CLI do
 
     it "reports when no project config found" do
       cli, output, _ = build_test_cli
-      cli.run(["config", "nonexistent"])
+      cli.run(["config", "--name", "nonexistent"])
 
       expect(output.string).to include("no config found for 'nonexistent'")
+    end
+
+    it "prints a key's effective value" do
+      report = Class.new do
+        attr_reader :shown
+
+        def show(name, key: nil)
+          @shown = [[name, key]]
+          {"keys" => [{"key" => "dev.stop_timeout", "value" => "20", "effective" => "20"}]}
+        end
+      end.new
+      detector = instance_double(Workspace::ProjectDetector, detect: "myproject")
+      cli, output, _ = build_test_cli(config_report: report, project_detector: detector)
+
+      cli.run(["config", "dev.stop_timeout"])
+
+      expect(report.shown).to eq([["myproject", "dev.stop_timeout"]])
+      expect(output.string).to include("20")
+    end
+
+    it "exits 1 with usage for an unknown key" do
+      cli, _, error_output = build_test_cli
+      expect { cli.run(["config", "bogus.key"]) }.to raise_error(FakeSystemExit) { |e|
+        expect(e.status).to eq(1)
+      }
+      expect(error_output.string).to include("Unknown config key 'bogus.key'")
+    end
+
+    it "refuses a key with --global" do
+      cli, _, error_output = build_test_cli
+      expect { cli.run(["config", "dev.up", "--global"]) }.to raise_error(FakeSystemExit) { |e|
+        expect(e.status).to eq(1)
+      }
+      expect(error_output.string).to include("--global shows the whole global file")
+    end
+
+    def key_cli_for(row)
+      report = Class.new do
+        attr_reader :shown
+
+        def initialize(row)
+          @row = row
+        end
+
+        def show(name, key: nil)
+          @shown = [[name, key]]
+          {"keys" => [@row]}
+        end
+      end.new(row)
+      detector = instance_double(Workspace::ProjectDetector, detect: "myproject")
+      build_test_cli(config_report: report, project_detector: detector)
+    end
+
+    it "prints false for a boolean key, not nothing" do
+      cli, output, _ = key_cli_for({"key" => "handoff.auto", "effective" => false})
+
+      cli.run(["config", "handoff.auto"])
+
+      expect(output.string).to eq("false\n")
+    end
+
+    it "prints the effective path for a notes key" do
+      cli, output, _ = key_cli_for({"key" => "notes.dir", "effective_path" => "/notes/api"})
+
+      cli.run(["config", "notes.dir"])
+
+      expect(output.string).to eq("/notes/api\n")
+    end
+
+    it "prints YAML for a mapping key" do
+      cli, output, _ = key_cli_for({"key" => "hooks", "effective" => {"post_launch" => "echo hi"}})
+
+      cli.run(["config", "hooks"])
+
+      expect(output.string).to include("post_launch: echo hi")
+    end
+
+    it "exits 1 with a stderr note for an unset key" do
+      cli, output, error_output = key_cli_for({"key" => "dev.ready", "effective" => nil})
+
+      expect { cli.run(["config", "dev.ready"]) }.to raise_error(FakeSystemExit) { |e|
+        expect(e.status).to eq(1)
+      }
+      expect(output.string).to be_empty
+      expect(error_output.string).to include("dev.ready is not set")
+    end
+
+    it "exits 1 with a stderr note for a notes key with no path" do
+      cli, output, error_output = key_cli_for({"key" => "notes.dir", "effective_path" => nil})
+
+      expect { cli.run(["config", "notes.dir"]) }.to raise_error(FakeSystemExit) { |e|
+        expect(e.status).to eq(1)
+      }
+      expect(output.string).to be_empty
+      expect(error_output.string).to include("notes.dir is not set")
+    end
+
+    it "prints only set/unset status for a sensitive key, never the value" do
+      cli, output, error_output = key_cli_for({"key" => "dev.up", "sensitive" => true, "source_file" => "/cfg/api.yml"})
+
+      cli.run(["config", "dev.up"])
+
+      expect(output.string).to be_empty
+      expect(error_output.string).to include("dev.up is set in /cfg/api.yml")
+    end
+
+    it "exits 1 when a sensitive key is not set" do
+      cli, output, error_output = key_cli_for({"key" => "dev.up", "sensitive" => true, "source_file" => nil})
+
+      expect { cli.run(["config", "dev.up"]) }.to raise_error(FakeSystemExit) { |e|
+        expect(e.status).to eq(1)
+      }
+      expect(output.string).to be_empty
+      expect(error_output.string).to include("dev.up is not set")
     end
   end
 
@@ -1733,9 +1847,9 @@ RSpec.describe Workspace::CLI do
           @valid = valid
         end
 
-        def show(name)
+        def show(name, key: nil)
           @calls << [:show, name]
-          {"schema_version" => 1, "ok" => true, "workspace" => name, "keys" => []}
+          {"schema_version" => 1, "ok" => true, "workspace" => name, "keys" => [{"key" => key || "dev.up", "value" => "bin/dev"}]}
         end
 
         def validate(name)
@@ -1756,13 +1870,16 @@ RSpec.describe Workspace::CLI do
       expect(fake.calls).to eq([[:show, "api"]])
     end
 
-    it "accepts --json without the show word and a positional project" do
+    it "accepts --json without the show word and a positional key" do
       fake = report.new
-      cli, output, _ = build_test_cli(config_report: fake)
+      detector = instance_double(Workspace::ProjectDetector, detect: "api")
+      cli, output, _ = build_test_cli(config_report: fake, project_detector: detector)
 
-      cli.run(["config", "--json", "api"])
+      cli.run(["config", "--json", "dev.up"])
 
-      expect(JSON.parse(output.string)["workspace"]).to eq("api")
+      doc = JSON.parse(output.string)
+      expect(doc["workspace"]).to eq("api")
+      expect(doc["keys"]).to eq([{"key" => "dev.up", "value" => "bin/dev"}])
     end
 
     it "uses the workspace detected from the working directory without --name" do
@@ -1783,14 +1900,23 @@ RSpec.describe Workspace::CLI do
       expect(JSON.parse(output.string)).to include("ok" => false, "code" => "usage")
     end
 
-    it "still shows a project literally named show through --" do
+    it "shows a workspace literally named show through --name" do
       project_settings = CLITestHelpers::FakeProjectSettings.new
       project_settings.define_singleton_method(:load) { |name| {"dev" => {"up" => name}} }
       cli, output, _ = build_test_cli(project_settings: project_settings)
 
-      cli.run(["config", "--", "show"])
+      cli.run(["config", "--name", "show"])
 
       expect(output.string).to include("up: show")
+    end
+
+    it "refuses a workspace name as a positional argument" do
+      cli, _, error_output = build_test_cli
+
+      expect { cli.run(["config", "--", "show"]) }.to raise_error(FakeSystemExit) { |e|
+        expect(e.status).to eq(1)
+      }
+      expect(error_output.string).to include("Unknown config key 'show'")
     end
 
     it "validate prints the document and exits 0 when valid" do

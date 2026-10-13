@@ -4601,16 +4601,18 @@ module Workspace
       json = false
       name = nil
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace config [show] [options] [project]"
+        opts.banner = "Usage: workspace config [show] [options] [key]"
         opts.separator ""
-        opts.separator "Show project or global workspace configuration."
+        opts.separator "Show project or global workspace configuration. With a key, print"
+        opts.separator "that key's effective value (layering and defaults included, unlike"
+        opts.separator "'workspace config get', which reads one file)."
         opts.separator ""
         opts.separator "Options:"
         opts.on("--global", "Show global configuration instead of project config") do
           global = true
         end
-        opts.on("--name NAME", "Workspace to show instead of the one inferred from cwd (the same as the project argument)") { |v| name = v }
-        opts.on("--json", "Print every config key with its effective value, source layer and files (see docs/README.config.md)") { json = true }
+        opts.on("--name NAME", "Workspace to show instead of the one inferred from cwd") { |v| name = v }
+        opts.on("--json", "Print the show document as JSON: every key with its effective value, source layer and files, or with a key just that key's row (see docs/README.config.md)") { json = true }
         opts.separator ""
         opts.separator "Config files:"
         opts.separator "  Global:  #{@project_settings.global_config_path}"
@@ -4671,15 +4673,16 @@ module Workspace
         opts.separator "                                 inside the worktree"
         opts.separator ""
         opts.separator "Note: 'show', 'validate', 'set', 'get', and 'unset' are reserved as the first"
-        opts.separator "argument here and are always treated as subcommands, so a project literally"
-        opts.separator "named one of them can't be shown this way (see docs/README.config.md for"
-        opts.separator "the workaround)."
+        opts.separator "argument here and are always treated as subcommands. A key named one of"
+        opts.separator "them, or a workspace named one of them, is reached with --name."
         opts.separator ""
         opts.separator "Examples:"
-        opts.separator "  workspace config myproject     # show project config"
         opts.separator "  workspace config               # show config for project in current dir"
+        opts.separator "  workspace config --name myproject    # show another workspace's config"
+        opts.separator "  workspace config dev.up         # that key's effective value"
+        opts.separator "  workspace config notes.dir      # where this workspace's notes go"
         opts.separator "  workspace config --global      # show global config"
-        opts.separator "  workspace config show --name myproject --json    # every key, its value and where it comes from"
+        opts.separator "  workspace config dev.up --json    # that key's row in the show document"
         opts.separator "  workspace config validate --name myproject --json    # problems, with line and column"
         opts.separator "  workspace config set dev.up \"./start-dev\""
         opts.separator "  workspace config get dev.up"
@@ -4691,10 +4694,24 @@ module Workspace
         opts.separator "  $EDITOR #{@config.workspace_config_dir}/projects/<name>.yml"
       end
       parser.parse!(args)
+      key = args.shift
+      raise UsageError, parser.help if args.any?
+      if key
+        raise UsageError, "Unknown config key '#{key}'. Keys: #{ConfigSchema.all.map(&:name).join(", ")}" if ConfigSchema.key(key).nil?
+        raise UsageError, "--global shows the whole global file; a key needs a workspace (drop --global; use --name to pick one)" if global
+        doc = config_report.show(config_workspace(name, parser), key: key)
+        if json
+          @output.puts JSON.generate(doc)
+        else
+          found = print_config_key_row(doc["keys"].first)
+          @exit_handler.exit(1) unless found
+        end
+        return
+      end
 
       if json
         raise UsageError, "--json can't be combined with --global: the global file is one of the layers in the document" if global
-        @output.puts JSON.generate(config_report.show(config_workspace(name || args.first, parser)))
+        @output.puts JSON.generate(config_report.show(config_workspace(name, parser)))
         return
       end
 
@@ -4708,7 +4725,7 @@ module Workspace
           @output.puts YAML.dump(data)
         end
       else
-        project = name || args.first || @project_detector.detect(@working_dir)
+        project = name || @project_detector.detect(@working_dir)
         raise UsageError, parser.help unless project
         data = @project_settings.load(project)
         path = @project_settings.project_config_path(project)
@@ -4718,6 +4735,42 @@ module Workspace
         else
           @output.puts YAML.dump(data)
         end
+      end
+    end
+
+    # Prints one key row from `config show --json` for `workspace config <key>`:
+    # the effective value for plain keys, the effective path for the notes keys,
+    # YAML for mapping keys, and only set/unset status for sensitive keys.
+    # Returns true when the key has a value, false when it is unset (the caller
+    # exits 1, like `config get`).
+    def print_config_key_row(row)
+      return print_config_key_status(row) if row["sensitive"]
+      if row.key?("effective_path") && row["effective_path"]
+        @output.puts row["effective_path"]
+        return true
+      end
+
+      value = row["effective"]
+      if value.is_a?(Hash)
+        return false if value.empty?
+        @output.puts YAML.dump(value)
+      elsif value.nil?
+        @error_output.puts "#{row["key"]} is not set"
+        return false
+      else
+        @output.puts value
+      end
+      true
+    end
+
+    # A sensitive key's value never prints; only whether it is set.
+    def print_config_key_status(row)
+      if row["source_file"]
+        @error_output.puts "#{row["key"]} is set in #{row["source_file"]}"
+        true
+      else
+        @error_output.puts "#{row["key"]} is not set"
+        false
       end
     end
 

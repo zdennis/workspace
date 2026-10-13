@@ -103,6 +103,20 @@ RSpec.describe Workspace::ConfigReport do
       expect(doc["keys"].map { |row| [row["key"], row["scope"]] }).to eq(Workspace::ConfigSchema.all.map { |key| [key.name, key.scope.to_s] })
     end
 
+    it "describes just the one key asked for, with the same envelope and layering" do
+      path = write("api", "dev:\n  ready_timeout: 90s\n")
+      write("api.worktree-fix", "dev:\n  ready_timeout: 5s\n")
+      doc = report.show("api.worktree-fix", key: "dev.ready_timeout")
+
+      expect(doc).to include("schema_version" => 1, "ok" => true, "workspace" => "api.worktree-fix", "parent" => "api")
+      expect(doc["keys"].map { |row| row["key"] }).to eq(["dev.ready_timeout"])
+      expect(doc["keys"].first).to include("effective" => 90, "source" => "project", "source_file" => path, "resolve" => "parent")
+    end
+
+    it "raises for a key no schema defines" do
+      expect { report.show("api", key: "dev.bogus") }.to raise_error(Workspace::Error, /Unknown config key 'dev.bogus'/)
+    end
+
     it "lists the layers the workspace reads: worktree, its parent project and the global file" do
       write("api", "dev: {}\n")
       doc = report.show("api.worktree-fix")

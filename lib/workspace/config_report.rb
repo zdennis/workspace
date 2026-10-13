@@ -37,9 +37,14 @@ module Workspace
     end
 
     # @param workspace [String] workspace name; a worktree reads its parent project's file too
-    # @return [Hash] the `config show --json` document
-    # @raise [Workspace::Error] code `unknown_workspace` when nothing is known about the name
-    def show(workspace)
+    # @param key [String, nil] one key to report instead of every key
+    # @return [Hash] the `config show --json` document; with `key`, `keys` holds just that key's row
+    # @raise [Workspace::Error] code `unknown_workspace` when nothing is known about the name,
+    #   code `unknown_config_key` when `key` names no key
+    def show(workspace, key: nil)
+      keys = key ? [ConfigSchema.key(key)] : ConfigSchema.all
+      raise Workspace::Error.new("Unknown config key '#{key}'. Keys: #{ConfigSchema.all.map(&:name).join(", ")}", code: "unknown_config_key", details: {"key" => key}) if keys.first.nil?
+
       scan = scan(workspace)
       problems = problems_for(scan)
       {
@@ -48,7 +53,7 @@ module Workspace
         "workspace" => workspace,
         "parent" => scan.parent,
         "files" => scan.files.map { |file| file_row(file) },
-        "keys" => ConfigSchema.all.map { |key| key_row(key, scan, problems) },
+        "keys" => keys.map { |k| key_row(k, scan, problems) },
         "unknown_keys" => problems.select { |p| p["code"] == "unknown_key" }
           .map { |p| p.slice("key", "layer", "line", "column") }
       }

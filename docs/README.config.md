@@ -5,8 +5,9 @@ Show, validate, set, get, or unset project or global workspace configuration.
 ## Usage
 
 ```sh
-workspace config [show] [options] [project]
+workspace config [show] [options] [key]
 workspace config show [--name NAME] [--json]
+workspace config [show] <key> [--name NAME] [--json]
 workspace config validate [--name NAME] [--json]
 workspace config set <key> <value> [--project NAME] [--json]
 workspace config get <key> [--project NAME]
@@ -18,19 +19,21 @@ workspace config unset <key> [--project NAME]
 | Option | Description |
 |--------|-------------|
 | `--global` | Show global configuration instead of project config |
-| `--name NAME` | (`show`, `validate`) The workspace to report on instead of the one inferred from cwd; for `show` the same as the project argument |
+| `--name NAME` | (`show`, `validate`) The workspace to report on instead of the one inferred from cwd |
 | `--json` | (`show`, `validate`, `set`) Print one JSON document (below) instead of text |
 | `--project NAME`, `--name NAME` | (`set`/`get`/`unset`) Configure this project instead of the one inferred from cwd; the two are the same option |
 
 ## Details
 
-With no subcommand, displays the YAML configuration for a project or the global workspace config. Auto-detects the project from the current directory if not specified.
+With no subcommand, displays the YAML configuration for the current directory's workspace (auto-detected), another workspace via `--name`, or the global workspace config via `--global`.
+
+With no subcommand and a key, `workspace config <key>` prints that key's effective value for the current directory's workspace (or `--name`'s): the value the readers actually use, across the worktree/parent-project layers and the schema's default when unset. Unlike `config get`, which reads one file and prints only a stored value, this prints the effective one; `--json` prints the same show document as below with `keys` filtered to that one key's row. Like `config get`, a key with no effective value prints nothing on stdout, a short note on stderr, and exits 1. Sensitive keys (`dev.up`, `dev.ready`, `alerts.notify`, `statusline.command`, `context.pattern`) never print their value, only whether they are set.
 
 `set`, `get`, and `unset` manage a project's config by dotted key, without needing to open the YAML file by hand. `get` prints the value and exits 0; if the key has no value, it prints nothing on stdout, a short note on stderr, and exits 1. The project is inferred from cwd via the same resolver used by `workspace parent`, `workspace lock`, and `dev`: a worktree resolves to its parent project. Pass `--project NAME` (or `--name NAME`) to target a different workspace explicitly.
 
 `notes.dir` is the one key a worktree owns. Inside a worktree, `set`, `get` and `unset` use the worktree's own file (`~/.config/workspace/projects/<project>.worktree-<name>.yml`), and a worktree never reads the project's value: with none of its own, its `notes.dir` is unset. The main checkout reads and writes the project's file. `--name` picks the file from anywhere, so `workspace config set notes.dir /notes/api-fix --name api.worktree-fix` sets one worktree's directory and `--name api` sets the main checkout's. A value already in the project's file stays there and still applies to the main checkout only.
 
-`show`, `validate`, `set`, `get`, and `unset` are reserved as the first argument to `workspace config`: they are always treated as subcommands, not as a project name. `workspace config show <name>` is the same as `workspace config <name>`. A project literally named one of them can be shown with `workspace config -- <name>` (everything after `--` is a name), or by reading its YAML file directly.
+`show`, `validate`, `set`, `get`, and `unset` are reserved as the first argument to `workspace config`: they are always treated as subcommands, not as a key. A workspace literally named one of them is shown with `--name`, or by reading its YAML file directly.
 
 <!-- The tables between GENERATED markers are rendered from lib/workspace/config_schema.rb; edit the schema and run script/generate-config-docs. -->
 
@@ -110,6 +113,12 @@ If the file isn't valid YAML (or isn't a mapping at the top level), `set` and `u
 
 ```sh
 workspace config show --name api.worktree-fix --json
+```
+
+With a key instead of a workspace, the same document with `keys` filtered to that key's one row:
+
+```sh
+workspace config dev.ready_timeout --name api.worktree-fix --json
 ```
 
 Prints one document with every key in the table above, the value each reader would use, and the file it comes from. It reads the layers the workspace reads, which is not always the file `workspace config` prints: `dev`, `locks`, `alerts`, `handoff`, `commands` and `notes` come from the **parent project's** file even in a worktree (the same file `config set` writes), except `notes.dir`, which a worktree reads from its own file and the main checkout from the project's, `hooks` and `pipeline` from the workspace's own file, and `statusline`, `context`, `launch` and `event_log_compact_threshold` from the global file.
@@ -207,11 +216,17 @@ Keys you can set with `workspace config set` are listed in the table above; the 
 ## Examples
 
 ```sh
-# Show config for a specific project
-workspace config myproject
-
-# Show config for the current directory's project
+# Show config for the current directory's workspace
 workspace config
+
+# Show config for a specific workspace
+workspace config --name myproject
+
+# Print one key's effective value
+workspace config dev.stop_timeout
+
+# Print where a workspace's notes go
+workspace config notes.dir
 
 # Show global configuration
 workspace config --global
