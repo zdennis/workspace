@@ -46,6 +46,16 @@ module Workspace
       block(name)["instructions"].to_s != "false"
     end
 
+    # Whether the dev environment an agent started is stopped when that agent's session ends
+    # (`dev.release_on_session_end`).
+    #
+    # @param name [String] project name (already resolved to its parent, if a worktree)
+    # @return [Boolean] false only when the project sets the key to false
+    # @raise [Workspace::ConfigParseError] if the project's config file can't be parsed
+    def release_on_session_end?(name)
+      block(name)["release_on_session_end"].to_s != "false"
+    end
+
     # Settings with every key unset, for callers that must still act when the
     # project config can't be read (e.g. `dev down`).
     #

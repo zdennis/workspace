@@ -31,6 +31,7 @@ RSpec.describe Workspace::Commands::Finish do
 
   before do
     allow(kill_command).to receive(:notes_inside_worktree).and_return(nil)
+    allow(kill_command).to receive(:dev_stopped).and_return(false)
     allow(project_config).to receive(:config_path_for)
       .with("myproject.worktree-PROJ-123")
       .and_return(config_path)
@@ -279,6 +280,31 @@ RSpec.describe Workspace::Commands::Finish do
         expect(result).to eq({exit_code: 0})
         parsed = JSON.parse(output.string)
         expect(parsed).to eq({"schema_version" => 1, "ok" => true, "project" => "myproject.worktree-PROJ-123"})
+      end
+
+      context "when kill stopped the worktree's dev environment" do
+        before do
+          allow(git).to receive(:changed_files_count).with(worktree_path).and_return(0)
+          allow(git).to receive(:worktree_branch).with(worktree_path).and_return("main")
+          allow(git).to receive(:upstream_branch).with(worktree_path).and_return("origin/main")
+          allow(git).to receive(:commits_ahead_of_upstream).with(worktree_path).and_return(0)
+          allow(kill_command).to receive(:call)
+          allow(kill_command).to receive(:dev_stopped).and_return(true)
+        end
+
+        it "leaves dev_stopped out when kill stopped nothing" do
+          allow(kill_command).to receive(:dev_stopped).and_return(false)
+
+          command.call("myproject.worktree-PROJ-123", json: true, working_dir: tmpdir)
+
+          expect(JSON.parse(output.string)).not_to have_key("dev_stopped")
+        end
+
+        it "adds dev_stopped: true at the top level" do
+          command.call("myproject.worktree-PROJ-123", json: true, working_dir: tmpdir)
+
+          expect(JSON.parse(output.string)).to eq({"schema_version" => 1, "ok" => true, "project" => "myproject.worktree-PROJ-123", "dev_stopped" => true})
+        end
       end
 
       context "when the notes directory was inside the worktree and held files" do

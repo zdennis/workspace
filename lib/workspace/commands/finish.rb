@@ -52,6 +52,7 @@ module Workspace
       def call_json(project, pr:, working_dir:, &after_remove)
         finished = finish!(project, pr: pr, working_dir: working_dir, quiet: true, &after_remove)
         document = {"schema_version" => JSON_SCHEMA_VERSION, "ok" => true, "project" => finished}
+        document["dev_stopped"] = true if @kill_command.dev_stopped
         if (held = @kill_command.notes_inside_worktree)
           document["notes_inside_worktree"] = held
           document["warnings"] = [Commands::Kill.notes_sentence(held)]

@@ -65,11 +65,14 @@ module Workspace
       # @param snapshot_client [Workspace::AgentSnapshotClient, nil] asks the holder's agent daemon
       #   whether its agent is working, for `dev status --json`; nil reports `none`
       # @param wall_clock [#call] returns the current Time, for how long each waiter has waited
+      # @param session_ledger [Workspace::SessionLedger, nil] names the coding-agent session running in the
+      #   pane `up` is called from, recorded on the holder as `started_by`; nil records none
       def initialize(lock_namespace:, lock_holder:, lineage:, dev_config:, dev_runner:, terminator:, tmux:, executable:,
         output: $stdout, error_output: $stderr, env: ENV, sleeper: ->(seconds) { sleep(seconds) }, clock: Lock::MonotonicClock,
         poll: POLL_SECONDS,
         kill: ->(signal, pid) { Process.kill(signal, pid) }, pid_provider: -> { Process.pid }, event_log: nil, bound_run: nil,
-        dev_events: nil, snapshot_client: nil, wall_clock: -> { Time.now })
+        dev_events: nil, snapshot_client: nil, wall_clock: -> { Time.now }, session_ledger: nil)
+        @session_ledger = session_ledger
         @bound_run = bound_run
         @dev_events = dev_events
         @snapshot_client = snapshot_client
@@ -266,6 +269,49 @@ module Workspace
         close_window(holder)
         @output.puts "Stopped dev environment for #{describe(holder)}, which run #{run_id} no longer uses."
         {exit_code: 0}
+      end
+
+      # Stops the dev environment a coding-agent session started when that session ends: the holder
+      # (or a run's delegate) whose `started_by.session_id` is +session_id+, through {#down}.
+      # Anything it cannot read or decide (the project's config, the lock store, which worktree
+      # this is) leaves the environment running.
+      #
+      # @param session_id [String] the session that ended
+      # @param working_dir [String] any directory inside the repository, the session's cwd
+      # @return [Hash] {exit_code:, outcome:} — "released", "kept" (it could not be stopped),
+      #   "disabled" (`dev.release_on_session_end` is false), "not_started_by_session", or
+      #   "unreadable" (left running)
+      def release_for_session(session_id:, working_dir: Dir.pwd)
+        return {exit_code: 0, outcome: "not_started_by_session"} if session_id.to_s.empty?
+
+        return {exit_code: 0, outcome: "disabled"} unless @dev_config.release_on_session_end?(@lineage.resolve(cwd: working_dir).name)
+        ctx = context(working_dir, tolerate_bad_config: true)
+        holder = settled_entry(ctx[:store])["holder"]
+        record = run?(holder) ? running_delegate(holder) : holder
+        started_by = record && !record["stale"] && record["started_by"]
+        return {exit_code: 0, outcome: "not_started_by_session"} unless started_by.is_a?(Hash) && started_by["session_id"] == session_id
+
+        result = down(working_dir: working_dir)
+        {exit_code: result[:exit_code], outcome: result[:exit_code].zero? ? "released" : "kept"}
+      rescue Workspace::Error
+        {exit_code: 0, outcome: "unreadable"}
+      end
+
+      # Stops this worktree's dev environment when this worktree holds the `devenv` lock (or is the
+      # delegate of the run that does), for `kill` and `finish`. A queued or stale hold, another
+      # worktree's environment, or a lock store that cannot be read leaves things as they are.
+      #
+      # @param working_dir [String] directory inside the worktree
+      # @return [Hash] {exit_code:, stopped:} — +stopped+ is true only when an environment was stopped
+      def down_when_held(working_dir: Dir.pwd)
+        ctx = context(working_dir, tolerate_bad_config: true)
+        own = own_hold(settled_entry(ctx[:store]), ctx)
+        return {exit_code: 0, stopped: false} unless own && own[:state] == :running
+
+        result = down(working_dir: working_dir)
+        {exit_code: result[:exit_code], stopped: result[:exit_code].zero?}
+      rescue Workspace::Error
+        {exit_code: 0, stopped: false}
       end
 
       # The dev environment's state as the `dev status --json` payload, without
@@ -652,6 +698,7 @@ module Workspace
         env = passthrough_env
         env[TAKEOVER_ENV] = "1" if takeover
         env[RUN_ENV] = delegate_for if delegate_for
+        env.merge!(started_by_env)
         wrapper = @tmux.new_window(session, name: WINDOW_NAME, cwd: ctx[:worktree], command: run_argv(wait), env: env,
           remain_on_exit: true)
         raise Workspace::Error, "Could not open a #{WINDOW_NAME} window in tmux session #{session}." unless wrapper
@@ -855,6 +902,18 @@ module Workspace
 
       def run_argv(wait)
         [RbConfig.ruby, @executable, "dev", "__run", *(wait ? ["--wait"] : [])]
+      end
+
+      # The session and pane to record as `started_by`: set only when the pane `up` runs from has a
+      # coding-agent session open in the session ledger.
+      def started_by_env
+        pane = @env["TMUX_PANE"].to_s
+        return {} if pane.empty? || @session_ledger.nil?
+
+        session = @session_ledger.open_session_for(pane_id: pane, tmux_server: @tmux.server_pid_for_pane(pane))
+        session ? {DevRunner::STARTED_BY_SESSION_ENV => session, DevRunner::STARTED_BY_PANE_ENV => pane} : {}
+      rescue Workspace::Error, SystemCallError
+        {}
       end
 
       def passthrough_env

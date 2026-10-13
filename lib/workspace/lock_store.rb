@@ -928,7 +928,8 @@ module Workspace
 
     def process_fields(identity)
       return {} unless identity[:kind] == "process"
-      {"kind" => "process", "pgid" => identity[:pgid], "branch" => identity[:branch]}
+      fields = {"kind" => "process", "pgid" => identity[:pgid], "branch" => identity[:branch]}
+      identity[:started_by] ? fields.merge("started_by" => identity[:started_by]) : fields
     end
 
     # An agent holder idle for at least the grace period. A process holder
@@ -1176,7 +1177,7 @@ module Workspace
     end
 
     def delegate_record(process, since)
-      {"kind" => "process"}.merge(process.slice("pid", "started", "pgid", "pane", "worktree", "branch", "kept"), "since" => since).compact
+      {"kind" => "process"}.merge(process.slice("pid", "started", "pgid", "pane", "worktree", "branch", "kept", "started_by"), "since" => since).compact
     end
 
     # Ends a run's hold: the lock goes to the run's live delegate, which
@@ -1194,7 +1195,8 @@ module Workspace
         return false
       end
       identity = {kind: "process", pid: delegate["pid"], started: delegate["started"], pane: delegate["pane"],
-                  worktree: delegate["worktree"], pgid: delegate["pgid"], branch: delegate["branch"]}
+                  worktree: delegate["worktree"], pgid: delegate["pgid"], branch: delegate["branch"],
+                  started_by: delegate["started_by"]}
       entry["holder"] = build_holder(identity, nil, waiter_pid: delegate["pid"]).merge("acquired_at" => delegate["since"])
       entry["holder"]["kept"] = true if delegate["kept"]
       entry["holder"]["from_run"] = run["run_id"] unless evicted
@@ -1282,7 +1284,7 @@ module Workspace
         "worktree" => holder["worktree"],
         "task" => holder["task"],
         "enqueued_at" => holder["acquired_at"]
-      }.merge(process_fields({kind: holder["kind"], pgid: holder["pgid"], branch: holder["branch"]}), holder.slice("takeover"))
+      }.merge(process_fields({kind: holder["kind"], pgid: holder["pgid"], branch: holder["branch"], started_by: holder["started_by"]}), holder.slice("takeover"))
     end
 
     def holder_from_waiter(waiter)
@@ -1295,7 +1297,8 @@ module Workspace
           pane: waiter["pane"],
           worktree: waiter["worktree"],
           pgid: waiter["pgid"],
-          branch: waiter["branch"]
+          branch: waiter["branch"],
+          started_by: waiter["started_by"]
         },
         waiter["task"],
         waiter_pid: waiter["waiter_pid"]

@@ -22,6 +22,7 @@ workspace config set dev.ready "port:3000"        # optional readiness probe
 workspace config set dev.stop_timeout 20s         # SIGTERM → SIGKILL grace (default 20s)
 workspace config set dev.startup_timeout 30s      # wait for the wrapper to take a free lock (default 30s)
 workspace config set dev.ready_timeout 2m         # wait for the dev.ready check to pass (default 120s)
+workspace config set dev.release_on_session_end false   # keep it running after the agent that started it ends (default true)
 ```
 
 `dev.ready` is either `port:N` (passes once `localhost:N` accepts a TCP connection) or a shell command run in the worktree (passes on exit 0).
@@ -103,7 +104,7 @@ workspace config set dev.ready_timeout 2m         # wait for the dev.ready check
 }
 ```
 
-Under `holder` there are two more keys, `agent_state` and `idle_since`, and each `queue` entry has `position` and `waiting_seconds` (see [Following the dev environment](#following-the-dev-environment)).
+Under `holder` there are two more keys, `agent_state` and `idle_since`, and, when `dev up` ran from a coding-agent pane, `started_by` (see [Release when the session ends](#release-when-the-session-ends)). Each `queue` entry has `position` and `waiting_seconds` (see [Following the dev environment](#following-the-dev-environment)).
 
 - `schema_version` is bumped only on a breaking change to this shape.
 - No environment running: `{"schema_version": 1, "running": false, "holder": null, "ready": null, "queue": []}` — never an error.
@@ -157,6 +158,26 @@ The event log (`workspace event-log show`) gains two lines under the project's n
 | `dev_stopped`, `reason: "reaped"` | the wrapper was found dead and its lock removed (by `dev down`, or by the agent daemon's reaper) |
 
 These are hints to refetch `dev status --json`, not a full record: `lock clear devenv`, a signal sent by hand, and a dead wrapper first found by some other lock command write no `dev_stopped` (see [event log](README.event-log.md)).
+
+## Release when the session ends
+
+The wrapper outlives the agent that ran `dev up`, so without a release the queue would stall behind a session that is over. When `dev up` runs from a pane with a coding-agent session open (the session ledger names it, see [`session-event`](README.session-event.md)), the wrapper records who started it on the lock holder, and `dev status --json` shows it:
+
+```json
+"started_by": {"session_id": "6f1c…", "pane": "%2"}
+```
+
+`started_by` is absent when `dev up` ran from a plain shell, or a pane with no open session. It stays on the holder when a queued wrapper is promoted and when a workflow run hands the lock over.
+
+When that session ends, [`session-event`](README.session-event.md) starts `workspace dev __release SESSION_ID` (a hidden subcommand) as its own process and returns at once, so the hook is never held up by the stop. It stops the environment as `dev down` does, and writes `dev_stopped` with `reason: "down"`. Nothing is stopped when:
+
+- the session ended with reason `clear`, or a new session started with source `clear`: a handoff must not stop the server. A `/clear` gives the pane a new session id, so an environment started before it is no longer released by a later end of the pane's session;
+- `dev.release_on_session_end` is `false` (a boolean, project scope, default `true`);
+- the holder was started by another session, or has no `started_by` (started from a shell, or by an older version);
+- the project's config, the lock store or the repository cannot be read: the environment is left running;
+- only a queued wrapper (not the holder) was started by that session.
+
+[`kill`](README.kill.md) and [`finish`](README.finish.md) also run `dev down` first when the worktree they remove holds `devenv` (or is the delegate of the workflow run that does). A queued wrapper, and another worktree's environment, are left alone. If the environment cannot be stopped, they say so and go on removing the worktree.
 
 ## Instructions for agents
 

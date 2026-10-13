@@ -141,6 +141,18 @@ RSpec.describe Workspace do
       expect(restore.instance_variable_get(:@agent_ensurer)).to equal(cli.instance_variable_get(:@ensure_agent_command))
     end
 
+    it "wires the dev environment's release to session end, and the same dev command and ledger into kill and dev up" do
+      cli = Workspace.build_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new)
+
+      session_event = cli.instance_variable_get(:@session_event_command)
+      dev = cli.instance_variable_get(:@dev_command)
+      kill = cli.instance_variable_get(:@kill_command)
+
+      expect(session_event.instance_variable_get(:@dev_session_release)).to be_a(Workspace::DevSessionRelease)
+      expect(kill.instance_variable_get(:@dev)).to equal(dev)
+      expect(dev.instance_variable_get(:@session_ledger)).to equal(session_event.instance_variable_get(:@session_ledger))
+    end
+
     it "wires instructions compose to the library start uses and the binding command binding show uses" do
       cli = Workspace.build_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new)
 

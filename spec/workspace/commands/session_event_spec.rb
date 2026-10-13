@@ -436,6 +436,47 @@ RSpec.describe Workspace::Commands::SessionEvent do
       end
     end
 
+    context "with a dev session release" do
+      let(:release) { instance_double(Workspace::DevSessionRelease, call: false) }
+
+      def invoke_releasing(payload, hook_env = env)
+        described_class.new(config: config, tmux: tmux, input: StringIO.new(JSON.generate(payload)),
+          env: hook_env, dev_session_release: release).call
+      end
+
+      it "hands the ended session, its directory and the reason to it on SessionEnd" do
+        invoke_releasing("hook_event_name" => "SessionEnd", "session_id" => "s1", "cwd" => "/project", "reason" => "logout")
+
+        expect(release).to have_received(:call).with(session_id: "s1", cwd: "/project", reason: "logout")
+      end
+
+      it "hands it a clear too, so the release itself can refuse it" do
+        invoke_releasing("hook_event_name" => "SessionEnd", "session_id" => "s1", "reason" => "clear")
+
+        expect(release).to have_received(:call).with(session_id: "s1", cwd: nil, reason: "clear")
+      end
+
+      it "does nothing on a SessionStart, clear or not, or on any other hook" do
+        invoke_releasing("hook_event_name" => "SessionStart", "session_id" => "s1", "source" => "clear")
+        invoke_releasing("hook_event_name" => "Stop", "session_id" => "s1")
+        invoke_releasing("hook_event_name" => "UserPromptSubmit", "session_id" => "s1")
+
+        expect(release).not_to have_received(:call)
+      end
+
+      it "still releases when the hook runs outside tmux" do
+        invoke_releasing({"hook_event_name" => "SessionEnd", "session_id" => "s1"}, {})
+
+        expect(release).to have_received(:call)
+      end
+
+      it "skips a payload that is not a JSON object" do
+        described_class.new(config: config, tmux: tmux, input: StringIO.new("[1]"), env: env, dev_session_release: release).call
+
+        expect(release).not_to have_received(:call)
+      end
+    end
+
     # A hook runs inside the agent's turn: anything that raises here surfaces
     # as a failure in the user's session.
     context "when something is wrong" do

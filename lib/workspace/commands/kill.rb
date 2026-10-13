@@ -19,8 +19,12 @@ module Workspace
       #   worktree is removed, so none goes on holding a lock; nil leaves runs alone
       # @param notes [Workspace::Commands::Notes, nil] says whether the project's notes directory sits inside its
       #   worktree with files in it, so removing the worktree can warn first; nil never warns
+      # @param dev [Workspace::Commands::Dev, nil] stops the worktree's dev environment before the worktree
+      #   is removed, when the worktree holds the `devenv` lock; nil leaves it alone
       # @param input [IO] input stream for interactive prompts
-      def initialize(git:, project_config:, project_settings:, stop_command:, project_detector:, task_store: nil, event_log: nil, workflow_runs: nil, notes: nil, output: $stdout, input: $stdin)
+      def initialize(git:, project_config:, project_settings:, stop_command:, project_detector:, task_store: nil, event_log: nil, workflow_runs: nil, notes: nil, dev: nil, output: $stdout, input: $stdin)
+        @dev = dev
+        @dev_stopped = false
         @git = git
         @project_config = project_config
         @project_settings = project_settings
@@ -44,6 +48,11 @@ module Workspace
       # @return [Hash, nil] `{"dir" => absolute path, "files" => count}`, or nil
       attr_reader :notes_inside_worktree
 
+      # Whether the last {#call} stopped the worktree's dev environment first. Reset at the start of every call.
+      #
+      # @return [Boolean]
+      attr_reader :dev_stopped
+
       # @param held [Hash] a {#notes_inside_worktree} answer
       # @return [String] the sentence for `warnings` and the text warning
       def self.notes_sentence(held)
@@ -56,12 +65,14 @@ module Workspace
       #
       # 1. check for unsaved work (unless force), before prompting
       # 2. confirm (unless force or confirm: false)
-      # 3. remove the worktree; Git#remove_worktree re-checks for unsaved work
+      # 3. stop the worktree's dev environment when it holds the `devenv` lock, so no server is left
+      #    running in a directory that is about to go
+      # 4. remove the worktree; Git#remove_worktree re-checks for unsaved work
       #    right before removing (unless force), so an edit made while the
       #    prompt waited is refused rather than deleted
-      # 4. end the project's workflow runs, archive its task, then yield to the caller's block (the
+      # 5. end the project's workflow runs, archive its task, then yield to the caller's block (the
       #    post_kill hook), then remove the config and settings
-      # 5. stop the session last: this may run inside the very session it
+      # 6. stop the session last: this may run inside the very session it
       #    kills, which ends this process before any later statement runs
       #
       # @param project [String, nil] project/config name, or nil to detect from cwd
@@ -88,6 +99,7 @@ module Workspace
       def call(project = nil, force: false, confirm: true, quiet: false, working_dir: Dir.pwd, missing_ok: false, warn_inactive: true, outcome: nil)
         out = quiet ? StringIO.new : @output
         @notes_inside_worktree = nil
+        @dev_stopped = false
         project ||= @project_detector.detect_from_marker(working_dir)
         unless project
           raise Workspace::Error,
@@ -125,6 +137,7 @@ module Workspace
         if missing
           out.puts "Checkout already gone; skipping worktree removal."
         else
+          stop_dev(worktree_path, out)
           out.puts "Removing worktree..."
           begin
             @git.remove_worktree(worktree_path, force: force)
@@ -148,6 +161,18 @@ module Workspace
       end
 
       private
+
+      # Stops the dev environment this worktree holds, before its directory goes. One that cannot
+      # be stopped is reported and the removal goes on, as the person asked for it.
+      def stop_dev(worktree_path, out)
+        return unless @dev
+        result = @dev.down_when_held(working_dir: worktree_path)
+        if result[:stopped]
+          @dev_stopped = true
+        elsif !result[:exit_code].zero?
+          out.puts "Warning: the dev environment could not be stopped; it is still running. See: workspace dev status"
+        end
+      end
 
       # Before the worktree goes: afterwards its notes can no longer be counted.
       def warn_about_notes(project, missing, out)

@@ -68,6 +68,7 @@ Error (nothing was removed):
 
 - `schema_version` is bumped only on a breaking change to this shape.
 - `notes_inside_worktree` and `warnings` are present only when the workspace's notes directory was inside the worktree and held files, which finishing deleted: `{"schema_version": 1, "ok": true, "project": "…", "notes_inside_worktree": {"dir": "/abs/tmp/workspace-notes", "files": 3}, "warnings": ["The notes directory /abs/tmp/workspace-notes holds 3 files and is inside the worktree; removing the worktree deletes them."]}`. `warnings` is a list of sentences. In plain-text mode `finish` prints the same sentence, prefixed `Warning:`, before it removes anything.
+- `dev_stopped: true` is present only when the worktree held the `devenv` lock and `finish` stopped that dev environment before removing the worktree (as [`kill`](README.kill.md) does); the key is absent otherwise.
 - Usage/validation errors (an unknown flag, extra arguments) get the same treatment when `--json` is present: `{"schema_version": 1, "ok": false, "error": "<message>", "code": "<code>"}` on stdout, exit 1 — never plain text on stderr.
 - Exit codes: `0` on success, `1` on any error (see above).
 

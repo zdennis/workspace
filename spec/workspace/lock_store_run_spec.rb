@@ -450,6 +450,39 @@ RSpec.describe Workspace::LockStore, "run holders" do
     end
   end
 
+  describe "started_by" do
+    let(:starter) { {"session_id" => "sess-1", "pane" => "%1"} }
+
+    it "stays on a process holder, a queued waiter and the holder it becomes" do
+      store.acquire("devenv", identity: process(500), waiter_pid: 500, waiter_started: "start-500")
+      store.acquire("devenv", identity: process(700).merge(started_by: starter), waiter_pid: 700, waiter_started: "start-700", wait: true)
+
+      expect(queue("devenv").first).to include("started_by" => starter)
+      expect(holder("devenv")).not_to have_key("started_by")
+
+      store.release("devenv", 500)
+
+      expect(holder("devenv")).to include("pid" => 700, "started_by" => starter)
+    end
+
+    it "goes with a delegate onto the lock when the run hands it over" do
+      store.acquire_run(%w[devenv], run: run)
+      store.delegate("devenv", run_id: "wr_1", identity: process(500).merge(started_by: starter))
+
+      expect(holder("devenv")["delegate"]).to include("started_by" => starter)
+
+      store.release_run("wr_1")
+
+      expect(holder("devenv")).to include("pid" => 500, "started_by" => starter)
+    end
+
+    it "is not added to an identity that has none" do
+      store.acquire("devenv", identity: process(500), waiter_pid: 500, waiter_started: "start-500")
+
+      expect(holder("devenv")).not_to have_key("started_by")
+    end
+  end
+
   describe "delegates" do
     before { store.acquire_run(%w[devenv], run: run) }
 

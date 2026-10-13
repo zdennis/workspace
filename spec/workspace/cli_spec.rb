@@ -2966,6 +2966,28 @@ RSpec.describe Workspace::CLI do
         )
       end
 
+      it "dispatches the hidden __release with the session id" do
+        cli, _, _ = build_test_cli(dev_command: dev_command)
+
+        cli.run(["dev", "__release", "sess-1"])
+
+        expect(dev_command.calls).to eq([{action: :release, session_id: "sess-1"}])
+      end
+
+      it "exits with the release's own status when the environment could not be stopped" do
+        dev_command.result = {exit_code: 1}
+        cli, _, _ = build_test_cli(dev_command: dev_command)
+
+        expect { cli.run(["dev", "__release", "sess-1"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+      end
+
+      it "refuses __release without exactly one session id" do
+        cli, _, _ = build_test_cli(dev_command: dev_command)
+
+        expect { cli.run(["dev", "__release"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+        expect { cli.run(["dev", "__release", "a", "b"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+      end
+
       it "dispatches status with --json" do
         cli, _, _ = build_test_cli(dev_command: dev_command)
 
@@ -7396,6 +7418,7 @@ RSpec.describe Workspace::CLI do
         kill = double("kill")
         allow(kill).to receive(:call).and_return("myproj.worktree-x")
         allow(kill).to receive(:notes_inside_worktree).and_return(nil)
+        allow(kill).to receive(:dev_stopped).and_return(false)
         cli, raw, = action_cli(kill_command: kill)
 
         cli.run(["kill", "myproj.worktree-x", "--json"])
@@ -7403,6 +7426,19 @@ RSpec.describe Workspace::CLI do
         expect(parse_one(raw)).to include("action" => "kill", "status" => "ok", "warnings" => [])
         expect(parse_one(raw)["results"].first).to include("workspace" => "myproj.worktree-x", "outcome" => "killed")
         expect(parse_one(raw)["results"].first).not_to have_key("notes_inside_worktree")
+        expect(parse_one(raw)["results"].first).not_to have_key("dev_stopped")
+      end
+
+      it "reports dev_stopped: true on the row when the worktree's dev environment was stopped first" do
+        kill = double("kill")
+        allow(kill).to receive(:call).and_return("myproj.worktree-x")
+        allow(kill).to receive(:notes_inside_worktree).and_return(nil)
+        allow(kill).to receive(:dev_stopped).and_return(true)
+        cli, raw, = action_cli(kill_command: kill)
+
+        cli.run(["kill", "myproj.worktree-x", "--json"])
+
+        expect(parse_one(raw)["results"].first).to include("workspace" => "myproj.worktree-x", "outcome" => "killed", "dev_stopped" => true)
       end
 
       it "reports notes that were inside the removed worktree on the row, and in warnings" do
@@ -7410,6 +7446,7 @@ RSpec.describe Workspace::CLI do
         kill = double("kill")
         allow(kill).to receive(:call).and_return("myproj.worktree-x")
         allow(kill).to receive(:notes_inside_worktree).and_return(held)
+        allow(kill).to receive(:dev_stopped).and_return(false)
         cli, raw, = action_cli(kill_command: kill)
 
         expect(exit_status { cli.run(["kill", "myproj.worktree-x", "--json"]) }).to eq(0)

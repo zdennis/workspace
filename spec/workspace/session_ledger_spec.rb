@@ -51,6 +51,55 @@ RSpec.describe Workspace::SessionLedger do
     expect(lines.size).to eq(100)
   end
 
+  describe "#open_session_for" do
+    def start(id, pane: "%1", server: "10")
+      ledger.record("event" => "session_start", "session_id" => id, "pane_id" => pane, "tmux_server" => server)
+    end
+
+    def finish(id)
+      ledger.record("event" => "session_end", "session_id" => id)
+    end
+
+    it "names the latest session started in the pane under that tmux server" do
+      start("a")
+      start("b")
+      start("other-pane", pane: "%2")
+
+      expect(ledger.open_session_for(pane_id: "%1", tmux_server: "10")).to eq("b")
+    end
+
+    it "is nil once that session ended, and follows a clear to the next one" do
+      start("a")
+      finish("a")
+      expect(ledger.open_session_for(pane_id: "%1", tmux_server: "10")).to be_nil
+
+      start("b")
+      expect(ledger.open_session_for(pane_id: "%1", tmux_server: "10")).to eq("b")
+    end
+
+    it "ignores the end of a different session" do
+      start("a")
+      finish("elsewhere")
+
+      expect(ledger.open_session_for(pane_id: "%1", tmux_server: "10")).to eq("a")
+    end
+
+    it "ignores a pane id recorded under another tmux server" do
+      start("a", server: "99")
+
+      expect(ledger.open_session_for(pane_id: "%1", tmux_server: "10")).to be_nil
+    end
+
+    it "is nil without a ledger, a pane, a server, or a readable file" do
+      expect(ledger.open_session_for(pane_id: "%1", tmux_server: "10")).to be_nil
+      start("a")
+      expect(ledger.open_session_for(pane_id: "", tmux_server: "10")).to be_nil
+      expect(ledger.open_session_for(pane_id: "%1", tmux_server: nil)).to be_nil
+      File.write(path, "not json\n{\"event\":\"session_start\"}\n")
+      expect(ledger.open_session_for(pane_id: "%1", tmux_server: "10")).to be_nil
+    end
+  end
+
   it "returns false instead of raising when the file can't be written" do
     FileUtils.mkdir_p(path)
 

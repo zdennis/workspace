@@ -93,6 +93,32 @@ RSpec.describe Workspace::DevRunner do
         "pgid" => Process.pid, "pane" => "%7", "worktree" => worktree, "branch" => "login")
     end
 
+    describe "started_by" do
+      def seen_holder(env)
+        seen = nil
+        spawner = lambda do |command, chdir|
+          seen = devenv_holder
+          Process.spawn("/bin/sh", "-c", command, chdir: chdir)
+        end
+        described_class.new(liveness: liveness, output: output, env: env, trap: trap, pgrp: -> { Process.pid },
+          kill: ->(signal, target) { kills << [signal, target] }, sleeper: ->(_) {}, group_members: ->(_pgid) { [Process.pid] },
+          spawner: spawner).call(store: fake_store, command: "true", worktree: worktree)
+        seen
+      end
+
+      it "records the session and pane named in the wrapper's environment" do
+        holder = seen_holder("TMUX_PANE" => "%7", "WORKSPACE_DEV_SESSION" => "sess-1", "WORKSPACE_DEV_STARTED_BY_PANE" => "%2")
+
+        expect(holder["started_by"]).to eq("session_id" => "sess-1", "pane" => "%2")
+      end
+
+      it "records nothing when either is missing or empty" do
+        expect(seen_holder("TMUX_PANE" => "%7")).not_to have_key("started_by")
+        expect(seen_holder("TMUX_PANE" => "%7", "WORKSPACE_DEV_SESSION" => "sess-1")).not_to have_key("started_by")
+        expect(seen_holder("TMUX_PANE" => "%7", "WORKSPACE_DEV_SESSION" => "", "WORKSPACE_DEV_STARTED_BY_PANE" => "%2")).not_to have_key("started_by")
+      end
+    end
+
     it "runs through the shell in the worktree root and releases the lock on normal exit" do
       code = run_with(command: "pwd -P > out.txt; exit 3", worktree: worktree)
 

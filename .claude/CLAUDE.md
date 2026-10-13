@@ -45,7 +45,7 @@ A macOS CLI (Ruby) for managing tmuxinator-based development workspaces in iTerm
 - `lib/workspace/pipeline_state.rb` — In-flight work item tracking, disk-persisted to `~/.local/state/workspace/<name>/pipeline.json`
 - `lib/workspace/sentinel_poller.rb` — Background poller watching tmux panes for `WORKSPACE_DONE:` sentinel
 - `lib/workspace/session_monitor.rb` — Per-pane coding-agent and sub-agent state (working/idle/waiting), keyed on tmux pane id; fires alerts
-- `lib/workspace/session_ledger.rb` — Flock-guarded append-only `ledger.jsonl` of SessionStart/SessionEnd (with pane slot, tmux server pid and window layout), written by `session-event`; `#slots_for` streams it into the latest session per pane slot for `restore`
+- `lib/workspace/session_ledger.rb` — Flock-guarded append-only `ledger.jsonl` of SessionStart/SessionEnd (with pane slot, tmux server pid and window layout), written by `session-event`; `#slots_for` streams it into the latest session per pane slot for `restore`; `#open_session_for` names the session open in a pane, which `dev up` records as `started_by`
 - `lib/workspace/alert_config.rb` — Reads a project's `alerts.notify` and `alerts.idle_after`
 - `lib/workspace/notifier.rb` — Runs the notify command in the background with a timeout, details in `WORKSPACE_ALERT_*` env vars
 - `lib/workspace/ask_store.rb` — Flock-guarded append-only store for `workspace ask` questions, one `asks.json` per workspace under its XDG state dir
@@ -72,6 +72,7 @@ A macOS CLI (Ruby) for managing tmuxinator-based development workspaces in iTerm
 - `lib/workflows/` — The workflow presets that ship (`rpiv.yml`)
 - `lib/workspace/bound_run.rb` — The run the calling pane is bound to (a non-stale `kind: run` binding of `$TMUX_PANE`); lets `dev up` and `lock acquire` tell the run's own agent from anyone else
 - `lib/workspace/lock_config.rb` — Reads a project's `locks.idle_grace` (falls back to 5m with a warning)
+- `lib/workspace/dev_session_release.rb` — On a `session-event` SessionEnd (never reason `clear`), finds a `devenv` lock record whose `started_by.session_id` is the session by reading the lock files, then starts `workspace dev __release SESSION` as its own process; `Commands::Dev#release_for_session` does the stop (unless `dev.release_on_session_end` is false, or anything cannot be read)
 - `lib/workspace/lock_idle_tracker.rb` — Marks an agent's lock idle/active from `session-event` hooks, for idle takeover
 - `lib/workspace/agent_provider.rb` — Registry of coding-agent CLIs workspace can monitor
 - `lib/workspace/agent_readiness.rb` — Waits for a coding agent's pane to be quiet and (if the provider declares one) match its ready pattern before `launch --prompt`/`start --prompt` send text

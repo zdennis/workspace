@@ -554,6 +554,12 @@ module CLITestHelpers
       @calls << {action: :run, **opts.except(:working_dir)}
       @result
     end
+
+    def release_for_session(**opts)
+      @working_dirs << opts[:working_dir]
+      @calls << {action: :release, **opts.except(:working_dir)}
+      @result
+    end
   end
 
   class FakeProjectsCommand

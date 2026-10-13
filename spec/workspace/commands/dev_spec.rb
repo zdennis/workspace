@@ -29,7 +29,7 @@ RSpec.describe Workspace::Commands::Dev do
       liveness = Workspace::LockHolder.new
       dev = Workspace::Commands::Dev.new(lock_namespace: ns, lock_holder: liveness, lineage: Workspace::WorkspaceLineage.new,
         dev_config: Workspace::DevConfig.new(project_settings: store),
-        dev_runner: Workspace::DevRunner.new(liveness: liveness, env: {"TMUX_PANE" => "%9"}, poll: 0.05),
+        dev_runner: Workspace::DevRunner.new(liveness: liveness, env: {"TMUX_PANE" => "%9"}.merge(ENV.to_h.slice("WORKSPACE_DEV_SESSION", "WORKSPACE_DEV_STARTED_BY_PANE")), poll: 0.05),
         terminator: Workspace::ProcessGroupTerminator.new, tmux: nil, executable: "unused")
       begin
         exit dev.run(wait: wait == "1", working_dir: Dir.pwd)[:exit_code]
@@ -54,10 +54,11 @@ RSpec.describe Workspace::Commands::Dev do
   end
 
   def dev(**opts)
-    described_class.new(lock_namespace: lock_namespace, lock_holder: Workspace::LockHolder.new,
-      lineage: Workspace::WorkspaceLineage.new, dev_config: dev_config, dev_runner: nil,
-      terminator: Workspace::ProcessGroupTerminator.new(poll_interval: 0.05), tmux: tmux, executable: "/ws/bin/workspace",
-      output: output, error_output: error_output, env: {"TMUX_PANE" => "%1"}, poll: 0.05, **opts)
+    defaults = {lock_namespace: lock_namespace, lock_holder: Workspace::LockHolder.new,
+                lineage: Workspace::WorkspaceLineage.new, dev_config: dev_config, dev_runner: nil,
+                terminator: Workspace::ProcessGroupTerminator.new(poll_interval: 0.05), tmux: tmux, executable: "/ws/bin/workspace",
+                output: output, error_output: error_output, env: {"TMUX_PANE" => "%1"}, poll: 0.05}
+    described_class.new(**defaults, **opts)
   end
 
   def holder
@@ -229,6 +230,203 @@ RSpec.describe Workspace::Commands::Dev do
 
       expect { broken_dev.up(working_dir: main) }.to raise_error(Workspace::ConfigParseError)
       expect(spawned).to be_empty
+    end
+  end
+
+  describe "who started the environment" do
+    let(:ledger_path) { File.join(tmpdir, "ledger.jsonl") }
+    let(:ledger) { Workspace::SessionLedger.new(path: ledger_path) }
+
+    def start_session(id, pane: "%1", server: "4242")
+      ledger.record("event" => "session_start", "session_id" => id, "pane_id" => pane, "tmux_server" => server, "workspace" => "app")
+    end
+
+    def end_session(id, reason: "other")
+      ledger.record("event" => "session_end", "session_id" => id, "reason" => reason, "workspace" => "app")
+    end
+
+    describe "#up" do
+      it "records the session and pane of the agent pane it ran from on the holder" do
+        start_session("sess-1")
+
+        dev(session_ledger: ledger).up(working_dir: login)
+
+        expect(holder["started_by"]).to eq("session_id" => "sess-1", "pane" => "%1")
+      end
+
+      it "follows a /clear to the session that replaced it" do
+        start_session("sess-1")
+        end_session("sess-1", reason: "clear")
+        start_session("sess-2")
+
+        dev(session_ledger: ledger).up(working_dir: login)
+
+        expect(holder.dig("started_by", "session_id")).to eq("sess-2")
+      end
+
+      it "records nothing when the pane has no open session, the session ended, or it is another tmux server's" do
+        start_session("sess-1")
+        end_session("sess-1")
+        start_session("sess-9", server: "1111")
+
+        dev(session_ledger: ledger).up(working_dir: login)
+
+        expect(holder).not_to have_key("started_by")
+      end
+
+      it "records nothing without a session ledger or outside tmux" do
+        start_session("sess-1")
+        no_pane = described_class.new(lock_namespace: lock_namespace, lock_holder: Workspace::LockHolder.new,
+          lineage: Workspace::WorkspaceLineage.new, dev_config: dev_config, dev_runner: nil,
+          terminator: Workspace::ProcessGroupTerminator.new(poll_interval: 0.05), tmux: tmux, executable: "/ws/bin/workspace",
+          output: output, error_output: error_output, env: {}, poll: 0.05, session_ledger: ledger)
+
+        no_pane.up(working_dir: login)
+
+        expect(holder).not_to have_key("started_by")
+      end
+
+      it "still starts the environment, with no started_by, when tmux cannot be asked about the pane" do
+        start_session("sess-1")
+        allow(tmux).to receive(:server_pid_for_pane).and_raise(Errno::ENOENT)
+
+        expect(dev(session_ledger: ledger).up(working_dir: login)).to eq(exit_code: 0)
+
+        expect(holder).not_to have_key("started_by")
+      end
+
+      it "keeps started_by on the holder when a queued wrapper is promoted" do
+        start_session("sess-1", pane: "%1")
+        dev.up(working_dir: main)
+        queued = dev(session_ledger: ledger).up(queue: true, working_dir: login)
+        expect(queued[:status]).to eq("queued")
+
+        dev.down(working_dir: main)
+
+        wait_until { holder && holder["worktree"] == login }
+        expect(holder.dig("started_by", "session_id")).to eq("sess-1")
+      end
+    end
+
+    describe "#release_for_session" do
+      let(:recorded) { [] }
+      let(:dev_events) do
+        events = recorded
+        log = Object.new.tap { |l| l.define_singleton_method(:record) { |type:, project:, data: {}| events << [type, data["reason"]] } }
+        Workspace::DevEvents.new(event_log: log, lineage: Workspace::WorkspaceLineage.new)
+      end
+
+      before do
+        start_session("sess-1")
+        dev(session_ledger: ledger).up(working_dir: login)
+        @wrapper = spawned.last
+      end
+
+      it "stops the environment that session started, and logs dev_stopped with reason down" do
+        result = dev(dev_events: dev_events).release_for_session(session_id: "sess-1", working_dir: login)
+
+        expect(result).to eq(exit_code: 0, outcome: "released")
+        expect(alive?(@wrapper)).to be(false)
+        expect(holder).to be_nil
+        expect(recorded).to eq([["dev_stopped", "down"]])
+      end
+
+      it "leaves it running for another session" do
+        result = dev.release_for_session(session_id: "sess-2", working_dir: login)
+
+        expect(result).to eq(exit_code: 0, outcome: "not_started_by_session")
+        expect(alive?(@wrapper)).to be(true)
+      end
+
+      it "reports kept, and leaves the lock, when the environment could not be stopped" do
+        command = dev
+        allow(command).to receive(:down).and_return(exit_code: 1)
+
+        expect(command.release_for_session(session_id: "sess-1", working_dir: login)).to eq(exit_code: 1, outcome: "kept")
+        expect(alive?(@wrapper)).to be(true)
+      end
+
+      it "leaves it running when the repository cannot be resolved" do
+        lineage = instance_double(Workspace::WorkspaceLineage)
+        allow(lineage).to receive(:resolve).and_raise(Workspace::Error, "no repository")
+
+        result = dev(lineage: lineage).release_for_session(session_id: "sess-1", working_dir: login)
+
+        expect(result).to eq(exit_code: 0, outcome: "unreadable")
+        expect(alive?(@wrapper)).to be(true)
+      end
+
+      it "leaves it running when the session id is empty" do
+        expect(dev.release_for_session(session_id: "", working_dir: login)).to eq(exit_code: 0, outcome: "not_started_by_session")
+        expect(alive?(@wrapper)).to be(true)
+      end
+
+      it "leaves it running when dev.release_on_session_end is false" do
+        off = Workspace::DevConfig.new(project_settings: Struct.new(:data) { def load(_name) = data }.new({"dev" => dev_settings.merge("release_on_session_end" => false)}))
+
+        result = dev(dev_config: off).release_for_session(session_id: "sess-1", working_dir: login)
+
+        expect(result).to eq(exit_code: 0, outcome: "disabled")
+        expect(alive?(@wrapper)).to be(true)
+        expect(holder).not_to be_nil
+      end
+
+      it "leaves it running when the project's config cannot be read" do
+        broken = Struct.new(:x) { def load(_name) = raise(Workspace::ConfigParseError.new("/cfg/app.yml", "bad yaml")) }.new
+
+        result = dev(dev_config: Workspace::DevConfig.new(project_settings: broken)).release_for_session(session_id: "sess-1", working_dir: login)
+
+        expect(result).to eq(exit_code: 0, outcome: "unreadable")
+        expect(alive?(@wrapper)).to be(true)
+      end
+
+      it "does nothing when nothing is running" do
+        dev.down(working_dir: login)
+
+        expect(dev.release_for_session(session_id: "sess-1", working_dir: login)).to eq(exit_code: 0, outcome: "not_started_by_session")
+      end
+    end
+
+    describe "#down_when_held" do
+      it "stops the environment this worktree holds" do
+        dev.up(working_dir: login)
+        wrapper = spawned.last
+
+        result = dev.down_when_held(working_dir: login)
+
+        expect(result).to eq(exit_code: 0, stopped: true)
+        expect(alive?(wrapper)).to be(false)
+      end
+
+      it "leaves everything running when the lock store cannot be read" do
+        dev.up(working_dir: login)
+        wrapper = spawned.last
+        File.write(File.join(lock_dir, "locks.json"), "{ not json")
+
+        expect(dev.down_when_held(working_dir: login)).to eq(exit_code: 0, stopped: false)
+        expect(alive?(wrapper)).to be(true)
+      end
+
+      it "leaves another worktree's environment running" do
+        dev.up(working_dir: main)
+        wrapper = spawned.last
+
+        result = dev.down_when_held(working_dir: login)
+
+        expect(result).to eq(exit_code: 0, stopped: false)
+        expect(alive?(wrapper)).to be(true)
+      end
+
+      it "leaves a worktree that is only queued in line, and does nothing when nothing runs" do
+        expect(dev.down_when_held(working_dir: login)).to eq(exit_code: 0, stopped: false)
+
+        dev.up(working_dir: main)
+        dev.up(queue: true, working_dir: login)
+        queued = spawned.last
+
+        expect(dev.down_when_held(working_dir: login)).to eq(exit_code: 0, stopped: false)
+        expect(alive?(queued)).to be(true)
+      end
     end
   end
 
@@ -1303,6 +1501,55 @@ RSpec.describe Workspace::Commands::Dev, "with fake processes and clock" do
       events = recorded
       log = Object.new.tap { |l| l.define_singleton_method(:record) { |type:, project:, data: {}| events << [type, data["reason"]] } }
       Workspace::DevEvents.new(event_log: log, lineage: lineage)
+    end
+
+    describe "#release_for_session" do
+      before { allow(terminator).to receive_messages(orphan_running?: false, pgid_reused?: false) }
+
+      def delegate_started_by(pid, session)
+        store.delegate("devenv", run_id: "wr_1", identity: process_identity(pid, worktree: worktree, branch: "feat/a").merge(started_by: {"session_id" => session, "pane" => "%1"}))
+      end
+
+      it "stops the run's environment that session started, and leaves the lock with the run" do
+        delegate_started_by(700, "sess-1")
+        allow(terminator).to receive(:stop_holder) do
+          liveness.kill(700)
+          :terminated
+        end
+
+        result = dev(dev_events: dev_events).release_for_session(session_id: "sess-1", working_dir: worktree)
+
+        expect(result).to eq(exit_code: 0, outcome: "released")
+        expect(holder).to include("run_id" => "wr_1")
+        expect(holder).not_to include("delegate")
+        expect(recorded).to eq([["dev_stopped", "down"]])
+      end
+
+      it "leaves a run's environment another session started" do
+        delegate_started_by(700, "sess-1")
+        expect(terminator).not_to receive(:stop_holder)
+
+        result = dev.release_for_session(session_id: "sess-2", working_dir: worktree)
+
+        expect(result).to eq(exit_code: 0, outcome: "not_started_by_session")
+        expect(holder).to include("delegate" => include("pid" => 700))
+      end
+
+      it "does nothing when the run has no environment under it" do
+        expect(dev.release_for_session(session_id: "sess-1", working_dir: worktree)).to eq(exit_code: 0, outcome: "not_started_by_session")
+      end
+
+      it "leaves a holder whose wrapper is gone for dev down --force" do
+        hold(800, worktree: worktree)
+        store.release("devenv", 800)
+        store.acquire("devenv", identity: process_identity(801, worktree: worktree).merge(started_by: {"session_id" => "sess-1", "pane" => "%1"}), waiter_pid: 801, waiter_started: "s-801")
+        liveness.kill(801)
+        expect(terminator).not_to receive(:stop_holder)
+
+        result = dev.release_for_session(session_id: "sess-1", working_dir: worktree)
+
+        expect(result).to eq(exit_code: 0, outcome: "not_started_by_session")
+      end
     end
 
     describe "#down_for_run" do

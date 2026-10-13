@@ -23,6 +23,10 @@ module Workspace
   class DevRunner
     LOCK_NAME = "devenv"
     DEFAULT_POLL_SECONDS = 1
+    # Set by `dev up` in the wrapper's window to the coding-agent session that ran it.
+    STARTED_BY_SESSION_ENV = "WORKSPACE_DEV_SESSION"
+    # Set by `dev up` in the wrapper's window to the pane that session runs in.
+    STARTED_BY_PANE_ENV = "WORKSPACE_DEV_STARTED_BY_PANE"
 
     # @param liveness [Workspace::LockHolder] supplies this process's start time
     # @param output [IO] receives the header and exit-status lines
@@ -100,7 +104,8 @@ module Workspace
 
     # @param worktree [String]
     # @param branch [String, nil]
-    # @return [Hash] this wrapper's `kind: "process"` lock identity
+    # @return [Hash] this wrapper's `kind: "process"` lock identity, with `started_by`
+    #   (`{"session_id", "pane"}`) when `dev up` ran from a coding-agent pane
     # @raise [Workspace::Error] if this process's start time cannot be read,
     #   or it does not lead its own process group
     def identity(worktree, branch)
@@ -111,7 +116,7 @@ module Workspace
         raise Workspace::Error, "the dev wrapper must lead its own process group (pid #{Process.pid}, pgid #{pgid}); " \
           "start it with `workspace dev up` or from an interactive shell"
       end
-      {
+      identity = {
         kind: "process",
         pid: Process.pid,
         started: started,
@@ -120,9 +125,18 @@ module Workspace
         worktree: worktree,
         branch: branch
       }
+      starter = started_by
+      starter ? identity.merge(started_by: starter) : identity
     end
 
     private
+
+    def started_by
+      session = @env[STARTED_BY_SESSION_ENV].to_s
+      pane = @env[STARTED_BY_PANE_ENV].to_s
+      return nil if session.empty? || pane.empty?
+      {"session_id" => session, "pane" => pane}
+    end
 
     # @return [Boolean] true once this wrapper is the run's delegate; false
     #   when the lock is free or someone else's to queue for the usual way

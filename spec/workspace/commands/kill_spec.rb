@@ -11,6 +11,7 @@ RSpec.describe Workspace::Commands::Kill do
   let(:stop_command) { double("stop_command") }
   let(:project_detector) { Workspace::ProjectDetector.new(state: CLITestHelpers::FakeState.new, project_config: project_config) }
   let(:notes) { nil }
+  let(:dev) { nil }
 
   subject(:command) do
     described_class.new(
@@ -20,6 +21,7 @@ RSpec.describe Workspace::Commands::Kill do
       stop_command: stop_command,
       project_detector: project_detector,
       notes: notes,
+      dev: dev,
       output: output,
       input: input
     )
@@ -115,6 +117,65 @@ RSpec.describe Workspace::Commands::Kill do
             command.call("myproject.worktree-PROJ-123", force: true)
 
             expect(command.notes_inside_worktree).to be_nil
+          end
+        end
+
+        context "with a dev command wired" do
+          let(:dev) { double("dev") }
+          let(:order) { [] }
+
+          before do
+            allow(git).to receive(:remove_worktree) { order << :remove }
+            allow(stop_command).to receive(:call).and_return([])
+            allow(project_config).to receive(:remove)
+            allow(project_settings).to receive(:remove)
+          end
+
+          it "stops the dev environment the worktree holds before it removes the worktree" do
+            allow(dev).to receive(:down_when_held).with(working_dir: "/path/to/worktree") {
+              order << :dev_down
+              {exit_code: 0, stopped: true}
+            }
+
+            command.call("myproject.worktree-PROJ-123", force: true)
+
+            expect(order).to eq([:dev_down, :remove])
+            expect(command.dev_stopped).to be(true)
+          end
+
+          it "reports no stop when the worktree holds nothing, and forgets an earlier stop" do
+            allow(dev).to receive(:down_when_held).and_return({exit_code: 0, stopped: true}, {exit_code: 0, stopped: false})
+            command.call("myproject.worktree-PROJ-123", force: true)
+            command.call("myproject.worktree-PROJ-123", force: true)
+
+            expect(command.dev_stopped).to be(false)
+            expect(output.string).not_to include("dev environment")
+          end
+
+          it "warns and still removes the worktree when the environment could not be stopped" do
+            allow(dev).to receive(:down_when_held).and_return({exit_code: 1, stopped: false})
+
+            command.call("myproject.worktree-PROJ-123", force: true)
+
+            expect(output.string).to include("Warning: the dev environment could not be stopped; it is still running")
+            expect(order).to eq([:remove])
+            expect(command.dev_stopped).to be(false)
+          end
+
+          it "does not touch the dev environment when it is cancelled at the prompt" do
+            input.puts "n"
+            input.rewind
+            expect(dev).not_to receive(:down_when_held)
+
+            command.call("myproject.worktree-PROJ-123")
+          end
+
+          it "does not ask when the checkout is already gone" do
+            expect(dev).not_to receive(:down_when_held)
+
+            command.call("myproject.worktree-PROJ-123", force: true, missing_ok: true)
+
+            expect(command.dev_stopped).to be(false)
           end
         end
 

@@ -189,6 +189,7 @@ require_relative "workspace/lock_audit_log"
 require_relative "workspace/lock_store"
 require_relative "workspace/lock_config"
 require_relative "workspace/lock_idle_tracker"
+require_relative "workspace/dev_session_release"
 require_relative "workspace/lock_reaper"
 require_relative "workspace/lock_enforcer"
 require_relative "workspace/notifier"
@@ -395,7 +396,8 @@ module Workspace
     lock_enforcer = LockEnforcer.new(config: config, lock_namespace: lock_namespace, lock_holder: lock_holder, logger: logger)
     session_ledger = SessionLedger.new(path: File.join(config.state_dir, "ledger.jsonl"), logger: logger)
     session_event_command = Commands::SessionEvent.new(config: config, tmux: tmux, input: input, output: output, error_output: error_output, logger: logger,
-      lock_idle_tracker: lock_idle_tracker, lock_enforcer: lock_enforcer, session_ledger: session_ledger, pane_bindings: pane_bindings, instruction_composer: instruction_composer)
+      lock_idle_tracker: lock_idle_tracker, lock_enforcer: lock_enforcer, session_ledger: session_ledger, pane_bindings: pane_bindings, instruction_composer: instruction_composer,
+      dev_session_release: DevSessionRelease.new(config: config, executable: File.expand_path("../bin/workspace", __dir__), logger: logger))
     process_group_terminator = ProcessGroupTerminator.new
     bound_run = BoundRun.new(pane_bindings: pane_bindings, tmux: tmux)
     lock_command = Commands::Lock.new(config: config, lock_namespace: lock_namespace, lock_holder: lock_holder,
@@ -416,6 +418,7 @@ module Workspace
       bound_run: bound_run,
       dev_events: dev_events,
       snapshot_client: agent_snapshot_client,
+      session_ledger: session_ledger,
       output: output,
       error_output: error_output
     )
@@ -452,7 +455,7 @@ module Workspace
     )
     workflow_nudger = WorkflowNudger.new(store: workflow_store, panes: workflow_panes, executable: File.expand_path("../bin/workspace", __dir__),
       log_path: ->(workspace) { config.agent_log_path(workspace) }, logger: logger, error_output: error_output)
-    kill_command = Commands::Kill.new(git: git, project_config: project_config, project_settings: project_settings, stop_command: stop_command, notes: notes_command, project_detector: project_detector, task_store: task_store, event_log: event_log, workflow_runs: workflow_engine, output: output, input: input)
+    kill_command = Commands::Kill.new(git: git, project_config: project_config, project_settings: project_settings, stop_command: stop_command, notes: notes_command, project_detector: project_detector, task_store: task_store, event_log: event_log, workflow_runs: workflow_engine, dev: dev_command, output: output, input: input)
     finish_command = Commands::Finish.new(git: git, project_config: project_config, kill_command: kill_command, project_detector: project_detector, output: output, error_output: error_output, input: input)
     parent_command = Commands::Parent.new(lineage: lineage, project_config: project_config, output: output)
     project_catalog = ProjectCatalog.new(project_config: project_config, git: git)

@@ -92,6 +92,32 @@ module Workspace
       []
     end
 
+    # The coding-agent session now running in a pane: the latest SessionStart recorded for the
+    # pane id under that tmux server, unless a SessionEnd for the same session came after it.
+    # A `/clear` ends one session and starts the next in the same pane, so the answer follows it.
+    #
+    # @param pane_id [String] a tmux pane id (e.g. "%23")
+    # @param tmux_server [String, nil] the pane's tmux server pid; entries from another server don't count
+    # @return [String, nil] the session id, or nil when none is open, none is recorded, or the ledger can't be read
+    def open_session_for(pane_id:, tmux_server:)
+      return nil if pane_id.to_s.empty? || tmux_server.to_s.empty?
+
+      current = nil
+      File.foreach(@path) do |line|
+        entry = parse(line)
+        next unless entry
+        case entry["event"]
+        when "session_start"
+          current = entry["session_id"] if entry["pane_id"] == pane_id && entry["tmux_server"] == tmux_server
+        when "session_end"
+          current = nil if current && entry["session_id"] == current
+        end
+      end
+      (current.is_a?(String) && !current.empty?) ? current : nil
+    rescue SystemCallError
+      nil
+    end
+
     private
 
     SLOT_FIELDS = %w[pane_slot pane_id tmux_server session_id transcript_path cwd layout at].freeze

@@ -60,8 +60,11 @@ module Workspace
       #   remind a bound pane of its subject; nil skips bindings
       # @param instruction_composer [Workspace::InstructionComposer, nil] composes the packs a
       #   binding lists, added after its subject; nil leaves them out
+      # @param dev_session_release [Workspace::DevSessionRelease, nil] stops the dev environment a session
+      #   started when that session ends (never on `clear`); nil leaves it running
       def initialize(config:, tmux:, input: $stdin, env: ENV, output: $stdout, error_output: $stderr, logger: Workspace::Logger.new,
-        lock_idle_tracker: nil, lock_enforcer: nil, session_ledger: nil, pane_bindings: nil, instruction_composer: nil)
+        lock_idle_tracker: nil, lock_enforcer: nil, session_ledger: nil, pane_bindings: nil, instruction_composer: nil, dev_session_release: nil)
+        @dev_session_release = dev_session_release
         @config = config
         @tmux = tmux
         @input = input
@@ -100,6 +103,7 @@ module Workspace
         elsif hook == "SessionEnd" || (hook == "SessionStart" && payload["source"] == "clear")
           @lock_enforcer&.release_all(cwd: cwd)
         end
+        @dev_session_release&.call(session_id: text_field(payload, "session_id"), cwd: cwd, reason: text_field(payload, "reason")) if hook == "SessionEnd"
 
         pane_id = @env["TMUX_PANE"]
         return ok { "session-event: not inside tmux, dropped" } unless pane_id

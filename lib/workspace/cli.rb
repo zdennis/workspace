@@ -858,11 +858,12 @@ module Workspace
         if !json
           {}
         elsif killed
+          extra = @kill_command.dev_stopped ? {dev_stopped: true} : {}
           held = @kill_command.notes_inside_worktree
           if held
-            {results: [action_row(killed, "killed", notes_inside_worktree: held)], warnings: [Workspace::Commands::Kill.notes_sentence(held)]}
+            {results: [action_row(killed, "killed", notes_inside_worktree: held, **extra)], warnings: [Workspace::Commands::Kill.notes_sentence(held)]}
           else
-            {results: [action_row(killed, "killed")]}
+            {results: [action_row(killed, "killed", **extra)]}
           end
         else
           {results: [action_row(args.first, "cancelled", reason: "declined", message: "Not confirmed; nothing was removed.")], status: "cancelled"}
@@ -2055,6 +2056,7 @@ module Workspace
       when "wait" then cmd_dev_wait(args)
       when "leave" then cmd_dev_leave(args)
       when "__run" then cmd_dev_run(args)
+      when "__release" then cmd_dev_release(args)
       when "help", "--help", "-h", nil then @output.puts dev_help
       else
         raise UsageError, dev_help
@@ -2278,6 +2280,15 @@ module Workspace
       raise UsageError, parser.help if args.any?
 
       result = @dev_command.run(wait: wait, working_dir: @working_dir)
+      @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
+    end
+
+    # Hidden: what `session-event` starts when a session that ran `dev up` ends.
+    def cmd_dev_release(args)
+      session = args.shift
+      raise UsageError, "Usage: workspace dev __release SESSION_ID" if session.nil? || args.any?
+
+      result = @dev_command.release_for_session(session_id: session, working_dir: @working_dir)
       @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
     end
 

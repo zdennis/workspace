@@ -241,6 +241,8 @@ module Workspace
       Key.new(name: "dev.kill_grace", scope: :project, type: :duration, settable: true, default: 2,
         parser: ->(value) { Duration.parse_capped(value, max: MAX_KILL_GRACE) },
         doc: "How long `lock clear devenv`, `dev down` and `dev up --force` wait for a SIGKILLed dev environment's process group to disappear before keeping its lock (default `2s`, capped at `60s`)"),
+      Key.new(name: "dev.release_on_session_end", scope: :project, type: :boolean, settable: true, default: true, parser: BOOLEAN,
+        doc: "`true` or `false`: whether the dev environment a coding agent started with `dev up` is stopped when that agent's session ends (default `true`). A `/clear` never stops it. `false` leaves it running until `dev down`"),
       Key.new(name: "dev.instructions", scope: :project, type: :boolean, settable: true, default: true, parser: BOOLEAN,
         doc: "`true` or `false`: whether `start` and `launch` send the agent the built-in `dev` pack (queue for the shared dev environment before testing, release it when done) when the project sets `dev.up` (default `true`); `--no-packs` skips it for one run. A workflow step that declares `uses: [devenv]` never gets it"),
       Key.new(name: "locks.idle_grace", scope: :project, type: :duration, settable: true, default: 300, parser: POSITIVE_DURATION,

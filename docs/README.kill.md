@@ -24,10 +24,11 @@ Removes the git worktree, cleans up the tmuxinator config, project settings and 
 
 1. Check for unsaved work (skipped with `--force`).
 2. Ask for confirmation (skipped with `--force`).
-3. Check for unsaved work again, then remove the worktree with `git worktree remove --force`, so untracked files go with it. An edit made while the prompt waited is refused here, not deleted. Once the worktree is gone, the workspace's [workflow runs](README.workflow.md) are cancelled (`cancelled_by: "kill"`), so none goes on holding a lock (a run whose file is malformed is named in a warning instead, and `kill` goes on), and its [task](README.start.md#tasks) is archived as `abandoned` (`discarded` with `--force`).
-4. Run the `post_kill` hook.
-5. Remove the tmuxinator config and project settings.
-6. Remove the state entry, then kill the tmux session.
+3. If this worktree holds the `devenv` lock (see [`dev`](README.dev.md)), stop its dev environment as `dev down` does. One that cannot be stopped is reported and the removal goes on.
+4. Check for unsaved work again, then remove the worktree with `git worktree remove --force`, so untracked files go with it. An edit made while the prompt waited is refused here, not deleted. Once the worktree is gone, the workspace's [workflow runs](README.workflow.md) are cancelled (`cancelled_by: "kill"`), so none goes on holding a lock (a run whose file is malformed is named in a warning instead, and `kill` goes on), and its [task](README.start.md#tasks) is archived as `abandoned` (`discarded` with `--force`).
+5. Run the `post_kill` hook.
+6. Remove the tmuxinator config and project settings.
+7. Remove the state entry, then kill the tmux session.
 
 The session is killed last because `kill` often runs inside that session, and killing it ends the `kill` process. Everything that has to be written is done by then. For the same reason, the `post_kill` hook runs before the session is killed, not after. It still sees the project's settings, but the worktree directory is already gone, so it runs in the directory you ran `kill` from.
 
@@ -67,4 +68,4 @@ workspace kill -f myproject.worktree-PROJ-123
 
 ## JSON output
 
-`--json` prints an action document (see [README.json.md](README.json.md#actions)) with one row: `killed`, or `cancelled` (status `cancelled`, exit 0) when the confirmation was declined. When the notes directory was inside the worktree and held files, the row also has `"notes_inside_worktree":{"dir":"/abs","files":3}` and `warnings` has the sentence above; the key is absent otherwise. A refusal is the failure envelope with `code` `unsaved_work` and `retry.flags` `["--force"]`. Run it from outside the session being killed, which ends last.
+`--json` prints an action document (see [README.json.md](README.json.md#actions)) with one row: `killed`, or `cancelled` (status `cancelled`, exit 0) when the confirmation was declined. When the notes directory was inside the worktree and held files, the row also has `"notes_inside_worktree":{"dir":"/abs","files":3}` and `warnings` has the sentence above; the key is absent otherwise. When step 3 stopped a dev environment the row also has `"dev_stopped": true`; the key is absent otherwise. A refusal is the failure envelope with `code` `unsaved_work` and `retry.flags` `["--force"]`. Run it from outside the session being killed, which ends last.

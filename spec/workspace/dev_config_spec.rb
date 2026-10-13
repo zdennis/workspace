@@ -54,6 +54,31 @@ RSpec.describe Workspace::DevConfig do
     end
   end
 
+  describe "#release_on_session_end?" do
+    def config_for(dev)
+      dir = Dir.mktmpdir("ws-dev-config")
+      settings = project_settings_with(dir: dir)
+      settings.save("myapp", {"dev" => dev}) if dev
+      described_class.new(project_settings: settings)
+    end
+
+    it "is true unless the key is false, as a string or a boolean" do
+      expect(config_for(nil).release_on_session_end?("myapp")).to be(true)
+      expect(config_for({"release_on_session_end" => true}).release_on_session_end?("myapp")).to be(true)
+      expect(config_for({"release_on_session_end" => "false"}).release_on_session_end?("myapp")).to be(false)
+      expect(config_for({"release_on_session_end" => false}).release_on_session_end?("myapp")).to be(false)
+    end
+
+    it "raises ConfigParseError for a file that cannot be parsed" do
+      dir = Dir.mktmpdir("ws-dev-config")
+      FileUtils.mkdir_p(File.join(dir, "projects"))
+      File.write(File.join(dir, "projects", "myapp.yml"), "a: [\n")
+
+      expect { described_class.new(project_settings: project_settings_with(dir: dir)).release_on_session_end?("myapp") }
+        .to raise_error(Workspace::ConfigParseError)
+    end
+  end
+
   describe "#for_project" do
     it "returns nils and the default timeouts when nothing is configured" do
       dir = Dir.mktmpdir("ws-dev-config")

@@ -12,6 +12,8 @@ class FakeDevWindowTmux
 
   def session_name_for(name) = name
 
+  def server_pid_for_pane(_pane) = "4242"
+
   def sessions = ["app"]
 
   def server_running? = true
