@@ -37,11 +37,14 @@ module Workspace
       # @param git [Workspace::Git] base ref reads
       # @param pull_request_status [Workspace::PullRequestStatus] reads a branch's pull request, only with +pr+
       # @param ask_store_for [#call] given a workspace name, returns its {Workspace::AskStore}
+      # @param plan [Workspace::Commands::Plan] says where each workspace's plan file is
+      # @param plan_state [Workspace::PlanState] works out each plan's state from the snapshot's own reads
+      # @param plan_config [Workspace::PlanConfig] reads `plan.stall_seconds`
       # @param output [IO] stream for the JSON document
       # @param error_output [IO] stream for warnings that must stay out of script-readable output
       # @param clock [#now] time source, injected for tests
       # @param agent_timeout [Numeric] seconds to wait for each agent daemon
-      def initialize(catalog:, facts:, tmux:, state:, config:, snapshot_client:, sessions:, git:, pull_request_status:, ask_store_for:,
+      def initialize(catalog:, facts:, tmux:, state:, config:, snapshot_client:, sessions:, git:, pull_request_status:, ask_store_for:, plan:, plan_state:, plan_config:,
         output: $stdout, error_output: $stderr, clock: Time, agent_timeout: DEFAULT_AGENT_TIMEOUT)
         @catalog = catalog
         @facts = facts
@@ -53,6 +56,9 @@ module Workspace
         @git = git
         @pull_request_status = pull_request_status
         @ask_store_for = ask_store_for
+        @plan = plan
+        @plan_state = plan_state
+        @plan_config = plan_config
         @output = output
         @error_output = error_output
         @clock = clock
@@ -205,17 +211,38 @@ module Workspace
         running = running?(workspace, sessions)
         snapshot = daemon && daemon[:snapshot]
         unavailable << {"workspace" => workspace, "code" => daemon[:code]} if daemon && daemon[:code]
+        member_panes = snapshot ? panes(snapshot) : nil
+        member_questions = questions(workspace, warnings)
         row = {
           "workspace" => workspace, "kind" => facts["kind"], "path" => facts["path"], "tmux_session" => @tmux.session_name_for(workspace),
           "running" => running, "headless" => facts["headless"], "iterm_window_id" => iterm_window_id(workspace),
           "daemon" => {"up" => !snapshot.nil?, "pid" => nil, "log_path" => @config.agent_log_path(workspace)},
           "git" => git_block(facts["path"], gathered[:git_by_workspace][workspace], pr),
-          "panes" => snapshot ? panes(snapshot) : nil,
-          "questions" => questions(workspace, warnings),
-          "pipeline" => facts["pipeline"]
+          "panes" => member_panes,
+          "questions" => member_questions,
+          "pipeline" => facts["pipeline"],
+          "plan" => plan_block(workspace, running, member_panes, member_questions, facts, warnings)
         }
         row["task"] = snapshot["task"] if snapshot
         row
+      end
+
+      # The member's plan without its tasks, worked out from reads the snapshot
+      # already made (no second look at tmux, the daemon or the ask store).
+      # nil when there is no plan file, or when the plan can't be located (with
+      # a warning); a file that can't be read or parsed still gives a block,
+      # with its `state` and `counts` as PlanFile reports them.
+      def plan_block(workspace, running, member_panes, member_questions, facts, warnings)
+        path = @plan.path_for(workspace)
+        plan = PlanFile.read(path)
+        return nil unless plan
+        open_asks = member_questions ? member_questions.size : facts["open_asks"].to_i
+        row = @plan_state.row(workspace: workspace, project: nil, path: path, plan: plan, session_live: running, panes: member_panes,
+          open_asks: open_asks, stall_seconds: @plan_config.stall_seconds_for(workspace))
+        row.slice("state", "status", "signature", "counts", "percent", "current", "updated_at")
+      rescue => e
+        warnings << {"code" => "plan_unavailable", "workspace" => workspace, "message" => e.message.lines.first.to_s.strip}
+        nil
       end
 
       def iterm_window_id(workspace)

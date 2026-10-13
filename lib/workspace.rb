@@ -467,12 +467,14 @@ module Workspace
       lock_holder: lock_holder, dev: dev_command, agents: ProjectAgents.new(client: agent_snapshot_client),
       git: git, catalog: project_catalog, error_output: error_output)
     projects_command = Commands::Projects.new(catalog: project_catalog, tmux: tmux, facts: project_facts, output: output, error_output: error_output)
-    plan_command = Commands::Plan.new(notes: notes_command, catalog: project_catalog, plan_state: PlanState.new,
-      plan_config: PlanConfig.new(project_settings: project_settings, error_output: error_output), tmux: tmux,
+    plan_config = PlanConfig.new(project_settings: project_settings, error_output: error_output)
+    plan_state = PlanState.new
+    plan_command = Commands::Plan.new(notes: notes_command, catalog: project_catalog, plan_state: plan_state,
+      plan_config: plan_config, tmux: tmux,
       snapshot_client: agent_snapshot_client, ask_store_for: ask_store_for, task_store: task_store, output: output)
     snapshot_command = Commands::Snapshot.new(catalog: project_catalog, facts: project_facts, tmux: tmux, state: state, config: config,
       snapshot_client: agent_snapshot_client, sessions: sessions_command, git: git, pull_request_status: PullRequestStatus.new,
-      ask_store_for: ask_store_for,
+      ask_store_for: ask_store_for, plan: plan_command, plan_state: plan_state, plan_config: plan_config,
       output: output, error_output: error_output)
     review_command = Commands::Review.new(catalog: project_catalog, git: git, snapshot_client: agent_snapshot_client, task_store: task_store,
       ask_store_for: ask_store_for, session_ledger: session_ledger, transcript_summary: TranscriptSummary.new, pull_request_status: PullRequestStatus.new,

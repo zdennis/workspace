@@ -25,11 +25,12 @@ RSpec.describe Workspace::Commands::Snapshot do
   # Mirrors ProjectFacts: for_project returns member hashes in member order.
   let(:facts) do
     git_table = git_by_path
+    asks_fact = ->(name) { fact_open_asks.fetch(name, 0) }
     Class.new do
       define_method(:for_project) do |project, **|
         members = project.members.map do |m|
           {"workspace" => m.workspace, "path" => m.path, "kind" => m.kind, "configured" => true, "exists" => true, "running" => false,
-           "headless" => false, "open_asks" => 0, "pipeline" => {"entries" => 2}, "agents" => nil}
+           "headless" => false, "open_asks" => asks_fact.call(m.workspace), "pipeline" => {"entries" => 2}, "agents" => nil}
         end
         {members: members, locks: {"edit" => {"holder" => {"workspace" => "app", "path" => "/src/app", "pid" => 9, "stale" => false}, "queue" => []}},
          dev: {"running" => true, "ready" => true, "holder_workspace" => "app"}, errors: {}}
@@ -38,6 +39,7 @@ RSpec.describe Workspace::Commands::Snapshot do
       define_method(:git_deadline) { 0.0 }
     end.new
   end
+  let(:fact_open_asks) { {} }
   let(:git_by_path) do
     {
       "/src/app" => {"available" => true, "branch" => "main", "changed_files" => 0, "ahead" => 0, "upstream" => "origin/main", "unpushed_commits" => 0, "unsaved" => "no"},
@@ -123,9 +125,27 @@ RSpec.describe Workspace::Commands::Snapshot do
     ->(workspace) { Workspace::AskStore.new(path: File.join(dir, workspace, "asks.json"), error_output: error_output) }
   end
 
+  let(:plan_paths) { Hash.new { |_, name| File.join(tmpdir, "notes", name, "IMPLEMENTATION_PLAN.md") } }
+  let(:plan_command) do
+    table = plan_paths
+    Class.new do
+      define_method(:path_for) do |name|
+        value = table[name]
+        raise value if value.is_a?(Exception)
+        value
+      end
+    end.new
+  end
+  let(:stall_seconds) { 300 }
+  let(:plan_config) do
+    seconds = stall_seconds
+    Class.new { define_method(:stall_seconds_for) { |_name| seconds } }.new
+  end
+
   subject(:snapshot) do
     described_class.new(catalog: catalog, facts: facts, tmux: tmux, state: state, config: config, snapshot_client: snapshot_client,
-      sessions: sessions, git: git, pull_request_status: pull_request_status, ask_store_for: ask_store_for, output: output,
+      sessions: sessions, git: git, pull_request_status: pull_request_status, ask_store_for: ask_store_for, plan: plan_command,
+      plan_state: Workspace::PlanState.new(clock: -> { now }), plan_config: plan_config, output: output,
       error_output: error_output, clock: clock)
   end
 
@@ -190,6 +210,166 @@ RSpec.describe Workspace::Commands::Snapshot do
 
     it "never includes an actions map" do
       expect(output.string).not_to include("\"actions\"")
+    end
+  end
+
+  describe "plan" do
+    def write_plan(name, text)
+      path = plan_paths[name]
+      FileUtils.mkdir_p(File.dirname(path))
+      File.write(path, text)
+      path
+    end
+
+    let(:plan_text) do
+      <<~MD
+        ---
+        plan: 1
+        title: Ship it
+        status: active
+        owner_pane: "%19"
+        ---
+        # Ship it
+
+        ## Tasks
+
+        - [x] T1 First
+        - [~] T9 Second
+        - [ ] T10 Third
+      MD
+    end
+
+    it "is null for a member with no plan file" do
+      snapshot.call
+
+      expect(parsed["projects"].flat_map { |p| p["members"] }.map { |m| m["plan"] }).to all(be_nil)
+      expect(parsed["warnings"]).to eq([])
+    end
+
+    it "reports state, status, signature, counts, percent, current and updated_at, without tasks" do
+      path = write_plan("app.worktree-fix", plan_text)
+      stat = File.stat(path)
+      snapshot.call
+      block = member_row(parsed, "app.worktree-fix")["plan"]
+
+      expect(block.keys).to eq(%w[state status signature counts percent current updated_at])
+      expect(block).to include("state" => "waiting", "status" => "active", "percent" => 33, "current" => {"id" => "T9", "phase" => nil, "title" => "Second"})
+      expect(block["signature"]).to eq("#{stat.mtime.to_i * 1_000_000_000 + stat.mtime.nsec}:#{stat.size}")
+      expect(block["updated_at"]).to eq(stat.mtime.utc.iso8601)
+      expect(block["counts"]).to include("total" => 3, "done" => 1)
+    end
+
+    it "matches what plan status reports for the same file" do
+      path = write_plan("app", plan_text)
+      snapshot.call
+      row = Workspace::PlanState.new(clock: -> { now }).row(workspace: "app", project: nil, path: path, plan: Workspace::PlanFile.read(path),
+        session_live: true, panes: nil)
+
+      expect(member_row(parsed, "app")["plan"]).to eq(row.slice("state", "status", "signature", "counts", "percent", "current", "updated_at"))
+    end
+
+    it "reads the owner pane from the panes the snapshot already holds, not a second daemon read" do
+      write_plan("app.worktree-fix", plan_text)
+      snapshot.call
+
+      expect(fetch_calls.count { |name, _| name == "app.worktree-fix" }).to eq(1)
+    end
+
+    it "counts the open questions the snapshot read toward waiting" do
+      daemon_replies["app.worktree-fix"]["panes"] = [pane("%19", "idle")]
+      write_plan("app.worktree-fix", plan_text)
+      store = Workspace::AskStore.new(path: File.join(tmpdir, "app.worktree-fix", "asks.json"))
+      store.add(question: "Use Postgres 16?", default: "yes", pane: "%19")
+      snapshot.call
+
+      expect(member_row(parsed, "app.worktree-fix")["plan"]["state"]).to eq("waiting")
+    end
+
+    it "falls back to the open-question count in the member facts when the ask store can't be read" do
+      fact_open_asks["app.worktree-fix"] = 1
+      daemon_replies["app.worktree-fix"]["panes"] = [pane("%19", "idle")]
+      write_plan("app.worktree-fix", plan_text)
+      broken = ->(_workspace) { raise IOError, "ask store broken" }
+      described_class.new(catalog: catalog, facts: facts, tmux: tmux, state: state, config: config, snapshot_client: snapshot_client,
+        sessions: sessions, git: git, pull_request_status: pull_request_status, ask_store_for: broken, plan: plan_command,
+        plan_state: Workspace::PlanState.new(clock: -> { now }), plan_config: plan_config, output: output, error_output: error_output,
+        clock: clock).call
+
+      expect(member_row(parsed, "app.worktree-fix")["plan"]["state"]).to eq("waiting")
+    end
+
+    it "reads stopped for a workspace with no live session and paused ahead of it" do
+      write_plan("other", plan_text)
+      write_plan("app", plan_text.sub("status: active", "status: paused"))
+      snapshot.call
+
+      expect(member_row(parsed, "other")["plan"]["state"]).to eq("stopped")
+      expect(member_row(parsed, "app")["plan"]["state"]).to eq("paused")
+    end
+
+    it "does not call a plan stopped when tmux can't be asked" do
+      write_plan("other", plan_text)
+      table = Class.new do
+        def sessions(strict: false) = raise(Workspace::Error, "tmux down")
+
+        def session_name_for(name) = name
+
+        def custom_socket_option(_name)
+        end
+      end.new
+      described_class.new(catalog: catalog, facts: facts, tmux: table, state: state, config: config, snapshot_client: snapshot_client,
+        sessions: sessions, git: git, pull_request_status: pull_request_status, ask_store_for: ask_store_for, plan: plan_command,
+        plan_state: Workspace::PlanState.new(clock: -> { now }), plan_config: plan_config, output: output, error_output: error_output,
+        clock: clock).call
+
+      expect(member_row(parsed, "other")["plan"]["state"]).to eq("idle")
+    end
+
+    it "uses the stall limit the config gives" do
+      daemon_replies["app.worktree-fix"]["panes"] = [pane("%19", "idle", "state_since" => (now - 120).utc.iso8601)]
+      write_plan("app.worktree-fix", plan_text)
+      described_class.new(catalog: catalog, facts: facts, tmux: tmux, state: state, config: config, snapshot_client: snapshot_client,
+        sessions: sessions, git: git, pull_request_status: pull_request_status, ask_store_for: ask_store_for, plan: plan_command,
+        plan_state: Workspace::PlanState.new(clock: -> { now }),
+        plan_config: Class.new { def stall_seconds_for(_name) = 60 }.new, output: output, error_output: error_output, clock: clock).call
+
+      expect(member_row(parsed, "app.worktree-fix")["plan"]["state"]).to eq("stalled")
+    end
+
+    it "gives a malformed plan a block with no tasks counted, not a failure" do
+      write_plan("app", "\x00\xFF not a plan\n---\n- [?] nope\n")
+      expect(snapshot.call).to eq(exit_code: 0)
+
+      expect(member_row(parsed, "app")["plan"]).to include("state" => "empty", "percent" => 0)
+    end
+
+    it "gives an unreadable plan file a block, and the rest of the snapshot is unharmed" do
+      path = write_plan("app", plan_text)
+      File.chmod(0o000, path)
+      begin
+        expect(snapshot.call).to eq(exit_code: 0)
+      ensure
+        File.chmod(0o600, path)
+      end
+
+      expect(member_row(parsed, "app")["plan"]).to include("state" => "empty")
+      expect(member_row(parsed, "other")["plan"]).to be_nil
+    end
+
+    it "gives a plan path that is a directory a block, not a failure" do
+      FileUtils.mkdir_p(plan_paths["app"])
+      expect(snapshot.call).to eq(exit_code: 0)
+
+      expect(member_row(parsed, "app")["plan"]).to include("state" => "empty")
+    end
+
+    it "makes the plan null with a plan_unavailable warning when the notes directory can't be worked out" do
+      plan_paths["other"] = Workspace::Error.new("No branch", code: "notes_dir_unresolved")
+      snapshot.call
+
+      expect(member_row(parsed, "other")["plan"]).to be_nil
+      expect(parsed["warnings"]).to include("code" => "plan_unavailable", "workspace" => "other", "message" => "No branch")
+      expect(member_row(parsed, "app")["plan"]).to be_nil
     end
   end
 
@@ -312,6 +492,17 @@ RSpec.describe Workspace::Commands::Snapshot do
       snapshot.call(pr: true)
 
       expect(member_row(parsed, "other")["git"]["pr"]).to eq("available" => false, "reason" => "git_unavailable")
+    end
+  end
+
+  describe "Workspace.build_cli snapshot wiring" do
+    it "gives the snapshot command the plan reader, state and config" do
+      cli = Workspace.build_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new, env: {})
+      snapshot = cli.instance_variable_get(:@snapshot_command)
+
+      expect(snapshot.instance_variable_get(:@plan)).to be_a(Workspace::Commands::Plan)
+      expect(snapshot.instance_variable_get(:@plan_state)).to be_a(Workspace::PlanState)
+      expect(snapshot.instance_variable_get(:@plan_config)).to be_a(Workspace::PlanConfig)
     end
   end
 

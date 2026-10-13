@@ -42,7 +42,10 @@ The daemons are read in parallel, one second each: a daemon serves one connectio
               "agents":[],"lock":"edit","lock_state":"held","open_questions":1}],
     "task":{"id":"t1","title":"Fix login"},
     "questions":[{"id":"q_7","question":"Use Postgres 16?","default":"yes","pane":"%19","asked_at":"2026-10-02T19:58:00Z","status":"open"}],
-    "pipeline":{"entries":0}}],
+    "pipeline":{"entries":0},
+    "plan":{"state":"working","status":"active","signature":"1791850994123456789:8841",
+            "counts":{"total":10,"done":4,"in_progress":1,"todo":5,"blocked":0,"skipped":0,"left":6},"percent":40,
+            "current":{"id":"T9","phase":null,"title":"Wire the poller"},"updated_at":"2026-10-02T19:40:00Z"}}],
    "locks":[{"name":"edit","holder":{"workspace":"api.worktree-fix-login","path":"/src/api-fix-login","pid":4411,"stale":false},"queue":[]}],
    "dev":{"running":true,"ready":true,"holder_workspace":"api"}}],
  "daemons_unavailable":[{"workspace":"api","code":"no_daemon"}],
@@ -55,9 +58,10 @@ The daemons are read in parallel, one second each: a daemon serves one connectio
 - `git` is null only when the project has no usable git repository (no git, a broken checkout, or an unknown one); git failing or timing out for a checkout is `git.available: false`, never null. `git.base` is the base branch `review` compares against, null when it can't be found. `git.pr` is present only with `--pr`: `{"available":false,"reason":"gh_missing"|"timeout"|"error"|"git_unavailable"}`, `{"available":true,"found":false}`, or the pull request, with `state` lowercased and `checks` one of `failing`, `pending`, `passing` or `none`.
 - Panes are as in [`sessions --json`](README.sessions.md), reduced to the fields a UI shows. `lock` is the name of the lock the pane holds or queues for, `lock_state` is `held` or `queued`, and `open_questions` is the pane's open `ask` questions (null when the store can't be read). `task` is the active task, present with `panes`.
 - `pipeline.entries` is the number of in-flight work items.
+- `plan` is the member's `IMPLEMENTATION_PLAN.md` as [`plan status --json`](README.plan.md) reports it, without `tasks`: `state`, `status`, `signature`, `counts`, `percent`, `current`, `updated_at`. It is null when the workspace has no plan file. `signature` is the file's `mtime_ns:size`, the value `plan status` reports, and the one value an app compares to learn that a plan changed; it then asks `plan status --name WS --json` for the task list. The state is worked out from the reads the snapshot already made (running state, panes, open questions) and the project's `plan.stall_seconds`, so a plan costs one file read per member (plus the notes-directory lookup, which runs `git` only when `notes.default_dir` uses the branch) and no second look at tmux or the daemon. A file that can't be read gives a block with `state: "empty"`, not a failure. A notes directory that can't be worked out, or any other error reading the plan, makes `plan` null and adds a `plan_unavailable` warning.
 - `locks` is the project's repo-wide lock list; a holder's `workspace` is null when its worktree belongs to no member. A holder or waiter that is a workflow run has `"pid": null` and a `run_id`.
 - `daemons_unavailable[].code` is `no_daemon`, `timeout` or `unreadable_reply` (any other failure reading or stamping the reply). These are row codes, not error envelope codes.
 - There is no per-target `actions` map; the command doesn't say what each workspace may do.
-- `warnings` entries are `{"code","message"}` (and `workspace` for `checkout_missing` and `questions_unavailable`).
+- `warnings` entries are `{"code","message"}` (and `workspace` for `checkout_missing`, `questions_unavailable` and `plan_unavailable`).
 
 A failure is the error envelope (see [`--json` output](README.json.md)) with exit status 1.
