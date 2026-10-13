@@ -83,9 +83,12 @@ module Workspace
     # @param liveness [#call, nil] maps project names to true, false, or nil
     #   (alive, dead, can't tell) for `list --liveness` and `status`; nil
     #   reports every project as unknown
+    # @param window_liveness [#call, nil] maps project names to true, false, or
+    #   nil (window open, gone, can't tell) for the `window_alive` field of
+    #   `list --liveness --json` and `status --json`; takes name => state entry
     # @param launch_mode [Workspace::LaunchMode, nil] decides whether launch/start
     #   run headless when no --[no-]headless flag is given; nil builds one
-    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, restart_agent_command: nil, send_command: nil, ensure_agent_command: nil, handoff_command: nil, projects_command: nil, capabilities_command: nil, daemon_command: nil, ui_command: nil, binding_command: nil, library_command: nil, library: nil, instructions_command: nil, workflow_command: nil, review_command: nil, restore_command: nil, snapshot_command: nil, project_actions_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil, liveness: nil)
+    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, restart_agent_command: nil, send_command: nil, ensure_agent_command: nil, handoff_command: nil, projects_command: nil, capabilities_command: nil, daemon_command: nil, ui_command: nil, binding_command: nil, library_command: nil, library: nil, instructions_command: nil, workflow_command: nil, review_command: nil, restore_command: nil, snapshot_command: nil, project_actions_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil, liveness: nil, window_liveness: nil)
       @config = config
       @state = state
       @project_config = project_config
@@ -152,6 +155,7 @@ module Workspace
       @working_dir = working_dir
       @clock = clock
       @launch_mode = launch_mode || LaunchMode.new(project_settings: project_settings)
+      @window_liveness = window_liveness || ->(entries) { entries.to_h { |name, _| [name, nil] } }
       @liveness = liveness || ->(names) { names.to_h { |name| [name, nil] } }
     end
 
@@ -4503,7 +4507,7 @@ module Workspace
         opts.separator "  workspace list --show-urls    # each active project with its git origin URL"
         opts.separator "  workspace list --json    # active projects as JSON"
         opts.separator "  workspace list --liveness    # each active project marked [alive], [dead], or [unknown]"
-        opts.separator "  workspace list --liveness --json    # [{\"name\":\"my-notes\",\"alive\":true},...]"
+        opts.separator "  workspace list --liveness --json    # [{\"name\":\"my-notes\",\"alive\":true,\"window_alive\":true},...]"
         opts.separator "  workspace list --all --json --show-urls    # all projects with directories and URLs as JSON"
       end
       parser.parse!(args)
@@ -4602,7 +4606,8 @@ module Workspace
 
       alive = @liveness.call(@state.keys)
       if json
-        @output.puts JSON.pretty_generate(@state.to_h.to_h { |project, info| [project, info.merge("alive" => alive[project])] })
+        windows = @window_liveness.call(@state.to_h)
+        @output.puts JSON.pretty_generate(@state.to_h.to_h { |project, info| [project, info.merge("alive" => alive[project], "window_alive" => windows[project])] })
       else
         @state.each do |project, info|
           wid = info["iterm_window_id"]
@@ -4627,6 +4632,7 @@ module Workspace
     def list_with_liveness(json:, show_urls:)
       names = @state.keys.sort
       alive = @liveness.call(names)
+      windows = json ? @window_liveness.call(@state.to_h.slice(*names)) : {}
       entries = names.map do |name|
         entry = {"name" => name}
         if show_urls
@@ -4636,6 +4642,7 @@ module Workspace
           entry["url"] = dir ? @git.remote_url(dir) : nil
         end
         entry["alive"] = alive[name]
+        entry["window_alive"] = windows[name] if json
         entry
       end
 

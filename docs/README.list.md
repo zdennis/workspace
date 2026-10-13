@@ -29,7 +29,7 @@ With `--all`, lists all workspace tmuxinator configs found in `~/.config/tmuxina
 
 `--show-urls` reads the `origin` remote URL from the project's git repository (no network call). Projects with no configured root or no `origin` remote show a blank URL column. Combine with `--all` to see URLs for every available project. When combined with `--json`, each object gains a `"url"` key.
 
-`--liveness` checks each active project's tmux session (one `tmux list-sessions` call); it applies to active projects and can't be combined with `--all`. `[dead]` means the state file still lists the project but its tmux session is gone; `[unknown]` means tmux didn't answer or the project uses a custom tmux socket. Without `--json` the marker is the last column; with `--json` the output is an array of `{"name", "alive"}` objects (plus `directory` and `url` with `--show-urls`), where `alive` is `true`, `false`, or `null`. Plain `list` output is unchanged. `workspace status` always reports liveness.
+`--liveness` checks each active project's tmux session (one `tmux list-sessions` call); it applies to active projects and can't be combined with `--all`. `[dead]` means the state file still lists the project but its tmux session is gone; `[unknown]` means tmux didn't answer or the project uses a custom tmux socket. Without `--json` the marker is the last column; with `--json` the output is an array of `{"name", "alive", "window_alive"}` objects (plus `directory` and `url` with `--show-urls`), where `alive` is the tmux session and `window_alive` the iTerm window, each `true`, `false`, or `null` (`window_alive` is `null` for a headless project and when the window list could not be read; see [`status`](README.status.md#window-state)). Plain `list` output is unchanged. `workspace status` always reports liveness.
 
 ## Examples
 
@@ -57,7 +57,7 @@ billing   [alive]
 my-notes  [dead]
 
 $ workspace list --liveness --json
-[{"name":"billing","alive":true},{"name":"my-notes","alive":false}]
+[{"name":"billing","alive":true,"window_alive":true},{"name":"my-notes","alive":false,"window_alive":false}]
 
 $ workspace list --json
 ["billing","my-notes"]

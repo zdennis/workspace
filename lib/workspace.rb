@@ -169,6 +169,7 @@ require_relative "workspace/config_report"
 require_relative "workspace/tmuxinator_report"
 require_relative "workspace/process_tree"
 require_relative "workspace/liveness"
+require_relative "workspace/window_liveness"
 require_relative "workspace/agent_readiness"
 require_relative "workspace/agent_restart"
 require_relative "workspace/workspace_lineage"
@@ -564,6 +565,7 @@ module Workspace
       ask_command: ask_command,
       launch_mode: launch_mode,
       liveness: Liveness.new(tmux: tmux),
+      window_liveness: WindowLiveness.new(window_manager: window_manager),
       restart_agent_command: restart_agent_command,
       send_command: send_command,
       ensure_agent_command: ensure_agent_command,

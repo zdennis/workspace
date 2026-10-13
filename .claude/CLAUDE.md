@@ -20,6 +20,7 @@ A macOS CLI (Ruby) for managing tmuxinator-based development workspaces in iTerm
 - `lib/workspace/osascript_runner.rb` — Runs one AppleScript through `osascript` with a 5s limit; past it the process group is stopped and the answer is empty with `timed_out`; `ITerm` and `WindowManager#close_window` go through it
 - `lib/workspace/iterm.rb` — iTerm2 session/pane lifecycle (AppleScript); `#last_call_timed_out?` says iTerm2 did not answer, which `stop` turns into a warning
 - `lib/workspace/window_manager.rb` — iTerm2 window operations: find, focus, position, close
+- `lib/workspace/window_liveness.rb` — Whether iTerm still has each tracked workspace's recorded window (one `live_window_ids` call, none when all are headless); nil for headless or when the list can't be read; backs `window_alive` in `status --json` and `list --liveness --json`
 - `lib/workspace/window_layout.rb` — Window positioning math
 - `lib/workspace/json_envelope.rb` — Builds the `--json` action and error documents (`ok`, `code`, `details`, `retry`); the CLI rescue funnel emits the errors, `CLI#run_action` the actions
 - `lib/workspace/output_gate.rb` — The stdout every collaborator writes through; `--json` actions divert it to stderr so stdout holds one document

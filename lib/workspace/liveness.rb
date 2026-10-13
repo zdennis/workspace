@@ -4,8 +4,7 @@ module Workspace
   # state-file entry.
   #
   # A project is alive when its tmux session exists. The iTerm window is not
-  # consulted: asking iTerm costs an AppleScript round trip, and a headless
-  # project has no window.
+  # consulted here; {Workspace::WindowLiveness} answers that.
   class Liveness
     # @param tmux [Workspace::Tmux] source of session names
     def initialize(tmux:)

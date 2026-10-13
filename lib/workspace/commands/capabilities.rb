@@ -40,7 +40,8 @@ module Workspace
         "library_copy" => 1,
         "instructions" => 1,
         "restore" => 1,
-        "workflow" => 1
+        "workflow" => 1,
+        "window_state" => 1
       }.freeze
 
       # The exit statuses commands use, by meaning.

@@ -86,6 +86,12 @@ RSpec.describe Workspace::Commands::Capabilities do
       expect(document["features"]).to include("locks_json" => 2)
     end
 
+    it "reports window_state once the lists carry window_alive" do
+      command.call(json: true)
+
+      expect(document["features"]).to include("window_state" => 1)
+    end
+
     it "ignores a PATH entry that is not executable or is a directory" do
       install("gh", mode: 0o644)
       FileUtils.mkdir_p(File.join(bin_dir, "tmux"))

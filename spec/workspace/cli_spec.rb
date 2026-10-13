@@ -119,7 +119,8 @@ RSpec.describe Workspace::CLI do
       working_dir: working_dir,
       clock: overrides[:clock] || -> { Time.now },
       launch_mode: overrides[:launch_mode] || CLITestHelpers.launch_mode(headless: false),
-      liveness: overrides[:liveness] || ->(names) { names.to_h { |name| [name, true] } }
+      liveness: overrides[:liveness] || ->(names) { names.to_h { |name| [name, true] } },
+      window_liveness: overrides[:window_liveness]
     )
     [cli, output, error_output, hook_runner]
   end
@@ -575,9 +576,26 @@ RSpec.describe Workspace::CLI do
       cli, output, _ = build_test_cli(state: state, liveness: liveness)
       cli.run(["status", "--json"])
       result = JSON.parse(output.string)
-      expect(result["up"]).to eq("unique_id" => "u1", "iterm_window_id" => 1, "alive" => true)
+      expect(result["up"]).to eq("unique_id" => "u1", "iterm_window_id" => 1, "alive" => true, "window_alive" => nil)
       expect(result["gone"]["alive"]).to eq(false)
-      expect(result["hl"]).to eq("headless" => true, "alive" => nil)
+      expect(result["hl"]).to eq("headless" => true, "alive" => nil, "window_alive" => nil)
+    end
+
+    it "adds window_alive beside alive with --json" do
+      window_liveness = ->(entries) { {"up" => true, "gone" => false, "hl" => nil}.slice(*entries.keys) }
+      cli, output, _ = build_test_cli(state: state, liveness: liveness, window_liveness: window_liveness)
+      cli.run(["status", "--json"])
+      result = JSON.parse(output.string)
+      expect(result.transform_values { |e| e.values_at("alive", "window_alive") }).to eq(
+        "up" => [true, true], "gone" => [false, false], "hl" => [nil, nil]
+      )
+    end
+
+    it "does not ask for windows without --json" do
+      window_liveness = ->(_) { raise "should not be called" }
+      cli, output, _ = build_test_cli(state: state, liveness: liveness, window_liveness: window_liveness)
+      cli.run(["status"])
+      expect(output.string).to include("up  window_id=1  [alive]")
     end
 
     it "does not write alive into the state file" do
@@ -611,7 +629,18 @@ RSpec.describe Workspace::CLI do
     it "prints name and alive objects with --json" do
       cli, output, _ = build_test_cli(state: state, liveness: liveness)
       cli.run(["list", "--liveness", "--json"])
-      expect(JSON.parse(output.string)).to eq([{"name" => "gone", "alive" => false}, {"name" => "up", "alive" => true}])
+      expect(JSON.parse(output.string)).to eq([{"name" => "gone", "alive" => false, "window_alive" => nil}, {"name" => "up", "alive" => true, "window_alive" => nil}])
+    end
+
+    it "adds window_alive beside alive with --json and not in the plain list" do
+      window_liveness = ->(entries) { {"up" => true, "gone" => false}.slice(*entries.keys) }
+      cli, output, _ = build_test_cli(state: state, liveness: liveness, window_liveness: window_liveness)
+      cli.run(["list", "--liveness", "--json"])
+      expect(JSON.parse(output.string)).to eq([{"name" => "gone", "alive" => false, "window_alive" => false}, {"name" => "up", "alive" => true, "window_alive" => true}])
+      output.truncate(0)
+      output.rewind
+      cli.run(["list", "--liveness"])
+      expect(output.string).to eq("gone  [dead]\nup    [alive]\n")
     end
 
     it "keeps url and directory with --show-urls --json" do
@@ -620,7 +649,7 @@ RSpec.describe Workspace::CLI do
       cli, output, _ = build_test_cli(state: state, liveness: liveness, git: git, project_config: pc)
       cli.run(["list", "--liveness", "--show-urls", "--json"])
       up = JSON.parse(output.string).find { |e| e["name"] == "up" }
-      expect(up).to eq("name" => "up", "directory" => "/tmp/up", "url" => "git@h:o/r.git", "alive" => true)
+      expect(up).to eq("name" => "up", "directory" => "/tmp/up", "url" => "git@h:o/r.git", "alive" => true, "window_alive" => nil)
     end
 
     it "shows the alive marker after the url column" do
