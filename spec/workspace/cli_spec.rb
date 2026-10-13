@@ -1321,12 +1321,12 @@ RSpec.describe Workspace::CLI do
       expect(JSON.parse(output.string)).to eq("schema_version" => 1, "ok" => false, "code" => "error", "error" => "no agent daemon for 'myapp'")
     end
 
-    it "requires --handoff-doc or --handoff-prompt for handoff new" do
-      cli, _, error_output = build_test_cli(handoff_command: handoff_command)
+    it "lets handoff new run with neither --handoff-doc nor --handoff-prompt, which the command defaults" do
+      cli, = build_test_cli(handoff_command: handoff_command)
 
-      expect { cli.run(["handoff", "new", "myapp"]) }.to raise_error(FakeSystemExit)
-      expect(error_output.string).to include("Missing --handoff-doc or --handoff-prompt")
-      expect(handoff_command).not_to have_received(:new)
+      cli.run(["handoff", "new", "myapp", "--pane", "%2"])
+
+      expect(handoff_command).to have_received(:new).with(name: "myapp", pane: "%2", handoff_doc: nil, handoff_prompt: nil, wait: false, json: false)
     end
 
     it "raises a usage error for an unknown handoff subcommand" do

@@ -46,8 +46,8 @@ module Workspace
     end
 
     # @param workspace [String] the calling workspace's name
-    # @return [Hash] :threshold [Integer], :check_prompt [String, nil],
-    #   :resume_prompt [String, nil] (nil means "use the built-in default")
+    # @return [Hash] :threshold [Integer], :check_prompt [String], :resume_prompt [String]
+    #   (unset keys give the schema default, which for the two prompts is the built-in text)
     def for_workspace(workspace)
       name = project_name_for(workspace)
       handoff = load_handoff(name)

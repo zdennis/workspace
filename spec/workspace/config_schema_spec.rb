@@ -119,6 +119,13 @@ RSpec.describe Workspace::ConfigSchema do
       expect(described_class.default("handoff.threshold")).to eq(11)
       expect(described_class.default("alerts.notify")).to be_nil
     end
+
+    it "gives the two handoff prompts their built-in text as the default" do
+      expect(described_class.default("handoff.check_prompt")).to start_with("%{usage} Update %{doc} now with").and include("%{new_cmd}")
+      expect(described_class.default("handoff.resume_prompt")).to start_with("Read %{doc} and follow its").and end_with("yourself.")
+      expect { format(described_class.default("handoff.check_prompt"), usage: "u", doc: "d", new_cmd: "n") }.not_to raise_error
+      expect { format(described_class.default("handoff.resume_prompt"), doc: "d") }.not_to raise_error
+    end
   end
 
   describe ".parse" do

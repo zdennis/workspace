@@ -2557,7 +2557,7 @@ module Workspace
     def handoff_help
       <<~HELP
         Usage: workspace handoff check NAME [options]
-               workspace handoff new NAME (--handoff-doc PATH|--handoff-prompt TEXT) [options]
+               workspace handoff new NAME [--handoff-doc PATH|--handoff-prompt TEXT] [options]
 
         Watches a coding agent's context-window usage and hands off to a fresh
         conversation before it fills up: `check` tells the agent to save its state
@@ -2565,6 +2565,11 @@ module Workspace
         (the same flow as `workspace agent-run restart`).
 
         NAME defaults to the workspace detected from the current directory.
+
+        With neither --handoff-doc nor --handoff-prompt, both use HANDOFF.md in the
+        workspace's notes directory (`check` makes the directory first). If that
+        directory can't be worked out, `check` lets the agent pick a path and `new`
+        fails with notes_dir_unresolved: pass --handoff-doc then.
 
         Options (check):
           --pane PANE            tmux pane id ('%19'; "$TMUX_PANE" inside the pane),
@@ -2575,9 +2580,11 @@ module Workspace
           --threshold PCT        Context usage percent that triggers a handoff, 1-100
                                   (default: handoff.threshold, or 11)
           --context-pct N        Skip detection and use this value (0-100)
-          --handoff-doc PATH     Doc the agent updates and resumes from
+          --handoff-doc PATH     Doc the agent updates and resumes from (default:
+                                  HANDOFF.md in the notes directory)
           --handoff-prompt TEXT  Prompt sent verbatim instead of a doc
-          --json                 Print the result as JSON
+          --json                 Print the result as JSON, with "next"
+                                  (continue, handoff or unknown) and "doc"
 
         Options (new):
           --pane PANE            tmux pane id ('%19'; "$TMUX_PANE" inside the pane),
@@ -2585,10 +2592,9 @@ module Workspace
                                   (default: the first Claude Code pane; `workspace
                                   sessions NAME` lists panes). Must be a pane of
                                   NAME's own tmux session
-          --handoff-doc PATH     Doc the agent reads and resumes from (one of
-                                  --handoff-doc/--handoff-prompt is required)
-          --handoff-prompt TEXT  Prompt sent verbatim instead of a doc (one of
-                                  --handoff-doc/--handoff-prompt is required)
+          --handoff-doc PATH     Doc the agent reads and resumes from (default:
+                                  HANDOFF.md in the notes directory)
+          --handoff-prompt TEXT  Prompt sent verbatim instead of a doc
           --wait                 Wait for the restart to finish and report how it
                                   went (don't use this from the agent being restarted)
           --json                 Print the result as JSON
@@ -2597,6 +2603,7 @@ module Workspace
         was sent), 2 when context usage can't be determined (nothing was sent).
 
         Examples:
+          workspace handoff check myapp                           # the doc is HANDOFF.md in the notes directory
           workspace handoff check myapp --handoff-doc HANDOFF.md
           workspace handoff check myapp --pane 2 --threshold 20 --json    # for scripting
           workspace handoff new myapp --pane 1 --handoff-doc HANDOFF.md    # without going through check
@@ -2635,7 +2642,7 @@ module Workspace
           "must be a pane of NAME's own tmux session; default: the first Claude Code pane") { |v| pane = v }
         opts.on("--threshold PCT", "Context usage percent that triggers a handoff") { |v| threshold = v }
         opts.on("--context-pct N", Integer, "Skip detection and use this value") { |v| context_pct = v }
-        opts.on("--handoff-doc PATH", "Doc the agent updates and resumes from") { |v| handoff_doc = v }
+        opts.on("--handoff-doc PATH", "Doc the agent updates and resumes from (default: HANDOFF.md in the notes directory)") { |v| handoff_doc = v }
         opts.on("--handoff-prompt TEXT", "Prompt sent verbatim instead of a doc") { |v| handoff_prompt = v }
         opts.on("--json", "Print the result as JSON; errors as {\"schema_version\":1,\"ok\":false,\"error\":...}") { json = true }
       end
@@ -2674,7 +2681,7 @@ module Workspace
         opts.banner = "Usage: workspace handoff new NAME [options]"
         opts.on("--pane PANE", "tmux pane id ('%19'; \"$TMUX_PANE\" inside the pane), window.pane (1.0), or a pane index in window 0;",
           "must be a pane of NAME's own tmux session; default: the first Claude Code pane") { |v| pane = v }
-        opts.on("--handoff-doc PATH", "Doc the agent reads and resumes from") { |v| handoff_doc = v }
+        opts.on("--handoff-doc PATH", "Doc the agent reads and resumes from (default: HANDOFF.md in the notes directory)") { |v| handoff_doc = v }
         opts.on("--handoff-prompt TEXT", "Prompt sent verbatim instead of a doc") { |v| handoff_prompt = v }
         opts.on("--wait", "Wait for the restart to finish and report how it went") { wait = true }
         opts.on("--json", "Print the result as JSON; errors as {\"schema_version\":1,\"ok\":false,\"error\":...}") { json = true }
@@ -2686,7 +2693,6 @@ module Workspace
       name ||= @project_detector.detect(@working_dir)
       raise UsageError, "Missing workspace name.\n\n#{parser.help}" if name.nil?
       raise UsageError, "Unexpected argument: #{args.first}\n\n#{parser.help}" if args.any?
-      raise UsageError, "Missing --handoff-doc or --handoff-prompt.\n\n#{parser.help}" if handoff_doc.nil? && handoff_prompt.nil?
       raise Error, "workspace handoff is not available in this build" unless @handoff_command
 
       result = @handoff_command.new(name: name, pane: pane, handoff_doc: handoff_doc, handoff_prompt: handoff_prompt, wait: wait, json: json)

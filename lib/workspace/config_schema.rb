@@ -132,6 +132,23 @@ module Workspace
     end
     private_constant :PROMPT
 
+    # The save-state prompt `handoff check` sends when it names a doc. `%{usage}`,
+    # `%{doc}` and `%{new_cmd}` are filled in by the command.
+    HANDOFF_CHECK_PROMPT = <<~PROMPT.strip.freeze
+      %{usage} Update %{doc} now with
+      everything needed to continue this work: current state, next steps, and the
+      process/workflow for picking it back up in a fresh session (a "Start here" section
+      with a single paste-able prompt). Commit it if appropriate. Then run this exact
+      command yourself: %{new_cmd}
+    PROMPT
+
+    # The prompt `handoff new` resumes a fresh conversation with. `%{doc}` is the doc's path.
+    HANDOFF_RESUME_PROMPT = <<~PROMPT.strip.freeze
+      Read %{doc} and follow its "Start here" instructions. Act strictly
+      as an orchestrator: delegate the actual work to sub-agents rather than doing it
+      yourself.
+    PROMPT
+
     ABSOLUTE_PATH = lambda do |value|
       path = value.to_s
       raise ArgumentError, "must not be blank" if path.strip.empty?
@@ -239,10 +256,10 @@ module Workspace
         doc: "How often the session-monitor daemon scans panes for agent state, alerts and stale locks (default `10s`)"),
       Key.new(name: "handoff.threshold", scope: :project, type: :percent, settable: true, default: 11, parser: PERCENT,
         doc: "Context-usage percent, 1 to 100, that triggers a handoff in [`workspace handoff check`](README.handoff.md) (default `11`)"),
-      Key.new(name: "handoff.check_prompt", scope: :project, settable: true, parser: PROMPT,
-        doc: "Overrides the built-in save-state prompt `handoff check --handoff-doc` sends; must not be blank (see [`workspace handoff`](README.handoff.md))"),
-      Key.new(name: "handoff.resume_prompt", scope: :project, settable: true, parser: PROMPT,
-        doc: "Overrides the built-in resume prompt `handoff new` sends; must not be blank (see [`workspace handoff`](README.handoff.md))"),
+      Key.new(name: "handoff.check_prompt", scope: :project, settable: true, default: HANDOFF_CHECK_PROMPT, parser: PROMPT,
+        doc: "Overrides the built-in save-state prompt `handoff check` sends when it names a doc (the default is that text); must not be blank (see [`workspace handoff`](README.handoff.md))"),
+      Key.new(name: "handoff.resume_prompt", scope: :project, settable: true, default: HANDOFF_RESUME_PROMPT, parser: PROMPT,
+        doc: "Overrides the built-in resume prompt `handoff new` sends (the default is that text); must not be blank (see [`workspace handoff`](README.handoff.md))"),
       Key.new(name: "handoff.auto", scope: :project, type: :boolean, settable: true, default: false, parser: BOOLEAN,
         doc: "`true` or `false`: whether `start` and `launch` send a Claude Code agent the built-in `handoff` pack, which makes it run [`workspace handoff check`](README.handoff.md) after every task and hand off to a fresh conversation itself (default `false`); `--handoff` and `--no-handoff` override it for one run"),
       Key.new(name: "commands.test", scope: :project, type: :command, sensitive: true, settable: true, parser: COMMAND,

@@ -8,10 +8,10 @@ Watches a coding agent's context-window usage and hands off to a fresh conversat
 
 ```sh
 workspace handoff check NAME [--pane PANE] [--threshold PCT] [--context-pct N] [--handoff-doc PATH | --handoff-prompt TEXT] [--json]
-workspace handoff new   NAME [--pane PANE] (--handoff-doc PATH | --handoff-prompt TEXT) [--wait] [--json]
+workspace handoff new   NAME [--pane PANE] [--handoff-doc PATH | --handoff-prompt TEXT] [--wait] [--json]
 ```
 
-`NAME` defaults to the workspace detected from the current directory. `new` requires either `--handoff-doc` or `--handoff-prompt`.
+`NAME` defaults to the workspace detected from the current directory. With neither `--handoff-doc` nor `--handoff-prompt`, both commands use [the default doc](#the-default-doc).
 
 ## Options (check)
 
@@ -20,7 +20,7 @@ workspace handoff new   NAME [--pane PANE] (--handoff-doc PATH | --handoff-promp
 | `--pane PANE` | A tmux pane id (`%19`; `"$TMUX_PANE"` inside the pane, or `pane_id` in `workspace sessions --json`), `window.pane` (`1.0`), or a pane index in window 0; default: the daemon's first Claude Code pane. See [Naming the pane](#naming-the-pane) |
 | `--threshold PCT` | Context-usage percent that triggers a handoff, 1-100 (default: `handoff.threshold`, or 11) |
 | `--context-pct N` | Skip detection and use this value |
-| `--handoff-doc PATH` | Doc the agent updates and resumes from |
+| `--handoff-doc PATH` | Doc the agent updates and resumes from (default: `HANDOFF.md` in the notes directory) |
 | `--handoff-prompt TEXT` | Prompt sent verbatim instead of a doc |
 | `--json` | Print the result as JSON; errors as `{"schema_version":1,"ok":false,"error":...}` |
 
@@ -29,12 +29,18 @@ workspace handoff new   NAME [--pane PANE] (--handoff-doc PATH | --handoff-promp
 | Option | Description |
 |--------|-------------|
 | `--pane PANE` | A tmux pane id (`%19`; `"$TMUX_PANE"` inside the pane, or `pane_id` in `workspace sessions --json`), `window.pane` (`1.0`), or a pane index in window 0; default: the daemon's first Claude Code pane. See [Naming the pane](#naming-the-pane) |
-| `--handoff-doc PATH` | Doc the agent reads and resumes from |
+| `--handoff-doc PATH` | Doc the agent reads and resumes from (default: `HANDOFF.md` in the notes directory) |
 | `--handoff-prompt TEXT` | Prompt sent verbatim instead of a doc |
 | `--wait` | Wait for the restart to finish and report how it went. Don't use it from the agent being restarted: it would block the turn the restart waits on |
 | `--json` | Print the result as JSON; errors as `{"schema_version":1,"ok":false,"error":...}` |
 
-`--handoff-doc` and `--handoff-prompt` are mutually exclusive. `new` requires one of them; `check` doesn't -- when neither is given, the save-state prompt tells the agent to pick a doc path itself.
+`--handoff-doc` and `--handoff-prompt` are mutually exclusive.
+
+## The default doc
+
+Given neither `--handoff-doc` nor `--handoff-prompt`, `check` and `new` use `HANDOFF.md` in the workspace's [notes directory](README.notes.md), the one `workspace notes dir` prints. `check` makes the directory (and lists it in `info/exclude` when it is inside the checkout) before it sends the save-state prompt, and the `workspace handoff new ... --handoff-doc PATH` command that prompt tells the agent to run names the doc by its full path. If the directory cannot be made, the prompt is still sent with a warning. If the notes directory cannot be worked out at all (for example a `{branch}` rule on a detached HEAD, `notes_dir_unresolved`), `check` falls back to what it did before: the prompt asks the agent to pick a path, and `doc` is `null`. `new` then fails with that error.
+
+The `IMPLEMENTATION_PLAN.md` in the notes directory is the plan, not the handoff doc; pass `--handoff-doc` to use it.
 
 ## Naming the pane
 
@@ -102,6 +108,8 @@ With `--json`, the reason and fix go in the JSON object instead of stderr:
 
 The other two outcomes print `status` (`ok`, or `handoff_sent` / `handoff_send_failed`), `context_pct`, `threshold`, `pane` (the pane's index in its window) and `pane_id` (its tmux pane id, e.g. `%19`, which a later `--pane` accepts). At or over the threshold they add `delivery` and `landed`.
 
+Every `check --json` document (the three above) also carries `next`, the exit code spelled out so a reader need not keep the table: `"continue"` (exit 0), `"handoff"` (exit 1, for `handoff_sent` and `handoff_send_failed` alike) or `"unknown"` (exit 2); and `doc`, the absolute path of the doc the agent writes and resumes from (`--handoff-doc` expanded, else the default doc), or `null` for `--handoff-prompt` or when the default cannot be worked out. `--json` without `--handoff-doc` reads the notes directory but makes nothing.
+
 ## Delivery
 
 `check` types the save-state prompt directly into the named pane and confirms it landed, the same delivery primitive the agent daemon uses for pipeline stages -- but always at the pane you named (or the daemon's first Claude pane), never a pane the daemon picks for you. `new` hands off to `workspace agent-run restart`'s `/clear` + confirm + resume flow; see [README.agent-run.md](README.agent-run.md).
@@ -115,22 +123,23 @@ workspace config set handoff.resume_prompt "..."        # overrides the built-in
 workspace config set handoff.auto true                  # start/launch send the handoff pack (default false)
 ```
 
-`handoff.check_prompt` and `handoff.resume_prompt` only override the flow used when `--handoff-doc` is given (the common case); `--handoff-prompt` always sends its text as-is. Both may use `%{usage}`/`%{doc}`/`%{new_cmd}` and `%{doc}` respectively, matching the built-in templates.
+`handoff.check_prompt` and `handoff.resume_prompt` only override the flow used when a doc is named (by `--handoff-doc` or the default doc); `--handoff-prompt` always sends its text as-is. They may use `%{usage}`/`%{doc}`/`%{new_cmd}` and `%{doc}` respectively. Their built-in text is the schema default: `workspace config show --json` reports it as `default` (and as `effective` while unset), so a reader need not keep its own copy.
 
 ## Automatic handoff
 
-`start` and `launch` can make a Claude Code agent run the check itself. The built-in `handoff` pack (see [`instructions`](README.instructions.md)) tells the agent to run `handoff check --pane "$TMUX_PANE"` after every task, and, on exit 1, to write its state into the doc and run `handoff new` once. The doc is `IMPLEMENTATION_PLAN.md` in the workspace's [notes directory](README.notes.md) when that file exists, otherwise `HANDOFF.md` there. The pack is bound to the pane with the others, so it comes back after `/clear` and compaction.
+`start` and `launch` can make a Claude Code agent run the check itself. The built-in `handoff` pack (see [`instructions`](README.instructions.md)) tells the agent to run `handoff check --pane "$TMUX_PANE"` after every task, and, on exit 1, to write its state into the doc and run `handoff new` once. The pack passes no threshold and no doc: the command picks both, and the doc is [`HANDOFF.md` in the notes directory](#the-default-doc). The pack is bound to the pane with the others, so it comes back after `/clear` and compaction.
 
 It is off by default. Turn it on for a project with `workspace config set handoff.auto true`, or for one run with `start --handoff` / `launch --handoff`; `--no-handoff` turns it off for one run. `--handoff` cannot be combined with `--no-packs`.
 
 The pack needs Claude Code. `workspace` reads the project's tmuxinator config for the first pane that runs a known coding agent. It sees through `exec`, `env`, `bundle exec`, `VAR=value` prefixes and paths, but not a wrapper script or an ERB-built command, which count as no agent. For a worktree it reads the parent project's config, not the worktree's own. With `handoff.auto` on and any other agent (or none), the pack is skipped with a warning and the run goes on: the `packs` row reads `delivered: false, pane: null, reason: "handoff_unsupported_agent"` and `warnings` says why. With `--handoff` the same case is an error, `handoff_unsupported_agent` (`details.kind` is the agent found, or `none`), raised before any worktree, config or window is created.
 
-Nothing here changes `handoff check` or `handoff new` themselves, or what they send.
+Run with an explicit `--handoff-doc`, `check` and `new` send and exit exactly as before.
 
 ## Examples
 
 ```sh
-# Check the first Claude pane in "myapp" against the default threshold
+# Check the first Claude pane in "myapp" against the default threshold, with the default doc
+workspace handoff check myapp
 workspace handoff check myapp --handoff-doc HANDOFF.md
 
 # Check a specific pane against a lower threshold, for scripting
@@ -140,6 +149,6 @@ workspace handoff check myapp --pane 2 --threshold 20 --json
 workspace handoff new myapp --pane 1 --handoff-doc HANDOFF.md
 
 # An agent checking, then handing off, its own pane
-workspace handoff check myapp --pane "$TMUX_PANE" --handoff-doc HANDOFF.md
-workspace handoff new myapp --pane "$TMUX_PANE" --handoff-doc HANDOFF.md
+workspace handoff check myapp --pane "$TMUX_PANE"
+workspace handoff new myapp --pane "$TMUX_PANE"
 ```

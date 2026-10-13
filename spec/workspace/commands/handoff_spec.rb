@@ -13,17 +13,20 @@ RSpec.describe Workspace::Commands::Handoff do
   let(:locator) { instance_double(Workspace::PaneLocator) }
   let(:handoff_config) { instance_double(Workspace::HandoffConfig) }
   let(:restart_agent_command) { instance_double(Workspace::Commands::RestartAgent) }
+  let(:notes) { instance_double(Workspace::Commands::Notes) }
+  let(:notes_dir) { "/notes/myapp" }
   let(:output) { StringIO.new }
   let(:error_output) { StringIO.new }
 
   subject(:command) do
     described_class.new(config: config, tmux: tmux, locator: locator, handoff_config: handoff_config,
-      restart_agent_command: restart_agent_command, output: output, error_output: error_output)
+      restart_agent_command: restart_agent_command, notes: notes, output: output, error_output: error_output)
   end
 
   let(:defaults) { {threshold: 11, check_prompt: nil, resume_prompt: nil} }
 
   before do
+    allow(notes).to receive(:info).and_return({"dir" => notes_dir})
     allow(handoff_config).to receive(:for_workspace).with("myapp").and_return(defaults)
     allow(tmux).to receive(:session_name_for).with("myapp").and_return("myapp")
     allow(locator).to receive(:locate) do |_name, spec|
@@ -156,13 +159,83 @@ RSpec.describe Workspace::Commands::Handoff do
       expect(tmux).to have_received(:deliver).with("myapp", "%1", a_string_including("--handoff-prompt Wrap\\ up"))
     end
 
-    it "lets the agent pick a doc path when neither is given" do
-      allow(tmux).to receive(:deliver).and_return(Workspace::Tmux::Delivery.new(status: :submitted))
-      over_pane = claude_pane.merge("context_pct" => 42)
+    describe "with neither --handoff-doc nor --handoff-prompt" do
+      let(:over_pane) { claude_pane.merge("context_pct" => 42) }
 
-      with_sessions([over_pane]) { command.check(name: "myapp") }
+      before { allow(tmux).to receive(:deliver).and_return(Workspace::Tmux::Delivery.new(status: :submitted)) }
 
-      expect(tmux).to have_received(:deliver).with("myapp", "%1", a_string_including("PATH replaced by the doc's absolute path", "--handoff-doc PATH"))
+      it "uses HANDOFF.md in the notes directory, made first, and names it in both commands" do
+        with_sessions([over_pane]) { command.check(name: "myapp") }
+
+        expect(notes).to have_received(:info).with(name: "myapp", create: true)
+        expect(tmux).to have_received(:deliver).with("myapp", "%1",
+          a_string_including("/notes/myapp/HANDOFF.md", "workspace handoff new myapp --pane '%1' --handoff-doc /notes/myapp/HANDOFF.md"))
+      end
+
+      it "still sends the prompt when the notes directory cannot be made" do
+        allow(notes).to receive(:info).with(name: "myapp", create: true).and_raise(Workspace::Error.new("no room", code: "notes_dir_unresolved"))
+        with_sessions([over_pane]) { command.check(name: "myapp") }
+
+        expect(tmux).to have_received(:deliver).with("myapp", "%1", a_string_including("/notes/myapp/HANDOFF.md"))
+        expect(error_output.string).to include("Warning", "no room")
+      end
+
+      it "falls back to letting the agent pick a path when the notes directory cannot be resolved" do
+        allow(notes).to receive(:info).and_raise(Workspace::Error.new("detached", code: "notes_dir_unresolved"))
+        result = with_sessions([over_pane]) { command.check(name: "myapp", json: true) }
+
+        expect(result).to eq(exit_code: 1)
+        expect(tmux).to have_received(:deliver).with("myapp", "%1", a_string_including("--handoff-doc PATH"))
+        expect(JSON.parse(output.string)).to include("next" => "handoff", "doc" => nil)
+      end
+
+      it "leaves an explicit --handoff-doc alone and never asks for the notes directory" do
+        with_sessions([over_pane]) { command.check(name: "myapp", handoff_doc: "/x/H.md") }
+
+        expect(notes).not_to have_received(:info)
+        expect(tmux).to have_received(:deliver).with("myapp", "%1", a_string_including("--handoff-doc /x/H.md"))
+      end
+    end
+
+    describe "--json next and doc" do
+      it "reports continue and the default doc under the threshold, without making the directory" do
+        with_sessions([claude_pane]) { command.check(name: "myapp", json: true) }
+
+        expect(JSON.parse(output.string)).to include("status" => "ok", "next" => "continue", "doc" => "/notes/myapp/HANDOFF.md")
+        expect(notes).to have_received(:info).with(name: "myapp", create: false)
+      end
+
+      it "reports handoff and the doc given, expanded, when over the threshold" do
+        allow(tmux).to receive(:deliver).and_return(Workspace::Tmux::Delivery.new(status: :submitted))
+        with_sessions([claude_pane.merge("context_pct" => 42)]) { command.check(name: "myapp", json: true, handoff_doc: "/x/H.md") }
+
+        expect(JSON.parse(output.string)).to include("status" => "handoff_sent", "next" => "handoff", "doc" => "/x/H.md")
+      end
+
+      it "reports handoff when the delivery failed" do
+        allow(tmux).to receive(:deliver).and_return(Workspace::Tmux::Delivery.new(status: :failed, message: "x"))
+        with_sessions([claude_pane.merge("context_pct" => 42)]) { command.check(name: "myapp", json: true) }
+
+        expect(JSON.parse(output.string)).to include("status" => "handoff_send_failed", "next" => "handoff")
+      end
+
+      it "reports unknown when usage cannot be read" do
+        with_sessions([claude_pane.merge("context_pct" => nil, "context_error" => "no reading")]) { command.check(name: "myapp", json: true) }
+
+        expect(JSON.parse(output.string)).to include("status" => "undetermined", "next" => "unknown", "doc" => "/notes/myapp/HANDOFF.md")
+      end
+
+      it "reports unknown when no daemon answers" do
+        command.check(name: "myapp", json: true)
+
+        expect(JSON.parse(output.string)).to include("next" => "unknown")
+      end
+
+      it "reports a null doc for --handoff-prompt" do
+        with_sessions([claude_pane]) { command.check(name: "myapp", json: true, handoff_prompt: "Wrap up") }
+
+        expect(JSON.parse(output.string)).to include("next" => "continue", "doc" => nil)
+      end
     end
 
     it "skips detection when --context-pct is given" do
@@ -294,6 +367,21 @@ RSpec.describe Workspace::Commands::Handoff do
       expect(restart_agent_command).to have_received(:call).with(name: "myapp", pane: "3", prompt: "Resume now", wait: true, json: false)
     end
 
+    it "resumes from HANDOFF.md in the notes directory when neither flag is given" do
+      allow(restart_agent_command).to receive(:call).and_return({exit_code: 0})
+
+      command.new(name: "myapp", pane: "%2")
+
+      expect(restart_agent_command).to have_received(:call)
+        .with(name: "myapp", pane: "%2", prompt: a_string_including("/notes/myapp/HANDOFF.md", "Start here"), wait: false, json: false)
+    end
+
+    it "passes on the notes error when neither flag is given and no directory resolves" do
+      allow(notes).to receive(:info).and_raise(Workspace::Error.new("detached", code: "notes_dir_unresolved"))
+
+      expect { command.new(name: "myapp", pane: "%2") }.to raise_error(Workspace::Error, "detached")
+    end
+
     it "raises when the daemon lists no Claude pane and no pane was given" do
       with_sessions([claude_pane.merge("kind" => "shell")]) do
         expect { command.new(name: "myapp", handoff_doc: "HANDOFF.md") }.to raise_error(Workspace::UsageError, /No Claude Code pane found/)
@@ -311,6 +399,22 @@ RSpec.describe Workspace::Commands::Handoff do
       command.new(name: "myapp", pane: "1", handoff_doc: "HANDOFF.md")
 
       expect(restart_agent_command).to have_received(:call).with(name: "myapp", pane: "1", prompt: "Resume from HANDOFF.md please", wait: false, json: false)
+    end
+  end
+  describe "the built-in packs" do
+    let(:pack_dir) { File.expand_path("../../../lib/library/play", __dir__) }
+
+    it "has the handoff pack leave the doc and the threshold to the command, as the command now does" do
+      text = File.read(File.join(pack_dir, "handoff.md"))
+
+      expect(text).to include('workspace handoff check --pane "$TMUX_PANE"', "workspace handoff new")
+      expect(text).not_to include("--handoff-doc", "DOC", "--threshold ")
+    end
+
+    it "has the notes pack name the same doc for a handoff and keep the plan apart" do
+      text = File.read(File.join(pack_dir, "notes.md"))
+
+      expect(text).to include("`IMPLEMENTATION_PLAN.md`", "`HANDOFF.md`")
     end
   end
 end

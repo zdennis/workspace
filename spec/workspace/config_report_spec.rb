@@ -253,6 +253,15 @@ RSpec.describe Workspace::ConfigReport do
       expect(row["problems"].first).to include("severity" => "error", "code" => "invalid_value", "line" => 2, "column" => 3)
     end
 
+    it "reports the built-in text of a handoff prompt as its default and effective value" do
+      row = key_row(report.show("api"), "handoff.resume_prompt")
+
+      expect(row).to include("value" => nil, "source" => "default")
+      expect(row["default"]).to eq(Workspace::ConfigSchema.default("handoff.resume_prompt"))
+      expect(row["default"]).to start_with("Read %{doc}")
+      expect(row["effective"]).to eq(row["default"])
+    end
+
     it "lists unknown keys with layer and position" do
       write("api", "dev:\n  up: x\n  bogus: 1\ndeploy_url: z\n")
       write(:global, "statusline_color: red\n")

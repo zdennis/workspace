@@ -18,17 +18,20 @@ RSpec.describe Workspace::Commands::Handoff do
   let(:locator) { instance_double(Workspace::PaneLocator) }
   let(:handoff_config) { instance_double(Workspace::HandoffConfig) }
   let(:restart_agent_command) { instance_double(Workspace::Commands::RestartAgent) }
+  let(:notes) { instance_double(Workspace::Commands::Notes) }
+  let(:notes_dir) { "/notes/myapp" }
   let(:output) { StringIO.new }
   let(:error_output) { StringIO.new }
 
   subject(:command) do
     described_class.new(config: config, tmux: tmux, locator: locator, handoff_config: handoff_config,
-      restart_agent_command: restart_agent_command, output: output, error_output: error_output)
+      restart_agent_command: restart_agent_command, notes: notes, output: output, error_output: error_output)
   end
 
   let(:defaults) { {threshold: 11, check_prompt: nil, resume_prompt: nil} }
 
   before do
+    allow(notes).to receive(:info).and_return({"dir" => notes_dir})
     allow(handoff_config).to receive(:for_workspace).and_return(defaults)
     allow(tmux).to receive(:session_name_for).with("myapp").and_return("myapp")
     allow(locator).to receive(:locate) do |_name, spec|

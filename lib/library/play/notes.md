@@ -9,7 +9,7 @@ What belongs there: the plan (`IMPLEMENTATION_PLAN.md`), findings from research 
 
 Before you start, list the directory with `ls` and read what is there. Earlier notes are your memory: read the plan before you plan anything new.
 
-Name files so they sort and say what they hold: lowercase words joined with hyphens, `.md`, and a date prefix for dated records, for example `2026-10-12-auth-findings.md`. Keep one file per topic and update it instead of adding a near copy. The plan is always `IMPLEMENTATION_PLAN.md`, and it is also where a handoff is written. Use `HANDOFF.md` only when the workspace has no plan.
+Name files so they sort and say what they hold: lowercase words joined with hyphens, `.md`, and a date prefix for dated records, for example `2026-10-12-auth-findings.md`. Keep one file per topic and update it instead of adding a near copy. The plan is always `IMPLEMENTATION_PLAN.md`. A handoff to a fresh conversation is written to `HANDOFF.md` in the same directory; `workspace handoff check` names it for you.
 
 Write notes as you work, not at the end. When you stop, write what is done, what is next, and what is blocked.
 

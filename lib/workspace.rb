@@ -521,7 +521,7 @@ module Workspace
     handoff_config = HandoffConfig.new(project_settings: project_settings, project_config: project_config,
       lineage: lineage, error_output: error_output)
     handoff_command = Commands::Handoff.new(config: config, tmux: tmux, locator: pane_locator, handoff_config: handoff_config,
-      restart_agent_command: restart_agent_command, output: output, error_output: error_output)
+      restart_agent_command: restart_agent_command, notes: notes_command, output: output, error_output: error_output)
 
     CLI.new(
       config: config,

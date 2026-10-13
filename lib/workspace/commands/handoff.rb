@@ -37,14 +37,17 @@ module Workspace
       #   template defaults
       # @param restart_agent_command [Workspace::Commands::RestartAgent] the
       #   H2 `/clear` + resume flow, reused verbatim by `new`
+      # @param notes [Workspace::Commands::Notes] says where a workspace's notes
+      #   are, which is where the default doc `HANDOFF.md` lives
       # @param output [IO] stream for the result (and `--json` output)
       # @param error_output [IO] stream for the "undetermined" reason (non-JSON)
-      def initialize(config:, tmux:, locator:, handoff_config:, restart_agent_command:, output: $stdout, error_output: $stderr)
+      def initialize(config:, tmux:, locator:, handoff_config:, restart_agent_command:, notes:, output: $stdout, error_output: $stderr)
         @config = config
         @tmux = tmux
         @locator = locator
         @handoff_config = handoff_config
         @restart_agent_command = restart_agent_command
+        @notes = notes
         @output = output
         @error_output = error_output
       end
@@ -55,7 +58,8 @@ module Workspace
       # @param threshold [Integer, nil] context-usage percent that triggers a
       #   handoff; nil uses `handoff.threshold` (default 11)
       # @param context_pct [Integer, nil] skips detection and uses this value
-      # @param handoff_doc [String, nil] path the agent updates and resumes from
+      # @param handoff_doc [String, nil] path the agent updates and resumes from; with neither this nor
+      #   +handoff_prompt+, +HANDOFF.md+ in the workspace's notes directory
       # @param handoff_prompt [String, nil] prompt sent verbatim instead of a doc
       # @param json [Boolean] emit the result as JSON instead of text
       # @return [Hash] {exit_code:} -- 0 under the threshold, 1 at/over it
@@ -78,12 +82,16 @@ module Workspace
           threshold = defaults[:threshold]
         end
 
+        doc = if handoff_prompt then nil
+        elsif handoff_doc then File.expand_path(handoff_doc)
+        else default_doc(name)
+        end
         snapshot, error = fetch_sessions(name)
-        return undetermined(json, error) if error
+        return undetermined(json, error, doc: doc) if error
 
         detail = locate(name, pane || default_pane(name, snapshot))
         pane_info = (snapshot["panes"] || []).find { |p| p["pane_id"] == detail[:id] }
-        return undetermined(json, unlisted_reason(name, detail), fix: unlisted_fix(name)) unless pane_info
+        return undetermined(json, unlisted_reason(name, detail), fix: unlisted_fix(name), doc: doc) unless pane_info
         raise Workspace::UsageError, not_claude_message(name, pane_info) unless pane_kind_ok?(pane_info)
 
         if context_pct && !context_pct.between?(0, 100)
@@ -91,31 +99,34 @@ module Workspace
         end
         pct = context_pct || pane_info["context_pct"]
         reason = context_pct ? nil : pane_info["context_error"]
-        return undetermined(json, reason || ContextReasons::NO_READING) if pct.nil?
+        return undetermined(json, reason || ContextReasons::NO_READING, doc: doc) if pct.nil?
 
         if pct < threshold
-          return ok(json, pct: pct, threshold: threshold, pane: pane_info)
+          return ok(json, pct: pct, threshold: threshold, pane: pane_info, doc: doc)
         end
 
+        prepare_default_doc(name) if doc && handoff_doc.nil?
         body = check_body(name: name, pane: pane_info, pct: pct, threshold: threshold,
-          handoff_doc: handoff_doc, handoff_prompt: handoff_prompt, defaults: defaults)
+          handoff_doc: handoff_doc || doc, handoff_prompt: handoff_prompt, defaults: defaults)
         delivery = begin
           @tmux.deliver(detail[:session], detail[:id], body)
         rescue Workspace::Error, SystemCallError => e
           Workspace::Tmux::Delivery.new(status: :failed, message: e.message)
         end
-        over_threshold(json, pct: pct, threshold: threshold, pane: pane_info, delivery: delivery)
+        over_threshold(json, pct: pct, threshold: threshold, pane: pane_info, delivery: delivery, doc: doc)
       end
 
       # @param name [String] workspace name
       # @param pane [String, nil] pane id ("%19"), "window.pane" or pane
       #   index; nil picks the daemon's first "claude" pane, same as {#check}
-      # @param handoff_doc [String, nil] path the agent should resume from
+      # @param handoff_doc [String, nil] path the agent should resume from; with neither this nor
+      #   +handoff_prompt+, +HANDOFF.md+ in the workspace's notes directory
       # @param handoff_prompt [String, nil] prompt sent verbatim instead
       # @param wait [Boolean] wait for the restart to finish instead of
       #   returning once it has started
       # @param json [Boolean] emit the result as JSON instead of text
       # @return [Hash] {exit_code:} -- see {Workspace::Commands::RestartAgent#call}
+      # @raise [Workspace::Error] when a default doc is needed and the notes directory can't be resolved
       def new(name:, pane: nil, handoff_doc: nil, handoff_prompt: nil, wait: false, json: false)
         if pane.nil?
           snapshot, error = fetch_sessions(name)
@@ -123,6 +134,7 @@ module Workspace
           pane = default_pane(name, snapshot)
         end
 
+        handoff_doc ||= resolve_default_doc(name) unless handoff_prompt
         defaults = @handoff_config.for_workspace(name)
         template = defaults[:resume_prompt] || DEFAULT_RESUME_PROMPT
         prompt = handoff_prompt || safe_format(template, DEFAULT_RESUME_PROMPT, doc: handoff_doc)
@@ -131,19 +143,11 @@ module Workspace
 
       private
 
-      DEFAULT_RESUME_PROMPT = <<~PROMPT.strip
-        Read %{doc} and follow its "Start here" instructions. Act strictly
-        as an orchestrator: delegate the actual work to sub-agents rather than doing it
-        yourself.
-      PROMPT
+      # The doc `check` and `new` use when given neither --handoff-doc nor --handoff-prompt.
+      DEFAULT_DOC_NAME = "HANDOFF.md"
 
-      DEFAULT_CHECK_PROMPT_DOC = <<~PROMPT.strip
-        %{usage} Update %{doc} now with
-        everything needed to continue this work: current state, next steps, and the
-        process/workflow for picking it back up in a fresh session (a "Start here" section
-        with a single paste-able prompt). Commit it if appropriate. Then run this exact
-        command yourself: %{new_cmd}
-      PROMPT
+      DEFAULT_RESUME_PROMPT = ConfigSchema.default("handoff.resume_prompt")
+      DEFAULT_CHECK_PROMPT_DOC = ConfigSchema.default("handoff.check_prompt")
 
       DEFAULT_CHECK_PROMPT_PROMPT = <<~PROMPT.strip
         %{usage} Save any in-progress state you'll need
@@ -159,6 +163,27 @@ module Workspace
         command yourself, with PATH replaced by the doc's absolute path:
         %{new_cmd} --handoff-doc PATH
       PROMPT
+
+      # @return [String] the default doc's absolute path
+      # @raise [Workspace::Error] when the notes directory can't be resolved
+      def resolve_default_doc(name, create: false)
+        File.join(@notes.info(name: name, create: create)["dir"], DEFAULT_DOC_NAME)
+      end
+
+      # @return [String, nil] the default doc's path, or nil when the notes directory can't be
+      #   resolved (`check` then lets the agent pick a path, as it did before the default existed)
+      def default_doc(name)
+        resolve_default_doc(name)
+      rescue Workspace::Error, SystemCallError
+        nil
+      end
+
+      # Makes the notes directory so the agent can write the doc. Without it the prompt still goes out.
+      def prepare_default_doc(name)
+        resolve_default_doc(name, create: true)
+      rescue Workspace::Error, SystemCallError => e
+        @error_output.puts "Warning: could not make the notes directory (#{e.message}); the handoff prompt is sent anyway."
+      end
 
       # The command it tells the agent to run names the pane by its id, which
       # stays with the pane however its window is split or renumbered. The id
@@ -255,10 +280,10 @@ module Workspace
           "handoff only restarts Claude Code, whose /clear it types."
       end
 
-      def undetermined(json, reason, fix: ContextReasons::FIX_HINT)
+      def undetermined(json, reason, fix: ContextReasons::FIX_HINT, doc: nil)
         if json
           @output.puts JSON.generate({"schema_version" => JSON_SCHEMA_VERSION, "ok" => true, "status" => "undetermined",
-                                        "reason" => reason, "fix" => fix})
+                                        "reason" => reason, "fix" => fix, "next" => "unknown", "doc" => doc})
         else
           @error_output.puts "workspace: could not determine context usage"
           @error_output.puts "  reason: #{reason}"
@@ -267,10 +292,11 @@ module Workspace
         {exit_code: 2}
       end
 
-      def ok(json, pct:, threshold:, pane:)
+      def ok(json, pct:, threshold:, pane:, doc: nil)
         if json
           @output.puts JSON.generate({"schema_version" => JSON_SCHEMA_VERSION, "ok" => true, "status" => "ok", "context_pct" => pct,
-                                        "threshold" => threshold, "pane" => pane["index"], "pane_id" => pane["pane_id"]})
+                                        "threshold" => threshold, "pane" => pane["index"], "pane_id" => pane["pane_id"],
+                                        "next" => "continue", "doc" => doc})
         else
           @output.puts "Context usage: #{pct}% (threshold #{threshold}%) -- under threshold, nothing to do."
         end
@@ -282,12 +308,13 @@ module Workspace
       # "unconfirmed". A caller scripting on `--json` can check "landed"
       # without parsing the status string; the status still travels for
       # anyone who wants the detail.
-      def over_threshold(json, pct:, threshold:, pane:, delivery:)
+      def over_threshold(json, pct:, threshold:, pane:, delivery:, doc: nil)
         status = delivery.landed? ? "handoff_sent" : "handoff_send_failed"
         if json
           @output.puts JSON.generate({"schema_version" => JSON_SCHEMA_VERSION, "ok" => true, "status" => status,
                                         "context_pct" => pct, "threshold" => threshold, "pane" => pane["index"], "pane_id" => pane["pane_id"],
-                                        "delivery" => delivery.status.to_s, "landed" => delivery.landed?})
+                                        "delivery" => delivery.status.to_s, "landed" => delivery.landed?,
+                                        "next" => "handoff", "doc" => doc})
         elsif delivery.landed?
           @output.puts "Context usage: #{pct}% (threshold #{threshold}%) -- at/over threshold; sent save-state prompt to pane #{pane["index"]} (#{delivery.status})."
         else

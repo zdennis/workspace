@@ -42,8 +42,9 @@ RSpec.describe Workspace::HandoffConfig do
   end
 
   describe "#for_workspace" do
-    it "uses the default threshold and no prompt overrides when unset" do
-      expect(handoff_config.for_workspace("app")).to eq(threshold: 11, check_prompt: nil, resume_prompt: nil)
+    it "uses the default threshold and the built-in prompts when unset" do
+      expect(handoff_config.for_workspace("app")).to eq(threshold: 11, check_prompt: Workspace::ConfigSchema.default("handoff.check_prompt"),
+        resume_prompt: Workspace::ConfigSchema.default("handoff.resume_prompt"))
     end
 
     it "reads handoff.threshold, handoff.check_prompt, and handoff.resume_prompt" do
@@ -57,7 +58,8 @@ RSpec.describe Workspace::HandoffConfig do
     it "warns and falls back when a hand-edited value is invalid" do
       project_settings.save("app", {"handoff" => {"threshold" => "0", "check_prompt" => "  "}})
 
-      expect(handoff_config.for_workspace("app")).to eq(threshold: 11, check_prompt: nil, resume_prompt: nil)
+      expect(handoff_config.for_workspace("app")).to eq(threshold: 11, check_prompt: Workspace::ConfigSchema.default("handoff.check_prompt"),
+        resume_prompt: Workspace::ConfigSchema.default("handoff.resume_prompt"))
       expect(error_output.string).to include("invalid handoff.threshold for 'app'")
       expect(error_output.string).to include("invalid handoff.check_prompt for 'app'")
     end
@@ -65,7 +67,8 @@ RSpec.describe Workspace::HandoffConfig do
     it "ignores a handoff block that is not a mapping" do
       project_settings.save("app", {"handoff" => "later"})
 
-      expect(handoff_config.for_workspace("app")).to eq(threshold: 11, check_prompt: nil, resume_prompt: nil)
+      expect(handoff_config.for_workspace("app")).to eq(threshold: 11, check_prompt: Workspace::ConfigSchema.default("handoff.check_prompt"),
+        resume_prompt: Workspace::ConfigSchema.default("handoff.resume_prompt"))
     end
 
     context "for a worktree workspace" do
