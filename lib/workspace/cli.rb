@@ -555,7 +555,8 @@ module Workspace
       run_action("launch", json: json) do
         launched = launch_projects(args, reattach: reattach, headless: headless, prompt: prompt, prompt_timeout: prompt_timeout, play: play,
           packs: packs, no_packs: no_packs, with_packs: true)
-        {exit_code: launched[:exit_code], results: json ? launch_rows(launched[:projects], launched[:result], plays: launched[:plays], packs: launched[:packs]) : []}
+        {exit_code: launched[:exit_code], results: json ? launch_rows(launched[:projects], launched[:result], plays: launched[:plays], packs: launched[:packs]) : [],
+         warnings: (launched[:result]&.dig(:skipped_prompts) || {}).values}
       end
     end
 
@@ -581,6 +582,8 @@ module Workspace
       call_options = {reattach: reattach, prompts: prompts}
       call_options[:bindings] = plays.transform_values { |p| @library.play_binding(p) } if plays.any?
       call_options[:report_panes] = true if composed.any?
+      optional = composed.select { |name, c| InstructionComposer.optional_prompt?(c, prompt: prompt, play: plays[name]) }
+      call_options[:optional] = optional.transform_values { |c| InstructionComposer.pack_names(c["packs"]) } if optional.any?
       call_options[:prompt_timeout] = prompt_timeout if prompt_timeout
       call_options[:headless] = true if @launch_mode.resolve(headless).headless?
       result = @launch_command.call(projects, **call_options)
@@ -622,13 +625,14 @@ module Workspace
       projects.map do |project|
         entry = @state[project]
         sent = !result.nil? && !entry.nil? && !prompt_failures.key?(project) && !start_failures.key?(project)
+        skipped = result&.dig(:skipped_prompts)&.key?(project)
         details = {iterm_window_id: entry.is_a?(Hash) ? entry["iterm_window_id"] : nil, headless: entry.is_a?(Hash) && entry["headless"] == true}
         if plays[project]
           details[:play] = plays[project].merge("delivered" => sent,
             "pane" => result&.dig(:bound_panes, project))
         end
         if packs
-          details[:packs] = packs[project] ? InstructionComposer.delivery_rows(packs[project]["packs"], delivered: sent,
+          details[:packs] = packs[project] ? InstructionComposer.delivery_rows(packs[project]["packs"], delivered: sent && !skipped,
             pane: result&.dig(:delivered_panes, project)) : []
         end
         if start_failures[project]

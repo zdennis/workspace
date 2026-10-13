@@ -23,6 +23,21 @@ RSpec.describe Workspace::AgentReadiness do
     allow(process_tree).to receive(:snapshot) { Workspace::ProcessTree::Snapshot.new(processes) }
   end
 
+  describe "#agent_running?" do
+    it "is true when a coding agent runs in any pane, without looking at its screen" do
+      expect(readiness.agent_running?("proj")).to be(true)
+      expect(tmux).not_to have_received(:capture_screen)
+    end
+
+    it "is false when no pane runs an agent, or the session has no panes" do
+      panes.replace([{id: "%1", window: 0, index: 0, pid: 100, command: "zsh"}])
+      expect(readiness.agent_running?("proj")).to be(false)
+
+      panes.clear
+      expect(readiness.agent_running?("proj")).to be(false)
+    end
+  end
+
   it "is ready once the agent's screen has stayed the same for quiet_for seconds" do
     result = readiness.wait("proj", deadline: readiness.deadline_in(60))
 

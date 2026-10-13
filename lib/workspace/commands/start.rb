@@ -210,6 +210,7 @@ module Workspace
         text = (@play || @packs) ? @library.play_prompt(@play, prompt, packs: @packs&.fetch("text")) : prompt
         prompts = text ? {config_name => text} : {}
         bindings = @play ? {config_name => @library.play_binding(@play)} : {}
+        @prompt = prompt
         result = launch(config_name, prompts, prompt_timeout, headless: headless, quiet: quiet, bindings: bindings)
         @project_settings.ensure_exists(config_name)
 
@@ -230,7 +231,9 @@ module Workspace
         json["task"] = {"id" => task["id"], "title" => task["title"]} if task
         %w[agent skill].each { |kind| json["#{kind}s"] = copied[kind] if copied.key?(kind) }
         json["play"] = @play.merge("delivered" => delivered?(result, config_name), "pane" => result&.dig(:bound_panes, config_name)) if @play
-        json["packs"] = @packs ? InstructionComposer.delivery_rows(@packs["packs"], delivered: delivered?(result, config_name), pane: result&.dig(:delivered_panes, config_name)) : []
+        skipped = result&.dig(:skipped_prompts, config_name)
+        @warnings << skipped if skipped
+        json["packs"] = @packs ? InstructionComposer.delivery_rows(@packs["packs"], delivered: delivered?(result, config_name) && !skipped, pane: result&.dig(:delivered_panes, config_name)) : []
         json["session_reused"] = result[:reused].include?(config_name) if result && result[:reused]
         if exit_code != 0
           prompt_failures = result && result[:prompt_failures]
@@ -252,6 +255,11 @@ module Workspace
       def resolve_play(play, root)
         raise Workspace::Error, "--play is not available: no library was wired." unless @library
         @library.play(play, cwd: root)
+      end
+
+      # Whether the prompt is automatic packs alone, which warns instead of failing.
+      def optional_packs?
+        InstructionComposer.optional_prompt?(@packs, prompt: @prompt, play: @play)
       end
 
       # The packs sent with the prompt, composed before anything is created so an
@@ -388,6 +396,7 @@ module Workspace
       def launch(config_name, prompts, prompt_timeout, headless:, quiet:, bindings:)
         kwargs = {prompts: prompts}
         kwargs[:report_panes] = true if @packs
+        kwargs[:optional] = {config_name => InstructionComposer.pack_names(@packs["packs"])} if optional_packs?
         kwargs[:bindings] = bindings if bindings.any?
         kwargs[:headless] = true if headless
         kwargs[:prompt_timeout] = prompt_timeout unless prompt_timeout.nil?

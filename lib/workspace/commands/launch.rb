@@ -12,6 +12,9 @@ module Workspace
       # starting. `tmuxinator start --no-attach` returns once tmux has made
       # it, so one that is still missing after this is a failed start.
       HEADLESS_SESSION_WAIT = 5
+      # Seconds an optional prompt (automatic packs alone) waits for a coding agent to
+      # show up in the session before it is skipped.
+      OPTIONAL_AGENT_WAIT = 5
 
       # @param state [Workspace::State] state persistence
       # @param iterm [Workspace::ITerm] iTerm session/pane automation
@@ -71,6 +74,11 @@ module Workspace
       #   such as a play from {Workspace::Library#play_binding}
       # @param report_panes [Boolean] add +delivered_panes:+ to the result: project => the pane id its
       #   prompt was delivered to, bound or not
+      # @param optional [Hash{String => Array<String>}] project => names of the automatic packs its prompt
+      #   carries, for a prompt that is nothing else. Such a prompt that can't be sent (no coding agent
+      #   within {OPTIONAL_AGENT_WAIT} seconds, or one that never gets ready) is a warning, not a failure:
+      #   it is not in +prompt_failures+ and does not change +exit_code+. With +report_panes+, +skipped_prompts:+
+      #   maps each such project to the warning's text.
       # @return [Hash] +{exit_code:, prompt_failures:}+; exit_code is 1 when any
       #   prompt was not sent, and prompt_failures maps each such project to why.
       #   A headless launch adds +headless: true+, +reused:+ (projects whose
@@ -81,8 +89,10 @@ module Workspace
       #   With +bindings+, +bound_panes:+ maps each project whose pane was bound
       #   to that pane id; one that could not be bound is a warning, not a failure.
       # @raise [Workspace::Error] if any project configs are missing
-      def call(projects, reattach: false, prompts: {}, prompt_timeout: @prompt_timeout, headless: false, quiet: false, bindings: {}, report_panes: false)
+      def call(projects, reattach: false, prompts: {}, prompt_timeout: @prompt_timeout, headless: false, quiet: false, bindings: {}, report_panes: false, optional: {})
         @quiet = quiet
+        @optional = optional
+        @skipped_prompts = {}
         @bindings = bindings
         @report_panes = report_panes
         @bound_panes = {}
@@ -191,7 +201,7 @@ module Workspace
 
       def with_bound_panes(result)
         result = result.merge(bound_panes: @bound_panes) unless @bindings.empty?
-        result = result.merge(delivered_panes: @delivered_panes) if @report_panes
+        result = result.merge(delivered_panes: @delivered_panes, skipped_prompts: @skipped_prompts) if @report_panes
         result
       end
 
@@ -506,15 +516,44 @@ module Workspace
       def send_prompts(session_names, prompts, prompt_timeout)
         deadline = @agent_readiness.deadline_in(prompt_timeout)
         prompts.each_with_object({}) do |(project, prompt_text), failures|
+          tmux_name = session_names.fetch(project, project)
+          packs = @optional[project]
+          if packs && (reason = missing_agent_reason(tmux_name))
+            skip_optional(project, packs, reason)
+            next
+          end
           log("Waiting for the coding agent in #{project} to be ready (up to #{prompt_timeout}s)...")
-          failure = deliver_prompt(project, session_names.fetch(project, project), prompt_text, deadline, prompt_timeout) do |pane_id|
+          failure = deliver_prompt(project, tmux_name, prompt_text, deadline, prompt_timeout) do |pane_id|
             @delivered_panes[project] = pane_id
             bind_pane(project, pane_id, @bindings[project]) if @bindings[project]
           end
           next unless failure
+          if packs
+            skip_optional(project, packs, failure)
+            next
+          end
           @error_output.puts "Error: prompt not sent to #{project}: #{failure}"
           failures[project] = failure
         end
+      end
+
+      # Gives a coding agent {OPTIONAL_AGENT_WAIT} seconds to show up in the session.
+      #
+      # @return [String, nil] why there is none, or nil once one is running
+      def missing_agent_reason(tmux_name)
+        deadline = @clock.call + OPTIONAL_AGENT_WAIT
+        loop do
+          return nil if @agent_readiness.agent_running?(tmux_name)
+          return "no coding agent is running in tmux session '#{tmux_name}'" if @clock.call >= deadline
+          @sleeper.call(1)
+        end
+      end
+
+      def skip_optional(project, packs, reason)
+        noun = (packs.size == 1) ? "pack was" : "packs were"
+        message = "the #{packs.join(" and ")} #{noun} not sent to #{project}: #{reason}"
+        @skipped_prompts[project] = message
+        @error_output.puts "Warning: #{message}"
       end
 
       # Waits for the agent, then pastes the prompt. A paste that never shows

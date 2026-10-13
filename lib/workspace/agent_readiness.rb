@@ -118,6 +118,12 @@ module Workspace
       end
     end
 
+    # @param session_name [String] the tmux session
+    # @return [Boolean] whether a coding agent is running in any pane of the session right now
+    def agent_running?(session_name)
+      !find_agent_pane(session_name)[:id].nil?
+    end
+
     private
 
     # Picks the session's agent pane, from any of its windows: the most

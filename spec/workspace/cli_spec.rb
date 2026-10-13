@@ -1408,6 +1408,23 @@ RSpec.describe Workspace::CLI do
         base: nil, yes: false, json: false, play: "kickoff")
     end
 
+    it "sends no packs on relaunch or restore" do
+      composer = instance_double(Workspace::InstructionComposer)
+      allow(composer).to receive(:compose_start)
+      state = CLITestHelpers::FakeState.new
+      state["proj1"] = {"unique_id" => "uid1"}
+      tmux = CLITestHelpers::FakeTmux.new
+      allow(tmux).to receive(:sessions).and_return(["proj1"])
+      window_manager = CLITestHelpers::FakeWindowManager.new
+      allow(window_manager).to receive(:iterm_windows).and_return({123 => "workspace-proj1"})
+      cli, = build_test_cli(state: state, tmux: tmux, iterm: CLITestHelpers::FakeITerm.new, window_manager: window_manager, instruction_composer: composer)
+      allow(cli).to receive(:sleep)
+
+      cli.run(["relaunch"])
+
+      expect(composer).not_to have_received(:compose_start)
+    end
+
     it "passes --pack and --no-packs through to start, and refuses both together" do
       start_command = double("start", call: {exit_code: 0, prompt_failures: {}})
       cli, _, error_output = build_test_cli(start_command: start_command)
@@ -3870,6 +3887,17 @@ RSpec.describe Workspace::CLI do
 
         expect(launcher.calls).to eq([[%w[api], false], [%w[web], true]])
         expect(restore.launch_failures).to eq({})
+      end
+
+      it "sends no packs when it launches a missing workspace" do
+        composer = instance_double(Workspace::InstructionComposer)
+        allow(composer).to receive(:compose_start)
+        restore = restore_class.new(missing: %w[api])
+        cli, = restore_cli(restore, launch_command: launch.new(state), launch_mode: CLITestHelpers.launch_mode(headless: false), instruction_composer: composer)
+
+        cli.run(["restore"])
+
+        expect(composer).not_to have_received(:compose_start)
       end
 
       it "hands back why a workspace could not be launched" do
@@ -6908,6 +6936,34 @@ RSpec.describe Workspace::CLI do
             expect(parse_one(raw)).to include("ok" => false, "code" => "unknown_library_entry")
             expect(project_config).not_to have_received(:create)
             expect(launch_command).not_to have_received(:call)
+          end
+
+          it "marks a prompt of automatic packs alone as optional, and any explicit prompt, play or pack as required" do
+            launch_command = double("launch", call: {exit_code: 0, prompt_failures: {}})
+            cli, = build_test_cli(launch_command: launch_command, project_config: project_config, library: library, instruction_composer: composer)
+
+            cli.run(["launch", "api"])
+            cli.run(["launch", "--prompt", "Go.", "web"])
+            cli.run(["launch", "--pack", "review", "api"])
+            cli.run(["launch", "--play", "kickoff", "web"])
+
+            expect(launch_command).to have_received(:call).with(["api"], hash_including(optional: {"api" => ["notes"]})).once
+            expect(launch_command).to have_received(:call).with(["web"], hash_not_including(:optional)).twice
+            expect(launch_command).to have_received(:call).with(["api"], hash_not_including(:optional)).once
+          end
+
+          it "exits 0 with delivered false, a null pane and a warning when the automatic pack was skipped" do
+            state = CLITestHelpers::FakeState.new
+            message = "the notes pack was not sent to api: no coding agent is running in tmux session 'api'"
+            cli, raw, = action_cli(state: state, project_config: project_config, library: library, instruction_composer: composer,
+              &launching(state, result: {exit_code: 0, prompt_failures: {}, delivered_panes: {}, skipped_prompts: {"api" => message}}))
+
+            status = exit_status { cli.run(["launch", "api", "--json"]) }
+
+            doc = parse_one(raw)
+            expect(status).to eq(0)
+            expect(doc["results"].first["packs"]).to eq([{"name" => "notes", "source" => "config", "delivered" => false, "pane" => nil}])
+            expect(doc["warnings"]).to eq([message])
           end
 
           it "reports each project's packs in its row, empty when none applied" do

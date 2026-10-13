@@ -467,6 +467,29 @@ RSpec.describe Workspace::Commands::Start do
           expect(JSON.parse(output.string)["packs"]).to eq([{"name" => "notes", "source" => "config", "delivered" => false, "pane" => nil}])
         end
 
+        it "asks launch to treat a prompt of automatic packs alone as optional, and any explicit one as required" do
+          packs_command.call("PROJ-123")
+          packs_command.call("PROJ-123", prompt: "Go.")
+          packs_command.call("PROJ-123", packs: %w[review])
+          packs_command.call("PROJ-123", play: "kickoff")
+
+          expect(launch_command).to have_received(:call).with(anything, hash_including(optional: {"myproject.worktree-PROJ-123" => ["notes"]})).once
+          expect(launch_command).to have_received(:call).with(anything, hash_not_including(:optional)).exactly(3).times
+        end
+
+        it "exits 0 with delivered false, a null pane and a warning when the automatic pack was skipped" do
+          message = "the notes pack was not sent to myproject.worktree-PROJ-123: no coding agent is running"
+          allow(launch_command).to receive(:call).and_return({exit_code: 0, prompt_failures: {}, delivered_panes: {}, skipped_prompts: {"myproject.worktree-PROJ-123" => message}})
+
+          result = packs_command.call("PROJ-123", json: true)
+
+          doc = JSON.parse(output.string)
+          expect(result[:exit_code]).to eq(0)
+          expect(doc["packs"]).to eq([{"name" => "notes", "source" => "config", "delivered" => false, "pane" => nil}])
+          expect(doc["warnings"]).to include(message)
+          expect(doc).not_to have_key("error")
+        end
+
         it "reports an empty packs list when none applied" do
           packs_command.call("PROJ-123", no_packs: true, json: true)
 

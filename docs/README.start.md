@@ -71,7 +71,7 @@ and/or `--yes` alongside it when the branch might need to be created.
 
 ### Packs
 
-`start` also sends the agent the instruction packs that apply, in one send: the `--play` line, then the packs (one `## From pack <name>` heading each), then the `--prompt` text. The automatic pack is `notes` (where working notes go; `start` has already set the notes directory up), unless the project's `notes.instructions` key is `false`. `--pack NAME` adds a pack (repeatable; any library play can be named, see [`instructions`](README.instructions.md)), and `--no-packs` drops the automatic ones for this run; the two together are a usage error. Packs are composed before the worktree is created, so an unknown name fails with `unknown_library_entry` and changes nothing. `workspace instructions compose --start` prints the same text and sends nothing.
+`start` also sends the agent the instruction packs that apply, in one send: the `--play` line, then the packs (one `## From pack <name>` heading each), then the `--prompt` text. The automatic pack is `notes` (where working notes go; `start` has already set the notes directory up), unless the project's `notes.instructions` key is `false`. `--pack NAME` adds a pack (repeatable; any library play can be named, see [`instructions`](README.instructions.md)), and `--no-packs` drops the automatic ones for this run; the two together are a usage error. A prompt of automatic packs alone is optional: if the agent is missing or never ready, `start` still exits 0, prints `Warning: the notes pack was not sent to <workspace>: <reason>`, reports `delivered: false` with `pane: null`, and adds the same sentence to `warnings` in `--json`. With `--prompt`, `--play` or `--pack` a failed delivery is `prompt_not_sent` and exit 1, as before. Packs are composed before the worktree is created, so an unknown name fails with `unknown_library_entry` and changes nothing. `workspace instructions compose --start` prints the same text and sends nothing.
 
 ### Plays
 
@@ -137,7 +137,7 @@ On success, one line of JSON on stdout (nothing else is written to stdout under
   `delivered` is whether the prompt carrying it was sent, and `pane` is the tmux
   pane id (`%5`) bound to the play, or `null` when it was not delivered or the
   pane could not be bound
-- `packs` — always present: one `{"name", "source", "delivered", "pane"}` object per pack sent, in order, `[]` when none applied. `source` is `config` (automatic) or `flag` (`--pack`); `delivered` is whether the prompt carrying it was sent, and `pane` the tmux pane id it went to (`null` when not delivered). A pack that was not delivered rides the same `prompt_not_sent` failure as the prompt
+- `packs` — always present: one `{"name", "source", "delivered", "pane"}` object per pack sent, in order, `[]` when none applied. `source` is `config` (automatic) or `flag` (`--pack`); `delivered` is whether the prompt carrying it was sent, and `pane` the tmux pane id it went to (`null` when not delivered). With an explicit prompt, play or pack, an undelivered pack rides the same `prompt_not_sent` failure as the prompt; automatic packs alone only warn (see Packs)
 - `agents`, `skills` — present only with `--agent` or `--skill`: one object per entry,
   `{"ref", "scope", "source", "path", "outcome"}`. `source` is the library path
   (a skill's directory), `path` is where it was copied in the worktree, and `outcome` is

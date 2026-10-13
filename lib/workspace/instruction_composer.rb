@@ -102,7 +102,22 @@ module Workspace
     # @param pane [String, nil] the pane id it was sent to
     # @return [Array<Hash{String=>Object}>] "name", "source", "delivered" and "pane" of each
     def self.delivery_rows(packs, delivered:, pane:)
-      packs.map { |pack| {"name" => pack["ref"].split("/", 2).last, "source" => pack["source"], "delivered" => delivered, "pane" => pane} }
+      packs.map { |pack| {"name" => pack_names([pack]).first, "source" => pack["source"], "delivered" => delivered, "pane" => pane} }
+    end
+
+    # @param packs [Array<Hash>] "packs" from {#compose_start}
+    # @return [Array<String>] their names
+    def self.pack_names(packs)
+      packs.map { |pack| pack["ref"].split("/", 2).last }
+    end
+
+    # Whether a prompt is nothing but automatic packs, so that failing to send it is a
+    # warning: no `--prompt` text, no play, and no pack named with `--pack`.
+    #
+    # @param composed [Hash, nil] from {#compose_start}
+    # @return [Boolean]
+    def self.optional_prompt?(composed, prompt:, play:)
+      !composed.nil? && play.nil? && prompt.to_s.strip.empty? && composed["packs"].all? { |pack| pack["source"] == "config" }
     end
 
     # @return [Array<String>] the packs composed when a caller names none

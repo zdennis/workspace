@@ -340,6 +340,65 @@ RSpec.describe Workspace::Commands::Launch do
         expect(agent_readiness).not_to have_received(:wait)
       end
 
+      context "with a prompt that is only automatic packs (optional:)" do
+        let(:ticks) { [0] }
+        subject(:command) do
+          described_class.new(
+            state: state, iterm: iterm, window_manager: window_manager, tmux: tmux,
+            project_config: project_config, window_layout: window_layout, config: config,
+            pipeline_config: pipeline_config, agent_readiness: agent_readiness, prompt_timeout: 60,
+            sleeper: ->(seconds) { ticks[0] += seconds }, clock: -> { ticks[0] }, output: output, error_output: error_output
+          )
+        end
+        let(:optional) { {"proj1" => ["notes"]} }
+
+        before { allow(agent_readiness).to receive(:agent_running?).and_return(true) }
+
+        it "sends it like any prompt when the agent is ready" do
+          result = command.call(["proj1"], prompts: {"proj1" => "notes text"}, optional: optional, report_panes: true)
+
+          expect(tmux).to have_received(:deliver).with("tmux-proj1", "0.1", "notes text")
+          expect(result).to include(exit_code: 0, prompt_failures: {}, skipped_prompts: {})
+        end
+
+        it "skips it without waiting for readiness when no agent pane appears, and still exits 0" do
+          allow(agent_readiness).to receive(:agent_running?).and_return(false)
+
+          result = command.call(["proj1"], prompts: {"proj1" => "notes text"}, optional: optional, report_panes: true)
+
+          expect(agent_readiness).not_to have_received(:wait)
+          expect(tmux).not_to have_received(:deliver)
+          expect(ticks[0]).to be <= 1 + described_class::OPTIONAL_AGENT_WAIT
+          expect(result).to include(exit_code: 0, prompt_failures: {}, delivered_panes: {})
+          expect(result[:skipped_prompts]).to eq("proj1" => "the notes pack was not sent to proj1: no coding agent is running in tmux session 'tmux-proj1'")
+          expect(error_output.string).to include("Warning: the notes pack was not sent to proj1: no coding agent is running")
+          expect(error_output.string).not_to include("Error:")
+        end
+
+        it "skips it, still exiting 0, when the agent never becomes ready" do
+          allow(agent_readiness).to receive(:wait)
+            .and_return(Workspace::AgentReadiness::Result.new(ready: false, reason: "Claude Code (pane 0.1) is still starting up"))
+
+          result = command.call(["proj1"], prompts: {"proj1" => "notes text"}, optional: optional, report_panes: true)
+
+          expect(result[:exit_code]).to eq(0)
+          expect(result[:prompt_failures]).to eq({})
+          expect(result[:skipped_prompts]["proj1"]).to include("the notes pack was not sent to proj1: Claude Code (pane 0.1) is still starting up")
+        end
+
+        it "still fails a project whose prompt is not optional" do
+          allow(agent_readiness).to receive(:agent_running?).and_return(false)
+          allow(agent_readiness).to receive(:wait)
+            .and_return(Workspace::AgentReadiness::Result.new(ready: false, reason: "no coding agent yet"))
+
+          result = command.call(["proj1", "proj2"], prompts: {"proj1" => "notes text", "proj2" => "fix it"}, optional: optional, report_panes: true)
+
+          expect(result[:exit_code]).to eq(1)
+          expect(result[:prompt_failures].keys).to eq(["proj2"])
+          expect(result[:skipped_prompts].keys).to eq(["proj1"])
+        end
+      end
+
       context "with pane bindings" do
         let(:bindings_store) { Workspace::PaneBindings.new(path: File.join(tmpdir, "bindings.json")) }
         let(:locator) { instance_double(Workspace::PaneLocator) }
