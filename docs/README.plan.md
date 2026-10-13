@@ -85,6 +85,12 @@ The parser never fails. It reads at most 1 MB, and it returns `warnings` for wha
 
 A fact that can't be read never decides a state. A tmux that can't be asked, or a workspace on a socket of its own, is not `stopped`; a plan with no `owner_pane`, or a daemon that does not answer, leaves `pane_state` null, so the plan reads `idle` (or `blocked`) rather than `working`. Plans with no tasks skip every read.
 
+## The implementation-plan play
+
+`play/implementation-plan` is a built-in [play](README.library.md) (`lib/library/play/implementation-plan.md`) that teaches an agent this file: where to find it (`workspace plan path`), the task syntax, taking a task to `[~]` and then `[x]` only once it is verified, re-reading `status:` before each task, and stopping on `paused`. Send it with `--pack implementation-plan` or `--play implementation-plan`; it is not one of the packs sent automatically. It names `workspace plan status` and `workspace plan start`.
+
+The plan is also the handoff doc: with no `--handoff-doc`, [`handoff check` and `new`](README.handoff.md#the-default-doc) use `IMPLEMENTATION_PLAN.md` when it exists, and `new` binds the pane to this play. [`doctor`](README.doctor.md) warns on a paused plan whose owner pane is working and on a `[~]` task in a workspace with no session.
+
 ## JSON output
 
 ```json

@@ -14,10 +14,11 @@ module Workspace
     #   window-tool are needed; nil builds one from +config+
     # @param project_settings [Workspace::ProjectSettings, nil] reads/writes the
     #   global config for the statusLine check and `--fix`; nil builds one from +config+
+    # @param plan [Workspace::Commands::Plan, nil] reads the plans of the current project's workspaces; nil skips the plan check
     # @param working_dir [String] directory to detect the current project from
     # @param output [IO] output stream for results
     def initialize(config:, state:, hook_installer:, project_detector:, which: nil, git: nil,
-      pipeline_config: nil, launch_mode: nil, project_settings: nil, working_dir: Dir.pwd, output: $stdout)
+      pipeline_config: nil, launch_mode: nil, project_settings: nil, plan: nil, working_dir: Dir.pwd, output: $stdout)
       @launch_mode = launch_mode || LaunchMode.new(project_settings: ProjectSettings.new(config: config), which: which)
       @config = config
       @state = state
@@ -27,6 +28,7 @@ module Workspace
       @git = git
       @pipeline_config = pipeline_config || PipelineConfig.new(config: config)
       @project_settings = project_settings || ProjectSettings.new(config: config)
+      @plan = plan
       @working_dir = working_dir
       @output = output
     end
@@ -225,6 +227,7 @@ module Workspace
       check_worktree_lock_hooks(capable) unless capable.empty?
       check_statusline(capable)
       issues += check_pipeline_config(project)
+      check_plans(project)
 
       issues
     end
@@ -277,6 +280,26 @@ module Workspace
       @output.puts "  ✗  pipeline config invalid for #{project}"
       @output.puts "     ↳ #{e.message}"
       1
+    end
+
+    # Warns, and prints nothing when all is well. Two states of a plan point at a session that
+    # disagrees with it: a paused plan whose owner pane is still working, and a `[~]` task in a
+    # workspace with no session (the plan's `stopped` state; a paused plan reads `paused` instead).
+    # A plan that can't be read is not worth failing doctor over.
+    def check_plans(project)
+      return unless @plan
+
+      @plan.rows(all: true).select { |row| row["project"] == project && row["exists"] }.each do |row|
+        if row["status"] == "paused" && row["pane_state"] == "working"
+          @output.puts "  ⚠  plan for #{row["workspace"]} is paused, but its owner pane #{row["owner_pane"]} is working"
+          @output.puts "     ↳ fix: tell that agent to stop, or set 'status: active' in #{row["path"]} to let it go on"
+        elsif row["state"] == "stopped" && row.dig("counts", "in_progress").to_i.positive?
+          @output.puts "  ⚠  plan for #{row["workspace"]} has a task in progress ([~]) but the workspace has no session"
+          @output.puts "     ↳ fix: start the workspace and resume the plan, or change the task back to [ ] in #{row["path"]}"
+        end
+      end
+    rescue
+      nil
     end
 
     # A worktree without hooks only loses edit-lock enforcement (advisory

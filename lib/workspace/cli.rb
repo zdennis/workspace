@@ -432,7 +432,7 @@ module Workspace
           handoff         Check context usage and hand off to a fresh conversation
           help            Show this help message
           init            Install tmuxinator templates and create config directory
-          instructions    Print the instructions built from library packs (binding, orchestrator, commits, review, notes)
+          instructions    Print the instructions built from library packs (binding, orchestrator, commits, review, notes, handoff, dev, implementation-plan)
           kill            Kill a worktree project and remove its worktree (auto-detects from cwd)
           launch          Launch tmuxinator projects in iTerm windows, or headless in plain tmux
           layout          Save/restore tmux pane layouts (auto-saved before resize)
@@ -2662,8 +2662,10 @@ module Workspace
 
         NAME defaults to the workspace detected from the current directory.
 
-        With neither --handoff-doc nor --handoff-prompt, both use HANDOFF.md in the
-        workspace's notes directory (`check` makes the directory first). If that
+        With neither --handoff-doc nor --handoff-prompt, both use the workspace's plan
+        (IMPLEMENTATION_PLAN.md) when its notes directory has one, else HANDOFF.md there
+        (`check` makes the directory first); `new` also binds the pane to the
+        implementation-plan play when the plan is the doc. If the notes
         directory can't be worked out, `check` lets the agent pick a path and `new`
         fails with notes_dir_unresolved: pass --handoff-doc then.
 
@@ -2676,8 +2678,8 @@ module Workspace
           --threshold PCT        Context usage percent that triggers a handoff, 1-100
                                   (default: handoff.threshold, or 11)
           --context-pct N        Skip detection and use this value (0-100)
-          --handoff-doc PATH     Doc the agent updates and resumes from (default:
-                                  HANDOFF.md in the notes directory)
+          --handoff-doc PATH     Doc the agent updates and resumes from (default: the
+                                  plan, else HANDOFF.md, in the notes directory)
           --handoff-prompt TEXT  Prompt sent verbatim instead of a doc
           --json                 Print the result as JSON, with "next"
                                   (continue, handoff or unknown) and "doc"
@@ -2688,8 +2690,8 @@ module Workspace
                                   (default: the first Claude Code pane; `workspace
                                   sessions NAME` lists panes). Must be a pane of
                                   NAME's own tmux session
-          --handoff-doc PATH     Doc the agent reads and resumes from (default:
-                                  HANDOFF.md in the notes directory)
+          --handoff-doc PATH     Doc the agent reads and resumes from (default: the
+                                  plan, else HANDOFF.md, in the notes directory)
           --handoff-prompt TEXT  Prompt sent verbatim instead of a doc
           --wait                 Wait for the restart to finish and report how it
                                   went (don't use this from the agent being restarted)
@@ -2699,7 +2701,7 @@ module Workspace
         was sent), 2 when context usage can't be determined (nothing was sent).
 
         Examples:
-          workspace handoff check myapp                           # the doc is HANDOFF.md in the notes directory
+          workspace handoff check myapp                           # the doc is the plan, else HANDOFF.md
           workspace handoff check myapp --handoff-doc HANDOFF.md
           workspace handoff check myapp --pane 2 --threshold 20 --json    # for scripting
           workspace handoff new myapp --pane 1 --handoff-doc HANDOFF.md    # without going through check
@@ -2738,7 +2740,7 @@ module Workspace
           "must be a pane of NAME's own tmux session; default: the first Claude Code pane") { |v| pane = v }
         opts.on("--threshold PCT", "Context usage percent that triggers a handoff") { |v| threshold = v }
         opts.on("--context-pct N", Integer, "Skip detection and use this value") { |v| context_pct = v }
-        opts.on("--handoff-doc PATH", "Doc the agent updates and resumes from (default: HANDOFF.md in the notes directory)") { |v| handoff_doc = v }
+        opts.on("--handoff-doc PATH", "Doc the agent updates and resumes from (default: the plan, else HANDOFF.md, in the notes directory)") { |v| handoff_doc = v }
         opts.on("--handoff-prompt TEXT", "Prompt sent verbatim instead of a doc") { |v| handoff_prompt = v }
         opts.on("--json", "Print the result as JSON; errors as {\"schema_version\":1,\"ok\":false,\"error\":...}") { json = true }
       end
@@ -2777,7 +2779,7 @@ module Workspace
         opts.banner = "Usage: workspace handoff new NAME [options]"
         opts.on("--pane PANE", "tmux pane id ('%19'; \"$TMUX_PANE\" inside the pane), window.pane (1.0), or a pane index in window 0;",
           "must be a pane of NAME's own tmux session; default: the first Claude Code pane") { |v| pane = v }
-        opts.on("--handoff-doc PATH", "Doc the agent reads and resumes from (default: HANDOFF.md in the notes directory)") { |v| handoff_doc = v }
+        opts.on("--handoff-doc PATH", "Doc the agent reads and resumes from (default: the plan, else HANDOFF.md, in the notes directory)") { |v| handoff_doc = v }
         opts.on("--handoff-prompt TEXT", "Prompt sent verbatim instead of a doc") { |v| handoff_prompt = v }
         opts.on("--wait", "Wait for the restart to finish and report how it went") { wait = true }
         opts.on("--json", "Print the result as JSON; errors as {\"schema_version\":1,\"ok\":false,\"error\":...}") { json = true }
@@ -3828,11 +3830,12 @@ module Workspace
         opts.banner = "Usage: workspace instructions compose [--pack NAME]... [--pane %ID] [--name WORKSPACE] [--json]\n       workspace instructions compose --start [--pack NAME]... [--no-packs] [--name WORKSPACE] [--json]"
         opts.separator ""
         opts.separator "Print the instructions an agent is given, built from library packs. A pack is a"
-        opts.separator "library play; workspace ships seven: binding (how to work in a bound pane),"
+        opts.separator "library play; workspace ships eight: binding (how to work in a bound pane),"
         opts.separator "orchestrator (delegate to sub-agents), commits (how to commit), review (review a"
         opts.separator "diff with reviewer sub-agents), notes (where working notes go), handoff (run"
-        opts.separator "'workspace handoff check' after every task) and dev (queue for the shared dev"
-        opts.separator "environment before testing, release it when done). With no"
+        opts.separator "'workspace handoff check' after every task), dev (queue for the shared dev"
+        opts.separator "environment before testing, release it when done) and implementation-plan"
+        opts.separator "(keep the counted task list in IMPLEMENTATION_PLAN.md). With no"
         opts.separator "--pack, binding, orchestrator and commits are composed, in that order. Each"
         opts.separator "pack is printed under a heading that names where it came from."
         opts.separator ""

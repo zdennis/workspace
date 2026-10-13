@@ -19,13 +19,15 @@ RSpec.describe Workspace::Commands::Handoff do
   let(:handoff_config) { instance_double(Workspace::HandoffConfig) }
   let(:restart_agent_command) { instance_double(Workspace::Commands::RestartAgent) }
   let(:notes) { instance_double(Workspace::Commands::Notes) }
+  let(:binder) { instance_double(Workspace::Commands::Binding, live: nil, bind: {}) }
+  let(:library) { instance_double(Workspace::Library) }
   let(:notes_dir) { "/notes/myapp" }
   let(:output) { StringIO.new }
   let(:error_output) { StringIO.new }
 
   subject(:command) do
     described_class.new(config: config, tmux: tmux, locator: locator, handoff_config: handoff_config,
-      restart_agent_command: restart_agent_command, notes: notes, output: output, error_output: error_output)
+      restart_agent_command: restart_agent_command, notes: notes, binder: binder, library: library, output: output, error_output: error_output)
   end
 
   let(:defaults) { {threshold: 11, check_prompt: nil, resume_prompt: nil} }

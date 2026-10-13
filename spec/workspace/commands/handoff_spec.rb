@@ -14,13 +14,15 @@ RSpec.describe Workspace::Commands::Handoff do
   let(:handoff_config) { instance_double(Workspace::HandoffConfig) }
   let(:restart_agent_command) { instance_double(Workspace::Commands::RestartAgent) }
   let(:notes) { instance_double(Workspace::Commands::Notes) }
+  let(:binder) { instance_double(Workspace::Commands::Binding, live: nil, bind: {}) }
+  let(:library) { instance_double(Workspace::Library) }
   let(:notes_dir) { "/notes/myapp" }
   let(:output) { StringIO.new }
   let(:error_output) { StringIO.new }
 
   subject(:command) do
     described_class.new(config: config, tmux: tmux, locator: locator, handoff_config: handoff_config,
-      restart_agent_command: restart_agent_command, notes: notes, output: output, error_output: error_output)
+      restart_agent_command: restart_agent_command, notes: notes, binder: binder, library: library, output: output, error_output: error_output)
   end
 
   let(:defaults) { {threshold: 11, check_prompt: nil, resume_prompt: nil} }
@@ -401,6 +403,176 @@ RSpec.describe Workspace::Commands::Handoff do
       expect(restart_agent_command).to have_received(:call).with(name: "myapp", pane: "1", prompt: "Resume from HANDOFF.md please", wait: false, json: false)
     end
   end
+  describe "when the workspace has a plan" do
+    let(:notes_dir) { File.join(tmpdir, "notes") }
+    let(:plan_path) { File.join(notes_dir, "IMPLEMENTATION_PLAN.md") }
+    let(:over_pane) { claude_pane.merge("context_pct" => 42) }
+    let(:play) { {"ref" => "play/implementation-plan", "scope" => "builtin", "path" => "/lib/library/play/implementation-plan.md"} }
+
+    before do
+      FileUtils.mkdir_p(notes_dir)
+      File.write(plan_path, "---\nplan: 1\n---\n\n## Tasks\n\n- [ ] T1 First\n")
+      allow(library).to receive(:pack).with("implementation-plan", cwd: nil).and_return([play, "body"])
+      allow(library).to receive(:play_binding) do |entry, packs: []|
+        base = {"kind" => "play", "id" => entry["ref"], "instructions" => entry["path"]}
+        packs.any? ? base.merge("packs" => packs) : base
+      end
+      allow(tmux).to receive(:deliver).and_return(Workspace::Tmux::Delivery.new(status: :submitted))
+      allow(restart_agent_command).to receive(:call).and_return({exit_code: 0})
+    end
+
+    describe "check" do
+      it "names the plan, not HANDOFF.md, and leaves the new command to find it so the pane is bound" do
+        with_sessions([over_pane]) { command.check(name: "myapp") }
+
+        expect(tmux).to have_received(:deliver).with("myapp", "%1", a_string_including(plan_path, "workspace handoff new myapp --pane '%1'"))
+        expect(tmux).not_to have_received(:deliver).with(anything, anything, a_string_including("HANDOFF.md", "--handoff-doc"))
+      end
+
+      it "tells the agent not to run new when the plan is paused" do
+        with_sessions([over_pane]) { command.check(name: "myapp") }
+
+        expect(tmux).to have_received(:deliver).with("myapp", "%1", a_string_including("If the plan's status: is paused, write the doc and end your turn without running that command."))
+      end
+
+      it "adds no paused note for an explicit doc" do
+        with_sessions([over_pane]) { command.check(name: "myapp", handoff_doc: "/x/H.md") }
+
+        expect(tmux).not_to have_received(:deliver).with(anything, anything, a_string_including("paused"))
+      end
+
+      it "reports the plan as doc in --json, under the threshold and over it" do
+        with_sessions([claude_pane]) { command.check(name: "myapp", json: true) }
+        expect(JSON.parse(output.string)).to include("next" => "continue", "doc" => plan_path)
+
+        output.truncate(0)
+        output.rewind
+        with_sessions([over_pane]) { command.check(name: "myapp", json: true) }
+        expect(JSON.parse(output.string)).to include("next" => "handoff", "doc" => plan_path)
+      end
+
+      it "keeps an explicit --handoff-doc over the plan" do
+        with_sessions([over_pane]) { command.check(name: "myapp", handoff_doc: "/x/H.md", json: true) }
+
+        expect(JSON.parse(output.string)).to include("doc" => "/x/H.md")
+        expect(tmux).to have_received(:deliver).with("myapp", "%1", a_string_including("--handoff-doc /x/H.md"))
+      end
+
+      it "keeps HANDOFF.md when the notes directory has no plan file" do
+        File.delete(plan_path)
+        with_sessions([claude_pane]) { command.check(name: "myapp", json: true) }
+
+        expect(JSON.parse(output.string)).to include("doc" => File.join(notes_dir, "HANDOFF.md"))
+      end
+
+      it "does not take a directory named like the plan for a plan" do
+        File.delete(plan_path)
+        Dir.mkdir(plan_path)
+        with_sessions([claude_pane]) { command.check(name: "myapp", json: true) }
+
+        expect(JSON.parse(output.string)).to include("doc" => File.join(notes_dir, "HANDOFF.md"))
+      end
+    end
+
+    describe "new" do
+      it "resumes from the plan and binds the pane to the plan play before the restart" do
+        order = []
+        allow(binder).to receive(:bind) { |**| order << :bind }
+        allow(restart_agent_command).to receive(:call) { |**| (order << :restart) && {exit_code: 0} }
+
+        command.new(name: "myapp", pane: "%2")
+
+        expect(binder).to have_received(:bind).with(hash_including({workspace: "myapp", pane: "%2"}.merge("kind" => "play", "id" => "play/implementation-plan",
+          "instructions" => play["path"])))
+        expect(restart_agent_command).to have_received(:call).with(name: "myapp", pane: "%2", prompt: a_string_including(plan_path), wait: false, json: false)
+        expect(order).to eq(%i[bind restart])
+      end
+
+      it "binds the pane the daemon names when no --pane is given" do
+        with_sessions([claude_pane]) { command.new(name: "myapp") }
+
+        expect(binder).to have_received(:bind).with(hash_including(workspace: "myapp", pane: "%1"))
+      end
+
+      it "keeps the packs a play binding already has" do
+        allow(binder).to receive(:live).with(pane: "%2").and_return({"kind" => "play", "id" => "play/notes", "packs" => %w[notes handoff]})
+
+        command.new(name: "myapp", pane: "%2")
+
+        expect(binder).to have_received(:bind).with(hash_including("id" => "play/implementation-plan", "packs" => %w[notes handoff]))
+      end
+
+      it "leaves a run or review binding as it is" do
+        allow(binder).to receive(:live).with(pane: "%2").and_return({"kind" => "run", "id" => "wr_1"})
+
+        command.new(name: "myapp", pane: "%2")
+
+        expect(binder).not_to have_received(:bind)
+        expect(restart_agent_command).to have_received(:call)
+      end
+
+      it "does not bind or change anything for an explicit --handoff-doc" do
+        command.new(name: "myapp", pane: "%2", handoff_doc: "/x/H.md")
+
+        expect(binder).not_to have_received(:bind)
+        expect(restart_agent_command).to have_received(:call).with(hash_including(prompt: a_string_including("/x/H.md")))
+      end
+
+      it "does not bind for --handoff-prompt" do
+        command.new(name: "myapp", pane: "%2", handoff_prompt: "Resume now")
+
+        expect(binder).not_to have_received(:bind)
+      end
+
+      it "does not bind when there is no plan, and resumes from HANDOFF.md" do
+        File.delete(plan_path)
+
+        command.new(name: "myapp", pane: "%2")
+
+        expect(binder).not_to have_received(:bind)
+        expect(restart_agent_command).to have_received(:call).with(hash_including(prompt: a_string_including(File.join(notes_dir, "HANDOFF.md"))))
+      end
+
+      [Workspace::Error.new("pane gone", code: "pane_not_found"), Errno::EACCES.new("bindings.json")].each do |error|
+        it "warns and still restarts when the binding fails with #{error.class}" do
+          allow(binder).to receive(:bind).and_raise(error)
+
+          result = command.new(name: "myapp", pane: "%2")
+
+          expect(result).to eq(exit_code: 0)
+          expect(error_output.string).to include("Warning: could not bind pane %2 to the plan play")
+        end
+      end
+
+      it "warns and still restarts when the plan play cannot be read" do
+        allow(library).to receive(:pack).and_raise(Workspace::Error.new("gone", code: "library_source_missing"))
+
+        command.new(name: "myapp", pane: "%2")
+
+        expect(error_output.string).to include("Warning: could not bind pane %2 to the plan play", "gone")
+        expect(restart_agent_command).to have_received(:call)
+      end
+    end
+  end
+
+  describe "the built-in play" do
+    let(:play_dir) { File.expand_path("../../../lib/library/play", __dir__) }
+
+    it "ships implementation-plan with a description and the task syntax" do
+      text = File.read(File.join(play_dir, "implementation-plan.md"))
+
+      expect(text).to start_with("---\ndescription: ")
+      expect(text).to include("workspace plan path", "workspace plan init --title", "workspace plan status", "workspace plan start",
+        "- [ ] T1 Short title in the imperative", "`[~]` in progress")
+    end
+
+    it "ends the turn on a paused plan in both the plan play and the handoff pack" do
+      expect(File.read(File.join(play_dir, "implementation-plan.md"))).to include("Do not run `workspace handoff new`")
+      expect(File.read(File.join(play_dir, "handoff.md")))
+        .to include("If the plan's `status:` is `paused`, write the doc and end your turn without running `handoff new`.")
+    end
+  end
+
   describe "the built-in packs" do
     let(:pack_dir) { File.expand_path("../../../lib/library/play", __dir__) }
 

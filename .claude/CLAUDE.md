@@ -15,7 +15,7 @@ A macOS CLI (Ruby) for managing tmuxinator-based development workspaces in iTerm
 - `lib/workspace/state.rb` — JSON-persisted session state
 - `lib/workspace/git.rb` — Git and worktree operations
 - `lib/workspace/which.rb` — Shared default PATH lookup for injectable `which:` collaborators
-- `lib/workspace/doctor.rb` — Dependency checking
+- `lib/workspace/doctor.rb` — Dependency checking; warns on a paused plan whose owner pane is working and on a `[~]` task in a workspace with no session
 - `lib/workspace/tmux.rb` — Tmux session management
 - `lib/workspace/project_config.rb` — Tmuxinator config generation
 - `lib/workspace/project_catalog.rb` — Groups workspaces into projects (main checkout + worktrees) by the realpath of each checkout's git common dir, read from `.git` files; backs `projects`
@@ -36,7 +36,7 @@ A macOS CLI (Ruby) for managing tmuxinator-based development workspaces in iTerm
 - `lib/workspace/notes_config.rb` — Reads a project's `notes.instructions` (false turns the automatic `notes` pack off for `start` and `launch`)
 - `lib/workspace/main_agent.rb` — Which coding agent a project's main agent pane runs (`claude`, `codex`, ..., or `none`), read from the panes of its tmuxinator config; `InstructionComposer` uses it to send the `handoff` pack to Claude Code only
 - `lib/workspace/commands_config.rb` — Reads a project's `commands.test` and `commands.lint`
-- `lib/library/play/` — The built-in instruction packs (`binding`, `orchestrator`, `commits`, `review`, `notes`, `handoff`, `dev`), read through `Library#builtin_store`
+- `lib/library/play/` — The built-in instruction packs (`binding`, `orchestrator`, `commits`, `review`, `notes`, `handoff`, `dev`, `implementation-plan`), read through `Library#builtin_store`
 - `lib/workspace/commands/` — Complex command objects (launch, kill, focus, start, agent, ensure_agent, lock, dev, notes, plan, projects, capabilities, send, review, restore, snapshot, daemon, ui, binding, library, instructions, workflow)
 - `lib/workspace/notes_dir.rb` — The one resolver for a workspace's notes directory: its own `notes.dir`, else the project's `notes.default_dir` rule, else `tmp/workspace-notes` in the checkout; `Commands::Notes#info` returns the answer as a Hash (`dir` prints it) and `#files_inside_worktree` counts the files `kill` and `finish` would delete
 - `lib/workspace/notes_setup.rb` — Fixes a new worktree's notes directory for `start` and `add`: writes the computed path as the worktree's own `notes.dir` (never over an existing value), makes the directory and its `info/exclude` line; every problem comes back as a warning, never an error

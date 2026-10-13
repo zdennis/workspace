@@ -110,10 +110,10 @@ RSpec.describe Workspace::Commands::Capabilities do
       expect(document["features"]).to include("dev_queue" => 2)
     end
 
-    it "reports plan 1 once plan status, path, show and init exist" do
+    it "reports plan 3 once the plan play exists and handoff follows the plan" do
       command.call(json: true)
 
-      expect(document["features"]).to include("plan" => 1)
+      expect(document["features"]).to include("plan" => 3)
     end
 
     it "ignores a PATH entry that is not executable or is a directory" do

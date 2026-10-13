@@ -20,7 +20,7 @@ workspace handoff new   NAME [--pane PANE] [--handoff-doc PATH | --handoff-promp
 | `--pane PANE` | A tmux pane id (`%19`; `"$TMUX_PANE"` inside the pane, or `pane_id` in `workspace sessions --json`), `window.pane` (`1.0`), or a pane index in window 0; default: the daemon's first Claude Code pane. See [Naming the pane](#naming-the-pane) |
 | `--threshold PCT` | Context-usage percent that triggers a handoff, 1-100 (default: `handoff.threshold`, or 11) |
 | `--context-pct N` | Skip detection and use this value |
-| `--handoff-doc PATH` | Doc the agent updates and resumes from (default: `HANDOFF.md` in the notes directory) |
+| `--handoff-doc PATH` | Doc the agent updates and resumes from (default: the plan when there is one, else `HANDOFF.md` in the notes directory) |
 | `--handoff-prompt TEXT` | Prompt sent verbatim instead of a doc |
 | `--json` | Print the result as JSON; errors as `{"schema_version":1,"ok":false,"error":...}` |
 
@@ -29,7 +29,7 @@ workspace handoff new   NAME [--pane PANE] [--handoff-doc PATH | --handoff-promp
 | Option | Description |
 |--------|-------------|
 | `--pane PANE` | A tmux pane id (`%19`; `"$TMUX_PANE"` inside the pane, or `pane_id` in `workspace sessions --json`), `window.pane` (`1.0`), or a pane index in window 0; default: the daemon's first Claude Code pane. See [Naming the pane](#naming-the-pane) |
-| `--handoff-doc PATH` | Doc the agent reads and resumes from (default: `HANDOFF.md` in the notes directory) |
+| `--handoff-doc PATH` | Doc the agent reads and resumes from (default: the plan when there is one, else `HANDOFF.md` in the notes directory) |
 | `--handoff-prompt TEXT` | Prompt sent verbatim instead of a doc |
 | `--wait` | Wait for the restart to finish and report how it went. Don't use it from the agent being restarted: it would block the turn the restart waits on |
 | `--json` | Print the result as JSON; errors as `{"schema_version":1,"ok":false,"error":...}` |
@@ -38,9 +38,9 @@ workspace handoff new   NAME [--pane PANE] [--handoff-doc PATH | --handoff-promp
 
 ## The default doc
 
-Given neither `--handoff-doc` nor `--handoff-prompt`, `check` and `new` use `HANDOFF.md` in the workspace's [notes directory](README.notes.md), the one `workspace notes dir` prints. `check` makes the directory (and lists it in `info/exclude` when it is inside the checkout) before it sends the save-state prompt, and the `workspace handoff new ... --handoff-doc PATH` command that prompt tells the agent to run names the doc by its full path. If the directory cannot be made, the prompt is still sent with a warning. If the notes directory cannot be worked out at all (for example a `{branch}` rule on a detached HEAD, `notes_dir_unresolved`), `check` falls back to what it did before: the prompt asks the agent to pick a path, and `doc` is `null`. `new` then fails with that error.
+Given neither `--handoff-doc` nor `--handoff-prompt`, `check` and `new` use the workspace's [plan](README.plan.md) when the file `IMPLEMENTATION_PLAN.md` exists in its [notes directory](README.notes.md) (the one `workspace notes dir` prints), so there is one task list. With no plan file they use `HANDOFF.md` in that directory. `check --json` reports the one chosen as `doc`. `check` makes the directory (and lists it in `info/exclude` when it is inside the checkout) before it sends the save-state prompt, and the `workspace handoff new ... --handoff-doc PATH` command that prompt tells the agent to run names the doc by its full path. If the directory cannot be made, the prompt is still sent with a warning. If the notes directory cannot be worked out at all (for example a `{branch}` rule on a detached HEAD, `notes_dir_unresolved`), `check` falls back to what it did before: the prompt asks the agent to pick a path, and `doc` is `null`. `new` then fails with that error.
 
-The `IMPLEMENTATION_PLAN.md` in the notes directory is the plan, not the handoff doc; pass `--handoff-doc` to use it.
+An explicit `--handoff-doc PATH` is always used as given, plan or no plan, and `--handoff-prompt` names no doc. When the plan is the doc, `new` also binds the pane to the built-in `implementation-plan` play before it restarts the agent, so the SessionStart hook points the fresh conversation back at the play (see [binding](README.binding.md)). A pane bound to a run or review keeps that binding; a pane bound to another play has that play replaced by this one and keeps its packs. The save-state prompt `check` sends in this case tells the agent to run `workspace handoff new NAME --pane ID` without `--handoff-doc`, so that `new` binds the pane, and to skip `new` when the plan is paused. If the binding cannot be made, `new` prints `Warning: could not bind pane ... to the plan play` and restarts anyway. The `handoff` pack tells an agent that when the plan's `status:` is `paused` it writes the doc and ends its turn without running `handoff new`.
 
 ## Naming the pane
 
@@ -127,7 +127,7 @@ workspace config set handoff.auto true                  # start/launch send the 
 
 ## Automatic handoff
 
-`start` and `launch` can make a Claude Code agent run the check itself. The built-in `handoff` pack (see [`instructions`](README.instructions.md)) tells the agent to run `handoff check --pane "$TMUX_PANE"` after every task, and, on exit 1, to write its state into the doc and run `handoff new` once. The pack passes no threshold and no doc: the command picks both, and the doc is [`HANDOFF.md` in the notes directory](#the-default-doc). The pack is bound to the pane with the others, so it comes back after `/clear` and compaction.
+`start` and `launch` can make a Claude Code agent run the check itself. The built-in `handoff` pack (see [`instructions`](README.instructions.md)) tells the agent to run `handoff check --pane "$TMUX_PANE"` after every task, and, on exit 1, to write its state into the doc and run `handoff new` once. The pack passes no threshold and no doc: the command picks both, and the doc is [the plan, or `HANDOFF.md`, in the notes directory](#the-default-doc). The pack is bound to the pane with the others, so it comes back after `/clear` and compaction.
 
 It is off by default. Turn it on for a project with `workspace config set handoff.auto true`, or for one run with `start --handoff` / `launch --handoff`; `--no-handoff` turns it off for one run. `--handoff` cannot be combined with `--no-packs`.
 

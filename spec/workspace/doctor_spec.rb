@@ -223,6 +223,100 @@ RSpec.describe Workspace::Doctor do
     end
   end
 
+  describe "plan check" do
+    let(:plan) { double("plan") }
+    let(:plan_path) { "/notes/myapp/IMPLEMENTATION_PLAN.md" }
+
+    def row(overrides = {})
+      {"workspace" => "myapp", "project" => "myapp", "path" => plan_path, "exists" => true, "status" => "active", "state" => "working",
+       "owner_pane" => "%19", "pane_state" => "working", "counts" => {"in_progress" => 0}}.merge(overrides)
+    end
+
+    def run_doctor(rows)
+      allow(plan).to receive(:rows).with(all: true).and_return(rows)
+      begin
+        build_doctor(plan: plan, which: ->(_exe) { false }).run
+      rescue Workspace::Error
+        # Other checks fail here; only the plan lines matter
+      end
+    end
+
+    before do
+      allow(project_detector).to receive(:detect).and_return("myapp")
+      allow(config).to receive(:agent_socket_path).with("myapp").and_return("/tmp/does-not-exist-workspace-myapp.sock")
+    end
+
+    it "warns on a paused plan whose owner pane is working" do
+      run_doctor([row("status" => "paused", "state" => "paused")])
+
+      expect(output.string).to include("⚠  plan for myapp is paused, but its owner pane %19 is working", "fix:", plan_path)
+    end
+
+    it "warns on an in-progress task in a workspace with no session" do
+      run_doctor([row("state" => "stopped", "pane_state" => nil, "counts" => {"in_progress" => 1})])
+
+      expect(output.string).to include("⚠  plan for myapp has a task in progress ([~]) but the workspace has no session", plan_path)
+    end
+
+    it "says nothing about a healthy plan, a paused one that is idle, or a stopped one with nothing in progress" do
+      run_doctor([row, row("status" => "paused", "state" => "paused", "pane_state" => "idle"),
+        row("state" => "stopped", "pane_state" => nil), row("exists" => false, "state" => "empty", "status" => "paused")])
+
+      expect(output.string).not_to include("plan for")
+    end
+
+    it "does not count a plan warning as an issue" do
+      allow(hook_installer).to receive(:installed?).and_return(true)
+      allow(config).to receive(:agent_running?).and_return(true)
+      messages = [[row("status" => "paused", "state" => "paused")], []].map do |rows|
+        allow(plan).to receive(:rows).and_return(rows)
+        begin
+          build_doctor(plan: plan).run
+          nil
+        rescue Workspace::Error => e
+          e.message
+        end
+      end
+
+      expect(messages.first).to eq(messages.last)
+    end
+
+    it "only looks at the detected project's workspaces" do
+      run_doctor([row("project" => "other", "workspace" => "other", "status" => "paused", "state" => "paused")])
+
+      expect(output.string).not_to include("plan for")
+    end
+
+    it "skips the check when the plans can't be read, and when no project is detected" do
+      allow(plan).to receive(:rows).and_raise(JSON::ParserError, "bad daemon reply")
+      begin
+        build_doctor(plan: plan, which: ->(_exe) { false }).run
+      rescue Workspace::Error
+        # expected
+      end
+      expect(output.string).not_to include("plan for")
+
+      allow(project_detector).to receive(:detect).and_return(nil)
+      begin
+        build_doctor(plan: plan).run
+      rescue Workspace::Error
+        # expected
+      end
+      expect(plan).to have_received(:rows).once
+    end
+
+    it "skips the check when reading a plan raises a system error" do
+      allow(plan).to receive(:rows).and_raise(Errno::EACCES)
+      begin
+        build_doctor(plan: plan, which: ->(_exe) { false }).run
+      rescue Workspace::Error
+        # expected
+      end
+
+      expect(output.string).not_to include("plan for")
+    end
+  end
+
   describe "pipeline config check" do
     let(:tmpdir) { Dir.mktmpdir }
     let(:project_yml) { File.join(tmpdir, "myapp.yml") }

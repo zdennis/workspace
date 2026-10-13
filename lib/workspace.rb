@@ -320,7 +320,6 @@ module Workspace
     hook_installer = HookInstaller.new(backup: file_backup, output: output, input: input)
     pipeline_config = PipelineConfig.new(config: config)
     launch_mode = LaunchMode.new(project_settings: project_settings)
-    doctor = Doctor.new(config: config, state: state, hook_installer: hook_installer, project_detector: project_detector, git: git, pipeline_config: pipeline_config, launch_mode: launch_mode, project_settings: project_settings, output: output)
 
     # Pre-build command objects so CLI delegates rather than constructs
     stop_command = Commands::Stop.new(state: state, iterm: iterm, window_manager: window_manager, tmux: tmux, output: output, error_output: error_output)
@@ -472,6 +471,7 @@ module Workspace
     plan_command = Commands::Plan.new(notes: notes_command, catalog: project_catalog, plan_state: plan_state,
       plan_config: plan_config, tmux: tmux,
       snapshot_client: agent_snapshot_client, ask_store_for: ask_store_for, task_store: task_store, output: output)
+    doctor = Doctor.new(config: config, state: state, hook_installer: hook_installer, project_detector: project_detector, git: git, pipeline_config: pipeline_config, launch_mode: launch_mode, project_settings: project_settings, plan: plan_command, output: output)
     snapshot_command = Commands::Snapshot.new(catalog: project_catalog, facts: project_facts, tmux: tmux, state: state, config: config,
       snapshot_client: agent_snapshot_client, sessions: sessions_command, git: git, pull_request_status: PullRequestStatus.new,
       ask_store_for: ask_store_for, plan: plan_command, plan_state: plan_state, plan_config: plan_config,
@@ -539,7 +539,8 @@ module Workspace
     handoff_config = HandoffConfig.new(project_settings: project_settings, project_config: project_config,
       lineage: lineage, error_output: error_output)
     handoff_command = Commands::Handoff.new(config: config, tmux: tmux, locator: pane_locator, handoff_config: handoff_config,
-      restart_agent_command: restart_agent_command, notes: notes_command, output: output, error_output: error_output)
+      restart_agent_command: restart_agent_command, notes: notes_command, binder: binding_command, library: library,
+      output: output, error_output: error_output)
 
     CLI.new(
       config: config,

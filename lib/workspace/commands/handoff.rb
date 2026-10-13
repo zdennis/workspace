@@ -23,6 +23,11 @@ module Workspace
     # default pane included: a daemon can be older than this command and list
     # another session's panes. Neither ever guesses a context percentage
     # either -- see {#check}'s exit code 2.
+    #
+    # With no explicit doc, a workspace that has a plan (`IMPLEMENTATION_PLAN.md`
+    # in its notes directory) uses the plan as the handoff doc, so there is one
+    # task list; `new` then also binds the pane to the `implementation-plan`
+    # play, so the fresh conversation is pointed back at it.
     class Handoff
       # Bumped whenever the `--json` payload's shape changes incompatibly.
       JSON_SCHEMA_VERSION = 1
@@ -38,10 +43,14 @@ module Workspace
       # @param restart_agent_command [Workspace::Commands::RestartAgent] the
       #   H2 `/clear` + resume flow, reused verbatim by `new`
       # @param notes [Workspace::Commands::Notes] says where a workspace's notes
-      #   are, which is where the default doc `HANDOFF.md` lives
+      #   are, which is where the plan and the default doc `HANDOFF.md` live
+      # @param binder [Workspace::Commands::Binding] binds the pane to the plan play when the plan is the doc
+      # @param library [Workspace::Library] finds the built-in `implementation-plan` play
       # @param output [IO] stream for the result (and `--json` output)
       # @param error_output [IO] stream for the "undetermined" reason (non-JSON)
-      def initialize(config:, tmux:, locator:, handoff_config:, restart_agent_command:, notes:, output: $stdout, error_output: $stderr)
+      def initialize(config:, tmux:, locator:, handoff_config:, restart_agent_command:, notes:, binder:, library:, output: $stdout, error_output: $stderr)
+        @binder = binder
+        @library = library
         @config = config
         @tmux = tmux
         @locator = locator
@@ -59,7 +68,7 @@ module Workspace
       #   handoff; nil uses `handoff.threshold` (default 11)
       # @param context_pct [Integer, nil] skips detection and uses this value
       # @param handoff_doc [String, nil] path the agent updates and resumes from; with neither this nor
-      #   +handoff_prompt+, +HANDOFF.md+ in the workspace's notes directory
+      #   +handoff_prompt+, the workspace's plan when it has one, else +HANDOFF.md+ in its notes directory
       # @param handoff_prompt [String, nil] prompt sent verbatim instead of a doc
       # @param json [Boolean] emit the result as JSON instead of text
       # @return [Hash] {exit_code:} -- 0 under the threshold, 1 at/over it
@@ -107,7 +116,8 @@ module Workspace
 
         prepare_default_doc(name) if doc && handoff_doc.nil?
         body = check_body(name: name, pane: pane_info, pct: pct, threshold: threshold,
-          handoff_doc: handoff_doc || doc, handoff_prompt: handoff_prompt, defaults: defaults)
+          handoff_doc: handoff_doc || doc, handoff_prompt: handoff_prompt, defaults: defaults,
+          plan_is_doc: handoff_doc.nil? && plan_doc?(doc))
         delivery = begin
           @tmux.deliver(detail[:session], detail[:id], body)
         rescue Workspace::Error, SystemCallError => e
@@ -120,7 +130,8 @@ module Workspace
       # @param pane [String, nil] pane id ("%19"), "window.pane" or pane
       #   index; nil picks the daemon's first "claude" pane, same as {#check}
       # @param handoff_doc [String, nil] path the agent should resume from; with neither this nor
-      #   +handoff_prompt+, +HANDOFF.md+ in the workspace's notes directory
+      #   +handoff_prompt+, the workspace's plan when it has one (and the pane is bound to the
+      #   `implementation-plan` play), else +HANDOFF.md+ in its notes directory
       # @param handoff_prompt [String, nil] prompt sent verbatim instead
       # @param wait [Boolean] wait for the restart to finish instead of
       #   returning once it has started
@@ -134,7 +145,10 @@ module Workspace
           pane = default_pane(name, snapshot)
         end
 
-        handoff_doc ||= resolve_default_doc(name) unless handoff_prompt
+        unless handoff_prompt || handoff_doc
+          handoff_doc = resolve_default_doc(name)
+          bind_plan_play(name, pane) if plan_doc?(handoff_doc)
+        end
         defaults = @handoff_config.for_workspace(name)
         template = defaults[:resume_prompt] || DEFAULT_RESUME_PROMPT
         prompt = handoff_prompt || safe_format(template, DEFAULT_RESUME_PROMPT, doc: handoff_doc)
@@ -164,10 +178,35 @@ module Workspace
         %{new_cmd} --handoff-doc PATH
       PROMPT
 
-      # @return [String] the default doc's absolute path
+      PAUSED_PLAN_NOTE = "If the plan's status: is paused, write the doc and end your turn without running that command."
+
+      # The ref of the built-in play `new` binds the pane to when the plan is the doc.
+      PLAN_PLAY = "implementation-plan"
+
+      # @return [String] the plan's absolute path when the workspace has a plan file, else the
+      #   default doc's
       # @raise [Workspace::Error] when the notes directory can't be resolved
       def resolve_default_doc(name, create: false)
-        File.join(@notes.info(name: name, create: create)["dir"], DEFAULT_DOC_NAME)
+        dir = @notes.info(name: name, create: create)["dir"]
+        plan = PlanFile.path_in(dir)
+        File.file?(plan) ? plan : File.join(dir, DEFAULT_DOC_NAME)
+      end
+
+      def plan_doc?(path)
+        !path.nil? && File.basename(path) == PlanFile::FILE_NAME
+      end
+
+      # Points the pane's fresh conversation back at the plan play after the restart. A pane bound
+      # to a run or review keeps that binding; a play binding keeps its packs. A failure is a
+      # warning: the restart still resumes from the plan.
+      def bind_plan_play(name, pane)
+        id = locate(name, pane)[:id]
+        existing = @binder.live(pane: id)
+        return if existing && existing["kind"] != "play"
+        entry, _body = @library.pack(PLAN_PLAY, cwd: nil)
+        @binder.bind(workspace: name, pane: id, **@library.play_binding(entry, packs: Array(existing && existing["packs"])))
+      rescue Workspace::Error, SystemCallError => e
+        @error_output.puts "Warning: could not bind pane #{pane} to the plan play (#{e.message}); the restart goes ahead."
       end
 
       # @return [String, nil] the default doc's path, or nil when the notes directory can't be
@@ -188,7 +227,7 @@ module Workspace
       # The command it tells the agent to run names the pane by its id, which
       # stays with the pane however its window is split or renumbered. The id
       # is quoted because `%` is special in some shells.
-      def check_body(name:, pane:, pct:, threshold:, handoff_doc:, handoff_prompt:, defaults:)
+      def check_body(name:, pane:, pct:, threshold:, handoff_doc:, handoff_prompt:, defaults:, plan_is_doc: false)
         usage = "Context usage is at #{pct}%, #{(pct > threshold) ? "over" : "at"} the #{threshold}% threshold."
         new_cmd_base = "workspace handoff new #{[name].shelljoin} --pane '#{pane["pane_id"]}'"
 
@@ -196,9 +235,11 @@ module Workspace
           new_cmd = "#{new_cmd_base} #{["--handoff-prompt", handoff_prompt].shelljoin}"
           safe_format(DEFAULT_CHECK_PROMPT_PROMPT, DEFAULT_CHECK_PROMPT_PROMPT, usage: usage, new_cmd: new_cmd)
         elsif handoff_doc
-          new_cmd = "#{new_cmd_base} #{["--handoff-doc", handoff_doc].shelljoin}"
+          # With the plan as the doc, `new` is left to find it, so it also binds the pane to the plan play.
+          new_cmd = plan_is_doc ? new_cmd_base : "#{new_cmd_base} #{["--handoff-doc", handoff_doc].shelljoin}"
           template = defaults[:check_prompt] || DEFAULT_CHECK_PROMPT_DOC
-          safe_format(template, DEFAULT_CHECK_PROMPT_DOC, usage: usage, doc: handoff_doc, new_cmd: new_cmd)
+          body = safe_format(template, DEFAULT_CHECK_PROMPT_DOC, usage: usage, doc: handoff_doc, new_cmd: new_cmd)
+          plan_is_doc ? "#{body} #{PAUSED_PLAN_NOTE}" : body
         else
           safe_format(DEFAULT_CHECK_PROMPT_PICK, DEFAULT_CHECK_PROMPT_PICK, usage: usage, new_cmd: new_cmd_base)
         end
