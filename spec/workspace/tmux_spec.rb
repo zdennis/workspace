@@ -14,8 +14,9 @@ RSpec.describe Workspace::Tmux do
 
     def fake_tmux(body)
       FileUtils.mkdir_p(bin)
-      File.write(File.join(bin, "tmux"), "#!/bin/sh\n#{body}\n")
+      File.write(File.join(bin, "tmux"), "#!/bin/sh\n[ \"$1\" = warm ] && exit 0\n#{body}\n")
       File.chmod(0o755, File.join(bin, "tmux"))
+      system(File.join(bin, "tmux"), "warm")
     end
 
     around do |example|

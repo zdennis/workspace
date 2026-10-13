@@ -588,8 +588,9 @@ RSpec.describe Workspace::Commands::Daemon do
 
     def fake_lsof(body)
       File.join(tmpdir, "lsof").tap do |path|
-        File.write(path, "#!/bin/sh\n#{body}\n")
+        File.write(path, "#!/bin/sh\n[ \"$1\" = warm ] && exit 0\n#{body}\n")
         File.chmod(0o755, path)
+        system(path, "warm")
       end
     end
 
