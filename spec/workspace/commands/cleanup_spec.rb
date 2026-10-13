@@ -19,7 +19,7 @@ RSpec.describe Workspace::Commands::Cleanup do
   subject(:command) do
     described_class.new(
       state: state,
-      window_manager: window_manager,
+      window_liveness: Workspace::WindowLiveness.new(window_manager: window_manager),
       tmux: tmux,
       output: output,
       input: input
@@ -106,7 +106,7 @@ RSpec.describe Workspace::Commands::Cleanup do
 
           result = command.call
 
-          expect(result).to contain_exactly("proj1", "proj2")
+          expect(result.map { |z| z[:project] }).to contain_exactly("proj1", "proj2")
           expect(output.string).to include("Cleaned up 2 zombie session(s)")
 
           state.load
@@ -121,7 +121,7 @@ RSpec.describe Workspace::Commands::Cleanup do
 
           result = command.call
 
-          expect(result).to contain_exactly("proj1", "proj2")
+          expect(result.map { |z| z[:project] }).to contain_exactly("proj1", "proj2")
           expect(output.string).to include("Cleaned up 2 zombie session(s)")
         end
 
@@ -144,7 +144,7 @@ RSpec.describe Workspace::Commands::Cleanup do
         it "removes zombies without confirmation" do
           result = command.call(force: true)
 
-          expect(result).to contain_exactly("proj1", "proj2")
+          expect(result.map { |z| z[:project] }).to contain_exactly("proj1", "proj2")
           expect(output.string).to include("Cleaned up 2 zombie session(s)")
           expect(output.string).not_to include("Remove these")
 
@@ -219,8 +219,103 @@ RSpec.describe Workspace::Commands::Cleanup do
       state.save
       allow(tmux).to receive(:sessions).and_return([])
 
-      expect(command.call(force: true)).to eq(["proj"])
+      expect(command.call(force: true).map { |z| z[:project] }).to eq(["proj"])
       expect(output.string).to include("iTerm window: none (headless)")
+    end
+
+    describe "reporting without acting" do
+      before do
+        state["dead"] = {"unique_id" => "u1", "iterm_window_id" => 100}
+        state["closed"] = {"unique_id" => "u2", "iterm_window_id" => 200}
+        state["fine"] = {"unique_id" => "u3", "iterm_window_id" => 300}
+        state.save
+        allow(tmux).to receive(:session_name_for) { |project| project }
+        allow(tmux).to receive(:sessions).and_return(["closed", "fine"])
+        allow(window_manager).to receive(:live_window_ids).and_return(Set.new([300]))
+      end
+
+      it "dry_run lists the zombies, never prompts, and removes nothing" do
+        result = command.call(dry_run: true)
+
+        expect(result.map { |z| [z[:project], z[:tmux_alive], z[:window_alive]] })
+          .to contain_exactly(["dead", false, false], ["closed", true, false])
+        expect(output.string).to include("Found 2 zombie session(s)")
+        expect(output.string).to include("Dry run: nothing was removed")
+        expect(output.string).not_to include("Remove these")
+        state.load
+        expect(state["dead"]).not_to be_nil
+        expect(state["closed"]).not_to be_nil
+      end
+
+      it "dry_run ignores force" do
+        command.call(dry_run: true, force: true)
+
+        state.load
+        expect(state["dead"]).not_to be_nil
+      end
+
+      it "dry_run reports a clean state without rows" do
+        state.delete("dead")
+        state.delete("closed")
+        state.save
+
+        expect(command.call(dry_run: true)).to eq([])
+      end
+
+      it "tmux_dead_only removes only entries whose tmux session is gone" do
+        result = command.call(force: true, tmux_dead_only: true)
+
+        expect(result.map { |z| z[:project] }).to eq(["dead"])
+        state.load
+        expect(state["dead"]).to be_nil
+        expect(state["closed"]).not_to be_nil
+      end
+
+      it "tmux_dead_only with dry_run lists only tmux-dead entries" do
+        result = command.call(dry_run: true, tmux_dead_only: true)
+
+        expect(result.map { |z| z[:project] }).to eq(["dead"])
+      end
+    end
+
+    describe "when the window list cannot be read" do
+      before do
+        state["alive-tmux"] = {"unique_id" => "u1", "iterm_window_id" => 100}
+        state["dead-tmux"] = {"unique_id" => "u2", "iterm_window_id" => 200}
+        state.save
+        allow(tmux).to receive(:session_name_for) { |project| project }
+        allow(tmux).to receive(:sessions).and_return(["alive-tmux"])
+        allow(window_manager).to receive(:live_window_ids).and_raise(Workspace::Error, "window-tool list failed")
+      end
+
+      it "does not call a window gone and keeps an entry whose tmux session is alive" do
+        result = command.call(force: true)
+
+        expect(result.map { |z| z[:project] }).to eq(["dead-tmux"])
+        expect(result.first[:window_alive]).to be_nil
+        state.load
+        expect(state["alive-tmux"]).not_to be_nil
+      end
+
+      it "says the window state is unknown rather than DEAD" do
+        command.call(dry_run: true)
+
+        expect(output.string).to include("iTerm window: unknown")
+        expect(output.string).not_to include("iTerm window: DEAD")
+      end
+
+      it "tmux_dead_only behaves the same when the list is unreadable" do
+        result = command.call(force: true, tmux_dead_only: true)
+
+        expect(result.map { |z| z[:project] }).to eq(["dead-tmux"])
+      end
+
+      it "removes nothing from an unreadable list when every tmux session is alive" do
+        allow(tmux).to receive(:sessions).and_return(["alive-tmux", "dead-tmux"])
+
+        expect(command.call(force: true)).to eq([])
+        expect(output.string).to include("No zombie sessions detected")
+      end
     end
   end
 end

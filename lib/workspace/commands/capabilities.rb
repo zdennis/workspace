@@ -41,7 +41,8 @@ module Workspace
         "instructions" => 1,
         "restore" => 1,
         "workflow" => 1,
-        "window_state" => 1
+        "window_state" => 1,
+        "cleanup_dry_run" => 1
       }.freeze
 
       # The exit statuses commands use, by meaning.

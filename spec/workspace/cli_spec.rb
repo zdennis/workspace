@@ -35,7 +35,7 @@ RSpec.describe Workspace::CLI do
     hook_installer = Workspace::HookInstaller.new(backup: Workspace::FileBackup.new(output: output), output: output, input: input)
     init_command = overrides[:init_command] || Workspace::Commands::Init.new(config: config, hook_installer: hook_installer, which: ->(_exe) { false }, output: output, error_output: error_output, input: input)
     repair_command = overrides[:repair_command] || CLITestHelpers::FakeRepairCommand.new
-    cleanup_command = overrides[:cleanup_command] || Workspace::Commands::Cleanup.new(state: state, window_manager: window_manager, tmux: tmux, output: output, input: input)
+    cleanup_command = overrides[:cleanup_command] || Workspace::Commands::Cleanup.new(state: state, window_liveness: Workspace::WindowLiveness.new(window_manager: window_manager), tmux: tmux, output: output, input: input)
     stop_command_for_prune = instance_double(Workspace::Commands::Stop)
     prune_command = overrides[:prune_command] || Workspace::Commands::Prune.new(state: state, project_config: project_config, project_settings: project_settings, git: git, stop_command: stop_command_for_prune, output: output, input: input)
     claude_command = overrides[:claude_command] || CLITestHelpers::FakeClaudeCommand.new
@@ -6989,14 +6989,60 @@ RSpec.describe Workspace::CLI do
     end
 
     describe "cleanup" do
-      it "reports each zombie removed" do
-        cleanup = double("cleanup", call: %w[old-a old-b])
+      let(:zombies) do
+        [{project: "old-a", tmux_alive: false, window_alive: false}, {project: "old-b", tmux_alive: true, window_alive: nil}]
+      end
+
+      it "reports each zombie removed, with its tmux and window state" do
+        cleanup = double("cleanup", call: zombies)
         cli, raw, = action_cli(cleanup_command: cleanup)
 
         cli.run(["cleanup", "--force", "--json"])
 
-        expect(cleanup).to have_received(:call).with(force: true)
-        expect(parse_one(raw)).to include("action" => "cleanup", "summary" => {"cleaned" => 2})
+        expect(cleanup).to have_received(:call).with(force: true, dry_run: false, tmux_dead_only: false)
+        doc = parse_one(raw)
+        expect(doc).to include("action" => "cleanup", "status" => "ok", "summary" => {"cleaned" => 2})
+        expect(doc["results"].first).to include("workspace" => "old-a", "outcome" => "cleaned", "reason" => nil, "message" => nil, "tmux_alive" => false, "window_alive" => false)
+        expect(doc["results"].last).to include("tmux_alive" => true, "window_alive" => nil)
+      end
+
+      it "with --dry-run --json reports would_remove rows, status dry_run, exit 0" do
+        cleanup = double("cleanup", call: zombies)
+        cli, raw, = action_cli(cleanup_command: cleanup)
+
+        expect(exit_status { cli.run(["cleanup", "--dry-run", "--json"]) }).to eq(0)
+
+        expect(cleanup).to have_received(:call).with(force: false, dry_run: true, tmux_dead_only: false)
+        doc = parse_one(raw)
+        expect(doc).to include("action" => "cleanup", "status" => "dry_run", "summary" => {"would_remove" => 2})
+        expect(doc["results"].first).to include("workspace" => "old-a", "outcome" => "would_remove", "tmux_alive" => false, "window_alive" => false)
+      end
+
+      it "passes --tmux-dead-only through" do
+        cleanup = double("cleanup", call: [])
+        cli, = action_cli(cleanup_command: cleanup)
+
+        cli.run(["cleanup", "--tmux-dead-only", "--force", "--json"])
+
+        expect(cleanup).to have_received(:call).with(force: true, dry_run: false, tmux_dead_only: true)
+      end
+
+      it "reports status dry_run with no rows when there is nothing to remove" do
+        cleanup = double("cleanup", call: [])
+        cli, raw, = action_cli(cleanup_command: cleanup)
+
+        expect(exit_status { cli.run(["cleanup", "--dry-run", "--json"]) }).to eq(0)
+
+        expect(parse_one(raw)).to include("status" => "dry_run", "results" => [])
+      end
+
+      it "names a headless row so null window_alive can be told from an unreadable list" do
+        cleanup = double("cleanup", call: [{project: "hl", tmux_alive: false, window_alive: nil, headless: true}])
+        cli, raw, = action_cli(cleanup_command: cleanup)
+
+        cli.run(["cleanup", "--dry-run", "--json"])
+
+        expect(parse_one(raw)["results"].first).to include("headless" => true, "window_alive" => nil)
       end
     end
 

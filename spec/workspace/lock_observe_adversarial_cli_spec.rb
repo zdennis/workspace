@@ -39,7 +39,7 @@ RSpec.describe "workspace lock observability adversarial findings" do
       session_event_command = Workspace::Commands::SessionEvent.new(config: config, tmux: tmux, input: StringIO.new, env: {})
       hook_installer = Workspace::HookInstaller.new(backup: Workspace::FileBackup.new(output: output), output: output, input: StringIO.new)
       init_command = Workspace::Commands::Init.new(config: config, hook_installer: hook_installer, which: ->(_exe) { false }, output: output, error_output: error_output, input: StringIO.new)
-      cleanup_command = Workspace::Commands::Cleanup.new(state: state, window_manager: window_manager, tmux: tmux, output: output, input: StringIO.new)
+      cleanup_command = Workspace::Commands::Cleanup.new(state: state, window_liveness: Workspace::WindowLiveness.new(window_manager: window_manager), tmux: tmux, output: output, input: StringIO.new)
       prune_command = Workspace::Commands::Prune.new(state: state, project_config: project_config, project_settings: project_settings, git: git, stop_command: instance_double(Workspace::Commands::Stop), output: output, input: StringIO.new)
       lookup_command = Workspace::Commands::Lookup.new(project_config: project_config, output: output)
 

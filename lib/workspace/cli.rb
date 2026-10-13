@@ -406,7 +406,7 @@ module Workspace
           binding         Bind a pane to a workflow run, a PR review or a play, so it survives /clear and compaction
           capabilities    Print what this CLI supports, as feature revisions (for scripts and the UI)
           capture         Print a tmux pane's scrollback buffer to stdout
-          cleanup         Detect and remove zombie sessions from state
+          cleanup         Detect and remove zombie sessions from state (--dry-run reports only)
           config          Show, validate, set, get or unset project or global configuration
           current         Print the workspace project name for the current directory
           daemon          List, show, restart (one or all) or read the log of agent daemons
@@ -4751,6 +4751,8 @@ module Workspace
     def cmd_cleanup(args)
       force = false
       json = false
+      dry_run = false
+      tmux_dead_only = false
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: workspace cleanup [options]"
         opts.separator ""
@@ -4764,18 +4766,27 @@ module Workspace
         opts.on("-f", "--force", "Skip confirmation and remove zombies immediately") do
           force = true
         end
+        opts.on("--dry-run", "List what would be removed; no prompt, nothing changes, exit 0") { dry_run = true }
+        opts.on("--tmux-dead-only", "Count only entries whose tmux session is gone (a closed window alone",
+          "does not make an entry a zombie)") { tmux_dead_only = true }
         opts.on("--json", "Print one action document (see docs/README.json.md) instead of text, which goes",
-          "to stderr; without --force the prompt still asks (or fails under --no-input)") { json = true }
+          "to stderr; without --force the prompt still asks (or fails under --no-input).",
+          "Rows carry tmux_alive and window_alive (null: headless, or iTerm's windows",
+          "could not be listed; a window that could not be read is never called gone)") { json = true }
         opts.separator ""
         opts.separator "Examples:"
         opts.separator "  workspace cleanup    # list zombie sessions and ask before removing"
+        opts.separator "  workspace cleanup --dry-run --json    # report the zombies, change nothing"
+        opts.separator "  workspace cleanup --tmux-dead-only --force    # remove only entries with no tmux session"
         opts.separator "  workspace cleanup --force    # remove all zombie sessions immediately"
       end
       parser.parse!(args)
 
       run_action("cleanup", json: json) do
-        cleaned = @cleanup_command.call(force: force)
-        {results: json ? cleaned.map { |p| action_row(p, "cleaned") } : []}
+        zombies = @cleanup_command.call(force: force, dry_run: dry_run, tmux_dead_only: tmux_dead_only)
+        outcome = dry_run ? "would_remove" : "cleaned"
+        rows = json ? zombies.map { |z| action_row(z[:project], outcome, tmux_alive: z[:tmux_alive], window_alive: z[:window_alive], headless: z[:headless] == true) } : []
+        {results: rows, status: dry_run ? "dry_run" : nil}
       end
     end
 

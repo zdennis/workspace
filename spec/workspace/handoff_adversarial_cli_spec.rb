@@ -38,7 +38,7 @@ RSpec.describe "workspace handoff adversarial CLI probes" do
     hook_installer = Workspace::HookInstaller.new(backup: Workspace::FileBackup.new(output: output), output: output, input: input)
     init_command = overrides[:init_command] || Workspace::Commands::Init.new(config: config, hook_installer: hook_installer, which: ->(_exe) { false }, output: output, error_output: error_output, input: input)
     repair_command = overrides[:repair_command] || CLITestHelpers::FakeRepairCommand.new
-    cleanup_command = overrides[:cleanup_command] || Workspace::Commands::Cleanup.new(state: state, window_manager: window_manager, tmux: tmux, output: output, input: input)
+    cleanup_command = overrides[:cleanup_command] || Workspace::Commands::Cleanup.new(state: state, window_liveness: Workspace::WindowLiveness.new(window_manager: window_manager), tmux: tmux, output: output, input: input)
     stop_command_for_prune = instance_double(Workspace::Commands::Stop)
     prune_command = overrides[:prune_command] || Workspace::Commands::Prune.new(state: state, project_config: project_config, project_settings: project_settings, git: git, stop_command: stop_command_for_prune, output: output, input: input)
     claude_command = overrides[:claude_command] || CLITestHelpers::FakeClaudeCommand.new
