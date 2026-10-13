@@ -2856,6 +2856,104 @@ RSpec.describe Workspace::CLI do
         expect { cli.run(["dev", "up"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(6) }
       end
 
+      it "passes queue: true to up only when --queue is given" do
+        cli, _, _ = build_test_cli(dev_command: dev_command)
+
+        cli.run(["dev", "up", "--queue"])
+
+        expect(dev_command.calls).to eq([{action: :up, wait: false, takeover: false, ready: true, max_wait: nil, queue: true}])
+      end
+
+      it "gives dev up --queue --json a row with status and position" do
+        dev_command.result = {exit_code: 0, status: "queued", position: 2}
+        cli, output, _ = build_test_cli(dev_command: dev_command)
+
+        cli.run(["dev", "up", "--queue", "--json"])
+
+        row = JSON.parse(output.string)["results"].first
+        expect(row).to include("outcome" => "queued", "status" => "queued", "position" => 2)
+      end
+
+      it "gives dev up --queue --json a started row with a null position when it is running" do
+        dev_command.result = {exit_code: 0, status: "running", position: nil}
+        cli, output, _ = build_test_cli(dev_command: dev_command)
+
+        cli.run(["dev", "up", "--queue", "--json"])
+
+        expect(JSON.parse(output.string)["results"].first).to include("outcome" => "started", "status" => "running", "position" => nil)
+      end
+
+      it "leaves the plain dev up --json row without status or position" do
+        cli, output, _ = build_test_cli(dev_command: dev_command)
+
+        cli.run(["dev", "up", "--json"])
+
+        expect(JSON.parse(output.string)["results"].first.keys).not_to include("status", "position")
+      end
+
+      it "dispatches wait with --no-ready and --max-wait" do
+        cli, _, _ = build_test_cli(dev_command: dev_command)
+
+        cli.run(["dev", "wait", "--no-ready", "--max-wait", "10m"])
+
+        expect(dev_command.calls).to eq([{action: :wait, ready: false, max_wait: 600.0}])
+      end
+
+      it "defaults wait to a ready check and no limit" do
+        cli, _, _ = build_test_cli(dev_command: dev_command)
+
+        cli.run(["dev", "wait"])
+
+        expect(dev_command.calls).to eq([{action: :wait, ready: true, max_wait: nil}])
+      end
+
+      it "exits with wait's exit code and puts status and position in its --json row" do
+        dev_command.result = {exit_code: 75, status: "queued", position: 3}
+        cli, output, _ = build_test_cli(dev_command: dev_command)
+
+        expect { cli.run(["dev", "wait", "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(75) }
+
+        row = JSON.parse(output.string)["results"].first
+        expect(row).to include("outcome" => "failed", "exit_code" => 75, "status" => "queued", "position" => 3)
+      end
+
+      it "rejects --queue with --force through the usual usage error path" do
+        dev_command.define_singleton_method(:up) { |**| raise Workspace::UsageError, "--queue returns at once" }
+        cli, _, error_output = build_test_cli(dev_command: dev_command)
+
+        expect { cli.run(["dev", "up", "--queue", "--force"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+        expect(error_output.string).to include("--queue")
+      end
+
+      it "gives a successful dev wait --json row with status running" do
+        dev_command.result = {exit_code: 0, status: "running", position: nil}
+        cli, output, _ = build_test_cli(dev_command: dev_command)
+
+        cli.run(["dev", "wait", "--json"])
+
+        expect(JSON.parse(output.string)["results"].first).to include("outcome" => "started", "status" => "running", "position" => nil)
+      end
+
+      it "dispatches leave and reports its outcome in --json" do
+        dev_command.result = {exit_code: 0, outcome: "left"}
+        cli, output, _ = build_test_cli(dev_command: dev_command)
+
+        cli.run(["dev", "leave", "--json"])
+
+        expect(dev_command.calls).to eq([{action: :leave}])
+        document = JSON.parse(output.string)
+        expect(document["status"]).to eq("ok")
+        expect(document["results"].first["outcome"]).to eq("left")
+      end
+
+      it "names wait and leave and --queue in the dev help" do
+        cli, output, _ = build_test_cli(dev_command: dev_command)
+
+        cli.run(["dev"])
+
+        expect(output.string).to include("wait [options]", "leave", "--queue")
+      end
+
       it "dispatches down with --force, status, and the hidden __run" do
         cli, _, _ = build_test_cli(dev_command: dev_command)
 

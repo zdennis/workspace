@@ -2050,6 +2050,8 @@ module Workspace
       when "up" then cmd_dev_up(args)
       when "down" then cmd_dev_down(args)
       when "status" then cmd_dev_status(args)
+      when "wait" then cmd_dev_wait(args)
+      when "leave" then cmd_dev_leave(args)
       when "__run" then cmd_dev_run(args)
       when "help", "--help", "-h", nil then @output.puts dev_help
       else
@@ -2073,6 +2075,8 @@ module Workspace
           up [options]      Start this worktree's dev env in a devenv tmux window
           down [--force]    Stop this repo's dev env, whichever worktree holds it
           status            Show holder, branch, uptime, pane, readiness, and queue
+          wait [options]    Block until this worktree holds the dev env and it is ready
+          leave             Take this worktree out of the line for the dev env
 
         Options (every subcommand):
           --name WS         Act on workspace WS instead of the one detected from the
@@ -2080,6 +2084,9 @@ module Workspace
 
         Options (up):
           --wait            Queue behind another worktree's dev env
+          --queue           Queue like --wait but return at once (exit 0), without
+                            waiting for the lock or the ready check; follow with
+                            `dev wait`. Not with --force or --max-wait.
           --force           Stop another worktree's dev env, then start this one
                             (--takeover, the old flag, still works; unrelated to
                             `down --force`)
@@ -2087,6 +2094,11 @@ module Workspace
           --max-wait DUR    Give up after DUR, e.g. "9m" (a plain number is seconds;
                             exit 75; implies --wait). With --force, it limits
                             the whole switch.
+
+        Options (wait):
+          --no-ready        Don't wait for the dev.ready check
+          --max-wait DUR    Give up after DUR (exit 75); the worktree stays queued
+                            until `dev leave`
 
         Options (down):
           --force           Also kill a process group left behind by a dead wrapper
@@ -2109,6 +2121,16 @@ module Workspace
           6   ready check failed (the env is stopped and the lock released)
           75  still queued after --max-wait
 
+        Exit codes (wait):
+          0   this worktree holds the dev env and it is ready
+          1   the queued wrapper exited
+          4   the lock was cleared while waiting, or this worktree is not queued
+          6   ready check failed
+          75  still queued after --max-wait
+
+        Exit codes (leave):
+          0   left the line, or this worktree was not in it
+
         Exit codes (down):
           0   stopped (or nothing was running)
           1   could not stop the process group, or it's already being stopped by
@@ -2117,6 +2139,8 @@ module Workspace
         Examples:
           workspace dev up
           workspace dev up --wait --max-wait 10m
+          workspace dev up --queue && workspace dev wait --max-wait 10m
+          workspace dev leave
           workspace dev up --force
           workspace dev status
           workspace dev down
@@ -2129,11 +2153,13 @@ module Workspace
       force = false
       ready = true
       max_wait = nil
+      queue = false
       json = false
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace dev up [--wait] [--force] [--no-ready] [--max-wait DURATION] [--json]"
+        opts.banner = "Usage: workspace dev up [--wait | --queue] [--force] [--no-ready] [--max-wait DURATION] [--json]"
         opts.on("--name NAME", "Workspace to act on instead of the one detected from cwd") { |v| workspace = v }
         opts.on("--wait", "Queue behind another worktree's dev env") { wait = true }
+        opts.on("--queue", "Queue like --wait but return at once; follow with `dev wait`") { queue = true }
         opts.on("--force", "--takeover", "Stop another worktree's dev env, then start this one") { force = true }
         opts.on("--[no-]ready", "Wait for the dev.ready check (default: on)") { |v| ready = v }
         opts.on("--max-wait DURATION", "Give up after DURATION (e.g. \"9m\", or a plain number of seconds); exits 75; implies --wait") { |v| max_wait = parse_duration_option("--max-wait", v) }
@@ -2143,8 +2169,60 @@ module Workspace
       raise UsageError, parser.help if args.any?
 
       run_action("dev up", json: json) do
-        result = @dev_command.up(wait: wait, takeover: force, ready: ready, max_wait: max_wait, working_dir: working_dir_for(workspace))
-        rows = json ? [exit_code_row(workspace || @project_detector.detect(@working_dir), "started", result[:exit_code])] : []
+        options = {wait: wait, takeover: force, ready: ready, max_wait: max_wait, working_dir: working_dir_for(workspace)}
+        options[:queue] = true if queue
+        result = @dev_command.up(**options)
+        rows = []
+        if json
+          name = workspace || @project_detector.detect(@working_dir)
+          rows = if queue
+            [exit_code_row(name, (result[:status] == "queued") ? "queued" : "started", result[:exit_code],
+              status: result[:status], position: result[:position])]
+          else
+            [exit_code_row(name, "started", result[:exit_code])]
+          end
+        end
+        {exit_code: result[:exit_code], results: rows}
+      end
+    end
+
+    def cmd_dev_wait(args)
+      workspace = nil
+      ready = true
+      max_wait = nil
+      json = false
+      parser = OptionParser.new do |opts|
+        opts.banner = "Usage: workspace dev wait [--no-ready] [--max-wait DURATION] [--json]"
+        opts.on("--name NAME", "Workspace to act on instead of the one detected from cwd") { |v| workspace = v }
+        opts.on("--[no-]ready", "Wait for the dev.ready check (default: on)") { |v| ready = v }
+        opts.on("--max-wait DURATION", "Give up after DURATION (e.g. \"9m\", or a plain number of seconds); exits 75 and stays queued") { |v| max_wait = parse_duration_option("--max-wait", v) }
+        opts.on("--json", "Print one action document (see docs/README.json.md) instead of text, which goes to stderr") { json = true }
+      end
+      parser.parse!(args)
+      raise UsageError, parser.help if args.any?
+
+      run_action("dev wait", json: json) do
+        result = @dev_command.wait(ready: ready, max_wait: max_wait, working_dir: working_dir_for(workspace))
+        rows = json ? [exit_code_row(workspace || @project_detector.detect(@working_dir), "started", result[:exit_code],
+          status: result[:status], position: result[:position])] : []
+        {exit_code: result[:exit_code], results: rows}
+      end
+    end
+
+    def cmd_dev_leave(args)
+      workspace = nil
+      json = false
+      parser = OptionParser.new do |opts|
+        opts.banner = "Usage: workspace dev leave [--json]"
+        opts.on("--name NAME", "Workspace to act on instead of the one detected from cwd") { |v| workspace = v }
+        opts.on("--json", "Print one action document (see docs/README.json.md) instead of text, which goes to stderr") { json = true }
+      end
+      parser.parse!(args)
+      raise UsageError, parser.help if args.any?
+
+      run_action("dev leave", json: json) do
+        result = @dev_command.leave(working_dir: working_dir_for(workspace))
+        rows = json ? [action_row(workspace || @project_detector.detect(@working_dir), result[:outcome])] : []
         {exit_code: result[:exit_code], results: rows}
       end
     end

@@ -83,7 +83,7 @@ workspace <subcommand> [options]
 | current | [README](docs/README.current.md) | Print the workspace project name for the current directory |
 | daemon | [README](docs/README.daemon.md) | List, show, restart (one or all) or read the log of agent daemons |
 | deactivate | [README](docs/README.deactivate.md) | Deactivate Claude in a project's tmux pane (sends Ctrl-C) |
-| dev | [README](docs/README.dev.md) | Start, stop, or inspect the repo's single dev environment (devenv lock) |
+| dev | [README](docs/README.dev.md) | Start, stop, or inspect the repo's single dev environment (devenv lock); `up --queue`, `wait` and `leave` get in line, wait for a turn and give it up without holding a shell open |
 | dir | [README](docs/README.dir.md) | Print the root directory of a workspace project |
 | doctor | [README](docs/README.doctor.md) | Check that all required dependencies are installed |
 | event-log | [README](docs/README.event-log.md) | Show or compact the append-only event log of state changes and agent activity |

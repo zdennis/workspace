@@ -92,15 +92,26 @@ module Workspace
       # @param ready [Boolean] run the `dev.ready` probe before returning
       # @param max_wait [Numeric, nil] give up (exit 75) after this many seconds; implies +wait+,
       #   and with +takeover+ bounds the whole takeover
+      # @param queue [Boolean] open the wrapper with the same FIFO rules as +wait+ and
+      #   return as soon as it is running or in line, without waiting for the lock or the
+      #   ready check; {#wait} waits for those, {#leave} withdraws
       # @param working_dir [String] directory inside the worktree to start
       # @return [Hash] {exit_code:} — 0, 1 (refused/failed), 4 (cleared while
-      #   queued), 6 (ready check failed), or 75 (still queued after max_wait)
+      #   queued), 6 (ready check failed), or 75 (still queued after max_wait).
+      #   With +queue+ it also has +status+ ("running", "queued", or nil when the
+      #   exit code is not 0) and +position+ (1 is next to run; nil unless queued)
       # @raise [Workspace::Error] if no dev command is configured or no tmux session is found
-      def up(wait: false, takeover: false, ready: true, max_wait: nil, working_dir: Dir.pwd)
+      # @raise [Workspace::UsageError] if +queue+ is combined with +takeover+ or +max_wait+
+      def up(wait: false, takeover: false, ready: true, max_wait: nil, queue: false, working_dir: Dir.pwd)
+        if queue && (takeover || max_wait)
+          raise Workspace::UsageError, "--queue returns at once, so it cannot be combined with --force or --max-wait; " \
+            "use `workspace dev wait --max-wait` to wait."
+        end
         raise Workspace::UsageError, "--max-wait must be greater than 0." if max_wait && max_wait.to_f <= 0
         wait ||= !max_wait.nil?
         ctx = context(working_dir)
         raise Workspace::Error, NO_COMMAND unless command?(ctx)
+        return up_queued(ctx) if queue
 
         entry = settled_entry(ctx[:store])
         holder = entry["holder"]
@@ -123,6 +134,71 @@ module Workspace
         limit_name = wait ? "--max-wait" : "startup timeout"
         code = await_wrapper(ctx, wrapper, limit: limit, limit_name: limit_name)
         finish_up(ctx, session, wrapper, code, ready: ready)
+      end
+
+      # Waits until this worktree holds the `devenv` lock and, when +ready+ and
+      # `dev.ready` is set, the check passes. The worktree must already be
+      # running the environment or be queued for it (see `up --queue`); a
+      # +max_wait+ that passes leaves it queued.
+      #
+      # @param max_wait [Numeric, nil] give up (exit 75) after this many seconds; nil waits as long as it takes
+      # @param ready [Boolean] also wait for the `dev.ready` check
+      # @param working_dir [String] directory inside the worktree
+      # @return [Hash] {exit_code:, status:, position:} — 0 (status "running"), 4 (the
+      #   lock was cleared, or this worktree was never in line), 6 (ready check
+      #   failed), 75 (status "queued" with its position), or 1 (the wrapper exited)
+      # @raise [Workspace::UsageError] if +max_wait+ is not above 0
+      def wait(max_wait: nil, ready: true, working_dir: Dir.pwd)
+        raise Workspace::UsageError, "--max-wait must be greater than 0." if max_wait && max_wait.to_f <= 0
+        ctx = context(working_dir)
+        own = own_hold(settled_entry(ctx[:store]), ctx)
+        unless own
+          @error_output.puts "This worktree is not queued for the #{LOCK_NAME} lock and does not hold it: it was cleared, " \
+            "or `workspace dev up --queue` has not run. Run it again to get in line."
+          return queue_result(4)
+        end
+        pid = (own[:state] == :running) ? own[:record]["pid"] : own[:record]["waiter_pid"]
+        code = if own[:state] == :running
+          0
+        else
+          await_wrapper(ctx, own[:record]["waiter_pid"], limit: max_wait, limit_name: "--max-wait", stop_on_timeout: false)
+        end
+        code = await_ready(ctx, pid) if code.zero? && ready && ctx[:settings][:ready]
+        if code.zero?
+          @output.puts "Dev environment running for #{label(ctx[:worktree])} (#{ctx[:branch]})."
+          return queue_result(0, status: "running")
+        end
+        return queue_result(code) unless code == 75
+        now = own_hold(entry(ctx[:store]), ctx)
+        return queue_result(0, status: "running") if now && now[:state] == :running
+        return queue_result(4) unless now
+        queue_result(75, status: "queued", position: now[:position])
+      end
+
+      # Takes this worktree out of the line for the `devenv` lock: stops its
+      # queued wrapper and closes its window. A worktree that is not in line
+      # (including one that holds the lock; `down` stops that) is left as it is.
+      #
+      # @param working_dir [String] directory inside the worktree
+      # @return [Hash] {exit_code: 0, outcome:} — "left" or "not_queued"
+      def leave(working_dir: Dir.pwd)
+        ctx = context(working_dir, tolerate_bad_config: true)
+        own = own_hold(settled_entry(ctx[:store]), ctx)
+        unless own && own[:state] == :queued
+          hint = own ? " This worktree holds the lock; stop it with: workspace dev down" : ""
+          @output.puts "This worktree is not queued for the #{LOCK_NAME} lock.#{hint}"
+          return {exit_code: 0, outcome: "not_queued"}
+        end
+
+        waiter = own[:record]
+        if ctx[:store].dequeue(LOCK_NAME, waiter["waiter_pid"]) == :absent
+          @output.puts "This worktree is not queued for the #{LOCK_NAME} lock."
+          return {exit_code: 0, outcome: "not_queued"}
+        end
+        signal_wrapper(waiter["waiter_pid"]) if @lock_holder.alive?(pid: waiter["waiter_pid"], started: waiter["waiter_started"])
+        close_window("pane" => waiter["pane"], "pid" => waiter["waiter_pid"])
+        @output.puts "Left the #{LOCK_NAME} queue for #{label(ctx[:worktree])}."
+        {exit_code: 0, outcome: "left"}
       end
 
       # Stops this repository's dev environment, whichever worktree holds it.
@@ -304,6 +380,65 @@ module Workspace
         wrapper = open_wrapper(ctx, session, wait: false, delegate_for: holder["run_id"])
         code = await_wrapper(ctx, wrapper, limit: ctx[:settings][:startup_timeout], limit_name: "startup timeout")
         finish_up(ctx, session, wrapper, code, ready: ready)
+      end
+
+      # `up --queue`: the same rules as `--wait`, but it returns once the wrapper
+      # holds the lock or is in line.
+      def up_queued(ctx)
+        entry = settled_entry(ctx[:store])
+        holder = entry["holder"]
+        if run?(holder)
+          result = up_under_run(ctx, holder, wait: true, takeover: false, ready: false)
+          return queue_result(result[:exit_code], status: result[:exit_code].zero? ? "running" : nil) if result
+        end
+
+        own = own_hold(entry, ctx)
+        if own && own[:state] == :running
+          @output.puts "Dev environment is already running for #{describe(own[:record])}."
+          return queue_result(0, status: "running")
+        elsif own
+          @output.puts "Already queued for the #{LOCK_NAME} lock at position #{own[:position]}."
+          return queue_result(0, status: "queued", position: own[:position])
+        end
+
+        refused = clear_the_way(ctx, entry, wait: true, takeover: false)
+        return queue_result(refused[:exit_code]) if refused
+
+        session = session_for(ctx)
+        wrapper = open_wrapper(ctx, session, wait: true)
+        code = await_queued(ctx, wrapper, max_wait: nil, deadline: nil)
+        return queue_result(code) unless code.zero?
+
+        now = settled_entry(ctx[:store])
+        if running_as?(now, wrapper)
+          @output.puts "Dev environment starting for #{label(ctx[:worktree])} (#{ctx[:branch]}) in #{session}:#{WINDOW_NAME}. " \
+            "Run `workspace dev wait` to wait for it to be ready."
+          return queue_result(0, status: "running")
+        end
+        position = (now["queue"] || []).index { |w| w["waiter_pid"] == wrapper }&.succ
+        holder = now["holder"]
+        @output.puts "Queued for the #{LOCK_NAME} lock at position #{position} (held by #{holder ? describe(holder) : "no one"}). " \
+          "Run `workspace dev wait` to wait for it, or `workspace dev leave` to withdraw."
+        queue_result(0, status: "queued", position: position)
+      end
+
+      def queue_result(code, status: nil, position: nil)
+        {exit_code: code, status: status, position: position}
+      end
+
+      # How this worktree stands on the lock: running (it holds it, or is the
+      # delegate of the run that does) or queued (with its place, 1 is next),
+      # or nil. A dead wrapper's leftovers do not count.
+      def own_hold(entry, ctx)
+        holder = entry["holder"]
+        if holder && run?(holder)
+          delegate = running_delegate(holder)
+          return {state: :running, record: delegate} if delegate && delegate["worktree"] == ctx[:worktree]
+        elsif holder && !holder["stale"] && holder["worktree"] == ctx[:worktree]
+          return {state: :running, record: holder}
+        end
+        index = (entry["queue"] || []).index { |w| !run?(w) && !w["stale"] && w["worktree"] == ctx[:worktree] }
+        index && {state: :queued, record: entry["queue"][index], position: index + 1}
       end
 
       def refuse_force_against_run(holder)
@@ -657,7 +792,9 @@ module Workspace
       # @param limit_name [String] the name of the limit being applied ("--max-wait" or
       #   "startup timeout"), reported on giving up
       # @param deadline [Numeric, nil] clock time to give up at
-      def await_wrapper(ctx, pid, limit:, limit_name:, deadline: limit && @clock.now + limit)
+      # @param stop_on_timeout [Boolean] stop the wrapper when the limit passes; false
+      #   (`dev wait`) leaves it in line and exits 75
+      def await_wrapper(ctx, pid, limit:, limit_name:, deadline: limit && @clock.now + limit, stop_on_timeout: true)
         store = ctx[:store]
         seen_queued = false
         started = @clock.now
@@ -685,6 +822,11 @@ module Workspace
           unless process_alive?(pid)
             @error_output.puts "The dev wrapper (pid #{pid}) exited before it acquired the #{LOCK_NAME} lock."
             return 1
+          end
+          if deadline && @clock.now >= deadline && !stop_on_timeout
+            @error_output.puts "Still queued for #{LOCK_NAME} lock after #{limit_name}; run `workspace dev wait` again to keep waiting, " \
+              "or `workspace dev leave` to withdraw."
+            return 75
           end
           if deadline && @clock.now >= deadline
             log_activity(ctx, "lock_wait_gave_up", pid, waited.call) if queued

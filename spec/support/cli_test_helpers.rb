@@ -531,6 +531,18 @@ module CLITestHelpers
       @result
     end
 
+    def wait(**opts)
+      @working_dirs << opts[:working_dir]
+      @calls << {action: :wait, **opts.except(:working_dir)}
+      @result
+    end
+
+    def leave(**opts)
+      @working_dirs << opts[:working_dir]
+      @calls << {action: :leave, **opts.except(:working_dir)}
+      @result
+    end
+
     def status(**opts)
       @working_dirs << opts[:working_dir]
       @calls << {action: :status, **opts.except(:working_dir)}

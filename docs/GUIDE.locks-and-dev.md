@@ -214,6 +214,12 @@ With `--force`, `--max-wait` limits the whole switch: if your env isn't
 running by then, `up` exits 75 and, if it hadn't stopped the other
 worktree's env yet, leaves that env running.
 
+A shell that cannot stay open for a long wait (an agent's tool call, a UI)
+can get in line without blocking: `workspace dev up --queue` returns at once,
+`workspace dev wait --max-wait 10m` blocks until your turn (exit 75 leaves you
+in line), and `workspace dev leave` gives the place up. See
+[`dev`](README.dev.md#queue-without-blocking).
+
 ## 6. Locks directly
 
 Locks are a general-purpose coordination primitive; `devenv` (used by `dev

@@ -45,7 +45,8 @@ module Workspace
         "cleanup_dry_run" => 1,
         "notes" => 1,
         "start_packs" => 1,
-        "handoff_auto" => 2
+        "handoff_auto" => 2,
+        "dev_queue" => 1
       }.freeze
 
       # The exit statuses commands use, by meaning.

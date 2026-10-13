@@ -776,6 +776,232 @@ RSpec.describe Workspace::Commands::Dev, "with fake processes and clock" do
     end
   end
 
+  describe "#up --queue" do
+    it "returns at once as queued, in line behind the holder, and leaves the wrapper running" do
+      hold(700)
+      wrapper_joins(555)
+
+      result = dev.up(queue: true, working_dir: worktree)
+
+      expect(result).to eq(exit_code: 0, status: "queued", position: 1)
+      expect(tmux).to have_received(:new_window).with("app", hash_including(command: end_with("__run", "--wait")))
+      expect(signals).to be_empty
+      expect(output.string).to include("Queued for the devenv lock at position 1")
+      expect(output.string).to include("workspace dev wait")
+    end
+
+    it "counts the waiters already queued ahead" do
+      hold(700)
+      enqueue(701)
+      wrapper_joins(555)
+
+      expect(dev.up(queue: true, working_dir: worktree)).to include(status: "queued", position: 2)
+    end
+
+    it "returns running when the lock is free, without waiting for the ready check" do
+      settings["ready"] = "false"
+      wrapper_joins(555)
+
+      result = dev.up(queue: true, working_dir: worktree)
+
+      expect(result).to eq(exit_code: 0, status: "running", position: nil)
+      expect(output.string).to include("Dev environment starting for")
+    end
+
+    it "does not open a second wrapper when this worktree is already queued" do
+      hold(700)
+      enqueue(555, worktree: worktree)
+      allow(tmux).to receive(:new_window)
+
+      result = dev.up(queue: true, working_dir: worktree)
+
+      expect(result).to eq(exit_code: 0, status: "queued", position: 1)
+      expect(tmux).not_to have_received(:new_window)
+      expect(output.string).to include("Already queued")
+    end
+
+    it "does not open a second wrapper when this worktree already holds the lock" do
+      hold(555, worktree: worktree)
+      allow(tmux).to receive(:new_window)
+
+      result = dev.up(queue: true, working_dir: worktree)
+
+      expect(result).to eq(exit_code: 0, status: "running", position: nil)
+      expect(tmux).not_to have_received(:new_window)
+    end
+
+    it "stops a wrapper that never reaches the queue and exits 1 with no status" do
+      allow(tmux).to receive(:new_window).and_return(555)
+
+      expect(dev.up(queue: true, working_dir: worktree)).to eq(exit_code: 1, status: nil, position: nil)
+      expect(signals).to eq([["TERM", 555]])
+    end
+
+    it "refuses a dead wrapper's process group that is still running, as --wait does" do
+      orphan(700)
+      allow(terminator).to receive(:orphan_running?).and_return(true)
+
+      result = dev.up(queue: true, working_dir: worktree)
+
+      expect(result).to include(exit_code: 1)
+      expect(error_output.string).to include("still running")
+    end
+
+    it "refuses --force and --max-wait together with --queue" do
+      expect { dev.up(queue: true, takeover: true, working_dir: worktree) }.to raise_error(Workspace::UsageError, /--queue/)
+      expect { dev.up(queue: true, max_wait: 5, working_dir: worktree) }.to raise_error(Workspace::UsageError, /--queue/)
+    end
+  end
+
+  describe "#wait" do
+    it "returns running once the queued wrapper is promoted" do
+      hold(700)
+      enqueue(555, worktree: worktree)
+      on_sleep << -> { store.release("devenv", 700) }
+
+      result = dev.wait(working_dir: worktree)
+
+      expect(result).to eq(exit_code: 0, status: "running", position: nil)
+      expect(holder).to include("pid" => 555)
+    end
+
+    it "returns at once when this worktree already holds the lock and there is no ready check" do
+      hold(555, worktree: worktree)
+
+      expect(dev.wait(working_dir: worktree)).to eq(exit_code: 0, status: "running", position: nil)
+      expect(now[0]).to eq(0)
+    end
+
+    it "exits 75 after --max-wait and leaves the wrapper queued" do
+      hold(700)
+      enqueue(555, worktree: worktree)
+
+      result = dev.wait(max_wait: 3, working_dir: worktree)
+
+      expect(result).to eq(exit_code: 75, status: "queued", position: 1)
+      expect(signals).to be_empty
+      expect(store.status("devenv").dig("devenv", "queue").size).to eq(1)
+      expect(error_output.string).to include("Still queued for devenv lock after --max-wait")
+    end
+
+    it "exits 4 when the lock is cleared while waiting" do
+      hold(700)
+      enqueue(555, worktree: worktree)
+      on_sleep << -> { store.clear("devenv") }
+
+      result = dev.wait(working_dir: worktree)
+
+      expect(result).to eq(exit_code: 4, status: nil, position: nil)
+      expect(error_output.string).to include("devenv lock was cleared while waiting.")
+    end
+
+    it "exits 4 when this worktree is neither queued nor running" do
+      hold(700)
+
+      result = dev.wait(working_dir: worktree)
+
+      expect(result).to eq(exit_code: 4, status: nil, position: nil)
+      expect(error_output.string).to include("not queued for the devenv lock")
+      expect(error_output.string).to include("workspace dev up --queue")
+    end
+
+    it "exits 6 when the environment is running but its ready check never passes" do
+      settings["ready"] = "false"
+      hold(555, worktree: worktree)
+      allow(terminator).to receive(:stop_holder) do
+        liveness.kill(555)
+        :terminated
+      end
+
+      result = dev.wait(working_dir: worktree)
+
+      expect(result).to include(exit_code: 6, status: nil)
+    end
+
+    it "skips the ready check with ready: false" do
+      settings["ready"] = "false"
+      hold(555, worktree: worktree)
+
+      expect(dev.wait(ready: false, working_dir: worktree)).to include(exit_code: 0, status: "running")
+    end
+
+    it "exits 1 when the queued wrapper has exited" do
+      hold(700)
+      enqueue(555, worktree: worktree)
+      dead_pids << 555
+
+      result = dev.wait(working_dir: worktree)
+
+      expect(result).to eq(exit_code: 1, status: nil, position: nil)
+      expect(error_output.string).to include("exited before it acquired")
+    end
+
+    it "rejects a --max-wait of zero" do
+      expect { dev.wait(max_wait: 0, working_dir: worktree) }.to raise_error(Workspace::UsageError, /--max-wait/)
+    end
+  end
+
+  describe "#leave" do
+    it "signals the queued wrapper, removes its place and reports left" do
+      hold(700)
+      enqueue(555, worktree: worktree)
+
+      result = dev.leave(working_dir: worktree)
+
+      expect(result).to eq(exit_code: 0, outcome: "left")
+      expect(signals).to eq([["TERM", 555]])
+      expect(store.status("devenv").dig("devenv", "queue")).to be_empty
+      expect(holder).to include("pid" => 700)
+    end
+
+    it "leaves other worktrees' places alone" do
+      hold(700)
+      enqueue(701)
+      enqueue(555, worktree: worktree)
+
+      dev.leave(working_dir: worktree)
+
+      expect(store.status("devenv").dig("devenv", "queue").map { |w| w["waiter_pid"] }).to eq([701])
+    end
+
+    it "ignores a place whose wrapper is already gone" do
+      hold(700)
+      enqueue(555, worktree: worktree)
+      liveness.kill(555)
+
+      expect(dev.leave(working_dir: worktree)).to eq(exit_code: 0, outcome: "not_queued")
+      expect(signals).to be_empty
+    end
+
+    it "closes the wrapper's dead window" do
+      hold(700)
+      enqueue(555, worktree: worktree)
+
+      dev.leave(working_dir: worktree)
+
+      expect(tmux).to have_received(:close_dead_pane).with("%7", pid: 555).at_least(:once)
+    end
+
+    it "reports not_queued, exit 0, when this worktree is not in line" do
+      hold(700)
+
+      expect(dev.leave(working_dir: worktree)).to eq(exit_code: 0, outcome: "not_queued")
+      expect(signals).to be_empty
+    end
+
+    it "reports not_queued and keeps the lock when this worktree holds it" do
+      hold(555, worktree: worktree)
+
+      expect(dev.leave(working_dir: worktree)).to eq(exit_code: 0, outcome: "not_queued")
+      expect(holder).to include("pid" => 555)
+      expect(output.string).to include("workspace dev down")
+    end
+
+    it "reports not_queued when nothing is held at all" do
+      expect(dev.leave(working_dir: worktree)).to eq(exit_code: 0, outcome: "not_queued")
+    end
+  end
+
   describe "#up recording devenv waits in the event log" do
     let(:recorded) { [] }
     let(:event_log) do

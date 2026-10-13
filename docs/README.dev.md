@@ -5,7 +5,9 @@ Run one dev environment per repository, guarded by the repo-wide `devenv` lock. 
 ## Usage
 
 ```sh
-workspace dev up     [--wait] [--force] [--no-ready] [--max-wait DURATION]
+workspace dev up     [--wait | --queue] [--force] [--no-ready] [--max-wait DURATION] [--json]
+workspace dev wait   [--no-ready] [--max-wait DURATION] [--json]
+workspace dev leave  [--json]
 workspace dev down   [--force]
 workspace dev status [--json]
 ```
@@ -35,11 +37,19 @@ workspace config set dev.ready_timeout 2m         # wait for the dev.ready check
 | Option | Description |
 |--------|-------------|
 | `--wait` | Queue FIFO behind another worktree's dev env instead of refusing |
+| `--queue` | Queue like `--wait`, but return at once with exit 0 once the wrapper is running or in line, without waiting for the lock or the ready check. Follow with `dev wait`. Cannot be combined with `--force` or `--max-wait` |
 | `--force` | Stop another worktree's dev env, then start this one |
 | `--no-ready` | Don't wait for the `dev.ready` check |
 | `--max-wait DURATION` | Give up after `DURATION`: `30s`, `9m`, `1h`, or a plain number of seconds (exit 75); implies `--wait`. With `--force`, it limits the whole switch |
 
 `--takeover` is the deprecated alias for `--force` and still works; `down --force` (below) is a separate flag.
+
+## Options (wait)
+
+| Option | Description |
+|--------|-------------|
+| `--no-ready` | Don't wait for the `dev.ready` check |
+| `--max-wait DURATION` | Give up after `DURATION` (exit 75). The worktree stays in line |
 
 ## Options (down)
 | Option | Description |
@@ -55,6 +65,18 @@ workspace config set dev.ready_timeout 2m         # wait for the dev.ready check
 | 4 | The `devenv` lock was cleared while waiting |
 | 6 | Ready check failed; the env is stopped and the lock released |
 | 75 | Still queued after `--max-wait` |
+
+## Exit codes (wait)
+
+| Code | Meaning |
+|------|---------|
+| 0 | This worktree holds the lock and `dev.ready` passes (or none is set) |
+| 1 | The queued wrapper exited before it took the lock |
+| 4 | The lock was cleared while waiting, or this worktree is neither queued nor running |
+| 6 | Ready check failed; the env is stopped and the lock released |
+| 75 | Still queued after `--max-wait` |
+
+`dev up --queue` exits 0 when the wrapper is running or in line, and 1 for the same refusals as `--wait` (for example a process group left behind by a dead wrapper). `dev leave` exits 0 whether or not this worktree was in line.
 
 ## Exit codes (down)
 
@@ -89,6 +111,29 @@ workspace config set dev.ready_timeout 2m         # wait for the dev.ready check
 - A corrupt `locks.json` becomes `{"schema_version": 1, "error": "<message>"}` on stdout, exit 1.
 - Usage/validation errors (an unknown flag, extra arguments) get the same treatment when `--json` is present: `{"schema_version": 1, "error": "<message>"}` on stdout, exit 1 — never plain text on stderr.
 - Exit codes: `0` on success (including no environment running), `1` for a store error or a usage/validation error.
+
+## Queue without blocking
+
+`up --wait` holds its caller until the lock is won, which an agent's shell tool or a UI cannot do. Split it in two:
+
+```sh
+workspace dev up --queue                # opens the wrapper, returns at once
+workspace dev wait --max-wait 10m       # blocks until this worktree holds the lock and dev.ready passes
+workspace dev leave                     # gives up the place in line
+```
+
+`up --queue` follows the same first-in, first-out rules as `--wait`. It returns exit 0 as soon as the wrapper holds the lock (`running`) or is in line behind another (`queued`). It does not wait for the lock or for `dev.ready`. Run from a worktree that already holds the lock, or is already in line, it opens no second wrapper and reports where the worktree stands. `--wait` with `--queue` changes nothing. From the pane bound to a workflow run that holds the lock it starts the environment as the run's delegate, as `up` does, so it waits for that wrapper to start (up to `dev.startup_timeout`) before returning.
+
+`wait` blocks until this worktree holds the lock and the `dev.ready` check passes, with the exit codes in the table above. It works from a worktree that is queued or already running; from one that is neither it exits 4 and says to run `up --queue`. When `--max-wait` passes it exits 75 and leaves the wrapper in line (unlike `up --wait --max-wait`, which stops it), so run `wait` again to keep waiting. A `wait` still blocked when another process runs `leave` exits 1 (the wrapper exited), not 4. With no `dev.ready` set it returns as soon as the worktree holds the lock.
+
+`leave` stops this worktree's queued wrapper, removes its place and closes its `devenv` window. A worktree that holds the lock is not "in line": `leave` reports `not_queued` and leaves it running (stop it with `down`).
+
+`--json` on these three prints the action document of [`--json`](README.json.md). Each row of `up --queue` and `wait` carries two more keys:
+
+- `status` is `"running"` when this worktree holds the lock, `"queued"` when it is in line, and `null` when the command failed before either was true.
+- `position` is the worktree's place in line: `1` is next to run, `null` unless `status` is `"queued"`.
+
+`up --queue` rows have outcome `started` (running) or `queued`; `wait` rows have outcome `started` (exit 0) or `failed` with `exit_code` (a 75 keeps `status: "queued"` and its `position`). `leave` rows have outcome `left` or `not_queued`. `workspace capabilities --json` reports `dev_queue: 1` when these exist.
 
 ## Details
 
