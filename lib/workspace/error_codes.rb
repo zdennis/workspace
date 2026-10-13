@@ -25,6 +25,7 @@ module Workspace
       "window_gone" => "The recorded iTerm window no longer exists.",
       "checkout_missing" => "The workspace's checkout directory no longer exists.",
       "config_parse" => "A config file exists but can't be parsed as a YAML mapping.",
+      "unknown_config_key" => "The config report was asked for a key that is not a config key.",
       "notes_dir_unresolved" => "The notes directory can't be worked out: the project's rule uses {branch} and the checkout is on no branch.",
       "notes_dir_unwritable" => "notes dir --create couldn't make the notes directory or list it in info/exclude, or plan init couldn't write the plan file.",
       "no_plan" => "The workspace has no IMPLEMENTATION_PLAN.md in its notes directory.",

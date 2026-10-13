@@ -94,6 +94,7 @@ The exit code is unchanged by `--json` (1 for most failures, 2 for `not_submitte
 | `window_gone` | `focus` found that the recorded iTerm window no longer exists. `details.workspace`, `details.iterm_window_id`. |
 | `checkout_missing` | The workspace's checkout directory no longer exists. |
 | `config_parse` | A config file exists but can't be parsed as a YAML mapping. `details.path` and `details.reason`. |
+| `unknown_config_key` | `ConfigReport#show` was given a key that is not a config key. `details.key`. `workspace config <key>` checks the key first and reports `usage` instead, so the command does not print this code today. |
 | `notes_dir_unresolved` | `notes dir` (and `handoff new` with no doc given) can't work out the directory: the project's `notes.default_dir` rule uses `{branch}` and the checkout is on a detached HEAD. `details.name`, `details.path` (the checkout). |
 | `handoff_unsupported_agent` | `start --handoff` or `launch --handoff` was given for a project whose main agent is not Claude Code, so the `handoff` pack would not work. `details.kind` is the agent found (`codex`, `opencode`, `pi`), or `none` when the project config runs no known agent. Nothing was created. The config key `handoff.auto` never raises it: there the pack is skipped with a warning (see [`handoff`](README.handoff.md#automatic-handoff)). |
 | `notes_dir_unwritable` | `notes dir --create` couldn't make the directory or list it in `info/exclude`, or `plan init` couldn't write the plan file. `details.path` is the directory. |
