@@ -7,11 +7,27 @@ require "fileutils"
 # that branched from main's first commit. Nothing outside the temp directory
 # is touched and nothing reaches the network.
 module RebaseRepos
+  # Git starts detached background maintenance after fetch, rebase, commit and
+  # push; it writes `objects/maintenance.lock` while mktmpdir deletes the tree.
+  # Env config reaches the specs own git calls and the ones the code under test makes.
+  NO_MAINTENANCE = {
+    "GIT_CONFIG_COUNT" => "3",
+    "GIT_CONFIG_KEY_0" => "gc.auto", "GIT_CONFIG_VALUE_0" => "0",
+    "GIT_CONFIG_KEY_1" => "maintenance.auto", "GIT_CONFIG_VALUE_1" => "false",
+    "GIT_CONFIG_KEY_2" => "gc.autoDetach", "GIT_CONFIG_VALUE_2" => "false"
+  }.freeze
+
   def self.included(base)
     base.around do |example|
-      Dir.mktmpdir("rebase-spec") do |dir|
-        @dir = File.realpath(dir)
-        example.run
+      saved = NO_MAINTENANCE.keys.to_h { |k| [k, ENV[k]] }
+      NO_MAINTENANCE.each { |k, v| ENV[k] = v }
+      begin
+        Dir.mktmpdir("rebase-spec") do |dir|
+          @dir = File.realpath(dir)
+          example.run
+        end
+      ensure
+        saved.each { |k, v| ENV[k] = v }
       end
     end
     base.let(:remote) { File.join(@dir, "remote.git") }
