@@ -15,9 +15,6 @@ module Workspace
       # Seconds `gh pr create` may take.
       CREATE_TIMEOUT = 60
 
-      # Seconds `git push` may take.
-      PUSH_TIMEOUT = 120
-
       REMOTE = "origin"
       NOT_LOGGED_IN = /gh auth login|not logged in|not authenticated|authentication required|bad credentials/i
       private_constant :REMOTE, :NOT_LOGGED_IN
@@ -54,7 +51,14 @@ module Workspace
         branch = @git.worktree_branch(path)
         raise Workspace::Error, "'#{name}' is on a detached HEAD at #{path}. Check out a branch first." if branch.nil?
 
-        result = find_or_create(path, draft: draft, label: name) { prepare_branch(path, branch, quiet: json) }
+        pushed = false
+        begin
+          result = find_or_create(path, draft: draft, label: name) { pushed = prepare_branch(path, branch, quiet: json) }
+        rescue Workspace::Error => e
+          raise e unless pushed
+
+          raise Workspace::Error.new("#{e.message} ('#{branch}' was already pushed to #{REMOTE}.)", code: e.code, details: e.details)
+        end
         if json
           @output.puts JSON.generate({"schema_version" => JSON_SCHEMA_VERSION, "ok" => true, "workspace" => name}.merge(result))
         else
@@ -98,19 +102,18 @@ module Workspace
           raise Workspace::Error.new("'#{branch}' has no commits ahead of #{base}, so there is nothing to open a pull request for.",
             code: "nothing_to_push", details: {"branch" => branch, "base" => base})
         end
-        return if @git.upstream_branch(path)
+        return false if @git.upstream_branch(path)
 
         push(path, branch)
         @output.puts "Pushed #{branch} to #{REMOTE}." unless quiet
+        true
       end
 
       def push(path, branch)
-        _, stderr, success = @runner.call(["git", "push", "-u", REMOTE, branch], chdir: path, timeout: PUSH_TIMEOUT)
+        success, stderr = @git.push(path, branch, set_upstream: true)
         return if success
 
         raise Workspace::Error, "Could not push '#{branch}': #{first_line(stderr)}"
-      rescue Timeout::Error
-        raise Workspace::Error, "git push did not finish within #{PUSH_TIMEOUT} seconds."
       end
 
       def submit(path, draft, label)

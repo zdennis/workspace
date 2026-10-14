@@ -16,7 +16,7 @@ module Workspace
     # hint).
     SUBCOMMANDS = %w[
       init doctor launch start stop add add-project kill finish relaunch restore
-      focus deactivate reactivate tile resize capture agent agentd lock dev parent notes plan ticket pr projects
+      focus deactivate reactivate tile resize capture agent agentd lock dev parent notes plan ticket pr rebase push projects
       capabilities daemon sessions review snapshot ask session-event agent-run handoff pipeline run library lib instructions workflow step
       run-and-report report-run-status layout config tmux statusline current
       list-projects list status repair cleanup prune set-command event-log
@@ -69,6 +69,8 @@ module Workspace
     # @param plan_command [Workspace::Commands::Plan, nil] pre-built plan command
     # @param ticket_command [Workspace::Commands::Ticket, nil] pre-built ticket command
     # @param pull_request_command [Workspace::Commands::PullRequest, nil] pre-built pr command
+    # @param rebase_command [Workspace::Commands::Rebase, nil] pre-built rebase command
+    # @param push_command [Workspace::Commands::Push, nil] pre-built push command
     # @param projects_command [Workspace::Commands::Projects, nil] pre-built projects command
     # @param capabilities_command [Workspace::Commands::Capabilities, nil] pre-built capabilities command
     # @param daemon_command [Workspace::Commands::Daemon, nil] pre-built daemon command
@@ -94,7 +96,7 @@ module Workspace
     #   `list --liveness --json` and `status --json`; takes name => state entry
     # @param launch_mode [Workspace::LaunchMode, nil] decides whether launch/start
     #   run headless when no --[no-]headless flag is given; nil builds one
-    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, restart_agent_command: nil, send_command: nil, ensure_agent_command: nil, handoff_command: nil, notes_command: nil, notes_setup: nil, plan_command: nil, ticket_command: nil, pull_request_command: nil, projects_command: nil, capabilities_command: nil, daemon_command: nil, ui_command: nil, binding_command: nil, library_command: nil, library: nil, instructions_command: nil, instruction_composer: nil, workflow_command: nil, review_command: nil, restore_command: nil, snapshot_command: nil, project_actions_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil, liveness: nil, window_liveness: nil)
+    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, restart_agent_command: nil, send_command: nil, ensure_agent_command: nil, handoff_command: nil, notes_command: nil, notes_setup: nil, plan_command: nil, ticket_command: nil, pull_request_command: nil, rebase_command: nil, push_command: nil, projects_command: nil, capabilities_command: nil, daemon_command: nil, ui_command: nil, binding_command: nil, library_command: nil, library: nil, instructions_command: nil, instruction_composer: nil, workflow_command: nil, review_command: nil, restore_command: nil, snapshot_command: nil, project_actions_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil, liveness: nil, window_liveness: nil)
       @config = config
       @state = state
       @project_config = project_config
@@ -134,6 +136,8 @@ module Workspace
       @plan_command = plan_command
       @ticket_command = ticket_command
       @pull_request_command = pull_request_command
+      @rebase_command = rebase_command
+      @push_command = push_command
       @notes_setup = notes_setup
       @agent_command = agent_command
       @config_command = config_command
@@ -235,6 +239,10 @@ module Workspace
         cmd_ticket(args)
       when "pr"
         cmd_pr(args)
+      when "rebase"
+        cmd_rebase(args)
+      when "push"
+        cmd_push(args)
       when "projects"
         cmd_projects(args)
       when "capabilities"
@@ -455,7 +463,9 @@ module Workspace
           pr              Open a pull request for a workspace's branch without finishing it (create)
           projects        Group workspaces by repository (main checkout + worktrees)
           prune           Remove worktree projects whose PR is closed or merged
+          push            Push a workspace's branch to origin, forcing with a lease only after a rebase
           reactivate      Reactivate Claude in a project's tmux pane
+          rebase          Rebase a workspace's branch onto the default branch (--onto local|update|remote)
           relaunch        Stop and relaunch all active workspace projects
           repair          Rebuild state from live iTerm windows
           resize          Resize tmux panes for a running project
@@ -5854,6 +5864,72 @@ module Workspace
       raise Error, "pr is not available: no pr command was wired" unless @pull_request_command
 
       @pull_request_command.create(name: options[:name], draft: options[:draft], json: options[:json], working_dir: @working_dir)
+    end
+
+    def rebase_parser(options)
+      OptionParser.new do |opts|
+        opts.banner = "Usage: workspace rebase --onto local|update|remote [--name WORKSPACE] [--json]"
+        opts.separator ""
+        opts.separator "Rebase a workspace's branch onto the repository's default branch."
+        opts.separator "  local    the local default branch; nothing is fetched"
+        opts.separator "  update   fetch origin, move the local default branch up to origin's (stashing and"
+        opts.separator "           restoring changes in the checkout that has it), then rebase onto it"
+        opts.separator "  remote   fetch origin, rebase onto origin/<default>"
+        opts.separator "Refuses a workspace with changes to tracked files and never stashes them. A rebase that"
+        opts.separator "stops on a conflict is aborted, so the workspace is left as it was."
+        opts.separator ""
+        opts.on("--onto TARGET", "local, update or remote (required)") { |v| options[:onto] = v }
+        opts.on("--name NAME", "The workspace (default: the one the current directory is in)") { |v| options[:name] = v }
+        opts.on("--json", "Print one JSON document (see docs/README.rebase.md)") { options[:json] = true }
+        opts.on("-h", "--help", "Show this help") { options[:help] = true }
+        opts.separator ""
+        opts.separator "Examples:"
+        opts.separator "  workspace rebase --onto update"
+        opts.separator "  workspace rebase --onto remote --name api.worktree-PROJ-123 --json"
+      end
+    end
+
+    def cmd_rebase(args)
+      options = {json: false, name: nil, onto: nil}
+      parser = rebase_parser(options)
+      parser.parse!(args)
+      return @output.puts(parser.help) if options[:help]
+
+      raise UsageError, "Unexpected argument: #{args.first}. Run 'workspace rebase --help'." if args.any?
+      raise UsageError, "Missing --onto local|update|remote.\n\n#{parser.help}" unless options[:onto]
+      raise Error, "rebase is not available: no rebase command was wired" unless @rebase_command
+
+      @rebase_command.call(name: options[:name], onto: options[:onto], json: options[:json], working_dir: @working_dir)
+    end
+
+    def push_parser(options)
+      OptionParser.new do |opts|
+        opts.banner = "Usage: workspace push [--name WORKSPACE] [--json]"
+        opts.separator ""
+        opts.separator "Push a workspace's branch to origin. A branch with no upstream is pushed with -u. When the"
+        opts.separator "upstream has commits the branch lacks, the push uses --force-with-lease, but only if the"
+        opts.separator "branch's own history once held all of them (a rebase replaced them); otherwise it is refused."
+        opts.separator ""
+        opts.on("--name NAME", "The workspace (default: the one the current directory is in)") { |v| options[:name] = v }
+        opts.on("--json", "Print one JSON document (see docs/README.rebase.md)") { options[:json] = true }
+        opts.on("-h", "--help", "Show this help") { options[:help] = true }
+        opts.separator ""
+        opts.separator "Examples:"
+        opts.separator "  workspace push"
+        opts.separator "  workspace push --name api.worktree-PROJ-123 --json"
+      end
+    end
+
+    def cmd_push(args)
+      options = {json: false, name: nil}
+      parser = push_parser(options)
+      parser.parse!(args)
+      return @output.puts(parser.help) if options[:help]
+
+      raise UsageError, "Unexpected argument: #{args.first}. Run 'workspace push --help'." if args.any?
+      raise Error, "push is not available: no push command was wired" unless @push_command
+
+      @push_command.call(name: options[:name], json: options[:json], working_dir: @working_dir)
     end
 
     PLAN_FLAGS = {

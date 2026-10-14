@@ -14,7 +14,7 @@ RSpec.describe Workspace::Commands::PullRequest do
   let(:remote) { File.join(@dir, "remote.git") }
   let(:repo) { File.join(@dir, "api") }
   let(:output) { StringIO.new }
-  let(:git) { Workspace::Git.new(output: StringIO.new, input: StringIO.new) }
+  let(:git) { Workspace::Git.new(output: StringIO.new, input: StringIO.new, runner: runner) }
   let(:project_config) { instance_double(Workspace::ProjectConfig) }
   let(:project_detector) { instance_double(Workspace::ProjectDetector, detect: "api") }
   let(:status) { instance_double(Workspace::PullRequestStatus, call: {"available" => true, "found" => false}) }
@@ -235,10 +235,40 @@ RSpec.describe Workspace::Commands::PullRequest do
     end
 
     it "raises when the push does not finish in time" do
-      cmd = described_class.new(git: git, project_config: project_config, project_detector: project_detector, status: status,
-        runner: ->(argv, chdir:, timeout:) { raise Timeout::Error }, output: output)
+      timing_out = ->(argv, chdir:, timeout:) { raise Timeout::Error }
+      cmd = described_class.new(git: Workspace::Git.new(output: StringIO.new, input: StringIO.new, runner: timing_out),
+        project_config: project_config, project_detector: project_detector, status: status, runner: timing_out, output: output)
 
-      expect { cmd.create(working_dir: repo) }.to raise_error(Workspace::Error, /git push did not finish/)
+      expect { cmd.create(working_dir: repo) }.to raise_error(Workspace::Error, /git push did not finish within 120 seconds/)
+    end
+
+    it "says git is not installed when the push cannot start it" do
+      missing = ->(argv, chdir:, timeout:) { raise Errno::ENOENT }
+      cmd = described_class.new(git: Workspace::Git.new(output: StringIO.new, input: StringIO.new, runner: missing),
+        project_config: project_config, project_detector: project_detector, status: status, runner: missing, output: output)
+
+      expect { cmd.create(working_dir: repo) }.to raise_error(Workspace::Error, "git is not installed.")
+    end
+
+    it "says the branch was pushed when the create fails afterwards, keeping the error's code" do
+      auth = "To get started with GitHub CLI, please run:  gh auth login\n"
+      failing = ->(argv, chdir:, timeout:) { (argv.first == "git") ? Workspace::TimedProcess.run(argv, chdir: chdir, timeout: timeout) : ["", auth, false] }
+      cmd = described_class.new(git: git, project_config: project_config, project_detector: project_detector, status: status, runner: failing, output: output)
+
+      expect { cmd.create(working_dir: repo) }.to raise_error(Workspace::Error) { |e|
+        expect(e.code).to eq("gh_unavailable")
+        expect(e.message).to include("'feature/x' was already pushed to origin")
+      }
+    end
+
+    it "does not claim a push when the failure comes before one" do
+      cmd = described_class.new(git: git, project_config: project_config, project_detector: project_detector, status: status,
+        runner: ->(argv, chdir:, timeout:) { raise Workspace::Error, "boom" }, output: output)
+      sh("push", "-q", "-u", "origin", "feature/x")
+
+      expect { cmd.create(working_dir: repo) }.to raise_error(Workspace::Error) { |e|
+        expect(e.message).not_to include("already pushed")
+      }
     end
 
     it "refuses with gh_unavailable (not_logged_in) before pushing when the lookup shows no login" do
@@ -262,7 +292,7 @@ RSpec.describe Workspace::Commands::PullRequest do
     it "gives the create and the push their own time limits" do
       command.create(working_dir: repo)
 
-      expect(calls.map { |c| c[:timeout] }).to eq([described_class::PUSH_TIMEOUT, described_class::CREATE_TIMEOUT])
+      expect(calls.map { |c| c[:timeout] }).to eq([Workspace::Git::PUSH_TIMEOUT, described_class::CREATE_TIMEOUT])
     end
 
     it "finds the workspace from the working directory" do

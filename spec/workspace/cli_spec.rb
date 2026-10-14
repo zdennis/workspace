@@ -101,6 +101,8 @@ RSpec.describe Workspace::CLI do
       plan_command: overrides[:plan_command],
       ticket_command: overrides[:ticket_command],
       pull_request_command: overrides[:pull_request_command],
+      rebase_command: overrides[:rebase_command],
+      push_command: overrides[:push_command],
       projects_command: overrides[:projects_command],
       capabilities_command: overrides[:capabilities_command],
       restore_command: overrides[:restore_command],
@@ -5061,6 +5063,74 @@ RSpec.describe Workspace::CLI do
 
       expect { cli.run(["ticket", "show", "PROJ-1"]) }.to raise_error(FakeSystemExit)
       expect(error_output.string).to include("ticket is not available")
+    end
+  end
+
+  describe "#run with rebase and push" do
+    let(:rebase_command) { instance_double(Workspace::Commands::Rebase, call: nil) }
+    let(:push_command) { instance_double(Workspace::Commands::Push, call: nil) }
+    let(:built) { build_test_cli(rebase_command: rebase_command, push_command: push_command) }
+    let(:cli) { built[0] }
+    let(:output) { built[1] }
+    let(:error_output) { built[2] }
+
+    it "passes rebase's flags to the command" do
+      cli.run(["rebase", "--onto", "update", "--name", "api", "--json"])
+
+      expect(rebase_command).to have_received(:call).with(name: "api", onto: "update", json: true, working_dir: an_instance_of(String))
+    end
+
+    it "requires --onto for rebase" do
+      expect { cli.run(["rebase", "--json"]) }.to raise_error(FakeSystemExit)
+
+      expect(JSON.parse(output.string.lines.last)).to include("ok" => false, "code" => "usage")
+      expect(rebase_command).not_to have_received(:call)
+    end
+
+    it "rejects extra arguments to rebase and push as usage errors" do
+      [["rebase", "--onto", "local", "extra"], ["push", "extra"]].each do |argv|
+        expect { cli.run(argv + ["--json"]) }.to raise_error(FakeSystemExit), argv.inspect
+        expect(JSON.parse(output.string.lines.last)).to include("ok" => false, "code" => "usage"), argv.inspect
+      end
+    end
+
+    it "passes push's flags to the command" do
+      cli.run(["push"])
+      cli.run(["push", "--json", "--name", "api"])
+
+      expect(push_command).to have_received(:call).with(name: nil, json: false, working_dir: an_instance_of(String))
+      expect(push_command).to have_received(:call).with(name: "api", json: true, working_dir: an_instance_of(String))
+    end
+
+    it "prints a command's failure as the envelope under --json" do
+      allow(rebase_command).to receive(:call).and_raise(Workspace::Error.new("dirty", code: "dirty_worktree", details: {"files" => ["a"]}))
+
+      expect { cli.run(["rebase", "--onto", "local", "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+      expect(JSON.parse(output.string)).to include("ok" => false, "code" => "dirty_worktree", "details" => {"files" => ["a"]})
+    end
+
+    it "shows help for each" do
+      cli.run(["rebase", "--help"])
+      cli.run(["push", "--help"])
+
+      expect(output.string).to include("workspace rebase --onto local|update|remote").and include("workspace push [--name")
+      expect(rebase_command).not_to have_received(:call)
+      expect(push_command).not_to have_received(:call)
+    end
+
+    it "says so when no command was wired" do
+      cli, _, error_output, = build_test_cli
+
+      expect { cli.run(["rebase", "--onto", "local"]) }.to raise_error(FakeSystemExit)
+      expect { cli.run(["push"]) }.to raise_error(FakeSystemExit)
+      expect(error_output.string).to include("rebase is not available").and include("push is not available")
+    end
+
+    it "lists both in the main help" do
+      cli.run(["help"])
+
+      expect(output.string).to match(/^\s+rebase\s+Rebase a workspace/)
+      expect(output.string).to match(/^\s+push\s+Push a workspace/)
     end
   end
 

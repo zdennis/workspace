@@ -988,3 +988,62 @@ RSpec.describe Workspace::Git, "checkout layout" do
     end
   end
 end
+
+RSpec.describe Workspace::Git, "write operations on a checkout" do
+  include RebaseRepos
+
+  let(:git) { described_class.new(output: StringIO.new, input: StringIO.new) }
+
+  it "names the default branch from origin/HEAD, else from main or master" do
+    expect(git.default_branch_name(repo)).to eq("main")
+
+    sh("remote", "set-head", "origin", "main")
+    expect(git.default_branch_name(repo)).to eq("main")
+
+    sh("update-ref", "-d", "refs/remotes/origin/HEAD")
+    sh("branch", "-m", "main", "master")
+    sh("update-ref", "-d", "refs/remotes/origin/main")
+    expect(git.default_branch_name(repo)).to eq("master")
+  end
+
+  it "reports commits only upstream has and commits only HEAD has" do
+    expect(git.behind_ahead(wt, "main")).to eq([0, 1])
+    expect(git.behind_ahead(wt, "no-such-ref")).to be_nil
+  end
+
+  it "lists only changes to tracked files as dirty" do
+    File.write(File.join(repo, "untracked.txt"), "x\n")
+    expect(git.dirty_tracked_files(repo)).to eq([])
+
+    File.write(File.join(repo, "base.txt"), "changed\n")
+    expect(git.dirty_tracked_files(repo)).to eq(["base.txt"])
+    expect(git.dirty_tracked_files(File.join(@dir, "missing"))).to be_nil
+
+    sh("checkout", "-q", "--", "base.txt")
+    sh("mv", "base.txt", "moved.txt")
+    expect(git.dirty_tracked_files(repo)).to contain_exactly("base.txt", "moved.txt")
+  end
+
+  it "judges replaced upstream commits false for a branch with no reflog, and lists no conflicts in a clean checkout" do
+    expect(git.upstream_commits_replaced?(repo, "no-such-branch", "origin/main")).to be(false)
+    expect(git.conflicted_files(repo)).to eq([])
+  end
+
+  it "turns a missing git and a timeout into errors for each timed call" do
+    missing = described_class.new(runner: ->(argv, chdir:, timeout:) { raise Errno::ENOENT })
+    slow = described_class.new(runner: ->(argv, chdir:, timeout:) { raise Timeout::Error })
+
+    expect { missing.fetch(repo) }.to raise_error(Workspace::Error, "git is not installed.")
+    expect { slow.fetch(repo) }.to raise_error(Workspace::Error, "git fetch did not finish within #{described_class::FETCH_TIMEOUT} seconds.")
+    expect { slow.rebase(repo, "main") }.to raise_error(Workspace::Error, /git rebase did not finish within/)
+    expect { slow.push(repo, "main") }.to raise_error(Workspace::Error, /git push did not finish within #{described_class::PUSH_TIMEOUT} seconds/o)
+  end
+
+  it "runs git through the injected runner with the checkout as its directory" do
+    calls = []
+    git = described_class.new(runner: ->(argv, chdir:, timeout:) { calls << [argv, chdir, timeout] && ["", "", true] })
+
+    expect(git.push(wt, "feature/x", set_upstream: true, force_with_lease: true)).to eq([true, ""])
+    expect(calls).to eq([[%w[git push -u --force-with-lease origin feature/x], wt, described_class::PUSH_TIMEOUT]])
+  end
+end

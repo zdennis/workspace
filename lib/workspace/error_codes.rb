@@ -36,6 +36,10 @@ module Workspace
       "ticket_source_unavailable" => "ticket show: gh or jira is not installed, did not answer in time, or failed; details.source says which.",
       "gh_unavailable" => "pr create (or finish --pr): gh is not installed or is not logged in; details.reason says which (missing or not_logged_in).",
       "nothing_to_push" => "pr create: the branch has no commits ahead of its base, so there is nothing to open a pull request for.",
+      "dirty_worktree" => "rebase: the workspace has changes to tracked files; commit or stash them first. details.path, details.files.",
+      "rebase_in_progress" => "rebase: a rebase is already stopped in the workspace; finish or abort it first. details.path.",
+      "fetch_failed" => "rebase (update, remote) or push: git fetch from origin failed. details.remote, details.detail.",
+      "push_rejected" => "push: origin refused the push, or the upstream has commits the branch never had so the push was not forced. details.branch, details.upstream, details.detail.",
       "handoff_unsupported_agent" => "The handoff pack was asked for, but the project's main agent is not Claude Code.",
       # Codes the agent daemon puts in its replies; `agent-run` passes them through.
       "malformed_message" => "The daemon couldn't parse the request.",

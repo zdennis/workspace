@@ -104,6 +104,10 @@ The exit code is unchanged by `--json` (1 for most failures, 2 for `not_submitte
 | `plan_write_conflict` | The plan file changed twice while a `plan` verb was writing it, so nothing was written; run the verb again. `details.path`. |
 | `gh_unavailable` | `pr create` (or `finish --pr`) needs `gh`, which is not installed (`details.reason` `missing`) or not logged in (`not_logged_in`, with `details.detail`). |
 | `nothing_to_push` | `pr create`: the branch has no commits ahead of its base. `details.branch`, `details.base`. |
+| `dirty_worktree` | `rebase`: the workspace has changes to tracked files. `details.path`, `details.files`. |
+| `rebase_in_progress` | `rebase`: a rebase is already stopped in the workspace. `details.path`. |
+| `fetch_failed` | `rebase --onto update\|remote` or `push`: `git fetch origin` failed. `details.remote`, `details.detail`. |
+| `push_rejected` | `push`: origin refused the push, or the upstream has commits the branch never had so the push was not forced. `details.branch`, `details.upstream`, `details.detail`. |
 | `ticket_not_found` | `ticket show` asked `gh` or `jira` for a ticket the tool says does not exist. `details.source`, `details.ref`. |
 | `ticket_source_unavailable` | `ticket show` could not read the ticket: `gh` or `jira` is not installed (`details.reason` `missing`), did not answer in time (`timeout`) or failed (`error`, with `details.detail`). `details.source`. |
 

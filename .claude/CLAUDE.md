@@ -37,7 +37,7 @@ A macOS CLI (Ruby) for managing tmuxinator-based development workspaces in iTerm
 - `lib/workspace/main_agent.rb` — Which coding agent a project's main agent pane runs (`claude`, `codex`, ..., or `none`), read from the panes of its tmuxinator config; `InstructionComposer` uses it to send the `handoff` pack to Claude Code only
 - `lib/workspace/commands_config.rb` — Reads a project's `commands.test` and `commands.lint`
 - `lib/library/play/` — The built-in instruction packs (`binding`, `orchestrator`, `commits`, `review`, `notes`, `handoff`, `dev`, `implementation-plan`), read through `Library#builtin_store`
-- `lib/workspace/commands/` — Complex command objects (launch, kill, focus, start, agent, ensure_agent, lock, dev, notes, plan, pull_request, projects, capabilities, send, review, restore, snapshot, daemon, ui, binding, library, instructions, workflow)
+- `lib/workspace/commands/` — Complex command objects (launch, kill, focus, start, agent, ensure_agent, lock, dev, notes, plan, pull_request, rebase, push, projects, capabilities, send, review, restore, snapshot, daemon, ui, binding, library, instructions, workflow)
 - `lib/workspace/notes_dir.rb` — The one resolver for a workspace's notes directory: its own `notes.dir`, else the project's `notes.default_dir` rule, else `tmp/workspace-notes` in the checkout; `Commands::Notes#info` returns the answer as a Hash (`dir` prints it) and `#files_inside_worktree` counts the files `kill` and `finish` would delete
 - `lib/workspace/notes_setup.rb` — Fixes a new worktree's notes directory for `start` and `add`: writes the computed path as the worktree's own `notes.dir` (never over an existing value), makes the directory and its `info/exclude` line; every problem comes back as a warning, never an error
 - `lib/workspace/plan_file.rb` — The parser for a workspace's `IMPLEMENTATION_PLAN.md` (`PlanFile.parse(text)`, `PlanFile.read(path)`; nil when the file is missing): frontmatter, the `- [S] ID Title` tasks under `## Tasks`, `counts`, `percent`, `current`, `warnings`; it never fails. `PlanFile.set_status` and `.set_owner_pane` are the only writers of the file: one frontmatter line, through a temp file and rename, with one re-read and retry
@@ -48,6 +48,9 @@ A macOS CLI (Ruby) for managing tmuxinator-based development workspaces in iTerm
 - `lib/workspace/commands/ticket.rb` — `ticket show REF [--name WS] [--json]`: the lookup, plus the workspace that already exists for the ref's branch; writes nothing
 - `lib/workspace/timed_process.rb` — Runs one command with a time limit and no prompt (`GH_PROMPT_DISABLED`, `GIT_TERMINAL_PROMPT`), in its own process group that is stopped on timeout; `TicketSource.run`, `PullRequestStatus` and `Commands::PullRequest` run `gh` and `git` through it
 - `lib/workspace/commands/pull_request.rb` — `pr create [--name WS] [--draft] [--json]`: the branch's existing pull request, else a push (no upstream) and `gh pr create --fill`; refuses `nothing_to_push` and `gh_unavailable`. `#find_or_create` is the look-up-or-create step alone, which `Commands::Finish` calls for `--pr`
+- `lib/workspace/workspace_checkout.rb` — The workspace, checkout path and branch a command works on (`--name`, else the workspace of the working directory; refuses a detached HEAD); `rebase` and `push` use it
+- `lib/workspace/commands/rebase.rb` — `rebase --onto local|update|remote [--name WS] [--json]`: refuses dirty tracked files (`dirty_worktree`) and a stopped rebase (`rebase_in_progress`), never stashes the workspace's own changes, aborts its own conflicted rebase; `update` moves the local default branch up to origin's first (stashing and restoring a dirty checkout of it); outcomes `rebased`, `up_to_date`, `conflict`, `default_not_updated`
+- `lib/workspace/commands/push.rb` — `push [--name WS] [--json]`: `-u` with no upstream, a plain push when only the branch has new commits, `--force-with-lease` only when the branch's reflog shows it once held every upstream-only commit, else `push_rejected`; `Git#push` is the one push, which `PullRequest` uses too (`Git` takes a `runner:` for its time-limited calls)
 - `lib/workspace/commands/plan.rb` — `plan status|path|show|init|start|pause|delete`; `#rows(names:, all:)` returns the rows, gathering the session, the owner pane's state and the open questions; `#start` is given a `launch:` callable by the CLI (launching is `CLI#launch_projects`) and otherwise types into the main agent pane and binds it to the play; every change records `plan_changed`
 - `lib/workspace/work_coordinator_client.rb` — JSONL client for work-coordinator sockets
 - `lib/workspace/pipeline_config.rb` — (`pipeline` is deprecated in favor of `workflow`) Reads per-project pipeline stage config from `~/.config/workspace/projects/<name>.yml`
@@ -111,7 +114,7 @@ A macOS CLI (Ruby) for managing tmuxinator-based development workspaces in iTerm
 
 ## Subcommands
 
-init, doctor, launch, start, add, stop, kill, finish, relaunch, restore, focus, list, status, whereis, agent, daemon, pipeline, sessions, review, snapshot, session-event, lock, dev, parent, notes, plan, ticket, pr, projects, ask, capabilities, ui, binding, library, instructions, workflow, step
+init, doctor, launch, start, add, stop, kill, finish, relaunch, restore, focus, list, status, whereis, agent, daemon, pipeline, sessions, review, snapshot, session-event, lock, dev, parent, notes, plan, ticket, pr, rebase, push, projects, ask, capabilities, ui, binding, library, instructions, workflow, step
 
 ## Adding a Subcommand
 

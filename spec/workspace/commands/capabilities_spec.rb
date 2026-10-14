@@ -134,6 +134,12 @@ RSpec.describe Workspace::Commands::Capabilities do
       expect(document["features"]).to include("pr_create" => 1)
     end
 
+    it "reports rebase 1 once rebase and push exist" do
+      command.call(json: true)
+
+      expect(document["features"]).to include("rebase" => 1)
+    end
+
     it "ignores a PATH entry that is not executable or is a directory" do
       install("gh", mode: 0o644)
       FileUtils.mkdir_p(File.join(bin_dir, "tmux"))

@@ -1,0 +1,360 @@
+require "spec_helper"
+require "json"
+
+RSpec.describe Workspace::Commands::Rebase do
+  include RebaseRepos
+
+  let(:output) { StringIO.new }
+  let(:runner) { Workspace::TimedProcess.method(:run) }
+  let(:git) { Workspace::Git.new(output: StringIO.new, input: StringIO.new, runner: runner) }
+  let(:project_config) { instance_double(Workspace::ProjectConfig) }
+  let(:project_detector) { instance_double(Workspace::ProjectDetector, detect: "api.worktree-x") }
+  let(:checkout) { Workspace::WorkspaceCheckout.new(git: git, project_config: project_config, project_detector: project_detector) }
+  subject(:command) { described_class.new(git: git, checkout: checkout, output: output) }
+
+  before { allow(project_config).to receive(:project_root_for).with("api.worktree-x").and_return(wt) }
+
+  def document = JSON.parse(output.string)
+
+  def run_json(onto)
+    command.call(onto: onto, json: true, working_dir: wt)
+    document
+  end
+
+  # A runner that fails the git calls whose first words match, and runs the rest.
+  def failing(*words)
+    lambda do |argv, chdir:, timeout:|
+      return ["", "forced failure\n", false] if words.all? { |w| argv.include?(w) }
+      Workspace::TimedProcess.run(argv, chdir: chdir, timeout: timeout)
+    end
+  end
+
+  def advance_main(message = "main moves", file: "main.txt")
+    commit_file(file, "#{message}\n", message)
+  end
+
+  describe "--onto local" do
+    it "rebases onto the local default branch without fetching" do
+      advance_main
+      sh("remote", "set-url", "origin", File.join(@dir, "nowhere.git"))
+
+      expect(run_json("local")).to include("ok" => true, "workspace" => "api.worktree-x", "branch" => "feature/x", "onto" => "local",
+        "outcome" => "rebased", "reason" => nil, "aborted" => nil, "conflicted" => [], "detail" => nil, "schema_version" => 1)
+      expect(sh("merge-base", "--is-ancestor", "main", "feature/x", dir: wt)).to eq("")
+      expect(File).to exist(File.join(wt, "main.txt"))
+    end
+
+    it "reports up_to_date and changes nothing when the branch already has the default branch" do
+      before_head = rev("HEAD", dir: wt)
+
+      expect(run_json("local")).to include("outcome" => "up_to_date")
+      expect(rev("HEAD", dir: wt)).to eq(before_head)
+    end
+
+    it "prints one sentence without --json" do
+      advance_main
+      command.call(onto: "local", working_dir: wt)
+
+      expect(output.string).to eq("Rebased feature/x onto local.\n")
+    end
+
+    it "prints the up-to-date sentence" do
+      command.call(onto: "local", working_dir: wt)
+
+      expect(output.string).to eq("feature/x is already up to date with local.\n")
+    end
+
+    it "aborts its own conflicted rebase and lists the files" do
+      commit_file("clash.txt", "main\n", "main clash")
+      commit_file("clash.txt", "feature\n", "feature clash", dir: wt)
+      before_head = rev("HEAD", dir: wt)
+
+      result = run_json("local")
+
+      expect(result).to include("outcome" => "conflict", "reason" => "conflict", "aborted" => true, "conflicted" => ["clash.txt"])
+      expect(result["detail"]).to be_a(String)
+      expect(git.rebase_in_progress?(wt)).to be(false)
+      expect(rev("HEAD", dir: wt)).to eq(before_head)
+      expect(sh("status", "--porcelain", dir: wt)).to eq("")
+    end
+
+    it "prints the conflicted files without --json" do
+      commit_file("clash.txt", "main\n", "main clash")
+      commit_file("clash.txt", "feature\n", "feature clash", dir: wt)
+
+      command.call(onto: "local", working_dir: wt)
+
+      expect(output.string).to eq("Rebase of feature/x stopped on a conflict and was aborted.\n  clash.txt\n")
+    end
+
+    it "says aborted is false when git rebase --abort fails" do
+      commit_file("clash.txt", "main\n", "main clash")
+      commit_file("clash.txt", "feature\n", "feature clash", dir: wt)
+      allow(git).to receive(:rebase_abort).and_return(false)
+
+      result = run_json("local")
+
+      expect(result).to include("outcome" => "conflict", "aborted" => false)
+      expect(result["detail"]).to include("--abort failed")
+    end
+
+    it "aborts the stopped rebase when git runs past its time limit" do
+      commit_file("clash.txt", "main\n", "main clash")
+      commit_file("clash.txt", "feature\n", "feature clash", dir: wt)
+      before_head = rev("HEAD", dir: wt)
+      timing_out = lambda do |argv, chdir:, timeout:|
+        Workspace::TimedProcess.run(argv, chdir: chdir, timeout: timeout)
+        raise Timeout::Error if argv.include?("rebase") && !argv.include?("--abort")
+        ["", "", true]
+      end
+      slow_git = Workspace::Git.new(output: StringIO.new, input: StringIO.new, runner: timing_out)
+      cmd = described_class.new(git: slow_git, checkout: checkout, output: output)
+
+      expect { cmd.call(onto: "local", working_dir: wt) }.to raise_error(Workspace::Error, /did not finish within/)
+      expect(git.rebase_in_progress?(wt)).to be(false)
+      expect(rev("HEAD", dir: wt)).to eq(before_head)
+    end
+
+    it "raises a plain error for a rebase that fails without stopping" do
+      advance_main
+      failing_git = Workspace::Git.new(output: StringIO.new, input: StringIO.new, runner: failing("rebase"))
+      cmd = described_class.new(git: failing_git, checkout: checkout, output: output)
+
+      expect { cmd.call(onto: "local", working_dir: wt) }.to raise_error(Workspace::Error, /git rebase onto main failed: forced failure/)
+    end
+  end
+
+  describe "refusals" do
+    it "refuses a bad or missing --onto as a usage error" do
+      [nil, "sideways"].each do |onto|
+        expect { command.call(onto: onto, working_dir: wt) }.to raise_error(Workspace::UsageError, /--onto must be one of local, update, remote/)
+      end
+    end
+
+    it "refuses changes to tracked files and names them" do
+      File.write(File.join(wt, "feature.txt"), "edited\n")
+      File.write(File.join(wt, "staged.txt"), "x\n")
+      sh("add", "staged.txt", dir: wt)
+
+      expect { command.call(onto: "local", working_dir: wt) }.to raise_error(Workspace::Error) { |e|
+        expect(e.code).to eq("dirty_worktree")
+        expect(e.details["files"]).to contain_exactly("feature.txt", "staged.txt")
+        expect(e.details["path"]).to eq(wt)
+      }
+      expect(File.read(File.join(wt, "feature.txt"))).to eq("edited\n")
+      expect(sh("stash", "list", dir: wt)).to eq("")
+    end
+
+    it "does not count untracked files as dirty" do
+      advance_main
+      File.write(File.join(wt, "scratch.txt"), "x\n")
+
+      expect(run_json("local")).to include("outcome" => "rebased")
+    end
+
+    it "refuses a workspace whose git state cannot be read" do
+      allow(git).to receive(:dirty_tracked_files).and_return(nil)
+
+      expect { command.call(onto: "local", working_dir: wt) }.to raise_error(Workspace::Error, /could not read the state/)
+    end
+
+    it "refuses a rebase that is already stopped" do
+      commit_file("clash.txt", "main\n", "main clash")
+      commit_file("clash.txt", "feature\n", "feature clash", dir: wt)
+      _, ok = sh_status("rebase", "main", dir: wt)
+      expect(ok).to be(false)
+
+      expect { command.call(onto: "local", working_dir: wt) }.to raise_error(Workspace::Error) { |e|
+        expect(e.code).to eq("rebase_in_progress")
+        expect(e.details).to eq("path" => wt)
+      }
+      expect(git.rebase_in_progress?(wt)).to be(true)
+    end
+
+    it "refuses a detached HEAD" do
+      sh("checkout", "-q", "--detach", dir: wt)
+
+      expect { command.call(onto: "local", working_dir: wt) }.to raise_error(Workspace::Error, /detached HEAD/)
+    end
+
+    it "refuses the default branch itself" do
+      allow(project_config).to receive(:project_root_for).with("api.worktree-x").and_return(repo)
+
+      expect { command.call(onto: "local", working_dir: repo) }.to raise_error(Workspace::Error, /is the default branch/)
+    end
+
+    it "raises when the repository has no main or master" do
+      sh("branch", "-m", "main", "trunk")
+      sh("update-ref", "-d", "refs/remotes/origin/main")
+
+      expect { command.call(onto: "local", working_dir: wt) }.to raise_error(Workspace::Error, /No default branch/)
+    end
+
+    it "raises when the target ref does not exist" do
+      empty_remote = File.join(@dir, "empty.git")
+      sh("init", "-q", "--bare", "-b", "main", empty_remote, dir: @dir)
+      sh("remote", "set-url", "origin", empty_remote)
+      sh("update-ref", "-d", "refs/remotes/origin/main")
+
+      expect { command.call(onto: "remote", working_dir: wt) }.to raise_error(Workspace::Error, /'origin\/main' does not exist/)
+    end
+  end
+
+  describe "--onto remote" do
+    it "fetches and rebases onto origin's default branch, leaving the local one alone" do
+      clone_other
+      commit_file("up.txt", "up\n", "upstream work", dir: other)
+      sh("push", "-q", "origin", "main", dir: other)
+      local_main = rev("main")
+
+      expect(run_json("remote")).to include("onto" => "remote", "outcome" => "rebased")
+      expect(File).to exist(File.join(wt, "up.txt"))
+      expect(rev("main")).to eq(local_main)
+    end
+
+    it "raises fetch_failed when origin cannot be reached" do
+      sh("remote", "set-url", "origin", File.join(@dir, "nowhere.git"))
+
+      expect { command.call(onto: "remote", working_dir: wt) }.to raise_error(Workspace::Error) { |e|
+        expect(e.code).to eq("fetch_failed")
+        expect(e.details).to include("remote" => "origin")
+        expect(e.details["detail"]).to be_a(String)
+      }
+    end
+  end
+
+  describe "--onto update" do
+    before do
+      clone_other
+      commit_file("up.txt", "up\n", "upstream work", dir: other)
+      sh("push", "-q", "origin", "main", dir: other)
+    end
+
+    it "moves a clean checked-out default branch to origin's, then rebases onto it" do
+      expect(run_json("update")).to include("onto" => "update", "outcome" => "rebased")
+
+      expect(rev("main")).to eq(rev("origin/main", dir: other))
+      expect(File).to exist(File.join(repo, "up.txt"))
+      expect(File).to exist(File.join(wt, "up.txt"))
+    end
+
+    it "stashes and restores changes in the default checkout" do
+      File.write(File.join(repo, "base.txt"), "dirty\n")
+
+      expect(run_json("update")).to include("outcome" => "rebased")
+
+      expect(rev("main")).to eq(rev("origin/main", dir: other))
+      expect(File.read(File.join(repo, "base.txt"))).to eq("dirty\n")
+      expect(sh("stash", "list")).to eq("")
+    end
+
+    it "reports stash_pop when the stashed changes do not apply back, keeping the stash" do
+      sh("fetch", "-q", "origin")
+      commit_file("shared.txt", "one\n", "add shared", dir: other)
+      sh("push", "-q", "origin", "main", dir: other)
+      sh("pull", "-q", "--ff-only")
+      commit_file("shared.txt", "two\n", "edit shared", dir: other)
+      sh("push", "-q", "origin", "main", dir: other)
+      File.write(File.join(repo, "shared.txt"), "mine\n")
+
+      result = run_json("update")
+
+      expect(result).to include("outcome" => "default_not_updated", "reason" => "stash_pop")
+      expect(result["detail"]).to include("kept in the stash")
+      expect(sh("stash", "list")).not_to eq("")
+    end
+
+    it "reports diverged when local and origin each have commits the other lacks" do
+      commit_file("local.txt", "local\n", "local only")
+      feature_head = rev("HEAD", dir: wt)
+
+      result = run_json("update")
+
+      expect(result).to include("outcome" => "default_not_updated", "reason" => "diverged")
+      expect(result["detail"]).to include("each have commits")
+      expect(rev("HEAD", dir: wt)).to eq(feature_head)
+    end
+
+    it "moves a default branch that is checked out nowhere" do
+      sh("switch", "-q", "-c", "elsewhere")
+
+      expect(run_json("update")).to include("outcome" => "rebased")
+      expect(rev("main")).to eq(rev("origin/main", dir: other))
+    end
+
+    it "rebases onto a local default branch that is ahead of origin's without moving it" do
+      sh("fetch", "-q", "origin")
+      sh("pull", "-q", "--ff-only")
+      commit_file("ahead.txt", "ahead\n", "local ahead")
+      ahead = rev("main")
+
+      expect(run_json("update")).to include("outcome" => "rebased")
+      expect(rev("main")).to eq(ahead)
+    end
+
+    it "rebases onto the local branch when origin has no default branch" do
+      sh("update-ref", "-d", "refs/remotes/origin/main")
+      empty_remote = File.join(@dir, "empty.git")
+      sh("init", "-q", "--bare", "-b", "main", empty_remote, dir: @dir)
+      sh("remote", "set-url", "origin", empty_remote)
+
+      expect(run_json("update")).to include("outcome" => "up_to_date")
+    end
+
+    it "raises fetch_failed before touching anything when origin cannot be reached" do
+      sh("remote", "set-url", "origin", File.join(@dir, "nowhere.git"))
+      main_before = rev("main")
+
+      expect { command.call(onto: "update", working_dir: wt) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("fetch_failed") }
+      expect(rev("main")).to eq(main_before)
+    end
+
+    it "raises when origin has a default branch but there is no local one" do
+      sh("switch", "-q", "-c", "elsewhere")
+      sh("branch", "-q", "-D", "main")
+
+      expect { command.call(onto: "update", working_dir: wt) }.to raise_error(Workspace::Error, /No local branch 'main' to update/)
+    end
+
+    it "raises when the unchecked-out default branch cannot be moved" do
+      sh("switch", "-q", "-c", "elsewhere")
+      failing_git = Workspace::Git.new(output: StringIO.new, input: StringIO.new, runner: failing("update-ref"))
+      cmd = described_class.new(git: failing_git, checkout: checkout, output: output)
+
+      expect { cmd.call(onto: "update", working_dir: wt) }.to raise_error(Workspace::Error, /Could not move 'main' to origin\/main/)
+    end
+
+    it "raises when the changes in the default checkout cannot be stashed" do
+      File.write(File.join(repo, "base.txt"), "dirty\n")
+      failing_git = Workspace::Git.new(output: StringIO.new, input: StringIO.new, runner: failing("stash"))
+      cmd = described_class.new(git: failing_git, checkout: checkout, output: output)
+
+      expect { cmd.call(onto: "update", working_dir: wt) }.to raise_error(Workspace::Error, /Could not stash the changes/)
+      expect(File.read(File.join(repo, "base.txt"))).to eq("dirty\n")
+    end
+
+    it "reports diverged when the checked-out default branch cannot be fast-forwarded" do
+      failing_git = Workspace::Git.new(output: StringIO.new, input: StringIO.new, runner: failing("merge"))
+      cmd = described_class.new(git: failing_git, checkout: checkout, output: output)
+      cmd.call(onto: "update", json: true, working_dir: wt)
+
+      expect(document).to include("outcome" => "default_not_updated", "reason" => "diverged")
+      expect(document["detail"]).to include("could not be fast-forwarded")
+    end
+
+    it "raises when the default checkout's state cannot be read" do
+      allow(git).to receive(:dirty_tracked_files).and_call_original
+      allow(git).to receive(:dirty_tracked_files).with(repo).and_return(nil)
+
+      expect { command.call(onto: "update", working_dir: wt) }.to raise_error(Workspace::Error, /could not read the state of #{Regexp.escape(repo)}/)
+    end
+
+    it "prints the reason without --json" do
+      commit_file("local.txt", "local\n", "local only")
+
+      command.call(onto: "update", working_dir: wt)
+
+      expect(output.string).to start_with("Default branch not updated (diverged):")
+    end
+  end
+end

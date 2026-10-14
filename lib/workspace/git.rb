@@ -1,4 +1,5 @@
 require "open3"
+require "timeout"
 
 module Workspace
   # Git and worktree operations for the workspace CLI.
@@ -6,10 +7,185 @@ module Workspace
     # @param output [IO] output stream for user-facing messages
     # @param input [IO] input stream for interactive prompts
     # @param logger [Workspace::Logger] debug logger
-    def initialize(output: $stdout, input: $stdin, logger: Workspace::Logger.new)
+    # @param runner [#call] `(argv, chdir:, timeout:)` returning `[stdout, stderr, success]`; runs the
+    #   time-limited, prompt-free git calls of {#push}, {#fetch}, {#rebase} and the other write operations
+    def initialize(output: $stdout, input: $stdin, logger: Workspace::Logger.new, runner: TimedProcess.method(:run))
       @output = output
       @input = input
       @logger = logger
+      @runner = runner
+    end
+
+    # Seconds `git push` may take.
+    PUSH_TIMEOUT = 120
+
+    # Seconds `git fetch` may take.
+    FETCH_TIMEOUT = 60
+
+    # Seconds `git rebase` may take.
+    REBASE_TIMEOUT = 300
+
+    # Seconds any other git call that changes a checkout may take.
+    QUICK_TIMEOUT = 30
+
+    # Pushes a branch to origin.
+    #
+    # @param path [String] the checkout
+    # @param branch [String]
+    # @param set_upstream [Boolean] pass `-u`
+    # @param force_with_lease [Boolean] pass `--force-with-lease`
+    # @return [Array(Boolean, String)] success and git's stderr
+    # @raise [Workspace::Error] git is not installed, or the push ran past {PUSH_TIMEOUT} (uncoded)
+    def push(path, branch, set_upstream: false, force_with_lease: false)
+      argv = ["push"]
+      argv << "-u" if set_upstream
+      argv << "--force-with-lease" if force_with_lease
+      argv.push("origin", branch)
+      _, stderr, success = run_git(path, *argv, timeout: PUSH_TIMEOUT)
+      [success, stderr]
+    end
+
+    # Fetches from origin.
+    #
+    # @param path [String] the checkout
+    # @param refs [Array<String>] branches to fetch; none fetches everything origin has
+    # @param remote [String]
+    # @return [Array(Boolean, String)] success and git's stderr
+    def fetch(path, *refs, remote: "origin")
+      _, stderr, success = run_git(path, "fetch", remote, *refs, timeout: FETCH_TIMEOUT)
+      [success, stderr]
+    end
+
+    # The name of the repository's default branch as a local branch: what
+    # `origin/HEAD` points at, else the first of `main` and `master` that exists.
+    #
+    # @param path [String] any checkout of the repository
+    # @return [String, nil]
+    def default_branch_name(path)
+      stdout, _, status = capture_git("-C", path, "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD")
+      head = stdout.scrub.strip.delete_prefix("origin/")
+      exists = ->(name) { ref_exists?(path, "refs/heads/#{name}") || ref_exists?(path, "refs/remotes/origin/#{name}") }
+      return head if status.success? && !head.empty? && exists.call(head)
+      %w[main master].find(&exists)
+    end
+
+    # @param path [String] the checkout
+    # @param ref [String]
+    # @return [Boolean] whether +ref+ names a commit
+    def commit_exists?(path, ref)
+      ref_exists?(path, ref)
+    end
+
+    # @param path [String] the checkout
+    # @param ancestor [String] a ref
+    # @param descendant [String] a ref
+    # @return [Boolean] whether +ancestor+ is reachable from +descendant+ (a ref is its own ancestor)
+    def ancestor?(path, ancestor, descendant)
+      _, _, status = capture_git("-C", path, "merge-base", "--is-ancestor", ancestor, descendant)
+      status.success?
+    end
+
+    # @param path [String] the checkout
+    # @return [Array<String>, nil] tracked files with staged or unstaged changes (untracked files do not
+    #   count), or nil if git could not answer
+    def dirty_tracked_files(path)
+      stdout, _, status = capture_git("-C", path, "status", "--porcelain", "--untracked-files=no", "--no-renames", "-z")
+      return nil unless status.success?
+      stdout.scrub.split("\0").reject(&:empty?).map { |entry| entry[3..] }
+    end
+
+    # @param path [String] the checkout
+    # @return [Boolean] whether a rebase has stopped in it
+    def rebase_in_progress?(path)
+      %w[rebase-merge rebase-apply].any? do |dir|
+        stdout, _, status = capture_git("-C", path, "rev-parse", "--git-path", dir)
+        status.success? && File.exist?(File.expand_path(stdout.strip, path))
+      end
+    end
+
+    # @param path [String] the checkout
+    # @param onto [String] a ref
+    # @return [Array(Boolean, String)] success and git's stderr
+    def rebase(path, onto)
+      _, stderr, success = run_git(path, "rebase", onto, timeout: REBASE_TIMEOUT)
+      [success, stderr]
+    end
+
+    # @param path [String] the checkout
+    # @return [Boolean] whether `git rebase --abort` worked
+    def rebase_abort(path)
+      _, _, success = run_git(path, "rebase", "--abort", timeout: QUICK_TIMEOUT)
+      success
+    end
+
+    # @param path [String] the checkout
+    # @return [Array<String>] the files a stopped rebase has unmerged
+    def conflicted_files(path)
+      stdout, _, status = capture_git("-C", path, "diff", "--name-only", "--diff-filter=U", "-z")
+      status.success? ? stdout.scrub.split("\0").reject(&:empty?) : []
+    end
+
+    # Moves a local branch that is not checked out anywhere to +target+. The
+    # caller has checked that it is a fast-forward.
+    #
+    # @param path [String] any checkout of the repository
+    # @param branch [String]
+    # @param target [String] a ref
+    # @return [Boolean]
+    def advance_branch(path, branch, target)
+      _, _, success = run_git(path, "update-ref", "refs/heads/#{branch}", target, timeout: QUICK_TIMEOUT)
+      success
+    end
+
+    # `git merge --ff-only` in a checkout of the branch to move.
+    #
+    # @param path [String] a checkout whose current branch is the one to move
+    # @param target [String] a ref
+    # @return [Boolean]
+    def fast_forward(path, target)
+      _, _, success = run_git(path, "merge", "--ff-only", "--quiet", target, timeout: QUICK_TIMEOUT)
+      success
+    end
+
+    # @param path [String] the checkout
+    # @param message [String]
+    # @return [Boolean] whether the changes to tracked files were stashed
+    def stash_push(path, message)
+      _, _, success = run_git(path, "stash", "push", "--quiet", "-m", message, timeout: QUICK_TIMEOUT)
+      success
+    end
+
+    # @param path [String] the checkout
+    # @return [Array(Boolean, String)] whether the newest stash applied cleanly, and git's stderr
+    def stash_pop(path)
+      _, stderr, success = run_git(path, "stash", "pop", "--quiet", timeout: QUICK_TIMEOUT)
+      [success, stderr]
+    end
+
+    # Whether the branch's own history once held every commit that +upstream+
+    # has and +branch+ lacks, judged by the branch's reflog: true after a
+    # rebase of commits already pushed, false when someone else added commits.
+    #
+    # @param path [String] the checkout
+    # @param branch [String] the local branch
+    # @param upstream [String] its upstream ref
+    # @return [Boolean]
+    def upstream_commits_replaced?(path, branch, upstream)
+      stdout, _, status = capture_git("-C", path, "reflog", "show", "--format=%H", "-n", "200", "refs/heads/#{branch}")
+      return false unless status.success?
+      old_tips = stdout.lines.map(&:strip).reject(&:empty?).uniq
+      stdout, _, status = capture_git("-C", path, "rev-list", upstream, "--not", "refs/heads/#{branch}", *old_tips)
+      status.success? && stdout.strip.empty?
+    end
+
+    # @param path [String] the checkout
+    # @param upstream [String] a ref
+    # @return [Array(Integer, Integer), nil] commits only upstream has, then commits only HEAD has; nil if git could not answer
+    def behind_ahead(path, upstream)
+      stdout, _, status = capture_git("-C", path, "rev-list", "--left-right", "--count", "#{upstream}...HEAD")
+      return nil unless status.success?
+      behind, ahead = stdout.split.map(&:to_i)
+      [behind, ahead]
     end
 
     # @return [String, nil] the root of the current git repository
@@ -496,6 +672,16 @@ module Workspace
     end
 
     private
+
+    # Runs git in +path+ through the runner, turning a missing git and a
+    # timeout into errors.
+    def run_git(path, *args, timeout:)
+      @runner.call(["git", *args], chdir: path, timeout: timeout)
+    rescue Errno::ENOENT
+      raise Workspace::Error, "git is not installed."
+    rescue Timeout::Error
+      raise Workspace::Error, "git #{args.first} did not finish within #{timeout} seconds."
+    end
 
     def ref_exists?(path, ref)
       _, _, status = capture_git("-C", path, "rev-parse", "--verify", "--quiet", "#{ref}^{commit}")
