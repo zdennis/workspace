@@ -700,7 +700,7 @@ module Workspace
         env[RUN_ENV] = delegate_for if delegate_for
         env.merge!(started_by_env)
         wrapper = @tmux.new_window(session, name: WINDOW_NAME, cwd: ctx[:worktree], command: run_argv(wait), env: env,
-          remain_on_exit: true)
+          remain_on_exit: true, source_pane: @env["TMUX_PANE"])
         raise Workspace::Error, "Could not open a #{WINDOW_NAME} window in tmux session #{session}." unless wrapper
         wrapper
       end

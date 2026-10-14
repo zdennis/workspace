@@ -21,7 +21,7 @@ class FakeDevWindowTmux
   # The spawned wrapper runs in no real pane, so there is none to close.
   def close_dead_pane(_pane_id, pid:) = nil
 
-  def new_window(session, name:, cwd:, command:, env: {}, remain_on_exit: false)
+  def new_window(session, name:, cwd:, command:, env: {}, remain_on_exit: false, source_pane: nil)
     @windows << {session: session, name: name, cwd: cwd, command: command}
     @spawner.call(cwd, command.include?("--wait"), env)
   end

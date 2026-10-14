@@ -856,6 +856,15 @@ RSpec.describe Workspace::Tmux do
       expect(Open3).to have_received(:capture3).with("tmux", "set-option", "-w", "-t", "%12", "remain-on-exit", "on")
     end
 
+    it "switches the client owning the source pane to the new window" do
+      allow(Open3).to receive(:capture3).and_return(["4321 %12 @4\n", "", double(success?: true)])
+      allow(tmux).to receive(:switch_client_to_pane)
+
+      tmux.new_window("app", name: "devenv", cwd: "/w", command: ["true"], source_pane: "%7")
+
+      expect(tmux).to have_received(:switch_client_to_pane).with("%7", "%12")
+    end
+
     it "returns nil when tmux fails" do
       allow(Open3).to receive(:capture3).and_return(["", "no session", double(success?: false)])
 
