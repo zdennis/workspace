@@ -56,6 +56,11 @@ module Workspace
     # pattern does not match them.
     CLAUDE_READY_PATTERN = /─{3,}\n❯[ \t\u00A0]?/
 
+    # Matches the line Codex prints under its input box: "72% context left".
+    # The number is what is left, not what is used (see `context_remaining`).
+    # Read from codex-cli 0.162.1, whose binary carries the text "% context left".
+    CODEX_CONTEXT_PATTERN = '(\d{1,3})% context left'
+
     # @return [Array<AgentProvider>] every known provider
     def self.all
       @all ||= [
@@ -66,12 +71,16 @@ module Workspace
           settings_path: File.join(".claude", "settings.json"),
           events: CLAUDE_EVENTS,
           background_markers: CLAUDE_BACKGROUND,
-          ready_pattern: CLAUDE_READY_PATTERN
+          ready_pattern: CLAUDE_READY_PATTERN,
+          restartable: true
         ),
         new(
           key: "codex",
           label: "Codex",
-          executable: "codex"
+          executable: "codex",
+          restartable: true,
+          context_pattern: CODEX_CONTEXT_PATTERN,
+          context_remaining: true
         ),
         new(
           key: "opencode",
@@ -93,6 +102,13 @@ module Workspace
           path_segment_matching: false
         )
       ].freeze
+    end
+
+    # @return [Array<String>] the keys of the agents `handoff` and `restart_agent` may
+    #   clear and resume: the ones whose provider is restartable, plus "unknown" for
+    #   a pane the session monitor has not identified yet
+    def self.restartable_kinds
+      all.select(&:restartable?).map(&:key) + ["unknown"]
     end
 
     # @param key [String] stable identifier used in config and CLI flags
@@ -124,7 +140,19 @@ module Workspace
       nil
     end
 
-    attr_reader :key, :label, :executable, :settings_path, :events, :background_markers, :ready_pattern
+    attr_reader :key, :label, :executable, :settings_path, :events, :background_markers, :ready_pattern,
+      :clear_command, :context_pattern
+
+    # @return [Boolean] whether handoff may clear this agent and type a resume prompt into it
+    def restartable?
+      @restartable
+    end
+
+    # @return [Boolean] whether the one capture group of {#context_pattern} is the
+    #   percent of the context window left, not the percent used
+    def context_remaining?
+      @context_remaining
+    end
 
     # @return [Boolean] whether a versioned install of this executable may be
     #   recognized by a "/#{executable}/" path segment, in addition to an
@@ -146,8 +174,14 @@ module Workspace
     # @param ready_pattern [Regexp, nil] matched against the pane's screen to
     #   confirm the agent is actually at its input prompt, not just quiet
     #   (e.g. sitting on a startup dialog). nil means quiet-only readiness.
+    # @param restartable [Boolean] whether handoff may clear this agent and resume it
+    # @param clear_command [String] text typed to start a fresh conversation
+    # @param context_pattern [String, nil] regex source with one capture group, applied to the
+    #   pane's screen to read context use when the agent has no status line workspace can route
+    # @param context_remaining [Boolean] whether that capture is the percent left, not used
     def initialize(key:, label:, executable:, settings_path: nil, events: nil,
-      background_markers: [], path_segment_matching: true, ready_pattern: nil)
+      background_markers: [], path_segment_matching: true, ready_pattern: nil,
+      restartable: false, clear_command: "/clear", context_pattern: nil, context_remaining: false)
       @key = key
       @label = label
       @executable = executable
@@ -156,6 +190,10 @@ module Workspace
       @background_markers = background_markers
       @path_segment_matching = path_segment_matching
       @ready_pattern = ready_pattern
+      @restartable = restartable
+      @clear_command = clear_command
+      @context_pattern = context_pattern
+      @context_remaining = context_remaining
     end
 
     # @return [Boolean] whether workspace can route this agent's statusLine

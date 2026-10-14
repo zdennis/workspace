@@ -40,7 +40,7 @@ module Workspace
       "rebase_in_progress" => "rebase: a rebase is already stopped in the workspace (finish or abort it first), or git ran past its time limit mid-rebase and git rebase --abort failed (details.aborted false). details.path.",
       "fetch_failed" => "rebase (update, remote) or push: git fetch from origin failed. details.remote, details.detail.",
       "push_rejected" => "push: origin refused the push, or the upstream has commits the branch never had so the push was not forced. details.branch, details.upstream, details.detail, details.reason (origin_refused, would_delete_commits, upstream_has_other_commits, upstream_mismatch).",
-      "handoff_unsupported_agent" => "The handoff pack was asked for, but the project's main agent is not Claude Code.",
+      "handoff_unsupported_agent" => "The handoff pack was asked for, but the project's main agent is not Claude Code or Codex.",
       # Codes the agent daemon puts in its replies; `agent-run` passes them through.
       "malformed_message" => "The daemon couldn't parse the request.",
       "internal_error" => "The daemon failed while handling the request.",

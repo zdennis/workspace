@@ -574,13 +574,13 @@ RSpec.describe Workspace::Commands::Start do
             end
 
             context "and the main agent is not Claude Code" do
-              let(:agent_kind) { "codex" }
+              let(:agent_kind) { "opencode" }
 
               it "fails before anything is created, with handoff_unsupported_agent and details.kind" do
                 result = packs_command.call("PROJ-123", handoff: true, json: true)
 
                 expect(result).to eq({exit_code: 1})
-                expect(JSON.parse(output.string)).to include("ok" => false, "code" => "handoff_unsupported_agent", "details" => {"kind" => "codex"})
+                expect(JSON.parse(output.string)).to include("ok" => false, "code" => "handoff_unsupported_agent", "details" => {"kind" => "opencode"})
                 expect(git).not_to have_received(:create_worktree)
                 expect(project_config).not_to have_received(:create_worktree)
                 expect(launch_command).not_to have_received(:call)

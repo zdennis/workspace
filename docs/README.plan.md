@@ -34,8 +34,8 @@ Each verb changes one thing and is safe to repeat. A plan with no file is `no_pl
 
 - **`start`** sets `status: active` and then does the first of these that applies:
   - The workspace has no tmux session: it is launched like `launch --play implementation-plan --prompt "Continue the plan."`, so the agent is told the play and the line, the notes pack and the other automatic packs ride along, and the pane is bound to the play. Outcome `launched`, or a `failed` row with the launch's reason (`prompt_not_sent`, `session_not_started`) when the prompt could not be sent; the status stays `active`.
-  - The workspace has a session and its main agent pane (the plan's `owner_pane` when that is a live Claude Code pane, else the first Claude Code pane the agent daemon lists) is working: nothing is typed. Outcome `already_working`.
-  - The pane is idle: the play and "Continue the plan." are typed into it and the pane is bound to the play (a pane bound to a workflow run or a review keeps that binding). Outcome `sent`. A pane that waits for an answer is not typed into (`pane_busy`), and a session whose agent daemon does not answer is `no_daemon`; with no Claude Code pane it is `no_agent_pane`.
+  - The workspace has a session and its main agent pane (the plan's `owner_pane` when that is a live Claude Code or Codex pane, else the first such pane the agent daemon lists) is working: nothing is typed. Outcome `already_working`.
+  - The pane is idle: the play and "Continue the plan." are typed into it and the pane is bound to the play (a pane bound to a workflow run or a review keeps that binding). Outcome `sent`. A pane that waits for an answer is not typed into (`pane_busy`), and a session whose agent daemon does not answer is `no_daemon`; with no Claude Code or Codex pane it is `no_agent_pane`.
 
   Where it knows the pane the agent is in, `start` writes it into the frontmatter as `owner_pane` (adding the line when it is missing), so a plan whose pane id went stale after a `restore` reads `working` again. An unwritable `owner_pane` is a note in `message`; the launch or send still stands.
 - **`pause`** sets `status: paused` (`paused`, or `unchanged` when it already was). It interrupts nothing: the agent re-reads `status:` before each task and stops, and whoever pauses sends the agent the key if it should stop sooner. [`doctor`](README.doctor.md) warns when a paused plan's owner pane is still working.
@@ -156,7 +156,7 @@ The plan is also the handoff doc: with no `--handoff-doc`, [`handoff check` and 
 | `plan_done` | `start` or `pause` found a plan that is done (`details.name`, `details.path`) |
 | `confirmation_required` | `delete` was run without `--yes` (`retry.flags` is `["--yes"]`) |
 | `plan_write_conflict` | The plan changed twice while a verb was writing it; nothing was written. Run the verb again |
-| `no_agent_pane`, `pane_busy`, `no_daemon`, `not_delivered`, `not_submitted` | `start` of a workspace with a session found no Claude Code pane, found the pane waiting for an answer, could not reach the agent daemon, or could not type into the pane. See [`agent-run send`](README.agent-run.md) |
+| `no_agent_pane`, `pane_busy`, `no_daemon`, `not_delivered`, `not_submitted` | `start` of a workspace with a session found no Claude Code or Codex pane, found the pane waiting for an answer, could not reach the agent daemon, or could not type into the pane. See [`agent-run send`](README.agent-run.md) |
 | `notes_dir_unwritable` | `init` couldn't make the notes directory or write the file, or a verb couldn't write or rename it |
 | `error` | `init --from FILE` couldn't read the file (no more specific code) |
 | `unknown_workspace`, `not_in_workspace`, `notes_dir_unresolved`, `config_parse` | As for [`notes dir`](README.notes.md#errors) |

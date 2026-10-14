@@ -47,6 +47,25 @@ RSpec.describe Workspace::AgentProvider do
 
       expect(executables.uniq).to eq(executables)
     end
+
+    it "lets handoff clear and resume Claude Code and Codex, and a pane not identified yet" do
+      expect(described_class.restartable_kinds).to eq(%w[claude codex unknown])
+      expect(described_class.find("opencode").restartable?).to be false
+      expect(described_class.find("pi").restartable?).to be false
+    end
+
+    it "types /clear for every agent, Codex included" do
+      expect(described_class.all.map(&:clear_command).uniq).to eq(["/clear"])
+    end
+
+    it "reads Codex context from the percent left in its footer" do
+      codex = described_class.find("codex")
+
+      expect(codex.context_remaining?).to be true
+      expect(Regexp.new(codex.context_pattern).match("  gpt-5  72% context left")[1]).to eq("72")
+      expect(described_class.find("claude").context_pattern).to be_nil
+      expect(described_class.find("claude").context_remaining?).to be false
+    end
   end
 
   describe "#hook_settings" do

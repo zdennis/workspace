@@ -1,8 +1,8 @@
 require "time"
 
 module Workspace
-  # Gives a Claude Code agent in one pane a fresh conversation: waits for the
-  # pane to go quiet, types `/clear`, waits for a status-line reading from
+  # Gives a Claude Code or Codex agent in one pane a fresh conversation: waits for
+  # the pane to go quiet, types the agent's clear command (`/clear` for both), waits for a status-line reading from
   # the new conversation, then types the prompt. The daemon runs it on a
   # worker thread for a `restart_agent` message.
   #
@@ -23,7 +23,7 @@ module Workspace
   # its life. tmux can't paste to "session:%id", so the pane's current
   # "window.index" is looked up from the id before each delivery.
   class AgentRestart
-    # Text that clears a Claude Code conversation.
+    # Text that clears a conversation when the pane's agent is not known.
     CLEAR_COMMAND = "/clear"
     # Longest wait for the pane to stop changing before /clear is typed.
     QUIET_TIMEOUT = 120
@@ -46,6 +46,8 @@ module Workspace
     #   lock held, just before the prompt is typed
     # @param pane_state [#call] returns the session monitor's state for a pane
     #   id ("working", "idle", "waiting") or nil when it has none
+    # @param pane_kind [#call] returns the session monitor's agent kind for a pane id ("claude",
+    #   "codex", ...) or nil; it picks the clear command and how the context is read
     # @param agent_pid [#call] returns the pid of the coding agent in a pane
     #   id, or nil; a reading recorded without $TMUX_PANE is found by it
     # @param clock [#call] monotonic seconds, for the bounded waits
@@ -59,6 +61,7 @@ module Workspace
     def initialize(tmux:, context_reader:, session_name:, delivery_lock:, pipeline_ref:,
       pane_state: ->(_pane_id) {},
       agent_pid: ->(_pane_id) {},
+      pane_kind: ->(_pane_id) {},
       clock: -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) },
       wall_clock: -> { Time.now },
       sleeper: ->(seconds) { sleep(seconds) },
@@ -71,6 +74,7 @@ module Workspace
       @pipeline_ref = pipeline_ref
       @pane_state = pane_state
       @agent_pid = agent_pid
+      @pane_kind = pane_kind
       @clock = clock
       @wall_clock = wall_clock
       @sleeper = sleeper
@@ -79,6 +83,7 @@ module Workspace
       @poll_interval = poll_interval
       @logger = logger
       @cleared = false
+      @clear_command = CLEAR_COMMAND
     end
 
     # @return [Boolean] whether /clear has been typed into the pane, so a
@@ -99,6 +104,7 @@ module Workspace
       quiet = wait_until_quiet(pane_id)
       return reply.merge(quiet) unless quiet["ok"]
 
+      @clear_command = AgentProvider.find(@pane_kind.call(pane_id).to_s)&.clear_command || CLEAR_COMMAND
       before = read_context(pane_id)
       unless self.class.confirmable?(before)
         return reply.merge(failure("context_unknown",
@@ -108,7 +114,7 @@ module Workspace
       reply["context_before"] = before[:pct]
 
       cleared_at = nil
-      clear = deliver(pane_id, CLEAR_COMMAND, check_pipeline: !force) do
+      clear = deliver(pane_id, @clear_command, check_pipeline: !force) do
         cleared_at = @wall_clock.call
         @cleared = true
       end
@@ -149,7 +155,7 @@ module Workspace
     # Looks the reading up by pane id, then by the agent's pid, as the
     # session monitor does for `sessions` and `handoff check`.
     def read_context(pane_id)
-      @context_reader.read(pane_id: pane_id, agent_pid: @agent_pid.call(pane_id))
+      @context_reader.read(pane_id: pane_id, agent_pid: @agent_pid.call(pane_id), kind: @pane_kind.call(pane_id))
     end
 
     def failure(error, message)
@@ -260,7 +266,7 @@ module Workspace
     end
 
     def describe_text(text)
-      (text == CLEAR_COMMAND) ? "/clear" : "the prompt"
+      (text == @clear_command) ? text : "the prompt"
     end
   end
 end

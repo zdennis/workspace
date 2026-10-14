@@ -11,6 +11,14 @@ module Workspace
   # * `statusline` — the most recent reading `workspace statusline` recorded
   #   in {Workspace::ContextStore}, keyed by pane id, falling back to the
   #   agent's pid when the status-line process ran without `TMUX_PANE` set.
+  # A pane whose agent kind is given is read by that kind first: the pattern
+  # in the global `context.patterns` for the kind (its one capture group is the
+  # percent used), else the provider's own ({AgentProvider#context_pattern},
+  # which Codex has because it has no status line to route), is scraped from
+  # the pane whatever `context.source` says. The last match on the screen
+  # counts, since an agent's footer is its lowest line. A kind with neither is
+  # read as described next.
+  #
   # * `scrape` — reads the pane's own visible text and applies
   #   `context.pattern` (a regex with one capture group).
   class ContextReader
@@ -50,19 +58,63 @@ module Workspace
     # @param current_session_id [String, nil] the pane's current Claude
     #   session id; when given and it doesn't match the stored reading's
     #   session_id, the reading is treated as stale rather than current
+    # @param kind [String, nil] the pane's agent kind ("claude", "codex", ...); see the class comment
     # @return [Hash] pct: [Integer, nil], error: [String, nil],
     #   updated_at: [String, nil] (ISO8601, whole seconds), and for a result
     #   taken from a stored or scraped reading, recorded_at: [Time, nil]
     #   (full precision, for ordering against another moment) and
     #   session_id: [String, nil]. A reading from a session that hasn't
     #   reported usage yet keeps its updated_at and session_id, with pct nil.
-    def read(pane_id:, agent_pid: nil, current_session_id: nil)
+    def read(pane_id:, agent_pid: nil, current_session_id: nil, kind: nil)
       global = safe_load_global
+      pattern, remaining = kind_pattern(kind, global)
+      return read_kind_scrape(pane_id, pattern, remaining) if pattern
       source = global.dig("context", "source") || "statusline"
       (source == "scrape") ? read_scrape(pane_id, global) : read_statusline(pane_id, agent_pid, current_session_id)
     end
 
     private
+
+    # @return [Array(String, Boolean), nil] the pattern for the kind and whether its capture is
+    #   the percent left; a configured pattern captures the percent used
+    def kind_pattern(kind, global)
+      patterns = global.dig("context", "patterns")
+      configured = patterns[kind] if kind && patterns.is_a?(Hash)
+      return [configured, false] if configured.is_a?(String) && !configured.empty?
+
+      provider = kind && AgentProvider.find(kind)
+      [provider.context_pattern, provider.context_remaining?] if provider&.context_pattern
+    end
+
+    def read_kind_scrape(pane_id, pattern, remaining)
+      return absent(ContextReasons::PATTERN_NO_MATCH) unless @tmux
+
+      scraped = scrape_pane(pane_id)
+      return scraped if scraped.is_a?(Hash)
+
+      captured = scraped && last_capture(scraped, Regexp.new(pattern))
+      return absent(ContextReasons::PATTERN_NO_MATCH) unless captured
+
+      used = remaining ? 100 - captured.to_i : captured.to_i
+      scraped_reading(pane_id, used.clamp(0, 100))
+    rescue RegexpError => e
+      @logger.debug { "context_reader: invalid context pattern for #{pane_id} (#{e.message})" }
+      absent(ContextReasons::PATTERN_NO_MATCH)
+    end
+
+    # @return [String, nil] the first capture group of the last match in +text+; nil for no match or no group
+    def last_capture(text, regexp)
+      last = nil
+      text.scan(regexp) { last = Regexp.last_match }
+      last && last[1]
+    end
+
+    def scraped_reading(pane_id, pct)
+      now = @clock.call
+      reading = {pct: pct, error: nil, updated_at: now.utc.iso8601, recorded_at: now, session_id: nil}
+      @scrape_cache[pane_id] = {reading: reading, recorded_at: now} if @scan_slots
+      reading
+    end
 
     def read_statusline(pane_id, agent_pid, current_session_id)
       reading = pane_id && @context_store.reading_for_pane(pane_id)
@@ -100,10 +152,7 @@ module Workspace
       match = scraped && Regexp.new(pattern).match(scraped)
       return absent(ContextReasons::PATTERN_NO_MATCH) unless match && match[1]
 
-      now = @clock.call
-      reading = {pct: match[1].to_i, error: nil, updated_at: now.utc.iso8601, recorded_at: now, session_id: nil}
-      @scrape_cache[pane_id] = {reading: reading, recorded_at: now} if @scan_slots
-      reading
+      scraped_reading(pane_id, match[1].to_i)
     rescue RegexpError => e
       @logger.debug { "context_reader: invalid context.pattern (#{e.message})" }
       absent(ContextReasons::PATTERN_NO_MATCH)

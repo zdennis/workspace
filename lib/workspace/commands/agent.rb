@@ -400,8 +400,9 @@ module Workspace
       MAX_RESTART_TIMEOUT = 600
 
       # Session monitor pane kinds restart_agent will type /clear into: the
-      # Claude provider, and a pane not identified yet.
-      RESTARTABLE_KINDS = ["claude", "unknown"].freeze
+      # providers marked restartable (Claude Code and Codex), and a pane not
+      # identified yet.
+      RESTARTABLE_KINDS = AgentProvider.restartable_kinds.freeze
       private_constant :RESTARTABLE_KINDS
 
       # Clears the coding agent in one explicitly named pane and types a
@@ -469,12 +470,12 @@ module Workspace
         if kind == "shell"
           return [nil, restart_error("not_an_agent", "pane #{target} (#{pane_id}) is running a shell, not a coding agent", target)]
         end
-        # /clear is Claude Code's own command; another agent would take it
-        # as a prompt. A pane the monitor hasn't identified yet is let through.
+        # /clear is the clear command of Claude Code and Codex; another agent
+        # would take it as a prompt. A pane the monitor hasn't identified yet is let through.
         if kind && !RESTARTABLE_KINDS.include?(kind)
           label = AgentProvider.find(kind)&.label || kind
           return [nil, restart_error("unsupported_agent",
-            "pane #{target} (#{pane_id}) is running #{label}; restart_agent only restarts Claude Code, whose /clear it types", target)]
+            "pane #{target} (#{pane_id}) is running #{label}; restart_agent only restarts Claude Code and Codex, whose /clear it types", target)]
         end
 
         ref = (detail[:window] == 0) ? pipeline_ref_on(detail[:index]) : nil
@@ -494,7 +495,7 @@ module Workspace
         # keep both in sync if this changes.
         # Looked up as `sessions` and `handoff check` do: a reading recorded
         # without $TMUX_PANE is keyed by the agent's pid, not the pane id.
-        reading = @context_reader.read(pane_id: pane_id, agent_pid: @session_monitor&.agent_pid(pane_id))
+        reading = @context_reader.read(pane_id: pane_id, agent_pid: @session_monitor&.agent_pid(pane_id), kind: kind)
         confirmable = AgentRestart.confirmable?(reading) &&
           (reading[:error] != ContextReasons::NO_READING || kind == "claude")
         unless confirmable
@@ -585,7 +586,8 @@ module Workspace
             delivery_lock: @delivery_lock,
             pipeline_ref: method(:pipeline_ref_on),
             pane_state: ->(id) { @session_monitor&.restart_state(id) },
-            agent_pid: ->(id) { @session_monitor&.agent_pid(id) }
+            agent_pid: ->(id) { @session_monitor&.agent_pid(id) },
+            pane_kind: ->(id) { @session_monitor&.pane_kind(id) }
           )
           restart.call(pane_id: pane_id, prompt: prompt, force: force, confirm_timeout: timeout)
         rescue => e
@@ -628,9 +630,9 @@ module Workspace
         workers.each { |worker| worker.join(1) }
       end
 
-      def build_agent_restart(session_name:, delivery_lock:, pipeline_ref:, pane_state:, agent_pid:)
+      def build_agent_restart(session_name:, delivery_lock:, pipeline_ref:, pane_state:, agent_pid:, pane_kind:)
         AgentRestart.new(tmux: @tmux, context_reader: @context_reader, session_name: session_name,
-          delivery_lock: delivery_lock, pipeline_ref: pipeline_ref, pane_state: pane_state, agent_pid: agent_pid,
+          delivery_lock: delivery_lock, pipeline_ref: pipeline_ref, pane_state: pane_state, agent_pid: agent_pid, pane_kind: pane_kind,
           logger: @logger)
       end
 

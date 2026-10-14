@@ -18,6 +18,8 @@ module Workspace
   class InstructionComposer
     # The packs a caller composes when none is named and `workflows.defaults.include` is unset.
     DEFAULT_PACKS = ConfigSchema::DEFAULT_PACKS
+    # Main agents the `handoff` pack works with: the ones `handoff check` and `handoff new` restart.
+    HANDOFF_AGENTS = %w[claude codex].freeze
 
     # @param library [Workspace::Library] resolves a pack name to a play
     # @param lineage [Workspace::WorkspaceLineage] names the project whose commands are read
@@ -91,7 +93,7 @@ module Workspace
     # @return [Array<Hash{String=>String}>] each pack's "name" and "source" ("config" or "flag")
     # @raise [Workspace::UsageError] for +none+ together with +packs+ or with +handoff+ true
     # @raise [Workspace::Error] code `handoff_unsupported_agent` for +handoff+ true when the main
-    #   agent is not Claude Code
+    #   agent is not Claude Code or Codex
     def start_packs(cwd:, packs: [], none: false, handoff: nil)
       start_selection(cwd: cwd, packs: packs, none: none, handoff: handoff).first
     end
@@ -172,13 +174,13 @@ module Workspace
       raise Error, "--handoff is not available: no handoff config was wired." if flag && (@handoff_config.nil? || @main_agent.nil?)
       return [[], []] if handoff == false || (!flag && (none || @handoff_config.nil? || @main_agent.nil? || !@handoff_config.auto?(project)))
       kind = @main_agent.kind(project)
-      return [[{"name" => "handoff", "source" => flag ? "flag" : "config"}], []] if kind == "claude"
+      return [[{"name" => "handoff", "source" => flag ? "flag" : "config"}], []] if HANDOFF_AGENTS.include?(kind)
       if flag
-        raise Error.new("--handoff needs Claude Code as the main agent, and #{project}'s is #{kind_words(kind)}.",
+        raise Error.new("--handoff needs Claude Code or Codex as the main agent, and #{project}'s is #{kind_words(kind)}.",
           code: "handoff_unsupported_agent", details: {"kind" => kind})
       end
       [[], [{"name" => "handoff", "source" => "config", "reason" => "handoff_unsupported_agent",
-             "message" => "the handoff pack was not sent to #{project}: handoff.auto is on, but its main agent is #{kind_words(kind)} and the pack needs Claude Code"}]]
+             "message" => "the handoff pack was not sent to #{project}: handoff.auto is on, but its main agent is #{kind_words(kind)} and the pack needs Claude Code or Codex"}]]
     end
 
     def kind_words(kind)

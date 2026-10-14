@@ -1081,7 +1081,7 @@ RSpec.describe Workspace::SessionMonitor do
       restarted.scan
       restarted.snapshot
 
-      expect(context_reader).to have_received(:read).with(pane_id: "%2", agent_pid: 250, current_session_id: nil)
+      expect(context_reader).to have_received(:read).with(pane_id: "%2", agent_pid: 250, current_session_id: nil, kind: "claude")
     end
 
     it "keeps a restored working pane's start time" do
@@ -1127,8 +1127,21 @@ RSpec.describe Workspace::SessionMonitor do
         idle_after: 30, clock: clock, context_reader: context_reader)
     end
 
+    it "reads a Codex pane by its kind, so sessions reports its context_pct" do
+      allow(snapshot).to receive(:find_descendant).with(200, ["codex"], hash_including(include_root: true))
+        .and_return({pid: 260, command: "codex", args: "codex"})
+      allow(snapshot).to receive(:find_descendant).with(200, ["claude"], hash_including(include_root: true)).and_return(nil)
+      allow(context_reader).to receive(:read).with(hash_including(pane_id: "%2", kind: "codex"))
+        .and_return(pct: 28, error: nil, updated_at: "2026-09-27T00:00:00Z")
+
+      monitor.scan
+
+      expect(pane("%2")["kind"]).to eq("codex")
+      expect(pane("%2")["context_pct"]).to eq(28)
+    end
+
     it "stamps a coding-agent pane with context_pct/context_error/context_updated_at" do
-      allow(context_reader).to receive(:read).with(pane_id: "%2", agent_pid: 250, current_session_id: nil)
+      allow(context_reader).to receive(:read).with(pane_id: "%2", agent_pid: 250, current_session_id: nil, kind: "claude")
         .and_return(pct: 55, error: nil, updated_at: "2026-09-27T00:00:00Z")
 
       monitor.scan
@@ -1189,7 +1202,7 @@ RSpec.describe Workspace::SessionMonitor do
 
         2.times { pane("%2") }
 
-        expect(context_reader).to have_received(:read).with(pane_id: "%2", agent_pid: nil, current_session_id: "s-1")
+        expect(context_reader).to have_received(:read).with(pane_id: "%2", agent_pid: nil, current_session_id: "s-1", kind: "unknown")
           .exactly(2).times
       end
 
@@ -1209,7 +1222,7 @@ RSpec.describe Workspace::SessionMonitor do
 
         expect(pane("%2")["context_pct"]).to eq(55)
 
-        expect(context_reader).to have_received(:read).with(pane_id: "%2", agent_pid: 250, current_session_id: "s-2")
+        expect(context_reader).to have_received(:read).with(pane_id: "%2", agent_pid: 250, current_session_id: "s-2", kind: "claude")
       end
     end
   end

@@ -147,7 +147,7 @@ RSpec.describe Workspace::Commands::Handoff do
 
       it "skips a listed Claude pane that has no pane id when picking the default" do
         with_sessions([claude_pane.merge("pane_id" => nil)]) do
-          expect { command.check(name: "myapp") }.to raise_error(Workspace::UsageError, /No Claude Code pane found/)
+          expect { command.check(name: "myapp") }.to raise_error(Workspace::UsageError, /No Claude Code or Codex pane found/)
         end
       end
     end
@@ -295,6 +295,58 @@ RSpec.describe Workspace::Commands::Handoff do
       end
     end
 
+    describe "a Codex pane" do
+      let(:codex_pane) { claude_pane.merge("kind" => "codex", "pane_id" => "%4", "context_pct" => 42) }
+
+      before { allow(tmux).to receive(:deliver).and_return(Workspace::Tmux::Delivery.new(status: :submitted)) }
+
+      it "gets the save-state prompt like a Claude Code pane" do
+        result = with_sessions([codex_pane]) { command.check(name: "myapp", pane: "%4", handoff_doc: "HANDOFF.md") }
+
+        expect(result).to eq(exit_code: 1)
+        expect(tmux).to have_received(:deliver).with("myapp", "%4", a_string_including("HANDOFF.md", "workspace handoff new myapp --pane '%4'"))
+      end
+
+      it "exits 0 under the threshold" do
+        result = with_sessions([codex_pane.merge("context_pct" => 3)]) { command.check(name: "myapp", pane: "%4") }
+
+        expect(result).to eq(exit_code: 0)
+        expect(tmux).not_to have_received(:deliver)
+      end
+
+      it "is the default pane when no Claude Code pane is listed" do
+        result = with_sessions([claude_pane.merge("kind" => "shell"), codex_pane]) { command.check(name: "myapp", handoff_doc: "HANDOFF.md") }
+
+        expect(result).to eq(exit_code: 1)
+        expect(tmux).to have_received(:deliver).with("myapp", "%4", anything)
+      end
+
+      it "is not the default pane while a Claude Code pane is listed" do
+        over_claude = claude_pane.merge("context_pct" => 42)
+        with_sessions([codex_pane, over_claude]) { command.check(name: "myapp", handoff_doc: "HANDOFF.md") }
+
+        expect(tmux).to have_received(:deliver).with("myapp", "%1", anything)
+      end
+
+      it "hands `new` the Codex pane to restart when it is the only agent" do
+        allow(restart_agent_command).to receive(:call).and_return({exit_code: 0})
+
+        with_sessions([codex_pane]) { command.new(name: "myapp", handoff_doc: "HANDOFF.md") }
+
+        expect(restart_agent_command).to have_received(:call).with(hash_including(name: "myapp", pane: "%4"))
+      end
+    end
+
+    it "refuses an OpenCode pane, naming both agents handoff does restart" do
+      allow(tmux).to receive(:deliver)
+
+      with_sessions([claude_pane.merge("kind" => "opencode")]) do
+        expect { command.check(name: "myapp", pane: "1") }
+          .to raise_error(Workspace::UsageError, /is running opencode, not Claude Code or Codex/)
+      end
+      expect(tmux).not_to have_received(:deliver)
+    end
+
     it "refuses to deliver into a pane that isn't running Claude Code" do
       allow(tmux).to receive(:deliver)
       shell_pane = claude_pane.merge("kind" => "shell")
@@ -386,7 +438,7 @@ RSpec.describe Workspace::Commands::Handoff do
 
     it "raises when the daemon lists no Claude pane and no pane was given" do
       with_sessions([claude_pane.merge("kind" => "shell")]) do
-        expect { command.new(name: "myapp", handoff_doc: "HANDOFF.md") }.to raise_error(Workspace::UsageError, /No Claude Code pane found/)
+        expect { command.new(name: "myapp", handoff_doc: "HANDOFF.md") }.to raise_error(Workspace::UsageError, /No Claude Code or Codex pane found/)
       end
     end
 

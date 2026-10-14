@@ -869,7 +869,7 @@ module Workspace
     # Reads the context uncached. A failure reads as no reading, so neither a
     # scan nor a request ever fails over it.
     def read_context(pane)
-      @context_reader.read(pane_id: pane[:pane_id], agent_pid: pane[:agent_pid], current_session_id: pane[:session_id])
+      @context_reader.read(pane_id: pane[:pane_id], agent_pid: pane[:agent_pid], current_session_id: pane[:session_id], kind: pane[:kind])
     rescue => e
       @logger.debug { "session monitor: context read failed (#{e.class}: #{e.message})" }
       {pct: nil, error: ContextReasons::NO_READING, updated_at: nil}

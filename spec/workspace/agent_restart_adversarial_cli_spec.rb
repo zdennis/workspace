@@ -102,16 +102,13 @@ RSpec.describe "agent-run restart adversarial CLI behavior" do
       "with no duration or caveat"
   end
 
-  # U3: /clear (AgentRestart::CLEAR_COMMAND, lib/workspace/agent_restart.rb:18)
-  # is Claude Code's own slash command. The daemon's only pane-type guard
-  # (lib/workspace/commands/agent.rb:410) rejects a "shell" pane but accepts
-  # anything else, including a non-Claude provider like codex
-  # (lib/workspace/agent_provider.rb:69-71). A restart_agent message aimed at
-  # a codex pane is accepted and will type a Claude-only slash command into
-  # an agent that doesn't understand it.
-  it "U3: accepts a restart_agent for a pane running a non-Claude provider (codex), though /clear is Claude-only" do
+  # U3: /clear is the clear command of the providers marked restartable
+  # (Claude Code and Codex). A restart_agent message aimed at a pane running
+  # any other provider, such as opencode, would type a command that agent
+  # does not know, so the daemon refuses it.
+  it "U3: refuses a restart_agent for a pane running a provider that is not restartable (opencode)" do
     tmux = AgentRestartAdversarialFakeTmux.new
-    monitor = AgentRestartAdversarialFakeMonitor.new("%18" => "codex")
+    monitor = AgentRestartAdversarialFakeMonitor.new("%18" => "opencode")
     restart = AgentRestartAdversarialGatedRestart.new({"ok" => true, "status" => "restarted", "pane_id" => "%18"})
     config = instance_double(Workspace::Config).tap do |c|
       allow(c).to receive(:agent_socket_path).with("myapp").and_return(socket_path)
@@ -150,7 +147,7 @@ RSpec.describe "agent-run restart adversarial CLI behavior" do
     end
 
     expect(reply["ok"]).to be(false),
-      "expected a codex pane to be refused before typing a Claude-only /clear, but the daemon accepted it: #{reply.inspect}"
+      "expected an opencode pane to be refused before typing /clear, but the daemon accepted it: #{reply.inspect}"
   ensure
     restart&.finish
     signal_trapper&.handlers&.[]("TERM")&.call
@@ -162,7 +159,7 @@ end
 class AgentRestartAdversarialFakeTmux < CLITestHelpers::FakeTmux
   def initialize
     super
-    @details = [{id: "%18", window: 0, index: 1, pid: 2, command: "codex", cwd: "/", title: ""}]
+    @details = [{id: "%18", window: 0, index: 1, pid: 2, command: "opencode", cwd: "/", title: ""}]
   end
 
   def session_name_for(_config) = "workspace-wt-myapp"

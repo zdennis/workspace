@@ -7914,7 +7914,7 @@ RSpec.describe Workspace::CLI do
             it "launches a project whose agent is not Claude Code without the pack, with a warning and a skipped row" do
               state = CLITestHelpers::FakeState.new
               handoff_auto["api"] = true
-              agent_kinds["api"] = "codex"
+              agent_kinds["api"] = "opencode"
               cli, raw, err = action_cli(state: state, project_config: project_config, library: library, instruction_composer: composer,
                 &launching(state, result: {exit_code: 0, prompt_failures: {}, delivered_panes: {"api" => "%4"}}))
 
@@ -7926,7 +7926,7 @@ RSpec.describe Workspace::CLI do
                 {"name" => "notes", "source" => "config", "delivered" => true, "pane" => "%4"},
                 {"name" => "handoff", "source" => "config", "delivered" => false, "pane" => nil, "reason" => "handoff_unsupported_agent"}
               ])
-              expect(doc["warnings"]).to eq(["the handoff pack was not sent to api: handoff.auto is on, but its main agent is codex and the pack needs Claude Code"])
+              expect(doc["warnings"]).to eq(["the handoff pack was not sent to api: handoff.auto is on, but its main agent is opencode and the pack needs Claude Code or Codex"])
               expect(err.string).to include("Warning: the handoff pack was not sent to api")
             end
 

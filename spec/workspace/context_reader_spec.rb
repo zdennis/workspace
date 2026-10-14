@@ -295,4 +295,120 @@ RSpec.describe Workspace::ContextReader do
 
     expect { reader.read(pane_id: "%1") }.not_to raise_error
   end
+
+  describe "a pane read by its agent kind" do
+    let(:codex_screen) { "earlier: 12% context left in a quote\n\n  gpt-5  72% context left\n" }
+
+    it "reads Codex from its own footer, as the percent used, whatever context.source says" do
+      allow(tmux).to receive(:capture_screen).with("%1").and_return(codex_screen)
+
+      result = reader.read(pane_id: "%1", kind: "codex")
+
+      expect(result).to include(pct: 28, error: nil, session_id: nil)
+      expect(result[:recorded_at]).to be_a(Time)
+    end
+
+    it "takes the last match on the screen, which is the footer" do
+      allow(tmux).to receive(:capture_screen).and_return("90% context left\n  10% context left")
+
+      expect(reader.read(pane_id: "%1", kind: "codex")[:pct]).to eq(90)
+    end
+
+    it "reports 100% used for a footer that says 0% left, and never goes below 0 used" do
+      allow(tmux).to receive(:capture_screen).and_return("0% context left")
+      expect(reader.read(pane_id: "%1", kind: "codex")[:pct]).to eq(100)
+      allow(tmux).to receive(:capture_screen).and_return("130% context left")
+      expect(reader.read(pane_id: "%1", kind: "codex")[:pct]).to eq(0)
+    end
+
+    it "reports a pattern mismatch when the footer is not on the screen" do
+      allow(tmux).to receive(:capture_screen).and_return("working...")
+
+      expect(reader.read(pane_id: "%1", kind: "codex")).to include(pct: nil, error: Workspace::ContextReasons::PATTERN_NO_MATCH)
+    end
+
+    it "uses context.patterns for the kind, whose capture is the percent used" do
+      global_config["context"] = {"patterns" => {"codex" => 'ctx (\d+)%'}}
+      allow(tmux).to receive(:capture_screen).and_return("ctx 41% 72% context left")
+
+      expect(reader.read(pane_id: "%1", kind: "codex")[:pct]).to eq(41)
+    end
+
+    it "scrapes a kind with a configured pattern even when it has no built-in one" do
+      global_config["context"] = {"patterns" => {"opencode" => '(\d+)% used'}}
+      allow(tmux).to receive(:capture_screen).and_return("55% used")
+
+      expect(reader.read(pane_id: "%1", kind: "opencode")[:pct]).to eq(55)
+    end
+
+    it "never guesses on an invalid configured pattern" do
+      global_config["context"] = {"patterns" => {"codex" => "(unterminated"}}
+      allow(tmux).to receive(:capture_screen).and_return("72% context left")
+
+      expect(reader.read(pane_id: "%1", kind: "codex")).to include(pct: nil, error: Workspace::ContextReasons::PATTERN_NO_MATCH)
+    end
+
+    it "reports a pattern mismatch when the pane cannot be captured, or no tmux was given" do
+      allow(tmux).to receive(:capture_screen).and_return(nil)
+      expect(reader.read(pane_id: "%1", kind: "codex")[:error]).to eq(Workspace::ContextReasons::PATTERN_NO_MATCH)
+
+      no_tmux = described_class.new(context_store: context_store, project_settings: project_settings, lock_holder: lock_holder)
+      expect(no_tmux.read(pane_id: "%1", kind: "codex")[:error]).to eq(Workspace::ContextReasons::PATTERN_NO_MATCH)
+    end
+
+    it "leaves Claude on the status line when context.patterns has no entry for it" do
+      allow(context_store).to receive(:reading_for_pane).with("%1").and_return({"pct" => 42, "recorded_at" => "2026-09-27T00:00:00Z"})
+
+      expect(reader.read(pane_id: "%1", kind: "claude")[:pct]).to eq(42)
+    end
+
+    it "falls back to context.pattern in scrape mode for a kind with no pattern of its own" do
+      global_config["context"] = {"source" => "scrape", "pattern" => '(\d+)% ctx'}
+      allow(tmux).to receive(:capture_screen).and_return("37% ctx")
+
+      expect(reader.read(pane_id: "%1", kind: "opencode")[:pct]).to eq(37)
+    end
+
+    it "reports a mismatch, not an error, for a configured pattern with no capture group" do
+      global_config["context"] = {"patterns" => {"codex" => "context left"}}
+      allow(tmux).to receive(:capture_screen).and_return("72% context left")
+
+      expect(reader.read(pane_id: "%1", kind: "codex")).to include(pct: nil, error: Workspace::ContextReasons::PATTERN_NO_MATCH)
+    end
+
+    it "ignores a context.patterns that is not a mapping, and uses the built-in Codex pattern" do
+      global_config["context"] = {"patterns" => "codex"}
+      allow(tmux).to receive(:capture_screen).and_return("72% context left")
+
+      expect(reader.read(pane_id: "%1", kind: "codex")[:pct]).to eq(28)
+    end
+
+    describe "under the scan slots" do
+      let(:scan_slots) { instance_double(Workspace::ScanSlotLimiter) }
+      let(:now) { [Time.utc(2026, 10, 5, 12, 0, 0)] }
+      let(:gated) do
+        described_class.new(context_store: context_store, project_settings: project_settings, tmux: tmux,
+          lock_holder: lock_holder, scan_slots: scan_slots, clock: -> { now[0] })
+      end
+
+      it "serves the last reading while it is fresh when every slot is busy, and reports busy otherwise" do
+        allow(scan_slots).to receive(:with_scan_slot) { |&block| block.call }
+        allow(tmux).to receive(:capture_screen).and_return("72% context left")
+        expect(gated.read(pane_id: "%1", kind: "codex")[:pct]).to eq(28)
+
+        allow(scan_slots).to receive(:with_scan_slot).and_return(nil)
+        now[0] += 5
+        expect(gated.read(pane_id: "%1", kind: "codex")[:pct]).to eq(28)
+        now[0] += 60
+        expect(gated.read(pane_id: "%1", kind: "codex")).to include(pct: nil, error: Workspace::ContextReasons::SCAN_BUSY)
+      end
+    end
+
+    it "treats an unknown kind or nil like no kind" do
+      allow(context_store).to receive(:reading_for_pane).and_return({"pct" => 5, "recorded_at" => "2026-09-27T00:00:00Z"})
+
+      expect(reader.read(pane_id: "%1", kind: "mystery")[:pct]).to eq(5)
+      expect(reader.read(pane_id: "%1", kind: nil)[:pct]).to eq(5)
+    end
+  end
 end

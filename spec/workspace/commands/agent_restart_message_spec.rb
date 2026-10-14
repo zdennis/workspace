@@ -217,7 +217,7 @@ RSpec.describe Workspace::Commands::Agent, "restart_agent" do
       pipeline_config: pipeline_config, context_reader: context_reader)
 
     built = plain.send(:build_agent_restart, session_name: "workspace-wt-myapp", delivery_lock: Mutex.new,
-      pipeline_ref: ->(_) {}, pane_state: ->(_) {}, agent_pid: ->(_) {})
+      pipeline_ref: ->(_) {}, pane_state: ->(_) {}, agent_pid: ->(_) {}, pane_kind: ->(_) {})
     expect(built).to be_a(Workspace::AgentRestart)
   end
 
@@ -269,13 +269,22 @@ RSpec.describe Workspace::Commands::Agent, "restart_agent" do
     end
   end
 
-  it "refuses a pane running an agent other than Claude Code" do
-    monitor.kinds["%18"] = "codex"
+  it "refuses a pane running an agent other than Claude Code or Codex" do
+    monitor.kinds["%18"] = "opencode"
     run_agent do
       reply = send_restart
       expect(reply).to include("ok" => false, "error" => "unsupported_agent", "pane" => "0.1")
-      expect(reply["message"]).to include("Codex")
+      expect(reply["message"]).to include("OpenCode", "Claude Code and Codex")
       expect(restart.calls).to be_empty
+    end
+  end
+
+  it "restarts a Codex pane, reading its context by kind and handing the factory the kind lookup" do
+    monitor.kinds["%18"] = "codex"
+    run_agent do
+      expect(send_restart).to include("ok" => true, "status" => "started")
+      expect(context_reader).to have_received(:read).with(hash_including(pane_id: "%18", kind: "codex"))
+      expect(restart.built_with[:pane_kind].call("%18")).to eq("codex")
     end
   end
 

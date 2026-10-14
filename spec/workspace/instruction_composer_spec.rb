@@ -478,13 +478,22 @@ RSpec.describe Workspace::InstructionComposer do
 
       it "is skipped with a reason and a warning when the config asks for it and the main agent is not Claude Code" do
         auto("true")
-        allow(main_agent).to receive(:kind).with("app").and_return("codex")
+        allow(main_agent).to receive(:kind).with("app").and_return("opencode")
 
         result = composer.compose_start(cwd: "/work/app")
 
         expect(result["packs"].map { |p| p["ref"] }).to eq(%w[play/notes])
         expect(result["skipped"]).to eq([{"name" => "handoff", "source" => "config", "reason" => "handoff_unsupported_agent",
-                                          "message" => "the handoff pack was not sent to app: handoff.auto is on, but its main agent is codex and the pack needs Claude Code"}])
+                                          "message" => "the handoff pack was not sent to app: handoff.auto is on, but its main agent is opencode and the pack needs Claude Code or Codex"}])
+      end
+
+      it "is sent when the main agent is Codex, from the config and from the flag" do
+        allow(main_agent).to receive(:kind).with("app").and_return("codex")
+        auto("true")
+
+        expect(composer.start_packs(cwd: "/work/app").map { |p| [p["name"], p["source"]] }).to eq([%w[notes config], %w[handoff config]])
+        expect(composer.start_packs(cwd: "/work/app", handoff: true).last).to eq("name" => "handoff", "source" => "flag")
+        expect(composer.compose_start(cwd: "/work/app")["skipped"]).to eq([])
       end
 
       it "describes a project that runs no known agent as such" do
@@ -495,11 +504,11 @@ RSpec.describe Workspace::InstructionComposer do
       end
 
       it "is refused with handoff_unsupported_agent and the agent kind when the flag asks for it" do
-        allow(main_agent).to receive(:kind).with("app").and_return("codex")
+        allow(main_agent).to receive(:kind).with("app").and_return("opencode")
 
         expect { composer.compose_start(cwd: "/work/app", handoff: true) }.to raise_error(Workspace::Error) { |e|
           expect(e.code).to eq("handoff_unsupported_agent")
-          expect(e.details).to eq("kind" => "codex")
+          expect(e.details).to eq("kind" => "opencode")
         }
       end
 
@@ -512,7 +521,7 @@ RSpec.describe Workspace::InstructionComposer do
 
       it "adds a skipped row beside the delivered ones" do
         auto("true")
-        allow(main_agent).to receive(:kind).and_return("codex")
+        allow(main_agent).to receive(:kind).and_return("opencode")
         result = composer.compose_start(cwd: "/work/app")
 
         expect(described_class.delivery_rows(result["packs"], delivered: true, pane: "%4", skipped: result["skipped"])).to eq([

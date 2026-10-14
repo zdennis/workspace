@@ -34,7 +34,7 @@ A macOS CLI (Ruby) for managing tmuxinator-based development workspaces in iTerm
 - `lib/workspace/library_installer.rb` — Copies a library agent or skill into a checkout's `.claude/agents/` or `.claude/skills/`, never over a tracked path, and lists it in the common dir's `info/exclude`
 - `lib/workspace/instruction_composer.rb` — Builds an agent's instructions from library packs under a heading per pack, and a workflow step's four layers (default packs, workflow, step, attempt); adds the pane's binding after `binding` and the project's `commands.test`/`commands.lint` after `commits`; `#start_packs`/`#compose_start` list and compose what `start` and `launch` send with the first prompt (the automatic `notes` pack, the `dev` pack when the project sets `dev.up`, then `--pack` names; `compose(skip:)` leaves a pack out of a workflow step)
 - `lib/workspace/notes_config.rb` — Reads a project's `notes.instructions` (false turns the automatic `notes` pack off for `start` and `launch`)
-- `lib/workspace/main_agent.rb` — Which coding agent a project's main agent pane runs (`claude`, `codex`, ..., or `none`), read from the panes of its tmuxinator config; `InstructionComposer` uses it to send the `handoff` pack to Claude Code only
+- `lib/workspace/main_agent.rb` — Which coding agent a project's main agent pane runs (`claude`, `codex`, ..., or `none`), read from the panes of its tmuxinator config; `InstructionComposer` uses it to send the `handoff` pack to Claude Code and Codex only
 - `lib/workspace/commands_config.rb` — Reads a project's `commands.test` and `commands.lint`
 - `lib/library/play/` — The built-in instruction packs (`binding`, `orchestrator`, `commits`, `review`, `notes`, `handoff`, `dev`, `implementation-plan`), read through `Library#builtin_store`
 - `lib/workspace/commands/` — Complex command objects (launch, kill, focus, start, agent, ensure_agent, lock, dev, notes, plan, pull_request, rebase, push, projects, capabilities, send, review, restore, snapshot, daemon, ui, binding, library, instructions, workflow)
@@ -57,6 +57,7 @@ A macOS CLI (Ruby) for managing tmuxinator-based development workspaces in iTerm
 - `lib/workspace/pipeline_state.rb` — In-flight work item tracking, disk-persisted to `~/.local/state/workspace/<name>/pipeline.json`
 - `lib/workspace/sentinel_poller.rb` — Background poller watching tmux panes for `WORKSPACE_DONE:` sentinel
 - `lib/workspace/session_monitor.rb` — Per-pane coding-agent and sub-agent state (working/idle/waiting), keyed on tmux pane id; fires alerts
+- `lib/workspace/context_reader.rb` — A pane's context use: the status-line reading, a `context.pattern` scrape, or, when given the pane's agent kind, a scrape by `context.patterns` or the provider's own pattern (Codex)
 - `lib/workspace/session_ledger.rb` — Flock-guarded append-only `ledger.jsonl` of SessionStart/SessionEnd (with pane slot, tmux server pid and window layout), written by `session-event`; `#slots_for` streams it into the latest session per pane slot for `restore`; `#open_session_for` names the session open in a pane, which `dev up` records as `started_by`
 - `lib/workspace/alert_config.rb` — Reads a project's `alerts.notify` and `alerts.idle_after`
 - `lib/workspace/notifier.rb` — Runs the notify command in the background with a timeout, details in `WORKSPACE_ALERT_*` env vars
@@ -86,7 +87,7 @@ A macOS CLI (Ruby) for managing tmuxinator-based development workspaces in iTerm
 - `lib/workspace/lock_config.rb` — Reads a project's `locks.idle_grace` (falls back to 5m with a warning)
 - `lib/workspace/dev_session_release.rb` — On a `session-event` SessionEnd (never reason `clear`), finds a `devenv` lock record whose `started_by.session_id` is the session by reading the lock files, then starts `workspace dev __release SESSION` as its own process; `Commands::Dev#release_for_session` does the stop (unless `dev.release_on_session_end` is false, or anything cannot be read)
 - `lib/workspace/lock_idle_tracker.rb` — Marks an agent's lock idle/active from `session-event` hooks, for idle takeover
-- `lib/workspace/agent_provider.rb` — Registry of coding-agent CLIs workspace can monitor
+- `lib/workspace/agent_provider.rb` — Registry of coding-agent CLIs workspace can monitor; says which ones handoff may clear (`restartable?`, `clear_command`) and how a pane without a status line has its context read (`context_pattern`, Codex's `N% context left`)
 - `lib/workspace/agent_readiness.rb` — Waits for a coding agent's pane to be quiet and (if the provider declares one) match its ready pattern before `launch --prompt`/`start --prompt` send text
 - `lib/workspace/hook_installer.rb` — Merges workspace's hooks into an agent's own settings file
 - `lib/workspace/file_backup.rb` — Copies a file aside before workspace edits it

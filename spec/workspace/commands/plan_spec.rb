@@ -872,7 +872,17 @@ RSpec.describe Workspace::Commands::Plan do
           expect(start["pane"]).to eq("%20")
         end
 
-        it "fails with no_agent_pane when no pane runs Claude Code" do
+        it "sends the plan to a Codex pane, which handoff now restarts" do
+          write_plan("api", paused_text.sub("owner_pane: \"%19\"\n", ""))
+          pane_rows.replace([{"pane_id" => "%18", "kind" => "shell", "state" => "idle"}, {"pane_id" => "%21", "kind" => "codex", "state" => "idle"}])
+
+          result = start
+
+          expect(result["pane"]).to eq("%21")
+          expect(written.owner_pane).to eq("%21")
+        end
+
+        it "fails with no_agent_pane when no pane runs Claude Code or Codex" do
           pane_rows.replace([{"pane_id" => "%18", "kind" => "shell", "state" => "idle"}])
 
           expect { start }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("no_agent_pane") }

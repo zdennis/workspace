@@ -15,7 +15,7 @@ module Workspace
     # resume prompt) at an explicit pane and returns once it's started.
     #
     # Neither command ever guesses a pane: `--pane` names one explicitly, or
-    # the daemon's first pane of kind "claude" is used. `--pane` takes a tmux
+    # the daemon's first pane of kind "claude" (else its first "codex" pane) is used. `--pane` takes a tmux
     # pane id ("%19", what `$TMUX_PANE` holds in the pane itself), "window.pane",
     # or a pane index in window 0. The id is the one to prefer: it names one
     # pane for its whole life. Either way the pane is looked up in the
@@ -63,7 +63,7 @@ module Workspace
 
       # @param name [String] workspace name
       # @param pane [String, nil] pane id ("%19"), "window.pane" or pane
-      #   index; nil picks the daemon's first "claude" pane
+      #   index; nil picks the daemon's first "claude" pane, else its first "codex" pane
       # @param threshold [Integer, nil] context-usage percent that triggers a
       #   handoff; nil uses `handoff.threshold` (default 11)
       # @param context_pct [Integer, nil] skips detection and uses this value
@@ -101,7 +101,7 @@ module Workspace
         detail = locate(name, pane || default_pane(name, snapshot))
         pane_info = (snapshot["panes"] || []).find { |p| p["pane_id"] == detail[:id] }
         return undetermined(json, unlisted_reason(name, detail), fix: unlisted_fix(name), doc: doc) unless pane_info
-        raise Workspace::UsageError, not_claude_message(name, pane_info) unless pane_kind_ok?(pane_info)
+        raise Workspace::UsageError, unsupported_pane_message(name, pane_info) unless pane_kind_ok?(pane_info)
 
         if context_pct && !context_pct.between?(0, 100)
           raise Workspace::UsageError, "--context-pct must be between 0 and 100"
@@ -128,7 +128,7 @@ module Workspace
 
       # @param name [String] workspace name
       # @param pane [String, nil] pane id ("%19"), "window.pane" or pane
-      #   index; nil picks the daemon's first "claude" pane, same as {#check}
+      #   index; nil picks the daemon's first "claude" pane, else its first "codex" pane, same as {#check}
       # @param handoff_doc [String, nil] path the agent should resume from; with neither this nor
       #   +handoff_prompt+, the workspace's plan when it has one (and the pane is bound to the
       #   `implementation-plan` play), else +HANDOFF.md+ in its notes directory
@@ -276,10 +276,11 @@ module Workspace
         [nil, "no agent daemon for '#{name}' (start one with: workspace agentd --name #{name})"]
       end
 
-      # @return [String] the pane id of the first Claude Code pane the daemon lists
+      # @return [String] the pane id of the first Claude Code pane the daemon lists, else of the first Codex pane
       def default_pane(name, snapshot)
-        listed = (snapshot["panes"] || []).find { |p| p["kind"] == "claude" && p["pane_id"] }
-        raise Workspace::UsageError, "No Claude Code pane found in workspace '#{name}'; pass --pane." unless listed
+        panes = (snapshot["panes"] || []).select { |p| p["pane_id"] }
+        listed = panes.find { |p| p["kind"] == "claude" } || panes.find { |p| p["kind"] == "codex" }
+        raise Workspace::UsageError, "No Claude Code or Codex pane found in workspace '#{name}'; pass --pane." unless listed
         listed["pane_id"]
       end
 
@@ -304,21 +305,22 @@ module Workspace
       end
 
       # Session monitor pane kinds `check` will type the save-state prompt
-      # into: the Claude provider, and a pane not identified yet. Mirrors
+      # into: the providers marked restartable (Claude Code and Codex), and a
+      # pane not identified yet. Mirrors
       # RESTARTABLE_KINDS in lib/workspace/commands/agent.rb -- keep both in
       # sync if this changes. Unlike `new` (which hands the pane to the
       # daemon's own restart_agent, already gated this way), `check` delivers
       # directly via Tmux#deliver, so it must gate the pane kind itself.
-      RESTARTABLE_KINDS = ["claude", "unknown"].freeze
+      RESTARTABLE_KINDS = AgentProvider.restartable_kinds.freeze
       private_constant :RESTARTABLE_KINDS
 
       def pane_kind_ok?(pane_info)
         RESTARTABLE_KINDS.include?(pane_info["kind"])
       end
 
-      def not_claude_message(name, pane_info)
-        "Pane #{pane_info["index"]} in workspace '#{name}' is running #{pane_info["kind"]}, not Claude Code; " \
-          "handoff only restarts Claude Code, whose /clear it types."
+      def unsupported_pane_message(name, pane_info)
+        "Pane #{pane_info["index"]} in workspace '#{name}' is running #{pane_info["kind"]}, not Claude Code or Codex; " \
+          "handoff only restarts Claude Code and Codex, whose /clear it types."
       end
 
       def undetermined(json, reason, fix: ContextReasons::FIX_HINT, doc: nil)

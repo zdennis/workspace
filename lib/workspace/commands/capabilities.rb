@@ -46,6 +46,7 @@ module Workspace
         "notes" => 1,
         "start_packs" => 2,
         "handoff_auto" => 2,
+        "handoff_codex" => 1,
         "dev_queue" => 2,
         "plan" => 4,
         "ticket" => 1,

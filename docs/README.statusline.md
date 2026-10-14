@@ -37,6 +37,7 @@ Set these with [`workspace config set`](README.config.md) — they're global (on
 | `statusline.command` | Delegate rendering to another command instead of the built-in renderer |
 | `context.source` | `statusline` (default) or `scrape` — see below |
 | `context.pattern` | Regex with one capture group, used when `context.source` is `scrape` |
+| `context.patterns` | Edited by hand in the config file: a mapping of agent kind to a regex with one capture group (percent used). That kind is read from its pane whatever `context.source` says; Codex has a built-in one. See [`handoff`](README.handoff.md#codex) |
 
 ```sh
 workspace config set statusline.command "~/bin/my-statusline"

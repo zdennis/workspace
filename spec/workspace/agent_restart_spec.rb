@@ -37,7 +37,10 @@ class RestartFakeContextReader
     @readings = readings
   end
 
-  def read(pane_id:, agent_pid: nil, current_session_id: nil)
+  attr_reader :kinds
+
+  def read(pane_id:, agent_pid: nil, current_session_id: nil, kind: nil)
+    (@kinds ||= []) << kind
     reading = (@readings.size > 1) ? @readings.shift : @readings.first
     reading.is_a?(Proc) ? reading.call(@wall[0]) : reading
   end
@@ -93,7 +96,7 @@ RSpec.describe Workspace::AgentRestart do
     scripted = [reading(14, session: "old"), reading(nil, session: "new")]
     clock_now = wall
     pid_reader = Object.new
-    pid_reader.define_singleton_method(:read) do |pane_id:, agent_pid: nil, current_session_id: nil|
+    pid_reader.define_singleton_method(:read) do |pane_id:, agent_pid: nil, current_session_id: nil, kind: nil|
       next {pct: nil, error: Workspace::ContextReasons::NO_READING, updated_at: nil} unless agent_pid == 4242
       ((scripted.size > 1) ? scripted.shift : scripted.first).call(clock_now[0])
     end
@@ -414,5 +417,47 @@ RSpec.describe Workspace::AgentRestart do
 
     expect(result).to include("ok" => false, "error" => "pane_gone")
     expect(result["message"]).to include("the prompt was not typed")
+  end
+
+  context "when the pane runs Codex" do
+    let(:kinds_by_pane) { {"%18" => "codex"} }
+    subject(:restart) do
+      described_class.new(
+        tmux: tmux, context_reader: context_reader, session_name: "workspace-wt-app",
+        delivery_lock: Mutex.new, pipeline_ref: ->(_) {}, pane_kind: ->(id) { kinds_by_pane[id] },
+        clock: -> { now[0] }, wall_clock: -> { wall[0] },
+        sleeper: ->(seconds) {
+          now[0] += seconds
+          wall[0] += seconds
+        },
+        quiet_timeout: 10, quiet_for: 1, poll_interval: 0.5
+      )
+    end
+
+    it "reads the pane by its kind, types /clear, and confirms from usage that dropped" do
+      readings.push(reading(60), reading(60), reading(60), reading(2))
+
+      result = call
+
+      expect(result).to include("ok" => true, "status" => "restarted", "context_before" => 60, "context_after" => 2)
+      expect(context_reader.kinds.uniq).to eq(["codex"])
+      expect(tmux.delivered.map { |d| d[:text] }).to eq(["/clear", "Read HANDOFF.md"])
+    end
+
+    it "does not type the prompt while usage stays where it was" do
+      readings.push(reading(60))
+
+      expect(call(confirm_timeout: 2)).to include("ok" => false, "error" => "clear_not_confirmed")
+      expect(tmux.delivered.map { |d| d[:text] }).to eq(["/clear"])
+    end
+  end
+
+  it "reads with no kind when the pane has none, and still types /clear" do
+    readings.push(reading(42), reading(42), reading(42), reading(3))
+
+    call
+
+    expect(context_reader.kinds.uniq).to eq([nil])
+    expect(tmux.delivered.first[:text]).to eq("/clear")
   end
 end

@@ -317,11 +317,11 @@ module Workspace
         raise Workspace::Error.new(e.message, code: "no_daemon", details: {"workspace" => name})
       end
 
-      # The plan's owner when it is a live Claude Code pane, else the first one.
+      # The plan's owner when it is a live Claude Code or Codex pane, else the first one.
       def main_pane(name, plan, panes)
-        agents = panes.select { |pane| pane["kind"] == "claude" && pane["pane_id"] }
+        agents = panes.select { |pane| %w[claude codex].include?(pane["kind"]) && pane["pane_id"] }
         agents.find { |pane| pane["pane_id"] == plan.owner_pane } || agents.first ||
-          raise(Workspace::Error.new("No pane of '#{name}' runs Claude Code, so there is nowhere to send the plan.",
+          raise(Workspace::Error.new("No pane of '#{name}' runs Claude Code or Codex, so there is nowhere to send the plan.",
             code: "no_agent_pane", details: {"workspace" => name}))
       end
 

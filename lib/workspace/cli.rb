@@ -555,8 +555,8 @@ module Workspace
           no_packs = true
         end
         opts.on("--[no-]handoff", "Send (or never send) the handoff pack, whatever handoff.auto says. It makes a Claude",
-          "Code agent run 'workspace handoff check' after every task. --handoff for a project",
-          "whose main agent is not Claude Code fails before anything launches (handoff_unsupported_agent)") do |v|
+          "Code or Codex agent run 'workspace handoff check' after every task. --handoff for a project",
+          "whose main agent is neither fails before anything launches (handoff_unsupported_agent)") do |v|
           handoff = v
         end
         opts.on("--json", "Print one action document (see docs/README.json.md) instead of progress text;",
@@ -743,8 +743,8 @@ module Workspace
           no_packs = true
         end
         opts.on("--[no-]handoff", "Send (or never send) the handoff pack, whatever handoff.auto says. It makes a Claude",
-          "Code agent run 'workspace handoff check' after every task. --handoff for a project",
-          "whose main agent is not Claude Code fails before the worktree is created (handoff_unsupported_agent)") do |v|
+          "Code or Codex agent run 'workspace handoff check' after every task. --handoff for a project",
+          "whose main agent is neither fails before the worktree is created (handoff_unsupported_agent)") do |v|
           handoff = v
         end
         opts.on("--agent NAME", "Copy a library agent into the worktree's .claude/agents/ (repeatable).",
