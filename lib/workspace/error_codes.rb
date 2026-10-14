@@ -32,6 +32,8 @@ module Workspace
       "plan_exists" => "plan init would replace a plan that is already there; pass --force.",
       "plan_done" => "plan start or pause was run on a plan that is done (status: done, or nothing left to do).",
       "plan_write_conflict" => "The plan file changed twice while a plan verb was writing it, so nothing was written; run the verb again.",
+      "ticket_not_found" => "ticket show: the ticket tool says no ticket has that key, number or URL.",
+      "ticket_source_unavailable" => "ticket show: gh or jira is not installed, did not answer in time, or failed; details.source says which.",
       "handoff_unsupported_agent" => "The handoff pack was asked for, but the project's main agent is not Claude Code.",
       # Codes the agent daemon puts in its replies; `agent-run` passes them through.
       "malformed_message" => "The daemon couldn't parse the request.",

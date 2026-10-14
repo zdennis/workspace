@@ -122,6 +122,12 @@ RSpec.describe Workspace::Commands::Capabilities do
       expect(document["features"]).to include("plan" => 4)
     end
 
+    it "reports ticket 1 once ticket show exists" do
+      command.call(json: true)
+
+      expect(document["features"]).to include("ticket" => 1)
+    end
+
     it "ignores a PATH entry that is not executable or is a directory" do
       install("gh", mode: 0o644)
       FileUtils.mkdir_p(File.join(bin_dir, "tmux"))

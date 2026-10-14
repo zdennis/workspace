@@ -128,6 +128,17 @@ RSpec.describe Workspace do
       expect(plan.instance_variable_get(:@ask_store_for).call("api")).to be_a(Workspace::AskStore)
     end
 
+    it "wires the ticket command to the start-input resolver start uses" do
+      cli = Workspace.build_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new)
+
+      ticket = cli.instance_variable_get(:@ticket_command)
+      start = cli.instance_variable_get(:@start_command)
+
+      expect(ticket).to be_a(Workspace::Commands::Ticket)
+      expect(ticket.instance_variable_get(:@start_ref)).to equal(start.instance_variable_get(:@start_ref))
+      expect(ticket.instance_variable_get(:@source)).to be_a(Workspace::TicketSource)
+    end
+
     it "wires the binding command into launch, so a delivered play binds the pane binding set and session-event use" do
       cli = Workspace.build_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new)
 

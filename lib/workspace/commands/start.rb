@@ -32,14 +32,16 @@ module Workspace
       #   the directory, its exclude line); nil sets nothing up
       # @param instruction_composer [Workspace::InstructionComposer, nil] composes the packs sent with the first
       #   prompt (the automatic `notes` pack, and `packs:`); nil sends none
+      # @param start_ref [Workspace::StartRef, nil] reads the input and finds the project; nil builds one from +git+ and +lineage+
       def initialize(git:, project_config:, project_settings:, launch_command:, lineage: WorkspaceLineage.new,
         hook_installer: nil, which: nil, task_store: nil, event_log: nil, library: nil, library_installer: nil,
-        notes_setup: nil, instruction_composer: nil, output: $stdout, input: $stdin, error_output: $stderr)
+        notes_setup: nil, instruction_composer: nil, start_ref: nil, output: $stdout, input: $stdin, error_output: $stderr)
         @git = git
         @project_config = project_config
         @project_settings = project_settings
         @launch_command = launch_command
         @lineage = lineage
+        @start_ref = start_ref || StartRef.new(git: git, lineage: lineage)
         @hook_installer = hook_installer
         @which = which || Workspace::Which
         @task_store = task_store
@@ -111,27 +113,23 @@ module Workspace
         @task_title = title&.strip&.then { |t| t unless t.empty? }
         @task_ref = input_string
 
-        info = @lineage.resolve(cwd: root)
-        if parent_repo?(root, info)
-          # Running from inside a linked worktree: resolve to the parent repo so
-          # worktree creation, adoption, config naming, and session reuse all
-          # target the parent project.
-          note_parent_repo(info.path, quiet: quiet)
-          root = info.path
-          project_name = info.name
-        else
-          project_name = WorkspaceLineage.name_from_path(root)
-        end
+        project = @start_ref.project(root)
+        # Running from inside a linked worktree: resolve to the parent repo so
+        # worktree creation, adoption, config naming, and session reuse all
+        # target the parent project.
+        note_parent_repo(project.root, quiet: quiet) if project.from_worktree
+        root = project.root
+        project_name = project.name
         @play = play && resolve_play(play, root)
         @packs = resolve_packs(root, packs, no_packs, handoff, quiet: quiet)
         @copies = resolve_copies({"agent" => agents, "skill" => skills}, root)
-        parsed = @git.parse_start_input(input_string)
+        ref = @start_ref.call(input_string)
 
         # A PR is checked out by `gh pr checkout` under its own number, never by
         # its head branch name, which for a fork PR can name an unrelated branch
         # of this repo (`main`).
-        pr = (parsed if parsed[:type] == :pr_url)
-        branch_name = pr ? "pr-#{pr[:number]}" : resolve_branch_name(parsed)
+        pr = ref.pr
+        branch_name = ref.branch
         note_pr_base_ignored(branch_name, quiet: quiet) if pr && base
         worktree_dir_name = @git.sanitize_for_filesystem(branch_name)
         worktree_path = File.join(root, ".worktrees", worktree_dir_name)
@@ -350,22 +348,6 @@ module Workspace
         end
       end
 
-      # A lineage result is only trusted when git's own common dir confirms it:
-      # the common dir must be a normal ".git" directory (a bare repo's common
-      # dir is the bare repo itself, whose parent directory is not a checkout),
-      # and it must resolve somewhere other than cwd's own toplevel (a marker
-      # found above a standalone repo nested inside a worktree would otherwise
-      # claim a parent the repo's own git does not).
-      #
-      # @param root [String] the git toplevel start was run from
-      # @param info [Workspace::WorkspaceLineage::Lineage] the resolved lineage
-      # @return [Boolean]
-      def parent_repo?(root, info)
-        info.is_worktree &&
-          info.git_common_dir && File.basename(info.git_common_dir) == ".git" &&
-          File.expand_path(info.path) != File.expand_path(root)
-      end
-
       # Notes that start was run from inside a linked worktree and resolved the
       # parent repo instead, since the worktree landing under a different repo
       # root than cwd is otherwise surprising.
@@ -413,10 +395,6 @@ module Workspace
         kwargs[:prompt_timeout] = prompt_timeout unless prompt_timeout.nil?
         kwargs[:quiet] = true if quiet
         @launch_command.call([config_name], **kwargs)
-      end
-
-      def resolve_branch_name(parsed)
-        parsed[:value]
       end
 
       def resolve_or_create_branch(branch_name, base:, yes:, interactive:, quiet:)

@@ -204,7 +204,7 @@ module Workspace
     end
 
     # @param input [String] user input (JIRA URL, PR URL, +#n+ or +owner/repo#n+ PR ref, JIRA key, or branch name)
-    # @return [Hash] parsed result with :type and :value keys; a +:pr_url+ result also has
+    # @return [Hash] parsed result with :type and :value keys; a +:pr_url+ or +:issue_url+ result also has
     #   +:repo+ (+"owner/repo"+, or nil for a bare +#n+) and +:number+
     def parse_start_input(input)
       if input.match?(%r{https?://.*atlassian\.net/browse/([A-Z]+-\d+)})
@@ -221,7 +221,8 @@ module Workspace
       end
 
       if (match = input.match(%r{https?://github\.com/.+/.+/issues/(\d+)}))
-        return {type: :issue_url, value: "issue-#{match[1]}"}
+        repo = input.match(%r{https?://github\.com/([^/]+/[^/]+)/issues/})&.[](1)
+        return {type: :issue_url, value: "issue-#{match[1]}", repo: repo, number: match[1]}
       end
 
       if input.match?(/\A[A-Z]+-\d+\z/)

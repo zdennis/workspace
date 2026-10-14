@@ -102,6 +102,8 @@ The exit code is unchanged by `--json` (1 for most failures, 2 for `not_submitte
 | `plan_exists` | `plan init` found a plan already there and `--force` was not given. `details.path`. |
 | `plan_done` | `plan start` or `plan pause` found a plan that is done (`status: done`, or nothing left to do). `details.name`, `details.path`. |
 | `plan_write_conflict` | The plan file changed twice while a `plan` verb was writing it, so nothing was written; run the verb again. `details.path`. |
+| `ticket_not_found` | `ticket show` asked `gh` or `jira` for a ticket the tool says does not exist. `details.source`, `details.ref`. |
+| `ticket_source_unavailable` | `ticket show` could not read the ticket: `gh` or `jira` is not installed (`details.reason` `missing`), did not answer in time (`timeout`) or failed (`error`, with `details.detail`). `details.source`. |
 
 The registry lives in `Workspace::ErrorCodes`; a spec checks that every code a raise site names is listed there and on this page. More codes arrive with the commands that need them.
 

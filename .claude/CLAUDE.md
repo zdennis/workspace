@@ -43,6 +43,9 @@ A macOS CLI (Ruby) for managing tmuxinator-based development workspaces in iTerm
 - `lib/workspace/plan_file.rb` — The parser for a workspace's `IMPLEMENTATION_PLAN.md` (`PlanFile.parse(text)`, `PlanFile.read(path)`; nil when the file is missing): frontmatter, the `- [S] ID Title` tasks under `## Tasks`, `counts`, `percent`, `current`, `warnings`; it never fails. `PlanFile.set_status` and `.set_owner_pane` are the only writers of the file: one frontmatter line, through a temp file and rename, with one re-read and retry
 - `lib/workspace/plan_state.rb` — `PlanState#derive` picks the one plan `state` (`empty`, `done`, `paused`, `stopped`, `waiting`, `working`, `blocked`, `stalled`, `idle`) from the parsed plan and the facts; `#row` builds the row `plan status --json` and, minus `tasks`, each member's `plan` in `snapshot` (from the snapshot's own reads)
 - `lib/workspace/plan_config.rb` — Reads a project's `plan.stall_seconds`
+- `lib/workspace/start_ref.rb` — What `start` and `ticket show` make of a ref (JIRA key or URL, pull request, issue, branch): its `kind`, `key` and `branch`, and `#project` for the project a worktree would join (the parent repo from inside a linked worktree)
+- `lib/workspace/ticket_source.rb` — Reads a ticket's title, body (64 KB cap) and URL with `gh` (pull request, issue) or `jira` (`jira issue view KEY --raw`) within 10s; a missing tool, a timeout or a failure is `ticket_source_unavailable`, an unknown ticket `ticket_not_found`; a branch runs nothing
+- `lib/workspace/commands/ticket.rb` — `ticket show REF [--name WS] [--json]`: the lookup, plus the workspace that already exists for the ref's branch; writes nothing
 - `lib/workspace/commands/plan.rb` — `plan status|path|show|init|start|pause|delete`; `#rows(names:, all:)` returns the rows, gathering the session, the owner pane's state and the open questions; `#start` is given a `launch:` callable by the CLI (launching is `CLI#launch_projects`) and otherwise types into the main agent pane and binds it to the play; every change records `plan_changed`
 - `lib/workspace/work_coordinator_client.rb` — JSONL client for work-coordinator sockets
 - `lib/workspace/pipeline_config.rb` — (`pipeline` is deprecated in favor of `workflow`) Reads per-project pipeline stage config from `~/.config/workspace/projects/<name>.yml`
@@ -106,7 +109,7 @@ A macOS CLI (Ruby) for managing tmuxinator-based development workspaces in iTerm
 
 ## Subcommands
 
-init, doctor, launch, start, add, stop, kill, finish, relaunch, restore, focus, list, status, whereis, agent, daemon, pipeline, sessions, review, snapshot, session-event, lock, dev, parent, notes, plan, projects, ask, capabilities, ui, binding, library, instructions, workflow, step
+init, doctor, launch, start, add, stop, kill, finish, relaunch, restore, focus, list, status, whereis, agent, daemon, pipeline, sessions, review, snapshot, session-event, lock, dev, parent, notes, plan, ticket, projects, ask, capabilities, ui, binding, library, instructions, workflow, step
 
 ## Adding a Subcommand
 

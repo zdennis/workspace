@@ -16,7 +16,7 @@ module Workspace
     # hint).
     SUBCOMMANDS = %w[
       init doctor launch start stop add add-project kill finish relaunch restore
-      focus deactivate reactivate tile resize capture agent agentd lock dev parent notes plan projects
+      focus deactivate reactivate tile resize capture agent agentd lock dev parent notes plan ticket projects
       capabilities daemon sessions review snapshot ask session-event agent-run handoff pipeline run library lib instructions workflow step
       run-and-report report-run-status layout config tmux statusline current
       list-projects list status repair cleanup prune set-command event-log
@@ -67,6 +67,7 @@ module Workspace
     # @param notes_command [Workspace::Commands::Notes, nil] pre-built notes command
     # @param notes_setup [Workspace::NotesSetup, nil] fixes the notes directory of a worktree config `add` creates; nil skips it
     # @param plan_command [Workspace::Commands::Plan, nil] pre-built plan command
+    # @param ticket_command [Workspace::Commands::Ticket, nil] pre-built ticket command
     # @param projects_command [Workspace::Commands::Projects, nil] pre-built projects command
     # @param capabilities_command [Workspace::Commands::Capabilities, nil] pre-built capabilities command
     # @param daemon_command [Workspace::Commands::Daemon, nil] pre-built daemon command
@@ -92,7 +93,7 @@ module Workspace
     #   `list --liveness --json` and `status --json`; takes name => state entry
     # @param launch_mode [Workspace::LaunchMode, nil] decides whether launch/start
     #   run headless when no --[no-]headless flag is given; nil builds one
-    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, restart_agent_command: nil, send_command: nil, ensure_agent_command: nil, handoff_command: nil, notes_command: nil, notes_setup: nil, plan_command: nil, projects_command: nil, capabilities_command: nil, daemon_command: nil, ui_command: nil, binding_command: nil, library_command: nil, library: nil, instructions_command: nil, instruction_composer: nil, workflow_command: nil, review_command: nil, restore_command: nil, snapshot_command: nil, project_actions_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil, liveness: nil, window_liveness: nil)
+    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, restart_agent_command: nil, send_command: nil, ensure_agent_command: nil, handoff_command: nil, notes_command: nil, notes_setup: nil, plan_command: nil, ticket_command: nil, projects_command: nil, capabilities_command: nil, daemon_command: nil, ui_command: nil, binding_command: nil, library_command: nil, library: nil, instructions_command: nil, instruction_composer: nil, workflow_command: nil, review_command: nil, restore_command: nil, snapshot_command: nil, project_actions_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil, liveness: nil, window_liveness: nil)
       @config = config
       @state = state
       @project_config = project_config
@@ -130,6 +131,7 @@ module Workspace
       @parent_command = parent_command
       @notes_command = notes_command
       @plan_command = plan_command
+      @ticket_command = ticket_command
       @notes_setup = notes_setup
       @agent_command = agent_command
       @config_command = config_command
@@ -227,6 +229,8 @@ module Workspace
         cmd_notes(args)
       when "plan"
         cmd_plan(args)
+      when "ticket"
+        cmd_ticket(args)
       when "projects"
         cmd_projects(args)
       when "capabilities"
@@ -464,6 +468,7 @@ module Workspace
           set-command     Set the shell command for a pane in a project config (--pane <N>)
           statusline      Render Claude Code's status line (install as its statusLine command)
           stop            Stop active workspace projects and their tmux sessions
+          ticket          Look up a ticket (JIRA key, pull request, issue or branch) the way start reads it (show)
           tile            Tile all windows for a project across the screen
           tmux            Show a workspace's tmuxinator file as windows and panes (tmux show --json)
           ui              Open a workspace-ui:// link: a task, a review or the inbox
@@ -5771,6 +5776,43 @@ module Workspace
       raise Error.new("No workspace found for #{@working_dir}. Run from inside a workspace or pass --name.", code: "not_in_workspace", details: {"path" => @working_dir}) unless name
 
       @notes_command.dir(name: name, create: options[:create], json: options[:json])
+    end
+
+    def ticket_parser(options)
+      OptionParser.new do |opts|
+        opts.banner = "Usage: workspace ticket show REF [--name WORKSPACE] [--json]"
+        opts.separator ""
+        opts.separator "Read a ticket the way 'workspace start' reads its argument, and say whether a worktree for"
+        opts.separator "it already exists. REF is a JIRA key or URL, a pull request URL or #n, a GitHub issue URL,"
+        opts.separator "or a branch name. Title and body come from gh (pull requests and issues) or jira (JIRA keys);"
+        opts.separator "a plain branch has none. Writes nothing, creates nothing, fetches nothing from git."
+        opts.separator ""
+        opts.on("--name NAME", "Look in this workspace's project instead of the one detected from the current directory") { |v| options[:name] = v }
+        opts.on("--json", "Print one JSON document (see docs/README.ticket.md)") { options[:json] = true }
+        opts.on("-h", "--help", "Show this help") { options[:help] = true }
+        opts.separator ""
+        opts.separator "Examples:"
+        opts.separator "  workspace ticket show PROJ-123"
+        opts.separator "  workspace ticket show https://github.com/acme/api/pull/41 --json"
+        opts.separator "  workspace ticket show feature/login --name api"
+      end
+    end
+
+    def cmd_ticket(args)
+      options = {json: false, name: nil}
+      parser = ticket_parser(options)
+      parser.parse!(args)
+      return @output.puts(parser.help) if options[:help]
+
+      subcommand = args.shift
+      raise UsageError, "Missing subcommand: show.\n\n#{parser.help}" unless subcommand
+      raise UsageError, "Unknown ticket subcommand: #{subcommand}. Run 'workspace ticket --help'." unless subcommand == "show"
+      ref = args.shift
+      raise UsageError, "Missing REF: a JIRA key or URL, a pull request or issue URL or #n, or a branch.\n\n#{parser.help}" unless ref
+      raise UsageError, "Unexpected argument: #{args.first}. Run 'workspace ticket --help'." if args.any?
+      raise Error, "ticket is not available: no ticket command was wired" unless @ticket_command
+
+      @ticket_command.show(ref, name: options[:name], json: options[:json])
     end
 
     PLAN_FLAGS = {

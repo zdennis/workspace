@@ -175,6 +175,8 @@ require_relative "workspace/window_liveness"
 require_relative "workspace/agent_readiness"
 require_relative "workspace/agent_restart"
 require_relative "workspace/workspace_lineage"
+require_relative "workspace/start_ref"
+require_relative "workspace/ticket_source"
 require_relative "workspace/project_catalog"
 require_relative "workspace/agent_snapshot_client"
 require_relative "workspace/project_agents"
@@ -260,6 +262,7 @@ require_relative "workspace/commands/capabilities"
 require_relative "workspace/commands/parent"
 require_relative "workspace/commands/notes"
 require_relative "workspace/commands/plan"
+require_relative "workspace/commands/ticket"
 require_relative "workspace/commands/projects"
 require_relative "workspace/commands/review"
 require_relative "workspace/commands/restore"
@@ -343,7 +346,9 @@ module Workspace
       dev_config: DevConfig.new(project_settings: project_settings),
       handoff_config: HandoffConfig.new(project_settings: project_settings, error_output: error_output),
       main_agent: MainAgent.new(project_config: project_config))
-    start_command = Commands::Start.new(git: git, project_config: project_config, project_settings: project_settings, launch_command: launch_command, lineage: lineage, hook_installer: hook_installer, task_store: task_store, event_log: event_log, library: library, library_installer: library_installer, notes_setup: notes_setup, instruction_composer: instruction_composer, output: output, input: input)
+    start_ref = StartRef.new(git: git, lineage: lineage)
+    start_command = Commands::Start.new(git: git, project_config: project_config, project_settings: project_settings, launch_command: launch_command, lineage: lineage, hook_installer: hook_installer, task_store: task_store, event_log: event_log, library: library, library_installer: library_installer, notes_setup: notes_setup, instruction_composer: instruction_composer, start_ref: start_ref, output: output, input: input)
+    ticket_command = Commands::Ticket.new(git: git, project_config: project_config, start_ref: start_ref, source: TicketSource.new, output: output)
     send_command = Commands::Send.new(locator: pane_locator, tmux: tmux, output: output)
     focus_command = Commands::Focus.new(state: state, window_manager: window_manager, tmux: tmux, pane_locator: pane_locator, output: output)
     tile_command = Commands::Tile.new(state: state, window_manager: window_manager, window_layout: window_layout, output: output)
@@ -580,6 +585,7 @@ module Workspace
       notes_command: notes_command,
       notes_setup: notes_setup,
       plan_command: plan_command,
+      ticket_command: ticket_command,
       projects_command: projects_command,
       capabilities_command: capabilities_command,
       daemon_command: daemon_command,

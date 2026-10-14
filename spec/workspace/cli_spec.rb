@@ -99,6 +99,7 @@ RSpec.describe Workspace::CLI do
       notes_command: overrides[:notes_command],
       notes_setup: overrides[:notes_setup],
       plan_command: overrides[:plan_command],
+      ticket_command: overrides[:ticket_command],
       projects_command: overrides[:projects_command],
       capabilities_command: overrides[:capabilities_command],
       restore_command: overrides[:restore_command],
@@ -5006,6 +5007,59 @@ RSpec.describe Workspace::CLI do
         expect(JSON.parse(output.string.lines.last)).to include("ok" => false, "code" => "usage"), argv.inspect
       end
       expect(notes_command).not_to have_received(:dir)
+    end
+  end
+
+  describe "#run with ticket" do
+    let(:ticket_command) { instance_double(Workspace::Commands::Ticket, show: nil) }
+    let(:built) { build_test_cli(ticket_command: ticket_command) }
+    let(:cli) { built[0] }
+    let(:output) { built[1] }
+    let(:error_output) { built[2] }
+
+    it "shows a ref" do
+      cli.run(["ticket", "show", "PROJ-123"])
+
+      expect(ticket_command).to have_received(:show).with("PROJ-123", name: nil, json: false)
+    end
+
+    it "passes --name and --json in any order" do
+      cli.run(["ticket", "show", "--json", "PROJ-123", "--name", "api"])
+
+      expect(ticket_command).to have_received(:show).with("PROJ-123", name: "api", json: true)
+    end
+
+    it "prints a command's failure as the envelope under --json and on stderr without it" do
+      allow(ticket_command).to receive(:show).and_raise(Workspace::Error.new("No such ticket", code: "ticket_not_found", details: {"source" => "gh"}))
+
+      expect { cli.run(["ticket", "show", "#9", "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+      expect(JSON.parse(output.string)).to include("ok" => false, "code" => "ticket_not_found", "details" => {"source" => "gh"})
+      expect(error_output.string).to eq("")
+
+      expect { cli.run(["ticket", "show", "#9"]) }.to raise_error(FakeSystemExit)
+      expect(error_output.string).to include("Error: No such ticket")
+    end
+
+    it "shows help" do
+      cli.run(["ticket", "--help"])
+
+      expect(output.string).to include("workspace ticket show").and include("--name")
+      expect(ticket_command).not_to have_received(:show)
+    end
+
+    it "rejects a missing subcommand, an unknown one, a missing ref and extra arguments as usage errors" do
+      [["ticket"], ["ticket", "bogus"], ["ticket", "show"], ["ticket", "show", "a", "b"]].each do |argv|
+        expect { cli.run(argv + ["--json"]) }.to raise_error(FakeSystemExit), argv.inspect
+        expect(JSON.parse(output.string.lines.last)).to include("ok" => false, "code" => "usage"), argv.inspect
+      end
+      expect(ticket_command).not_to have_received(:show)
+    end
+
+    it "says so when no ticket command was wired" do
+      cli, _, error_output, = build_test_cli
+
+      expect { cli.run(["ticket", "show", "PROJ-1"]) }.to raise_error(FakeSystemExit)
+      expect(error_output.string).to include("ticket is not available")
     end
   end
 
