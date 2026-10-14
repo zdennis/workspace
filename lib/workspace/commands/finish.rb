@@ -1,6 +1,5 @@
 require "yaml"
 require "json"
-require "open3"
 
 module Workspace
   module Commands
@@ -19,7 +18,9 @@ module Workspace
       # @param output [IO] output stream for user-facing messages
       # @param error_output [IO] error output stream for warnings
       # @param input [IO] input stream (unused; accepted for interface symmetry with Kill)
-      def initialize(git:, project_config:, kill_command:, project_detector:, output: $stdout, error_output: $stderr, input: $stdin)
+      # @param pull_request [Commands::PullRequest, nil] looks up or opens the PR for `--pr`; built over the same
+      #   collaborators when nil
+      def initialize(git:, project_config:, kill_command:, project_detector:, output: $stdout, error_output: $stderr, input: $stdin, pull_request: nil)
         @git = git
         @project_config = project_config
         @kill_command = kill_command
@@ -27,6 +28,7 @@ module Workspace
         @output = output
         @error_output = error_output
         @input = input
+        @pull_request = pull_request || PullRequest.new(git: git, project_config: project_config, project_detector: project_detector, output: output)
       end
 
       # Finishes a worktree project: checks it is clean and pushed, optionally
@@ -51,7 +53,7 @@ module Workspace
 
       def call_json(project, pr:, working_dir:, &after_remove)
         finished = finish!(project, pr: pr, working_dir: working_dir, quiet: true, &after_remove)
-        document = {"schema_version" => JSON_SCHEMA_VERSION, "ok" => true, "project" => finished}
+        document = {"schema_version" => JSON_SCHEMA_VERSION, "ok" => true, "project" => finished, "pr_url" => @pr_url}
         document["dev_stopped"] = true if @kill_command.dev_stopped
         if (held = @kill_command.notes_inside_worktree)
           document["notes_inside_worktree"] = held
@@ -65,6 +67,7 @@ module Workspace
       end
 
       def finish!(project, pr:, working_dir:, quiet: false, &after_remove)
+        @pr_url = nil
         project ||= @project_detector.detect_from_marker(working_dir)
         unless project
           raise Workspace::Error,
@@ -139,35 +142,17 @@ module Workspace
       end
 
       def open_pr!(project, worktree_path, quiet:)
-        unless gh_available?
+        result = @pull_request.find_or_create(worktree_path, label: project)
+        @pr_url = result["url"]
+        @output.puts((result["outcome"] == "existing") ? "PR already exists: #{@pr_url}" : @pr_url) unless quiet
+      rescue Workspace::Error => e
+        raise unless e.code == "gh_unavailable"
+
+        if e.details["reason"] == "missing"
           @output.puts "gh is not installed; skipping PR creation." unless quiet
-          return
+        else
+          raise Workspace::Error, "Could not open a PR for '#{project}': #{e.details["detail"]}"
         end
-
-        branch = @git.worktree_branch(worktree_path)
-        stdout, _, status = Open3.capture3("gh", "pr", "view", branch, "--json", "url", chdir: worktree_path)
-        if status.success?
-          url = begin
-            JSON.parse(stdout)["url"]
-          rescue JSON::ParserError
-            stdout.strip
-          end
-          @output.puts "PR already exists: #{url}" unless quiet
-          return
-        end
-
-        stdout, stderr, status = Open3.capture3("gh", "pr", "create", "--fill", chdir: worktree_path)
-        unless status.success?
-          raise Workspace::Error, "Could not open a PR for '#{project}': #{stderr.strip}"
-        end
-        @output.puts stdout.strip unless quiet
-      end
-
-      def gh_available?
-        _, _, status = Open3.capture3("which", "gh")
-        status.success?
-      rescue Errno::ENOENT
-        false
       end
 
       def read_worktree_path(config_path)

@@ -157,13 +157,34 @@ RSpec.describe Workspace::Commands::Finish do
             end
 
             context "with --pr" do
+              let(:pr_status) { instance_double(Workspace::PullRequestStatus, call: {"available" => true, "found" => false}) }
+              let(:runner_calls) { [] }
+              let(:runner_reply) { ["https://github.com/org/repo/pull/2\n", "", true] }
+              let(:pull_request) do
+                reply = runner_reply
+                calls = runner_calls
+                Workspace::Commands::PullRequest.new(
+                  git: git, project_config: project_config, project_detector: project_detector, output: output, status: pr_status,
+                  runner: ->(argv, chdir:, timeout:) {
+                    calls << [argv, chdir]
+                    raise Errno::ENOENT if reply.first == :missing
+                    reply
+                  }
+                )
+              end
+
+              subject(:command) do
+                described_class.new(git: git, project_config: project_config, kill_command: kill_command, project_detector: project_detector,
+                  pull_request: pull_request, output: output, error_output: error_output, input: input)
+              end
+
               before do
                 allow(git).to receive(:commits_ahead_of_upstream).with(worktree_path).and_return(0)
                 allow(kill_command).to receive(:call)
               end
 
               it "skips PR creation with a note when gh is missing" do
-                allow(Open3).to receive(:capture3).with("which", "gh").and_return(["", "", instance_double(Process::Status, success?: false)])
+                allow(pr_status).to receive(:call).and_return({"available" => false, "reason" => "gh_missing"})
 
                 command.call("myproject.worktree-PROJ-123", pr: true, working_dir: tmpdir)
 
@@ -172,43 +193,88 @@ RSpec.describe Workspace::Commands::Finish do
               end
 
               it "reuses an existing PR without creating a new one" do
-                allow(Open3).to receive(:capture3).with("which", "gh").and_return(["/usr/bin/gh", "", instance_double(Process::Status, success?: true)])
-                allow(git).to receive(:worktree_branch).with(worktree_path).and_return("feature/x")
-                allow(Open3).to receive(:capture3).with("gh", "pr", "view", "feature/x", "--json", "url", chdir: worktree_path)
-                  .and_return([JSON.generate({"url" => "https://github.com/org/repo/pull/1"}), "", instance_double(Process::Status, success?: true)])
+                allow(pr_status).to receive(:call).with(worktree_path)
+                  .and_return({"available" => true, "found" => true, "number" => 1, "url" => "https://github.com/org/repo/pull/1"})
 
                 command.call("myproject.worktree-PROJ-123", pr: true, working_dir: tmpdir)
 
-                expect(output.string).to include("https://github.com/org/repo/pull/1")
+                expect(output.string).to include("PR already exists: https://github.com/org/repo/pull/1")
+                expect(runner_calls).to be_empty
                 expect(kill_command).to have_received(:call)
               end
 
-              it "creates a PR when none exists" do
-                allow(Open3).to receive(:capture3).with("which", "gh").and_return(["/usr/bin/gh", "", instance_double(Process::Status, success?: true)])
-                allow(git).to receive(:worktree_branch).with(worktree_path).and_return("feature/x")
-                allow(Open3).to receive(:capture3).with("gh", "pr", "view", "feature/x", "--json", "url", chdir: worktree_path)
-                  .and_return(["", "no pr found", instance_double(Process::Status, success?: false)])
-                allow(Open3).to receive(:capture3).with("gh", "pr", "create", "--fill", chdir: worktree_path)
-                  .and_return(["https://github.com/org/repo/pull/2", "", instance_double(Process::Status, success?: true)])
-
+              it "creates a PR when none exists, without pushing" do
                 command.call("myproject.worktree-PROJ-123", pr: true, working_dir: tmpdir)
 
                 expect(output.string).to include("https://github.com/org/repo/pull/2")
+                expect(runner_calls).to eq([[%w[gh pr create --fill], worktree_path]])
                 expect(kill_command).to have_received(:call)
               end
 
               it "raises and does not clean up when gh pr create fails" do
-                allow(Open3).to receive(:capture3).with("which", "gh").and_return(["/usr/bin/gh", "", instance_double(Process::Status, success?: true)])
-                allow(git).to receive(:worktree_branch).with(worktree_path).and_return("feature/x")
-                allow(Open3).to receive(:capture3).with("gh", "pr", "view", "feature/x", "--json", "url", chdir: worktree_path)
-                  .and_return(["", "no pr found", instance_double(Process::Status, success?: false)])
-                allow(Open3).to receive(:capture3).with("gh", "pr", "create", "--fill", chdir: worktree_path)
-                  .and_return(["", "gh: not authenticated", instance_double(Process::Status, success?: false)])
+                allow(pr_status).to receive(:call).and_return({"available" => false, "reason" => "error", "detail" => "x"})
+                runner_reply.replace(["", "boom", false])
 
                 expect { command.call("myproject.worktree-PROJ-123", pr: true, working_dir: tmpdir) }.to raise_error(
-                  Workspace::Error, /not authenticated/
+                  Workspace::Error, /Could not open a PR for 'myproject.worktree-PROJ-123': boom/
                 )
                 expect(kill_command).not_to have_received(:call)
+              end
+
+              it "raises with gh's own words and does not clean up when gh is not logged in" do
+                runner_reply.replace(["", "gh: not authenticated\nrun gh auth login", false])
+
+                expect { command.call("myproject.worktree-PROJ-123", pr: true, working_dir: tmpdir) }.to raise_error(
+                  Workspace::Error, /Could not open a PR for 'myproject.worktree-PROJ-123': gh: not authenticated/
+                )
+                expect(kill_command).not_to have_received(:call)
+              end
+
+              it "skips with a note when gh vanishes between the lookup and the create" do
+                allow(pr_status).to receive(:call).and_return({"available" => false, "reason" => "timeout"})
+                runner_reply.replace([:missing])
+
+                command.call("myproject.worktree-PROJ-123", pr: true, working_dir: tmpdir)
+
+                expect(output.string).to include("gh is not installed; skipping PR creation.")
+                expect(kill_command).to have_received(:call)
+              end
+
+              it "raises other errors from the pull request step as they are" do
+                allow(pr_status).to receive(:call).and_return({"available" => true, "found" => false})
+                allow(pull_request).to receive(:find_or_create).and_raise(Workspace::Error, "something else")
+
+                expect { command.call("myproject.worktree-PROJ-123", pr: true, working_dir: tmpdir) }.to raise_error(Workspace::Error, "something else")
+              end
+
+              it "reports pr_url in --json for a created PR" do
+                command.call("myproject.worktree-PROJ-123", pr: true, json: true, working_dir: tmpdir)
+
+                expect(JSON.parse(output.string)).to include("pr_url" => "https://github.com/org/repo/pull/2")
+              end
+
+              it "reports pr_url in --json for an existing PR" do
+                allow(pr_status).to receive(:call)
+                  .and_return({"available" => true, "found" => true, "number" => 1, "url" => "https://github.com/org/repo/pull/1"})
+
+                command.call("myproject.worktree-PROJ-123", pr: true, json: true, working_dir: tmpdir)
+
+                expect(JSON.parse(output.string)).to include("pr_url" => "https://github.com/org/repo/pull/1")
+              end
+
+              it "reports a null pr_url in --json when gh is missing" do
+                allow(pr_status).to receive(:call).and_return({"available" => false, "reason" => "gh_missing"})
+
+                command.call("myproject.worktree-PROJ-123", pr: true, json: true, working_dir: tmpdir)
+
+                expect(JSON.parse(output.string)).to include("pr_url" => nil)
+              end
+
+              it "reports a null pr_url in --json without --pr" do
+                command.call("myproject.worktree-PROJ-123", json: true, working_dir: tmpdir)
+
+                expect(JSON.parse(output.string)).to include("pr_url" => nil)
+                expect(runner_calls).to be_empty
               end
             end
           end
@@ -279,7 +345,7 @@ RSpec.describe Workspace::Commands::Finish do
 
         expect(result).to eq({exit_code: 0})
         parsed = JSON.parse(output.string)
-        expect(parsed).to eq({"schema_version" => 1, "ok" => true, "project" => "myproject.worktree-PROJ-123"})
+        expect(parsed).to eq({"schema_version" => 1, "ok" => true, "project" => "myproject.worktree-PROJ-123", "pr_url" => nil})
       end
 
       context "when kill stopped the worktree's dev environment" do
@@ -303,7 +369,7 @@ RSpec.describe Workspace::Commands::Finish do
         it "adds dev_stopped: true at the top level" do
           command.call("myproject.worktree-PROJ-123", json: true, working_dir: tmpdir)
 
-          expect(JSON.parse(output.string)).to eq({"schema_version" => 1, "ok" => true, "project" => "myproject.worktree-PROJ-123", "dev_stopped" => true})
+          expect(JSON.parse(output.string)).to eq({"schema_version" => 1, "ok" => true, "project" => "myproject.worktree-PROJ-123", "pr_url" => nil, "dev_stopped" => true})
         end
       end
 

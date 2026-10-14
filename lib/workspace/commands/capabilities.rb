@@ -48,7 +48,8 @@ module Workspace
         "handoff_auto" => 2,
         "dev_queue" => 2,
         "plan" => 4,
-        "ticket" => 1
+        "ticket" => 1,
+        "pr_create" => 1
       }.freeze
 
       # The exit statuses commands use, by meaning.

@@ -139,6 +139,16 @@ RSpec.describe Workspace do
       expect(ticket.instance_variable_get(:@source)).to be_a(Workspace::TicketSource)
     end
 
+    it "gives finish the same pull request command that pr create runs" do
+      cli = Workspace.build_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new)
+
+      pr = cli.instance_variable_get(:@pull_request_command)
+      finish = cli.instance_variable_get(:@finish_command)
+
+      expect(pr).to be_a(Workspace::Commands::PullRequest)
+      expect(finish.instance_variable_get(:@pull_request)).to equal(pr)
+    end
+
     it "wires the binding command into launch, so a delivered play binds the pane binding set and session-event use" do
       cli = Workspace.build_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new)
 

@@ -100,6 +100,7 @@ RSpec.describe Workspace::CLI do
       notes_setup: overrides[:notes_setup],
       plan_command: overrides[:plan_command],
       ticket_command: overrides[:ticket_command],
+      pull_request_command: overrides[:pull_request_command],
       projects_command: overrides[:projects_command],
       capabilities_command: overrides[:capabilities_command],
       restore_command: overrides[:restore_command],
@@ -5060,6 +5061,65 @@ RSpec.describe Workspace::CLI do
 
       expect { cli.run(["ticket", "show", "PROJ-1"]) }.to raise_error(FakeSystemExit)
       expect(error_output.string).to include("ticket is not available")
+    end
+  end
+
+  describe "#run with pr" do
+    let(:pull_request_command) { instance_double(Workspace::Commands::PullRequest, create: nil) }
+    let(:built) { build_test_cli(pull_request_command: pull_request_command) }
+    let(:cli) { built[0] }
+    let(:output) { built[1] }
+    let(:error_output) { built[2] }
+
+    it "creates with the defaults" do
+      cli.run(["pr", "create"])
+
+      expect(pull_request_command).to have_received(:create).with(name: nil, draft: false, json: false, working_dir: an_instance_of(String))
+    end
+
+    it "passes --name, --draft and --json in any order" do
+      cli.run(["pr", "create", "--json", "--draft", "--name", "api"])
+
+      expect(pull_request_command).to have_received(:create).with(name: "api", draft: true, json: true, working_dir: an_instance_of(String))
+    end
+
+    it "prints a command's failure as the envelope under --json and on stderr without it" do
+      allow(pull_request_command).to receive(:create).and_raise(Workspace::Error.new("no commits", code: "nothing_to_push", details: {"branch" => "x"}))
+
+      expect { cli.run(["pr", "create", "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+      expect(JSON.parse(output.string)).to include("ok" => false, "code" => "nothing_to_push", "details" => {"branch" => "x"})
+      expect(error_output.string).to eq("")
+
+      expect { cli.run(["pr", "create"]) }.to raise_error(FakeSystemExit)
+      expect(error_output.string).to include("Error: no commits")
+    end
+
+    it "shows help" do
+      cli.run(["pr", "--help"])
+
+      expect(output.string).to include("workspace pr create").and include("--draft")
+      expect(pull_request_command).not_to have_received(:create)
+    end
+
+    it "rejects a missing subcommand, an unknown one and extra arguments as usage errors" do
+      [["pr"], ["pr", "bogus"], ["pr", "create", "extra"]].each do |argv|
+        expect { cli.run(argv + ["--json"]) }.to raise_error(FakeSystemExit), argv.inspect
+        expect(JSON.parse(output.string.lines.last)).to include("ok" => false, "code" => "usage"), argv.inspect
+      end
+      expect(pull_request_command).not_to have_received(:create)
+    end
+
+    it "says so when no pr command was wired" do
+      cli, _, error_output, = build_test_cli
+
+      expect { cli.run(["pr", "create"]) }.to raise_error(FakeSystemExit)
+      expect(error_output.string).to include("pr is not available")
+    end
+
+    it "lists pr in the main help" do
+      cli.run(["help"])
+
+      expect(output.string).to match(/^\s+pr\s+Open a pull request/)
     end
   end
 

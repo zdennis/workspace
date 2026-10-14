@@ -176,6 +176,7 @@ require_relative "workspace/agent_readiness"
 require_relative "workspace/agent_restart"
 require_relative "workspace/workspace_lineage"
 require_relative "workspace/start_ref"
+require_relative "workspace/timed_process"
 require_relative "workspace/ticket_source"
 require_relative "workspace/project_catalog"
 require_relative "workspace/agent_snapshot_client"
@@ -241,6 +242,7 @@ require_relative "workspace/commands/init"
 require_relative "workspace/commands/claude"
 require_relative "workspace/commands/launch"
 require_relative "workspace/commands/kill"
+require_relative "workspace/commands/pull_request"
 require_relative "workspace/commands/finish"
 require_relative "workspace/commands/focus"
 require_relative "workspace/commands/start"
@@ -464,7 +466,8 @@ module Workspace
     workflow_nudger = WorkflowNudger.new(store: workflow_store, panes: workflow_panes, executable: File.expand_path("../bin/workspace", __dir__),
       log_path: ->(workspace) { config.agent_log_path(workspace) }, logger: logger, error_output: error_output)
     kill_command = Commands::Kill.new(git: git, project_config: project_config, project_settings: project_settings, stop_command: stop_command, notes: notes_command, project_detector: project_detector, task_store: task_store, event_log: event_log, workflow_runs: workflow_engine, dev: dev_command, output: output, input: input)
-    finish_command = Commands::Finish.new(git: git, project_config: project_config, kill_command: kill_command, project_detector: project_detector, output: output, error_output: error_output, input: input)
+    pull_request_command = Commands::PullRequest.new(git: git, project_config: project_config, project_detector: project_detector, output: output)
+    finish_command = Commands::Finish.new(git: git, project_config: project_config, kill_command: kill_command, project_detector: project_detector, pull_request: pull_request_command, output: output, error_output: error_output, input: input)
     parent_command = Commands::Parent.new(lineage: lineage, project_config: project_config, output: output)
     project_catalog = ProjectCatalog.new(project_config: project_config, git: git)
     project_facts = ProjectFacts.new(tmux: tmux, state: state, config: config, lock_namespace: lock_namespace,
@@ -586,6 +589,7 @@ module Workspace
       notes_setup: notes_setup,
       plan_command: plan_command,
       ticket_command: ticket_command,
+      pull_request_command: pull_request_command,
       projects_command: projects_command,
       capabilities_command: capabilities_command,
       daemon_command: daemon_command,

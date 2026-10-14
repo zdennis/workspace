@@ -33,7 +33,7 @@ If git can't answer one of these checks, `finish` refuses rather than guess. The
 
 `finish` removes the worktree through `kill` and archives the workspace's [task](README.start.md#tasks) with outcome `merged`: it has verified the work is clean and pushed, not that it merged.
 
-With `--pr`, `finish` looks for an existing PR for the branch (`gh pr view`) and prints its URL if found, or opens one (`gh pr create --fill`) otherwise. If `gh` isn't installed, this step is skipped with a one-line note and `finish` keeps going. If `gh` fails (not authenticated, no fill-able commits, etc.), `finish` reports the error and stops — the worktree is *not* removed.
+With `--pr`, `finish` looks for an existing PR for the branch (`gh pr view`) and prints its URL if found, or opens one (`gh pr create --fill`) otherwise. This is the same step [`pr create`](README.pr.md) runs, without its push or its check for commits: `finish` has already required the branch to be pushed. If `gh` isn't installed, this step is skipped with a one-line note and `finish` keeps going. If `gh` fails (not authenticated, no fill-able commits, etc.), `finish` reports the error and stops — the worktree is *not* removed.
 
 Once the checks (and optional PR step) pass, `finish` removes the project the same way `workspace kill` does, without the confirmation prompt but *with* its unsaved-work check (`finish` never uses `--force`). That check runs again right before the worktree is removed, so work committed or edited after the checks above (while the PR step ran, say) is refused rather than deleted. The worktree is then removed with `git worktree remove --force`, so untracked files go with it.
 
@@ -57,7 +57,7 @@ Under `--json`, the `post_kill` hook doesn't run, so stdout carries only the JSO
 Success:
 
 ```json
-{"schema_version": 1, "ok": true, "project": "myproject.worktree-PROJ-123"}
+{"schema_version": 1, "ok": true, "project": "myproject.worktree-PROJ-123", "pr_url": null}
 ```
 
 Error (nothing was removed):
@@ -68,6 +68,7 @@ Error (nothing was removed):
 
 - `schema_version` is bumped only on a breaking change to this shape.
 - `notes_inside_worktree` and `warnings` are present only when the workspace's notes directory was inside the worktree and held files, which finishing deleted: `{"schema_version": 1, "ok": true, "project": "…", "notes_inside_worktree": {"dir": "/abs/tmp/workspace-notes", "files": 3}, "warnings": ["The notes directory /abs/tmp/workspace-notes holds 3 files and is inside the worktree; removing the worktree deletes them."]}`. `warnings` is a list of sentences. In plain-text mode `finish` prints the same sentence, prefixed `Warning:`, before it removes anything.
+- `pr_url` is always present: the URL of the pull request `--pr` found or opened, or `null` without `--pr`, when `gh` is not installed, or when no URL came back.
 - `dev_stopped: true` is present only when the worktree held the `devenv` lock and `finish` stopped that dev environment before removing the worktree (as [`kill`](README.kill.md) does); the key is absent otherwise.
 - Usage/validation errors (an unknown flag, extra arguments) get the same treatment when `--json` is present: `{"schema_version": 1, "ok": false, "error": "<message>", "code": "<code>"}` on stdout, exit 1 — never plain text on stderr.
 - Exit codes: `0` on success, `1` on any error (see above).
@@ -87,4 +88,4 @@ workspace finish myproject.worktree-PROJ-123 --json
 
 ## See also
 
-`workspace kill` removes a worktree unconditionally (with an unsaved-work check that `--force` can skip); `finish` never skips its clean/pushed check.
+[`workspace pr create`](README.pr.md) opens a pull request and keeps the workspace. `workspace kill` removes a worktree unconditionally (with an unsaved-work check that `--force` can skip); `finish` never skips its clean/pushed check.

@@ -1,5 +1,4 @@
 require "json"
-require "open3"
 require "timeout"
 
 module Workspace
@@ -23,7 +22,7 @@ module Workspace
     private_constant :FAILED_CONCLUSIONS, :PASSED_CONCLUSIONS, :FAILED_STATES
 
     # @param runner [#call] `(args, chdir:, timeout:)` returning `[stdout, stderr, success]`;
-    #   defaults to running `gh` without a prompt, in a process group stopped on timeout
+    #   defaults to {TimedProcess}
     # @param timeout [Numeric] seconds `gh` may take
     def initialize(runner: method(:run_gh), timeout: DEFAULT_TIMEOUT)
       @runner = runner
@@ -51,24 +50,7 @@ module Workspace
     private
 
     def run_gh(args, chdir:, timeout:)
-      Open3.popen3({"GH_PROMPT_DISABLED" => "1"}, "gh", *args, chdir: chdir, pgroup: true) do |stdin, stdout, stderr, waiter|
-        stdin.close
-        out = Thread.new { stdout.read }
-        err = Thread.new { stderr.read }
-        [out, err].each { |reader| reader.report_on_exception = false }
-        unless waiter.join(timeout)
-          stop_group(waiter)
-          raise Timeout::Error
-        end
-        [out.value, err.value, waiter.value.success?]
-      end
-    end
-
-    def stop_group(waiter)
-      Process.kill("TERM", -waiter.pid)
-      Process.kill("KILL", -waiter.pid) unless waiter.join(1)
-    rescue Errno::ESRCH, Errno::EPERM
-      nil
+      TimedProcess.run(["gh", *args], chdir: chdir, timeout: timeout)
     end
 
     def facts(doc)

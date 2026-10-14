@@ -32,26 +32,8 @@ module Workspace
     # @raise [Errno::ENOENT] if the command is not installed
     # @raise [Timeout::Error] if it ran past +timeout+
     def self.run(argv, chdir:, timeout:)
-      Open3.popen3({"GH_PROMPT_DISABLED" => "1"}, *argv, chdir: chdir, pgroup: true) do |stdin, stdout, stderr, waiter|
-        stdin.close
-        out = Thread.new { stdout.read }
-        err = Thread.new { stderr.read }
-        [out, err].each { |reader| reader.report_on_exception = false }
-        unless waiter.join(timeout)
-          stop_group(waiter)
-          raise Timeout::Error
-        end
-        [out.value, err.value, waiter.value.success?]
-      end
+      TimedProcess.run(argv, chdir: chdir, timeout: timeout)
     end
-
-    def self.stop_group(waiter)
-      Process.kill("TERM", -waiter.pid)
-      Process.kill("KILL", -waiter.pid) unless waiter.join(1)
-    rescue Errno::ESRCH, Errno::EPERM
-      nil
-    end
-    private_class_method :stop_group
 
     # @param runner [#call] `(argv, chdir:, timeout:)` returning `[stdout, stderr, success]`
     # @param which [#call] true when an executable is on the PATH

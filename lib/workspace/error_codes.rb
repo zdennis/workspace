@@ -34,6 +34,8 @@ module Workspace
       "plan_write_conflict" => "The plan file changed twice while a plan verb was writing it, so nothing was written; run the verb again.",
       "ticket_not_found" => "ticket show: the ticket tool says no ticket has that key, number or URL.",
       "ticket_source_unavailable" => "ticket show: gh or jira is not installed, did not answer in time, or failed; details.source says which.",
+      "gh_unavailable" => "pr create (or finish --pr): gh is not installed or is not logged in; details.reason says which (missing or not_logged_in).",
+      "nothing_to_push" => "pr create: the branch has no commits ahead of its base, so there is nothing to open a pull request for.",
       "handoff_unsupported_agent" => "The handoff pack was asked for, but the project's main agent is not Claude Code.",
       # Codes the agent daemon puts in its replies; `agent-run` passes them through.
       "malformed_message" => "The daemon couldn't parse the request.",

@@ -16,7 +16,7 @@ module Workspace
     # hint).
     SUBCOMMANDS = %w[
       init doctor launch start stop add add-project kill finish relaunch restore
-      focus deactivate reactivate tile resize capture agent agentd lock dev parent notes plan ticket projects
+      focus deactivate reactivate tile resize capture agent agentd lock dev parent notes plan ticket pr projects
       capabilities daemon sessions review snapshot ask session-event agent-run handoff pipeline run library lib instructions workflow step
       run-and-report report-run-status layout config tmux statusline current
       list-projects list status repair cleanup prune set-command event-log
@@ -68,6 +68,7 @@ module Workspace
     # @param notes_setup [Workspace::NotesSetup, nil] fixes the notes directory of a worktree config `add` creates; nil skips it
     # @param plan_command [Workspace::Commands::Plan, nil] pre-built plan command
     # @param ticket_command [Workspace::Commands::Ticket, nil] pre-built ticket command
+    # @param pull_request_command [Workspace::Commands::PullRequest, nil] pre-built pr command
     # @param projects_command [Workspace::Commands::Projects, nil] pre-built projects command
     # @param capabilities_command [Workspace::Commands::Capabilities, nil] pre-built capabilities command
     # @param daemon_command [Workspace::Commands::Daemon, nil] pre-built daemon command
@@ -93,7 +94,7 @@ module Workspace
     #   `list --liveness --json` and `status --json`; takes name => state entry
     # @param launch_mode [Workspace::LaunchMode, nil] decides whether launch/start
     #   run headless when no --[no-]headless flag is given; nil builds one
-    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, restart_agent_command: nil, send_command: nil, ensure_agent_command: nil, handoff_command: nil, notes_command: nil, notes_setup: nil, plan_command: nil, ticket_command: nil, projects_command: nil, capabilities_command: nil, daemon_command: nil, ui_command: nil, binding_command: nil, library_command: nil, library: nil, instructions_command: nil, instruction_composer: nil, workflow_command: nil, review_command: nil, restore_command: nil, snapshot_command: nil, project_actions_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil, liveness: nil, window_liveness: nil)
+    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, restart_agent_command: nil, send_command: nil, ensure_agent_command: nil, handoff_command: nil, notes_command: nil, notes_setup: nil, plan_command: nil, ticket_command: nil, pull_request_command: nil, projects_command: nil, capabilities_command: nil, daemon_command: nil, ui_command: nil, binding_command: nil, library_command: nil, library: nil, instructions_command: nil, instruction_composer: nil, workflow_command: nil, review_command: nil, restore_command: nil, snapshot_command: nil, project_actions_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil, liveness: nil, window_liveness: nil)
       @config = config
       @state = state
       @project_config = project_config
@@ -132,6 +133,7 @@ module Workspace
       @notes_command = notes_command
       @plan_command = plan_command
       @ticket_command = ticket_command
+      @pull_request_command = pull_request_command
       @notes_setup = notes_setup
       @agent_command = agent_command
       @config_command = config_command
@@ -231,6 +233,8 @@ module Workspace
         cmd_plan(args)
       when "ticket"
         cmd_ticket(args)
+      when "pr"
+        cmd_pr(args)
       when "projects"
         cmd_projects(args)
       when "capabilities"
@@ -448,6 +452,7 @@ module Workspace
           parent          Print the parent workspace of the current (or given) workspace
           plan            Show and run a workspace's plan (IMPLEMENTATION_PLAN.md): status, path, show, init, start, pause, delete
           pipeline        Deprecated (use workflow): inspect and drive a project's agent pipeline
+          pr              Open a pull request for a workspace's branch without finishing it (create)
           projects        Group workspaces by repository (main checkout + worktrees)
           prune           Remove worktree projects whose PR is closed or merged
           reactivate      Reactivate Claude in a project's tmux pane
@@ -5813,6 +5818,42 @@ module Workspace
       raise Error, "ticket is not available: no ticket command was wired" unless @ticket_command
 
       @ticket_command.show(ref, name: options[:name], json: options[:json])
+    end
+
+    def pr_parser(options)
+      OptionParser.new do |opts|
+        opts.banner = "Usage: workspace pr create [--name WORKSPACE] [--draft] [--json]"
+        opts.separator ""
+        opts.separator "Open a pull request for a workspace's branch and leave the workspace alone. When the"
+        opts.separator "branch already has a pull request, it is returned and nothing else happens. Otherwise the"
+        opts.separator "branch is pushed to origin if it has no upstream, and 'gh pr create --fill' runs. Refuses a"
+        opts.separator "branch with no commits ahead of its base. Needs 'gh', logged in."
+        opts.separator ""
+        opts.on("--name NAME", "The workspace (default: the one the current directory is in)") { |v| options[:name] = v }
+        opts.on("--draft", "Open the pull request as a draft") { options[:draft] = true }
+        opts.on("--json", "Print one JSON document (see docs/README.pr.md)") { options[:json] = true }
+        opts.on("-h", "--help", "Show this help") { options[:help] = true }
+        opts.separator ""
+        opts.separator "Examples:"
+        opts.separator "  workspace pr create"
+        opts.separator "  workspace pr create --draft --json"
+        opts.separator "  workspace pr create --name api.worktree-PROJ-123"
+      end
+    end
+
+    def cmd_pr(args)
+      options = {json: false, name: nil, draft: false}
+      parser = pr_parser(options)
+      parser.parse!(args)
+      return @output.puts(parser.help) if options[:help]
+
+      subcommand = args.shift
+      raise UsageError, "Missing subcommand: create.\n\n#{parser.help}" unless subcommand
+      raise UsageError, "Unknown pr subcommand: #{subcommand}. Run 'workspace pr --help'." unless subcommand == "create"
+      raise UsageError, "Unexpected argument: #{args.first}. Run 'workspace pr --help'." if args.any?
+      raise Error, "pr is not available: no pr command was wired" unless @pull_request_command
+
+      @pull_request_command.create(name: options[:name], draft: options[:draft], json: options[:json], working_dir: @working_dir)
     end
 
     PLAN_FLAGS = {
