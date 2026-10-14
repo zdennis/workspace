@@ -7,6 +7,7 @@ Open a view of the workspace UI from a script, an agent or a notification, throu
 ```sh
 workspace ui open task [WORKSPACE] [--print] [--json]
 workspace ui open review [WORKSPACE] [--print] [--json]
+workspace ui open notes [WORKSPACE] [--print] [--json]
 workspace ui open inbox [--print] [--json]
 ```
 
@@ -14,6 +15,7 @@ workspace ui open inbox [--print] [--json]
 |------|------|
 | `task WORKSPACE` | `workspace-ui://task/WORKSPACE` |
 | `review WORKSPACE` | `workspace-ui://review/WORKSPACE` |
+| `notes WORKSPACE` | `workspace-ui://notes/WORKSPACE` |
 | `inbox` | `workspace-ui://inbox` |
 
 `WORKSPACE` (or `--name WORKSPACE`) defaults to the project detected from the current directory. `inbox` takes no workspace. The name is percent-encoded, so `my-app.worktree-fix` stays as written and a `/` becomes `%2F`; a name with control characters or over 255 characters is a usage error. The command does not check that the workspace exists: the UI validates the target it receives.
@@ -48,5 +50,6 @@ The link is passed to the system `open` as a single argument (no shell). The wor
 ```sh
 workspace ui open task my-app
 workspace ui open review my-app.worktree-fix-login
+workspace ui open notes my-app
 workspace ui open inbox --print
 ```

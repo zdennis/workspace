@@ -8,7 +8,7 @@ A macOS CLI (Ruby) for managing tmuxinator-based development workspaces in iTerm
 - `lib/workspace.rb` — Module root, `build_cli` factory, error classes
 - `lib/workspace/cli.rb` — CLI dispatch, OptionParser definitions, simple command methods
 - `lib/workspace/config.rb` — Path constants and configuration
-- `lib/workspace/commands/notes.rb` — `notes dir`: the one answer to where a workspace's notes are, through `NotesDir`; `--create` makes the directory and lists it in `info/exclude`
+- `lib/workspace/commands/notes.rb` — `notes dir`: the one answer to where a workspace's notes are, through `NotesDir`; `--create` makes the directory and lists it in `info/exclude`; `workspace ui open notes [WS]` sends the person to the Notes view through `Commands::Ui` (`workspace-ui://notes/<ws>`)
 - `lib/workspace/config_schema.rb` — The one table of config keys: scope, settable, default, value parser, restart flag, doc text; readers, `config set/get/unset` and the docs take their key lists and checks from it
 - `lib/workspace/notes_dir.rb` — The one resolver for where a workspace's notes go: its own `notes.dir`, else the directory the project's `notes.default_dir` rule computes (`tmp/workspace-notes` in the checkout when unset); `config show --json` reports it as `effective_path`
 - `lib/workspace/config_schema_docs.rb` — Renders the schema into the generated blocks of `docs/README.config.md`; `script/generate-config-docs [--check]` runs it, and a spec fails on drift

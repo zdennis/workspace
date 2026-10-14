@@ -9,7 +9,7 @@ module Workspace
     # a command, and the UI validates its target again when it receives one.
     class Ui
       # The views a link can name, each with whether it takes a workspace.
-      VIEWS = {"task" => true, "review" => true, "inbox" => false}.freeze
+      VIEWS = {"task" => true, "review" => true, "notes" => true, "inbox" => false}.freeze
 
       # URL scheme the UI registers.
       SCHEME = "workspace-ui"
@@ -35,7 +35,7 @@ module Workspace
       end
 
       # @param view [String] one of {VIEWS}
-      # @param workspace [String, nil] required for task and review, refused for inbox
+      # @param workspace [String, nil] required for task, review and notes, refused for inbox
       # @return [String] the deep link, with the workspace percent-encoded
       # @raise [Workspace::UsageError] for an unknown view or a workspace that doesn't fit the view
       def url_for(view:, workspace: nil)

@@ -31,13 +31,22 @@ RSpec.describe Workspace::Commands::Ui do
       expect(command.url_for(view: "inbox")).to eq("workspace-ui://inbox")
     end
 
+    it "builds a notes link that names the workspace, percent-encoded like task" do
+      expect(command.url_for(view: "notes", workspace: "my-app.worktree-fix")).to eq("workspace-ui://notes/my-app.worktree-fix")
+      expect(command.url_for(view: "notes", workspace: "a b/c")).to eq("workspace-ui://notes/a%20b%2Fc")
+    end
+
+    it "requires a workspace for notes" do
+      expect { command.url_for(view: "notes") }.to raise_error(Workspace::UsageError, /notes needs a workspace/)
+    end
+
     it "percent-encodes everything but unreserved characters" do
       expect(command.url_for(view: "task", workspace: "a b/c?d#e%f")).to eq("workspace-ui://task/a%20b%2Fc%3Fd%23e%25f")
     end
 
     it "rejects an unknown view, naming the valid ones" do
       expect { command.url_for(view: "settings", workspace: "x") }
-        .to raise_error(Workspace::UsageError, /Unknown view 'settings'.*task, review, inbox.*workspace ui --help/)
+        .to raise_error(Workspace::UsageError, /Unknown view 'settings'.*task, review, notes, inbox.*workspace ui --help/)
     end
 
     it "requires a workspace for task and review" do

@@ -69,6 +69,9 @@ $ workspace notes dir
 
 $ cd "$(workspace notes dir --create)"
 
+$ workspace ui open notes api --print
+workspace-ui://notes/api
+
 $ workspace notes dir --name api --json
 {"schema_version":1,"ok":true,"workspace":"api","dir":"/Users/z/notes/api","source":"project","exists":true,"inside_worktree":false,"excluded":true}
 ```

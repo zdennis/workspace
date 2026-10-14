@@ -5213,6 +5213,18 @@ RSpec.describe Workspace::CLI do
       ])
     end
 
+    it "routes notes with a workspace, --name, or the detected workspace" do
+      cli.run(["ui", "open", "notes", "app", "--print"])
+      cli.run(["ui", "open", "notes", "--name", "other"])
+      cli.run(["ui", "open", "notes"])
+
+      expect(ui_command.calls).to eq([
+        {view: "notes", workspace: "app", print_only: true},
+        {view: "notes", workspace: "other", print_only: false},
+        {view: "notes", workspace: "detected-ws", print_only: false}
+      ])
+    end
+
     it "uses the detected workspace for task and review but not inbox" do
       cli.run(["ui", "open", "review"])
       cli.run(["ui", "open", "inbox"])

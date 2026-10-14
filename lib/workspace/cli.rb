@@ -486,7 +486,7 @@ module Workspace
           ticket          Look up a ticket (JIRA key, pull request, issue or branch) the way start reads it (show)
           tile            Tile all windows for a project across the screen
           tmux            Show a workspace's tmuxinator file as windows and panes (tmux show --json)
-          ui              Open a workspace-ui:// link: a task, a review or the inbox
+          ui              Open a workspace-ui:// link: a task, a review, notes or the inbox
           wait-until-content  Block until a pane shows content, then exec a command
           whereis         Print the workspace installation directory
           workflow        Run a workflow (ordered steps, e.g. rpiv) in a workspace's agent pane, and see where it stands
@@ -3568,12 +3568,13 @@ module Workspace
 
     def ui_parser(options)
       OptionParser.new do |opts|
-        opts.banner = "Usage: workspace ui open task|review [WORKSPACE] [--print] [--json]\n" \
+        opts.banner = "Usage: workspace ui open task|review|notes [WORKSPACE] [--print] [--json]\n" \
           "       workspace ui open inbox [--print] [--json]"
         opts.separator ""
         opts.separator "Open a view of the workspace UI through its workspace-ui:// link:"
         opts.separator "  task WORKSPACE     workspace-ui://task/WORKSPACE"
         opts.separator "  review WORKSPACE   workspace-ui://review/WORKSPACE"
+        opts.separator "  notes WORKSPACE    workspace-ui://notes/WORKSPACE"
         opts.separator "  inbox              workspace-ui://inbox"
         opts.separator ""
         opts.separator "A link only opens a view; it never starts an agent or runs a command. WORKSPACE (or --name)"
@@ -3581,7 +3582,7 @@ module Workspace
         opts.separator "installed, since it registers the scheme; without it `open` fails, the exit status is 1, and"
         opts.separator "--print still shows the link."
         opts.separator ""
-        opts.on("--name NAME", "Workspace name (task and review)") { |v| options[:name] = v }
+        opts.on("--name NAME", "Workspace name (task, review and notes)") { |v| options[:name] = v }
         opts.on("--print", "Print the link and open nothing") { options[:print] = true }
         opts.on("--json", "Print one JSON action document (see docs/README.ui.md)") { options[:json] = true }
         opts.on("-h", "--help", "Show this help") { options[:help] = true }
@@ -3589,6 +3590,7 @@ module Workspace
         opts.separator "Examples:"
         opts.separator "  workspace ui open task my-app"
         opts.separator "  workspace ui open review my-app.worktree-fix-login"
+        opts.separator "  workspace ui open notes my-app"
         opts.separator "  workspace ui open inbox --print"
       end
     end

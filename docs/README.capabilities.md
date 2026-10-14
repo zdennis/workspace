@@ -24,7 +24,7 @@ It reads constants, config paths and the `PATH`. It starts no process and touche
    "sessions":1,"locks_json":2,"git_facts":1,"prune_safe":1,"snapshot":3,"events_follow":0,
    "actions_manifest":0,"agent_send":1,"agent_spawn":1,"focus_pane":1,"state_done":1,
    "doctor_json":0,"daemon_control":3,"config_json":2,"tmux_show":1,"tasks":1,"event_emitters":1,
-   "ui_open":1,"pane_bindings":3,"library":3,"library_play":2,"library_copy":1,"instructions":1,"restore":1,
+   "ui_open":2,"pane_bindings":3,"library":3,"library_play":2,"library_copy":1,"instructions":1,"restore":1,
    "workflow":1,"window_state":1,"cleanup_dry_run":1,"notes":1,"start_packs":2,
    "handoff_auto":2,"dev_queue":2,"plan":4},
  "exit_codes":{"ok":0,"failed":1,"not_submitted":2,"partial":3,"lock_cleared":4,"timeout":75},
@@ -64,7 +64,7 @@ It reads constants, config paths and the `PATH`. It starts no process and touche
 | `config_json` | `config show --json` and `config validate --json` (see [`config`](README.config.md)). Revision 2 adds `effective_path` on the `notes.dir` and `notes.default_dir` rows, the `notes.default_dir` key, type `path` and the `shared_notes_dir` warning |
 | `tmux_show` | `tmux show --json` (see [`tmux`](README.tmux.md)) |
 | `tasks` | `start` records a task per worktree workspace (`--title`, `WORKSPACE_TASK` in its panes); `sessions --json` reports it as `task` and uses its title as the first `display_label` (see [`start`](README.start.md#tasks)); `finish` and `kill` archive it |
-| `ui_open` | `ui open task\|review\|inbox` opens a `workspace-ui://` link (see [`ui`](README.ui.md)) |
+| `ui_open` | `ui open task\|review\|inbox` opens a `workspace-ui://` link (see [`ui`](README.ui.md)). Revision 2 adds the `notes` view |
 | `pane_bindings` | `binding set\|show\|clear` binds a pane to a run, review or play, and `session-event` prints it as `additionalContext` on `SessionStart` (see [`binding`](README.binding.md)). Revision 2: `binding show --json` adds `stale` to the `binding` object, `set` defaults `--pane` to `$TMUX_PANE`, and `--instructions` and `--artifacts` are stored as absolute paths. Revision 3: bindings carry `packs` (always in `binding show --json` and the `binding set` row), `binding set --pack` sets them, `start` and `launch` set them for the packs they send, and `session-event` prints them on `SessionStart` |
 | `library` | `library list\|show\|info\|add\|update\|remove` stores named plays and prompts, globally or per project; `paths.library` is the store (see [`library`](README.library.md)). Revision 2 adds the `agent` and `skill` kinds; a skill is a directory, so its entry's `path` names a directory. Revision 3 adds the built-in scope: `list`, `show` and `info` return the plays workspace ships with `scope` `builtin`, `--builtin` narrows a read to them, and `unknown_library_entry` can name `builtin` in `details.scopes` |
 | `library_play` | `start --play NAME` and `launch --play NAME` point the agent at a library play and report a `play` object in `--json` (see [`start`](README.start.md#plays)). Revision 2 binds the pane a play was delivered to, so `session-event` reminds the agent of the play after `/clear`, and adds `pane` to the `play` object |
