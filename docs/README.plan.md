@@ -1,6 +1,6 @@
 # workspace plan
 
-Read a workspace's plan: the counted task list in `IMPLEMENTATION_PLAN.md` in its [notes directory](README.notes.md). workspace parses the file, counts it, and works out one `state` from the plan, the session and the pane that owns the plan, so the app, scripts and agents all show the same answer.
+Read, start, pause and delete a workspace's plan: the counted task list in `IMPLEMENTATION_PLAN.md` in its [notes directory](README.notes.md). workspace parses the file, counts it, and works out one `state` from the plan, the session and the pane that owns the plan, so the app, scripts and agents all show the same answer.
 
 ## Usage
 
@@ -9,6 +9,9 @@ workspace plan status [--name WORKSPACE | --all | --file PATH] [--json]
 workspace plan path [--name WORKSPACE] [--json]
 workspace plan show [--name WORKSPACE]
 workspace plan init [--name WORKSPACE] [--title TITLE] [--from FILE] [--force] [--json]
+workspace plan start [--name WORKSPACE] [--json]
+workspace plan pause [--name WORKSPACE] [--json]
+workspace plan delete [--name WORKSPACE] --yes [--json]
 ```
 
 Without `--name`, the workspace is the one detected from the current directory. `--all`, `--file` and `--name` exclude each other, and a flag that does not belong to the subcommand is a usage error.
@@ -21,6 +24,26 @@ Without `--name`, the workspace is the one detected from the current directory. 
 | `path` | Prints the plan's absolute path alone, whether or not the file exists. Makes nothing |
 | `show` | Prints the plan file as it is. Fails with `no_plan` when there is none |
 | `init` | Writes a new plan into the notes directory, making the directory first. `--title` sets the title (default: the title of the workspace's task, else none). `--from FILE` imports an existing document as the plan: it gets new frontmatter unless it has its own (then `--title` is ignored). Fails with `plan_exists` when a plan is there; `--force` replaces it. The file is written whole or not at all |
+| `start` | Sets `status: active`, then gets an agent working on the plan (see [Start, pause and delete](#start-pause-and-delete)) |
+| `pause` | Sets `status: paused`. Interrupts nothing |
+| `delete` | Renames the plan to `IMPLEMENTATION_PLAN.md.deleted-<time>`. Needs `--yes` |
+
+## Start, pause and delete
+
+Each verb changes one thing and is safe to repeat. A plan with no file is `no_plan`. `start` and `pause` also refuse a plan that is done (`status: done`, or no task left to do) with `plan_done`; reopen it by editing the file.
+
+- **`start`** sets `status: active` and then does the first of these that applies:
+  - The workspace has no tmux session: it is launched like `launch --play implementation-plan --prompt "Continue the plan."`, so the agent is told the play and the line, the notes pack and the other automatic packs ride along, and the pane is bound to the play. Outcome `launched`, or a `failed` row with the launch's reason (`prompt_not_sent`, `session_not_started`) when the prompt could not be sent; the status stays `active`.
+  - The workspace has a session and its main agent pane (the plan's `owner_pane` when that is a live Claude Code pane, else the first Claude Code pane the agent daemon lists) is working: nothing is typed. Outcome `already_working`.
+  - The pane is idle: the play and "Continue the plan." are typed into it and the pane is bound to the play (a pane bound to a workflow run or a review keeps that binding). Outcome `sent`. A pane that waits for an answer is not typed into (`pane_busy`), and a session whose agent daemon does not answer is `no_daemon`; with no Claude Code pane it is `no_agent_pane`.
+
+  Where it knows the pane the agent is in, `start` writes it into the frontmatter as `owner_pane` (adding the line when it is missing), so a plan whose pane id went stale after a `restore` reads `working` again. An unwritable `owner_pane` is a note in `message`; the launch or send still stands.
+- **`pause`** sets `status: paused` (`paused`, or `unchanged` when it already was). It interrupts nothing: the agent re-reads `status:` before each task and stops, and whoever pauses sends the agent the key if it should stop sooner. [`doctor`](README.doctor.md) warns when a paused plan's owner pane is still working.
+- **`delete`** needs `--yes`, or fails with `confirmation_required` (`retry.flags` is `["--yes"]`). It renames the file to `IMPLEMENTATION_PLAN.md.deleted-<UTC time>` in the same directory (`-1`, `-2` after it when that name is taken) and touches neither the session nor the worktree. The row's `path` is the plan's path and `message` names the new file.
+
+A status or owner write changes only that line (the frontmatter is added when the file has none), reads the whole file, goes through a temp file and a rename, and keeps the file's mode. If the file changed between the read and the rename, for instance because the agent saved an edit, the write is made again on what is there now. A second change under the retry writes nothing and fails with `plan_write_conflict`. An agent that saves between the final check and the rename can still lose its edit; that window is a few microseconds.
+
+Every change to the file records [`plan_changed`](README.event-log.md) in the event log, which `init` does too.
 
 ## The plan file
 
@@ -114,16 +137,30 @@ The plan is also the handoff doc: with no `--handoff-doc`, [`handoff check` and 
 
 `plan init --json` is an [action document](README.json.md) (`action: "plan init"`) with one result, `{"workspace","outcome":"created","reason":null,"message":null,"path"}`; `message` says so when an imported document has no tasks to count.
 
-`plan` in [`capabilities`](README.capabilities.md) is `1` when these commands exist.
+`start`, `pause` and `delete` are [action documents](README.json.md) too (`action: "plan start"`, `"plan pause"`, `"plan delete"`) with one result, `{"workspace","outcome","reason","message","path","pane"}`:
+
+| Verb | `outcome` | Notes |
+|------|-----------|-------|
+| `start` | `launched`, `sent`, `already_working`, `failed` | `pane` is the pane id the agent is in (null when a launch did not say); `failed` carries `reason` and `message` and exits 1 |
+| `pause` | `paused`, `unchanged` | `pane` is null |
+| `delete` | `deleted` | `message` is `Renamed to <path>.`; `pane` is null |
+
+`plan` in [`capabilities`](README.capabilities.md) is `4` once `start`, `pause` and `delete` exist; each level is described there.
 
 ## Errors
 
 | `code` | When |
 |--------|------|
-| `no_plan` | `show` found no plan file (`details.name`, `details.path`) |
+| `no_plan` | `show`, `start`, `pause` or `delete` found no plan file (`details.name`, `details.path`) |
 | `plan_exists` | `init` found a plan and `--force` was not given (`details.path`) |
-| `notes_dir_unwritable` | `init` couldn't make the notes directory or write the file |
+| `plan_done` | `start` or `pause` found a plan that is done (`details.name`, `details.path`) |
+| `confirmation_required` | `delete` was run without `--yes` (`retry.flags` is `["--yes"]`) |
+| `plan_write_conflict` | The plan changed twice while a verb was writing it; nothing was written. Run the verb again |
+| `no_agent_pane`, `pane_busy`, `no_daemon`, `not_delivered`, `not_submitted` | `start` of a workspace with a session found no Claude Code pane, found the pane waiting for an answer, could not reach the agent daemon, or could not type into the pane. See [`agent-run send`](README.agent-run.md) |
+| `notes_dir_unwritable` | `init` couldn't make the notes directory or write the file, or a verb couldn't write or rename it |
 | `error` | `init --from FILE` couldn't read the file (no more specific code) |
 | `unknown_workspace`, `not_in_workspace`, `notes_dir_unresolved`, `config_parse` | As for [`notes dir`](README.notes.md#errors) |
+
+A `start` that fails after setting the status (`pane_busy`, `no_daemon`, `no_agent_pane`, a send that did not arrive, or a `failed` launch row) leaves the plan `active`; the status write is the first step, and running `start` again is safe.
 
 Exit 0, or 1 with an error (the [`--json` error envelope](README.json.md) under `--json`).

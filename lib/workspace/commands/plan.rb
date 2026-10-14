@@ -3,7 +3,7 @@ require "fileutils"
 
 module Workspace
   module Commands
-    # `workspace plan`: reads and starts a workspace's plan, the counted task
+    # `workspace plan`: reads, starts, pauses and deletes a workspace's plan, the counted task
     # list in `IMPLEMENTATION_PLAN.md` in its notes directory (see {PlanFile}
     # for the syntax and {PlanState} for how the state is worked out).
     #
@@ -15,12 +15,24 @@ module Workspace
     # about the workspace: its tmux session, the owner pane's state from the
     # agent daemon, and its open questions. A source that can't answer leaves
     # that fact unknown and the plan's state does not use it.
+    #
+    # The verbs each change one thing and are safe to repeat. `start` and `pause` rewrite only the
+    # `status:` line ({PlanFile.set_status}); `start` also launches the workspace, or types into its
+    # main agent pane, and records that pane as `owner_pane`. `pause` interrupts nothing. `delete`
+    # renames the file and touches neither the session nor the worktree. A verb that changes the
+    # file records `plan_changed` in the event log.
     class Plan
       # Bumped whenever the `--json` payload's shape changes in a backward-incompatible way.
       JSON_SCHEMA_VERSION = 1
 
       # Seconds the agent daemon may take to answer.
       DAEMON_TIMEOUT = 1.0
+
+      # The built-in play `start` points the agent at.
+      PLAY = "implementation-plan"
+
+      # The line `start` gives the agent after the play.
+      CONTINUE_PROMPT = "Continue the plan."
 
       # @param notes [Workspace::Commands::Notes] answers where a workspace's notes are
       # @param catalog [Workspace::ProjectCatalog] lists the workspaces for `--all`
@@ -30,8 +42,14 @@ module Workspace
       # @param snapshot_client [Workspace::AgentSnapshotClient] reads the owner pane's state from the daemon
       # @param ask_store_for [#call] given a workspace name, returns its {Workspace::AskStore}
       # @param task_store [Workspace::TaskStore] gives `init` a default title
+      # @param sender [Workspace::Commands::Send] types the continue line into the main agent pane for `start`
+      # @param binder [Workspace::Commands::Binding] binds that pane to the plan play
+      # @param library [Workspace::Library] finds the built-in play
+      # @param event_log [Workspace::EventLog] gets `plan_changed`
+      # @param clock [#call] returns the current Time, for the name of a deleted plan
       # @param output [IO] output stream
-      def initialize(notes:, catalog:, plan_state:, plan_config:, tmux:, snapshot_client:, ask_store_for:, task_store:, output: $stdout)
+      def initialize(notes:, catalog:, plan_state:, plan_config:, tmux:, snapshot_client:, ask_store_for:, task_store:, sender:, binder:, library:,
+        event_log:, clock: -> { Time.now }, output: $stdout)
         @notes = notes
         @catalog = catalog
         @plan_state = plan_state
@@ -40,6 +58,11 @@ module Workspace
         @snapshot_client = snapshot_client
         @ask_store_for = ask_store_for
         @task_store = task_store
+        @sender = sender
+        @binder = binder
+        @library = library
+        @event_log = event_log
+        @clock = clock
         @output = output
       end
 
@@ -113,8 +136,7 @@ module Workspace
         @output.print File.read(file, encoding: Encoding::UTF_8)
       rescue SystemCallError => e
         raise Workspace::Error, "Can't read the plan #{file}: #{e.message}" unless e.is_a?(Errno::ENOENT)
-        raise Workspace::Error.new("No plan for '#{name}' at #{file}. Make one with 'workspace plan init --name #{name}'.",
-          code: "no_plan", details: {"name" => name, "path" => file})
+        raise no_plan(name, file)
       end
 
       # Writes a new plan into the notes directory, making the directory first.
@@ -137,10 +159,192 @@ module Workspace
         message = "The imported document has no tasks under '## Tasks' yet: add one line per task." if imported && PlanFile.read(file).tasks.empty?
         @output.puts "Created #{file}"
         @output.puts message if message
+        record_change(name, PlanFile.read(file).status)
         {"path" => file, "message" => message}
       end
 
+      # Sets `status: paused`, printing what it did. Interrupts nothing: whoever pauses the plan
+      # sends the agent the key.
+      #
+      # @param name [String] the workspace
+      # @return [Hash] the row of the action document: `outcome` (`paused`, or `unchanged` when it already was), `reason`, `message`, `path`, `pane`
+      # @raise [Workspace::Error] `no_plan`, `plan_done` when the plan is done, `notes_dir_unwritable`, `plan_write_conflict`
+      def pause(name:)
+        file, plan = require_plan(name)
+        raise plan_done(name, file) if finished?(plan)
+        changed = write_status(name, file, "paused")
+        @output.puts changed ? "Paused the plan for #{name}." : "The plan for #{name} is already paused."
+        row(changed ? "paused" : "unchanged", file)
+      end
+
+      # Renames the plan to `IMPLEMENTATION_PLAN.md.deleted-<time>`. The session, the worktree and
+      # the rest of the notes directory are left alone.
+      #
+      # @param name [String] the workspace
+      # @param yes [Boolean] confirms the delete
+      # @return [Hash] the row: `outcome` `deleted`, with `message` naming the new file
+      # @raise [Workspace::Error] `no_plan`, `confirmation_required` without +yes+, `notes_dir_unwritable`
+      def delete(name:, yes: false)
+        file, = require_plan(name)
+        unless yes
+          raise Workspace::Error.new("Deleting the plan for '#{name}' needs confirmation: pass --yes.",
+            code: "confirmation_required", details: {"name" => name, "path" => file},
+            retry_with: {"flags" => ["--yes"], "destructive" => true})
+        end
+        target = deleted_name(file)
+        begin
+          File.rename(file, target)
+        rescue Errno::ENOENT
+          raise no_plan(name, file)
+        rescue SystemCallError => e
+          raise unwritable(file, e)
+        end
+        record_change(name, "deleted")
+        @output.puts "Deleted the plan for #{name}: renamed to #{target}."
+        row("deleted", file, message: "Renamed to #{target}.")
+      end
+
+      # Sets `status: active` and gets an agent working on the plan: a workspace with no session is
+      # launched with the play and {CONTINUE_PROMPT}; one with a session gets the same text typed into
+      # its main agent pane, which is bound to the play. A pane that is working is left alone.
+      # The pane the agent is in is recorded as `owner_pane` (the plan never reads `working` without one).
+      #
+      # @param name [String] the workspace
+      # @param launch [#call] given the workspace name, launches it with the play and prompt and returns
+      #   `{ok:, reason:, message:, pane:}` (the CLI supplies it, since launching is its job)
+      # @return [Hash] the row: `outcome` `launched`, `sent`, `already_working`, or `failed` when the launch could not
+      #   send its prompt (`reason` and `message` say why); `pane` is the pane the agent is in, when known
+      # @raise [Workspace::Error] `no_plan`, `plan_done`, `notes_dir_unwritable`, `plan_write_conflict`; with a session,
+      #   `no_daemon`, `no_agent_pane`, `pane_busy` (the pane waits on a person), and the codes of {Workspace::Commands::Send#deliver}
+      def start(name:, launch:)
+        file, plan = require_plan(name)
+        raise plan_done(name, file) if finished?(plan)
+        live = session_live?(name, {})
+        write_status(name, file, "active")
+        (live == false) ? start_by_launch(name, file, plan, launch) : start_in_pane(name, file, plan)
+      end
+
       private
+
+      def require_plan(name)
+        file = path_for(name)
+        plan = PlanFile.read(file)
+        raise no_plan(name, file) unless plan
+        [file, plan]
+      end
+
+      def no_plan(name, file)
+        Workspace::Error.new("No plan for '#{name}' at #{file}. Make one with 'workspace plan init --name #{name}'.",
+          code: "no_plan", details: {"name" => name, "path" => file})
+      end
+
+      def plan_done(name, file)
+        Workspace::Error.new("The plan for '#{name}' is done: nothing is left to do. Edit #{file} to reopen it.",
+          code: "plan_done", details: {"name" => name, "path" => file})
+      end
+
+      def finished?(plan)
+        plan.status == "done" || (!plan.tasks.empty? && plan.counts["left"].zero?)
+      end
+
+      def row(outcome, file, message: nil, pane: nil, reason: nil)
+        {"outcome" => outcome, "reason" => reason, "message" => message, "path" => file, "pane" => pane}
+      end
+
+      # The `status:` write, with the event when the file changed.
+      def write_status(name, file, status)
+        changed = guarded_write(name, file) { PlanFile.set_status(file, status) }
+        record_change(name, status) if changed
+        changed
+      end
+
+      def guarded_write(name, file)
+        yield
+      rescue Errno::ENOENT
+        raise no_plan(name, file)
+      rescue SystemCallError => e
+        raise unwritable(file, e)
+      end
+
+      def unwritable(file, error)
+        Workspace::Error.new("Can't write the plan #{file}: #{error.message}", code: "notes_dir_unwritable", details: {"path" => File.dirname(file)})
+      end
+
+      def record_change(name, status)
+        @event_log.record(type: "plan_changed", project: name, data: {"workspace" => name, "status" => status})
+      end
+
+      def deleted_name(file)
+        stamp = @clock.call.utc.strftime("%Y%m%dT%H%M%SZ")
+        target = "#{file}.deleted-#{stamp}"
+        suffix = 0
+        target = "#{file}.deleted-#{stamp}-#{suffix += 1}" while File.exist?(target)
+        target
+      end
+
+      def start_by_launch(name, file, plan, launch)
+        result = launch.call(name)
+        return row("failed", file, reason: result[:reason], message: result[:message]) unless result[:ok]
+        note = record_owner(name, file, plan, result[:pane])
+        @output.puts "Started the plan for #{name}: launched it with the #{PLAY} play."
+        @output.puts note if note
+        row("launched", file, pane: result[:pane], message: note)
+      end
+
+      def start_in_pane(name, file, plan)
+        panes = Array(fetch_panes(name)["panes"])
+        pane = main_pane(name, plan, panes)
+        id = pane["pane_id"]
+        if pane["state"] == "working"
+          @output.puts "The plan for #{name} is already being worked on in pane #{id}."
+          return row("already_working", file, pane: id)
+        end
+        if pane["state"] == "waiting"
+          raise Workspace::Error.new("Pane #{id} of '#{name}' is waiting for an answer, so nothing was typed. Answer it, then start the plan again.",
+            code: "pane_busy", details: {"workspace" => name, "pane" => id})
+        end
+        play = @library.pack(PLAY, cwd: nil).first
+        @sender.deliver(name: name, pane: id, body: @library.play_prompt(play, CONTINUE_PROMPT))
+        notes = [bind_play(name, id, play), record_owner(name, file, plan, id)].compact
+        @output.puts "Started the plan for #{name}: sent it to pane #{id}."
+        notes.each { |note| @output.puts note }
+        row("sent", file, pane: id, message: notes.empty? ? nil : notes.join(" "))
+      end
+
+      def fetch_panes(name)
+        @snapshot_client.fetch(name, timeout: DAEMON_TIMEOUT)
+      rescue AgentSnapshotClient::Unavailable => e
+        raise Workspace::Error.new(e.message, code: "no_daemon", details: {"workspace" => name})
+      end
+
+      # The plan's owner when it is a live Claude Code pane, else the first one.
+      def main_pane(name, plan, panes)
+        agents = panes.select { |pane| pane["kind"] == "claude" && pane["pane_id"] }
+        agents.find { |pane| pane["pane_id"] == plan.owner_pane } || agents.first ||
+          raise(Workspace::Error.new("No pane of '#{name}' runs Claude Code, so there is nowhere to send the plan.",
+            code: "no_agent_pane", details: {"workspace" => name}))
+      end
+
+      # A pane bound to a run or review keeps that binding; a play binding keeps its packs.
+      # @return [String, nil] a note when the pane could not be bound
+      def bind_play(name, pane, play)
+        existing = @binder.live(pane: pane)
+        return if existing && existing["kind"] != "play"
+        @binder.bind(workspace: name, pane: pane, **@library.play_binding(play, packs: Array(existing && existing["packs"])))
+        nil
+      rescue Workspace::Error, SystemCallError => e
+        "Sent, but could not bind pane #{pane} to the play (#{e.message})."
+      end
+
+      # @return [String, nil] a note when the owner could not be written
+      def record_owner(name, file, plan, pane)
+        return if pane.nil? || plan.owner_pane == pane
+        changed = PlanFile.set_owner_pane(file, pane)
+        record_change(name, "active") if changed
+        nil
+      rescue Workspace::Error, SystemCallError => e
+        "Could not record the owner pane in the plan (#{e.message}); set owner_pane: \"#{pane}\" there."
+      end
 
       def row_for(name, memo)
         info = @notes.info(name: name)

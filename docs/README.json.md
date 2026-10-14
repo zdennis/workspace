@@ -84,7 +84,7 @@ The exit code is unchanged by `--json` (1 for most failures, 2 for `not_submitte
 | `unsaved_work` | The worktree has uncommitted changes or unpushed commits. `details` has the counts; `retry` is `--force`. |
 | `unsaved_unknown` | git couldn't tell whether the worktree has unsaved work. `retry` is `--force`. |
 | `not_submitted` | Text reached the pane but wasn't confirmed submitted; check before resending. |
-| `confirmation_required` | A prompt would have read stdin while `--no-input` or `WORKSPACE_NO_INPUT` was set. `details.prompt` is the question; `retry` names the flag that answers it, when there is one (`--force` or `--yes`, destructive). |
+| `confirmation_required` | A prompt would have read stdin while `--no-input` or `WORKSPACE_NO_INPUT` was set, or `plan delete` was run without `--yes` (`details.name`, `details.path`, `retry.flags` `["--yes"]`). `details.prompt` is the question; `retry` names the flag that answers it, when there is one (`--force` or `--yes`, destructive). |
 | `no_session` | The workspace has no running tmux session. `details.workspace` (from `send`, `focus --pane`, `ask answer --deliver`, `agent-run restart`, `handoff`). |
 | `bad_keys` | `agent-run send --keys` named something that isn't a tmux key name, or too many keys. `details.keys`. |
 | `no_pane` | The question wasn't asked from a tmux pane, so `ask answer --deliver` has nowhere to type. `details.question`. |
@@ -97,9 +97,11 @@ The exit code is unchanged by `--json` (1 for most failures, 2 for `not_submitte
 | `unknown_config_key` | `ConfigReport#show` was given a key that is not a config key. `details.key`. `workspace config <key>` checks the key first and reports `usage` instead, so the command does not print this code today. |
 | `notes_dir_unresolved` | `notes dir` (and `handoff new` with no doc given) can't work out the directory: the project's `notes.default_dir` rule uses `{branch}` and the checkout is on a detached HEAD. `details.name`, `details.path` (the checkout). |
 | `handoff_unsupported_agent` | `start --handoff` or `launch --handoff` was given for a project whose main agent is not Claude Code, so the `handoff` pack would not work. `details.kind` is the agent found (`codex`, `opencode`, `pi`), or `none` when the project config runs no known agent. Nothing was created. The config key `handoff.auto` never raises it: there the pack is skipped with a warning (see [`handoff`](README.handoff.md#automatic-handoff)). |
-| `notes_dir_unwritable` | `notes dir --create` couldn't make the directory or list it in `info/exclude`, or `plan init` couldn't write the plan file. `details.path` is the directory. |
-| `no_plan` | `plan show` found no `IMPLEMENTATION_PLAN.md` in the workspace's notes directory. `details.name`, `details.path`. |
+| `notes_dir_unwritable` | `notes dir --create` couldn't make the directory or list it in `info/exclude`, or a `plan` verb couldn't write or rename the plan file. `details.path` is the directory. |
+| `no_plan` | `plan show`, `start`, `pause` or `delete` found no `IMPLEMENTATION_PLAN.md` in the workspace's notes directory. `details.name`, `details.path`. |
 | `plan_exists` | `plan init` found a plan already there and `--force` was not given. `details.path`. |
+| `plan_done` | `plan start` or `plan pause` found a plan that is done (`status: done`, or nothing left to do). `details.name`, `details.path`. |
+| `plan_write_conflict` | The plan file changed twice while a `plan` verb was writing it, so nothing was written; run the verb again. `details.path`. |
 
 The registry lives in `Workspace::ErrorCodes`; a spec checks that every code a raise site names is listed there and on this page. More codes arrive with the commands that need them.
 

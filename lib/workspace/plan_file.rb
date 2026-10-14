@@ -1,4 +1,5 @@
 require "json"
+require "fileutils"
 require "time"
 
 module Workspace
@@ -69,6 +70,10 @@ module Workspace
     # @return [Integer, nil] the 1-based line number of the `status:` line, nil when there is none
     attr_reader :status_line
 
+    # @param key [String] a frontmatter key
+    # @return [Integer, nil] the 1-based line number of the last `key:` line, nil when there is none
+    def key_line(key) = @key_lines[key]
+
     # @return [Array<Task>] the tasks in file order
     attr_reader :tasks
 
@@ -109,7 +114,7 @@ module Workspace
           bytes = cut ? bytes.byteslice(0, cut + 1) : +""
         end
         mtime = stat.mtime
-        signature = "#{mtime.to_i * 1_000_000_000 + mtime.nsec}:#{stat.size}"
+        signature = signature_for(stat)
         parse(bytes.force_encoding(Encoding::UTF_8).scrub, truncated: truncated, signature: signature,
           updated_at: mtime.utc.iso8601)
       end
@@ -118,6 +123,96 @@ module Workspace
     rescue SystemCallError => e
       parse("", warnings: [warning("unreadable", nil, "The plan file can't be read: #{e.message}")])
     end
+
+    # Sets `status:` in the frontmatter. Only that line changes, or one line is added, or a
+    # frontmatter block with `plan: 1` and the status is added when the file has none.
+    # Nothing is written when the status already reads that way (an absent `status:` reads `active`).
+    #
+    # @param path [String] the plan's absolute path
+    # @param status [String] one of {STATUSES}
+    # @return [Boolean] whether the file changed
+    # @raise [Errno::ENOENT] when there is no file
+    # @raise [Workspace::Error] code `plan_write_conflict` when the file changed under the write twice
+    def self.set_status(path, status)
+      return false if status == "active" && frontmatter_of(path)["status"].nil?
+      set_frontmatter(path, "status", status)
+    end
+
+    # Sets `owner_pane:` in the frontmatter like {.set_status}.
+    #
+    # @param path [String] the plan's absolute path
+    # @param pane [String] a tmux pane id such as `%19`
+    # @return [Boolean] whether the file changed
+    # @raise (see .set_status)
+    def self.set_owner_pane(path, pane)
+      set_frontmatter(path, "owner_pane", pane, quote: true)
+    end
+
+    # Writes one frontmatter key through a temp file and a rename. The file is read whole (the
+    # 1 MB read limit does not apply), and if it changed between the read and the rename, for
+    # instance because an agent edited it, the edit is made again on what is there now. A file
+    # that changes under a second try is left alone.
+    def self.set_frontmatter(path, key, value, quote: false)
+      target = File.realpath(path)
+      2.times do
+        bytes, signature = File.open(target, "rb") { |file| [file.read, signature_for(file.stat)] }
+        updated = with_frontmatter_value(bytes, key, value, quote)
+        return false if updated.nil?
+        return true if replace_unless_changed(target, updated, signature)
+      end
+      raise Workspace::Error.new("The plan #{path} changed while it was being written. Nothing was changed; try again.",
+        code: "plan_write_conflict", details: {"path" => path})
+    end
+    private_class_method :set_frontmatter
+
+    def self.frontmatter_of(path)
+      read(path)&.frontmatter || raise(Errno::ENOENT, path)
+    end
+    private_class_method :frontmatter_of
+
+    # @return [String, nil] the new bytes, nil when the key already holds the value
+    def self.with_frontmatter_value(bytes, key, value, quote)
+      plan = parse(bytes.dup.force_encoding(Encoding::UTF_8).scrub)
+      return nil if plan.frontmatter.key?(key) && plan.frontmatter[key] == value
+      lines = bytes.lines
+      text = "#{key}: #{quote ? JSON.generate(value) : value}".b
+      if (number = plan.key_line(key))
+        lines[number - 1] = text + line_ending(lines[number - 1])
+      elsif plan.frontmatter_lines
+        closing = plan.frontmatter_lines.last
+        lines.insert(closing, text + line_ending(lines[closing - 1]).then { |e| e.empty? ? "\n" : e })
+      else
+        bom = lines.first.to_s.start_with?("\xEF\xBB\xBF".b) ? "\xEF\xBB\xBF".b : "".b
+        lines[0] = lines.first.to_s.delete_prefix(bom)
+        lines.unshift(bom + "---\nplan: 1\n".b + text + "\n---\n".b)
+      end
+      lines.join
+    end
+    private_class_method :with_frontmatter_value
+
+    def self.line_ending(line)
+      return "\r\n".b if line.end_with?("\r\n".b)
+      line.end_with?("\n".b) ? "\n".b : "".b
+    end
+    private_class_method :line_ending
+
+    def self.signature_for(stat)
+      "#{stat.mtime.to_i * 1_000_000_000 + stat.mtime.nsec}:#{stat.size}"
+    end
+    private_class_method :signature_for
+
+    # @return [Boolean] false when the file's signature is no longer +signature+, with nothing renamed
+    def self.replace_unless_changed(target, bytes, signature)
+      temp = "#{target}.#{Process.pid}.tmp"
+      File.binwrite(temp, bytes)
+      File.chmod(File.stat(target).mode & 0o7777, temp)
+      return false unless signature_for(File.stat(target)) == signature
+      File.rename(temp, target)
+      true
+    ensure
+      FileUtils.rm_f(temp) if temp
+    end
+    private_class_method :replace_unless_changed
 
     # @param code [String]
     # @param line [Integer, nil]
@@ -171,6 +266,7 @@ module Workspace
       @tasks = []
       @warnings = warnings.dup
       @frontmatter = {}
+      @key_lines = {}
       @seen = {}
       lines = text.to_s.split("\n", -1).map { |line| line.chomp("\r") }
       lines[0] = lines[0].delete_prefix("\uFEFF") if lines.first
@@ -193,6 +289,7 @@ module Workspace
         next unless match
         value = unquote(match[2])
         @frontmatter[match[1]] = value.empty? ? nil : value
+        @key_lines[match[1]] = i + 1
         @status_line = i + 1 if match[1] == "status"
       end
       status = @frontmatter["status"]

@@ -249,13 +249,14 @@ RSpec.describe Workspace::Doctor do
     it "warns on a paused plan whose owner pane is working" do
       run_doctor([row("status" => "paused", "state" => "paused")])
 
-      expect(output.string).to include("⚠  plan for myapp is paused, but its owner pane %19 is working", "fix:", plan_path)
+      expect(output.string).to include("⚠  plan for myapp is paused, but its owner pane %19 is working", "fix: tell that agent to stop, or run 'workspace plan start --name myapp'")
     end
 
     it "warns on an in-progress task in a workspace with no session" do
       run_doctor([row("state" => "stopped", "pane_state" => nil, "counts" => {"in_progress" => 1})])
 
-      expect(output.string).to include("⚠  plan for myapp has a task in progress ([~]) but the workspace has no session", plan_path)
+      expect(output.string).to include("⚠  plan for myapp has a task in progress ([~]) but the workspace has no session",
+        "fix: run 'workspace plan start --name myapp' to resume the plan", plan_path)
     end
 
     it "says nothing about a healthy plan, a paused one that is idle, or a stopped one with nothing in progress" do

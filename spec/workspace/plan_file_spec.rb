@@ -377,4 +377,172 @@ RSpec.describe Workspace::PlanFile do
       expect(plan.warnings).to contain_exactly(a_hash_including("code" => "unreadable", "line" => nil))
     end
   end
+  describe ".set_status and .set_owner_pane" do
+    around do |example|
+      Dir.mktmpdir("plan-write") do |dir|
+        @path = File.join(dir, "IMPLEMENTATION_PLAN.md")
+        example.run
+      end
+    end
+
+    let(:body) { "# Plan\n\n## Tasks\n- [ ] T1 One\n" }
+
+    def write(text) = File.binwrite(@path, text)
+
+    def content = File.binread(@path)
+
+    it "rewrites only the status line and keeps every other byte" do
+      write("---\nplan: 1\nstatus: active\ntitle: \"A: b\"\n---\n" + body)
+
+      expect(described_class.set_status(@path, "paused")).to be true
+
+      expect(content).to eq("---\nplan: 1\nstatus: paused\ntitle: \"A: b\"\n---\n" + body)
+    end
+
+    it "changes the signature of the file" do
+      write("---\nstatus: active\n---\n" + body)
+      before = described_class.read(@path).signature
+
+      described_class.set_status(@path, "paused")
+
+      expect(described_class.read(@path).signature).not_to eq(before)
+    end
+
+    it "is a no-op that leaves the file alone when the status already reads that way" do
+      write("---\nstatus:   paused\n---\n" + body)
+      before = File.stat(@path).mtime
+
+      expect(described_class.set_status(@path, "paused")).to be false
+
+      expect(content).to eq("---\nstatus:   paused\n---\n" + body)
+      expect(File.stat(@path).mtime).to eq(before)
+    end
+
+    it "treats an absent status as active and writes nothing for active" do
+      write("---\ntitle: T\n---\n" + body)
+
+      expect(described_class.set_status(@path, "active")).to be false
+      expect(content).to eq("---\ntitle: T\n---\n" + body)
+    end
+
+    it "repairs a status that is not one of the three when asked for active" do
+      write("---\nstatus: bogus\n---\n" + body)
+
+      expect(described_class.set_status(@path, "active")).to be true
+      expect(content).to eq("---\nstatus: active\n---\n" + body)
+    end
+
+    it "adds the key before the closing line when the frontmatter has no status" do
+      write("---\ntitle: T\n---\n" + body)
+
+      expect(described_class.set_status(@path, "paused")).to be true
+
+      expect(content).to eq("---\ntitle: T\nstatus: paused\n---\n" + body)
+    end
+
+    it "adds frontmatter when the file has none" do
+      write(body)
+
+      expect(described_class.set_status(@path, "paused")).to be true
+
+      expect(content).to eq("---\nplan: 1\nstatus: paused\n---\n" + body)
+      expect(described_class.read(@path)).to have_attributes(status: "paused", tasks: satisfy { |t| t.size == 1 })
+    end
+
+    it "adds frontmatter after a byte order mark" do
+      write("\uFEFF" + body)
+
+      described_class.set_status(@path, "paused")
+
+      expect(content).to eq("\uFEFF---\nplan: 1\nstatus: paused\n---\n".b + body.b)
+      expect(described_class.read(@path).status).to eq("paused")
+    end
+
+    it "keeps CRLF line endings on the line it replaces and the line it adds" do
+      write("---\r\nstatus: active\r\n---\r\n## Tasks\r\n- [ ] T1 a\r\n")
+      described_class.set_status(@path, "paused")
+      expect(content).to start_with("---\r\nstatus: paused\r\n---\r\n")
+
+      write("---\r\ntitle: T\r\n---\r\n## Tasks\r\n")
+      described_class.set_status(@path, "paused")
+      expect(content).to start_with("---\r\ntitle: T\r\nstatus: paused\r\n---\r\n")
+    end
+
+    it "keeps bytes that are not valid UTF-8" do
+      write("---\nstatus: active\n---\n## Tasks\n- [ ] T1 caf\xE9\n".b)
+
+      described_class.set_status(@path, "paused")
+
+      expect(content).to eq("---\nstatus: paused\n---\n## Tasks\n- [ ] T1 caf\xE9\n".b)
+    end
+
+    it "rewrites a plan longer than the read limit whole" do
+      tail = "x" * (described_class::MAX_BYTES + 10)
+      write("---\nstatus: active\n---\n" + tail)
+
+      described_class.set_status(@path, "paused")
+
+      expect(content).to eq("---\nstatus: paused\n---\n" + tail)
+    end
+
+    it "keeps the file mode and leaves no temporary file" do
+      write("---\nstatus: active\n---\n" + body)
+      File.chmod(0o640, @path)
+
+      described_class.set_status(@path, "paused")
+
+      expect(File.stat(@path).mode & 0o777).to eq(0o640)
+      expect(Dir.children(File.dirname(@path))).to eq(["IMPLEMENTATION_PLAN.md"])
+    end
+
+    it "writes through a symlink and leaves the link in place" do
+      target = File.join(File.dirname(@path), "real.md")
+      File.write(target, "---\nstatus: active\n---\n" + body)
+      File.symlink(target, @path)
+
+      described_class.set_status(@path, "paused")
+
+      expect(File.symlink?(@path)).to be true
+      expect(File.read(target)).to start_with("---\nstatus: paused\n")
+    end
+
+    it "raises ENOENT when there is no file" do
+      expect { described_class.set_status(@path, "paused") }.to raise_error(Errno::ENOENT)
+    end
+
+    it "raises ENOENT for active too when there is no file" do
+      expect { described_class.set_status(@path, "active") }.to raise_error(Errno::ENOENT)
+    end
+
+    it "adds frontmatter to an empty file" do
+      write("")
+
+      expect(described_class.set_status(@path, "paused")).to be true
+
+      expect(content).to eq("---\nplan: 1\nstatus: paused\n---\n")
+    end
+
+    it "sets owner_pane quoted, replacing a blank value" do
+      write("---\nowner_pane:\nstatus: active\n---\n" + body)
+
+      expect(described_class.set_owner_pane(@path, "%19")).to be true
+
+      expect(content).to eq("---\nowner_pane: \"%19\"\nstatus: active\n---\n" + body)
+      expect(described_class.read(@path).owner_pane).to eq("%19")
+    end
+
+    it "leaves owner_pane alone when it already names that pane" do
+      write("---\nowner_pane: \"%19\"\n---\n" + body)
+
+      expect(described_class.set_owner_pane(@path, "%19")).to be false
+    end
+
+    it "changes the last of two status lines, the one the parser reads" do
+      write("---\nstatus: active\nstatus: done\n---\n" + body)
+
+      described_class.set_status(@path, "paused")
+
+      expect(content).to eq("---\nstatus: active\nstatus: paused\n---\n" + body)
+    end
+  end
 end

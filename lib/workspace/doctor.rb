@@ -292,10 +292,10 @@ module Workspace
       @plan.rows(all: true).select { |row| row["project"] == project && row["exists"] }.each do |row|
         if row["status"] == "paused" && row["pane_state"] == "working"
           @output.puts "  ⚠  plan for #{row["workspace"]} is paused, but its owner pane #{row["owner_pane"]} is working"
-          @output.puts "     ↳ fix: tell that agent to stop, or set 'status: active' in #{row["path"]} to let it go on"
+          @output.puts "     ↳ fix: tell that agent to stop, or run 'workspace plan start --name #{row["workspace"]}' to let it go on"
         elsif row["state"] == "stopped" && row.dig("counts", "in_progress").to_i.positive?
           @output.puts "  ⚠  plan for #{row["workspace"]} has a task in progress ([~]) but the workspace has no session"
-          @output.puts "     ↳ fix: start the workspace and resume the plan, or change the task back to [ ] in #{row["path"]}"
+          @output.puts "     ↳ fix: run 'workspace plan start --name #{row["workspace"]}' to resume the plan, or change the task back to [ ] in #{row["path"]}"
         end
       end
     rescue

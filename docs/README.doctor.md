@@ -31,7 +31,7 @@ Also verifies that tmuxinator templates are installed and checks the state file 
 
 **Pipeline config** — also validates the current project's [pipeline config](README.pipeline.md), if it has one, reporting an invalid `timeout:` the same way `launch` does. It also warns, without failing the check, on a `pipeline:` block with no panes (it won't start a pipeline) and on a stage whose own text names the bare completion sentinel (workspace appends that itself with a per-dispatch token, so a stage repeating it verbatim can be confusing, though the tokened instruction still wins).
 
-**Plans** — also warns (`⚠`, doesn't fail the check, and prints nothing when all is well) about the current project's [plans](README.plan.md): a plan whose `status:` is `paused` while its owner pane is still working, and a plan with a `[~]` task in a workspace that has no tmux session (the plan reads `stopped`). A plan that can't be read is skipped.
+**Plans** — also warns (`⚠`, doesn't fail the check, and prints nothing when all is well) about the current project's [plans](README.plan.md): a plan whose `status:` is `paused` while its owner pane is still working, and a plan with a `[~]` task in a workspace that has no tmux session (the plan reads `stopped`). The fix line names `workspace plan start --name <workspace>`. A plan that can't be read is skipped.
 
 Exits with a non-zero status if any issues are found, so it can be used in scripts.
 

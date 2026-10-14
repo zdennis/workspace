@@ -7135,6 +7135,154 @@ RSpec.describe Workspace::CLI do
       end
     end
 
+    describe "plan start, pause and delete" do
+      let(:plan_command) { instance_double(Workspace::Commands::Plan) }
+      let(:detector) { instance_double(Workspace::ProjectDetector, detect: "detected-ws") }
+      let(:row) { {"outcome" => "paused", "reason" => nil, "message" => nil, "path" => "/n/IMPLEMENTATION_PLAN.md", "pane" => nil} }
+
+      def plan_cli(**overrides, &block)
+        action_cli(plan_command: plan_command, project_detector: detector, **overrides, &block)
+      end
+
+      it "prints pause as an action document with the row's path and pane" do
+        allow(plan_command).to receive(:pause).with(name: "api").and_return(row)
+        cli, raw, = plan_cli
+
+        cli.run(["plan", "pause", "--name", "api", "--json"])
+
+        expect(parse_one(raw)).to include("action" => "plan pause", "status" => "ok",
+          "results" => [{"workspace" => "api", "outcome" => "paused", "reason" => nil, "message" => nil, "path" => "/n/IMPLEMENTATION_PLAN.md", "pane" => nil}])
+      end
+
+      it "reports unchanged as ok, and pauses the workspace detected from the working directory" do
+        allow(plan_command).to receive(:pause).and_return(row.merge("outcome" => "unchanged"))
+        cli, raw, = plan_cli
+
+        cli.run(["plan", "pause", "--json"])
+
+        expect(plan_command).to have_received(:pause).with(name: "detected-ws")
+        expect(parse_one(raw)).to include("status" => "ok")
+      end
+
+      it "passes --yes to delete, and nothing without it" do
+        allow(plan_command).to receive(:delete).and_return(row.merge("outcome" => "deleted", "message" => "Renamed to /n/x."))
+        cli, raw, = plan_cli
+
+        cli.run(["plan", "delete", "--name", "api", "--yes", "--json"])
+        cli.run(["plan", "delete", "--name", "api"])
+
+        expect(plan_command).to have_received(:delete).with(name: "api", yes: true)
+        expect(plan_command).to have_received(:delete).with(name: "api", yes: false)
+        expect(raw.string.lines.first).to include("\"action\":\"plan delete\"", "\"outcome\":\"deleted\"")
+      end
+
+      it "prints delete's refusal as an envelope with confirmation_required" do
+        allow(plan_command).to receive(:delete).and_raise(Workspace::Error.new("needs --yes", code: "confirmation_required", details: {"name" => "api"}))
+        cli, raw, = plan_cli
+
+        expect(exit_status { cli.run(["plan", "delete", "--name", "api", "--json"]) }).to eq(1)
+
+        expect(parse_one(raw)).to include("ok" => false, "code" => "confirmation_required")
+      end
+
+      it "prints start's refusals as envelopes" do
+        allow(plan_command).to receive(:start).and_raise(Workspace::Error.new("done", code: "plan_done", details: {"name" => "api"}))
+        cli, raw, = plan_cli
+
+        expect(exit_status { cli.run(["plan", "start", "--name", "api", "--json"]) }).to eq(1)
+
+        expect(parse_one(raw)).to include("ok" => false, "code" => "plan_done")
+      end
+
+      it "prints a sent start as an action document with the pane" do
+        allow(plan_command).to receive(:start).and_return(row.merge("outcome" => "sent", "pane" => "%19"))
+        cli, raw, = plan_cli
+
+        cli.run(["plan", "start", "--name", "api", "--json"])
+
+        expect(parse_one(raw)["results"]).to eq([{"workspace" => "api", "outcome" => "sent", "reason" => nil, "message" => nil, "path" => "/n/IMPLEMENTATION_PLAN.md", "pane" => "%19"}])
+      end
+
+      it "exits 1 with a failed row when the launch could not send its prompt, and says why on stderr without --json" do
+        allow(plan_command).to receive(:start).and_return(row.merge("outcome" => "failed", "reason" => "prompt_not_sent", "message" => "agent never ready"))
+        cli, raw, = plan_cli
+
+        expect(exit_status { cli.run(["plan", "start", "--name", "api", "--json"]) }).to eq(1)
+        expect(parse_one(raw)).to include("status" => "failed")
+        expect(parse_one(raw)["results"].first).to include("outcome" => "failed", "reason" => "prompt_not_sent")
+
+        cli, raw, err = plan_cli
+        expect(exit_status { cli.run(["plan", "start", "--name", "api"]) }).to eq(1)
+        expect(err.string).to include("Error: could not start the plan for api: agent never ready")
+        expect(raw.string).to eq("")
+      end
+
+      it "gives start a launcher that launches with the implementation-plan play and the continue line, and reports the bound pane" do
+        launched = nil
+        allow(plan_command).to receive(:start) do |name:, launch:|
+          launched = launch.call(name)
+          row.merge("outcome" => "launched", "pane" => launched[:pane])
+        end
+        state = CLITestHelpers::FakeState.new
+        project_config = CLITestHelpers::FakeProjectConfig.new("api" => "/work/api")
+        library = Workspace::Library.new(
+          config: instance_double(Workspace::Config, library_dir: Dir.mktmpdir, builtin_library_dir: File.expand_path("../../lib/library", __dir__)),
+          lineage: instance_double(Workspace::WorkspaceLineage, resolve: Workspace::WorkspaceLineage::Lineage.new(name: "api")), project_config: project_config
+        )
+        launch = nil
+        cli, = plan_cli(state: state, project_config: project_config, library: library) do |out|
+          launch = launch_class.new(state: state, output: out, result: {bound_panes: {"api" => "%5"}})
+          {launch_command: launch}
+        end
+
+        cli.run(["plan", "start", "--name", "api"])
+
+        play = File.expand_path("../../lib/library/play/implementation-plan.md", __dir__)
+        expect(launched).to eq(ok: true, reason: nil, message: nil, pane: "%5")
+        expect(launch.calls.size).to eq(1)
+        projects, options = launch.calls.first
+        expect(projects).to eq(["api"])
+        expect(options[:prompts]).to eq("api" => "Read \"#{play}\" and follow it.\n\nContinue the plan.")
+        expect(options[:bindings]).to eq("api" => {"kind" => "play", "id" => "play/implementation-plan", "instructions" => play})
+      end
+
+      it "gives start a launcher that reports a launch that never sent its prompt" do
+        launched = nil
+        allow(plan_command).to receive(:start) do |name:, launch:|
+          launched = launch.call(name)
+          row
+        end
+        state = CLITestHelpers::FakeState.new
+        project_config = CLITestHelpers::FakeProjectConfig.new("api" => "/work/api")
+        library = Workspace::Library.new(
+          config: instance_double(Workspace::Config, library_dir: Dir.mktmpdir, builtin_library_dir: File.expand_path("../../lib/library", __dir__)),
+          lineage: instance_double(Workspace::WorkspaceLineage, resolve: Workspace::WorkspaceLineage::Lineage.new(name: "api")), project_config: project_config
+        )
+        cli, = plan_cli(state: state, project_config: project_config, library: library, &launching(state, result: {exit_code: 1, prompt_failures: {"api" => "never ready"}}))
+
+        cli.run(["plan", "start", "--name", "api"])
+
+        expect(launched).to include(ok: false, reason: "prompt_not_sent", message: "never ready", pane: nil)
+      end
+
+      it "rejects --yes on start and pause, and --all on delete" do
+        cli, raw, = plan_cli
+
+        [%w[start --yes], %w[pause --yes], %w[delete --all]].each do |argv|
+          expect(exit_status { cli.run(["plan", *argv, "--json"]) }).to eq(1), argv.inspect
+        end
+        expect(raw.string.lines.map { |l| JSON.parse(l)["code"] }).to all(eq("usage"))
+      end
+
+      it "describes the new subcommands in plan --help" do
+        cli, raw, = plan_cli
+
+        cli.run(["plan", "--help"])
+
+        expect(raw.string).to include("workspace plan start", "workspace plan pause", "workspace plan delete", "--yes")
+      end
+    end
+
     describe "stop" do
       it "prints one action document and sends the text to stderr" do
         state = CLITestHelpers::FakeState.new

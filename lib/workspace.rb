@@ -470,7 +470,8 @@ module Workspace
     plan_state = PlanState.new
     plan_command = Commands::Plan.new(notes: notes_command, catalog: project_catalog, plan_state: plan_state,
       plan_config: plan_config, tmux: tmux,
-      snapshot_client: agent_snapshot_client, ask_store_for: ask_store_for, task_store: task_store, output: output)
+      snapshot_client: agent_snapshot_client, ask_store_for: ask_store_for, task_store: task_store, sender: send_command, binder: binding_command,
+      library: library, event_log: event_log, output: output)
     doctor = Doctor.new(config: config, state: state, hook_installer: hook_installer, project_detector: project_detector, git: git, pipeline_config: pipeline_config, launch_mode: launch_mode, project_settings: project_settings, plan: plan_command, output: output)
     snapshot_command = Commands::Snapshot.new(catalog: project_catalog, facts: project_facts, tmux: tmux, state: state, config: config,
       snapshot_client: agent_snapshot_client, sessions: sessions_command, git: git, pull_request_status: PullRequestStatus.new,

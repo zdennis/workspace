@@ -442,7 +442,7 @@ module Workspace
           lookup          Find a workspace project by worktree path, branch, or project name
           notes           Print where a workspace's notes are kept (dir)
           parent          Print the parent workspace of the current (or given) workspace
-          plan            Show a workspace's plan (IMPLEMENTATION_PLAN.md): status, path, show, init
+          plan            Show and run a workspace's plan (IMPLEMENTATION_PLAN.md): status, path, show, init, start, pause, delete
           pipeline        Deprecated (use workflow): inspect and drive a project's agent pipeline
           projects        Group workspaces by repository (main checkout + worktrees)
           prune           Remove worktree projects whose PR is closed or merged
@@ -5762,7 +5762,10 @@ module Workspace
       "status" => %i[name all file json],
       "path" => %i[name json],
       "show" => %i[name],
-      "init" => %i[name title from force json]
+      "init" => %i[name title from force json],
+      "start" => %i[name json],
+      "pause" => %i[name json],
+      "delete" => %i[name yes json]
     }.freeze
 
     def plan_parser(options)
@@ -5770,7 +5773,10 @@ module Workspace
         opts.banner = "Usage: workspace plan status [--name WORKSPACE | --all | --file PATH] [--json]\n" \
           "       workspace plan path [--name WORKSPACE] [--json]\n" \
           "       workspace plan show [--name WORKSPACE]\n" \
-          "       workspace plan init [--name WORKSPACE] [--title TITLE] [--from FILE] [--force] [--json]"
+          "       workspace plan init [--name WORKSPACE] [--title TITLE] [--from FILE] [--force] [--json]\n" \
+          "       workspace plan start [--name WORKSPACE] [--json]\n" \
+          "       workspace plan pause [--name WORKSPACE] [--json]\n" \
+          "       workspace plan delete [--name WORKSPACE] --yes [--json]"
         opts.separator ""
         opts.separator "A plan is IMPLEMENTATION_PLAN.md in the workspace's notes directory: one checklist"
         opts.separator "line per task under '## Tasks'. workspace counts it, and works out one state from the"
@@ -5781,6 +5787,10 @@ module Workspace
         opts.separator "  path     Print where the plan is (or would be)"
         opts.separator "  show     Print the plan file"
         opts.separator "  init     Write a new plan, or import an existing document with --from"
+        opts.separator "  start    Set status: active, then launch the workspace with the implementation-plan play, or send"
+        opts.separator "           the main agent pane the play and \"Continue the plan.\" (a working pane is left alone)"
+        opts.separator "  pause    Set status: paused; interrupts nothing (the agent stops before its next task)"
+        opts.separator "  delete   Rename the plan to IMPLEMENTATION_PLAN.md.deleted-<time>; needs --yes; the session and worktree stay"
         opts.separator ""
         opts.on("--name NAME", "Workspace to act on instead of the one detected from the current directory") { |v| take_plan_flag(options, :name, v) }
         opts.on("--all", "status: every workspace") { take_plan_flag(options, :all, true) }
@@ -5788,6 +5798,7 @@ module Workspace
         opts.on("--title TITLE", "init: the plan's title (default: the workspace task's title)") { |v| take_plan_flag(options, :title, v) }
         opts.on("--from FILE", "init: import this document as the plan") { |v| take_plan_flag(options, :from, v) }
         opts.on("--force", "init: replace a plan that is already there") { take_plan_flag(options, :force, true) }
+        opts.on("--yes", "delete: confirm the delete") { take_plan_flag(options, :yes, true) }
         opts.on("--json", "Print one JSON document (see docs/README.plan.md)") { take_plan_flag(options, :json, true) }
         opts.on("-h", "--help", "Show this help") { options[:help] = true }
         opts.separator ""
@@ -5796,6 +5807,9 @@ module Workspace
         opts.separator "  workspace plan status --all --json"
         opts.separator "  workspace plan init --title \"Auth rewrite\""
         opts.separator "  workspace plan path    # /src/api/tmp/workspace-notes/IMPLEMENTATION_PLAN.md"
+        opts.separator "  workspace plan start --name api.worktree-x --json"
+        opts.separator "  workspace plan pause"
+        opts.separator "  workspace plan delete --yes"
       end
     end
 
@@ -5805,7 +5819,7 @@ module Workspace
     end
 
     def cmd_plan(args)
-      options = {given: [], json: false, force: false}
+      options = {given: [], json: false, force: false, yes: false}
       parser = plan_parser(options)
       parser.parse!(args)
       return @output.puts(parser.help) if options[:help]
@@ -5837,6 +5851,30 @@ module Workspace
           created = @plan_command.init(name: name, title: options[:title], from: options[:from], force: options[:force])
           {exit_code: 0, results: [action_row(name, "created", message: created["message"], path: created["path"])]}
         end
+      when "start"
+        run_action("plan start", json: options[:json]) { plan_verb_outcome(name, @plan_command.start(name: name, launch: plan_launcher), options[:json]) }
+      when "pause"
+        run_action("plan pause", json: options[:json]) { plan_verb_outcome(name, @plan_command.pause(name: name), options[:json]) }
+      when "delete"
+        run_action("plan delete", json: options[:json]) { plan_verb_outcome(name, @plan_command.delete(name: name, yes: options[:yes]), options[:json]) }
+      end
+    end
+
+    # The action result for a plan verb's row; a failed one also says why on stderr when there is no document.
+    def plan_verb_outcome(name, row, json)
+      failed = row["outcome"] == "failed"
+      @error_output.puts "Error: could not start the plan for #{name}: #{row["message"]}" if failed && !json
+      {exit_code: failed ? 1 : 0, results: [action_row(name, row["outcome"], reason: row["reason"], message: row["message"], path: row["path"], pane: row["pane"])]}
+    end
+
+    # What `plan start` uses to launch a workspace that has no session: `launch --play implementation-plan
+    # --prompt "Continue the plan."`, with the packs a launch sends. Returns `{ok:, reason:, message:, pane:}`.
+    def plan_launcher
+      lambda do |workspace|
+        launched = launch_projects([workspace], play: Commands::Plan::PLAY, prompt: Commands::Plan::CONTINUE_PROMPT, with_packs: true)
+        row = launch_rows(launched[:projects], launched[:result], plays: launched[:plays], packs: launched[:packs], skipped_packs: launched[:skipped_packs]).first
+        pane = row.dig("play", "pane") || launched[:result]&.dig(:delivered_panes, launched[:projects].first)
+        {ok: row["outcome"] != "failed", reason: row["reason"], message: row["message"], pane: pane}
       end
     end
 
