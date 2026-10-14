@@ -78,6 +78,7 @@ RSpec.describe Workspace::Commands::Push do
       expect(e.code).to eq("push_rejected")
       expect(e.details).to include("branch" => "feature/x", "upstream" => "origin/feature/x")
       expect(e.message).to include("never had")
+      expect(e.details["reason"]).to eq("upstream_has_other_commits")
     }
     expect(remote_tip).to eq(teammate_tip)
   end
@@ -91,6 +92,7 @@ RSpec.describe Workspace::Commands::Push do
     expect { command.call(working_dir: wt) }.to raise_error(Workspace::Error) { |e|
       expect(e.code).to eq("push_rejected")
       expect(e.message).to include("behind")
+      expect(e.details["reason"]).to eq("would_delete_commits")
     }
     expect(remote_tip).to eq(pushed_tip)
   end
@@ -98,11 +100,16 @@ RSpec.describe Workspace::Commands::Push do
   it "refuses a branch whose upstream is not origin/<branch>" do
     sh("push", "-q", "origin", "feature/x:renamed", dir: wt)
     sh("branch", "-q", "--set-upstream-to=origin/renamed", dir: wt)
+    renamed_tip = rev("refs/heads/renamed", dir: remote)
 
     expect { command.call(working_dir: wt) }.to raise_error(Workspace::Error) { |e|
       expect(e.code).to eq("push_rejected")
       expect(e.details["upstream"]).to eq("origin/renamed")
+      expect(e.details["reason"]).to eq("upstream_mismatch")
     }
+    _, feature_on_remote = sh_status("rev-parse", "--verify", "--quiet", "refs/heads/feature/x", dir: remote)
+    expect(feature_on_remote).to be(false)
+    expect(rev("refs/heads/renamed", dir: remote)).to eq(renamed_tip)
   end
 
   it "refuses to force when the reflog no longer shows the replaced commits" do
@@ -110,7 +117,7 @@ RSpec.describe Workspace::Commands::Push do
     rebase_feature
     sh("reflog", "expire", "--expire=now", "--all", dir: wt)
 
-    expect { command.call(working_dir: wt) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("push_rejected") }
+    expect { command.call(working_dir: wt) }.to raise_error(Workspace::Error) { |e| expect([e.code, e.details["reason"]]).to eq(["push_rejected", "upstream_has_other_commits"]) }
   end
 
   it "reports push_rejected when origin refuses the push" do
@@ -120,6 +127,7 @@ RSpec.describe Workspace::Commands::Push do
 
     expect { command.call(working_dir: wt) }.to raise_error(Workspace::Error) { |e|
       expect(e.code).to eq("push_rejected")
+      expect(e.details["reason"]).to eq("origin_refused")
       expect(e.details["detail"]).to be_a(String)
     }
   end

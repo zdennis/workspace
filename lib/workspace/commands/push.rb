@@ -49,7 +49,7 @@ module Workspace
         end
 
         unless upstream == "origin/#{branch}"
-          raise rejected(branch, upstream, "its upstream is #{upstream}; push only handles origin/#{branch}.")
+          raise rejected(branch, upstream, "its upstream is #{upstream}; push only handles origin/#{branch}.", "upstream_mismatch")
         end
 
         fetched, stderr = @git.fetch(path)
@@ -66,10 +66,10 @@ module Workspace
         end
 
         if ahead == 0
-          raise rejected(branch, upstream, "the branch is #{behind} commit(s) behind #{upstream}; pushing would delete them.")
+          raise rejected(branch, upstream, "the branch is #{behind} commit(s) behind #{upstream}; pushing would delete them.", "would_delete_commits")
         end
         unless @git.upstream_commits_replaced?(path, branch, upstream)
-          raise rejected(branch, upstream, "#{upstream} has #{behind} commit(s) this branch never had; push was not forced.")
+          raise rejected(branch, upstream, "#{upstream} has #{behind} commit(s) this branch never had; push was not forced.", "upstream_has_other_commits")
         end
         push!(path, branch, force_with_lease: true)
         ["pushed", true]
@@ -78,14 +78,14 @@ module Workspace
       def push!(path, branch, set_upstream: false, force_with_lease: false)
         success, stderr = @git.push(path, branch, set_upstream: set_upstream, force_with_lease: force_with_lease)
         return true if success
-        raise rejected(branch, nil, first_line(stderr)) if stderr.to_s.match?(REJECTED)
+        raise rejected(branch, nil, first_line(stderr), "origin_refused") if stderr.to_s.match?(REJECTED)
 
         raise Workspace::Error, "Could not push '#{branch}': #{first_line(stderr)}"
       end
 
-      def rejected(branch, upstream, detail)
+      def rejected(branch, upstream, detail, reason)
         Workspace::Error.new("Push of '#{branch}' was rejected: #{detail}",
-          code: "push_rejected", details: {"branch" => branch, "upstream" => upstream, "detail" => detail})
+          code: "push_rejected", details: {"branch" => branch, "upstream" => upstream, "detail" => detail, "reason" => reason})
       end
 
       def message(outcome, forced, branch)

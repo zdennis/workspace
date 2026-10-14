@@ -29,7 +29,7 @@ The default branch is what `origin/HEAD` points at, else `main`, else `master`. 
 
 Before anything else, `rebase` refuses a workspace that has a rebase already stopped in it (`rebase_in_progress`) and a workspace with staged or unstaged changes to tracked files (`dirty_worktree`). It never stashes the workspace's own changes. Untracked files do not count.
 
-If the branch already contains the target, the outcome is `up_to_date` and nothing changes. If the rebase stops on a conflict, `rebase` lists the conflicted files, runs `git rebase --abort`, and reports `conflict` with `aborted: true`: the workspace is back as it was. If git runs past its time limit during the rebase, the rebase is aborted too and the error is an uncoded `error`. If the abort itself fails, `aborted` is `false` and the rebase is still stopped. In `update`, when the local default branch and origin's each have commits the other lacks, or the stash does not apply back, nothing is rebased and the outcome is `default_not_updated` (`reason` `diverged` or `stash_pop`; with `stash_pop` the default branch was moved and the changes stay in the stash).
+If the branch already contains the target, the outcome is `up_to_date` and nothing changes. If the rebase stops on a conflict, `rebase` lists the conflicted files, runs `git rebase --abort`, and reports `conflict` with `aborted: true`: the workspace is back as it was. If git runs past its time limit during the rebase, the rebase is aborted too and the error (code `error`) says so, with `details.aborted: true`: the branch is unchanged. If that abort fails, the error is `rebase_in_progress` with `details.aborted: false` and `details.path`, and its message says to run `git rebase --abort` there. If the abort of a conflicted rebase fails, `aborted` is `false` and the rebase is still stopped. In `update`, when the local default branch and origin's each have commits the other lacks, or the stash does not apply back, nothing is rebased and the outcome is `default_not_updated` (`reason` `diverged` or `stash_pop`; with `stash_pop` the default branch was moved and the changes stay in the stash).
 
 Exit 0 for every outcome, `conflict` and `default_not_updated` included: read `outcome`. Exit 1 with an error for the cases under Errors. Plain output is one sentence, plus the conflicted files, one per line.
 
@@ -78,13 +78,13 @@ A branch whose upstream is not `origin/<branch>` is refused (`push_rejected`). A
 | Code | When |
 |------|------|
 | `dirty_worktree` | `rebase`: tracked files have changes. `details.path`, `details.files` |
-| `rebase_in_progress` | `rebase`: a rebase is already stopped in the workspace. `details.path` |
+| `rebase_in_progress` | `rebase`: a rebase is already stopped in the workspace, or git ran past its time limit mid-rebase and the abort failed (`details.aborted` `false`). `details.path` |
 | `fetch_failed` | `rebase --onto update\|remote` or `push`: `git fetch origin` failed. `details.remote`, `details.detail` |
-| `push_rejected` | `push`: origin refused, or the upstream has commits the branch never had. `details.branch`, `details.upstream`, `details.detail` |
+| `push_rejected` | `push`: refused. `details.branch`, `details.upstream`, `details.detail`, `details.reason`: `origin_refused` (origin said no), `would_delete_commits` (the branch is only behind its upstream, so pushing would delete commits), `upstream_has_other_commits` (the upstream has commits the branch never had, or its reflog no longer shows them) or `upstream_mismatch` (the upstream is not `origin/<branch>`). |
 | `not_in_workspace` | No `--name` and the current directory is in no workspace |
 | `unknown_workspace` | `--name` names no workspace |
 | `usage` | `--onto` is missing or not `local`, `update` or `remote` |
-| `error` | A detached HEAD, no default branch, a rebase that failed without stopping, `git` missing, or a git call past its time limit |
+| `error` | A detached HEAD, no default branch, a rebase that failed without stopping, `git` missing, or a git call past its time limit (during a rebase, `details.aborted` is `true`) |
 
 Capability: `rebase` 1 in [`capabilities`](README.capabilities.md) (covers both commands).
 

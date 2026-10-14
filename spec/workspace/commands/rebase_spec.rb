@@ -98,21 +98,56 @@ RSpec.describe Workspace::Commands::Rebase do
       expect(result["detail"]).to include("--abort failed")
     end
 
-    it "aborts the stopped rebase when git runs past its time limit" do
-      commit_file("clash.txt", "main\n", "main clash")
-      commit_file("clash.txt", "feature\n", "feature clash", dir: wt)
-      before_head = rev("HEAD", dir: wt)
-      timing_out = lambda do |argv, chdir:, timeout:|
-        Workspace::TimedProcess.run(argv, chdir: chdir, timeout: timeout)
-        raise Timeout::Error if argv.include?("rebase") && !argv.include?("--abort")
-        ["", "", true]
+    context "when git runs past its time limit during the rebase" do
+      let(:timing_out) do
+        lambda do |argv, chdir:, timeout:|
+          Workspace::TimedProcess.run(argv, chdir: chdir, timeout: timeout)
+          raise Timeout::Error if argv.include?("rebase") && !argv.include?("--abort")
+          ["", "", true]
+        end
       end
-      slow_git = Workspace::Git.new(output: StringIO.new, input: StringIO.new, runner: timing_out)
-      cmd = described_class.new(git: slow_git, checkout: checkout, output: output)
+      let(:slow_git) { Workspace::Git.new(output: StringIO.new, input: StringIO.new, runner: timing_out) }
+      let(:cmd) { described_class.new(git: slow_git, checkout: checkout, output: output) }
 
-      expect { cmd.call(onto: "local", working_dir: wt) }.to raise_error(Workspace::Error, /did not finish within/)
-      expect(git.rebase_in_progress?(wt)).to be(false)
-      expect(rev("HEAD", dir: wt)).to eq(before_head)
+      before do
+        commit_file("clash.txt", "main\n", "main clash")
+        commit_file("clash.txt", "feature\n", "feature clash", dir: wt)
+      end
+
+      it "aborts the stopped rebase and says so, with details.aborted true" do
+        before_head = rev("HEAD", dir: wt)
+
+        expect { cmd.call(onto: "local", working_dir: wt) }.to raise_error(Workspace::Error) { |e|
+          expect(e.code).to eq("error")
+          expect(e.details).to eq("aborted" => true)
+          expect(e.message).to include("did not finish within").and include("rebase was aborted").and include("'feature/x' is unchanged")
+        }
+        expect(git.rebase_in_progress?(wt)).to be(false)
+        expect(rev("HEAD", dir: wt)).to eq(before_head)
+      end
+
+      it "raises rebase_in_progress with details.aborted false when the abort fails" do
+        allow(slow_git).to receive(:rebase_abort).and_return(false)
+
+        expect { cmd.call(onto: "local", working_dir: wt) }.to raise_error(Workspace::Error) { |e|
+          expect(e.code).to eq("rebase_in_progress")
+          expect(e.details).to eq("path" => wt, "aborted" => false)
+          expect(e.message).to include("still in the middle of a rebase").and include("git rebase --abort")
+        }
+        expect(git.rebase_in_progress?(wt)).to be(true)
+      end
+
+      it "re-raises the plain timeout error when no rebase was left in progress" do
+        never_started = ->(argv, chdir:, timeout:) { argv.include?("rebase") ? raise(Timeout::Error) : Workspace::TimedProcess.run(argv, chdir: chdir, timeout: timeout) }
+        idle_git = Workspace::Git.new(output: StringIO.new, input: StringIO.new, runner: never_started)
+        idle_cmd = described_class.new(git: idle_git, checkout: checkout, output: output)
+
+        expect { idle_cmd.call(onto: "local", working_dir: wt) }.to raise_error(Workspace::Error) { |e|
+          expect(e.code).to eq("error")
+          expect(e.details).not_to include("aborted")
+          expect(e.message).to eq("git rebase did not finish within #{Workspace::Git::REBASE_TIMEOUT} seconds.")
+        }
+      end
     end
 
     it "raises a plain error for a rebase that fails without stopping" do

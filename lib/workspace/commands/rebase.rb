@@ -32,7 +32,7 @@ module Workspace
       # @param working_dir [String]
       # @return [void]
       # @raise [Workspace::Error] `not_in_workspace`, `unknown_workspace`, `dirty_worktree`,
-      #   `rebase_in_progress`, `fetch_failed`, or an uncoded error for a detached HEAD, a missing default
+      #   `rebase_in_progress` (also when a timed-out rebase could not be aborted), `fetch_failed`, or an uncoded error (`details.aborted` true when a timed-out rebase was aborted) for a detached HEAD, a missing default
       #   branch, a rebase that failed without stopping, or git not answering
       def call(name: nil, onto: nil, json: false, working_dir: Dir.pwd)
         raise UsageError, "--onto must be one of #{TARGETS.join(", ")}." unless TARGETS.include?(onto)
@@ -75,7 +75,7 @@ module Workspace
         ref = (onto == "remote") ? "origin/#{default}" : default
         raise Workspace::Error, "'#{ref}' does not exist in #{path}." unless @git.commit_exists?(path, ref)
 
-        run_rebase(path, ref)
+        run_rebase(path, branch, ref)
       end
 
       def fetch(path)
@@ -127,16 +127,17 @@ module Workspace
          "detail" => "'#{default}' in #{holder} could not be fast-forwarded to #{remote} (a local file may be in the way)."}
       end
 
-      def run_rebase(path, ref)
+      def run_rebase(path, branch, ref)
         if @git.ancestor?(path, ref, "HEAD")
           return {"outcome" => "up_to_date"}
         end
 
         begin
           success, stderr = @git.rebase(path, ref)
-        rescue Workspace::Error
-          @git.rebase_abort(path) if @git.rebase_in_progress?(path)
-          raise
+        rescue Workspace::Error => e
+          raise e unless @git.rebase_in_progress?(path)
+
+          raise stopped_by(e, path, branch)
         end
         return {"outcome" => "rebased"} if success
         unless @git.rebase_in_progress?(path)
@@ -148,6 +149,17 @@ module Workspace
         detail = first_line(stderr)
         detail = "#{detail} (git rebase --abort failed; the rebase is still stopped)".strip unless aborted
         {"outcome" => "conflict", "reason" => "conflict", "aborted" => aborted, "conflicted" => conflicted, "detail" => detail}
+      end
+
+      # A git call failed while a rebase was running: abort it, and say what
+      # became of the checkout.
+      def stopped_by(error, path, branch)
+        if @git.rebase_abort(path)
+          Workspace::Error.new("#{error.message} The rebase was aborted and '#{branch}' is unchanged.", details: {"aborted" => true})
+        else
+          Workspace::Error.new("#{error.message} git rebase --abort failed, so #{path} is still in the middle of a rebase. Run 'git rebase --abort' there.",
+            code: "rebase_in_progress", details: {"path" => path, "aborted" => false})
+        end
       end
 
       def message(document)
