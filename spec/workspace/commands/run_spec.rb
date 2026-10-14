@@ -78,12 +78,12 @@ RSpec.describe Workspace::Commands::Run do
 
       it "raises Workspace::Error in the split path without attempting a split" do
         allow(tmux).to receive(:panes).with("myproject", window: "0").and_return([])
-        allow(tmux).to receive(:split_window)
+        allow(tmux).to receive(:split_pane)
 
         expect { command.call("myproject", "echo hi", split: true) }.to raise_error(
           Workspace::Error, /No panes found for session 'myproject'/
         )
-        expect(tmux).not_to have_received(:split_window)
+        expect(tmux).not_to have_received(:split_pane)
       end
     end
 
@@ -111,18 +111,36 @@ RSpec.describe Workspace::Commands::Run do
 
     context "with split: true" do
       before do
-        allow(tmux).to receive(:split_window).and_return(3)
+        allow(tmux).to receive(:split_pane).and_return({index: 3, id: "%23"})
       end
 
       it "splits the last pane and sends command to the pane index tmux reported" do
         command.call("myproject", "tail -f log/dev.log", split: true)
 
-        expect(tmux).to have_received(:split_window).with("myproject", pane: 2, vertical: false)
+        expect(tmux).to have_received(:split_pane).with("myproject", pane: 2, vertical: false)
         expect(tmux).to have_received(:deliver).with("myproject", "0.3", "tail -f log/dev.log", enter: true)
       end
 
+      it "returns the id of the new pane" do
+        expect(command.call("myproject", "tail -f log/dev.log", split: true)).to eq("%23")
+      end
+
+      it "returns nil for a split that tmux gave no id for" do
+        allow(tmux).to receive(:split_pane).and_return({index: 3, id: nil})
+
+        expect(command.call("myproject", "tail -f log/dev.log", split: true)).to be_nil
+      end
+
+      it "returns nil when it did not split" do
+        expect(command.call("myproject", "echo hi")).to be_nil
+      end
+
+      it "returns nil for a dry run" do
+        expect(command.call("myproject", "echo hi", split: true, dry_run: true)).to be_nil
+      end
+
       it "uses the reported index even when it is not the highest pane index" do
-        allow(tmux).to receive(:split_window).and_return(1)
+        allow(tmux).to receive(:split_pane).and_return({index: 1, id: "%9"})
 
         command.call("myproject", "tail -f log/dev.log", split: true)
 
@@ -136,7 +154,7 @@ RSpec.describe Workspace::Commands::Run do
       end
 
       it "raises Workspace::Error when split fails" do
-        allow(tmux).to receive(:split_window).and_return(nil)
+        allow(tmux).to receive(:split_pane).and_return(nil)
 
         expect { command.call("myproject", "tail -f log/dev.log", split: true) }.to raise_error(
           Workspace::Error, /Failed to split window/
@@ -154,13 +172,13 @@ RSpec.describe Workspace::Commands::Run do
 
     context "with split: true, vertical: true" do
       before do
-        allow(tmux).to receive(:split_window).and_return(3)
+        allow(tmux).to receive(:split_pane).and_return({index: 3, id: "%23"})
       end
 
       it "splits side-by-side (vertical: true)" do
         command.call("myproject", "rails console", split: true, vertical: true)
 
-        expect(tmux).to have_received(:split_window).with("myproject", pane: 2, vertical: true)
+        expect(tmux).to have_received(:split_pane).with("myproject", pane: 2, vertical: true)
       end
     end
 
@@ -220,12 +238,12 @@ RSpec.describe Workspace::Commands::Run do
 
       it "prints split commands without executing when split: true" do
         allow(tmux).to receive(:panes).and_return([0, 1, 2])
-        allow(tmux).to receive(:split_window)
+        allow(tmux).to receive(:split_pane)
 
         command.call("myproject", "tail -f log", split: true, dry_run: true)
 
         expect(output.string).to include("split-window")
-        expect(tmux).not_to have_received(:split_window)
+        expect(tmux).not_to have_received(:split_pane)
         expect(tmux).not_to have_received(:deliver)
       end
     end

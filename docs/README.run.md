@@ -23,6 +23,7 @@ workspace run [project] <command> [options]
 | `--timeout N` | Seconds to wait before giving up (default: 300, requires `--wait`) |
 | `--close` | Send `exit` to the pane after the command runs (closes the shell/pane) |
 | `--pipe CMD` | Pipe the command output into CMD (repeatable for multi-stage pipelines) |
+| `--json` | Print one action document (see [README.json.md](README.json.md#actions)) naming the pane; not with `--wait` or `--dry-run`. See [JSON output](#json-output) |
 
 ## Details
 
@@ -46,7 +47,7 @@ A paste large enough to trigger Claude Code's own large-paste widget (the `[Past
 
 **Pane targeting** — by default the bottommost pane is used (highest pane index at invocation time). Use `--pane N` for a specific zero-based index, `--pane 0.1` for `window.pane` (as shown by `workspace sessions`), `--pane %19` for a tmux pane id (from `workspace sessions --json`), or `--pane bottom` / `--bottom` to be explicit.
 
-**Split panes** — `--split` creates a new horizontal pane below the bottommost pane, then sends the command there. `--split --vertical` splits side-by-side instead. The split uses `tmux split-window -P -F '#{pane_index}'` to capture the new pane index atomically.
+**Split panes** — `--split` creates a new horizontal pane below the bottommost pane, then sends the command there. `--split --vertical` splits side-by-side instead. The split uses `tmux split-window -P -F '#{pane_index} #{pane_id}'` to capture the new pane's index and id atomically.
 
 **Waiting for results** — `--wait` writes two UUID-keyed files to `~/.workspace-runs/` before sending anything to tmux:
 
@@ -116,3 +117,13 @@ workspace run scooter "claude -p 'find recent Slack @-mentions'" \
 # Multi-stage pipeline
 workspace run scooter 'grep ERROR log/production.log' --pipe 'sort' --pipe 'uniq -c'
 ```
+
+## JSON output
+
+`--json` prints an action document with one row, and the progress text goes to stderr. With `--split`, `pane` is the tmux id of the new pane, read from `tmux split-window -P`, so a caller can use it at once with `agent-run send --pane` or `focus --pane` without comparing two `sessions` reads:
+
+```json
+{"workspace":"api","outcome":"started","reason":null,"message":null,"pane":"%23"}
+```
+
+Without `--split` the command went to an existing pane and `pane` is `null`. A failure is the usual error document: exit 1 when the text never reached the pane (safe to run again), exit 2 with code `not_submitted` when it landed but was not confirmed submitted (do not resend). `--json` with `--wait` or `--dry-run` is a usage error, since both print their own text.

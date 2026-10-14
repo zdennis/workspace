@@ -22,7 +22,7 @@ It reads constants, config paths and the `PATH`. It starts no process and touche
 {"schema_version":1,"ok":true,"version":"0.27.1",
  "features":{"envelope":1,"error_codes":1,"name_scope":1,"no_input":1,"action_json":1,
    "sessions":1,"locks_json":2,"git_facts":1,"prune_safe":1,"snapshot":3,"events_follow":0,
-   "actions_manifest":0,"agent_send":1,"agent_spawn":0,"focus_pane":1,"state_done":1,
+   "actions_manifest":0,"agent_send":1,"agent_spawn":1,"focus_pane":1,"state_done":1,
    "doctor_json":0,"daemon_control":3,"config_json":2,"tmux_show":1,"tasks":1,"event_emitters":1,
    "ui_open":1,"pane_bindings":3,"library":3,"library_play":2,"library_copy":1,"instructions":1,"restore":1,
    "workflow":1,"window_state":1,"cleanup_dry_run":1,"notes":1,"start_packs":2,
@@ -56,7 +56,7 @@ It reads constants, config paths and the `PATH`. It starts no process and touche
 | `events_follow` | Not available yet |
 | `actions_manifest` | Not available yet |
 | `agent_send` | `agent-run send --pane` types text or tmux keys into one named pane; `ask answer --deliver` types an answer into the asking pane |
-| `agent_spawn` | Not available yet |
+| `agent_spawn` | `launch --json` rows carry `prompt_sent` and `pane`, and `run --split --json` names the new pane, so a caller need not compare two `sessions` reads to find the pane it started or sent to (see [`launch`](README.launch.md#json-output), [`run`](README.run.md#json-output)) |
 | `focus_pane` | `focus --pane` selects a pane after focusing the window |
 | `state_done` | `sessions --json` panes can report `state: "done"` with a `stop_reason` (see [`sessions`](README.sessions.md)) |
 | `doctor_json` | Not available yet |

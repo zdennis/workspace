@@ -40,7 +40,7 @@ module Workspace
       # @param focus [Boolean] bring the project's iTerm window to front after sending
       # @param dry_run [Boolean] print what would be executed without running it
       # @param close [Boolean] send 'exit' to the pane after the command (closes the shell/pane)
-      # @return [void]
+      # @return [String, nil] with +split+, the tmux id of the new pane (e.g. +%23+); otherwise nil
       # @raise [Workspace::Error] if no active tmux session exists for the project
       # @raise [Workspace::Error] if the session's window has no panes
       # @raise [Workspace::Error] if pane index is out of range
@@ -54,8 +54,9 @@ module Workspace
             "No active tmux session for '#{project}'.\nRun 'workspace launch #{project}' to start it."
         end
 
+        new_pane_id = nil
         if split
-          split_and_run(session_name, command, vertical: vertical, enter: enter,
+          new_pane_id = split_and_run(session_name, command, vertical: vertical, enter: enter,
             dry_run: dry_run, close: close)
         else
           pane_spec = TmuxPane.new(pane, tmux: @tmux).target(session_name)
@@ -74,6 +75,7 @@ module Workspace
         end
 
         focus_window(project) if focus
+        new_pane_id
       end
 
       private
@@ -89,18 +91,18 @@ module Workspace
           @output.puts "tmux split-window #{flag} -t #{session_name}:0.#{last_pane}"
           print_dry_run_delivery(session_name, "0.<new_pane>", command, enter: enter)
           print_dry_run_delivery(session_name, "0.<new_pane>", "exit", enter: true) if close
-          return
+          return nil
         end
 
-        # split_window reports the new pane's index directly (tmux split-window -P -F).
+        # split_pane reports the new pane's index and id directly (tmux split-window -P -F).
         # Re-querying panes() and taking .last would race with concurrent pane changes
         # and can be defeated by tmux reusing a freed pane index.
-        new_pane_index = @tmux.split_window(session_name, pane: last_pane, vertical: vertical)
-        unless new_pane_index
+        new_pane = @tmux.split_pane(session_name, pane: last_pane, vertical: vertical)
+        unless new_pane
           raise Workspace::Error, "Failed to split window for '#{session_name}'"
         end
 
-        pane_spec = "0.#{new_pane_index}"
+        pane_spec = "0.#{new_pane[:index]}"
 
         send_text(session_name, pane_spec, command, enter: enter,
           failure: "Failed to send command to new split pane of '#{session_name}'")
@@ -109,6 +111,8 @@ module Workspace
           send_text(session_name, pane_spec, "exit", enter: true,
             failure: "Failed to send exit to new split pane of '#{session_name}'")
         end
+
+        new_pane[:id]
       end
 
       # Prints the load-buffer + paste-buffer sequence that {Workspace::Tmux#deliver}

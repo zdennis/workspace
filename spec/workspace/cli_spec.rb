@@ -1354,7 +1354,7 @@ RSpec.describe Workspace::CLI do
       expect { cli.run(["launch", "--prompt", "go", "myproject"]) }.to raise_error(FakeSystemExit) { |e|
         expect(e.status).to eq(1)
       }
-      expect(launch_command).to have_received(:call).with(["myproject"], reattach: false, prompts: {"myproject" => "go"})
+      expect(launch_command).to have_received(:call).with(["myproject"], reattach: false, prompts: {"myproject" => "go"}, report_panes: true)
       expect(hook_runner.runs).to include(project: "myproject", event: "post_launch", env: {})
     end
 
@@ -1386,7 +1386,7 @@ RSpec.describe Workspace::CLI do
 
       cli.run(["launch", "--prompt", "go", "--prompt-timeout", "90s", "myproject"])
 
-      expect(launch_command).to have_received(:call).with(["myproject"], reattach: false, prompts: {"myproject" => "go"}, prompt_timeout: 90.0)
+      expect(launch_command).to have_received(:call).with(["myproject"], reattach: false, prompts: {"myproject" => "go"}, prompt_timeout: 90.0, report_panes: true)
     end
 
     it "passes --prompt-timeout through to start" do
@@ -7265,6 +7265,25 @@ RSpec.describe Workspace::CLI do
         expect(launched).to include(ok: false, reason: "prompt_not_sent", message: "never ready", pane: nil)
       end
 
+      it "gives start the delivered pane when the play could not be bound to it" do
+        launched = nil
+        allow(plan_command).to receive(:start) do |name:, launch:|
+          launched = launch.call(name)
+          row
+        end
+        state = CLITestHelpers::FakeState.new
+        project_config = CLITestHelpers::FakeProjectConfig.new("api" => "/work/api")
+        library = Workspace::Library.new(
+          config: instance_double(Workspace::Config, library_dir: Dir.mktmpdir, builtin_library_dir: File.expand_path("../../lib/library", __dir__)),
+          lineage: instance_double(Workspace::WorkspaceLineage, resolve: Workspace::WorkspaceLineage::Lineage.new(name: "api")), project_config: project_config
+        )
+        cli, = plan_cli(state: state, project_config: project_config, library: library, &launching(state, result: {exit_code: 0, prompt_failures: {}, delivered_panes: {"api" => "%7"}}))
+
+        cli.run(["plan", "start", "--name", "api"])
+
+        expect(launched).to include(ok: true, pane: "%7")
+      end
+
       it "rejects --yes on start and pause, and --all on delete" do
         cli, raw, = plan_cli
 
@@ -7333,6 +7352,78 @@ RSpec.describe Workspace::CLI do
       end
     end
 
+    describe "run" do
+      it "names the new pane of a --split in one action document" do
+        run_command = CLITestHelpers::FakeRunCommand.new
+        run_command.returning("%23")
+        cli, raw, = action_cli(run_command: run_command)
+
+        status = exit_status { cli.run(["run", "api", "tail -f log", "--split", "--json"]) }
+
+        expect(status).to eq(0)
+        expect(parse_one(raw)).to include("action" => "run", "ok" => true, "status" => "ok")
+        expect(parse_one(raw)["results"]).to eq([{"workspace" => "api", "outcome" => "started", "reason" => nil, "message" => nil, "pane" => "%23"}])
+      end
+
+      it "gives a null pane when the command went to an existing pane" do
+        cli, raw, = action_cli
+
+        cli.run(["run", "api", "echo hi", "--json"])
+
+        expect(parse_one(raw)["results"].first).to include("outcome" => "started", "pane" => nil)
+      end
+
+      it "runs the post_run hook once, inside the document" do
+        hook_runner = CLITestHelpers::FakeHookRunner.new
+        cli, raw, = action_cli(hook_runner: hook_runner)
+
+        cli.run(["run", "api", "echo hi", "--json"])
+
+        expect(hook_runner.runs.map { |r| r[:event] }).to eq(["post_run"])
+        parse_one(raw)
+      end
+
+      it "prints the error envelope and exits 2 when the text landed but was not confirmed submitted" do
+        run_command = CLITestHelpers::FakeRunCommand.new
+        run_command.raise_on_call(Workspace::Commands::Run::NotSubmittedError.new("pasted, but Enter didn't visibly take"))
+        cli, raw, = action_cli(run_command: run_command)
+
+        status = exit_status { cli.run(["run", "api", "echo hi", "--json"]) }
+
+        expect(status).to eq(2)
+        expect(parse_one(raw)).to include("ok" => false, "code" => "not_submitted")
+      end
+
+      it "prints the error envelope and exits 1 when the command was not delivered" do
+        run_command = CLITestHelpers::FakeRunCommand.new
+        run_command.raise_on_call(Workspace::Error.new("No active tmux session for 'api'."))
+        cli, raw, = action_cli(run_command: run_command)
+
+        expect(exit_status { cli.run(["run", "api", "echo hi", "--split", "--json"]) }).to eq(1)
+        expect(parse_one(raw)).to include("ok" => false)
+      end
+
+      it "refuses --json with --wait or --dry-run as a usage error" do
+        run_command = CLITestHelpers::FakeRunCommand.new
+        cli, raw, = action_cli(run_command: run_command)
+
+        expect(exit_status { cli.run(["run", "api", "echo hi", "--wait", "--json"]) }).to eq(1)
+        expect(exit_status { cli.run(["run", "api", "echo hi", "--dry-run", "--json"]) }).to eq(1)
+        expect(run_command.calls).to eq([])
+        expect(raw.string.lines.size).to eq(2)
+      end
+
+      it "prints nothing extra without --json" do
+        run_command = CLITestHelpers::FakeRunCommand.new
+        run_command.returning("%23")
+        cli, raw, = action_cli(run_command: run_command)
+
+        cli.run(["run", "api", "tail -f log", "--split"])
+
+        expect(raw.string).to eq("")
+      end
+    end
+
     describe "launch" do
       it "reports each project with its window id" do
         state = CLITestHelpers::FakeState.new
@@ -7343,6 +7434,7 @@ RSpec.describe Workspace::CLI do
         doc = parse_one(raw)
         expect(doc).to include("action" => "launch", "status" => "ok", "summary" => {"launched" => 2})
         expect(doc["results"].first).to include("workspace" => "api", "outcome" => "launched", "iterm_window_id" => 31337, "headless" => false)
+        expect(doc["results"].map { |r| r.values_at("prompt_sent", "pane") }).to eq([[nil, nil], [nil, nil]])
         expect(err.string).to eq("Launching api, web...\n")
         expect(raw.string).not_to include("Launching")
       end
@@ -7357,6 +7449,27 @@ RSpec.describe Workspace::CLI do
         expect(status).to eq(3)
         expect(doc["status"]).to eq("partial")
         expect(doc["results"].last).to include("workspace" => "web", "outcome" => "failed", "reason" => "prompt_not_sent", "message" => "agent not ready")
+      end
+
+      it "says per project whether the prompt was sent and to which pane" do
+        state = CLITestHelpers::FakeState.new
+        cli, raw, = action_cli(state: state, &launching(state, result: {exit_code: 1, prompt_failures: {"web" => "agent not ready"}, delivered_panes: {"api" => "%4"}}))
+
+        exit_status { cli.run(["launch", "api", "web", "--prompt", "hi", "--json"]) }
+
+        rows = parse_one(raw)["results"]
+        expect(rows.map { |r| r.values_at("prompt_sent", "pane") }).to eq([[true, "%4"], [false, nil]])
+      end
+
+      it "asks Launch for the delivered panes whenever it sends a prompt" do
+        state = CLITestHelpers::FakeState.new
+        cli, = action_cli(state: state, &launching(state))
+        launch = cli.instance_variable_get(:@launch_command)
+
+        cli.run(["launch", "api", "--json"])
+        cli.run(["launch", "api", "--prompt", "hi", "--json"])
+
+        expect(launch.calls.map { |_, options| options[:report_panes] }).to eq([nil, true])
       end
 
       context "with --play" do
@@ -7418,7 +7531,7 @@ RSpec.describe Workspace::CLI do
           }, bindings: {
             "api" => {"kind" => "play", "id" => "play/kickoff", "instructions" => api_path},
             "web" => {"kind" => "play", "id" => "play/kickoff", "instructions" => global_path}
-          })
+          }, report_panes: true)
         end
 
         context "with packs" do
@@ -7521,6 +7634,7 @@ RSpec.describe Workspace::CLI do
             doc = parse_one(raw)
             expect(status).to eq(0)
             expect(doc["results"].first["packs"]).to eq([{"name" => "notes", "source" => "config", "delivered" => false, "pane" => nil}])
+            expect(doc["results"].first).to include("prompt_sent" => false, "pane" => nil)
             expect(doc["warnings"]).to eq([message])
           end
 
@@ -7547,6 +7661,7 @@ RSpec.describe Workspace::CLI do
             rows = parse_one(raw)["results"]
             expect(rows.first["packs"]).to eq([{"name" => "notes", "source" => "config", "delivered" => true, "pane" => "%4"},
               {"name" => "review", "source" => "flag", "delivered" => true, "pane" => "%4"}])
+            expect(rows.map { |r| r.values_at("prompt_sent", "pane") }).to eq([[true, "%4"], [true, "%6"]])
           end
 
           context "with the handoff pack" do
@@ -7662,7 +7777,8 @@ RSpec.describe Workspace::CLI do
 
           expect(launch_command).to have_received(:call).with(["new"], reattach: false,
             prompts: {"new" => "Read \"#{library.project_store("new").path_for("play", "kickoff")}\" and follow it."},
-            bindings: {"new" => {"kind" => "play", "id" => "play/kickoff", "instructions" => library.project_store("new").path_for("play", "kickoff")}})
+            bindings: {"new" => {"kind" => "play", "id" => "play/kickoff", "instructions" => library.project_store("new").path_for("play", "kickoff")}},
+            report_panes: true)
           expect(project_config).not_to have_received(:project_root_for)
         end
 

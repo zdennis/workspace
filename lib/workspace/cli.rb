@@ -568,7 +568,7 @@ module Workspace
       run_action("launch", json: json) do
         launched = launch_projects(args, reattach: reattach, headless: headless, prompt: prompt, prompt_timeout: prompt_timeout, play: play,
           packs: packs, no_packs: no_packs, handoff: handoff, with_packs: true)
-        {exit_code: launched[:exit_code], results: json ? launch_rows(launched[:projects], launched[:result], plays: launched[:plays], packs: launched[:packs], skipped_packs: launched[:skipped_packs]) : [],
+        {exit_code: launched[:exit_code], results: json ? launch_rows(launched[:projects], launched[:result], plays: launched[:plays], packs: launched[:packs], skipped_packs: launched[:skipped_packs], prompts: launched[:prompts]) : [],
          warnings: launched[:skipped_packs].values.flatten.map { |pack| pack["message"] } + (launched[:result]&.dig(:skipped_prompts) || {}).values}
       end
     end
@@ -601,7 +601,7 @@ module Workspace
         [name, plays[name] ? @library.play_binding(plays[name], packs: names) : (@library.packs_binding(names) if names.any?)]
       end.compact
       call_options[:bindings] = pane_bindings if pane_bindings.any?
-      call_options[:report_panes] = true if composed.any?
+      call_options[:report_panes] = true if composed.any? || prompts.any?
       optional = composed.select { |name, c| InstructionComposer.optional_prompt?(c, prompt: prompt, play: plays[name]) }
       call_options[:optional] = optional.transform_values { |c| InstructionComposer.pack_names(c["packs"]) } if optional.any?
       call_options[:prompt_timeout] = prompt_timeout if prompt_timeout
@@ -612,7 +612,7 @@ module Workspace
         @project_settings.ensure_exists(p)
         @hook_runner.run(p, "post_launch")
       end
-      {exit_code: result && result[:exit_code], projects: projects, result: result, plays: plays, packs: composed, skipped_packs: skipped_packs}
+      {exit_code: result && result[:exit_code], projects: projects, result: result, plays: plays, packs: composed, skipped_packs: skipped_packs, prompts: prompts}
     end
 
     # The packs `launch` sends each project, from its root's library and config; a
@@ -638,7 +638,7 @@ module Workspace
     end
 
     # One `results` row per launched project, from the state Launch wrote.
-    def launch_rows(projects, result, ok_outcome: "launched", plays: {}, packs: nil, skipped_packs: {})
+    def launch_rows(projects, result, ok_outcome: "launched", plays: {}, packs: nil, skipped_packs: {}, prompts: {})
       @state.load
       reused = result&.dig(:reused) || []
       prompt_failures = result&.dig(:prompt_failures) || {}
@@ -648,6 +648,9 @@ module Workspace
         sent = !result.nil? && !entry.nil? && !prompt_failures.key?(project) && !start_failures.key?(project)
         skipped = result&.dig(:skipped_prompts)&.key?(project)
         details = {iterm_window_id: entry.is_a?(Hash) ? entry["iterm_window_id"] : nil, headless: entry.is_a?(Hash) && entry["headless"] == true}
+        prompt_sent = prompts[project] ? (sent && !skipped) : nil
+        details[:prompt_sent] = prompt_sent
+        details[:pane] = prompt_sent ? result&.dig(:delivered_panes, project) : nil
         if plays[project]
           details[:play] = plays[project].merge("delivered" => sent,
             "pane" => result&.dig(:bound_panes, project))
@@ -1051,6 +1054,7 @@ module Workspace
       dry_run = false
       wait = false
       close = false
+      json = false
       pipe_commands = []
       timeout_secs = Workspace::RunResultStore::DEFAULT_TIMEOUT
 
@@ -1099,6 +1103,10 @@ module Workspace
           "Pipe command output into CMD (repeatable for multi-stage pipelines)") do |cmd|
           pipe_commands << cmd
         end
+        opts.on("--json", "Print one action document (see docs/README.json.md) naming the pane",
+          "(the new pane's id with --split, else null); not with --wait or --dry-run") do
+          json = true
+        end
         opts.separator ""
         opts.separator "Exit codes: 0 delivered; 1 not delivered, safe to run again; 2 text"
         opts.separator "  landed but wasn't confirmed submitted — do not resend, check the pane first."
@@ -1114,6 +1122,10 @@ module Workspace
 
       if vertical && !split
         raise UsageError, "--vertical requires --split.\n\n#{parser.help}"
+      end
+
+      if json && (wait || dry_run)
+        raise UsageError, "--json cannot be combined with --wait or --dry-run.\n\n#{parser.help}"
       end
 
       if wait && no_enter
@@ -1199,19 +1211,22 @@ module Workspace
         return
       end
 
-      @run_command.call(
-        project, command,
-        pane: pane,
-        split: split,
-        vertical: vertical,
-        enter: !no_enter,
-        focus: focus,
-        dry_run: dry_run,
-        close: close
-      )
+      run_action("run", json: json) do
+        new_pane_id = @run_command.call(
+          project, command,
+          pane: pane,
+          split: split,
+          vertical: vertical,
+          enter: !no_enter,
+          focus: focus,
+          dry_run: dry_run,
+          close: close
+        )
 
-      # --dry-run performs no real work, so post_run hooks must not observe it as a run.
-      @hook_runner.run(project, "post_run") unless dry_run
+        # --dry-run performs no real work, so post_run hooks must not observe it as a run.
+        @hook_runner.run(project, "post_run") unless dry_run
+        {exit_code: 0, results: json ? [action_row(project, "started", pane: new_pane_id)] : []}
+      end
     end
 
     # Writes two files and returns the pane command string for --wait:
@@ -5872,8 +5887,8 @@ module Workspace
     def plan_launcher
       lambda do |workspace|
         launched = launch_projects([workspace], play: Commands::Plan::PLAY, prompt: Commands::Plan::CONTINUE_PROMPT, with_packs: true)
-        row = launch_rows(launched[:projects], launched[:result], plays: launched[:plays], packs: launched[:packs], skipped_packs: launched[:skipped_packs]).first
-        pane = row.dig("play", "pane") || launched[:result]&.dig(:delivered_panes, launched[:projects].first)
+        row = launch_rows(launched[:projects], launched[:result], plays: launched[:plays], packs: launched[:packs], skipped_packs: launched[:skipped_packs], prompts: launched[:prompts]).first
+        pane = row.dig("play", "pane") || row["pane"]
         {ok: row["outcome"] != "failed", reason: row["reason"], message: row["message"], pane: pane}
       end
     end

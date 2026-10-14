@@ -367,9 +367,14 @@ module CLITestHelpers
       @error = error
     end
 
+    def returning(pane_id)
+      @pane_id = pane_id
+    end
+
     def call(project, command, **opts)
       @calls << {project: project, command: command, **opts}
       raise @error if @error
+      @pane_id
     end
   end
 

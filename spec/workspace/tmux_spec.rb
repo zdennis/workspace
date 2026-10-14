@@ -727,9 +727,9 @@ RSpec.describe Workspace::Tmux do
   describe "#split_window" do
     let(:tmux) { described_class.new(config: config) }
 
-    def stub_split(target, stdout: "3\n", success: true)
+    def stub_split(target, stdout: "3 %23\n", success: true)
       allow(Open3).to receive(:capture3)
-        .with("tmux", "split-window", anything, "-t", target, "-P", "-F", "\#{pane_index}")
+        .with("tmux", "split-window", anything, "-t", target, "-P", "-F", "\#{pane_index} \#{pane_id}")
         .and_return([stdout, "", double(success?: success)])
     end
 
@@ -738,7 +738,7 @@ RSpec.describe Workspace::Tmux do
 
       expect(tmux.split_window("my-session")).to eq(3)
       expect(Open3).to have_received(:capture3)
-        .with("tmux", "split-window", "-v", "-t", "=my-session:0", "-P", "-F", "\#{pane_index}")
+        .with("tmux", "split-window", "-v", "-t", "=my-session:0", "-P", "-F", "\#{pane_index} \#{pane_id}")
     end
 
     it "splits horizontally (side-by-side) when vertical: true" do
@@ -746,7 +746,7 @@ RSpec.describe Workspace::Tmux do
 
       expect(tmux.split_window("my-session", vertical: true)).to eq(3)
       expect(Open3).to have_received(:capture3)
-        .with("tmux", "split-window", "-h", "-t", "=my-session:0", "-P", "-F", "\#{pane_index}")
+        .with("tmux", "split-window", "-h", "-t", "=my-session:0", "-P", "-F", "\#{pane_index} \#{pane_id}")
     end
 
     it "targets a specific pane when pane: is given" do
@@ -755,13 +755,31 @@ RSpec.describe Workspace::Tmux do
       tmux.split_window("my-session", pane: 2)
 
       expect(Open3).to have_received(:capture3)
-        .with("tmux", "split-window", "-v", "-t", "=my-session:0.2", "-P", "-F", "\#{pane_index}")
+        .with("tmux", "split-window", "-v", "-t", "=my-session:0.2", "-P", "-F", "\#{pane_index} \#{pane_id}")
     end
 
     it "returns nil when split fails" do
       stub_split("=my-session:0", stdout: "", success: false)
 
       expect(tmux.split_window("my-session")).to be_nil
+    end
+
+    it "split_pane returns the new pane index and id" do
+      stub_split("=my-session:0")
+
+      expect(tmux.split_pane("my-session")).to eq({index: 3, id: "%23"})
+    end
+
+    it "split_pane gives a nil id when tmux prints only the index" do
+      stub_split("=my-session:0", stdout: "3\n")
+
+      expect(tmux.split_pane("my-session")).to eq({index: 3, id: nil})
+    end
+
+    it "split_pane returns nil when the split fails" do
+      stub_split("=my-session:0", stdout: "", success: false)
+
+      expect(tmux.split_pane("my-session")).to be_nil
     end
 
     it "returns nil when tmux reports no pane index" do
