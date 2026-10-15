@@ -4455,9 +4455,11 @@ module Workspace
         opts.separator ""
         opts.separator "Allowed keys: #{ConfigSchema.settable_names.join(", ")}"
         opts.separator ""
-        opts.separator "Note: this rewrites the whole YAML file, so YAML.dump drops"
-        opts.separator "any comments already in it. A file that isn't valid YAML is"
-        opts.separator "left untouched and the command fails; fix or remove it first."
+        opts.separator "Note: this rewrites the whole YAML file, so comments already in it"
+        opts.separator "are not kept. The old file is always copied to a .workspace-backup-*"
+        opts.separator "file first; when it had a comment, a note on stderr names the backup"
+        opts.separator "and the --json row has comments_preserved: false. A file that isn't"
+        opts.separator "valid YAML is left untouched and the command fails; fix or remove it first."
         opts.separator ""
         opts.separator "Options:"
         opts.on("--project NAME", "--name NAME", "Project to configure instead of the one inferred from cwd (--name is the same)") { |v| project = v }
@@ -4491,7 +4493,7 @@ module Workspace
 
       run_action("config set", json: json) do
         name = @config_command.set(key, value, project: project, cwd: @working_dir)
-        {results: json ? [action_row(name, "set", key: key, value: value, global: name.nil?)] : []}
+        {results: json ? [action_row(name, "set", key: key, value: value, global: name.nil?, comments_preserved: @config_command.last_write.comments_preserved)] : []}
       end
     end
 

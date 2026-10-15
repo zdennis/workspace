@@ -9,6 +9,18 @@ module Workspace
     # unused config. The allowlist, value checks and restart notes come from
     # {Workspace::ConfigSchema}.
     class Config
+      # What the last {#set} or {#unset} did to the file, for the CLI's JSON row.
+      #
+      # @!attribute comments_preserved
+      #   @return [Boolean] false when the old text had a comment the rewrite dropped
+      # @!attribute backup
+      #   @return [String, nil] where the old file was copied, nil when there was none
+      Write = Struct.new(:comments_preserved, :backup)
+
+      # TODO(phase 5): replace last_write with the return value
+      # @return [Write, nil] the outcome of the last write; nil before any
+      attr_reader :last_write
+
       # @param project_settings [Workspace::ProjectSettings] reads/writes project YAML
       # @param lineage [Workspace::WorkspaceLineage] resolves a project from cwd (worktree -> parent)
       # @param file_backup [Workspace::FileBackup] backs up the config file before it's rewritten
@@ -45,8 +57,9 @@ module Workspace
         name = config_name(key, project, lineage)
         path = @project_settings.project_config_path(name)
         with_config_lock(path) do
-          @file_backup.backup(path)
+          old_text = read_text(path)
           data = load_for_edit(name)
+          backup = @file_backup.backup(path)
           segments = key.split(".")
           cursor = data
           segments[0..-2].each do |segment|
@@ -55,6 +68,7 @@ module Workspace
           end
           cursor[segments.last] = value
           write(path, data)
+          note_write(path, old_text, backup)
         end
         record_change("project", "set", key, name)
         @output.puts "Set #{key} = #{value} for '#{name}'."
@@ -104,7 +118,7 @@ module Workspace
         validate_key!(key)
 
         if ConfigSchema.key(key).global?
-          @project_settings.with_global_lock do |data|
+          with_global_backup do |data|
             segments = key.split(".")
             cursor = segments[0..-2].reduce(data) { |node, segment| node.is_a?(Hash) ? node[segment] : nil }
             cursor.delete(segments.last) if cursor.is_a?(Hash)
@@ -118,12 +132,14 @@ module Workspace
         name = config_name(key, project, @lineage.resolve(cwd: cwd))
         path = @project_settings.project_config_path(name)
         with_config_lock(path) do
-          @file_backup.backup(path)
+          old_text = read_text(path)
           data = load_for_edit(name)
+          backup = @file_backup.backup(path)
           segments = key.split(".")
           cursor = segments[0..-2].reduce(data) { |node, segment| node.is_a?(Hash) ? node[segment] : nil }
           cursor.delete(segments.last) if cursor.is_a?(Hash)
           write(path, data)
+          note_write(path, old_text, backup)
         end
         record_change("project", "unset", key, name)
         @output.puts "Unset #{key} for '#{name}'."
@@ -167,7 +183,7 @@ module Workspace
       end
 
       def set_global(key, value)
-        @project_settings.with_global_lock do |data|
+        with_global_backup do |data|
           segments = key.split(".")
           cursor = data
           segments[0..-2].each do |segment|
@@ -178,6 +194,69 @@ module Workspace
           data
         end
         @output.puts "Set #{key} = #{value}."
+      end
+
+      # Runs a global edit under {ProjectSettings#with_global_lock}, backing the
+      # file up first (after it parsed, so a broken file is refused untouched).
+      def with_global_backup
+        path = @project_settings.global_config_path
+        @project_settings.with_global_lock do |data|
+          old_text = read_text(path)
+          backup = @file_backup.backup(path)
+          result = yield(data)
+          # with_global_lock saves result right after this block returns.
+          note_write(path, old_text, backup)
+          result
+        end
+      end
+
+      def read_text(path)
+        File.exist?(path) ? File.read(path) : ""
+      end
+
+      # Records the write's outcome and, when a comment was dropped, says so on
+      # stderr (never stdout, which `--json` keeps for its one document).
+      def note_write(path, old_text, backup)
+        preserved = !comments?(old_text)
+        @last_write = Write.new(preserved, backup)
+        return if preserved
+        @error_output.puts "Note: comments in #{path} were not kept; backup at #{backup}"
+      end
+
+      # Whether +text+ has a YAML comment: a `#` at the start of a line or after
+      # whitespace, outside a quoted scalar. A quote only opens at the start of a
+      # value (after whitespace, `[`, `{` or `,`), so an apostrophe inside a plain
+      # word is not one. Lines inside a block scalar (`|`, `>`) are not told
+      # apart, so a `#` line in one counts: a false positive only adds a note.
+      #
+      # Other writers drop comments too and are out of scope here:
+      # HookInstaller#preserve_existing_statusline_command, Commands::Layout and
+      # the ProjectSettings#save callers (notes_setup, start's hook seeding,
+      # ensure_exists).
+      def comments?(text)
+        text.each_line.any? do |line|
+          quote = nil
+          prev = nil
+          escaped = false
+          line.each_char.any? do |char|
+            hit = false
+            if escaped
+              escaped = false
+            elsif quote
+              if quote == '"' && char == "\\"
+                escaped = true
+              elsif char == quote
+                quote = nil
+              end
+            elsif ['"', "'"].include?(char) && (prev.nil? || prev =~ /[\s\[{,]/)
+              quote = char
+            elsif char == "#" && (prev.nil? || prev =~ /\s/)
+              hit = true
+            end
+            prev = char
+            hit
+          end
+        end
       end
 
       # Guards the load -> mutate -> write cycle with an exclusive flock on a

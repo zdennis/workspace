@@ -4,13 +4,13 @@ require "tmpdir"
 require "fileutils"
 
 RSpec.describe Workspace::Commands::Config do
-  def build_command(output: StringIO.new)
+  def build_command(output: StringIO.new, error_output: StringIO.new)
     dir = Dir.mktmpdir("ws-config")
     fake_path_config = Struct.new(:workspace_config_dir).new(dir)
     project_settings = Workspace::ProjectSettings.new(config: fake_path_config)
     lineage = Workspace::WorkspaceLineage.new
     file_backup = Workspace::FileBackup.new(output: output)
-    command = described_class.new(project_settings: project_settings, lineage: lineage, file_backup: file_backup, output: output)
+    command = described_class.new(project_settings: project_settings, lineage: lineage, file_backup: file_backup, output: output, error_output: error_output)
     [command, project_settings]
   end
 
@@ -29,6 +29,7 @@ RSpec.describe Workspace::Commands::Config do
       expect { command.set("dev.up", "x", project: "broken", cwd: Dir.pwd) }
         .to raise_error(Workspace::ConfigParseError, /Cannot parse #{Regexp.escape(path)}/)
       expect(File.read(path)).to eq("hooks: [unclosed\n\tbad: yaml")
+      expect(Dir.glob("#{path}.workspace-backup-*")).to be_empty
     end
 
     it "set tells the user to fix or remove the file" do
@@ -45,6 +46,7 @@ RSpec.describe Workspace::Commands::Config do
 
       expect { command.unset("dev.up", project: "broken", cwd: Dir.pwd) }.to raise_error(Workspace::ConfigParseError)
       expect(File.read(path)).to eq("hooks: [unclosed\n\tbad: yaml")
+      expect(Dir.glob("#{path}.workspace-backup-*")).to be_empty
     end
 
     it "set refuses a global key when the global file is unparseable" do
@@ -772,6 +774,176 @@ RSpec.describe Workspace::Commands::Config do
       threads.each(&:join)
 
       expect(%w[cmd-0 cmd-1 cmd-2 cmd-3 cmd-4]).to include(project_settings.load_global.dig("statusline", "command"))
+    end
+  end
+
+  describe "backups and comment loss" do
+    let(:error_output) { StringIO.new }
+    let(:project_dir) { Dir.mktmpdir("ws-config-project") }
+
+    def project_path(project_settings)
+      project_settings.project_config_path(File.basename(project_dir))
+    end
+
+    it "backs up the global file before a global set and unset" do
+      command, project_settings = build_command(error_output: error_output)
+      path = project_settings.global_config_path
+      project_settings.save_global({"context" => {"source" => "statusline"}})
+
+      command.set("context.source", "scrape")
+      expect(Dir.glob("#{path}.workspace-backup-*").size).to eq(1)
+      command.unset("context.source")
+      expect(Dir.glob("#{path}.workspace-backup-*").size).to eq(2)
+      expect(error_output.string).to be_empty
+      expect(command.last_write.comments_preserved).to be(true)
+    end
+
+    it "notes the lost comment, naming the backup, on a project set" do
+      command, project_settings = build_command(error_output: error_output)
+      path = project_path(project_settings)
+      FileUtils.mkdir_p(File.dirname(path))
+      File.write(path, "# my notes\ndev:\n  up: bin/dev\n")
+
+      command.set("dev.up", "bin/dev2", cwd: project_dir)
+
+      backup = Dir.glob("#{path}.workspace-backup-*").first
+      expect(File.read(backup)).to include("# my notes")
+      expect(error_output.string).to eq("Note: comments in #{path} were not kept; backup at #{backup}\n")
+      expect(command.last_write.comments_preserved).to be(false)
+      expect(command.last_write.backup).to eq(backup)
+    end
+
+    it "notes the lost comment on a global set" do
+      command, project_settings = build_command(error_output: error_output)
+      path = project_settings.global_config_path
+      FileUtils.mkdir_p(File.dirname(path))
+      File.write(path, "context:\n  source: statusline # why\n")
+
+      command.set("context.source", "scrape")
+
+      expect(error_output.string).to match(/\ANote: comments in #{Regexp.escape(path)} were not kept; backup at #{Regexp.escape(path)}\.workspace-backup-/)
+      expect(command.last_write.comments_preserved).to be(false)
+    end
+
+    it "notes the lost comment on unset" do
+      command, project_settings = build_command(error_output: error_output)
+      path = project_path(project_settings)
+      FileUtils.mkdir_p(File.dirname(path))
+      File.write(path, "dev:\n  up: bin/dev  # start\n")
+
+      command.unset("dev.up", cwd: project_dir)
+
+      expect(error_output.string).to include("comments in #{path} were not kept")
+      expect(command.last_write.comments_preserved).to be(false)
+    end
+
+    it "prints no note for a file without comments" do
+      command, project_settings = build_command(error_output: error_output)
+      project_settings.save(File.basename(project_dir), {"dev" => {"up" => "bin/dev"}})
+
+      command.set("dev.up", "bin/dev2", cwd: project_dir)
+      command.unset("dev.up", cwd: project_dir)
+
+      expect(error_output.string).to be_empty
+      expect(command.last_write.comments_preserved).to be(true)
+    end
+
+    it "ignores a # inside a quoted scalar or glued to a word" do
+      command, project_settings = build_command(error_output: error_output)
+      path = project_path(project_settings)
+      FileUtils.mkdir_p(File.dirname(path))
+      File.write(path, "dev:\n  up: \"echo # hi\"\nalerts:\n  notify: 'say #1'\n  idle_after: a#b\n")
+
+      command.set("dev.up", "bin/dev2", cwd: project_dir)
+
+      expect(error_output.string).to be_empty
+      expect(command.last_write.comments_preserved).to be(true)
+    end
+
+    it "counts a comment after a quoted value ending in an escaped backslash" do
+      command, project_settings = build_command(error_output: error_output)
+      path = project_path(project_settings)
+      FileUtils.mkdir_p(File.dirname(path))
+      File.write(path, "a: \"b\\\\\" # c\n")
+
+      command.set("dev.up", "bin/dev", cwd: project_dir)
+
+      expect(command.last_write.comments_preserved).to be(false)
+    end
+
+    it "counts a comment-only file" do
+      command, project_settings = build_command(error_output: error_output)
+      path = project_path(project_settings)
+      FileUtils.mkdir_p(File.dirname(path))
+      File.write(path, "# just a note\n")
+
+      command.set("dev.up", "bin/dev", cwd: project_dir)
+
+      expect(command.last_write.comments_preserved).to be(false)
+      expect(error_output.string).to include("comments in #{path} were not kept")
+    end
+
+    it "does not count a # inside a plain value as a comment" do
+      command, project_settings = build_command(error_output: error_output)
+      path = project_path(project_settings)
+      FileUtils.mkdir_p(File.dirname(path))
+      File.write(path, "alerts:\n  notify: open http://x/#y\n")
+
+      command.set("dev.up", "bin/dev", cwd: project_dir)
+
+      expect(command.last_write.comments_preserved).to be(true)
+      expect(error_output.string).to be_empty
+    end
+
+    it "takes no backup and prints no note for a file that does not exist yet" do
+      command, project_settings = build_command(error_output: error_output)
+      path = project_path(project_settings)
+
+      command.set("dev.up", "bin/dev", cwd: project_dir)
+
+      expect(Dir.glob("#{path}.workspace-backup-*")).to be_empty
+      expect(error_output.string).to be_empty
+      expect(command.last_write.backup).to be_nil
+      expect(command.last_write.comments_preserved).to be(true)
+    end
+
+    it "sets last_write on every successful project and global set and unset" do
+      command, project_settings = build_command(error_output: error_output)
+      project_settings.save_global({})
+      [
+        -> { command.set("dev.up", "bin/dev", cwd: project_dir) },
+        -> { command.unset("dev.up", cwd: project_dir) },
+        -> { command.unset("dev.up", cwd: project_dir) },
+        -> { command.set("context.source", "scrape") },
+        -> { command.unset("context.source") },
+        -> { command.unset("context.source") }
+      ].each do |step|
+        command.instance_variable_set(:@last_write, nil)
+        step.call
+        expect(command.last_write).to be_a(Workspace::Commands::Config::Write)
+      end
+    end
+
+    it "still writes through a temp file and rename, leaving no temp file" do
+      command, project_settings = build_command(error_output: error_output)
+      path = project_path(project_settings)
+
+      expect(File).to receive(:rename).with(/\A#{Regexp.escape(path)}\.tmp\d+\z/, path).and_call_original
+      command.set("dev.up", "bin/dev", cwd: project_dir)
+
+      expect(Dir.glob("#{path}.tmp*")).to be_empty
+    end
+
+    it "takes no backup and leaves an unparseable global file untouched" do
+      command, project_settings = build_command(error_output: error_output)
+      path = project_settings.global_config_path
+      FileUtils.mkdir_p(File.dirname(path))
+      File.write(path, "context: [unclosed\n")
+
+      expect { command.set("context.source", "scrape") }.to raise_error(Workspace::ConfigParseError)
+
+      expect(File.read(path)).to eq("context: [unclosed\n")
+      expect(Dir.glob("#{path}.workspace-backup-*")).to be_empty
     end
   end
 

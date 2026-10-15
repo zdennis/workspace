@@ -8401,21 +8401,41 @@ RSpec.describe Workspace::CLI do
 
     describe "config set" do
       it "reports the project and key set" do
-        config_command = double("config", set: "api")
+        config_command = double("config", set: "api", last_write: Workspace::Commands::Config::Write.new(true, nil))
         cli, raw, = action_cli(config_command: config_command)
 
         cli.run(["config", "set", "dev.up", "bin/dev", "--name", "api", "--json"])
 
-        expect(parse_one(raw)["results"]).to eq([{"workspace" => "api", "outcome" => "set", "reason" => nil, "message" => nil, "key" => "dev.up", "value" => "bin/dev", "global" => false}])
+        expect(parse_one(raw)["results"]).to eq([{"workspace" => "api", "outcome" => "set", "reason" => nil, "message" => nil, "key" => "dev.up", "value" => "bin/dev", "global" => false, "comments_preserved" => true}])
       end
 
       it "marks a global key" do
-        config_command = double("config", set: nil)
+        config_command = double("config", set: nil, last_write: Workspace::Commands::Config::Write.new(true, nil))
         cli, raw, = action_cli(config_command: config_command)
 
         cli.run(["config", "set", "launch.headless", "true", "--json"])
 
         expect(parse_one(raw)["results"].first).to include("workspace" => nil, "global" => true)
+      end
+
+      it "keeps stdout to one JSON document and puts the comment note on stderr" do
+        dir = Dir.mktmpdir("ws-config-cli")
+        settings = Workspace::ProjectSettings.new(config: Struct.new(:workspace_config_dir).new(dir))
+        path = settings.project_config_path("api")
+        FileUtils.mkdir_p(File.dirname(path))
+        File.write(path, "# keep me\ndev:\n  up: old\n")
+        raw = StringIO.new
+        gate = Workspace::OutputGate.new(raw)
+        err = StringIO.new
+        config_command = Workspace::Commands::Config.new(project_settings: settings, lineage: Workspace::WorkspaceLineage.new,
+          file_backup: Workspace::FileBackup.new(output: err), output: gate, error_output: err)
+        cli, = build_test_cli(output: gate, error_output: err, config_command: config_command)
+
+        cli.run(["config", "set", "dev.up", "bin/dev", "--name", "api", "--json"])
+
+        expect(parse_one(raw)["results"].first).to include("comments_preserved" => false)
+        expect(err.string).to include("Note: comments in #{path} were not kept")
+        expect(raw.string).not_to include("Note:")
       end
     end
   end
