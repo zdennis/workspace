@@ -881,6 +881,11 @@ module CLITestHelpers
       result(key, project, scope)
     end
 
+    def keys(query: nil, settable: false, json: false)
+      @calls << {action: :keys, query: query, settable: settable, json: json}
+      []
+    end
+
     def edit(project: nil, scope: nil, cwd: Dir.pwd)
       @calls << {action: :edit, project: project, scope: scope, cwd: cwd}
       layer = (scope == "global") ? "global" : "project"

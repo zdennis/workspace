@@ -70,17 +70,23 @@ module Workspace
     # @!attribute min [Numeric, nil] smallest accepted value, in `unit`
     # @!attribute max [Numeric, nil] largest accepted value, in `unit`
     # @!attribute unit [String, nil] "seconds" for every :duration key
+    # @!attribute examples [Array<String>] sample values for `config keys` and the docs, for a key whose value format
+    #   isn't obvious; empty by default (see {Key#example_values})
     Key = Struct.new(:name, :scope, :doc, :default, :restart, :settable, :parser, :resolve, :applies, :sensitive, :type,
-      :overridable_in, :choices, :min, :max, :unit, keyword_init: true) do
+      :overridable_in, :choices, :min, :max, :unit, :examples, keyword_init: true) do
       def initialize(scope:, restart: nil, resolve: nil, applies: nil, sensitive: false, type: :text,
-        overridable_in: nil, choices: nil, unit: nil, **rest)
+        overridable_in: nil, choices: nil, unit: nil, examples: nil, **rest)
         resolve ||= (scope == :global) ? :global : :parent
         applies ||= restart ? :daemon_restart : :next_call
         overridable_in ||= LEGACY_LAYERS.fetch(resolve)
         choices ||= DEFAULT_CHOICES[type]
         unit ||= "seconds" if type == :duration
+        examples ||= []
         super
       end
+
+      # @return [Array<String>] sample values: the declared `examples`, else the `choices`, else none
+      def example_values = examples.empty? ? Array(choices) : examples
 
       # @param layer [Symbol, String] :global, :project or :worktree
       # @return [Boolean] whether the key may be set in that layer
@@ -266,17 +272,17 @@ module Workspace
     # then keys that are documented but edited by hand.
     KEYS = [
       # dev.up/ready and the timeouts run in the caller's checkout: an old branch may need its own start, probe or wait.
-      Key.new(name: "dev.up", scope: :project, resolve: :layered, overridable_in: [:project, :worktree], type: :command, sensitive: true, settable: true, doc: "Command that starts the project's dev environment"),
-      Key.new(name: "dev.ready", scope: :project, resolve: :layered, overridable_in: [:project, :worktree], type: :command, sensitive: true, settable: true, doc: "Readiness probe for the dev environment"),
+      Key.new(name: "dev.up", scope: :project, resolve: :layered, overridable_in: [:project, :worktree], type: :command, sensitive: true, settable: true, examples: ["./bin/dev"], doc: "Command that starts the project's dev environment"),
+      Key.new(name: "dev.ready", scope: :project, resolve: :layered, overridable_in: [:project, :worktree], type: :command, sensitive: true, settable: true, examples: ["curl -sf http://localhost:3000/up"], doc: "Readiness probe for the dev environment"),
       # dev.stop_timeout/kill_grace stop the one shared holder from any checkout, so there is one value per lock: project only.
-      Key.new(name: "dev.stop_timeout", scope: :project, type: :duration, settable: true, default: 20, parser: DURATION,
+      Key.new(name: "dev.stop_timeout", scope: :project, type: :duration, settable: true, examples: ["20s", "1m"], default: 20, parser: DURATION,
         doc: "Grace period before force-stopping the dev environment, e.g. `20s` or `20`"),
       # How long this caller waits, so a worktree may differ.
-      Key.new(name: "dev.startup_timeout", scope: :project, resolve: :layered, overridable_in: [:project, :worktree], type: :duration, settable: true, default: 30, parser: POSITIVE_DURATION,
+      Key.new(name: "dev.startup_timeout", scope: :project, resolve: :layered, overridable_in: [:project, :worktree], type: :duration, settable: true, examples: ["30s", "1m"], default: 30, parser: POSITIVE_DURATION,
         doc: "How long `dev up` waits for the wrapper to take a free lock, e.g. `30s` (default `30s`)"),
-      Key.new(name: "dev.ready_timeout", scope: :project, resolve: :layered, overridable_in: [:project, :worktree], type: :duration, settable: true, default: 120, parser: POSITIVE_DURATION,
+      Key.new(name: "dev.ready_timeout", scope: :project, resolve: :layered, overridable_in: [:project, :worktree], type: :duration, settable: true, examples: ["2m", "90s"], default: 120, parser: POSITIVE_DURATION,
         doc: "How long `dev up` waits for the `dev.ready` check to pass, e.g. `2m` (default `120s`)"),
-      Key.new(name: "dev.kill_grace", scope: :project, type: :duration, settable: true, default: 2, max: MAX_KILL_GRACE,
+      Key.new(name: "dev.kill_grace", scope: :project, type: :duration, settable: true, examples: ["2s", "10s"], default: 2, max: MAX_KILL_GRACE,
         parser: ->(value) { Duration.parse_capped(value, max: MAX_KILL_GRACE) },
         doc: "How long `lock clear devenv`, `dev down` and `dev up --force` wait for a SIGKILLed dev environment's process group to disappear before keeping its lock (default `2s`, capped at `60s`)"),
       # dev.release_on_session_end/instructions are personal preferences; a global default is useful.
@@ -285,21 +291,21 @@ module Workspace
       Key.new(name: "dev.instructions", scope: :project, resolve: :layered, overridable_in: [:global, :project, :worktree], type: :boolean, settable: true, default: true, parser: BOOLEAN,
         doc: "`true` or `false`: whether `start` and `launch` send the agent the built-in `dev` pack (queue for the shared dev environment before testing, release it when done) when the project sets `dev.up` (default `true`); `--no-packs` skips it for one run. A workflow step that declares `uses: [devenv]` never gets it"),
       # locks.* are read once per shared lock store (one per git common dir, shared by all worktrees): project only.
-      Key.new(name: "locks.idle_grace", scope: :project, type: :duration, settable: true, default: 300, parser: POSITIVE_DURATION,
+      Key.new(name: "locks.idle_grace", scope: :project, type: :duration, settable: true, examples: ["5m", "10m"], default: 300, parser: POSITIVE_DURATION,
         doc: "How long an idle agent keeps a lock before the first waiter may take it over (default `5m`; see [`workspace lock`](README.lock.md))"),
-      Key.new(name: "locks.ps_timeout", scope: :project, type: :duration, settable: true, default: 5, restart: true, min: MIN_PS_TIMEOUT, max: MAX_PS_TIMEOUT,
+      Key.new(name: "locks.ps_timeout", scope: :project, type: :duration, settable: true, examples: ["5s", "10s"], default: 5, restart: true, min: MIN_PS_TIMEOUT, max: MAX_PS_TIMEOUT,
         parser: ->(value) { Duration.parse_ranged(value, min: MIN_PS_TIMEOUT, max: MAX_PS_TIMEOUT) },
         doc: "How long to wait for `ps` when reading the process table for lock/session checks, before giving up (default `5s`, must be between `1s` and `60s`)"),
-      Key.new(name: "locks.reap_interval", scope: :project, type: :duration, settable: true, default: 30, restart: true, parser: POSITIVE_DURATION,
+      Key.new(name: "locks.reap_interval", scope: :project, type: :duration, settable: true, examples: ["30s", "1m"], default: 30, restart: true, parser: POSITIVE_DURATION,
         doc: "How often the session-monitor daemon sweeps for stale lock holders and waiters (default `30s`)"),
       # alerts, agentd and handoff are per-person habits for a per-workspace daemon; a machine-wide default is the common case.
-      Key.new(name: "alerts.notify", scope: :project, resolve: :layered, overridable_in: [:global, :project, :worktree], type: :command, sensitive: true, settable: true, restart: true, parser: COMMAND,
+      Key.new(name: "alerts.notify", scope: :project, resolve: :layered, overridable_in: [:global, :project, :worktree], type: :command, sensitive: true, settable: true, examples: ["say 'agent needs you'"], restart: true, parser: COMMAND,
         doc: "Command the session-monitor daemon runs when an agent pane starts waiting on a person or stays idle past `alerts.idle_after` (unset: no alerts; see [`workspace sessions`](README.sessions.md#alerts))"),
-      Key.new(name: "alerts.idle_after", scope: :project, resolve: :layered, overridable_in: [:global, :project, :worktree], type: :duration, settable: true, default: 600, restart: true, parser: POSITIVE_DURATION,
+      Key.new(name: "alerts.idle_after", scope: :project, resolve: :layered, overridable_in: [:global, :project, :worktree], type: :duration, settable: true, examples: ["10m", "30m"], default: 600, restart: true, parser: POSITIVE_DURATION,
         doc: "How long an agent pane may sit idle before `alerts.notify` runs (default `10m`)"),
-      Key.new(name: "agentd.poll_interval", scope: :project, resolve: :layered, overridable_in: [:global, :project, :worktree], type: :duration, settable: true, default: 10, restart: true, parser: POSITIVE_DURATION,
+      Key.new(name: "agentd.poll_interval", scope: :project, resolve: :layered, overridable_in: [:global, :project, :worktree], type: :duration, settable: true, examples: ["10s", "30s"], default: 10, restart: true, parser: POSITIVE_DURATION,
         doc: "How often the session-monitor daemon scans panes for agent state, alerts and stale locks (default `10s`)"),
-      Key.new(name: "handoff.threshold", scope: :project, resolve: :layered, overridable_in: [:global, :project, :worktree], type: :percent, settable: true, default: 11, min: 1, max: 100, parser: PERCENT,
+      Key.new(name: "handoff.threshold", scope: :project, resolve: :layered, overridable_in: [:global, :project, :worktree], type: :percent, settable: true, examples: ["11", "20"], default: 11, min: 1, max: 100, parser: PERCENT,
         doc: "Context-usage percent, 1 to 100, that triggers a handoff in [`workspace handoff check`](README.handoff.md) (default `11`)"),
       Key.new(name: "handoff.check_prompt", scope: :project, resolve: :layered, overridable_in: [:global, :project, :worktree], settable: true, default: HANDOFF_CHECK_PROMPT, parser: PROMPT,
         doc: "Overrides the built-in save-state prompt `handoff check` sends when it names a doc (the default is that text); must not be blank (see [`workspace handoff`](README.handoff.md))"),
@@ -308,34 +314,34 @@ module Workspace
       Key.new(name: "handoff.auto", scope: :project, resolve: :layered, overridable_in: [:global, :project, :worktree], type: :boolean, settable: true, default: false, parser: BOOLEAN,
         doc: "`true` or `false`: whether `start` and `launch` send a Claude Code agent the built-in `handoff` pack, which makes it run [`workspace handoff check`](README.handoff.md) after every task and hand off to a fresh conversation itself (default `false`); `--handoff` and `--no-handoff` override it for one run"),
       # commands.* are repo-specific (no global value makes sense); a branch may change the command.
-      Key.new(name: "commands.test", scope: :project, resolve: :layered, overridable_in: [:project, :worktree], type: :command, sensitive: true, settable: true, parser: COMMAND,
+      Key.new(name: "commands.test", scope: :project, resolve: :layered, overridable_in: [:project, :worktree], type: :command, sensitive: true, settable: true, examples: ["bundle exec rspec"], parser: COMMAND,
         doc: "Command that runs the project's tests, e.g. `bundle exec rspec`; [`workspace instructions compose`](README.instructions.md) names it in the `commits` pack"),
-      Key.new(name: "commands.lint", scope: :project, resolve: :layered, overridable_in: [:project, :worktree], type: :command, sensitive: true, settable: true, parser: COMMAND,
+      Key.new(name: "commands.lint", scope: :project, resolve: :layered, overridable_in: [:project, :worktree], type: :command, sensitive: true, settable: true, examples: ["bundle exec standardrb lib/ spec/"], parser: COMMAND,
         doc: "Command that lints the project, e.g. `bundle exec standardrb lib/ spec/`; named in the `commits` pack beside `commands.test`"),
       # notes.dir is one checkout's identity: its own file only, never inherited.
-      Key.new(name: "notes.dir", scope: :project, overridable_in: [:project, :worktree], type: :path, settable: true, parser: ABSOLUTE_PATH, resolve: :own_then_parent,
+      Key.new(name: "notes.dir", scope: :project, overridable_in: [:project, :worktree], type: :path, settable: true, examples: ["/Users/me/notes/api-fix"], parser: ABSOLUTE_PATH, resolve: :own_then_parent,
         doc: "Directory where one workspace's notes are kept, as an absolute path; other tools read it to know where to store notes. A worktree reads only its own value (set it with `--name`), never the project's; the main checkout reads the project's (unset: the directory `notes.default_dir` gives it)"),
       # notes.default_dir is a machine-wide rule such as ~/notes/{workspace}; a worktree's own place is notes.dir.
-      Key.new(name: "notes.default_dir", scope: :project, resolve: :layered, overridable_in: [:global, :project], type: :path, settable: true, parser: NOTES_DEFAULT_DIR,
+      Key.new(name: "notes.default_dir", scope: :project, resolve: :layered, overridable_in: [:global, :project], type: :path, settable: true, examples: ["~/notes/{workspace}", "tmp/workspace-notes"], parser: NOTES_DEFAULT_DIR,
         doc: "The rule that gives each workspace its notes directory when it has no `notes.dir`: an absolute path, `~/…`, or a path relative to the worktree with no `..`; `{workspace}` and `{branch}` are filled in per workspace, so give an outside-the-repo path one or the other (unset: `tmp/workspace-notes` inside the worktree)"),
       # notes.instructions and plan.stall_seconds are preferences.
       Key.new(name: "notes.instructions", scope: :project, resolve: :layered, overridable_in: [:global, :project, :worktree], type: :boolean, settable: true, default: true, parser: BOOLEAN,
         doc: "`true` or `false`: whether `start` and `launch` send the agent the built-in `notes` pack (where working notes go) with its first prompt (default `true`); `--no-packs` skips it for one run"),
-      Key.new(name: "plan.stall_seconds", scope: :project, resolve: :layered, overridable_in: [:global, :project, :worktree], type: :duration, settable: true, default: 300, parser: POSITIVE_DURATION,
+      Key.new(name: "plan.stall_seconds", scope: :project, resolve: :layered, overridable_in: [:global, :project, :worktree], type: :duration, settable: true, examples: ["300", "10m"], default: 300, parser: POSITIVE_DURATION,
         doc: "How long the agent pane that owns a workspace's plan may sit idle before [`workspace plan status`](README.plan.md) reads the plan as `stalled` (default `5m`)"),
       # statusline.command, context.*, launch.headless describe the machine and are read where no workspace is known: global only.
-      Key.new(name: "statusline.command", scope: :global, type: :command, sensitive: true, settable: true,
+      Key.new(name: "statusline.command", scope: :global, type: :command, sensitive: true, settable: true, examples: ["~/bin/my-statusline"],
         doc: "Delegates [`workspace statusline`](README.statusline.md) rendering to another command instead of the built-in renderer"),
       Key.new(name: "context.source", scope: :global, type: :enum, settable: true, parser: CONTEXT_SOURCE,
         doc: "`statusline` (default) or `scrape` — where `workspace sessions` reads a pane's context usage; see [`workspace statusline`](README.statusline.md)"),
-      Key.new(name: "context.pattern", scope: :global, type: :regex, settable: true, parser: ONE_GROUP_REGEX,
+      Key.new(name: "context.pattern", scope: :global, type: :regex, settable: true, examples: ['(\d+)% used'], parser: ONE_GROUP_REGEX,
         doc: "Regex with exactly one capture group, used when `context.source` is `scrape`"),
       Key.new(name: "context.patterns", scope: :global, type: :mapping, settable: false,
         doc: "Edited in the file by hand: a mapping of agent kind (`claude`, `codex`, ...) to a regex with exactly one capture group that reads the percent of the context window used from that agent's pane. A kind listed here is read from its pane whatever `context.source` says; Codex has a built-in reading of its \"N% context left\" line. `context.pattern` stays the fallback in `scrape` mode for a kind with neither. See [`handoff`](README.handoff.md#codex)"),
       Key.new(name: "launch.headless", scope: :global, type: :boolean, settable: true, parser: HEADLESS,
         doc: "`true` or `false`: whether `launch`, `start` and `doctor` run [headless](README.launch.md#headless) on this machine when no `--headless`/`--no-headless` flag is given. Unset, they pick headless off macOS, without `osascript`, or when `CI` is set"),
       # Packs suit projects differently, and compose already knows the cwd.
-      Key.new(name: "workflows.defaults.include", scope: :global, resolve: :layered, overridable_in: [:global, :project, :worktree], type: :text, settable: true, default: DEFAULT_PACKS, parser: PACK_LIST,
+      Key.new(name: "workflows.defaults.include", scope: :global, resolve: :layered, overridable_in: [:global, :project, :worktree], type: :text, settable: true, examples: ["binding, commits"], default: DEFAULT_PACKS, parser: PACK_LIST,
         doc: "Instruction packs every workflow step and [`workspace instructions compose`](README.instructions.md) start with, " \
           "as names separated by commas (default `binding, orchestrator, commits`)"),
       Key.new(name: "hooks", scope: :global, type: :mapping, sensitive: true, resolve: :none, settable: false, doc: "Global hooks applied to all projects"),

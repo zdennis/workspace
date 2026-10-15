@@ -29,9 +29,9 @@ module Workspace
     def self.keys_table
       rows = ConfigSchema.settable.map do |key|
         prefix = "Global. " if key.overridable_in == [:global]
-        "| `#{key.name}` | #{layers_cell(key)} | #{prefix}#{key.doc} |"
+        "| `#{key.name}` | #{layers_cell(key)} | #{prefix}#{key.doc} | #{examples_cell(key)} |"
       end
-      ["| Key | Layers | Description |", "|-----|--------|-------------|", *rows].join("\n") + "\n"
+      ["| Key | Layers | Description | Examples |", "|-----|--------|-------------|----------|", *rows].join("\n") + "\n"
     end
 
     # The layers a key may be set in, lowest precedence first, e.g. "global, project, worktree".
@@ -39,6 +39,12 @@ module Workspace
       key.overridable_in.join(", ")
     end
     private_class_method :layers_cell
+
+    # The key's example values as code spans, e.g. "`20s`, `1m`"; empty when it has none.
+    def self.examples_cell(key)
+      key.example_values.map { |value| "`#{value}`" }.join(", ")
+    end
+    private_class_method :examples_cell
     private_class_method :keys_table
 
     def self.restart_sentence

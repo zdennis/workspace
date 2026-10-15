@@ -1,5 +1,6 @@
 require "yaml"
 require "fileutils"
+require "json"
 
 module Workspace
   module Commands
@@ -14,6 +15,9 @@ module Workspace
     # `layer` value in every JSON document), and in a main checkout, which has
     # no file of its own besides the project's, it is the `project` layer.
     class Config
+      # Version of the `keys --json` document.
+      KEYS_JSON_SCHEMA_VERSION = 1
+
       # The user-facing scope names, lowest layer first.
       SCOPES = %w[global project workspace].freeze
 
@@ -165,6 +169,41 @@ module Workspace
           end
         end
         EditResult.new(workspace: target.name, layer: target.layer, scope: LAYER_SCOPES.fetch(target.layer), path: target.path, created: created)
+      end
+
+      # Describes the keys in {Workspace::ConfigSchema}: name, type, default, doc, the layers that may hold
+      # each, whether `set` accepts it and when a change applies. Reads no config file and prints no
+      # stored value.
+      #
+      # With no query, every key is listed one to a line. A query that equals a key name prints that
+      # key in full; any other query keeps the keys whose name or doc text contains it (any case).
+      #
+      # @param query [String, nil] a key name, or text to look for in key names and docs
+      # @param settable [Boolean] true to keep only the keys `config set` accepts
+      # @param json [Boolean] true to print one `{"keys": [...]}` document instead of text
+      # @return [Array<ConfigSchema::Key>] the keys described
+      # @raise [Workspace::Error] code `unknown_config_key` when nothing matches
+      def keys(query: nil, settable: false, json: false)
+        found = ConfigSchema.all.select { |key| !settable || key.settable? }
+        exact = found.select { |key| key.name == query }
+        found = if query.to_s.empty?
+          found
+        else
+          (exact.any? ? exact : found.select { |key| key_matches?(key, query) })
+        end
+        if found.empty?
+          kind = settable ? "settable config key" : "config key"
+          raise Workspace::Error.new("No #{kind} matches '#{query}'. Run `workspace config keys#{" --settable" if settable}` with no query to list them.",
+            code: "unknown_config_key", details: {"key" => query}.merge(settable ? {"settable" => true} : {}))
+        end
+        if json
+          @output.puts JSON.generate({"schema_version" => KEYS_JSON_SCHEMA_VERSION, "ok" => true, "keys" => found.map { |key| key_document(key) }})
+        elsif exact.any?
+          @output.puts found.map { |key| key_detail(key) }.join("\n")
+        else
+          print_key_list(found)
+        end
+        found
       end
 
       private
@@ -416,9 +455,92 @@ module Workspace
         end
       end
 
+      # Longest doc text the one-line key list shows before cutting it.
+      KEY_LIST_DOC_WIDTH = 70
+
+      def key_matches?(key, query)
+        needle = query.downcase
+        key.name.downcase.include?(needle) || key.doc.downcase.include?(needle)
+      end
+
+      def print_key_list(found)
+        rows = found.map { |key| [key.name, key.scope.to_s, key.settable? ? "set" : "-", key.type.to_s, key_default(key), key_summary(key.doc)] }
+        widths = (0..4).map { |column| rows.map { |row| row[column].length }.max }
+        rows.each do |row|
+          @output.puts [*row[0..4].each_with_index.map { |cell, i| cell.ljust(widths[i]) }, row[5]].join("  ").rstrip
+        end
+        @output.puts
+        @output.puts "Columns: name, scope (the file it lives in), set (`config set` accepts it), type, default, description."
+        @output.puts "Run `workspace config keys <name>` for details and examples."
+      end
+
+      def key_detail(key)
+        lines = [key.name, "  #{key_summary(key.doc, width: nil)}", "",
+          "  Type:     #{key_type(key)}",
+          "  Default:  #{key_default(key)}",
+          "  Scope:    #{key.scope}",
+          "  Layers:   #{key.overridable_in.empty? ? "(none; nothing reads it from a layer)" : key.overridable_in.join(", ")}",
+          "  Settable: #{key.settable? ? "yes" : "no (edit the file with `workspace config edit`)"}",
+          "  Applies:  #{key.applies.to_s.tr("_", " ")}"]
+        if key.settable? && key.example_values.any?
+          lines << "  Examples:"
+          key.example_values.each { |value| lines << "    workspace config set #{key.name} #{shell_word(value)}" }
+        end
+        lines.join("\n") + "\n"
+      end
+
+      def key_type(key)
+        parts = [key.type.to_s]
+        parts << "unit #{key.unit}" if key.unit
+        parts << "min #{key.min}" if key.min
+        parts << "max #{key.max}" if key.max
+        parts << "choices #{key.choices.join(", ")}" if key.choices
+        parts.first + ((parts.size > 1) ? " (#{parts[1..].join("; ")})" : "")
+      end
+
+      def key_default(key)
+        value = key.default
+        if value.nil? then "(unset)"
+        elsif key.type == :duration then Duration.humanize(value)
+        elsif value.is_a?(Array) then value.join(", ")
+        elsif value.is_a?(String) && value.include?("\n") then "(built-in text)"
+        else value.to_s
+        end
+      end
+
+      # The doc as one line without Markdown links. Cut to +width+ (nil keeps it whole): at the end of
+      # the first sentence when that fits, else at a word boundary with "...".
+      def key_summary(doc, width: KEY_LIST_DOC_WIDTH)
+        text = doc.gsub(/\[([^\]]+)\]\([^)]*\)/, "\\1").tr("\n", " ")
+        return text if width.nil? || text.length <= width
+        sentence = text[/\A.*?(?<!e\.g|i\.e|etc)\.(?=\s)/]
+        return sentence if sentence && sentence.length <= width
+        cut = text[0, width - 3].sub(/\s+\S*\z/, "")
+        cut = cut[0...cut.index(/\s*\b(e\.g|i\.e)\./)] if cut.match?(/\b(e\.g|i\.e)\./)
+        cut = cut[0...cut.rindex("`")] if cut.count("`").odd?
+        cut = cut[0...cut.rindex("(")] if cut.count("(") > cut.count(")")
+        cut.sub(/[\s,;:-]+\z/, "") + "..."
+      end
+
+      # A value as one shell word: bare when it is safe, else in single quotes.
+      def shell_word(value)
+        return value if value.match?(%r{\A[\w./:%@+=,~-]+\z})
+        "'#{value.gsub("'", "'\\''")}'"
+      end
+
+      def key_document(key)
+        {
+          "name" => key.name, "scope" => key.scope.to_s, "doc" => key.doc, "type" => key.type.to_s, "default" => key.default,
+          "choices" => key.choices, "min" => key.min, "max" => key.max, "unit" => key.unit,
+          "layers" => key.overridable_in.map(&:to_s), "settable" => key.settable?, "applies" => key.applies.to_s,
+          "restart" => !!key.restart_required?, "sensitive" => !!key.sensitive,
+          "examples" => key.settable? ? key.example_values : []
+        }
+      end
+
       def validate_key!(key)
         return if ConfigSchema.settable?(key)
-        raise Workspace::Error.new("Unknown config key '#{key}'. Allowed keys: #{ConfigSchema.settable_names.join(", ")}", code: "unknown_config_key", details: {"key" => key})
+        raise Workspace::Error.new("Unknown config key '#{key}'. Allowed keys: #{ConfigSchema.settable_names.join(", ")}. Run `workspace config keys` to see what each does.", code: "unknown_config_key", details: {"key" => key})
       end
 
       def validate_value!(key, value)

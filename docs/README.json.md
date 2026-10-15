@@ -96,7 +96,7 @@ The exit code is unchanged by `--json` (1 for most failures, 2 for `not_submitte
 | `window_gone` | `focus` found that the recorded iTerm window no longer exists. `details.workspace`, `details.iterm_window_id`. |
 | `checkout_missing` | The workspace's checkout directory no longer exists. |
 | `config_parse` | A config file exists but can't be parsed as a YAML mapping. `details.path` and `details.reason`. |
-| `unknown_config_key` | `config set`, `get`, `unset` or `show <key>` was given a key that is not a config key. `details.key`. (Before this code existed these commands reported `usage`; the exit code is still 1.) |
+| `unknown_config_key` | `config set`, `get`, `unset` or `show <key>` was given a key that is not a config key, or `config keys QUERY` matched no key. `details.key`. (Before this code existed these commands reported `usage`; the exit code is still 1.) |
 | `scope_not_allowed` | `config set`, `get` or `unset` named a `--scope` the key doesn't allow (a global-only key at `project`, a project-only key at `workspace` in a worktree, ...). `details.key`, `details.scope` (the scope as typed) and `details.allowed`, the scopes the key does allow, lowest first (`global`, `project`, `workspace`). Nothing is written. |
 | `editor_failed` | `config edit` could not open the editor: `$VISUAL` or `$EDITOR` is not a valid command (an unbalanced quote), or the editor could not be run or exited non-zero. `details.path` is the file to edit by hand. |
 | `notes_dir_unresolved` | `notes dir` (and `handoff new` with no doc given) can't work out the directory: the project's `notes.default_dir` rule uses `{branch}` and the checkout is on a detached HEAD. `details.name`, `details.path` (the checkout). |

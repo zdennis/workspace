@@ -2180,6 +2180,41 @@ RSpec.describe Workspace::CLI do
         expect(JSON.parse(raw.string)["results"].first).to include("effective" => nil)
       end
 
+      describe "config keys" do
+        let(:config_command) { CLITestHelpers::FakeConfigCommand.new }
+
+        it "passes the query and flags to the command" do
+          cli, = build_test_cli(config_command: config_command)
+
+          cli.run(["config", "keys", "timeout", "--settable", "--json"])
+          cli.run(["config", "keys"])
+
+          expect(config_command.calls).to eq([
+            {action: :keys, query: "timeout", settable: true, json: true},
+            {action: :keys, query: nil, settable: false, json: false}
+          ])
+        end
+
+        it "prints the unknown_config_key error envelope on stdout and exits 1 under --json" do
+          raw = StringIO.new
+          command = Workspace::Commands::Config.new(project_settings: CLITestHelpers::FakeProjectSettings.new, lineage: Workspace::WorkspaceLineage.new,
+            file_backup: Workspace::FileBackup.new(output: StringIO.new))
+          cli, = build_test_cli(output: Workspace::OutputGate.new(raw), config_command: command)
+
+          expect { cli.run(["config", "keys", "nosuch", "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+
+          expect(JSON.parse(raw.string)).to include("ok" => false, "code" => "unknown_config_key", "details" => {"key" => "nosuch"})
+        end
+
+        it "rejects a second query with usage" do
+          cli, _, error_output = build_test_cli(config_command: config_command)
+
+          expect { cli.run(["config", "keys", "a", "b"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+          expect(error_output.string).to include("Usage: workspace config keys")
+          expect(config_command.calls).to be_empty
+        end
+      end
+
       describe "config edit" do
         let(:config_command) { CLITestHelpers::FakeConfigCommand.new }
 

@@ -443,7 +443,7 @@ module Workspace
           capabilities    Print what this CLI supports, as feature revisions (for scripts and the UI)
           capture         Print a tmux pane's scrollback buffer to stdout
           cleanup         Detect and remove zombie sessions from state (--dry-run reports only)
-          config          Show, validate, set, get, unset or edit project or global configuration
+          config          Show, validate, set, get, unset, edit or describe (keys) project or global configuration
           current         Print the workspace project name for the current directory
           daemon          List, show, restart (one or all) or read the log of agent daemons
           dev             Start, stop, or inspect this repo's dev environment (devenv lock)
@@ -4448,6 +4448,9 @@ module Workspace
       when "edit"
         args.shift
         cmd_config_edit(args)
+      when "keys"
+        args.shift
+        cmd_config_keys(args)
       else
         cmd_config_show(args)
       end
@@ -4551,6 +4554,37 @@ module Workspace
       @config_report.show(workspace, key: key)["keys"].first["effective"]
     rescue Workspace::Error
       nil
+    end
+
+    def cmd_config_keys(args)
+      settable = false
+      json = false
+      parser = OptionParser.new do |opts|
+        opts.banner = "Usage: workspace config keys [QUERY] [--settable] [--json]"
+        opts.separator ""
+        opts.separator "Describes the config keys: type, default, the layers that may hold each, whether"
+        opts.separator "'config set' accepts it, when a change applies, and example values. Reads no config"
+        opts.separator "file and prints no stored value (see 'workspace config' for those)."
+        opts.separator ""
+        opts.separator "With no QUERY, lists every key on one line. A QUERY equal to a key name prints that"
+        opts.separator "key in full. Any other QUERY keeps the keys whose name or description text contains"
+        opts.separator "it as a substring, ignoring case; with no match it fails with unknown_config_key."
+        opts.separator ""
+        opts.separator "Options:"
+        opts.on("--settable", "Only the keys 'config set' accepts") { settable = true }
+        opts.on("--json", "Print one document with a `keys` array (see docs/README.config.md)") { json = true }
+        opts.separator ""
+        opts.separator "Examples:"
+        opts.separator "  workspace config keys"
+        opts.separator "  workspace config keys timeout     # keys whose name or description mentions timeout"
+        opts.separator "  workspace config keys dev.up      # one key in full, with example values"
+        opts.separator "  workspace config keys --settable --json"
+      end
+      parser.parse!(args)
+      query = args.shift
+      raise UsageError, parser.help if args.any?
+
+      @config_command.keys(query: query, settable: settable, json: json)
     end
 
     def cmd_config_get(args)
@@ -4823,7 +4857,7 @@ module Workspace
         opts.separator "allows (overridable_in); see docs/README.config.md. Choose the file with"
         opts.separator "--scope S on config set/get/unset/edit."
         opts.separator ""
-        opts.separator "Note: 'show', 'validate', 'set', 'get', 'unset', and 'edit' are reserved as the first"
+        opts.separator "Note: 'show', 'validate', 'set', 'get', 'unset', 'edit' and 'keys' are reserved as the first"
         opts.separator "argument here and are always treated as subcommands. A key named one of"
         opts.separator "them, or a workspace named one of them, is reached with --name."
         opts.separator ""
@@ -4841,6 +4875,7 @@ module Workspace
         opts.separator "  workspace config get dev.up"
         opts.separator "  workspace config unset dev.ready"
         opts.separator "  workspace config edit --scope global    # hand-edit a file, keeping its comments"
+        opts.separator "  workspace config keys [QUERY]    # what each key is, its default and example values"
       end
       parser.parse!(args)
       key = args.shift

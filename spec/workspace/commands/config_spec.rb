@@ -1381,4 +1381,150 @@ RSpec.describe Workspace::Commands::Config do
       end
     end
   end
+
+  describe "#keys" do
+    # The key lines of a list view, without the footer.
+    def key_rows(**opts)
+      keys_output(**opts).split("\n\n").first.lines.map(&:chomp)
+    end
+
+    def keys_output(**opts)
+      output = StringIO.new
+      command, = build_command(output: output)
+      command.keys(**opts)
+      output.string
+    end
+
+    it "lists every key on one line with name, type, default and doc, in aligned columns" do
+      lines = key_rows
+
+      expect(lines.size).to eq(Workspace::ConfigSchema.all.size)
+      row = lines.find { |line| line.start_with?("dev.stop_timeout") }
+      expect(row).to match(/\Adev\.stop_timeout\s+project\s+set\s+duration\s+20s\s+Grace period/)
+      expect(lines.find { |line| line.start_with?("dev.up ") }).to match(/\Adev\.up\s+project\s+set\s+command\s+\(unset\)\s+Command that starts/)
+      expect(lines.map { |line| line.index("duration") || line.index("command") }.compact.uniq.size).to be <= 3
+    end
+
+    it "prints the full entry for a query that equals a key name" do
+      text = keys_output(query: "locks.ps_timeout")
+
+      expect(text).to include("locks.ps_timeout", "Type:     duration (unit seconds; min 1; max 60)", "Default:  5s",
+        "Layers:   project", "Settable: yes", "Applies:  daemon restart",
+        "workspace config set locks.ps_timeout 5s")
+    end
+
+    it "derives examples from choices and quotes values that need it" do
+      expect(keys_output(query: "launch.headless")).to include("workspace config set launch.headless true", "workspace config set launch.headless false")
+      expect(keys_output(query: "commands.test")).to include("workspace config set commands.test 'bundle exec rspec'")
+    end
+
+    it "gives no set lines for a key set refuses" do
+      text = keys_output(query: "context.patterns")
+
+      expect(text).to include("Settable: no")
+      expect(text).not_to include("config set context.patterns")
+    end
+
+    it "matches a name prefix or part, in any case, and lists the matches" do
+      expect(key_rows(query: "LOCKS.").map { |l| l.split.first }).to eq(%w[locks.idle_grace locks.ps_timeout locks.reap_interval])
+      expect(key_rows(query: "ready").map { |l| l.split.first }).to include("dev.ready", "dev.ready_timeout")
+    end
+
+    it "matches the doc text" do
+      names = key_rows(query: "timeout").map { |l| l.split.first }
+
+      expect(names).to include("dev.startup_timeout", "locks.ps_timeout", "dev.stop_timeout")
+      expect(names).not_to include("dev.up")
+    end
+
+    it "keeps the text of a Markdown link in the list view" do
+      line = key_rows.find { |l| l.start_with?("pipeline") }
+
+      expect(line).to include("Deprecated (use `workspace workflow`)")
+    end
+
+    it "shows scope and a settable marker in the list, and a footer that --json lacks" do
+      lines = key_rows
+
+      expect(lines.grep(/\Ahooks\s/).map { |l| l.split[1] }).to eq(%w[global project])
+      expect(lines.find { |l| l.start_with?("dev.up ") }.split[2]).to eq("set")
+      expect(lines.find { |l| l.start_with?("layouts") }.split[2]).to eq("-")
+      expect(keys_output.lines.last.chomp).to eq("Run `workspace config keys <name>` for details and examples.")
+      expect(keys_output(json: true)).not_to include("Run `workspace config keys")
+    end
+
+    it "cuts a long doc at the end of its first sentence when that fits, never inside an e.g. fragment" do
+      command, = build_command
+      summary = ->(doc) { command.send(:key_summary, doc) }
+
+      expect(summary.call("Short first sentence. " + "More words follow here. " * 5)).to eq("Short first sentence.")
+      expect(summary.call("Grace period before force-stopping the dev environment, e.g. `20s` or `20`, and then some more words")).to eq("Grace period before force-stopping the dev environment...")
+      expect(summary.call("Size warning threshold (e.g. 10kb). " + "x " * 60)).to start_with("Size warning threshold (e.g. 10kb).").and(end_with("...").or(end_with("10kb).")))
+      expect(key_rows.grep(/e\.g\.\s*\.\.\.|\(\.\.\./)).to be_empty
+    end
+
+    it "shows the scope in the detail view" do
+      expect(keys_output(query: "launch.headless")).to include("Scope:    global")
+    end
+
+    it "keeps only settable keys with --settable" do
+      names = key_rows(settable: true).map { |l| l.split.first }
+
+      expect(names).to eq(Workspace::ConfigSchema.settable_names)
+      expect(names).not_to include("hooks")
+    end
+
+    it "prints one document with a keys array for --json, also for one key" do
+      doc = JSON.parse(keys_output(query: "dev.kill_grace", json: true))
+
+      expect(doc).to include("ok" => true, "schema_version" => 1)
+      expect(doc["keys"].size).to eq(1)
+      expect(doc["keys"].first).to eq(
+        "name" => "dev.kill_grace", "scope" => "project", "doc" => Workspace::ConfigSchema.key("dev.kill_grace").doc,
+        "type" => "duration", "default" => 2, "choices" => nil, "min" => nil, "max" => 60, "unit" => "seconds",
+        "layers" => ["project"], "settable" => true, "applies" => "next_call", "restart" => false, "sensitive" => false,
+        "examples" => ["2s", "10s"]
+      )
+      all = JSON.parse(keys_output(json: true))["keys"]
+      expect(all.size).to eq(Workspace::ConfigSchema.all.size)
+      expect(all.find { |k| k["name"] == "dev.up" }).to include("sensitive" => true, "default" => nil)
+    end
+
+    it "says no settable key matches when --settable filters out the exact name" do
+      command, = build_command
+
+      expect { command.keys(query: "hooks", settable: true) }.to raise_error(Workspace::Error) { |e|
+        expect(e.code).to eq("unknown_config_key")
+        expect(e.message).to include("No settable config key matches 'hooks'")
+        expect(e.details).to eq("key" => "hooks", "settable" => true)
+      }
+    end
+
+    it "prints the full entry for an exact settable name with --settable" do
+      expect(keys_output(query: "dev.up", settable: true)).to include("Settable: yes", "workspace config set dev.up ./bin/dev")
+    end
+
+    it "never reads the stored values" do
+      command, project_settings = build_command
+      expect(project_settings).not_to receive(:load)
+      expect(project_settings).not_to receive(:load_global)
+
+      command.keys
+    end
+
+    it "fails with unknown_config_key and a hint when nothing matches" do
+      command, = build_command
+
+      expect { command.keys(query: "zzz-nope") }.to raise_error(Workspace::Error) { |e|
+        expect(e.code).to eq("unknown_config_key")
+        expect(e.message).to include("No config key matches 'zzz-nope'", "workspace config keys")
+      }
+    end
+
+    it "points the unknown-key error of set at config keys" do
+      command, = build_command
+
+      expect { command.set("nope", "x") }.to raise_error(Workspace::Error, /workspace config keys/)
+    end
+  end
 end

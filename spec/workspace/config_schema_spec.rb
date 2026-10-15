@@ -261,4 +261,22 @@ RSpec.describe Workspace::ConfigSchema, "layers and limits" do
     expect([ps.min, ps.max]).to eq([described_class::MIN_PS_TIMEOUT, described_class::MAX_PS_TIMEOUT])
     expect(described_class.key("dev.kill_grace").max).to eq(described_class::MAX_KILL_GRACE)
   end
+
+  describe "example values" do
+    it "uses a key's own examples" do
+      expect(described_class.key("dev.stop_timeout").example_values).to eq(%w[20s 1m])
+    end
+
+    it "falls back to the choices, then to none" do
+      expect(described_class.key("launch.headless").example_values).to eq(%w[true false])
+      expect(described_class.key("context.source").example_values).to eq(%w[statusline scrape])
+      expect(described_class.key("hooks").example_values).to eq([])
+    end
+
+    it "gives every example a value its parser accepts" do
+      described_class.settable.each do |key|
+        key.example_values.each { |value| expect { key.parse(value) }.not_to raise_error, "#{key.name}: #{value}" }
+      end
+    end
+  end
 end

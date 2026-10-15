@@ -30,7 +30,7 @@ module Workspace
         "doctor_json" => 0,
         "daemon_control" => 4,
         "config_json" => 2,
-        "config_scopes" => 1,
+        "config_scopes" => 2,
         "tmux_show" => 1,
         "tasks" => 1,
         "event_emitters" => 1,
