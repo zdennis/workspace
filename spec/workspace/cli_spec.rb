@@ -7731,7 +7731,7 @@ RSpec.describe Workspace::CLI do
         end
 
         context "with packs" do
-          let(:project_settings) { instance_double(Workspace::ProjectSettings, load: {}) }
+          let(:project_settings) { instance_double(Workspace::ProjectSettings, load: {}, load_global: {}) }
           let(:composer) do
             Workspace::InstructionComposer.new(library: library, lineage: lineage, commands_config: Workspace::CommandsConfig.new(config_resolver: Workspace::ConfigResolver.new(project_settings: project_settings)),
               pane_bindings: instance_double(Workspace::PaneBindings), notes_config: Workspace::NotesConfig.new(config_resolver: Workspace::ConfigResolver.new(project_settings: project_settings)))

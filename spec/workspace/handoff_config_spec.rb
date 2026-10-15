@@ -144,19 +144,19 @@ RSpec.describe Workspace::HandoffConfig do
   end
 
   describe "a worktree name with no lineage wired (the instruction composer's wiring)" do
-    it "reads the parent project's file and never the worktree's own" do
+    it "reads the worktree's own file over the parent project's, key by key" do
       project_settings.save("app", {"handoff" => {"threshold" => "30", "auto" => "true"}})
-      project_settings.save("app.worktree-x", {"handoff" => {"threshold" => "50", "auto" => "false"}})
+      project_settings.save("app.worktree-x", {"handoff" => {"threshold" => "50"}})
 
-      expect(handoff_config.for_workspace("app.worktree-x")[:threshold]).to eq(30)
+      expect(handoff_config.for_workspace("app.worktree-x")[:threshold]).to eq(50)
       expect(handoff_config.auto?("app.worktree-x")).to be(true)
     end
 
-    it "gives the defaults when the parent project has no file, whatever the worktree's file says" do
+    it "reads the worktree's own file when the parent project has none" do
       project_settings.save("app.worktree-x", {"handoff" => {"threshold" => "50", "auto" => "true"}})
 
-      expect(handoff_config.for_workspace("app.worktree-x")[:threshold]).to eq(11)
-      expect(handoff_config.auto?("app.worktree-x")).to be(false)
+      expect(handoff_config.for_workspace("app.worktree-x")[:threshold]).to eq(50)
+      expect(handoff_config.auto?("app.worktree-x")).to be(true)
     end
   end
 end

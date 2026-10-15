@@ -55,12 +55,13 @@ RSpec.describe Workspace::ConfigSchema do
 
   describe "reading attributes" do
     it "resolves a project key from the parent project's file and a global key from the global file" do
-      expect(described_class.key("dev.up").resolve).to eq(:parent)
+      expect(described_class.key("dev.stop_timeout").resolve).to eq(:parent)
+      expect(described_class.key("dev.up").resolve).to eq(:layered)
       expect(described_class.key("context.source").resolve).to eq(:global)
       expect(described_class.key("hooks", scope: :project).resolve).to eq(:own)
       expect(described_class.key("layouts", scope: :project).resolve).to eq(:merge)
       expect(described_class.key("notes.dir").resolve).to eq(:own_then_parent)
-      expect(described_class.key("notes.default_dir")).to have_attributes(resolve: :parent, scope: :project, type: :path, settable: true, default: nil)
+      expect(described_class.key("notes.default_dir")).to have_attributes(resolve: :layered, overridable_in: %i[global project], scope: :project, type: :path, settable: true, default: nil)
       expect(described_class.key("notes.dir").type).to eq(:path)
     end
 
@@ -227,11 +228,25 @@ end
 RSpec.describe Workspace::ConfigSchema, "layers and limits" do
   let(:legacy) { {global: %i[global], parent: %i[project], own_then_parent: %i[project worktree], own: %i[project worktree], merge: %i[project worktree], none: []} }
 
-  it "gives every key the layers its resolve mode reads today" do
-    expect(described_class.all).to all(satisfy { |key| key.overridable_in == legacy.fetch(key.resolve) })
+  it "gives every key not widened the layers its resolve mode reads today, and every widened key :layered" do
+    legacy = {global: %i[global], parent: %i[project], own_then_parent: %i[project worktree], own: %i[project worktree], merge: %i[project worktree], none: []}
+    expect(described_class.all.reject { |key| key.resolve == :layered }).to all(satisfy { |key| key.overridable_in == legacy.fetch(key.resolve) })
+    layered = described_class.all.select { |key| key.resolve == :layered }
+    expect(layered).to all(satisfy { |key| key.overridable_in.size > 1 })
+    multi = described_class.all.select { |key| key.overridable_in.size > 1 }
+    expect(multi.reject { |key| key.resolve == :layered }.map(&:name)).to match_array(%w[notes.dir hooks layouts layouts pipeline])
     expect(described_class.key("notes.dir").overridable_in).to eq(%i[project worktree])
     expect(described_class.key("dev.up").overridable_in?("project")).to be true
-    expect(described_class.key("dev.up").overridable_in?(:worktree)).to be false
+    expect(described_class.key("dev.up").overridable_in?(:worktree)).to be true
+    expect(described_class.key("dev.stop_timeout").overridable_in?(:worktree)).to be false
+  end
+
+  it "keeps the project-only, global-only and no-inherit keys as the layer table says" do
+    project_only = %w[dev.stop_timeout dev.kill_grace locks.idle_grace locks.ps_timeout locks.reap_interval]
+    global_only = %w[statusline.command context.source context.pattern launch.headless]
+    expect(project_only.map { |n| described_class.key(n).overridable_in }).to all(eq(%i[project]))
+    expect(global_only.map { |n| described_class.key(n).overridable_in }).to all(eq(%i[global]))
+    expect(described_class.key("workflows.defaults.include").overridable_in).to eq(%i[global project worktree])
   end
 
   it "declares choices for closed sets, seconds for durations, and limits where the parser has them" do

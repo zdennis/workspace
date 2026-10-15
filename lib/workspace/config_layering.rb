@@ -58,12 +58,13 @@ module Workspace
 
     # @param key [ConfigSchema::Key, String] the key or its name
     # @param worktree [Boolean] whether the workspace is a worktree
-    # @return [String] the layer `config set` writes the key to today: "global" for a global key, "worktree" for a
-    #   key a worktree owns when the workspace is one, else "project"
+    # @return [String] the layer `config set` writes the key to when no layer is named: "global" for a key of the
+    #   global file (a global-file key that is also layered keeps writing there until `--scope` can name another),
+    #   else "worktree" for a worktree when the key allows it, else "project". {ConfigReport} reports this as `target_layer`.
     def self.default_layer(key, worktree:)
       key = schema_key(key)
       return "global" if key.global?
-      return "worktree" if key.resolve == :own_then_parent && worktree
+      return "worktree" if worktree && key.overridable_in?(:worktree)
       "project"
     end
 

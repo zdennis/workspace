@@ -40,37 +40,37 @@ With no subcommand and a key, `workspace config <key>` prints that key's effecti
 Only an allowlisted set of keys can be written this way, so a typo doesn't silently create unused config:
 
 <!-- BEGIN GENERATED: keys -->
-| Key | Description |
-|-----|-------------|
-| `dev.up` | Command that starts the project's dev environment |
-| `dev.ready` | Readiness probe for the dev environment |
-| `dev.stop_timeout` | Grace period before force-stopping the dev environment, e.g. `20s` or `20` |
-| `dev.startup_timeout` | How long `dev up` waits for the wrapper to take a free lock, e.g. `30s` (default `30s`) |
-| `dev.ready_timeout` | How long `dev up` waits for the `dev.ready` check to pass, e.g. `2m` (default `120s`) |
-| `dev.kill_grace` | How long `lock clear devenv`, `dev down` and `dev up --force` wait for a SIGKILLed dev environment's process group to disappear before keeping its lock (default `2s`, capped at `60s`) |
-| `dev.release_on_session_end` | `true` or `false`: whether the dev environment a coding agent started with `dev up` is stopped when that agent's session ends (default `true`). A `/clear` never stops it. `false` leaves it running until `dev down` |
-| `dev.instructions` | `true` or `false`: whether `start` and `launch` send the agent the built-in `dev` pack (queue for the shared dev environment before testing, release it when done) when the project sets `dev.up` (default `true`); `--no-packs` skips it for one run. A workflow step that declares `uses: [devenv]` never gets it |
-| `locks.idle_grace` | How long an idle agent keeps a lock before the first waiter may take it over (default `5m`; see [`workspace lock`](README.lock.md)) |
-| `locks.ps_timeout` | How long to wait for `ps` when reading the process table for lock/session checks, before giving up (default `5s`, must be between `1s` and `60s`) |
-| `locks.reap_interval` | How often the session-monitor daemon sweeps for stale lock holders and waiters (default `30s`) |
-| `alerts.notify` | Command the session-monitor daemon runs when an agent pane starts waiting on a person or stays idle past `alerts.idle_after` (unset: no alerts; see [`workspace sessions`](README.sessions.md#alerts)) |
-| `alerts.idle_after` | How long an agent pane may sit idle before `alerts.notify` runs (default `10m`) |
-| `agentd.poll_interval` | How often the session-monitor daemon scans panes for agent state, alerts and stale locks (default `10s`) |
-| `handoff.threshold` | Context-usage percent, 1 to 100, that triggers a handoff in [`workspace handoff check`](README.handoff.md) (default `11`) |
-| `handoff.check_prompt` | Overrides the built-in save-state prompt `handoff check` sends when it names a doc (the default is that text); must not be blank (see [`workspace handoff`](README.handoff.md)) |
-| `handoff.resume_prompt` | Overrides the built-in resume prompt `handoff new` sends (the default is that text); must not be blank (see [`workspace handoff`](README.handoff.md)) |
-| `handoff.auto` | `true` or `false`: whether `start` and `launch` send a Claude Code agent the built-in `handoff` pack, which makes it run [`workspace handoff check`](README.handoff.md) after every task and hand off to a fresh conversation itself (default `false`); `--handoff` and `--no-handoff` override it for one run |
-| `commands.test` | Command that runs the project's tests, e.g. `bundle exec rspec`; [`workspace instructions compose`](README.instructions.md) names it in the `commits` pack |
-| `commands.lint` | Command that lints the project, e.g. `bundle exec standardrb lib/ spec/`; named in the `commits` pack beside `commands.test` |
-| `notes.dir` | Directory where one workspace's notes are kept, as an absolute path; other tools read it to know where to store notes. A worktree reads only its own value (set it with `--name`), never the project's; the main checkout reads the project's (unset: the directory `notes.default_dir` gives it) |
-| `notes.default_dir` | The rule that gives each workspace its notes directory when it has no `notes.dir`: an absolute path, `~/…`, or a path relative to the worktree with no `..`; `{workspace}` and `{branch}` are filled in per workspace, so give an outside-the-repo path one or the other (unset: `tmp/workspace-notes` inside the worktree) |
-| `notes.instructions` | `true` or `false`: whether `start` and `launch` send the agent the built-in `notes` pack (where working notes go) with its first prompt (default `true`); `--no-packs` skips it for one run |
-| `plan.stall_seconds` | How long the agent pane that owns a workspace's plan may sit idle before [`workspace plan status`](README.plan.md) reads the plan as `stalled` (default `5m`) |
-| `statusline.command` | Global. Delegates [`workspace statusline`](README.statusline.md) rendering to another command instead of the built-in renderer |
-| `context.source` | Global. `statusline` (default) or `scrape` — where `workspace sessions` reads a pane's context usage; see [`workspace statusline`](README.statusline.md) |
-| `context.pattern` | Global. Regex with exactly one capture group, used when `context.source` is `scrape` |
-| `launch.headless` | Global. `true` or `false`: whether `launch`, `start` and `doctor` run [headless](README.launch.md#headless) on this machine when no `--headless`/`--no-headless` flag is given. Unset, they pick headless off macOS, without `osascript`, or when `CI` is set |
-| `workflows.defaults.include` | Global. Instruction packs every workflow step and [`workspace instructions compose`](README.instructions.md) start with, as names separated by commas (default `binding, orchestrator, commits`) |
+| Key | Layers | Description |
+|-----|--------|-------------|
+| `dev.up` | project, worktree | Command that starts the project's dev environment |
+| `dev.ready` | project, worktree | Readiness probe for the dev environment |
+| `dev.stop_timeout` | project | Grace period before force-stopping the dev environment, e.g. `20s` or `20` |
+| `dev.startup_timeout` | project, worktree | How long `dev up` waits for the wrapper to take a free lock, e.g. `30s` (default `30s`) |
+| `dev.ready_timeout` | project, worktree | How long `dev up` waits for the `dev.ready` check to pass, e.g. `2m` (default `120s`) |
+| `dev.kill_grace` | project | How long `lock clear devenv`, `dev down` and `dev up --force` wait for a SIGKILLed dev environment's process group to disappear before keeping its lock (default `2s`, capped at `60s`) |
+| `dev.release_on_session_end` | global, project, worktree | `true` or `false`: whether the dev environment a coding agent started with `dev up` is stopped when that agent's session ends (default `true`). A `/clear` never stops it. `false` leaves it running until `dev down` |
+| `dev.instructions` | global, project, worktree | `true` or `false`: whether `start` and `launch` send the agent the built-in `dev` pack (queue for the shared dev environment before testing, release it when done) when the project sets `dev.up` (default `true`); `--no-packs` skips it for one run. A workflow step that declares `uses: [devenv]` never gets it |
+| `locks.idle_grace` | project | How long an idle agent keeps a lock before the first waiter may take it over (default `5m`; see [`workspace lock`](README.lock.md)) |
+| `locks.ps_timeout` | project | How long to wait for `ps` when reading the process table for lock/session checks, before giving up (default `5s`, must be between `1s` and `60s`) |
+| `locks.reap_interval` | project | How often the session-monitor daemon sweeps for stale lock holders and waiters (default `30s`) |
+| `alerts.notify` | global, project, worktree | Command the session-monitor daemon runs when an agent pane starts waiting on a person or stays idle past `alerts.idle_after` (unset: no alerts; see [`workspace sessions`](README.sessions.md#alerts)) |
+| `alerts.idle_after` | global, project, worktree | How long an agent pane may sit idle before `alerts.notify` runs (default `10m`) |
+| `agentd.poll_interval` | global, project, worktree | How often the session-monitor daemon scans panes for agent state, alerts and stale locks (default `10s`) |
+| `handoff.threshold` | global, project, worktree | Context-usage percent, 1 to 100, that triggers a handoff in [`workspace handoff check`](README.handoff.md) (default `11`) |
+| `handoff.check_prompt` | global, project, worktree | Overrides the built-in save-state prompt `handoff check` sends when it names a doc (the default is that text); must not be blank (see [`workspace handoff`](README.handoff.md)) |
+| `handoff.resume_prompt` | global, project, worktree | Overrides the built-in resume prompt `handoff new` sends (the default is that text); must not be blank (see [`workspace handoff`](README.handoff.md)) |
+| `handoff.auto` | global, project, worktree | `true` or `false`: whether `start` and `launch` send a Claude Code agent the built-in `handoff` pack, which makes it run [`workspace handoff check`](README.handoff.md) after every task and hand off to a fresh conversation itself (default `false`); `--handoff` and `--no-handoff` override it for one run |
+| `commands.test` | project, worktree | Command that runs the project's tests, e.g. `bundle exec rspec`; [`workspace instructions compose`](README.instructions.md) names it in the `commits` pack |
+| `commands.lint` | project, worktree | Command that lints the project, e.g. `bundle exec standardrb lib/ spec/`; named in the `commits` pack beside `commands.test` |
+| `notes.dir` | project, worktree | Directory where one workspace's notes are kept, as an absolute path; other tools read it to know where to store notes. A worktree reads only its own value (set it with `--name`), never the project's; the main checkout reads the project's (unset: the directory `notes.default_dir` gives it) |
+| `notes.default_dir` | global, project | The rule that gives each workspace its notes directory when it has no `notes.dir`: an absolute path, `~/…`, or a path relative to the worktree with no `..`; `{workspace}` and `{branch}` are filled in per workspace, so give an outside-the-repo path one or the other (unset: `tmp/workspace-notes` inside the worktree) |
+| `notes.instructions` | global, project, worktree | `true` or `false`: whether `start` and `launch` send the agent the built-in `notes` pack (where working notes go) with its first prompt (default `true`); `--no-packs` skips it for one run |
+| `plan.stall_seconds` | global, project, worktree | How long the agent pane that owns a workspace's plan may sit idle before [`workspace plan status`](README.plan.md) reads the plan as `stalled` (default `5m`) |
+| `statusline.command` | global | Global. Delegates [`workspace statusline`](README.statusline.md) rendering to another command instead of the built-in renderer |
+| `context.source` | global | Global. `statusline` (default) or `scrape` — where `workspace sessions` reads a pane's context usage; see [`workspace statusline`](README.statusline.md) |
+| `context.pattern` | global | Global. Regex with exactly one capture group, used when `context.source` is `scrape` |
+| `launch.headless` | global | Global. `true` or `false`: whether `launch`, `start` and `doctor` run [headless](README.launch.md#headless) on this machine when no `--headless`/`--no-headless` flag is given. Unset, they pick headless off macOS, without `osascript`, or when `CI` is set |
+| `workflows.defaults.include` | global, project, worktree | Instruction packs every workflow step and [`workspace instructions compose`](README.instructions.md) start with, as names separated by commas (default `binding, orchestrator, commits`) |
 <!-- END GENERATED: keys -->
 
 `statusline.command`, `context.source`, `context.pattern`, and `launch.headless` are always written to the global config, never a project's — there's one status line, one context source and one launch mode per machine. `context.source` must be `statusline` or `scrape`; `context.pattern` must be a valid regex with exactly one capture group. `launch.headless` must be `true` or `false`.
@@ -148,6 +148,8 @@ Prints one document with every key in the table above, the value each reader wou
 - `resolve` says whose file the readers consult: `parent`, `own`, `own_then_parent` (a worktree's own file and never the project's; a main checkout reads the project's; today that is `notes.dir`), `merge` (global, then the workspace's own; the row reports one scope's file), `global`, or `none` (nothing reads it; today that is global `hooks`). `target_layer` is where `config set` writes the key (`worktree` or `project` for a key a worktree owns, depending on the workspace asked about), and null for a key edited by hand. `affects` lists the workspaces that read the file a change lands in. `applies` is `next_call`, `next_event` or `daemon_restart`; treat an unknown value as plain text.
 - `sensitive` keys are commands and hooks. Their `value` and `effective` are always null; `masked` is true when the key has a value. Neither `problems` nor `unknown_keys` ever quote a value.
 - `problems` holds the problems `config validate` reports for that key, with `severity`, `code`, `message`, `line` and `column`.
+- `overridable_in` lists the layers a key can be set in, lowest precedence first. An empty list means the key can't be set per layer.
+- `layers[]` lists only the layers that hold a value for the key (lowest precedence first); use `files[].exists` to see which files exist.
 - `type` is `command`, `duration`, `percent`, `text`, `path`, `enum`, `regex`, `boolean` or `mapping`.
 - `effective_path` appears only on the `notes.dir` and `notes.default_dir` rows (`capabilities` reports `config_json: 2` when a client can rely on it). It is an absolute path with `~` expanded, and cleaned of `..` segments and a trailing slash, or null when it can't be worked out: the rule is relative to a checkout the workspace doesn't have, the rule uses `{branch}` and the checkout has no branch (a detached HEAD), or a file the key depends on can't be parsed. An invalid stored value is ignored, as in `effective`.
 - `dev.configured` is a derived, read-only row (it can't be set, and a value written for it in a file is ignored and reported as `not_read`): `effective` is `true` when the project's `dev.up` is set, `false` when it is not, and `null` when the project's file can't be read. It is what makes `start` and `launch` send the `dev` pack, so a reader need not infer it from `dev.up`, whose `value` and `effective` are always masked. `value` is `null`, `masked` is `false` and `source` is `default`.

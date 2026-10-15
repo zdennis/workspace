@@ -97,10 +97,12 @@ RSpec.describe Workspace::AgentdConfig do
   end
 
   describe "a worktree workspace with no lineage wired" do
-    it "reads the parent project's file and ignores the worktree's own" do
+    it "reads the worktree's own file over the parent project's, and the parent's when it sets none" do
       project_settings.save("app", {"agentd" => {"poll_interval" => "20s"}})
       project_settings.save("app.worktree-x", {"agentd" => {"poll_interval" => "90s"}})
 
+      expect(agentd_config.poll_interval_for("app.worktree-x")).to eq(90.0)
+      project_settings.save("app.worktree-x", {})
       expect(agentd_config.poll_interval_for("app.worktree-x")).to eq(20.0)
     end
   end

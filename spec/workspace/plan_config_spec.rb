@@ -3,7 +3,7 @@ require "stringio"
 
 RSpec.describe Workspace::PlanConfig do
   let(:error_output) { StringIO.new }
-  let(:settings) { instance_double(Workspace::ProjectSettings) }
+  let(:settings) { instance_double(Workspace::ProjectSettings, load_global: {}) }
   subject(:config) { described_class.new(config_resolver: Workspace::ConfigResolver.new(project_settings: settings), error_output: error_output) }
 
   it "gives 300 seconds when the key is unset" do
@@ -27,6 +27,7 @@ RSpec.describe Workspace::PlanConfig do
 
   it "reads a worktree's value from its parent project" do
     allow(settings).to receive(:load).with("api").and_return("plan" => {"stall_seconds" => 90})
+    allow(settings).to receive(:load).with("api.worktree-x").and_return({})
 
     expect(config.stall_seconds_for("api.worktree-x")).to eq(90)
   end
@@ -57,10 +58,17 @@ RSpec.describe Workspace::PlanConfig do
     expect(config.stall_seconds_for("api")).to eq(300)
   end
 
-  it "ignores a worktree's own value" do
+  it "reads a worktree's own value over its parent project's" do
     allow(settings).to receive(:load).with("api").and_return("plan" => {"stall_seconds" => "10m"})
     allow(settings).to receive(:load).with("api.worktree-x").and_return("plan" => {"stall_seconds" => "1m"})
 
-    expect(config.stall_seconds_for("api.worktree-x")).to eq(600)
+    expect(config.stall_seconds_for("api.worktree-x")).to eq(60)
+  end
+
+  it "reads the global value when neither the project nor the worktree sets one" do
+    allow(settings).to receive(:load).and_return({})
+    allow(settings).to receive(:load_global).and_return("plan" => {"stall_seconds" => "2m"})
+
+    expect(config.stall_seconds_for("api.worktree-x")).to eq(120)
   end
 end

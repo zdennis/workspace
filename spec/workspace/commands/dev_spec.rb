@@ -15,7 +15,12 @@ RSpec.describe Workspace::Commands::Dev do
   let(:spawned) { [] }
   let(:dev_settings) { {"up" => "exec sleep 30", "stop_timeout" => 2, "startup_timeout" => 10} }
   let(:lock_namespace) { Struct.new(:dir) { def resolve(cwd:) = {key: dir, display: "app", dir: dir} }.new(lock_dir) }
-  let(:dev_config) { Workspace::DevConfig.new(config_resolver: Workspace::ConfigResolver.new(project_settings: Struct.new(:data) { def load(_name) = data }.new({"dev" => dev_settings}))) }
+  let(:dev_config) {
+    Workspace::DevConfig.new(config_resolver: Workspace::ConfigResolver.new(project_settings: Struct.new(:data) {
+      def load(_name) = data
+      def load_global = {}
+    }.new({"dev" => dev_settings})))
+  }
   let(:lib_dir) { File.expand_path("../../../lib", __dir__) }
   let(:tmux) { FakeDevWindowTmux.new(method(:spawn_wrapper)) }
 
@@ -25,7 +30,7 @@ RSpec.describe Workspace::Commands::Dev do
       require "workspace"
       lock_dir, settings, wait = ARGV
       ns = Struct.new(:dir) { def resolve(cwd:) = {dir: dir} }.new(lock_dir)
-      store = Struct.new(:data) { def load(_name) = data }.new(JSON.parse(settings))
+      store = Struct.new(:data) { def load(_name) = data; def load_global = {} }.new(JSON.parse(settings))
       liveness = Workspace::LockHolder.new
       dev = Workspace::Commands::Dev.new(lock_namespace: ns, lock_holder: liveness, lineage: Workspace::WorkspaceLineage.new,
         dev_config: Workspace::DevConfig.new(config_resolver: Workspace::ConfigResolver.new(project_settings: store)),
@@ -362,7 +367,10 @@ RSpec.describe Workspace::Commands::Dev do
       end
 
       it "leaves it running when dev.release_on_session_end is false" do
-        off = Workspace::DevConfig.new(config_resolver: Workspace::ConfigResolver.new(project_settings: Struct.new(:data) { def load(_name) = data }.new({"dev" => dev_settings.merge("release_on_session_end" => false)})))
+        off = Workspace::DevConfig.new(config_resolver: Workspace::ConfigResolver.new(project_settings: Struct.new(:data) {
+          def load(_name) = data
+          def load_global = {}
+        }.new({"dev" => dev_settings.merge("release_on_session_end" => false)})))
 
         result = dev(dev_config: off).release_for_session(session_id: "sess-1", working_dir: login)
 
@@ -635,7 +643,12 @@ RSpec.describe Workspace::Commands::Dev, "with fake processes and clock" do
   let(:settings) { {"up" => "run-dev", "stop_timeout" => 2, "startup_timeout" => 5, "ready_timeout" => 5} }
   let(:liveness) { FakeLockLiveness.new }
   let(:lock_namespace) { Struct.new(:dir) { def resolve(cwd:) = {key: dir, display: "app", dir: dir} }.new(lock_dir) }
-  let(:dev_config) { Workspace::DevConfig.new(config_resolver: Workspace::ConfigResolver.new(project_settings: Struct.new(:data) { def load(_name) = data }.new({"dev" => settings}))) }
+  let(:dev_config) {
+    Workspace::DevConfig.new(config_resolver: Workspace::ConfigResolver.new(project_settings: Struct.new(:data) {
+      def load(_name) = data
+      def load_global = {}
+    }.new({"dev" => settings})))
+  }
   let(:lineage) { double("lineage", resolve: double(name: "app", worktree: nil)) }
   # A real terminator, so dev's orphan rule runs as written, with every
   # signal stubbed: nothing here may reach a real process group.

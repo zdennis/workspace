@@ -42,7 +42,7 @@ module Workspace
         end
 
         lineage = @lineage.resolve(cwd: cwd)
-        name = project || config_name(key, lineage)
+        name = config_name(key, project, lineage)
         path = @project_settings.project_config_path(name)
         with_config_lock(path) do
           @file_backup.backup(path)
@@ -83,7 +83,7 @@ module Workspace
           return true
         end
 
-        name = project || config_name(key, @lineage.resolve(cwd: cwd))
+        name = config_name(key, project, @lineage.resolve(cwd: cwd))
         data = @project_settings.load(name)
         value = data.dig(*key.split("."))
         if value.nil?
@@ -115,7 +115,7 @@ module Workspace
           return
         end
 
-        name = project || config_name(key, @lineage.resolve(cwd: cwd))
+        name = config_name(key, project, @lineage.resolve(cwd: cwd))
         path = @project_settings.project_config_path(name)
         with_config_lock(path) do
           @file_backup.backup(path)
@@ -131,16 +131,23 @@ module Workspace
 
       private
 
-      # The config file a key is written to and read from when no name is given:
-      # a worktree's own file for a key a worktree owns (`notes.dir`), else the
-      # parent project's file.
-      def config_name(key, lineage)
-        return lineage.name unless ConfigSchema.key(key).resolve == :own_then_parent
-        return lineage.worktree if lineage.worktree
-        if lineage.is_worktree
+      # The config file a key is written to and read from: the layer
+      # {ConfigLayering.default_layer} gives, which is also the `target_layer`
+      # `config show` reports. A worktree's own file for a key it may override
+      # (`dev.ready_timeout`, `notes.dir`), else the parent project's file. The
+      # workspace is the named one, else the one cwd is in.
+      def config_name(key, project, lineage)
+        schema_key = ConfigSchema.key(key)
+        if project
+          split = WorkspaceLineage.split_worktree_name(project)
+          layer = ConfigLayering.default_layer(schema_key, worktree: !split.nil?)
+          return (layer == "worktree") ? project : (split&.first || project)
+        end
+        if schema_key.resolve == :own_then_parent && lineage.is_worktree && !lineage.worktree
           raise Workspace::UsageError, "This worktree has no workspace name (no .workspace-project marker), so #{key} can't tell which file is its own. Pass --name <project>.worktree-<name>."
         end
-        lineage.name
+        layer = ConfigLayering.default_layer(schema_key, worktree: !lineage.worktree.nil?)
+        (layer == "worktree") ? lineage.worktree : lineage.name
       end
 
       # The key's name goes in the log, never its value: values can be commands

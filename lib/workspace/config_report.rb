@@ -114,17 +114,42 @@ module Workspace
       read_layers(key, scan).first
     end
 
-    # The winning layer and stored value for a key, or [nil, nil] when no layer holds one.
-    # The first of {#read_layers} that holds a value wins, as for the readers.
-    def winner(key, scan)
+    # Every layer that holds a value for the key, highest precedence first, as {ConfigLayering::Hit}s.
+    # A key with no read order keeps the one-file branch of {#read_layers}.
+    def hits(key, scan)
       data = scan.files.to_h { |f| [f.layer, f.data] }
-      hit = ConfigLayering.hits(key, data, worktree: scan.worktree?).first
-      return [hit.layer, hit.value] if hit
-      return [nil, nil] unless ConfigLayering.read_order(key, worktree: scan.worktree?).empty?
-      return [nil, nil] if key.name == DEV_CONFIGURED
+      order = ConfigLayering.read_order(key, worktree: scan.worktree?)
+      return ConfigLayering.hits(key, data, worktree: scan.worktree?) unless order.empty?
+      return [] if key.name == DEV_CONFIGURED
       layer = read_layer(key, scan)
       value = dig(scan.file(layer).data, key.name.split("."))
-      value.nil? ? [nil, nil] : [layer, value]
+      value.nil? ? [] : [ConfigLayering::Hit.new(layer: layer, value: value)]
+    end
+
+    # The winning layer and stored value for a key, or [nil, nil] when no layer holds one.
+    # The first of {#hits} wins, as for the readers.
+    def winner(key, scan)
+      hit = hits(key, scan).first
+      hit ? [hit.layer, hit.value] : [nil, nil]
+    end
+
+    # The `layers` of a row: every layer that holds a value, lowest to highest precedence, with the winner `active`.
+    # A sensitive key's value is nil and `masked` true, so no layer leaks it.
+    def layer_rows(key, scan)
+      hits(key, scan).each_with_index.map do |hit, index|
+        file = scan.file(hit.layer)
+        line, column = file.locations[key.name]
+        {"layer" => hit.layer, "value" => key.sensitive ? nil : ConfigFile.json_safe(hit.value), "masked" => key.sensitive,
+         "file" => file.path, "line" => line, "column" => column, "active" => index.zero?}
+      end.reverse
+    end
+
+    # Problems that belong to a key's row: those in the layers it may live in, plus a `not_read` note in any other.
+    # A key read by the special-cased modes (`:own`, `:merge`, `:none`) keeps the layers of its file scope.
+    def row_problems(key, problems)
+      layers = key.overridable_in.map(&:to_s)
+      layers |= key.global? ? ["global"] : %w[worktree project] if %i[own merge none].include?(key.resolve)
+      problems.select { |p| p["key"] == key.name && (layers.include?(p["layer"]) || p["code"] == "not_read") }
     end
 
     def key_row(key, scan, problems)
@@ -132,8 +157,7 @@ module Workspace
       files = layers.map { |l| scan.file(l) }
       win_layer, stored = winner(key, scan)
       file = scan.file(win_layer || layers.first)
-      problem_layers = key.global? ? ["global"] : %w[worktree project]
-      own_problems = problems.select { |p| p["key"] == key.name && problem_layers.include?(p["layer"]) }
+      own_problems = row_problems(key, problems)
       masked = key.sensitive && !stored.nil?
       line, column = file.locations[key.name]
       source = if files.any? { |f| !f.readable? } then "unreadable"
@@ -159,8 +183,15 @@ module Workspace
         "applies" => key.applies.to_s,
         "settable" => key.settable?,
         "sensitive" => key.sensitive,
+        "overridable_in" => key.overridable_in.map(&:to_s),
+        "layers" => layer_rows(key, scan),
+        "doc" => key.doc,
         "problems" => own_problems.map { |p| p.slice("severity", "code", "message", "line", "column") }
       }
+      row["choices"] = key.choices if key.choices
+      row["min"] = key.min unless key.min.nil?
+      row["max"] = key.max unless key.max.nil?
+      row["unit"] = key.unit if key.unit
       row["effective_path"] = effective_path(key, scan, problems) if NOTES_KEYS.include?(key.name)
       row["effective"] = dev_configured(scan) if key.name == DEV_CONFIGURED
       row
@@ -179,24 +210,25 @@ module Workspace
     # (`notes.default_dir`), as an absolute path. Nil when a config file can't be read or
     # the workspace has no known checkout (or branch, for a rule that uses it).
     def effective_path(key, scan, problems)
-      project = scan.file("project")
-      own = scan.file(read_layer(ConfigSchema.key("notes.dir"), scan))
-      return nil unless project.readable? && own.readable?
-      template = valid_value(ConfigSchema.key("notes.default_dir"), project, problems)
+      dir_key = ConfigSchema.key("notes.dir")
+      template_key = ConfigSchema.key("notes.default_dir")
+      files = (read_layers(dir_key, scan) | read_layers(template_key, scan)).map { |l| scan.file(l) }
+      return nil unless files.all?(&:readable?)
+      template = valid_value(template_key, scan, problems)
       root = @project_config.project_root_for(scan.workspace)
       if key.name == "notes.default_dir"
         @notes_dir.default_path(template, root: root, workspace: scan.workspace)
       else
-        stored = valid_value(key, own, problems)
+        stored = valid_value(key, scan, problems)
         @notes_dir.resolve(stored: stored, template: template, worktree: scan.worktree?, root: root, workspace: scan.workspace).path
       end
     end
 
-    # The stored value of a key in a file, nil when unset or when it has an error (as {#effective} treats it).
-    def valid_value(key, file, problems)
-      stored = dig(file.data, key.name.split("."))
+    # The winning stored value of a key as its reader parses it, nil when unset or when it has an error (as {#effective} treats it).
+    def valid_value(key, scan, problems)
+      layer, stored = winner(key, scan)
       return nil if stored.nil?
-      return nil if problems.any? { |p| p["key"] == key.name && p["layer"] == file.layer && p["severity"] == ERROR }
+      return nil if problems.any? { |p| p["key"] == key.name && p["layer"] == layer && p["severity"] == ERROR }
       key.parse(stored)
     end
 
@@ -214,12 +246,15 @@ module Workspace
       key.parse(stored)
     end
 
-    # The workspaces that read the file a change to this key lands in.
+    # The workspaces that read the file a change to this key lands in: every workspace for the global file, the
+    # project and its worktrees for the project file, the workspace alone for its own file.
     def affects(key, scan)
       return [] if key.resolve == :none
+      return [scan.workspace] if %i[own merge own_then_parent].include?(key.resolve) && !key.global?
       all = @project_config.available_projects
-      return (all | [scan.workspace]).sort if key.global?
-      return [scan.workspace] unless key.resolve == :parent
+      layer = ConfigLayering.default_layer(key, worktree: scan.worktree?)
+      return (all | [scan.workspace]).sort if layer == "global"
+      return [scan.workspace] if layer == "worktree"
 
       root = scan.parent || scan.workspace
       ([root] + all.select { |name| name.start_with?("#{root}#{WorkspaceLineage::WORKTREE_SEPARATOR}") }).uniq.sort
@@ -241,14 +276,20 @@ module Workspace
       return [problem("error", "yaml_syntax", file, file.parse_error["message"], line: file.parse_error["line"], column: file.parse_error["column"])] unless file.readable?
 
       scope = (file.layer == "global") ? :global : :project
-      declared = ConfigSchema.all.select { |key| key.scope == scope }
+      declared = declared_keys(file.layer, scope)
       read_here = declared.reject { |key| unread_here?(key, file) }
       value_problems(file, read_here) + escaped_path_problems(file, read_here) + shared_notes_problems(file, scan) + unknown_problems(file, declared, scope) + not_read_problems(file, declared, scan)
     end
 
-    # A key whose readers look elsewhere has no effect in this file, so its value isn't checked here.
+    # The keys a file of this layer holds: those of its scope, plus any layered key that may be set in the layer.
+    def declared_keys(layer, scope)
+      ConfigSchema.all.select { |key| key.scope == scope || (key.resolve == :layered && key.overridable_in?(layer)) }
+    end
+
+    # A key whose readers look elsewhere has no effect in this file, so its value isn't checked here: a key that
+    # may not be set in this file's layer.
     def unread_here?(key, file)
-      file.layer == "worktree" && key.resolve == :parent
+      %i[parent layered own_then_parent global].include?(key.resolve) && !key.overridable_in?(file.layer)
     end
 
     def value_problems(file, declared)
@@ -303,12 +344,12 @@ module Workspace
     def unknown_problems(file, declared, scope)
       names = declared.map(&:name)
       tops = names.map { |name| name.split(".").first }.uniq
-      other = ConfigSchema.all.reject { |key| key.scope == scope }.map(&:name)
+      other = ConfigSchema.all.map(&:name) - names
       file.data.flat_map do |top, value|
         if !tops.include?(top)
           [unknown(file, top.to_s, other, scope)]
         elsif value.is_a?(Hash) && names.any? { |name| name.start_with?("#{top}.") }
-          value.keys.map { |child| "#{top}.#{child}" }.reject { |path| names.include?(path) }.map { |path| unknown(file, path, other, scope) }
+          value.keys.map { |child| "#{top}.#{child}" }.reject { |path| names.any? { |name| name == path || name.start_with?("#{path}.") } }.map { |path| unknown(file, path, other, scope) }
         else
           []
         end
@@ -327,9 +368,19 @@ module Workspace
         next if dig(file.data, key.name.split(".")).nil?
         if key.resolve == :none
           located(file, "info", "not_read", key.name, "#{key.name} in the #{file.layer} config isn't read by anything.")
-        elsif file.layer == "worktree" && key.resolve == :parent
-          located(file, "info", "not_read", key.name, "#{key.name} is read from the parent project's file (#{scan.parent}), not this worktree's.")
+        elsif unread_here?(key, file)
+          located(file, "info", "not_read", key.name, not_read_message(key, file, scan))
         end
+      end
+    end
+
+    # Says where the key is read from instead. The text for a project-only key set in a worktree file is the original one.
+    def not_read_message(key, file, scan)
+      allowed = key.overridable_in.map(&:to_s)
+      if file.layer == "worktree" && allowed == ["project"]
+        "#{key.name} is read from the parent project's file (#{scan.parent}), not this worktree's."
+      else
+        "#{key.name} in the #{file.layer} config isn't read. It is read from the #{allowed.join(", ")} config."
       end
     end
 

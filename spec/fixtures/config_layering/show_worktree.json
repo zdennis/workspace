@@ -39,15 +39,30 @@
       "source_file": "<CONFIG>/projects/main.yml",
       "line": 2,
       "column": 3,
-      "resolve": "parent",
-      "target_layer": "project",
+      "resolve": "layered",
+      "target_layer": "worktree",
       "affects": [
-        "main",
         "main.worktree-a"
       ],
       "applies": "next_call",
       "settable": true,
       "sensitive": true,
+      "overridable_in": [
+        "project",
+        "worktree"
+      ],
+      "layers": [
+        {
+          "layer": "project",
+          "value": null,
+          "masked": true,
+          "file": "<CONFIG>/projects/main.yml",
+          "line": 2,
+          "column": 3,
+          "active": true
+        }
+      ],
+      "doc": "Command that starts the project's dev environment",
       "problems": []
     },
     {
@@ -62,15 +77,30 @@
       "source_file": "<CONFIG>/projects/main.yml",
       "line": 3,
       "column": 3,
-      "resolve": "parent",
-      "target_layer": "project",
+      "resolve": "layered",
+      "target_layer": "worktree",
       "affects": [
-        "main",
         "main.worktree-a"
       ],
       "applies": "next_call",
       "settable": true,
       "sensitive": true,
+      "overridable_in": [
+        "project",
+        "worktree"
+      ],
+      "layers": [
+        {
+          "layer": "project",
+          "value": null,
+          "masked": true,
+          "file": "<CONFIG>/projects/main.yml",
+          "line": 3,
+          "column": 3,
+          "active": true
+        }
+      ],
+      "doc": "Readiness probe for the dev environment",
       "problems": []
     },
     {
@@ -94,6 +124,21 @@
       "applies": "next_call",
       "settable": true,
       "sensitive": false,
+      "overridable_in": [
+        "project"
+      ],
+      "layers": [
+        {
+          "layer": "project",
+          "value": "45s",
+          "masked": false,
+          "file": "<CONFIG>/projects/main.yml",
+          "line": 5,
+          "column": 3,
+          "active": true
+        }
+      ],
+      "doc": "Grace period before force-stopping the dev environment, e.g. `20s` or `20`",
       "problems": [
         {
           "severity": "info",
@@ -102,7 +147,8 @@
           "line": 6,
           "column": 3
         }
-      ]
+      ],
+      "unit": "seconds"
     },
     {
       "key": "dev.startup_timeout",
@@ -116,16 +162,22 @@
       "source_file": null,
       "line": null,
       "column": null,
-      "resolve": "parent",
-      "target_layer": "project",
+      "resolve": "layered",
+      "target_layer": "worktree",
       "affects": [
-        "main",
         "main.worktree-a"
       ],
       "applies": "next_call",
       "settable": true,
       "sensitive": false,
-      "problems": []
+      "overridable_in": [
+        "project",
+        "worktree"
+      ],
+      "layers": [],
+      "doc": "How long `dev up` waits for the wrapper to take a free lock, e.g. `30s` (default `30s`)",
+      "problems": [],
+      "unit": "seconds"
     },
     {
       "key": "dev.ready_timeout",
@@ -139,15 +191,30 @@
       "source_file": "<CONFIG>/projects/main.yml",
       "line": 4,
       "column": 3,
-      "resolve": "parent",
-      "target_layer": "project",
+      "resolve": "layered",
+      "target_layer": "worktree",
       "affects": [
-        "main",
         "main.worktree-a"
       ],
       "applies": "next_call",
       "settable": true,
       "sensitive": false,
+      "overridable_in": [
+        "project",
+        "worktree"
+      ],
+      "layers": [
+        {
+          "layer": "project",
+          "value": "not-a-duration",
+          "masked": false,
+          "file": "<CONFIG>/projects/main.yml",
+          "line": 4,
+          "column": 3,
+          "active": true
+        }
+      ],
+      "doc": "How long `dev up` waits for the `dev.ready` check to pass, e.g. `2m` (default `120s`)",
       "problems": [
         {
           "severity": "error",
@@ -156,7 +223,8 @@
           "line": 4,
           "column": 3
         }
-      ]
+      ],
+      "unit": "seconds"
     },
     {
       "key": "dev.kill_grace",
@@ -179,7 +247,14 @@
       "applies": "next_call",
       "settable": true,
       "sensitive": false,
-      "problems": []
+      "overridable_in": [
+        "project"
+      ],
+      "layers": [],
+      "doc": "How long `lock clear devenv`, `dev down` and `dev up --force` wait for a SIGKILLed dev environment's process group to disappear before keeping its lock (default `2s`, capped at `60s`)",
+      "problems": [],
+      "max": 60,
+      "unit": "seconds"
     },
     {
       "key": "dev.release_on_session_end",
@@ -193,16 +268,26 @@
       "source_file": null,
       "line": null,
       "column": null,
-      "resolve": "parent",
-      "target_layer": "project",
+      "resolve": "layered",
+      "target_layer": "worktree",
       "affects": [
-        "main",
         "main.worktree-a"
       ],
       "applies": "next_call",
       "settable": true,
       "sensitive": false,
-      "problems": []
+      "overridable_in": [
+        "global",
+        "project",
+        "worktree"
+      ],
+      "layers": [],
+      "doc": "`true` or `false`: whether the dev environment a coding agent started with `dev up` is stopped when that agent's session ends (default `true`). A `/clear` never stops it. `false` leaves it running until `dev down`",
+      "problems": [],
+      "choices": [
+        "true",
+        "false"
+      ]
     },
     {
       "key": "dev.instructions",
@@ -216,16 +301,26 @@
       "source_file": null,
       "line": null,
       "column": null,
-      "resolve": "parent",
-      "target_layer": "project",
+      "resolve": "layered",
+      "target_layer": "worktree",
       "affects": [
-        "main",
         "main.worktree-a"
       ],
       "applies": "next_call",
       "settable": true,
       "sensitive": false,
-      "problems": []
+      "overridable_in": [
+        "global",
+        "project",
+        "worktree"
+      ],
+      "layers": [],
+      "doc": "`true` or `false`: whether `start` and `launch` send the agent the built-in `dev` pack (queue for the shared dev environment before testing, release it when done) when the project sets `dev.up` (default `true`); `--no-packs` skips it for one run. A workflow step that declares `uses: [devenv]` never gets it",
+      "problems": [],
+      "choices": [
+        "true",
+        "false"
+      ]
     },
     {
       "key": "locks.idle_grace",
@@ -248,7 +343,13 @@
       "applies": "next_call",
       "settable": true,
       "sensitive": false,
-      "problems": []
+      "overridable_in": [
+        "project"
+      ],
+      "layers": [],
+      "doc": "How long an idle agent keeps a lock before the first waiter may take it over (default `5m`; see [`workspace lock`](README.lock.md))",
+      "problems": [],
+      "unit": "seconds"
     },
     {
       "key": "locks.ps_timeout",
@@ -271,7 +372,15 @@
       "applies": "daemon_restart",
       "settable": true,
       "sensitive": false,
-      "problems": []
+      "overridable_in": [
+        "project"
+      ],
+      "layers": [],
+      "doc": "How long to wait for `ps` when reading the process table for lock/session checks, before giving up (default `5s`, must be between `1s` and `60s`)",
+      "problems": [],
+      "min": 1,
+      "max": 60,
+      "unit": "seconds"
     },
     {
       "key": "locks.reap_interval",
@@ -294,7 +403,13 @@
       "applies": "daemon_restart",
       "settable": true,
       "sensitive": false,
-      "problems": []
+      "overridable_in": [
+        "project"
+      ],
+      "layers": [],
+      "doc": "How often the session-monitor daemon sweeps for stale lock holders and waiters (default `30s`)",
+      "problems": [],
+      "unit": "seconds"
     },
     {
       "key": "alerts.notify",
@@ -308,47 +423,62 @@
       "source_file": null,
       "line": null,
       "column": null,
-      "resolve": "parent",
-      "target_layer": "project",
+      "resolve": "layered",
+      "target_layer": "worktree",
       "affects": [
-        "main",
         "main.worktree-a"
       ],
       "applies": "daemon_restart",
       "settable": true,
       "sensitive": true,
+      "overridable_in": [
+        "global",
+        "project",
+        "worktree"
+      ],
+      "layers": [],
+      "doc": "Command the session-monitor daemon runs when an agent pane starts waiting on a person or stays idle past `alerts.idle_after` (unset: no alerts; see [`workspace sessions`](README.sessions.md#alerts))",
       "problems": []
     },
     {
       "key": "alerts.idle_after",
       "scope": "project",
       "type": "duration",
-      "value": null,
+      "value": "1m",
       "masked": false,
       "default": 600,
-      "effective": 600,
-      "source": "default",
-      "source_file": null,
-      "line": null,
-      "column": null,
-      "resolve": "parent",
-      "target_layer": "project",
+      "effective": 60.0,
+      "source": "worktree",
+      "source_file": "<CONFIG>/projects/main.worktree-a.yml",
+      "line": 8,
+      "column": 3,
+      "resolve": "layered",
+      "target_layer": "worktree",
       "affects": [
-        "main",
         "main.worktree-a"
       ],
       "applies": "daemon_restart",
       "settable": true,
       "sensitive": false,
-      "problems": [
+      "overridable_in": [
+        "global",
+        "project",
+        "worktree"
+      ],
+      "layers": [
         {
-          "severity": "info",
-          "code": "not_read",
-          "message": "alerts.idle_after is read from the parent project's file (main), not this worktree's.",
+          "layer": "worktree",
+          "value": "1m",
+          "masked": false,
+          "file": "<CONFIG>/projects/main.worktree-a.yml",
           "line": 8,
-          "column": 3
+          "column": 3,
+          "active": true
         }
-      ]
+      ],
+      "doc": "How long an agent pane may sit idle before `alerts.notify` runs (default `10m`)",
+      "problems": [],
+      "unit": "seconds"
     },
     {
       "key": "agentd.poll_interval",
@@ -362,16 +492,23 @@
       "source_file": null,
       "line": null,
       "column": null,
-      "resolve": "parent",
-      "target_layer": "project",
+      "resolve": "layered",
+      "target_layer": "worktree",
       "affects": [
-        "main",
         "main.worktree-a"
       ],
       "applies": "daemon_restart",
       "settable": true,
       "sensitive": false,
-      "problems": []
+      "overridable_in": [
+        "global",
+        "project",
+        "worktree"
+      ],
+      "layers": [],
+      "doc": "How often the session-monitor daemon scans panes for agent state, alerts and stale locks (default `10s`)",
+      "problems": [],
+      "unit": "seconds"
     },
     {
       "key": "handoff.threshold",
@@ -385,16 +522,24 @@
       "source_file": null,
       "line": null,
       "column": null,
-      "resolve": "parent",
-      "target_layer": "project",
+      "resolve": "layered",
+      "target_layer": "worktree",
       "affects": [
-        "main",
         "main.worktree-a"
       ],
       "applies": "next_call",
       "settable": true,
       "sensitive": false,
-      "problems": []
+      "overridable_in": [
+        "global",
+        "project",
+        "worktree"
+      ],
+      "layers": [],
+      "doc": "Context-usage percent, 1 to 100, that triggers a handoff in [`workspace handoff check`](README.handoff.md) (default `11`)",
+      "problems": [],
+      "min": 1,
+      "max": 100
     },
     {
       "key": "handoff.check_prompt",
@@ -408,15 +553,21 @@
       "source_file": null,
       "line": null,
       "column": null,
-      "resolve": "parent",
-      "target_layer": "project",
+      "resolve": "layered",
+      "target_layer": "worktree",
       "affects": [
-        "main",
         "main.worktree-a"
       ],
       "applies": "next_call",
       "settable": true,
       "sensitive": false,
+      "overridable_in": [
+        "global",
+        "project",
+        "worktree"
+      ],
+      "layers": [],
+      "doc": "Overrides the built-in save-state prompt `handoff check` sends when it names a doc (the default is that text); must not be blank (see [`workspace handoff`](README.handoff.md))",
       "problems": []
     },
     {
@@ -431,39 +582,65 @@
       "source_file": null,
       "line": null,
       "column": null,
-      "resolve": "parent",
-      "target_layer": "project",
+      "resolve": "layered",
+      "target_layer": "worktree",
       "affects": [
-        "main",
         "main.worktree-a"
       ],
       "applies": "next_call",
       "settable": true,
       "sensitive": false,
+      "overridable_in": [
+        "global",
+        "project",
+        "worktree"
+      ],
+      "layers": [],
+      "doc": "Overrides the built-in resume prompt `handoff new` sends (the default is that text); must not be blank (see [`workspace handoff`](README.handoff.md))",
       "problems": []
     },
     {
       "key": "handoff.auto",
       "scope": "project",
       "type": "boolean",
-      "value": null,
+      "value": true,
       "masked": false,
       "default": false,
-      "effective": false,
-      "source": "default",
-      "source_file": null,
-      "line": null,
-      "column": null,
-      "resolve": "parent",
-      "target_layer": "project",
+      "effective": "true",
+      "source": "global",
+      "source_file": "<CONFIG>/config.yml",
+      "line": 8,
+      "column": 3,
+      "resolve": "layered",
+      "target_layer": "worktree",
       "affects": [
-        "main",
         "main.worktree-a"
       ],
       "applies": "next_call",
       "settable": true,
       "sensitive": false,
-      "problems": []
+      "overridable_in": [
+        "global",
+        "project",
+        "worktree"
+      ],
+      "layers": [
+        {
+          "layer": "global",
+          "value": true,
+          "masked": false,
+          "file": "<CONFIG>/config.yml",
+          "line": 8,
+          "column": 3,
+          "active": true
+        }
+      ],
+      "doc": "`true` or `false`: whether `start` and `launch` send a Claude Code agent the built-in `handoff` pack, which makes it run [`workspace handoff check`](README.handoff.md) after every task and hand off to a fresh conversation itself (default `false`); `--handoff` and `--no-handoff` override it for one run",
+      "problems": [],
+      "choices": [
+        "true",
+        "false"
+      ]
     },
     {
       "key": "commands.test",
@@ -477,15 +654,30 @@
       "source_file": "<CONFIG>/projects/main.yml",
       "line": 9,
       "column": 3,
-      "resolve": "parent",
-      "target_layer": "project",
+      "resolve": "layered",
+      "target_layer": "worktree",
       "affects": [
-        "main",
         "main.worktree-a"
       ],
       "applies": "next_call",
       "settable": true,
       "sensitive": true,
+      "overridable_in": [
+        "project",
+        "worktree"
+      ],
+      "layers": [
+        {
+          "layer": "project",
+          "value": null,
+          "masked": true,
+          "file": "<CONFIG>/projects/main.yml",
+          "line": 9,
+          "column": 3,
+          "active": true
+        }
+      ],
+      "doc": "Command that runs the project's tests, e.g. `bundle exec rspec`; [`workspace instructions compose`](README.instructions.md) names it in the `commits` pack",
       "problems": []
     },
     {
@@ -500,15 +692,20 @@
       "source_file": null,
       "line": null,
       "column": null,
-      "resolve": "parent",
-      "target_layer": "project",
+      "resolve": "layered",
+      "target_layer": "worktree",
       "affects": [
-        "main",
         "main.worktree-a"
       ],
       "applies": "next_call",
       "settable": true,
       "sensitive": true,
+      "overridable_in": [
+        "project",
+        "worktree"
+      ],
+      "layers": [],
+      "doc": "Command that lints the project, e.g. `bundle exec standardrb lib/ spec/`; named in the `commits` pack beside `commands.test`",
       "problems": []
     },
     {
@@ -531,6 +728,22 @@
       "applies": "next_call",
       "settable": true,
       "sensitive": false,
+      "overridable_in": [
+        "project",
+        "worktree"
+      ],
+      "layers": [
+        {
+          "layer": "worktree",
+          "value": "/tmp/golden-notes/a",
+          "masked": false,
+          "file": "<CONFIG>/projects/main.worktree-a.yml",
+          "line": 2,
+          "column": 3,
+          "active": true
+        }
+      ],
+      "doc": "Directory where one workspace's notes are kept, as an absolute path; other tools read it to know where to store notes. A worktree reads only its own value (set it with `--name`), never the project's; the main checkout reads the project's (unset: the directory `notes.default_dir` gives it)",
       "problems": [],
       "effective_path": "/tmp/golden-notes/a"
     },
@@ -546,7 +759,7 @@
       "source_file": "<CONFIG>/projects/main.yml",
       "line": 7,
       "column": 3,
-      "resolve": "parent",
+      "resolve": "layered",
       "target_layer": "project",
       "affects": [
         "main",
@@ -555,6 +768,22 @@
       "applies": "next_call",
       "settable": true,
       "sensitive": false,
+      "overridable_in": [
+        "global",
+        "project"
+      ],
+      "layers": [
+        {
+          "layer": "project",
+          "value": "~/notes/{workspace}",
+          "masked": false,
+          "file": "<CONFIG>/projects/main.yml",
+          "line": 7,
+          "column": 3,
+          "active": true
+        }
+      ],
+      "doc": "The rule that gives each workspace its notes directory when it has no `notes.dir`: an absolute path, `~/…`, or a path relative to the worktree with no `..`; `{workspace}` and `{branch}` are filled in per workspace, so give an outside-the-repo path one or the other (unset: `tmp/workspace-notes` inside the worktree)",
       "problems": [],
       "effective_path": "/home/me/notes/main.worktree-a"
     },
@@ -570,16 +799,26 @@
       "source_file": null,
       "line": null,
       "column": null,
-      "resolve": "parent",
-      "target_layer": "project",
+      "resolve": "layered",
+      "target_layer": "worktree",
       "affects": [
-        "main",
         "main.worktree-a"
       ],
       "applies": "next_call",
       "settable": true,
       "sensitive": false,
-      "problems": []
+      "overridable_in": [
+        "global",
+        "project",
+        "worktree"
+      ],
+      "layers": [],
+      "doc": "`true` or `false`: whether `start` and `launch` send the agent the built-in `notes` pack (where working notes go) with its first prompt (default `true`); `--no-packs` skips it for one run",
+      "problems": [],
+      "choices": [
+        "true",
+        "false"
+      ]
     },
     {
       "key": "plan.stall_seconds",
@@ -593,16 +832,33 @@
       "source_file": "<CONFIG>/projects/main.yml",
       "line": 11,
       "column": 3,
-      "resolve": "parent",
-      "target_layer": "project",
+      "resolve": "layered",
+      "target_layer": "worktree",
       "affects": [
-        "main",
         "main.worktree-a"
       ],
       "applies": "next_call",
       "settable": true,
       "sensitive": false,
-      "problems": []
+      "overridable_in": [
+        "global",
+        "project",
+        "worktree"
+      ],
+      "layers": [
+        {
+          "layer": "project",
+          "value": "10m",
+          "masked": false,
+          "file": "<CONFIG>/projects/main.yml",
+          "line": 11,
+          "column": 3,
+          "active": true
+        }
+      ],
+      "doc": "How long the agent pane that owns a workspace's plan may sit idle before [`workspace plan status`](README.plan.md) reads the plan as `stalled` (default `5m`)",
+      "problems": [],
+      "unit": "seconds"
     },
     {
       "key": "statusline.command",
@@ -625,6 +881,21 @@
       "applies": "next_call",
       "settable": true,
       "sensitive": true,
+      "overridable_in": [
+        "global"
+      ],
+      "layers": [
+        {
+          "layer": "global",
+          "value": null,
+          "masked": true,
+          "file": "<CONFIG>/config.yml",
+          "line": 2,
+          "column": 3,
+          "active": true
+        }
+      ],
+      "doc": "Delegates [`workspace statusline`](README.statusline.md) rendering to another command instead of the built-in renderer",
       "problems": []
     },
     {
@@ -648,7 +919,16 @@
       "applies": "next_call",
       "settable": true,
       "sensitive": false,
-      "problems": []
+      "overridable_in": [
+        "global"
+      ],
+      "layers": [],
+      "doc": "`statusline` (default) or `scrape` — where `workspace sessions` reads a pane's context usage; see [`workspace statusline`](README.statusline.md)",
+      "problems": [],
+      "choices": [
+        "statusline",
+        "scrape"
+      ]
     },
     {
       "key": "context.pattern",
@@ -671,6 +951,11 @@
       "applies": "next_call",
       "settable": true,
       "sensitive": false,
+      "overridable_in": [
+        "global"
+      ],
+      "layers": [],
+      "doc": "Regex with exactly one capture group, used when `context.source` is `scrape`",
       "problems": []
     },
     {
@@ -694,6 +979,11 @@
       "applies": "next_call",
       "settable": false,
       "sensitive": false,
+      "overridable_in": [
+        "global"
+      ],
+      "layers": [],
+      "doc": "Edited in the file by hand: a mapping of agent kind (`claude`, `codex`, ...) to a regex with exactly one capture group that reads the percent of the context window used from that agent's pane. A kind listed here is read from its pane whatever `context.source` says; Codex has a built-in reading of its \"N% context left\" line. `context.pattern` stays the fallback in `scrape` mode for a kind with neither. See [`handoff`](README.handoff.md#codex)",
       "problems": []
     },
     {
@@ -717,7 +1007,26 @@
       "applies": "next_call",
       "settable": true,
       "sensitive": false,
-      "problems": []
+      "overridable_in": [
+        "global"
+      ],
+      "layers": [
+        {
+          "layer": "global",
+          "value": false,
+          "masked": false,
+          "file": "<CONFIG>/config.yml",
+          "line": 10,
+          "column": 3,
+          "active": true
+        }
+      ],
+      "doc": "`true` or `false`: whether `launch`, `start` and `doctor` run [headless](README.launch.md#headless) on this machine when no `--headless`/`--no-headless` flag is given. Unset, they pick headless off macOS, without `osascript`, or when `CI` is set",
+      "problems": [],
+      "choices": [
+        "true",
+        "false"
+      ]
     },
     {
       "key": "workflows.defaults.include",
@@ -739,7 +1048,7 @@
       "source_file": null,
       "line": null,
       "column": null,
-      "resolve": "global",
+      "resolve": "layered",
       "target_layer": "global",
       "affects": [
         "main",
@@ -748,6 +1057,13 @@
       "applies": "next_call",
       "settable": true,
       "sensitive": false,
+      "overridable_in": [
+        "global",
+        "project",
+        "worktree"
+      ],
+      "layers": [],
+      "doc": "Instruction packs every workflow step and [`workspace instructions compose`](README.instructions.md) start with, as names separated by commas (default `binding, orchestrator, commits`)",
       "problems": []
     },
     {
@@ -768,6 +1084,9 @@
       "applies": "next_call",
       "settable": false,
       "sensitive": true,
+      "overridable_in": [],
+      "layers": [],
+      "doc": "Global hooks applied to all projects",
       "problems": []
     },
     {
@@ -801,6 +1120,27 @@
       "applies": "next_call",
       "settable": false,
       "sensitive": false,
+      "overridable_in": [
+        "project",
+        "worktree"
+      ],
+      "layers": [
+        {
+          "layer": "global",
+          "value": {
+            "default": [
+              "editor",
+              "shell"
+            ]
+          },
+          "masked": false,
+          "file": "<CONFIG>/config.yml",
+          "line": 3,
+          "column": 1,
+          "active": true
+        }
+      ],
+      "doc": "Default tmux pane layouts",
       "problems": []
     },
     {
@@ -824,6 +1164,11 @@
       "applies": "next_call",
       "settable": false,
       "sensitive": false,
+      "overridable_in": [
+        "global"
+      ],
+      "layers": [],
+      "doc": "Size warning threshold (e.g., \"10kb\", \"1mb\"). Default: 1mb",
       "problems": []
     },
     {
@@ -844,7 +1189,14 @@
       "applies": "next_call",
       "settable": false,
       "sensitive": false,
-      "problems": []
+      "overridable_in": [],
+      "layers": [],
+      "doc": "Read-only, shown by `config show --json` only: `effective` is `true` when the project's `dev.up` is set, which is what makes `start` and `launch` send the `dev` pack. Not a key to write",
+      "problems": [],
+      "choices": [
+        "true",
+        "false"
+      ]
     },
     {
       "key": "hooks",
@@ -866,6 +1218,22 @@
       "applies": "next_event",
       "settable": false,
       "sensitive": true,
+      "overridable_in": [
+        "project",
+        "worktree"
+      ],
+      "layers": [
+        {
+          "layer": "worktree",
+          "value": null,
+          "masked": true,
+          "file": "<CONFIG>/projects/main.worktree-a.yml",
+          "line": 3,
+          "column": 1,
+          "active": true
+        }
+      ],
+      "doc": "Project-specific hooks (e.g., `post_launch`)",
       "problems": []
     },
     {
@@ -888,6 +1256,12 @@
       "applies": "next_call",
       "settable": false,
       "sensitive": false,
+      "overridable_in": [
+        "project",
+        "worktree"
+      ],
+      "layers": [],
+      "doc": "Project-specific tmux pane layouts",
       "problems": []
     },
     {
@@ -911,6 +1285,11 @@
       "applies": "next_call",
       "settable": false,
       "sensitive": true,
+      "overridable_in": [
+        "project"
+      ],
+      "layers": [],
+      "doc": "Hooks seeded into new worktrees created from this project",
       "problems": []
     },
     {
@@ -933,15 +1312,14 @@
       "applies": "daemon_restart",
       "settable": false,
       "sensitive": true,
+      "overridable_in": [
+        "project",
+        "worktree"
+      ],
+      "layers": [],
+      "doc": "Deprecated (use [`workspace workflow`](README.workflow.md)): pipeline stages (`pipeline.panes`: role, timeout) the agent daemon dispatches work through",
       "problems": []
     }
   ],
-  "unknown_keys": [
-    {
-      "key": "handoff",
-      "layer": "global",
-      "line": 7,
-      "column": 1
-    }
-  ]
+  "unknown_keys": []
 }

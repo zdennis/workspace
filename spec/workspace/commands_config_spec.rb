@@ -1,7 +1,7 @@
 require "spec_helper"
 
 RSpec.describe Workspace::CommandsConfig do
-  let(:project_settings) { instance_double(Workspace::ProjectSettings) }
+  let(:project_settings) { instance_double(Workspace::ProjectSettings, load_global: {}) }
   subject(:config) { described_class.new(config_resolver: Workspace::ConfigResolver.new(project_settings: project_settings)) }
 
   it "reads the project's test and lint commands" do
@@ -32,10 +32,10 @@ RSpec.describe Workspace::CommandsConfig do
     expect { config.for_project("app") }.to raise_error(Workspace::ConfigParseError)
   end
 
-  it "reads a worktree's commands from the parent project and ignores its own file" do
-    allow(project_settings).to receive(:load).with("app").and_return("commands" => {"test" => "bin/test"})
-    allow(project_settings).to receive(:load).with("app.worktree-x").and_return("commands" => {"test" => "other", "lint" => "other"})
+  it "reads a worktree's own commands over the parent project's, key by key" do
+    allow(project_settings).to receive(:load).with("app").and_return("commands" => {"test" => "bin/test", "lint" => "bin/lint"})
+    allow(project_settings).to receive(:load).with("app.worktree-x").and_return("commands" => {"test" => "other"})
 
-    expect(config.for_project("app.worktree-x")).to eq(test: "bin/test", lint: nil)
+    expect(config.for_project("app.worktree-x")).to eq(test: "other", lint: "bin/lint")
   end
 end

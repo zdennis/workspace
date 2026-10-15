@@ -79,18 +79,22 @@ RSpec.describe Workspace::ConfigReport do
       expect(key_row(report.show("api.worktree-fix"), "dev.configured")["effective"]).to be(true)
     end
 
-    it "follows the winning hit of dev.up from ConfigLayering, not a read of the project file" do
-      write("api", "dev:\n  up: ./start-dev\n")
-      allow(Workspace::ConfigLayering).to receive(:hits).and_call_original
-      allow(Workspace::ConfigLayering).to receive(:hits).with(satisfy { |k| k.name == "dev.up" }, anything, worktree: false)
-        .and_return([])
+    it "follows dev.up's winning layer: true for a worktree whose own file sets dev.up while the project sets none" do
+      write("api", "dev: {}\n")
+      write("api.worktree-fix", "dev:\n  up: ./worktree-start\n")
 
+      expect(key_row(report.show("api.worktree-fix"), "dev.configured")["effective"]).to be(true)
+      expect(key_row(report.show("api.worktree-search"), "dev.configured")["effective"]).to be(false)
       expect(key_row(report.show("api"), "dev.configured")["effective"]).to be(false)
+    end
 
-      allow(Workspace::ConfigLayering).to receive(:hits).with(satisfy { |k| k.name == "dev.up" }, anything, worktree: false)
-        .and_return([Workspace::ConfigLayering::Hit.new(layer: "project", value: "./other")])
+    it "is false in a worktree whose own dev.up is blank over a project that sets one, and null when the worktree file is unreadable" do
+      write("api", "dev:\n  up: ./start-dev\n")
+      write("api.worktree-fix", "dev:\n  up: \"  \"\n")
+      expect(key_row(report.show("api.worktree-fix"), "dev.configured")["effective"]).to be(false)
 
-      expect(key_row(report.show("api"), "dev.configured")["effective"]).to be(true)
+      write("api.worktree-fix", "dev: [\n")
+      expect(key_row(report.show("api.worktree-fix"), "dev.configured")["effective"]).to be_nil
     end
 
     it "is null when the project's file can't be read" do
@@ -118,13 +122,105 @@ RSpec.describe Workspace::ConfigReport do
     end
 
     it "describes just the one key asked for, with the same envelope and layering" do
-      path = write("api", "dev:\n  ready_timeout: 90s\n")
-      write("api.worktree-fix", "dev:\n  ready_timeout: 5s\n")
-      doc = report.show("api.worktree-fix", key: "dev.ready_timeout")
+      path = write("api", "dev:\n  stop_timeout: 90s\n")
+      write("api.worktree-fix", "dev:\n  stop_timeout: 5s\n")
+      doc = report.show("api.worktree-fix", key: "dev.stop_timeout")
 
       expect(doc).to include("schema_version" => 1, "ok" => true, "workspace" => "api.worktree-fix", "parent" => "api")
-      expect(doc["keys"].map { |row| row["key"] }).to eq(["dev.ready_timeout"])
+      expect(doc["keys"].map { |row| row["key"] }).to eq(["dev.stop_timeout"])
       expect(doc["keys"].first).to include("effective" => 90, "source" => "project", "source_file" => path, "resolve" => "parent")
+    end
+
+    describe "layers" do
+      it "lists every layer that holds a value, lowest to highest precedence, with exactly the winner active" do
+        global = write(:global, "handoff:\n  threshold: 20\n")
+        project = write("api", "handoff:\n  threshold: 30\n")
+        worktree = write("api.worktree-fix", "\n\nhandoff:\n  threshold: 40\n")
+        row = key_row(report.show("api.worktree-fix"), "handoff.threshold")
+
+        expect(row["layers"]).to eq([
+          {"layer" => "global", "value" => 20, "masked" => false, "file" => global, "line" => 2, "column" => 3, "active" => false},
+          {"layer" => "project", "value" => 30, "masked" => false, "file" => project, "line" => 2, "column" => 3, "active" => false},
+          {"layer" => "worktree", "value" => 40, "masked" => false, "file" => worktree, "line" => 4, "column" => 3, "active" => true}
+        ])
+        expect(row).to include("value" => 40, "source" => "worktree", "overridable_in" => %w[global project worktree])
+      end
+
+      it "lists a main checkout's layers without the worktree, and none for an unset key" do
+        write("api", "handoff:\n  threshold: 30\n")
+        write("api.worktree-fix", "handoff:\n  threshold: 40\n")
+        doc = report.show("api")
+
+        expect(key_row(doc, "handoff.threshold")["layers"].map { |l| [l["layer"], l["active"]] }).to eq([["project", true]])
+        expect(key_row(doc, "handoff.auto")["layers"]).to eq([])
+      end
+
+      it "masks a sensitive key's value in every layer and never quotes it in a problem message" do
+        write(:global, "alerts:\n  notify: ' '\n")
+        write("api", "alerts:\n  notify: sekrit-project\ncommands:\n  test: sekrit-test\n")
+        write("api.worktree-fix", "alerts:\n  notify: sekrit-worktree\n")
+        doc = report.show("api.worktree-fix")
+        row = key_row(doc, "alerts.notify")
+
+        expect(row["layers"].map { |l| [l["layer"], l["value"], l["masked"]] }).to eq([["global", nil, true], ["project", nil, true], ["worktree", nil, true]])
+        expect(row["layers"].map { |l| l["active"] }).to eq([false, false, true])
+        expect(JSON.generate(doc)).not_to include("sekrit")
+        expect(report.validate("api.worktree-fix")["problems"].map { |p| p["message"] }.join).not_to include("sekrit")
+      end
+
+      it "reports one entry for a key edited in its own file, none for the derived row" do
+        write("api", "hooks:\n  post_launch: echo\n")
+        doc = report.show("api")
+
+        expect(key_row(doc, "hooks", scope: "project")["layers"].map { |l| [l["layer"], l["active"]] }).to eq([["project", true]])
+        expect(key_row(doc, "dev.configured")["layers"]).to eq([])
+      end
+
+      it "describes each key: its layers, doc, choices and limits, only where set" do
+        doc = report.show("api")
+
+        expect(key_row(doc, "handoff.threshold")).to include("min" => 1, "max" => 100, "doc" => start_with("Context-usage percent"))
+        expect(key_row(doc, "handoff.threshold")).not_to include("choices", "unit")
+        expect(key_row(doc, "dev.ready_timeout")).to include("unit" => "seconds", "overridable_in" => %w[project worktree])
+        expect(key_row(doc, "dev.ready_timeout")).not_to include("choices", "min", "max")
+        expect(key_row(doc, "dev.kill_grace")).to include("max" => 60, "unit" => "seconds")
+        expect(key_row(doc, "handoff.auto")).to include("choices" => %w[true false])
+        expect(key_row(doc, "context.source")).to include("choices" => %w[statusline scrape], "overridable_in" => ["global"])
+        expect(key_row(doc, "locks.ps_timeout")).to include("min" => 1, "max" => 60)
+        expect(key_row(doc, "dev.up")).not_to include("choices", "min", "max", "unit")
+        expect(doc["keys"]).to all(include("doc" => a_kind_of(String), "overridable_in" => a_kind_of(Array), "layers" => a_kind_of(Array)))
+      end
+    end
+
+    describe "which layer a value may sit in" do
+      it "notes a project-only key in a worktree file, and names the allowed layers for a key allowed elsewhere" do
+        write("api", "")
+        write("api.worktree-fix", "locks:\n  idle_grace: 1m\nnotes:\n  default_dir: tmp/n\n")
+        problems = report.validate("api.worktree-fix")["problems"]
+
+        expect(problems.map { |p| [p["key"], p["code"], p["severity"]] }).to eq([["locks.idle_grace", "not_read", "info"], ["notes.default_dir", "not_read", "info"]])
+        expect(problems[0]["message"]).to include("parent project's file (api)")
+        expect(problems[1]["message"]).to eq("notes.default_dir in the worktree config isn't read. It is read from the global, project config.")
+        expect(key_row(report.show("api.worktree-fix"), "locks.idle_grace")["problems"].map { |p| p["code"] }).to eq(["not_read"])
+      end
+
+      it "reads a value in a newly allowed layer without a warning, and still flags a key allowed in neither layer" do
+        write("api", "")
+        write(:global, "handoff:\n  auto: true\ndev:\n  stop_timeout: 5s\nworkflows:\n  defaults:\n    include: binding\n")
+        write("api.worktree-fix", "workflows:\n  defaults:\n    include: commits\ncontext:\n  source: scrape\n")
+        problems = report.validate("api.worktree-fix")["problems"]
+
+        expect(problems.map { |p| [p["layer"], p["key"], p["code"]] }).to eq([["worktree", "context", "unknown_key"], ["global", "dev.stop_timeout", "unknown_key"]])
+        expect(problems.first["message"]).to include("It is a global setting.")
+        expect(problems.last["message"]).to include("It is a project setting.")
+      end
+
+      it "checks a widened key's value in the layer it newly sits in" do
+        write("api", "")
+        write(:global, "handoff:\n  threshold: 500\n")
+
+        expect(report.validate("api")["problems"].map { |p| [p["layer"], p["key"], p["code"]] }).to eq([["global", "handoff.threshold", "invalid_value"]])
+      end
     end
 
     it "raises for a key no schema defines" do
@@ -151,15 +247,56 @@ RSpec.describe Workspace::ConfigReport do
       expect(unset).to include("value" => nil, "effective" => 20, "source" => "default", "source_file" => nil, "line" => nil)
     end
 
-    it "reads a worktree's dev keys from the parent project's file, as the readers do" do
-      write("api", "dev:\n  ready_timeout: 90s\n")
-      write("api.worktree-fix", "dev:\n  ready_timeout: 5s\n")
+    it "reads a worktree's project-only dev keys from the parent project's file, as the readers do" do
+      write("api", "dev:\n  stop_timeout: 90s\n")
+      write("api.worktree-fix", "dev:\n  stop_timeout: 5s\n")
       doc = report.show("api.worktree-fix")
 
-      expect(key_row(doc, "dev.ready_timeout")).to include("effective" => 90, "source" => "project", "resolve" => "parent")
+      expect(key_row(doc, "dev.stop_timeout")).to include("effective" => 90, "source" => "project", "resolve" => "parent", "overridable_in" => ["project"])
       expect(doc["files"].first["layer"]).to eq("worktree")
-      note = key_row(doc, "dev.ready_timeout")["problems"].find { |p| p["code"] == "not_read" }
+      note = key_row(doc, "dev.stop_timeout")["problems"].find { |p| p["code"] == "not_read" }
       expect(note["message"]).to include("parent project's file (api)")
+    end
+
+    it "reads a widened key from the worktree's own file over the project's, with resolve layered" do
+      path = write("api.worktree-fix", "dev:\n  ready_timeout: 5s\n")
+      write("api", "dev:\n  ready_timeout: 90s\n")
+      doc = report.show("api.worktree-fix")
+
+      expect(key_row(doc, "dev.ready_timeout")).to include("effective" => 5, "source" => "worktree", "source_file" => path, "resolve" => "layered",
+        "overridable_in" => %w[project worktree], "target_layer" => "worktree", "problems" => [])
+      expect(key_row(report.show("api"), "dev.ready_timeout")).to include("effective" => 90, "source" => "project", "target_layer" => "project")
+    end
+
+    it "reads a widened key from the global file when neither the project nor the worktree sets it" do
+      write("api", "")
+      write(:global, "handoff:\n  auto: true\n")
+
+      expect(key_row(report.show("api.worktree-fix"), "handoff.auto")).to include("effective" => "true", "source" => "global", "resolve" => "layered")
+      expect(report.validate("api.worktree-fix")["problems"]).to eq([])
+    end
+
+    it "reports the layer config set writes as target_layer, the same one a write with no scope lands in" do
+      command = Workspace::Commands::Config.new(project_settings: settings, file_backup: instance_double(Workspace::FileBackup, backup: nil),
+        lineage: instance_double(Workspace::WorkspaceLineage, resolve: Workspace::WorkspaceLineage::Lineage.new(name: "api", is_worktree: false)))
+      expected = {
+        ["api", "dev.ready_timeout"] => "api", ["api.worktree-fix", "dev.ready_timeout"] => "api.worktree-fix",
+        ["api", "locks.idle_grace"] => "api", ["api.worktree-fix", "locks.idle_grace"] => "api",
+        ["api", "notes.dir"] => "api", ["api.worktree-fix", "notes.dir"] => "api.worktree-fix",
+        ["api", "handoff.auto"] => "api", ["api.worktree-fix", "handoff.auto"] => "api.worktree-fix"
+      }
+      layers = {"api" => "project", "api.worktree-fix" => "worktree"}
+      expected.each do |(workspace, name), file_name|
+        write("api", "")
+        write("api.worktree-fix", "")
+        value = {"notes.dir" => "/n", "handoff.auto" => "true"}.fetch(name, "90s")
+        target = key_row(report.show(workspace), name)["target_layer"]
+        command.set(name, value, project: workspace)
+
+        written = %w[api api.worktree-fix].select { |w| settings.load(w).dig(*name.split(".")) }
+        expect(written).to eq([file_name]), "#{name} on #{workspace}"
+        expect(target).to eq((file_name == workspace) ? layers.fetch(workspace) : "project"), "#{name} on #{workspace}"
+      end
     end
 
     it "doesn't let an invalid value in a worktree's file, where the reader never looks, change the effective value or fail validation" do
@@ -206,7 +343,7 @@ RSpec.describe Workspace::ConfigReport do
 
       fix = report.show("api.worktree-fix")
       expect(key_row(fix, "notes.dir")["effective_path"]).to eq("/wt/notes")
-      expect(key_row(fix, "notes.default_dir")).to include("effective_path" => "/home/me/notes/api.worktree-fix/feature-fix", "source" => "project", "resolve" => "parent", "type" => "path")
+      expect(key_row(fix, "notes.default_dir")).to include("effective_path" => "/home/me/notes/api.worktree-fix/feature-fix", "source" => "project", "resolve" => "layered", "type" => "path")
 
       search = report.show("api.worktree-search")
       expect(key_row(search, "notes.dir")).to include("source" => "default", "effective" => nil, "effective_path" => "/home/me/notes/api.worktree-search/feature-search")
@@ -275,7 +412,10 @@ RSpec.describe Workspace::ConfigReport do
     it "lists the workspaces a change reaches: the parent and its worktrees for a parent key, itself for its own" do
       doc = report.show("api.worktree-fix")
 
-      expect(key_row(doc, "dev.up")["affects"]).to eq(%w[api api.worktree-fix api.worktree-search])
+      expect(key_row(doc, "dev.stop_timeout")["affects"]).to eq(%w[api api.worktree-fix api.worktree-search])
+      expect(key_row(doc, "dev.up")["affects"]).to eq(["api.worktree-fix"])
+      expect(key_row(report.show("api"), "dev.up")["affects"]).to eq(%w[api api.worktree-fix api.worktree-search])
+      expect(key_row(doc, "notes.dir")["affects"]).to eq(["api.worktree-fix"])
       expect(key_row(doc, "hooks", scope: "project")["affects"]).to eq(["api.worktree-fix"])
       expect(key_row(doc, "context.source")["affects"]).to eq(available | ["api.worktree-fix"])
       expect(key_row(doc, "hooks", scope: "global")["affects"]).to eq([])
@@ -401,7 +541,7 @@ RSpec.describe Workspace::ConfigReport do
 
       expect(problems.map { |p| [p["layer"], p["key"], p["severity"], p["code"]] }).to eq([
         ["project", "statusline", "warning", "unknown_key"], ["project", "dev.upp", "warning", "unknown_key"],
-        ["project", "mystery", "warning", "unknown_key"], ["global", "dev", "warning", "unknown_key"]
+        ["project", "mystery", "warning", "unknown_key"], ["global", "dev.up", "warning", "unknown_key"]
       ])
       expect(problems.first["message"]).to include("It is a global setting.")
       expect(problems.last["message"]).to include("It is a project setting.")
@@ -414,13 +554,13 @@ RSpec.describe Workspace::ConfigReport do
     end
 
     it "notes global hooks, which nothing reads, and parent keys set in a worktree's file" do
-      write("api.worktree-fix", "dev:\n  up: x\nhooks: {}\n")
+      write("api.worktree-fix", "dev:\n  stop_timeout: 5s\nhooks: {}\n")
       write("api", "")
       write(:global, "hooks:\n  post_launch: x\n")
       problems = report.validate("api.worktree-fix")["problems"]
 
       expect(problems.map { |p| [p["layer"], p["key"], p["severity"], p["code"]] }).to eq([
-        ["worktree", "dev.up", "info", "not_read"], ["global", "hooks", "info", "not_read"]
+        ["worktree", "dev.stop_timeout", "info", "not_read"], ["global", "hooks", "info", "not_read"]
       ])
       expect(report.validate("api.worktree-fix")["valid"]).to be true
     end

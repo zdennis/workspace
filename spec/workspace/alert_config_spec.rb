@@ -101,11 +101,11 @@ RSpec.describe Workspace::AlertConfig do
   end
 
   describe "a worktree workspace with no lineage wired" do
-    it "reads the parent project's file and ignores the worktree's own" do
+    it "reads the worktree's own file over the parent project's, key by key" do
       project_settings.save("app", {"alerts" => {"notify" => "notify-project", "idle_after" => "2m"}})
-      project_settings.save("app.worktree-x", {"alerts" => {"notify" => "notify-worktree", "idle_after" => "9m"}})
+      project_settings.save("app.worktree-x", {"alerts" => {"idle_after" => "9m"}})
 
-      expect(alert_config.for_workspace("app.worktree-x")).to eq(notify: "notify-project", idle_after: 120.0)
+      expect(alert_config.for_workspace("app.worktree-x")).to eq(notify: "notify-project", idle_after: 540.0)
     end
   end
 end

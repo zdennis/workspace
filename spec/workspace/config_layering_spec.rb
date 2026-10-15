@@ -33,7 +33,21 @@ RSpec.describe Workspace::ConfigLayering do
     end
 
     it "takes a key name" do
-      expect(described_class.read_order("dev.up", worktree: true)).to eq(["project"])
+      expect(described_class.read_order("locks.idle_grace", worktree: true)).to eq(["project"])
+    end
+
+    it "reads the real :layered keys by their overridable_in" do
+      expect(described_class.read_order("dev.ready_timeout", worktree: true)).to eq(%w[worktree project])
+      expect(described_class.read_order("dev.ready_timeout", worktree: false)).to eq(%w[project])
+      expect(described_class.read_order("handoff.auto", worktree: true)).to eq(%w[worktree project global])
+      expect(described_class.read_order("notes.default_dir", worktree: true)).to eq(%w[project global])
+      expect(described_class.read_order("dev.stop_timeout", worktree: true)).to eq(%w[project])
+    end
+
+    it "never gives notes.dir a project or global layer in a worktree" do
+      data = {"worktree" => {"notes" => {"dir" => "/w"}}, "project" => {"notes" => {"dir" => "/p"}}, "global" => {"notes" => {"dir" => "/g"}}}
+      expect(described_class.hits("notes.dir", data, worktree: true).map(&:layer)).to eq(%w[worktree])
+      expect(described_class.hits("notes.dir", {"project" => data["project"]}, worktree: true)).to eq([])
     end
   end
 
@@ -130,12 +144,44 @@ RSpec.describe Workspace::ConfigLayering do
     end
   end
 
+  describe "precedence of a real :layered key (handoff.threshold)" do
+    let(:layers) { {"worktree" => 40, "project" => 30, "global" => 20} }
+
+    def winner(*names, worktree: true)
+      data = names.to_h { |name| [name, {"handoff" => {"threshold" => layers.fetch(name)}}] }
+      described_class.hits("handoff.threshold", data, worktree: worktree).first&.layer
+    end
+
+    it "lets each layer beat the ones below it, and none beat the default" do
+      expect(winner).to be_nil
+      expect(winner("global")).to eq("global")
+      expect(winner("global", "project")).to eq("project")
+      expect(winner("project", "worktree")).to eq("worktree")
+      expect(winner("global", "worktree")).to eq("worktree")
+      expect(winner("global", "project", "worktree")).to eq("worktree")
+    end
+
+    it "ignores the worktree layer in a main checkout" do
+      expect(winner("project", "worktree", worktree: false)).to eq("project")
+    end
+  end
+
   describe ".default_layer" do
     it "gives today's `config set` target" do
       expect(described_class.default_layer("context.source", worktree: true)).to eq("global")
       expect(described_class.default_layer("notes.dir", worktree: true)).to eq("worktree")
       expect(described_class.default_layer("notes.dir", worktree: false)).to eq("project")
-      expect(described_class.default_layer("dev.up", worktree: true)).to eq("project")
+      expect(described_class.default_layer("locks.idle_grace", worktree: true)).to eq("project")
+    end
+
+    it "writes a widened key to the worktree's file in a worktree and the project's file in a main checkout" do
+      expect(described_class.default_layer("dev.ready_timeout", worktree: true)).to eq("worktree")
+      expect(described_class.default_layer("dev.ready_timeout", worktree: false)).to eq("project")
+      expect(described_class.default_layer("notes.default_dir", worktree: true)).to eq("project")
+    end
+
+    it "keeps a global-file key global even when it is layered, until --scope can name another layer" do
+      expect(described_class.default_layer("workflows.defaults.include", worktree: true)).to eq("global")
     end
   end
 end

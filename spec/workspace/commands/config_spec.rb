@@ -350,10 +350,33 @@ RSpec.describe Workspace::Commands::Config do
         expect(project_settings.load(File.basename(root)).dig("notes", "dir")).to eq("/shared/notes")
       end
 
-      it "sets other project keys from the worktree in the parent project" do
-        command.set("dev.up", "bin/dev", cwd: worktree_path)
+      it "sets project-only keys from the worktree in the parent project" do
+        command.set("locks.idle_grace", "9m", cwd: worktree_path)
 
-        expect(project_settings.load("myapp").dig("dev", "up")).to eq("bin/dev")
+        expect(project_settings.load("myapp").dig("locks", "idle_grace")).to eq("9m")
+        expect(project_settings.load("myapp.worktree-wt1")).to eq({})
+      end
+
+      it "sets a widened key from the worktree in the worktree's own file" do
+        command.set("dev.ready_timeout", "90s", cwd: worktree_path)
+
+        expect(project_settings.load("myapp.worktree-wt1").dig("dev", "ready_timeout")).to eq("90s")
+        expect(project_settings.load("myapp")).to eq({})
+      end
+
+      it "sets a widened key in the worktree's own file for --name <worktree>, and a project-only key in the parent's" do
+        command.set("dev.ready_timeout", "90s", project: "myapp.worktree-other")
+        command.set("locks.idle_grace", "9m", project: "myapp.worktree-other")
+
+        expect(project_settings.load("myapp.worktree-other")).to eq("dev" => {"ready_timeout" => "90s"})
+        expect(project_settings.load("myapp")).to eq("locks" => {"idle_grace" => "9m"})
+        expect(command.get("dev.ready_timeout", project: "myapp.worktree-other")).to be(true)
+      end
+
+      it "sets a widened key in the project's file from a main checkout" do
+        command.set("dev.ready_timeout", "90s", cwd: root)
+
+        expect(project_settings.load(File.basename(root)).dig("dev", "ready_timeout")).to eq("90s")
       end
     end
 

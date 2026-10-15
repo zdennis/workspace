@@ -28,11 +28,17 @@ module Workspace
 
     def self.keys_table
       rows = ConfigSchema.settable.map do |key|
-        prefix = "Global. " if key.global?
-        "| `#{key.name}` | #{prefix}#{key.doc} |"
+        prefix = "Global. " if key.overridable_in == [:global]
+        "| `#{key.name}` | #{layers_cell(key)} | #{prefix}#{key.doc} |"
       end
-      ["| Key | Description |", "|-----|-------------|", *rows].join("\n") + "\n"
+      ["| Key | Layers | Description |", "|-----|--------|-------------|", *rows].join("\n") + "\n"
     end
+
+    # The layers a key may be set in, lowest precedence first, e.g. "global, project, worktree".
+    def self.layers_cell(key)
+      key.overridable_in.join(", ")
+    end
+    private_class_method :layers_cell
     private_class_method :keys_table
 
     def self.restart_sentence

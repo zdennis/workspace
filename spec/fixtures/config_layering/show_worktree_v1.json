@@ -1,0 +1,947 @@
+{
+  "schema_version": 1,
+  "ok": true,
+  "workspace": "main.worktree-a",
+  "parent": "main",
+  "files": [
+    {
+      "layer": "worktree",
+      "path": "<CONFIG>/projects/main.worktree-a.yml",
+      "exists": true,
+      "etag": "sha256:c0b0abb6f9e7fbd19fd27950d0658e978d00ff1371be2b272c35a6f4f769df43",
+      "parse_error": null
+    },
+    {
+      "layer": "project",
+      "path": "<CONFIG>/projects/main.yml",
+      "exists": true,
+      "etag": "sha256:50b6aeb3f7fa394aa61a354e0b167d52d259afc8847171fc17cb676d82cacd4c",
+      "parse_error": null
+    },
+    {
+      "layer": "global",
+      "path": "<CONFIG>/config.yml",
+      "exists": true,
+      "etag": "sha256:5cd636e1e8876e5fc4d650ea1c3bbd7744d3f7996012705f1cff0a539fc85ce3",
+      "parse_error": null
+    }
+  ],
+  "keys": [
+    {
+      "key": "dev.up",
+      "scope": "project",
+      "type": "command",
+      "value": null,
+      "masked": true,
+      "default": null,
+      "effective": null,
+      "source": "project",
+      "source_file": "<CONFIG>/projects/main.yml",
+      "line": 2,
+      "column": 3,
+      "resolve": "parent",
+      "target_layer": "project",
+      "affects": [
+        "main",
+        "main.worktree-a"
+      ],
+      "applies": "next_call",
+      "settable": true,
+      "sensitive": true,
+      "problems": []
+    },
+    {
+      "key": "dev.ready",
+      "scope": "project",
+      "type": "command",
+      "value": null,
+      "masked": true,
+      "default": null,
+      "effective": null,
+      "source": "project",
+      "source_file": "<CONFIG>/projects/main.yml",
+      "line": 3,
+      "column": 3,
+      "resolve": "parent",
+      "target_layer": "project",
+      "affects": [
+        "main",
+        "main.worktree-a"
+      ],
+      "applies": "next_call",
+      "settable": true,
+      "sensitive": true,
+      "problems": []
+    },
+    {
+      "key": "dev.stop_timeout",
+      "scope": "project",
+      "type": "duration",
+      "value": "45s",
+      "masked": false,
+      "default": 20,
+      "effective": 45.0,
+      "source": "project",
+      "source_file": "<CONFIG>/projects/main.yml",
+      "line": 5,
+      "column": 3,
+      "resolve": "parent",
+      "target_layer": "project",
+      "affects": [
+        "main",
+        "main.worktree-a"
+      ],
+      "applies": "next_call",
+      "settable": true,
+      "sensitive": false,
+      "problems": [
+        {
+          "severity": "info",
+          "code": "not_read",
+          "message": "dev.stop_timeout is read from the parent project's file (main), not this worktree's.",
+          "line": 6,
+          "column": 3
+        }
+      ]
+    },
+    {
+      "key": "dev.startup_timeout",
+      "scope": "project",
+      "type": "duration",
+      "value": null,
+      "masked": false,
+      "default": 30,
+      "effective": 30,
+      "source": "default",
+      "source_file": null,
+      "line": null,
+      "column": null,
+      "resolve": "parent",
+      "target_layer": "project",
+      "affects": [
+        "main",
+        "main.worktree-a"
+      ],
+      "applies": "next_call",
+      "settable": true,
+      "sensitive": false,
+      "problems": []
+    },
+    {
+      "key": "dev.ready_timeout",
+      "scope": "project",
+      "type": "duration",
+      "value": "not-a-duration",
+      "masked": false,
+      "default": 120,
+      "effective": 120,
+      "source": "project",
+      "source_file": "<CONFIG>/projects/main.yml",
+      "line": 4,
+      "column": 3,
+      "resolve": "parent",
+      "target_layer": "project",
+      "affects": [
+        "main",
+        "main.worktree-a"
+      ],
+      "applies": "next_call",
+      "settable": true,
+      "sensitive": false,
+      "problems": [
+        {
+          "severity": "error",
+          "code": "invalid_value",
+          "message": "dev.ready_timeout: expected a duration like \"20\", \"20s\", \"5m\" or \"1h\", got \"not-a-duration\"",
+          "line": 4,
+          "column": 3
+        }
+      ]
+    },
+    {
+      "key": "dev.kill_grace",
+      "scope": "project",
+      "type": "duration",
+      "value": null,
+      "masked": false,
+      "default": 2,
+      "effective": 2,
+      "source": "default",
+      "source_file": null,
+      "line": null,
+      "column": null,
+      "resolve": "parent",
+      "target_layer": "project",
+      "affects": [
+        "main",
+        "main.worktree-a"
+      ],
+      "applies": "next_call",
+      "settable": true,
+      "sensitive": false,
+      "problems": []
+    },
+    {
+      "key": "dev.release_on_session_end",
+      "scope": "project",
+      "type": "boolean",
+      "value": null,
+      "masked": false,
+      "default": true,
+      "effective": true,
+      "source": "default",
+      "source_file": null,
+      "line": null,
+      "column": null,
+      "resolve": "parent",
+      "target_layer": "project",
+      "affects": [
+        "main",
+        "main.worktree-a"
+      ],
+      "applies": "next_call",
+      "settable": true,
+      "sensitive": false,
+      "problems": []
+    },
+    {
+      "key": "dev.instructions",
+      "scope": "project",
+      "type": "boolean",
+      "value": null,
+      "masked": false,
+      "default": true,
+      "effective": true,
+      "source": "default",
+      "source_file": null,
+      "line": null,
+      "column": null,
+      "resolve": "parent",
+      "target_layer": "project",
+      "affects": [
+        "main",
+        "main.worktree-a"
+      ],
+      "applies": "next_call",
+      "settable": true,
+      "sensitive": false,
+      "problems": []
+    },
+    {
+      "key": "locks.idle_grace",
+      "scope": "project",
+      "type": "duration",
+      "value": null,
+      "masked": false,
+      "default": 300,
+      "effective": 300,
+      "source": "default",
+      "source_file": null,
+      "line": null,
+      "column": null,
+      "resolve": "parent",
+      "target_layer": "project",
+      "affects": [
+        "main",
+        "main.worktree-a"
+      ],
+      "applies": "next_call",
+      "settable": true,
+      "sensitive": false,
+      "problems": []
+    },
+    {
+      "key": "locks.ps_timeout",
+      "scope": "project",
+      "type": "duration",
+      "value": null,
+      "masked": false,
+      "default": 5,
+      "effective": 5,
+      "source": "default",
+      "source_file": null,
+      "line": null,
+      "column": null,
+      "resolve": "parent",
+      "target_layer": "project",
+      "affects": [
+        "main",
+        "main.worktree-a"
+      ],
+      "applies": "daemon_restart",
+      "settable": true,
+      "sensitive": false,
+      "problems": []
+    },
+    {
+      "key": "locks.reap_interval",
+      "scope": "project",
+      "type": "duration",
+      "value": null,
+      "masked": false,
+      "default": 30,
+      "effective": 30,
+      "source": "default",
+      "source_file": null,
+      "line": null,
+      "column": null,
+      "resolve": "parent",
+      "target_layer": "project",
+      "affects": [
+        "main",
+        "main.worktree-a"
+      ],
+      "applies": "daemon_restart",
+      "settable": true,
+      "sensitive": false,
+      "problems": []
+    },
+    {
+      "key": "alerts.notify",
+      "scope": "project",
+      "type": "command",
+      "value": null,
+      "masked": false,
+      "default": null,
+      "effective": null,
+      "source": "default",
+      "source_file": null,
+      "line": null,
+      "column": null,
+      "resolve": "parent",
+      "target_layer": "project",
+      "affects": [
+        "main",
+        "main.worktree-a"
+      ],
+      "applies": "daemon_restart",
+      "settable": true,
+      "sensitive": true,
+      "problems": []
+    },
+    {
+      "key": "alerts.idle_after",
+      "scope": "project",
+      "type": "duration",
+      "value": null,
+      "masked": false,
+      "default": 600,
+      "effective": 600,
+      "source": "default",
+      "source_file": null,
+      "line": null,
+      "column": null,
+      "resolve": "parent",
+      "target_layer": "project",
+      "affects": [
+        "main",
+        "main.worktree-a"
+      ],
+      "applies": "daemon_restart",
+      "settable": true,
+      "sensitive": false,
+      "problems": [
+        {
+          "severity": "info",
+          "code": "not_read",
+          "message": "alerts.idle_after is read from the parent project's file (main), not this worktree's.",
+          "line": 8,
+          "column": 3
+        }
+      ]
+    },
+    {
+      "key": "agentd.poll_interval",
+      "scope": "project",
+      "type": "duration",
+      "value": null,
+      "masked": false,
+      "default": 10,
+      "effective": 10,
+      "source": "default",
+      "source_file": null,
+      "line": null,
+      "column": null,
+      "resolve": "parent",
+      "target_layer": "project",
+      "affects": [
+        "main",
+        "main.worktree-a"
+      ],
+      "applies": "daemon_restart",
+      "settable": true,
+      "sensitive": false,
+      "problems": []
+    },
+    {
+      "key": "handoff.threshold",
+      "scope": "project",
+      "type": "percent",
+      "value": null,
+      "masked": false,
+      "default": 11,
+      "effective": 11,
+      "source": "default",
+      "source_file": null,
+      "line": null,
+      "column": null,
+      "resolve": "parent",
+      "target_layer": "project",
+      "affects": [
+        "main",
+        "main.worktree-a"
+      ],
+      "applies": "next_call",
+      "settable": true,
+      "sensitive": false,
+      "problems": []
+    },
+    {
+      "key": "handoff.check_prompt",
+      "scope": "project",
+      "type": "text",
+      "value": null,
+      "masked": false,
+      "default": "%{usage} Update %{doc} now with\neverything needed to continue this work: current state, next steps, and the\nprocess/workflow for picking it back up in a fresh session (a \"Start here\" section\nwith a single paste-able prompt). Commit it if appropriate. Then run this exact\ncommand yourself: %{new_cmd}",
+      "effective": "%{usage} Update %{doc} now with\neverything needed to continue this work: current state, next steps, and the\nprocess/workflow for picking it back up in a fresh session (a \"Start here\" section\nwith a single paste-able prompt). Commit it if appropriate. Then run this exact\ncommand yourself: %{new_cmd}",
+      "source": "default",
+      "source_file": null,
+      "line": null,
+      "column": null,
+      "resolve": "parent",
+      "target_layer": "project",
+      "affects": [
+        "main",
+        "main.worktree-a"
+      ],
+      "applies": "next_call",
+      "settable": true,
+      "sensitive": false,
+      "problems": []
+    },
+    {
+      "key": "handoff.resume_prompt",
+      "scope": "project",
+      "type": "text",
+      "value": null,
+      "masked": false,
+      "default": "Read %{doc} and follow its \"Start here\" instructions. Act strictly\nas an orchestrator: delegate the actual work to sub-agents rather than doing it\nyourself.",
+      "effective": "Read %{doc} and follow its \"Start here\" instructions. Act strictly\nas an orchestrator: delegate the actual work to sub-agents rather than doing it\nyourself.",
+      "source": "default",
+      "source_file": null,
+      "line": null,
+      "column": null,
+      "resolve": "parent",
+      "target_layer": "project",
+      "affects": [
+        "main",
+        "main.worktree-a"
+      ],
+      "applies": "next_call",
+      "settable": true,
+      "sensitive": false,
+      "problems": []
+    },
+    {
+      "key": "handoff.auto",
+      "scope": "project",
+      "type": "boolean",
+      "value": null,
+      "masked": false,
+      "default": false,
+      "effective": false,
+      "source": "default",
+      "source_file": null,
+      "line": null,
+      "column": null,
+      "resolve": "parent",
+      "target_layer": "project",
+      "affects": [
+        "main",
+        "main.worktree-a"
+      ],
+      "applies": "next_call",
+      "settable": true,
+      "sensitive": false,
+      "problems": []
+    },
+    {
+      "key": "commands.test",
+      "scope": "project",
+      "type": "command",
+      "value": null,
+      "masked": true,
+      "default": null,
+      "effective": null,
+      "source": "project",
+      "source_file": "<CONFIG>/projects/main.yml",
+      "line": 9,
+      "column": 3,
+      "resolve": "parent",
+      "target_layer": "project",
+      "affects": [
+        "main",
+        "main.worktree-a"
+      ],
+      "applies": "next_call",
+      "settable": true,
+      "sensitive": true,
+      "problems": []
+    },
+    {
+      "key": "commands.lint",
+      "scope": "project",
+      "type": "command",
+      "value": null,
+      "masked": false,
+      "default": null,
+      "effective": null,
+      "source": "default",
+      "source_file": null,
+      "line": null,
+      "column": null,
+      "resolve": "parent",
+      "target_layer": "project",
+      "affects": [
+        "main",
+        "main.worktree-a"
+      ],
+      "applies": "next_call",
+      "settable": true,
+      "sensitive": true,
+      "problems": []
+    },
+    {
+      "key": "notes.dir",
+      "scope": "project",
+      "type": "path",
+      "value": "/tmp/golden-notes/a",
+      "masked": false,
+      "default": null,
+      "effective": "/tmp/golden-notes/a",
+      "source": "worktree",
+      "source_file": "<CONFIG>/projects/main.worktree-a.yml",
+      "line": 2,
+      "column": 3,
+      "resolve": "own_then_parent",
+      "target_layer": "worktree",
+      "affects": [
+        "main.worktree-a"
+      ],
+      "applies": "next_call",
+      "settable": true,
+      "sensitive": false,
+      "problems": [],
+      "effective_path": "/tmp/golden-notes/a"
+    },
+    {
+      "key": "notes.default_dir",
+      "scope": "project",
+      "type": "path",
+      "value": "~/notes/{workspace}",
+      "masked": false,
+      "default": null,
+      "effective": "~/notes/{workspace}",
+      "source": "project",
+      "source_file": "<CONFIG>/projects/main.yml",
+      "line": 7,
+      "column": 3,
+      "resolve": "parent",
+      "target_layer": "project",
+      "affects": [
+        "main",
+        "main.worktree-a"
+      ],
+      "applies": "next_call",
+      "settable": true,
+      "sensitive": false,
+      "problems": [],
+      "effective_path": "/home/me/notes/main.worktree-a"
+    },
+    {
+      "key": "notes.instructions",
+      "scope": "project",
+      "type": "boolean",
+      "value": null,
+      "masked": false,
+      "default": true,
+      "effective": true,
+      "source": "default",
+      "source_file": null,
+      "line": null,
+      "column": null,
+      "resolve": "parent",
+      "target_layer": "project",
+      "affects": [
+        "main",
+        "main.worktree-a"
+      ],
+      "applies": "next_call",
+      "settable": true,
+      "sensitive": false,
+      "problems": []
+    },
+    {
+      "key": "plan.stall_seconds",
+      "scope": "project",
+      "type": "duration",
+      "value": "10m",
+      "masked": false,
+      "default": 300,
+      "effective": 600.0,
+      "source": "project",
+      "source_file": "<CONFIG>/projects/main.yml",
+      "line": 11,
+      "column": 3,
+      "resolve": "parent",
+      "target_layer": "project",
+      "affects": [
+        "main",
+        "main.worktree-a"
+      ],
+      "applies": "next_call",
+      "settable": true,
+      "sensitive": false,
+      "problems": []
+    },
+    {
+      "key": "statusline.command",
+      "scope": "global",
+      "type": "command",
+      "value": null,
+      "masked": true,
+      "default": null,
+      "effective": null,
+      "source": "global",
+      "source_file": "<CONFIG>/config.yml",
+      "line": 2,
+      "column": 3,
+      "resolve": "global",
+      "target_layer": "global",
+      "affects": [
+        "main",
+        "main.worktree-a"
+      ],
+      "applies": "next_call",
+      "settable": true,
+      "sensitive": true,
+      "problems": []
+    },
+    {
+      "key": "context.source",
+      "scope": "global",
+      "type": "enum",
+      "value": null,
+      "masked": false,
+      "default": null,
+      "effective": null,
+      "source": "default",
+      "source_file": null,
+      "line": null,
+      "column": null,
+      "resolve": "global",
+      "target_layer": "global",
+      "affects": [
+        "main",
+        "main.worktree-a"
+      ],
+      "applies": "next_call",
+      "settable": true,
+      "sensitive": false,
+      "problems": []
+    },
+    {
+      "key": "context.pattern",
+      "scope": "global",
+      "type": "regex",
+      "value": null,
+      "masked": false,
+      "default": null,
+      "effective": null,
+      "source": "default",
+      "source_file": null,
+      "line": null,
+      "column": null,
+      "resolve": "global",
+      "target_layer": "global",
+      "affects": [
+        "main",
+        "main.worktree-a"
+      ],
+      "applies": "next_call",
+      "settable": true,
+      "sensitive": false,
+      "problems": []
+    },
+    {
+      "key": "context.patterns",
+      "scope": "global",
+      "type": "mapping",
+      "value": null,
+      "masked": false,
+      "default": null,
+      "effective": null,
+      "source": "default",
+      "source_file": null,
+      "line": null,
+      "column": null,
+      "resolve": "global",
+      "target_layer": null,
+      "affects": [
+        "main",
+        "main.worktree-a"
+      ],
+      "applies": "next_call",
+      "settable": false,
+      "sensitive": false,
+      "problems": []
+    },
+    {
+      "key": "launch.headless",
+      "scope": "global",
+      "type": "boolean",
+      "value": false,
+      "masked": false,
+      "default": null,
+      "effective": false,
+      "source": "global",
+      "source_file": "<CONFIG>/config.yml",
+      "line": 10,
+      "column": 3,
+      "resolve": "global",
+      "target_layer": "global",
+      "affects": [
+        "main",
+        "main.worktree-a"
+      ],
+      "applies": "next_call",
+      "settable": true,
+      "sensitive": false,
+      "problems": []
+    },
+    {
+      "key": "workflows.defaults.include",
+      "scope": "global",
+      "type": "text",
+      "value": null,
+      "masked": false,
+      "default": [
+        "binding",
+        "orchestrator",
+        "commits"
+      ],
+      "effective": [
+        "binding",
+        "orchestrator",
+        "commits"
+      ],
+      "source": "default",
+      "source_file": null,
+      "line": null,
+      "column": null,
+      "resolve": "global",
+      "target_layer": "global",
+      "affects": [
+        "main",
+        "main.worktree-a"
+      ],
+      "applies": "next_call",
+      "settable": true,
+      "sensitive": false,
+      "problems": []
+    },
+    {
+      "key": "hooks",
+      "scope": "global",
+      "type": "mapping",
+      "value": null,
+      "masked": false,
+      "default": null,
+      "effective": null,
+      "source": "default",
+      "source_file": null,
+      "line": null,
+      "column": null,
+      "resolve": "none",
+      "target_layer": null,
+      "affects": [],
+      "applies": "next_call",
+      "settable": false,
+      "sensitive": true,
+      "problems": []
+    },
+    {
+      "key": "layouts",
+      "scope": "global",
+      "type": "mapping",
+      "value": {
+        "default": [
+          "editor",
+          "shell"
+        ]
+      },
+      "masked": false,
+      "default": null,
+      "effective": {
+        "default": [
+          "editor",
+          "shell"
+        ]
+      },
+      "source": "global",
+      "source_file": "<CONFIG>/config.yml",
+      "line": 3,
+      "column": 1,
+      "resolve": "merge",
+      "target_layer": null,
+      "affects": [
+        "main",
+        "main.worktree-a"
+      ],
+      "applies": "next_call",
+      "settable": false,
+      "sensitive": false,
+      "problems": []
+    },
+    {
+      "key": "event_log_compact_threshold",
+      "scope": "global",
+      "type": "text",
+      "value": null,
+      "masked": false,
+      "default": null,
+      "effective": null,
+      "source": "default",
+      "source_file": null,
+      "line": null,
+      "column": null,
+      "resolve": "global",
+      "target_layer": null,
+      "affects": [
+        "main",
+        "main.worktree-a"
+      ],
+      "applies": "next_call",
+      "settable": false,
+      "sensitive": false,
+      "problems": []
+    },
+    {
+      "key": "dev.configured",
+      "scope": "project",
+      "type": "boolean",
+      "value": null,
+      "masked": false,
+      "default": false,
+      "effective": true,
+      "source": "default",
+      "source_file": null,
+      "line": null,
+      "column": null,
+      "resolve": "none",
+      "target_layer": null,
+      "affects": [],
+      "applies": "next_call",
+      "settable": false,
+      "sensitive": false,
+      "problems": []
+    },
+    {
+      "key": "hooks",
+      "scope": "project",
+      "type": "mapping",
+      "value": null,
+      "masked": true,
+      "default": null,
+      "effective": null,
+      "source": "worktree",
+      "source_file": "<CONFIG>/projects/main.worktree-a.yml",
+      "line": 3,
+      "column": 1,
+      "resolve": "own",
+      "target_layer": null,
+      "affects": [
+        "main.worktree-a"
+      ],
+      "applies": "next_event",
+      "settable": false,
+      "sensitive": true,
+      "problems": []
+    },
+    {
+      "key": "layouts",
+      "scope": "project",
+      "type": "mapping",
+      "value": null,
+      "masked": false,
+      "default": null,
+      "effective": null,
+      "source": "default",
+      "source_file": null,
+      "line": null,
+      "column": null,
+      "resolve": "merge",
+      "target_layer": null,
+      "affects": [
+        "main.worktree-a"
+      ],
+      "applies": "next_call",
+      "settable": false,
+      "sensitive": false,
+      "problems": []
+    },
+    {
+      "key": "worktree_hooks",
+      "scope": "project",
+      "type": "mapping",
+      "value": null,
+      "masked": false,
+      "default": null,
+      "effective": null,
+      "source": "default",
+      "source_file": null,
+      "line": null,
+      "column": null,
+      "resolve": "parent",
+      "target_layer": null,
+      "affects": [
+        "main",
+        "main.worktree-a"
+      ],
+      "applies": "next_call",
+      "settable": false,
+      "sensitive": true,
+      "problems": []
+    },
+    {
+      "key": "pipeline",
+      "scope": "project",
+      "type": "mapping",
+      "value": null,
+      "masked": false,
+      "default": null,
+      "effective": null,
+      "source": "default",
+      "source_file": null,
+      "line": null,
+      "column": null,
+      "resolve": "own",
+      "target_layer": null,
+      "affects": [
+        "main.worktree-a"
+      ],
+      "applies": "daemon_restart",
+      "settable": false,
+      "sensitive": true,
+      "problems": []
+    }
+  ],
+  "unknown_keys": [
+    {
+      "key": "handoff",
+      "layer": "global",
+      "line": 7,
+      "column": 1
+    }
+  ]
+}

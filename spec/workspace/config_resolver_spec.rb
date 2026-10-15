@@ -16,11 +16,19 @@ RSpec.describe Workspace::ConfigResolver do
   end
 
   it "reads a :parent key from the project's file even for a worktree" do
+    write("api", "dev:\n  stop_timeout: 40s\n")
+    write("api.worktree-x", "dev:\n  stop_timeout: 5s\n")
+    resolution = resolver.view(workspace: "api.worktree-x").resolve("dev.stop_timeout")
+    expect(resolution.winner.layer).to eq("project")
+    expect(resolution.winner.value).to eq("40s")
+  end
+
+  it "reads a :layered key from the worktree's own file over the project's" do
     write("api", "dev:\n  up: ./start\n")
     write("api.worktree-x", "dev:\n  up: ./other\n")
     resolution = resolver.view(workspace: "api.worktree-x").resolve("dev.up")
-    expect(resolution.winner.layer).to eq("project")
-    expect(resolution.winner.value).to eq("./start")
+    expect(resolution.winner.layer).to eq("worktree")
+    expect(resolution.hits.map(&:layer)).to eq(%w[worktree project])
   end
 
   it "reads notes.dir from a worktree's own file and a main checkout's project file" do

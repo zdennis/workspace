@@ -167,18 +167,34 @@ RSpec.describe Workspace::DevConfig do
   end
 
   describe "in a worktree" do
-    it "reads each key from the parent project's file and ignores the worktree's own, key by key" do
+    it "reads the keys a worktree may override from its own file, and the project-only ones from the project's, key by key" do
       dir = Dir.mktmpdir("ws-dev-config")
       settings = project_settings_with(dir: dir)
       settings.save("myapp", {"dev" => {"up" => "./project-up", "stop_timeout" => "40s", "kill_grace" => "3s", "instructions" => false}})
-      settings.save("myapp.worktree-x", {"dev" => {"up" => "./worktree-up", "ready" => "port:1", "stop_timeout" => "5s",
+      settings.save("myapp.worktree-x", {"dev" => {"up" => "./worktree-up", "ready" => "port:1", "ready_timeout" => "90s", "stop_timeout" => "5s",
                                                    "kill_grace" => "9s", "instructions" => true, "release_on_session_end" => false}})
       dev_config = described_class.new(config_resolver: Workspace::ConfigResolver.new(project_settings: settings))
 
-      expect(dev_config.for_project("myapp.worktree-x")).to include(up: "./project-up", ready: nil, stop_timeout: 40, kill_grace: 3)
+      expect(dev_config.for_project("myapp.worktree-x")).to include(up: "./worktree-up", ready: "port:1", ready_timeout: 90, stop_timeout: 40, kill_grace: 3)
       expect(dev_config.configured?("myapp.worktree-x")).to be(true)
-      expect(dev_config.instructions?("myapp.worktree-x")).to be(false)
-      expect(dev_config.release_on_session_end?("myapp.worktree-x")).to be(true)
+      expect(dev_config.instructions?("myapp.worktree-x")).to be(true)
+      expect(dev_config.release_on_session_end?("myapp.worktree-x")).to be(false)
+    ensure
+      FileUtils.remove_entry(dir)
+    end
+
+    it "is configured when only the worktree sets dev.up, and falls back to the project's value when it sets none" do
+      dir = Dir.mktmpdir("ws-dev-config")
+      settings = project_settings_with(dir: dir)
+      settings.save("myapp", {})
+      settings.save("myapp.worktree-x", {"dev" => {"up" => "./worktree-up"}})
+      dev_config = described_class.new(config_resolver: Workspace::ConfigResolver.new(project_settings: settings))
+
+      expect(dev_config.configured?("myapp.worktree-x")).to be(true)
+      expect(dev_config.configured?("myapp")).to be(false)
+      settings.save("myapp", {"dev" => {"up" => "./project-up"}})
+      settings.save("myapp.worktree-x", {})
+      expect(dev_config.for_project("myapp.worktree-x")).to include(up: "./project-up")
     ensure
       FileUtils.remove_entry(dir)
     end
