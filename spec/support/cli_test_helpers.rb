@@ -881,6 +881,13 @@ module CLITestHelpers
       result(key, project, scope)
     end
 
+    def edit(project: nil, scope: nil, cwd: Dir.pwd)
+      @calls << {action: :edit, project: project, scope: scope, cwd: cwd}
+      layer = (scope == "global") ? "global" : "project"
+      Workspace::Commands::Config::EditResult.new(workspace: (layer == "global") ? nil : project, layer: layer, scope: layer,
+        path: "/cfg/#{project || "config"}.yml", created: true)
+    end
+
     private
 
     def result(key, project, scope)

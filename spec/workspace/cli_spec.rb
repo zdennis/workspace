@@ -128,7 +128,10 @@ RSpec.describe Workspace::CLI do
       clock: overrides[:clock] || -> { Time.now },
       launch_mode: overrides[:launch_mode] || CLITestHelpers.launch_mode(headless: false),
       liveness: overrides[:liveness] || ->(names) { names.to_h { |name| [name, true] } },
-      window_liveness: overrides[:window_liveness]
+      window_liveness: overrides[:window_liveness],
+      env: overrides[:env] || {},
+      editor_launcher: overrides[:editor_launcher] || ->(_argv) { true },
+      interactive: overrides.fetch(:interactive, -> { true })
     )
     [cli, output, error_output, hook_runner]
   end
@@ -2175,6 +2178,113 @@ RSpec.describe Workspace::CLI do
         cli.run(["config", "set", "--name", "api", "dev.up", "x", "--json"])
 
         expect(JSON.parse(raw.string)["results"].first).to include("effective" => nil)
+      end
+
+      describe "config edit" do
+        let(:config_command) { CLITestHelpers::FakeConfigCommand.new }
+
+        it "passes the scope, name and cwd to the command" do
+          cli, = build_test_cli(config_command: config_command, working_dir: "/tmp/p", env: {"EDITOR" => "vi"})
+
+          cli.run(["config", "edit", "--scope", "worktree", "--name", "api.worktree-x"])
+
+          expect(config_command.calls).to eq([{action: :edit, project: "api.worktree-x", scope: "workspace", cwd: "/tmp/p"}])
+        end
+
+        it "runs $VISUAL ahead of $EDITOR as an argv array, so no shell sees the path" do
+          launched = []
+          path = "/cfg/my project; rm -rf $HOME.yml"
+          config_command.define_singleton_method(:edit) { |**| Workspace::Commands::Config::EditResult.new(workspace: "api", layer: "project", scope: "project", path: path, created: false) }
+          cli, = build_test_cli(config_command: config_command, env: {"VISUAL" => "code --wait", "EDITOR" => "vi"}, editor_launcher: ->(argv) { launched << argv })
+
+          cli.run(["config", "edit"])
+
+          expect(launched).to eq([["code", "--wait", path]])
+        end
+
+        it "falls back to $EDITOR" do
+          launched = []
+          cli, = build_test_cli(config_command: config_command, env: {"VISUAL" => "", "EDITOR" => "nano"}, editor_launcher: ->(argv) { launched << argv })
+
+          cli.run(["config", "edit"])
+
+          expect(launched).to eq([["nano", "/cfg/config.yml"]])
+        end
+
+        it "prints the path and opens nothing when no editor is set" do
+          launched = []
+          cli, output, = build_test_cli(config_command: config_command, env: {}, editor_launcher: ->(argv) { launched << argv })
+
+          cli.run(["config", "edit", "--scope", "global"])
+
+          expect(launched).to be_empty
+          expect(output.string).to eq("/cfg/config.yml\n")
+        end
+
+        it "treats blank or whitespace-only $VISUAL and $EDITOR as unset" do
+          launched = []
+          cli, output, = build_test_cli(config_command: config_command, env: {"VISUAL" => "  ", "EDITOR" => ""}, editor_launcher: ->(argv) { launched << argv })
+
+          cli.run(["config", "edit"])
+
+          expect(launched).to be_empty
+          expect(output.string).to eq("/cfg/config.yml\n")
+        end
+
+        it "prints the path and opens nothing under --no-input" do
+          launched = []
+          cli, output, = build_test_cli(config_command: config_command, env: {"EDITOR" => "vi"}, input: Workspace::PromptInput.new(StringIO.new), editor_launcher: ->(argv) { launched << argv })
+
+          cli.run(["--no-input", "config", "edit"])
+
+          expect(launched).to be_empty
+          expect(output.string).to eq("/cfg/config.yml\n")
+        end
+
+        it "prints the path and opens nothing when stdin or stdout is not a terminal" do
+          launched = []
+          cli, output, = build_test_cli(config_command: config_command, env: {"EDITOR" => "vi"}, interactive: -> { false }, editor_launcher: ->(argv) { launched << argv })
+
+          cli.run(["config", "edit"])
+
+          expect(launched).to be_empty
+          expect(output.string).to eq("/cfg/config.yml\n")
+        end
+
+        it "fails with editor_failed on an unbalanced quote in $EDITOR" do
+          launched = []
+          cli, _, error_output = build_test_cli(config_command: config_command, env: {"EDITOR" => 'vim "x'}, editor_launcher: ->(argv) { launched << argv })
+
+          expect { cli.run(["config", "edit"]) }.to raise_error(FakeSystemExit)
+          expect(error_output.string).to include("$EDITOR is not a valid command").and include("Edit /cfg/config.yml directly.")
+          expect(launched).to be_empty
+        end
+
+        it "fails when the editor can't be run" do
+          cli, _, error_output = build_test_cli(config_command: config_command, env: {"EDITOR" => "nope"}, editor_launcher: ->(_argv) {})
+
+          expect { cli.run(["config", "edit"]) }.to raise_error(FakeSystemExit)
+          expect(error_output.string).to include("Could not run the editor 'nope'")
+        end
+
+        it "--json prints the path document and opens no editor" do
+          launched = []
+          cli, raw = json_cli(config_command: config_command, env: {"EDITOR" => "vi"}, editor_launcher: ->(argv) { launched << argv })
+
+          cli.run(["config", "edit", "--scope", "global", "--json"])
+
+          doc = JSON.parse(raw.string)
+          expect(doc).to include("ok" => true, "action" => "config edit", "status" => "ok")
+          expect(doc["results"].first).to include("outcome" => "ready", "workspace" => nil, "global" => true, "scope" => "global", "layer" => "global", "file" => "/cfg/config.yml", "created" => true)
+          expect(launched).to be_empty
+        end
+
+        it "rejects an unknown scope" do
+          cli, _, error_output = build_test_cli(config_command: config_command)
+
+          expect { cli.run(["config", "edit", "--scope", "nope"]) }.to raise_error(FakeSystemExit)
+          expect(error_output.string).to include("Unknown scope 'nope'")
+        end
       end
 
       it "unset --json prints an action document without a value" do

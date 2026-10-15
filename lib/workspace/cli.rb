@@ -89,6 +89,11 @@ module Workspace
     # @param project_actions_command [Workspace::Commands::ProjectActions, nil] pre-built project-wide actions command
     # @param clock [#call] returns the current Time, for relative deadline display
     # @param liveness [#call, nil] maps project names to true, false, or nil
+    # @param env [#[]] the environment `config edit` reads $VISUAL and $EDITOR from
+    # @param editor_launcher [#call, nil] runs an editor given its argv array (no shell) and returns
+    #   true when it exited 0; defaults to `system`
+    # @param interactive [#call, nil] says whether stdin and stdout are both terminals (`config edit` opens
+    #   no editor otherwise); defaults to a check of $stdin and $stdout
     #   (alive, dead, can't tell) for `list --liveness` and `status`; nil
     #   reports every project as unknown
     # @param window_liveness [#call, nil] maps project names to true, false, or
@@ -96,7 +101,7 @@ module Workspace
     #   `list --liveness --json` and `status --json`; takes name => state entry
     # @param launch_mode [Workspace::LaunchMode, nil] decides whether launch/start
     #   run headless when no --[no-]headless flag is given; nil builds one
-    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, restart_agent_command: nil, send_command: nil, ensure_agent_command: nil, handoff_command: nil, notes_command: nil, notes_setup: nil, plan_command: nil, ticket_command: nil, pull_request_command: nil, rebase_command: nil, push_command: nil, projects_command: nil, capabilities_command: nil, daemon_command: nil, ui_command: nil, binding_command: nil, library_command: nil, library: nil, instructions_command: nil, instruction_composer: nil, workflow_command: nil, review_command: nil, restore_command: nil, snapshot_command: nil, project_actions_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil, liveness: nil, window_liveness: nil)
+    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, restart_agent_command: nil, send_command: nil, ensure_agent_command: nil, handoff_command: nil, notes_command: nil, notes_setup: nil, plan_command: nil, ticket_command: nil, pull_request_command: nil, rebase_command: nil, push_command: nil, projects_command: nil, capabilities_command: nil, daemon_command: nil, ui_command: nil, binding_command: nil, library_command: nil, library: nil, instructions_command: nil, instruction_composer: nil, workflow_command: nil, review_command: nil, restore_command: nil, snapshot_command: nil, project_actions_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil, liveness: nil, window_liveness: nil, env: ENV, editor_launcher: nil, interactive: nil)
       @config = config
       @state = state
       @project_config = project_config
@@ -173,6 +178,9 @@ module Workspace
       @launch_mode = launch_mode || LaunchMode.new(project_settings: project_settings)
       @window_liveness = window_liveness || ->(entries) { entries.to_h { |name, _| [name, nil] } }
       @liveness = liveness || ->(names) { names.to_h { |name| [name, nil] } }
+      @env = env
+      @editor_launcher = editor_launcher || ->(argv) { system(*argv) }
+      @interactive = interactive || -> { $stdin.tty? && $stdout.tty? }
     end
 
     # Parses the subcommand from argv and dispatches to the appropriate method.
@@ -435,7 +443,7 @@ module Workspace
           capabilities    Print what this CLI supports, as feature revisions (for scripts and the UI)
           capture         Print a tmux pane's scrollback buffer to stdout
           cleanup         Detect and remove zombie sessions from state (--dry-run reports only)
-          config          Show, validate, set, get or unset project or global configuration
+          config          Show, validate, set, get, unset or edit project or global configuration
           current         Print the workspace project name for the current directory
           daemon          List, show, restart (one or all) or read the log of agent daemons
           dev             Start, stop, or inspect this repo's dev environment (devenv lock)
@@ -4437,6 +4445,9 @@ module Workspace
       when "validate"
         args.shift
         cmd_config_validate(args)
+      when "edit"
+        args.shift
+        cmd_config_edit(args)
       else
         cmd_config_show(args)
       end
@@ -4602,6 +4613,70 @@ module Workspace
       end
     end
 
+    def cmd_config_edit(args)
+      project = nil
+      scope = nil
+      json = false
+      parser = OptionParser.new do |opts|
+        opts.banner = "Usage: workspace config edit [options]"
+        opts.separator ""
+        opts.separator "Opens one layer's config file in $VISUAL or $EDITOR (run without a shell, so"
+        opts.separator "the command is split into words and the path is passed as its last argument)."
+        opts.separator "A file that doesn't exist yet is created first with a comment header. With no"
+        opts.separator "--scope the workspace's own file is opened (the project's file in a main checkout)."
+        opts.separator ""
+        opts.separator "Unlike 'config set', editing by hand keeps comments, but nothing checks the"
+        opts.separator "keys or values; run 'workspace config validate' afterwards."
+        opts.separator ""
+        opts.separator "An editor path containing spaces must be quoted in $EDITOR."
+        opts.separator "With no $VISUAL or $EDITOR set (or blank), under --no-input, or when stdin or"
+        opts.separator "stdout is not a terminal, the path is printed, nothing is opened and the exit is 0."
+        opts.separator "With --json nothing is opened either: one action document gives the path."
+        opts.separator ""
+        opts.separator "Options:"
+        opts.on("--project NAME", "--name NAME", "Workspace to edit instead of the one inferred from cwd (--name is the same)") { |v| project = v }
+        opts.on("--scope SCOPE", "File to edit: global, project or workspace (worktree is the same)") { |v| scope = v }
+        opts.on("--json", "Print one action document (see docs/README.json.md); open no editor") { json = true }
+        opts.separator ""
+        opts.separator "Examples:"
+        opts.separator "  workspace config edit"
+        opts.separator "  workspace config edit --scope global"
+        opts.separator "  workspace config edit --scope project --name myapp.worktree-fix --json"
+      end
+      parser.parse!(args)
+      raise UsageError, parser.help if args.any?
+
+      run_action("config edit", json: json) do
+        result = @config_command.edit(project: project, scope: config_scope(scope), cwd: @working_dir)
+        if json
+          {results: [action_row(result.workspace, "ready", global: result.layer == "global", scope: result.scope, layer: result.layer, file: result.path, created: result.created)]}
+        else
+          open_in_editor(result.path)
+          nil
+        end
+      end
+    end
+
+    # Runs $VISUAL or $EDITOR on +path+ without a shell. With neither set (blank counts as unset),
+    # under --no-input, or when stdin or stdout is not a terminal, prints the path and opens nothing.
+    def open_in_editor(path)
+      command = [@env["VISUAL"], @env["EDITOR"]].find { |value| !value.to_s.strip.empty? }
+      if command.nil? || (@input.respond_to?(:no_input?) && @input.no_input?) || !@interactive.call
+        @output.puts path
+        return
+      end
+      begin
+        argv = Shellwords.split(command)
+      rescue ArgumentError => e
+        raise Error.new("$EDITOR is not a valid command (#{e.message}). Edit #{path} directly.", code: "editor_failed", details: {path: path})
+      end
+      return @output.puts(path) if argv.empty?
+
+      unless @editor_launcher.call(argv + [path])
+        raise Error.new("Could not run the editor '#{argv.first}'. The file is at #{path}", code: "editor_failed", details: {path: path, editor: argv.first})
+      end
+    end
+
     def cmd_config_validate(args)
       json = false
       name = nil
@@ -4738,66 +4813,17 @@ module Workspace
         opts.separator "  Global:  #{@project_settings.global_config_path}"
         opts.separator "  Project: #{@config.workspace_config_dir}/projects/<name>.yml"
         opts.separator ""
-        opts.separator "Global settings:"
-        opts.separator "  hooks:                         Global hooks (applied to all projects)"
-        opts.separator "  layouts:                       Default tmux pane layouts"
-        opts.separator "  event_log_compact_threshold:   Size warning threshold for the event log"
-        opts.separator "                                 Formats: \"10kb\", \"1mb\", \"500b\", \"1024\""
-        opts.separator "                                 Default: 1mb"
-        opts.separator "  statusline.command:            Delegate 'workspace statusline' rendering to"
-        opts.separator "                                 another command. Set via 'workspace config set'."
-        opts.separator "  context.source:                'statusline' (default) or 'scrape'. Set via"
-        opts.separator "                                 'workspace config set'."
-        opts.separator "  context.pattern:               Regex (one capture group) used when"
-        opts.separator "                                 context.source is 'scrape'."
-        opts.separator "  launch.headless:               'true' or 'false': whether launch/start run"
-        opts.separator "                                 headless by default on this machine."
-        opts.separator ""
-        opts.separator "Project settings (in projects/<name>.yml):"
-        opts.separator "  hooks:                         Project-specific hooks (post_launch, etc.)"
-        opts.separator "  layouts:                       Project-specific tmux pane layouts"
-        opts.separator "  worktree_hooks:                Hooks seeded into new worktrees"
-        opts.separator "  dev.up, dev.ready,             Set via 'workspace config set' (see"
-        opts.separator "  dev.stop_timeout,              'workspace config set --help')"
-        opts.separator "  dev.startup_timeout,"
-        opts.separator "  dev.ready_timeout,"
-        opts.separator "  dev.kill_grace:"
-        opts.separator "  locks.idle_grace:              How long an idle agent keeps a lock before"
-        opts.separator "                                 the next waiter may take it (default: 5m)"
-        opts.separator "  locks.ps_timeout:              How long to wait for 'ps' before giving up"
-        opts.separator "                                 (default: 5s, must be > 0)"
-        opts.separator "  locks.reap_interval:           How often the background session-monitor"
-        opts.separator "                                 sweeps out stale lock holders (default: 30s,"
-        opts.separator "                                 must be > 0; takes effect next time the"
-        opts.separator "                                 monitor starts)"
-        opts.separator "  alerts.notify:                 Command the session-monitor daemon runs when an"
-        opts.separator "                                 agent pane starts waiting on a person or stays"
-        opts.separator "                                 idle past alerts.idle_after; details arrive in"
-        opts.separator "                                 WORKSPACE_ALERT_* environment variables (see"
-        opts.separator "                                 docs/README.sessions.md). Unset: no alerts"
-        opts.separator "  alerts.idle_after:             How long an agent pane may sit idle before it"
-        opts.separator "                                 alerts (default: 10m, must be > 0). Both take"
-        opts.separator "                                 effect next time the monitor starts"
-        opts.separator "  agentd.poll_interval:          How often the session-monitor daemon scans"
-        opts.separator "                                 panes for agent state, alerts and stale locks"
-        opts.separator "                                 (default: 10s, must be > 0). Takes effect next"
-        opts.separator "                                 time the monitor starts"
-        opts.separator "  notes.dir:                     Absolute path of the directory where one"
-        opts.separator "                                 workspace's notes are kept. A worktree reads only"
-        opts.separator "                                 its own value (set it with --name), never the"
-        opts.separator "                                 project's; the main checkout reads the project's"
-        opts.separator "  notes.default_dir:             The rule that gives a workspace without a notes.dir"
-        opts.separator "                                 its notes directory: an absolute path, ~/..., or a"
-        opts.separator "                                 path relative to the worktree (no ..). {workspace}"
-        opts.separator "                                 and {branch} are filled in. Unset: tmp/workspace-notes"
-        opts.separator "                                 inside the worktree"
+        opts.separator "Keys: 'workspace config' lists every key with its value and layer; docs/README.config.md"
+        opts.separator "has the table of doc text, defaults and the layers each key may be set in"
+        opts.separator "(overridable_in), and 'workspace config --json' gives the same as data."
+        opts.separator "hooks and layouts are edited by hand ('config edit')."
         opts.separator ""
         opts.separator "Layers (highest wins): workspace (a worktree's own file) > project (the main"
         opts.separator "checkout's file) > global > the built-in default. Each key lists the layers it"
-        opts.separator "allows (overridable_in); see docs/README.config.md. Writes: 'config set/get/unset"
-        opts.separator "--scope S'."
+        opts.separator "allows (overridable_in); see docs/README.config.md. Choose the file with"
+        opts.separator "--scope S on config set/get/unset/edit."
         opts.separator ""
-        opts.separator "Note: 'show', 'validate', 'set', 'get', and 'unset' are reserved as the first"
+        opts.separator "Note: 'show', 'validate', 'set', 'get', 'unset', and 'edit' are reserved as the first"
         opts.separator "argument here and are always treated as subcommands. A key named one of"
         opts.separator "them, or a workspace named one of them, is reached with --name."
         opts.separator ""
@@ -4814,11 +4840,7 @@ module Workspace
         opts.separator "  workspace config set dev.up \"./start-dev\""
         opts.separator "  workspace config get dev.up"
         opts.separator "  workspace config unset dev.ready"
-        opts.separator ""
-        opts.separator "To edit by hand, open the config file directly (loses the set/get/unset"
-        opts.separator "validation, but keeps comments):"
-        opts.separator "  $EDITOR #{@project_settings.global_config_path}"
-        opts.separator "  $EDITOR #{@config.workspace_config_dir}/projects/<name>.yml"
+        opts.separator "  workspace config edit --scope global    # hand-edit a file, keeping its comments"
       end
       parser.parse!(args)
       key = args.shift

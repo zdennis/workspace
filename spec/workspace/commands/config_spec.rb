@@ -367,6 +367,13 @@ RSpec.describe Workspace::Commands::Config do
         expect(Dir.glob(File.join(dir, "**", "*")).select { |f| File.file?(f) }).to be_empty
       end
 
+      it "refuses edit --scope workspace without writing, when the worktree has no marker" do
+        File.delete(File.join(worktree_path, ".workspace-project"))
+
+        expect { command.edit(scope: "workspace", cwd: worktree_path) }.to raise_error(Workspace::UsageError, /no workspace name/)
+        expect(Dir.glob(File.join(dir, "**", "*")).select { |f| File.file?(f) }).to be_empty
+      end
+
       it "still writes the project file with --scope project from a worktree with no marker" do
         File.delete(File.join(worktree_path, ".workspace-project"))
 
@@ -1047,6 +1054,55 @@ RSpec.describe Workspace::Commands::Config do
 
     def refused(code = "scope_not_allowed")
       raise_error(Workspace::Error) { |e| expect(e.code).to eq(code) }
+    end
+
+    describe "#edit" do
+      let(:project_file) { settings.project_config_path("myapp") }
+      let(:worktree_file) { settings.project_config_path("myapp.worktree-a") }
+
+      it "creates a comment-header stub for the global file, through a rename" do
+        result = command.edit(scope: "global", cwd: Dir.pwd)
+
+        expect(result).to have_attributes(workspace: nil, layer: "global", scope: "global", path: settings.global_config_path, created: true)
+        expect(File.read(settings.global_config_path)).to eq("# workspace config (global). See docs/README.config.md\n")
+        expect(YAML.safe_load_file(settings.global_config_path)).to be_nil
+        expect(Dir.glob("#{settings.global_config_path}.tmp*")).to be_empty
+      end
+
+      it "opens the project's file for --scope project, even from a worktree name" do
+        result = command.edit(scope: "project", project: "myapp.worktree-a")
+
+        expect(result).to have_attributes(workspace: "myapp", layer: "project", scope: "project", path: project_file, created: true)
+        expect(File.exist?(worktree_file)).to be(false)
+      end
+
+      it "opens the worktree's own file for --scope workspace and by default" do
+        expect(command.edit(scope: "workspace", project: "myapp.worktree-a")).to have_attributes(workspace: "myapp.worktree-a", layer: "worktree", scope: "workspace", path: worktree_file, created: true)
+        expect(command.edit(scope: "worktree", project: "myapp.worktree-a")).to have_attributes(layer: "worktree", created: false)
+        FileUtils.rm_f(worktree_file)
+        expect(command.edit(project: "myapp.worktree-a")).to have_attributes(layer: "worktree", path: worktree_file)
+      end
+
+      it "treats --scope workspace in a main checkout as the project file" do
+        expect(command.edit(scope: "workspace", project: "myapp")).to have_attributes(workspace: "myapp", layer: "project", scope: "project", path: project_file)
+      end
+
+      it "leaves an existing file untouched" do
+        FileUtils.mkdir_p(File.dirname(project_file))
+        File.write(project_file, "# mine\ndev:\n  up: x\n")
+
+        expect(command.edit(scope: "project", project: "myapp")).to have_attributes(created: false)
+        expect(File.read(project_file)).to eq("# mine\ndev:\n  up: x\n")
+      end
+
+      it "refuses an unknown workspace at workspace scope, writing nothing" do
+        expect { command.edit(scope: "workspace", project: "nope.worktree-z") }.to refused("unknown_workspace")
+        expect(File.exist?(settings.project_config_path("nope.worktree-z"))).to be(false)
+      end
+
+      it "refuses an unknown scope" do
+        expect { command.edit(scope: "everywhere", project: "myapp") }.to raise_error(Workspace::UsageError, /Unknown scope 'everywhere'/)
+      end
     end
 
     describe "#set" do

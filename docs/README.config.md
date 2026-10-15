@@ -1,6 +1,6 @@
 # workspace config
 
-Show, validate, set, get, or unset project or global workspace configuration.
+Show, validate, set, get, unset, or edit project or global workspace configuration.
 
 ## Usage
 
@@ -13,6 +13,7 @@ workspace config set [--scope SCOPE] [--name NAME] [--json] <key> [--] <value>
 workspace config get [--scope SCOPE] [--name NAME] <key>
 workspace config unset [--scope SCOPE] [--name NAME] [--json] <key>
 workspace config show --scope SCOPE [--name NAME] [--json] [key]
+workspace config edit [--scope SCOPE] [--name NAME] [--json]
 ```
 
 ## Options
@@ -21,9 +22,9 @@ workspace config show --scope SCOPE [--name NAME] [--json] [key]
 |--------|-------------|
 | `--global` | Show global configuration instead of project config; the same as `--scope global` |
 | `--scope SCOPE` | `global`, `project` or `workspace` (`worktree` is the same). `set`/`get`/`unset`: the layer whose file is written or read. `show`: see [Scopes](#scopes) |
-| `--name NAME` | (`show`, `validate`) The workspace to report on instead of the one inferred from cwd |
-| `--json` | (`show`, `validate`, `set`, `unset`) Print one JSON document (below) instead of text |
-| `--project NAME`, `--name NAME` | (`set`/`get`/`unset`) Configure this project instead of the one inferred from cwd; the two are the same option |
+| `--name NAME` | (`show`, `validate`, `edit`) The workspace to report on instead of the one inferred from cwd |
+| `--json` | (`show`, `validate`, `set`, `unset`, `edit`) Print one JSON document (below) instead of text |
+| `--project NAME`, `--name NAME` | (`set`/`get`/`unset`/`edit`) Configure this project instead of the one inferred from cwd; the two are the same option |
 
 ## Details
 
@@ -33,9 +34,9 @@ With no subcommand and a key, `workspace config <key>` prints that key's effecti
 
 `set`, `get`, and `unset` manage a project's config by dotted key, without needing to open the YAML file by hand. `get` prints the value and exits 0; if the key has no value, it prints nothing on stdout, a short note on stderr, and exits 1. The project is inferred from cwd via the same resolver used by `workspace parent`, `workspace lock`, and `dev`: a worktree resolves to its parent project. Pass `--project NAME` (or `--name NAME`) to target a different workspace explicitly.
 
-`notes.dir` is the one key a worktree owns. Inside a worktree, `set`, `get` and `unset` use the worktree's own file (`~/.config/workspace/projects/<project>.worktree-<name>.yml`), and a worktree never reads the project's value: with none of its own, its `notes.dir` is unset. The main checkout reads and writes the project's file. `--name` picks the file from anywhere, so `workspace config set notes.dir /notes/api-fix --name api.worktree-fix` sets one worktree's directory and `--name api` sets the main checkout's. A value already in the project's file stays there and still applies to the main checkout only.
+`notes.dir` is the key where a worktree reads only its own file. Inside a worktree, `set`, `get` and `unset` use the worktree's own file (`~/.config/workspace/projects/<project>.worktree-<name>.yml`), and a worktree never inherits the project's value: with none of its own, its `notes.dir` is unset. The main checkout reads and writes the project's file. `--name` picks the file from anywhere, so `workspace config set notes.dir /notes/api-fix --name api.worktree-fix` sets one worktree's directory and `--name api` sets the main checkout's. A value already in the project's file stays there and still applies to the main checkout only.
 
-`show`, `validate`, `set`, `get`, and `unset` are reserved as the first argument to `workspace config`: they are always treated as subcommands, not as a key. A workspace literally named one of them is shown with `--name`, or by reading its YAML file directly.
+`show`, `validate`, `set`, `get`, `unset`, and `edit` are reserved as the first argument to `workspace config`: they are always treated as subcommands, not as a key. A workspace literally named one of them is shown with `--name`, or by reading its YAML file directly.
 
 <!-- The tables between GENERATED markers are rendered from lib/workspace/config_schema.rb; edit the schema and run script/generate-config-docs. -->
 
@@ -107,7 +108,7 @@ The `notes.dir` and `notes.default_dir` rows of `config show --json` carry `effe
 
 `config get` prints nothing on stdout and exits 1 when the key is unset, so a client that finds no output should pick its own location. The "is not set" message on stderr marks that case, and `config show --name N --json` gives `value: null` for an unset key.
 
-Before writing, `set` and `unset` back up the project's config file (via the same backup mechanism used elsewhere in workspace) and then rewrite it through a temp file and rename. Global keys are backed up the same way. **`YAML.dump` drops comments**, so a file you've hand-edited with comments loses them the first time `set` or `unset` touches it. When the old text had a comment, the command prints `Note: comments in <path> were not kept; backup at <path>` on stderr, and the `config set --json` row carries `comments_preserved: false` (`true` otherwise). The check looks for a `#` at the start of a line or after whitespace, outside a quoted scalar; a `#` line inside a block scalar (`|`, `>`) counts too, so the note can appear when nothing was lost. The backup is the old file, so copy the comments back from it by hand.
+Before writing, `set` and `unset` back up the project's config file (via the same backup mechanism used elsewhere in workspace) and then rewrite it through a temp file and rename. Global keys are backed up the same way. **`YAML.dump` drops comments**, so a file you've hand-edited with comments loses them the first time `set` or `unset` touches it; use [`config edit`](#config-edit) to change a commented file by hand and keep them. When the old text had a comment, the command prints `Note: comments in <path> were not kept; backup at <path>` on stderr, and the `config set --json` row carries `comments_preserved: false` (`true` otherwise). The check looks for a `#` at the start of a line or after whitespace, outside a quoted scalar; a `#` line inside a block scalar (`|`, `>`) counts too, so the note can appear when nothing was lost. The backup is the old file, so copy the comments back from it by hand.
 
 If the file isn't valid YAML (or isn't a mapping at the top level), `set` and `unset` stop with `Cannot parse <path>: ...` and leave it as written; fix or remove it and retry. Readers that run in the background (lock, alert, and handoff settings) warn and use their defaults instead of failing.
 
@@ -117,7 +118,7 @@ If the file isn't valid YAML (or isn't a mapping at the top level), `set` and `u
 
 With no `--scope`, `set`, `get` and `unset` use the highest layer the key allows at or below the workspace (`target_layer` in `config show --json`): the workspace's own file for a key a worktree may override, else the project's file, and the global file for a global-only key and for `workflows.defaults.include`. That holds for `--name <worktree>` as well as for a worktree cwd. A project-only key such as `locks.idle_grace` therefore lands in the parent project's file.
 
-Precedence is workspace > project > global > default. `workflows.defaults.include` is the one global-file key that may also be set at project and workspace scope: the packs a project's workflow steps start with are a project's choice, so a project may override the machine-wide default. A scope the key doesn't allow (see `overridable_in`) fails with code `scope_not_allowed`, a message that says why in a few words and which `--scope` to use, `details.key`, `details.scope` (the scope as typed) and `details.allowed` (the scopes it does allow, lowest first), and writes nothing. An unknown key fails with `unknown_config_key` (`details.key`), a bad value or an unknown `--scope` with `usage`, and a file that can't be parsed with `config_parse` (`details.path`, `details.reason`; the reason is the parser's message and never quotes a stored value).
+Precedence is workspace > project > global > default (see [Layers](#layers)). `workflows.defaults.include` is the one global-file key that may also be set at project and workspace scope: the packs a project's workflow steps start with are a project's choice, so a project may override the machine-wide default. A scope the key doesn't allow (see `overridable_in`) fails with code `scope_not_allowed`, a message that says why in a few words and which `--scope` to use, `details.key`, `details.scope` (the scope as typed) and `details.allowed` (the scopes it does allow, lowest first), and writes nothing. An unknown key fails with `unknown_config_key` (`details.key`), a bad value or an unknown `--scope` with `usage`, and a file that can't be parsed with `config_parse` (`details.path`, `details.reason`; the reason is the parser's message and never quotes a stored value).
 
 `set --json` and `unset --json` print an action document whose row has `workspace` (the name whose file was written, null for the global file), `outcome` (`set`, `unset`, or `noop` for an `unset` of a key that wasn't in that file, which writes and backs up nothing), `key`, `value` (`set` only), `global`, `scope`, `layer`, `file`, `comments_preserved` and `effective`, the key's effective value for the workspace asked about after the write (null for a sensitive key). `effective` has the type `config show` gives the key (a number may be a float, a boolean may be a string). After a restart-required key (on `set` and on `unset`), the text output names the affected daemons: the workspace's own for a `workspace` write, the project and each of its worktrees for a `project` write, every known workspace for a `global` write. Past three workspaces it gives their count and `workspace daemon restart --all` instead of a list. Put a value that starts with a dash after `--`: `workspace config set dev.up -- -x`.
 
@@ -130,6 +131,50 @@ workspace config set --scope project workflows.defaults.include commits
 workspace config unset --scope workspace dev.ready_timeout --name myapp.worktree-fix --json
 workspace config show --scope project --json dev.ready_timeout --name myapp.worktree-fix
 ```
+
+### Layers
+
+Each key lists the layers it may be set in (`overridable_in`, also the **Layers** column of the key table above). The highest layer that holds a value wins; a key with no value anywhere falls back to its built-in default.
+
+| Layer | `--scope` | File | Wins over |
+|-------|-----------|------|-----------|
+| `worktree` | `workspace` | `~/.config/workspace/projects/<project>.worktree-<name>.yml` | project, global, default |
+| `project` | `project` | `~/.config/workspace/projects/<project>.yml` (the main checkout's) | global, default |
+| `global` | `global` | `~/.config/workspace/config.yml` | default |
+
+Two things to know about the worktree layer. A worktree with no `.workspace-project` marker has no name of its own for the tool to find, so its worktree-level overrides are ignored there, and `config set --scope workspace` from inside it fails and asks for `--name <project>.worktree-<name>` (`start` and `add` write the marker). And `kill` and `prune` delete the worktree's file, and its overrides with it.
+
+```sh
+workspace config set --scope project handoff.auto true
+workspace config set --scope workspace dev.ready_timeout 90s
+```
+
+### `config edit`
+
+```sh
+workspace config edit [--scope SCOPE] [--name NAME] [--json]
+```
+
+Opens one layer's file in `$VISUAL`, else `$EDITOR`. The scope defaults to `workspace`, which is the workspace's own file; in a main checkout that is the project's file. It resolves the file as `set`, `get` and `unset` do (same names, `unknown_workspace` for a workspace that isn't known, the same refusal for a worktree with no name) but checks no key. A file that doesn't exist yet is created first, through a temp file and rename, with the one-line header `# workspace config (<layer>). See docs/README.config.md`; an existing file is not touched.
+
+The editor is run without a shell: the variable is split into words (`code --wait` is two) and the path is the last argument, so nothing in the path or the variable is interpreted by a shell. A path to the editor that contains spaces must be quoted in `$EDITOR`. A blank `$VISUAL` or `$EDITOR` counts as unset. If the variable is not a valid command (an unbalanced quote), or the editor can't be run or exits non-zero, the command fails with the error code `editor_failed`. With neither variable set, under `--no-input` (or `WORKSPACE_NO_INPUT`), or when stdin or stdout is not a terminal, it prints the path, opens nothing and exits 0.
+
+Example for a script or an agent that edits the file itself:
+
+```sh
+workspace config edit --scope global --json    # just the path
+```
+
+With `--json` no editor is opened either; the action document gives the path, which suits a script or an agent that edits the file itself:
+
+```json
+{"schema_version":1,"ok":true,"action":"config edit","status":"ok",
+ "results":[{"workspace":"api.worktree-fix","outcome":"ready","reason":null,"message":null,"global":false,
+  "scope":"workspace","layer":"worktree","file":"/Users/me/.config/workspace/projects/api.worktree-fix.yml","created":true}],
+ "warnings":[],"summary":{"ready":1}}
+```
+
+Editing by hand is the way to keep comments: `config set` and `unset` rewrite the whole file and drop them. Nothing checks a hand edit, so run `workspace config validate` afterwards.
 
 ### `config show --json`
 
@@ -280,11 +325,18 @@ workspace config unset dev.ready
 # Target a project other than the one inferred from cwd
 workspace config set --project myapp dev.up "bin/dev"
 
-# Edit config files directly (global config has no set/get/unset)
-$EDITOR ~/.config/workspace/config.yml
-$EDITOR ~/.config/workspace/projects/myproject.yml
+# Set a key for the whole project, or for one worktree only
+workspace config set --scope project handoff.auto true
+workspace config set --scope workspace dev.ready_timeout 90s
+
+# Edit a config file by hand, keeping its comments
+workspace config edit --scope global
+workspace config edit --name myproject.worktree-fix
+workspace config edit --scope global --json    # just the path
 ```
 
 ## JSON output
+
+`config edit --json` prints an action document (the action is `config edit`) with one `ready` row carrying `global`, `scope`, `layer`, `file` and `created`; see [`config edit`](#config-edit).
 
 `config set --json` prints an action document (see [README.json.md](README.json.md#actions); the action is `config set`) with one `set` row carrying `key`, `value` and `global`; `workspace` is the project, or null for a global key.

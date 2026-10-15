@@ -130,7 +130,54 @@ module Workspace
         result_for(key, target, write, affects)
       end
 
+      # What an {#edit} found: the file to open and whether it had to be made.
+      #
+      # @!attribute workspace
+      #   @return [String, nil] the name whose file it is; nil for the global file
+      # @!attribute layer
+      #   @return [String] "global", "project" or "worktree"
+      # @!attribute scope
+      #   @return [String] "global", "project" or "workspace"
+      # @!attribute path
+      #   @return [String] the file
+      # @!attribute created
+      #   @return [Boolean] true when the file was absent and a stub was written
+      EditResult = Struct.new(:workspace, :layer, :scope, :path, :created, keyword_init: true)
+
+      # Finds the file of one scope for hand-editing, writing a stub (a comment header) through
+      # the usual temp-file-and-rename write when it is absent. An existing file is not touched.
+      # The scope is resolved as for {#set}, with no key to check; the default is the
+      # workspace's own file.
+      #
+      # @param project [String, nil] workspace to edit; defaults to the one inferred from cwd
+      # @param scope [String, nil] "global", "project" or "workspace" ("worktree" is the same); nil is "workspace"
+      # @param cwd [String] directory to infer the workspace from, when project is nil
+      # @return [EditResult]
+      # @raise [Workspace::Error] code `unknown_workspace`
+      # @raise [Workspace::UsageError] for an invalid scope or a worktree with no name
+      def edit(project: nil, scope: nil, cwd: Dir.pwd)
+        target = edit_target(project, scope, cwd)
+        created = false
+        with_config_lock(target.path) do
+          unless File.exist?(target.path)
+            write_text(target.path, "# workspace config (#{target.layer}). See docs/README.config.md\n")
+            created = true
+          end
+        end
+        EditResult.new(workspace: target.name, layer: target.layer, scope: LAYER_SCOPES.fetch(target.layer), path: target.path, created: created)
+      end
+
       private
+
+      def edit_target(project, scope, cwd)
+        scope = normalize_scope(scope) || "workspace"
+        return Target.new("global", nil, @project_settings.global_config_path, nil) if scope == "global"
+        workspace, worktree = workspace_for(project, cwd, nil, scope)
+        layer = (scope == "workspace" && worktree) ? "worktree" : "project"
+        check_workspace_known!(workspace) if scope == "workspace"
+        name = (layer == "project") ? (WorkspaceLineage.split_worktree_name(workspace)&.first || workspace) : workspace
+        Target.new(layer, name, @project_settings.project_config_path(name), workspace)
+      end
 
       # More affected workspaces than this, and the restart hint gives a count and one command.
       MAX_LISTED_RESTARTS = 3
@@ -185,7 +232,7 @@ module Workspace
         end
         lineage = @lineage.resolve(cwd: cwd)
         if lineage.is_worktree && !lineage.worktree && (scope == "workspace" || (scope.nil? && schema_key.resolve == :own_then_parent))
-          raise Workspace::UsageError, "This worktree has no workspace name (no .workspace-project marker), so #{schema_key.name} can't tell which file is its own. Pass --name <project>.worktree-<name>."
+          raise Workspace::UsageError, "This worktree has no workspace name (no .workspace-project marker), so #{schema_key ? schema_key.name : "config edit"} can't tell which file is its own. Pass --name <project>.worktree-<name>."
         end
         [lineage.worktree || lineage.name, !lineage.worktree.nil?]
       end
@@ -381,9 +428,13 @@ module Workspace
       end
 
       def write(path, data)
+        write_text(path, YAML.dump(data))
+      end
+
+      def write_text(path, text)
         FileUtils.mkdir_p(File.dirname(path))
         tmp_path = "#{path}.tmp#{Process.pid}"
-        File.write(tmp_path, YAML.dump(data))
+        File.write(tmp_path, text)
         File.rename(tmp_path, path)
       end
     end

@@ -79,7 +79,7 @@ workspace <subcommand> [options]
 | capabilities | [README](docs/README.capabilities.md) | Print what this CLI supports, as feature revisions (for scripts and the UI) |
 | capture | [README](docs/README.capture.md) | Print a tmux pane's scrollback buffer to stdout |
 | cleanup | [README](docs/README.cleanup.md) | Detect and remove zombie sessions from state |
-| config | [README](docs/README.config.md) | Show, validate, set, get, or unset project or global configuration |
+| config | [README](docs/README.config.md) | Show, validate, set, get, unset, or edit project or global configuration |
 | current | [README](docs/README.current.md) | Print the workspace project name for the current directory |
 | daemon | [README](docs/README.daemon.md) | List, show, restart (one or all) or read the log of agent daemons |
 | deactivate | [README](docs/README.deactivate.md) | Deactivate Claude in a project's tmux pane (sends Ctrl-C) |
