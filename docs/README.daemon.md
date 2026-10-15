@@ -27,19 +27,19 @@ workspace daemon log [WORKSPACE] [--lines N] [--json]
 Lists every running agent daemon, so you can see what is still running old code after installing a new version. Only workspaces that still have a tmuxinator config are found (a daemon left running for a workspace whose config was deleted is not listed), and each one's daemon is found from its socket (`~/.local/workspace/run/workspace-<name>.sock`), not from the process list. A daemon is listed when it answers on its socket, or when it holds the socket without answering (hung) and its command line is a `workspace agentd`. A hung daemon whose socket more than one process has open is listed too, with `pid: null`, so it isn't hidden. A socket file with no process behind it is stale and is left out. With none running it prints `No agentd processes are running.` and exits 0.
 
 ```
-WORKSPACE  PID   STARTED               ANSWERING  SOCKET
-api        4242  2026-09-24T09:12:03Z  yes        /Users/me/.local/workspace/run/workspace-api.sock
+WORKSPACE  PID   STARTED               VERSION  ANSWERING  SOCKET
+api        4242  2026-09-24T09:12:03Z  0.37.1   yes        /Users/me/.local/workspace/run/workspace-api.sock
 ```
 
-`list --json` is a read-only document like `status --json`: `schema_version`, `ok`, then `daemons` and `warnings`, with no `action` or `status`.
+The table's columns may change between versions; scripts should read `list --json`, which is a read-only document like `status --json`: `schema_version`, `ok`, then `daemons` and `warnings`, with no `action` or `status`.
 
 ```json
-{"schema_version":1,"ok":true,"daemons":[{"workspace":"api","pid":4242,"started_at":"2026-09-24T09:12:03Z","answering":true,
+{"schema_version":1,"ok":true,"daemons":[{"workspace":"api","pid":4242,"started_at":"2026-09-24T09:12:03Z","version":"0.37.1","answering":true,
  "socket":"/Users/me/.local/workspace/run/workspace-api.sock","log":"/Users/me/.local/workspace/run/workspace-api.log","wc_socket":null}],
  "warnings":[]}
 ```
 
-`pid` and `started_at` (UTC, from the process table) are `null` when they can't be read: more than one process has the socket open, `lsof` doesn't answer within 2 seconds, or the process table can't be read. `answering` is `false` for a hung daemon. `wc_socket` is the `--wc-socket` the daemon was started with, read from its command line; `null` when it has none or the path can't be read back. The version a daemon runs isn't recorded anywhere, so it isn't shown: compare `started_at` with when you installed.
+`pid` and `started_at` (UTC, from the process table) are `null` when they can't be read: more than one process has the socket open, `lsof` doesn't answer within 2 seconds, or the process table can't be read. `answering` is `false` for a hung daemon. `wc_socket` is the `--wc-socket` the daemon was started with, read from its command line; `null` when it has none or the path can't be read back. `version` is the workspace version the daemon is running, which it reports when asked over its socket; it differs from `workspace --version` when the daemon was started before an upgrade. It is `null` (`-` in the table) for a hung daemon, one that doesn't answer within 2 seconds, or one started before daemons reported their version: compare `started_at` with when you installed.
 
 ## status
 

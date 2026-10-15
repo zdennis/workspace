@@ -18,6 +18,13 @@ RSpec.describe Workspace::Commands::Daemon, "list and restart_all" do
   let(:ensure_calls) { [] }
   let(:failing_start) { [] }
   let(:next_pid) { [9000] }
+  # Version each answering daemon reports; a workspace left out answers without one.
+  let(:versions) { {} }
+  let(:version_client) do
+    double("version_client").tap do |v|
+      allow(v).to receive(:version) { |name, timeout:| versions[name] }
+    end
+  end
 
   let(:config) do
     dir = tmpdir
@@ -66,7 +73,7 @@ RSpec.describe Workspace::Commands::Daemon, "list and restart_all" do
   let(:command) do
     holder_lookup = ->(path) { [holders[File.basename(path)[/workspace-(.*)\.sock/, 1]]].compact }
     described_class.new(config: config, project_config: project_config, ensure_agent: ensure_agent, process_tree: process_tree,
-      pid_finder: holder_lookup, signaller: signaller, sleeper: ->(s) { now[0] += s }, clock: -> { now[0] }, stop_timeout: 1, output: output)
+      version_client: version_client, pid_finder: holder_lookup, signaller: signaller, sleeper: ->(s) { now[0] += s }, clock: -> { now[0] }, stop_timeout: 1, output: output)
   end
 
   # Starts a fake agentd for +name+ the way a real one would be found.
@@ -92,14 +99,15 @@ RSpec.describe Workspace::Commands::Daemon, "list and restart_all" do
       expect(JSON.parse(output.string)).to eq("schema_version" => 1, "ok" => true, "daemons" => [], "warnings" => [])
     end
 
-    it "lists one daemon as a table with its workspace, pid and start time" do
+    it "lists one daemon as a table with its workspace, pid, start time and version" do
       run_daemon("api", 4242)
+      versions["api"] = "0.37.1"
 
       command.list
 
       header, row = output.string.lines.map(&:chomp)
-      expect(header).to start_with("WORKSPACE  PID   STARTED")
-      expect(row).to match(/\Aapi\s+4242  2026-09-24T09:12:03Z  yes\s+#{Regexp.escape(File.join(tmpdir, "workspace-api.sock"))}\z/)
+      expect(header).to start_with("WORKSPACE  PID   STARTED               VERSION  ANSWERING")
+      expect(row).to match(/\Aapi\s+4242  2026-09-24T09:12:03Z  0\.37\.1   yes\s+#{Regexp.escape(File.join(tmpdir, "workspace-api.sock"))}\z/)
     end
 
     it "lists many daemons in workspace order and leaves out workspaces with no socket" do
@@ -128,21 +136,57 @@ RSpec.describe Workspace::Commands::Daemon, "list and restart_all" do
       expect(JSON.parse(output.string)["daemons"]).to eq([])
     end
 
-    it "lists a hung agentd as not answering" do
+    it "lists a hung agentd as not answering, and doesn't ask it for a version" do
       run_daemon("api", 4242, answers: false)
 
       command.list(json: true)
 
-      expect(JSON.parse(output.string)["daemons"].first).to include("workspace" => "api", "pid" => 4242, "answering" => false)
+      expect(JSON.parse(output.string)["daemons"].first).to include("workspace" => "api", "pid" => 4242, "answering" => false, "version" => nil)
+      expect(version_client).not_to have_received(:version)
+    end
+
+    it "shows a dash for a daemon that doesn't say its version" do
+      run_daemon("api", 4242)
+
+      command.list
+
+      expect(output.string.lines.last).to include("2026-09-24T09:12:03Z  -        yes")
+    end
+
+    it "gives a null version when asking the daemon fails" do
+      run_daemon("api", 4242)
+      allow(version_client).to receive(:version).and_raise(Workspace::AgentSnapshotClient::Unavailable.new("slow", reason: :timeout))
+
+      command.list(json: true)
+
+      expect(JSON.parse(output.string)["daemons"].first).to include("answering" => true, "version" => nil)
+    end
+
+    it "gives a null version when the daemon closes without replying" do
+      run_daemon("api", 4242)
+      allow(version_client).to receive(:version).and_raise(Workspace::Error, "Agent for 'api' closed the connection.")
+
+      command.list(json: true)
+
+      expect(JSON.parse(output.string)["daemons"].first).to include("answering" => true, "version" => nil)
+    end
+
+    it "asks each daemon with the list's own short timeout" do
+      run_daemon("api", 4242)
+
+      command.list
+
+      expect(version_client).to have_received(:version).with("api", timeout: described_class::VERSION_TIMEOUT)
     end
 
     it "gives the JSON shape: pid, start time, sockets and log, with the work-coordinator socket read from the command line" do
       run_daemon("api", 4242, args: "/usr/bin/ruby workspace agentd --name api --wc-socket /tmp/wc.sock")
+      versions["api"] = "0.37.1"
 
       command.list(json: true)
 
       expect(JSON.parse(output.string)).to eq("schema_version" => 1, "ok" => true, "warnings" => [], "daemons" => [
-        {"workspace" => "api", "pid" => 4242, "started_at" => "2026-09-24T09:12:03Z", "answering" => true,
+        {"workspace" => "api", "pid" => 4242, "started_at" => "2026-09-24T09:12:03Z", "version" => "0.37.1", "answering" => true,
          "socket" => File.join(tmpdir, "workspace-api.sock"), "log" => File.join(tmpdir, "workspace-api.log"), "wc_socket" => "/tmp/wc.sock"}
       ])
     end

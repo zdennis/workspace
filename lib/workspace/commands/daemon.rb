@@ -29,6 +29,9 @@ module Workspace
       # How long `lsof` gets to name the processes that have the socket open.
       LSOF_TIMEOUT = 2
 
+      # How long `list` waits for each answering daemon to say its version.
+      VERSION_TIMEOUT = 2
+
       LSOF_COMMAND = %w[lsof -t].freeze
       private_constant :LSOF_COMMAND
 
@@ -48,13 +51,16 @@ module Workspace
 
       # One running agent daemon, as `list` reports it. `pid` and `started_at`
       # are nil when they can't be read; `answering` is false for a daemon that
-      # holds its socket but no longer replies (a hung one).
-      Entry = Struct.new(:workspace, :pid, :socket, :log, :started_at, :wc_socket, :answering)
+      # holds its socket but no longer replies (a hung one). `version` is the
+      # workspace version the daemon runs: nil when it is hung, doesn't answer
+      # in time, or predates the `version` request.
+      Entry = Struct.new(:workspace, :pid, :socket, :log, :started_at, :wc_socket, :answering, :version)
 
       # @param config [Workspace::Config] socket and log paths, liveness probe
       # @param project_config [Workspace::ProjectConfig] knows which workspaces exist
       # @param ensure_agent [Workspace::Commands::EnsureAgent] starts the new daemon, detached, under its lock
       # @param process_tree [Workspace::ProcessTree] confirms a pid is an `agentd` process before it is signalled
+      # @param version_client [Workspace::AgentSnapshotClient] asks an answering daemon which version it runs
       # @param pid_finder [#call] `(socket_path)` returns the pids with the socket open,
       #   or nil when it couldn't find out in time
       # @param signaller [#call] `(signal, pid)`; raises Errno::ESRCH when the process is gone
@@ -64,13 +70,14 @@ module Workspace
       # @param lsof_command [Array<String>] the `lsof` argv the default +pid_finder+ runs, before the socket path
       # @param lsof_timeout [Numeric] seconds the default +pid_finder+ waits for `lsof` before killing it
       # @param output [IO]
-      def initialize(config:, project_config:, ensure_agent:, process_tree: ProcessTree.new, pid_finder: method(:lsof_pids), signaller: Process.method(:kill),
+      def initialize(config:, project_config:, ensure_agent:, version_client:, process_tree: ProcessTree.new, pid_finder: method(:lsof_pids), signaller: Process.method(:kill),
         sleeper: ->(seconds) { sleep(seconds) }, clock: -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) },
         stop_timeout: DEFAULT_STOP_TIMEOUT, lsof_command: LSOF_COMMAND, lsof_timeout: LSOF_TIMEOUT, output: $stdout)
         @config = config
         @project_config = project_config
         @ensure_agent = ensure_agent
         @process_tree = process_tree
+        @version_client = version_client
         @pid_finder = pid_finder
         @signaller = signaller
         @sleeper = sleeper
@@ -82,7 +89,7 @@ module Workspace
       end
 
       # Finds every running agent daemon and prints it: the workspace it
-      # serves, its pid, start time, work-coordinator socket and paths. The
+      # serves, its pid, start time, version, work-coordinator socket and paths. The
       # workspaces come from the tmuxinator configs, and each one's daemon
       # from its socket: a daemon counts when it answers on the socket, or
       # holds it but is hung and is an `agentd` process. A socket file with no
@@ -98,9 +105,9 @@ module Workspace
           @output.puts "No agentd processes are running."
         else
           rows = entries.map do |e|
-            [e.workspace, e.pid.to_s, e.started_at.to_s, e.answering ? "yes" : "no (hung)", e.socket]
+            [e.workspace, e.pid.to_s, e.started_at.to_s, e.version || "-", e.answering ? "yes" : "no (hung)", e.socket]
           end
-          table = [%w[WORKSPACE PID STARTED ANSWERING SOCKET]] + rows
+          table = [%w[WORKSPACE PID STARTED VERSION ANSWERING SOCKET]] + rows
           widths = table.transpose.map { |column| column.map(&:length).max }
           table.each { |row| @output.puts row.each_with_index.map { |cell, i| cell.ljust(widths[i]) }.join("  ").rstrip }
         end
@@ -259,7 +266,14 @@ module Workspace
         return nil unless answering || agentd || pids&.size.to_i > 1
 
         wc_socket = agentd ? old_wc_socket(process[:args].to_s.split, name) : nil
-        Entry.new(name, pid, socket, @config.agent_log_path(name), started_at(process), wc_socket.is_a?(String) ? wc_socket : nil, answering)
+        Entry.new(name, pid, socket, @config.agent_log_path(name), started_at(process), wc_socket.is_a?(String) ? wc_socket : nil, answering,
+          answering ? daemon_version(name) : nil)
+      end
+
+      def daemon_version(name)
+        @version_client.version(name, timeout: VERSION_TIMEOUT)
+      rescue Workspace::Error
+        nil
       end
 
       def started_at(process)
@@ -269,7 +283,7 @@ module Workspace
       end
 
       def entry_hash(entry)
-        {"workspace" => entry.workspace, "pid" => entry.pid, "started_at" => entry.started_at, "answering" => entry.answering,
+        {"workspace" => entry.workspace, "pid" => entry.pid, "started_at" => entry.started_at, "version" => entry.version, "answering" => entry.answering,
          "socket" => entry.socket, "log" => entry.log, "wc_socket" => entry.wc_socket}
       end
 

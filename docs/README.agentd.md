@@ -149,6 +149,10 @@ If step 3 times out, the prompt is not typed. Without `wait`, the reply comes at
 | `error: "clear_not_confirmed"` | (`wait`) `/clear` was typed but usage didn't drop in time; the prompt was not typed |
 | `error: "not_delivered"` | (`wait`) `/clear` or the prompt never reached the pane |
 
+### Version
+
+`{"type": "version", "workspace": "myapp"}` asks which workspace version the agent is running (the one loaded when it started). `workspace daemon list` sends it. The reply is `{"ok": true, "version": "0.37.1"}`; an agent from before this message answers `unknown_type`.
+
 ### Dispatch errors
 
 | Reply | Meaning |

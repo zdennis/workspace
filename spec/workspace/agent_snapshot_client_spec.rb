@@ -44,6 +44,33 @@ RSpec.describe Workspace::AgentSnapshotClient do
 
   def client_call = client.fetch("proj", timeout: @timeout)
 
+  describe "#version" do
+    def client_call = client.version("proj")
+
+    it "sends a version request and returns the daemon's version" do
+      outcome = with_daemon { |conn| conn.puts(JSON.generate("ok" => true, "version" => "1.2.3")) }
+
+      expect(outcome).to eq([:ok, "1.2.3"])
+      expect(@request).to eq("type" => "version", "workspace" => "proj")
+    end
+
+    it "returns nil from a daemon that predates the version request" do
+      outcome = with_daemon { |conn| conn.puts(JSON.generate("ok" => false, "error" => "unknown_type")) }
+
+      expect(outcome).to eq([:ok, nil])
+    end
+
+    it "returns nil when the reply's version isn't a string" do
+      outcome = with_daemon { |conn| conn.puts(JSON.generate("ok" => true, "version" => 42)) }
+
+      expect(outcome).to eq([:ok, nil])
+    end
+
+    it "raises Unavailable when nothing listens on the socket path" do
+      expect { client.version("proj") }.to raise_error(described_class::Unavailable)
+    end
+  end
+
   describe "#fetch" do
     it "sends a sessions request for the workspace and returns the parsed reply" do
       outcome = with_daemon { |conn| conn.puts(JSON.generate(snapshot)) }

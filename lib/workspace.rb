@@ -436,7 +436,8 @@ module Workspace
       error_output: error_output
     )
     capabilities_command = Commands::Capabilities.new(config: config, output: output)
-    daemon_command = Commands::Daemon.new(config: config, project_config: project_config, ensure_agent: ensure_agent_command, process_tree: ProcessTree.new(logger: logger), output: output)
+    daemon_command = Commands::Daemon.new(config: config, project_config: project_config, ensure_agent: ensure_agent_command, version_client: agent_snapshot_client,
+      process_tree: ProcessTree.new(logger: logger), output: output)
     ui_command = Commands::Ui.new(output: output)
     library_command = Commands::Library.new(library: library, output: output, input: input)
     instructions_command = Commands::Instructions.new(composer: instruction_composer, bindings: binding_command, output: output)

@@ -153,6 +153,16 @@ RSpec.describe Workspace::Commands::Agent, "restart_agent" do
     end
   end
 
+  it "answers a version request with the version it runs" do
+    run_agent do
+      reply = UNIXSocket.open(agent_socket_path) do |socket|
+        socket.puts({"type" => "version", "workspace" => "myapp"}.to_json)
+        JSON.parse(socket.gets)
+      end
+      expect(reply).to eq("ok" => true, "version" => Workspace::VERSION)
+    end
+  end
+
   it "with wait, replies with the outcome once the restart finishes" do
     run_agent do
       waiter = Thread.new { send_restart("wait" => true, "timeout" => 5) }

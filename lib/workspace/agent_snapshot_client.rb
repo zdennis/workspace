@@ -45,27 +45,44 @@ module Workspace
     # @raise [Unavailable] if no daemon is listening or it doesn't answer in time
     # @raise [Workspace::Error] if the daemon closes the connection or sends a malformed reply
     def fetch(name, timeout: nil)
-      limit = timeout || @timeout
+      snapshot = exchange(name, "sessions", timeout || @timeout)
+      raise Workspace::Error, "Malformed reply from session monitor for '#{name}'." unless snapshot.is_a?(Hash)
+      snapshot
+    end
+
+    # Asks the daemon which workspace version it is running. A daemon from
+    # before the `version` request answers `unknown_type`, which is nil here.
+    #
+    # @param name [String] workspace name
+    # @param timeout [Numeric, nil] seconds to wait for the reply; nil uses the default
+    # @return [String, nil] the daemon's version, or nil when it doesn't say
+    # @raise [Unavailable] if no daemon is listening or it doesn't answer in time
+    # @raise [Workspace::Error] if the daemon closes the connection
+    def version(name, timeout: nil)
+      reply = exchange(name, "version", timeout || @timeout)
+      version = reply.is_a?(Hash) && reply["version"]
+      version.is_a?(String) ? version : nil
+    end
+
+    private
+
+    def exchange(name, type, limit)
       deadline = @clock.call + limit
       socket = @connector.call(@config.agent_socket_path(name))
       begin
-        socket.puts(JSON.generate("type" => "sessions", "workspace" => name))
+        socket.puts(JSON.generate("type" => type, "workspace" => name))
         reply = read_line(socket, deadline, name, limit)
       ensure
         socket.close unless socket.closed?
       end
-      snapshot = begin
+      begin
         JSON.parse(reply)
       rescue JSON::ParserError
         nil
       end
-      raise Workspace::Error, "Malformed reply from session monitor for '#{name}'." unless snapshot.is_a?(Hash)
-      snapshot
     rescue SystemCallError, IOError
       raise Unavailable.new("No agent daemon for '#{name}'.\nStart one with:  workspace agentd #{name}", reason: :no_daemon)
     end
-
-    private
 
     def read_line(socket, deadline, name, limit)
       buffer = +""

@@ -3,6 +3,7 @@ require "stringio"
 require "tmpdir"
 
 RSpec.describe Workspace::Commands::Daemon do
+  let(:version_client) { double("version_client", version: nil) }
   let(:tmpdir) { Dir.mktmpdir }
   let(:log_path) { File.join(tmpdir, "workspace-api.log") }
   let(:socket_path) { File.join(tmpdir, "workspace-api.sock") }
@@ -58,7 +59,7 @@ RSpec.describe Workspace::Commands::Daemon do
   let(:sleeper) { ->(seconds) { now[0] += seconds } }
   let(:clock) { -> { now[0] } }
   def build(**overrides)
-    described_class.new(config: config, project_config: project_config, ensure_agent: ensure_agent, process_tree: process_tree,
+    described_class.new(config: config, project_config: project_config, ensure_agent: ensure_agent, version_client: version_client, process_tree: process_tree,
       pid_finder: pid_finder, signaller: signaller, sleeper: sleeper, clock: clock, stop_timeout: 1, output: output, **overrides)
   end
 
@@ -596,7 +597,7 @@ RSpec.describe Workspace::Commands::Daemon do
 
     def status_pid(**overrides)
       up[0] = true
-      described_class.new(config: config, project_config: project_config, ensure_agent: ensure_agent, output: output, **overrides)
+      described_class.new(config: config, project_config: project_config, ensure_agent: ensure_agent, version_client: version_client, output: output, **overrides)
         .status(name: "api", json: true)
       document["pid"]
     end
@@ -614,7 +615,7 @@ RSpec.describe Workspace::Commands::Daemon do
     it "reads every pid when lsof prints several, one per line, and refuses to pick one" do
       lsof = fake_lsof("echo 4242\necho 5000")
       up[0] = true
-      command = described_class.new(config: config, project_config: project_config, ensure_agent: ensure_agent, process_tree: process_tree,
+      command = described_class.new(config: config, project_config: project_config, ensure_agent: ensure_agent, version_client: version_client, process_tree: process_tree,
         signaller: signaller, lsof_command: [lsof, "-t"], output: output)
 
       result = command.restart(name: "api")

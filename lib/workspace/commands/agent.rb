@@ -347,6 +347,8 @@ module Workspace
           reply_to(client, "ok" => true)
         when "sessions"
           reply_to(client, @session_monitor&.snapshot || {"workspace" => @current_name, "panes" => []})
+        when "version"
+          reply_to(client, "ok" => true, "version" => Workspace::VERSION)
         else
           @logger.debug { "unknown message type: #{message["type"]}" }
           reply_to(client, "ok" => false, "error" => "unknown_type")
