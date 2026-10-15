@@ -14,7 +14,7 @@ workspace dev status [--json]
 
 ## Configuration
 
-The command comes from the parent project's config (`~/.config/workspace/projects/<parent>.yml`), so every worktree of a repo shares it:
+The command comes from the parent project's config (`~/.config/workspace/projects/<parent>.yml`), so every worktree of a repo shares it unless the worktree's own config file sets the key (`dev.up`, `dev.ready` and the dev timeouts may be set per worktree with `config set --scope workspace`):
 
 ```sh
 workspace config set dev.up "./start-dev"         # required
