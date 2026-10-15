@@ -657,7 +657,10 @@ RSpec.describe Workspace::Commands::Dev, "with fake processes and clock" do
       allow(t).to receive(:running?).and_return(false)
     end
   end
-  let(:tmux) { double("tmux", session_name_for_pane: "app", sessions: ["app"], session_name_for: "app", close_dead_pane: nil) }
+  let(:tmux) {
+    double("tmux", session_name_for_pane: "app", sessions: ["app"], session_name_for: "app", close_dead_pane: nil,
+      windows_in_session: [], close_dead_windows: [])
+  }
   let(:dead_pids) { [] }
   let(:signals) { [] }
   let(:now) { [0.0] }
@@ -844,6 +847,107 @@ RSpec.describe Workspace::Commands::Dev, "with fake processes and clock" do
 
       expect(dev.up(takeover: true, working_dir: worktree)).to eq(exit_code: 0)
       expect(tmux).to have_received(:close_dead_pane).with("%7", pid: 700)
+    end
+  end
+
+  describe "dead devenv windows left in the session" do
+    it "`up` closes them before opening its own window" do
+      wrapper_joins(555, wait: false)
+      allow(tmux).to receive(:close_dead_windows).and_return(["%8", "%9"])
+
+      expect(dev.up(working_dir: worktree)).to eq(exit_code: 0)
+
+      expect(tmux).to have_received(:close_dead_windows).with("app", name: "devenv").ordered
+      expect(tmux).to have_received(:new_window).with("app", hash_including(name: "devenv")).ordered
+    end
+
+    it "`up --force` sweeps the session's dead devenv windows after stopping the loser's environment" do
+      hold(700)
+      wrapper_joins(555)
+      allow(terminator).to receive(:stop_holder) do
+        liveness.kill(700)
+        :terminated
+      end
+      allow(tmux).to receive(:close_dead_windows).and_return(["%8"])
+
+      expect(dev.up(takeover: true, working_dir: worktree)).to eq(exit_code: 0)
+
+      expect(tmux).to have_received(:close_dead_pane).with("%7", pid: 700).ordered
+      expect(tmux).to have_received(:close_dead_windows).with("app", name: "devenv").ordered
+    end
+
+    it "`down` closes them even when nothing is running" do
+      allow(tmux).to receive(:close_dead_windows).and_return(["%8"])
+
+      expect(dev.down(working_dir: worktree)).to eq(exit_code: 0)
+
+      expect(tmux).to have_received(:close_dead_windows).with("app", name: "devenv")
+    end
+
+    it "`down` still stops the environment when no session can be found to sweep" do
+      hold(700)
+      allow(terminator).to receive(:stop_holder) do
+        liveness.kill(700)
+        :terminated
+      end
+      allow(tmux).to receive(:session_name_for_pane).and_return(nil)
+      allow(tmux).to receive(:sessions).and_return([])
+      allow(tmux).to receive(:server_running?).and_return(false)
+      allow(tmux).to receive(:close_dead_windows)
+
+      expect(dev.down(working_dir: worktree)).to eq(exit_code: 0)
+
+      expect(tmux).not_to have_received(:close_dead_windows)
+    end
+  end
+
+  describe "reusing the session's live devenv window" do
+    it "reuses the window this worktree's holder already runs in, instead of opening a second one" do
+      # The lock is free when `up` checks; another `up` from this worktree
+      # takes it and opens its window before this one opens its own.
+      allow(tmux).to receive(:close_dead_windows)
+      allow(tmux).to receive(:windows_in_session) do
+        hold(555, worktree: worktree)
+        [{window: "@1", pane: "%12", pid: 555, dead: false}]
+      end
+      allow(tmux).to receive(:new_window)
+
+      expect(dev.up(working_dir: worktree)).to eq(exit_code: 0)
+
+      expect(tmux).not_to have_received(:new_window)
+      expect(output.string).to include("Dev environment running for")
+    end
+
+    it "opens its own window when the live devenv window is another worktree's holder" do
+      hold(700)
+      allow(tmux).to receive(:close_dead_windows)
+      allow(tmux).to receive(:windows_in_session).and_return([{window: "@1", pane: "%12", pid: 700, dead: false}])
+      wrapper_joins(555)
+      on_sleep << -> { store.release("devenv", 700) }
+
+      expect(dev.up(wait: true, working_dir: worktree)).to eq(exit_code: 0)
+
+      expect(tmux).to have_received(:new_window)
+    end
+
+    it "reuses the window a run's delegate from this worktree already runs in" do
+      # The lock is free when `up` checks; a run takes it and its delegate
+      # (this worktree's wrapper) opens the window before this `up` opens
+      # its own.
+      allow(tmux).to receive(:close_dead_windows)
+      allow(tmux).to receive(:windows_in_session) do
+        store.acquire_run(["devenv"], run: {run_id: "wr_1", step: "implement", workflow: "rpiv",
+                                            workspace: "app", worktree: worktree, pane: "%1"}.freeze)
+        store.delegate("devenv", run_id: "wr_1",
+          identity: process_identity(555, worktree: worktree, branch: "feat/a"))
+        [{window: "@1", pane: "%12", pid: 555, dead: false}]
+      end
+      allow(tmux).to receive(:new_window)
+
+      expect(dev.up(working_dir: worktree)).to eq(exit_code: 0)
+
+      expect(tmux).not_to have_received(:new_window)
+      expect(output.string).to include("Dev environment running for")
     end
   end
 

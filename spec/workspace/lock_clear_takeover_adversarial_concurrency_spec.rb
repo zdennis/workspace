@@ -21,7 +21,10 @@ RSpec.describe "lock clear devenv racing dev up --takeover" do
   let(:settings) { {"up" => "run-dev", "stop_timeout" => 2, "startup_timeout" => 5} }
   let(:dev_config) { Workspace::DevConfig.new(config_resolver: Workspace::ConfigResolver.new(project_settings: Struct.new(:data) { def load(_name) = data }.new({"dev" => settings}))) }
   let(:lineage) { double("lineage", resolve: double(name: "app", worktree: nil)) }
-  let(:tmux) { double("tmux", session_name_for_pane: "app", sessions: ["app"], session_name_for: "app", close_dead_pane: nil) }
+  let(:tmux) {
+    double("tmux", session_name_for_pane: "app", sessions: ["app"], session_name_for: "app", close_dead_pane: nil,
+      windows_in_session: [], close_dead_windows: [])
+  }
 
   # Terminators whose every real signal raises; stop_holder is stubbed per example.
   def fake_terminator

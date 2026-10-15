@@ -224,6 +224,7 @@ module Workspace
       # @return [Hash] {exit_code:}
       def down(force: false, working_dir: Dir.pwd)
         ctx = context(working_dir, tolerate_bad_config: true)
+        sweep_session(ctx)
         holder = settled_entry(ctx[:store])["holder"]
         unless holder
           @output.puts "No dev environment is running."
@@ -686,6 +687,7 @@ module Workspace
           return {exit_code: 1}
         end
         close_window(holder)
+        sweep_dead_windows(session)
         code = if deadline
           await_wrapper(ctx, wrapper, limit: max_wait, limit_name: "--max-wait", deadline: deadline)
         else
@@ -699,10 +701,58 @@ module Workspace
         env[TAKEOVER_ENV] = "1" if takeover
         env[RUN_ENV] = delegate_for if delegate_for
         env.merge!(started_by_env)
+        # A takeover sweeps after stopping the loser's environment instead
+        # ({#take_over}), so the sweep sees the windows it frees too; nor
+        # does it reuse a window, whose pid it would take for the wrapper it
+        # is about to stop.
+        sweep_dead_windows(session) unless takeover
+        reused = reusable_window(ctx, session) unless takeover
+        return reused if reused
         wrapper = @tmux.new_window(session, name: WINDOW_NAME, cwd: ctx[:worktree], command: run_argv(wait), env: env,
           remain_on_exit: true, source_pane: @env["TMUX_PANE"])
         raise Workspace::Error, "Could not open a #{WINDOW_NAME} window in tmux session #{session}." unless wrapper
         wrapper
+      end
+
+      # The #{WINDOW_NAME} window this worktree's running environment already
+      # occupies in this session, when there is one: `up` decides this worktree
+      # has nothing running before it opens a window, and a holder can appear
+      # in between (another `up` from this worktree). Reusing that window
+      # leaves the session with one #{WINDOW_NAME} window instead of two.
+      #
+      # @return [Integer, nil] the running wrapper's pid, or nil when this
+      #   worktree's environment is not running in a live window of this session
+      def reusable_window(ctx, session)
+        windows = @tmux.windows_in_session(session, name: WINDOW_NAME)
+        record = entry(ctx[:store])["holder"]
+        record = running_delegate(record) if run?(record)
+        return nil unless record && !record["stale"] && record["worktree"] == ctx[:worktree]
+        window = windows.find { |each| !each[:dead] && each[:pid] == record["pid"] }
+        record["pid"] if window
+      end
+
+      # Closes every dead #{WINDOW_NAME} window left in a session, whatever
+      # became of its lock record (a crashed wrapper, a lock cleared under
+      # it, an environment stopped from elsewhere): tmux keeps a dead window
+      # open through remain-on-exit, and every tmux window renders as its own
+      # iTerm window in control mode. A window whose pane still runs is left
+      # alone. The crash output a stopped wrapper's window still shows is
+      # readable until the next #{WINDOW_NAME} command sweeps it.
+      #
+      # @param session [String] tmux session name
+      # @return [Array<String>] the pane ids of the windows it closed
+      def sweep_dead_windows(session)
+        @tmux.close_dead_windows(session, name: WINDOW_NAME)
+      end
+
+      # Sweeps the caller's session's dead #{WINDOW_NAME} windows (see
+      # {#sweep_dead_windows}); `down` still stops the environment when no
+      # tmux is wired or no session can be found to sweep.
+      def sweep_session(ctx)
+        return nil unless @tmux
+        sweep_dead_windows(session_for(ctx))
+      rescue Workspace::Error
+        nil
       end
 
       # The devenv window outlives its wrapper (remain-on-exit) so a crash

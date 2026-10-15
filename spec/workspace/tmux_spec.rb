@@ -909,6 +909,62 @@ RSpec.describe Workspace::Tmux do
     end
   end
 
+  describe "#windows_in_session" do
+    let(:tmux) { described_class.new(config: config) }
+    let(:ok) { instance_double(Process::Status, success?: true) }
+
+    it "lists the named windows with their pane ids, pids and dead flags" do
+      stdout = "@1\tmain\t%3\t300\t0\n@2\tdevenv\t%12\t4321\t1\n@3\tdevenv\t%13\t5100\t0\n"
+      allow(Open3).to receive(:capture3).and_return([stdout, "", ok])
+
+      windows = tmux.windows_in_session("app", name: "devenv")
+
+      # No @ prefixes: tmux 3.x renders an @-prefixed window_id as empty — an
+      # id-less sweep would close nothing.
+      expect(Open3).to have_received(:capture3).with("tmux", "list-windows", "-t", "=app:", "-F",
+        "\#{window_id}\t\#{window_name}\t\#{pane_id}\t\#{pane_pid}\t\#{pane_dead}")
+      expect(windows).to eq([
+        {window: "@2", pane: "%12", pid: 4321, dead: true},
+        {window: "@3", pane: "%13", pid: 5100, dead: false}
+      ])
+    end
+
+    it "is empty when tmux fails, as for a session that isn't there" do
+      allow(Open3).to receive(:capture3).and_return(["", "can't find session: app", instance_double(Process::Status, success?: false)])
+
+      expect(tmux.windows_in_session("gone", name: "devenv")).to eq([])
+    end
+  end
+
+  describe "#close_dead_windows" do
+    let(:tmux) { described_class.new(config: config) }
+
+    it "closes each dead window of the name through close_dead_pane, leaving live ones alone" do
+      allow(tmux).to receive(:windows_in_session).and_return([
+        {window: "@2", pane: "%12", pid: 4321, dead: true},
+        {window: "@3", pane: "%13", pid: 5100, dead: false}
+      ])
+      allow(tmux).to receive(:close_dead_pane).and_return(true)
+
+      closed = tmux.close_dead_windows("app", name: "devenv")
+
+      expect(closed).to eq(["%12"])
+      expect(tmux).to have_received(:close_dead_pane).with("%12", pid: 4321)
+      expect(tmux).not_to have_received(:close_dead_pane).with("%13", pid: 5100)
+    end
+
+    it "reports only the panes it closed, dropping one whose pane vanished meanwhile" do
+      allow(tmux).to receive(:windows_in_session).and_return([
+        {window: "@2", pane: "%12", pid: 4321, dead: true},
+        {window: "@3", pane: "%13", pid: 5100, dead: true}
+      ])
+      allow(tmux).to receive(:close_dead_pane).with("%12", pid: 4321).and_return(true)
+      allow(tmux).to receive(:close_dead_pane).with("%13", pid: 5100).and_return(nil)
+
+      expect(tmux.close_dead_windows("app", name: "devenv")).to eq(["%12"])
+    end
+  end
+
   describe "#server_running?" do
     let(:tmux) { described_class.new(config: config) }
 

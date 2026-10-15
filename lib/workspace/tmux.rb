@@ -508,6 +508,43 @@ module Workspace
       status.success?
     end
 
+    # Lists the windows named +name+ in a session, with the pane each one
+    # runs. tmux allows duplicate window names, so a session can hold more
+    # than one window of a name (a `devenv` window opened while dead ones
+    # remain); each entry carries its window and pane ids, the pane's
+    # process, and whether that process has exited — a pane tmux keeps open
+    # through remain-on-exit once it has.
+    #
+    # @param session_name [String] tmux session name
+    # @param name [String] the window name to list
+    # @return [Array<Hash>] +{window:, pane:, pid:, dead:}+ per named window;
+    #   empty when the session isn't there or tmux fails
+    def windows_in_session(session_name, name:)
+      format = ["window_id", "window_name", "pane_id", "pane_pid", "pane_dead"].map { |field| "\#{#{field}}" }.join("\t")
+      @logger.debug { "tmux: listing #{name} windows in #{session_name}" }
+      stdout, _, status = Open3.capture3("tmux", "list-windows", "-t", session_target(session_name), "-F", format)
+      return [] unless status.success?
+
+      stdout.lines.filter_map do |line|
+        window, window_name, pane, pid, dead = line.chomp.split("\t", 5)
+        next unless window_name == name
+        {window: window, pane: pane, pid: pid.to_i, dead: dead == "1"}
+      end
+    end
+
+    # Closes every dead window named +name+ in a session, each through
+    # {#close_dead_pane}: a window whose pane still runs, or whose process
+    # was replaced by another, is left alone, exactly as a record-named
+    # pane is.
+    #
+    # @param session_name [String] tmux session name
+    # @param name [String] the window name to sweep
+    # @return [Array<String>] the pane ids of the windows it closed
+    def close_dead_windows(session_name, name:)
+      windows_in_session(session_name, name: name).select { |window| window[:dead] }
+        .filter_map { |window| window[:pane] if close_dead_pane(window[:pane], pid: window[:pid]) }
+    end
+
     # @return [Boolean] whether a tmux server is running for this user
     def server_running?
       _, _, status = Open3.capture3("tmux", "list-sessions")
