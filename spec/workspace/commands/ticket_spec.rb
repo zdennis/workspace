@@ -21,7 +21,7 @@ RSpec.describe Workspace::Commands::Ticket do
   subject(:command) { described_class.new(git: git, project_config: project_config, start_ref: start_ref, source: source, output: output) }
 
   def sh(*args, dir: repo)
-    out, status = Open3.capture2e("git", "-C", dir, "-c", "user.name=t", "-c", "user.email=t@example.com", *args)
+    out, status = Open3.capture2e("git", "-C", dir, "-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "gc.auto=0", "-c", "maintenance.auto=false", *args)
     raise out unless status.success?
   end
 
