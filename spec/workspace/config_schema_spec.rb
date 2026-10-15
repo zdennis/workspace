@@ -223,3 +223,27 @@ RSpec.describe Workspace::ConfigSchema do
     end
   end
 end
+
+RSpec.describe Workspace::ConfigSchema, "layers and limits" do
+  let(:legacy) { {global: %i[global], parent: %i[project], own_then_parent: %i[project worktree], own: %i[project worktree], merge: %i[project worktree], none: []} }
+
+  it "gives every key the layers its resolve mode reads today" do
+    expect(described_class.all).to all(satisfy { |key| key.overridable_in == legacy.fetch(key.resolve) })
+    expect(described_class.key("notes.dir").overridable_in).to eq(%i[project worktree])
+    expect(described_class.key("dev.up").overridable_in?("project")).to be true
+    expect(described_class.key("dev.up").overridable_in?(:worktree)).to be false
+  end
+
+  it "declares choices for closed sets, seconds for durations, and limits where the parser has them" do
+    expect(described_class.key("context.source").choices).to eq(%w[statusline scrape])
+    expect(described_class.key("handoff.auto").choices).to eq(%w[true false])
+    expect(described_class.key("dev.up").choices).to be_nil
+    expect(described_class.all.select { |k| k.type == :duration }).to all(satisfy { |k| k.unit == "seconds" })
+    expect(described_class.key("dev.up").unit).to be_nil
+    threshold = described_class.key("handoff.threshold")
+    expect([threshold.min, threshold.max]).to eq([1, 100])
+    ps = described_class.key("locks.ps_timeout")
+    expect([ps.min, ps.max]).to eq([described_class::MIN_PS_TIMEOUT, described_class::MAX_PS_TIMEOUT])
+    expect(described_class.key("dev.kill_grace").max).to eq(described_class::MAX_KILL_GRACE)
+  end
+end

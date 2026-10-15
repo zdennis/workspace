@@ -26,6 +26,21 @@ module Workspace
     # Values the `launch.headless` key accepts.
     LAUNCH_HEADLESS_VALUES = %w[true false].freeze
 
+    # The layers a key may live in for each `resolve` mode, as the readers consult them today.
+    LEGACY_LAYERS = {
+      global: [:global].freeze,
+      parent: [:project].freeze,
+      own_then_parent: [:project, :worktree].freeze,
+      own: [:project, :worktree].freeze,
+      merge: [:project, :worktree].freeze,
+      none: [].freeze
+    }.freeze
+    private_constant :LEGACY_LAYERS
+
+    # The values a key of that type accepts, when the type is a closed set.
+    DEFAULT_CHOICES = {enum: CONTEXT_SOURCES, boolean: %w[true false].freeze}.freeze
+    private_constant :DEFAULT_CHOICES
+
     # One config key.
     #
     # @!attribute name [String] dotted key, e.g. "dev.ready_timeout"
@@ -44,12 +59,30 @@ module Workspace
     # @!attribute sensitive [Boolean] true when the value is a command or other text `config show --json` must not print
     # @!attribute type [Symbol] :command, :duration, :percent, :text, :path, :enum, :regex, :boolean or :mapping.
     #   A :path value is a file system location a person may have typed with shell escapes, which `config validate` checks for.
-    Key = Struct.new(:name, :scope, :doc, :default, :restart, :settable, :parser, :resolve, :applies, :sensitive, :type, keyword_init: true) do
-      def initialize(scope:, restart: nil, resolve: nil, applies: nil, sensitive: false, type: :text, **rest)
+    # @!attribute overridable_in [Array<Symbol>] the layers (:global, :project, :worktree) that may hold the key, lowest
+    #   precedence first. Defaults from `resolve` to what the readers consult today: :global is [:global], :parent is
+    #   [:project], :own_then_parent is [:project, :worktree]; :own and :merge are [:project, :worktree] for information
+    #   (their readers are unchanged) and :none is [].
+    # @!attribute choices [Array<String>, nil] the accepted values of a closed set; defaults to {CONTEXT_SOURCES} for an
+    #   :enum key and "true"/"false" for a :boolean one
+    # @!attribute min [Numeric, nil] smallest accepted value, in `unit`
+    # @!attribute max [Numeric, nil] largest accepted value, in `unit`
+    # @!attribute unit [String, nil] "seconds" for every :duration key
+    Key = Struct.new(:name, :scope, :doc, :default, :restart, :settable, :parser, :resolve, :applies, :sensitive, :type,
+      :overridable_in, :choices, :min, :max, :unit, keyword_init: true) do
+      def initialize(scope:, restart: nil, resolve: nil, applies: nil, sensitive: false, type: :text,
+        overridable_in: nil, choices: nil, unit: nil, **rest)
         resolve ||= (scope == :global) ? :global : :parent
         applies ||= restart ? :daemon_restart : :next_call
+        overridable_in ||= LEGACY_LAYERS.fetch(resolve)
+        choices ||= DEFAULT_CHOICES[type]
+        unit ||= "seconds" if type == :duration
         super
       end
+
+      # @param layer [Symbol, String] :global, :project or :worktree
+      # @return [Boolean] whether the key may be set in that layer
+      def overridable_in?(layer) = overridable_in.include?(layer.to_sym)
 
       # @return [Boolean]
       def settable? = settable
@@ -238,7 +271,7 @@ module Workspace
         doc: "How long `dev up` waits for the wrapper to take a free lock, e.g. `30s` (default `30s`)"),
       Key.new(name: "dev.ready_timeout", scope: :project, type: :duration, settable: true, default: 120, parser: POSITIVE_DURATION,
         doc: "How long `dev up` waits for the `dev.ready` check to pass, e.g. `2m` (default `120s`)"),
-      Key.new(name: "dev.kill_grace", scope: :project, type: :duration, settable: true, default: 2,
+      Key.new(name: "dev.kill_grace", scope: :project, type: :duration, settable: true, default: 2, max: MAX_KILL_GRACE,
         parser: ->(value) { Duration.parse_capped(value, max: MAX_KILL_GRACE) },
         doc: "How long `lock clear devenv`, `dev down` and `dev up --force` wait for a SIGKILLed dev environment's process group to disappear before keeping its lock (default `2s`, capped at `60s`)"),
       Key.new(name: "dev.release_on_session_end", scope: :project, type: :boolean, settable: true, default: true, parser: BOOLEAN,
@@ -247,7 +280,7 @@ module Workspace
         doc: "`true` or `false`: whether `start` and `launch` send the agent the built-in `dev` pack (queue for the shared dev environment before testing, release it when done) when the project sets `dev.up` (default `true`); `--no-packs` skips it for one run. A workflow step that declares `uses: [devenv]` never gets it"),
       Key.new(name: "locks.idle_grace", scope: :project, type: :duration, settable: true, default: 300, parser: POSITIVE_DURATION,
         doc: "How long an idle agent keeps a lock before the first waiter may take it over (default `5m`; see [`workspace lock`](README.lock.md))"),
-      Key.new(name: "locks.ps_timeout", scope: :project, type: :duration, settable: true, default: 5, restart: true,
+      Key.new(name: "locks.ps_timeout", scope: :project, type: :duration, settable: true, default: 5, restart: true, min: MIN_PS_TIMEOUT, max: MAX_PS_TIMEOUT,
         parser: ->(value) { Duration.parse_ranged(value, min: MIN_PS_TIMEOUT, max: MAX_PS_TIMEOUT) },
         doc: "How long to wait for `ps` when reading the process table for lock/session checks, before giving up (default `5s`, must be between `1s` and `60s`)"),
       Key.new(name: "locks.reap_interval", scope: :project, type: :duration, settable: true, default: 30, restart: true, parser: POSITIVE_DURATION,
@@ -258,7 +291,7 @@ module Workspace
         doc: "How long an agent pane may sit idle before `alerts.notify` runs (default `10m`)"),
       Key.new(name: "agentd.poll_interval", scope: :project, type: :duration, settable: true, default: 10, restart: true, parser: POSITIVE_DURATION,
         doc: "How often the session-monitor daemon scans panes for agent state, alerts and stale locks (default `10s`)"),
-      Key.new(name: "handoff.threshold", scope: :project, type: :percent, settable: true, default: 11, parser: PERCENT,
+      Key.new(name: "handoff.threshold", scope: :project, type: :percent, settable: true, default: 11, min: 1, max: 100, parser: PERCENT,
         doc: "Context-usage percent, 1 to 100, that triggers a handoff in [`workspace handoff check`](README.handoff.md) (default `11`)"),
       Key.new(name: "handoff.check_prompt", scope: :project, settable: true, default: HANDOFF_CHECK_PROMPT, parser: PROMPT,
         doc: "Overrides the built-in save-state prompt `handoff check` sends when it names a doc (the default is that text); must not be blank (see [`workspace handoff`](README.handoff.md))"),

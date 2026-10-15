@@ -1,0 +1,10 @@
+statusline:
+  command: "my-statusline --fancy"
+layouts:
+  default:
+    - editor
+    - shell
+handoff:
+  auto: true
+launch:
+  headless: false

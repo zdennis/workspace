@@ -1,0 +1,8 @@
+notes:
+  dir: /tmp/golden-notes/a
+hooks:
+  post_launch: echo hi
+dev:
+  stop_timeout: 5s
+alerts:
+  idle_after: 1m

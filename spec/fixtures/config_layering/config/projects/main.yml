@@ -1,0 +1,11 @@
+dev:
+  up: ./start-dev
+  ready: curl -fs localhost:3000
+  ready_timeout: not-a-duration
+  stop_timeout: 45s
+notes:
+  default_dir: "~/notes/{workspace}"
+commands:
+  test: bundle exec rspec
+plan:
+  stall_seconds: 10m
