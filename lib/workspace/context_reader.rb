@@ -91,9 +91,10 @@ module Workspace
 
       scraped = scrape_pane(pane_id)
       return scraped if scraped.is_a?(Hash)
+      return absent(ContextReasons::PATTERN_NO_MATCH) unless scraped
 
-      captured = scraped && last_capture(scraped, Regexp.new(pattern))
-      return absent(ContextReasons::PATTERN_NO_MATCH) unless captured
+      captured = last_capture(scraped, Regexp.new(pattern))
+      return cache_scrape(pane_id, absent(ContextReasons::PATTERN_NO_MATCH)) unless captured
 
       used = remaining ? 100 - captured.to_i : captured.to_i
       scraped_reading(pane_id, used.clamp(0, 100))
@@ -112,7 +113,17 @@ module Workspace
     def scraped_reading(pane_id, pct)
       now = @clock.call
       reading = {pct: pct, error: nil, updated_at: now.utc.iso8601, recorded_at: now, session_id: nil}
-      @scrape_cache[pane_id] = {reading: reading, recorded_at: now} if @scan_slots
+      cache_scrape(pane_id, reading)
+    end
+
+    # Records a reading taken from a pane the reader just scraped — matched
+    # or not — in the scrape cache, so a later busy read for a pane that never
+    # matches still answers from the cache instead of undetermined. Returns
+    # the reading as given; the cache write is all this adds.
+    def cache_scrape(pane_id, reading)
+      if @scan_slots
+        @scrape_cache[pane_id] = {reading: reading, recorded_at: reading[:recorded_at] || @clock.call}
+      end
       reading
     end
 
@@ -148,9 +159,10 @@ module Workspace
       scraped = scrape_pane(pane_id)
       # Every slot busy already answered with a result of its own.
       return scraped if scraped.is_a?(Hash)
+      return absent(ContextReasons::PATTERN_NO_MATCH) unless scraped
 
-      match = scraped && Regexp.new(pattern).match(scraped)
-      return absent(ContextReasons::PATTERN_NO_MATCH) unless match && match[1]
+      match = Regexp.new(pattern).match(scraped)
+      return cache_scrape(pane_id, absent(ContextReasons::PATTERN_NO_MATCH)) unless match && match[1]
 
       scraped_reading(pane_id, match[1].to_i)
     rescue RegexpError => e

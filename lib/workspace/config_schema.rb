@@ -337,7 +337,7 @@ module Workspace
       Key.new(name: "context.pattern", scope: :global, type: :regex, settable: true, examples: ['(\d+)% used'], parser: ONE_GROUP_REGEX,
         doc: "Regex with exactly one capture group, used when `context.source` is `scrape`"),
       Key.new(name: "context.patterns", scope: :global, type: :mapping, settable: false,
-        doc: "Edited in the file by hand: a mapping of agent kind (`claude`, `codex`, ...) to a regex with exactly one capture group that reads the percent of the context window used from that agent's pane. A kind listed here is read from its pane whatever `context.source` says; Codex has a built-in reading of its \"N% context left\" line. `context.pattern` stays the fallback in `scrape` mode for a kind with neither. See [`handoff`](README.handoff.md#codex)"),
+        doc: "Edited in the file by hand: a mapping of agent kind (`claude`, `codex`, ...) to a regex with exactly one capture group that reads the percent of the context window used from that agent's pane. A kind listed here is read from its pane whatever `context.source` says; Codex has a built-in reading of its \"Context N% used\" line. `context.pattern` stays the fallback in `scrape` mode for a kind with neither. See [`handoff`](README.handoff.md#codex)"),
       Key.new(name: "launch.headless", scope: :global, type: :boolean, settable: true, parser: HEADLESS,
         doc: "`true` or `false`: whether `launch`, `start` and `doctor` run [headless](README.launch.md#headless) on this machine when no `--headless`/`--no-headless` flag is given. Unset, they pick headless off macOS, without `osascript`, or when `CI` is set"),
       # Packs suit projects differently, and compose already knows the cwd.

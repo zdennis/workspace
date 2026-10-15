@@ -58,11 +58,13 @@ RSpec.describe Workspace::AgentProvider do
       expect(described_class.all.map(&:clear_command).uniq).to eq(["/clear"])
     end
 
-    it "reads Codex context from the percent left in its footer" do
+    it "reads Codex context from the percent used in its status footer" do
       codex = described_class.find("codex")
 
-      expect(codex.context_remaining?).to be true
-      expect(Regexp.new(codex.context_pattern).match("  gpt-5  72% context left")[1]).to eq("72")
+      expect(codex.context_remaining?).to be false
+      expect(Regexp.new(codex.context_pattern).match("  gpt-5  Context 72% used · Context 28% left")[1]).to eq("72")
+      expect(Regexp.new(codex.context_pattern).match("Context 0% used · Context 100% left")[1]).to eq("0")
+      expect(Regexp.new(codex.context_pattern).match("72% context left")).to be_nil
       expect(described_class.find("claude").context_pattern).to be_nil
       expect(described_class.find("claude").context_remaining?).to be false
     end

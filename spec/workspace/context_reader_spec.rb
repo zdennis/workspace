@@ -1,3 +1,5 @@
+require "tmpdir"
+
 RSpec.describe Workspace::ContextReader do
   let(:context_store) { instance_double(Workspace::ContextStore) }
   let(:tmux) { instance_double(Workspace::Tmux) }
@@ -258,15 +260,44 @@ RSpec.describe Workspace::ContextReader do
         expect(result[:error]).to eq(Workspace::ContextReasons::PATTERN_NO_MATCH)
       end
 
-      it "caches only successful scrapes, so a busy read after a mismatch reports undetermined" do
+      it "caches a mismatched scrape too, so a busy read after it answers no-match from the cache" do
         allow(scan_slots).to receive(:with_scan_slot).and_yield
         allow(tmux).to receive(:capture_screen).with("%1").and_return("nothing here")
-        gated_reader.read(pane_id: "%1")
+        first = gated_reader.read(pane_id: "%1")
+        expect(first[:error]).to eq(Workspace::ContextReasons::PATTERN_NO_MATCH)
 
         allow(scan_slots).to receive(:with_scan_slot).and_return(nil)
 
         result = gated_reader.read(pane_id: "%1")
-        expect(result[:error]).to eq(Workspace::ContextReasons::SCAN_BUSY)
+        expect(result[:error]).to eq(Workspace::ContextReasons::PATTERN_NO_MATCH)
+        expect(tmux).to have_received(:capture_screen).with("%1").exactly(1).time
+      end
+
+      it "scrapes and caches inside a scan already holding a slot, as the daemon's monitor does" do
+        slot_dir = Dir.mktmpdir("ws-scan-slots")
+        begin
+          # Separate limiter instances over one slot directory, as the daemon
+          # wires the monitor's limiter apart from the reader's.
+          monitor_slots = Workspace::ScanSlotLimiter.new(dir: slot_dir, limit: 1)
+          reader_slots = Workspace::ScanSlotLimiter.new(dir: slot_dir, limit: 1)
+          in_scan = described_class.new(context_store: context_store, project_settings: project_settings,
+            tmux: tmux, lock_holder: lock_holder, scan_slots: reader_slots, clock: -> { now[0] })
+          allow(tmux).to receive(:capture_screen).with("%1").and_return("37% ctx")
+
+          first = monitor_slots.with_scan_slot { in_scan.read(pane_id: "%1") }
+          expect(first).to include(pct: 37, error: nil)
+
+          # The scan populated the reader's cache, so a later busy read of
+          # the pane serves the reading the scan scraped.
+          holder = reader_slots.send(:take_slot)
+          begin
+            expect(in_scan.read(pane_id: "%1")).to eq(first)
+          ensure
+            holder&.close
+          end
+        ensure
+          FileUtils.remove_entry(slot_dir)
+        end
       end
 
       it "refreshes the cache on a later successful scrape, so the window counts from it" do
@@ -297,28 +328,28 @@ RSpec.describe Workspace::ContextReader do
   end
 
   describe "a pane read by its agent kind" do
-    let(:codex_screen) { "earlier: 12% context left in a quote\n\n  gpt-5  72% context left\n" }
+    let(:codex_screen) { "earlier: Context 12% used in a quote\n\n  gpt-5  Context 72% used · Context 28% left\n? for shortcuts ⚠ 4 warnings · f2 to view\n" }
 
     it "reads Codex from its own footer, as the percent used, whatever context.source says" do
       allow(tmux).to receive(:capture_screen).with("%1").and_return(codex_screen)
 
       result = reader.read(pane_id: "%1", kind: "codex")
 
-      expect(result).to include(pct: 28, error: nil, session_id: nil)
+      expect(result).to include(pct: 72, error: nil, session_id: nil)
       expect(result[:recorded_at]).to be_a(Time)
     end
 
-    it "takes the last match on the screen, which is the footer" do
-      allow(tmux).to receive(:capture_screen).and_return("90% context left\n  10% context left")
+    it "takes the last match on the screen, which is the footer, and never its 'left' half" do
+      allow(tmux).to receive(:capture_screen).and_return("Context 10% used · Context 90% left\n  Context 90% used · Context 10% left")
 
       expect(reader.read(pane_id: "%1", kind: "codex")[:pct]).to eq(90)
     end
 
-    it "reports 100% used for a footer that says 0% left, and never goes below 0 used" do
-      allow(tmux).to receive(:capture_screen).and_return("0% context left")
-      expect(reader.read(pane_id: "%1", kind: "codex")[:pct]).to eq(100)
-      allow(tmux).to receive(:capture_screen).and_return("130% context left")
+    it "reads the used half of the footer directly, clamped into 0..100" do
+      allow(tmux).to receive(:capture_screen).and_return("Context 0% used · Context 100% left")
       expect(reader.read(pane_id: "%1", kind: "codex")[:pct]).to eq(0)
+      allow(tmux).to receive(:capture_screen).and_return("Context 130% used")
+      expect(reader.read(pane_id: "%1", kind: "codex")[:pct]).to eq(100)
     end
 
     it "reports a pattern mismatch when the footer is not on the screen" do
@@ -329,7 +360,7 @@ RSpec.describe Workspace::ContextReader do
 
     it "uses context.patterns for the kind, whose capture is the percent used" do
       global_config["context"] = {"patterns" => {"codex" => 'ctx (\d+)%'}}
-      allow(tmux).to receive(:capture_screen).and_return("ctx 41% 72% context left")
+      allow(tmux).to receive(:capture_screen).and_return("ctx 41% Context 72% used")
 
       expect(reader.read(pane_id: "%1", kind: "codex")[:pct]).to eq(41)
     end
@@ -343,7 +374,7 @@ RSpec.describe Workspace::ContextReader do
 
     it "never guesses on an invalid configured pattern" do
       global_config["context"] = {"patterns" => {"codex" => "(unterminated"}}
-      allow(tmux).to receive(:capture_screen).and_return("72% context left")
+      allow(tmux).to receive(:capture_screen).and_return("Context 72% used")
 
       expect(reader.read(pane_id: "%1", kind: "codex")).to include(pct: nil, error: Workspace::ContextReasons::PATTERN_NO_MATCH)
     end
@@ -378,9 +409,9 @@ RSpec.describe Workspace::ContextReader do
 
     it "ignores a context.patterns that is not a mapping, and uses the built-in Codex pattern" do
       global_config["context"] = {"patterns" => "codex"}
-      allow(tmux).to receive(:capture_screen).and_return("72% context left")
+      allow(tmux).to receive(:capture_screen).and_return("Context 72% used")
 
-      expect(reader.read(pane_id: "%1", kind: "codex")[:pct]).to eq(28)
+      expect(reader.read(pane_id: "%1", kind: "codex")[:pct]).to eq(72)
     end
 
     describe "under the scan slots" do
@@ -393,14 +424,25 @@ RSpec.describe Workspace::ContextReader do
 
       it "serves the last reading while it is fresh when every slot is busy, and reports busy otherwise" do
         allow(scan_slots).to receive(:with_scan_slot) { |&block| block.call }
-        allow(tmux).to receive(:capture_screen).and_return("72% context left")
-        expect(gated.read(pane_id: "%1", kind: "codex")[:pct]).to eq(28)
+        allow(tmux).to receive(:capture_screen).and_return("Context 72% used")
+        expect(gated.read(pane_id: "%1", kind: "codex")[:pct]).to eq(72)
 
         allow(scan_slots).to receive(:with_scan_slot).and_return(nil)
         now[0] += 5
-        expect(gated.read(pane_id: "%1", kind: "codex")[:pct]).to eq(28)
+        expect(gated.read(pane_id: "%1", kind: "codex")[:pct]).to eq(72)
         now[0] += 60
         expect(gated.read(pane_id: "%1", kind: "codex")).to include(pct: nil, error: Workspace::ContextReasons::SCAN_BUSY)
+      end
+
+      it "caches a mismatched kind scrape too, so a later busy read answers no-match" do
+        allow(scan_slots).to receive(:with_scan_slot) { |&block| block.call }
+        allow(tmux).to receive(:capture_screen).and_return("working...")
+        expect(gated.read(pane_id: "%1", kind: "codex")[:error]).to eq(Workspace::ContextReasons::PATTERN_NO_MATCH)
+
+        allow(scan_slots).to receive(:with_scan_slot).and_return(nil)
+        now[0] += 5
+
+        expect(gated.read(pane_id: "%1", kind: "codex")[:error]).to eq(Workspace::ContextReasons::PATTERN_NO_MATCH)
       end
     end
 

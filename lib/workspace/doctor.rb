@@ -15,10 +15,13 @@ module Workspace
     # @param project_settings [Workspace::ProjectSettings, nil] reads/writes the
     #   global config for the statusLine check and `--fix`; nil builds one from +config+
     # @param plan [Workspace::Commands::Plan, nil] reads the plans of the current project's workspaces; nil skips the plan check
+    # @param snapshot_client [Workspace::AgentSnapshotClient, nil] reads the session
+    #   monitor's snapshot, to diagnose the context readability of panes whose
+    #   agent workspace reads by scraping the pane itself (Codex); nil skips that check
     # @param working_dir [String] directory to detect the current project from
     # @param output [IO] output stream for results
     def initialize(config:, state:, hook_installer:, project_detector:, which: nil, git: nil,
-      pipeline_config: nil, launch_mode: nil, project_settings: nil, plan: nil, working_dir: Dir.pwd, output: $stdout)
+      pipeline_config: nil, launch_mode: nil, project_settings: nil, plan: nil, snapshot_client: nil, working_dir: Dir.pwd, output: $stdout)
       @launch_mode = launch_mode || LaunchMode.new(project_settings: ProjectSettings.new(config: config), which: which)
       @config = config
       @state = state
@@ -29,6 +32,7 @@ module Workspace
       @pipeline_config = pipeline_config || PipelineConfig.new(config: config)
       @project_settings = project_settings || ProjectSettings.new(config: config)
       @plan = plan
+      @snapshot_client = snapshot_client
       @working_dir = working_dir
       @output = output
     end
@@ -143,6 +147,9 @@ module Workspace
     # through `workspace statusline`, via the same {HookInstaller} used by
     # `workspace init`. Applied before the checks run, so this same call
     # reports the fixed state rather than requiring a second `doctor` run.
+    # An agent whose context workspace reads by scraping its own pane (Codex)
+    # needs no routing, so a machine with only that agent on PATH has nothing
+    # to fix -- and no failure counted for it.
     def apply_fixes
       project = @project_detector.detect(@working_dir)
       unless project
@@ -152,16 +159,16 @@ module Workspace
       end
 
       capable = AgentProvider.all.select { |p| p.supports_hooks? && @which.call(p.executable) }
-      if capable.empty?
-        @output.puts "--fix: no hook-capable agent detected on PATH, so there's nothing to fix"
-        @fix_failed = true
-        return
-      end
-
       statusline_capable = capable.select(&:supports_statusline?)
       if statusline_capable.empty?
-        @output.puts "--fix: no statusLine-capable agent detected on PATH, so there's nothing to fix"
-        @fix_failed = true
+        scraped = scraped_context_providers
+        if scraped.any?
+          @output.puts "--fix: nothing to fix: #{scraped.map(&:label).join(", ")} " \
+            "read context usage from their own panes (no statusLine to route)"
+        else
+          @output.puts "--fix: no statusLine-capable agent detected on PATH, so there's nothing to fix"
+          @fix_failed = true
+        end
         return
       end
 
@@ -170,6 +177,12 @@ module Workspace
           project_settings: @project_settings)
       end
       @output.puts "Restart any running Claude Code sessions for the statusLine change to take effect."
+    end
+
+    # The providers on PATH whose context usage workspace reads by scraping
+    # the pane itself (Codex), rather than through a routed status line.
+    def scraped_context_providers
+      AgentProvider.all.select { |p| p.context_pattern && @which.call(p.executable) }
     end
 
     def check_duplicate_window_ids
@@ -216,7 +229,8 @@ module Workspace
         issues += 1
       end
 
-      if @config.agent_running?(project)
+      agent_running = @config.agent_running?(project)
+      if agent_running
         @output.puts "  ✓  session monitor agent running for #{project}"
       else
         @output.puts "  ✗  session monitor agent not running for #{project}"
@@ -226,6 +240,7 @@ module Workspace
 
       check_worktree_lock_hooks(capable) unless capable.empty?
       check_statusline(capable)
+      check_scraped_pane_context(project) if agent_running
       issues += check_pipeline_config(project)
       check_plans(project)
 
@@ -235,10 +250,18 @@ module Workspace
     # Warns rather than counting as an issue: a status line not routed
     # through workspace only means context usage can't be read (`handoff
     # check`, `sessions --json` report the reason and this same fix), not
-    # that anything else is broken.
+    # that anything else is broken. Providers whose context is scraped from
+    # their own panes (Codex) have no status line to route, so when no
+    # statusLine-capable agent is on PATH they are reported as read instead
+    # of warned about with the Claude-centric routing fix.
     def check_statusline(capable)
       statusline_capable = capable.select(&:supports_statusline?)
-      return if statusline_capable.empty?
+      if statusline_capable.empty?
+        scraped_context_providers.each do |provider|
+          @output.puts "  ✓  #{provider.label} context usage read from its own pane (no statusLine to route)"
+        end
+        return
+      end
 
       shadow = statusline_capable.each_with_object([]) do |provider, shadows|
         command = @hook_installer.local_statusline_command(provider, @working_dir)
@@ -257,6 +280,42 @@ module Workspace
       else
         @output.puts "  ⚠  statusLine not routed through workspace (context usage can't be read)"
         @output.puts "     ↳ fix: run 'workspace doctor --fix'"
+      end
+    end
+
+    # Diagnoses the context readability of each pane whose agent workspace
+    # reads by scraping the pane itself (Codex), from the session monitor's
+    # own readings, so a pane whose footer no longer matches the pattern is
+    # found here rather than only surfacing in `sessions --json`. The
+    # statusLine check above covers the agents workspace routes (Claude
+    # Code); this covers the rest. Warns rather than counting as an issue,
+    # like the statusLine check; a daemon that can't be asked (not running,
+    # not answering) is already reported by the agent check above.
+    def check_scraped_pane_context(project)
+      return unless @snapshot_client
+
+      snapshot = begin
+        @snapshot_client.fetch(project)
+      rescue Workspace::Error
+        return
+      end
+      scraped = (snapshot["panes"] || []).filter_map do |pane|
+        provider = pane["kind"] && AgentProvider.find(pane["kind"])
+        next unless provider&.context_pattern
+        next unless pane.key?("context_pct") || pane.key?("context_error")
+        [provider, pane]
+      end
+      scraped.group_by(&:first).each do |provider, pairs|
+        panes = pairs.map(&:last)
+        readable = panes.select { |pane| pane["context_error"].nil? && !pane["context_pct"].nil? }
+        if readable.any?
+          detail = readable.map { |pane| "pane #{pane["index"]} (#{pane["context_pct"]}% used)" }.join(", ")
+          @output.puts "  ✓  #{provider.label} context usage read from #{detail}"
+        end
+        panes.reject { |pane| pane["context_error"].nil? }.each do |pane|
+          @output.puts "  ⚠  #{provider.label} context usage unreadable on pane #{pane["index"]} (#{pane["context_error"]})"
+          @output.puts "     ↳ #{ContextReasons.fix_hint(pane["kind"]).gsub("\n", "\n     ")}"
+        end
       end
     end
 

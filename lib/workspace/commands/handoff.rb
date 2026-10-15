@@ -108,7 +108,10 @@ module Workspace
         end
         pct = context_pct || pane_info["context_pct"]
         reason = context_pct ? nil : pane_info["context_error"]
-        return undetermined(json, reason || ContextReasons::NO_READING, doc: doc) if pct.nil?
+        if pct.nil?
+          return undetermined(json, reason || ContextReasons::NO_READING,
+            fix: ContextReasons.fix_hint(pane_info["kind"]), doc: doc)
+        end
 
         if pct < threshold
           return ok(json, pct: pct, threshold: threshold, pane: pane_info, doc: doc)

@@ -15,6 +15,14 @@ module Workspace
   # A slot is a plain file taken with a non-blocking exclusive flock, which
   # the kernel releases when the fd closes or the holder dies, so a crashed
   # daemon never strands a slot.
+  #
+  # The slot is re-entrant per thread and directory: a call made while this
+  # thread already holds a slot for this limiter's directory runs under the
+  # hold it already has. flock is held per open fd, and a second
+  # non-blocking lock on another fd of the same file fails even from the
+  # process holding the first one, so a nested call — a monitor's scan
+  # reading a pane through a context reader whose own limiter works the
+  # same directory — would always read every slot as busy without it.
   class ScanSlotLimiter
     # Concurrent scans allowed when +limit+ is not given and
     # WORKSPACE_SCAN_CONCURRENCY is unset or not a positive integer. One at a
@@ -66,6 +74,9 @@ module Workspace
     # @return [Object, nil] the block's value when a slot was held (or the
     #   limiter failed open), nil when every slot was busy
     def with_scan_slot
+      depth = holds[@dir]
+      return run_nested(depth) { yield } if depth&.positive?
+
       slot = take_slot
     rescue SystemCallError, IOError => e
       @logger.debug { "scan slot limiter: could not take a slot in #{@dir} (#{e.class}: #{e.message}); scanning without one" }
@@ -74,8 +85,10 @@ module Workspace
       return @logger.debug { "scan slot limiter: every slot is busy; skipping this scan" } unless slot
 
       begin
+        holds[@dir] = 1
         yield
       ensure
+        holds.delete(@dir)
         begin
           slot.close
         rescue IOError, SystemCallError
@@ -85,6 +98,34 @@ module Workspace
     end
 
     private
+
+    # Runs a scan nested inside a slot this thread already holds for this
+    # directory. The nested caller is in the same process as the holder, so
+    # the hold already covers it: no second slot is taken or closed, and the
+    # depth is restored to what the enclosing scan leaves behind, whatever
+    # the nested scan does.
+    #
+    # @yield [] the nested scan
+    # @return [Object] the block's value
+    def run_nested(depth)
+      holds[@dir] = depth + 1
+      begin
+        yield
+      ensure
+        holds[@dir] = depth
+      end
+    end
+
+    # The per-thread slot hold depths, keyed on the slot directory. A nested
+    # call is in the calling thread's own process whatever limiter instance
+    # it went through — every limiter over a directory contends for that
+    # directory's same slot files — so the hold is tracked in the thread,
+    # not the instance.
+    #
+    # @return [Hash] slot directory to hold depth for this thread
+    def holds
+      Thread.current[:workspace_scan_slot_holds] ||= {}
+    end
 
     # Tries each slot file in turn and returns the first one taken, or nil
     # when every slot is held. The shared directory is created on first use.

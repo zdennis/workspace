@@ -503,7 +503,7 @@ module Workspace
         unless confirmable
           return [nil, restart_error("context_unknown",
             "can't read context usage for pane #{target} (#{reading[:error]}), so a /clear couldn't be confirmed; " \
-            "nothing was typed", target).merge("reason" => reading[:error], "fix" => ContextReasons::FIX_HINT)]
+            "nothing was typed", target).merge("reason" => reading[:error], "fix" => ContextReasons.fix_hint(kind))]
         end
 
         claimed = @state_lock.synchronize do

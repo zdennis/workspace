@@ -98,6 +98,8 @@ That fix line packs three independent options together. Pick one:
 
 Or skip detection entirely for one call with `--context-pct N`.
 
+That fix line is the one for a pane whose kind workspace doesn't know, and for Claude Code. A pane whose kind workspace reads by scraping the pane itself (Codex) gets that agent's fix instead — Codex has no `statusLine` to route, and `context.pattern` is not consulted for a kind-detected pane, so the fix is the `context.patterns` mapping in `~/.config/workspace/config.yml` (see [Codex](#codex)).
+
 With `--json`, the reason and fix go in the JSON object instead of stderr:
 
 ```json
@@ -115,7 +117,7 @@ Every `check --json` document (the three above) also carries `next`, the exit co
 `check` and `new` work on a pane running Codex as well as Claude Code. A pane running OpenCode or Pi is refused with a usage error that names both agents handoff does restart, and `new` through the daemon fails with `unsupported_agent`.
 
 - **Clearing.** Codex's `/clear` clears the terminal and starts a fresh chat, so `new` types `/clear` into a Codex pane as it does for Claude Code, then types the resume prompt once the clear is confirmed.
-- **Reading usage.** Codex has no status line for `workspace statusline` to route. Its input box shows a line such as `72% context left`, so `sessions --json` and `check` scrape that line from the pane and report the percent used (`28`). When the screen holds the text more than once, the last match counts, since the footer is the lowest line. Codex panes need no `context.source` setting for this.
+- **Reading usage.** Codex has no status line for `workspace statusline` to route. Its status footer shows a line such as `Context 72% used · Context 28% left`, so `sessions --json` and `check` scrape the "used" half of that line from the pane and report the percent used (`72`). When the screen holds the text more than once, the last match counts, since the footer is the lowest line. Codex panes need no `context.source` setting for this.
 - **Confirming the clear.** A Codex pane has no session id, so `new` counts the clear as done when a reading taken after `/clear` was typed shows less use than before. A pane at 0% used cannot be confirmed that way: `new` then reports `clear_not_confirmed` after the wait and does not type the resume prompt.
 - **Other footers.** If your Codex footer reads differently (for example a custom `/statusline`), set `context.patterns` in `~/.config/workspace/config.yml` to a regex with one capture group that captures the percent *used*. A pattern listed there for an agent kind replaces the built-in one for that kind; `context.pattern` remains the fallback in `scrape` mode for a kind with neither:
 

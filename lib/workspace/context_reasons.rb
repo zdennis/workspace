@@ -52,5 +52,36 @@ module Workspace
       or set a scrape pattern with `workspace config set context.source scrape` and
       `workspace config set context.pattern '(\\d+)% ctx'`, or pass --context-pct N.
     HINT
+
+    # The fix hint for a kind whose context workspace reads by scraping the
+    # pane itself (Codex): it has no status line workspace could route, and
+    # `context.pattern` is not consulted for a kind-detected pane
+    # (ContextReader#kind_pattern short-circuits it), so only
+    # `context.patterns.<kind>` in the global config file can replace the
+    # built-in pattern.
+    SCRAPED_KIND_FIX_HINT = <<~HINT.strip
+      Fix: this agent has no status line workspace can route; its context usage
+      is read by scraping its own status footer. If your version prints a
+      different line, set a pattern by hand in ~/.config/workspace/config.yml:
+      context:
+        patterns:
+          codex: 'Context\\s+(\\d{1,3})% used'
+      (`context.pattern` is not consulted for a detected pane of this kind;
+      only the `context.patterns` mapping above is), or pass --context-pct N.
+    HINT
+
+    # The fix hint for a pane whose agent kind is known. A kind workspace
+    # reads by scraping its own pane (one whose provider carries a context
+    # pattern, Codex today) gets the hint that takes effect for it; any other
+    # kind -- Claude Code, an unknown kind, or no kind at all -- gets the
+    # statusLine routing hint.
+    #
+    # @param kind [String, nil] the pane's agent kind ("claude", "codex", ...)
+    # @return [String] one fix hint
+    def self.fix_hint(kind = nil)
+      provider = kind && AgentProvider.find(kind)
+      return SCRAPED_KIND_FIX_HINT if provider&.context_pattern
+      FIX_HINT
+    end
   end
 end

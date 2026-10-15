@@ -189,6 +189,130 @@ RSpec.describe Workspace::Doctor do
     end
   end
 
+  describe "agents read by scraping their own panes (Codex)" do
+    before do
+      allow(project_detector).to receive(:detect).and_return("myapp")
+      allow(config).to receive(:agent_socket_path).with("myapp").and_return("/tmp/does-not-exist-workspace-myapp.sock")
+    end
+
+    it "reports Codex context as read from its own pane when only Codex is on PATH, without the Claude routing warning" do
+      allow(config).to receive(:agent_running?).with("myapp").and_return(false)
+
+      doctor = build_doctor(which: ->(exe) { exe == "codex" })
+      begin
+        doctor.run
+      rescue Workspace::Error
+        # The unrelated agent-not-running check fails here
+      end
+
+      expect(output.string).to include("✓  Codex context usage read from its own pane (no statusLine to route)")
+      expect(output.string).not_to include("statusLine not routed")
+    end
+
+    it "counts no --fix failure when only Codex is on PATH, because Codex needs no routing" do
+      allow(config).to receive(:agent_running?).with("myapp").and_return(true)
+
+      messages = [false, true].map do |fix|
+        build_doctor(which: ->(exe) { exe == "codex" }).run(fix: fix)
+        nil
+      rescue Workspace::Error => e
+        e.message
+      end
+
+      expect(messages.first).to eq(messages.last)
+      expect(output.string).to include("--fix: nothing to fix: Codex read context usage from their own panes (no statusLine to route)")
+      expect(output.string).not_to include("--fix: no statusLine-capable agent")
+    end
+
+    describe "the pane diagnosis from the session monitor" do
+      let(:snapshot_client) { double("snapshot_client") }
+
+      before do
+        allow(config).to receive(:agent_running?).with("myapp").and_return(true)
+      end
+
+      def pane(overrides = {})
+        {"pane_id" => "%3", "index" => 2, "kind" => "codex"}.merge(overrides)
+      end
+
+      it "reports each Codex pane whose context was read" do
+        allow(snapshot_client).to receive(:fetch).with("myapp")
+          .and_return({"panes" => [pane("context_pct" => 37, "context_error" => nil)]})
+
+        doctor = build_doctor(which: ->(exe) { exe == "codex" }, snapshot_client: snapshot_client)
+        begin
+          doctor.run
+        rescue Workspace::Error
+          # Unrelated checks may fail on this machine
+        end
+
+        expect(output.string).to include("✓  Codex context usage read from pane 2 (37% used)")
+      end
+
+      it "warns, without failing doctor, when a Codex pane's context can't be read, with the Codex fix hint" do
+        readings = [
+          {"context_pct" => 37, "context_error" => nil},
+          {"context_pct" => nil, "context_error" => Workspace::ContextReasons::PATTERN_NO_MATCH}
+        ]
+        messages = readings.map do |reading|
+          allow(snapshot_client).to receive(:fetch).with("myapp").and_return({"panes" => [pane.merge(reading)]})
+          begin
+            build_doctor(which: ->(exe) { exe == "codex" }, snapshot_client: snapshot_client).run
+            nil
+          rescue Workspace::Error => e
+            e.message
+          end
+        end
+
+        expect(messages.first).to eq(messages.last)
+        expect(output.string).to include("⚠  Codex context usage unreadable on pane 2 (#{Workspace::ContextReasons::PATTERN_NO_MATCH})")
+        expect(output.string).to include("context.patterns")
+        expect(output.string).not_to include("route Claude's status line")
+      end
+
+      it "says nothing when the daemon can't be asked, and ignores panes of kinds it doesn't scrape" do
+        allow(snapshot_client).to receive(:fetch).with("myapp")
+          .and_raise(Workspace::AgentSnapshotClient::Unavailable.new("down", reason: "no daemon"))
+        doctor = build_doctor(which: ->(exe) { exe == "codex" }, snapshot_client: snapshot_client)
+        begin
+          doctor.run
+        rescue Workspace::Error
+          # Expected
+        end
+        expect(output.string).not_to include("context usage read from pane")
+        expect(output.string).not_to include("context usage unreadable")
+
+        allow(snapshot_client).to receive(:fetch).with("myapp").and_return({"panes" => [
+          pane("pane_id" => "%4", "index" => 3, "kind" => "claude", "context_pct" => nil,
+            "context_error" => Workspace::ContextReasons::NO_READING),
+          pane("pane_id" => "%5", "index" => 4, "kind" => "shell")
+        ]})
+        output.truncate(output.string.length)
+        doctor = build_doctor(which: ->(exe) { exe == "codex" }, snapshot_client: snapshot_client)
+        begin
+          doctor.run
+        rescue Workspace::Error
+          # Expected
+        end
+        expect(output.string).not_to include("context usage read from pane")
+        expect(output.string).not_to include("context usage unreadable")
+      end
+
+      it "is skipped without a snapshot client" do
+        allow(config).to receive(:agent_running?).with("myapp").and_return(true)
+
+        doctor = build_doctor(which: ->(exe) { exe == "codex" })
+        begin
+          doctor.run
+        rescue Workspace::Error
+          # Expected
+        end
+
+        expect(output.string).not_to include("Codex context usage read from pane")
+      end
+    end
+  end
+
   describe "--fix" do
     it "installs the statusLine entry via HookInstaller before running checks" do
       allow(project_detector).to receive(:detect).and_return("myapp")

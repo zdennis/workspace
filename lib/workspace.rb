@@ -490,7 +490,7 @@ module Workspace
       plan_config: plan_config, tmux: tmux,
       snapshot_client: agent_snapshot_client, ask_store_for: ask_store_for, task_store: task_store, sender: send_command, binder: binding_command,
       library: library, event_log: event_log, output: output)
-    doctor = Doctor.new(config: config, state: state, hook_installer: hook_installer, project_detector: project_detector, git: git, pipeline_config: pipeline_config, launch_mode: launch_mode, project_settings: project_settings, plan: plan_command, output: output)
+    doctor = Doctor.new(config: config, state: state, hook_installer: hook_installer, project_detector: project_detector, git: git, pipeline_config: pipeline_config, launch_mode: launch_mode, project_settings: project_settings, plan: plan_command, snapshot_client: agent_snapshot_client, output: output)
     snapshot_command = Commands::Snapshot.new(catalog: project_catalog, facts: project_facts, tmux: tmux, state: state, config: config,
       snapshot_client: agent_snapshot_client, sessions: sessions_command, git: git, pull_request_status: PullRequestStatus.new,
       ask_store_for: ask_store_for, plan: plan_command, plan_state: plan_state, plan_config: plan_config,
@@ -512,7 +512,9 @@ module Workspace
     context_store = ContextStore.new(path: config.context_store_path, logger: logger)
     # The reader takes its own limiter, separate from the monitor's: it serves
     # `sessions` requests rather than polls, and its busy reads fall back to a
-    # cached reading instead of skipping.
+    # cached reading instead of skipping. The limiter's slot is re-entrant per
+    # directory, so the reader's scrape inside a monitor's scan — a separate
+    # instance over the same slot files — runs under the slot the scan holds.
     context_reader = ContextReader.new(context_store: context_store, project_settings: project_settings, tmux: tmux, logger: logger,
       lock_holder: lock_holder, scan_slots: ScanSlotLimiter.new(dir: File.join(config.state_dir, "scan-slots"), logger: logger))
     statusline_command = Commands::Statusline.new(context_store: context_store, renderer: StatuslineRenderer.new(logger: logger),

@@ -107,6 +107,44 @@ RSpec.describe Workspace::ScanSlotLimiter do
     end
   end
 
+  it "runs a nested scan under the slot this thread already holds, whatever limiter instance it went through" do
+    monitor = limiter(limit: 1)
+    reader = limiter(limit: 1)
+
+    expect(monitor.with_scan_slot { reader.with_scan_slot { :nested } }).to eq(:nested)
+  end
+
+  it "still skips another thread's scan while this thread holds the slot" do
+    limiter(limit: 1).with_scan_slot do
+      other = Thread.new { limiter(limit: 1).with_scan_slot { :other_thread } }
+
+      expect(other.value).to be_nil
+    end
+  end
+
+  it "releases its slot once a nested scan ends and the outer scan follows, so the next scan takes it" do
+    limiter(limit: 1).with_scan_slot do
+      limiter(limit: 1).with_scan_slot { :nested }
+    end
+
+    expect(limiter(limit: 1).with_scan_slot { :next_scan }).to eq(:next_scan)
+  end
+
+  it "keeps the slot held through a nested scan's raise, and releases it when the outer scan ends" do
+    limiter(limit: 1).with_scan_slot do
+      begin
+        limiter(limit: 1).with_scan_slot { raise "nested scan blew up" }
+      rescue RuntimeError
+        nil
+      end
+
+      # The nested raise dropped only its own depth; the outer hold stands.
+      expect(Thread.new { limiter(limit: 1).with_scan_slot { :other_thread } }.value).to be_nil
+    end
+
+    expect(limiter(limit: 1).with_scan_slot { :next_scan }).to eq(:next_scan)
+  end
+
   it "skips a scan when all configured slots are held" do
     first = described_class.new(dir: dir, limit: 2, logger: logger).send(:take_slot)
     second = described_class.new(dir: dir, limit: 2, logger: logger).send(:take_slot)

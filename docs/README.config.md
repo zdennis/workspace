@@ -285,7 +285,7 @@ New codes may be added; treat an unknown one by its `severity`.
 <!-- BEGIN GENERATED: global-settings -->
 | Setting | Description |
 |---------|-------------|
-| `context.patterns` | Edited in the file by hand: a mapping of agent kind (`claude`, `codex`, ...) to a regex with exactly one capture group that reads the percent of the context window used from that agent's pane. A kind listed here is read from its pane whatever `context.source` says; Codex has a built-in reading of its "N% context left" line. `context.pattern` stays the fallback in `scrape` mode for a kind with neither. See [`handoff`](README.handoff.md#codex) |
+| `context.patterns` | Edited in the file by hand: a mapping of agent kind (`claude`, `codex`, ...) to a regex with exactly one capture group that reads the percent of the context window used from that agent's pane. A kind listed here is read from its pane whatever `context.source` says; Codex has a built-in reading of its "Context N% used" line. `context.pattern` stays the fallback in `scrape` mode for a kind with neither. See [`handoff`](README.handoff.md#codex) |
 | `hooks` | Global hooks applied to all projects |
 | `layouts` | Default tmux pane layouts |
 | `event_log_compact_threshold` | Size warning threshold (e.g., "10kb", "1mb"). Default: 1mb |

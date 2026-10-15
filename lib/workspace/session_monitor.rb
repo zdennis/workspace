@@ -166,7 +166,10 @@ module Workspace
     # Refreshes every pane's kind and activity from tmux and the process table.
     # With a limiter injected, the scan runs under one of its machine-wide
     # slots; a scan that can't take a slot is skipped, so other monitors'
-    # scans, alerts and lock reaps go ahead regardless.
+    # scans, alerts and lock reaps go ahead regardless. The slot is re-entrant
+    # per directory, so the context reads this scan performs through the
+    # reader's own limiter over the same slot files run under the slot this
+    # scan already holds.
     #
     # @return [void]
     def scan

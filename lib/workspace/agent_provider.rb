@@ -56,10 +56,14 @@ module Workspace
     # pattern does not match them.
     CLAUDE_READY_PATTERN = /─{3,}\n❯[ \t\u00A0]?/
 
-    # Matches the line Codex prints under its input box: "72% context left".
-    # The number is what is left, not what is used (see `context_remaining`).
-    # Read from codex-cli 0.162.1, whose binary carries the text "% context left".
-    CODEX_CONTEXT_PATTERN = '(\d{1,3})% context left'
+    # Matches the context line of the current codex-cli status footer, e.g.
+    #   Context 0% used · Context 100% left
+    # The "used" half is matched, not the "left" half, so the capture is the
+    # percent used directly (see `context_remaining`): both halves sit on the
+    # same footer line, and the reader counts the last match on the screen,
+    # which would otherwise be the "left" half. Older codex-cli (0.162.1)
+    # printed "72% context left" instead; that format is gone.
+    CODEX_CONTEXT_PATTERN = 'Context\s+(\d{1,3})% used'
 
     # @return [Array<AgentProvider>] every known provider
     def self.all
@@ -79,8 +83,7 @@ module Workspace
           label: "Codex",
           executable: "codex",
           restartable: true,
-          context_pattern: CODEX_CONTEXT_PATTERN,
-          context_remaining: true
+          context_pattern: CODEX_CONTEXT_PATTERN
         ),
         new(
           key: "opencode",

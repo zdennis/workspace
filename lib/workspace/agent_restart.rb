@@ -104,12 +104,13 @@ module Workspace
       quiet = wait_until_quiet(pane_id)
       return reply.merge(quiet) unless quiet["ok"]
 
-      @clear_command = AgentProvider.find(@pane_kind.call(pane_id).to_s)&.clear_command || CLEAR_COMMAND
+      kind = @pane_kind.call(pane_id)
+      @clear_command = AgentProvider.find(kind.to_s)&.clear_command || CLEAR_COMMAND
       before = read_context(pane_id)
       unless self.class.confirmable?(before)
         return reply.merge(failure("context_unknown",
           "can't read context usage for pane #{pane_id} (#{before[:error]}), so a /clear couldn't be confirmed; " \
-          "nothing was typed. #{ContextReasons::FIX_HINT}"))
+          "nothing was typed. #{ContextReasons.fix_hint(kind)}"))
       end
       reply["context_before"] = before[:pct]
 
