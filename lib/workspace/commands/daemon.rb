@@ -121,7 +121,10 @@ module Workspace
       #
       # @return [Array<Array(String, Result)>] workspace name and what its restart did
       def restart_all
-        running_daemons.map do |entry|
+        report_progress("Looking for running agentd processes...")
+        running_daemons(on_check: ->(name) { report_progress("Checking agentd candidate for #{name}...") },
+          on_found: ->(name) { report_progress("Found agentd for #{name}.") }).map do |entry|
+          report_progress("Restarting agentd for #{entry.workspace}...")
           [entry.workspace, restart(name: entry.workspace)]
         rescue Workspace::Error => e
           [entry.workspace, failed((e.code.to_s == "error") ? "restart_failed" : e.code, entry.pid, e.message)]
@@ -240,7 +243,7 @@ module Workspace
       private
 
       # @return [Array<Entry>] the running daemons, by workspace name
-      def running_daemons
+      def running_daemons(on_check: nil, on_found: nil)
         candidates = @project_config.available_projects.filter_map do |name|
           socket = @config.agent_socket_path(name)
           [name, socket] if File.exist?(socket)
@@ -254,10 +257,11 @@ module Workspace
         rescue Workspace::Error
           nil
         end
-        candidates.filter_map { |name, socket| daemon_entry(name, socket, snapshot) }
+        candidates.filter_map { |name, socket| daemon_entry(name, socket, snapshot, on_check: on_check, on_found: on_found) }
       end
 
-      def daemon_entry(name, socket, snapshot)
+      def daemon_entry(name, socket, snapshot, on_check: nil, on_found: nil)
+        on_check&.call(name)
         answering = @config.agent_running?(name)
         pids = socket_pids(name)
         pid = (pids&.size == 1) ? pids.first : nil
@@ -266,8 +270,14 @@ module Workspace
         return nil unless answering || agentd || pids&.size.to_i > 1
 
         wc_socket = agentd ? old_wc_socket(process[:args].to_s.split, name) : nil
+        on_found&.call(name)
         Entry.new(name, pid, socket, @config.agent_log_path(name), started_at(process), wc_socket.is_a?(String) ? wc_socket : nil, answering,
           answering ? daemon_version(name) : nil)
+      end
+
+      def report_progress(message)
+        @output.puts message
+        @output.flush
       end
 
       def daemon_version(name)

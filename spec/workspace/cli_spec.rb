@@ -5422,6 +5422,32 @@ RSpec.describe Workspace::CLI do
         expect(doc["results"].map { |r| [r["workspace"], r["outcome"], r["reason"]] }).to eq([["api", "failed", "not_stopped"], ["web", "restarted", nil]])
       end
 
+      it "sends restart-all progress to stderr and keeps stdout to one JSON document" do
+        dir = Dir.mktmpdir
+        raw = StringIO.new
+        error_output = StringIO.new
+        output_gate = Workspace::OutputGate.new(raw)
+        socket = File.join(dir, "workspace-api.sock")
+        File.write(socket, "")
+        config = instance_double(Workspace::Config)
+        allow(config).to receive(:agent_socket_path).with("api").and_return(socket)
+        allow(config).to receive(:agent_log_path).with("api").and_return(File.join(dir, "workspace-api.log"))
+        allow(config).to receive(:agent_running?).with("api").and_return(true)
+        project_config = instance_double(Workspace::ProjectConfig, available_projects: ["api"], exists?: true)
+        process_tree = double(snapshot: double(find: nil))
+        command = Workspace::Commands::Daemon.new(config: config, project_config: project_config, ensure_agent: double("ensure_agent"),
+          version_client: double("version_client", version: nil), process_tree: process_tree, pid_finder: ->(_path) { [] }, output: output_gate)
+        cli, = build_test_cli(config: config, project_config: project_config, daemon_command: command, output: output_gate, error_output: error_output)
+
+        expect { cli.run(["daemon", "restart", "--all", "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+
+        expect(raw.string.lines.size).to eq(1)
+        expect(JSON.parse(raw.string)).to include("action" => "restart", "status" => "failed")
+        expect(error_output.string).to include("Looking for running agentd processes...", "Found agentd for api.", "Restarting agentd for api...")
+      ensure
+        FileUtils.remove_entry(dir) if dir && File.directory?(dir)
+      end
+
       it "refuses a workspace with --all or list, and --all or --wc-socket where they don't belong, as usage errors" do
         [%w[daemon restart --all app], %w[daemon restart --all --name app], %w[daemon list app], %w[daemon list --wc-socket /x],
           %w[daemon restart --all --wc-socket /x], %w[daemon status --all], %w[daemon list --lines 3]].each do |argv|
