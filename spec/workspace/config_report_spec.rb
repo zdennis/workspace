@@ -79,6 +79,20 @@ RSpec.describe Workspace::ConfigReport do
       expect(key_row(report.show("api.worktree-fix"), "dev.configured")["effective"]).to be(true)
     end
 
+    it "follows the winning hit of dev.up from ConfigLayering, not a read of the project file" do
+      write("api", "dev:\n  up: ./start-dev\n")
+      allow(Workspace::ConfigLayering).to receive(:hits).and_call_original
+      allow(Workspace::ConfigLayering).to receive(:hits).with(satisfy { |k| k.name == "dev.up" }, anything, worktree: false)
+        .and_return([])
+
+      expect(key_row(report.show("api"), "dev.configured")["effective"]).to be(false)
+
+      allow(Workspace::ConfigLayering).to receive(:hits).with(satisfy { |k| k.name == "dev.up" }, anything, worktree: false)
+        .and_return([Workspace::ConfigLayering::Hit.new(layer: "project", value: "./other")])
+
+      expect(key_row(report.show("api"), "dev.configured")["effective"]).to be(true)
+    end
+
     it "is null when the project's file can't be read" do
       write("api", "dev: [\n")
 

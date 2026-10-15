@@ -98,28 +98,48 @@ module Workspace
       {"layer" => file.layer, "path" => file.path, "exists" => file.exists, "etag" => file.etag, "parse_error" => file.parse_error}
     end
 
-    # The layer whose file a reader of this key consults. An :own_then_parent key is
-    # read from the worktree's own file in a worktree and from the project's file in
-    # a main checkout, never from the project's file in a worktree.
+    # The layers a reader of this key consults, highest precedence first, from {ConfigLayering}.
+    # A key with no read order (`:own`, `:merge`, `:none`, and the derived `dev.configured`) is
+    # reported from the one file its scope and the workspace point at, as before.
+    def read_layers(key, scan)
+      order = ConfigLayering.read_order(key, worktree: scan.worktree?)
+      return order unless order.empty?
+      return ["global"] if key.global?
+      return ["project"] if key.name == DEV_CONFIGURED
+      [scan.worktree? ? "worktree" : "project"]
+    end
+
+    # The layer of the file that holds the key's own value (the first one a reader consults).
     def read_layer(key, scan)
-      return "global" if key.global?
-      return "project" if key.resolve == :parent || key.name == DEV_CONFIGURED
-      scan.worktree? ? "worktree" : "project"
+      read_layers(key, scan).first
+    end
+
+    # The winning layer and stored value for a key, or [nil, nil] when no layer holds one.
+    # The first of {#read_layers} that holds a value wins, as for the readers.
+    def winner(key, scan)
+      data = scan.files.to_h { |f| [f.layer, f.data] }
+      hit = ConfigLayering.hits(key, data, worktree: scan.worktree?).first
+      return [hit.layer, hit.value] if hit
+      return [nil, nil] unless ConfigLayering.read_order(key, worktree: scan.worktree?).empty?
+      return [nil, nil] if key.name == DEV_CONFIGURED
+      layer = read_layer(key, scan)
+      value = dig(scan.file(layer).data, key.name.split("."))
+      value.nil? ? [nil, nil] : [layer, value]
     end
 
     def key_row(key, scan, problems)
-      layer = read_layer(key, scan)
-      file = scan.file(layer)
-      parts = key.name.split(".")
-      stored = (key.name == DEV_CONFIGURED) ? nil : dig(file.data, parts)
-      layers = key.global? ? ["global"] : %w[worktree project]
-      own_problems = problems.select { |p| p["key"] == key.name && layers.include?(p["layer"]) }
+      layers = read_layers(key, scan)
+      files = layers.map { |l| scan.file(l) }
+      win_layer, stored = winner(key, scan)
+      file = scan.file(win_layer || layers.first)
+      problem_layers = key.global? ? ["global"] : %w[worktree project]
+      own_problems = problems.select { |p| p["key"] == key.name && problem_layers.include?(p["layer"]) }
       masked = key.sensitive && !stored.nil?
       line, column = file.locations[key.name]
-      source = if !file.readable? then "unreadable"
-      elsif stored.nil? then "default"
+      source = if files.any? { |f| !f.readable? } then "unreadable"
+      elsif win_layer.nil? then "default"
       else
-        layer
+        win_layer
       end
       row = {
         "key" => key.name,
@@ -130,9 +150,9 @@ module Workspace
         "default" => key.default,
         "effective" => effective(key, stored, source, own_problems),
         "source" => source,
-        "source_file" => (source == layer) ? file.path : nil,
-        "line" => (source == layer) ? line : nil,
-        "column" => (source == layer) ? column : nil,
+        "source_file" => (source == win_layer) ? file.path : nil,
+        "line" => (source == win_layer) ? line : nil,
+        "column" => (source == win_layer) ? column : nil,
         "resolve" => key.resolve.to_s,
         "target_layer" => target_layer(key, scan),
         "affects" => affects(key, scan),
@@ -142,14 +162,17 @@ module Workspace
         "problems" => own_problems.map { |p| p.slice("severity", "code", "message", "line", "column") }
       }
       row["effective_path"] = effective_path(key, scan, problems) if NOTES_KEYS.include?(key.name)
-      row["effective"] = dev_configured(file) if key.name == DEV_CONFIGURED
+      row["effective"] = dev_configured(scan) if key.name == DEV_CONFIGURED
       row
     end
 
-    # Whether the project's `dev.up` holds a command, as {DevConfig#configured?} reads it; nil when the file can't be read.
-    def dev_configured(file)
-      return nil unless file.readable?
-      !dig(file.data, %w[dev up]).to_s.strip.empty?
+    # Whether the project's `dev.up` holds a command, as {DevConfig#configured?} reads it: from the
+    # winning layer of `dev.up`. Nil when a file it reads can't be read.
+    def dev_configured(scan)
+      dev_up = ConfigSchema.key("dev.up")
+      return nil unless read_layers(dev_up, scan).all? { |l| scan.file(l).readable? }
+      _layer, stored = winner(dev_up, scan)
+      !stored.to_s.strip.empty?
     end
 
     # Where the workspace's notes go (`notes.dir`) or where the project's rule puts them
@@ -180,9 +203,7 @@ module Workspace
     # The layer `config set` writes this key to, nil for a key edited by hand.
     def target_layer(key, scan)
       return nil unless key.settable?
-      return "global" if key.global?
-      return "worktree" if key.resolve == :own_then_parent && scan.worktree?
-      "project"
+      ConfigLayering.default_layer(key, worktree: scan.worktree?)
     end
 
     # What a reader uses: the stored value as the reader parses it, else the default.
