@@ -85,6 +85,8 @@ Restarts every daemon `list` finds, one after another, each the way a single `re
 
 With `--json` it prints the same action document with one row per workspace; `status` is `partial` when some rows failed.
 
+In text mode, it names each workspace before checking its socket and process, then prints a line when it finds a daemon and another when that daemon's restart begins. With `--json`, progress goes to stderr so stdout contains only the action document.
+
 ## log
 
 Prints the last lines of the daemon log, `~/.local/workspace/run/workspace-<name>.log` (the path is computed by workspace, including the truncation applied to long names, so use `path` rather than rebuilding it). Only a daemon started in the background (`agentd --ensure`, `daemon restart`, `launch`) writes this file; one run in a terminal writes to that terminal. Only the last megabyte is read, and invalid UTF-8 is replaced with `?`.

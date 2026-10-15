@@ -220,6 +220,34 @@ RSpec.describe Workspace::Commands::Daemon, "list and restart_all" do
   end
 
   describe "#restart_all" do
+    it "prints each candidate before probing, then reports findings and restarts" do
+      run_daemon("api", 4242)
+      run_daemon("web", 4243)
+      original_restart = command.method(:restart)
+      allow(config).to receive(:agent_running?) do |name|
+        expect(output.string).to include("Checking agentd candidate for #{name}...")
+        answering.include?(name)
+      end
+      allow(command).to receive(:socket_pids) do |name|
+        expect(output.string).to include("Checking agentd candidate for #{name}...")
+        [holders[name]].compact
+      end
+      allow(version_client).to receive(:version) do |name, timeout:|
+        expect(output.string).to include("Found agentd for #{name}.")
+        expect(output.string).not_to include("Restarting agentd for #{name}...")
+        nil
+      end
+      allow(command).to receive(:restart) do |name:|
+        expect(output.string).to include("Restarting agentd for #{name}...")
+        original_restart.call(name: name)
+      end
+
+      command.restart_all
+
+      expect(output.string).to eq("Looking for running agentd processes...\nChecking agentd candidate for api...\nFound agentd for api.\n" \
+        "Checking agentd candidate for web...\nFound agentd for web.\nRestarting agentd for api...\nRestarting agentd for web...\n")
+    end
+
     it "restarts every running daemon, old pid to new pid, and signals nothing else" do
       run_daemon("api", 4242)
       run_daemon("web", 4243)
