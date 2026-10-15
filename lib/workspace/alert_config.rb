@@ -14,14 +14,14 @@ module Workspace
     # Seconds an agent pane may sit idle before the notify command runs.
     DEFAULT_IDLE_AFTER = ConfigSchema.default("alerts.idle_after")
 
-    # @param project_settings [Workspace::ProjectSettings]
+    # @param config_resolver [Workspace::ConfigResolver]
     # @param project_config [Workspace::ProjectConfig, nil] finds a workspace's
     #   root; nil reads settings under the workspace name as given
     # @param lineage [Workspace::WorkspaceLineage, nil] resolves that root to
     #   its parent project
     # @param error_output [IO] where a warning about an invalid value goes
-    def initialize(project_settings:, project_config: nil, lineage: nil, error_output: $stderr)
-      @project_settings = project_settings
+    def initialize(config_resolver:, project_config: nil, lineage: nil, error_output: $stderr)
+      @config_resolver = config_resolver
       @project_config = project_config
       @lineage = lineage
       @error_output = error_output
@@ -49,40 +49,46 @@ module Workspace
     # @return [Hash] :notify [String, nil] the command to run, nil for none;
     #   :idle_after [Numeric] seconds before an idle agent pane alerts
     def for_workspace(workspace)
-      name = project_name_for(workspace)
-      alerts = load_alerts(name)
-      alerts = {} unless alerts.is_a?(Hash)
+      alerts = load_alerts(workspace)
       {
-        notify: setting(alerts, name, "notify"),
-        idle_after: setting(alerts, name, "idle_after")
+        notify: setting(alerts, workspace, "notify"),
+        idle_after: setting(alerts, workspace, "idle_after")
       }
     end
 
     private
 
-    def load_alerts(name)
-      @project_settings.load(name)["alerts"]
+    # Every stored `alerts.*` value, or {} when a config file can't be parsed.
+    def load_alerts(workspace)
+      view = view_for(workspace)
+      %w[notify idle_after].to_h { |key| [key, view.raw("alerts.#{key}")] }
     rescue Workspace::ConfigParseError => e
       @error_output.puts "Warning: #{e.message} No alerts will be sent."
+      {}
+    end
+
+    # The parent project when the lineage resolved one, else nil so the resolver
+    # splits a worktree name itself (it must never be handed the worktree's own name).
+    def resolved_project(workspace)
+      root = @project_config&.project_root_for(workspace)
+      return nil unless root && @lineage && File.directory?(root)
+      @lineage.resolve(cwd: root).name
+    rescue Workspace::Error
       nil
     end
 
-    def project_name_for(workspace)
-      root = @project_config&.project_root_for(workspace)
-      return workspace unless root && @lineage && File.directory?(root)
-      @lineage.resolve(cwd: root).name
-    rescue Workspace::Error
-      workspace
+    def view_for(workspace)
+      @config_resolver.view(workspace: workspace, project: resolved_project(workspace))
     end
 
-    def setting(alerts, name, key)
+    def setting(alerts, workspace, key)
       schema_key = "alerts.#{key}"
       default = ConfigSchema.default(schema_key)
-      return default unless alerts.key?(key)
+      return default if alerts[key].nil?
       ConfigSchema.parse(schema_key, alerts[key])
     rescue ArgumentError => e
       fallback = default.nil? ? "no alerts will be sent" : "using #{default}s"
-      @error_output.puts "Warning: invalid alerts.#{key} for '#{name}' (#{e.message}); #{fallback}."
+      @error_output.puts "Warning: invalid alerts.#{key} for '#{workspace}' (#{e.message}); #{fallback}."
       default
     end
   end

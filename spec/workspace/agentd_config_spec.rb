@@ -5,7 +5,7 @@ RSpec.describe Workspace::AgentdConfig do
   let(:dir) { Dir.mktmpdir("ws-agentd-config") }
   let(:project_settings) { Workspace::ProjectSettings.new(config: Struct.new(:workspace_config_dir).new(dir)) }
   let(:error_output) { StringIO.new }
-  let(:agentd_config) { described_class.new(project_settings: project_settings, error_output: error_output) }
+  let(:agentd_config) { described_class.new(config_resolver: Workspace::ConfigResolver.new(project_settings: project_settings), error_output: error_output) }
 
   after { FileUtils.remove_entry(dir) }
 
@@ -64,7 +64,7 @@ RSpec.describe Workspace::AgentdConfig do
       let(:project_config) { instance_double(Workspace::ProjectConfig) }
       let(:lineage) { instance_double(Workspace::WorkspaceLineage) }
       let(:agentd_config) do
-        described_class.new(project_settings: project_settings, project_config: project_config,
+        described_class.new(config_resolver: Workspace::ConfigResolver.new(project_settings: project_settings), project_config: project_config,
           lineage: lineage, error_output: error_output)
       end
 
@@ -93,6 +93,15 @@ RSpec.describe Workspace::AgentdConfig do
 
         expect(agentd_config.poll_interval_for("app-PROJ-1")).to eq(45.0)
       end
+    end
+  end
+
+  describe "a worktree workspace with no lineage wired" do
+    it "reads the parent project's file and ignores the worktree's own" do
+      project_settings.save("app", {"agentd" => {"poll_interval" => "20s"}})
+      project_settings.save("app.worktree-x", {"agentd" => {"poll_interval" => "90s"}})
+
+      expect(agentd_config.poll_interval_for("app.worktree-x")).to eq(20.0)
     end
   end
 end

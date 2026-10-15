@@ -16,7 +16,7 @@ RSpec.describe Workspace::InstructionComposer do
   let(:project_config) { instance_double(Workspace::ProjectConfig) }
   let(:library) { Workspace::Library.new(config: config, lineage: lineage, project_config: project_config) }
   let(:project_settings) { instance_double(Workspace::ProjectSettings, load: {}) }
-  let(:commands_config) { Workspace::CommandsConfig.new(project_settings: project_settings) }
+  let(:commands_config) { Workspace::CommandsConfig.new(config_resolver: Workspace::ConfigResolver.new(project_settings: project_settings)) }
   let(:pane_bindings) { Workspace::PaneBindings.new(path: File.join(@dir, "bindings.json")) }
   subject(:composer) do
     described_class.new(library: library, lineage: lineage, commands_config: commands_config, pane_bindings: pane_bindings)
@@ -279,7 +279,7 @@ RSpec.describe Workspace::InstructionComposer do
     let(:settings) { instance_double(Workspace::ProjectSettings, load: {}, load_global: global) }
     subject(:composer) do
       described_class.new(library: library, lineage: lineage, commands_config: commands_config, pane_bindings: pane_bindings,
-        workflow_config: Workspace::WorkflowConfig.new(project_settings: settings))
+        workflow_config: Workspace::WorkflowConfig.new(config_resolver: Workspace::ConfigResolver.new(project_settings: settings)))
     end
 
     it "are binding, orchestrator and commits when no pack is named and workflows.defaults.include is unset" do
@@ -301,7 +301,7 @@ RSpec.describe Workspace::InstructionComposer do
   end
 
   describe "#start_packs and #compose_start" do
-    let(:notes_config) { Workspace::NotesConfig.new(project_settings: project_settings) }
+    let(:notes_config) { Workspace::NotesConfig.new(config_resolver: Workspace::ConfigResolver.new(project_settings: project_settings)) }
     subject(:composer) do
       described_class.new(library: library, lineage: lineage, commands_config: commands_config, pane_bindings: pane_bindings, notes_config: notes_config)
     end
@@ -368,7 +368,7 @@ RSpec.describe Workspace::InstructionComposer do
     end
 
     describe "the dev pack" do
-      let(:dev_config) { Workspace::DevConfig.new(project_settings: project_settings) }
+      let(:dev_config) { Workspace::DevConfig.new(config_resolver: Workspace::ConfigResolver.new(project_settings: project_settings)) }
       subject(:composer) do
         described_class.new(library: library, lineage: lineage, commands_config: commands_config, pane_bindings: pane_bindings,
           notes_config: notes_config, dev_config: dev_config)
@@ -437,7 +437,7 @@ RSpec.describe Workspace::InstructionComposer do
     end
 
     describe "the handoff pack" do
-      let(:handoff_config) { Workspace::HandoffConfig.new(project_settings: project_settings, error_output: StringIO.new) }
+      let(:handoff_config) { Workspace::HandoffConfig.new(config_resolver: Workspace::ConfigResolver.new(project_settings: project_settings), error_output: StringIO.new) }
       let(:main_agent) { instance_double(Workspace::MainAgent, kind: "claude") }
       subject(:composer) do
         described_class.new(library: library, lineage: lineage, commands_config: commands_config, pane_bindings: pane_bindings,
@@ -460,6 +460,15 @@ RSpec.describe Workspace::InstructionComposer do
         auto("true")
 
         expect(composer.start_packs(cwd: "/work/app")).to eq([{"name" => "notes", "source" => "config"}, {"name" => "handoff", "source" => "config"}])
+      end
+
+      it "reads the parent project for a worktree, never the worktree's own file, with no lineage wired into HandoffConfig" do
+        allow(lineage).to receive(:resolve).with(cwd: "/work/app/.worktrees/fix")
+          .and_return(Workspace::WorkspaceLineage::Lineage.new(name: "app", worktree: "app.worktree-fix", is_worktree: true))
+        allow(project_settings).to receive(:load).with("app").and_return({"handoff" => {"auto" => "true"}})
+        allow(project_settings).to receive(:load).with("app.worktree-fix").and_return({"handoff" => {"auto" => "false"}, "notes" => {"instructions" => false}})
+
+        expect(composer.start_packs(cwd: "/work/app/.worktrees/fix").map { |p| p["name"] }).to eq(%w[notes handoff])
       end
 
       it "comes from the flag with handoff: true, whatever the key says, and is left out with handoff: false" do
@@ -552,7 +561,7 @@ RSpec.describe Workspace::InstructionComposer, "with the packs workspace ships" 
   let(:lineage) { instance_double(Workspace::WorkspaceLineage, resolve: Workspace::WorkspaceLineage::Lineage.new(name: "app")) }
   let(:project_config) { instance_double(Workspace::ProjectConfig, exists?: false) }
   let(:library) { Workspace::Library.new(config: config, lineage: lineage, project_config: project_config) }
-  let(:commands_config) { Workspace::CommandsConfig.new(project_settings: instance_double(Workspace::ProjectSettings, load: {})) }
+  let(:commands_config) { Workspace::CommandsConfig.new(config_resolver: Workspace::ConfigResolver.new(project_settings: instance_double(Workspace::ProjectSettings, load: {}))) }
   subject(:composer) do
     described_class.new(library: library, lineage: lineage, commands_config: commands_config,
       pane_bindings: Workspace::PaneBindings.new(path: "/nonexistent/bindings.json"))

@@ -15,10 +15,10 @@ module Workspace
     # Largest accepted `locks.ps_timeout`, in seconds.
     MAX_PS_TIMEOUT = ConfigSchema::MAX_PS_TIMEOUT
 
-    # @param project_settings [Workspace::ProjectSettings]
+    # @param config_resolver [Workspace::ConfigResolver]
     # @param error_output [IO] where a warning about an invalid value goes
-    def initialize(project_settings:, error_output: $stderr)
-      @project_settings = project_settings
+    def initialize(config_resolver:, error_output: $stderr)
+      @config_resolver = config_resolver
       @error_output = error_output
     end
 
@@ -75,10 +75,9 @@ module Workspace
     def setting(name, key)
       schema_key = "locks.#{key}"
       default = ConfigSchema.default(schema_key)
-      settings = @project_settings.load(name)
-      locks = settings.is_a?(Hash) ? settings["locks"] : nil
-      return default unless locks.is_a?(Hash) && locks.key?(key)
-      ConfigSchema.parse(schema_key, locks[key])
+      winner = @config_resolver.view(workspace: name).resolve(schema_key).winner
+      return default unless winner
+      ConfigSchema.parse(schema_key, winner.value)
     rescue Workspace::ConfigParseError => e
       @error_output.puts "Warning: #{e.message} Using #{default}s for locks.#{key}."
       default

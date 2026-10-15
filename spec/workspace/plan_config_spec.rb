@@ -4,12 +4,19 @@ require "stringio"
 RSpec.describe Workspace::PlanConfig do
   let(:error_output) { StringIO.new }
   let(:settings) { instance_double(Workspace::ProjectSettings) }
-  subject(:config) { described_class.new(project_settings: settings, error_output: error_output) }
+  subject(:config) { described_class.new(config_resolver: Workspace::ConfigResolver.new(project_settings: settings), error_output: error_output) }
 
   it "gives 300 seconds when the key is unset" do
     allow(settings).to receive(:load).with("api").and_return({})
 
     expect(config.stall_seconds_for("api")).to eq(300)
+  end
+
+  it "treats an empty key as unset: the default and no warning" do
+    allow(settings).to receive(:load).with("api").and_return("plan" => {"stall_seconds" => nil})
+
+    expect(config.stall_seconds_for("api")).to eq(300)
+    expect(error_output.string).to eq("")
   end
 
   it "reads a duration the project set" do
@@ -48,5 +55,12 @@ RSpec.describe Workspace::PlanConfig do
     allow(settings).to receive(:load).and_return("plan" => "oops")
 
     expect(config.stall_seconds_for("api")).to eq(300)
+  end
+
+  it "ignores a worktree's own value" do
+    allow(settings).to receive(:load).with("api").and_return("plan" => {"stall_seconds" => "10m"})
+    allow(settings).to receive(:load).with("api.worktree-x").and_return("plan" => {"stall_seconds" => "1m"})
+
+    expect(config.stall_seconds_for("api.worktree-x")).to eq(600)
   end
 end

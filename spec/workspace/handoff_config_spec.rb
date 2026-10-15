@@ -5,7 +5,7 @@ RSpec.describe Workspace::HandoffConfig do
   let(:dir) { Dir.mktmpdir("ws-handoff-config") }
   let(:project_settings) { Workspace::ProjectSettings.new(config: Struct.new(:workspace_config_dir).new(dir)) }
   let(:error_output) { StringIO.new }
-  let(:handoff_config) { described_class.new(project_settings: project_settings, error_output: error_output) }
+  let(:handoff_config) { described_class.new(config_resolver: Workspace::ConfigResolver.new(project_settings: project_settings), error_output: error_output) }
 
   after { FileUtils.remove_entry(dir) }
 
@@ -76,7 +76,7 @@ RSpec.describe Workspace::HandoffConfig do
       let(:project_config) { instance_double(Workspace::ProjectConfig) }
       let(:lineage) { instance_double(Workspace::WorkspaceLineage) }
       let(:handoff_config) do
-        described_class.new(project_settings: project_settings, project_config: project_config,
+        described_class.new(config_resolver: Workspace::ConfigResolver.new(project_settings: project_settings), project_config: project_config,
           lineage: lineage, error_output: error_output)
       end
 
@@ -140,6 +140,23 @@ RSpec.describe Workspace::HandoffConfig do
       project_settings.save("app", {"handoff" => {"auto" => "true"}})
 
       expect(handoff_config.for_workspace("app").keys).to eq(%i[threshold check_prompt resume_prompt])
+    end
+  end
+
+  describe "a worktree name with no lineage wired (the instruction composer's wiring)" do
+    it "reads the parent project's file and never the worktree's own" do
+      project_settings.save("app", {"handoff" => {"threshold" => "30", "auto" => "true"}})
+      project_settings.save("app.worktree-x", {"handoff" => {"threshold" => "50", "auto" => "false"}})
+
+      expect(handoff_config.for_workspace("app.worktree-x")[:threshold]).to eq(30)
+      expect(handoff_config.auto?("app.worktree-x")).to be(true)
+    end
+
+    it "gives the defaults when the parent project has no file, whatever the worktree's file says" do
+      project_settings.save("app.worktree-x", {"handoff" => {"threshold" => "50", "auto" => "true"}})
+
+      expect(handoff_config.for_workspace("app.worktree-x")[:threshold]).to eq(11)
+      expect(handoff_config.auto?("app.worktree-x")).to be(false)
     end
   end
 end

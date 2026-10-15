@@ -7733,8 +7733,8 @@ RSpec.describe Workspace::CLI do
         context "with packs" do
           let(:project_settings) { instance_double(Workspace::ProjectSettings, load: {}) }
           let(:composer) do
-            Workspace::InstructionComposer.new(library: library, lineage: lineage, commands_config: Workspace::CommandsConfig.new(project_settings: project_settings),
-              pane_bindings: instance_double(Workspace::PaneBindings), notes_config: Workspace::NotesConfig.new(project_settings: project_settings))
+            Workspace::InstructionComposer.new(library: library, lineage: lineage, commands_config: Workspace::CommandsConfig.new(config_resolver: Workspace::ConfigResolver.new(project_settings: project_settings)),
+              pane_bindings: instance_double(Workspace::PaneBindings), notes_config: Workspace::NotesConfig.new(config_resolver: Workspace::ConfigResolver.new(project_settings: project_settings)))
           end
           let(:notes_text) { "## From pack notes (built-in)\n\nNotes go in the notes directory.\n" }
 
@@ -7866,8 +7866,8 @@ RSpec.describe Workspace::CLI do
             let(:agent_kinds) { Hash.new("claude") }
             let(:main_agent) { instance_double(Workspace::MainAgent) }
             let(:composer) do
-              Workspace::InstructionComposer.new(library: library, lineage: lineage, commands_config: Workspace::CommandsConfig.new(project_settings: project_settings),
-                pane_bindings: instance_double(Workspace::PaneBindings), notes_config: Workspace::NotesConfig.new(project_settings: project_settings),
+              Workspace::InstructionComposer.new(library: library, lineage: lineage, commands_config: Workspace::CommandsConfig.new(config_resolver: Workspace::ConfigResolver.new(project_settings: project_settings)),
+                pane_bindings: instance_double(Workspace::PaneBindings), notes_config: Workspace::NotesConfig.new(config_resolver: Workspace::ConfigResolver.new(project_settings: project_settings)),
                 handoff_config: handoff_config, main_agent: main_agent)
             end
 

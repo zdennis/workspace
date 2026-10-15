@@ -179,7 +179,7 @@ RSpec.describe "lock clear's clearing marker, under concurrency" do
     lineage.define_singleton_method(:resolve) { |cwd:| Struct.new(:name, :worktree).new("app", nil) }
     settings = Struct.new(:data) { def load(_name) = data }.new({"dev" => {"up" => "true", "stop_timeout" => 2}})
     Workspace::Commands::Dev.new(lock_namespace: lock_namespace, lock_holder: identity, lineage: lineage,
-      dev_config: Workspace::DevConfig.new(project_settings: settings), dev_runner: nil, terminator: terminator,
+      dev_config: Workspace::DevConfig.new(config_resolver: Workspace::ConfigResolver.new(project_settings: settings)), dev_runner: nil, terminator: terminator,
       tmux: nil, executable: "unused", output: output, error_output: error_output, env: {}, sleeper: advance,
       clock: mono_clock, poll: 0.1)
   end

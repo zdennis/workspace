@@ -315,6 +315,7 @@ module Workspace
     logger ||= Logger.new(output: error_output, enabled: ENV.key?("WORKSPACE_DEBUG"))
     config = Config.new
     project_settings = ProjectSettings.new(config: config)
+    config_resolver = ConfigResolver.new(project_settings: project_settings)
     event_log = EventLog.new(config: config, project_settings: project_settings, error_output: error_output, logger: logger)
     state = State.new(config: config, event_log: event_log, logger: logger)
     osascript = OsascriptRunner.new
@@ -343,15 +344,15 @@ module Workspace
     task_store = TaskStore.new(dir: config.task_dir, error_output: error_output)
     library = Library.new(config: config, lineage: lineage, project_config: project_config)
     library_installer = LibraryInstaller.new(git: git)
-    notes_command = Commands::Notes.new(notes_dir: NotesDir.new(git: git), project_config: project_config, project_settings: project_settings,
+    notes_command = Commands::Notes.new(notes_dir: NotesDir.new(git: git), project_config: project_config, config_resolver: config_resolver,
       git_exclude: GitExclude.new(git: git), output: output)
     notes_setup = NotesSetup.new(notes: notes_command, project_settings: project_settings)
-    commands_config = CommandsConfig.new(project_settings: project_settings)
+    commands_config = CommandsConfig.new(config_resolver: config_resolver)
     instruction_composer = InstructionComposer.new(library: library, lineage: lineage,
-      commands_config: commands_config, pane_bindings: pane_bindings, workflow_config: WorkflowConfig.new(project_settings: project_settings),
-      notes_config: NotesConfig.new(project_settings: project_settings),
-      dev_config: DevConfig.new(project_settings: project_settings),
-      handoff_config: HandoffConfig.new(project_settings: project_settings, error_output: error_output),
+      commands_config: commands_config, pane_bindings: pane_bindings, workflow_config: WorkflowConfig.new(config_resolver: config_resolver),
+      notes_config: NotesConfig.new(config_resolver: config_resolver),
+      dev_config: DevConfig.new(config_resolver: config_resolver),
+      handoff_config: HandoffConfig.new(config_resolver: config_resolver, error_output: error_output),
       main_agent: MainAgent.new(project_config: project_config))
     start_ref = StartRef.new(git: git, lineage: lineage)
     start_command = Commands::Start.new(git: git, project_config: project_config, project_settings: project_settings, launch_command: launch_command, lineage: lineage, hook_installer: hook_installer, task_store: task_store, event_log: event_log, library: library, library_installer: library_installer, notes_setup: notes_setup, instruction_composer: instruction_composer, start_ref: start_ref, output: output, input: input)
@@ -390,8 +391,8 @@ module Workspace
     wait_until_content_command = Commands::WaitUntilContent.new(tmux: tmux, output: output, error_output: error_output)
 
     lock_namespace = LockNamespace.new(config: config, lineage: lineage)
-    dev_config = DevConfig.new(project_settings: project_settings)
-    lock_config = LockConfig.new(project_settings: project_settings, error_output: error_output)
+    dev_config = DevConfig.new(config_resolver: config_resolver)
+    lock_config = LockConfig.new(config_resolver: config_resolver, error_output: error_output)
     # Resolved once, from cwd's project, since a CLI run and the long-lived
     # `agent` daemon it may spawn both belong to a single project.
     cwd_project_name = begin
@@ -483,7 +484,7 @@ module Workspace
       lock_holder: lock_holder, dev: dev_command, agents: ProjectAgents.new(client: agent_snapshot_client),
       git: git, catalog: project_catalog, error_output: error_output)
     projects_command = Commands::Projects.new(catalog: project_catalog, tmux: tmux, facts: project_facts, output: output, error_output: error_output)
-    plan_config = PlanConfig.new(project_settings: project_settings, error_output: error_output)
+    plan_config = PlanConfig.new(config_resolver: config_resolver, error_output: error_output)
     plan_state = PlanState.new
     plan_command = Commands::Plan.new(notes: notes_command, catalog: project_catalog, plan_state: plan_state,
       plan_config: plan_config, tmux: tmux,
@@ -518,9 +519,9 @@ module Workspace
       project_settings: project_settings, logger: logger, output: output, input: input, terminator: process_group_terminator,
       lock_holder: lock_holder)
 
-    alert_config = AlertConfig.new(project_settings: project_settings, project_config: project_config,
+    alert_config = AlertConfig.new(config_resolver: config_resolver, project_config: project_config,
       lineage: lineage, error_output: error_output)
-    agentd_config = AgentdConfig.new(project_settings: project_settings, project_config: project_config,
+    agentd_config = AgentdConfig.new(config_resolver: config_resolver, project_config: project_config,
       lineage: lineage, error_output: error_output)
     ask_command = Commands::Ask.new(config: config, project_detector: project_detector, alert_config: alert_config,
       pane_sender: send_command, event_log: event_log, output: output, error_output: error_output)
@@ -554,7 +555,7 @@ module Workspace
     )
 
     restart_agent_command = Commands::RestartAgent.new(config: config, locator: pane_locator, output: output)
-    handoff_config = HandoffConfig.new(project_settings: project_settings, project_config: project_config,
+    handoff_config = HandoffConfig.new(config_resolver: config_resolver, project_config: project_config,
       lineage: lineage, error_output: error_output)
     handoff_command = Commands::Handoff.new(config: config, tmux: tmux, locator: pane_locator, handoff_config: handoff_config,
       restart_agent_command: restart_agent_command, notes: notes_command, binder: binding_command, library: library,

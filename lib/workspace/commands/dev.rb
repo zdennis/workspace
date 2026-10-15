@@ -284,7 +284,7 @@ module Workspace
       def release_for_session(session_id:, working_dir: Dir.pwd)
         return {exit_code: 0, outcome: "not_started_by_session"} if session_id.to_s.empty?
 
-        return {exit_code: 0, outcome: "disabled"} unless @dev_config.release_on_session_end?(@lineage.resolve(cwd: working_dir).name)
+        return {exit_code: 0, outcome: "disabled"} unless @dev_config.release_on_session_end?(workspace_name(@lineage.resolve(cwd: working_dir)))
         ctx = context(working_dir, tolerate_bad_config: true)
         holder = settled_entry(ctx[:store])["holder"]
         record = run?(holder) ? running_delegate(holder) : holder
@@ -733,15 +733,17 @@ module Workspace
           config_name: lineage.worktree || lineage.name,
           project: lineage.name,
           workspace: lineage.worktree,
-          settings: settings_for(lineage.name, tolerate_bad_config),
+          settings: settings_for(lineage.worktree || lineage.name, tolerate_bad_config),
           store: LockStore.new(dir: @lock_namespace.resolve(cwd: working_dir)[:dir], liveness: @lock_holder, terminator: @terminator)
         }
       end
 
+      def workspace_name(lineage) = lineage.worktree || lineage.name
+
       # `dev down` must stay reachable while the config is mid-edit, so it
       # warns and stops with the default timeouts instead of failing.
-      def settings_for(project, tolerate_bad_config)
-        @dev_config.for_project(project)
+      def settings_for(workspace, tolerate_bad_config)
+        @dev_config.for_project(workspace)
       rescue Workspace::ConfigParseError => e
         raise unless tolerate_bad_config
         @error_output.puts "Warning: #{e.message} Stopping with the default timeouts."

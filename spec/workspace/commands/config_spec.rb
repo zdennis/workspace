@@ -227,7 +227,7 @@ RSpec.describe Workspace::Commands::Config do
       command.set("commands.lint", "bundle exec standardrb lib/ spec/", cwd: project_dir)
 
       expect(project_settings.load(name)).to eq({"commands" => {"test" => "bundle exec rspec", "lint" => "bundle exec standardrb lib/ spec/"}})
-      expect(Workspace::CommandsConfig.new(project_settings: project_settings).for_project(name))
+      expect(Workspace::CommandsConfig.new(config_resolver: Workspace::ConfigResolver.new(project_settings: project_settings)).for_project(name))
         .to eq(test: "bundle exec rspec", lint: "bundle exec standardrb lib/ spec/")
       expect { command.set("commands.test", "  ", cwd: project_dir) }.to raise_error(Workspace::UsageError, /Invalid commands.test/)
       expect(project_settings.load(name)["commands"]["test"]).to eq("bundle exec rspec")

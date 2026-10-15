@@ -1,6 +1,6 @@
 RSpec.describe Workspace::NotesConfig do
   let(:project_settings) { instance_double(Workspace::ProjectSettings) }
-  subject(:config) { described_class.new(project_settings: project_settings) }
+  subject(:config) { described_class.new(config_resolver: Workspace::ConfigResolver.new(project_settings: project_settings)) }
 
   def stored(value)
     allow(project_settings).to receive(:load).with("app").and_return(value)
@@ -25,5 +25,12 @@ RSpec.describe Workspace::NotesConfig do
     expect(config.instructions?("app")).to be(true)
     stored({"notes" => "oops"})
     expect(config.instructions?("app")).to be(true)
+  end
+
+  it "reads a worktree's value from the parent project and ignores its own file" do
+    allow(project_settings).to receive(:load).with("app").and_return("notes" => {"instructions" => false})
+    allow(project_settings).to receive(:load).with("app.worktree-x").and_return("notes" => {"instructions" => true})
+
+    expect(config.instructions?("app.worktree-x")).to be(false)
   end
 end

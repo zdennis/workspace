@@ -404,8 +404,8 @@ RSpec.describe Workspace::Commands::Start do
 
       context "with packs" do
         let(:composer) do
-          Workspace::InstructionComposer.new(library: library, lineage: Workspace::WorkspaceLineage.new, commands_config: Workspace::CommandsConfig.new(project_settings: project_settings),
-            pane_bindings: instance_double(Workspace::PaneBindings), notes_config: Workspace::NotesConfig.new(project_settings: project_settings))
+          Workspace::InstructionComposer.new(library: library, lineage: Workspace::WorkspaceLineage.new, commands_config: Workspace::CommandsConfig.new(config_resolver: Workspace::ConfigResolver.new(project_settings: project_settings)),
+            pane_bindings: instance_double(Workspace::PaneBindings), notes_config: Workspace::NotesConfig.new(config_resolver: Workspace::ConfigResolver.new(project_settings: project_settings)))
         end
         let(:packs_command) do
           described_class.new(git: git, project_config: project_config, project_settings: project_settings,
@@ -540,8 +540,8 @@ RSpec.describe Workspace::Commands::Start do
           let(:handoff_config) { instance_double(Workspace::HandoffConfig, auto?: handoff_auto) }
           let(:main_agent) { instance_double(Workspace::MainAgent, kind: agent_kind) }
           let(:composer) do
-            Workspace::InstructionComposer.new(library: library, lineage: Workspace::WorkspaceLineage.new, commands_config: Workspace::CommandsConfig.new(project_settings: project_settings),
-              pane_bindings: instance_double(Workspace::PaneBindings), notes_config: Workspace::NotesConfig.new(project_settings: project_settings),
+            Workspace::InstructionComposer.new(library: library, lineage: Workspace::WorkspaceLineage.new, commands_config: Workspace::CommandsConfig.new(config_resolver: Workspace::ConfigResolver.new(project_settings: project_settings)),
+              pane_bindings: instance_double(Workspace::PaneBindings), notes_config: Workspace::NotesConfig.new(config_resolver: Workspace::ConfigResolver.new(project_settings: project_settings)),
               handoff_config: handoff_config, main_agent: main_agent)
           end
           let(:name) { "myproject.worktree-PROJ-123" }

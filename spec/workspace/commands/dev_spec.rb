@@ -15,7 +15,7 @@ RSpec.describe Workspace::Commands::Dev do
   let(:spawned) { [] }
   let(:dev_settings) { {"up" => "exec sleep 30", "stop_timeout" => 2, "startup_timeout" => 10} }
   let(:lock_namespace) { Struct.new(:dir) { def resolve(cwd:) = {key: dir, display: "app", dir: dir} }.new(lock_dir) }
-  let(:dev_config) { Workspace::DevConfig.new(project_settings: Struct.new(:data) { def load(_name) = data }.new({"dev" => dev_settings})) }
+  let(:dev_config) { Workspace::DevConfig.new(config_resolver: Workspace::ConfigResolver.new(project_settings: Struct.new(:data) { def load(_name) = data }.new({"dev" => dev_settings}))) }
   let(:lib_dir) { File.expand_path("../../../lib", __dir__) }
   let(:tmux) { FakeDevWindowTmux.new(method(:spawn_wrapper)) }
 
@@ -28,7 +28,7 @@ RSpec.describe Workspace::Commands::Dev do
       store = Struct.new(:data) { def load(_name) = data }.new(JSON.parse(settings))
       liveness = Workspace::LockHolder.new
       dev = Workspace::Commands::Dev.new(lock_namespace: ns, lock_holder: liveness, lineage: Workspace::WorkspaceLineage.new,
-        dev_config: Workspace::DevConfig.new(project_settings: store),
+        dev_config: Workspace::DevConfig.new(config_resolver: Workspace::ConfigResolver.new(project_settings: store)),
         dev_runner: Workspace::DevRunner.new(liveness: liveness, env: {"TMUX_PANE" => "%9"}.merge(ENV.to_h.slice("WORKSPACE_DEV_SESSION", "WORKSPACE_DEV_STARTED_BY_PANE")), poll: 0.05),
         terminator: Workspace::ProcessGroupTerminator.new, tmux: nil, executable: "unused")
       begin
@@ -226,7 +226,7 @@ RSpec.describe Workspace::Commands::Dev do
   describe "#up with an unparseable project config" do
     it "refuses instead of running with defaults" do
       broken = Struct.new(:x) { def load(_name) = raise(Workspace::ConfigParseError.new("/cfg/app.yml", "bad yaml")) }.new
-      broken_dev = dev(dev_config: Workspace::DevConfig.new(project_settings: broken))
+      broken_dev = dev(dev_config: Workspace::DevConfig.new(config_resolver: Workspace::ConfigResolver.new(project_settings: broken)))
 
       expect { broken_dev.up(working_dir: main) }.to raise_error(Workspace::ConfigParseError)
       expect(spawned).to be_empty
@@ -362,7 +362,7 @@ RSpec.describe Workspace::Commands::Dev do
       end
 
       it "leaves it running when dev.release_on_session_end is false" do
-        off = Workspace::DevConfig.new(project_settings: Struct.new(:data) { def load(_name) = data }.new({"dev" => dev_settings.merge("release_on_session_end" => false)}))
+        off = Workspace::DevConfig.new(config_resolver: Workspace::ConfigResolver.new(project_settings: Struct.new(:data) { def load(_name) = data }.new({"dev" => dev_settings.merge("release_on_session_end" => false)})))
 
         result = dev(dev_config: off).release_for_session(session_id: "sess-1", working_dir: login)
 
@@ -374,7 +374,7 @@ RSpec.describe Workspace::Commands::Dev do
       it "leaves it running when the project's config cannot be read" do
         broken = Struct.new(:x) { def load(_name) = raise(Workspace::ConfigParseError.new("/cfg/app.yml", "bad yaml")) }.new
 
-        result = dev(dev_config: Workspace::DevConfig.new(project_settings: broken)).release_for_session(session_id: "sess-1", working_dir: login)
+        result = dev(dev_config: Workspace::DevConfig.new(config_resolver: Workspace::ConfigResolver.new(project_settings: broken))).release_for_session(session_id: "sess-1", working_dir: login)
 
         expect(result).to eq(exit_code: 0, outcome: "unreadable")
         expect(alive?(@wrapper)).to be(true)
@@ -447,7 +447,7 @@ RSpec.describe Workspace::Commands::Dev do
       dev.up(working_dir: login)
       wrapper = spawned.last
       broken = Struct.new(:x) { def load(_name) = raise(Workspace::ConfigParseError.new("/cfg/app.yml", "bad yaml")) }.new
-      broken_dev = dev(dev_config: Workspace::DevConfig.new(project_settings: broken))
+      broken_dev = dev(dev_config: Workspace::DevConfig.new(config_resolver: Workspace::ConfigResolver.new(project_settings: broken)))
 
       result = broken_dev.down(working_dir: main)
 
@@ -635,7 +635,7 @@ RSpec.describe Workspace::Commands::Dev, "with fake processes and clock" do
   let(:settings) { {"up" => "run-dev", "stop_timeout" => 2, "startup_timeout" => 5, "ready_timeout" => 5} }
   let(:liveness) { FakeLockLiveness.new }
   let(:lock_namespace) { Struct.new(:dir) { def resolve(cwd:) = {key: dir, display: "app", dir: dir} }.new(lock_dir) }
-  let(:dev_config) { Workspace::DevConfig.new(project_settings: Struct.new(:data) { def load(_name) = data }.new({"dev" => settings})) }
+  let(:dev_config) { Workspace::DevConfig.new(config_resolver: Workspace::ConfigResolver.new(project_settings: Struct.new(:data) { def load(_name) = data }.new({"dev" => settings}))) }
   let(:lineage) { double("lineage", resolve: double(name: "app", worktree: nil)) }
   # A real terminator, so dev's orphan rule runs as written, with every
   # signal stubbed: nothing here may reach a real process group.

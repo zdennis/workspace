@@ -68,7 +68,7 @@ module Workspace
     # @raise [Workspace::ConfigParseError] if a config file that is read can't be parsed
     def compose(packs:, cwd:, binding: nil, workflow: nil, step: nil, attempt: nil, skip: [])
       seen = []
-      sections = pack_sections(packs || default_packs, cwd, binding, seen, skip)
+      sections = pack_sections(packs || default_packs(cwd: cwd), cwd, binding, seen, skip)
       [["workflow", workflow], ["step", step]].each do |kind, layer|
         next unless layer
         sections.concat(pack_sections(layer["include"] || [], cwd, binding, seen, skip))
@@ -142,10 +142,12 @@ module Workspace
       !composed.nil? && play.nil? && prompt.to_s.strip.empty? && composed["packs"].all? { |pack| pack["source"] == "config" }
     end
 
+    # @param cwd [String, nil] where the packs are composed; names the workspace whose config is read
     # @return [Array<String>] the packs composed when a caller names none
     # @raise [Workspace::ConfigParseError] if the global config file can't be parsed
-    def default_packs
-      @workflow_config ? @workflow_config.default_packs : DEFAULT_PACKS
+    def default_packs(cwd: nil)
+      return DEFAULT_PACKS unless @workflow_config
+      @workflow_config.default_packs(workspace: cwd && workspace_for(cwd))
     end
 
     private
@@ -154,25 +156,32 @@ module Workspace
     def start_selection(cwd:, packs:, none:, handoff:)
       raise UsageError, "--no-packs cannot be combined with --pack." if none && packs.any?
       raise UsageError, "--no-packs cannot be combined with --handoff." if none && handoff == true
-      project = @lineage.resolve(cwd: cwd).name
-      automatic = (none ? [] : automatic_start_packs(project)).map { |pack| {"name" => pack, "source" => "config"} }
-      extra, skipped = handoff_pack(project, none: none, handoff: handoff)
+      lineage = @lineage.resolve(cwd: cwd)
+      project = lineage.name
+      workspace = lineage.worktree || project
+      automatic = (none ? [] : automatic_start_packs(workspace)).map { |pack| {"name" => pack, "source" => "config"} }
+      extra, skipped = handoff_pack(project, workspace, none: none, handoff: handoff)
       flagged = packs.map { |pack| {"name" => pack.sub(%r{\Aplay/}, ""), "source" => "flag"} }
       [(automatic + extra + flagged).uniq { |pack| pack["name"] }, skipped]
     end
 
-    def automatic_start_packs(project)
+    def workspace_for(cwd)
+      lineage = @lineage.resolve(cwd: cwd)
+      lineage.worktree || lineage.name
+    end
+
+    def automatic_start_packs(workspace)
       packs = []
-      packs << "notes" if @notes_config&.instructions?(project)
-      packs << "dev" if @dev_config&.configured?(project) && @dev_config.instructions?(project)
+      packs << "notes" if @notes_config&.instructions?(workspace)
+      packs << "dev" if @dev_config&.configured?(workspace) && @dev_config.instructions?(workspace)
       packs
     end
 
     # @return [Array(Array<Hash>, Array<Hash>)] the `handoff` entry to send, and the one to report as skipped
-    def handoff_pack(project, none:, handoff:)
+    def handoff_pack(project, workspace, none:, handoff:)
       flag = handoff == true
       raise Error, "--handoff is not available: no handoff config was wired." if flag && (@handoff_config.nil? || @main_agent.nil?)
-      return [[], []] if handoff == false || (!flag && (none || @handoff_config.nil? || @main_agent.nil? || !@handoff_config.auto?(project)))
+      return [[], []] if handoff == false || (!flag && (none || @handoff_config.nil? || @main_agent.nil? || !@handoff_config.auto?(workspace)))
       kind = @main_agent.kind(project)
       return [[{"name" => "handoff", "source" => flag ? "flag" : "config"}], []] if HANDOFF_AGENTS.include?(kind)
       if flag
@@ -225,7 +234,7 @@ module Workspace
     end
 
     def commands(cwd)
-      set = @commands_config.for_project(@lineage.resolve(cwd: cwd).name)
+      set = @commands_config.for_project(workspace_for(cwd))
       lines = [(command_line("Test", set[:test]) if set[:test]), (command_line("Lint", set[:lint]) if set[:lint])].compact
       return nil if lines.empty?
       lines.join((lines.any? { |line| line.include?("\n") }) ? "\n\n" : "\n")

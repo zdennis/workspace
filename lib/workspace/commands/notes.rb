@@ -15,13 +15,13 @@ module Workspace
     class Notes
       # @param notes_dir [Workspace::NotesDir] the resolver
       # @param project_config [Workspace::ProjectConfig] gives a workspace's checkout root
-      # @param project_settings [Workspace::ProjectSettings] reads the config files
+      # @param config_resolver [Workspace::ConfigResolver] reads the config files
       # @param git_exclude [Workspace::GitExclude] reads and writes the common dir's `info/exclude`
       # @param output [IO] output stream
-      def initialize(notes_dir:, project_config:, project_settings:, git_exclude:, output: $stdout)
+      def initialize(notes_dir:, project_config:, config_resolver:, git_exclude:, output: $stdout)
         @notes_dir = notes_dir
         @project_config = project_config
-        @project_settings = project_settings
+        @config_resolver = config_resolver
         @git_exclude = git_exclude
         @output = output
       end
@@ -92,11 +92,9 @@ module Workspace
       end
 
       def resolve(name, root)
-        parent = WorkspaceLineage.split_worktree_name(name)&.first
-        own = @project_settings.load(name)
-        project = parent ? @project_settings.load(parent) : own
-        result = @notes_dir.resolve(stored: valid(own, "dir"), template: valid(project, "default_dir"),
-          worktree: !parent.nil?, root: root, workspace: name)
+        view = @config_resolver.view(workspace: name)
+        result = @notes_dir.resolve(stored: valid(view, "dir"), template: valid(view, "default_dir"),
+          worktree: !WorkspaceLineage.split_worktree_name(name).nil?, root: root, workspace: name)
         return result if result.path
         raise Workspace::Error.new(
           "Can't work out the notes directory for '#{name}': notes.default_dir uses {branch} and the checkout at #{root} is on no branch (detached HEAD). Check out a branch, or set notes.dir for this workspace.",
@@ -105,8 +103,8 @@ module Workspace
       end
 
       # The stored `notes.<leaf>`, nil when unset or not valid for the key.
-      def valid(data, leaf)
-        value = data["notes"].is_a?(Hash) ? data["notes"][leaf] : nil
+      def valid(view, leaf)
+        value = view.raw("notes.#{leaf}")
         return nil if value.nil?
         ConfigSchema.parse("notes.#{leaf}", value)
       rescue ArgumentError

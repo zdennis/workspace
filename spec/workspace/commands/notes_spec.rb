@@ -23,7 +23,7 @@ RSpec.describe Workspace::Commands::Notes do
   let(:project_config) { instance_double(Workspace::ProjectConfig) }
   subject(:command) do
     described_class.new(notes_dir: Workspace::NotesDir.new(git: git, home: "/home/me"), project_config: project_config,
-      project_settings: settings, git_exclude: Workspace::GitExclude.new(git: git), output: output)
+      config_resolver: Workspace::ConfigResolver.new(project_settings: settings), git_exclude: Workspace::GitExclude.new(git: git), output: output)
   end
 
   def sh(*args, dir: repo)
@@ -68,6 +68,22 @@ RSpec.describe Workspace::Commands::Notes do
       command.dir(name: "api.worktree-x", json: true)
 
       expect(JSON.parse(output.string)).to include("dir" => "/elsewhere/mine", "source" => "worktree", "inside_worktree" => false)
+    end
+
+    it "prefers the worktree's notes.dir over the project's, and reads notes.default_dir from the project only" do
+      write_config("api.worktree-x", "notes:\n  dir: /elsewhere/mine\n  default_dir: /ignored/{workspace}\n")
+      write_config("api", "notes:\n  dir: /elsewhere/project\n  default_dir: /notes/{workspace}\n")
+
+      command.dir(name: "api.worktree-x", json: true)
+      expect(JSON.parse(output.string)).to include("dir" => "/elsewhere/mine", "source" => "worktree")
+    end
+
+    it "ignores a notes.default_dir in the worktree's own file" do
+      write_config("api.worktree-x", "notes:\n  default_dir: /ignored/{workspace}\n")
+      write_config("api", "notes:\n  default_dir: /notes/{workspace}\n")
+
+      command.dir(name: "api.worktree-x", json: true)
+      expect(JSON.parse(output.string)).to include("dir" => "/notes/api.worktree-x", "source" => "default")
     end
 
     it "uses the project's notes.dir for the main checkout" do

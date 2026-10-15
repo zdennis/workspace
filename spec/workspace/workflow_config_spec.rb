@@ -3,7 +3,7 @@ require "spec_helper"
 RSpec.describe Workspace::WorkflowConfig do
   let(:global) { {} }
   let(:project_settings) { instance_double(Workspace::ProjectSettings, load_global: global) }
-  subject(:config) { described_class.new(project_settings: project_settings) }
+  subject(:config) { described_class.new(config_resolver: Workspace::ConfigResolver.new(project_settings: project_settings)) }
 
   it "defaults to binding, orchestrator and commits" do
     expect(config.default_packs).to eq(%w[binding orchestrator commits])
@@ -28,5 +28,12 @@ RSpec.describe Workspace::WorkflowConfig do
     allow(project_settings).to receive(:load_global).and_raise(Workspace::ConfigParseError.new("/c/config.yml", "bad"))
 
     expect { config.default_packs }.to raise_error(Workspace::ConfigParseError)
+  end
+
+  it "reads the global value for a worktree without opening the worktree's or project's file" do
+    global["workflows"] = {"defaults" => {"include" => "binding, review"}}
+    allow(project_settings).to receive(:load).and_raise(Workspace::ConfigParseError.new("/c/app.yml", "bad"))
+
+    expect(config.default_packs(workspace: "app.worktree-x")).to eq(%w[binding review])
   end
 end

@@ -22,7 +22,7 @@ RSpec.describe Workspace::NotesSetup do
   let(:project_config) { instance_double(Workspace::ProjectConfig) }
   let(:notes) do
     Workspace::Commands::Notes.new(notes_dir: Workspace::NotesDir.new(git: git, home: "/home/me"), project_config: project_config,
-      project_settings: settings, git_exclude: Workspace::GitExclude.new(git: git), output: StringIO.new)
+      config_resolver: Workspace::ConfigResolver.new(project_settings: settings), git_exclude: Workspace::GitExclude.new(git: git), output: StringIO.new)
   end
   subject(:setup) { described_class.new(notes: notes, project_settings: settings) }
 

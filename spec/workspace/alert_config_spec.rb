@@ -5,7 +5,7 @@ RSpec.describe Workspace::AlertConfig do
   let(:dir) { Dir.mktmpdir("ws-alert-config") }
   let(:project_settings) { Workspace::ProjectSettings.new(config: Struct.new(:workspace_config_dir).new(dir)) }
   let(:error_output) { StringIO.new }
-  let(:alert_config) { described_class.new(project_settings: project_settings, error_output: error_output) }
+  let(:alert_config) { described_class.new(config_resolver: Workspace::ConfigResolver.new(project_settings: project_settings), error_output: error_output) }
 
   after { FileUtils.remove_entry(dir) }
 
@@ -68,7 +68,7 @@ RSpec.describe Workspace::AlertConfig do
       let(:project_config) { instance_double(Workspace::ProjectConfig) }
       let(:lineage) { instance_double(Workspace::WorkspaceLineage) }
       let(:alert_config) do
-        described_class.new(project_settings: project_settings, project_config: project_config,
+        described_class.new(config_resolver: Workspace::ConfigResolver.new(project_settings: project_settings), project_config: project_config,
           lineage: lineage, error_output: error_output)
       end
 
@@ -97,6 +97,15 @@ RSpec.describe Workspace::AlertConfig do
 
         expect(alert_config.for_workspace("app-PROJ-1")[:notify]).to eq("say own")
       end
+    end
+  end
+
+  describe "a worktree workspace with no lineage wired" do
+    it "reads the parent project's file and ignores the worktree's own" do
+      project_settings.save("app", {"alerts" => {"notify" => "notify-project", "idle_after" => "2m"}})
+      project_settings.save("app.worktree-x", {"alerts" => {"notify" => "notify-worktree", "idle_after" => "9m"}})
+
+      expect(alert_config.for_workspace("app.worktree-x")).to eq(notify: "notify-project", idle_after: 120.0)
     end
   end
 end

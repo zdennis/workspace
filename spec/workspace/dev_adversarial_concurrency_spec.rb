@@ -137,7 +137,7 @@ RSpec.describe "devenv lock: adversarial concurrency" do
     let(:error_output) { StringIO.new }
     let(:dev_settings) { {"up" => "exec sleep 30", "stop_timeout" => 2, "startup_timeout" => 10} }
     let(:lock_namespace) { Struct.new(:dir) { def resolve(cwd:) = {key: dir, display: "app", dir: dir} }.new(lock_dir) }
-    let(:dev_config) { Workspace::DevConfig.new(project_settings: Struct.new(:data) { def load(_name) = data }.new({"dev" => dev_settings})) }
+    let(:dev_config) { Workspace::DevConfig.new(config_resolver: Workspace::ConfigResolver.new(project_settings: Struct.new(:data) { def load(_name) = data }.new({"dev" => dev_settings}))) }
     let(:lib_dir) { File.expand_path("../../lib", __dir__) }
     let(:tmux) { FakeDevWindowTmux.new(method(:spawn_wrapper)) }
 
@@ -150,7 +150,7 @@ RSpec.describe "devenv lock: adversarial concurrency" do
         store = Struct.new(:data) { def load(_name) = data }.new(JSON.parse(settings))
         liveness = Workspace::LockHolder.new
         dev = Workspace::Commands::Dev.new(lock_namespace: ns, lock_holder: liveness, lineage: Workspace::WorkspaceLineage.new,
-          dev_config: Workspace::DevConfig.new(project_settings: store),
+          dev_config: Workspace::DevConfig.new(config_resolver: Workspace::ConfigResolver.new(project_settings: store)),
           dev_runner: Workspace::DevRunner.new(liveness: liveness, env: {"TMUX_PANE" => "%9"}, poll: 0.05),
           terminator: Workspace::ProcessGroupTerminator.new, tmux: nil, executable: "unused")
         begin

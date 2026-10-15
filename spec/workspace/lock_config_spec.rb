@@ -5,7 +5,7 @@ RSpec.describe Workspace::LockConfig do
   let(:dir) { Dir.mktmpdir("ws-lock-config") }
   let(:project_settings) { Workspace::ProjectSettings.new(config: Struct.new(:workspace_config_dir).new(dir)) }
   let(:error_output) { StringIO.new }
-  let(:lock_config) { described_class.new(project_settings: project_settings, error_output: error_output) }
+  let(:lock_config) { described_class.new(config_resolver: Workspace::ConfigResolver.new(project_settings: project_settings), error_output: error_output) }
 
   after { FileUtils.remove_entry(dir) }
 
@@ -39,6 +39,17 @@ RSpec.describe Workspace::LockConfig do
 
       expect(lock_config.idle_grace_for("app")).to eq(300)
       expect(error_output.string).to include("Cannot parse", "app.yml", "Using 300s for locks.idle_grace")
+    end
+  end
+
+  describe "an empty key" do
+    it "counts as unset: the default and no warning" do
+      FileUtils.mkdir_p(File.join(dir, "projects"))
+      File.write(File.join(dir, "projects", "app.yml"), "locks:\n  idle_grace:\n  ps_timeout:\n")
+
+      expect(lock_config.idle_grace_for("app")).to eq(300)
+      expect(lock_config.ps_timeout_for("app")).to eq(Workspace::ConfigSchema.default("locks.ps_timeout"))
+      expect(error_output.string).to eq("")
     end
   end
 
@@ -154,6 +165,15 @@ RSpec.describe Workspace::LockConfig do
       project_settings.save("app", {"locks" => "nope"})
 
       expect(lock_config.reap_interval_for("app")).to eq(Workspace::LockReaper::DEFAULT_INTERVAL)
+    end
+  end
+
+  describe "a worktree name" do
+    it "reads the parent project's file and ignores the worktree's own" do
+      project_settings.save("app", {"locks" => {"idle_grace" => "10m"}})
+      project_settings.save("app.worktree-x", {"locks" => {"idle_grace" => "1m"}})
+
+      expect(lock_config.idle_grace_for("app.worktree-x")).to eq(600)
     end
   end
 end

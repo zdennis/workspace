@@ -10,7 +10,7 @@ RSpec.describe Workspace::DevConfig do
   describe "#defaults" do
     it "matches an empty config without reading any file" do
       dir = Dir.mktmpdir("ws-dev-config")
-      dev_config = described_class.new(project_settings: project_settings_with(dir: dir))
+      dev_config = described_class.new(config_resolver: Workspace::ConfigResolver.new(project_settings: project_settings_with(dir: dir)))
 
       expect(dev_config.defaults).to eq(dev_config.for_project("myapp"))
     end
@@ -21,7 +21,7 @@ RSpec.describe Workspace::DevConfig do
       dir = Dir.mktmpdir("ws-dev-config")
       FileUtils.mkdir_p(File.join(dir, "projects"))
       File.write(File.join(dir, "projects", "myapp.yml"), "a: [\n")
-      dev_config = described_class.new(project_settings: project_settings_with(dir: dir))
+      dev_config = described_class.new(config_resolver: Workspace::ConfigResolver.new(project_settings: project_settings_with(dir: dir)))
 
       expect { dev_config.for_project("myapp") }.to raise_error(Workspace::ConfigParseError)
     end
@@ -32,7 +32,7 @@ RSpec.describe Workspace::DevConfig do
       dir = Dir.mktmpdir("ws-dev-config")
       settings = project_settings_with(dir: dir)
       settings.save("myapp", {"dev" => dev}) if dev
-      described_class.new(project_settings: settings)
+      described_class.new(config_resolver: Workspace::ConfigResolver.new(project_settings: settings))
     end
 
     it "is configured only when dev.up holds a command" do
@@ -59,7 +59,7 @@ RSpec.describe Workspace::DevConfig do
       dir = Dir.mktmpdir("ws-dev-config")
       settings = project_settings_with(dir: dir)
       settings.save("myapp", {"dev" => dev}) if dev
-      described_class.new(project_settings: settings)
+      described_class.new(config_resolver: Workspace::ConfigResolver.new(project_settings: settings))
     end
 
     it "is true unless the key is false, as a string or a boolean" do
@@ -74,15 +74,37 @@ RSpec.describe Workspace::DevConfig do
       FileUtils.mkdir_p(File.join(dir, "projects"))
       File.write(File.join(dir, "projects", "myapp.yml"), "a: [\n")
 
-      expect { described_class.new(project_settings: project_settings_with(dir: dir)).release_on_session_end?("myapp") }
+      expect { described_class.new(config_resolver: Workspace::ConfigResolver.new(project_settings: project_settings_with(dir: dir))).release_on_session_end?("myapp") }
         .to raise_error(Workspace::ConfigParseError)
+    end
+  end
+
+  describe "an empty duration key" do
+    it "counts as unset: the default and no error" do
+      dir = Dir.mktmpdir("ws-dev-config")
+      FileUtils.mkdir_p(File.join(dir, "projects"))
+      File.write(File.join(dir, "projects", "myapp.yml"), "dev:\n  stop_timeout:\n  kill_grace:\n")
+      dev_config = described_class.new(config_resolver: Workspace::ConfigResolver.new(project_settings: project_settings_with(dir: dir)))
+
+      expect(dev_config.for_project("myapp")).to eq(dev_config.defaults)
+    end
+  end
+
+  describe "#defaults covers the schema" do
+    it "has a value for every dev.* key in ConfigSchema" do
+      boolean_or_derived = %w[instructions release_on_session_end configured]
+      schema_keys = Workspace::ConfigSchema.all.map(&:name).grep(/\Adev\./).map { |n| n.delete_prefix("dev.") }
+      covered = Workspace::DevConfig.new(config_resolver: nil).defaults.keys.map(&:to_s)
+
+      expect(covered).to include(*(schema_keys - boolean_or_derived))
+      expect(schema_keys - covered).to contain_exactly(*boolean_or_derived)
     end
   end
 
   describe "#for_project" do
     it "returns nils and the default timeouts when nothing is configured" do
       dir = Dir.mktmpdir("ws-dev-config")
-      dev_config = described_class.new(project_settings: project_settings_with(dir: dir))
+      dev_config = described_class.new(config_resolver: Workspace::ConfigResolver.new(project_settings: project_settings_with(dir: dir)))
 
       result = dev_config.for_project("myapp")
 
@@ -97,7 +119,7 @@ RSpec.describe Workspace::DevConfig do
       project_settings = project_settings_with(dir: dir)
       project_settings.save("myapp", {"dev" => {"up" => "./start-dev", "ready" => "port:3000", "stop_timeout" => "30s",
                                                 "startup_timeout" => "45s", "ready_timeout" => "5m", "kill_grace" => "10s"}})
-      dev_config = described_class.new(project_settings: project_settings)
+      dev_config = described_class.new(config_resolver: Workspace::ConfigResolver.new(project_settings: project_settings))
 
       result = dev_config.for_project("myapp")
 
@@ -109,7 +131,7 @@ RSpec.describe Workspace::DevConfig do
       dir = Dir.mktmpdir("ws-dev-config")
       project_settings = project_settings_with(dir: dir)
       project_settings.save("myapp", {"dev" => {"stop_timeout" => "soon"}})
-      dev_config = described_class.new(project_settings: project_settings)
+      dev_config = described_class.new(config_resolver: Workspace::ConfigResolver.new(project_settings: project_settings))
 
       expect { dev_config.for_project("myapp") }.to raise_error(Workspace::Error, /Invalid dev.stop_timeout/)
     end
@@ -119,7 +141,7 @@ RSpec.describe Workspace::DevConfig do
         dir = Dir.mktmpdir("ws-dev-config")
         project_settings = project_settings_with(dir: dir)
         project_settings.save("myapp", {"dev" => {key => "soon"}})
-        dev_config = described_class.new(project_settings: project_settings)
+        dev_config = described_class.new(config_resolver: Workspace::ConfigResolver.new(project_settings: project_settings))
 
         expect { dev_config.for_project("myapp") }.to raise_error(Workspace::Error, /Invalid dev.#{key}/)
       end
@@ -129,7 +151,7 @@ RSpec.describe Workspace::DevConfig do
       dir = Dir.mktmpdir("ws-dev-config")
       project_settings = project_settings_with(dir: dir)
       project_settings.save("myapp", {"dev" => {"kill_grace" => "61s"}})
-      dev_config = described_class.new(project_settings: project_settings)
+      dev_config = described_class.new(config_resolver: Workspace::ConfigResolver.new(project_settings: project_settings))
 
       expect { dev_config.for_project("myapp") }.to raise_error(Workspace::Error, /Invalid dev.kill_grace/)
     end
@@ -138,9 +160,27 @@ RSpec.describe Workspace::DevConfig do
       dir = Dir.mktmpdir("ws-dev-config")
       project_settings = project_settings_with(dir: dir)
       project_settings.save("myapp", {"dev" => {"kill_grace" => "0"}})
-      dev_config = described_class.new(project_settings: project_settings)
+      dev_config = described_class.new(config_resolver: Workspace::ConfigResolver.new(project_settings: project_settings))
 
       expect { dev_config.for_project("myapp") }.to raise_error(Workspace::Error, /Invalid dev.kill_grace/)
+    end
+  end
+
+  describe "in a worktree" do
+    it "reads each key from the parent project's file and ignores the worktree's own, key by key" do
+      dir = Dir.mktmpdir("ws-dev-config")
+      settings = project_settings_with(dir: dir)
+      settings.save("myapp", {"dev" => {"up" => "./project-up", "stop_timeout" => "40s", "kill_grace" => "3s", "instructions" => false}})
+      settings.save("myapp.worktree-x", {"dev" => {"up" => "./worktree-up", "ready" => "port:1", "stop_timeout" => "5s",
+                                                   "kill_grace" => "9s", "instructions" => true, "release_on_session_end" => false}})
+      dev_config = described_class.new(config_resolver: Workspace::ConfigResolver.new(project_settings: settings))
+
+      expect(dev_config.for_project("myapp.worktree-x")).to include(up: "./project-up", ready: nil, stop_timeout: 40, kill_grace: 3)
+      expect(dev_config.configured?("myapp.worktree-x")).to be(true)
+      expect(dev_config.instructions?("myapp.worktree-x")).to be(false)
+      expect(dev_config.release_on_session_end?("myapp.worktree-x")).to be(true)
+    ensure
+      FileUtils.remove_entry(dir)
     end
   end
 end

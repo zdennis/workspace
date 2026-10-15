@@ -91,7 +91,7 @@ RSpec.describe "PR2 adversarial findings" do
         git_repo(worktree)
         Dir.mktmpdir("ws-empty-devup-locks") do |lock_dir|
           store = Struct.new(:data) { def load(_name) = data }.new({"dev" => {"up" => ""}})
-          dev_config = Workspace::DevConfig.new(project_settings: store)
+          dev_config = Workspace::DevConfig.new(config_resolver: Workspace::ConfigResolver.new(project_settings: store))
           lock_namespace = Struct.new(:dir) { def resolve(cwd:) = {dir: dir} }.new(lock_dir)
           liveness = Workspace::LockHolder.new
           runner_calls = []

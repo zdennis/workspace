@@ -12,14 +12,14 @@ module Workspace
     # Context-usage percent that triggers a handoff, unless overridden.
     DEFAULT_THRESHOLD = ConfigSchema.default("handoff.threshold")
 
-    # @param project_settings [Workspace::ProjectSettings]
+    # @param config_resolver [Workspace::ConfigResolver]
     # @param project_config [Workspace::ProjectConfig, nil] finds a workspace's
     #   root; nil reads settings under the workspace name as given
     # @param lineage [Workspace::WorkspaceLineage, nil] resolves that root to
     #   its parent project
     # @param error_output [IO] where a warning about an invalid value goes
-    def initialize(project_settings:, project_config: nil, lineage: nil, error_output: $stderr)
-      @project_settings = project_settings
+    def initialize(config_resolver:, project_config: nil, lineage: nil, error_output: $stderr)
+      @config_resolver = config_resolver
       @project_config = project_config
       @lineage = lineage
       @error_output = error_output
@@ -49,13 +49,11 @@ module Workspace
     # @return [Hash] :threshold [Integer], :check_prompt [String], :resume_prompt [String]
     #   (unset keys give the schema default, which for the two prompts is the built-in text)
     def for_workspace(workspace)
-      name = project_name_for(workspace)
-      handoff = load_handoff(name)
-      handoff = {} unless handoff.is_a?(Hash)
+      handoff = load_handoff(workspace)
       {
-        threshold: setting(handoff, name, "threshold"),
-        check_prompt: setting(handoff, name, "check_prompt"),
-        resume_prompt: setting(handoff, name, "resume_prompt")
+        threshold: setting(handoff, workspace, "threshold"),
+        check_prompt: setting(handoff, workspace, "check_prompt"),
+        resume_prompt: setting(handoff, workspace, "resume_prompt")
       }
     end
 
@@ -66,36 +64,41 @@ module Workspace
     # @param workspace [String] the workspace's name (a worktree reads its parent project's value)
     # @return [Boolean]
     def auto?(workspace)
-      name = project_name_for(workspace)
-      handoff = load_handoff(name)
-      handoff = {} unless handoff.is_a?(Hash)
-      setting(handoff, name, "auto") == "true"
+      setting(load_handoff(workspace), workspace, "auto") == "true"
     end
 
     private
 
-    def load_handoff(name)
-      @project_settings.load(name)["handoff"]
+    # Every stored `handoff.*` value, or {} when a config file can't be parsed.
+    def load_handoff(workspace)
+      view = view_for(workspace)
+      %w[threshold check_prompt resume_prompt auto].to_h { |key| [key, view.raw("handoff.#{key}")] }
     rescue Workspace::ConfigParseError => e
       @error_output.puts "Warning: #{e.message} Using handoff defaults."
+      {}
+    end
+
+    # The parent project when the lineage resolved one, else nil so the resolver
+    # splits a worktree name itself (it must never be handed the worktree's own name).
+    def resolved_project(workspace)
+      root = @project_config&.project_root_for(workspace)
+      return nil unless root && @lineage && File.directory?(root)
+      @lineage.resolve(cwd: root).name
+    rescue Workspace::Error
       nil
     end
 
-    def project_name_for(workspace)
-      root = @project_config&.project_root_for(workspace)
-      return workspace unless root && @lineage && File.directory?(root)
-      @lineage.resolve(cwd: root).name
-    rescue Workspace::Error
-      workspace
+    def view_for(workspace)
+      @config_resolver.view(workspace: workspace, project: resolved_project(workspace))
     end
 
-    def setting(handoff, name, key)
+    def setting(handoff, workspace, key)
       schema_key = "handoff.#{key}"
       default = ConfigSchema.default(schema_key)
-      return default unless handoff.key?(key)
+      return default if handoff[key].nil?
       ConfigSchema.parse(schema_key, handoff[key])
     rescue ArgumentError => e
-      @error_output.puts "Warning: invalid handoff.#{key} for '#{name}' (#{e.message}); using #{default.inspect}."
+      @error_output.puts "Warning: invalid handoff.#{key} for '#{workspace}' (#{e.message}); using #{default.inspect}."
       default
     end
   end
