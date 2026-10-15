@@ -91,7 +91,7 @@ module Workspace
 
       def checkout_path(name)
         root = @project_config.project_root_for(name)
-        raise Workspace::Error.new("Unknown project '#{name}'", code: "unknown_workspace", details: {"name" => name}) unless root
+        raise Workspace::Error.new("Unknown workspace '#{name}'", code: "unknown_workspace", details: {"name" => name}) unless root
 
         File.expand_path(root)
       end

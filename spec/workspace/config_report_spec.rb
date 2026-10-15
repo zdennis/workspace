@@ -131,6 +131,74 @@ RSpec.describe Workspace::ConfigReport do
       expect(doc["keys"].first).to include("effective" => 90, "source" => "project", "source_file" => path, "resolve" => "parent")
     end
 
+    describe "with a scope" do
+      let!(:global_path) { write(:global, "alerts:\n  idle_after: 20m\n") }
+      let!(:project_path) { write("api", "alerts:\n  idle_after: 15m\n") }
+      let!(:worktree_path) { write("api.worktree-fix", "alerts:\n  idle_after: 5m\n") }
+
+      def row_for(workspace, scope, key = "alerts.idle_after")
+        report.show(workspace, key: key, scope: scope)["keys"].first
+      end
+
+      it "takes value and location from the project file alone and resolves effective up to the project" do
+        doc = report.show("api.worktree-fix", key: "alerts.idle_after", scope: "project")
+
+        expect(doc).to include("scope" => "project", "scope_layer" => "project")
+        expect(doc["keys"].first).to include("value" => "15m", "source" => "project", "source_file" => project_path, "line" => 2, "column" => 3, "effective" => 900)
+        expect(doc["keys"].first["layers"].map { |l| l["layer"] }).to eq(%w[global project])
+        expect(doc["keys"].first["layers"].last).to include("active" => true)
+      end
+
+      it "takes them from the global file for the global scope" do
+        expect(row_for("api.worktree-fix", "global")).to include("value" => "20m", "source" => "global", "source_file" => global_path, "effective" => 1200)
+        expect(row_for("api.worktree-fix", "global")["layers"].map { |l| l["layer"] }).to eq(%w[global])
+      end
+
+      it "takes them from the worktree file for the workspace scope, and 'worktree' is the same" do
+        expect(row_for("api.worktree-fix", "workspace")).to include("value" => "5m", "source" => "worktree", "source_file" => worktree_path, "effective" => 300)
+        expect(report.show("api.worktree-fix", scope: "worktree")).to include("scope" => "workspace", "scope_layer" => "worktree")
+      end
+
+      it "leaves value and location empty when the scope's file lacks the key, and resolves from the lower layers" do
+        File.write(project_path, "")
+
+        expect(row_for("api.worktree-fix", "project")).to include("value" => nil, "source_file" => nil, "line" => nil, "source" => "global", "effective" => 1200)
+        expect(row_for("api.worktree-fix", "global", "dev.ready_timeout")).to include("value" => nil, "source" => "default")
+      end
+
+      it "ignores a worktree override that sits above the scope" do
+        expect(row_for("api.worktree-fix", "project")["effective"]).to eq(900)
+        expect(row_for("api.worktree-fix", nil)["effective"]).to eq(300)
+      end
+
+      it "reads the project file for the workspace scope in a main checkout" do
+        doc = report.show("api", key: "alerts.idle_after", scope: "workspace")
+
+        expect(doc).to include("scope" => "workspace", "scope_layer" => "project")
+        expect(doc["keys"].first).to include("value" => "15m", "source_file" => project_path)
+      end
+
+      it "adds no scope fields without a scope" do
+        expect(report.show("api")).not_to include("scope", "scope_layer")
+      end
+
+      it "reports a scope file that can't be read as unreadable, with no value" do
+        File.write(project_path, "alerts: [unclosed\n")
+
+        expect(row_for("api.worktree-fix", "project")).to include("value" => nil, "source" => "unreadable", "source_file" => nil, "effective" => nil)
+      end
+
+      it "still masks a sensitive key" do
+        File.write(project_path, "dev:\n  up: secret-cmd\n")
+
+        expect(row_for("api", "project", "dev.up")).to include("value" => nil, "masked" => true, "effective" => nil, "source_file" => project_path)
+      end
+
+      it "refuses an unknown scope" do
+        expect { report.show("api", scope: "team") }.to raise_error(Workspace::UsageError, /Unknown scope 'team'/)
+      end
+    end
+
     describe "layers" do
       it "lists every layer that holds a value, lowest to highest precedence, with exactly the winner active" do
         global = write(:global, "handoff:\n  threshold: 20\n")

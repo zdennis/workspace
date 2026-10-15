@@ -64,7 +64,7 @@ RSpec.describe Workspace::Commands::Parent do
     it "raises when the given project name is unknown" do
       allow(project_config).to receive(:project_root_for).with("nope").and_return(nil)
 
-      expect { command.call("nope") }.to raise_error(Workspace::Error, /Unknown project 'nope'/)
+      expect { command.call("nope") }.to raise_error(Workspace::Error, /Unknown workspace 'nope'/)
     end
 
     it "raises when nothing resolves" do

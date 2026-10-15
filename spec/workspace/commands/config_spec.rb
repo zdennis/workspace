@@ -11,7 +11,19 @@ RSpec.describe Workspace::Commands::Config do
     lineage = Workspace::WorkspaceLineage.new
     file_backup = Workspace::FileBackup.new(output: output)
     command = described_class.new(project_settings: project_settings, lineage: lineage, file_backup: file_backup, output: output, error_output: error_output)
+    remember_last_write(command)
     [command, project_settings]
+  end
+
+  # Keeps the result of the latest set or unset on the command, for the specs that look at the write alone.
+  def remember_last_write(command)
+    command.singleton_class.class_eval do
+      attr_reader :last_write
+
+      %i[set unset].each do |name|
+        define_method(name) { |*args, **opts| super(*args, **opts).tap { |result| @last_write = result } }
+      end
+    end
   end
 
   describe "unparseable config" do
@@ -74,8 +86,8 @@ RSpec.describe Workspace::Commands::Config do
 
     it "returns the project it set the key for, and nil for a global key" do
       command, = build_command
-      expect(command.set("dev.up", "./start-dev", project: "api", cwd: Dir.pwd)).to eq("api")
-      expect(command.set("launch.headless", "true")).to be_nil
+      expect(command.set("dev.up", "./start-dev", project: "api", cwd: Dir.pwd)).to have_attributes(workspace: "api")
+      expect(command.set("launch.headless", "true")).to have_attributes(workspace: nil, layer: "global", scope: "global")
     end
 
     it "preserves other keys already in the project config" do
@@ -104,7 +116,7 @@ RSpec.describe Workspace::Commands::Config do
       command, = build_command
       project_dir = Dir.mktmpdir("ws-config-project")
 
-      expect { command.set("dev.bogus", "x", cwd: project_dir) }.to raise_error(Workspace::UsageError, /Unknown config key 'dev.bogus'/)
+      expect { command.set("dev.bogus", "x", cwd: project_dir) }.to raise_error(Workspace::Error, /Unknown config key 'dev.bogus'/) { |e| expect(e.code).to eq("unknown_config_key") }
     end
 
     it "rejects an invalid dev.stop_timeout duration" do
@@ -309,7 +321,7 @@ RSpec.describe Workspace::Commands::Config do
       it "set from the worktree writes the worktree's own file and leaves the project's alone" do
         project_settings.save("myapp", {"notes" => {"dir" => "/parent/notes"}})
 
-        expect(command.set("notes.dir", "/wt/notes", cwd: worktree_path)).to eq("myapp.worktree-wt1")
+        expect(command.set("notes.dir", "/wt/notes", cwd: worktree_path).workspace).to eq("myapp.worktree-wt1")
 
         expect(project_settings.load("myapp.worktree-wt1")).to eq({"notes" => {"dir" => "/wt/notes"}})
         expect(project_settings.load("myapp")).to eq({"notes" => {"dir" => "/parent/notes"}})
@@ -344,6 +356,24 @@ RSpec.describe Workspace::Commands::Config do
         expect { command.set("notes.dir", "/wt/notes", cwd: worktree_path) }
           .to raise_error(Workspace::UsageError, /no workspace name.*--name/)
         expect(project_settings.load("myapp")).to eq({})
+      end
+
+      it "refuses --scope workspace set, get and unset without writing, when the worktree has no marker" do
+        File.delete(File.join(worktree_path, ".workspace-project"))
+
+        expect { command.set("dev.ready_timeout", "90s", scope: "workspace", cwd: worktree_path) }.to raise_error(Workspace::UsageError, /no workspace name/)
+        expect { command.get("dev.ready_timeout", scope: "workspace", cwd: worktree_path) }.to raise_error(Workspace::UsageError, /no workspace name/)
+        expect { command.unset("dev.ready_timeout", scope: "workspace", cwd: worktree_path) }.to raise_error(Workspace::UsageError, /no workspace name/)
+        expect(Dir.glob(File.join(dir, "**", "*")).select { |f| File.file?(f) }).to be_empty
+      end
+
+      it "still writes the project file with --scope project from a worktree with no marker" do
+        File.delete(File.join(worktree_path, ".workspace-project"))
+
+        result = command.set("dev.ready_timeout", "90s", scope: "project", cwd: worktree_path)
+
+        expect(result.layer).to eq("project")
+        expect(project_settings.load(result.workspace).dig("dev", "ready_timeout")).to eq("90s")
       end
 
       it "set from the main checkout writes the project's file" do
@@ -591,7 +621,7 @@ RSpec.describe Workspace::Commands::Config do
       system("git", "-C", root, "worktree", "add", "-q", "-b", "wt1-branch", worktree_path, out: File::NULL, err: File::NULL)
       File.write(File.join(worktree_path, ".workspace-project"), "myapp.worktree-wt1")
 
-      command.set("locks.reap_interval", "1m", cwd: worktree_path)
+      command.set("agentd.poll_interval", "1m", cwd: worktree_path)
 
       expect(output.string).to include("workspace agentd myapp.worktree-wt1 --force, or relaunch")
       expect(output.string).not_to include("workspace agentd myapp --force")
@@ -659,7 +689,7 @@ RSpec.describe Workspace::Commands::Config do
       command, = build_command
       project_dir = Dir.mktmpdir("ws-config-project")
 
-      expect { command.get("dev.bogus", cwd: project_dir) }.to raise_error(Workspace::UsageError, /Unknown config key 'dev.bogus'/)
+      expect { command.get("dev.bogus", cwd: project_dir) }.to raise_error(Workspace::Error, /Unknown config key 'dev.bogus'/) { |e| expect(e.code).to eq("unknown_config_key") }
     end
   end
 
@@ -704,7 +734,7 @@ RSpec.describe Workspace::Commands::Config do
       command, = build_command
       project_dir = Dir.mktmpdir("ws-config-project")
 
-      expect { command.unset("dev.bogus", cwd: project_dir) }.to raise_error(Workspace::UsageError, /Unknown config key 'dev.bogus'/)
+      expect { command.unset("dev.bogus", cwd: project_dir) }.to raise_error(Workspace::Error, /Unknown config key 'dev.bogus'/) { |e| expect(e.code).to eq("unknown_config_key") }
     end
   end
 
@@ -907,7 +937,7 @@ RSpec.describe Workspace::Commands::Config do
       expect(command.last_write.comments_preserved).to be(true)
     end
 
-    it "sets last_write on every successful project and global set and unset" do
+    it "returns the write on every successful project and global set and unset" do
       command, project_settings = build_command(error_output: error_output)
       project_settings.save_global({})
       [
@@ -918,9 +948,8 @@ RSpec.describe Workspace::Commands::Config do
         -> { command.unset("context.source") },
         -> { command.unset("context.source") }
       ].each do |step|
-        command.instance_variable_set(:@last_write, nil)
         step.call
-        expect(command.last_write).to be_a(Workspace::Commands::Config::Write)
+        expect(command.last_write).to be_a(Workspace::Commands::Config::Result)
       end
     end
 
@@ -988,7 +1017,7 @@ RSpec.describe Workspace::Commands::Config do
 
     it "records nothing for a rejected key, value or unparseable file" do
       command = build_logged_command
-      expect { command.set("dev.bogus", "x", project: "api", cwd: Dir.pwd) }.to raise_error(Workspace::UsageError)
+      expect { command.set("dev.bogus", "x", project: "api", cwd: Dir.pwd) }.to raise_error(Workspace::Error) { |e| expect(e.details).to eq({"key" => "dev.bogus"}) }
       expect { command.set("dev.stop_timeout", "soon", project: "api", cwd: Dir.pwd) }.to raise_error(Workspace::UsageError)
 
       expect(event_log.events).to be_empty
@@ -998,7 +1027,302 @@ RSpec.describe Workspace::Commands::Config do
       broken = CLITestHelpers.unwritable_event_log(Dir.mktmpdir("ws-config-broken"))
       command = build_logged_command(broken)
 
-      expect(command.set("dev.up", "./go", project: "api", cwd: Dir.pwd)).to eq("api")
+      expect(command.set("dev.up", "./go", project: "api", cwd: Dir.pwd)).to have_attributes(workspace: "api", layer: "project", scope: "project")
+    end
+  end
+
+  describe "scopes" do
+    let(:output) { StringIO.new }
+    let(:error_output) { StringIO.new }
+    let(:known) { %w[myapp myapp.worktree-a myapp.worktree-b other] }
+    let(:project_config) { instance_double(Workspace::ProjectConfig, available_projects: known) }
+    let(:dir) { Dir.mktmpdir("ws-config-scope") }
+    let(:settings) { Workspace::ProjectSettings.new(config: Struct.new(:workspace_config_dir).new(dir)) }
+    let(:command) do
+      described_class.new(project_settings: settings, lineage: Workspace::WorkspaceLineage.new, file_backup: Workspace::FileBackup.new(output: output),
+        project_config: project_config, output: output, error_output: error_output)
+    end
+
+    after { FileUtils.rm_rf(dir) }
+
+    def refused(code = "scope_not_allowed")
+      raise_error(Workspace::Error) { |e| expect(e.code).to eq(code) }
+    end
+
+    describe "#set" do
+      it "writes the project file from a worktree name with --scope project" do
+        result = command.set("dev.ready_timeout", "90s", project: "myapp.worktree-a", scope: "project")
+
+        expect(settings.load("myapp")).to eq({"dev" => {"ready_timeout" => "90s"}})
+        expect(File.exist?(settings.project_config_path("myapp.worktree-a"))).to be(false)
+        expect(result).to have_attributes(workspace: "myapp", layer: "project", scope: "project", path: settings.project_config_path("myapp"))
+      end
+
+      it "writes the worktree's own file with --scope workspace, and --scope worktree is the same" do
+        command.set("dev.ready_timeout", "90s", project: "myapp.worktree-a", scope: "workspace")
+        result = command.set("dev.ready", "curl x", project: "myapp.worktree-a", scope: "worktree")
+
+        expect(settings.load("myapp.worktree-a")).to eq({"dev" => {"ready_timeout" => "90s", "ready" => "curl x"}})
+        expect(settings.load("myapp")).to eq({})
+        expect(result).to have_attributes(workspace: "myapp.worktree-a", layer: "worktree", scope: "workspace")
+      end
+
+      it "writes the global file with --scope global, for a key that is also layered" do
+        result = command.set("alerts.idle_after", "20m", project: "myapp", scope: "global")
+
+        expect(settings.load_global).to eq({"alerts" => {"idle_after" => "20m"}})
+        expect(settings.load("myapp")).to eq({})
+        expect(result).to have_attributes(workspace: nil, layer: "global", scope: "global", path: settings.global_config_path)
+      end
+
+      it "lets a project override a global key (workflows.defaults.include), and keeps writing global with no scope" do
+        command.set("workflows.defaults.include", "commits", project: "myapp", scope: "project")
+        expect(settings.load("myapp")).to eq({"workflows" => {"defaults" => {"include" => "commits"}}})
+        expect(settings.load_global).to eq({})
+
+        command.set("workflows.defaults.include", "review", project: "myapp")
+        expect(settings.load_global).to eq({"workflows" => {"defaults" => {"include" => "review"}}})
+      end
+
+      it "treats --scope workspace in a main checkout as the project file and says so in the result" do
+        result = command.set("dev.ready_timeout", "90s", project: "myapp", scope: "workspace")
+
+        expect(settings.load("myapp")).to eq({"dev" => {"ready_timeout" => "90s"}})
+        expect(result).to have_attributes(workspace: "myapp", layer: "project", scope: "project")
+      end
+
+      it "with no scope writes the highest allowed layer for an explicit worktree name" do
+        command.set("locks.idle_grace", "10m", project: "myapp.worktree-a")
+        command.set("dev.ready_timeout", "90s", project: "myapp.worktree-a")
+        command.set("notes.dir", "/n", project: "myapp.worktree-a")
+
+        expect(settings.load("myapp")).to eq({"locks" => {"idle_grace" => "10m"}})
+        expect(settings.load("myapp.worktree-a")).to eq({"dev" => {"ready_timeout" => "90s"}, "notes" => {"dir" => "/n"}})
+      end
+
+      it "refuses a scope the key does not allow, naming the allowed scopes, and writes nothing" do
+        expect { command.set("statusline.command", "x", project: "myapp", scope: "project") }.to raise_error(Workspace::Error) { |e|
+          expect(e.code).to eq("scope_not_allowed")
+          expect(e.details).to eq({"key" => "statusline.command", "scope" => "project", "allowed" => ["global"]})
+        }
+        expect { command.set("locks.idle_grace", "5m", project: "myapp.worktree-a", scope: "workspace") }.to raise_error(Workspace::Error) { |e|
+          expect(e.details).to include("key" => "locks.idle_grace", "allowed" => ["project"])
+        }
+        expect { command.set("notes.default_dir", "x", project: "myapp", scope: "workspace") }.not_to raise_error
+        expect { command.set("notes.default_dir", "x", project: "myapp.worktree-a", scope: "workspace") }.to raise_error(Workspace::Error) { |e|
+          expect(e.details["allowed"]).to eq(%w[global project])
+        }
+        expect(Dir.glob(File.join(dir, "**", "*.yml")).map { |f| File.basename(f) }).to eq(["myapp.yml"])
+      end
+
+      it "refuses a global scope for a project-only key" do
+        expect { command.set("dev.stop_timeout", "20s", project: "myapp", scope: "global") }.to raise_error(Workspace::Error) { |e|
+          expect(e.details).to eq({"key" => "dev.stop_timeout", "scope" => "global", "allowed" => ["project"]})
+        }
+      end
+
+      it "refuses an unknown scope as a usage error" do
+        expect { command.set("dev.up", "x", project: "myapp", scope: "team") }.to raise_error(Workspace::UsageError, /Unknown scope 'team'/)
+      end
+
+      it "refuses --scope workspace for a workspace nothing knows about, but not --scope project" do
+        expect { command.set("dev.ready_timeout", "90s", project: "ghost.worktree-x", scope: "workspace") }.to raise_error(Workspace::Error) { |e|
+          expect(e.code).to eq("unknown_workspace")
+          expect(e.details).to eq({"name" => "ghost.worktree-x"})
+        }
+        expect(File.exist?(settings.project_config_path("ghost.worktree-x"))).to be(false)
+
+        expect { command.set("dev.ready_timeout", "90s", project: "ghost.worktree-x", scope: "project") }.not_to raise_error
+        expect(settings.load("ghost")).to eq({"dev" => {"ready_timeout" => "90s"}})
+      end
+
+      it "accepts --scope workspace for a workspace that only has a config file" do
+        settings.save("quiet.worktree-q", {})
+
+        expect { command.set("dev.ready_timeout", "90s", project: "quiet.worktree-q", scope: "workspace") }.not_to raise_error
+      end
+
+      it "names every daemon a project-scope key reaches, siblings included, when set through a worktree name" do
+        command.set("locks.reap_interval", "1m", project: "myapp.worktree-a", scope: "project")
+
+        expect(output.string).to include("Takes effect the next time the session monitor starts " \
+          "(workspace agentd myapp --force, workspace agentd myapp.worktree-a --force, workspace agentd myapp.worktree-b --force, or relaunch).")
+        expect(output.string).not_to include("agentd other")
+      end
+
+      it "names only the workspace's daemon for a workspace-scope write, and every known one for a global write" do
+        command.set("agentd.poll_interval", "1m", project: "myapp.worktree-a", scope: "workspace")
+        expect(output.string).to include("(workspace agentd myapp.worktree-a --force, or relaunch)")
+
+        output.truncate(0)
+        command.set("agentd.poll_interval", "1m", project: "myapp", scope: "global")
+        expect(output.string).to include("(4 workspaces' session monitors read it; run `workspace daemon restart --all`, or relaunch)")
+      end
+
+      it "returns the write's outcome and logs the real layer" do
+        events = []
+        event_log = Object.new
+        event_log.define_singleton_method(:record) { |**args| events << args }
+        logged = described_class.new(project_settings: settings, lineage: Workspace::WorkspaceLineage.new, file_backup: Workspace::FileBackup.new(output: output),
+          event_log: event_log, project_config: project_config, output: output, error_output: error_output)
+
+        result = logged.set("dev.ready_timeout", "90s", project: "myapp.worktree-a", scope: "workspace")
+
+        expect(result).to have_attributes(key: "dev.ready_timeout", comments_preserved: true, backup: nil, affects: ["myapp.worktree-a"])
+        expect(events.last[:data]).to include("layer" => "worktree", "via" => "set", "workspace" => "myapp.worktree-a")
+      end
+
+      it "reports comment loss in the result of a scoped write" do
+        path = settings.project_config_path("myapp")
+        FileUtils.mkdir_p(File.dirname(path))
+        File.write(path, "# keep\ndev:\n  up: a\n")
+
+        result = command.set("dev.up", "b", project: "myapp.worktree-a", scope: "project")
+
+        expect(result.comments_preserved).to be(false)
+        expect(result.backup).to start_with("#{path}.workspace-backup-")
+      end
+    end
+
+    describe "#get" do
+      before do
+        settings.save("myapp", {"dev" => {"ready_timeout" => "120s"}})
+        settings.save("myapp.worktree-a", {"dev" => {"ready_timeout" => "90s"}})
+        settings.save_global({"dev" => {"release_on_session_end" => "false"}})
+      end
+
+      it "reads only the named layer's file" do
+        expect(command.get("dev.ready_timeout", project: "myapp.worktree-a", scope: "project")).to be(true)
+        expect(output.string.strip).to eq("120s")
+        output.truncate(0)
+        expect(command.get("dev.ready_timeout", project: "myapp.worktree-a", scope: "workspace")).to be(true)
+        expect(output.string.strip).to eq("90s")
+        output.truncate(0)
+        expect(command.get("dev.release_on_session_end", project: "myapp.worktree-a", scope: "workspace")).to be(false)
+        expect(error_output.string).to include("dev.release_on_session_end is not set for 'myapp.worktree-a'.")
+      end
+
+      it "reads the global file for a global scope on a layered key" do
+        expect(command.get("dev.release_on_session_end", project: "myapp", scope: "global")).to be(true)
+        expect(output.string.strip).to eq("false")
+      end
+
+      it "reads the file a no-scope set would write for an explicit worktree name" do
+        expect(command.get("dev.ready_timeout", project: "myapp.worktree-a")).to be(true)
+        expect(output.string.strip).to eq("90s")
+      end
+
+      it "refuses a scope the key does not allow" do
+        expect { command.get("statusline.command", project: "myapp", scope: "workspace") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("scope_not_allowed") }
+      end
+    end
+
+    describe "refusal message" do
+      it "echoes the scope typed, says the project file is meant in a main checkout, and gives the reason and the scope to use" do
+        expect { command.set("statusline.command", "x", project: "myapp", scope: "workspace") }.to raise_error(Workspace::Error) { |e|
+          expect(e.message).to eq("statusline.command is a machine-wide setting, so it can't be set in the workspace scope (the project file here). Use --scope global.")
+          expect(e.details).to eq({"key" => "statusline.command", "scope" => "workspace", "allowed" => ["global"]})
+        }
+      end
+
+      it "names the typed scope for a worktree and for get and unset" do
+        expect { command.get("dev.stop_timeout", project: "myapp.worktree-a", scope: "workspace") }.to raise_error(Workspace::Error) { |e|
+          expect(e.message).to eq("dev.stop_timeout is a project-wide setting shared by its worktrees, so it can't be read from the workspace scope. Use --scope project.")
+        }
+        expect { command.unset("statusline.command", project: "myapp", scope: "project") }.to raise_error(Workspace::Error) { |e|
+          expect(e.message).to eq("statusline.command is a machine-wide setting, so it can't be unset in the project scope. Use --scope global.")
+        }
+      end
+
+      it "reports an unknown workspace as Unknown workspace for --scope workspace" do
+        expect { command.set("dev.ready_timeout", "90s", project: "nosuch.worktree-x", scope: "workspace") }
+          .to raise_error(Workspace::Error, "Unknown workspace 'nosuch.worktree-x'") { |e| expect(e.code).to eq("unknown_workspace") }
+      end
+
+      it "rejects an unknown scope as a usage error" do
+        expect { command.set("dev.up", "x", project: "myapp", scope: "bogus") }.to raise_error(Workspace::UsageError, "Unknown scope 'bogus'. Use global, project or workspace.")
+      end
+    end
+
+    describe "unset of a key that is not set" do
+      it "is a no-op: nothing written, no backup, and the text says so" do
+        settings.save("myapp", {"dev" => {"up" => "x"}})
+        path = settings.project_config_path("myapp")
+        before_text = File.read(path)
+
+        result = command.unset("dev.ready_timeout", project: "myapp", scope: "project")
+
+        expect(result.changed).to be(false)
+        expect(File.read(path)).to eq(before_text)
+        expect(Dir.glob("#{path}.workspace-backup-*")).to be_empty
+        expect(output.string).to include("dev.ready_timeout was not set for 'myapp'; nothing changed.")
+      end
+
+      it "is a no-op for a missing file and for the global file" do
+        expect(command.unset("dev.ready_timeout", project: "myapp", scope: "project").changed).to be(false)
+        expect(command.unset("launch.headless", project: "myapp").changed).to be(false)
+        expect(File.exist?(settings.global_config_path)).to be(false)
+      end
+    end
+
+    describe "restart hint" do
+      it "prints on unset of a restart-required key, listing a few workspaces" do
+        settings.save("myapp.worktree-a", {"agentd" => {"poll_interval" => "1m"}})
+
+        command.unset("agentd.poll_interval", project: "myapp.worktree-a", scope: "workspace")
+
+        expect(output.string).to include("Takes effect the next time the session monitor starts (workspace agentd myapp.worktree-a --force, or relaunch).")
+      end
+
+      it "condenses a global write over many workspaces to a count and one command" do
+        command.set("alerts.idle_after", "20m", project: "myapp", scope: "global")
+
+        expect(output.string).to include("(4 workspaces' session monitors read it; run `workspace daemon restart --all`, or relaunch)")
+        expect(output.string).not_to include("agentd myapp --force")
+      end
+    end
+
+    describe "#unset" do
+      before do
+        settings.save("myapp", {"dev" => {"ready_timeout" => "120s"}})
+        settings.save("myapp.worktree-a", {"dev" => {"ready_timeout" => "90s"}})
+      end
+
+      it "removes the key from the named layer only" do
+        result = command.unset("dev.ready_timeout", project: "myapp.worktree-a", scope: "workspace")
+
+        expect(settings.load("myapp.worktree-a")).to eq({"dev" => {}})
+        expect(settings.load("myapp")).to eq({"dev" => {"ready_timeout" => "120s"}})
+        expect(result).to have_attributes(layer: "worktree", scope: "workspace", workspace: "myapp.worktree-a")
+      end
+
+      it "removes it from the project file with --scope project" do
+        command.unset("dev.ready_timeout", project: "myapp.worktree-a", scope: "project")
+
+        expect(settings.load("myapp")).to eq({"dev" => {}})
+        expect(settings.load("myapp.worktree-a")).to eq({"dev" => {"ready_timeout" => "90s"}})
+      end
+
+      it "refuses a scope the key does not allow and leaves the files alone" do
+        expect { command.unset("dev.stop_timeout", project: "myapp.worktree-a", scope: "workspace") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("scope_not_allowed") }
+        expect(settings.load("myapp.worktree-a")).to eq({"dev" => {"ready_timeout" => "90s"}})
+      end
+    end
+
+    describe "an unparseable file" do
+      it "is refused with config_parse, naming the file and quoting no value" do
+        path = settings.project_config_path("myapp")
+        FileUtils.mkdir_p(File.dirname(path))
+        File.write(path, "dev:\n  up: sekrit-token-123\n  ready: [unclosed\n")
+
+        expect { command.set("dev.ready_timeout", "90s", project: "myapp.worktree-a", scope: "project") }.to raise_error(Workspace::ConfigParseError) { |e|
+          expect(e.code).to eq("config_parse")
+          expect(e.details["path"]).to eq(path)
+          expect(e.message).not_to include("sekrit-token-123")
+          expect(e.details["reason"]).not_to include("sekrit-token-123")
+        }
+        expect(File.read(path)).to include("sekrit-token-123")
+      end
     end
   end
 end

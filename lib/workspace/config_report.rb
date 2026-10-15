@@ -36,18 +36,27 @@ module Workspace
       @notes_dir = notes_dir
     end
 
+    # Layers each scope keeps, and the one whose file a scope's own `value` comes from.
+    SCOPE_LAYERS = {"global" => %w[global], "project" => %w[project global], "workspace" => %w[worktree project global]}.freeze
+
     # @param workspace [String] workspace name; a worktree reads its parent project's file too
     # @param key [String, nil] one key to report instead of every key
+    # @param scope [String, nil] "global", "project" or "workspace" ("worktree" is the same). With one, each row's
+    #   `value`, `source_file`, `line` and `column` come from that scope's file alone (nil when the key isn't in
+    #   it), and `effective`, `source` and `layers` cover the layers up to it. In a main checkout "workspace" is
+    #   the project's file. The document then carries `scope` and `scope_layer`.
     # @return [Hash] the `config show --json` document; with `key`, `keys` holds just that key's row
     # @raise [Workspace::Error] code `unknown_workspace` when nothing is known about the name,
     #   code `unknown_config_key` when `key` names no key
-    def show(workspace, key: nil)
+    # @raise [Workspace::UsageError] for a scope that is none of the three
+    def show(workspace, key: nil, scope: nil)
       keys = key ? [ConfigSchema.key(key)] : ConfigSchema.all
       raise Workspace::Error.new("Unknown config key '#{key}'. Keys: #{ConfigSchema.all.map(&:name).join(", ")}", code: "unknown_config_key", details: {"key" => key}) if keys.first.nil?
 
       scan = scan(workspace)
+      scan.scope = normalize_scope(scope, scan)
       problems = problems_for(scan)
-      {
+      doc = {
         "schema_version" => JSON_SCHEMA_VERSION,
         "ok" => true,
         "workspace" => workspace,
@@ -57,6 +66,11 @@ module Workspace
         "unknown_keys" => problems.select { |p| p["code"] == "unknown_key" }
           .map { |p| p.slice("key", "layer", "line", "column") }
       }
+      if scan.scope
+        doc["scope"] = scan.scope
+        doc["scope_layer"] = scan.scope_layer
+      end
+      doc
     end
 
     # @param workspace [String] workspace name
@@ -75,12 +89,32 @@ module Workspace
 
     private
 
-    Scan = Struct.new(:workspace, :parent, :files, keyword_init: true) do
+    Scan = Struct.new(:workspace, :parent, :files, :scope, keyword_init: true) do
       def file(layer) = files.find { |f| f.layer == layer }
 
       def worktree? = !parent.nil?
+
+      # The layer whose file the scope's own values come from, nil without a scope.
+      def scope_layer
+        return nil unless scope
+        return scope unless scope == "workspace"
+        worktree? ? "worktree" : "project"
+      end
+
+      # The layers a scope keeps; all of them without one.
+      def layers_upto
+        return %w[worktree project global] unless scope
+        SCOPE_LAYERS.fetch(scope)
+      end
     end
     private_constant :Scan
+
+    def normalize_scope(scope, scan)
+      return nil if scope.nil?
+      scope = "workspace" if scope == "worktree"
+      raise Workspace::UsageError, "Unknown scope '#{scope}'. Scopes: global, project, workspace" unless SCOPE_LAYERS.key?(scope)
+      scope
+    end
 
     def scan(workspace)
       split = WorkspaceLineage.split_worktree_name(workspace)
@@ -90,7 +124,7 @@ module Workspace
       files << ConfigFile.read("project", @project_settings.project_config_path(parent || workspace))
       files << ConfigFile.read("global", @project_settings.global_config_path)
       known = @project_config.available_projects.include?(workspace) || files.first(files.size - 1).any?(&:exists)
-      raise Workspace::Error.new("Unknown project '#{workspace}'", code: "unknown_workspace", details: {"name" => workspace}) unless known
+      raise Workspace::Error.new("Unknown workspace '#{workspace}'", code: "unknown_workspace", details: {"name" => workspace}) unless known
       Scan.new(workspace: workspace, parent: parent, files: files)
     end
 
@@ -102,6 +136,10 @@ module Workspace
     # A key with no read order (`:own`, `:merge`, `:none`, and the derived `dev.configured`) is
     # reported from the one file its scope and the workspace point at, as before.
     def read_layers(key, scan)
+      all_read_layers(key, scan) & scan.layers_upto
+    end
+
+    def all_read_layers(key, scan)
       order = ConfigLayering.read_order(key, worktree: scan.worktree?)
       return order unless order.empty?
       return ["global"] if key.global?
@@ -119,9 +157,10 @@ module Workspace
     def hits(key, scan)
       data = scan.files.to_h { |f| [f.layer, f.data] }
       order = ConfigLayering.read_order(key, worktree: scan.worktree?)
-      return ConfigLayering.hits(key, data, worktree: scan.worktree?) unless order.empty?
+      return ConfigLayering.hits(key, data, worktree: scan.worktree?).select { |hit| scan.layers_upto.include?(hit.layer) } unless order.empty?
       return [] if key.name == DEV_CONFIGURED
-      layer = read_layer(key, scan)
+      layer = all_read_layers(key, scan).first
+      return [] unless scan.layers_upto.include?(layer)
       value = dig(scan.file(layer).data, key.name.split("."))
       value.nil? ? [] : [ConfigLayering::Hit.new(layer: layer, value: value)]
     end
@@ -155,16 +194,25 @@ module Workspace
     def key_row(key, scan, problems)
       layers = read_layers(key, scan)
       files = layers.map { |l| scan.file(l) }
-      win_layer, stored = winner(key, scan)
-      file = scan.file(win_layer || layers.first)
+      win_layer, win_stored = winner(key, scan)
       own_problems = row_problems(key, problems)
-      masked = key.sensitive && !stored.nil?
-      line, column = file.locations[key.name]
       source = if files.any? { |f| !f.readable? } then "unreadable"
       elsif win_layer.nil? then "default"
       else
         win_layer
       end
+      # With a scope, the row's own value is the scope's file alone, not the winner.
+      if scan.scope
+        file = scan.file(scan.scope_layer)
+        stored = dig(file.data, key.name.split("."))
+        shown = !stored.nil? && file.readable?
+      else
+        file = scan.file(win_layer || layers.first)
+        stored = win_stored
+        shown = source == win_layer
+      end
+      masked = key.sensitive && !stored.nil?
+      line, column = file.locations[key.name]
       row = {
         "key" => key.name,
         "scope" => key.scope.to_s,
@@ -172,11 +220,11 @@ module Workspace
         "value" => masked ? nil : ConfigFile.json_safe(stored),
         "masked" => masked,
         "default" => key.default,
-        "effective" => effective(key, stored, source, own_problems),
+        "effective" => effective(key, win_stored, source, own_problems),
         "source" => source,
-        "source_file" => (source == win_layer) ? file.path : nil,
-        "line" => (source == win_layer) ? line : nil,
-        "column" => (source == win_layer) ? column : nil,
+        "source_file" => shown ? file.path : nil,
+        "line" => shown ? line : nil,
+        "column" => shown ? column : nil,
         "resolve" => key.resolve.to_s,
         "target_layer" => target_layer(key, scan),
         "affects" => affects(key, scan),

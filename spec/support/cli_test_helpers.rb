@@ -866,17 +866,27 @@ module CLITestHelpers
       @get_returns = get_returns
     end
 
-    def set(key, value, project: nil, cwd: Dir.pwd)
-      @calls << {action: :set, key: key, value: value, project: project, cwd: cwd}
+    def set(key, value, project: nil, scope: nil, cwd: Dir.pwd)
+      @calls << {action: :set, key: key, value: value, project: project, scope: scope, cwd: cwd}
+      result(key, project, scope)
     end
 
-    def get(key, project: nil, cwd: Dir.pwd)
-      @calls << {action: :get, key: key, project: project, cwd: cwd}
+    def get(key, project: nil, scope: nil, cwd: Dir.pwd)
+      @calls << {action: :get, key: key, project: project, scope: scope, cwd: cwd}
       @get_returns
     end
 
-    def unset(key, project: nil, cwd: Dir.pwd)
-      @calls << {action: :unset, key: key, project: project, cwd: cwd}
+    def unset(key, project: nil, scope: nil, cwd: Dir.pwd)
+      @calls << {action: :unset, key: key, project: project, scope: scope, cwd: cwd}
+      result(key, project, scope)
+    end
+
+    private
+
+    def result(key, project, scope)
+      layer = (scope == "global") ? "global" : "project"
+      Workspace::Commands::Config::Result.new(key: key, workspace: (layer == "global") ? nil : project, layer: layer, scope: layer,
+        path: "/cfg/#{project || "config"}.yml", comments_preserved: true, backup: nil, affects: [])
     end
   end
 

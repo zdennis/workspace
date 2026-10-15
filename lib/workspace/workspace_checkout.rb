@@ -23,7 +23,7 @@ module Workspace
           code: "not_in_workspace", details: {"path" => working_dir})
       end
       root = @project_config.project_root_for(name)
-      raise Workspace::Error.new("Unknown project '#{name}'", code: "unknown_workspace", details: {"name" => name}) unless root
+      raise Workspace::Error.new("Unknown workspace '#{name}'", code: "unknown_workspace", details: {"name" => name}) unless root
 
       path = File.expand_path(root)
       branch = @git.worktree_branch(path)

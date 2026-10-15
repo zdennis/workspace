@@ -18,7 +18,7 @@ RSpec.describe Workspace::Commands::Review do
     proj = project
     Class.new do
       define_method(:all) { [proj] }
-      define_method(:find) { |token| (token == "app" || proj.members.any? { |m| m.workspace == token }) ? proj : raise(Workspace::Error.new("Unknown project '#{token}'", code: "unknown_workspace")) }
+      define_method(:find) { |token| (token == "app" || proj.members.any? { |m| m.workspace == token }) ? proj : raise(Workspace::Error.new("Unknown workspace '#{token}'", code: "unknown_workspace")) }
       define_method(:for_cwd) { |_cwd| proj }
     end.new
   end
@@ -570,7 +570,7 @@ RSpec.describe Workspace::Commands::Review do
     end
 
     it "raises for an unknown project without --json" do
-      expect { review.list(project: "nope") }.to raise_error(Workspace::Error, /Unknown project 'nope'/)
+      expect { review.list(project: "nope") }.to raise_error(Workspace::Error, /Unknown workspace 'nope'/)
     end
 
     it "names a workspace whose daemon answered with an error" do

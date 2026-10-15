@@ -397,7 +397,7 @@ module Workspace
       return @working_dir unless name
 
       root = @project_config.project_root_for(name)
-      raise Error.new("Unknown project '#{name}'", code: "unknown_workspace", details: {"name" => name}) unless root
+      raise Error.new("Unknown workspace '#{name}'", code: "unknown_workspace", details: {"name" => name}) unless root
 
       File.expand_path(root)
     end
@@ -4324,7 +4324,7 @@ module Workspace
       unless names.empty?
         names.each do |name|
           next if @project_config.project_root_for(name)
-          raise Error.new("Unknown project '#{name}'", code: "unknown_workspace", details: {"name" => name})
+          raise Error.new("Unknown workspace '#{name}'", code: "unknown_workspace", details: {"name" => name})
         end
         return names.uniq
       end
@@ -4444,14 +4444,17 @@ module Workspace
 
     def cmd_config_set(args)
       project = nil
+      scope = nil
       json = false
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace config set <key> <value> [options]"
+        opts.banner = "Usage: workspace config set [options] <key> [--] <value>"
         opts.separator ""
-        opts.separator "Sets a project config key. The project is inferred from cwd"
-        opts.separator "(a worktree resolves to its parent project, except for notes.dir:"
-        opts.separator "a worktree owns its notes.dir, so in a worktree it writes the worktree's"
-        opts.separator "own file; --name picks the file from anywhere)."
+        opts.separator "Sets a config key in one layer's file. With no --scope the highest layer the"
+        opts.separator "key allows at or below the workspace is written: the workspace's own file for a"
+        opts.separator "key a worktree may override (dev.ready_timeout, notes.dir), else the project's"
+        opts.separator "file, and the global file for a key that is global-only. The workspace is"
+        opts.separator "inferred from cwd; --name picks it from anywhere. `workspace config show --json`"
+        opts.separator "lists the layers each key allows (overridable_in)."
         opts.separator ""
         opts.separator "Allowed keys: #{ConfigSchema.settable_names.join(", ")}"
         opts.separator ""
@@ -4462,10 +4465,24 @@ module Workspace
         opts.separator "valid YAML is left untouched and the command fails; fix or remove it first."
         opts.separator ""
         opts.separator "Options:"
-        opts.on("--project NAME", "--name NAME", "Project to configure instead of the one inferred from cwd (--name is the same)") { |v| project = v }
+        opts.on("--project NAME", "--name NAME", "Workspace to configure instead of the one inferred from cwd (--name is the same)") { |v| project = v }
+        opts.on("--scope SCOPE", "Layer to write: global, project or workspace (worktree is the same). A key that doesn't allow it fails with code scope_not_allowed") { |v| scope = v }
         opts.on("--json", "Print one action document (see docs/README.json.md) instead of text, which goes to stderr") { json = true }
         opts.separator ""
+        opts.separator "Precedence: workspace > project > global > default (`workspace config --help`, docs/README.config.md \"Scopes\")."
+        opts.separator ""
+        opts.separator "Scopes: global is the machine-wide file, project is the main checkout's file and"
+        opts.separator "workspace is the workspace's own file. In a main checkout there is no file of its"
+        opts.separator "own besides the project's, so workspace writes the project file. The --json row"
+        opts.separator "reports scope, layer (global, project or worktree), file and the key's effective"
+        opts.separator "value after the write."
+        opts.separator ""
+        opts.separator "A value that starts with a dash goes after --:  workspace config set dev.up -- -x"
+        opts.separator ""
         opts.separator "Examples:"
+        opts.separator "  workspace config set --scope project handoff.auto true"
+        opts.separator "  workspace config set --scope workspace dev.ready_timeout 90s"
+        opts.separator "  workspace config set --scope project workflows.defaults.include commits"
         opts.separator "  workspace config set dev.up \"./start-dev\""
         opts.separator "  workspace config set dev.stop_timeout 20s"
         opts.separator "  workspace config set locks.idle_grace 10m"
@@ -4492,42 +4509,97 @@ module Workspace
       raise UsageError, parser.help if key.nil? || value.nil? || args.any?
 
       run_action("config set", json: json) do
-        name = @config_command.set(key, value, project: project, cwd: @working_dir)
-        {results: json ? [action_row(name, "set", key: key, value: value, global: name.nil?, comments_preserved: @config_command.last_write.comments_preserved)] : []}
+        result = @config_command.set(key, value, project: project, scope: config_scope(scope), cwd: @working_dir)
+        {results: json ? [config_write_row(result, "set", project, value: value)] : []}
       end
+    end
+
+    CONFIG_SCOPE_CHOICES = %w[global project workspace worktree].freeze
+
+    # "worktree" is another spelling of "workspace".
+    def config_scope(scope)
+      return nil if scope.nil?
+      raise UsageError, "Unknown scope '#{scope}'. Use global, project or workspace." unless CONFIG_SCOPE_CHOICES.include?(scope)
+      (scope == "worktree") ? "workspace" : scope
+    end
+
+    # The `config set/unset --json` row: the existing fields plus the layer written and the key's
+    # effective value after the write (nil for a sensitive key or when it can't be worked out).
+    def config_write_row(result, outcome, project, value: nil)
+      extra = {key: result.key}
+      extra[:value] = value if outcome == "set"
+      outcome = "noop" if result.changed == false
+      action_row(result.workspace, outcome, **extra, global: result.layer == "global", scope: result.scope, layer: result.layer,
+        file: result.path, comments_preserved: result.comments_preserved, effective: config_effective_after(result.key, project))
+    end
+
+    def config_effective_after(key, project)
+      return nil unless @config_report
+      workspace = project || @project_detector.detect(@working_dir)
+      return nil unless workspace
+      @config_report.show(workspace, key: key)["keys"].first["effective"]
+    rescue Workspace::Error
+      nil
     end
 
     def cmd_config_get(args)
       project = nil
+      scope = nil
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: workspace config get <key> [options]"
         opts.separator ""
-        opts.separator "In a worktree, notes.dir is read from the worktree's own file, not the project's."
+        opts.separator "Reads one layer's file, not the layered result (`workspace config <key>`"
+        opts.separator "gives that). With no --scope it reads the file `config set` would write: the"
+        opts.separator "workspace's own for a key a worktree may override, else the project's, else the"
+        opts.separator "global file."
         opts.separator ""
         opts.separator "Prints the value on stdout and exits 0. If the key has no value,"
         opts.separator "prints nothing on stdout, a note on stderr, and exits 1."
         opts.separator ""
-        opts.on("--project NAME", "--name NAME", "Project to read instead of the one inferred from cwd (--name is the same)") { |v| project = v }
+        opts.separator "Options:"
+        opts.on("--project NAME", "--name NAME", "Workspace to read instead of the one inferred from cwd (--name is the same)") { |v| project = v }
+        opts.on("--scope SCOPE", "Layer whose file to read: global, project or workspace (worktree is the same); scope_not_allowed when the key can't live there") { |v| scope = v }
+        opts.separator ""
+        opts.separator "Examples:"
+        opts.separator "  workspace config get dev.up"
+        opts.separator "  workspace config get --scope project handoff.auto --name myapp.worktree-fix"
       end
       parser.parse!(args)
       key = args.shift
       raise UsageError, parser.help if key.nil? || args.any?
 
-      found = @config_command.get(key, project: project, cwd: @working_dir)
+      found = @config_command.get(key, project: project, scope: config_scope(scope), cwd: @working_dir)
       @exit_handler.exit(1) unless found
     end
 
     def cmd_config_unset(args)
       project = nil
+      scope = nil
+      json = false
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: workspace config unset <key> [options]"
-        opts.on("--project NAME", "--name NAME", "Project to configure instead of the one inferred from cwd (--name is the same)") { |v| project = v }
+        opts.separator ""
+        opts.separator "Removes a key from one layer's file (the one `config set` would write, unless"
+        opts.separator "--scope names another). The layers below it then apply again. Like `set`, it"
+        opts.separator "rewrites the file, keeps a .workspace-backup-* copy and drops comments."
+        opts.separator ""
+        opts.separator "Options:"
+        opts.on("--project NAME", "--name NAME", "Workspace to configure instead of the one inferred from cwd (--name is the same)") { |v| project = v }
+        opts.on("--scope SCOPE", "Layer to remove it from: global, project or workspace (worktree is the same); scope_not_allowed when the key can't live there") { |v| scope = v }
+        opts.on("--json", "Print one action document (see docs/README.json.md) instead of text, which goes to stderr") { json = true }
+        opts.separator ""
+        opts.separator "Examples:"
+        opts.separator "  workspace config unset dev.ready"
+        opts.separator "  workspace config unset --scope workspace dev.ready_timeout --name myapp.worktree-fix --json"
       end
       parser.parse!(args)
       key = args.shift
       raise UsageError, parser.help if key.nil? || args.any?
 
-      @config_command.unset(key, project: project, cwd: @working_dir)
+      run_action("config unset", json: json) do
+        result = @config_command.unset(key, project: project, scope: config_scope(scope), cwd: @working_dir)
+        {results: json ? [config_write_row(result, "unset", project)] : []}
+      end
     end
 
     def cmd_config_validate(args)
@@ -4573,7 +4645,7 @@ module Workspace
 
     # The workspace `config show/validate` act on: the named one, else the one detected from cwd.
     def config_workspace(name, parser)
-      name || @project_detector.detect(@working_dir) || raise(UsageError, parser.help)
+      name || @project_detector.detect(@working_dir) || raise(UsageError, "Not in a workspace. Pass --name <workspace>.\n\n#{parser.help}")
     end
 
     def cmd_tmux(args)
@@ -4639,7 +4711,7 @@ module Workspace
     end
 
     def cmd_config_show(args)
-      global = false
+      scope = nil
       json = false
       name = nil
       parser = OptionParser.new do |opts|
@@ -4649,9 +4721,15 @@ module Workspace
         opts.separator "that key's effective value (layering and defaults included, unlike"
         opts.separator "'workspace config get', which reads one file)."
         opts.separator ""
+        opts.separator "With --scope, show one layer: the file of that scope (text) or, in --json, each"
+        opts.separator "row's value/source_file/line/column from that file alone, with effective, source"
+        opts.separator "and layers covering global up to that scope (project: global < project)."
+        opts.separator ""
         opts.separator "Options:"
-        opts.on("--global", "Show global configuration instead of project config") do
-          global = true
+        opts.on("--scope SCOPE", "Show one layer: global, project or workspace (worktree is the same). In a main checkout workspace is the project's file") { |v| scope = config_scope(v) }
+        opts.on("--global", "Same as --scope global") do
+          raise UsageError, "--global and --scope #{scope} disagree: pass one" if scope && scope != "global"
+          scope = "global"
         end
         opts.on("--name NAME", "Workspace to show instead of the one inferred from cwd") { |v| name = v }
         opts.on("--json", "Print the show document as JSON: every key with its effective value, source layer and files, or with a key just that key's row (see docs/README.config.md)") { json = true }
@@ -4714,6 +4792,11 @@ module Workspace
         opts.separator "                                 and {branch} are filled in. Unset: tmp/workspace-notes"
         opts.separator "                                 inside the worktree"
         opts.separator ""
+        opts.separator "Layers (highest wins): workspace (a worktree's own file) > project (the main"
+        opts.separator "checkout's file) > global > the built-in default. Each key lists the layers it"
+        opts.separator "allows (overridable_in); see docs/README.config.md. Writes: 'config set/get/unset"
+        opts.separator "--scope S'."
+        opts.separator ""
         opts.separator "Note: 'show', 'validate', 'set', 'get', and 'unset' are reserved as the first"
         opts.separator "argument here and are always treated as subcommands. A key named one of"
         opts.separator "them, or a workspace named one of them, is reached with --name."
@@ -4724,6 +4807,8 @@ module Workspace
         opts.separator "  workspace config dev.up         # that key's effective value"
         opts.separator "  workspace config notes.dir      # where this workspace's notes go"
         opts.separator "  workspace config --global      # show global config"
+        opts.separator "  workspace config --scope project --name myapp.worktree-fix    # the project's file"
+        opts.separator "  workspace config --scope project --json dev.up    # dev.up as the project's file has it, and effective up to project"
         opts.separator "  workspace config dev.up --json    # that key's row in the show document"
         opts.separator "  workspace config validate --name myproject --json    # problems, with line and column"
         opts.separator "  workspace config set dev.up \"./start-dev\""
@@ -4740,8 +4825,7 @@ module Workspace
       raise UsageError, parser.help if args.any?
       if key
         raise UsageError, "Unknown config key '#{key}'. Keys: #{ConfigSchema.all.map(&:name).join(", ")}" if ConfigSchema.key(key).nil?
-        raise UsageError, "--global shows the whole global file; a key needs a workspace (drop --global; use --name to pick one)" if global
-        doc = config_report.show(config_workspace(name, parser), key: key)
+        doc = config_report.show(config_workspace(name, parser), key: key, **config_show_scope(scope))
         if json
           @output.puts JSON.generate(doc)
         else
@@ -4752,12 +4836,11 @@ module Workspace
       end
 
       if json
-        raise UsageError, "--json can't be combined with --global: the global file is one of the layers in the document" if global
-        @output.puts JSON.generate(config_report.show(config_workspace(name, parser)))
+        @output.puts JSON.generate(config_report.show(config_workspace(name, parser), **config_show_scope(scope)))
         return
       end
 
-      if global
+      if scope == "global"
         data = @project_settings.load_global
         path = @project_settings.global_config_path
         @output.puts "# #{path}"
@@ -4767,8 +4850,9 @@ module Workspace
           @output.puts YAML.dump(data)
         end
       else
-        project = name || @project_detector.detect(@working_dir)
-        raise UsageError, parser.help unless project
+        project = config_workspace(name, parser)
+        config_report.show(project, scope: scope) if scope == "workspace"
+        project = WorkspaceLineage.split_worktree_name(project)&.first || project if scope == "project"
         data = @project_settings.load(project)
         path = @project_settings.project_config_path(project)
         @output.puts "# #{path}"
@@ -4778,6 +4862,10 @@ module Workspace
           @output.puts YAML.dump(data)
         end
       end
+    end
+
+    def config_show_scope(scope)
+      scope ? {scope: scope} : {}
     end
 
     # Prints one key row from `config show --json` for `workspace config <key>`:

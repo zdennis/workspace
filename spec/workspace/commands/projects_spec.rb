@@ -462,13 +462,13 @@ RSpec.describe Workspace::Commands::Projects do
       end
 
       it "raises for an unknown project" do
-        expect { command.members(name: "nope") }.to raise_error(Workspace::Error, "Unknown project 'nope'")
+        expect { command.members(name: "nope") }.to raise_error(Workspace::Error, "Unknown workspace 'nope'")
         expect(output.string).to eq("")
       end
 
       it "prints an unknown project as a JSON error with exit code 1" do
         expect(command.members(name: "nope", json: true)).to eq(exit_code: 1)
-        expect(payload).to eq("schema_version" => 1, "ok" => false, "code" => "unknown_workspace", "details" => {"name" => "nope"}, "error" => "Unknown project 'nope'")
+        expect(payload).to eq("schema_version" => 1, "ok" => false, "code" => "unknown_workspace", "details" => {"name" => "nope"}, "error" => "Unknown workspace 'nope'")
       end
 
       it "reports a directory in no project as an error" do
@@ -807,13 +807,13 @@ RSpec.describe Workspace::Commands::Projects do
       end
 
       it "raises for an unknown project" do
-        expect { command.show(name: "nope") }.to raise_error(Workspace::Error, "Unknown project 'nope'")
+        expect { command.show(name: "nope") }.to raise_error(Workspace::Error, "Unknown workspace 'nope'")
         expect(output.string).to eq("")
       end
 
       it "prints an unknown project as a JSON error with exit code 1" do
         expect(command.show(name: "nope", json: true)).to eq(exit_code: 1)
-        expect(payload).to eq("schema_version" => 1, "ok" => false, "code" => "unknown_workspace", "details" => {"name" => "nope"}, "error" => "Unknown project 'nope'")
+        expect(payload).to eq("schema_version" => 1, "ok" => false, "code" => "unknown_workspace", "details" => {"name" => "nope"}, "error" => "Unknown workspace 'nope'")
       end
 
       it "prints a JSON error when the working directory is in no project" do

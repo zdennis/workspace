@@ -35,7 +35,7 @@ These commands take `--json` and print one action document: `launch`, `stop`, `k
 ```
 
 - `action` is the command's words: `launch`, `dev up`, `lock release`, `config set`, `pipeline start`.
-- `results` has one row per target with `workspace` (null when the command has none, such as a global `config set`), `outcome`, `reason` (a short machine-readable cause, or null) and `message`. A row may carry more keys, named on the command's page (`iterm_window_id` for `launch` and `focus`, `play` for `launch --play`, `prompt_sent` and `pane` for `launch` and `pane` for `run --json`, `key`, `value` and `comments_preserved` for `config set`, `work_item_ref` for `pipeline`, `run` for `workflow`, and `run_id`, `step`, `attempt` and `reported` for `step done`).
+- `results` has one row per target with `workspace` (null when the command has none, such as a global `config set`), `outcome`, `reason` (a short machine-readable cause, or null) and `message`. A row may carry more keys, named on the command's page (`iterm_window_id` for `launch` and `focus`, `play` for `launch --play`, `prompt_sent` and `pane` for `launch` and `pane` for `run --json`, `key`, `value`, `global`, `scope`, `layer`, `file`, `comments_preserved` and `effective` for `config set`, the same without `value` for `config unset` (whose `outcome` is `unset`, or `noop` when the key was not set in that file and nothing was written), `effective` keeping the type `config show` uses for the key (a number may be a float, a boolean may be a string), `work_item_ref` for `pipeline`, `run` for `workflow`, and `run_id`, `step`, `attempt` and `reported` for `step done`).
 - `outcome` is per command (see its page). `failed` and `refused` count as failures.
 - `status` is `ok` (no row failed), `partial` (some did), `failed` (all did, or the command exited non-zero), `cancelled` (a prompt was declined; nothing changed), `dry_run` (`--dry-run` reported the plan; nothing changed), or `refused` (a preflight check refused every target; nothing changed).
 - `ok` is `true` for every action document, including `failed`: it means the command ran and reports per-row outcomes. Check `status` and the exit code. A refusal or usage error is the failure envelope above, with `ok: false`.
@@ -55,7 +55,7 @@ These commands take `--json` and print one action document: `launch`, `stop`, `k
 ## Failure
 
 ```json
-{"schema_version":1,"ok":false,"error":"Unknown project 'api'","code":"unknown_workspace","details":{"name":"api"}}
+{"schema_version":1,"ok":false,"error":"Unknown workspace 'api'","code":"unknown_workspace","details":{"name":"api"}}
 ```
 
 - `error` is the message a person would read.
@@ -95,7 +95,8 @@ The exit code is unchanged by `--json` (1 for most failures, 2 for `not_submitte
 | `window_gone` | `focus` found that the recorded iTerm window no longer exists. `details.workspace`, `details.iterm_window_id`. |
 | `checkout_missing` | The workspace's checkout directory no longer exists. |
 | `config_parse` | A config file exists but can't be parsed as a YAML mapping. `details.path` and `details.reason`. |
-| `unknown_config_key` | `ConfigReport#show` was given a key that is not a config key. `details.key`. `workspace config <key>` checks the key first and reports `usage` instead, so the command does not print this code today. |
+| `unknown_config_key` | `config set`, `get`, `unset` or `show <key>` was given a key that is not a config key. `details.key`. (Before this code existed these commands reported `usage`; the exit code is still 1.) |
+| `scope_not_allowed` | `config set`, `get` or `unset` named a `--scope` the key doesn't allow (a global-only key at `project`, a project-only key at `workspace` in a worktree, ...). `details.key`, `details.scope` (the scope as typed) and `details.allowed`, the scopes the key does allow, lowest first (`global`, `project`, `workspace`). Nothing is written. |
 | `notes_dir_unresolved` | `notes dir` (and `handoff new` with no doc given) can't work out the directory: the project's `notes.default_dir` rule uses `{branch}` and the checkout is on a detached HEAD. `details.name`, `details.path` (the checkout). |
 | `handoff_unsupported_agent` | `start --handoff` or `launch --handoff` was given for a project whose main agent is not Claude Code or Codex, so the `handoff` pack would not work. `details.kind` is the agent found (`opencode`, `pi`), or `none` when the project config runs no known agent. Nothing was created. The config key `handoff.auto` never raises it: there the pack is skipped with a warning (see [`handoff`](README.handoff.md#automatic-handoff)). |
 | `notes_dir_unwritable` | `notes dir --create` couldn't make the directory or list it in `info/exclude`, or a `plan` verb couldn't write or rename the plan file. `details.path` is the directory. |

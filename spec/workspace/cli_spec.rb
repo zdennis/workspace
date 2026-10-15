@@ -1550,12 +1550,12 @@ RSpec.describe Workspace::CLI do
     end
 
     it "prints one envelope on stdout and nothing on stderr with --json" do
-      error = Workspace::Error.new("Unknown project 'x'", code: "unknown_workspace", details: {"name" => "x"})
+      error = Workspace::Error.new("Unknown workspace 'x'", code: "unknown_workspace", details: {"name" => "x"})
       status, out, err = run_failing(["parent", "x", "--json"], error)
       expect(status).to eq(1)
       expect(err).to eq("")
       expect(JSON.parse(out)).to eq(
-        "schema_version" => 1, "ok" => false, "error" => "Unknown project 'x'",
+        "schema_version" => 1, "ok" => false, "error" => "Unknown workspace 'x'",
         "code" => "unknown_workspace", "details" => {"name" => "x"}
       )
     end
@@ -1690,12 +1690,14 @@ RSpec.describe Workspace::CLI do
       expect(error_output.string).to include("Unknown config key 'bogus.key'")
     end
 
-    it "refuses a key with --global" do
-      cli, _, error_output = build_test_cli
-      expect { cli.run(["config", "dev.up", "--global"]) }.to raise_error(FakeSystemExit) { |e|
-        expect(e.status).to eq(1)
-      }
-      expect(error_output.string).to include("--global shows the whole global file")
+    it "reads a key with --global as --scope global" do
+      shown = []
+      report = Object.new
+      report.define_singleton_method(:show) { |name, **opts| shown << [name, opts] and {"keys" => [{"key" => "dev.up", "effective" => "x"}]} }
+      cli, output, _ = build_test_cli(config_report: report)
+      cli.run(["config", "dev.up", "--global", "--name", "api"])
+      expect(shown).to eq([["api", {key: "dev.up", scope: "global"}]])
+      expect(output.string).to include("x")
     end
 
     def key_cli_for(row)
@@ -1896,12 +1898,17 @@ RSpec.describe Workspace::CLI do
       expect(fake.calls).to eq([[:show, "detected"]])
     end
 
-    it "refuses --json with --global as a usage error envelope" do
-      cli, output, _ = build_test_cli(config_report: report.new)
+    it "treats --global --json as --scope global" do
+      scoped = Class.new(report) do
+        def show(name, key: nil, scope: nil)
+          super(name, key: key).merge("scope" => scope)
+        end
+      end.new
+      cli, output, _ = build_test_cli(config_report: scoped)
 
-      expect { cli.run(["config", "show", "--global", "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+      cli.run(["config", "show", "--global", "--json", "--name", "api"])
 
-      expect(JSON.parse(output.string)).to include("ok" => false, "code" => "usage")
+      expect(JSON.parse(output.string)).to include("ok" => true, "scope" => "global")
     end
 
     it "shows a workspace literally named show through --name" do
@@ -2001,7 +2008,7 @@ RSpec.describe Workspace::CLI do
 
       cli.run(["config", "set", "dev.up", "./start-dev"])
 
-      expect(config_command.calls).to eq([{action: :set, key: "dev.up", value: "./start-dev", project: nil, cwd: "/tmp/some-project"}])
+      expect(config_command.calls).to eq([{action: :set, key: "dev.up", value: "./start-dev", project: nil, scope: nil, cwd: "/tmp/some-project"}])
     end
 
     it "passes --project through to config_command#set" do
@@ -2019,7 +2026,7 @@ RSpec.describe Workspace::CLI do
 
       cli.run(["config", "get", "dev.up"])
 
-      expect(config_command.calls).to eq([{action: :get, key: "dev.up", project: nil, cwd: "/tmp/some-project"}])
+      expect(config_command.calls).to eq([{action: :get, key: "dev.up", project: nil, scope: nil, cwd: "/tmp/some-project"}])
     end
 
     it "exits 1 when config_command#get reports the key is unset" do
@@ -2044,7 +2051,7 @@ RSpec.describe Workspace::CLI do
 
       cli.run(["config", "unset", "dev.ready"])
 
-      expect(config_command.calls).to eq([{action: :unset, key: "dev.ready", project: nil, cwd: "/tmp/some-project"}])
+      expect(config_command.calls).to eq([{action: :unset, key: "dev.ready", project: nil, scope: nil, cwd: "/tmp/some-project"}])
     end
 
     it "exits 1 with a clean usage error instead of a backtrace when the value looks like a flag" do
@@ -2077,6 +2084,199 @@ RSpec.describe Workspace::CLI do
         expect(e.status).to eq(1)
       }
       expect(error_output.string).to include("Usage: workspace config unset")
+    end
+
+    describe "--scope" do
+      def json_cli(**overrides)
+        raw = StringIO.new
+        gate = Workspace::OutputGate.new(raw)
+        cli, = build_test_cli(output: gate, error_output: StringIO.new, **overrides)
+        [cli, raw]
+      end
+
+      it "passes the scope to set, get and unset, and maps worktree to workspace" do
+        config_command = CLITestHelpers::FakeConfigCommand.new
+        cli, = build_test_cli(config_command: config_command)
+
+        cli.run(["config", "set", "--scope", "project", "dev.up", "x"])
+        cli.run(["config", "set", "--scope", "worktree", "dev.up", "x"])
+        cli.run(["config", "get", "--scope", "global", "dev.up"])
+        cli.run(["config", "unset", "--scope", "workspace", "dev.up"])
+
+        expect(config_command.calls.map { |c| [c[:action], c[:scope]] }).to eq([[:set, "project"], [:set, "workspace"], [:get, "global"], [:unset, "workspace"]])
+      end
+
+      it "reads a value that starts with a dash after --" do
+        config_command = CLITestHelpers::FakeConfigCommand.new
+        cli, = build_test_cli(config_command: config_command)
+
+        cli.run(["config", "set", "--scope", "project", "--name", "api", "dev.up", "--", "-x --flag"])
+
+        expect(config_command.calls.first).to include(key: "dev.up", value: "-x --flag", scope: "project", project: "api")
+      end
+
+      it "refuses a scope that is not global, project or workspace as a usage error" do
+        cli, _, error_output = build_test_cli
+        expect { cli.run(["config", "set", "--scope", "team", "dev.up", "x"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+        expect(error_output.string).to include("Unknown scope 'team'. Use global, project or workspace.")
+      end
+
+      it "prints unknown_config_key as an envelope for set and unset under --json" do
+        %w[set unset].each do |verb|
+          command = Workspace::Commands::Config.new(project_settings: CLITestHelpers::FakeProjectSettings.new, lineage: Workspace::WorkspaceLineage.new,
+            file_backup: Workspace::FileBackup.new(output: StringIO.new))
+          cli, raw = json_cli(config_command: command)
+
+          expect { cli.run(["config", verb, "no.such", "--json"] + ((verb == "set") ? ["x"] : [])) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+
+          expect(JSON.parse(raw.string)).to include("ok" => false, "code" => "unknown_config_key", "details" => {"key" => "no.such"})
+        end
+      end
+
+      it "takes a value that starts with a dash only after --" do
+        config_command = CLITestHelpers::FakeConfigCommand.new
+        cli, _, error_output = build_test_cli(config_command: config_command)
+
+        expect { cli.run(["config", "set", "dev.up", "-x"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+        expect(error_output.string).to include("looks like a flag")
+        expect(config_command.calls).to be_empty
+
+        cli.run(["config", "set", "dev.up", "--", "-x"])
+        expect(config_command.calls.first).to include(key: "dev.up", value: "-x")
+      end
+
+      it "prints a noop row when unset finds nothing to remove" do
+        config_command = CLITestHelpers::FakeConfigCommand.new
+        config_command.define_singleton_method(:unset) do |key, **|
+          Workspace::Commands::Config::Result.new(key: key, workspace: "api", layer: "project", scope: "project", path: "/cfg/api.yml", comments_preserved: true, backup: nil, affects: [], changed: false)
+        end
+        cli, raw = json_cli(config_command: config_command)
+
+        cli.run(["config", "unset", "--name", "api", "dev.ready", "--json"])
+
+        expect(JSON.parse(raw.string)["results"].first).to include("outcome" => "noop", "key" => "dev.ready")
+      end
+
+      it "prints the set row with scope, layer, file and the effective value after the write" do
+        report = Object.new
+        report.define_singleton_method(:show) { |name, key: nil| {"keys" => [{"key" => key, "effective" => 90}]} }
+        cli, raw = json_cli(config_command: CLITestHelpers::FakeConfigCommand.new, config_report: report)
+
+        cli.run(["config", "set", "--scope", "project", "--name", "api", "dev.ready_timeout", "90s", "--json"])
+
+        expect(JSON.parse(raw.string)["results"].first).to include("workspace" => "api", "outcome" => "set", "scope" => "project", "layer" => "project", "file" => "/cfg/api.yml", "effective" => 90)
+      end
+
+      it "gives a null effective when the report fails" do
+        report = Object.new
+        report.define_singleton_method(:show) { |*, **| raise Workspace::Error.new("Unknown workspace 'api'", code: "unknown_workspace") }
+        cli, raw = json_cli(config_command: CLITestHelpers::FakeConfigCommand.new, config_report: report)
+
+        cli.run(["config", "set", "--name", "api", "dev.up", "x", "--json"])
+
+        expect(JSON.parse(raw.string)["results"].first).to include("effective" => nil)
+      end
+
+      it "unset --json prints an action document without a value" do
+        cli, raw = json_cli(config_command: CLITestHelpers::FakeConfigCommand.new)
+
+        cli.run(["config", "unset", "--scope", "global", "launch.headless", "--json"])
+
+        doc = JSON.parse(raw.string)
+        expect(doc).to include("ok" => true, "action" => "config unset")
+        expect(doc["results"].first).to include("outcome" => "unset", "key" => "launch.headless", "global" => true, "scope" => "global", "layer" => "global")
+        expect(doc["results"].first).not_to have_key("value")
+      end
+
+      it "prints scope_not_allowed as an error envelope with its details" do
+        config_command = CLITestHelpers::FakeConfigCommand.new
+        config_command.define_singleton_method(:set) do |*, **|
+          raise Workspace::Error.new("dev.stop_timeout can't be set in the workspace scope.", code: "scope_not_allowed", details: {"key" => "dev.stop_timeout", "scope" => "workspace", "allowed" => ["project"]})
+        end
+        cli, raw = json_cli(config_command: config_command)
+
+        expect { cli.run(["config", "set", "--scope", "workspace", "dev.stop_timeout", "5s", "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+
+        expect(JSON.parse(raw.string)).to include("ok" => false, "code" => "scope_not_allowed", "details" => {"key" => "dev.stop_timeout", "scope" => "workspace", "allowed" => ["project"]})
+      end
+
+      it "writes and reports through the real command and report, naming the file and the effective value" do
+        dir = Dir.mktmpdir("ws-config-cli")
+        settings = Workspace::ProjectSettings.new(config: Struct.new(:workspace_config_dir).new(dir))
+        project_config = instance_double(Workspace::ProjectConfig, available_projects: %w[api api.worktree-fix], project_root_for: nil)
+        raw = StringIO.new
+        gate = Workspace::OutputGate.new(raw)
+        err = StringIO.new
+        command = Workspace::Commands::Config.new(project_settings: settings, lineage: Workspace::WorkspaceLineage.new, file_backup: Workspace::FileBackup.new(output: err),
+          project_config: project_config, output: gate, error_output: err)
+        report = Workspace::ConfigReport.new(project_settings: settings, project_config: project_config, notes_dir: Workspace::NotesDir.new(git: Workspace::Git.new))
+        cli, = build_test_cli(output: gate, error_output: err, config_command: command, config_report: report)
+
+        cli.run(["config", "set", "--scope", "project", "--name", "api.worktree-fix", "dev.ready_timeout", "90s", "--json"])
+
+        expect(JSON.parse(raw.string)["results"]).to eq([{"workspace" => "api", "outcome" => "set", "reason" => nil, "message" => nil, "key" => "dev.ready_timeout", "value" => "90s",
+                                                          "global" => false, "scope" => "project", "layer" => "project", "file" => settings.project_config_path("api"),
+                                                          "comments_preserved" => true, "effective" => 90}])
+        expect(settings.load("api")).to eq({"dev" => {"ready_timeout" => "90s"}})
+      ensure
+        FileUtils.rm_rf(dir)
+      end
+
+      it "show --scope forwards the scope to the report" do
+        calls = []
+        report = Object.new
+        report.define_singleton_method(:show) { |name, **opts| calls << [name, opts] and {"ok" => true, "keys" => []} }
+        cli, _ = json_cli(config_report: report)
+
+        cli.run(["config", "show", "--scope", "worktree", "--name", "api.worktree-fix", "--json"])
+
+        expect(calls).to eq([["api.worktree-fix", {scope: "workspace"}]])
+      end
+
+      it "show --global and --scope global agree, and --global with another scope is refused" do
+        calls = []
+        report = Object.new
+        report.define_singleton_method(:show) { |name, **opts| calls << opts and {"ok" => true, "keys" => []} }
+        cli, = json_cli(config_report: report)
+        cli.run(["config", "show", "--global", "--name", "api", "--json"])
+        cli.run(["config", "show", "--scope", "global", "--name", "api", "--json"])
+        expect(calls).to eq([{scope: "global"}, {scope: "global"}])
+
+        expect { cli.run(["config", "show", "--scope", "project", "--global", "--name", "api", "--json"]) }.to raise_error(FakeSystemExit)
+      end
+
+      it "show --scope project prints the project's file even from a worktree name (text mode)" do
+        loaded = []
+        settings = CLITestHelpers::FakeProjectSettings.new
+        settings.define_singleton_method(:load) { |name| loaded << name and {"dev" => {"up" => "from-#{name}"}} }
+        cli, output, = build_test_cli(project_settings: settings)
+
+        cli.run(["config", "show", "--scope", "project", "--name", "api.worktree-fix"])
+
+        expect(loaded).to eq(["api"])
+        expect(output.string).to include("up: from-api")
+        expect(output.string).to include("/tmp/workspace/projects/api.yml")
+      end
+
+      it "show --scope workspace prints the workspace's own file (text mode)" do
+        settings = CLITestHelpers::FakeProjectSettings.new
+        settings.define_singleton_method(:load) { |name| {"dev" => {"up" => "from-#{name}"}} }
+        report = Object.new
+        report.define_singleton_method(:show) { |*, **| {"ok" => true, "keys" => []} }
+        cli, output, = build_test_cli(project_settings: settings, config_report: report)
+
+        cli.run(["config", "show", "--scope", "workspace", "--name", "api.worktree-fix"])
+
+        expect(output.string).to include("up: from-api.worktree-fix")
+      end
+
+      it "show --scope workspace --name of an unknown workspace fails with unknown_workspace" do
+        report = Object.new
+        report.define_singleton_method(:show) { |name, **| raise Workspace::Error.new("Unknown workspace '#{name}'", code: "unknown_workspace", details: {"name" => name}) }
+        cli, = build_test_cli(config_report: report)
+
+        expect { cli.run(["config", "show", "--scope", "workspace", "--name", "nosuch"]) }.to raise_error(FakeSystemExit)
+      end
     end
 
     it "surfaces a Workspace::UsageError from config_command as exit 1" do
@@ -4079,7 +4279,7 @@ RSpec.describe Workspace::CLI do
       cli, _, error_output = restore_cli(restore)
 
       expect { cli.run(["restore", "nope"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
-      expect(error_output.string).to include("Unknown project 'nope'")
+      expect(error_output.string).to include("Unknown workspace 'nope'")
       expect(restore.calls).to eq([])
     end
 
@@ -8401,21 +8601,22 @@ RSpec.describe Workspace::CLI do
 
     describe "config set" do
       it "reports the project and key set" do
-        config_command = double("config", set: "api", last_write: Workspace::Commands::Config::Write.new(true, nil))
+        config_command = CLITestHelpers::FakeConfigCommand.new
         cli, raw, = action_cli(config_command: config_command)
 
         cli.run(["config", "set", "dev.up", "bin/dev", "--name", "api", "--json"])
 
-        expect(parse_one(raw)["results"]).to eq([{"workspace" => "api", "outcome" => "set", "reason" => nil, "message" => nil, "key" => "dev.up", "value" => "bin/dev", "global" => false, "comments_preserved" => true}])
+        expect(parse_one(raw)["results"]).to eq([{"workspace" => "api", "outcome" => "set", "reason" => nil, "message" => nil, "key" => "dev.up", "value" => "bin/dev", "global" => false,
+                                                  "scope" => "project", "layer" => "project", "file" => "/cfg/api.yml", "comments_preserved" => true, "effective" => nil}])
       end
 
       it "marks a global key" do
-        config_command = double("config", set: nil, last_write: Workspace::Commands::Config::Write.new(true, nil))
+        config_command = CLITestHelpers::FakeConfigCommand.new
         cli, raw, = action_cli(config_command: config_command)
 
-        cli.run(["config", "set", "launch.headless", "true", "--json"])
+        cli.run(["config", "set", "launch.headless", "true", "--scope", "global", "--json"])
 
-        expect(parse_one(raw)["results"].first).to include("workspace" => nil, "global" => true)
+        expect(parse_one(raw)["results"].first).to include("workspace" => nil, "global" => true, "scope" => "global", "layer" => "global")
       end
 
       it "keeps stdout to one JSON document and puts the comment note on stderr" do

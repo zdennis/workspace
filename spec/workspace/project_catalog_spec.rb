@@ -386,13 +386,13 @@ RSpec.describe Workspace::ProjectCatalog do
     end
 
     it "raises an unknown-project error for no match" do
-      expect { catalog.find("nope") }.to raise_error(Workspace::Error, "Unknown project 'nope'")
+      expect { catalog.find("nope") }.to raise_error(Workspace::Error, "Unknown workspace 'nope'")
     end
 
     it "raises an unknown-project error for a path that matches no project" do
       FileUtils.mkdir_p(File.join(@root, "stray"))
 
-      expect { catalog.find(File.join(@root, "stray")) }.to raise_error(Workspace::Error, /Unknown project/)
+      expect { catalog.find(File.join(@root, "stray")) }.to raise_error(Workspace::Error, /Unknown workspace/)
     end
 
     context "with two clones sharing a name" do

@@ -3,105 +3,104 @@ require "fileutils"
 
 module Workspace
   module Commands
-    # Sets, reads, and unsets a project's config by dotted key
+    # Sets, reads, and unsets a config key by dotted key
     # (`workspace config set/get/unset`), so callers don't need to hand-edit
     # YAML. Restricted to an allowlist, so a typo doesn't silently create
     # unused config. The allowlist, value checks and restart notes come from
     # {Workspace::ConfigSchema}.
+    #
+    # Each command writes one layer's file. The user-facing scopes are `global`,
+    # `project` and `workspace`; `workspace` is the `worktree` layer (the
+    # `layer` value in every JSON document), and in a main checkout, which has
+    # no file of its own besides the project's, it is the `project` layer.
     class Config
-      # What the last {#set} or {#unset} did to the file, for the CLI's JSON row.
+      # The user-facing scope names, lowest layer first.
+      SCOPES = %w[global project workspace].freeze
+
+      # `worktree` is accepted as another spelling of `workspace`.
+      SCOPE_ALIASES = {"worktree" => "workspace"}.freeze
+
+      # The scope each layer is called by in `scope_not_allowed` details and results.
+      LAYER_SCOPES = {"global" => "global", "project" => "project", "worktree" => "workspace"}.freeze
+
+      # What a {#set} or {#unset} did.
       #
+      # @!attribute key
+      #   @return [String] the dotted key
+      # @!attribute workspace
+      #   @return [String, nil] the name whose file was written (the parent project for a project-layer write); nil for the global file
+      # @!attribute layer
+      #   @return [String] "global", "project" or "worktree"
+      # @!attribute scope
+      #   @return [String] the layer as the user names it: "global", "project" or "workspace"
+      # @!attribute path
+      #   @return [String] the file that was written
       # @!attribute comments_preserved
       #   @return [Boolean] false when the old text had a comment the rewrite dropped
       # @!attribute backup
       #   @return [String, nil] where the old file was copied, nil when there was none
-      Write = Struct.new(:comments_preserved, :backup)
+      # @!attribute affects
+      #   @return [Array<String>] the workspaces whose daemons read the file
+      # @!attribute changed
+      #   @return [Boolean] false when nothing was written (an `unset` of a key that wasn't set)
+      Result = Struct.new(:key, :workspace, :layer, :scope, :path, :comments_preserved, :backup, :affects, :changed, keyword_init: true)
 
-      # TODO(phase 5): replace last_write with the return value
-      # @return [Write, nil] the outcome of the last write; nil before any
-      attr_reader :last_write
+      Target = Struct.new(:layer, :name, :path, :workspace)
+      private_constant :Target
 
       # @param project_settings [Workspace::ProjectSettings] reads/writes project YAML
       # @param lineage [Workspace::WorkspaceLineage] resolves a project from cwd (worktree -> parent)
       # @param file_backup [Workspace::FileBackup] backs up the config file before it's rewritten
       # @param event_log [Workspace::EventLog, nil] records `config_changed` after each
       #   write (key names only, never values); nil records nothing
+      # @param project_config [Workspace::ProjectConfig, nil] lists the known workspaces: it lets
+      #   `--scope workspace` refuse an unknown one and the restart hint name every affected daemon
       # @param output [IO] output stream for user-facing messages
       # @param error_output [IO] output stream for user-facing errors
-      def initialize(project_settings:, lineage:, file_backup:, event_log: nil, output: $stdout, error_output: $stderr)
+      def initialize(project_settings:, lineage:, file_backup:, event_log: nil, project_config: nil, output: $stdout, error_output: $stderr)
         @project_settings = project_settings
         @lineage = lineage
         @file_backup = file_backup
         @event_log = event_log
+        @project_config = project_config
         @output = output
         @error_output = error_output
       end
 
       # @param key [String] a dotted key from {Workspace::ConfigSchema}
       # @param value [String] the value to store
-      # @param project [String, nil] project to configure; defaults to the one inferred from cwd
-      # @param cwd [String] directory to infer the project from, when project is nil
-      # @return [String, nil] the project the key was set for; nil for a global key
-      # @raise [Workspace::UsageError] for an unknown key or an invalid value
-      def set(key, value, project: nil, cwd: Dir.pwd)
+      # @param project [String, nil] workspace to configure; defaults to the one inferred from cwd
+      # @param scope [String, nil] "global", "project" or "workspace" ("worktree" is the same); nil
+      #   writes the highest layer the key allows at or below the workspace ({ConfigLayering.default_layer})
+      # @param cwd [String] directory to infer the workspace from, when project is nil
+      # @return [Result]
+      # @raise [Workspace::Error] code `unknown_config_key`, `scope_not_allowed` or `unknown_workspace`
+      # @raise [Workspace::UsageError] for an invalid value or scope
+      def set(key, value, project: nil, scope: nil, cwd: Dir.pwd)
         validate_key!(key)
         validate_value!(key, value)
-
-        if ConfigSchema.key(key).global?
-          set_global(key, value)
-          record_change("global", "set", key, nil)
-          return
-        end
-
-        lineage = @lineage.resolve(cwd: cwd)
-        name = config_name(key, project, lineage)
-        path = @project_settings.project_config_path(name)
-        with_config_lock(path) do
-          old_text = read_text(path)
-          data = load_for_edit(name)
-          backup = @file_backup.backup(path)
-          segments = key.split(".")
-          cursor = data
-          segments[0..-2].each do |segment|
-            cursor[segment] = {} unless cursor[segment].is_a?(Hash)
-            cursor = cursor[segment]
-          end
-          cursor[segments.last] = value
-          write(path, data)
-          note_write(path, old_text, backup)
-        end
-        record_change("project", "set", key, name)
-        @output.puts "Set #{key} = #{value} for '#{name}'."
-        if ConfigSchema.key(key).restart_required?
-          daemon_name = (project.nil? && lineage.worktree) ? lineage.worktree : name
-          @output.puts "Takes effect the next time the session monitor starts (workspace agentd #{daemon_name} --force, or relaunch)."
-        end
-        name
+        target = target_for(key, project, scope, cwd, "set")
+        write = apply(target) { |data| store(data, key, value) }
+        record_change(target.layer, "set", key, target.name)
+        @output.puts target.name ? "Set #{key} = #{value} for '#{target.name}'." : "Set #{key} = #{value}."
+        affects = affected_workspaces(target)
+        print_restart_hint(key, affects)
+        result_for(key, target, write, affects)
       end
 
       # @param key [String] a dotted key from {Workspace::ConfigSchema}
-      # @param project [String, nil] project to read; defaults to the one inferred from cwd
-      # @param cwd [String] directory to infer the project from, when project is nil
+      # @param project [String, nil] workspace to read; defaults to the one inferred from cwd
+      # @param scope [String, nil] as for {#set}; only that layer's file is read
+      # @param cwd [String] directory to infer the workspace from, when project is nil
       # @return [Boolean] true if the key had a value, false if unset
-      # @raise [Workspace::UsageError] for an unknown key
-      def get(key, project: nil, cwd: Dir.pwd)
+      # @raise [Workspace::Error] as for {#set}
+      def get(key, project: nil, scope: nil, cwd: Dir.pwd)
         validate_key!(key)
-
-        if ConfigSchema.key(key).global?
-          value = @project_settings.load_global.dig(*key.split("."))
-          if value.nil?
-            @error_output.puts "#{key} is not set."
-            return false
-          end
-          @output.puts value
-          return true
-        end
-
-        name = config_name(key, project, @lineage.resolve(cwd: cwd))
-        data = @project_settings.load(name)
+        target = target_for(key, project, scope, cwd, "read")
+        data = (target.layer == "global") ? @project_settings.load_global : @project_settings.load(target.name)
         value = data.dig(*key.split("."))
         if value.nil?
-          @error_output.puts "#{key} is not set for '#{name}'."
+          @error_output.puts target.name ? "#{key} is not set for '#{target.name}'." : "#{key} is not set."
           false
         else
           @output.puts value
@@ -110,60 +109,179 @@ module Workspace
       end
 
       # @param key [String] a dotted key from {Workspace::ConfigSchema}
-      # @param project [String, nil] project to configure; defaults to the one inferred from cwd
-      # @param cwd [String] directory to infer the project from, when project is nil
-      # @return [void]
-      # @raise [Workspace::UsageError] for an unknown key
-      def unset(key, project: nil, cwd: Dir.pwd)
+      # @param project [String, nil] workspace to configure; defaults to the one inferred from cwd
+      # @param scope [String, nil] as for {#set}
+      # @param cwd [String] directory to infer the workspace from, when project is nil
+      # @return [Result]
+      # @raise [Workspace::Error] as for {#set}
+      def unset(key, project: nil, scope: nil, cwd: Dir.pwd)
         validate_key!(key)
-
-        if ConfigSchema.key(key).global?
-          with_global_backup do |data|
-            segments = key.split(".")
-            cursor = segments[0..-2].reduce(data) { |node, segment| node.is_a?(Hash) ? node[segment] : nil }
-            cursor.delete(segments.last) if cursor.is_a?(Hash)
-            data
-          end
-          record_change("global", "unset", key, nil)
-          @output.puts "Unset #{key}."
-          return
+        target = target_for(key, project, scope, cwd, "unset")
+        unless set_in?(target, key)
+          @output.puts target.name ? "#{key} was not set for '#{target.name}'; nothing changed." : "#{key} was not set; nothing changed."
+          return Result.new(key: key, workspace: target.name, layer: target.layer, scope: LAYER_SCOPES.fetch(target.layer), path: target.path,
+            comments_preserved: true, backup: nil, affects: [], changed: false)
         end
-
-        name = config_name(key, project, @lineage.resolve(cwd: cwd))
-        path = @project_settings.project_config_path(name)
-        with_config_lock(path) do
-          old_text = read_text(path)
-          data = load_for_edit(name)
-          backup = @file_backup.backup(path)
-          segments = key.split(".")
-          cursor = segments[0..-2].reduce(data) { |node, segment| node.is_a?(Hash) ? node[segment] : nil }
-          cursor.delete(segments.last) if cursor.is_a?(Hash)
-          write(path, data)
-          note_write(path, old_text, backup)
-        end
-        record_change("project", "unset", key, name)
-        @output.puts "Unset #{key} for '#{name}'."
+        write = apply(target) { |data| remove(data, key) }
+        record_change(target.layer, "unset", key, target.name)
+        @output.puts target.name ? "Unset #{key} for '#{target.name}'." : "Unset #{key}."
+        affects = affected_workspaces(target)
+        print_restart_hint(key, affects)
+        result_for(key, target, write, affects)
       end
 
       private
 
-      # The config file a key is written to and read from: the layer
-      # {ConfigLayering.default_layer} gives, which is also the `target_layer`
-      # `config show` reports. A worktree's own file for a key it may override
-      # (`dev.ready_timeout`, `notes.dir`), else the parent project's file. The
-      # workspace is the named one, else the one cwd is in.
-      def config_name(key, project, lineage)
+      # More affected workspaces than this, and the restart hint gives a count and one command.
+      MAX_LISTED_RESTARTS = 3
+
+      def print_restart_hint(key, affects)
+        return unless ConfigSchema.key(key).restart_required?
+        how = if affects.size > MAX_LISTED_RESTARTS
+          "#{affects.size} workspaces' session monitors read it; run `workspace daemon restart --all`, or relaunch"
+        else
+          "#{affects.map { |name| "workspace agentd #{name} --force" }.join(", ")}, or relaunch"
+        end
+        @output.puts "Takes effect the next time the session monitor starts (#{how})."
+      end
+
+      # Whether the target's file holds the key.
+      def set_in?(target, key)
+        data = (target.layer == "global") ? @project_settings.load_global : load_for_edit(target.name)
+        !data.dig(*key.split(".")).nil?
+      end
+
+      # The file a command acts on. With no scope, the layer {ConfigLayering.default_layer}
+      # gives, which is also the `target_layer` `config show` reports; with one, the layer it
+      # names, refused when the key doesn't allow it. The workspace is the named one, else the
+      # one cwd is in.
+      def target_for(key, project, scope, cwd, action)
         schema_key = ConfigSchema.key(key)
+        scope = normalize_scope(scope)
+        workspace, worktree = workspace_for(project, cwd, schema_key, scope)
+        layer = case scope
+        when nil then ConfigLayering.default_layer(schema_key, worktree: worktree)
+        when "workspace" then worktree ? "worktree" : "project"
+        else scope
+        end
+        refuse_scope!(schema_key, layer, scope, action) if scope
+        check_workspace_known!(workspace) if scope == "workspace"
+        return Target.new(layer, nil, @project_settings.global_config_path, workspace) if layer == "global"
+        name = (layer == "project") ? (WorkspaceLineage.split_worktree_name(workspace)&.first || workspace) : workspace
+        Target.new(layer, name, @project_settings.project_config_path(name), workspace)
+      end
+
+      def normalize_scope(scope)
+        return nil if scope.nil?
+        scope = SCOPE_ALIASES.fetch(scope, scope)
+        return scope if SCOPES.include?(scope)
+        raise Workspace::UsageError, "Unknown scope '#{scope}'. Use global, project or workspace."
+      end
+
+      # @return [Array(String, Boolean)] the workspace name and whether it is a worktree
+      def workspace_for(project, cwd, schema_key, scope)
         if project
-          split = WorkspaceLineage.split_worktree_name(project)
-          layer = ConfigLayering.default_layer(schema_key, worktree: !split.nil?)
-          return (layer == "worktree") ? project : (split&.first || project)
+          return [project, !WorkspaceLineage.split_worktree_name(project).nil?]
         end
-        if schema_key.resolve == :own_then_parent && lineage.is_worktree && !lineage.worktree
-          raise Workspace::UsageError, "This worktree has no workspace name (no .workspace-project marker), so #{key} can't tell which file is its own. Pass --name <project>.worktree-<name>."
+        lineage = @lineage.resolve(cwd: cwd)
+        if lineage.is_worktree && !lineage.worktree && (scope == "workspace" || (scope.nil? && schema_key.resolve == :own_then_parent))
+          raise Workspace::UsageError, "This worktree has no workspace name (no .workspace-project marker), so #{schema_key.name} can't tell which file is its own. Pass --name <project>.worktree-<name>."
         end
-        layer = ConfigLayering.default_layer(schema_key, worktree: !lineage.worktree.nil?)
-        (layer == "worktree") ? lineage.worktree : lineage.name
+        [lineage.worktree || lineage.name, !lineage.worktree.nil?]
+      end
+
+      def refuse_scope!(schema_key, layer, typed, action)
+        return if schema_key.overridable_in?(layer)
+        allowed = schema_key.overridable_in.map { |l| LAYER_SCOPES.fetch(l.to_s) }
+        here = (typed == "workspace" && layer == "project") ? " (the project file here)" : ""
+        use = allowed.map { |name| "--scope #{name}" }.join(" or ")
+        verb = (action == "read") ? "read from" : "#{action} in"
+        raise Workspace::Error.new("#{schema_key.name} is #{layer_reason(schema_key)}, so it can't be #{verb} the #{typed} scope#{here}. Use #{use}.",
+          code: "scope_not_allowed", details: {"key" => schema_key.name, "scope" => typed, "allowed" => allowed})
+      end
+
+      # Why a key lives only in the layers it does, in a few words.
+      def layer_reason(schema_key)
+        layers = schema_key.overridable_in.map(&:to_s)
+        if layers == ["global"]
+          "a machine-wide setting"
+        elsif layers == ["project"]
+          "a project-wide setting shared by its worktrees"
+        elsif !layers.include?("global")
+          "a project or workspace setting, not a machine-wide one"
+        else
+          "a machine or project setting, not one workspace's own"
+        end
+      end
+
+      def check_workspace_known!(workspace)
+        return if @project_config.nil?
+        return if @project_config.available_projects.include?(workspace)
+        return if File.exist?(@project_settings.project_config_path(workspace))
+        raise Workspace::Error.new("Unknown workspace '#{workspace}'", code: "unknown_workspace", details: {"name" => workspace})
+      end
+
+      # The workspaces whose daemons read the file written: all for the global file, the
+      # project and its worktrees for a project file, the one workspace for its own.
+      def affected_workspaces(target)
+        return [target.name] if target.layer == "worktree"
+        known = @project_config ? @project_config.available_projects : []
+        if target.layer == "global"
+          return (known | [target.workspace]).sort
+        end
+        prefix = "#{target.name}#{WorkspaceLineage::WORKTREE_SEPARATOR}"
+        siblings = known.select { |name| name.start_with?(prefix) }
+        siblings |= [target.workspace] if target.workspace.start_with?(prefix)
+        ([target.name] + siblings).uniq.sort
+      end
+
+      def result_for(key, target, write, affects)
+        Result.new(key: key, workspace: target.name, layer: target.layer, scope: LAYER_SCOPES.fetch(target.layer), path: target.path,
+          comments_preserved: write.comments_preserved, backup: write.backup, affects: affects, changed: true)
+      end
+
+      # Loads the target's file under its lock, backs it up, yields the data to change
+      # and writes it back (the global file through {ProjectSettings#with_global_lock}).
+      # A file that doesn't parse is refused untouched.
+      #
+      # @return [Struct] the outcome of the write (`comments_preserved`, `backup`)
+      def apply(target)
+        write = nil
+        if target.layer == "global"
+          @project_settings.with_global_lock do |data|
+            old_text = read_text(target.path)
+            backup = @file_backup.backup(target.path)
+            yield data
+            write = note_write(target.path, old_text, backup)
+            data
+          end
+        else
+          with_config_lock(target.path) do
+            old_text = read_text(target.path)
+            data = load_for_edit(target.name)
+            backup = @file_backup.backup(target.path)
+            yield data
+            write(target.path, data)
+            write = note_write(target.path, old_text, backup)
+          end
+        end
+        write
+      end
+
+      def store(data, key, value)
+        segments = key.split(".")
+        cursor = data
+        segments[0..-2].each do |segment|
+          cursor[segment] = {} unless cursor[segment].is_a?(Hash)
+          cursor = cursor[segment]
+        end
+        cursor[segments.last] = value
+      end
+
+      def remove(data, key)
+        segments = key.split(".")
+        cursor = segments[0..-2].reduce(data) { |node, segment| node.is_a?(Hash) ? node[segment] : nil }
+        cursor.delete(segments.last) if cursor.is_a?(Hash)
       end
 
       # The key's name goes in the log, never its value: values can be commands
@@ -182,45 +300,21 @@ module Workspace
         raise Workspace::ConfigParseError.new(e.path, "#{e.reason}. Fix or remove the file, then retry")
       end
 
-      def set_global(key, value)
-        with_global_backup do |data|
-          segments = key.split(".")
-          cursor = data
-          segments[0..-2].each do |segment|
-            cursor[segment] = {} unless cursor[segment].is_a?(Hash)
-            cursor = cursor[segment]
-          end
-          cursor[segments.last] = value
-          data
-        end
-        @output.puts "Set #{key} = #{value}."
-      end
-
-      # Runs a global edit under {ProjectSettings#with_global_lock}, backing the
-      # file up first (after it parsed, so a broken file is refused untouched).
-      def with_global_backup
-        path = @project_settings.global_config_path
-        @project_settings.with_global_lock do |data|
-          old_text = read_text(path)
-          backup = @file_backup.backup(path)
-          result = yield(data)
-          # with_global_lock saves result right after this block returns.
-          note_write(path, old_text, backup)
-          result
-        end
-      end
-
       def read_text(path)
         File.exist?(path) ? File.read(path) : ""
       end
 
-      # Records the write's outcome and, when a comment was dropped, says so on
+      # The outcome of a write: whether comments survived and where the old file went.
+      Write = Struct.new(:comments_preserved, :backup)
+      private_constant :Write
+
+      # Returns the write's outcome and, when a comment was dropped, says so on
       # stderr (never stdout, which `--json` keeps for its one document).
       def note_write(path, old_text, backup)
         preserved = !comments?(old_text)
-        @last_write = Write.new(preserved, backup)
-        return if preserved
-        @error_output.puts "Note: comments in #{path} were not kept; backup at #{backup}"
+        write = Write.new(preserved, backup)
+        @error_output.puts "Note: comments in #{path} were not kept; backup at #{backup}" unless preserved
+        write
       end
 
       # Whether +text+ has a YAML comment: a `#` at the start of a line or after
@@ -277,13 +371,13 @@ module Workspace
 
       def validate_key!(key)
         return if ConfigSchema.settable?(key)
-        raise Workspace::UsageError, "Unknown config key '#{key}'. Allowed keys: #{ConfigSchema.settable_names.join(", ")}"
+        raise Workspace::Error.new("Unknown config key '#{key}'. Allowed keys: #{ConfigSchema.settable_names.join(", ")}", code: "unknown_config_key", details: {"key" => key})
       end
 
       def validate_value!(key, value)
         ConfigSchema.parse(key, value)
       rescue ArgumentError, RegexpError => e
-        raise Workspace::UsageError, "Invalid #{key}: #{e.message}"
+        raise Workspace::UsageError.new("Invalid #{key}: #{e.message}", details: {"key" => key})
       end
 
       def write(path, data)

@@ -9,18 +9,20 @@ workspace config [show] [options] [key]
 workspace config show [--name NAME] [--json]
 workspace config [show] <key> [--name NAME] [--json]
 workspace config validate [--name NAME] [--json]
-workspace config set <key> <value> [--project NAME] [--json]
-workspace config get <key> [--project NAME]
-workspace config unset <key> [--project NAME]
+workspace config set [--scope SCOPE] [--name NAME] [--json] <key> [--] <value>
+workspace config get [--scope SCOPE] [--name NAME] <key>
+workspace config unset [--scope SCOPE] [--name NAME] [--json] <key>
+workspace config show --scope SCOPE [--name NAME] [--json] [key]
 ```
 
 ## Options
 
 | Option | Description |
 |--------|-------------|
-| `--global` | Show global configuration instead of project config |
+| `--global` | Show global configuration instead of project config; the same as `--scope global` |
+| `--scope SCOPE` | `global`, `project` or `workspace` (`worktree` is the same). `set`/`get`/`unset`: the layer whose file is written or read. `show`: see [Scopes](#scopes) |
 | `--name NAME` | (`show`, `validate`) The workspace to report on instead of the one inferred from cwd |
-| `--json` | (`show`, `validate`, `set`) Print one JSON document (below) instead of text |
+| `--json` | (`show`, `validate`, `set`, `unset`) Print one JSON document (below) instead of text |
 | `--project NAME`, `--name NAME` | (`set`/`get`/`unset`) Configure this project instead of the one inferred from cwd; the two are the same option |
 
 ## Details
@@ -109,6 +111,26 @@ Before writing, `set` and `unset` back up the project's config file (via the sam
 
 If the file isn't valid YAML (or isn't a mapping at the top level), `set` and `unset` stop with `Cannot parse <path>: ...` and leave it as written; fix or remove it and retry. Readers that run in the background (lock, alert, and handoff settings) warn and use their defaults instead of failing.
 
+### Scopes
+
+`--scope` names the layer a command works on, with the names a person sees: `global` (`~/.config/workspace/config.yml`), `project` (the main checkout's file) and `workspace` (the workspace's own file). The `layer` values in JSON are `global`, `project` and `worktree`; `workspace` is the `worktree` layer, and `worktree` is accepted as another spelling of `--scope workspace`. In a main checkout there is no file besides the project's, so `--scope workspace` means the project file there, and the result reports `scope: "project"`, `layer: "project"`. Naming a workspace that isn't known with `--scope workspace` fails with `unknown_workspace`.
+
+With no `--scope`, `set`, `get` and `unset` use the highest layer the key allows at or below the workspace (`target_layer` in `config show --json`): the workspace's own file for a key a worktree may override, else the project's file, and the global file for a global-only key and for `workflows.defaults.include`. That holds for `--name <worktree>` as well as for a worktree cwd. A project-only key such as `locks.idle_grace` therefore lands in the parent project's file.
+
+Precedence is workspace > project > global > default. `workflows.defaults.include` is the one global-file key that may also be set at project and workspace scope: the packs a project's workflow steps start with are a project's choice, so a project may override the machine-wide default. A scope the key doesn't allow (see `overridable_in`) fails with code `scope_not_allowed`, a message that says why in a few words and which `--scope` to use, `details.key`, `details.scope` (the scope as typed) and `details.allowed` (the scopes it does allow, lowest first), and writes nothing. An unknown key fails with `unknown_config_key` (`details.key`), a bad value or an unknown `--scope` with `usage`, and a file that can't be parsed with `config_parse` (`details.path`, `details.reason`; the reason is the parser's message and never quotes a stored value).
+
+`set --json` and `unset --json` print an action document whose row has `workspace` (the name whose file was written, null for the global file), `outcome` (`set`, `unset`, or `noop` for an `unset` of a key that wasn't in that file, which writes and backs up nothing), `key`, `value` (`set` only), `global`, `scope`, `layer`, `file`, `comments_preserved` and `effective`, the key's effective value for the workspace asked about after the write (null for a sensitive key). `effective` has the type `config show` gives the key (a number may be a float, a boolean may be a string). After a restart-required key (on `set` and on `unset`), the text output names the affected daemons: the workspace's own for a `workspace` write, the project and each of its worktrees for a `project` write, every known workspace for a `global` write. Past three workspaces it gives their count and `workspace daemon restart --all` instead of a list. Put a value that starts with a dash after `--`: `workspace config set dev.up -- -x`.
+
+`config show --scope S` keeps the document and changes what each row means. `value`, `source_file`, `line` and `column` come from S's file alone (`value` is null when the key isn't in that file), `effective` and `source` are the resolution up to S (`project`: global < project; `global`: global < default; `workspace`: everything), and `layers[]` stops at S. The document gains `scope` and `scope_layer` (the layer S names for this workspace). Text mode prints S's file. `--json` now works with `--global` (it is `--scope global`).
+
+```sh
+workspace config set --scope project handoff.auto true
+workspace config set --scope workspace dev.ready_timeout 90s --name myapp.worktree-fix
+workspace config set --scope project workflows.defaults.include commits
+workspace config unset --scope workspace dev.ready_timeout --name myapp.worktree-fix --json
+workspace config show --scope project --json dev.ready_timeout --name myapp.worktree-fix
+```
+
 ### `config show --json`
 
 ```sh
@@ -154,7 +176,7 @@ Prints one document with every key in the table above, the value each reader wou
 - `effective_path` appears only on the `notes.dir` and `notes.default_dir` rows (`capabilities` reports `config_json: 2` when a client can rely on it). It is an absolute path with `~` expanded, and cleaned of `..` segments and a trailing slash, or null when it can't be worked out: the rule is relative to a checkout the workspace doesn't have, the rule uses `{branch}` and the checkout has no branch (a detached HEAD), or a file the key depends on can't be parsed. An invalid stored value is ignored, as in `effective`.
 - `dev.configured` is a derived, read-only row (it can't be set, and a value written for it in a file is ignored and reported as `not_read`): `effective` is `true` when the project's `dev.up` is set, `false` when it is not, and `null` when the project's file can't be read. It is what makes `start` and `launch` send the `dev` pack, so a reader need not infer it from `dev.up`, whose `value` and `effective` are always masked. `value` is `null`, `masked` is `false` and `source` is `default`.
 
-A file that can't be parsed doesn't fail `config show --json`: it is reported in `files` and its keys are `unreadable`. (Plain `workspace config` still refuses and prints the error.) `--json` can't be combined with `--global`; the global file is one of the layers. An unknown workspace is an error document with code `unknown_workspace`.
+A file that can't be parsed doesn't fail `config show --json`: it is reported in `files` and its keys are `unreadable`. (Plain `workspace config` still refuses and prints the error.) An unknown workspace is an error document with code `unknown_workspace`.
 
 ### `config validate`
 
