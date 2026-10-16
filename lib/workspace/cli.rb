@@ -460,7 +460,7 @@ module Workspace
           handoff         Check context usage and hand off to a fresh conversation
           help            Show this help message
           init            Install tmuxinator templates and create config directory
-          inbox           Keep a durable list of things that need a person: add, list, show
+          inbox           Keep a durable list of things that need a person: add, list, show, done, dismiss, reopen
           instructions    Print the instructions built from library packs (binding, orchestrator, commits, review, notes, handoff, dev, implementation-plan)
           kill            Kill a worktree project and remove its worktree (auto-detects from cwd)
           launch          Launch tmuxinator projects in iTerm windows, or headless in plain tmux
@@ -1792,6 +1792,9 @@ module Workspace
       when "add" then cmd_inbox_add(args)
       when "list" then cmd_inbox_list(args)
       when "show" then cmd_inbox_show(args)
+      when "done" then cmd_inbox_resolve(args, "done", :done)
+      when "dismiss" then cmd_inbox_resolve(args, "dismiss", :dismiss)
+      when "reopen" then cmd_inbox_resolve(args, "reopen", :reopen)
       when "help", "--help", "-h", nil then @output.puts inbox_help
       else raise UsageError, "Unknown inbox subcommand: #{subcommand}. Run 'workspace inbox help'."
       end
@@ -1802,6 +1805,7 @@ module Workspace
         Usage: workspace inbox add TITLE [options] [scope]
                workspace inbox list [--state S[,S]] [--type T] [--all] [scope] [--json]
                workspace inbox show ID [scope] [--json]
+               workspace inbox done|dismiss|reopen ID... [scope] [--json]
 
         A durable list of things that need a person, kept per workspace, per
         project (all worktrees of one repository) or globally. Agents, scripts
@@ -1811,6 +1815,9 @@ module Workspace
           add TITLE     Add an item (type todo unless --type says otherwise)
           list          Open items of this workspace, its project and the global list
           show ID       One item, in any state
+          done ID...    Mark items done; one already done is reported unchanged
+          dismiss ID... Mark items dismissed (nobody will act on them)
+          reopen ID...  Move done, dismissed or snoozed items back to open
 
         Scope (every subcommand; at most one):
           --name WS         The workspace WS instead of the one detected from the current directory
@@ -1847,6 +1854,8 @@ module Workspace
           workspace inbox add "CI failed" --type alert --source-kind github_check --global --json
           workspace inbox list --all --state open,snoozed
           workspace inbox show a1b2c3d4e5
+          workspace inbox done a1b2c3d4e5 f6a7b8c9d0
+          workspace inbox dismiss a1b2c3d4e5 --json
       HELP
     end
 
@@ -1930,6 +1939,23 @@ module Workspace
 
       result = @inbox_command.show(id, target: target, working_dir: inbox_working_dir(target), json: json)
       @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
+    end
+
+    def cmd_inbox_resolve(args, verb, method)
+      target = {}
+      json = false
+      parser = OptionParser.new do |opts|
+        opts.banner = "Usage: workspace inbox #{verb} ID... [--json]"
+        inbox_scope_options(opts, target)
+        opts.on("--json", "Print one action document (see docs/README.json.md) instead of text, which goes to stderr") { json = true }
+      end
+      parser.parse!(args)
+      raise UsageError, "inbox #{verb} needs at least one id.\n\n#{parser.help}" if args.empty?
+      raise Error, "inbox is not available: no inbox command was wired" unless @inbox_command
+
+      run_action("inbox #{verb}", json: json) do
+        @inbox_command.public_send(method, args.dup, target: target, working_dir: inbox_working_dir(target))
+      end
     end
 
     def cmd_lock(args)

@@ -142,16 +142,9 @@ module Workspace
       # @raise [Workspace::Error] `unknown_inbox_item`, or `ambiguous_inbox_item` when
       #   the id is in more than one scope
       def show(id, target: {}, working_dir: Dir.pwd, json: false)
-        scopes = target.values.any? ? [explicit_scope(target, working_dir)] : every_scope
         sink = StringIO.new
-        found = scopes.filter_map do |scope|
-          item = store_for(scope, sink).find(id)
-          [scope, item] if item
-        end
+        scope, item = locate(id, lookup_scopes(target, working_dir), sink)
         warnings = warnings_from(sink)
-        raise unknown_item(id) if found.empty?
-        raise ambiguous_item(id, found.map { |scope, _| scope.label }) if found.size > 1
-        scope, item = found.first
 
         if json
           @output.puts JSON.generate({"schema_version" => JSON_SCHEMA_VERSION, "ok" => true, "item" => item, "warnings" => warnings})
@@ -162,7 +155,90 @@ module Workspace
         {exit_code: 0}
       end
 
+      # Marks items done. Already-done items are `unchanged`, so a retry is safe.
+      #
+      # @param ids [Array<String>]
+      # @param target [Hash] `:name`, `:project`, `:global`; none searches every scope
+      # @param working_dir [String]
+      # @return [Hash] `{exit_code:, results:}`; one row per id, outcome `resolved`,
+      #   `unchanged` or `failed` (with `code` and `error`); exit 0, 3 when some failed, 1 when all did
+      def done(ids, target: {}, working_dir: Dir.pwd)
+        change(ids, "done", target, working_dir)
+      end
+
+      # Like {#done}, for items nobody will act on.
+      #
+      # @param (see #done)
+      # @return [Hash] as {#done}
+      def dismiss(ids, target: {}, working_dir: Dir.pwd)
+        change(ids, "dismissed", target, working_dir)
+      end
+
+      # Moves done, dismissed or snoozed items back to open. Open items are `unchanged`.
+      #
+      # @param ids [Array<String>]
+      # @param target [Hash] `:name`, `:project`, `:global`; none searches every scope
+      # @param working_dir [String]
+      # @return [Hash] as {#done}, with outcome `reopened` instead of `resolved`
+      def reopen(ids, target: {}, working_dir: Dir.pwd)
+        change(ids, "open", target, working_dir)
+      end
+
       private
+
+      def change(ids, to, target, working_dir)
+        scopes = lookup_scopes(target, working_dir)
+        by = to.start_with?("d") ? resolver : nil
+        results = ids.map { |id| change_one(id, to, by, scopes) }
+        failed = results.count { |row| row["outcome"] == "failed" }
+        exit_code = if failed.zero? then 0
+        elsif failed == results.size then 1
+        else
+          3
+        end
+        {exit_code: exit_code, results: results}
+      end
+
+      def change_one(id, to, by, scopes)
+        scope, found = locate(id, scopes, @error_output)
+        transition = store_for(scope).transition(found["id"], to: to, by: by)
+        raise unknown_item(id) unless transition
+        item = transition.record
+        outcome = if !transition.changed then "unchanged"
+        elsif to == "open" then "reopened"
+        else
+          "resolved"
+        end
+        say = (outcome == "unchanged") ? "#{escape(id)} is already #{item["state"]}" : "#{escape(id)} #{outcome}"
+        @output.puts "#{say} (#{scope.label}): #{escape(item["title"])}"
+        {"id" => item["id"], "outcome" => outcome, "scope" => scope.label, "item" => item}
+      rescue Workspace::Error => e
+        raise unless %w[unknown_inbox_item ambiguous_inbox_item inbox_store_unreadable].include?(e.code)
+        @error_output.puts e.message
+        {"id" => id, "outcome" => "failed", "code" => e.code, "error" => e.message, "details" => e.details}
+      end
+
+      # Who resolved an item: the calling pane, as an agent only when the session ledger says so.
+      def resolver
+        by = created_by(false)
+        {"kind" => by["kind"], "pane" => by["pane"]}
+      end
+
+      def lookup_scopes(target, working_dir)
+        target.values.any? ? [explicit_scope(target, working_dir)] : every_scope
+      end
+
+      # @return [Array] the scope and the item with this id
+      # @raise [Workspace::Error] `unknown_inbox_item`, `ambiguous_inbox_item`
+      def locate(id, scopes, sink)
+        found = scopes.filter_map do |scope|
+          item = store_for(scope, sink).find(id)
+          [scope, item] if item
+        end
+        raise unknown_item(id) if found.empty?
+        raise ambiguous_item(id, found.map { |scope, _| scope.label }) if found.size > 1
+        found.first
+      end
 
       def invalid(field, reason)
         Workspace::Error.new("Invalid inbox item: #{field} #{reason}.",

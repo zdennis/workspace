@@ -1902,6 +1902,28 @@ RSpec.describe Workspace::CLI do
       cli.run(["inbox", "show", "a1b2c3d4e5"])
     end
 
+    %w[done dismiss reopen].each do |verb|
+      it "routes inbox #{verb} with every id and the scope" do
+        expect(inbox_command).to receive(verb.to_sym).with(%w[a1 b2], target: {global: true}, working_dir: anything)
+          .and_return({exit_code: 0, results: []})
+
+        cli.run(["inbox", verb, "a1", "--global", "b2"])
+      end
+    end
+
+    it "wraps done in an action document and exits 3 when partial" do
+      rows = [{"id" => "a1", "outcome" => "resolved"}, {"id" => "b2", "outcome" => "failed", "code" => "unknown_inbox_item"}]
+      allow(inbox_command).to receive(:done).and_return({exit_code: 3, results: rows})
+
+      expect { cli.run(["inbox", "done", "a1", "b2", "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(3) }
+      expect(JSON.parse(output.string)).to include("action" => "inbox done", "status" => "partial", "results" => rows)
+    end
+
+    it "needs at least one id to resolve" do
+      expect { cli.run(["inbox", "done", "--json"]) }.to raise_error(FakeSystemExit)
+      expect(JSON.parse(output.string)).to include("ok" => false, "code" => "usage")
+    end
+
     it "reports a missing title as a usage error in the JSON envelope" do
       expect { cli.run(["inbox", "add", "--json"]) }.to raise_error(FakeSystemExit)
       expect(JSON.parse(output.string)).to include("ok" => false, "code" => "usage")

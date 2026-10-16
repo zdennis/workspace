@@ -486,4 +486,151 @@ RSpec.describe Workspace::Commands::Inbox do
       expect { command.show(item["id"], target: {name: "other"}, working_dir: "/app") }.not_to raise_error
     end
   end
+
+  describe "#done, #dismiss and #reopen" do
+    def add_item(title, **opts)
+      command.add(title: title, working_dir: "/app", **opts)[:results].first["item"]
+    end
+
+    def stored_item(id, kind: "workspace", key: "api.fix")
+      stored(config.inbox_path(kind, key)).find { |r| r["id"] == id }
+    end
+
+    before { output.truncate(0) && output.rewind }
+
+    it "marks several ids done, one row each, stamping resolved_by" do
+      a = add_item("one")
+      b = add_item("two")
+
+      result = command.done([a["id"], b["id"]], working_dir: "/app")
+
+      expect(result[:exit_code]).to eq(0)
+      expect(result[:results]).to match([
+        a_hash_including("id" => a["id"], "outcome" => "resolved", "scope" => "workspace:api.fix"),
+        a_hash_including("id" => b["id"], "outcome" => "resolved")
+      ])
+      expect(stored_item(a["id"])).to include("state" => "done", "resolved_at" => "2026-10-16T12:00:00Z",
+        "resolved_by" => {"kind" => "cli", "pane" => nil})
+      expect(output.string).to include("#{a["id"]} resolved (workspace:api.fix): one")
+    end
+
+    it "dismisses an item" do
+      a = add_item("one")
+
+      result = command.dismiss([a["id"]], working_dir: "/app")
+
+      expect(result[:results].first).to include("outcome" => "resolved")
+      expect(stored_item(a["id"])["state"]).to eq("dismissed")
+    end
+
+    it "records the calling pane, and agent only when the ledger shows an open session" do
+      a = add_item("one")
+      b = add_item("two")
+      env.merge!("TMUX_PANE" => "%7", "TMUX" => "/tmp/tmux-1/default,4242,0")
+      allow(session_ledger).to receive(:open_session_for).with(pane_id: "%7", tmux_server: "4242").and_return(nil, "sess-1")
+
+      command.done([a["id"]], working_dir: "/app")
+      command.done([b["id"]], working_dir: "/app")
+
+      expect(stored_item(a["id"])["resolved_by"]).to eq("kind" => "cli", "pane" => "%7")
+      expect(stored_item(b["id"])["resolved_by"]).to eq("kind" => "agent", "pane" => "%7")
+    end
+
+    it "reports an already resolved item as unchanged without rewriting its resolution" do
+      a = add_item("one")
+      command.done([a["id"]], working_dir: "/app")
+      before = stored_item(a["id"])
+
+      result = command.done([a["id"]], working_dir: "/app")
+
+      expect(result[:exit_code]).to eq(0)
+      expect(result[:results].first).to include("outcome" => "unchanged")
+      expect(stored_item(a["id"])).to eq(before)
+      expect(output.string).to include("is already done")
+    end
+
+    it "moves a done item to dismissed" do
+      a = add_item("one")
+      command.done([a["id"]], working_dir: "/app")
+
+      result = command.dismiss([a["id"]], working_dir: "/app")
+
+      expect(result[:results].first["outcome"]).to eq("resolved")
+      expect(stored_item(a["id"])["state"]).to eq("dismissed")
+    end
+
+    it "gives an unknown id a failed row and exit 1 when all fail" do
+      result = command.done(["0000000000"], working_dir: "/app")
+
+      expect(result[:exit_code]).to eq(1)
+      expect(result[:results]).to eq([
+        {"id" => "0000000000", "outcome" => "failed", "code" => "unknown_inbox_item",
+         "error" => "No inbox item '0000000000'.", "details" => {"id" => "0000000000"}}
+      ])
+      expect(error_output.string).to include("No inbox item '0000000000'.")
+    end
+
+    it "is partial (exit 3) when some ids fail, and still resolves the rest" do
+      a = add_item("one")
+
+      result = command.done(["0000000000", a["id"]], working_dir: "/app")
+
+      expect(result[:exit_code]).to eq(3)
+      expect(result[:results].map { |r| r["outcome"] }).to eq(%w[failed resolved])
+      expect(Workspace::JsonEnvelope.action_status(result[:results])).to eq("partial")
+      expect(stored_item(a["id"])["state"]).to eq("done")
+    end
+
+    it "fails a row whose id is in more than one scope, and resolves it with a scope flag" do
+      a = add_item("one")
+      FileUtils.cp(config.inbox_path("workspace", "api.fix"), config.inbox_path("global"))
+
+      result = command.done([a["id"]], working_dir: "/app")
+      expect(result[:results].first).to include("outcome" => "failed", "code" => "ambiguous_inbox_item")
+
+      result = command.done([a["id"]], target: {global: true}, working_dir: "/app")
+      expect(result[:results].first).to include("outcome" => "resolved", "scope" => "global")
+      expect(stored_item(a["id"])["state"]).to eq("open")
+    end
+
+    it "fails a row for an unreadable scope file (read as empty) without overwriting it" do
+      a = add_item("one")
+      File.write(config.inbox_path("workspace", "api.fix"), "{not json")
+
+      result = command.done([a["id"]], target: {name: "api.fix"}, working_dir: "/app")
+
+      expect(result[:results].first).to include("outcome" => "failed", "code" => "unknown_inbox_item")
+      expect(error_output.string).not_to be_empty
+      expect(File.read(config.inbox_path("workspace", "api.fix"))).to eq("{not json")
+    end
+
+    it "reopens a done item, clearing the resolution" do
+      a = add_item("one")
+      command.done([a["id"]], working_dir: "/app")
+
+      result = command.reopen([a["id"]], working_dir: "/app")
+
+      expect(result[:results].first).to include("outcome" => "reopened")
+      expect(stored_item(a["id"])).to include("state" => "open", "resolved_at" => nil, "resolved_by" => nil)
+    end
+
+    it "reports reopening an open item as unchanged" do
+      a = add_item("one")
+
+      expect(command.reopen([a["id"]], working_dir: "/app")[:results].first["outcome"]).to eq("unchanged")
+    end
+
+    it "escapes control characters in a title it prints" do
+      a = add_item("one")
+      path = config.inbox_path("workspace", "api.fix")
+      records = stored(path)
+      records.first["title"] = "t\e[2J"
+      File.write(path, JSON.generate(records))
+
+      command.done([a["id"]], working_dir: "/app")
+
+      expect(output.string).to include('t\e[2J')
+      expect(output.string).not_to include("\e")
+    end
+  end
 end
