@@ -173,6 +173,42 @@ module Workspace
       File.join(pipeline_state_dir(name), "pipeline.json")
     end
 
+    # Dotted, like {#task_dir}, so no workspace name (whose state directory sits
+    # beside it) can produce it.
+    #
+    # @return [String] path to the directory holding one JSON file per inbox scope
+    def inbox_dir
+      File.join(state_dir, ".inbox")
+    end
+
+    # @param kind [String] `"workspace"`, `"project"` or `"global"`
+    # @param key [String, nil] the workspace name; for a project the realpath of
+    #   its git common dir (or its name when it has none); unused for global
+    # @param name [String, nil] a project's display name, for the readable part of its file name
+    # @return [String] path to the scope's inbox file; a project's is slugged as
+    #   {LockNamespace} slugs its lock directory
+    def inbox_path(kind, key = nil, name: nil)
+      case kind
+      when "global"
+        File.join(inbox_dir, "global.json")
+      when "workspace"
+        raise ArgumentError, "invalid workspace name #{key.inspect}" if key.to_s.empty? || key.include?("/") || key.start_with?(".")
+        File.join(inbox_dir, "workspace", "#{key}.json")
+      when "project"
+        raise ArgumentError, "invalid project key #{key.inspect}" if key.to_s.empty?
+        slug = (name || key).to_s.gsub(/[^A-Za-z0-9_-]+/, "-").gsub(/-{2,}/, "-").gsub(/^-|-$/, "")
+        slug = "namespace" if slug.empty?
+        File.join(inbox_dir, "project", "#{slug}-#{Digest::SHA1.hexdigest(key.to_s)[0, 12]}.json")
+      else
+        raise ArgumentError, "unknown inbox scope kind #{kind.inspect}"
+      end
+    end
+
+    # @return [String] path to the JSON file of acknowledged derived inbox items
+    def inbox_acks_path
+      File.join(inbox_dir, "acks.json")
+    end
+
     # @return [String] path to the JSON store of per-pane context-window readings
     def context_store_path
       File.join(state_dir, "context.json")

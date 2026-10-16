@@ -323,3 +323,38 @@ RSpec.describe Workspace::Config do
     end
   end
 end
+
+RSpec.describe Workspace::Config, "inbox paths" do
+  subject(:config) { described_class.new }
+
+  it "keeps the store under a dotted directory no workspace name can produce" do
+    expect(config.inbox_dir).to eq(File.join(config.state_dir, ".inbox"))
+    expect(File.dirname(config.inbox_dir)).to eq(config.state_dir)
+    expect(config.pipeline_state_dir("inbox")).not_to eq(config.inbox_dir)
+    expect(config.inbox_path("workspace", "inbox")).to eq(File.join(config.inbox_dir, "workspace", "inbox.json"))
+  end
+
+  it "files a workspace under .inbox/workspace and the global list at .inbox/global.json" do
+    expect(config.inbox_path("workspace", "api.fix-login")).to eq(File.join(config.inbox_dir, "workspace", "api.fix-login.json"))
+    expect(config.inbox_path("global")).to eq(File.join(config.inbox_dir, "global.json"))
+    expect(config.inbox_acks_path).to eq(File.join(config.inbox_dir, "acks.json"))
+  end
+
+  it "files a project as <slug>-<sha1[0,12]> of its key, slugged as LockNamespace does" do
+    key = "/src/My Repo/.git"
+
+    expect(config.inbox_path("project", key, name: "My Repo!")).to eq(
+      File.join(config.inbox_dir, "project", "My-Repo-#{Digest::SHA1.hexdigest(key)[0, 12]}.json")
+    )
+    expect(config.inbox_path("project", "x", name: "///")).to match(%r{/project/namespace-\h{12}\.json\z})
+    expect(config.inbox_path("project", "name-only")).to match(%r{/project/name-only-\h{12}\.json\z})
+  end
+
+  it "refuses a workspace name that would leave the directory, and an unknown kind" do
+    ["../x", "a/b", "", ".hidden"].each do |bad|
+      expect { config.inbox_path("workspace", bad) }.to raise_error(ArgumentError)
+    end
+    expect { config.inbox_path("galaxy") }.to raise_error(ArgumentError)
+    expect { config.inbox_path("project", "") }.to raise_error(ArgumentError)
+  end
+end

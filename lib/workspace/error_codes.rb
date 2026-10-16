@@ -74,6 +74,7 @@ module Workspace
       "library_entry_exists" => "library add would replace an entry with different content; pass --force.",
       "library_source_missing" => "The file to add doesn't exist, or a linked entry's target can't be read.",
       "unknown_workflow" => "No workflow definition has that id.",
+      "inbox_store_unreadable" => "An inbox scope's file can't be parsed, so nothing was written to it. `details.scope`.",
       "invalid_workflow" => "A workflow definition file doesn't pass the checks.",
       "input_required" => "workflow run is missing a required input.",
       "workflow_command_unset" => "A step's check names the project's test or lint command and the project has none.",

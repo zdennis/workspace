@@ -153,6 +153,7 @@ The registry lives in `Workspace::ErrorCodes`; a spec checks that every code a r
 | `library_entry_exists` | `library add` would replace an entry with different content. `details.ref`, `details.scope`; `retry` names `--force` (destructive). |
 | `library_source_missing` | The file to add doesn't exist, or a linked entry's target can't be read. `details.ref`, `details.path`. |
 | `unknown_workflow` | No workflow definition has that id. `details.workflow`, `details.known`. |
+| `inbox_store_unreadable` | An inbox scope's file can't be parsed, so nothing was written to it. `details.scope`. |
 | `invalid_workflow` | A workflow definition file doesn't pass the checks. `details.workflow`, `details.path`, `details.problems`. |
 | `input_required` | workflow run is missing a required input. `details.workflow`, `details.inputs` (each `name` and `description`). |
 | `workflow_command_unset` | A step's check names the project's test or lint command and the project has none. `details.workflow`, `details.project`, `details.commands`. |
