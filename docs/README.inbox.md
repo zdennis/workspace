@@ -83,6 +83,8 @@ Text with NUL or another control character (an escape sequence, a C1 control, a 
 
 `done`, `dismiss` and `reopen` take one or more ids and print an action document (`inbox done`, `inbox dismiss`, `inbox reopen`) with one row per id: `id`, `outcome`, `scope` (a label) and the `item`. Outcomes are `resolved` (done and dismiss), `reopened`, `unchanged` (already in that state, so a retry is safe; nothing is rewritten) and `failed`, whose row carries `code` (`unknown_inbox_item`, `ambiguous_inbox_item`), `error` and `details`. The action `status` is `ok`, `partial` (exit 3) or `failed` (exit 1); rows are processed in order and each one that can be resolved is. `done` or `dismiss` stamps `resolved_at` and `resolved_by` (`kind` `cli`, or `agent` when the session ledger shows an agent session open in `$TMUX_PANE`, plus `pane`); `reopen` clears both and any snooze.
 
-Errors use the [`--json` error envelope](README.json.md): `invalid_inbox_item`, `unknown_inbox_item`, `ambiguous_inbox_item`, `not_in_workspace`, `unknown_workspace`, `usage`.
+Errors use the [`--json` error envelope](README.json.md): `invalid_inbox_item`, `unknown_inbox_item`, `ambiguous_inbox_item`, `inbox_store_unreadable`, `not_in_workspace`, `unknown_workspace`, `usage`.
+
+`workspace capabilities --json` reports `features.inbox: 1` for these commands.
 
 Exit 0, 1 on an error; `done`, `dismiss` and `reopen` exit 3 when only some ids failed.

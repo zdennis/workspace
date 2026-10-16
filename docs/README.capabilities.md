@@ -26,7 +26,7 @@ It reads constants, config paths and the `PATH`. It starts no process and touche
    "doctor_json":0,"daemon_control":4,"config_json":2,"config_scopes":2,"tmux_show":1,"tasks":1,"event_emitters":1,
    "ui_open":2,"pane_bindings":3,"library":3,"library_play":2,"library_copy":1,"instructions":1,"restore":1,
    "workflow":1,"window_state":1,"cleanup_dry_run":1,"notes":1,"start_packs":2,
-   "handoff_auto":2,"handoff_codex":1,"dev_queue":2,"plan":4},
+   "handoff_auto":2,"handoff_codex":1,"dev_queue":2,"plan":4,"inbox":1},
  "exit_codes":{"ok":0,"failed":1,"not_submitted":2,"partial":3,"lock_cleared":4,"timeout":75},
  "paths":{"event_log":"/Users/me/.workspace-events.jsonl","run_dir":"/Users/me/.local/workspace/run",
    "library":"/Users/me/.config/workspace/library"},
@@ -83,6 +83,7 @@ It reads constants, config paths and the `PATH`. It starts no process and touche
 | `ticket` | `ticket show REF [--name WS] [--json]` reads a JIRA key, pull request, issue or branch the way `start` does, with its title, body and URL and the workspace that already exists for it, and writes nothing (see [`ticket`](README.ticket.md)) |
 | `pr_create` | `pr create [--name WS] [--draft] [--json]` pushes the branch when it has no upstream, returns the branch's pull request when it has one, and otherwise runs `gh pr create --fill`; `finish --json` carries `pr_url` (see [`pr`](README.pr.md)) |
 | `rebase` | `rebase --onto local\|update\|remote [--name WS] [--json]` and `push [--name WS] [--json]` (see [`rebase`](README.rebase.md)) |
+| `inbox` | `inbox add\|list\|show\|done\|dismiss\|reopen` and `inbox add --from-json PATH\|-` keep a durable list of things that need a person, per workspace, project or global, with `--json` (see [`inbox`](README.inbox.md)) |
 | `start_packs` | `start` and `launch` send the instruction packs that apply (`--pack`, `--no-packs`, the `notes.instructions` key) and report `packs` rows in `--json`; `instructions compose --start` prints them (see [`start`](README.start.md#packs)). Level 2: the `dev.instructions` key and the automatic `dev` pack for a project with `dev.up`, and a `dev.configured` row in `config show --json` |
 | `event_emitters` | The event log records `ask_created`, `ask_answered`, `lock_released`, `lock_cleared`, `worktree_started`, `worktree_finished`, `daemon_started`, `daemon_stopped` and `config_changed` (see [`event-log`](README.event-log.md#state-and-lifecycle-events)) |
 
