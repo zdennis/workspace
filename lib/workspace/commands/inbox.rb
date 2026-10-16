@@ -48,10 +48,12 @@ module Workspace
       # @param env [Hash] process environment, for `TMUX_PANE` and `TMUX`
       # @param input [IO] read by `--body-file -`
       # @param clock [#call] returns the current Time
+      # @param event_log [Workspace::EventLog, nil] records `inbox_changed` (ids and states only,
+      #   never the item's text); nil records nothing
       # @param output [IO]
       # @param error_output [IO]
       def initialize(config:, project_detector:, store_factory:, project_catalog: nil, session_ledger: nil,
-        env: ENV, input: $stdin, clock: -> { Time.now }, output: $stdout, error_output: $stderr)
+        env: ENV, input: $stdin, clock: -> { Time.now }, event_log: nil, output: $stdout, error_output: $stderr)
         @config = config
         @project_detector = project_detector
         @project_catalog = project_catalog
@@ -60,6 +62,7 @@ module Workspace
         @env = env
         @input = input
         @clock = clock
+        @event_log = event_log
         @output = output
         @error_output = error_output
       end
@@ -96,6 +99,7 @@ module Workspace
           "expires_at" => checked_expiry(expires, expires_field)
         }
         item = store_for(scope).add(record)
+        record_change(item, "created")
         @output.puts "Added inbox item #{item["id"]} to #{scope.label}: #{escape(item["title"])}"
         {exit_code: 0, results: [{"id" => item["id"], "outcome" => "created", "scope" => scope.label, "item" => item}]}
       end
@@ -233,6 +237,7 @@ module Workspace
         else
           "resolved"
         end
+        record_change(item, outcome) unless outcome == "unchanged"
         say = (outcome == "unchanged") ? "#{escape(id)} is already #{item["state"]}" : "#{escape(id)} #{outcome}"
         @output.puts "#{say} (#{scope.label}): #{escape(item["title"])}"
         {"id" => item["id"], "outcome" => outcome, "scope" => scope.label, "item" => item}
@@ -240,6 +245,14 @@ module Workspace
         raise unless %w[unknown_inbox_item ambiguous_inbox_item inbox_store_unreadable].include?(e.code)
         @error_output.puts e.message
         {"id" => id, "outcome" => "failed", "code" => e.code, "error" => e.message, "details" => e.details}
+      end
+
+      # Writes `inbox_changed`: the workspace or project name for those scopes, "" for global.
+      # The item's text stays in the store; EventLog#record never raises.
+      def record_change(item, change)
+        scope = item["scope"]
+        @event_log&.record(type: "inbox_changed", project: scope["name"] || "",
+          data: {"id" => item["id"], "scope" => scope["kind"], "scope_key" => scope["key"], "state" => item["state"], "change" => change})
       end
 
       # Who resolved an item: the calling pane, as an agent only when the session ledger says so.

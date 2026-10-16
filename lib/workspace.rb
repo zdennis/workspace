@@ -531,7 +531,7 @@ module Workspace
       pane_sender: send_command, event_log: event_log, output: output, error_output: error_output)
     inbox_store_factory = ->(path:, scope:, error_output:) { InboxStore.new(path: path, scope: scope, error_output: error_output) }
     inbox_command = Commands::Inbox.new(config: config, project_detector: project_detector, project_catalog: project_catalog,
-      session_ledger: session_ledger, store_factory: inbox_store_factory, env: env, input: input, output: output, error_output: error_output)
+      session_ledger: session_ledger, store_factory: inbox_store_factory, env: env, input: input, event_log: event_log, output: output, error_output: error_output)
 
     work_coordinator_client = WorkCoordinatorClient.new(
       socket_path: config.work_coordinator_socket,

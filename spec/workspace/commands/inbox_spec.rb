@@ -761,4 +761,82 @@ RSpec.describe Workspace::Commands::Inbox do
       expect(output.string).not_to include("\e")
     end
   end
+
+  describe "inbox_changed events" do
+    let(:event_log) { CLITestHelpers::FakeEventLog.new }
+
+    subject(:command) do
+      described_class.new(config: config, project_detector: project_detector, project_catalog: project_catalog,
+        session_ledger: session_ledger, store_factory: store_factory, env: env, input: input,
+        clock: -> { now }, event_log: event_log, output: output, error_output: error_output)
+    end
+
+    def add_item(title, **opts)
+      command.add(title: title, working_dir: "/app", **opts)[:results].first["item"]
+    end
+
+    it "writes one created event for a workspace item, with ids and states only" do
+      item = add_item("Secret title", body: "secret body", source: {ref: "SECRET-1"})
+
+      data = {"id" => item["id"], "scope" => "workspace", "scope_key" => "api.fix", "state" => "open", "change" => "created"}
+      expect(event_log.events).to eq([{"type" => "inbox_changed", "project" => "api.fix", "data" => data}])
+      expect(event_log.events.to_s).not_to match(/Secret|secret|SECRET/)
+    end
+
+    it "uses the project's display name for a project item" do
+      item = add_item("x", target: {project: "api"})
+
+      expect(event_log.events.last).to eq({"type" => "inbox_changed", "project" => "api",
+        "data" => {"id" => item["id"], "scope" => "project", "scope_key" => "/src/api/.git", "state" => "open", "change" => "created"}})
+    end
+
+    it "uses an empty project for a global item" do
+      item = add_item("x", target: {global: true})
+
+      expect(event_log.events.last).to eq({"type" => "inbox_changed", "project" => "",
+        "data" => {"id" => item["id"], "scope" => "global", "scope_key" => nil, "state" => "open", "change" => "created"}})
+    end
+
+    it "writes resolved for done and dismiss, and reopened for reopen, each with the new state" do
+      a = add_item("a")
+      b = add_item("b")
+      event_log.events.clear
+
+      command.done([a["id"]], working_dir: "/app")
+      command.dismiss([b["id"]], working_dir: "/app")
+      command.reopen([a["id"]], working_dir: "/app")
+
+      expect(event_log.events.map { |e| [e["data"]["id"], e["data"]["state"], e["data"]["change"]] }).to eq([
+        [a["id"], "done", "resolved"], [b["id"], "dismissed", "resolved"], [a["id"], "open", "reopened"]
+      ])
+    end
+
+    it "writes nothing for an unchanged outcome or a failed row" do
+      a = add_item("a")
+      event_log.events.clear
+
+      command.reopen([a["id"]], working_dir: "/app")
+      command.done(["nosuchid"], working_dir: "/app")
+
+      expect(event_log.events).to be_empty
+    end
+
+    it "writes nothing when an add is refused" do
+      expect { command.add(title: "", working_dir: "/app") }.to raise_error(Workspace::Error)
+
+      expect(event_log.events).to be_empty
+    end
+
+    it "still succeeds when the log cannot be written" do
+      unwritable = instance_double(Workspace::Config, event_log_file: File.join(tmpdir, "missing-dir", "events.jsonl"))
+      real = Workspace::EventLog.new(config: unwritable, error_output: StringIO.new)
+      failing = described_class.new(config: config, project_detector: project_detector, project_catalog: project_catalog,
+        session_ledger: session_ledger, store_factory: store_factory, env: env, input: input,
+        clock: -> { now }, event_log: real, output: output, error_output: error_output)
+
+      result = failing.add(title: "x", working_dir: "/app")
+
+      expect(result[:exit_code]).to eq(0)
+    end
+  end
 end
