@@ -1873,6 +1873,30 @@ RSpec.describe Workspace::CLI do
         "--link-plan-task", "T1", "--link-run", "run1"])
     end
 
+    it "passes --from-json to add_from_json" do
+      expect(inbox_command).to receive(:add_from_json).with("-", working_dir: anything).and_return({exit_code: 0, results: []})
+
+      cli.run(["inbox", "add", "--from-json", "-"])
+    end
+
+    it "accepts --from-json=PATH under --json" do
+      row = {"id" => "a1b2c3d4e5", "outcome" => "created"}
+      expect(inbox_command).to receive(:add_from_json).with("/p.json", working_dir: anything).and_return({exit_code: 0, results: [row]})
+
+      cli.run(["inbox", "add", "--from-json=/p.json", "--json"])
+
+      expect(JSON.parse(output.string)).to include("action" => "inbox add", "results" => [row])
+    end
+
+    it "refuses --from-json mixed with a title, a scope or an item flag" do
+      [["T"], ["--global"], ["--type", "todo"], ["--type=alert"], ["--body", "b"], ["--as-user"], ["--expires", "2h"]].each do |extra|
+        expect { cli.run(["inbox", "add", "--from-json", "-", *extra]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+        expect(built[2].string).to include("--from-json takes the whole item")
+        built[2].truncate(0)
+        built[2].rewind
+      end
+    end
+
     it "routes show with a scope flag under --json" do
       expect(inbox_command).to receive(:show).with("abc", target: {global: true}, working_dir: anything, json: true).and_return({exit_code: 0})
 

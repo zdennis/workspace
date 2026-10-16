@@ -8,6 +8,7 @@ A durable list of things that need a person. Agents, scripts and outside tools p
 workspace inbox add TITLE [--type TYPE] [--body TEXT | --body-file PATH|-] [--source-kind K] [--source-ref R] [--source-url URL]
                           [--expires DURATION|ISO] [--link-pane P] [--link-plan-task T] [--link-pr N] [--link-run R]
                           [--as-user] [scope] [--json]
+workspace inbox add --from-json PATH|- [--json]
 workspace inbox list [--state S[,S]] [--type TYPE] [--all] [scope] [--json]
 workspace inbox show ID [scope] [--json]
 workspace inbox done ID... [scope] [--json]
@@ -28,6 +29,26 @@ workspace inbox done a1b2c3d4e5 f6a7b8c9d0
 workspace inbox dismiss a1b2c3d4e5 --json
 workspace inbox reopen a1b2c3d4e5
 ```
+
+## Adding from JSON
+
+`add --from-json PATH|-` takes the whole item from one JSON object, read from a file or stdin (64 KB at most). Use it alone: a title, scope flag or item flag with it is a `usage` error; only `--json` goes with it. The output is the same as `add`.
+
+```sh
+echo '{"title":"CI failed","type":"alert","source":{"kind":"github_check","ref":"api#412"},"scope":{"kind":"global"}}' \
+  | workspace inbox add --from-json - --json
+```
+
+| Key | Value |
+|---|---|
+| `title` | Required string |
+| `type`, `body`, `expires_at` | Strings; the same rules as `--type`, `--body`, `--expires` (`expires_at` may be a duration or an ISO 8601 time) |
+| `source` | Object with `kind`, `ref`, `url` |
+| `links` | Object with `pane`, `plan_task`, `run_id` (strings) and `pr` (a positive integer) |
+| `scope` | `{"kind": "global"}`, or `{"kind": "workspace" or "project", "name": "..."}`; left out, the workspace of the current directory |
+| `dedupe_key` | Only `null` for now; a key is refused until deduplication arrives |
+
+Any other key, a value of the wrong type, a non-object, invalid JSON or UTF-8, or input over 64 KB is `invalid_inbox_item` (`details.field` names the key, such as `state` or `source.host`; `json` for the document itself). Every field then passes the checks in the table below, and nothing is written when one fails.
 
 ## Scope
 

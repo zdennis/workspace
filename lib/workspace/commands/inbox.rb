@@ -72,6 +72,7 @@ module Workspace
       # @param body_file [String, nil] a path, or `-` for stdin, read instead of +body+ (64 KB cap)
       # @param source [Hash] `:kind`, `:ref`, `:url` (https only)
       # @param expires [String, nil] a duration (`2h`) or an ISO 8601 time in the future
+      # @param expires_field [String] the field name an expiry error reports (`expires_at` for JSON input)
       # @param links [Hash] `:pane`, `:plan_task`, `:pr`, `:run_id`
       # @param as_user [Boolean] record the item as made by a person, not a script or agent
       # @param target [Hash] `:name`, `:project`, `:global`; none means the workspace of +working_dir+
@@ -79,7 +80,7 @@ module Workspace
       # @return [Hash] `{exit_code:, results:}` for the action document
       # @raise [Workspace::Error] `invalid_inbox_item`, `not_in_workspace`, `inbox_store_unreadable`
       def add(title:, type: "todo", body: nil, body_file: nil, source: {}, expires: nil, links: {},
-        as_user: false, target: {}, working_dir: Dir.pwd)
+        as_user: false, target: {}, working_dir: Dir.pwd, expires_field: "expires")
         raise UsageError, "Pass --body or --body-file, not both." if body && body_file
         scope = scope_for_write(target, working_dir)
         created_by = created_by(as_user)
@@ -87,16 +88,39 @@ module Workspace
           "type" => checked_type(type),
           "scope" => {"kind" => scope.kind, "key" => scope.key, "name" => scope.name},
           "title" => checked_title(title),
-          "body" => checked_body(body_file ? read_body_file(body_file) : body),
+          "body" => checked_body(body_file ? read_input(body_file, "body") : body),
           "source" => checked_source(source, created_by["kind"]),
           "dedupe_key" => nil,
           "created_by" => created_by,
           "links" => checked_links(links),
-          "expires_at" => checked_expiry(expires)
+          "expires_at" => checked_expiry(expires, expires_field)
         }
         item = store_for(scope).add(record)
         @output.puts "Added inbox item #{item["id"]} to #{scope.label}: #{escape(item["title"])}"
         {exit_code: 0, results: [{"id" => item["id"], "outcome" => "created", "scope" => scope.label, "item" => item}]}
+      end
+
+      # Creates an item from one JSON object holding only the item's writable
+      # keys (`type`, `title`, `body`, `source`, `dedupe_key`, `expires_at`,
+      # `links`, `scope`). Every field gets the same checks as {#add}; nothing
+      # is written when any is refused.
+      #
+      # @param path [String] a file, or `-` for stdin (64 KB cap)
+      # @param working_dir [String] directory to detect the workspace from when the object has no `scope`
+      # @return [Hash] as {#add}
+      # @raise [Workspace::Error] `invalid_inbox_item`, `not_in_workspace`, `inbox_store_unreadable`
+      def add_from_json(path, working_dir: Dir.pwd)
+        data = parse_item_json(read_input(path, "json"))
+        title = data.fetch("title") { raise invalid("title", "is required") }
+        add(title: string_field("title", title),
+          type: data.key?("type") ? string_field("type", data["type"]) : "todo",
+          body: string_field("body", data["body"]),
+          source: json_source(data["source"]),
+          expires: string_field("expires_at", data["expires_at"]),
+          expires_field: "expires_at",
+          links: json_links(data["links"]),
+          target: json_target(data["scope"]),
+          working_dir: working_dir)
       end
 
       # Prints items, newest change first. Without +all+ or a scope flag it reads
@@ -317,7 +341,7 @@ module Workspace
       end
 
       # @return [String, nil] an ISO 8601 UTC time in the future
-      def checked_expiry(expires)
+      def checked_expiry(expires, field = "expires")
         return nil if expires.nil?
         now = @clock.call
         at = begin
@@ -326,20 +350,85 @@ module Workspace
           begin
             now + Duration.parse_positive(expires)
           rescue ArgumentError
-            raise invalid("expires", "must be a duration like 2h or an ISO 8601 time")
+            raise invalid(field, "must be a duration like 2h or an ISO 8601 time")
           end
         end
-        raise invalid("expires", "must be in the future") unless at > now
+        raise invalid(field, "must be in the future") unless at > now
         at.utc.iso8601
       end
 
-      def read_body_file(path)
+      def read_input(path, field)
         data = (path == "-") ? @input.read(INPUT_MAX + 1) : File.open(path, "rb") { |f| f.read(INPUT_MAX + 1) }
         text = data.to_s.dup.force_encoding(Encoding::UTF_8)
-        raise invalid("body", "is longer than #{INPUT_MAX / 1024} KB") if text.bytesize > INPUT_MAX
+        raise invalid(field, "is longer than #{INPUT_MAX / 1024} KB") if text.bytesize > INPUT_MAX
         text
       rescue SystemCallError
-        raise invalid("body", "can't be read from the file")
+        raise invalid(field, "can't be read from the file")
+      end
+
+      JSON_KEYS = %w[type title body source dedupe_key expires_at links scope].freeze
+      JSON_SOURCE_KEYS = %w[kind ref url].freeze
+      JSON_LINK_KEYS = %w[pane plan_task pr run_id].freeze
+      JSON_SCOPE_KEYS = %w[kind name].freeze
+      private_constant :JSON_KEYS, :JSON_SOURCE_KEYS, :JSON_LINK_KEYS, :JSON_SCOPE_KEYS
+
+      def parse_item_json(text)
+        raise invalid("json", "must be valid UTF-8") unless text.valid_encoding?
+        data = begin
+          JSON.parse(text)
+        rescue JSON::ParserError
+          raise invalid("json", "is not valid JSON")
+        end
+        raise invalid("json", "must be one object") unless data.is_a?(Hash)
+        unknown = data.keys - JSON_KEYS
+        raise invalid(unknown.first.to_s, "is not a writable key (use #{JSON_KEYS.join(", ")})") if unknown.any?
+        # Dedupe arrives with the upsert (INB7); storing a key that does not dedupe would mislead a poster.
+        raise invalid("dedupe_key", "is not supported yet") unless data["dedupe_key"].nil?
+        data
+      end
+
+      def string_field(field, value)
+        return nil if value.nil?
+        raise invalid(field, "must be a string") unless value.is_a?(String)
+        value
+      end
+
+      def json_object(field, value, keys)
+        return {} if value.nil?
+        raise invalid(field, "must be an object") unless value.is_a?(Hash)
+        unknown = value.keys - keys
+        raise invalid("#{field}.#{unknown.first}", "is not a writable key (use #{keys.join(", ")})") if unknown.any?
+        value
+      end
+
+      def json_source(value)
+        json_object("source", value, JSON_SOURCE_KEYS)
+          .to_h { |key, v| [key.to_sym, string_field("source.#{key}", v)] }.compact
+      end
+
+      def json_links(value)
+        json_object("links", value, JSON_LINK_KEYS).to_h do |key, v|
+          [key.to_sym, (key == "pr") ? v : string_field("links.#{key}", v)]
+        end.compact
+      end
+
+      # `{"kind": "global"}`, or `workspace`/`project` with a `name` (a project
+      # name or a path in it); no object means the workspace of the working directory.
+      def json_target(value)
+        object = json_object("scope", value, JSON_SCOPE_KEYS)
+        return {} if value.nil?
+        kind = string_field("scope.kind", object["kind"])
+        name = string_field("scope.name", object["name"])
+        case kind
+        when "global"
+          raise invalid("scope.name", "must be absent for the global scope") if name
+          {global: true}
+        when "workspace", "project"
+          raise invalid("scope.name", "is required") if name.to_s.empty?
+          {(kind == "workspace") ? :name : :project => name}
+        else
+          raise invalid("scope.kind", "must be one of workspace, project, global")
+        end
       end
 
       # `agent` only when the ledger knows an open agent session in the pane;

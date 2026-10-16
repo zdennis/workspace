@@ -1803,6 +1803,7 @@ module Workspace
     def inbox_help
       <<~HELP
         Usage: workspace inbox add TITLE [options] [scope]
+               workspace inbox add --from-json PATH|- [--json]
                workspace inbox list [--state S[,S]] [--type T] [--all] [scope] [--json]
                workspace inbox show ID [scope] [--json]
                workspace inbox done|dismiss|reopen ID... [scope] [--json]
@@ -1840,6 +1841,9 @@ module Workspace
           --link-pr N            A pull request number
           --link-run ID          A workflow run id
           --as-user              Record the item as made by a person
+          --from-json PATH|-     Take the whole item from one JSON object (64 KB at most) with the keys
+                                 type, title, body, source, expires_at, links and scope; use it
+                                 alone (only --json goes with it)
         Options (list):
           --state S[,S]          open (default), snoozed, done, dismissed
           --type TYPE            Only this type
@@ -1852,6 +1856,7 @@ module Workspace
         Examples:
           workspace inbox add "Check the deploy" --type todo
           workspace inbox add "CI failed" --type alert --source-kind github_check --global --json
+          echo '{"title":"Check the deploy","type":"alert","scope":{"kind":"global"}}' | workspace inbox add --from-json -
           workspace inbox list --all --state open,snoozed
           workspace inbox show a1b2c3d4e5
           workspace inbox done a1b2c3d4e5 f6a7b8c9d0
@@ -1872,6 +1877,7 @@ module Workspace
     def cmd_inbox_add(args)
       target = {}
       json = false
+      from_json = nil
       options = {type: "todo", source: {}, links: {}}
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: workspace inbox add TITLE [options]"
@@ -1888,9 +1894,20 @@ module Workspace
         opts.on("--link-pr N", Integer, "A pull request number") { |v| options[:links][:pr] = v }
         opts.on("--link-run ID", "A workflow run id") { |v| options[:links][:run_id] = v }
         opts.on("--as-user", "Record the item as made by a person") { options[:as_user] = true }
+        opts.on("--from-json PATH", "Read the whole item from one JSON object in PATH, or - for stdin (64 KB at most)") { |v| from_json = v }
         opts.on("--json", "Print one action document (see docs/README.json.md) instead of text, which goes to stderr") { json = true }
       end
+      flags = args.select { |arg| arg.start_with?("-") && arg != "-" }
       parser.parse!(args)
+      if from_json
+        mixed = args.any? || (flags - ["--json"]).any? { |flag| !flag.start_with?("--from-json") }
+        raise UsageError, "--from-json takes the whole item from the JSON object; pass no title, scope or item flags with it (only --json)." if mixed
+        raise Error, "inbox is not available: no inbox command was wired" unless @inbox_command
+
+        return run_action("inbox add", json: json) do
+          @inbox_command.add_from_json(from_json, working_dir: inbox_working_dir(target))
+        end
+      end
       title = args.shift
       raise UsageError, "An inbox item needs a title.\n\n#{parser.help}" if title.nil?
       raise UsageError, "Unexpected argument: #{args.first}. Run 'workspace inbox help'." if args.any?

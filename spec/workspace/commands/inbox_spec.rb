@@ -285,6 +285,134 @@ RSpec.describe Workspace::Commands::Inbox do
     end
   end
 
+  describe "#add_from_json" do
+    def post(object)
+      input.string = object.is_a?(String) ? object : JSON.generate(object)
+      command.add_from_json("-", working_dir: "/app")
+    end
+
+    def refused(object)
+      expect { post(object) }.to raise_error(Workspace::Error) { |e|
+        expect(e.code).to eq("invalid_inbox_item")
+        @details = e.details
+      }
+      @details["field"]
+    end
+
+    it "creates the item from every writable key" do
+      result = post({"type" => "alert", "title" => "CI failed", "body" => "3 failures", "dedupe_key" => nil,
+                     "source" => {"kind" => "github_check", "ref" => "api#412", "url" => "https://github.com/x/y/runs/1"},
+                     "expires_at" => "2h", "links" => {"pr" => 412, "pane" => "%2"},
+                     "scope" => {"kind" => "global"}})
+
+      item = stored(config.inbox_path("global")).first
+      expect(item).to include("type" => "alert", "title" => "CI failed", "body" => "3 failures",
+        "source" => {"kind" => "github_check", "ref" => "api#412", "url" => "https://github.com/x/y/runs/1"},
+        "links" => {"pane" => "%2", "plan_task" => nil, "pr" => 412, "run_id" => nil},
+        "expires_at" => "2026-10-16T14:00:00Z", "scope" => {"kind" => "global", "key" => nil, "name" => nil})
+      expect(result[:results]).to contain_exactly(a_hash_including("outcome" => "created", "scope" => "global", "id" => item["id"]))
+    end
+
+    it "uses the working directory's workspace and type todo when they are left out" do
+      post({"title" => "Check"})
+
+      expect(stored(config.inbox_path("workspace", "api.fix")).first).to include("title" => "Check", "type" => "todo")
+    end
+
+    it "targets a named workspace or project from the scope object" do
+      post({"title" => "a", "scope" => {"kind" => "workspace", "name" => "other"}})
+      post({"title" => "b", "scope" => {"kind" => "project", "name" => "api"}})
+
+      expect(stored(config.inbox_path("workspace", "other")).first["title"]).to eq("a")
+      expect(stored(config.inbox_path("project", api_project.id, name: "api")).first["title"]).to eq("b")
+    end
+
+    it "reads a file" do
+      path = File.join(tmpdir, "item.json")
+      File.write(path, JSON.generate({"title" => "from file", "scope" => {"kind" => "global"}}))
+
+      command.add_from_json(path, working_dir: "/app")
+
+      expect(stored(config.inbox_path("global")).first["title"]).to eq("from file")
+    end
+
+    it "refuses an unknown key, naming it" do
+      expect(refused({"title" => "x", "state" => "done"})).to eq("state")
+      expect(refused({"title" => "x", "source" => {"host" => "a"}})).to eq("source.host")
+      expect(refused({"title" => "x", "links" => {"issue" => "a"}})).to eq("links.issue")
+      expect(refused({"title" => "x", "scope" => {"kind" => "global", "key" => "a"}})).to eq("scope.key")
+    end
+
+    it "refuses anything but one object" do
+      expect(refused("[]")).to eq("json")
+      expect(refused("\"x\"")).to eq("json")
+      expect(refused("{nope")).to eq("json")
+      expect(refused("")).to eq("json")
+    end
+
+    it "refuses input over 64 KB and writes nothing" do
+      expect(refused("{\"title\":\"#{"a" * (64 * 1024)}\"}")).to eq("json")
+      expect(Dir.glob(File.join(tmpdir, "**", "*.json"))).to be_empty
+    end
+
+    it "refuses a file that can't be read" do
+      expect { command.add_from_json(File.join(tmpdir, "missing")) }.to raise_error(Workspace::Error) { |e|
+        expect([e.code, e.details["field"]]).to eq(["invalid_inbox_item", "json"])
+      }
+    end
+
+    it "refuses invalid UTF-8" do
+      expect(refused("{\"title\":\"\xff\"}".b)).to eq("json")
+    end
+
+    it "requires a title" do
+      expect(refused({"body" => "x"})).to eq("title")
+    end
+
+    it "refuses values that are not strings, and an integer-less pr" do
+      expect(refused({"title" => 5})).to eq("title")
+      expect(refused({"title" => "x", "body" => ["a"]})).to eq("body")
+      expect(refused({"title" => "x", "type" => 1})).to eq("type")
+      expect(refused({"title" => "x", "source" => "jira"})).to eq("source")
+      expect(refused({"title" => "x", "links" => {"pane" => 2}})).to eq("links.pane")
+      expect(refused({"title" => "x", "links" => {"pr" => "7"}})).to eq("links.pr")
+      expect(refused({"title" => "x", "expires_at" => 3})).to eq("expires_at")
+    end
+
+    it "applies the same checks as add" do
+      expect(refused({"title" => "red \e[31m"})).to eq("title")
+      expect(refused({"title" => "x", "body" => "a\u0000b"})).to eq("body")
+      expect(refused({"title" => "x", "type" => "bogus"})).to eq("type")
+      expect(refused({"title" => "x", "source" => {"url" => "http://a.test"}})).to eq("source.url")
+      expect(refused({"title" => "x", "expires_at" => "2020-01-01T00:00:00Z"})).to eq("expires_at")
+      expect(refused({"title" => "x", "expires_at" => "soon"})).to eq("expires_at")
+    end
+
+    it "refuses a bad scope" do
+      expect(refused({"title" => "x", "scope" => {"kind" => "team"}})).to eq("scope.kind")
+      expect(refused({"title" => "x", "scope" => {"kind" => "workspace"}})).to eq("scope.name")
+      expect(refused({"title" => "x", "scope" => {"kind" => "global", "name" => "a"}})).to eq("scope.name")
+      expect(refused({"title" => "x", "scope" => []})).to eq("scope")
+    end
+
+    it "refuses a dedupe key until the upsert exists, and accepts null" do
+      expect(refused({"title" => "x", "dedupe_key" => "k"})).to eq("dedupe_key")
+    end
+
+    it "writes nothing when a field is refused" do
+      refused({"title" => "x", "type" => "bogus"})
+
+      expect(File.exist?(config.inbox_path("workspace", "api.fix"))).to be(false)
+    end
+
+    it "raises not_in_workspace outside a workspace with no scope" do
+      allow(project_detector).to receive(:detect).and_return(nil)
+      input.string = JSON.generate({"title" => "x"})
+
+      expect { command.add_from_json("-", working_dir: "/tmp") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("not_in_workspace") }
+    end
+  end
+
   describe "#list" do
     before do
       command.add(title: "ws item", working_dir: "/app")
