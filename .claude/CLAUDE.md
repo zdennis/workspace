@@ -61,6 +61,8 @@ A macOS CLI (Ruby) for managing tmuxinator-based development workspaces in iTerm
 - `lib/workspace/session_ledger.rb` — Flock-guarded append-only `ledger.jsonl` of SessionStart/SessionEnd (with pane slot, tmux server pid and window layout), written by `session-event`; `#slots_for` streams it into the latest session per pane slot for `restore`; `#open_session_for` names the session open in a pane, which `dev up` records as `started_by`
 - `lib/workspace/alert_config.rb` — Reads a project's `alerts.notify` and `alerts.idle_after`
 - `lib/workspace/notifier.rb` — Runs the notify command in the background with a timeout, details in `WORKSPACE_ALERT_*` env vars
+- `lib/workspace/inbox_store.rb` — Flock-guarded JSON file of one inbox scope (workspace, project or global) under `~/.local/state/workspace/.inbox/`; `add`, `list`, `find`, `update`, `transition`; a passed snooze or expiry reads as `open`/`dismissed` without writing
+- `lib/workspace/commands/inbox.rb` — `inbox add|list|show`: scope resolution (`--name`, `--project`, `--global`, else the cwd's workspace), input checks that refuse control characters and over-long or non-https text (`invalid_inbox_item`), and output with control characters escaped; stores come from an injected `store_factory`
 - `lib/workspace/ask_store.rb` — Flock-guarded append-only store for `workspace ask` questions, one `asks.json` per workspace under its XDG state dir
 - `lib/workspace/task_store.rb` — Flock-guarded one-file-per-task store under `~/.local/state/workspace/.tasks/`: `start` creates, `finish`/`kill` archive (newest 200 kept); the task id is `WORKSPACE_TASK` in panes
 - `lib/workspace/pull_request_status.rb` — Read-only `gh pr view` for a checkout's branch (state, review decision, check counts); `gh` missing or failing is a fact, not an error
@@ -115,7 +117,7 @@ A macOS CLI (Ruby) for managing tmuxinator-based development workspaces in iTerm
 
 ## Subcommands
 
-init, doctor, launch, start, add, stop, kill, finish, relaunch, restore, focus, list, status, whereis, agent, daemon, pipeline, sessions, review, snapshot, session-event, lock, dev, parent, notes, plan, ticket, pr, rebase, push, projects, ask, capabilities, ui, binding, library, instructions, workflow, step
+init, doctor, launch, start, add, stop, kill, finish, relaunch, restore, focus, list, status, whereis, agent, daemon, pipeline, sessions, review, snapshot, session-event, lock, dev, parent, notes, plan, ticket, pr, rebase, push, projects, ask, inbox, capabilities, ui, binding, library, instructions, workflow, step
 
 ## Adding a Subcommand
 

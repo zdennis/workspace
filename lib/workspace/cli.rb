@@ -17,7 +17,7 @@ module Workspace
     SUBCOMMANDS = %w[
       init doctor launch start stop add add-project kill finish relaunch restore
       focus deactivate reactivate tile resize capture agent agentd lock dev parent notes plan ticket pr rebase push projects
-      capabilities daemon sessions review snapshot ask session-event agent-run handoff pipeline run library lib instructions workflow step
+      capabilities daemon sessions review snapshot ask inbox session-event agent-run handoff pipeline run library lib instructions workflow step
       run-and-report report-run-status layout config tmux statusline current
       list-projects list status repair cleanup prune set-command event-log
       whereis lookup dir alfred version help
@@ -84,6 +84,7 @@ module Workspace
     # @param review_command [Workspace::Commands::Review, nil] pre-built review command
     # @param restore_command [Workspace::Commands::Restore, nil] pre-built restore command
     # @param snapshot_command [Workspace::Commands::Snapshot, nil] pre-built snapshot command
+    # @param inbox_command [Workspace::Commands::Inbox, nil] pre-built inbox command
     # @param config_report [Workspace::ConfigReport, nil] builds the `config show/validate --json` documents
     # @param tmuxinator_report [Workspace::TmuxinatorReport, nil] builds the `tmux show --json` document
     # @param project_actions_command [Workspace::Commands::ProjectActions, nil] pre-built project-wide actions command
@@ -101,7 +102,7 @@ module Workspace
     #   `list --liveness --json` and `status --json`; takes name => state entry
     # @param launch_mode [Workspace::LaunchMode, nil] decides whether launch/start
     #   run headless when no --[no-]headless flag is given; nil builds one
-    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, restart_agent_command: nil, send_command: nil, ensure_agent_command: nil, handoff_command: nil, notes_command: nil, notes_setup: nil, plan_command: nil, ticket_command: nil, pull_request_command: nil, rebase_command: nil, push_command: nil, projects_command: nil, capabilities_command: nil, daemon_command: nil, ui_command: nil, binding_command: nil, library_command: nil, library: nil, instructions_command: nil, instruction_composer: nil, workflow_command: nil, review_command: nil, restore_command: nil, snapshot_command: nil, project_actions_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil, liveness: nil, window_liveness: nil, env: ENV, editor_launcher: nil, interactive: nil)
+    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, restart_agent_command: nil, send_command: nil, ensure_agent_command: nil, handoff_command: nil, notes_command: nil, notes_setup: nil, plan_command: nil, ticket_command: nil, pull_request_command: nil, rebase_command: nil, push_command: nil, projects_command: nil, capabilities_command: nil, daemon_command: nil, ui_command: nil, binding_command: nil, library_command: nil, library: nil, instructions_command: nil, instruction_composer: nil, workflow_command: nil, review_command: nil, restore_command: nil, snapshot_command: nil, project_actions_command: nil, inbox_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil, liveness: nil, window_liveness: nil, env: ENV, editor_launcher: nil, interactive: nil)
       @config = config
       @state = state
       @project_config = project_config
@@ -148,6 +149,7 @@ module Workspace
       @config_command = config_command
       @statusline_command = statusline_command
       @ask_command = ask_command
+      @inbox_command = inbox_command
       @restart_agent_command = restart_agent_command
       @send_command = send_command
       @ensure_agent_command = ensure_agent_command
@@ -277,6 +279,8 @@ module Workspace
         cmd_snapshot(args)
       when "ask"
         cmd_ask(args)
+      when "inbox"
+        cmd_inbox(args)
       when "session-event"
         cmd_session_event(args)
       when "agent-run"
@@ -456,6 +460,7 @@ module Workspace
           handoff         Check context usage and hand off to a fresh conversation
           help            Show this help message
           init            Install tmuxinator templates and create config directory
+          inbox           Keep a durable list of things that need a person: add, list, show
           instructions    Print the instructions built from library packs (binding, orchestrator, commits, review, notes, handoff, dev, implementation-plan)
           kill            Kill a worktree project and remove its worktree (auto-detects from cwd)
           launch          Launch tmuxinator projects in iTerm windows, or headless in plain tmux
@@ -1779,6 +1784,152 @@ module Workspace
     rescue OptionParser::ParseError => e
       raise unless json_requested?(json, args)
       emit_json_error(Commands::Ask::JSON_SCHEMA_VERSION, e)
+    end
+
+    def cmd_inbox(args)
+      subcommand = args.shift
+      case subcommand
+      when "add" then cmd_inbox_add(args)
+      when "list" then cmd_inbox_list(args)
+      when "show" then cmd_inbox_show(args)
+      when "help", "--help", "-h", nil then @output.puts inbox_help
+      else raise UsageError, "Unknown inbox subcommand: #{subcommand}. Run 'workspace inbox help'."
+      end
+    end
+
+    def inbox_help
+      <<~HELP
+        Usage: workspace inbox add TITLE [options] [scope]
+               workspace inbox list [--state S[,S]] [--type T] [--all] [scope] [--json]
+               workspace inbox show ID [scope] [--json]
+
+        A durable list of things that need a person, kept per workspace, per
+        project (all worktrees of one repository) or globally. Agents, scripts
+        and outside tools post to it; titles and bodies are data, never run.
+
+        Subcommands:
+          add TITLE     Add an item (type todo unless --type says otherwise)
+          list          Open items of this workspace, its project and the global list
+          show ID       One item, in any state
+
+        Scope (every subcommand; at most one):
+          --name WS         The workspace WS instead of the one detected from the current directory
+          --project NAME    The project NAME (or a path in it)
+          --global          The global list
+        Without one, add uses the workspace of the current directory, and fails with
+        not_in_workspace outside any; list reads the workspace, its project and global.
+
+        Options (add):
+          --type TYPE            todo, alert, note or review_request
+          --body TEXT            Longer text, up to 8192 characters
+          --body-file PATH|-     Read the body from a file or stdin (64 KB at most)
+          --source-kind KIND     jira, github_pr, github_check, session, agent, cli or user
+          --source-ref REF       Free text up to 200 characters
+          --source-url URL       An https:// URL
+          --expires DURATION|ISO After this time the item counts as dismissed and leaves the
+                                 default list (2h, 2026-10-20T09:00:00Z)
+          --link-pane PANE       A tmux pane the item is about
+          --link-plan-task ID    A plan task id
+          --link-pr N            A pull request number
+          --link-run ID          A workflow run id
+          --as-user              Record the item as made by a person
+        Options (list):
+          --state S[,S]          open (default), snoozed, done, dismissed
+          --type TYPE            Only this type
+          --all                  Every scope that has items
+        Options (every subcommand):
+          --json                 Print the documented JSON (see docs/README.inbox.md)
+
+        A title or body with a control character (an escape sequence, NUL) is refused.
+
+        Examples:
+          workspace inbox add "Check the deploy" --type todo
+          workspace inbox add "CI failed" --type alert --source-kind github_check --global --json
+          workspace inbox list --all --state open,snoozed
+          workspace inbox show a1b2c3d4e5
+      HELP
+    end
+
+    def inbox_scope_options(opts, target)
+      opts.on("--name NAME", "Workspace to act on instead of the one detected from cwd") { |v| target[:name] = v }
+      opts.on("--project NAME", "Project (a name, or a path in it) to act on") { |v| target[:project] = v }
+      opts.on("--global", "Act on the global list") { target[:global] = true }
+    end
+
+    def inbox_working_dir(target)
+      working_dir_for(target[:name])
+    end
+
+    def cmd_inbox_add(args)
+      target = {}
+      json = false
+      options = {type: "todo", source: {}, links: {}}
+      parser = OptionParser.new do |opts|
+        opts.banner = "Usage: workspace inbox add TITLE [options]"
+        inbox_scope_options(opts, target)
+        opts.on("--type TYPE", "todo, alert, note or review_request") { |v| options[:type] = v }
+        opts.on("--body TEXT", "Longer text, up to 8192 characters") { |v| options[:body] = v }
+        opts.on("--body-file PATH", "Read the body from PATH, or - for stdin (64 KB at most)") { |v| options[:body_file] = v }
+        opts.on("--source-kind KIND", "Where the item came from") { |v| options[:source][:kind] = v }
+        opts.on("--source-ref REF", "A reference in that source") { |v| options[:source][:ref] = v }
+        opts.on("--source-url URL", "An https:// URL") { |v| options[:source][:url] = v }
+        opts.on("--expires WHEN", "A duration (2h) or an ISO 8601 time") { |v| options[:expires] = v }
+        opts.on("--link-pane PANE", "A pane the item concerns") { |v| options[:links][:pane] = v }
+        opts.on("--link-plan-task ID", "A plan task id") { |v| options[:links][:plan_task] = v }
+        opts.on("--link-pr N", Integer, "A pull request number") { |v| options[:links][:pr] = v }
+        opts.on("--link-run ID", "A workflow run id") { |v| options[:links][:run_id] = v }
+        opts.on("--as-user", "Record the item as made by a person") { options[:as_user] = true }
+        opts.on("--json", "Print one action document (see docs/README.json.md) instead of text, which goes to stderr") { json = true }
+      end
+      parser.parse!(args)
+      title = args.shift
+      raise UsageError, "An inbox item needs a title.\n\n#{parser.help}" if title.nil?
+      raise UsageError, "Unexpected argument: #{args.first}. Run 'workspace inbox help'." if args.any?
+      raise Error, "inbox is not available: no inbox command was wired" unless @inbox_command
+
+      run_action("inbox add", json: json) do
+        @inbox_command.add(title: title, target: target, working_dir: inbox_working_dir(target), **options)
+      end
+    end
+
+    def cmd_inbox_list(args)
+      target = {}
+      json = false
+      all = false
+      states = []
+      type = nil
+      parser = OptionParser.new do |opts|
+        opts.banner = "Usage: workspace inbox list [--state S[,S]] [--type T] [--all] [--json]"
+        inbox_scope_options(opts, target)
+        opts.on("--state STATES", Array, "open (default), snoozed, done or dismissed; comma-separated") { |v| states = v }
+        opts.on("--type TYPE", "Only items of this type") { |v| type = v }
+        opts.on("--all", "Every scope that has items") { all = true }
+        opts.on("--json", "Emit the documented JSON schema instead of a table") { json = true }
+      end
+      parser.parse!(args)
+      raise UsageError, "Unexpected argument: #{args.first}. Run 'workspace inbox help'." if args.any?
+      raise Error, "inbox is not available: no inbox command was wired" unless @inbox_command
+
+      result = @inbox_command.list(target: target, working_dir: inbox_working_dir(target), states: states, type: type, all: all, json: json)
+      @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
+    end
+
+    def cmd_inbox_show(args)
+      target = {}
+      json = false
+      parser = OptionParser.new do |opts|
+        opts.banner = "Usage: workspace inbox show ID [--json]"
+        inbox_scope_options(opts, target)
+        opts.on("--json", "Emit the documented JSON schema instead of text") { json = true }
+      end
+      parser.parse!(args)
+      id = args.shift
+      raise UsageError, "inbox show needs an id.\n\n#{parser.help}" if id.nil?
+      raise UsageError, "Unexpected argument: #{args.first}. Run 'workspace inbox help'." if args.any?
+      raise Error, "inbox is not available: no inbox command was wired" unless @inbox_command
+
+      result = @inbox_command.show(id, target: target, working_dir: inbox_working_dir(target), json: json)
+      @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
     end
 
     def cmd_lock(args)

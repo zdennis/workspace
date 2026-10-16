@@ -117,6 +117,7 @@ RSpec.describe Workspace::CLI do
       review_command: overrides[:review_command],
       snapshot_command: overrides[:snapshot_command],
       project_actions_command: overrides[:project_actions_command],
+      inbox_command: overrides[:inbox_command],
       config_report: overrides[:config_report],
       tmuxinator_report: overrides[:tmuxinator_report],
       logger: logger,
@@ -1843,6 +1844,78 @@ RSpec.describe Workspace::CLI do
       cli.run(["ask", "answer", "q_7", "yes"])
 
       expect(ask_command.calls).to contain_exactly(a_hash_including(action: :answer, deliver: false))
+    end
+  end
+
+  describe "#run with inbox" do
+    let(:inbox_command) { instance_double(Workspace::Commands::Inbox) }
+    let(:built) { build_test_cli(inbox_command: inbox_command, project_config: CLITestHelpers::FakeProjectConfig.new("ws" => "/ws")) }
+    let(:cli) { built[0] }
+    let(:output) { built[1] }
+
+    it "passes add its title, options and scope to the command" do
+      expect(inbox_command).to receive(:add).with(
+        title: "Check it", target: {global: true}, working_dir: anything, type: "alert", body: "b",
+        source: {kind: "jira", url: "https://x.test/1"}, links: {pr: 7}, expires: "2h", as_user: true
+      ).and_return({exit_code: 0, results: []})
+
+      cli.run(["inbox", "add", "Check it", "--global", "--type=alert", "--body", "b", "--source-kind", "jira",
+        "--source-url=https://x.test/1", "--link-pr", "7", "--expires", "2h", "--as-user"])
+    end
+
+    it "passes every add option to the command" do
+      expect(inbox_command).to receive(:add).with(
+        title: "T", target: {name: "ws"}, working_dir: "/ws", type: "todo", body_file: "-",
+        source: {ref: "r"}, links: {pane: "%2", plan_task: "T1", run_id: "run1"}
+      ).and_return({exit_code: 0, results: []})
+
+      cli.run(["inbox", "add", "T", "--name", "ws", "--body-file", "-", "--source-ref", "r", "--link-pane", "%2",
+        "--link-plan-task", "T1", "--link-run", "run1"])
+    end
+
+    it "routes show with a scope flag under --json" do
+      expect(inbox_command).to receive(:show).with("abc", target: {global: true}, working_dir: anything, json: true).and_return({exit_code: 0})
+
+      cli.run(["inbox", "show", "abc", "--global", "--json"])
+    end
+
+    it "wraps add in an action document under --json" do
+      row = {"id" => "a1b2c3d4e5", "outcome" => "created"}
+      allow(inbox_command).to receive(:add).and_return({exit_code: 0, results: [row]})
+
+      cli.run(["inbox", "add", "x", "--json"])
+
+      expect(JSON.parse(output.string)).to include("action" => "inbox add", "status" => "ok", "results" => [row])
+    end
+
+    it "passes list filters through" do
+      expect(inbox_command).to receive(:list).with(
+        target: {project: "api"}, working_dir: anything, states: %w[open snoozed], type: "note", all: false, json: true
+      ).and_return({exit_code: 0})
+
+      cli.run(["inbox", "list", "--project", "api", "--state", "open,snoozed", "--type", "note", "--json"])
+    end
+
+    it "routes show with the id" do
+      expect(inbox_command).to receive(:show).with("a1b2c3d4e5", target: {}, working_dir: anything, json: false).and_return({exit_code: 0})
+
+      cli.run(["inbox", "show", "a1b2c3d4e5"])
+    end
+
+    it "reports a missing title as a usage error in the JSON envelope" do
+      expect { cli.run(["inbox", "add", "--json"]) }.to raise_error(FakeSystemExit)
+      expect(JSON.parse(output.string)).to include("ok" => false, "code" => "usage")
+    end
+
+    it "reports an unknown subcommand as a usage error" do
+      expect { cli.run(["inbox", "bogus", "--json"]) }.to raise_error(FakeSystemExit)
+      expect(JSON.parse(output.string)).to include("ok" => false, "code" => "usage")
+    end
+
+    it "prints help for no subcommand" do
+      cli.run(["inbox"])
+
+      expect(output.string).to include("workspace inbox add TITLE")
     end
   end
 

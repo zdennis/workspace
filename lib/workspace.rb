@@ -288,6 +288,7 @@ require_relative "workspace/commands/instructions"
 require_relative "workspace/commands/workflow"
 require_relative "workspace/commands/handoff"
 require_relative "workspace/commands/ask"
+require_relative "workspace/commands/inbox"
 require_relative "workspace/commands/wait_until_content"
 require_relative "workspace/work_coordinator_client"
 require_relative "workspace/pipeline_config"
@@ -528,6 +529,9 @@ module Workspace
       lineage: lineage, error_output: error_output)
     ask_command = Commands::Ask.new(config: config, project_detector: project_detector, alert_config: alert_config,
       pane_sender: send_command, event_log: event_log, output: output, error_output: error_output)
+    inbox_store_factory = ->(path:, scope:, error_output:) { InboxStore.new(path: path, scope: scope, error_output: error_output) }
+    inbox_command = Commands::Inbox.new(config: config, project_detector: project_detector, project_catalog: project_catalog,
+      session_ledger: session_ledger, store_factory: inbox_store_factory, env: env, input: input, output: output, error_output: error_output)
 
     work_coordinator_client = WorkCoordinatorClient.new(
       socket_path: config.work_coordinator_socket,
@@ -627,6 +631,7 @@ module Workspace
       tmuxinator_report: tmuxinator_report,
       statusline_command: statusline_command,
       ask_command: ask_command,
+      inbox_command: inbox_command,
       launch_mode: launch_mode,
       liveness: Liveness.new(tmux: tmux),
       window_liveness: WindowLiveness.new(window_manager: window_manager),
