@@ -1807,7 +1807,7 @@ module Workspace
         Usage: workspace inbox add TITLE [options] [scope]
                workspace inbox add --from-json PATH|- [--json]
                workspace inbox done|dismiss --dedupe-key KEY [scope] [--json]
-               workspace inbox list [--state S[,S]] [--type T] [--all] [scope] [--json]
+               workspace inbox list [--state S[,S]] [--type T] [--all] [--include-derived] [scope] [--json]
                workspace inbox show ID [scope] [--json]
                workspace inbox edit ID [options] [scope] [--json]
                workspace inbox done|dismiss|reopen ID... [scope] [--json]
@@ -1869,6 +1869,9 @@ module Workspace
           --state S[,S]          open (default), snoozed, done, dismissed
           --type TYPE            Only this type
           --all                  Every scope that has items
+          --include-derived      Add what needs you now, worked out from workspace state: open
+                                 questions, waiting agent panes, blocked or stalled plans, workflow
+                                 gates and stuck locks (open alerts, never stored)
         Options (every subcommand):
           --json                 Print the documented JSON (see docs/README.inbox.md)
 
@@ -1879,6 +1882,7 @@ module Workspace
           workspace inbox add "CI failed" --type alert --source-kind github_check --global --json
           echo '{"title":"Check the deploy","type":"alert","scope":{"kind":"global"}}' | workspace inbox add --from-json -
           workspace inbox list --all --state open,snoozed
+          workspace inbox list --all --include-derived --json
           workspace inbox show a1b2c3d4e5
           workspace inbox done a1b2c3d4e5 f6a7b8c9d0
           workspace inbox dismiss a1b2c3d4e5 --json
@@ -1950,21 +1954,24 @@ module Workspace
       target = {}
       json = false
       all = false
+      include_derived = false
       states = []
       type = nil
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace inbox list [--state S[,S]] [--type T] [--all] [--json]"
+        opts.banner = "Usage: workspace inbox list [--state S[,S]] [--type T] [--all] [--include-derived] [--json]"
         inbox_scope_options(opts, target)
         opts.on("--state STATES", Array, "open (default), snoozed, done or dismissed; comma-separated") { |v| states = v }
         opts.on("--type TYPE", "Only items of this type") { |v| type = v }
         opts.on("--all", "Every scope that has items") { all = true }
+        opts.on("--include-derived", "Add what needs you now: open questions, waiting agents, blocked plans, workflow gates, stuck locks") { include_derived = true }
         opts.on("--json", "Emit the documented JSON schema instead of a table") { json = true }
       end
       parser.parse!(args)
       raise UsageError, "Unexpected argument: #{args.first}. Run 'workspace inbox help'." if args.any?
       raise Error, "inbox is not available: no inbox command was wired" unless @inbox_command
 
-      result = @inbox_command.list(target: target, working_dir: inbox_working_dir(target), states: states, type: type, all: all, json: json)
+      result = @inbox_command.list(target: target, working_dir: inbox_working_dir(target), states: states, type: type, all: all,
+        include_derived: include_derived, json: json)
       @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
     end
 

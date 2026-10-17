@@ -1973,10 +1973,16 @@ RSpec.describe Workspace::CLI do
 
     it "passes list filters through" do
       expect(inbox_command).to receive(:list).with(
-        target: {project: "api"}, working_dir: anything, states: %w[open snoozed], type: "note", all: false, json: true
+        target: {project: "api"}, working_dir: anything, states: %w[open snoozed], type: "note", all: false, include_derived: false, json: true
       ).and_return({exit_code: 0})
 
       cli.run(["inbox", "list", "--project", "api", "--state", "open,snoozed", "--type", "note", "--json"])
+    end
+
+    it "passes --include-derived to list" do
+      expect(inbox_command).to receive(:list).with(hash_including(all: true, include_derived: true)).and_return({exit_code: 0})
+
+      cli.run(["inbox", "list", "--all", "--include-derived"])
     end
 
     it "routes show with the id" do

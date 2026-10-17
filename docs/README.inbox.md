@@ -9,7 +9,7 @@ workspace inbox add TITLE [--type TYPE] [--body TEXT | --body-file PATH|-] [--so
                           [--dedupe-key KEY [--reopen]] [--expires DURATION|ISO] [--link-pane P] [--link-plan-task T] [--link-pr N] [--link-run R]
                           [--as-user] [scope] [--json]
 workspace inbox add --from-json PATH|- [--json]
-workspace inbox list [--state S[,S]] [--type TYPE] [--all] [scope] [--json]
+workspace inbox list [--state S[,S]] [--type TYPE] [--all] [--include-derived] [scope] [--json]
 workspace inbox show ID [scope] [--json]
 workspace inbox edit ID [--title TEXT] [--body TEXT | --body-file PATH|-] [--expires DURATION|ISO | --no-expires]
                        [--link-pane P] [--link-plan-task T] [--link-pr N] [--link-run R] [scope] [--json]
@@ -29,6 +29,7 @@ Scope: at most one of `--name WORKSPACE`, `--project NAME|PATH`, `--global`. Eve
 workspace inbox add "Check the deploy" --type todo
 workspace inbox add "CI failed" --type alert --source-kind github_check --global --json
 workspace inbox list --all --state open,snoozed
+workspace inbox list --all --include-derived --json
 workspace inbox show a1b2c3d4e5
 workspace inbox done a1b2c3d4e5 f6a7b8c9d0
 workspace inbox dismiss a1b2c3d4e5 --json
@@ -89,6 +90,24 @@ A scope holds at most 500 items in `open` or `snoozed`. A write that would make 
 | `done`, `dismiss`, `reopen` | As `show`, once per id; an id in more than one scope is that row's `ambiguous_inbox_item` failure, so pass a scope flag |
 
 A project is keyed by the realpath of its git common dir, so two clones with the same name stay apart.
+
+## Derived items
+
+`list --include-derived` adds rows worked out at read time from state the CLI already owns, so one read answers "what needs me". They are never stored, and they follow the rules of workspace-ui's needs-you queue:
+
+| `kind` | `id` | `fingerprint` | Counted when |
+|---|---|---|---|
+| `ask` | `ask:<workspace>:<ask id>` | `asked_at` | A `workspace ask` question is open |
+| `pane_waiting` | `pane:waiting:<workspace>:<pane id>` | the pane's `state_since` | The agent daemon reports the pane `waiting` (a permission prompt) |
+| `plan_blocked`, `plan_stalled` | `plan:<state>:<workspace>` | the plan file's `updated_at`, else its current task id | `plan status` would say `blocked` or `stalled` |
+| `workflow_waiting_you` | `workflow:waiting_you:<run id>` | `<step>:<since>` | A run waits at a step's gate for `workflow approve` (a prompt or question holding a run is already its pane's or question's row) |
+| `lock_stale` | `lock:stale:<namespace sha1[0,12]>:<lock>` | the holder's `acquired_at`, plus its `idle_since` when idle | A held lock has a live waiter and its holder is gone, or is an agent idle past `locks.idle_grace`; never a dev environment holder or one being cleared |
+
+Each derived row has `"derived": true`, `type` `alert`, `state` `open`, `kind`, `fingerprint`, `scope` (the workspace; a lock's project), `title`, `body` (the question or the waiting message, as data), `links` and `created_at`/`updated_at` (when the episode began). The fingerprint changes with each new episode: a new question, a new wait, a new lock holder.
+
+Rows come only for the scopes `list` reads: the current workspace (and its project's locks) by default, the one named by `--name`, the project's locks with `--project`, none for `--global`, and with `--all` every configured workspace and project in the catalog. They are added only when the listed states include `open` and `--type` is absent or `alert`; without the flag, no daemon, plan, workflow or lock is read.
+
+A source that can't be read adds a warning and no rows, never an empty answer: `daemons_unavailable` (with `workspace`; a daemon of a running workspace did not answer within 1s; the daemons are read in parallel), `tmux_unavailable` (every daemon is asked), `questions_unreadable`, `plan_unreadable`, `workflow_unreadable` and `locks_unreadable` (with `project`).
 
 ## Item
 

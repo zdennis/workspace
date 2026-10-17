@@ -208,6 +208,7 @@ require_relative "workspace/context_reader"
 require_relative "workspace/statusline_renderer"
 require_relative "workspace/ask_store"
 require_relative "workspace/inbox_store"
+require_relative "workspace/inbox_derived"
 require_relative "workspace/task_store"
 require_relative "workspace/pull_request_status"
 require_relative "workspace/transcript_summary"
@@ -464,10 +465,11 @@ module Workspace
       event_log: event_log,
       task_store: task_store
     )
+    workflow_status = WorkflowStatus.new(store: workflow_store, panes: workflow_panes, snapshot_client: agent_snapshot_client, ask_store_for: ask_store_for)
     workflow_command = Commands::Workflow.new(
       catalog: WorkflowCatalog.new(config: config),
       engine: workflow_engine,
-      status: WorkflowStatus.new(store: workflow_store, panes: workflow_panes, snapshot_client: agent_snapshot_client, ask_store_for: ask_store_for),
+      status: workflow_status,
       store: workflow_store,
       panes: workflow_panes,
       output: output
@@ -530,8 +532,13 @@ module Workspace
     ask_command = Commands::Ask.new(config: config, project_detector: project_detector, alert_config: alert_config,
       pane_sender: send_command, event_log: event_log, output: output, error_output: error_output)
     inbox_store_factory = ->(path:, scope:, error_output:) { InboxStore.new(path: path, scope: scope, error_output: error_output) }
+    inbox_derived = InboxDerived.new(snapshot_client: agent_snapshot_client, tmux: tmux,
+      ask_store_for: ->(workspace, sink) { AskStore.new(path: config.ask_state_path(workspace), error_output: sink) }, plan: plan_command,
+      plan_state: plan_state, plan_config: plan_config, workflow_status: workflow_status, lock_namespace: lock_namespace,
+      lock_store_for: ->(dir) { LockStore.new(dir: dir, liveness: lock_holder) }, lock_config: lock_config)
     inbox_command = Commands::Inbox.new(config: config, project_detector: project_detector, project_catalog: project_catalog,
-      session_ledger: session_ledger, store_factory: inbox_store_factory, env: env, input: input, event_log: event_log, output: output, error_output: error_output)
+      session_ledger: session_ledger, store_factory: inbox_store_factory, env: env, input: input, event_log: event_log, derived: inbox_derived,
+      output: output, error_output: error_output)
 
     work_coordinator_client = WorkCoordinatorClient.new(
       socket_path: config.work_coordinator_socket,

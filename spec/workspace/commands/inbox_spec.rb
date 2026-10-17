@@ -667,6 +667,106 @@ RSpec.describe Workspace::Commands::Inbox do
     end
   end
 
+  describe "#list with include_derived" do
+    # Mirrors InboxDerived#rows: `rows:` in the derived row shape and `warnings:` as {"code", "message"}.
+    let(:derived_calls) { [] }
+    let(:derived) do
+      calls = derived_calls
+      Class.new do
+        define_method(:rows) do |workspaces:, projects:|
+          calls << [workspaces, projects]
+          {rows: [{"id" => "pane:waiting:api.fix:%5", "derived" => true, "kind" => "pane_waiting", "fingerprint" => "2026-10-16T11:50:00Z",
+                   "type" => "alert", "state" => "open", "scope" => {"kind" => "workspace", "key" => "api.fix", "name" => "api.fix"},
+                   "title" => "An agent is waiting in api.fix (%5)", "body" => "Allow Bash?",
+                   "links" => {"pane" => "%5", "plan_task" => nil, "pr" => nil, "run_id" => nil},
+                   "created_at" => "2026-10-16T11:50:00Z", "updated_at" => "2026-10-16T11:50:00Z"}],
+           warnings: [{"code" => "daemons_unavailable", "workspace" => "api", "message" => "The agent daemon for 'api' did not answer (timeout)."}]}
+        end
+      end.new
+    end
+    let(:with_derived) do
+      described_class.new(config: config, project_detector: project_detector, project_catalog: project_catalog,
+        session_ledger: session_ledger, store_factory: store_factory, env: env, input: input, derived: derived,
+        clock: -> { now }, output: output, error_output: error_output)
+    end
+
+    before { with_derived.add(title: "ws item", working_dir: "/app") }
+
+    def listed(**opts)
+      output.truncate(0)
+      output.rewind
+      with_derived.list(working_dir: "/app", json: true, **opts)
+      JSON.parse(output.string)
+    end
+
+    it "reads no derived source without the flag" do
+      listed
+
+      expect(derived_calls).to be_empty
+    end
+
+    it "adds the derived rows and their warnings, newest first with the stored items" do
+      doc = listed(include_derived: true)
+
+      expect(doc["items"].map { |i| i["title"] }).to eq(["ws item", "An agent is waiting in api.fix (%5)"])
+      expect(doc["items"].last).to include("derived" => true, "fingerprint" => "2026-10-16T11:50:00Z")
+      expect(doc["warnings"].map { |w| w["code"] }).to eq(["daemons_unavailable"])
+    end
+
+    it "reads the detected workspace and its project by default" do
+      listed(include_derived: true)
+
+      expect(derived_calls).to eq([[["api.fix"], [api_project]]])
+    end
+
+    it "reads only the named workspace, only the project, or nothing for the global list" do
+      listed(include_derived: true, target: {name: "other"})
+      listed(include_derived: true, target: {project: "api"})
+      listed(include_derived: true, target: {global: true})
+
+      expect(derived_calls).to eq([[["other"], []], [[], [api_project]], [[], []]])
+    end
+
+    it "reads nothing derived outside a workspace" do
+      allow(project_detector).to receive(:detect).and_return(nil)
+
+      listed(include_derived: true)
+
+      expect(derived_calls).to eq([[[], []]])
+    end
+
+    it "reads every configured workspace with a checkout and every project with --all" do
+      members = [Workspace::ProjectCatalog::Member.new(workspace: "api", path: "/src/api", kind: "main", configured: true, exists: true),
+        Workspace::ProjectCatalog::Member.new(workspace: "api.gone", path: "/src/gone", kind: "worktree", configured: true, exists: false),
+        Workspace::ProjectCatalog::Member.new(workspace: "api.loose", path: "/src/loose", kind: "worktree", configured: false, exists: true)]
+      project = Workspace::ProjectCatalog::Project.new(name: "api", id: "/src/api/.git", path: "/src/api", vcs: "git", members: members)
+      allow(project_catalog).to receive(:all).and_return([project])
+
+      listed(include_derived: true, all: true)
+
+      expect(derived_calls).to eq([[["api"], [project]]])
+    end
+
+    it "reads nothing derived when the states or type leave open alerts out" do
+      listed(include_derived: true, states: %w[done])
+      listed(include_derived: true, type: "note")
+      listed(include_derived: true, type: "alert")
+
+      expect(derived_calls.size).to eq(1)
+    end
+
+    it "prints derived rows in the table and their warnings on stderr" do
+      with_derived.list(working_dir: "/app", include_derived: true)
+
+      expect(output.string).to include("pane:waiting:api.fix:%5", "An agent is waiting in api.fix (%5)")
+      expect(error_output.string).to include("did not answer")
+    end
+
+    it "fails when no derived reader is wired" do
+      expect { command.list(working_dir: "/app", include_derived: true) }.to raise_error(Workspace::Error, /not available/)
+    end
+  end
+
   describe "#show" do
     let(:item) do
       command.add(title: "Look at this", body: "line1\nline2", source: {kind: "jira", ref: "ABC-1"}, links: {pr: 5},

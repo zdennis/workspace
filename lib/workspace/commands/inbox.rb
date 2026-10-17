@@ -52,10 +52,12 @@ module Workspace
       # @param clock [#call] returns the current Time
       # @param event_log [Workspace::EventLog, nil] records `inbox_changed` (ids and states only,
       #   never the item's text); nil records nothing
+      # @param derived [Workspace::InboxDerived, nil] works out the rows `list --include-derived` adds;
+      #   read only with that flag
       # @param output [IO]
       # @param error_output [IO]
       def initialize(config:, project_detector:, store_factory:, project_catalog: nil, session_ledger: nil,
-        env: ENV, input: $stdin, clock: -> { Time.now }, event_log: nil, output: $stdout, error_output: $stderr)
+        env: ENV, input: $stdin, clock: -> { Time.now }, event_log: nil, derived: nil, output: $stdout, error_output: $stderr)
         @config = config
         @project_detector = project_detector
         @project_catalog = project_catalog
@@ -65,6 +67,7 @@ module Workspace
         @input = input
         @clock = clock
         @event_log = event_log
+        @derived = derived
         @output = output
         @error_output = error_output
       end
@@ -153,9 +156,11 @@ module Workspace
       # @param states [Array<String>] states to show; `open` when empty
       # @param type [String, nil] only this type
       # @param all [Boolean] read every scope that has a file
+      # @param include_derived [Boolean] add the open `alert` rows {Workspace::InboxDerived} works out for
+      #   the workspaces and projects listed (with +all+, every one in the catalog)
       # @param json [Boolean] print `{schema_version, ok, items, warnings}`
       # @return [Hash] `{exit_code:}`
-      def list(target: {}, working_dir: Dir.pwd, states: [], type: nil, all: false, json: false)
+      def list(target: {}, working_dir: Dir.pwd, states: [], type: nil, all: false, include_derived: false, json: false)
         raise UsageError, "Pass --all or a scope flag, not both." if all && target.values.any?
         checked_filter_states(states)
         checked_filter_type(type)
@@ -165,8 +170,13 @@ module Workspace
         items = scopes.flat_map { |scope| store_for(scope, sink).list }
         items = items.select { |item| states.include?(item["state"]) }
         items = items.select { |item| item["type"] == type } if type
-        items = items.sort_by { |item| [item["updated_at"].to_s, item["id"].to_s] }.reverse
         warnings = warnings_from(sink)
+        if include_derived && states.include?("open") && [nil, "alert"].include?(type)
+          derived = derived_rows(target, working_dir, all)
+          items += derived[:rows]
+          warnings += derived[:warnings]
+        end
+        items = items.sort_by { |item| [item["updated_at"].to_s, item["id"].to_s] }.reverse
 
         if json
           @output.puts JSON.generate({"schema_version" => JSON_SCHEMA_VERSION, "ok" => true, "items" => items, "warnings" => warnings})
@@ -641,6 +651,31 @@ module Workspace
           scopes << project_scope(project) if project
         end
         scopes << global_scope
+      end
+
+      # Derived rows for the workspaces and projects the listed scopes stand for: a workspace scope's
+      # workspace, a project scope's project, or with +all+ every one in the catalog. Global has none.
+      def derived_rows(target, working_dir, all)
+        raise Workspace::Error, "Derived inbox rows are not available in this build." unless @derived
+        workspaces = []
+        projects = []
+        if all
+          Array(@project_catalog&.all).each do |project|
+            projects << project
+            workspaces.concat(project.members.select { |m| m.configured && m.exists }.map(&:workspace))
+          end
+        elsif target[:project]
+          projects << @project_catalog.find(target[:project])
+        elsif target[:name]
+          workspaces << target[:name]
+        elsif !target[:global]
+          detected_workspace(working_dir) do |name|
+            workspaces << name
+            project = project_of(working_dir)
+            projects << project if project
+          end
+        end
+        @derived.rows(workspaces: workspaces, projects: projects)
       end
 
       def detected_workspace(working_dir)
