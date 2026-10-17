@@ -410,4 +410,48 @@ RSpec.describe Workspace::Commands::Library do
       expect(described_class.name_from_path("-")).to eq("")
     end
   end
+
+  describe "library_changed events" do
+    let(:event_log) { CLITestHelpers::FakeEventLog.new }
+    subject(:command) { described_class.new(library: library, output: output, input: input, event_log: event_log) }
+
+    def changed(ref, scope, action, project = "")
+      {"type" => "library_changed", "project" => project, "data" => {"ref" => ref, "scope" => scope, "action" => action}}
+    end
+
+    it "records add, update (also add --force) and remove" do
+      command.add(kind: "play", path: source("x.md", "one"), cwd: cwd)
+      command.update("play/x", body: "two", cwd: cwd)
+      command.add(kind: "play", path: source("x.md", "three"), force: true, cwd: cwd)
+      command.remove("play/x", yes: true, cwd: cwd)
+
+      expect(event_log.events).to eq([
+        changed("play/x", "global", "add"), changed("play/x", "global", "update"),
+        changed("play/x", "global", "update"), changed("play/x", "global", "remove")
+      ])
+    end
+
+    it "names the project for a project store" do
+      command.add(kind: "prompt", path: source("p.md", "hi"), scope: "project", cwd: cwd)
+
+      expect(event_log.events).to eq([changed("prompt/p", "project", "add", "app")])
+    end
+
+    it "writes nothing for unchanged, dry-run, declined or failed writes" do
+      command.add(kind: "play", path: source("x.md", "one"), cwd: cwd)
+      event_log.events.clear
+
+      command.add(kind: "play", path: source("x.md", "one"), cwd: cwd)
+      command.update("play/x", body: "one", cwd: cwd)
+      command.add(kind: "play", path: source("x.md", "two"), force: true, dry_run: true, cwd: cwd)
+      command.update("play/x", body: "two", dry_run: true, cwd: cwd)
+      command.remove("play/x", dry_run: true, cwd: cwd)
+      input.string = "n\n"
+      command.remove("play/x", cwd: cwd)
+      expect { command.add(kind: "play", path: source("x.md", "two"), cwd: cwd) }.to raise_error(Workspace::Error)
+      expect { command.remove("play/missing", yes: true, cwd: cwd) }.to raise_error(Workspace::Error)
+
+      expect(event_log.events).to be_empty
+    end
+  end
 end

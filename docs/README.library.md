@@ -75,6 +75,10 @@ The built-in scope is searched last here and by `--play`, so `workspace start --
 
 `remove` asks before deleting. `--yes` skips the question. With `--json`, or under `--no-input` (`WORKSPACE_NO_INPUT`), it needs `--yes` or `--dry-run`, as `projects kill` does: `--json` without them is a `usage` error, `--no-input` without them is `confirmation_required` with `retry.flags: ["--yes"]`.
 
+## Change events
+
+`add`, `update` and `remove` write a `library_changed` line (`ref`, `scope`, `action`) to the event log when they change the store, so a reader can refetch `library list --json` instead of polling. An unchanged entry, `--dry-run`, a declined `remove` or a failed write writes nothing. See [the event log](README.event-log.md).
+
 ## --json
 
 `list`, `show` and `info` print their own document:

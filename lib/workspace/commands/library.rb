@@ -22,8 +22,10 @@ module Workspace
       # @param library [Workspace::Library] the resolver
       # @param output [IO]
       # @param input [IO] where `remove` reads its confirmation
-      def initialize(library:, output: $stdout, input: $stdin)
+      # @param event_log [Workspace::EventLog, nil] records `library_changed` after a write that changed the store
+      def initialize(library:, output: $stdout, input: $stdin, event_log: nil)
         @library = library
+        @event_log = event_log
         @output = output
         @input = input
       end
@@ -124,6 +126,7 @@ module Workspace
           "added"
         end
         put(store, kind, name, content) unless dry_run || outcome == "unchanged"
+        record_change(store, kind, name, (outcome == "added") ? "add" : "update") unless dry_run || outcome == "unchanged"
         finish(outcome, store, kind, name, dry_run)
       end
 
@@ -148,6 +151,7 @@ module Workspace
 
         outcome = same?(entry, content) ? "unchanged" : "updated"
         put(store, kind, name, content) unless dry_run || outcome == "unchanged"
+        record_change(store, kind, name, "update") unless dry_run || outcome == "unchanged"
         finish(outcome, store, kind, name, dry_run)
       end
 
@@ -172,7 +176,10 @@ module Workspace
             return nil
           end
         end
-        store.delete(kind, name) unless dry_run
+        unless dry_run
+          store.delete(kind, name)
+          record_change(store, kind, name, "remove")
+        end
         message = "#{dry_run ? "Would remove" : "Removed"} #{entry["ref"]} from #{scope_label(store)}."
         @output.puts message
         Result.new("removed", store.project, entry, message)
@@ -253,6 +260,13 @@ module Workspace
         message = "#{verb} #{kind}/#{name} in #{scope_label(store)}."
         @output.puts message
         Result.new(outcome, store.project, entry, message)
+      end
+
+      # Writes `library_changed`: the project name for a project store, "" for the global one.
+      # EventLog#record never raises.
+      def record_change(store, kind, name, action)
+        @event_log&.record(type: "library_changed", project: store.project || "",
+          data: {"ref" => "#{kind}/#{name}", "scope" => store.scope, "action" => action})
       end
 
       def scope_label(store)

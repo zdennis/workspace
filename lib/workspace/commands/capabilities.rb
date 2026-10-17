@@ -36,7 +36,7 @@ module Workspace
         "event_emitters" => 1,
         "ui_open" => 3,
         "pane_bindings" => 3,
-        "library" => 3,
+        "library" => 4,
         "library_play" => 2,
         "library_copy" => 1,
         "instructions" => 1,
