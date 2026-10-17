@@ -91,7 +91,7 @@ workspace <subcommand> [options]
 | focus | [README](docs/README.focus.md) | Bring a project's iTerm window to the front |
 | handoff | [README](docs/README.handoff.md) | Check context usage and hand off to a fresh conversation |
 | init | [README](docs/README.init.md) | Install tmuxinator templates and create workspace config directory |
-| inbox | [README](docs/README.inbox.md) | A durable list of things that need a person, per workspace, project or globally: `add` (also `--from-json`, `--dedupe-key`), `list`, `show`, `done`, `dismiss`, `reopen` |
+| inbox | [README](docs/README.inbox.md) | A durable list of things that need a person, per workspace, project or globally: `add` (also `--from-json`, `--dedupe-key`), `list`, `show`, `edit`, `done`, `dismiss`, `reopen` |
 | instructions | [README](docs/README.instructions.md) | Print the instructions built from library packs (`binding`, `orchestrator`, `commits`, `review`, `notes`, `handoff`, `dev`, `implementation-plan`) |
 | kill | [README](docs/README.kill.md) | Kill a worktree project and remove its worktree |
 | launch | [README](docs/README.launch.md) | Launch tmuxinator projects in iTerm2 windows, or headless in plain tmux |

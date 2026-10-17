@@ -892,6 +892,187 @@ RSpec.describe Workspace::Commands::Inbox do
     end
   end
 
+  describe "#edit" do
+    let(:event_log) { CLITestHelpers::FakeEventLog.new }
+    let(:logged) do
+      described_class.new(config: config, project_detector: project_detector, project_catalog: project_catalog,
+        session_ledger: session_ledger, store_factory: store_factory, env: env, input: input,
+        clock: -> { now }, event_log: event_log, output: output, error_output: error_output)
+    end
+
+    def add_item(**opts)
+      command.add(title: "Old title", working_dir: "/app", **opts)[:results].first["item"]
+    end
+
+    def edit_row(*args, **opts)
+      command.edit(*args, working_dir: "/app", **opts)[:results].first
+    end
+
+    it "changes the title, body, expiry and links, keeping the rest, and stamps updated_at" do
+      item = add_item(body: "old", links: {pane: "%1", pr: 3})
+      later = now + 60
+      editor = described_class.new(config: config, project_detector: project_detector, project_catalog: project_catalog,
+        session_ledger: session_ledger, store_factory: ->(path:, scope:, error_output:) { Workspace::InboxStore.new(path: path, scope: scope, clock: -> { later }, error_output: error_output) },
+        env: env, input: input, clock: -> { later }, output: output, error_output: error_output)
+
+      row = editor.edit(item["id"], title: " New title ", body: "new body", expires: "2h", links: {pr: 9, run_id: "r1"},
+        working_dir: "/app")[:results].first
+
+      expect(row).to include("outcome" => "updated", "id" => item["id"], "scope" => "workspace:api.fix")
+      stored_item = stored(config.inbox_path("workspace", "api.fix")).first
+      expect(stored_item).to include("title" => "New title", "body" => "new body", "expires_at" => "2026-10-16T14:01:00Z",
+        "state" => "open", "created_at" => item["created_at"], "updated_at" => "2026-10-16T12:01:00Z",
+        "links" => {"pane" => "%1", "plan_task" => nil, "pr" => 9, "run_id" => "r1"})
+      expect(row["item"]).to eq(stored_item)
+      expect(output.string).to include("Updated inbox item #{item["id"]} in workspace:api.fix: New title")
+    end
+
+    it "clears the body, a link and the expiry" do
+      item = add_item(body: "old", expires: "2h", links: {pane: "%1", pr: 3})
+
+      edit_row(item["id"], body: "", links: {pane: "", pr: ""}, no_expires: true)
+
+      expect(stored(config.inbox_path("workspace", "api.fix")).first).to include("body" => nil, "expires_at" => nil,
+        "links" => {"pane" => nil, "plan_task" => nil, "pr" => nil, "run_id" => nil})
+    end
+
+    it "reads the body from a file" do
+      item = add_item
+      path = File.join(tmpdir, "body.txt")
+      File.write(path, "from file\n")
+
+      edit_row(item["id"], body_file: path)
+
+      expect(stored(config.inbox_path("workspace", "api.fix")).first["body"]).to eq("from file")
+    end
+
+    it "is unchanged, and writes nothing, when every value is what the item holds" do
+      item = add_item(body: "b", links: {pr: 3})
+      before = File.read(config.inbox_path("workspace", "api.fix"))
+
+      result = command.edit(item["id"], title: "Old title", body: "b", links: {pr: 3}, working_dir: "/app")
+
+      expect(result).to include(exit_code: 0)
+      expect(result[:results].first).to include("outcome" => "unchanged", "id" => item["id"])
+      expect(File.read(config.inbox_path("workspace", "api.fix"))).to eq(before)
+      expect(output.string).to include("No change to inbox item #{item["id"]}")
+    end
+
+    it "is unchanged when it clears a field a hand-edited record never had" do
+      item = add_item
+      path = config.inbox_path("workspace", "api.fix")
+      data = stored(path)
+      data.first.delete("expires_at")
+      data.first["links"] = {}
+      File.write(path, JSON.generate(data))
+
+      row = edit_row(item["id"], no_expires: true, links: {pane: ""})
+      expect(row["outcome"]).to eq("unchanged")
+
+      data.first.delete("links")
+      File.write(path, JSON.generate(data))
+      expect(edit_row(item["id"], title: "Old title")["outcome"]).to eq("unchanged")
+    end
+
+    it "refuses an empty body file instead of clearing the body" do
+      item = add_item(body: "keep")
+      path = File.join(tmpdir, "empty.txt")
+      File.write(path, "\n")
+
+      expect(refused_field { command.edit(item["id"], body_file: path, working_dir: "/app") }).to eq("body")
+      expect(stored(config.inbox_path("workspace", "api.fix")).first["body"]).to eq("keep")
+    end
+
+    it "edits a done item without reopening it" do
+      item = add_item
+      command.done([item["id"]], working_dir: "/app")
+
+      row = edit_row(item["id"], title: "Renamed")
+
+      expect(row["outcome"]).to eq("updated")
+      expect(stored(config.inbox_path("workspace", "api.fix")).first).to include("title" => "Renamed", "state" => "done")
+    end
+
+    it "edits an item in another scope when no scope flag is given" do
+      item = add_item(target: {global: true})
+
+      row = command.edit(item["id"], title: "Renamed", working_dir: "/app")[:results].first
+
+      expect(row).to include("outcome" => "updated", "scope" => "global")
+    end
+
+    it "checks each field like add and writes nothing when one is refused" do
+      item = add_item
+      before = File.read(config.inbox_path("workspace", "api.fix"))
+
+      expect(refused_field { command.edit(item["id"], title: "  ", working_dir: "/app") }).to eq("title")
+      expect(refused_field { command.edit(item["id"], title: "a\e[2Jb", working_dir: "/app") }).to eq("title")
+      expect(refused_field { command.edit(item["id"], body: "x" * 8193, working_dir: "/app") }).to eq("body")
+      expect(refused_field { command.edit(item["id"], expires: "soon", working_dir: "/app") }).to eq("expires")
+      expect(refused_field { command.edit(item["id"], expires: "2020-01-01T00:00:00Z", working_dir: "/app") }).to eq("expires")
+      expect(refused_field { command.edit(item["id"], links: {pr: "x"}, working_dir: "/app") }).to eq("links.pr")
+      expect(refused_field { command.edit(item["id"], links: {pane: "p" * 65}, working_dir: "/app") }).to eq("links.pane")
+      expect(File.read(config.inbox_path("workspace", "api.fix"))).to eq(before)
+    end
+
+    it "refuses with usage when nothing is given, or options conflict" do
+      item = add_item
+
+      expect { command.edit(item["id"], working_dir: "/app") }.to raise_error(Workspace::UsageError, /Nothing to change/)
+      expect { command.edit(item["id"], body: "a", body_file: "-", working_dir: "/app") }.to raise_error(Workspace::UsageError)
+      expect { command.edit(item["id"], expires: "2h", no_expires: true, working_dir: "/app") }.to raise_error(Workspace::UsageError)
+    end
+
+    it "raises unknown_inbox_item for an id no scope holds" do
+      add_item
+
+      expect { command.edit("0000000000", title: "x", working_dir: "/app") }.to raise_error(Workspace::Error) { |e|
+        expect(e.code).to eq("unknown_inbox_item")
+      }
+    end
+
+    it "raises ambiguous_inbox_item when two scopes hold the id, and a scope flag picks one" do
+      item = add_item
+      other = config.inbox_path("global")
+      FileUtils.mkdir_p(File.dirname(other))
+      File.write(other, JSON.generate([item.merge("scope" => {"kind" => "global", "key" => nil, "name" => nil})]))
+
+      expect { command.edit(item["id"], title: "x", working_dir: "/app") }.to raise_error(Workspace::Error) { |e|
+        expect(e.code).to eq("ambiguous_inbox_item")
+      }
+      expect(edit_row(item["id"], title: "x", target: {global: true})["scope"]).to eq("global")
+    end
+
+    it "writes one updated event, with no text, only when something changed" do
+      item = logged.add(title: "Secret", working_dir: "/app")[:results].first["item"]
+      event_log.events.clear
+
+      logged.edit(item["id"], title: "Secret", working_dir: "/app")
+      expect(event_log.events).to be_empty
+
+      logged.edit(item["id"], title: "Other secret", working_dir: "/app")
+      data = {"id" => item["id"], "scope" => "workspace", "scope_key" => "api.fix", "state" => "open", "change" => "updated"}
+      expect(event_log.events).to eq([{"type" => "inbox_changed", "project" => "api.fix", "data" => data}])
+    end
+
+    it "prints the title with control characters escaped" do
+      item = add_item
+
+      edit_row(item["id"], title: "plain")
+      stored_path = config.inbox_path("workspace", "api.fix")
+      data = stored(stored_path)
+      data.first["title"] = "bad\e[2J"
+      File.write(stored_path, JSON.generate(data))
+      output.truncate(0)
+      output.rewind
+
+      edit_row(item["id"], body: "b")
+
+      expect(output.string).to include("bad\\e[2J")
+      expect(output.string).not_to include("\e")
+    end
+  end
+
   describe "inbox_changed events" do
     let(:event_log) { CLITestHelpers::FakeEventLog.new }
 

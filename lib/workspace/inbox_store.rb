@@ -104,7 +104,7 @@ module Workspace
 
     # Changes a record's fields: yields the stored record (a passed snooze or
     # expiry already applied) under the exclusive lock and stamps `updated_at`
-    # after the block. State changes go through {#transition}.
+    # after the block, unless the block left the record as it was. State changes go through {#transition}.
     #
     # @param id [String]
     # @yieldparam record [Hash] the record to change in place
@@ -114,8 +114,9 @@ module Workspace
         record = records_in(data).find { |r| r["id"] == id }
         next nil unless record
         record.replace(settle(record, @clock.call))
+        before = record.dup
         yield record
-        record["updated_at"] = now_iso
+        record["updated_at"] = now_iso unless record == before
         record
       end
     end

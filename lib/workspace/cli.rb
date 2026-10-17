@@ -460,7 +460,7 @@ module Workspace
           handoff         Check context usage and hand off to a fresh conversation
           help            Show this help message
           init            Install tmuxinator templates and create config directory
-          inbox           Keep a durable list of things that need a person: add, list, show, done, dismiss, reopen
+          inbox           Keep a durable list of things that need a person: add, list, show, edit, done, dismiss, reopen
           instructions    Print the instructions built from library packs (binding, orchestrator, commits, review, notes, handoff, dev, implementation-plan)
           kill            Kill a worktree project and remove its worktree (auto-detects from cwd)
           launch          Launch tmuxinator projects in iTerm windows, or headless in plain tmux
@@ -1792,6 +1792,7 @@ module Workspace
       when "add" then cmd_inbox_add(args)
       when "list" then cmd_inbox_list(args)
       when "show" then cmd_inbox_show(args)
+      when "edit" then cmd_inbox_edit(args)
       when "done" then cmd_inbox_resolve(args, "done", :done)
       when "dismiss" then cmd_inbox_resolve(args, "dismiss", :dismiss)
       when "reopen" then cmd_inbox_resolve(args, "reopen", :reopen)
@@ -1807,6 +1808,7 @@ module Workspace
                workspace inbox done|dismiss --dedupe-key KEY [scope] [--json]
                workspace inbox list [--state S[,S]] [--type T] [--all] [scope] [--json]
                workspace inbox show ID [scope] [--json]
+               workspace inbox edit ID [options] [scope] [--json]
                workspace inbox done|dismiss|reopen ID... [scope] [--json]
 
         A durable list of things that need a person, kept per workspace, per
@@ -1817,6 +1819,7 @@ module Workspace
           add TITLE     Add an item (type todo unless --type says otherwise)
           list          Open items of this workspace, its project and the global list
           show ID       One item, in any state
+          edit ID       Change an item's title, body, expiry or links (any state; it stays as it is)
           done ID...    Mark items done; one already done is reported unchanged
           dismiss ID... Mark items dismissed (nobody will act on them)
           reopen ID...  Move done, dismissed or snoozed items back to open
@@ -1848,6 +1851,12 @@ module Workspace
           --from-json PATH|-     Take the whole item from one JSON object (64 KB at most) with the keys
                                  type, title, body, source, dedupe_key, expires_at, links and scope; use it
                                  alone (only --json goes with it)
+        Options (edit; at least one):
+          --title TEXT           A new title
+          --body TEXT            A new body ("" clears it); or --body-file PATH|-
+          --expires DURATION|ISO A new expiry; --no-expires drops it
+          --link-pane PANE, --link-plan-task ID, --link-pr N, --link-run ID
+                                 Change a link ("" clears it)
         Options (done, dismiss):
           --dedupe-key KEY       Resolve the item holding KEY in the scope (no ids); none is unchanged
         Options (list):
@@ -1867,6 +1876,7 @@ module Workspace
           workspace inbox show a1b2c3d4e5
           workspace inbox done a1b2c3d4e5 f6a7b8c9d0
           workspace inbox dismiss a1b2c3d4e5 --json
+          workspace inbox edit a1b2c3d4e5 --title "Check the deploy again" --expires 2h
           workspace inbox add "CI failed" --type alert --dedupe-key github_check:org/api:rspec:9f3c2e1 --global
           workspace inbox done --dedupe-key github_check:org/api:rspec:9f3c2e1 --global
       HELP
@@ -1966,6 +1976,35 @@ module Workspace
 
       result = @inbox_command.show(id, target: target, working_dir: inbox_working_dir(target), json: json)
       @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
+    end
+
+    def cmd_inbox_edit(args)
+      target = {}
+      json = false
+      options = {links: {}}
+      parser = OptionParser.new do |opts|
+        opts.banner = "Usage: workspace inbox edit ID [options]"
+        inbox_scope_options(opts, target)
+        opts.on("--title TEXT", "A new title") { |v| options[:title] = v }
+        opts.on("--body TEXT", "A new body; an empty one clears it") { |v| options[:body] = v }
+        opts.on("--body-file PATH", "Read the body from PATH, or - for stdin (64 KB at most)") { |v| options[:body_file] = v }
+        opts.on("--expires WHEN", "A duration (2h) or an ISO 8601 time") { |v| options[:expires] = v }
+        opts.on("--no-expires", "Drop the expiry") { options[:no_expires] = true }
+        opts.on("--link-pane PANE", "A pane the item concerns; an empty one clears it") { |v| options[:links][:pane] = v }
+        opts.on("--link-plan-task ID", "A plan task id; an empty one clears it") { |v| options[:links][:plan_task] = v }
+        opts.on("--link-pr N", "A pull request number; an empty one clears it") { |v| options[:links][:pr] = v.match?(/\A\d+\z/) ? v.to_i : v }
+        opts.on("--link-run ID", "A workflow run id; an empty one clears it") { |v| options[:links][:run_id] = v }
+        opts.on("--json", "Print one action document (see docs/README.json.md) instead of text, which goes to stderr") { json = true }
+      end
+      parser.parse!(args)
+      id = args.shift
+      raise UsageError, "inbox edit needs an id.\n\n#{parser.help}" if id.nil?
+      raise UsageError, "Unexpected argument: #{args.first}. Run 'workspace inbox help'." if args.any?
+      raise Error, "inbox is not available: no inbox command was wired" unless @inbox_command
+
+      run_action("inbox edit", json: json) do
+        @inbox_command.edit(id, target: target, working_dir: inbox_working_dir(target), **options)
+      end
     end
 
     def cmd_inbox_resolve(args, verb, method)

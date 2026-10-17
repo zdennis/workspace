@@ -1892,6 +1892,25 @@ RSpec.describe Workspace::CLI do
       cli.run(["inbox", "dismiss", "abc"])
     end
 
+    it "passes edit its id, the changed fields, links and scope" do
+      expect(inbox_command).to receive(:edit).with(
+        "abc", target: {global: true}, working_dir: anything, title: "T", body: "", expires: "2h",
+        links: {pr: 7, pane: "", run_id: "r1"}
+      ).and_return({exit_code: 0, results: []})
+
+      cli.run(["inbox", "edit", "abc", "--global", "--title", "T", "--body", "", "--expires", "2h",
+        "--link-pr", "7", "--link-pane", "", "--link-run", "r1"])
+    end
+
+    it "passes edit --no-expires and --body-file, and refuses edit without an id" do
+      expect(inbox_command).to receive(:edit).with(
+        "abc", target: {}, working_dir: anything, links: {}, no_expires: true, body_file: "-"
+      ).and_return({exit_code: 0, results: []})
+
+      cli.run(["inbox", "edit", "abc", "--no-expires", "--body-file", "-"])
+      expect { cli.run(["inbox", "edit", "--title", "T"]) }.to raise_error(FakeSystemExit)
+    end
+
     it "refuses reopen --dedupe-key and done with neither ids nor a key" do
       expect { cli.run(["inbox", "reopen", "--dedupe-key", "k"]) }.to raise_error(FakeSystemExit)
       expect { cli.run(["inbox", "done"]) }.to raise_error(FakeSystemExit)

@@ -11,6 +11,8 @@ workspace inbox add TITLE [--type TYPE] [--body TEXT | --body-file PATH|-] [--so
 workspace inbox add --from-json PATH|- [--json]
 workspace inbox list [--state S[,S]] [--type TYPE] [--all] [scope] [--json]
 workspace inbox show ID [scope] [--json]
+workspace inbox edit ID [--title TEXT] [--body TEXT | --body-file PATH|-] [--expires DURATION|ISO | --no-expires]
+                       [--link-pane P] [--link-plan-task T] [--link-pr N] [--link-run R] [scope] [--json]
 workspace inbox done ID... [scope] [--json]
 workspace inbox done --dedupe-key KEY [scope] [--json]
 workspace inbox dismiss ID... [scope] [--json]
@@ -76,6 +78,7 @@ The check and the write happen under one lock, so two processes upserting one ke
 | `add` | The workspace detected from the current directory; outside any, `not_in_workspace` |
 | `list` | Open items of the current workspace, its project and the global list; outside a workspace, the global list. `--all` reads every scope that has a file |
 | `show` | Searches every scope for the id; `ambiguous_inbox_item` if it is in more than one |
+| `edit` | As `show`: searches every scope; `ambiguous_inbox_item` if the id is in more than one |
 | `done`, `dismiss`, `reopen` | As `show`, once per id; an id in more than one scope is that row's `ambiguous_inbox_item` failure, so pass a scope flag |
 
 A project is keyed by the realpath of its git common dir, so two clones with the same name stay apart.
@@ -102,7 +105,9 @@ Text with NUL or another control character (an escape sequence, a C1 control, a 
 
 `done`, `dismiss` and `reopen` take one or more ids and print an action document (`inbox done`, `inbox dismiss`, `inbox reopen`) with one row per id: `id`, `outcome`, `scope` (a label) and the `item`. Outcomes are `resolved` (done and dismiss), `reopened`, `unchanged` (already in that state, so a retry is safe; nothing is rewritten) and `failed`, whose row carries `code` (`unknown_inbox_item`, `ambiguous_inbox_item`), `error` and `details`. The action `status` is `ok`, `partial` (exit 3) or `failed` (exit 1); rows are processed in order and each one that can be resolved is. `done` or `dismiss` stamps `resolved_at` and `resolved_by` (`kind` `cli`, or `agent` when the session ledger shows an agent session open in `$TMUX_PANE`, plus `pane`); `reopen` clears both and any snooze.
 
-Each `created`, `updated`, `resolved` or `reopened` outcome writes one `inbox_changed` event with ids and states only (see [`event-log`](README.event-log.md#state-and-lifecycle-events)); `unchanged`, `suppressed` and `failed` rows write none, and an event log that cannot be written does not fail the command.
+`edit` changes the title, body, expiry and links of one item, in any state (an edit never reopens a done or dismissed item). Pass at least one option; a missing one leaves that field as it is. Each value is checked like `add` (`invalid_inbox_item` names the field, and nothing is written when any is refused). An empty `--body` or link value clears it (`--link-pr ""` too), and `--no-expires` drops the expiry. The action document (`inbox edit`) has one row, outcome `updated`, or `unchanged` when every value is what the item already holds (nothing is rewritten, `updated_at` stays; a relative `--expires` such as `2h` is a new time each call, so repeating it is `updated`). An empty `--body-file` is refused (`--body ""` clears the body). An unknown or ambiguous id is the command's error, not a row. `type`, `source`, `scope` and the dedupe key are not editable.
+
+Each `created`, `updated`, `resolved` or `reopened` outcome (an `edit` that changed something is `updated`) writes one `inbox_changed` event with ids and states only (see [`event-log`](README.event-log.md#state-and-lifecycle-events)); `unchanged`, `suppressed` and `failed` rows write none, and an event log that cannot be written does not fail the command.
 
 Errors use the [`--json` error envelope](README.json.md): `invalid_inbox_item`, `unknown_inbox_item`, `ambiguous_inbox_item`, `inbox_store_unreadable`, `not_in_workspace`, `unknown_workspace`, `usage`.
 

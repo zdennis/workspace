@@ -204,6 +204,15 @@ RSpec.describe Workspace::InboxStore do
       expect(later.find(other["id"])).to eq(other)
     end
 
+    it "leaves updated_at alone when the block changes nothing" do
+      item = store.add(fields)
+      later = described_class.new(path: path, clock: -> { Time.utc(2026, 10, 16, 13, 0, 0) })
+
+      result = later.update(item["id"]) { |r| r["title"] = r["title"].dup }
+
+      expect(result["updated_at"]).to eq("2026-10-16T12:00:00Z")
+    end
+
     it "yields a record whose passed snooze has already woken" do
       item = store.add(fields)
       store.transition(item["id"], to: "snoozed", snooze_until: "2026-10-16T12:30:00Z")

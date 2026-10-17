@@ -221,6 +221,59 @@ module Workspace
         change(ids, "dismissed", target, working_dir, dedupe_key)
       end
 
+      # Changes an item's title, body, expiry or links, in any state; a resolved item stays resolved.
+      # Each changed field is checked like {#add}. An empty +body+ or link value clears it. Passing
+      # values the item already holds is `unchanged`, and writes nothing.
+      #
+      # @param id [String]
+      # @param title [String, nil]
+      # @param body [String, nil]
+      # @param body_file [String, nil] a path, or `-` for stdin, read instead of +body+ (64 KB cap)
+      # @param expires [String, nil] a duration or an ISO 8601 time in the future
+      # @param no_expires [Boolean] drop the expiry
+      # @param links [Hash] `:pane`, `:plan_task`, `:pr`, `:run_id`; an empty string clears the link
+      # @param target [Hash] `:name`, `:project`, `:global`; none searches every scope
+      # @param working_dir [String]
+      # @return [Hash] `{exit_code:, results:}`; one row, outcome `updated` or `unchanged`
+      # @raise [Workspace::Error] `invalid_inbox_item`, `unknown_inbox_item`, `ambiguous_inbox_item`,
+      #   `inbox_store_unreadable`
+      def edit(id, title: nil, body: nil, body_file: nil, expires: nil, no_expires: false, links: {}, target: {},
+        working_dir: Dir.pwd)
+        raise UsageError, "Pass --body or --body-file, not both." if body && body_file
+        raise UsageError, "Pass --expires or --no-expires, not both." if expires && no_expires
+        if title.nil? && body.nil? && body_file.nil? && expires.nil? && !no_expires && links.empty?
+          raise UsageError, "Nothing to change. Pass --title, --body, --body-file, --expires, --no-expires or a --link-* option."
+        end
+        changes = {}
+        changes["title"] = checked_title(title) unless title.nil?
+        if body_file
+          text = read_input(body_file, "body")
+          raise invalid("body", "is empty (pass --body \"\" to clear it)") if text.strip.empty?
+          changes["body"] = checked_body(text)
+        elsif body
+          changes["body"] = checked_body(body)
+        end
+        changes["expires_at"] = checked_expiry(expires) if expires
+        changes["expires_at"] = nil if no_expires
+        cleared, given = links.partition { |_, value| value == "" }.map(&:to_h)
+        checked = checked_links(given)
+        scope, found = locate(id, lookup_scopes(target, working_dir), @error_output)
+        changed = false
+        item = store_for(scope).update(found["id"]) do |record|
+          before = record.dup
+          changes.each { |field, value| record[field] = value unless record[field] == value }
+          held = record["links"].is_a?(Hash) ? record["links"] : {}
+          wanted = given.to_h { |key, _| [key.to_s, checked[key.to_s]] }.merge(cleared.to_h { |key, _| [key.to_s, nil] })
+          record["links"] = held.merge(wanted) if wanted.any? { |key, value| held[key] != value }
+          changed = record != before
+        end
+        raise unknown_item(id) unless item
+        record_change(item, "updated") if changed
+        outcome = changed ? "updated" : "unchanged"
+        @output.puts "#{changed ? "Updated" : "No change to"} inbox item #{escape(item["id"])} in #{scope.label}: #{escape(item["title"])}"
+        {exit_code: 0, results: [{"id" => item["id"], "outcome" => outcome, "scope" => scope.label, "item" => item}]}
+      end
+
       # Moves done, dismissed or snoozed items back to open. Open items are `unchanged`.
       #
       # @param ids [Array<String>]
