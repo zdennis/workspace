@@ -136,6 +136,11 @@ RSpec.describe Workspace::Commands::Snapshot do
       end
     end.new
   end
+  let(:task_records) { {} }
+  let(:task_store) do
+    records = task_records
+    Class.new { define_method(:latest_by_workspace) { records } }.new
+  end
   let(:stall_seconds) { 300 }
   let(:plan_config) do
     seconds = stall_seconds
@@ -145,7 +150,7 @@ RSpec.describe Workspace::Commands::Snapshot do
   subject(:snapshot) do
     described_class.new(catalog: catalog, facts: facts, tmux: tmux, state: state, config: config, snapshot_client: snapshot_client,
       sessions: sessions, git: git, pull_request_status: pull_request_status, ask_store_for: ask_store_for, plan: plan_command,
-      plan_state: Workspace::PlanState.new(clock: -> { now }), plan_config: plan_config, output: output,
+      plan_state: Workspace::PlanState.new(clock: -> { now }), plan_config: plan_config, task_store: task_store, output: output,
       error_output: error_output, clock: clock)
   end
 
@@ -292,7 +297,7 @@ RSpec.describe Workspace::Commands::Snapshot do
       broken = ->(_workspace) { raise IOError, "ask store broken" }
       described_class.new(catalog: catalog, facts: facts, tmux: tmux, state: state, config: config, snapshot_client: snapshot_client,
         sessions: sessions, git: git, pull_request_status: pull_request_status, ask_store_for: broken, plan: plan_command,
-        plan_state: Workspace::PlanState.new(clock: -> { now }), plan_config: plan_config, output: output, error_output: error_output,
+        plan_state: Workspace::PlanState.new(clock: -> { now }), plan_config: plan_config, task_store: task_store, output: output, error_output: error_output,
         clock: clock).call
 
       expect(member_row(parsed, "app.worktree-fix")["plan"]["state"]).to eq("waiting")
@@ -319,7 +324,7 @@ RSpec.describe Workspace::Commands::Snapshot do
       end.new
       described_class.new(catalog: catalog, facts: facts, tmux: table, state: state, config: config, snapshot_client: snapshot_client,
         sessions: sessions, git: git, pull_request_status: pull_request_status, ask_store_for: ask_store_for, plan: plan_command,
-        plan_state: Workspace::PlanState.new(clock: -> { now }), plan_config: plan_config, output: output, error_output: error_output,
+        plan_state: Workspace::PlanState.new(clock: -> { now }), plan_config: plan_config, task_store: task_store, output: output, error_output: error_output,
         clock: clock).call
 
       expect(member_row(parsed, "other")["plan"]["state"]).to eq("idle")
@@ -331,7 +336,7 @@ RSpec.describe Workspace::Commands::Snapshot do
       described_class.new(catalog: catalog, facts: facts, tmux: tmux, state: state, config: config, snapshot_client: snapshot_client,
         sessions: sessions, git: git, pull_request_status: pull_request_status, ask_store_for: ask_store_for, plan: plan_command,
         plan_state: Workspace::PlanState.new(clock: -> { now }),
-        plan_config: Class.new { def stall_seconds_for(_name) = 60 }.new, output: output, error_output: error_output, clock: clock).call
+        plan_config: Class.new { def stall_seconds_for(_name) = 60 }.new, task_store: task_store, output: output, error_output: error_output, clock: clock).call
 
       expect(member_row(parsed, "app.worktree-fix")["plan"]["state"]).to eq("stalled")
     end
@@ -530,7 +535,37 @@ RSpec.describe Workspace::Commands::Snapshot do
 
       expect(parsed["daemons_unavailable"]).to eq([{"workspace" => "app", "code" => "no_daemon"}])
       expect(member_row(parsed, "app")).to include("panes" => nil, "daemon" => {"up" => false, "pid" => nil, "log_path" => "/logs/workspace-app.log"})
-      expect(member_row(parsed, "app")).not_to have_key("task")
+      expect(member_row(parsed, "app")["task"]).to be_nil
+    end
+
+    it "reports the recorded task of a stopped workspace, and an archived one with its outcome" do
+      task_records.merge!("other" => {"id" => "t9", "title" => "Fix login", "ref" => "PROJ-1", "branch" => "fix-login"},
+        "app" => {"id" => "t2", "title" => "Old", "ref" => nil, "branch" => "old", "outcome" => "merged"})
+      snapshot.call
+
+      expect(member_row(parsed, "other")["task"]).to eq("id" => "t9", "title" => "Fix login", "ref" => "PROJ-1", "branch" => "fix-login", "status" => "stopped", "outcome" => nil)
+      expect(member_row(parsed, "app")["task"]).to include("id" => "t2", "status" => "archived", "outcome" => "merged")
+    end
+
+    it "reports a null task and one task_store_unavailable warning when the store can't be read" do
+      allow(task_store).to receive(:latest_by_workspace).and_raise(Errno::EACCES)
+      snapshot.call
+
+      expect(member_row(parsed, "other")["task"]).to be_nil
+      expect(parsed["warnings"].count { |w| w["code"] == "task_store_unavailable" }).to eq(1)
+    end
+
+    it "reads the task store once for all stopped members" do
+      allow(task_store).to receive(:latest_by_workspace).and_call_original
+      snapshot.call
+
+      expect(task_store).to have_received(:latest_by_workspace).once
+    end
+
+    it "reports a null task when none was recorded" do
+      snapshot.call
+
+      expect(member_row(parsed, "other")["task"]).to be_nil
     end
 
     it "does not ask a workspace that is not running, and does not list it as unavailable" do

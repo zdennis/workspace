@@ -40,11 +40,12 @@ module Workspace
       # @param plan [Workspace::Commands::Plan] says where each workspace's plan file is
       # @param plan_state [Workspace::PlanState] works out each plan's state from the snapshot's own reads
       # @param plan_config [Workspace::PlanConfig] reads `plan.stall_seconds`
+      # @param task_store [Workspace::TaskStore] read once per run for the task of a member whose daemon gave none
       # @param output [IO] stream for the JSON document
       # @param error_output [IO] stream for warnings that must stay out of script-readable output
       # @param clock [#now] time source, injected for tests
       # @param agent_timeout [Numeric] seconds to wait for each agent daemon
-      def initialize(catalog:, facts:, tmux:, state:, config:, snapshot_client:, sessions:, git:, pull_request_status:, ask_store_for:, plan:, plan_state:, plan_config:,
+      def initialize(catalog:, facts:, tmux:, state:, config:, snapshot_client:, sessions:, git:, pull_request_status:, ask_store_for:, plan:, plan_state:, plan_config:, task_store:,
         output: $stdout, error_output: $stderr, clock: Time, agent_timeout: DEFAULT_AGENT_TIMEOUT)
         @catalog = catalog
         @facts = facts
@@ -59,6 +60,7 @@ module Workspace
         @plan = plan
         @plan_state = plan_state
         @plan_config = plan_config
+        @task_store = task_store
         @output = output
         @error_output = error_output
         @clock = clock
@@ -72,6 +74,7 @@ module Workspace
       # @param pr [Boolean] read each checkout's pull request with `gh` (one read per member, in parallel)
       # @return [Hash] `{exit_code:}`; 1 only after a JSON error payload was printed
       def call(names: [], pr: false)
+        @stored_tasks = nil
         cursor, cursor_warning = event_cursor
         warnings = []
         warnings << cursor_warning if cursor_warning
@@ -223,8 +226,29 @@ module Workspace
           "pipeline" => facts["pipeline"],
           "plan" => plan_block(workspace, running, member_panes, member_questions, facts, warnings)
         }
-        row["task"] = snapshot["task"] if snapshot
+        row["task"] = snapshot ? snapshot["task"] : stored_task(workspace, warnings)
         row
+      end
+
+      # The task `start` recorded for a workspace whose daemon gave none, so a
+      # stopped or ended workspace keeps its goal. Same keys as the daemon's
+      # task plus `outcome`; `status` is "stopped" for an active task and
+      # "archived" once `finish` or `kill` ended it. nil when none was
+      # recorded or the store can't be read.
+      def stored_task(workspace, warnings)
+        record = stored_tasks(warnings)[workspace]
+        return nil unless record
+        {"id" => record["id"], "title" => record["title"], "ref" => record["ref"], "branch" => record["branch"],
+         "status" => record["outcome"] ? "archived" : "stopped", "outcome" => record["outcome"]}
+      end
+
+      def stored_tasks(warnings)
+        @stored_tasks ||= begin
+          @task_store.latest_by_workspace
+        rescue Workspace::Error, SystemCallError => e
+          warnings << {"code" => "task_store_unavailable", "message" => e.message}
+          {}
+        end
       end
 
       # The member's plan without its tasks, worked out from reads the snapshot

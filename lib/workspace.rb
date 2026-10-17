@@ -500,7 +500,7 @@ module Workspace
     doctor = Doctor.new(config: config, state: state, hook_installer: hook_installer, project_detector: project_detector, git: git, pipeline_config: pipeline_config, launch_mode: launch_mode, project_settings: project_settings, plan: plan_command, snapshot_client: agent_snapshot_client, output: output)
     snapshot_command = Commands::Snapshot.new(catalog: project_catalog, facts: project_facts, tmux: tmux, state: state, config: config,
       snapshot_client: agent_snapshot_client, sessions: sessions_command, git: git, pull_request_status: PullRequestStatus.new,
-      ask_store_for: ask_store_for, plan: plan_command, plan_state: plan_state, plan_config: plan_config,
+      ask_store_for: ask_store_for, plan: plan_command, plan_state: plan_state, plan_config: plan_config, task_store: task_store,
       output: output, error_output: error_output)
     review_command = Commands::Review.new(catalog: project_catalog, git: git, snapshot_client: agent_snapshot_client, task_store: task_store,
       ask_store_for: ask_store_for, session_ledger: session_ledger, transcript_summary: TranscriptSummary.new, pull_request_status: PullRequestStatus.new,

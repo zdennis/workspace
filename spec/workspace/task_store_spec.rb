@@ -86,6 +86,32 @@ RSpec.describe Workspace::TaskStore do
     end
   end
 
+  describe "#latest_by_workspace" do
+    it "gives the active task, else the newest archived one, per workspace" do
+      now[0] = Time.utc(2026, 10, 1)
+      store.start(workspace: "old", title: "First")
+      store.archive("old", outcome: "abandoned")
+      now[0] = Time.utc(2026, 10, 2)
+      store.start(workspace: "old", title: "Second")
+      store.archive("old", outcome: "merged")
+      store.start(workspace: "live", title: "Live")
+      store.start(workspace: "both", title: "Gone")
+      store.archive("both", outcome: "discarded")
+      store.start(workspace: "both", title: "Again")
+
+      latest = store.latest_by_workspace
+
+      expect(latest.keys).to contain_exactly("old", "live", "both")
+      expect(latest["old"]).to include("title" => "Second", "outcome" => "merged")
+      expect(latest["live"]).not_to have_key("outcome")
+      expect(latest["both"]["title"]).to eq("Again")
+    end
+
+    it "is empty for a store that does not exist" do
+      expect(described_class.new(dir: File.join(tmpdir, "none")).latest_by_workspace).to eq({})
+    end
+  end
+
   describe "#archive" do
     it "moves the task to archive/ with its outcome and removes it from the active set" do
       task = store.start(workspace: "w", title: "A")

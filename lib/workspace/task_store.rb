@@ -101,6 +101,18 @@ module Workspace
       records_in(@archive_dir).sort_by { |r| r["archived_at"].to_s }.reverse
     end
 
+    # One read of the whole store: each workspace's active task, else its
+    # newest archived one. A task carries no status, so the record says only
+    # whether it is still active (no `outcome`) or was archived with one.
+    #
+    # @return [Hash{String => Hash}] workspace name to task record
+    def latest_by_workspace
+      latest = {}
+      archived.reverse_each { |r| latest[r["workspace"]] = r }
+      active_records.each { |r| latest[r["workspace"]] = r }
+      latest
+    end
+
     private
 
     def active_records
