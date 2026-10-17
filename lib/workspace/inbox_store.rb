@@ -45,18 +45,42 @@ module Workspace
     # @return [Hash] the stored record
     def add(record)
       with_lock do |data|
-        now = now_iso
-        item = record.merge(
-          "id" => unused_id(data),
-          "state" => "open",
-          "snooze_until" => nil,
-          "created_at" => now,
-          "updated_at" => now,
-          "resolved_at" => nil,
-          "resolved_by" => nil
-        )
-        data << item
-        item
+        build_item(record, data).tap { |item| data << item }
+      end
+    end
+
+    # What {#upsert} did.
+    # @!attribute record [Hash] the item after the call
+    # @!attribute outcome [String] `created`, `updated`, `suppressed` or `reopened`
+    Upsert = Struct.new(:record, :outcome)
+
+    # Adds the record, or updates the one item already holding its
+    # `dedupe_key`, in one lock so two writers never leave two items. An open
+    # or snoozed item takes the new `title`, `body`, `source`, `links` and
+    # `expires_at` and keeps its `id`, `state` and `snooze_until` (`updated`).
+    # A done, dismissed or expired one is left alone (`suppressed`) unless
+    # +reopen+ is set, which opens it with the new fields (`reopened`).
+    #
+    # @param record [Hash] as {#add}, with a non-nil `dedupe_key`
+    # @param reopen [Boolean] reopen a resolved item instead of suppressing
+    # @return [Upsert]
+    def upsert(record, reopen: false)
+      key = record["dedupe_key"]
+      raise ArgumentError, "upsert needs a dedupe_key" if key.nil?
+      with_lock do |data|
+        now = @clock.call
+        existing = records_in(data).find { |r| r["dedupe_key"] == key }
+        next Upsert.new(build_item(record, data).tap { |item| data << item }, "created") unless existing
+        settled = settle(existing, now)
+        live = %w[open snoozed].include?(settled["state"])
+        next Upsert.new(settled, "suppressed") unless live || reopen
+        existing.replace(settled)
+        UPSERT_FIELDS.each { |field| existing[field] = record[field] }
+        existing["updated_at"] = now_iso
+        unless live
+          existing.merge!("state" => "open", "resolved_at" => nil, "resolved_by" => nil, "snooze_until" => nil)
+        end
+        Upsert.new(existing, live ? "updated" : "reopened")
       end
     end
 
@@ -107,11 +131,26 @@ module Workspace
     # @param snooze_until [String, nil] ISO 8601 time to wake at; required for `snoozed`
     # @return [Transition, nil] nil when there is no such id
     def transition(id, to:, by: nil, snooze_until: nil)
+      transition_where(to, by, snooze_until) { |r| r["id"] == id }
+    end
+
+    # {#transition} for the item holding a `dedupe_key`, found and changed under one lock.
+    # An unreadable store raises `inbox_store_unreadable` rather than reading as no match.
+    #
+    # @param key [String]
+    # @return [Transition, nil] nil when no item holds the key
+    def transition_by_key(key, to:, by: nil, snooze_until: nil)
+      transition_where(to, by, snooze_until) { |r| r["dedupe_key"] == key }
+    end
+
+    private
+
+    def transition_where(to, by, snooze_until)
       raise ArgumentError, "unknown inbox state #{to.inspect}" unless STATES.include?(to)
       raise ArgumentError, "snoozing needs snooze_until" if to == "snoozed" && snooze_until.nil?
       with_lock do |data|
         now = @clock.call
-        record = records_in(data).find { |r| r["id"] == id }
+        record = records_in(data).find { |r| yield r }
         next nil unless record
         settled = settle(record, now)
         next Transition.new(settled, false) if settled["state"] == to && (to != "snoozed" || settled["snooze_until"] == snooze_until)
@@ -121,7 +160,22 @@ module Workspace
       end
     end
 
-    private
+    # The fields an upsert refreshes on an item that already holds the key.
+    UPSERT_FIELDS = %w[title body source links expires_at].freeze
+    private_constant :UPSERT_FIELDS
+
+    def build_item(record, data)
+      now = now_iso
+      record.merge(
+        "id" => unused_id(data),
+        "state" => "open",
+        "snooze_until" => nil,
+        "created_at" => now,
+        "updated_at" => now,
+        "resolved_at" => nil,
+        "resolved_by" => nil
+      )
+    end
 
     def apply_transition(record, to, by, now, snooze_until)
       stamp = now.utc.iso8601

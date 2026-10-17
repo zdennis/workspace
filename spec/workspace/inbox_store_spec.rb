@@ -12,6 +12,102 @@ RSpec.describe Workspace::InboxStore do
 
   after { FileUtils.remove_entry(tmpdir) if File.directory?(tmpdir) }
 
+  describe "#upsert" do
+    let(:keyed) { fields.merge("dedupe_key" => "github_check:x:rspec:abc", "body" => nil, "source" => {"kind" => "cli"}, "links" => {"pr" => nil}, "expires_at" => nil) }
+
+    it "creates the item when no item holds the key" do
+      result = store.upsert(keyed)
+
+      expect(result.outcome).to eq("created")
+      expect(result.record).to include("dedupe_key" => "github_check:x:rspec:abc", "state" => "open")
+      expect(store.list).to eq([result.record])
+    end
+
+    it "updates the fields of an open item and keeps its id, state and creation time" do
+      first = store.upsert(keyed).record
+      later = Time.utc(2026, 10, 16, 13, 0, 0)
+      clock = -> { later }
+      store2 = described_class.new(path: path, scope: "workspace:api", clock: clock, error_output: err)
+
+      result = store2.upsert(keyed.merge("title" => "Newer", "body" => "more", "expires_at" => "2026-10-17T00:00:00Z"))
+
+      expect(result.outcome).to eq("updated")
+      expect(result.record).to include("id" => first["id"], "state" => "open", "title" => "Newer", "body" => "more",
+        "expires_at" => "2026-10-17T00:00:00Z", "created_at" => "2026-10-16T12:00:00Z", "updated_at" => "2026-10-16T13:00:00Z")
+      expect(store2.list.size).to eq(1)
+    end
+
+    it "keeps a snoozed item snoozed" do
+      id = store.upsert(keyed).record["id"]
+      store.transition(id, to: "snoozed", snooze_until: "2026-10-17T00:00:00Z")
+
+      result = store.upsert(keyed.merge("title" => "Newer"))
+
+      expect(result.outcome).to eq("updated")
+      expect(result.record).to include("state" => "snoozed", "snooze_until" => "2026-10-17T00:00:00Z", "title" => "Newer")
+    end
+
+    it "leaves a resolved item alone as suppressed" do
+      id = store.upsert(keyed).record["id"]
+      store.transition(id, to: "dismissed", by: {"kind" => "user"})
+
+      result = store.upsert(keyed.merge("title" => "Newer"))
+
+      expect(result.outcome).to eq("suppressed")
+      expect(result.record).to include("state" => "dismissed", "title" => "Check the deploy")
+      expect(store.list.size).to eq(1)
+      expect(store.find(id)).to include("state" => "dismissed", "title" => "Check the deploy")
+    end
+
+    it "reopens a resolved item with the new fields when asked" do
+      id = store.upsert(keyed).record["id"]
+      store.transition(id, to: "done", by: {"kind" => "user"})
+
+      result = store.upsert(keyed.merge("title" => "Newer"), reopen: true)
+
+      expect(result.outcome).to eq("reopened")
+      expect(result.record).to include("id" => id, "state" => "open", "title" => "Newer", "resolved_at" => nil, "resolved_by" => nil)
+    end
+
+    it "treats an expired item as resolved" do
+      store.upsert(keyed.merge("expires_at" => "2026-10-16T11:00:00Z"))
+
+      expect(store.upsert(keyed).outcome).to eq("suppressed")
+      expect(store.upsert(keyed, reopen: true)).to have_attributes(outcome: "reopened", record: a_hash_including("state" => "open", "expires_at" => nil))
+    end
+
+    it "does not match items with other keys, or without one" do
+      store.add(fields)
+      store.upsert(keyed)
+
+      expect(store.upsert(keyed.merge("dedupe_key" => "other")).outcome).to eq("created")
+      expect(store.list.size).to eq(3)
+    end
+
+    it "refuses a record without a key" do
+      expect { store.upsert(fields) }.to raise_error(ArgumentError)
+    end
+  end
+
+  describe "#transition_by_key" do
+    it "moves the item holding the key, in one lock, or returns nil" do
+      id = store.upsert(fields.merge("dedupe_key" => "k")).record["id"]
+
+      moved = store.transition_by_key("k", to: "done", by: {"kind" => "cli"})
+
+      expect(moved).to have_attributes(changed: true, record: a_hash_including("id" => id, "state" => "done"))
+      expect(store.transition_by_key("k", to: "done").changed).to be(false)
+      expect(store.transition_by_key("nope", to: "done")).to be_nil
+    end
+
+    it "raises on an unreadable store instead of reading no match" do
+      FileUtils.mkdir_p(File.dirname(path))
+      File.write(path, "not json")
+
+      expect { store.transition_by_key("k", to: "done") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("inbox_store_unreadable") }
+    end
+  end
+
   describe "#add" do
     it "stores an open item with a 10 hex id and the clock's timestamps" do
       item = store.add(fields)

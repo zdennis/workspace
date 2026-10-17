@@ -1873,6 +1873,30 @@ RSpec.describe Workspace::CLI do
         "--link-plan-task", "T1", "--link-run", "run1"])
     end
 
+    it "passes --dedupe-key and --reopen to add" do
+      expect(inbox_command).to receive(:add).with(
+        title: "T", target: {global: true}, working_dir: anything, type: "todo", source: {}, links: {},
+        dedupe_key: "ci:1", reopen: true
+      ).and_return({exit_code: 0, results: []})
+
+      cli.run(["inbox", "add", "T", "--global", "--dedupe-key", "ci:1", "--reopen"])
+    end
+
+    it "passes done and dismiss a --dedupe-key with no ids, and plain ids without one" do
+      expect(inbox_command).to receive(:done).with([], target: {global: true}, working_dir: anything, dedupe_key: "ci:1")
+        .and_return({exit_code: 0, results: []})
+      expect(inbox_command).to receive(:dismiss).with(["abc"], target: {}, working_dir: anything)
+        .and_return({exit_code: 0, results: []})
+
+      cli.run(["inbox", "done", "--dedupe-key=ci:1", "--global"])
+      cli.run(["inbox", "dismiss", "abc"])
+    end
+
+    it "refuses reopen --dedupe-key and done with neither ids nor a key" do
+      expect { cli.run(["inbox", "reopen", "--dedupe-key", "k"]) }.to raise_error(FakeSystemExit)
+      expect { cli.run(["inbox", "done"]) }.to raise_error(FakeSystemExit)
+    end
+
     it "passes --from-json to add_from_json" do
       expect(inbox_command).to receive(:add_from_json).with("-", working_dir: anything).and_return({exit_code: 0, results: []})
 

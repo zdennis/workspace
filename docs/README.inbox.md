@@ -6,13 +6,15 @@ A durable list of things that need a person. Agents, scripts and outside tools p
 
 ```sh
 workspace inbox add TITLE [--type TYPE] [--body TEXT | --body-file PATH|-] [--source-kind K] [--source-ref R] [--source-url URL]
-                          [--expires DURATION|ISO] [--link-pane P] [--link-plan-task T] [--link-pr N] [--link-run R]
+                          [--dedupe-key KEY [--reopen]] [--expires DURATION|ISO] [--link-pane P] [--link-plan-task T] [--link-pr N] [--link-run R]
                           [--as-user] [scope] [--json]
 workspace inbox add --from-json PATH|- [--json]
 workspace inbox list [--state S[,S]] [--type TYPE] [--all] [scope] [--json]
 workspace inbox show ID [scope] [--json]
 workspace inbox done ID... [scope] [--json]
+workspace inbox done --dedupe-key KEY [scope] [--json]
 workspace inbox dismiss ID... [scope] [--json]
+workspace inbox dismiss --dedupe-key KEY [scope] [--json]
 workspace inbox reopen ID... [scope] [--json]
 ```
 
@@ -27,6 +29,8 @@ workspace inbox list --all --state open,snoozed
 workspace inbox show a1b2c3d4e5
 workspace inbox done a1b2c3d4e5 f6a7b8c9d0
 workspace inbox dismiss a1b2c3d4e5 --json
+workspace inbox add "CI failed" --type alert --dedupe-key github_check:zdennis/api:rspec:9f3c2e1 --global
+workspace inbox done --dedupe-key github_check:zdennis/api:rspec:9f3c2e1 --global
 workspace inbox reopen a1b2c3d4e5
 ```
 
@@ -46,9 +50,24 @@ echo '{"title":"CI failed","type":"alert","source":{"kind":"github_check","ref":
 | `source` | Object with `kind`, `ref`, `url` |
 | `links` | Object with `pane`, `plan_task`, `run_id` (strings) and `pr` (a positive integer) |
 | `scope` | `{"kind": "global"}`, or `{"kind": "workspace" or "project", "name": "..."}`; left out, the workspace of the current directory |
-| `dedupe_key` | Only `null` for now; a key is refused until deduplication arrives |
+| `dedupe_key` | A string or `null`; a string makes the add an upsert (see Dedupe). `--reopen` has no key here: to reopen a resolved item by key, use the flag form |
 
 Any other key, a value of the wrong type, a non-object, invalid JSON or UTF-8, or input over 64 KB is `invalid_inbox_item` (`details.field` names the key, such as `state` or `source.host`; `json` for the document itself). Every field then passes the checks in the table below, and nothing is written when one fails.
+
+## Dedupe
+
+`add --dedupe-key KEY` (or `dedupe_key` in `--from-json`) adds an item once per key and scope, so a poster that repeats itself never duplicates. A key is 1 to 200 characters of `A-Z a-z 0-9 . _ : / # @ -`; anything else is `invalid_inbox_item` with `details.field` `dedupe_key`. The outcome says what happened:
+
+| Outcome | When | What changes |
+|---|---|---|
+| `created` | No item in the scope holds the key | A new open item |
+| `updated` | An open or snoozed item holds it | `title`, `body`, `source`, `links`, `expires_at` and `updated_at` (a field the repeat leaves out is cleared; every repeat stamps `updated_at` and writes `inbox_changed`; `type` is not changed); `id`, `state` and `snooze_until` stay |
+| `suppressed` | A done, dismissed or expired item holds it | Nothing: a person who dismissed an alert is not nagged. The row carries the existing item |
+| `reopened` | As `suppressed`, with `--reopen` | The item opens with the new fields |
+
+The check and the write happen under one lock, so two processes upserting one key leave one item. A CI failure should key on the check and the head SHA (`github_check:<repo>:<check>:<sha>`): a new push that fails again is a new key. `--reopen` without `--dedupe-key` is a `usage` error.
+
+`done --dedupe-key KEY` and `dismiss --dedupe-key KEY` resolve the item holding the key, which is how a poster clears its own alert. They take no ids. Unlike `done ID`, which searches every scope, the scope is the one `add` uses (a scope flag, else the workspace of the current directory, else `not_in_workspace`). The single row has `dedupe_key` and the item's `id`; with no match it is `unchanged` (`id` and `item` are `null`) and the exit code is 0, so a retry is safe.
 
 ## Scope
 
@@ -83,7 +102,7 @@ Text with NUL or another control character (an escape sequence, a C1 control, a 
 
 `done`, `dismiss` and `reopen` take one or more ids and print an action document (`inbox done`, `inbox dismiss`, `inbox reopen`) with one row per id: `id`, `outcome`, `scope` (a label) and the `item`. Outcomes are `resolved` (done and dismiss), `reopened`, `unchanged` (already in that state, so a retry is safe; nothing is rewritten) and `failed`, whose row carries `code` (`unknown_inbox_item`, `ambiguous_inbox_item`), `error` and `details`. The action `status` is `ok`, `partial` (exit 3) or `failed` (exit 1); rows are processed in order and each one that can be resolved is. `done` or `dismiss` stamps `resolved_at` and `resolved_by` (`kind` `cli`, or `agent` when the session ledger shows an agent session open in `$TMUX_PANE`, plus `pane`); `reopen` clears both and any snooze.
 
-Each `created`, `resolved` or `reopened` outcome writes one `inbox_changed` event with ids and states only (see [`event-log`](README.event-log.md#state-and-lifecycle-events)); `unchanged` and `failed` rows write none, and an event log that cannot be written does not fail the command.
+Each `created`, `updated`, `resolved` or `reopened` outcome writes one `inbox_changed` event with ids and states only (see [`event-log`](README.event-log.md#state-and-lifecycle-events)); `unchanged`, `suppressed` and `failed` rows write none, and an event log that cannot be written does not fail the command.
 
 Errors use the [`--json` error envelope](README.json.md): `invalid_inbox_item`, `unknown_inbox_item`, `ambiguous_inbox_item`, `inbox_store_unreadable`, `not_in_workspace`, `unknown_workspace`, `usage`.
 

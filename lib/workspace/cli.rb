@@ -1804,6 +1804,7 @@ module Workspace
       <<~HELP
         Usage: workspace inbox add TITLE [options] [scope]
                workspace inbox add --from-json PATH|- [--json]
+               workspace inbox done|dismiss --dedupe-key KEY [scope] [--json]
                workspace inbox list [--state S[,S]] [--type T] [--all] [scope] [--json]
                workspace inbox show ID [scope] [--json]
                workspace inbox done|dismiss|reopen ID... [scope] [--json]
@@ -1834,6 +1835,9 @@ module Workspace
           --source-kind KIND     jira, github_pr, github_check, session, agent, cli or user
           --source-ref REF       Free text up to 200 characters
           --source-url URL       An https:// URL
+          --dedupe-key KEY       Add once: an open or snoozed item with this key in the scope is
+                                 updated, a resolved one is left alone (A-Z a-z 0-9 . _ : / # @ -, 200 at most)
+          --reopen               With --dedupe-key, reopen a resolved item instead of leaving it
           --expires DURATION|ISO After this time the item counts as dismissed and leaves the
                                  default list (2h, 2026-10-20T09:00:00Z)
           --link-pane PANE       A tmux pane the item is about
@@ -1842,8 +1846,10 @@ module Workspace
           --link-run ID          A workflow run id
           --as-user              Record the item as made by a person
           --from-json PATH|-     Take the whole item from one JSON object (64 KB at most) with the keys
-                                 type, title, body, source, expires_at, links and scope; use it
+                                 type, title, body, source, dedupe_key, expires_at, links and scope; use it
                                  alone (only --json goes with it)
+        Options (done, dismiss):
+          --dedupe-key KEY       Resolve the item holding KEY in the scope (no ids); none is unchanged
         Options (list):
           --state S[,S]          open (default), snoozed, done, dismissed
           --type TYPE            Only this type
@@ -1861,6 +1867,8 @@ module Workspace
           workspace inbox show a1b2c3d4e5
           workspace inbox done a1b2c3d4e5 f6a7b8c9d0
           workspace inbox dismiss a1b2c3d4e5 --json
+          workspace inbox add "CI failed" --type alert --dedupe-key github_check:org/api:rspec:9f3c2e1 --global
+          workspace inbox done --dedupe-key github_check:org/api:rspec:9f3c2e1 --global
       HELP
     end
 
@@ -1889,6 +1897,8 @@ module Workspace
         opts.on("--source-ref REF", "A reference in that source") { |v| options[:source][:ref] = v }
         opts.on("--source-url URL", "An https:// URL") { |v| options[:source][:url] = v }
         opts.on("--expires WHEN", "A duration (2h) or an ISO 8601 time") { |v| options[:expires] = v }
+        opts.on("--dedupe-key KEY", "Add once per key: update the open item with it, leave a resolved one") { |v| options[:dedupe_key] = v }
+        opts.on("--reopen", "With --dedupe-key, reopen a resolved item") { options[:reopen] = true }
         opts.on("--link-pane PANE", "A pane the item concerns") { |v| options[:links][:pane] = v }
         opts.on("--link-plan-task ID", "A plan task id") { |v| options[:links][:plan_task] = v }
         opts.on("--link-pr N", Integer, "A pull request number") { |v| options[:links][:pr] = v }
@@ -1961,17 +1971,20 @@ module Workspace
     def cmd_inbox_resolve(args, verb, method)
       target = {}
       json = false
+      dedupe_key = nil
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: workspace inbox #{verb} ID... [--json]"
         inbox_scope_options(opts, target)
+        opts.on("--dedupe-key KEY", "Resolve the item holding KEY in the scope instead of ids") { |v| dedupe_key = v } unless method == :reopen
         opts.on("--json", "Print one action document (see docs/README.json.md) instead of text, which goes to stderr") { json = true }
       end
       parser.parse!(args)
-      raise UsageError, "inbox #{verb} needs at least one id.\n\n#{parser.help}" if args.empty?
+      raise UsageError, "inbox #{verb} needs at least one id.\n\n#{parser.help}" if args.empty? && dedupe_key.nil?
       raise Error, "inbox is not available: no inbox command was wired" unless @inbox_command
 
+      extra = dedupe_key ? {dedupe_key: dedupe_key} : {}
       run_action("inbox #{verb}", json: json) do
-        @inbox_command.public_send(method, args.dup, target: target, working_dir: inbox_working_dir(target))
+        @inbox_command.public_send(method, args.dup, target: target, working_dir: inbox_working_dir(target), **extra)
       end
     end
 

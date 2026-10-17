@@ -395,8 +395,19 @@ RSpec.describe Workspace::Commands::Inbox do
       expect(refused({"title" => "x", "scope" => []})).to eq("scope")
     end
 
-    it "refuses a dedupe key until the upsert exists, and accepts null" do
-      expect(refused({"title" => "x", "dedupe_key" => "k"})).to eq("dedupe_key")
+    it "upserts on a dedupe_key and accepts null" do
+      post({"title" => "x", "dedupe_key" => nil, "scope" => {"kind" => "global"}})
+      first = post({"title" => "CI", "dedupe_key" => "ci:1", "scope" => {"kind" => "global"}})
+      second = post({"title" => "CI again", "dedupe_key" => "ci:1", "scope" => {"kind" => "global"}})
+
+      expect(first[:results].first["outcome"]).to eq("created")
+      expect(second[:results].first).to include("outcome" => "updated", "id" => first[:results].first["id"])
+      expect(stored(config.inbox_path("global")).map { |i| i["title"] }).to eq(["x", "CI again"])
+    end
+
+    it "refuses a bad dedupe_key" do
+      expect(refused({"title" => "x", "dedupe_key" => "has space"})).to eq("dedupe_key")
+      expect(refused({"title" => "x", "dedupe_key" => 5})).to eq("dedupe_key")
     end
 
     it "writes nothing when a field is refused" do
@@ -410,6 +421,125 @@ RSpec.describe Workspace::Commands::Inbox do
       input.string = JSON.generate({"title" => "x"})
 
       expect { command.add_from_json("-", working_dir: "/tmp") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("not_in_workspace") }
+    end
+  end
+
+  describe "#add with a dedupe key" do
+    let(:key) { "github_check:zdennis/api:rspec:9f3c2e1" }
+
+    def put(**opts)
+      command.add(title: "CI failed", type: "alert", working_dir: "/app", dedupe_key: key, **opts)[:results].first
+    end
+
+    def rows
+      stored(config.inbox_path("workspace", "api.fix"))
+    end
+
+    it "creates once, then updates the same item" do
+      first = put
+      second = put(body: "3 failures")
+
+      expect(first["outcome"]).to eq("created")
+      expect(second).to include("outcome" => "updated", "id" => first["id"])
+      expect(rows.size).to eq(1)
+      expect(rows.first).to include("body" => "3 failures", "dedupe_key" => key)
+      expect(output.string).to include("Updated inbox item #{first["id"]}")
+    end
+
+    it "does not nag after a dismissal and reopens only with --reopen" do
+      id = put["id"]
+      command.dismiss([id], working_dir: "/app")
+
+      suppressed = put
+      expect(suppressed).to include("outcome" => "suppressed", "id" => id)
+      expect(suppressed["item"]["state"]).to eq("dismissed")
+      expect(output.string).to include("pass --reopen")
+
+      reopened = put(reopen: true)
+      expect(reopened).to include("outcome" => "reopened", "id" => id)
+      expect(rows.first["state"]).to eq("open")
+    end
+
+    it "keys per scope, so the same key in another scope is a new item" do
+      put
+      other = put(target: {global: true})
+
+      expect(other["outcome"]).to eq("created")
+    end
+
+    it "refuses --reopen without a key, and a malformed key, writing nothing" do
+      expect { command.add(title: "x", working_dir: "/app", reopen: true) }.to raise_error(Workspace::UsageError, /--dedupe-key/)
+      expect(refused_field { put(dedupe_key: "a b") }).to eq("dedupe_key")
+      expect(refused_field { command.add(title: "x", working_dir: "/app", dedupe_key: "a" * 201) }).to eq("dedupe_key")
+      expect(refused_field { command.add(title: "x", working_dir: "/app", dedupe_key: "") }).to eq("dedupe_key")
+      expect(File.exist?(config.inbox_path("workspace", "api.fix"))).to be(false)
+    end
+
+    it "accepts every character the key allows" do
+      expect(put(dedupe_key: "A-z_0.9:/#@")["outcome"]).to eq("created")
+    end
+  end
+
+  describe "#done and #dismiss with a dedupe key" do
+    let(:key) { "ci:1" }
+
+    def add_keyed
+      command.add(title: "CI", working_dir: "/app", dedupe_key: key)[:results].first
+    end
+
+    before { output.truncate(0) && output.rewind }
+
+    it "resolves the item holding the key in the workspace scope" do
+      id = add_keyed["id"]
+
+      result = command.done([], working_dir: "/app", dedupe_key: key)
+
+      expect(result[:exit_code]).to eq(0)
+      expect(result[:results]).to contain_exactly(a_hash_including("id" => id, "dedupe_key" => key, "outcome" => "resolved"))
+      expect(stored(config.inbox_path("workspace", "api.fix")).first).to include("state" => "done")
+    end
+
+    it "dismisses by key in an explicit scope" do
+      command.add(title: "CI", target: {global: true}, working_dir: "/app", dedupe_key: key)
+
+      result = command.dismiss([], target: {global: true}, working_dir: "/app", dedupe_key: key)
+
+      expect(result[:results].first).to include("outcome" => "resolved", "scope" => "global")
+      expect(stored(config.inbox_path("global")).first).to include("state" => "dismissed", "resolved_by" => a_hash_including("kind" => "cli"))
+    end
+
+    it "reports unchanged with exit 0 when nothing holds the key, and when it is already resolved" do
+      none = command.done([], working_dir: "/app", dedupe_key: key)
+      expect(none[:exit_code]).to eq(0)
+      expect(none[:results]).to eq([{"id" => nil, "dedupe_key" => key, "outcome" => "unchanged", "scope" => "workspace:api.fix", "item" => nil}])
+
+      add_keyed
+      command.done([], working_dir: "/app", dedupe_key: key)
+      again = command.done([], working_dir: "/app", dedupe_key: key)
+      expect(again[:results].first).to include("outcome" => "unchanged")
+    end
+
+    it "fails the row for an unreadable scope file without overwriting it" do
+      path = config.inbox_path("workspace", "api.fix")
+      FileUtils.mkdir_p(File.dirname(path))
+      File.write(path, "not json")
+
+      result = command.done([], working_dir: "/app", dedupe_key: key)
+
+      expect(result[:exit_code]).to eq(1)
+      expect(result[:results]).to contain_exactly(a_hash_including("outcome" => "failed", "code" => "inbox_store_unreadable", "dedupe_key" => key))
+      expect(File.read(path)).to eq("not json")
+    end
+
+    it "refuses ids together with a key, and a malformed key" do
+      expect { command.done(["abc"], working_dir: "/app", dedupe_key: key) }.to raise_error(Workspace::UsageError, /not both/)
+      expect(refused_field { command.done([], working_dir: "/app", dedupe_key: "a b") }).to eq("dedupe_key")
+    end
+
+    it "raises not_in_workspace outside a workspace with no scope" do
+      allow(project_detector).to receive(:detect).and_return(nil)
+
+      expect { command.done([], working_dir: "/x", dedupe_key: key) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("not_in_workspace") }
     end
   end
 
@@ -797,7 +927,28 @@ RSpec.describe Workspace::Commands::Inbox do
         "data" => {"id" => item["id"], "scope" => "global", "scope_key" => nil, "state" => "open", "change" => "created"}})
     end
 
-    it "writes resolved for done and dismiss, and reopened for reopen, each with the new state" do
+    it "writes updated and reopened for upserts, and nothing for suppressed" do
+      id = command.add(title: "CI", working_dir: "/app", dedupe_key: "ci:1")[:results].first["id"]
+      command.add(title: "CI 2", working_dir: "/app", dedupe_key: "ci:1")
+      command.dismiss([id], working_dir: "/app")
+      command.add(title: "CI 3", working_dir: "/app", dedupe_key: "ci:1")
+      command.add(title: "CI 4", working_dir: "/app", dedupe_key: "ci:1", reopen: true)
+
+      expect(event_log.events.map { |e| [e["data"]["change"], e["data"]["state"]] }).to eq(
+        [%w[created open], %w[updated open], %w[resolved dismissed], %w[reopened open]]
+      )
+    end
+
+    it "writes resolved for a done by dedupe key, and nothing when no item holds it" do
+      command.add(title: "CI", working_dir: "/app", dedupe_key: "ci:1")
+      command.done([], working_dir: "/app", dedupe_key: "ci:1")
+      command.done([], working_dir: "/app", dedupe_key: "none")
+
+      expect(event_log.events.map { |e| e["data"]["change"] }).to eq(%w[created resolved])
+    end
+
+    it "writes resolved for done and dismiss,
+ and reopened for reopen, each with the new state" do
       a = add_item("a")
       b = add_item("b")
       event_log.events.clear

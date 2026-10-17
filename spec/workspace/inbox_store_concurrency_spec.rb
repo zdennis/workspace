@@ -29,6 +29,22 @@ RSpec.describe "workspace inbox store concurrency" do
     expect(items.map { |i| i["title"] }.uniq.size).to eq(100)
   end
 
+  it "leaves one item when two processes each upsert one key 25 times" do
+    lib = File.expand_path("../../lib", __dir__)
+    script = <<~RUBY
+      require "workspace"
+      store = Workspace::InboxStore.new(path: ARGV[0])
+      25.times { |i| store.upsert({"dedupe_key" => "ci:1", "title" => "run \#{ARGV[1]}-\#{i}"}) }
+    RUBY
+
+    pids = %w[a b].map do |tag|
+      Process.spawn(RbConfig.ruby, "-I", lib, "-e", script, path, tag, out: File::NULL, err: File::NULL)
+    end
+    Timeout.timeout(60) { pids.each { |pid| Process.wait(pid) } }
+
+    expect(Workspace::InboxStore.new(path: path).list.map { |i| i["dedupe_key"] }).to eq(["ci:1"])
+  end
+
   it "keeps every record when a reader and a writer overlap" do
     store = Workspace::InboxStore.new(path: path)
     10.times { |i| store.add("title" => "seed #{i}") }

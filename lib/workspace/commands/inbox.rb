@@ -28,6 +28,8 @@ module Workspace
       REF_MAX = 200
       URL_MAX = 2048
       LINK_MAX = 64
+      DEDUPE_MAX = 200
+      DEDUPE_KEY = /\A[A-Za-z0-9._:\/#@-]+\z/
       # Bytes read from `--body-file`.
       INPUT_MAX = 64 * 1024
 
@@ -67,24 +69,30 @@ module Workspace
         @error_output = error_output
       end
 
-      # Creates an item. The text is checked first; nothing is written when any field is refused.
+      # Creates an item, or with +dedupe_key+ adds it once: an item already holding the key in the
+      # scope is updated, left alone when resolved, or reopened. The text is checked first; nothing
+      # is written when any field is refused.
       #
       # @param title [String] one line, 1 to 200 characters
       # @param type [String] one of {TYPES}
       # @param body [String, nil] up to 8192 characters
       # @param body_file [String, nil] a path, or `-` for stdin, read instead of +body+ (64 KB cap)
       # @param source [Hash] `:kind`, `:ref`, `:url` (https only)
+      # @param dedupe_key [String, nil] up to 200 characters of `A-Za-z0-9._:/#@-`; makes the add an upsert
+      # @param reopen [Boolean] with +dedupe_key+, reopen a resolved item instead of leaving it
       # @param expires [String, nil] a duration (`2h`) or an ISO 8601 time in the future
       # @param expires_field [String] the field name an expiry error reports (`expires_at` for JSON input)
       # @param links [Hash] `:pane`, `:plan_task`, `:pr`, `:run_id`
       # @param as_user [Boolean] record the item as made by a person, not a script or agent
       # @param target [Hash] `:name`, `:project`, `:global`; none means the workspace of +working_dir+
       # @param working_dir [String] directory to detect the workspace from
-      # @return [Hash] `{exit_code:, results:}` for the action document
+      # @return [Hash] `{exit_code:, results:}` for the action document; outcome `created`, `updated`,
+      #   `suppressed` or `reopened`
       # @raise [Workspace::Error] `invalid_inbox_item`, `not_in_workspace`, `inbox_store_unreadable`
-      def add(title:, type: "todo", body: nil, body_file: nil, source: {}, expires: nil, links: {},
-        as_user: false, target: {}, working_dir: Dir.pwd, expires_field: "expires")
+      def add(title:, type: "todo", body: nil, body_file: nil, source: {}, expires: nil, links: {}, dedupe_key: nil,
+        reopen: false, as_user: false, target: {}, working_dir: Dir.pwd, expires_field: "expires")
         raise UsageError, "Pass --body or --body-file, not both." if body && body_file
+        raise UsageError, "--reopen needs --dedupe-key." if reopen && dedupe_key.nil?
         scope = scope_for_write(target, working_dir)
         created_by = created_by(as_user)
         record = {
@@ -93,15 +101,23 @@ module Workspace
           "title" => checked_title(title),
           "body" => checked_body(body_file ? read_input(body_file, "body") : body),
           "source" => checked_source(source, created_by["kind"]),
-          "dedupe_key" => nil,
+          "dedupe_key" => checked_dedupe_key(dedupe_key),
           "created_by" => created_by,
           "links" => checked_links(links),
           "expires_at" => checked_expiry(expires, expires_field)
         }
-        item = store_for(scope).add(record)
-        record_change(item, "created")
-        @output.puts "Added inbox item #{item["id"]} to #{scope.label}: #{escape(item["title"])}"
-        {exit_code: 0, results: [{"id" => item["id"], "outcome" => "created", "scope" => scope.label, "item" => item}]}
+        store = store_for(scope)
+        if dedupe_key
+          upserted = store.upsert(record, reopen: reopen)
+          item = upserted.record
+          outcome = upserted.outcome
+        else
+          item = store.add(record)
+          outcome = "created"
+        end
+        record_change(item, outcome) unless outcome == "suppressed"
+        @output.puts add_message(outcome, item, scope)
+        {exit_code: 0, results: [{"id" => item["id"], "outcome" => outcome, "scope" => scope.label, "item" => item}]}
       end
 
       # Creates an item from one JSON object holding only the item's writable
@@ -118,6 +134,7 @@ module Workspace
         title = data.fetch("title") { raise invalid("title", "is required") }
         add(title: string_field("title", title),
           type: data.key?("type") ? string_field("type", data["type"]) : "todo",
+          dedupe_key: string_field("dedupe_key", data["dedupe_key"]),
           body: string_field("body", data["body"]),
           source: json_source(data["source"]),
           expires: string_field("expires_at", data["expires_at"]),
@@ -188,18 +205,20 @@ module Workspace
       # @param ids [Array<String>]
       # @param target [Hash] `:name`, `:project`, `:global`; none searches every scope
       # @param working_dir [String]
+      # @param dedupe_key [String, nil] resolve the item holding this key in the target scope (the
+      #   workspace of +working_dir+ when none is given) instead of +ids+; no match is `unchanged`
       # @return [Hash] `{exit_code:, results:}`; one row per id, outcome `resolved`,
       #   `unchanged` or `failed` (with `code` and `error`); exit 0, 3 when some failed, 1 when all did
-      def done(ids, target: {}, working_dir: Dir.pwd)
-        change(ids, "done", target, working_dir)
+      def done(ids, target: {}, working_dir: Dir.pwd, dedupe_key: nil)
+        change(ids, "done", target, working_dir, dedupe_key)
       end
 
       # Like {#done}, for items nobody will act on.
       #
       # @param (see #done)
       # @return [Hash] as {#done}
-      def dismiss(ids, target: {}, working_dir: Dir.pwd)
-        change(ids, "dismissed", target, working_dir)
+      def dismiss(ids, target: {}, working_dir: Dir.pwd, dedupe_key: nil)
+        change(ids, "dismissed", target, working_dir, dedupe_key)
       end
 
       # Moves done, dismissed or snoozed items back to open. Open items are `unchanged`.
@@ -214,9 +233,14 @@ module Workspace
 
       private
 
-      def change(ids, to, target, working_dir)
-        scopes = lookup_scopes(target, working_dir)
+      def change(ids, to, target, working_dir, dedupe_key = nil)
         by = to.start_with?("d") ? resolver : nil
+        if dedupe_key
+          raise UsageError, "Pass ids or --dedupe-key, not both." if ids.any?
+          results = [change_by_key(dedupe_key, to, by, scope_for_write(target, working_dir))]
+          return {exit_code: (results.first["outcome"] == "failed") ? 1 : 0, results: results}
+        end
+        scopes = lookup_scopes(target, working_dir)
         results = ids.map { |id| change_one(id, to, by, scopes) }
         failed = results.count { |row| row["outcome"] == "failed" }
         exit_code = if failed.zero? then 0
@@ -227,11 +251,37 @@ module Workspace
         {exit_code: exit_code, results: results}
       end
 
+      def change_by_key(key, to, by, scope)
+        transition = store_for(scope).transition_by_key(checked_dedupe_key(key), to: to, by: by)
+        unless transition
+          @output.puts "No item with dedupe key #{escape(key)} in #{scope.label}"
+          return {"id" => nil, "dedupe_key" => key, "outcome" => "unchanged", "scope" => scope.label, "item" => nil}
+        end
+        change_row(transition, to, scope).merge("dedupe_key" => key)
+      rescue Workspace::Error => e
+        raise unless e.code == "inbox_store_unreadable"
+        @error_output.puts e.message
+        {"id" => nil, "dedupe_key" => key, "outcome" => "failed", "code" => e.code, "error" => e.message, "details" => e.details}
+      end
+
       def change_one(id, to, by, scopes)
         scope, found = locate(id, scopes, @error_output)
-        transition = store_for(scope).transition(found["id"], to: to, by: by)
+        apply_change(found["id"], to, by, scope)
+      rescue Workspace::Error => e
+        raise unless %w[unknown_inbox_item ambiguous_inbox_item inbox_store_unreadable].include?(e.code)
+        @error_output.puts e.message
+        {"id" => id, "outcome" => "failed", "code" => e.code, "error" => e.message, "details" => e.details}
+      end
+
+      def apply_change(id, to, by, scope)
+        transition = store_for(scope).transition(id, to: to, by: by)
         raise unknown_item(id) unless transition
+        change_row(transition, to, scope)
+      end
+
+      def change_row(transition, to, scope)
         item = transition.record
+        id = item["id"]
         outcome = if !transition.changed then "unchanged"
         elsif to == "open" then "reopened"
         else
@@ -241,10 +291,24 @@ module Workspace
         say = (outcome == "unchanged") ? "#{escape(id)} is already #{item["state"]}" : "#{escape(id)} #{outcome}"
         @output.puts "#{say} (#{scope.label}): #{escape(item["title"])}"
         {"id" => item["id"], "outcome" => outcome, "scope" => scope.label, "item" => item}
-      rescue Workspace::Error => e
-        raise unless %w[unknown_inbox_item ambiguous_inbox_item inbox_store_unreadable].include?(e.code)
-        @error_output.puts e.message
-        {"id" => id, "outcome" => "failed", "code" => e.code, "error" => e.message, "details" => e.details}
+      end
+
+      def add_message(outcome, item, scope)
+        title = escape(item["title"])
+        case outcome
+        when "created" then "Added inbox item #{item["id"]} to #{scope.label}: #{title}"
+        when "updated" then "Updated inbox item #{item["id"]} in #{scope.label}: #{title}"
+        when "reopened" then "Reopened inbox item #{item["id"]} in #{scope.label}: #{title}"
+        else "Left inbox item #{item["id"]} in #{scope.label} as it is (#{item["state"]}); pass --reopen to reopen it"
+        end
+      end
+
+      def checked_dedupe_key(key)
+        return nil if key.nil?
+        unless key.is_a?(String) && key.length <= DEDUPE_MAX && key.match?(DEDUPE_KEY)
+          raise invalid("dedupe_key", "must be 1 to #{DEDUPE_MAX} characters of A-Z a-z 0-9 . _ : / # @ -")
+        end
+        key
       end
 
       # Writes `inbox_changed`: the workspace or project name for those scopes, "" for global.
@@ -395,8 +459,6 @@ module Workspace
         raise invalid("json", "must be one object") unless data.is_a?(Hash)
         unknown = data.keys - JSON_KEYS
         raise invalid(unknown.first.to_s, "is not a writable key (use #{JSON_KEYS.join(", ")})") if unknown.any?
-        # Dedupe arrives with the upsert (INB7); storing a key that does not dedupe would mislead a poster.
-        raise invalid("dedupe_key", "is not supported yet") unless data["dedupe_key"].nil?
         data
       end
 
