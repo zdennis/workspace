@@ -1468,4 +1468,292 @@ RSpec.describe Workspace::Commands::Inbox do
       expect(event_log.events).to be_empty
     end
   end
+
+  describe "derived ids: #ack, #snooze and #list" do
+    let(:event_log) { CLITestHelpers::FakeEventLog.new }
+    let(:fingerprint) { {"pane" => "2026-10-16T11:50:00Z"} }
+    let(:derived_calls) { [] }
+    let(:warnings) { [] }
+    # Mirrors InboxDerived#rows: rows in the derived shape, `fingerprint` read at the time of the call.
+    let(:derived) do
+      calls = derived_calls
+      prints = fingerprint
+      noted = warnings
+      Class.new do
+        define_method(:rows) do |workspaces:, projects:|
+          calls << [workspaces, projects]
+          scope = {"kind" => "workspace", "key" => "api.fix", "name" => "api.fix"}
+          links = {"pane" => nil, "plan_task" => nil, "pr" => nil, "run_id" => nil}
+          {rows: [
+            {"id" => "pane:waiting:api.fix:%5", "derived" => true, "kind" => "pane_waiting", "fingerprint" => prints["pane"], "type" => "alert",
+             "state" => "open", "scope" => scope, "title" => "An agent is waiting in api.fix (%5)", "body" => "Allow Bash?", "links" => links,
+             "created_at" => prints["pane"], "updated_at" => prints["pane"]},
+            {"id" => "ask:api.fix:q1", "derived" => true, "kind" => "ask", "fingerprint" => "2026-10-16T11:00:00Z", "type" => "alert",
+             "state" => "open", "scope" => scope, "title" => "Which db?", "body" => "Which db?", "links" => links,
+             "created_at" => "2026-10-16T11:00:00Z", "updated_at" => "2026-10-16T11:00:00Z"},
+            {"id" => "lock:stale:abc123abc123:devenv", "derived" => true, "kind" => "lock_stale", "fingerprint" => "1760000000", "type" => "alert",
+             "state" => "open", "scope" => {"kind" => "project", "key" => "/src/api/.git", "name" => "api"}, "title" => "Lock devenv in api is stuck",
+             "body" => nil, "links" => links, "created_at" => "2026-10-16T11:00:00Z", "updated_at" => "2026-10-16T11:00:00Z"}
+          ], warnings: noted}
+        end
+      end.new
+    end
+    let(:acks_path) { File.join(tmpdir, ".inbox", "acks.json") }
+    let(:acks) { Workspace::InboxAcks.new(path: acks_path, clock: -> { now }) }
+    let(:with_acks) do
+      described_class.new(config: config, project_detector: project_detector, project_catalog: project_catalog,
+        session_ledger: session_ledger, store_factory: store_factory, env: env, input: input, derived: derived, acks: acks,
+        clock: -> { now }, event_log: event_log, output: output, error_output: error_output)
+    end
+    let(:pane_id) { "pane:waiting:api.fix:%5" }
+
+    before { allow(project_catalog).to receive(:all).and_return([api_project]) }
+
+    def listed(**opts)
+      output.truncate(0)
+      output.rewind
+      with_acks.list(working_dir: "/app", json: true, include_derived: true, **opts)
+      JSON.parse(output.string)
+    end
+
+    def acks_file
+      JSON.parse(File.read(acks_path))
+    end
+
+    describe "#ack" do
+      it "stores the id and fingerprint, and the row leaves list" do
+        result = with_acks.ack([pane_id], working_dir: "/app")
+
+        expect(result[:exit_code]).to eq(0)
+        expect(result[:results]).to contain_exactly(a_hash_including("id" => pane_id, "outcome" => "acked", "scope" => "workspace:api.fix",
+          "item" => a_hash_including("derived" => true, "fingerprint" => "2026-10-16T11:50:00Z")))
+        expect(acks_file).to contain_exactly(a_hash_including("id" => pane_id, "fingerprint" => "2026-10-16T11:50:00Z"))
+        expect(listed["items"].map { |i| i["id"] }).not_to include(pane_id)
+      end
+
+      it "brings the row back when its fingerprint changes" do
+        with_acks.ack([pane_id], working_dir: "/app")
+        fingerprint["pane"] = "2026-10-16T11:59:00Z"
+
+        expect(listed["items"].map { |i| i["id"] }).to include(pane_id)
+      end
+
+      it "is unchanged for an ack already stored, and writes no event" do
+        with_acks.ack([pane_id], working_dir: "/app")
+        event_log.events.clear
+
+        result = with_acks.ack([pane_id], working_dir: "/app")
+
+        expect(result[:results].first["outcome"]).to eq("unchanged")
+        expect(event_log.events).to be_empty
+      end
+
+      it "writes one inbox_changed event with the id and no text" do
+        with_acks.ack([pane_id], working_dir: "/app")
+
+        expect(event_log.events).to eq([{"type" => "inbox_changed", "project" => "api.fix",
+                                         "data" => {"id" => pane_id, "scope" => "workspace", "scope_key" => "api.fix", "state" => "open", "change" => "acked"}}])
+      end
+
+      it "refuses an ask: id as use_ask_answer without reading any derived source" do
+        result = with_acks.ack(["ask:api.fix:q1"], working_dir: "/app")
+
+        expect(result[:exit_code]).to eq(1)
+        expect(result[:results].first).to include("outcome" => "failed", "code" => "use_ask_answer", "details" => {"id" => "ask:api.fix:q1"})
+        expect(result[:results].first["error"]).to include("ask answer")
+        expect(derived_calls).to be_empty
+        expect(File.exist?(acks_path)).to be(false)
+      end
+
+      it "refuses an id no derived source produces right now as unknown_derived_item" do
+        result = with_acks.ack(["pane:waiting:api.fix:%9"], working_dir: "/app")
+
+        expect(result[:results].first).to include("outcome" => "failed", "code" => "unknown_derived_item", "details" => {"id" => "pane:waiting:api.fix:%9"})
+        expect(File.exist?(acks_path)).to be(false)
+      end
+
+      it "refuses a stored item id as unknown_derived_item" do
+        item = with_acks.add(title: "todo", working_dir: "/app")[:results].first["item"]
+
+        result = with_acks.ack([item["id"]], working_dir: "/app")
+
+        expect(result[:results].first).to include("outcome" => "failed", "code" => "unknown_derived_item")
+        expect(derived_calls).to be_empty
+      end
+
+      it "points a stored item id at done and dismiss" do
+        result = with_acks.ack(["a1b2c3d4e5"], working_dir: "/app")
+
+        expect(result[:results].first["error"]).to include("done")
+      end
+
+      it "refuses a row with no fingerprint, so a later episode is not hidden by it" do
+        derived_rows = derived.rows(workspaces: [], projects: [])[:rows]
+        derived_rows.first["fingerprint"] = ""
+        allow(derived).to receive(:rows).and_return({rows: derived_rows, warnings: []})
+
+        result = with_acks.ack([pane_id], working_dir: "/app")
+
+        expect(result[:results].first).to include("outcome" => "failed", "code" => "unknown_derived_item")
+        expect(result[:results].first["error"]).to include("no fingerprint")
+        expect(File.exist?(acks_path)).to be(false)
+      end
+
+      it "carries on with the other ids when the acks file can't be written" do
+        File.write(File.join(tmpdir, ".inbox"), "in the way")
+
+        result = with_acks.ack([pane_id, "lock:stale:abc123abc123:devenv"], working_dir: "/app")
+
+        expect(result[:results].map { |r| r["code"] }).to eq(%w[inbox_store_unreadable inbox_store_unreadable])
+        expect(result[:exit_code]).to eq(1)
+      end
+
+      it "does each id on its own: partial is exit 3, all failed is 1" do
+        result = with_acks.ack([pane_id, "ask:api.fix:q1", "lock:stale:abc123abc123:devenv"], working_dir: "/app")
+
+        expect(result[:results].map { |r| r["outcome"] }).to eq(%w[acked failed acked])
+        expect(result[:exit_code]).to eq(3)
+      end
+
+      it "reads every workspace and project without a scope flag, and the named scope with one" do
+        with_acks.ack([pane_id], working_dir: "/app")
+        with_acks.ack([pane_id], target: {name: "api.fix"}, working_dir: "/app")
+
+        expect(derived_calls).to eq([[[], [api_project]], [["api.fix"], []]])
+      end
+
+      it "prints the derived warnings on stderr" do
+        warnings << {"code" => "daemons_unavailable", "message" => "The agent daemon did not answer."}
+
+        with_acks.ack([pane_id], working_dir: "/app")
+
+        expect(error_output.string).to include("The agent daemon did not answer.")
+      end
+
+      it "prints the title with control characters escaped" do
+        derived_rows = derived.rows(workspaces: [], projects: [])[:rows]
+        derived_rows.first["title"] = "x\e[2Jy"
+        allow(derived).to receive(:rows).and_return({rows: derived_rows, warnings: []})
+
+        with_acks.ack([pane_id], working_dir: "/app")
+
+        expect(output.string).to include('x\e[2Jy')
+        expect(output.string).not_to include("\e")
+      end
+
+      it "needs an id" do
+        expect { with_acks.ack([], working_dir: "/app") }.to raise_error(Workspace::UsageError, /at least one id/)
+      end
+
+      it "fails when no acks store is wired" do
+        expect { with_derived_only.ack([pane_id], working_dir: "/app") }.to raise_error(Workspace::Error, /not available/)
+      end
+
+      it "refuses an unreadable acks file as a failed row and leaves it alone" do
+        FileUtils.mkdir_p(File.dirname(acks_path))
+        File.write(acks_path, "{nope")
+
+        result = with_acks.ack([pane_id], working_dir: "/app")
+
+        expect(result[:results].first).to include("outcome" => "failed", "code" => "inbox_store_unreadable")
+        expect(File.read(acks_path)).to eq("{nope")
+      end
+    end
+
+    describe "#snooze of a derived id" do
+      it "stores the same record with an until, and the row leaves list until then" do
+        result = with_acks.snooze([pane_id], for_duration: "2h", working_dir: "/app")
+
+        expect(result[:results]).to contain_exactly(a_hash_including("id" => pane_id, "outcome" => "snoozed", "scope" => "workspace:api.fix"))
+        expect(acks_file).to contain_exactly(a_hash_including("id" => pane_id, "fingerprint" => "2026-10-16T11:50:00Z", "until" => "2026-10-16T14:00:00Z"))
+        expect(listed["items"].map { |i| i["id"] }).not_to include(pane_id)
+      end
+
+      it "shows the row again after until" do
+        with_acks.snooze([pane_id], until_time: "2026-10-16T13:00:00Z", working_dir: "/app")
+        later = Workspace::InboxAcks.new(path: acks_path, clock: -> { Time.utc(2026, 10, 16, 13, 0, 1) })
+        reader = described_class.new(config: config, project_detector: project_detector, project_catalog: project_catalog,
+          session_ledger: session_ledger, store_factory: store_factory, env: env, input: input, derived: derived, acks: later,
+          clock: -> { Time.utc(2026, 10, 16, 13, 0, 1) }, output: output, error_output: error_output)
+        output.truncate(0)
+        output.rewind
+
+        reader.list(working_dir: "/app", json: true, include_derived: true)
+
+        expect(JSON.parse(output.string)["items"].map { |i| i["id"] }).to include(pane_id)
+      end
+
+      it "is unchanged for the same time, moves for a new one, and writes the snoozed event" do
+        with_acks.snooze([pane_id], until_time: "2026-10-16T13:00:00Z", working_dir: "/app")
+        event_log.events.clear
+
+        same = with_acks.snooze([pane_id], until_time: "2026-10-16T13:00:00Z", working_dir: "/app")
+        moved = with_acks.snooze([pane_id], until_time: "2026-10-16T15:00:00Z", working_dir: "/app")
+
+        expect(same[:results].first["outcome"]).to eq("unchanged")
+        expect(moved[:results].first["outcome"]).to eq("snoozed")
+        expect(event_log.events.map { |e| e["data"]["change"] }).to eq(["snoozed"])
+      end
+
+      it "refuses an ask: id as use_ask_answer and an unknown id as unknown_derived_item" do
+        result = with_acks.snooze(["ask:api.fix:q1", "plan:blocked:api.fix"], for_duration: "1h", working_dir: "/app")
+
+        expect(result[:results].map { |r| r["code"] }).to eq(%w[use_ask_answer unknown_derived_item])
+        expect(result[:exit_code]).to eq(1)
+      end
+
+      it "snoozes stored and derived ids together, in order" do
+        item = with_acks.add(title: "todo", working_dir: "/app")[:results].first["item"]
+
+        result = with_acks.snooze([pane_id, item["id"]], for_duration: "2h", working_dir: "/app")
+
+        expect(result[:results].map { |r| r["outcome"] }).to eq(%w[snoozed snoozed])
+        expect(result[:results].last["item"]).to include("state" => "snoozed")
+        expect(result[:exit_code]).to eq(0)
+      end
+
+      it "reads no derived source for stored ids only" do
+        item = with_acks.add(title: "todo", working_dir: "/app")[:results].first["item"]
+
+        with_acks.snooze([item["id"]], for_duration: "2h", working_dir: "/app")
+
+        expect(derived_calls).to be_empty
+      end
+
+      it "still refuses a time that is not in the future before reading anything" do
+        expect { with_acks.snooze([pane_id], until_time: "2026-10-16T11:00:00Z", working_dir: "/app") }.to raise_error(Workspace::Error) { |e|
+          expect(e.code).to eq("invalid_inbox_item")
+        }
+        expect(derived_calls).to be_empty
+      end
+    end
+
+    describe "#list" do
+      it "warns, and shows every row, when the acks file cannot be read" do
+        FileUtils.mkdir_p(File.dirname(acks_path))
+        File.write(acks_path, "{nope")
+
+        doc = listed
+
+        expect(doc["items"].map { |i| i["id"] }).to include(pane_id)
+        expect(doc["warnings"].map { |w| w["code"] }).to include("inbox_store_unreadable")
+      end
+
+      it "reads no acks without the flag" do
+        with_acks.ack([pane_id], working_dir: "/app")
+        output.truncate(0)
+        output.rewind
+
+        with_acks.list(working_dir: "/app", json: true)
+
+        expect(JSON.parse(output.string)["items"]).to eq([])
+      end
+    end
+
+    def with_derived_only
+      described_class.new(config: config, project_detector: project_detector, project_catalog: project_catalog,
+        session_ledger: session_ledger, store_factory: store_factory, env: env, input: input, derived: derived,
+        clock: -> { now }, output: output, error_output: error_output)
+    end
+  end
 end

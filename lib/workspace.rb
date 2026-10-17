@@ -209,6 +209,7 @@ require_relative "workspace/statusline_renderer"
 require_relative "workspace/ask_store"
 require_relative "workspace/inbox_store"
 require_relative "workspace/inbox_derived"
+require_relative "workspace/inbox_acks"
 require_relative "workspace/task_store"
 require_relative "workspace/pull_request_status"
 require_relative "workspace/transcript_summary"
@@ -536,8 +537,9 @@ module Workspace
       ask_store_for: ->(workspace, sink) { AskStore.new(path: config.ask_state_path(workspace), error_output: sink) }, plan: plan_command,
       plan_state: plan_state, plan_config: plan_config, workflow_status: workflow_status, lock_namespace: lock_namespace,
       lock_store_for: ->(dir) { LockStore.new(dir: dir, liveness: lock_holder) }, lock_config: lock_config)
+    inbox_acks = InboxAcks.new(path: config.inbox_acks_path)
     inbox_command = Commands::Inbox.new(config: config, project_detector: project_detector, project_catalog: project_catalog,
-      session_ledger: session_ledger, store_factory: inbox_store_factory, env: env, input: input, event_log: event_log, derived: inbox_derived,
+      session_ledger: session_ledger, store_factory: inbox_store_factory, env: env, input: input, event_log: event_log, derived: inbox_derived, acks: inbox_acks,
       output: output, error_output: error_output)
 
     work_coordinator_client = WorkCoordinatorClient.new(

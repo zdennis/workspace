@@ -19,6 +19,7 @@ workspace inbox dismiss ID... [scope] [--json]
 workspace inbox dismiss --dedupe-key KEY [scope] [--json]
 workspace inbox reopen ID... [scope] [--json]
 workspace inbox snooze ID... (--until ISO | --for DURATION) [scope] [--json]
+workspace inbox ack DERIVED_ID... [scope] [--json]
 ```
 
 Scope: at most one of `--name WORKSPACE`, `--project NAME|PATH`, `--global`. Every flag accepts the `--flag=value` form.
@@ -105,6 +106,8 @@ A project is keyed by the realpath of its git common dir, so two clones with the
 
 Each derived row has `"derived": true`, `type` `alert`, `state` `open`, `kind`, `fingerprint`, `scope` (the workspace; a lock's project), `title`, `body` (the question or the waiting message, as data), `links` and `created_at`/`updated_at` (when the episode began). The fingerprint changes with each new episode: a new question, a new wait, a new lock holder.
 
+`ack DERIVED_ID...` hides a derived row until its fingerprint changes, and `snooze DERIVED_ID... (--until | --for)` hides it until a time (or until the fingerprint changes, whichever comes first). Both store `{id, fingerprint, acked_at}` (plus `until` for a snooze) in `.inbox/acks.json` beside the scope files, written the way the scope files are (`flock`, temp file, `rename`); `list --include-derived` leaves out a row whose id and current fingerprint match an entry, and a new episode (a new wait, plan state, lock holder) has a new fingerprint and shows again. Entries are dropped on the next write to the file: acks older than 30 days, snoozes past their `until`. The row must be one a derived source produces right now, because the fingerprint comes from it: without a scope flag `ack` and `snooze` read every workspace and project (as `show` searches every scope), and an id nothing produces (a pane that stopped waiting, a stored item's id) is a `failed` row with `unknown_derived_item`. An `ask:` id is a `failed` row with `use_ask_answer`: a question leaves the inbox when it is answered. `snooze` takes stored and derived ids together. Outcomes are `acked` (or `snoozed`), `unchanged` (the same fingerprint, and for a snooze the same time, is already stored) and `failed`; the row's `item` is the derived row. A change writes one `inbox_changed` event (`change` `acked` or `snoozed`, `id` the derived id, `state` `open`). An acks file that can't be read shows every row with an `inbox_store_unreadable` warning on `list`, and fails the write as `inbox_store_unreadable`.
+
 Rows come only for the scopes `list` reads: the current workspace (and its project's locks) by default, the one named by `--name`, the project's locks with `--project`, none for `--global`, and with `--all` every configured workspace and project in the catalog. They are added only when the listed states include `open` and `--type` is absent or `alert`; without the flag, no daemon, plan, workflow or lock is read.
 
 A source that can't be read adds a warning and no rows, never an empty answer: `daemons_unavailable` (with `workspace`; a daemon of a running workspace did not answer within 1s; the daemons are read in parallel), `tmux_unavailable` (every daemon is asked), `questions_unreadable`, `plan_unreadable`, `workflow_unreadable` and `locks_unreadable` (with `project`).
@@ -139,8 +142,8 @@ Each `created`, `updated`, `resolved`, `reopened` or `snoozed` outcome (an `edit
 
 Snoozes and expiries are time-driven, so reads work them out and never write: `list` leaves a snoozed item out of the default `open` list until `snooze_until`, after which it reads `open` with `snooze_until` null, and an item past its `expires_at` reads `dismissed` with `resolved_by` `{"kind":"expiry"}`. The next write to the scope (any `add`, `edit`, `done`, `dismiss`, `reopen` or `snooze` that reaches it) stores both and writes one `inbox_changed` event with `change` `expired` for each item that expired; a wake writes no event.
 
-Errors use the [`--json` error envelope](README.json.md): `invalid_inbox_item`, `unknown_inbox_item`, `ambiguous_inbox_item`, `inbox_store_unreadable`, `not_in_workspace`, `unknown_workspace`, `usage`.
+Errors use the [`--json` error envelope](README.json.md): `invalid_inbox_item`, `unknown_inbox_item`, `ambiguous_inbox_item`, `inbox_store_unreadable`, `unknown_derived_item`, `use_ask_answer`, `not_in_workspace`, `unknown_workspace`, `usage`.
 
-`workspace capabilities --json` reports `features.inbox: 2` for these commands (level 2: `edit`, `snooze`, `--dedupe-key`, expiry and the caps below).
+`workspace capabilities --json` reports `features.inbox: 3` for these commands (level 2: `edit`, `snooze`, `--dedupe-key`, expiry and the caps below; level 3: `list --include-derived`, `ack` and `snooze` of derived ids).
 
 Exit 0, 1 on an error; `done`, `dismiss`, `reopen` and `snooze` exit 3 when only some ids failed.

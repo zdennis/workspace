@@ -1794,6 +1794,7 @@ module Workspace
       when "show" then cmd_inbox_show(args)
       when "edit" then cmd_inbox_edit(args)
       when "snooze" then cmd_inbox_snooze(args)
+      when "ack" then cmd_inbox_resolve(args, "ack", :ack)
       when "done" then cmd_inbox_resolve(args, "done", :done)
       when "dismiss" then cmd_inbox_resolve(args, "dismiss", :dismiss)
       when "reopen" then cmd_inbox_resolve(args, "reopen", :reopen)
@@ -1812,6 +1813,7 @@ module Workspace
                workspace inbox edit ID [options] [scope] [--json]
                workspace inbox done|dismiss|reopen ID... [scope] [--json]
                workspace inbox snooze ID... (--until ISO | --for DURATION) [scope] [--json]
+               workspace inbox ack DERIVED_ID... [scope] [--json]
 
         A durable list of things that need a person, kept per workspace, per
         project (all worktrees of one repository) or globally. Agents, scripts
@@ -1825,7 +1827,10 @@ module Workspace
           done ID...    Mark items done; one already done is reported unchanged
           dismiss ID... Mark items dismissed (nobody will act on them)
           reopen ID...  Move done, dismissed or snoozed items back to open
-          snooze ID...  Hide open items until a time; they read open again after it
+          snooze ID...  Hide open items until a time; they read open again after it. A derived id
+                        (from list --include-derived) is hidden until then, or until it changes
+          ack ID...     Hide derived rows (list --include-derived) until they change (a new wait,
+                        plan state or lock holder shows again) or 30 days pass. A question is answered, not acked
 
         Scope (every subcommand; at most one):
           --name WS         The workspace WS instead of the one detected from the current directory
@@ -1862,6 +1867,8 @@ module Workspace
                                  Change a link ("" clears it)
         Options (done, dismiss):
           --dedupe-key KEY       Resolve the item holding KEY in the scope (no ids); none is unchanged
+        Options (ack, snooze of derived ids): without a scope flag every workspace and project is read
+        to find the row.
         Options (snooze; one of):
           --until ISO            Wake at this time (2026-10-20T09:00:00Z); it must be in the future
           --for DURATION         Wake after this long from now (30m, 2h)
@@ -1889,6 +1896,8 @@ module Workspace
           workspace inbox edit a1b2c3d4e5 --title "Check the deploy again" --expires 2h
           workspace inbox snooze a1b2c3d4e5 --for 2h
           workspace inbox snooze a1b2c3d4e5 --until 2026-10-20T09:00:00Z --json
+          workspace inbox ack plan:blocked:api.fix
+          workspace inbox snooze 'pane:waiting:api.fix:%5' --for 1h
           workspace inbox add "CI failed" --type alert --dedupe-key github_check:org/api:rspec:9f3c2e1 --global
           workspace inbox done --dedupe-key github_check:org/api:rspec:9f3c2e1 --global
       HELP
@@ -2049,7 +2058,7 @@ module Workspace
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: workspace inbox #{verb} ID... [--json]"
         inbox_scope_options(opts, target)
-        opts.on("--dedupe-key KEY", "Resolve the item holding KEY in the scope instead of ids") { |v| dedupe_key = v } unless method == :reopen
+        opts.on("--dedupe-key KEY", "Resolve the item holding KEY in the scope instead of ids") { |v| dedupe_key = v } unless %i[reopen ack].include?(method)
         opts.on("--json", "Print one action document (see docs/README.json.md) instead of text, which goes to stderr") { json = true }
       end
       parser.parse!(args)

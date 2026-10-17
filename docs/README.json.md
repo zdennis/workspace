@@ -153,11 +153,13 @@ The registry lives in `Workspace::ErrorCodes`; a spec checks that every code a r
 | `library_entry_exists` | `library add` would replace an entry with different content. `details.ref`, `details.scope`; `retry` names `--force` (destructive). |
 | `library_source_missing` | The file to add doesn't exist, or a linked entry's target can't be read. `details.ref`, `details.path`. |
 | `unknown_workflow` | No workflow definition has that id. `details.workflow`, `details.known`. |
-| `inbox_store_unreadable` | An inbox scope's file can't be parsed, so nothing was written to it. `details.scope`. |
+| `inbox_store_unreadable` | An inbox scope's file (or `acks`, the acks of derived rows) can't be read, so nothing was written to it. `details.scope`. |
 | `inbox_full` | The scope already holds 500 open or snoozed items, so nothing was added (also for a reopen that would pass 500). `details.scope`, `details.limit`. |
 | `unknown_inbox_item` | No inbox item has that id. `details.id`. |
 | `ambiguous_inbox_item` | The id is in more than one inbox scope; pass `--name`, `--project` or `--global`. `details.id`, `details.scopes`. |
 | `invalid_inbox_item` | A field of an item being added doesn't pass the checks: a control character, a length over its cap, a non-https URL, an unknown type or source kind, an expiry in the past. `details.field` (such as `title` or `source.url`), `details.reason`. |
+| `unknown_derived_item` | `inbox ack` or `inbox snooze` named a derived id that no source produces right now (a pane that is no longer waiting, a stored item id given to `ack`). `details.id`. |
+| `use_ask_answer` | `inbox ack` or `inbox snooze` named an `ask:` id; answer the question with `ask answer` instead. `details.id`. |
 | `invalid_workflow` | A workflow definition file doesn't pass the checks. `details.workflow`, `details.path`, `details.problems`. |
 | `input_required` | workflow run is missing a required input. `details.workflow`, `details.inputs` (each `name` and `description`). |
 | `workflow_command_unset` | A step's check names the project's test or lint command and the project has none. `details.workflow`, `details.project`, `details.commands`. |

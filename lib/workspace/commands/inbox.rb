@@ -54,10 +54,11 @@ module Workspace
       #   never the item's text); nil records nothing
       # @param derived [Workspace::InboxDerived, nil] works out the rows `list --include-derived` adds;
       #   read only with that flag
+      # @param acks [Workspace::InboxAcks, nil] the derived rows acknowledged or snoozed; `list` leaves them out
       # @param output [IO]
       # @param error_output [IO]
       def initialize(config:, project_detector:, store_factory:, project_catalog: nil, session_ledger: nil,
-        env: ENV, input: $stdin, clock: -> { Time.now }, event_log: nil, derived: nil, output: $stdout, error_output: $stderr)
+        env: ENV, input: $stdin, clock: -> { Time.now }, event_log: nil, derived: nil, acks: nil, output: $stdout, error_output: $stderr)
         @config = config
         @project_detector = project_detector
         @project_catalog = project_catalog
@@ -68,6 +69,7 @@ module Workspace
         @clock = clock
         @event_log = event_log
         @derived = derived
+        @acks = acks
         @output = output
         @error_output = error_output
       end
@@ -173,8 +175,9 @@ module Workspace
         warnings = warnings_from(sink)
         if include_derived && states.include?("open") && [nil, "alert"].include?(type)
           derived = derived_rows(target, working_dir, all)
-          items += derived[:rows]
-          warnings += derived[:warnings]
+          shown = @acks ? @acks.filter(derived[:rows]) : {rows: derived[:rows], warnings: []}
+          items += shown[:rows]
+          warnings += derived[:warnings] + shown[:warnings]
         end
         items = items.sort_by { |item| [item["updated_at"].to_s, item["id"].to_s] }.reverse
 
@@ -301,7 +304,33 @@ module Workspace
         raise UsageError, "Pass --until or --for, not both." if until_time && for_duration
         raise UsageError, "inbox snooze needs at least one id." if ids.empty?
         wake = checked_wake(until_time, for_duration)
-        change(ids, "snoozed", target, working_dir, nil, snooze_until: wake)
+        return change(ids, "snoozed", target, working_dir, nil, snooze_until: wake) unless ids.any? { |id| derived_id?(id) }
+        rows = derived_lookup(ids, target, working_dir)
+        scopes = lookup_scopes(target, working_dir) unless ids.all? { |id| derived_id?(id) }
+        results = ids.map do |id|
+          next change_one(id, "snoozed", nil, scopes, wake) unless derived_id?(id)
+          derived_change(id, rows, "snoozed", wake)
+        end
+        {exit_code: exit_code_for(results), results: results}
+      end
+
+      # Hides derived rows (the ones `list --include-derived` adds) until their fingerprint changes: a
+      # new question, a new wait, a new lock holder. An ack already stored for the fingerprint is
+      # `unchanged`. Each id must be produced by a derived source right now. An `ask:` id is refused:
+      # a question leaves the inbox when it is answered.
+      #
+      # @param ids [Array<String>] derived ids
+      # @param target [Hash] `:name`, `:project`, `:global`; none reads every workspace and project
+      # @param working_dir [String]
+      # @return [Hash] as {#done}, with outcome `acked` instead of `resolved`; a failed row's `code` is
+      #   `unknown_derived_item`, `use_ask_answer` or `inbox_store_unreadable`
+      # @raise [Workspace::UsageError] no id
+      # @raise [Workspace::Error] when acks or derived rows are not wired
+      def ack(ids, target: {}, working_dir: Dir.pwd)
+        raise UsageError, "inbox ack needs at least one id." if ids.empty?
+        rows = derived_lookup(ids, target, working_dir)
+        results = ids.map { |id| derived_change(id, rows, "acked") }
+        {exit_code: exit_code_for(results), results: results}
       end
 
       # Moves done, dismissed or snoozed items back to open. Open items are `unchanged`.
@@ -325,13 +354,52 @@ module Workspace
         end
         scopes = lookup_scopes(target, working_dir)
         results = ids.map { |id| change_one(id, to, by, scopes, snooze_until) }
+        {exit_code: exit_code_for(results), results: results}
+      end
+
+      def exit_code_for(results)
         failed = results.count { |row| row["outcome"] == "failed" }
-        exit_code = if failed.zero? then 0
+        if failed.zero? then 0
         elsif failed == results.size then 1
         else
           3
         end
-        {exit_code: exit_code, results: results}
+      end
+
+      # Derived ids hold a colon (`pane:waiting:api:%5`); stored ids are hex.
+      def derived_id?(id)
+        id.include?(":")
+      end
+
+      # The current derived rows by id, read once, when any of +ids+ names one (an `ask:` id needs no read).
+      # Without a scope flag every workspace and project is read, as `show` searches every scope.
+      def derived_lookup(ids, target, working_dir)
+        raise Workspace::Error, "Acknowledging derived inbox rows is not available in this build." unless @acks
+        return {} unless ids.any? { |id| derived_id?(id) && !id.start_with?("ask:") }
+        read = derived_rows(target, working_dir, target.values.none?)
+        read[:warnings].each { |w| @error_output.puts w["message"] }
+        read[:rows].to_h { |row| [row["id"], row] }
+      end
+
+      def derived_change(id, rows, change, wake = nil)
+        raise ask_in_inbox(id) if id.start_with?("ask:")
+        row = rows[id]
+        raise unknown_derived(id) unless row
+        raise unackable(id) if row["fingerprint"].to_s.empty?
+        changed = wake ? @acks.snooze(id, row["fingerprint"], wake) : @acks.ack(id, row["fingerprint"])
+        record_change(row, change) if changed
+        outcome = changed ? change : "unchanged"
+        say = if !changed then "#{escape(id)} is already #{(change == "acked") ? "acked" : "snoozed to that time"}"
+        elsif wake then "#{escape(id)} snoozed until #{wake}"
+        else
+          "#{escape(id)} acked"
+        end
+        @output.puts "#{say} (#{scope_label(row["scope"])}): #{escape(row["title"])}"
+        {"id" => id, "outcome" => outcome, "scope" => scope_label(row["scope"]), "item" => row}
+      rescue Workspace::Error => e
+        raise unless %w[use_ask_answer unknown_derived_item inbox_store_unreadable].include?(e.code)
+        @error_output.puts e.message
+        {"id" => id, "outcome" => "failed", "code" => e.code, "error" => e.message, "details" => e.details}
       end
 
       def change_by_key(key, to, by, scope)
@@ -429,6 +497,22 @@ module Workspace
       def invalid(field, reason)
         Workspace::Error.new("Invalid inbox item: #{field} #{reason}.",
           code: "invalid_inbox_item", details: {"field" => field, "reason" => reason})
+      end
+
+      def ask_in_inbox(id)
+        Workspace::Error.new("'#{escape(id)}' is a question: it leaves the inbox when it is answered. Use 'workspace ask answer'.",
+          code: "use_ask_answer", details: {"id" => id})
+      end
+
+      def unknown_derived(id)
+        hint = derived_id?(id) ? "See 'workspace inbox list --include-derived'." : "For a stored item use 'workspace inbox done' or 'dismiss'."
+        Workspace::Error.new("No derived inbox item '#{escape(id)}' needs you right now. #{hint}",
+          code: "unknown_derived_item", details: {"id" => id})
+      end
+
+      def unackable(id)
+        Workspace::Error.new("Derived inbox item '#{escape(id)}' has no fingerprint, so a later episode could not be told from this one; not hidden.",
+          code: "unknown_derived_item", details: {"id" => id})
       end
 
       def unknown_item(id)

@@ -1923,6 +1923,24 @@ RSpec.describe Workspace::CLI do
       cli.run(["inbox", "snooze", "abc", "--until=2026-10-20T09:00:00Z"])
     end
 
+    it "passes ack its ids and scope, and refuses ack without an id" do
+      expect(inbox_command).to receive(:ack).with(
+        ["pane:waiting:api:%5", "plan:blocked:api"], target: {global: true}, working_dir: anything
+      ).and_return({exit_code: 0, results: []})
+
+      cli.run(["inbox", "ack", "pane:waiting:api:%5", "plan:blocked:api", "--global"])
+      expect { cli.run(["inbox", "ack"]) }.to raise_error(FakeSystemExit)
+    end
+
+    it "prints ack as an action document and exits 3 when some ids failed" do
+      rows = [{"id" => "a:1", "outcome" => "acked"}, {"id" => "ask:x:1", "outcome" => "failed", "code" => "use_ask_answer"}]
+      allow(inbox_command).to receive(:ack).and_return({exit_code: 3, results: rows})
+
+      expect { cli.run(["inbox", "ack", "a:1", "ask:x:1", "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(3) }
+      doc = JSON.parse(output.string)
+      expect(doc).to include("action" => "inbox ack", "status" => "partial")
+    end
+
     it "refuses snooze without an id" do
       expect { cli.run(["inbox", "snooze", "--for", "2h"]) }.to raise_error(FakeSystemExit)
     end
