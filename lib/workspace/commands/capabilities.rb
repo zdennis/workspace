@@ -34,7 +34,7 @@ module Workspace
         "tmux_show" => 1,
         "tasks" => 1,
         "event_emitters" => 1,
-        "ui_open" => 2,
+        "ui_open" => 3,
         "pane_bindings" => 3,
         "library" => 3,
         "library_play" => 2,

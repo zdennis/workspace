@@ -36,6 +36,37 @@ RSpec.describe Workspace::Commands::Ui do
       expect(command.url_for(view: "notes", workspace: "a b/c")).to eq("workspace-ui://notes/a%20b%2Fc")
     end
 
+    it "builds a plan link like notes and refuses a pane" do
+      expect(command.url_for(view: "plan", workspace: "my-app.worktree-fix")).to eq("workspace-ui://plan/my-app.worktree-fix")
+      expect { command.url_for(view: "plan") }.to raise_error(Workspace::UsageError, /plan needs a workspace/)
+      expect { command.url_for(view: "plan", workspace: "x", pane: "%1") }.to raise_error(Workspace::UsageError, /plan takes no pane/)
+      expect { command.url_for(view: "inbox", pane: "%1") }.to raise_error(Workspace::UsageError, /inbox takes no pane/)
+    end
+
+    it "builds a pane link with the workspace and the pane id percent-encoded" do
+      expect(command.url_for(view: "pane", workspace: "my-app", pane: "%19")).to eq("workspace-ui://pane/my-app/%2519")
+      expect(command.url_for(view: "pane", workspace: "a b", pane: "%0")).to eq("workspace-ui://pane/a%20b/%250")
+    end
+
+    it "requires a tmux pane id for pane" do
+      expect { command.url_for(view: "pane", workspace: "x") }.to raise_error(Workspace::UsageError, /pane needs a pane id/)
+      ["19", "%", "%a", "%1/2", "%19 ", "%1\n2", "0.1", "%1234567890"].each do |bad|
+        expect { command.url_for(view: "pane", workspace: "x", pane: bad) }.to raise_error(Workspace::UsageError, /not a tmux pane id/), bad.inspect
+      end
+    end
+
+    it "treats a blank pane as missing and prints a pane link under print_only" do
+      expect { command.url_for(view: "pane", workspace: "x", pane: "  ") }.to raise_error(Workspace::UsageError, /pane needs a pane id/)
+      result = command.open(view: "pane", workspace: "x", pane: "%3", print_only: true)
+      expect(result).to have_attributes(outcome: "printed", url: "workspace-ui://pane/x/%253")
+      expect(opener.calls).to eq([])
+    end
+
+    it "opens a pane link through open" do
+      command.open(view: "pane", workspace: "x", pane: "%3")
+      expect(opener.calls).to eq([["open", "workspace-ui://pane/x/%253"]])
+    end
+
     it "requires a workspace for notes" do
       expect { command.url_for(view: "notes") }.to raise_error(Workspace::UsageError, /notes needs a workspace/)
     end
@@ -46,7 +77,7 @@ RSpec.describe Workspace::Commands::Ui do
 
     it "rejects an unknown view, naming the valid ones" do
       expect { command.url_for(view: "settings", workspace: "x") }
-        .to raise_error(Workspace::UsageError, /Unknown view 'settings'.*task, review, notes, inbox.*workspace ui --help/)
+        .to raise_error(Workspace::UsageError, /Unknown view 'settings'.*task, review, notes, plan, pane, inbox.*workspace ui --help/)
     end
 
     it "requires a workspace for task and review" do

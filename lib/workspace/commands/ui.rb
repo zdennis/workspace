@@ -9,7 +9,13 @@ module Workspace
     # a command, and the UI validates its target again when it receives one.
     class Ui
       # The views a link can name, each with whether it takes a workspace.
-      VIEWS = {"task" => true, "review" => true, "notes" => true, "inbox" => false}.freeze
+      VIEWS = {"task" => true, "review" => true, "notes" => true, "plan" => true, "pane" => true, "inbox" => false}.freeze
+
+      # The one view that also names a tmux pane: `pane WORKSPACE PANE`.
+      PANE_VIEW = "pane"
+
+      # A tmux pane id such as `%19`.
+      PANE_ID = /\A%\d{1,9}\z/
 
       # URL scheme the UI registers.
       SCHEME = "workspace-ui"
@@ -35,10 +41,12 @@ module Workspace
       end
 
       # @param view [String] one of {VIEWS}
-      # @param workspace [String, nil] required for task, review and notes, refused for inbox
-      # @return [String] the deep link, with the workspace percent-encoded
-      # @raise [Workspace::UsageError] for an unknown view or a workspace that doesn't fit the view
-      def url_for(view:, workspace: nil)
+      # @param workspace [String, nil] required for every view but inbox, which refuses it
+      # @param pane [String, nil] tmux pane id (`%19`): required for pane, refused for the others
+      # @return [String] the deep link, with the workspace and pane percent-encoded
+      # @raise [Workspace::UsageError] for an unknown view, a workspace or pane that doesn't fit the view,
+      #   or a pane that is not a tmux pane id
+      def url_for(view:, workspace: nil, pane: nil)
         raise UsageError, "Unknown view '#{view}': one of #{VIEWS.keys.join(", ")}. Run 'workspace ui --help'." unless VIEWS.key?(view)
 
         if VIEWS.fetch(view)
@@ -46,9 +54,20 @@ module Workspace
           unless valid_name?(workspace)
             raise UsageError, "'#{workspace.to_s[0, 40].inspect[1..-2]}' is not a valid workspace name."
           end
-          "#{SCHEME}://#{view}/#{ERB::Util.url_encode(workspace)}"
+          link = "#{SCHEME}://#{view}/#{ERB::Util.url_encode(workspace)}"
+          if view == PANE_VIEW
+            raise UsageError, "pane needs a pane id such as %19: workspace ui open pane [WORKSPACE] PANE. Run 'workspace ui --help'." if pane.to_s.strip.empty?
+            unless pane.match?(PANE_ID)
+              raise UsageError, "'#{pane.to_s[0, 40].inspect[1..-2]}' is not a tmux pane id: use the form %19 (see $TMUX_PANE or `tmux display -p '\#{pane_id}'`). Usage: workspace ui open pane [WORKSPACE] PANE."
+            end
+            link = "#{link}/#{ERB::Util.url_encode(pane)}"
+          elsif pane
+            raise UsageError, "#{view} takes no pane: only the pane view takes one."
+          end
+          link
         else
           raise UsageError, "#{view} takes no workspace." if workspace
+          raise UsageError, "#{view} takes no pane." if pane
           "#{SCHEME}://#{view}"
         end
       end
@@ -57,11 +76,12 @@ module Workspace
       #
       # @param view [String] one of {VIEWS}
       # @param workspace [String, nil]
+      # @param pane [String, nil] see {#url_for}
       # @param print_only [Boolean] print the link and open nothing
       # @return [Result]
       # @raise [Workspace::UsageError] see {#url_for}
-      def open(view:, workspace: nil, print_only: false)
-        url = url_for(view: view, workspace: workspace)
+      def open(view:, workspace: nil, pane: nil, print_only: false)
+        url = url_for(view: view, workspace: workspace, pane: pane)
         if print_only
           @output.puts url
           return Result.new("printed", view, url)

@@ -658,8 +658,8 @@ module CLITestHelpers
       @result = Workspace::Commands::Ui::Result.new("opened", "task", "workspace-ui://task/app")
     end
 
-    def open(view:, workspace: nil, print_only: false)
-      @calls << {view: view, workspace: workspace, print_only: print_only}
+    def open(view:, workspace: nil, print_only: false, pane: nil)
+      @calls << {view: view, workspace: workspace, print_only: print_only}.tap { |call| call[:pane] = pane if pane }
       raise @error if @error
       @result
     end

@@ -5799,6 +5799,49 @@ RSpec.describe Workspace::CLI do
       ])
     end
 
+    it "passes plan like notes and the pane of `pane WS PANE`" do
+      cli.run(["ui", "open", "plan", "app", "--print"])
+      cli.run(["ui", "open", "pane", "app", "%19"])
+      cli.run(["ui", "open", "pane", "--name=other", "%2"])
+      cli.run(["ui", "open", "pane", "%3"])
+
+      expect(ui_command.calls).to eq([
+        {view: "plan", workspace: "app", print_only: true},
+        {view: "pane", workspace: "app", print_only: false, pane: "%19"},
+        {view: "pane", workspace: "other", print_only: false, pane: "%2"},
+        {view: "pane", workspace: "detected-ws", print_only: false, pane: "%3"}
+      ])
+    end
+
+    it "reports the pane in the --json row" do
+      cli.run(["ui", "open", "pane", "app", "%19", "--json"])
+
+      expect(JSON.parse(output.string)["results"].first).to include("workspace" => "app", "pane" => "%19", "view" => "task")
+    end
+
+    it "keeps the pane key off rows of other views" do
+      cli.run(["ui", "open", "plan", "app", "--json"])
+
+      expect(JSON.parse(output.string)["results"].first).not_to have_key("pane")
+    end
+
+    it "takes a lone argument as the pane and the workspace from the directory" do
+      cli.run(["ui", "open", "pane", "%7"])
+
+      expect(ui_command.calls).to eq([{view: "pane", workspace: "detected-ws", print_only: false, pane: "%7"}])
+    end
+
+    it "rejects a pane after --name plus a positional workspace" do
+      expect { cli.run(["ui", "open", "pane", "--name", "x", "a", "%1"]) }.to raise_error(FakeSystemExit)
+      expect(error_output.string).to include("Unexpected argument")
+      expect(ui_command.calls).to eq([])
+    end
+
+    it "rejects extra arguments after a pane" do
+      expect { cli.run(["ui", "open", "pane", "a", "%1", "%2"]) }.to raise_error(FakeSystemExit)
+      expect(ui_command.calls).to eq([])
+    end
+
     it "uses the detected workspace for task and review but not inbox" do
       cli.run(["ui", "open", "review"])
       cli.run(["ui", "open", "inbox"])

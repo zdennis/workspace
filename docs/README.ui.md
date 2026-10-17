@@ -8,6 +8,8 @@ Open a view of the workspace UI from a script, an agent or a notification, throu
 workspace ui open task [WORKSPACE] [--print] [--json]
 workspace ui open review [WORKSPACE] [--print] [--json]
 workspace ui open notes [WORKSPACE] [--print] [--json]
+workspace ui open plan [WORKSPACE] [--print] [--json]
+workspace ui open pane [WORKSPACE] PANE [--print] [--json]
 workspace ui open inbox [--print] [--json]
 ```
 
@@ -16,9 +18,11 @@ workspace ui open inbox [--print] [--json]
 | `task WORKSPACE` | `workspace-ui://task/WORKSPACE` |
 | `review WORKSPACE` | `workspace-ui://review/WORKSPACE` |
 | `notes WORKSPACE` | `workspace-ui://notes/WORKSPACE` |
+| `plan WORKSPACE` | `workspace-ui://plan/WORKSPACE` |
+| `pane WORKSPACE PANE` | `workspace-ui://pane/WORKSPACE/PANE` |
 | `inbox` | `workspace-ui://inbox` |
 
-`WORKSPACE` (or `--name WORKSPACE`) defaults to the project detected from the current directory. `inbox` takes no workspace. The name is percent-encoded, so `my-app.worktree-fix` stays as written and a `/` becomes `%2F`; a name with control characters or over 255 characters is a usage error. The command does not check that the workspace exists: the UI validates the target it receives.
+`WORKSPACE` (or `--name WORKSPACE`) defaults to the project detected from the current directory. `inbox` takes no workspace. `PANE` is a tmux pane id such as `%19`, percent-encoded in the link (`%2519`); anything else is a usage error. With `--name` or a workspace detected from the current directory, `workspace ui open pane %19` is enough. The pane is not checked against tmux: the UI validates it. The name is percent-encoded, so `my-app.worktree-fix` stays as written and a `/` becomes `%2F`; a name with control characters or over 255 characters is a usage error. The command does not check that the workspace exists: the UI validates the target it receives.
 
 | Option | Description |
 |--------|-------------|
@@ -43,7 +47,7 @@ The link is passed to the system `open` as a single argument (no shell). The wor
  "warnings":[],"summary":{"opened":1}}
 ```
 
-`action` is `ui open`, like `dev up` and `lock release`. `reason` is the stable machine field; `message` is for people and its text may change. `outcome` is `opened`, `printed` or `failed`. `reason` on a failure is `open_failed` (`open` exited non-zero; `message` is its first line of stderr, with a reminder to use `--print` appended) or `open_unavailable` (`open` could not be run). `workspace` is `null` for `inbox`. An unknown view, a missing workspace, or a workspace given to `inbox` is a `usage` error (exit 1; with `--json` the error envelope).
+`action` is `ui open`, like `dev up` and `lock release`. `reason` is the stable machine field; `message` is for people and its text may change. `outcome` is `opened`, `printed` or `failed`. `reason` on a failure is `open_failed` (`open` exited non-zero; `message` is its first line of stderr, with a reminder to use `--print` appended) or `open_unavailable` (`open` could not be run). `workspace` is `null` for `inbox`. A `pane` row also carries `pane`. These are `usage` errors: an unknown view, a missing workspace, a workspace given to `inbox`, a pane given to any view but `pane`, and a missing or malformed pane id (exit 1; with `--json` the error envelope).
 
 ## Examples
 
@@ -51,5 +55,8 @@ The link is passed to the system `open` as a single argument (no shell). The wor
 workspace ui open task my-app
 workspace ui open review my-app.worktree-fix-login
 workspace ui open notes my-app
+workspace ui open plan my-app
+workspace ui open pane my-app %19 --print
+workspace ui open pane %19 --print   # workspace from the current directory
 workspace ui open inbox --print
 ```
