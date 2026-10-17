@@ -192,6 +192,118 @@ RSpec.describe Workspace::Commands::Ask do
     end
   end
 
+  describe "#withdraw and #list --all" do
+    def ask_id(text = "q1")
+      output.truncate(0)
+      output.rewind
+      command.call(question: text, default: "d1", working_dir: "/app", json: true)
+      id = JSON.parse(output.string)["question"]["id"]
+      output.truncate(0)
+      output.rewind
+      id
+    end
+
+    it "withdraws an open question" do
+      id = ask_id
+
+      result = command.withdraw(id, working_dir: "/app")
+
+      expect(result).to eq(exit_code: 0)
+      expect(output.string).to eq("Withdrew #{id}\n")
+    end
+
+    it "emits the question in JSON" do
+      id = ask_id
+
+      command.withdraw(id, working_dir: "/app", json: true)
+
+      payload = JSON.parse(output.string)
+      expect(payload).to include("schema_version" => 1, "ok" => true)
+      expect(payload["question"]).to include("id" => id, "status" => "withdrawn", "answer" => nil)
+    end
+
+    it "drops it from the open list and shows it as withdrawn with --all" do
+      kept = ask_id("kept")
+      withdrawn = ask_id("gone")
+      command.withdraw(withdrawn, working_dir: "/app")
+      output.truncate(0)
+      output.rewind
+
+      command.list(working_dir: "/app", json: true)
+      expect(JSON.parse(output.string)["questions"].map { |q| q["id"] }).to eq([kept])
+
+      output.truncate(0)
+      output.rewind
+      command.list(working_dir: "/app", json: true, all: true)
+      expect(JSON.parse(output.string)["questions"].map { |q| [q["id"], q["status"]] }).to eq([[kept, "open"], [withdrawn, "withdrawn"]])
+
+      output.truncate(0)
+      output.rewind
+      command.list(working_dir: "/app", all: true)
+      expect(output.string).to include("STATUS").and match(/#{withdrawn}\s+withdrawn/)
+    end
+
+    it "refuses to withdraw an answered or withdrawn question with ask_not_open" do
+      answered = ask_id("a")
+      command.answer(answered, "yes", working_dir: "/app")
+      withdrawn = ask_id("b")
+      command.withdraw(withdrawn, working_dir: "/app")
+
+      expect { command.withdraw(answered, working_dir: "/app") }
+        .to raise_error(Workspace::Error) { |e| expect([e.code, e.details]).to eq(["ask_not_open", {"id" => answered, "status" => "answered"}]) }
+      expect { command.withdraw(withdrawn, working_dir: "/app") }
+        .to raise_error(Workspace::Error) { |e| expect([e.code, e.details]).to eq(["ask_not_open", {"id" => withdrawn, "status" => "withdrawn"}]) }
+    end
+
+    it "keeps the plain not-found error for an unknown id, in JSON too" do
+      expect { command.withdraw("nope", working_dir: "/app") }.to raise_error(Workspace::Error, "No question 'nope' for myapp.")
+
+      result = command.withdraw("nope", working_dir: "/app", json: true)
+      expect(result).to eq(exit_code: 1)
+      expect(JSON.parse(output.string)).to include("ok" => false, "error" => "No question 'nope' for myapp.")
+    end
+
+    it "fails ask answer on a withdrawn question with ask_not_open" do
+      id = ask_id
+      command.withdraw(id, working_dir: "/app")
+      output.truncate(0)
+      output.rewind
+
+      result = command.answer(id, "yes", working_dir: "/app", json: true)
+
+      expect(result).to eq(exit_code: 1)
+      expect(JSON.parse(output.string)).to include("ok" => false, "code" => "ask_not_open", "details" => {"id" => id, "status" => "withdrawn"})
+    end
+
+    it "fails ask answer --deliver on a withdrawn question before touching a pane" do
+      id = ask_id
+      command.withdraw(id, working_dir: "/app")
+
+      expect { command.answer(id, "yes", working_dir: "/app", deliver: true) }.to raise_error(Workspace::Error, /not available in this build/)
+    end
+
+    it "records ask_withdrawn with the id and pane only" do
+      event_log = CLITestHelpers::FakeEventLog.new
+      recorder = described_class.new(config: config, project_detector: project_detector, notifier_factory: notifier_factory,
+        event_log: event_log, env: {"TMUX_PANE" => "%7"}, output: output, error_output: error_output)
+      recorder.call(question: "secret question", default: "d", working_dir: "/app", json: true)
+      id = JSON.parse(output.string)["question"]["id"]
+
+      recorder.withdraw(id, working_dir: "/app")
+
+      expect(event_log.events.last).to eq({"type" => "ask_withdrawn", "project" => "myapp", "data" => {"id" => id, "workspace" => "myapp", "pane_id" => "%7"}})
+      expect(event_log.events.to_s).not_to include("secret question")
+    end
+
+    it "records no event when nothing was withdrawn" do
+      event_log = CLITestHelpers::FakeEventLog.new
+      recorder = described_class.new(config: config, project_detector: project_detector, event_log: event_log, env: {}, output: output, error_output: error_output)
+
+      expect { recorder.withdraw("nope", working_dir: "/app") }.to raise_error(Workspace::Error)
+      expect(event_log.events).to eq([])
+    end
+  end
+
   describe "#answer with deliver" do
     let(:tmux) do
       CLITestHelpers::FakeTmuxServer.new("myapp" => [{id: "%19", window: 1, index: 2}], "other" => [{id: "%7", window: 0, index: 0}])

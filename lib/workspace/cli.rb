@@ -1662,6 +1662,7 @@ module Workspace
       case subcommand
       when "list" then cmd_ask_list(rest)
       when "answer", "resolve" then cmd_ask_answer(rest)
+      when "withdraw" then cmd_ask_withdraw(rest)
       when "help", "--help", "-h", nil then @output.puts ask_help
       else cmd_ask_record(args)
       end
@@ -1670,8 +1671,9 @@ module Workspace
     def ask_help
       <<~HELP
         Usage: workspace ask "<question>" --default "<default taken>" [options]
-               workspace ask list [--json]
+               workspace ask list [--all] [--json]
                workspace ask answer <id> "<answer>" [--deliver] [--json]
+               workspace ask withdraw <id> [--json]
 
         Records a question an unattended agent hit, with the default it took,
         so the agent can keep going instead of blocking on a person. Never
@@ -1679,11 +1681,14 @@ module Workspace
         command has finished (it is stopped after 10 seconds).
 
         Subcommands:
-          list                    Show open questions for this workspace
+          list                    Show open questions for this workspace (--all: also answered
+                                  and withdrawn ones, with their status)
           answer <id> <answer>    Resolve an open question (alias: resolve); with --deliver,
                                   also type the answer and Enter into the pane that asked
+          withdraw <id>           Close an open question nobody needs answered any more; it
+                                  leaves `ask list` and the inbox, and can't be answered
 
-        A first word of list, answer, resolve or help is a subcommand only
+        A first word of list, answer, resolve, withdraw or help is a subcommand only
         without --default; `workspace ask list --default x` records "list".
 
         Options (every subcommand):
@@ -1711,6 +1716,7 @@ module Workspace
           workspace ask "Use pg or sqlite for the cache?" --default "sqlite" --context "lib/cache.rb:12"
           workspace ask list
           workspace ask answer a1b2c3 "Use postgres instead"
+          workspace ask withdraw a1b2c3             # the asker no longer needs an answer
           workspace ask answer --deliver a1b2c3 -- yes    # also types it into the asking pane
       HELP
     end
@@ -1744,16 +1750,18 @@ module Workspace
 
     def cmd_ask_list(args)
       workspace = nil
+      all = false
       json = false
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace ask list [--json]"
+        opts.banner = "Usage: workspace ask list [--all] [--json]"
         opts.on("--name NAME", "Workspace to act on instead of the one detected from cwd") { |v| workspace = v }
+        opts.on("--all", "Also list answered and withdrawn questions, with their status") { all = true }
         opts.on("--json", "Emit the documented JSON schema instead of a table") { json = true }
       end
       parser.parse!(args)
       raise UsageError, parser.help if args.any?
 
-      result = @ask_command.list(working_dir: working_dir_for(workspace), json: json)
+      result = @ask_command.list(working_dir: working_dir_for(workspace), json: json, all: all)
       @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
     rescue OptionParser::ParseError => e
       raise unless json_requested?(json, args)
@@ -1780,6 +1788,29 @@ module Workspace
       end
 
       result = @ask_command.answer(id, answer, working_dir: working_dir_for(workspace), json: json, deliver: deliver)
+      @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
+    rescue OptionParser::ParseError => e
+      raise unless json_requested?(json, args)
+      emit_json_error(Commands::Ask::JSON_SCHEMA_VERSION, e)
+    end
+
+    def cmd_ask_withdraw(args)
+      workspace = nil
+      json = false
+      parser = OptionParser.new do |opts|
+        opts.banner = "Usage: workspace ask withdraw <id> [--json]"
+        opts.on("--name NAME", "Workspace to act on instead of the one detected from cwd") { |v| workspace = v }
+        opts.on("--json", "Emit the documented JSON schema instead of a message") { json = true }
+      end
+      parser.parse!(args)
+
+      id = args.shift
+      if id.nil? || args.any?
+        raise UsageError, parser.help unless json_requested?(json, args)
+        return emit_json_usage_error(Commands::Ask::JSON_SCHEMA_VERSION, "workspace ask withdraw: an id is required.")
+      end
+
+      result = @ask_command.withdraw(id, working_dir: working_dir_for(workspace), json: json)
       @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
     rescue OptionParser::ParseError => e
       raise unless json_requested?(json, args)

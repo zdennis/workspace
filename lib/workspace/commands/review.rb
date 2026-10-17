@@ -273,8 +273,8 @@ module Workspace
       # and a person hasn't resolved yet.
       def asks_facts(workspace)
         records = @ask_store_for.call(workspace).list
-        open, answered = records.partition { |r| r["status"] == "open" }
-        {"open" => open.map { |r| ask_facts(r) }, "answered" => answered.size}
+        open = records.select { |r| r["status"] == "open" }
+        {"open" => open.map { |r| ask_facts(r) }, "answered" => records.count { |r| r["status"] == "answered" }}
       rescue Workspace::Error => e
         warn_line "workspace review: not reading questions for #{workspace}: #{e.message}"
         {"open" => [], "answered" => 0, "unavailable" => true}

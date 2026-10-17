@@ -847,8 +847,13 @@ module CLITestHelpers
       @result
     end
 
-    def list(working_dir: Dir.pwd, json: false)
-      @calls << {action: :list, working_dir: working_dir, json: json}
+    def list(working_dir: Dir.pwd, json: false, all: false)
+      @calls << {action: :list, working_dir: working_dir, json: json, all: all}
+      @result
+    end
+
+    def withdraw(id, working_dir: Dir.pwd, json: false)
+      @calls << {action: :withdraw, id: id, working_dir: working_dir, json: json}
       @result
     end
 

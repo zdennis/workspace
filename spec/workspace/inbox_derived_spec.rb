@@ -209,6 +209,12 @@ RSpec.describe Workspace::InboxDerived do
         "links" => a_hash_including("pane" => "%12"))
     end
 
+    it "leaves out an ask once it is withdrawn" do
+      ask_store_for.call("api").withdraw(ask["id"])
+
+      expect(read[:rows].map { |row| row["kind"] }).not_to include("ask")
+    end
+
     it "reads the daemons in parallel, each with its own timeout, and skips a stopped workspace's" do
       read
       calls = []

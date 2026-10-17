@@ -65,6 +65,7 @@ These record that something changed, so a reader can refetch (`snapshot --json`)
 |------|-----------|-----------|--------|
 | `ask_created` | the asking workspace | `ask`, once the question is stored | `id`, `workspace`, `pane_id` (the tmux pane id, or `null`) |
 | `ask_answered` | the asking workspace | `ask answer`, once the answer is stored and before `--deliver` types it | `id`, `workspace`, `pane_id` |
+| `ask_withdrawn` | the asking workspace | `ask withdraw`, once the question is marked withdrawn | `id`, `workspace`, `pane_id` |
 | `lock_released` | the lock namespace's project, as for the lock waits | `lock release`, once per lock released | `lock`, `pid`, and `workspace` from a worktree |
 | `lock_cleared` | the lock namespace's project | `lock clear`, for each lock it cleared; a lock kept for a process group it could not stop writes nothing | `lock`, `pid` (the clearer's), and `workspace` from a worktree |
 | `worktree_started` | the worktree's workspace name | `start`, once the worktree's config is written and before it launches | `workspace`, `parent` (the main workspace's name), `branch`, `created` (`false` for an existing or adopted worktree), `task` (the task id, when a task store is wired) |

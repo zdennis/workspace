@@ -21,7 +21,7 @@ module Workspace
       # @param notifier_factory [#call] builds a {Workspace::Notifier} for a notify command string
       # @param pane_sender [Workspace::Commands::Send, nil] types an answer into the
       #   asking pane for `answer --deliver`; nil refuses `--deliver`
-      # @param event_log [Workspace::EventLog, nil] records `ask_created` and `ask_answered`
+      # @param event_log [Workspace::EventLog, nil] records `ask_created`, `ask_answered` and `ask_withdrawn`
       #   (ids and pane only, never the text); nil records nothing
       # @param env [Hash] process environment, for `TMUX_PANE`
       # @param output [IO] stream for the recorded/listed/answered question
@@ -76,15 +76,19 @@ module Workspace
 
       # @param working_dir [String] directory to detect the workspace from
       # @param json [Boolean] emit the documented JSON schema instead of a table
+      # @param all [Boolean] also list answered and withdrawn questions
       # @return [Hash] {exit_code:}
-      def list(working_dir: Dir.pwd, json: false)
+      def list(working_dir: Dir.pwd, json: false, all: false)
         name = workspace_for(working_dir)
-        records = store_for(name).list(open_only: true)
+        records = store_for(name).list(open_only: !all)
 
         if json
           @output.puts JSON.generate({"schema_version" => JSON_SCHEMA_VERSION, "ok" => true, "workspace" => name, "questions" => records})
         elsif records.empty?
-          @output.puts "No open questions for #{name}"
+          @output.puts all ? "No questions for #{name}" : "No open questions for #{name}"
+        elsif all
+          @output.puts "ID      STATUS     PANE   QUESTION"
+          records.each { |r| @output.puts format("%-8s%-11s%-7s%s", r["id"], r["status"], r["pane"] || "-", r["question"]) }
         else
           @output.puts "ID      PANE   QUESTION"
           records.each { |r| @output.puts format("%-8s%-7s%s", r["id"], r["pane"] || "-", r["question"]) }
@@ -115,11 +119,7 @@ module Workspace
         store = store_for(name)
         pane = deliver ? pane_to_deliver_to(store, name, id) : nil
         record = store.answer(id, answer)
-        unless record
-          already_answered = store.list.any? { |r| r["id"] == id }
-          message = already_answered ? "Question '#{id}' was already answered for #{name}." : "No question '#{id}' for #{name}."
-          raise Workspace::Error, message
-        end
+        raise not_open_error(store, name, id, "answered") unless record
         record_event("ask_answered", name, record)
         delivered = pane ? deliver_answer(name, pane, answer, id) : nil
 
@@ -138,7 +138,45 @@ module Workspace
         {exit_code: e.is_a?(Run::NotSubmittedError) ? Run::NotSubmittedError::EXIT_CODE : 1}
       end
 
+      # Closes an open question its asker no longer needs answered. Only an
+      # open question can be withdrawn; the event carries ids, never text.
+      #
+      # @param id [String]
+      # @param working_dir [String] directory to detect the workspace from
+      # @param json [Boolean] emit the documented JSON schema instead of a message
+      # @return [Hash] {exit_code:}
+      def withdraw(id, working_dir: Dir.pwd, json: false)
+        name = workspace_for(working_dir)
+        store = store_for(name)
+        record = store.withdraw(id)
+        raise not_open_error(store, name, id, "withdrawn") unless record
+        record_event("ask_withdrawn", name, record)
+
+        if json
+          @output.puts JSON.generate({"schema_version" => JSON_SCHEMA_VERSION, "ok" => true, "question" => record})
+        else
+          @output.puts "Withdrew #{id}"
+        end
+        {exit_code: 0}
+      rescue Workspace::Error => e
+        raise unless json
+        @output.puts JSON.generate(Workspace::JsonEnvelope.from_exception(JSON_SCHEMA_VERSION, e))
+        {exit_code: 1}
+      end
+
       private
+
+      # The error for an id with no open question: a closed one is
+      # `ask_not_open` (its status in `details`), an unknown one a plain error.
+      # +verb+ is what the caller tried to do, for the message.
+      def not_open_error(store, name, id, verb)
+        record = store.list.find { |r| r["id"] == id }
+        return Workspace::Error.new("No question '#{id}' for #{name}.") unless record
+
+        status = record["status"]
+        Workspace::Error.new("Question '#{id}' was already #{status} for #{name}, so it can't be #{verb}.",
+          code: "ask_not_open", details: {"id" => id, "status" => status})
+      end
 
       # The open question's asking pane, checked against the workspace's
       # session. Nil when there is no such open question, so the normal

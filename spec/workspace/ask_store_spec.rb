@@ -135,4 +135,42 @@ RSpec.describe Workspace::AskStore do
       expect(store.answer(record["id"], "second answer")).to be_nil
     end
   end
+
+  describe "#withdraw" do
+    it "marks an open question withdrawn, leaving the answer empty" do
+      record = store.add(question: "q1", default: "d1")
+
+      withdrawn = store.withdraw(record["id"])
+
+      expect(withdrawn).to include("status" => "withdrawn", "answer" => nil, "answered_at" => nil)
+      expect(withdrawn["withdrawn_at"]).to be_a(String)
+      expect(store.list(open_only: true)).to eq([])
+      expect(store.list.map { |r| r["status"] }).to eq(["withdrawn"])
+    end
+
+    it "returns nil for an unknown id, an answered question and a withdrawn one" do
+      answered = store.add(question: "q1", default: "d1")
+      store.answer(answered["id"], "a")
+      withdrawn = store.add(question: "q2", default: "d2")
+      store.withdraw(withdrawn["id"])
+
+      expect(store.withdraw("nope")).to be_nil
+      expect(store.withdraw(answered["id"])).to be_nil
+      expect(store.withdraw(withdrawn["id"])).to be_nil
+    end
+
+    it "makes answer return nil" do
+      record = store.add(question: "q1", default: "d1")
+      store.withdraw(record["id"])
+
+      expect(store.answer(record["id"], "late")).to be_nil
+    end
+
+    it "refuses to withdraw against an unparseable file, leaving it unchanged" do
+      File.write(path, "not json")
+
+      expect { store.withdraw("abc123") }.to raise_error(Workspace::Error, /left unchanged/)
+      expect(File.read(path)).to eq("not json")
+    end
+  end
 end

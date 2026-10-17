@@ -56,7 +56,7 @@ module Workspace
     # unreadable file also reads as empty, with a warning, since nothing is
     # written back.
     #
-    # @param open_only [Boolean] only unanswered questions
+    # @param open_only [Boolean] only open questions (not answered or withdrawn)
     # @return [Array<Hash>] records, oldest first
     def list(open_only: false)
       return [] unless File.exist?(@path)
@@ -77,6 +77,21 @@ module Workspace
         record["answer"] = answer
         record["status"] = "answered"
         record["answered_at"] = now_iso
+        record
+      end
+    end
+
+    # Closes an open question its asker no longer needs answered. The
+    # answer stays nil.
+    #
+    # @param id [String]
+    # @return [Hash, nil] the updated record, or nil when no open question has this id
+    def withdraw(id)
+      with_lock do |data|
+        record = records_in(data).find { |r| r["id"] == id && r["status"] == "open" }
+        next nil unless record
+        record["status"] = "withdrawn"
+        record["withdrawn_at"] = now_iso
         record
       end
     end

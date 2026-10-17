@@ -104,10 +104,11 @@ RSpec.describe Workspace::Commands::Review do
     end
   end
 
-  def add_ask(workspace, question, default, answered: false)
+  def add_ask(workspace, question, default, answered: false, withdrawn: false)
     store = Workspace::AskStore.new(path: config.ask_state_path(workspace))
     record = store.add(question: question, default: default, pane: "%2")
     store.answer(record["id"], "yes") if answered
+    store.withdraw(record["id"]) if withdrawn
   end
 
   describe "#show" do
@@ -283,6 +284,14 @@ RSpec.describe Workspace::Commands::Review do
       expect(output.string).to include("Task    unavailable (task store unreadable)", "Sessions  unavailable (ledger unreadable)")
     ensure
       File.chmod(0o600, path) if path
+    end
+
+    it "does not count a withdrawn question as answered" do
+      add_ask("app.worktree-fix", "Gone?", "no", withdrawn: true)
+
+      review.show(name: "app.worktree-fix", json: true)
+
+      expect(parsed["asks"]).to include("open" => [], "answered" => 0)
     end
 
     it "lists open questions (the defaults the agent took) and counts answered ones" do

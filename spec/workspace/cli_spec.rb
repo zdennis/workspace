@@ -1837,6 +1837,33 @@ RSpec.describe Workspace::CLI do
       expect(ask_command.calls).to contain_exactly(a_hash_including(action: :answer, id: "q_7", answer: "-y", deliver: true, json: true))
     end
 
+    it "passes --all to ask list" do
+      ask_command = CLITestHelpers::FakeAskCommand.new
+      cli, = build_test_cli(ask_command: ask_command)
+
+      cli.run(["ask", "list", "--all"])
+
+      expect(ask_command.calls).to contain_exactly(a_hash_including(action: :list, all: true))
+    end
+
+    it "dispatches ask withdraw with the id" do
+      ask_command = CLITestHelpers::FakeAskCommand.new
+      cli, = build_test_cli(ask_command: ask_command)
+
+      cli.run(["ask", "withdraw", "q_7", "--json"])
+
+      expect(ask_command.calls).to contain_exactly(a_hash_including(action: :withdraw, id: "q_7", json: true))
+    end
+
+    it "treats withdraw as the question text when --default is given" do
+      ask_command = CLITestHelpers::FakeAskCommand.new
+      cli, = build_test_cli(ask_command: ask_command)
+
+      cli.run(["ask", "withdraw", "--default", "x"])
+
+      expect(ask_command.calls).to contain_exactly(a_hash_including(action: :call, question: "withdraw"))
+    end
+
     it "does not deliver unless asked" do
       ask_command = CLITestHelpers::FakeAskCommand.new
       cli, = build_test_cli(ask_command: ask_command)
