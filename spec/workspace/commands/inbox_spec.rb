@@ -1171,4 +1171,201 @@ RSpec.describe Workspace::Commands::Inbox do
       expect(result[:exit_code]).to eq(0)
     end
   end
+  # Commands built on a clock of their own, over the same temp store.
+  def inbox_at(time, **extra)
+    described_class.new(config: config, project_detector: project_detector, project_catalog: project_catalog,
+      session_ledger: session_ledger, env: env, input: input, clock: -> { time },
+      output: extra.delete(:output) || StringIO.new, error_output: error_output,
+      store_factory: ->(path:, scope:, error_output:) { Workspace::InboxStore.new(path: path, scope: scope, clock: -> { time }, error_output: error_output) },
+      **extra)
+  end
+
+  def listed_at(time, **opts)
+    io = StringIO.new
+    inbox_at(time, output: io).list(working_dir: "/app", json: true, **opts)
+    JSON.parse(io.string)["items"]
+  end
+
+  describe "#snooze" do
+    let(:event_log) { CLITestHelpers::FakeEventLog.new }
+
+    def add_item(title = "one", **opts)
+      command.add(title: title, working_dir: "/app", **opts)[:results].first["item"]
+    end
+
+    def stored_item(id)
+      stored(config.inbox_path("workspace", "api.fix")).find { |r| r["id"] == id }
+    end
+
+    it "snoozes for a duration and reports the wake time" do
+      item = add_item
+
+      result = command.snooze([item["id"]], for_duration: "2h", working_dir: "/app")
+
+      expect(result[:exit_code]).to eq(0)
+      expect(result[:results]).to contain_exactly(a_hash_including("id" => item["id"], "outcome" => "snoozed", "scope" => "workspace:api.fix",
+        "item" => a_hash_including("state" => "snoozed", "snooze_until" => "2026-10-16T14:00:00Z")))
+      expect(stored_item(item["id"])).to include("state" => "snoozed", "snooze_until" => "2026-10-16T14:00:00Z")
+      expect(output.string).to include("#{item["id"]} snoozed until 2026-10-16T14:00:00Z (workspace:api.fix): one")
+    end
+
+    it "snoozes until an ISO 8601 time, converted to UTC" do
+      item = add_item
+
+      command.snooze([item["id"]], until_time: "2026-10-17T09:00:00+02:00", working_dir: "/app")
+
+      expect(stored_item(item["id"])["snooze_until"]).to eq("2026-10-17T07:00:00Z")
+    end
+
+    it "needs exactly one of --until and --for, and an id" do
+      item = add_item
+
+      expect { command.snooze([item["id"]], working_dir: "/app") }.to raise_error(Workspace::UsageError, /--until or --for/)
+      expect { command.snooze([item["id"]], until_time: "2026-10-17T09:00:00Z", for_duration: "1h", working_dir: "/app") }
+        .to raise_error(Workspace::UsageError, /not both/)
+      expect { command.snooze([], for_duration: "1h", working_dir: "/app") }.to raise_error(Workspace::UsageError)
+    end
+
+    it "refuses a time that is not in the future, a bad time and a bad duration, naming the field" do
+      item = add_item
+
+      expect(refused_field { command.snooze([item["id"]], until_time: "2026-10-16T12:00:00Z", working_dir: "/app") }).to eq("until")
+      expect(refused_field { command.snooze([item["id"]], until_time: "tomorrow", working_dir: "/app") }).to eq("until")
+      expect(refused_field { command.snooze([item["id"]], for_duration: "soon", working_dir: "/app") }).to eq("for")
+      expect(refused_field { command.snooze([item["id"]], for_duration: "0", working_dir: "/app") }).to eq("for")
+      expect(stored_item(item["id"])["state"]).to eq("open")
+    end
+
+    it "hides the item from the default list until the wake time, then it reads open" do
+      item = add_item
+      command.snooze([item["id"]], for_duration: "2h", working_dir: "/app")
+
+      expect(listed_at(now + 3599).map { |i| i["id"] }).not_to include(item["id"])
+      woke = listed_at(now + 7200).find { |i| i["id"] == item["id"] }
+      expect(woke).to include("state" => "open", "snooze_until" => nil)
+    end
+
+    it "lists a snoozed item under --state snoozed" do
+      item = add_item
+      command.snooze([item["id"]], for_duration: "2h", working_dir: "/app")
+
+      expect(listed_at(now + 60, states: %w[snoozed]).map { |i| i["id"] }).to eq([item["id"]])
+    end
+
+    it "changes the wake time of a snoozed item, and reports the same time as unchanged" do
+      item = add_item
+      command.snooze([item["id"]], until_time: "2026-10-16T14:00:00Z", working_dir: "/app")
+
+      same = command.snooze([item["id"]], until_time: "2026-10-16T14:00:00Z", working_dir: "/app")[:results].first
+      moved = command.snooze([item["id"]], until_time: "2026-10-16T16:00:00Z", working_dir: "/app")[:results].first
+
+      expect(same["outcome"]).to eq("unchanged")
+      expect(moved["outcome"]).to eq("snoozed")
+      expect(stored_item(item["id"])["snooze_until"]).to eq("2026-10-16T16:00:00Z")
+    end
+
+    it "refuses to snooze a done or dismissed item, as a failed row" do
+      item = add_item
+      command.done([item["id"]], working_dir: "/app")
+
+      result = command.snooze([item["id"]], for_duration: "1h", working_dir: "/app")
+
+      expect(result[:exit_code]).to eq(1)
+      expect(result[:results].first).to include("outcome" => "failed", "code" => "invalid_inbox_item",
+        "details" => {"field" => "state", "reason" => a_string_matching(/done.*reopen/)})
+      expect(stored_item(item["id"])["state"]).to eq("done")
+    end
+
+    it "handles several ids, with a failed row for an unknown one" do
+      a = add_item("a")
+
+      result = command.snooze([a["id"], "nosuchid"], for_duration: "1h", working_dir: "/app")
+
+      expect(result[:exit_code]).to eq(3)
+      expect(result[:results].map { |r| r["outcome"] }).to eq(%w[snoozed failed])
+    end
+
+    it "is cleared by reopen" do
+      item = add_item
+      command.snooze([item["id"]], for_duration: "1h", working_dir: "/app")
+
+      row = command.reopen([item["id"]], working_dir: "/app")[:results].first
+
+      expect(row["outcome"]).to eq("reopened")
+      expect(stored_item(item["id"])).to include("state" => "open", "snooze_until" => nil)
+    end
+
+    it "writes inbox_changed with change snoozed, and nothing for an unchanged or refused snooze" do
+      logged = inbox_at(now, event_log: event_log)
+      item = logged.add(title: "x", working_dir: "/app")[:results].first["item"]
+      event_log.events.clear
+
+      logged.snooze([item["id"]], until_time: "2026-10-16T14:00:00Z", working_dir: "/app")
+      logged.snooze([item["id"]], until_time: "2026-10-16T14:00:00Z", working_dir: "/app")
+      expect { logged.snooze([item["id"]], for_duration: "bad", working_dir: "/app") }.to raise_error(Workspace::Error)
+
+      expect(event_log.events).to eq([{"type" => "inbox_changed", "project" => "api.fix",
+                                       "data" => {"id" => item["id"], "scope" => "workspace", "scope_key" => "api.fix", "state" => "snoozed", "change" => "snoozed"}}])
+    end
+
+    it "keeps the item's text out of the event log" do
+      logged = inbox_at(now, event_log: event_log)
+      item = logged.add(title: "secret title", body: "secret body", working_dir: "/app")[:results].first["item"]
+
+      logged.snooze([item["id"]], for_duration: "1h", working_dir: "/app")
+
+      expect(event_log.events.to_s).not_to include("secret")
+    end
+  end
+
+  describe "expiry" do
+    let(:event_log) { CLITestHelpers::FakeEventLog.new }
+    let(:later) { now + 4 * 3600 }
+
+    it "leaves an expired item out of the default list and shows it as dismissed by expiry" do
+      item = command.add(title: "short lived", expires: "1h", working_dir: "/app")[:results].first["item"]
+
+      expect(listed_at(now + 1800).map { |i| i["id"] }).to include(item["id"])
+      expect(listed_at(later).map { |i| i["id"] }).not_to include(item["id"])
+      expired = listed_at(later, states: %w[dismissed]).find { |i| i["id"] == item["id"] }
+      expect(expired).to include("state" => "dismissed", "resolved_by" => {"kind" => "expiry"})
+    end
+
+    it "stores the expiry on the next write and logs expired once for each item" do
+      a = command.add(title: "a", expires: "1h", working_dir: "/app")[:results].first["item"]
+      b = command.add(title: "b", expires: "2h", working_dir: "/app")[:results].first["item"]
+      command.add(title: "c", expires: "9h", working_dir: "/app")
+      event_log.events.clear
+
+      inbox_at(later, event_log: event_log).add(title: "d", working_dir: "/app")
+      inbox_at(later, event_log: event_log).add(title: "e", working_dir: "/app")
+
+      expired = event_log.events.select { |e| e["data"]["change"] == "expired" }
+      expect(expired.map { |e| e["data"]["id"] }).to contain_exactly(a["id"], b["id"])
+      expect(expired.first).to include("type" => "inbox_changed", "project" => "api.fix")
+      expect(expired.first["data"]).to include("scope" => "workspace", "scope_key" => "api.fix", "state" => "dismissed")
+      expect(stored(config.inbox_path("workspace", "api.fix")).find { |r| r["id"] == a["id"] })
+        .to include("state" => "dismissed", "resolved_by" => {"kind" => "expiry"})
+    end
+
+    it "logs expired for an item that expired during a done on another item" do
+      a = command.add(title: "a", expires: "1h", working_dir: "/app")[:results].first["item"]
+      b = command.add(title: "b", working_dir: "/app")[:results].first["item"]
+      event_log.events.clear
+
+      inbox_at(later, event_log: event_log).done([b["id"]], working_dir: "/app")
+
+      changes = event_log.events.map { |e| [e["data"]["id"], e["data"]["change"]] }
+      expect(changes).to contain_exactly([a["id"], "expired"], [b["id"], "resolved"])
+    end
+
+    it "logs nothing for a read of an expired item" do
+      command.add(title: "a", expires: "1h", working_dir: "/app")
+      event_log.events.clear
+
+      listed_at(later)
+
+      expect(event_log.events).to be_empty
+    end
+  end
 end

@@ -1911,6 +1911,22 @@ RSpec.describe Workspace::CLI do
       expect { cli.run(["inbox", "edit", "--title", "T"]) }.to raise_error(FakeSystemExit)
     end
 
+    it "passes snooze its ids, the wake option and scope" do
+      expect(inbox_command).to receive(:snooze).with(
+        ["abc", "def"], target: {global: true}, working_dir: anything, for_duration: "2h"
+      ).and_return({exit_code: 0, results: []})
+      expect(inbox_command).to receive(:snooze).with(
+        ["abc"], target: {}, working_dir: anything, until_time: "2026-10-20T09:00:00Z"
+      ).and_return({exit_code: 0, results: []})
+
+      cli.run(["inbox", "snooze", "abc", "def", "--for", "2h", "--global"])
+      cli.run(["inbox", "snooze", "abc", "--until=2026-10-20T09:00:00Z"])
+    end
+
+    it "refuses snooze without an id" do
+      expect { cli.run(["inbox", "snooze", "--for", "2h"]) }.to raise_error(FakeSystemExit)
+    end
+
     it "refuses reopen --dedupe-key and done with neither ids nor a key" do
       expect { cli.run(["inbox", "reopen", "--dedupe-key", "k"]) }.to raise_error(FakeSystemExit)
       expect { cli.run(["inbox", "done"]) }.to raise_error(FakeSystemExit)

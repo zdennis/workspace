@@ -13,9 +13,11 @@ module Workspace
   #
   # The store keeps text as data and checks none of it; the command that
   # builds a record checks its fields (string keys, valid ISO 8601 times)
-  # before it gets here. Retention (the live and resolved caps) and storing a
-  # passed snooze or expiry on write belong to later items; reads already
-  # report both.
+  # before it gets here. Every write stores a passed snooze (the item is
+  # open again) and a passed expiry (the item is dismissed by expiry) on every
+  # item it finds, and reports each expiry to {#on_expired}; reads compute both
+  # and never write. Retention (the live and resolved caps) belongs to a later
+  # item.
   class InboxStore
     # The states {#transition} moves an item to.
     STATES = %w[open snoozed done dismissed].freeze
@@ -24,6 +26,11 @@ module Workspace
     # @!attribute record [Hash] the item after the call
     # @!attribute changed [Boolean] false when it was already in the state
     Transition = Struct.new(:record, :changed)
+
+    # Called with each item an earlier-set expiry dismissed during a write, after
+    # the write is done and the lock released (the caller logs `expired`).
+    # @return [#call, nil]
+    attr_accessor :on_expired
 
     # @param path [String] path to this scope's JSON file
     # @param scope [String] how this scope is named in errors (`workspace:api`)
@@ -131,6 +138,7 @@ module Workspace
     # @param by [Hash, nil] who resolved it (`{"kind" => "user", "pane" => "%3"}`)
     # @param snooze_until [String, nil] ISO 8601 time to wake at; required for `snoozed`
     # @return [Transition, nil] nil when there is no such id
+    # @raise [Workspace::Error] `invalid_inbox_item` when snoozing a done or dismissed item
     def transition(id, to:, by: nil, snooze_until: nil)
       transition_where(to, by, snooze_until) { |r| r["id"] == id }
     end
@@ -154,6 +162,10 @@ module Workspace
         record = records_in(data).find { |r| yield r }
         next nil unless record
         settled = settle(record, now)
+        if to == "snoozed" && %w[done dismissed].include?(settled["state"])
+          raise Workspace::Error.new("Invalid inbox item: state is #{settled["state"]}; reopen it before snoozing.",
+            code: "invalid_inbox_item", details: {"field" => "state", "reason" => "is #{settled["state"]}; reopen it before snoozing"})
+        end
         next Transition.new(settled, false) if settled["state"] == to && (to != "snoozed" || settled["snooze_until"] == snooze_until)
         record.replace(settled)
         apply_transition(record, to, by, now, snooze_until)
@@ -212,6 +224,25 @@ module Workspace
       record.merge("state" => "open", "snooze_until" => nil)
     end
 
+    # The write is done by now, so a failing callback only warns.
+    def report_expired(record)
+      @on_expired&.call(record)
+    rescue => e
+      @error_output.puts "workspace: could not report the expiry of inbox item #{record["id"]} (#{e.class})"
+    end
+
+    # Applies every passed snooze and expiry to the stored records in place.
+    # @return [Array<Hash>] the records that expired
+    def settle_stored(data)
+      now = @clock.call
+      records_in(data).filter_map do |record|
+        settled = settle(record, now)
+        next if settled.equal?(record)
+        record.replace(settled)
+        record if settled["resolved_by"] == {"kind" => "expiry"}
+      end
+    end
+
     def parse_time(value)
       Time.iso8601(value) if value.is_a?(String)
     rescue ArgumentError
@@ -224,12 +255,15 @@ module Workspace
     def with_lock(readonly: false)
       FileUtils.mkdir_p(File.dirname(@path), mode: 0o700)
       result = nil
+      expired = []
       File.open(@lockfile_path, File::RDWR | File::CREAT, 0o600) do |f|
         f.flock(readonly ? File::LOCK_SH : File::LOCK_EX)
         data = read_data(readonly: readonly)
+        expired = settle_stored(data) unless readonly
         result = yield data
         write_data(data) unless readonly
       end
+      expired.each { |record| report_expired(record) }
       result
     rescue SystemCallError => e
       raise Workspace::Error, "Could not access inbox store at #{@path} (#{e.class}: errno #{e.errno})"

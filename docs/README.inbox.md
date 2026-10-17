@@ -18,6 +18,7 @@ workspace inbox done --dedupe-key KEY [scope] [--json]
 workspace inbox dismiss ID... [scope] [--json]
 workspace inbox dismiss --dedupe-key KEY [scope] [--json]
 workspace inbox reopen ID... [scope] [--json]
+workspace inbox snooze ID... (--until ISO | --for DURATION) [scope] [--json]
 ```
 
 Scope: at most one of `--name WORKSPACE`, `--project NAME|PATH`, `--global`. Every flag accepts the `--flag=value` form.
@@ -34,6 +35,8 @@ workspace inbox dismiss a1b2c3d4e5 --json
 workspace inbox add "CI failed" --type alert --dedupe-key github_check:zdennis/api:rspec:9f3c2e1 --global
 workspace inbox done --dedupe-key github_check:zdennis/api:rspec:9f3c2e1 --global
 workspace inbox reopen a1b2c3d4e5
+workspace inbox snooze a1b2c3d4e5 --for 2h
+workspace inbox snooze a1b2c3d4e5 --until 2026-10-20T09:00:00Z --json
 ```
 
 ## Adding from JSON
@@ -94,7 +97,7 @@ A project is keyed by the realpath of its git common dir, so two clones with the
 | `source.ref` | Up to 200 characters |
 | `source.url` | `https://` only |
 | `links` | `pane`, `plan_task`, `run_id` up to 64 characters; `pr` a positive number |
-| `expires_at` | From `--expires`: a duration such as `2h` or an ISO 8601 time in the future. Once passed, the item reads as `dismissed` |
+| `expires_at` | From `--expires`: a duration such as `2h` or an ISO 8601 time in the future. Once passed, the item reads as `dismissed` with `resolved_by` `{"kind":"expiry"}` and `resolved_at` set to the expiry time |
 | `created_by` | `kind` is `agent` when the session ledger shows an agent session open in `$TMUX_PANE`, `user` with `--as-user`, else `cli`; also `pane`, `session_id`, `tmux_server` |
 
 Text with NUL or another control character (an escape sequence, a C1 control, a line separator) is refused as `invalid_inbox_item`; a body may hold `\n` and `\t`. Text is data: it is never run, typed into a pane or put in the event log, and human output shows any control character as an escape such as `\e`.
@@ -107,10 +110,14 @@ Text with NUL or another control character (an escape sequence, a C1 control, a 
 
 `edit` changes the title, body, expiry and links of one item, in any state (an edit never reopens a done or dismissed item). Pass at least one option; a missing one leaves that field as it is. Each value is checked like `add` (`invalid_inbox_item` names the field, and nothing is written when any is refused). An empty `--body` or link value clears it (`--link-pr ""` too), and `--no-expires` drops the expiry. The action document (`inbox edit`) has one row, outcome `updated`, or `unchanged` when every value is what the item already holds (nothing is rewritten, `updated_at` stays; a relative `--expires` such as `2h` is a new time each call, so repeating it is `updated`). An empty `--body-file` is refused (`--body ""` clears the body). An unknown or ambiguous id is the command's error, not a row. `type`, `source`, `scope` and the dedupe key are not editable.
 
-Each `created`, `updated`, `resolved` or `reopened` outcome (an `edit` that changed something is `updated`) writes one `inbox_changed` event with ids and states only (see [`event-log`](README.event-log.md#state-and-lifecycle-events)); `unchanged`, `suppressed` and `failed` rows write none, and an event log that cannot be written does not fail the command.
+Each `created`, `updated`, `resolved`, `reopened` or `snoozed` outcome (an `edit` that changed something is `updated`) writes one `inbox_changed` event with ids and states only (see [`event-log`](README.event-log.md#state-and-lifecycle-events)); `unchanged`, `suppressed` and `failed` rows write none, and an event log that cannot be written does not fail the command.
+
+`snooze` hides open items until a time, given as `--until` (an ISO 8601 time) or `--for` (a duration such as `30m` or `2h`); pass exactly one, and it must be in the future (`invalid_inbox_item` with `details.field` `until` or `for` otherwise). It takes one or more ids and prints an action document (`inbox snooze`) shaped like `done`'s, with outcome `snoozed` (the item carries `state` `snoozed` and `snooze_until`), `unchanged` (already snoozed to that time) or `failed`. A snoozed item can be given a new time. An item whose `expires_at` falls before the wake time expires first. A done or dismissed item is a `failed` row with `invalid_inbox_item` (`details.field` `state`): `reopen` it first. `reopen` also clears a snooze.
+
+Snoozes and expiries are time-driven, so reads work them out and never write: `list` leaves a snoozed item out of the default `open` list until `snooze_until`, after which it reads `open` with `snooze_until` null, and an item past its `expires_at` reads `dismissed` with `resolved_by` `{"kind":"expiry"}`. The next write to the scope (any `add`, `edit`, `done`, `dismiss`, `reopen` or `snooze` that reaches it) stores both and writes one `inbox_changed` event with `change` `expired` for each item that expired; a wake writes no event.
 
 Errors use the [`--json` error envelope](README.json.md): `invalid_inbox_item`, `unknown_inbox_item`, `ambiguous_inbox_item`, `inbox_store_unreadable`, `not_in_workspace`, `unknown_workspace`, `usage`.
 
 `workspace capabilities --json` reports `features.inbox: 1` for these commands.
 
-Exit 0, 1 on an error; `done`, `dismiss` and `reopen` exit 3 when only some ids failed.
+Exit 0, 1 on an error; `done`, `dismiss`, `reopen` and `snooze` exit 3 when only some ids failed.

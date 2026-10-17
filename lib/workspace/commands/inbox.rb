@@ -274,6 +274,26 @@ module Workspace
         {exit_code: 0, results: [{"id" => item["id"], "outcome" => outcome, "scope" => scope.label, "item" => item}]}
       end
 
+      # Hides items until a time: each stays out of the default `list` until
+      # then and reads `open` after. A snoozed item can be given a new time;
+      # the same time is `unchanged`. A done or dismissed item is refused (reopen it first).
+      #
+      # @param ids [Array<String>]
+      # @param until_time [String, nil] an ISO 8601 time in the future
+      # @param for_duration [String, nil] a duration (`2h`, `30m`) from now; exactly one of the two
+      # @param target [Hash] `:name`, `:project`, `:global`; none searches every scope
+      # @param working_dir [String]
+      # @return [Hash] as {#done}, with outcome `snoozed` instead of `resolved`
+      # @raise [Workspace::UsageError] neither or both times, or no id
+      # @raise [Workspace::Error] `invalid_inbox_item` for a time that is not valid or not in the future
+      def snooze(ids, until_time: nil, for_duration: nil, target: {}, working_dir: Dir.pwd)
+        raise UsageError, "Pass --until or --for." if until_time.nil? && for_duration.nil?
+        raise UsageError, "Pass --until or --for, not both." if until_time && for_duration
+        raise UsageError, "inbox snooze needs at least one id." if ids.empty?
+        wake = checked_wake(until_time, for_duration)
+        change(ids, "snoozed", target, working_dir, nil, snooze_until: wake)
+      end
+
       # Moves done, dismissed or snoozed items back to open. Open items are `unchanged`.
       #
       # @param ids [Array<String>]
@@ -286,7 +306,7 @@ module Workspace
 
       private
 
-      def change(ids, to, target, working_dir, dedupe_key = nil)
+      def change(ids, to, target, working_dir, dedupe_key = nil, snooze_until: nil)
         by = to.start_with?("d") ? resolver : nil
         if dedupe_key
           raise UsageError, "Pass ids or --dedupe-key, not both." if ids.any?
@@ -294,7 +314,7 @@ module Workspace
           return {exit_code: (results.first["outcome"] == "failed") ? 1 : 0, results: results}
         end
         scopes = lookup_scopes(target, working_dir)
-        results = ids.map { |id| change_one(id, to, by, scopes) }
+        results = ids.map { |id| change_one(id, to, by, scopes, snooze_until) }
         failed = results.count { |row| row["outcome"] == "failed" }
         exit_code = if failed.zero? then 0
         elsif failed == results.size then 1
@@ -317,17 +337,17 @@ module Workspace
         {"id" => nil, "dedupe_key" => key, "outcome" => "failed", "code" => e.code, "error" => e.message, "details" => e.details}
       end
 
-      def change_one(id, to, by, scopes)
+      def change_one(id, to, by, scopes, snooze_until = nil)
         scope, found = locate(id, scopes, @error_output)
-        apply_change(found["id"], to, by, scope)
+        apply_change(found["id"], to, by, scope, snooze_until)
       rescue Workspace::Error => e
-        raise unless %w[unknown_inbox_item ambiguous_inbox_item inbox_store_unreadable].include?(e.code)
+        raise unless %w[unknown_inbox_item ambiguous_inbox_item inbox_store_unreadable invalid_inbox_item].include?(e.code)
         @error_output.puts e.message
         {"id" => id, "outcome" => "failed", "code" => e.code, "error" => e.message, "details" => e.details}
       end
 
-      def apply_change(id, to, by, scope)
-        transition = store_for(scope).transition(id, to: to, by: by)
+      def apply_change(id, to, by, scope, snooze_until = nil)
+        transition = store_for(scope).transition(id, to: to, by: by, snooze_until: snooze_until)
         raise unknown_item(id) unless transition
         change_row(transition, to, scope)
       end
@@ -337,11 +357,13 @@ module Workspace
         id = item["id"]
         outcome = if !transition.changed then "unchanged"
         elsif to == "open" then "reopened"
+        elsif to == "snoozed" then "snoozed"
         else
           "resolved"
         end
         record_change(item, outcome) unless outcome == "unchanged"
         say = (outcome == "unchanged") ? "#{escape(id)} is already #{item["state"]}" : "#{escape(id)} #{outcome}"
+        say += " until #{item["snooze_until"]}" if outcome == "snoozed"
         @output.puts "#{say} (#{scope.label}): #{escape(item["title"])}"
         {"id" => item["id"], "outcome" => outcome, "scope" => scope.label, "item" => item}
       end
@@ -468,6 +490,22 @@ module Workspace
           "pr" => pr,
           "run_id" => links[:run_id] && checked_text("links.run_id", links[:run_id], max: LINK_MAX, required: true)
         }
+      end
+
+      # @return [String] an ISO 8601 UTC time in the future
+      def checked_wake(until_time, for_duration)
+        now = @clock.call
+        wake = if for_duration
+          field = "for"
+          now + Duration.parse_positive(for_duration)
+        else
+          field = "until"
+          Time.iso8601(until_time.to_s)
+        end
+        raise invalid(field, "must be in the future") unless wake > now
+        wake.utc.iso8601
+      rescue ArgumentError
+        raise invalid(field, for_duration ? "must be a duration like 2h" : "must be an ISO 8601 time")
       end
 
       # @return [String, nil] an ISO 8601 UTC time in the future
@@ -645,7 +683,9 @@ module Workspace
       end
 
       def store_for(scope, error_output = @error_output)
-        @store_factory.call(path: scope.path, scope: scope.label, error_output: error_output)
+        @store_factory.call(path: scope.path, scope: scope.label, error_output: error_output).tap do |store|
+          store.on_expired = ->(item) { record_change(item, "expired") }
+        end
       end
 
       def warnings_from(sink)

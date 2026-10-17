@@ -1793,6 +1793,7 @@ module Workspace
       when "list" then cmd_inbox_list(args)
       when "show" then cmd_inbox_show(args)
       when "edit" then cmd_inbox_edit(args)
+      when "snooze" then cmd_inbox_snooze(args)
       when "done" then cmd_inbox_resolve(args, "done", :done)
       when "dismiss" then cmd_inbox_resolve(args, "dismiss", :dismiss)
       when "reopen" then cmd_inbox_resolve(args, "reopen", :reopen)
@@ -1810,6 +1811,7 @@ module Workspace
                workspace inbox show ID [scope] [--json]
                workspace inbox edit ID [options] [scope] [--json]
                workspace inbox done|dismiss|reopen ID... [scope] [--json]
+               workspace inbox snooze ID... (--until ISO | --for DURATION) [scope] [--json]
 
         A durable list of things that need a person, kept per workspace, per
         project (all worktrees of one repository) or globally. Agents, scripts
@@ -1823,6 +1825,7 @@ module Workspace
           done ID...    Mark items done; one already done is reported unchanged
           dismiss ID... Mark items dismissed (nobody will act on them)
           reopen ID...  Move done, dismissed or snoozed items back to open
+          snooze ID...  Hide open items until a time; they read open again after it
 
         Scope (every subcommand; at most one):
           --name WS         The workspace WS instead of the one detected from the current directory
@@ -1859,6 +1862,9 @@ module Workspace
                                  Change a link ("" clears it)
         Options (done, dismiss):
           --dedupe-key KEY       Resolve the item holding KEY in the scope (no ids); none is unchanged
+        Options (snooze; one of):
+          --until ISO            Wake at this time (2026-10-20T09:00:00Z); it must be in the future
+          --for DURATION         Wake after this long from now (30m, 2h)
         Options (list):
           --state S[,S]          open (default), snoozed, done, dismissed
           --type TYPE            Only this type
@@ -1877,6 +1883,8 @@ module Workspace
           workspace inbox done a1b2c3d4e5 f6a7b8c9d0
           workspace inbox dismiss a1b2c3d4e5 --json
           workspace inbox edit a1b2c3d4e5 --title "Check the deploy again" --expires 2h
+          workspace inbox snooze a1b2c3d4e5 --for 2h
+          workspace inbox snooze a1b2c3d4e5 --until 2026-10-20T09:00:00Z --json
           workspace inbox add "CI failed" --type alert --dedupe-key github_check:org/api:rspec:9f3c2e1 --global
           workspace inbox done --dedupe-key github_check:org/api:rspec:9f3c2e1 --global
       HELP
@@ -2004,6 +2012,26 @@ module Workspace
 
       run_action("inbox edit", json: json) do
         @inbox_command.edit(id, target: target, working_dir: inbox_working_dir(target), **options)
+      end
+    end
+
+    def cmd_inbox_snooze(args)
+      target = {}
+      json = false
+      options = {}
+      parser = OptionParser.new do |opts|
+        opts.banner = "Usage: workspace inbox snooze ID... (--until ISO | --for DURATION) [--json]"
+        inbox_scope_options(opts, target)
+        opts.on("--until ISO", "Wake at this ISO 8601 time") { |v| options[:until_time] = v }
+        opts.on("--for DURATION", "Wake after this long (30m, 2h)") { |v| options[:for_duration] = v }
+        opts.on("--json", "Print one action document (see docs/README.json.md) instead of text, which goes to stderr") { json = true }
+      end
+      parser.parse!(args)
+      raise UsageError, "inbox snooze needs at least one id.\n\n#{parser.help}" if args.empty?
+      raise Error, "inbox is not available: no inbox command was wired" unless @inbox_command
+
+      run_action("inbox snooze", json: json) do
+        @inbox_command.snooze(args.dup, target: target, working_dir: inbox_working_dir(target), **options)
       end
     end
 

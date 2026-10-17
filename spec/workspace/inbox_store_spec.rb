@@ -317,6 +317,116 @@ RSpec.describe Workspace::InboxStore do
     end
   end
 
+  describe "storing a passed snooze or expiry on write" do
+    let(:later) { Time.utc(2026, 10, 16, 15, 0, 0) }
+    let(:store_later) { described_class.new(path: path, scope: "workspace:api", clock: -> { later }, error_output: err) }
+
+    def raw
+      JSON.parse(File.read(path))
+    end
+
+    it "does not write on a read" do
+      store.add(fields.merge("expires_at" => "2026-10-16T13:00:00Z"))
+
+      expect(store_later.list.first["state"]).to eq("dismissed")
+      expect(raw.first).to include("state" => "open", "resolved_by" => nil)
+    end
+
+    it "stores an expiry as dismissed by expiry on the next write, at the expiry time" do
+      expiring = store.add(fields.merge("expires_at" => "2026-10-16T13:00:00Z"))
+
+      store_later.add(fields.merge("title" => "another"))
+
+      expect(raw.find { |r| r["id"] == expiring["id"] }).to include("state" => "dismissed",
+        "resolved_at" => "2026-10-16T13:00:00Z", "resolved_by" => {"kind" => "expiry"}, "snooze_until" => nil)
+    end
+
+    it "stores a passed snooze as open on the next write" do
+      snoozed = store.add(fields)
+      store.transition(snoozed["id"], to: "snoozed", snooze_until: "2026-10-16T13:00:00Z")
+
+      store_later.add(fields)
+
+      expect(raw.find { |r| r["id"] == snoozed["id"] }).to include("state" => "open", "snooze_until" => nil)
+    end
+
+    it "keeps a snooze that has not passed" do
+      snoozed = store.add(fields)
+      store.transition(snoozed["id"], to: "snoozed", snooze_until: "2026-10-16T18:00:00Z")
+
+      store_later.add(fields)
+
+      expect(raw.find { |r| r["id"] == snoozed["id"] }).to include("state" => "snoozed", "snooze_until" => "2026-10-16T18:00:00Z")
+    end
+
+    it "reports each item that expired in the write, once, after the write" do
+      a = store.add(fields.merge("expires_at" => "2026-10-16T13:00:00Z"))
+      b = store.add(fields.merge("expires_at" => "2026-10-16T14:00:00Z"))
+      store.add(fields.merge("expires_at" => "2026-10-16T20:00:00Z"))
+      store.transition(store.add(fields.merge("expires_at" => "2026-10-16T13:30:00Z"))["id"], to: "done")
+      seen = []
+      store_later.on_expired = ->(record) { seen << [record["id"], record["state"], raw.size] }
+
+      store_later.add(fields)
+      store_later.add(fields)
+
+      expect(seen).to contain_exactly([a["id"], "dismissed", 5], [b["id"], "dismissed", 5])
+    end
+
+    it "reports an item that expired under a transition on another item" do
+      expiring = store.add(fields.merge("expires_at" => "2026-10-16T13:00:00Z"))
+      other = store.add(fields)
+      seen = []
+      store_later.on_expired = ->(record) { seen << record["id"] }
+
+      store_later.transition(other["id"], to: "done")
+
+      expect(seen).to eq([expiring["id"]])
+    end
+
+    it "reports nothing for a read" do
+      store.add(fields.merge("expires_at" => "2026-10-16T13:00:00Z"))
+      seen = []
+      store_later.on_expired = ->(record) { seen << record }
+
+      store_later.list
+
+      expect(seen).to be_empty
+    end
+
+    it "refuses to snooze a done, dismissed or expired item, leaving it as it was" do
+      done = store.add(fields)
+      store.transition(done["id"], to: "done")
+      expiring = store.add(fields.merge("expires_at" => "2026-10-16T13:00:00Z"))
+
+      expect { store.transition(done["id"], to: "snoozed", snooze_until: "2026-10-16T18:00:00Z") }
+        .to raise_error(Workspace::Error) { |e| expect([e.code, e.details["field"]]).to eq(["invalid_inbox_item", "state"]) }
+      expect { store_later.transition(expiring["id"], to: "snoozed", snooze_until: "2026-10-16T18:00:00Z") }
+        .to raise_error(Workspace::Error, /dismissed/)
+      expect(raw.find { |r| r["id"] == done["id"] }["state"]).to eq("done")
+    end
+
+    it "warns and keeps going when the expiry callback raises" do
+      store.add(fields.merge("expires_at" => "2026-10-16T13:00:00Z"))
+      store_later.on_expired = ->(_record) { raise "log is gone" }
+
+      added = store_later.add(fields)
+
+      expect(raw.map { |r| r["id"] }).to include(added["id"])
+      expect(err.string).to match(/could not report the expiry of inbox item \w+ \(RuntimeError\)/)
+    end
+
+    it "snoozes an open item and a reopen clears the snooze" do
+      item = store.add(fields)
+
+      snoozed = store.transition(item["id"], to: "snoozed", snooze_until: "2026-10-16T18:00:00Z")
+      reopened = store.transition(item["id"], to: "open")
+
+      expect(snoozed.record).to include("state" => "snoozed", "snooze_until" => "2026-10-16T18:00:00Z")
+      expect(reopened.record).to include("state" => "open", "snooze_until" => nil)
+    end
+  end
+
   describe "an unreadable file" do
     before do
       FileUtils.mkdir_p(File.dirname(path))
