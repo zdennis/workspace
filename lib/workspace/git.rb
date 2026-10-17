@@ -56,6 +56,20 @@ module Workspace
       [success, stderr]
     end
 
+    # Whether +remote+ still has +ref+, asked with `ls-remote` so the answer
+    # does not depend on the wording of git's messages in the user's locale.
+    #
+    # @param path [String] the checkout
+    # @param remote [String]
+    # @param ref [String] a full ref, such as `refs/heads/main`
+    # @return [Boolean, nil] nil when the remote could not be asked
+    def remote_ref_exists?(path, remote, ref)
+      stdout, _, success = run_git(path, "ls-remote", remote, ref, timeout: FETCH_TIMEOUT)
+      return nil unless success
+
+      !stdout.strip.empty?
+    end
+
     # The name of the repository's default branch as a local branch: what
     # `origin/HEAD` points at, else the first of `main` and `master` that exists.
     #

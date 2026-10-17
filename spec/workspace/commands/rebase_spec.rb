@@ -302,6 +302,17 @@ RSpec.describe Workspace::Commands::Rebase do
       expect(rev("HEAD", dir: wt)).to eq(before_head)
     end
 
+    it "raises upstream_gone whatever language git's fetch error is in" do
+      push_feature
+      clone_other
+      sh("push", "-q", "origin", "--delete", "feature/x", dir: other)
+      allow(git).to receive(:fetch).and_return([false, "fatal: référence distante introuvable feature/x\n"])
+
+      expect { command.call(onto: "upstream", working_dir: wt) }.to raise_error(Workspace::Error) { |e|
+        expect(e.code).to eq("upstream_gone")
+      }
+    end
+
     it "raises upstream_gone when the remote-tracking branch was already pruned" do
       push_feature
       sh("update-ref", "-d", "refs/remotes/origin/feature/x")

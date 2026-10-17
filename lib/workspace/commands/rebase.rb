@@ -102,7 +102,7 @@ module Workspace
         end
 
         success, stderr = @git.fetch(path, merge, remote: remote)
-        raise upstream_gone(branch, "#{remote}/#{short}") if !success && stderr.to_s.include?("couldn't find remote ref")
+        raise upstream_gone(branch, "#{remote}/#{short}") if !success && @git.remote_ref_exists?(path, remote, merge) == false
         unless success
           raise Workspace::Error.new("Could not fetch from #{remote}: #{first_line(stderr)}",
             code: "fetch_failed", details: {"remote" => remote, "detail" => first_line(stderr)})

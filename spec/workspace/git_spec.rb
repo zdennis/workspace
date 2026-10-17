@@ -534,6 +534,20 @@ RSpec.describe Workspace::Git do
       end
     end
 
+    describe "#remote_ref_exists?" do
+      it "is true for a branch the remote has" do
+        expect(git.remote_ref_exists?(@repo_dir, "origin", "refs/heads/main")).to be(true)
+      end
+
+      it "is false for a branch the remote does not have" do
+        expect(git.remote_ref_exists?(@repo_dir, "origin", "refs/heads/gone")).to be(false)
+      end
+
+      it "is nil when the remote cannot be asked" do
+        expect(git.remote_ref_exists?(@repo_dir, "nowhere", "refs/heads/main")).to be_nil
+      end
+    end
+
     describe "#commits_ahead_of_upstream" do
       it "returns 0 when HEAD matches its upstream" do
         expect(git.commits_ahead_of_upstream(@repo_dir)).to eq(0)
