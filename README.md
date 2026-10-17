@@ -110,7 +110,7 @@ workspace <subcommand> [options]
 | prune | [README](docs/README.prune.md) | Remove worktree projects whose PR is closed or merged |
 | push | [README](docs/README.rebase.md) | Push a workspace's branch to origin; forces with a lease only when a rebase replaced commits the upstream has |
 | reactivate | [README](docs/README.reactivate.md) | Reactivate Claude in a project's tmux pane |
-| rebase | [README](docs/README.rebase.md) | Rebase a workspace's branch onto the default branch (`--onto local\|update\|remote`); a conflict is aborted and reported |
+| rebase | [README](docs/README.rebase.md) | Rebase a workspace's branch onto the default branch (`--onto local\|update\|remote\|upstream`); a conflict is aborted and reported |
 | relaunch | [README](docs/README.relaunch.md) | Stop and relaunch all active workspace projects |
 | restore | [README](docs/README.restore.md) | Bring back agent panes after a reboot: launch the active workspaces, recreate recorded agent panes (hand-split ones too) and resume their sessions with `claude --resume`; `--dry-run` shows the plan and what can't be matched |
 | report-run-status | [README](docs/README.report-run-status.md) | Internal: write run result for --wait (called by shell wrapper) |

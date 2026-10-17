@@ -110,7 +110,9 @@ The exit code is unchanged by `--json` (1 for most failures, 2 for `not_submitte
 | `nothing_to_push` | `pr create`: the branch has no commits ahead of its base. `details.branch`, `details.base`. |
 | `dirty_worktree` | `rebase`: the workspace has changes to tracked files. `details.path`, `details.files`. |
 | `rebase_in_progress` | `rebase`: a rebase is already stopped in the workspace, or git ran past its time limit during the rebase and `git rebase --abort` failed (`details.aborted` `false`). `details.path`. |
-| `fetch_failed` | `rebase --onto update\|remote` or `push`: `git fetch origin` failed. `details.remote`, `details.detail`. |
+| `no_upstream` | `rebase --onto upstream`: the branch has no upstream configured. `details.branch`. |
+| `upstream_gone` | `rebase --onto upstream`: the branch's upstream no longer exists on the remote. `details.branch`, `details.upstream`. |
+| `fetch_failed` | `rebase --onto update\|remote\|upstream` or `push`: `git fetch origin` failed. `details.remote`, `details.detail`. |
 | `push_rejected` | `push`: origin refused the push, or the upstream has commits the branch never had so the push was not forced. `details.branch`, `details.upstream`, `details.detail`, `details.reason`: `origin_refused` (origin said no), `would_delete_commits` (the branch is only behind its upstream, so pushing would delete commits), `upstream_has_other_commits` (the upstream has commits the branch never had, or its reflog no longer shows them) or `upstream_mismatch` (the upstream is not `origin/<branch>`). |
 | `ticket_not_found` | `ticket show` asked `gh` or `jira` for a ticket the tool says does not exist. `details.source`, `details.ref`. |
 | `ticket_source_unavailable` | `ticket show` could not read the ticket: `gh` or `jira` is not installed (`details.reason` `missing`), did not answer in time (`timeout`) or failed (`error`, with `details.detail`). `details.source`. |

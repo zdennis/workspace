@@ -5,7 +5,7 @@
 ## Usage
 
 ```sh
-workspace rebase --onto local|update|remote [--name WORKSPACE] [--json]
+workspace rebase --onto local|update|remote|upstream [--name WORKSPACE] [--json]
 workspace push [--name WORKSPACE] [--json]
 ```
 
@@ -15,7 +15,7 @@ Run them inside a workspace, or name one with `--name`. A detached HEAD is refus
 
 | Option | Description |
 |--------|-------------|
-| `--onto TARGET` | Required. `local`, `update` or `remote` |
+| `--onto TARGET` | Required. `local`, `update`, `remote` or `upstream` |
 | `--name WORKSPACE` | The workspace (default: the one the current directory is in) |
 | `--json` | Print one JSON document |
 
@@ -26,6 +26,7 @@ The default branch is what `origin/HEAD` points at, else `main`, else `master`. 
 | `local` | Rebases onto the local default branch. Nothing is fetched |
 | `update` | Fetches origin, then moves the local default branch up to `origin/<default>`, then rebases onto it. If the checkout that has the default branch checked out has changes to tracked files, they are stashed first and restored after (untracked files are never touched). A default branch that is not checked out anywhere is moved directly |
 | `remote` | Fetches origin and rebases onto `origin/<default>`; the local default branch is not touched |
+| `upstream` | Fetches the branch's own upstream (usually `origin/<branch>`) and rebases onto it. Allowed on the default branch (main onto `origin/main`), which the other targets refuse. Refused with `no_upstream` when the branch has no upstream and `upstream_gone` when its upstream was deleted on the remote |
 
 Before anything else, `rebase` refuses a workspace that has a rebase already stopped in it (`rebase_in_progress`) and a workspace with staged or unstaged changes to tracked files (`dirty_worktree`). It never stashes the workspace's own changes. Untracked files do not count.
 
@@ -79,14 +80,16 @@ A branch whose upstream is not `origin/<branch>` is refused (`push_rejected`). A
 |------|------|
 | `dirty_worktree` | `rebase`: tracked files have changes. `details.path`, `details.files` |
 | `rebase_in_progress` | `rebase`: a rebase is already stopped in the workspace, or git ran past its time limit mid-rebase and the abort failed (`details.aborted` `false`). `details.path` |
-| `fetch_failed` | `rebase --onto update\|remote` or `push`: `git fetch origin` failed. `details.remote`, `details.detail` |
+| `no_upstream` | `rebase --onto upstream`: the branch has no upstream configured. `details.branch` |
+| `upstream_gone` | `rebase --onto upstream`: the upstream no longer exists on the remote. `details.branch`, `details.upstream` |
+| `fetch_failed` | `rebase --onto update\|remote\|upstream` or `push`: `git fetch origin` failed. `details.remote`, `details.detail` |
 | `push_rejected` | `push`: refused. `details.branch`, `details.upstream`, `details.detail`, `details.reason`: `origin_refused` (origin said no), `would_delete_commits` (the branch is only behind its upstream, so pushing would delete commits), `upstream_has_other_commits` (the upstream has commits the branch never had, or its reflog no longer shows them) or `upstream_mismatch` (the upstream is not `origin/<branch>`). |
 | `not_in_workspace` | No `--name` and the current directory is in no workspace |
 | `unknown_workspace` | `--name` names no workspace |
-| `usage` | `--onto` is missing or not `local`, `update` or `remote` |
+| `usage` | `--onto` is missing or not `local`, `update`, `remote` or `upstream` |
 | `error` | A detached HEAD, no default branch, a rebase that failed without stopping, `git` missing, or a git call past its time limit (during a rebase, `details.aborted` is `true`) |
 
-Capability: `rebase` 1 in [`capabilities`](README.capabilities.md) (covers both commands).
+Capability: `rebase` 2 (1 had `local`, `update` and `remote`; 2 adds `upstream`) in [`capabilities`](README.capabilities.md) (covers both commands).
 
 ## Examples
 

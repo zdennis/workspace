@@ -40,7 +40,9 @@ module Workspace
       "nothing_to_push" => "pr create: the branch has no commits ahead of its base, so there is nothing to open a pull request for.",
       "dirty_worktree" => "rebase: the workspace has changes to tracked files; commit or stash them first. details.path, details.files.",
       "rebase_in_progress" => "rebase: a rebase is already stopped in the workspace (finish or abort it first), or git ran past its time limit mid-rebase and git rebase --abort failed (details.aborted false). details.path.",
-      "fetch_failed" => "rebase (update, remote) or push: git fetch from origin failed. details.remote, details.detail.",
+      "fetch_failed" => "rebase (update, remote, upstream) or push: git fetch from origin failed. details.remote, details.detail.",
+      "no_upstream" => "rebase --onto upstream: the branch has no upstream configured. details.branch.",
+      "upstream_gone" => "rebase --onto upstream: the branch's upstream no longer exists on the remote. details.branch, details.upstream.",
       "push_rejected" => "push: origin refused the push, or the upstream has commits the branch never had so the push was not forced. details.branch, details.upstream, details.detail, details.reason (origin_refused, would_delete_commits, upstream_has_other_commits, upstream_mismatch).",
       "handoff_unsupported_agent" => "The handoff pack was asked for, but the project's main agent is not Claude Code or Codex.",
       # Codes the agent daemon puts in its replies; `agent-run` passes them through.

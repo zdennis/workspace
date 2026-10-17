@@ -5687,7 +5687,7 @@ RSpec.describe Workspace::CLI do
       cli.run(["rebase", "--help"])
       cli.run(["push", "--help"])
 
-      expect(output.string).to include("workspace rebase --onto local|update|remote").and include("workspace push [--name")
+      expect(output.string).to include("workspace rebase --onto local|update|remote|upstream").and include("workspace push [--name")
       expect(rebase_command).not_to have_received(:call)
       expect(push_command).not_to have_received(:call)
     end

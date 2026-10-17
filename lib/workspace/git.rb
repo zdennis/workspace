@@ -559,6 +559,20 @@ module Workspace
       status.success? ? stdout.strip : nil
     end
 
+    # The upstream a branch is configured with, whether or not its remote branch still exists.
+    #
+    # @param path [String] the checkout
+    # @param branch [String]
+    # @return [Array(String, String), nil] the remote name (or ".") and the full ref on it
+    #   (`refs/heads/x`), or nil when the branch has no upstream configured
+    def upstream_config(path, branch)
+      remote, _, remote_status = capture_git("-C", path, "config", "--get", "branch.#{branch}.remote")
+      merge, _, merge_status = capture_git("-C", path, "config", "--get", "branch.#{branch}.merge")
+      return nil unless remote_status.success? && merge_status.success?
+
+      [remote.strip, merge.strip]
+    end
+
     # @param path [String] worktree directory path
     # @return [Integer, nil] number of commits on HEAD not in its upstream, or
     #   nil if there is no upstream or git could not answer

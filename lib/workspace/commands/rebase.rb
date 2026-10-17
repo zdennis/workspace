@@ -10,12 +10,15 @@ module Workspace
     # `origin/<default>`). It refuses a workspace with changes to tracked files
     # and never stashes them. A rebase that stops on a conflict is aborted by
     # this command, so the workspace is left as it was.
+    #
+    # `upstream` is the odd one out: it fetches the branch's own upstream and
+    # rebases onto it, so it also works on the default branch itself.
     class Rebase
       # Bumped whenever the `--json` payload's shape changes in a backward-incompatible way.
       JSON_SCHEMA_VERSION = 1
 
       # The accepted values of +onto+.
-      TARGETS = %w[local update remote].freeze
+      TARGETS = %w[local update remote upstream].freeze
 
       # @param git [Workspace::Git]
       # @param checkout [Workspace::WorkspaceCheckout]
@@ -32,7 +35,7 @@ module Workspace
       # @param working_dir [String]
       # @return [void]
       # @raise [Workspace::Error] `not_in_workspace`, `unknown_workspace`, `dirty_worktree`,
-      #   `rebase_in_progress` (also when a timed-out rebase could not be aborted), `fetch_failed`, or an uncoded error (`details.aborted` true when a timed-out rebase was aborted) for a detached HEAD, a missing default
+      #   `no_upstream` and `upstream_gone` (with `upstream`), `rebase_in_progress` (also when a timed-out rebase could not be aborted), `fetch_failed`, or an uncoded error (`details.aborted` true when a timed-out rebase was aborted) for a detached HEAD, a missing default
       #   branch, a rebase that failed without stopping, or git not answering
       def call(name: nil, onto: nil, json: false, working_dir: Dir.pwd)
         raise UsageError, "--onto must be one of #{TARGETS.join(", ")}." unless TARGETS.include?(onto)
@@ -63,6 +66,8 @@ module Workspace
           raise Workspace::Error.new("'#{branch}' has changes to tracked files; commit or stash them first.",
             code: "dirty_worktree", details: {"path" => path, "files" => dirty.first(50)})
         end
+        return rebase_onto_upstream(path, branch) if onto == "upstream"
+
         default = @git.default_branch_name(path)
         raise Workspace::Error, "No default branch (main or master) found in #{path}." unless default
         raise Workspace::Error, "'#{branch}' is the default branch; there is nothing to rebase it onto." if branch == default
@@ -76,6 +81,41 @@ module Workspace
         raise Workspace::Error, "'#{ref}' does not exist in #{path}." unless @git.commit_exists?(path, ref)
 
         run_rebase(path, branch, ref)
+      end
+
+      def rebase_onto_upstream(path, branch)
+        remote, merge = @git.upstream_config(path, branch)
+        if remote.nil?
+          raise Workspace::Error.new("'#{branch}' has no upstream; push it first or use --onto local.",
+            code: "no_upstream", details: {"branch" => branch})
+        end
+        run_rebase(path, branch, fetch_upstream(path, branch, remote, merge))
+      end
+
+      # Fetches just the upstream branch and returns the ref to rebase onto.
+      def fetch_upstream(path, branch, remote, merge)
+        short = merge.delete_prefix("refs/heads/")
+        if remote == "."
+          raise upstream_gone(branch, short) unless @git.commit_exists?(path, "refs/heads/#{short}")
+
+          return short
+        end
+
+        success, stderr = @git.fetch(path, merge, remote: remote)
+        raise upstream_gone(branch, "#{remote}/#{short}") if !success && stderr.to_s.include?("couldn't find remote ref")
+        unless success
+          raise Workspace::Error.new("Could not fetch from #{remote}: #{first_line(stderr)}",
+            code: "fetch_failed", details: {"remote" => remote, "detail" => first_line(stderr)})
+        end
+        ref = @git.upstream_branch(path) || "#{remote}/#{short}"
+        raise upstream_gone(branch, ref) unless @git.commit_exists?(path, ref)
+
+        ref
+      end
+
+      def upstream_gone(branch, upstream)
+        Workspace::Error.new("The upstream of '#{branch}' (#{upstream}) no longer exists; push the branch again or use --onto local.",
+          code: "upstream_gone", details: {"branch" => branch, "upstream" => upstream})
       end
 
       def fetch(path)

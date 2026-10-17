@@ -52,7 +52,7 @@ module Workspace
         "plan" => 4,
         "ticket" => 1,
         "pr_create" => 1,
-        "rebase" => 1,
+        "rebase" => 2,
         "inbox" => 3,
         "ask_withdraw" => 1
       }.freeze

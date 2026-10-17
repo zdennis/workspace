@@ -235,6 +235,136 @@ RSpec.describe Workspace::Commands::Rebase do
     end
   end
 
+  describe "--onto upstream" do
+    def push_feature
+      sh("push", "-q", "-u", "origin", "feature/x", dir: wt)
+    end
+
+    def teammate_pushes_to(branch, file)
+      clone_other
+      sh("checkout", "-q", branch, dir: other)
+      commit_file(file, "x\n", "teammate #{file}", dir: other)
+      sh("push", "-q", "origin", branch, dir: other)
+    end
+
+    it "rebases a feature branch onto its own upstream" do
+      push_feature
+      teammate_pushes_to("feature/x", "mate.txt")
+      expect(File).not_to exist(File.join(wt, "mate.txt"))
+
+      expect(run_json("upstream")).to include("ok" => true, "onto" => "upstream", "branch" => "feature/x", "outcome" => "rebased")
+      expect(File).to exist(File.join(wt, "mate.txt"))
+    end
+
+    it "reports up_to_date when the branch already has its upstream" do
+      push_feature
+      before_head = rev("HEAD", dir: wt)
+
+      expect(run_json("upstream")).to include("outcome" => "up_to_date")
+      expect(rev("HEAD", dir: wt)).to eq(before_head)
+    end
+
+    it "rebases the default branch onto origin's, which the other targets refuse" do
+      teammate_pushes_to("main", "up.txt")
+      allow(project_config).to receive(:project_root_for).with("api.worktree-x").and_return(repo)
+
+      command.call(onto: "upstream", json: true, working_dir: repo)
+
+      expect(document).to include("branch" => "main", "outcome" => "rebased")
+      expect(File).to exist(File.join(repo, "up.txt"))
+      expect { command.call(onto: "remote", working_dir: repo) }.to raise_error(Workspace::Error, /is the default branch/)
+    end
+
+    it "prints one sentence without --json" do
+      push_feature
+      command.call(onto: "upstream", working_dir: wt)
+
+      expect(output.string).to eq("feature/x is already up to date with upstream.\n")
+    end
+
+    it "raises no_upstream for a branch that was never pushed" do
+      expect { command.call(onto: "upstream", working_dir: wt) }.to raise_error(Workspace::Error) { |e|
+        expect(e.code).to eq("no_upstream")
+        expect(e.details).to eq("branch" => "feature/x")
+      }
+    end
+
+    it "raises upstream_gone when the branch was deleted on the remote" do
+      push_feature
+      clone_other
+      sh("push", "-q", "origin", "--delete", "feature/x", dir: other)
+      before_head = rev("HEAD", dir: wt)
+
+      expect { command.call(onto: "upstream", working_dir: wt) }.to raise_error(Workspace::Error) { |e|
+        expect(e.code).to eq("upstream_gone")
+        expect(e.details).to eq("branch" => "feature/x", "upstream" => "origin/feature/x")
+      }
+      expect(rev("HEAD", dir: wt)).to eq(before_head)
+    end
+
+    it "raises upstream_gone when the remote-tracking branch was already pruned" do
+      push_feature
+      sh("update-ref", "-d", "refs/remotes/origin/feature/x")
+      sh("push", "-q", "origin", "--delete", "feature/x", dir: wt)
+
+      expect { command.call(onto: "upstream", working_dir: wt) }.to raise_error(Workspace::Error) { |e|
+        expect(e.code).to eq("upstream_gone")
+      }
+    end
+
+    it "rebases onto a local branch upstream without fetching, and raises upstream_gone when it is deleted" do
+      advance_main
+      sh("branch", "--set-upstream-to=main", dir: wt)
+      sh("remote", "set-url", "origin", File.join(@dir, "nowhere.git"))
+
+      expect(run_json("upstream")).to include("outcome" => "rebased")
+
+      sh("branch", "-q", "--unset-upstream", dir: wt)
+      sh("branch", "-q", "tmp-up", dir: wt)
+      sh("branch", "--set-upstream-to=tmp-up", dir: wt)
+      sh("branch", "-q", "-D", "tmp-up")
+      expect { command.call(onto: "upstream", working_dir: wt) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("upstream_gone") }
+    end
+
+    it "raises fetch_failed when the remote cannot be reached" do
+      push_feature
+      sh("remote", "set-url", "origin", File.join(@dir, "nowhere.git"))
+
+      expect { command.call(onto: "upstream", working_dir: wt) }.to raise_error(Workspace::Error) { |e|
+        expect(e.code).to eq("fetch_failed")
+        expect(e.details).to include("remote" => "origin")
+      }
+    end
+
+    it "aborts its own conflicted rebase" do
+      push_feature
+      teammate_pushes_to("feature/x", "feature.txt")
+      commit_file("feature.txt", "mine\n", "my edit", dir: wt)
+      before_head = rev("HEAD", dir: wt)
+
+      result = run_json("upstream")
+
+      expect(result).to include("outcome" => "conflict", "aborted" => true, "conflicted" => ["feature.txt"])
+      expect(git.rebase_in_progress?(wt)).to be(false)
+      expect(rev("HEAD", dir: wt)).to eq(before_head)
+    end
+
+    it "refuses dirty tracked files without stashing them" do
+      push_feature
+      File.write(File.join(wt, "feature.txt"), "edited\n")
+
+      expect { command.call(onto: "upstream", working_dir: wt) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("dirty_worktree") }
+      expect(sh("stash", "list", dir: wt)).to eq("")
+    end
+
+    it "refuses a rebase that is already stopped" do
+      push_feature
+      allow(git).to receive(:rebase_in_progress?).and_return(true)
+
+      expect { command.call(onto: "upstream", working_dir: wt) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("rebase_in_progress") }
+    end
+  end
+
   describe "--onto remote" do
     it "fetches and rebases onto origin's default branch, leaving the local one alone" do
       clone_other

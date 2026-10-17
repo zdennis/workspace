@@ -478,7 +478,7 @@ module Workspace
           prune           Remove worktree projects whose PR is closed or merged
           push            Push a workspace's branch to origin, forcing with a lease only after a rebase
           reactivate      Reactivate Claude in a project's tmux pane
-          rebase          Rebase a workspace's branch onto the default branch (--onto local|update|remote)
+          rebase          Rebase a workspace's branch onto the default branch (--onto local|update|remote|upstream)
           relaunch        Stop and relaunch all active workspace projects
           repair          Rebuild state from live iTerm windows
           resize          Resize tmux panes for a running project
@@ -6351,17 +6351,19 @@ module Workspace
 
     def rebase_parser(options)
       OptionParser.new do |opts|
-        opts.banner = "Usage: workspace rebase --onto local|update|remote [--name WORKSPACE] [--json]"
+        opts.banner = "Usage: workspace rebase --onto local|update|remote|upstream [--name WORKSPACE] [--json]"
         opts.separator ""
         opts.separator "Rebase a workspace's branch onto the repository's default branch."
         opts.separator "  local    the local default branch; nothing is fetched"
         opts.separator "  update   fetch origin, move the local default branch up to origin's (stashing and"
         opts.separator "           restoring changes in the checkout that has it), then rebase onto it"
         opts.separator "  remote   fetch origin, rebase onto origin/<default>"
+        opts.separator "  upstream fetch the branch's own upstream and rebase onto it; works on the default"
+        opts.separator "           branch too (refused: no_upstream, upstream_gone)"
         opts.separator "Refuses a workspace with changes to tracked files and never stashes them. A rebase that"
         opts.separator "stops on a conflict is aborted, so the workspace is left as it was."
         opts.separator ""
-        opts.on("--onto TARGET", "local, update or remote (required)") { |v| options[:onto] = v }
+        opts.on("--onto TARGET", "local, update, remote or upstream (required)") { |v| options[:onto] = v }
         opts.on("--name NAME", "The workspace (default: the one the current directory is in)") { |v| options[:name] = v }
         opts.on("--json", "Print one JSON document (see docs/README.rebase.md)") { options[:json] = true }
         opts.on("-h", "--help", "Show this help") { options[:help] = true }
@@ -6379,7 +6381,7 @@ module Workspace
       return @output.puts(parser.help) if options[:help]
 
       raise UsageError, "Unexpected argument: #{args.first}. Run 'workspace rebase --help'." if args.any?
-      raise UsageError, "Missing --onto local|update|remote.\n\n#{parser.help}" unless options[:onto]
+      raise UsageError, "Missing --onto local|update|remote|upstream.\n\n#{parser.help}" unless options[:onto]
       raise Error, "rebase is not available: no rebase command was wired" unless @rebase_command
 
       @rebase_command.call(name: options[:name], onto: options[:onto], json: options[:json], working_dir: @working_dir)
