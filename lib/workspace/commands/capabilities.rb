@@ -53,7 +53,7 @@ module Workspace
         "ticket" => 1,
         "pr_create" => 1,
         "rebase" => 1,
-        "inbox" => 1
+        "inbox" => 2
       }.freeze
 
       # The exit statuses commands use, by meaning.

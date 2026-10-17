@@ -457,4 +457,102 @@ RSpec.describe Workspace::InboxStore do
     expect(JSON.parse(File.read(path)).first).to eq(7)
     expect(store.list.size).to eq(1)
   end
+
+  describe "retention" do
+    def resolved_item(id, resolved_at, state: "done")
+      fields.merge("id" => id, "state" => state, "resolved_at" => resolved_at, "snooze_until" => nil, "expires_at" => nil)
+    end
+
+    def seed(items)
+      FileUtils.mkdir_p(File.dirname(path))
+      File.write(path, JSON.generate(items))
+    end
+
+    before { stub_const("Workspace::InboxStore::LIVE_LIMIT", 3) }
+
+    it "refuses the item past the live limit as inbox_full and writes nothing" do
+      3.times { store.add(fields) }
+      before = File.read(path)
+
+      expect { store.add(fields) }.to raise_error(Workspace::Error) { |e|
+        expect(e.code).to eq("inbox_full")
+        expect(e.details).to eq("scope" => "workspace:api", "limit" => 3)
+      }
+      expect(File.read(path)).to eq(before)
+    end
+
+    it "counts snoozed items as live and not done ones" do
+      a = store.add(fields)
+      store.add(fields)
+      store.add(fields)
+      store.transition(a["id"], to: "done")
+
+      expect { store.add(fields) }.not_to raise_error
+      expect { store.add(fields) }.to raise_error(Workspace::Error, /full/)
+    end
+
+    it "refuses a created upsert when full but still updates the existing key" do
+      store.upsert(fields.merge("dedupe_key" => "k"))
+      2.times { store.add(fields) }
+
+      expect(store.upsert(fields.merge("dedupe_key" => "k", "title" => "New")).outcome).to eq("updated")
+      expect { store.upsert(fields.merge("dedupe_key" => "other")) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("inbox_full") }
+    end
+
+    it "refuses reopening a resolved item when full, through transition and upsert" do
+      done = store.add(fields.merge("dedupe_key" => "k"))
+      store.transition(done["id"], to: "done")
+      3.times { store.add(fields) }
+
+      expect { store.transition(done["id"], to: "open") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("inbox_full") }
+      expect { store.upsert(fields.merge("dedupe_key" => "k"), reopen: true) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("inbox_full") }
+      expect(store.find(done["id"])["state"]).to eq("done")
+    end
+
+    it "keeps the newest 200 resolved items by resolved_at on the next write" do
+      items = (0...205).map { |i| resolved_item("r#{i}", (Time.utc(2026, 10, 1) + i * 60).iso8601, state: (i.even? ? "done" : "dismissed")) }
+      seed(items.reverse)
+
+      store.add(fields)
+
+      kept = JSON.parse(File.read(path)).map { |r| r["id"] }
+      expect(kept.grep(/\Ar/).size).to eq(200)
+      expect(kept).not_to include("r0", "r1", "r2", "r3", "r4")
+      expect(kept).to include("r5", "r204")
+      expect(kept.size).to eq(201)
+    end
+
+    it "drops a resolved item with no resolved_at first and keeps live ones whatever their age" do
+      items = (1..200).map { |i| resolved_item("r#{i}", (Time.utc(2026, 10, 1) + i * 60).iso8601) }
+      items << resolved_item("none", nil)
+      items << fields.merge("id" => "live", "state" => "open", "created_at" => "2020-01-01T00:00:00Z", "snooze_until" => nil, "expires_at" => nil, "resolved_at" => nil)
+      seed(items)
+
+      store.update("live") { |r| r["title"] = "x" }
+
+      kept = JSON.parse(File.read(path)).map { |r| r["id"] }
+      expect(kept).not_to include("none")
+      expect(kept).to include("live", "r1")
+    end
+
+    it "counts an item that just expired as resolved" do
+      items = (1..200).map { |i| resolved_item("r#{i}", (Time.utc(2026, 10, 2) + i * 60).iso8601) }
+      items << fields.merge("id" => "exp", "state" => "open", "expires_at" => "2026-10-16T11:00:00Z", "snooze_until" => nil, "resolved_at" => nil)
+      seed(items)
+
+      store.add(fields)
+
+      kept = JSON.parse(File.read(path)).map { |r| r["id"] }
+      expect(kept).to include("exp")
+      expect(kept).not_to include("r1")
+    end
+
+    it "does not trim on a read" do
+      seed((0...205).map { |i| resolved_item("r#{i}", (Time.utc(2026, 10, 1) + i * 60).iso8601) })
+
+      store.list
+
+      expect(JSON.parse(File.read(path)).size).to eq(205)
+    end
+  end
 end

@@ -75,6 +75,7 @@ module Workspace
       "library_source_missing" => "The file to add doesn't exist, or a linked entry's target can't be read.",
       "unknown_workflow" => "No workflow definition has that id.",
       "inbox_store_unreadable" => "An inbox scope's file can't be parsed, so nothing was written to it. `details.scope`.",
+      "inbox_full" => "An inbox scope already holds 500 open or snoozed items, so nothing was added. `details.scope`, `details.limit`.",
       "unknown_inbox_item" => "No inbox item has that id. `details.id`.",
       "ambiguous_inbox_item" => "The id is in more than one inbox scope. `details.id`, `details.scopes`.",
       "invalid_inbox_item" => "An inbox item's field doesn't pass the checks (control characters, length, https URL). `details.field`, `details.reason`.",

@@ -74,6 +74,10 @@ The check and the write happen under one lock, so two processes upserting one ke
 
 `done --dedupe-key KEY` and `dismiss --dedupe-key KEY` resolve the item holding the key, which is how a poster clears its own alert. They take no ids. Unlike `done ID`, which searches every scope, the scope is the one `add` uses (a scope flag, else the workspace of the current directory, else `not_in_workspace`). The single row has `dedupe_key` and the item's `id`; with no match it is `unchanged` (`id` and `item` are `null`) and the exit code is 0, so a retry is safe.
 
+## Retention
+
+A scope holds at most 500 items in `open` or `snoozed`. A write that would make the 501st (an `add`, a `created` or `reopened` upsert, or a `reopen`) is refused as `inbox_full` (`details.scope`, `details.limit`) and changes nothing; resolve some items first. Only the newest 200 `done` or `dismissed` items per scope are kept: every write drops the older ones, oldest `resolved_at` first (an item without one counts as oldest). Items are dropped without an event, and a dropped item forgets its `dedupe_key`: a poster that repeats an alert resolved more than 200 resolutions ago creates a new item.
+
 ## Scope
 
 | Command | Without a scope flag |
@@ -118,6 +122,6 @@ Snoozes and expiries are time-driven, so reads work them out and never write: `l
 
 Errors use the [`--json` error envelope](README.json.md): `invalid_inbox_item`, `unknown_inbox_item`, `ambiguous_inbox_item`, `inbox_store_unreadable`, `not_in_workspace`, `unknown_workspace`, `usage`.
 
-`workspace capabilities --json` reports `features.inbox: 1` for these commands.
+`workspace capabilities --json` reports `features.inbox: 2` for these commands (level 2: `edit`, `snooze`, `--dedupe-key`, expiry and the caps below).
 
 Exit 0, 1 on an error; `done`, `dismiss`, `reopen` and `snooze` exit 3 when only some ids failed.

@@ -16,11 +16,18 @@ module Workspace
   # before it gets here. Every write stores a passed snooze (the item is
   # open again) and a passed expiry (the item is dismissed by expiry) on every
   # item it finds, and reports each expiry to {#on_expired}; reads compute both
-  # and never write. Retention (the live and resolved caps) belongs to a later
-  # item.
+  # and never write. Retention: a write that would make the {LIVE_LIMIT}+1st
+  # live item raises `inbox_full`, and every write drops the resolved items
+  # past the newest {RESOLVED_LIMIT} (by `resolved_at`).
   class InboxStore
     # The states {#transition} moves an item to.
     STATES = %w[open snoozed done dismissed].freeze
+
+    # The most items one scope holds in `open` or `snoozed`; a write that would add another is `inbox_full`.
+    LIVE_LIMIT = 500
+
+    # The newest resolved (`done` or `dismissed`) items a scope keeps; older ones are dropped on write.
+    RESOLVED_LIMIT = 200
 
     # What {#transition} did.
     # @!attribute record [Hash] the item after the call
@@ -52,6 +59,7 @@ module Workspace
     # @return [Hash] the stored record
     def add(record)
       with_lock do |data|
+        ensure_room(data)
         build_item(record, data).tap { |item| data << item }
       end
     end
@@ -77,10 +85,14 @@ module Workspace
       with_lock do |data|
         now = @clock.call
         existing = records_in(data).find { |r| r["dedupe_key"] == key }
-        next Upsert.new(build_item(record, data).tap { |item| data << item }, "created") unless existing
+        unless existing
+          ensure_room(data)
+          next Upsert.new(build_item(record, data).tap { |item| data << item }, "created")
+        end
         settled = settle(existing, now)
         live = %w[open snoozed].include?(settled["state"])
         next Upsert.new(settled, "suppressed") unless live || reopen
+        ensure_room(data) unless live
         existing.replace(settled)
         UPSERT_FIELDS.each { |field| existing[field] = record[field] }
         existing["updated_at"] = now_iso
@@ -167,6 +179,7 @@ module Workspace
             code: "invalid_inbox_item", details: {"field" => "state", "reason" => "is #{settled["state"]}; reopen it before snoozing"})
         end
         next Transition.new(settled, false) if settled["state"] == to && (to != "snoozed" || settled["snooze_until"] == snooze_until)
+        ensure_room(data) if to == "open" && %w[done dismissed].include?(settled["state"])
         record.replace(settled)
         apply_transition(record, to, by, now, snooze_until)
         Transition.new(record, true)
@@ -176,6 +189,23 @@ module Workspace
     # The fields an upsert refreshes on an item that already holds the key.
     UPSERT_FIELDS = %w[title body source links expires_at].freeze
     private_constant :UPSERT_FIELDS
+
+    def ensure_room(data)
+      return if records_in(data).count { |r| %w[open snoozed].include?(r["state"]) } < LIVE_LIMIT
+      raise Workspace::Error.new(
+        "Inbox is full: #{@scope} holds #{LIVE_LIMIT} open or snoozed items. Mark some done or dismissed first.",
+        code: "inbox_full", details: {"scope" => @scope, "limit" => LIVE_LIMIT}
+      )
+    end
+
+    # Drops the resolved items past the newest {RESOLVED_LIMIT} by `resolved_at`.
+    def trim_resolved(data)
+      resolved = data.each_with_index.select { |r, _| r.is_a?(Hash) && %w[done dismissed].include?(r["state"]) }
+      return if resolved.size <= RESOLVED_LIMIT
+      oldest = resolved.sort_by { |r, i| [parse_time(r["resolved_at"]) || Time.at(0), i] }.first(resolved.size - RESOLVED_LIMIT)
+      drop = oldest.map(&:last)
+      data.reject!.with_index { |_, i| drop.include?(i) }
+    end
 
     def build_item(record, data)
       now = now_iso
@@ -261,7 +291,10 @@ module Workspace
         data = read_data(readonly: readonly)
         expired = settle_stored(data) unless readonly
         result = yield data
-        write_data(data) unless readonly
+        unless readonly
+          trim_resolved(data)
+          write_data(data)
+        end
       end
       expired.each { |record| report_expired(record) }
       result

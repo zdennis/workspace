@@ -154,6 +154,7 @@ The registry lives in `Workspace::ErrorCodes`; a spec checks that every code a r
 | `library_source_missing` | The file to add doesn't exist, or a linked entry's target can't be read. `details.ref`, `details.path`. |
 | `unknown_workflow` | No workflow definition has that id. `details.workflow`, `details.known`. |
 | `inbox_store_unreadable` | An inbox scope's file can't be parsed, so nothing was written to it. `details.scope`. |
+| `inbox_full` | The scope already holds 500 open or snoozed items, so nothing was added (also for a reopen that would pass 500). `details.scope`, `details.limit`. |
 | `unknown_inbox_item` | No inbox item has that id. `details.id`. |
 | `ambiguous_inbox_item` | The id is in more than one inbox scope; pass `--name`, `--project` or `--global`. `details.id`, `details.scopes`. |
 | `invalid_inbox_item` | A field of an item being added doesn't pass the checks: a control character, a length over its cap, a non-https URL, an unknown type or source kind, an expiry in the past. `details.field` (such as `title` or `source.url`), `details.reason`. |
