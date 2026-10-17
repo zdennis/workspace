@@ -542,6 +542,10 @@ RSpec.describe Workspace::ConfigReport do
       ])
     end
 
+    it "knows a workspace whose name differs from its config only in case" do
+      expect { report.show("API") }.not_to raise_error
+    end
+
     it "raises unknown_workspace for a name nothing knows" do
       expect { report.show("nope") }.to raise_error(Workspace::Error) { |e|
         expect(e.code).to eq("unknown_workspace")

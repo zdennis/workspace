@@ -123,7 +123,7 @@ module Workspace
       files << ConfigFile.read("worktree", @project_settings.project_config_path(workspace)) if parent
       files << ConfigFile.read("project", @project_settings.project_config_path(parent || workspace))
       files << ConfigFile.read("global", @project_settings.global_config_path)
-      known = @project_config.available_projects.include?(workspace) || files.first(files.size - 1).any?(&:exists)
+      known = @project_config.available_projects.any? { |name| WorkspaceName.same?(name, workspace) } || files.first(files.size - 1).any?(&:exists)
       raise Workspace::Error.new("Unknown workspace '#{workspace}'", code: "unknown_workspace", details: {"name" => workspace}) unless known
       Scan.new(workspace: workspace, parent: parent, files: files)
     end

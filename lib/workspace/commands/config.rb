@@ -302,7 +302,7 @@ module Workspace
 
       def check_workspace_known!(workspace)
         return if @project_config.nil?
-        return if @project_config.available_projects.include?(workspace)
+        return if @project_config.available_projects.any? { |known| WorkspaceName.same?(known, workspace) }
         return if File.exist?(@project_settings.project_config_path(workspace))
         raise Workspace::Error.new("Unknown workspace '#{workspace}'", code: "unknown_workspace", details: {"name" => workspace})
       end

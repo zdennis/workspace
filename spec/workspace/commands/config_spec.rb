@@ -1181,6 +1181,10 @@ RSpec.describe Workspace::Commands::Config do
         expect { command.set("dev.up", "x", project: "myapp", scope: "team") }.to raise_error(Workspace::UsageError, /Unknown scope 'team'/)
       end
 
+      it "knows a workspace whose name differs from its config only in case" do
+        expect { command.set("dev.ready_timeout", "90s", project: "MyApp.worktree-a", scope: "workspace") }.not_to raise_error
+      end
+
       it "refuses --scope workspace for a workspace nothing knows about, but not --scope project" do
         expect { command.set("dev.ready_timeout", "90s", project: "ghost.worktree-x", scope: "workspace") }.to raise_error(Workspace::Error) { |e|
           expect(e.code).to eq("unknown_workspace")

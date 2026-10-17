@@ -333,7 +333,7 @@ module Workspace
 
         value = words[(index + 1)..].take_while { |word| !word.start_with?("-") }
         value.unshift(words[index].split("=", 2).last) if words[index].include?("=")
-        value.pop if value.size > 1 && value.last == name && words.none? { |word| flag?(word, "--name") }
+        value.pop if value.size > 1 && WorkspaceName.same?(value.last, name) && words.none? { |word| flag?(word, "--name") }
         (value.size == 1 && value.first.start_with?("/")) ? value.first : :unknown
       end
 
@@ -412,8 +412,21 @@ module Workspace
 
       # @return [Array<Integer>, nil] nil when the finder couldn't answer in time
       def socket_pids(name)
-        found = @pid_finder.call(@config.agent_socket_path(name))
+        found = @pid_finder.call(socket_path_on_disk(@config.agent_socket_path(name)))
         found && (Array(found).map(&:to_i).select(&:positive?).uniq - [Process.pid])
+      end
+
+      # The socket as the file system spells it (this is only for `lsof`, which matches paths exactly).
+      # A daemon started as `notes` for
+      # the config `Notes` made `notes.sock`, and `lsof` matches a path exactly.
+      def socket_path_on_disk(path)
+        entries = Dir.children(File.dirname(path))
+        return path if entries.include?(File.basename(path))
+
+        found = entries.find { |entry| WorkspaceName.same?(entry, File.basename(path)) }
+        found ? File.join(File.dirname(path), found) : path
+      rescue SystemCallError
+        path
       end
 
       # @return [Array<String>, nil] the last +count+ lines, nil when there is no log

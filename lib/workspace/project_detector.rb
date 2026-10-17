@@ -7,9 +7,11 @@ module Workspace
 
     # @param state [Workspace::State] state persistence for active project lookup
     # @param project_config [Workspace::ProjectConfig] project config for root path resolution
-    def initialize(state:, project_config:)
+    # @param workspace_name [Workspace::WorkspaceName, nil] settles the detected name to its on-disk spelling
+    def initialize(state:, project_config:, workspace_name: nil)
       @state = state
       @project_config = project_config
+      @workspace_name = workspace_name
     end
 
     # Detects the project for the given working directory.
@@ -17,7 +19,7 @@ module Workspace
     # @param working_dir [String] the directory to detect from
     # @return [String, nil] the detected project name, or nil if not found
     def detect(working_dir)
-      detect_from_marker(working_dir) || detect_from_active_roots(working_dir)
+      settle(detect_from_marker(working_dir) || detect_from_active_roots(working_dir))
     end
 
     # Detects a project from marker files only (no state lookup).
@@ -26,6 +28,16 @@ module Workspace
     # @param working_dir [String] the directory to detect from
     # @return [String, nil] the detected project name, or nil if not found
     def detect_from_marker(working_dir)
+      settle(read_marker(working_dir))
+    end
+
+    private
+
+    def settle(name)
+      (@workspace_name && name) ? (@workspace_name.match(name) || name) : name
+    end
+
+    def read_marker(working_dir)
       dir = resolve_real_path(working_dir)
       loop do
         marker = File.join(dir, MARKER_FILE)
@@ -36,8 +48,6 @@ module Workspace
       end
       nil
     end
-
-    private
 
     def detect_from_active_roots(working_dir)
       @state.load

@@ -241,6 +241,7 @@ require_relative "workspace/workflow_status"
 require_relative "workspace/workflow_nudger"
 require_relative "workspace/hook_installer"
 require_relative "workspace/hook_runner"
+require_relative "workspace/workspace_name"
 require_relative "workspace/project_detector"
 require_relative "workspace/commands/sessions"
 require_relative "workspace/commands/session_event"
@@ -330,7 +331,8 @@ module Workspace
     project_config = ProjectConfig.new(config: config, git: git, output: output)
     window_layout = WindowLayout.new(window_manager: window_manager, config: config, output: output, logger: logger)
     hook_runner = HookRunner.new(project_settings: project_settings, project_config: project_config, output: output, error_output: error_output, logger: logger)
-    project_detector = ProjectDetector.new(state: state, project_config: project_config)
+    workspace_name = WorkspaceName.new(project_config: project_config)
+    project_detector = ProjectDetector.new(state: state, project_config: project_config, workspace_name: workspace_name)
     file_backup = FileBackup.new(output: output)
     hook_installer = HookInstaller.new(backup: file_backup, output: output, input: input)
     pipeline_config = PipelineConfig.new(config: config)
@@ -587,6 +589,7 @@ module Workspace
       project_settings: project_settings,
       hook_runner: hook_runner,
       project_detector: project_detector,
+      workspace_name: workspace_name,
       launch_command: launch_command,
       kill_command: kill_command,
       finish_command: finish_command,

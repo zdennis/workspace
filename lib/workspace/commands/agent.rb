@@ -329,7 +329,7 @@ module Workspace
         end
 
         workspace = message["workspace"]
-        if workspace != @current_name
+        if !WorkspaceName.same?(workspace, @current_name)
           @logger.debug { "dropped message for workspace '#{workspace}' (I am '#{@current_name}')" }
           return reply_to(client, "ok" => false, "error" => "wrong_workspace")
         end
@@ -549,7 +549,7 @@ module Workspace
             details.find { |d| d[:id] == spec }
           elsif (match = RESTART_PANE_TARGET.match(spec))
             session = match[:session]
-            if session && ![@tmux_session, @current_name].include?(session)
+            if session && ![@tmux_session, @current_name].any? { |own| WorkspaceName.same?(own, session) }
               return [nil, restart_error("wrong_session", "pane #{spec} is not in this workspace's tmux session (#{@tmux_session})")]
             end
             details.find { |d| d[:window] == match[:window].to_i && d[:index] == match[:index].to_i }

@@ -71,6 +71,39 @@ RSpec.describe Workspace::Commands::Daemon do
     JSON.parse(output.string)
   end
 
+  describe "a daemon started under another spelling of the workspace name" do
+    let(:config_path) { File.join(tmpdir, "workspace-Notes.sock") }
+    let(:disk_path) { File.join(tmpdir, "workspace-notes.sock") }
+    let(:config) do
+      instance_double(Workspace::Config, agent_socket_path: config_path, agent_log_path: log_path).tap do |c|
+        allow(c).to receive(:agent_running?) { up[0] }
+      end
+    end
+
+    before { File.write(disk_path, "") }
+
+    it "asks lsof about the socket as the file system spells it" do
+      up[0] = true
+      asked = []
+      cmd = build(pid_finder: ->(path) { asked << path && [4242] })
+
+      cmd.status(name: "Notes", json: true)
+
+      expect(asked).to eq([disk_path])
+      expect(document).to include("running" => true, "pid" => 4242)
+    end
+
+    it "restarts it, keeping the work-coordinator socket it was started with" do
+      up[0] = true
+      process_table[4242] = {pid: 4242, args: "ruby /opt/bin/workspace agentd --wc-socket /tmp/wc-dev.sock notes"}
+
+      result = command.restart(name: "Notes")
+
+      expect(ensure_calls).to eq([{name: "Notes", wc_socket: "/tmp/wc-dev.sock"}])
+      expect(result).to have_attributes(outcome: "restarted", old_pid: 4242)
+    end
+  end
+
   describe "unknown workspaces" do
     before { allow(project_config).to receive(:exists?).with("nope").and_return(false) }
 

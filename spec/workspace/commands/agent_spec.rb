@@ -1154,6 +1154,12 @@ RSpec.describe Workspace::Commands::Agent do
       end
     end
 
+    it "answers a request for its own workspace in another case" do
+      run_agent do
+        expect(send_inject("workspace" => "MyApp", "work_item_ref" => "WC-999")).to eq("ok" => false, "error" => "no_active_pipeline")
+      end
+    end
+
     it "answers every inbound message so a caller never reads a bare EOF" do
       run_agent do
         expect(send_inject("workspace" => "api")).to eq("ok" => false, "error" => "wrong_workspace")

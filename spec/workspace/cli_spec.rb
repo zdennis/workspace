@@ -62,6 +62,7 @@ RSpec.describe Workspace::CLI do
       project_settings: project_settings,
       hook_runner: hook_runner,
       project_detector: project_detector,
+      workspace_name: overrides[:workspace_name],
       launch_command: launch_command,
       kill_command: kill_command,
       finish_command: finish_command,
@@ -4065,6 +4066,41 @@ RSpec.describe Workspace::CLI do
         ])
         expect(agent_command.calls).to eq([])
         expect(output.string.lines.first).to eq("Restarted agentd for app (pid 11 -> 22)\n")
+      end
+
+      context "when a config exists under a different case" do
+        let(:project_config) { instance_double(Workspace::ProjectConfig, available_projects: ["Notes"]) }
+        let(:built) do
+          build_test_cli(daemon_command: daemon_command, agent_command: agent_command, project_detector: detector, working_dir: "/some/dir",
+            workspace_name: Workspace::WorkspaceName.new(project_config: project_config))
+        end
+
+        it "takes notes and Notes for one workspace, by position and by --name" do
+          cli.run(["agentd", "restart", "notes"])
+          cli.run(["agentd", "restart", "--name", "NOTES"])
+          cli.run(["agentd", "restart", "--name=notes"])
+          cli.run(["agentd", "--name", "notes"])
+          cli.run(["agentd", "Notes"])
+
+          expect(daemon_command.calls.map { |call| call[:restart] }).to eq(["Notes", "Notes", "Notes"])
+          expect(agent_command.calls.map { |call| call[:name] }).to eq(["Notes", "Notes"])
+        end
+
+        it "leaves a name no config matches as given, in both forms" do
+          cli.run(["agentd", "restart", "Fresh"])
+          cli.run(["agentd", "restart", "--name", "Fresh"])
+
+          expect(daemon_command.calls).to eq([{restart: "Fresh", wc_socket: nil}] * 2)
+        end
+
+        it "leaves a --name after -- alone and a trailing --name without a value" do
+          args = ["agentd", "restart", "--", "--name", "notes"]
+          cli.send(:settle_name_flags!, args)
+          expect(args).to eq(["agentd", "restart", "--", "--name", "notes"])
+
+          args = ["agentd", "--name"]
+          expect { cli.send(:settle_name_flags!, args) }.not_to raise_error
+        end
       end
 
       it "restarts the detected workspace when none is named" do

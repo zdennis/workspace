@@ -23,6 +23,7 @@ module Workspace
       whereis lookup dir alfred version help
     ].freeze
 
+    # @param workspace_name [Workspace::WorkspaceName, nil] settles a given workspace name to its on-disk spelling (nil leaves names as given)
     # @param config [Workspace::Config] configuration for path lookups
     # @param state [Workspace::State] state persistence
     # @param project_config [Workspace::ProjectConfig] project config management
@@ -102,7 +103,7 @@ module Workspace
     #   `list --liveness --json` and `status --json`; takes name => state entry
     # @param launch_mode [Workspace::LaunchMode, nil] decides whether launch/start
     #   run headless when no --[no-]headless flag is given; nil builds one
-    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, restart_agent_command: nil, send_command: nil, ensure_agent_command: nil, handoff_command: nil, notes_command: nil, notes_setup: nil, plan_command: nil, ticket_command: nil, pull_request_command: nil, rebase_command: nil, push_command: nil, projects_command: nil, capabilities_command: nil, daemon_command: nil, ui_command: nil, binding_command: nil, library_command: nil, library: nil, instructions_command: nil, instruction_composer: nil, workflow_command: nil, review_command: nil, restore_command: nil, snapshot_command: nil, project_actions_command: nil, inbox_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil, liveness: nil, window_liveness: nil, env: ENV, editor_launcher: nil, interactive: nil)
+    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, restart_agent_command: nil, send_command: nil, ensure_agent_command: nil, handoff_command: nil, notes_command: nil, notes_setup: nil, plan_command: nil, ticket_command: nil, pull_request_command: nil, rebase_command: nil, push_command: nil, projects_command: nil, capabilities_command: nil, daemon_command: nil, ui_command: nil, binding_command: nil, library_command: nil, library: nil, instructions_command: nil, instruction_composer: nil, workflow_command: nil, review_command: nil, restore_command: nil, snapshot_command: nil, project_actions_command: nil, inbox_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil, liveness: nil, window_liveness: nil, env: ENV, editor_launcher: nil, interactive: nil, workspace_name: nil)
       @config = config
       @state = state
       @project_config = project_config
@@ -112,6 +113,7 @@ module Workspace
       @project_settings = project_settings
       @hook_runner = hook_runner
       @project_detector = project_detector
+      @workspace_name = workspace_name
       @sessions_command = sessions_command
       @session_event_command = session_event_command
       @launch_command = launch_command
@@ -193,6 +195,7 @@ module Workspace
       args = argv.dup
       @logger.enable! if args.delete("--debug")
       @input.no_input! if take_no_input_flag!(args) && @input.respond_to?(:no_input!)
+      settle_name_flags!(args)
       subcommand = args.shift
       @logger.debug { "subcommand=#{subcommand} args=#{args.inspect}" }
 
@@ -399,6 +402,32 @@ module Workspace
       found
     end
 
+    # Rewrites the value of each `--name` (or `--name=VALUE`) that matches an
+    # existing workspace ignoring case to that workspace's on-disk name, so
+    # every command sees one spelling. A name that matches nothing is left as
+    # given: whether it is new or a mistake is the command's call.
+    #
+    # @param args [Array<String>] arguments, modified in place
+    def settle_name_flags!(args)
+      return unless @workspace_name
+
+      stop = args.index("--") || args.size
+      stop.times do |i|
+        if args[i] == "--name" && i + 1 < stop
+          args[i + 1] = @workspace_name.match(args[i + 1]) || args[i + 1]
+        elsif args[i].start_with?("--name=")
+          value = args[i].delete_prefix("--name=")
+          args[i] = "--name=#{@workspace_name.match(value) || value}"
+        end
+      end
+    end
+
+    # @param name [String, nil] a workspace or project name as given
+    # @return [String, nil] the on-disk name of the config it matches ignoring case, else the name as given
+    def settle_name(name)
+      (@workspace_name && name) ? (@workspace_name.match(name) || name) : name
+    end
+
     # The directory a per-workspace command acts from: the named workspace's
     # root for `--name`, else the detected working directory.
     #
@@ -426,7 +455,7 @@ module Workspace
         @state.load
         @state.keys
       else
-        project = args.first || @project_detector.detect(@working_dir)
+        project = settle_name(args.first) || @project_detector.detect(@working_dir)
         raise UsageError, parser.help unless project
         [project]
       end
@@ -995,7 +1024,7 @@ module Workspace
       end
       parser.parse!(args)
 
-      project = args.first || @project_detector.detect(@working_dir)
+      project = settle_name(args.first) || @project_detector.detect(@working_dir)
       raise UsageError, parser.help unless project
 
       run_action("focus", json: json) do
@@ -1033,7 +1062,7 @@ module Workspace
       if all
         @tile_command.call_all
       else
-        project = args.first || @project_detector.detect(@working_dir)
+        project = settle_name(args.first) || @project_detector.detect(@working_dir)
         raise UsageError, parser.help unless project
         @tile_command.call(project)
       end
@@ -1573,7 +1602,7 @@ module Workspace
       end
       parser.parse!(args)
 
-      name ||= args.shift
+      name = settle_name(name || args.shift)
       raise UsageError, "Unexpected argument: #{args.first}.\n\n#{parser.help}" if args.any?
       name ||= @project_detector.detect(@working_dir)
       raise UsageError, parser.help if name.nil?
@@ -1623,7 +1652,7 @@ module Workspace
 
       raise Error, "agentd restart is not available: no daemon command was wired" unless @daemon_command
 
-      name = options[:name] || args.shift
+      name = settle_name(options[:name] || args.shift)
       raise UsageError, "Unexpected argument: #{args.first}. Run 'workspace agentd restart --help'." if args.any?
       name ||= @project_detector.detect(@working_dir)
       raise UsageError, "Missing workspace name.\n\n#{parser.help}" unless name
@@ -3571,7 +3600,7 @@ module Workspace
         name ||= Commands::Layout::DEFAULT_NAME
         @layout_command.restore(project, name)
       when "list"
-        project = args[0] || @project_detector.detect(@working_dir)
+        project = settle_name(args[0]) || @project_detector.detect(@working_dir)
         raise UsageError, layout_help_text unless project
         @layout_command.list(project)
       when "help", "--help", "-h", nil
@@ -3711,7 +3740,7 @@ module Workspace
 
       parser.parse!(args)
 
-      project = args.first || @project_detector.detect(@working_dir)
+      project = settle_name(args.first) || @project_detector.detect(@working_dir)
       raise UsageError, parser.help unless project
 
       result = @sessions_command.call(name: project, json: json, watch: watch, interval: interval, worktrees: worktrees)
@@ -3764,7 +3793,7 @@ module Workspace
       result = if subcommand == "list"
         @review_command.list(project: args.first, json: options[:json])
       else
-        name = args.first || @project_detector.detect(@working_dir)
+        name = settle_name(args.first) || @project_detector.detect(@working_dir)
         raise UsageError, "Missing workspace name.\n\n#{parser.help}" unless name
 
         @review_command.show(name: name, json: options[:json])
@@ -3835,7 +3864,7 @@ module Workspace
         return (subcommand == "list") ? @daemon_command.list(json: options[:json]) : daemon_restart_all(options)
       end
 
-      name = options[:name] || args.shift
+      name = settle_name(options[:name] || args.shift)
       raise UsageError, "Unexpected argument: #{args.first}. Run 'workspace daemon --help'." if args.any?
       name ||= @project_detector.detect(@working_dir)
       raise UsageError, "Missing workspace name.\n\n#{parser.help}" unless name
@@ -3954,7 +3983,7 @@ module Workspace
         pane = args.pop if options[:name] || args.size == 1
         pane = args.pop if pane.nil? && args.size == 2
       end
-      name = options[:name] || args.shift
+      name = settle_name(options[:name] || args.shift)
       raise UsageError, "Unexpected argument: #{args.first}. Run 'workspace ui --help'." if args.any?
       if Commands::Ui::VIEWS[view]
         name ||= @project_detector.detect(@working_dir)
@@ -4038,7 +4067,7 @@ module Workspace
       raise Error, "binding is not available: no binding command was wired" unless @binding_command
 
       if subcommand == "set"
-        name = options[:name] || args.shift || @project_detector.detect(@working_dir)
+        name = settle_name(options[:name] || args.shift) || @project_detector.detect(@working_dir)
         raise UsageError, "binding set needs a workspace: name one, pass --name, or run from inside a project." unless name
         pane = options[:pane] || ENV["TMUX_PANE"]
         raise UsageError, "binding set needs --pane (or to run inside a tmux pane)." unless pane
