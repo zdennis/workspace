@@ -493,6 +493,7 @@ RSpec.describe Workspace::Commands::Start do
 
           project_settings.data[project_name] = {"notes" => {"instructions" => "false"}} if project_settings.respond_to?(:data)
           allow(project_settings).to receive(:load).with(project_name).and_return({"notes" => {"instructions" => "false"}})
+          allow(project_settings).to receive(:load).with(/-PROJ-123\z/).and_return({"notes" => {"instructions" => "false"}})
           packs_command.call("PROJ-123")
           expect(launch_command).to have_received(:call).with(["myproject.worktree-PROJ-123"], prompts: {}).twice
         end
@@ -650,6 +651,7 @@ RSpec.describe Workspace::Commands::Start do
 
               it "sends no prompt at all when the skipped pack was the only one" do
                 allow(project_settings).to receive(:load).with(project_name).and_return({"notes" => {"instructions" => "false"}})
+                allow(project_settings).to receive(:load).with(/-PROJ-123\z/).and_return({"notes" => {"instructions" => "false"}})
                 packs_command.call("PROJ-123", json: true)
 
                 expect(JSON.parse(output.string)["packs"]).to eq([{"name" => "handoff", "source" => "config", "delivered" => false, "pane" => nil, "reason" => "handoff_unsupported_agent"}])
@@ -1900,6 +1902,140 @@ RSpec.describe Workspace::Commands::Start do
       missing.call("PROJ-123", agent_kind: "codex", no_launch: true, json: true)
 
       expect(JSON.parse(output.string)["warnings"].join).to include("codex is not on your PATH")
+    end
+  end
+
+  describe "#call with --spine, --no-spine and spine.auto" do
+    let(:name) { "myproject.worktree-PROJ-123" }
+    let(:library) { double("library") }
+    let(:spine_exists) { [false] }
+    let(:composer) { double("composer") }
+    let(:spine_init) { double("spine_init") }
+    let(:auto) { false }
+    let(:spine_config) { double("spine_config", auto?: auto, template: {"name" => "default", "source" => "default"}) }
+    let(:init_answer) { {"outcome" => "created", "dir" => "/n/spine", "files" => ["a.md"], "template" => {"name" => "default", "scope" => "builtin", "source" => "default"}} }
+    let(:events) { [] }
+    subject(:command) do
+      described_class.new(git: git, project_config: project_config, project_settings: project_settings, launch_command: launch_command,
+        library: library, instruction_composer: composer, spine_init: spine_init, spine_config: spine_config,
+        output: output, error_output: error_output, input: input)
+    end
+
+    before do
+      allow(git).to receive(:root).and_return(tmpdir)
+      allow(git).to receive(:parse_start_input).with("PROJ-123").and_return({type: :jira_key, value: "PROJ-123"})
+      allow(git).to receive(:sanitize_for_filesystem).with("PROJ-123").and_return("PROJ-123")
+      allow(git).to receive(:worktree_exists?).and_return(false)
+      allow(git).to receive(:find_worktree_by_branch).and_return(nil)
+      allow(git).to receive(:branch_exists?).with("PROJ-123").and_return(true)
+      allow(git).to receive(:create_worktree)
+      allow(project_config).to receive(:create_worktree).and_return(name)
+      allow(launch_command).to receive(:call)
+      allow(library).to receive(:play_prompt) { |_play, prompt, packs:| [packs, prompt].compact.join("\n\n") }
+      allow(library).to receive(:packs_binding) { |names| {"kind" => "play", "id" => "play/#{names.first}", "packs" => names} }
+      allow(composer).to receive(:compose_start) do |cwd:, **|
+        events << [:compose, cwd]
+        if spine_exists.first
+          {"packs" => [{"ref" => "play/spine", "source" => "config"}], "text" => "SPINE PACK", "skipped" => []}
+        else
+          {"packs" => [], "text" => nil, "skipped" => []}
+        end
+      end
+      allow(spine_init).to receive(:call) do |**args|
+        events << [:init, args]
+        spine_exists[0] = true
+        init_answer
+      end
+    end
+
+    it "runs init after the worktree exists and before the first prompt is composed, so the spine pack is sent" do
+      command.call("PROJ-123", spine: true, json: true)
+
+      expect(events.map(&:first)).to eq(%i[compose init compose])
+      expect(events.last.last).to eq(File.join(tmpdir, ".worktrees", "PROJ-123"))
+      expect(spine_init).to have_received(:call).with(name: name, template: nil, print: false)
+      expect(launch_command).to have_received(:call).with([name], hash_including(prompts: {name => "SPINE PACK"}))
+      payload = JSON.parse(output.string)
+      expect(payload["spine"]).to eq("outcome" => "created", "template" => init_answer["template"])
+      expect(payload["packs"].map { |p| p["name"] }).to eq(["spine"])
+    end
+
+    it "passes --spine=NAME as the template" do
+      command.call("PROJ-123", spine: "team", json: true)
+
+      expect(spine_init).to have_received(:call).with(name: name, template: "team", print: false)
+    end
+
+    it "runs on spine.auto, and --no-spine skips it even then" do
+      auto_command = described_class.new(git: git, project_config: project_config, project_settings: project_settings, launch_command: launch_command,
+        library: library, instruction_composer: composer, spine_init: spine_init, spine_config: double("c", auto?: true), output: output, error_output: error_output, input: input)
+
+      auto_command.call("PROJ-123", json: true)
+      expect(spine_init).to have_received(:call).once
+      expect(JSON.parse(output.string)).to include("spine")
+
+      output.truncate(0)
+      output.rewind
+      auto_command.call("PROJ-123", spine: false, json: true)
+      expect(spine_init).to have_received(:call).once
+      expect(JSON.parse(output.string)).not_to include("spine")
+    end
+
+    it "does nothing and reports no spine key without a flag or spine.auto" do
+      command.call("PROJ-123", json: true)
+
+      expect(spine_init).not_to have_received(:call)
+      expect(JSON.parse(output.string)).not_to include("spine")
+    end
+
+    it "makes a failed init a warning: start goes on, the prompt is still sent and --json says failed" do
+      allow(spine_init).to receive(:call).and_raise(Workspace::Error.new("No spine template 'gone'.", code: "unknown_template"))
+
+      result = command.call("PROJ-123", spine: "gone", json: true)
+
+      expect(result).to eq({exit_code: 0})
+      payload = JSON.parse(output.string)
+      expect(payload["spine"]).to eq("outcome" => "failed", "template" => {"name" => "gone", "source" => "flag"}, "error" => "unknown_template")
+      expect(payload["warnings"].join).to include("Could not set up the spine: No spine template 'gone'")
+      expect(launch_command).to have_received(:call)
+    end
+
+    it "warns on stderr and prints one line on stdout in plain mode" do
+      command.call("PROJ-123", spine: true)
+      expect(output.string).to include("Spine created: /n/spine (template default)")
+
+      allow(spine_init).to receive(:call).and_raise(Workspace::Error.new("boom"))
+      command.call("PROJ-123", spine: true)
+      expect(error_output.string).to include("Warning: Could not set up the spine: boom")
+    end
+
+    it "still runs init with --no-launch, sends no prompt and reports it in --json" do
+      result = command.call("PROJ-123", spine: true, no_launch: true, json: true)
+
+      expect(result).to eq({exit_code: 0})
+      expect(spine_init).to have_received(:call)
+      expect(launch_command).not_to have_received(:call)
+      expect(JSON.parse(output.string)).to include("spine" => hash_including("outcome" => "created"), "packs" => [])
+    end
+
+    it "keeps the first packs and warns when composing them again fails" do
+      calls = 0
+      allow(composer).to receive(:compose_start) do |**|
+        calls += 1
+        raise Workspace::Error, "unreadable" if calls > 1
+        {"packs" => [], "text" => nil, "skipped" => []}
+      end
+
+      result = command.call("PROJ-123", spine: true, json: true)
+
+      expect(result).to eq({exit_code: 0})
+      expect(JSON.parse(output.string)["warnings"].join).to include("Could not compose the packs again", "unreadable")
+    end
+
+    it "refuses --spine when no spine init command was wired" do
+      bare = described_class.new(git: git, project_config: project_config, project_settings: project_settings, launch_command: launch_command, output: output, error_output: error_output, input: input)
+
+      expect { bare.call("PROJ-123", spine: true) }.to raise_error(Workspace::Error, /--spine is not available/)
     end
   end
 end

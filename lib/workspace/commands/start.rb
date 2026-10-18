@@ -35,10 +35,12 @@ module Workspace
       # @param start_ref [Workspace::StartRef, nil] reads the input and finds the project; nil builds one from +git+ and +lineage+
       # @param main_agent [Workspace::MainAgent, nil] reads which agent the new workspace's main pane runs, for the
       #   `agent_kind` the JSON reports; nil leaves it out
+      # @param spine_init [Workspace::Commands::SpineInit, nil] makes the workspace's `spine/` for `--spine` and `spine.auto`; nil refuses `--spine`
+      # @param spine_config [Workspace::SpineConfig, nil] reads `spine.auto`; nil never runs init unasked
       # @param ticket_source [Workspace::TicketSource, nil] reads the ticket's title for +title_from_ticket+ and +slug+; nil reads none
       def initialize(git:, project_config:, project_settings:, launch_command:, lineage: WorkspaceLineage.new,
         hook_installer: nil, which: nil, task_store: nil, event_log: nil, library: nil, library_installer: nil,
-        notes_setup: nil, instruction_composer: nil, start_ref: nil, main_agent: nil, ticket_source: nil, output: $stdout, input: $stdin, error_output: $stderr)
+        notes_setup: nil, instruction_composer: nil, start_ref: nil, main_agent: nil, ticket_source: nil, spine_init: nil, spine_config: nil, output: $stdout, input: $stdin, error_output: $stderr)
         @git = git
         @project_config = project_config
         @project_settings = project_settings
@@ -55,6 +57,8 @@ module Workspace
         @instruction_composer = instruction_composer
         @main_agent = main_agent
         @ticket_source = ticket_source
+        @spine_init = spine_init
+        @spine_config = spine_config
         @output = output
         @input = input
         @error_output = error_output
@@ -87,6 +91,9 @@ module Workspace
       #   given; a ticket that cannot be read is a warning and the title stays empty
       # @param slug [Boolean] add the title's words to the branch of a JIRA or issue ref (`issue-42-fix-login`);
       #   implies +title_from_ticket+, and is ignored with a warning when no title is found
+      # @param spine [String, Boolean, nil] `--spine[=NAME]` (a name, or true for the resolved `spine.template`) runs
+      #   `spine init` once the worktree exists; false (`--no-spine`) never does; nil follows `spine.auto`. Run before the
+      #   first prompt is composed, so the automatic `spine` pack goes to the new agent. A failure is a warning
       # @param json [Boolean] emit the documented JSON schema instead of plain text; on
       #   an error, prints `{"schema_version":1,"ok":false,"error":"..."}` to stdout and returns
       #   +{exit_code: 1}+ instead of raising
@@ -97,10 +104,10 @@ module Workspace
       # @raise [Workspace::UsageError] if a prompt would block on a non-TTY stdin and
       #   neither +base+ nor +yes+ resolves it (unless +json+ is true)
       def call(input_string, prompt: nil, prompt_timeout: nil, base: nil, yes: false, headless: false, json: false, title: nil, play: nil,
-        agents: [], skills: [], packs: [], no_packs: false, handoff: nil, no_launch: false, agent_kind: nil, title_from_ticket: false, slug: false)
+        agents: [], skills: [], packs: [], no_packs: false, handoff: nil, no_launch: false, agent_kind: nil, title_from_ticket: false, slug: false, spine: nil)
         options = {prompt: prompt, prompt_timeout: prompt_timeout, base: base, yes: yes, headless: headless, title: title, play: play,
                    agents: agents, skills: skills, packs: packs, no_packs: no_packs, handoff: handoff, no_launch: no_launch, agent_kind: agent_kind,
-                   title_from_ticket: title_from_ticket, slug: slug}
+                   title_from_ticket: title_from_ticket, slug: slug, spine: spine}
         return call_json(input_string, **options) if json
 
         start!(input_string, quiet: false, **options)
@@ -119,13 +126,17 @@ module Workspace
 
       # @return [Hash] when quiet is true, +{exit_code:, json:}+; otherwise the
       #   launch result, or nil if branch selection was cancelled
-      def start!(input_string, prompt:, prompt_timeout:, base:, yes:, headless:, quiet:, title: nil, play: nil, agents: [], skills: [], packs: [], no_packs: false, handoff: nil, no_launch: false, agent_kind: nil, title_from_ticket: false, slug: false)
+      def start!(input_string, prompt:, prompt_timeout:, base:, yes:, headless:, quiet:, title: nil, play: nil, agents: [], skills: [], packs: [], no_packs: false, handoff: nil, no_launch: false, agent_kind: nil, title_from_ticket: false, slug: false, spine: nil)
         root = @git.root
         raise Workspace::Error, "Not inside a git repository." unless root
         check_no_launch!(no_launch, prompt: prompt, prompt_timeout: prompt_timeout, play: play, packs: packs, handoff: handoff)
         @agent_kind = check_agent_kind!(agent_kind)
         @project_config.check_agent_kind!(@agent_kind) if @agent_kind
         @no_launch = no_launch
+        raise Workspace::Error, "--spine is not available: no spine init command was wired." if spine && !@spine_init
+        @spine_flag = spine
+        @spine_result = nil
+        @pack_args = {packs: packs, none: no_packs, handoff: handoff}
 
         interactive = !quiet && !yes && stdin_tty?
         @warnings = []
@@ -225,6 +236,7 @@ module Workspace
         install_agent_hooks(worktree_path, quiet: quiet)
         copied = copy_library_entries(worktree_path, quiet: quiet)
         write_project_marker(worktree_path, config_name)
+        setup_spine(config_name, worktree_path, quiet: quiet)
         record_started(config_name, project_name, branch_name, created: created, task: task)
         agent_kind = report_agent_kind(config_name, quiet: quiet)
         if @no_launch
@@ -282,6 +294,7 @@ module Workspace
           "agent_kind" => agent_kind
         }
         json["notes_dir"] = notes_dir if notes_dir
+        json["spine"] = @spine_result if @spine_result
         json["task"] = {"id" => task["id"], "title" => task["title"]} if task
         %w[agent skill].each { |kind| json["#{kind}s"] = copied[kind] if copied.key?(kind) }
         if @no_launch
@@ -567,6 +580,41 @@ module Workspace
         result = @notes_setup.call(config_name)
         result["warnings"].each { |message| quiet ? @warnings << message : @error_output.puts(message) }
         result["dir"]
+      end
+
+      # Runs `spine init` when asked (`--spine`) or configured (`spine.auto`), unless `--no-spine`. A failure is a
+      # warning and `start` goes on. The packs are composed again afterwards, from the new worktree, because the
+      # automatic `spine` pack follows the `spine/` folder, which did not exist when they were first checked.
+      def setup_spine(config_name, worktree_path, quiet:)
+        # (`spine.auto` runs init on a reused or adopted worktree too; an existing spine/ is never overwritten.)
+        @spine_result = run_spine_init(config_name, quiet: quiet) unless @spine_flag == false
+        return if @no_launch || !@instruction_composer
+        composed = @instruction_composer.compose_start(cwd: worktree_path, agent_kind: @agent_kind, **@pack_args)
+        @skipped_packs = composed["skipped"] || []
+        @packs = composed["packs"].empty? ? nil : composed
+      rescue Workspace::Error => e
+        message = "Could not compose the packs again after the spine step, so the ones found before the worktree existed are sent: #{e.message}"
+        quiet ? @warnings << message : @error_output.puts("Warning: #{message}")
+      end
+
+      # @return [Hash, nil] `{"outcome", "template"}`, or nil when init was not wanted
+      def run_spine_init(config_name, quiet:)
+        return unless @spine_init
+        template = @spine_flag if @spine_flag.is_a?(String)
+        return unless @spine_flag || @spine_config&.auto?(config_name)
+        answer = @spine_init.call(name: config_name, template: template, print: false)
+        log(quiet, "Spine #{answer["outcome"]}: #{answer["dir"]} (template #{answer.dig("template", "name")})")
+        {"outcome" => answer["outcome"], "template" => answer["template"]}
+      rescue Workspace::Error, SystemCallError => e
+        message = "Could not set up the spine: #{e.message}"
+        quiet ? @warnings << message : @error_output.puts("Warning: #{message}")
+        {"outcome" => "failed", "template" => (template && {"name" => template, "source" => "flag"}) || safe_template(config_name), "error" => (e.respond_to?(:code) ? e.code : nil)}.compact
+      end
+
+      def safe_template(config_name)
+        @spine_config&.template(config_name)
+      rescue Workspace::Error
+        nil
       end
 
       def seed_worktree_hooks(parent_project, worktree_config_name)

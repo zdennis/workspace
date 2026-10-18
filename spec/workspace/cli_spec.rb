@@ -1756,6 +1756,22 @@ RSpec.describe Workspace::CLI do
         base: nil, yes: false, json: false, agent_kind: "claude")
     end
 
+    it "passes --spine, --spine=NAME and --no-spine through to start, without eating the ref, and refuses both" do
+      start_command = double("start", call: {exit_code: 0})
+      cli, _, error_output = build_test_cli(start_command: start_command)
+
+      cli.run(["start", "--spine", "PROJ-1"])
+      cli.run(["start", "--spine=team", "PROJ-2"])
+      cli.run(["start", "--no-spine", "PROJ-3"])
+
+      expect(start_command).to have_received(:call).with("PROJ-1", hash_including(spine: true))
+      expect(start_command).to have_received(:call).with("PROJ-2", hash_including(spine: "team"))
+      expect(start_command).to have_received(:call).with("PROJ-3", hash_including(spine: false))
+      expect { cli.run(["start", "--spine", "--no-spine", "PROJ-4"]) }.to raise_error(FakeSystemExit)
+      expect(error_output.string).to include("--spine cannot be combined with --no-spine")
+      expect(start_command).not_to have_received(:call).with("PROJ-4", anything)
+    end
+
     it "passes --handoff and --no-handoff through to start, and refuses --handoff with --no-packs" do
       start_command = double("start", call: {exit_code: 0, prompt_failures: {}})
       cli, _, error_output = build_test_cli(start_command: start_command)
