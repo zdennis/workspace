@@ -26,7 +26,7 @@ It reads constants, config paths and the `PATH`. It starts no process and touche
    "doctor_json":1,"daemon_control":4,"config_json":2,"config_scopes":2,"tmux_show":1,"tasks":1,"event_emitters":1,
    "ui_open":3,"pane_bindings":3,"library":5,"library_play":2,"library_copy":1,"instructions":1,"restore":1,
    "workflow":2,"window_state":1,"cleanup_dry_run":1,"notes":1,"start_packs":2,"start_agent":1,
-   "handoff_auto":2,"handoff_codex":1,"dev_queue":2,"plan":4,"inbox":3,"ask_withdraw":1,"review":1,"add_json":1,"plan_progress":1,"agent_status":1,"plan_tasks":1},
+   "handoff_auto":2,"handoff_codex":1,"dev_queue":2,"plan":4,"inbox":3,"ask_withdraw":1,"review":1,"add_json":1,"plan_progress":1,"spine_events":1,"agent_status":1,"plan_tasks":1},
  "exit_codes":{"ok":0,"failed":1,"not_submitted":2,"partial":3,"lock_cleared":4,"timeout":75},
  "paths":{"event_log":"/Users/me/.workspace-events.jsonl","hook_events":"/Users/me/.local/state/workspace/.events",
    "run_dir":"/Users/me/.local/workspace/run",
@@ -87,6 +87,7 @@ It reads constants, config paths and the `PATH`. It starts no process and touche
 | `spine_set` | `spine set [WS] STAGE-PATH --status VALUE [--note TEXT] [--if-revision REV] [--recursive] [--by LABEL] [--json]` sets a stage's status in its file's frontmatter, refusing a stale revision, and records `spine_changed` in the event log (see [`spine`](README.spine.md)) |
 | `spine_init` | `spine init [WS] [--template NAME] [--dry-run] [--json]` creates `spine/` in the notes directory from a `spine` library template (the built-in `default`, or a global or project entry) and never overwrites; answers `created`, `exists` or `would_create`; errors `unknown_template` and `spine_unwritable` (see [`spine`](README.spine.md#spine-init)) |
 | `spine_pack` | The built-in `spine` play ("Keep this workspace's plan spine current") exists, and `start`, `launch` and `instructions compose --start` add it as an automatic pack to a workspace whose notes directory has a `spine/` folder (see [`spine`](README.spine.md#telling-agents-the-convention)) |
+| `spine_events` | The event log records `spine_changed` for a stage's status or note changed by hand or by an agent's edit, and `change: "added"`/`"removed"` lines when a stage file appears or goes, while the workspace's agent daemon runs; `events --follow --types spine_changed` carries them (see [`spine`](README.spine.md) and [`event-log`](README.event-log.md)) |
 | `pr_create` | `pr create [--name WS] [--draft] [--json]` pushes the branch when it has no upstream, returns the branch's pull request when it has one, and otherwise runs `gh pr create --fill`; `finish --json` carries `pr_url` (see [`pr`](README.pr.md)) |
 | `rebase` | `rebase --onto local\|update\|remote\|upstream [--name WS] [--json]` and `push [--name WS] [--json]` (see [`rebase`](README.rebase.md)) |
 | `inbox` | `inbox add\|list\|show\|done\|dismiss\|reopen` and `inbox add --from-json PATH\|-` keep a durable list of things that need a person, per workspace, project or global, with `--json` (see [`inbox`](README.inbox.md)). Level 2 adds `edit`, `snooze`, dedupe, expiry and the scope caps; level 3 adds `list --include-derived` and `ack`, and `snooze` of derived ids |

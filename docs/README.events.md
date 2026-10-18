@@ -25,7 +25,7 @@ Without `--json`, each line is `at  workspace  type  key=value ...`, like [`even
 
 The stream has two kinds of source:
 
-- **The event log**, `~/.workspace-events.jsonl` ([`event-log`](README.event-log.md)): state changes and lifecycle events such as `plan_changed`, `plan_progress` (a plan task changed state), `inbox_changed`, `ask_created`, `agent_state`. Its lines are printed as they are in the log (`timestamp`, `type`, `project`, `data`), with `source: "lifecycle"`, `at` (the `timestamp`) and `workspace` (`data.workspace`, else `project`) added.
+- **The event log**, `~/.workspace-events.jsonl` ([`event-log`](README.event-log.md)): state changes and lifecycle events such as `plan_changed`, `plan_progress` (a plan task changed state), `spine_changed` (a spine stage's status or note changed, or a stage file was added or removed), `inbox_changed`, `ask_created`, `agent_state`. Its lines are printed as they are in the log (`timestamp`, `type`, `project`, `data`), with `source: "lifecycle"`, `at` (the `timestamp`) and `workspace` (`data.workspace`, else `project`) added.
 - **Each agent daemon's hook event file**, `~/.local/state/workspace/.events/<workspace>.jsonl` (the `hook_events` path in [`capabilities --json`](README.capabilities.md)). [`agentd`](README.agentd.md) writes one line for each hook event [`session-event`](README.session-event.md) forwards, and one for each [`agent status post`](README.agent.md#status). Its lines are printed as they are in the file, with `source: "hook"` added.
 
 Every printed line also carries `cursor`. Lines from different sources come out in time order, and lines from one file always keep that file's order.

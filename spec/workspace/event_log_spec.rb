@@ -37,6 +37,20 @@ RSpec.describe Workspace::EventLog do
     end
   end
 
+  describe "#recent" do
+    it "returns the data of one project's events of a type that are not older than the cutoff" do
+      File.write(event_log_file, [
+        {"timestamp" => "2026-10-17T10:00:00.000Z", "type" => "spine_changed", "project" => "a", "data" => {"n" => 1}},
+        {"timestamp" => "2026-10-17T10:05:00.000Z", "type" => "spine_changed", "project" => "a", "data" => {"n" => 2}},
+        {"timestamp" => "2026-10-17T10:05:00.000Z", "type" => "spine_changed", "project" => "b", "data" => {"n" => 3}},
+        {"timestamp" => "2026-10-17T10:05:00.000Z", "type" => "plan_changed", "project" => "a", "data" => {"n" => 4}},
+        {"timestamp" => "garbage", "type" => "spine_changed", "project" => "a", "data" => {"n" => 5}}
+      ].map { |e| JSON.generate(e) + "\n" }.join)
+
+      expect(event_log.recent(type: "spine_changed", project: "a", since: Time.utc(2026, 10, 17, 10, 1))).to eq([{"n" => 2}])
+    end
+  end
+
   describe "#events" do
     it "returns empty array when file does not exist" do
       expect(event_log.events).to eq([])

@@ -67,6 +67,8 @@ module Workspace
       #   to lowercase before the socket is claimed; nil renames nothing
       # @param plan_progress_watcher_factory [#call, nil] given the workspace name, builds the
       #   {Workspace::PlanProgressWatcher} that records `plan_progress`; nil watches nothing
+      # @param spine_watcher_factory [#call, nil] given the workspace name, builds the
+      #   {Workspace::SpineWatcher} that records `spine_changed` for edits made by hand; nil watches nothing
       # @param logger [Workspace::Logger] debug logger
       # @param output [IO] output stream for user-facing messages
       # @param error_output [IO] error output stream for errors
@@ -101,6 +103,7 @@ module Workspace
         agent_status_desk_factory: nil,
         name_migration: nil,
         plan_progress_watcher_factory: nil,
+        spine_watcher_factory: nil,
         logger: Workspace::Logger.new, output: $stdout, error_output: $stderr)
         @name_migration = name_migration
         @config = config
@@ -126,6 +129,7 @@ module Workspace
         @agent_restart_factory = agent_restart_factory || method(:build_agent_restart)
         @hook_event_log_factory = hook_event_log_factory
         @plan_progress_watcher_factory = plan_progress_watcher_factory
+        @spine_watcher_factory = spine_watcher_factory
         @agent_status_desk_factory = agent_status_desk_factory || method(:build_agent_status_desk)
         # Restart workers by pane id, so one pane is restarted once at a time.
         @restarts = {}
@@ -204,6 +208,8 @@ module Workspace
         @session_monitor.start
         @plan_progress_watcher = @plan_progress_watcher_factory&.call(name)
         @plan_progress_watcher&.start
+        @spine_watcher = @spine_watcher_factory&.call(name)
+        @spine_watcher&.start
         @agent_status_desk = @agent_status_desk_factory.call(workspace: name, session_name: @tmux_session,
           session_monitor: @session_monitor, hook_event_log: @hook_event_log, delivery_lock: @delivery_lock)
 
@@ -219,6 +225,7 @@ module Workspace
         @shutdown_signal << :stop
         @session_monitor&.stop
         @plan_progress_watcher&.stop
+        @spine_watcher&.stop
         stop_restarts
         watcher&.join(1)
         watcher&.kill

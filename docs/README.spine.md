@@ -43,6 +43,8 @@ The file is read as bytes, opened without following a link, written to a temp fi
 
 Each file written appends one [`spine_changed`](README.event-log.md) line to the event log, carrying the new `revision`.
 
+A stage changed some other way, by hand in an editor or by an agent's edit tool, is logged too while the workspace's agent daemon runs (`spine_events` in [`capabilities`](README.capabilities.md)): see [`event-log`](README.event-log.md). The daemon recognises a `spine set` write by its revision, so one write is one line.
+
 ```json
 {
   "schema_version": 1, "ok": true, "workspace": "fix-oauth-refresh",

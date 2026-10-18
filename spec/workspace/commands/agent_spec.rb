@@ -2144,6 +2144,36 @@ RSpec.describe Workspace::Commands::Agent do
       end
     end
 
+    context "with a spine watcher" do
+      let(:watcher) { instance_double(Workspace::SpineWatcher, start: nil, stop: nil) }
+      let(:built_for) { [] }
+
+      subject(:agent) do
+        described_class.new(
+          config: config, tmux: tmux, work_coordinator_client: client,
+          pipeline_config: pipeline_config, pipeline_state: pipeline_state,
+          epoch_generator: -> { "wa-TESTEPOCH" }, signal_trapper: signal_trapper,
+          sentinel_poller_factory: sentinel_poller_factory, token_generator: token_generator,
+          clock: -> { now }, retry_backoff: 0, session_monitor_factory: ->(_name) { monitor },
+          spine_watcher_factory: ->(name) {
+            built_for << name
+            watcher
+          },
+          output: output, error_output: error_output
+        )
+      end
+
+      it "starts the workspace's watcher with the daemon and stops it on the way out" do
+        run_agent do
+          expect(built_for).to eq(["myapp"])
+          expect(watcher).to have_received(:start)
+          expect(watcher).not_to have_received(:stop)
+        end
+
+        expect(watcher).to have_received(:stop)
+      end
+    end
+
     context "with an agent status desk" do
       let(:built) { [] }
       let(:release) { Queue.new }

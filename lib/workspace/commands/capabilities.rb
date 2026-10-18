@@ -63,6 +63,7 @@ module Workspace
         "review" => 1,
         "add_json" => 1,
         "plan_progress" => 1,
+        "spine_events" => 1,
         "agent_status" => 1,
         "plan_tasks" => 1
       }.freeze

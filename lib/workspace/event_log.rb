@@ -202,6 +202,24 @@ module Workspace
       end
     end
 
+    # The payloads of the events of one type and project written since a time.
+    #
+    # @param type [String] event type
+    # @param project [String] project name
+    # @param since [Time] events stamped earlier than this are left out
+    # @return [Array<Hash>] the `data` hashes, oldest first; empty when the log can't be read
+    def recent(type:, project:, since:)
+      events.filter_map do |event|
+        next unless event["type"] == type && event["project"] == project && event["data"].is_a?(Hash)
+        stamp = begin
+          Time.iso8601(event["timestamp"].to_s)
+        rescue ArgumentError
+          nil
+        end
+        event["data"] if stamp && stamp >= since
+      end
+    end
+
     # Reads all events from the log file. A log that can't be read warns
     # once on the error stream and reads as empty.
     #
