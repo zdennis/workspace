@@ -1234,6 +1234,136 @@ RSpec.describe Workspace::SessionMonitor do
       end
     end
   end
+
+  describe "per-pane tool status" do
+    before { monitor.scan }
+
+    def tool_start(id, tool = "Bash", extra = {})
+      monitor.record({"event" => "tool_start", "pane_id" => "%2", "tool" => tool, "tool_use_id" => id}.merge(extra))
+    end
+
+    def tool_end(id, extra = {})
+      monitor.record({"event" => "tool_use", "pane_id" => "%2", "tool" => "Bash", "tool_use_id" => id}.merge(extra))
+    end
+
+    it "reports nulls and no sub-agents for an agent pane no hook has reached" do
+      expect(pane("%2")).to include("last_event_at" => nil, "current_tool" => nil,
+        "current_tool_since" => nil, "subagents" => [])
+    end
+
+    it "leaves the fields off a shell pane" do
+      expect(pane("%1").keys).not_to include("last_event_at", "current_tool", "current_tool_since", "subagents")
+    end
+
+    it "reports the running tool by name with when it started" do
+      tool_start("t1")
+
+      expect(pane("%2")).to include("current_tool" => "Bash", "current_tool_since" => now.iso8601,
+        "last_event_at" => now.iso8601)
+    end
+
+    it "reports no tool between tools but keeps the heartbeat" do
+      tool_start("t1")
+      allow(clock).to receive(:now).and_return(now + 5)
+      tool_end("t1")
+
+      expect(pane("%2")).to include("current_tool" => nil, "current_tool_since" => nil,
+        "last_event_at" => (now + 5).iso8601)
+    end
+
+    it "reports the latest of tools run side by side, then the earlier one once it ends" do
+      tool_start("t1", "Read")
+      allow(clock).to receive(:now).and_return(now + 2)
+      tool_start("t2", "Grep")
+      expect(pane("%2")["current_tool"]).to eq("Grep")
+
+      tool_end("t2")
+      expect(pane("%2")).to include("current_tool" => "Read", "current_tool_since" => now.iso8601)
+    end
+
+    it "ignores a sub-agent's tools" do
+      tool_start("t1", "Bash", "agent_id" => "sub-1")
+
+      expect(pane("%2")["current_tool"]).to be_nil
+    end
+
+    it "clears the tool when the turn ends or a prompt is submitted" do
+      tool_start("t1")
+      monitor.record("event" => "stop", "pane_id" => "%2")
+      expect(pane("%2")["current_tool"]).to be_nil
+
+      tool_start("t2")
+      monitor.record("event" => "user_prompt", "pane_id" => "%2")
+      expect(pane("%2")["current_tool"]).to be_nil
+    end
+
+    it "keeps no tool input: the name is all that is reported" do
+      tool_start("t1", "Bash", "path" => "lib/a.rb", "command" => "rm -rf /")
+
+      expect(pane("%2").to_s).not_to include("rm -rf")
+    end
+
+    describe "subagents" do
+      def start_sub(id, description)
+        monitor.record("event" => "subagent_start", "pane_id" => "%2", "tool" => "Task", "tool_use_id" => id,
+          "description" => description, "agent" => {"name" => "general-purpose"})
+      end
+
+      it "lists running sub-agents with their description" do
+        start_sub("task-1", "Review the diff")
+
+        expect(pane("%2")["subagents"]).to eq([{"agent_id" => nil, "description" => "Review the diff", "since" => now.iso8601}])
+        expect(pane("%2")["current_tool"]).to eq("Task")
+      end
+
+      it "falls back to the sub-agent's name without a description" do
+        monitor.record("event" => "subagent_start", "pane_id" => "%2", "agent" => {"name" => "x"})
+
+        expect(pane("%2")["subagents"].first["description"]).to eq("x")
+      end
+
+      it "keeps a sub-agent running after its Task call returns, as a background Task does" do
+        start_sub("task-1", "first")
+
+        tool_end("task-1", "tool" => "Task")
+
+        expect(pane("%2")["subagents"].map { |s| s["description"] }).to eq(["first"])
+        expect(pane("%2")["current_tool"]).to be_nil
+      end
+
+      it "learns the agent id from its own tool when it is the only one unnamed" do
+        start_sub("task-1", "first")
+        tool_start("t9", "Read", "agent_id" => "sub-9")
+
+        expect(pane("%2")["subagents"].first["agent_id"]).to eq("sub-9")
+      end
+
+      it "does not guess an agent id when two are unnamed" do
+        start_sub("task-1", "first")
+        start_sub("task-2", "second")
+        tool_start("t9", "Read", "agent_id" => "sub-9")
+
+        expect(pane("%2")["subagents"].map { |s| s["agent_id"] }).to eq([nil, nil])
+      end
+
+      it "closes the sub-agent a stop names" do
+        start_sub("task-1", "first")
+        tool_start("t9", "Read", "agent_id" => "sub-9")
+        start_sub("task-2", "second")
+
+        monitor.record("event" => "subagent_stop", "pane_id" => "%2", "agent_id" => "sub-9")
+
+        expect(pane("%2")["subagents"].map { |s| s["description"] }).to eq(["second"])
+      end
+
+      it "reports none once the turn ends" do
+        start_sub("task-1", "first")
+        monitor.record("event" => "stop", "pane_id" => "%2")
+
+        expect(pane("%2")["subagents"]).to eq([])
+      end
+    end
+  end
 end
 
 RSpec.describe Workspace::SessionMonitor, "display_label" do

@@ -16,7 +16,7 @@ module Workspace
         "name_scope" => 1,
         "no_input" => 1,
         "action_json" => 1,
-        "sessions" => 1,
+        "sessions" => 2,
         "locks_json" => 2,
         "git_facts" => 1,
         "prune_safe" => 2,

@@ -192,6 +192,7 @@ module Workspace
         pane[:session_id] = event["session_id"] || pane[:session_id]
         note_label_source(pane, event)
         pane[:last_event_at] = @clock.now
+        track_tools(pane, event)
         apply_event(pane, event)
       end
     end
@@ -629,19 +630,68 @@ module Workspace
       case event["event"]
       when "subagent_start"
         pane.delete(:done)
-        pane[:agents] << {name: agent_name(event), state: "running", started_at: @clock.now}
+        pane[:agents] << {name: agent_name(event), state: "running", started_at: @clock.now,
+          description: self.class.clean_message(event["description"])&.slice(0, 120), tool_use_id: event["tool_use_id"]}
       when "subagent_stop"
         # Claude Code's SubagentStop does not say which sub-agent finished, so
         # the oldest running one is closed. With sub-agents running in parallel
         # this can pair the wrong start with the wrong stop; the count stays
         # right, which is what the display needs.
-        running = pane[:agents].find { |a| a[:state] == "running" }
+        # When the hook names the sub-agent (agent_id), that one is closed.
+        running = pane[:agents].find { |a| a[:state] == "running" && event["agent_id"] && a[:agent_id] == event["agent_id"] } ||
+          pane[:agents].find { |a| a[:state] == "running" && !a[:agent_id] } ||
+          pane[:agents].find { |a| a[:state] == "running" }
         running&.merge!(state: "done", ended_at: @clock.now)
       when "stop", "session_end"
         pane[:agents].each do |agent|
           agent.merge!(state: "done", ended_at: @clock.now) if agent[:state] == "running"
         end
       end
+    end
+
+    # Events that leave no tool of the main agent running.
+    TOOL_RESET_EVENTS = ["user_prompt", "stop", "session_start", "session_end"].freeze
+    private_constant :TOOL_RESET_EVENTS
+
+    # Keeps what `sessions` says about tools: the main agent's tools still
+    # running (by tool_use_id, so tools run side by side finish one by one),
+    # and the id of each sub-agent. Only the tool's name is kept, never its
+    # input. A sub-agent is not ended by its Task call's PostToolUse, since a
+    # background Task returns at once while the sub-agent keeps running.
+    def track_tools(pane, event)
+      open = (pane[:open_tools] ||= {})
+      main = event["agent_id"].nil?
+      id = event["tool_use_id"]
+
+      case event["event"]
+      when "tool_start", "subagent_start"
+        name = event["tool"] || ((event["event"] == "subagent_start") ? "Task" : nil)
+        if main && name
+          open.delete(id || :anonymous)
+          open[id || :anonymous] = {tool: self.class.clean_message(name)&.slice(0, 64), since: @clock.now}
+        end
+      when "tool_use"
+        if id
+          open.delete(id)
+        elsif main
+          open.clear
+        end
+      when *TOOL_RESET_EVENTS
+        open.clear if main
+      end
+
+      bind_subagent_id(pane, event["agent_id"]) if event["agent_id"] && event["event"] != "subagent_stop"
+    end
+
+    # A sub-agent is named only once it runs. It is paired with an id when
+    # exactly one running sub-agent has none, which is the only case that
+    # cannot pair the wrong two.
+    def bind_subagent_id(pane, agent_id)
+      running = pane[:agents].select { |a| a[:state] == "running" }
+      return if running.any? { |a| a[:agent_id] == agent_id }
+
+      unbound = running.reject { |a| a[:agent_id] }
+      unbound.first[:agent_id] = agent_id if unbound.size == 1
     end
 
     # The Stop hook says whether the turn ended normally; Claude Code's does
@@ -717,8 +767,26 @@ module Workspace
            "ended_at" => agent[:ended_at]&.utc&.iso8601}
         }
       }
-      apply_context(result, pane, now) unless pane[:kind] == "shell"
+      unless pane[:kind] == "shell"
+        apply_context(result, pane, now)
+        apply_tool_status(result, pane)
+      end
       result
+    end
+
+    # `last_event_at`, `current_tool` (the name of the main agent's most
+    # recently started tool still running, else nil), `current_tool_since`
+    # and the running `subagents`. A coding-agent pane no hook has reached
+    # reports nulls and an empty list; a shell pane carries none of these.
+    def apply_tool_status(result, pane)
+      current = pane[:open_tools]&.values&.last
+      result["last_event_at"] = pane[:last_event_at]&.utc&.iso8601
+      result["current_tool"] = current&.dig(:tool)
+      result["current_tool_since"] = current&.dig(:since)&.utc&.iso8601
+      result["subagents"] = pane[:agents].select { |a| a[:state] == "running" }.map { |agent|
+        {"agent_id" => agent[:agent_id], "description" => agent[:description] || agent[:name],
+         "since" => agent[:started_at]&.utc&.iso8601}
+      }
     end
 
     # Longest prompt kept as a label fallback.

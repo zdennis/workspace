@@ -21,7 +21,7 @@ It reads constants, config paths and the `PATH`. It starts no process and touche
 ```json
 {"schema_version":1,"ok":true,"version":"0.27.1",
  "features":{"envelope":1,"error_codes":1,"name_scope":1,"no_input":1,"action_json":1,
-   "sessions":1,"locks_json":2,"git_facts":1,"prune_safe":2,"snapshot":4,"events_follow":1,
+   "sessions":2,"locks_json":2,"git_facts":1,"prune_safe":2,"snapshot":4,"events_follow":1,
    "actions_manifest":0,"agent_send":1,"agent_spawn":1,"focus_pane":1,"state_done":1,
    "doctor_json":1,"daemon_control":4,"config_json":2,"config_scopes":2,"tmux_show":1,"tasks":1,"event_emitters":1,
    "ui_open":3,"pane_bindings":3,"library":4,"library_play":2,"library_copy":1,"instructions":1,"restore":1,
@@ -49,7 +49,7 @@ It reads constants, config paths and the `PATH`. It starts no process and touche
 | `name_scope` | `--name` on `ask`, `lock`, `dev` and `config` |
 | `no_input` | `--no-input` and `WORKSPACE_NO_INPUT` |
 | `action_json` | `--json` action documents on the lifecycle commands, `dev up|down`, `lock release`, `config set`, `pipeline start|advance|reset`, and `agent run --json` |
-| `sessions` | `sessions --json` |
+| `sessions` | `sessions --json`. Revision 2: each coding-agent pane carries `last_event_at`, `current_tool`, `current_tool_since` and `subagents` (see [`sessions`](README.sessions.md#tool-status-fields)) |
 | `locks_json` | `lock status --json` and `lock clear --json`. Revision 2: a holder or waiter can be a workflow run (`"kind": "run"` with `run_id` and `step`, and no `pid`), a run holder can carry a `delegate`, and `dev status --json` reports `running: false` for a run that holds `devenv` with no dev environment under it (see [`lock`](README.lock.md) and [`dev`](README.dev.md)) |
 | `git_facts` | `projects show` reports git facts per workspace |
 | `prune_safe` | `prune` skips a worktree with unsaved work and reports it, rather than removing it. Revision 2: `prune --json [--name=WS]...` prints an action document with a row per candidate (see [`prune`](README.prune.md)) |
