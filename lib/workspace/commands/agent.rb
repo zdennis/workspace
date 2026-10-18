@@ -62,6 +62,8 @@ module Workspace
       #   {Workspace::HookEventLog} each forwarded hook event is written to; nil writes none
       # @param name_migration [Workspace::NameMigration, nil] renames a mixed-case workspace
       #   to lowercase before the socket is claimed; nil renames nothing
+      # @param plan_progress_watcher_factory [#call, nil] given the workspace name, builds the
+      #   {Workspace::PlanProgressWatcher} that records `plan_progress`; nil watches nothing
       # @param logger [Workspace::Logger] debug logger
       # @param output [IO] output stream for user-facing messages
       # @param error_output [IO] error output stream for errors
@@ -94,6 +96,7 @@ module Workspace
         agent_restart_factory: nil,
         hook_event_log_factory: nil,
         name_migration: nil,
+        plan_progress_watcher_factory: nil,
         logger: Workspace::Logger.new, output: $stdout, error_output: $stderr)
         @name_migration = name_migration
         @config = config
@@ -118,6 +121,7 @@ module Workspace
         @scan_slots = scan_slots
         @agent_restart_factory = agent_restart_factory || method(:build_agent_restart)
         @hook_event_log_factory = hook_event_log_factory
+        @plan_progress_watcher_factory = plan_progress_watcher_factory
         # Restart workers by pane id, so one pane is restarted once at a time.
         @restarts = {}
         # When the main agent's current turn began, by pane id, for the workflow nudger.
@@ -193,6 +197,8 @@ module Workspace
         @hook_event_log = @hook_event_log_factory&.call(name)
         @session_monitor = @session_monitor_factory.call(name)
         @session_monitor.start
+        @plan_progress_watcher = @plan_progress_watcher_factory&.call(name)
+        @plan_progress_watcher&.start
 
         @output.puts "workspace agent '#{name}' ready"
         log_activity("daemon_started", "workspace" => name, "daemon" => "agent", "pid" => Process.pid)
@@ -205,6 +211,7 @@ module Workspace
         @shutting_down = true
         @shutdown_signal << :stop
         @session_monitor&.stop
+        @plan_progress_watcher&.stop
         stop_restarts
         watcher&.join(1)
         watcher&.kill

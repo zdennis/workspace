@@ -43,7 +43,7 @@ Each verb changes one thing and is safe to repeat. A plan with no file is `no_pl
 
 A status or owner write changes only that line (the frontmatter is added when the file has none), reads the whole file, goes through a temp file and a rename, and keeps the file's mode. If the file changed between the read and the rename, for instance because the agent saved an edit, the write is made again on what is there now. A second change under the retry writes nothing and fails with `plan_write_conflict`. An agent that saves between the final check and the rename can still lose its edit; that window is a few microseconds.
 
-Every change to the file records [`plan_changed`](README.event-log.md) in the event log, which `init` does too.
+Every change to the file records [`plan_changed`](README.event-log.md) in the event log, which `init` does too. A change to the checklist, however it was made, also records [`plan_progress`](README.event-log.md) (counts, current task, changed task ids) while the workspace's agent daemon runs.
 
 ## The plan file
 
