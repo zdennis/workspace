@@ -102,6 +102,7 @@ RSpec.describe Workspace::CLI do
       notes_command: overrides[:notes_command],
       notes_setup: overrides[:notes_setup],
       plan_command: overrides[:plan_command],
+      plan_dispatch_command: overrides[:plan_dispatch_command],
       ticket_command: overrides[:ticket_command],
       spine_command: overrides[:spine_command],
       spine_init_command: overrides[:spine_init_command],
@@ -5801,7 +5802,7 @@ RSpec.describe Workspace::CLI do
   describe "#run with plan" do
     let(:plan_command) { instance_double(Workspace::Commands::Plan, status: [], path: nil, show: nil, init: {"path" => "/n/IMPLEMENTATION_PLAN.md", "message" => nil}) }
     let(:detector) { instance_double(Workspace::ProjectDetector, detect: "detected-ws") }
-    let(:built) { build_test_cli(plan_command: plan_command, project_detector: detector, working_dir: "/some/dir") }
+    let(:built) { build_test_cli(plan_command: plan_command, plan_dispatch_command: instance_double(Workspace::Commands::PlanDispatch), project_detector: detector, working_dir: "/some/dir") }
     let(:cli) { built[0] }
     let(:output) { built[1] }
     let(:error_output) { built[2] }
@@ -8589,11 +8590,12 @@ RSpec.describe Workspace::CLI do
 
     describe "plan start, pause and delete" do
       let(:plan_command) { instance_double(Workspace::Commands::Plan) }
+      let(:plan_dispatch_command) { instance_double(Workspace::Commands::PlanDispatch) }
       let(:detector) { instance_double(Workspace::ProjectDetector, detect: "detected-ws") }
       let(:row) { {"outcome" => "paused", "reason" => nil, "message" => nil, "path" => "/n/IMPLEMENTATION_PLAN.md", "pane" => nil} }
 
       def plan_cli(**overrides, &block)
-        action_cli(plan_command: plan_command, project_detector: detector, **overrides, &block)
+        action_cli(plan_command: plan_command, plan_dispatch_command: plan_dispatch_command, project_detector: detector, **overrides, &block)
       end
 
       it "prints pause as an action document with the row's path and pane" do
@@ -8638,7 +8640,7 @@ RSpec.describe Workspace::CLI do
       end
 
       it "prints start's refusals as envelopes" do
-        allow(plan_command).to receive(:start).and_raise(Workspace::Error.new("done", code: "plan_done", details: {"name" => "api"}))
+        allow(plan_dispatch_command).to receive(:start).and_raise(Workspace::Error.new("done", code: "plan_done", details: {"name" => "api"}))
         cli, raw, = plan_cli
 
         expect(exit_status { cli.run(["plan", "start", "--name", "api", "--json"]) }).to eq(1)
@@ -8647,7 +8649,7 @@ RSpec.describe Workspace::CLI do
       end
 
       it "prints a sent start as an action document with the pane" do
-        allow(plan_command).to receive(:start).and_return(row.merge("outcome" => "sent", "pane" => "%19"))
+        allow(plan_dispatch_command).to receive(:start).and_return(row.merge("outcome" => "sent", "pane" => "%19"))
         cli, raw, = plan_cli
 
         cli.run(["plan", "start", "--name", "api", "--json"])
@@ -8656,7 +8658,7 @@ RSpec.describe Workspace::CLI do
       end
 
       it "exits 1 with a failed row when the launch could not send its prompt, and says why on stderr without --json" do
-        allow(plan_command).to receive(:start).and_return(row.merge("outcome" => "failed", "reason" => "prompt_not_sent", "message" => "agent never ready"))
+        allow(plan_dispatch_command).to receive(:start).and_return(row.merge("outcome" => "failed", "reason" => "prompt_not_sent", "message" => "agent never ready"))
         cli, raw, = plan_cli
 
         expect(exit_status { cli.run(["plan", "start", "--name", "api", "--json"]) }).to eq(1)
@@ -8671,7 +8673,7 @@ RSpec.describe Workspace::CLI do
 
       it "gives start a launcher that launches with the implementation-plan play and the continue line, and reports the bound pane" do
         launched = nil
-        allow(plan_command).to receive(:start) do |name:, launch:|
+        allow(plan_dispatch_command).to receive(:start) do |name:, launch:|
           launched = launch.call(name)
           row.merge("outcome" => "launched", "pane" => launched[:pane])
         end
@@ -8700,7 +8702,7 @@ RSpec.describe Workspace::CLI do
 
       it "gives start a launcher that reports a launch that never sent its prompt" do
         launched = nil
-        allow(plan_command).to receive(:start) do |name:, launch:|
+        allow(plan_dispatch_command).to receive(:start) do |name:, launch:|
           launched = launch.call(name)
           row
         end
@@ -8719,7 +8721,7 @@ RSpec.describe Workspace::CLI do
 
       it "gives start the delivered pane when the play could not be bound to it" do
         launched = nil
-        allow(plan_command).to receive(:start) do |name:, launch:|
+        allow(plan_dispatch_command).to receive(:start) do |name:, launch:|
           launched = launch.call(name)
           row
         end
@@ -8737,21 +8739,21 @@ RSpec.describe Workspace::CLI do
       end
 
       it "sends --task, --pane and --spawn to start_task in the --flag=value form, and reports the task in the result" do
-        allow(plan_command).to receive(:start_task).and_return(row.merge("outcome" => "spawned", "pane" => "%23", "task" => "T5"))
+        allow(plan_dispatch_command).to receive(:start_task).and_return(row.merge("outcome" => "spawned", "pane" => "%23", "task" => "T5"))
         cli, raw, = plan_cli
 
         cli.run(["plan", "start", "--name=api", "--task=T5", "--spawn=codex", "--json"])
         cli.run(["plan", "start", "--name", "api", "--task", "T6", "--pane", "%4"])
 
-        expect(plan_command).to have_received(:start_task).with(name: "api", task_id: "T5", pane: nil, spawn: "codex", launch: kind_of(Proc))
-        expect(plan_command).to have_received(:start_task).with(name: "api", task_id: "T6", pane: "%4", spawn: nil, launch: kind_of(Proc))
+        expect(plan_dispatch_command).to have_received(:start_task).with(name: "api", task_id: "T5", pane: nil, spawn: "codex", launch: kind_of(Proc))
+        expect(plan_dispatch_command).to have_received(:start_task).with(name: "api", task_id: "T6", pane: "%4", spawn: nil, launch: kind_of(Proc))
         expect(parse_one(raw)).to include("action" => "plan start", "status" => "ok",
           "results" => [a_hash_including("workspace" => "api", "outcome" => "spawned", "pane" => "%23", "task" => "T5")])
       end
 
       it "gives start_task a launcher that sends the task's line instead of the continue line" do
-        allow(plan_command).to receive(:start_task) do |name:, task_id:, launch:, **|
-          launch.call(name, Workspace::Commands::Plan.task_prompt(task_id))
+        allow(plan_dispatch_command).to receive(:start_task) do |name:, task_id:, launch:, **|
+          launch.call(name, Workspace::Commands::PlanDispatch.task_prompt(task_id))
           row.merge("outcome" => "launched", "task" => task_id)
         end
         state = CLITestHelpers::FakeState.new

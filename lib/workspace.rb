@@ -239,6 +239,7 @@ require_relative "workspace/spine_file"
 require_relative "workspace/spine_tree"
 require_relative "workspace/spine_writer"
 require_relative "workspace/plan_state"
+require_relative "workspace/plan_access"
 require_relative "workspace/plan_progress_watcher"
 require_relative "workspace/spine_watcher"
 require_relative "workspace/plan_config"
@@ -285,6 +286,7 @@ require_relative "workspace/commands/dev"
 require_relative "workspace/commands/capabilities"
 require_relative "workspace/commands/parent"
 require_relative "workspace/commands/notes"
+require_relative "workspace/commands/plan_dispatch"
 require_relative "workspace/commands/plan"
 require_relative "workspace/commands/ticket"
 require_relative "workspace/commands/spine"
@@ -520,10 +522,11 @@ module Workspace
     projects_command = Commands::Projects.new(catalog: project_catalog, tmux: tmux, facts: project_facts, output: output, error_output: error_output)
     plan_config = PlanConfig.new(config_resolver: config_resolver, error_output: error_output)
     plan_state = PlanState.new
-    plan_command = Commands::Plan.new(notes: notes_command, catalog: project_catalog, plan_state: plan_state,
-      plan_config: plan_config, tmux: tmux,
-      snapshot_client: agent_snapshot_client, ask_store_for: ask_store_for, task_store: task_store, sender: send_command, binder: binding_command,
-      library: library, event_log: event_log, runner: run_command, readiness: agent_readiness, main_agent: main_agent, output: output)
+    plan_access = PlanAccess.new(notes: notes_command, tmux: tmux, event_log: event_log)
+    plan_dispatch_command = Commands::PlanDispatch.new(access: plan_access, snapshot_client: agent_snapshot_client, sender: send_command,
+      binder: binding_command, library: library, runner: run_command, readiness: agent_readiness, main_agent: main_agent, tmux: tmux, output: output)
+    plan_command = Commands::Plan.new(notes: notes_command, access: plan_access, dispatch: plan_dispatch_command, catalog: project_catalog,
+      plan_state: plan_state, plan_config: plan_config, snapshot_client: agent_snapshot_client, ask_store_for: ask_store_for, task_store: task_store, output: output)
     doctor = Doctor.new(config: config, state: state, hook_installer: hook_installer, project_detector: project_detector, git: git, pipeline_config: pipeline_config, launch_mode: launch_mode, project_settings: project_settings, plan: plan_command, snapshot_client: agent_snapshot_client, name_migration: name_migration, output: output)
     snapshot_command = Commands::Snapshot.new(catalog: project_catalog, facts: project_facts, tmux: tmux, state: state, config: config,
       snapshot_client: agent_snapshot_client, sessions: sessions_command, git: git, pull_request_status: PullRequestStatus.new,
@@ -653,6 +656,7 @@ module Workspace
       notes_command: notes_command,
       notes_setup: notes_setup,
       plan_command: plan_command,
+      plan_dispatch_command: plan_dispatch_command,
       ticket_command: ticket_command,
       spine_command: spine_command,
       spine_init_command: spine_init_command,

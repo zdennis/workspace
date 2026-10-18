@@ -72,6 +72,7 @@ module Workspace
     # @param notes_command [Workspace::Commands::Notes, nil] pre-built notes command
     # @param notes_setup [Workspace::NotesSetup, nil] fixes the notes directory of a worktree config `add` creates; nil skips it
     # @param plan_command [Workspace::Commands::Plan, nil] pre-built plan command
+    # @param plan_dispatch_command [Workspace::Commands::PlanDispatch, nil] pre-built plan start command
     # @param ticket_command [Workspace::Commands::Ticket, nil] pre-built ticket command
     # @param spine_command [Workspace::Commands::Spine, nil] pre-built spine command
     # @param spine_init_command [Workspace::Commands::SpineInit, nil] pre-built spine init command
@@ -110,7 +111,7 @@ module Workspace
     #   `list --liveness --json` and `status --json`; takes name => state entry
     # @param launch_mode [Workspace::LaunchMode, nil] decides whether launch/start
     #   run headless when no --[no-]headless flag is given; nil builds one
-    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, restart_agent_command: nil, agent_status_command: nil, send_command: nil, ensure_agent_command: nil, name_migration: nil, spine_command: nil, spine_init_command: nil, handoff_command: nil, notes_command: nil, notes_setup: nil, plan_command: nil, ticket_command: nil, pull_request_command: nil, rebase_command: nil, push_command: nil, projects_command: nil, capabilities_command: nil, daemon_command: nil, ui_command: nil, binding_command: nil, library_command: nil, library: nil, instructions_command: nil, instruction_composer: nil, workflow_command: nil, review_command: nil, restore_command: nil, snapshot_command: nil, events_command: nil, project_actions_command: nil, inbox_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil, liveness: nil, window_liveness: nil, env: ENV, editor_launcher: nil, interactive: nil, workspace_name: nil)
+    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, restart_agent_command: nil, agent_status_command: nil, send_command: nil, ensure_agent_command: nil, name_migration: nil, spine_command: nil, spine_init_command: nil, handoff_command: nil, notes_command: nil, notes_setup: nil, plan_command: nil, plan_dispatch_command: nil, ticket_command: nil, pull_request_command: nil, rebase_command: nil, push_command: nil, projects_command: nil, capabilities_command: nil, daemon_command: nil, ui_command: nil, binding_command: nil, library_command: nil, library: nil, instructions_command: nil, instruction_composer: nil, workflow_command: nil, review_command: nil, restore_command: nil, snapshot_command: nil, events_command: nil, project_actions_command: nil, inbox_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil, liveness: nil, window_liveness: nil, env: ENV, editor_launcher: nil, interactive: nil, workspace_name: nil)
       @config = config
       @state = state
       @project_config = project_config
@@ -149,6 +150,7 @@ module Workspace
       @parent_command = parent_command
       @notes_command = notes_command
       @plan_command = plan_command
+      @plan_dispatch_command = plan_dispatch_command
       @ticket_command = ticket_command
       @spine_command = spine_command
       @spine_init_command = spine_init_command
@@ -6991,7 +6993,7 @@ module Workspace
         opts.on("--yes", "delete: confirm the delete") { take_plan_flag(options, :yes, true) }
         opts.on("--task ID", "start: send only this task (its id, such as T3)") { |v| take_plan_flag(options, :task, v) }
         opts.on("--pane PANE", "start --task: the pane to send it to, a pane id (%19) or window.pane (0.1)") { |v| take_plan_flag(options, :pane, v) }
-        opts.on("--spawn KIND", "start --task: start a new agent pane for it (#{Commands::Plan::AGENT_KINDS.join(", ")})") { |v| take_plan_flag(options, :spawn, v) }
+        opts.on("--spawn KIND", "start --task: start a new agent pane for it (#{Commands::PlanDispatch::AGENT_KINDS.join(", ")})") { |v| take_plan_flag(options, :spawn, v) }
         opts.on("--interrupt", "pause: interrupt the owner panes that are working") { take_plan_flag(options, :interrupt, true) }
         opts.on("--json", "Print one JSON document (see docs/README.plan.md)") { take_plan_flag(options, :json, true) }
         opts.on("-h", "--help", "Show this help") { options[:help] = true }
@@ -7032,10 +7034,10 @@ module Workspace
       end
       raise UsageError, "Give only one of --pane and --spawn." if options[:pane] && options[:spawn]
       raise UsageError, "--pane and --spawn need --task. Run 'workspace plan --help'." if (options[:pane] || options[:spawn]) && !options[:task]
-      if options[:spawn] && !Commands::Plan::AGENT_KINDS.include?(options[:spawn])
-        raise UsageError, "Unknown agent kind for --spawn: #{options[:spawn]}. One of #{Commands::Plan::AGENT_KINDS.join(", ")}."
+      if options[:spawn] && !Commands::PlanDispatch::AGENT_KINDS.include?(options[:spawn])
+        raise UsageError, "Unknown agent kind for --spawn: #{options[:spawn]}. One of #{Commands::PlanDispatch::AGENT_KINDS.join(", ")}."
       end
-      raise Error, "plan is not available: no plan command was wired" unless @plan_command
+      raise Error, "plan is not available: no plan command was wired" unless @plan_command && @plan_dispatch_command
 
       return @plan_command.status(all: true, json: options[:json]) if options[:all]
       return @plan_command.status(file: options[:file], json: options[:json]) if options[:file]
@@ -7055,9 +7057,9 @@ module Workspace
       when "start"
         run_action("plan start", json: options[:json]) do
           row = if options[:task]
-            @plan_command.start_task(name: name, task_id: options[:task], pane: options[:pane], spawn: options[:spawn], launch: plan_launcher)
+            @plan_dispatch_command.start_task(name: name, task_id: options[:task], pane: options[:pane], spawn: options[:spawn], launch: plan_launcher)
           else
-            @plan_command.start(name: name, launch: plan_launcher)
+            @plan_dispatch_command.start(name: name, launch: plan_launcher)
           end
           plan_verb_outcome(name, row, options[:json])
         end
@@ -7083,8 +7085,8 @@ module Workspace
     # What `plan start` uses to launch a workspace that has no session: `launch --play implementation-plan
     # --prompt "Continue the plan."` (or a task's prompt), with the packs a launch sends. Returns `{ok:, reason:, message:, pane:}`.
     def plan_launcher
-      lambda do |workspace, prompt = Commands::Plan::CONTINUE_PROMPT|
-        launched = launch_projects([workspace], play: Commands::Plan::PLAY, prompt: prompt, with_packs: true)
+      lambda do |workspace, prompt = Commands::PlanDispatch::CONTINUE_PROMPT|
+        launched = launch_projects([workspace], play: Commands::PlanDispatch::PLAY, prompt: prompt, with_packs: true)
         row = launch_rows(launched[:projects], launched[:result], plays: launched[:plays], packs: launched[:packs], skipped_packs: launched[:skipped_packs], prompts: launched[:prompts]).first
         pane = row.dig("play", "pane") || row["pane"]
         {ok: row["outcome"] != "failed", reason: row["reason"], message: row["message"], pane: pane}
