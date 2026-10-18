@@ -22,7 +22,7 @@ module Workspace
     # @param title [String] window title to search for (exact project name match)
     # @return [String, nil] window ID string or nil
     def find_window_by_title(title)
-      pattern = /#{Regexp.escape(title)}(?=[\s\[\]]|$)/
+      pattern = /#{Regexp.escape(title)}(?=[\s\[\]]|$)/i
       best_id = nil
       best_len = Float::INFINITY
       iterm_windows.each do |wid, wname|

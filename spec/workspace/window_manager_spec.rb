@@ -132,4 +132,20 @@ RSpec.describe Workspace::WindowManager do
       expect { manager.live_window_ids }.to raise_error(Workspace::Error, /window-tool list failed/)
     end
   end
+
+  describe "#find_window_by_title" do
+    before do
+      json = '[{"window_id": 1, "title": "workspace-Notes [claude]"}, {"window_id": 2, "title": "workspace-notesy"}]'
+      status = instance_double(Process::Status, success?: true)
+      allow(Open3).to receive(:capture3).and_return([json, "", status])
+    end
+
+    it "matches a window title ignoring case" do
+      expect(manager.find_window_by_title("workspace-notes")).to eq("1")
+    end
+
+    it "still wants the whole name" do
+      expect(manager.find_window_by_title("workspace-note")).to be_nil
+    end
+  end
 end

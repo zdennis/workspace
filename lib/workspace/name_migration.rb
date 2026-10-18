@@ -85,7 +85,48 @@ module Workspace
       @config.agent_lock_path(WorkspaceName.normalize(name))
     end
 
+    # What a migration still has to rename, read from directory listings and
+    # the state file without changing anything: a workspace written with
+    # capitals that has a tmuxinator config, a project settings file, a state
+    # directory or a state key, with the parts left to rename. The live tmux
+    # session is not looked at.
+    #
+    # @raise [SystemCallError, IOError, Workspace::Error] when a directory or the state file can't be read
+    # @return [Array<Hash>] `{"name" => the mixed-case name, "workspace" => its lowercase name,
+    #   "remaining" => [what, ...]}`, sorted by name; empty when all is lowercase
+    def pending
+      names = (mixed_case_configs + mixed_case_entries(@config.workspace_projects_dir, ".yml") +
+        mixed_case_entries(@config.state_dir, nil) +
+        @state.load.to_h.keys.select { |key| key != key.downcase }).uniq.sort
+      names.map { |name| {"name" => name, "workspace" => name.downcase, "remaining" => remaining_for(name)} }
+    end
+
     private
+
+    def remaining_for(name)
+      checks = {
+        "tmuxinator_config" => @config.config_path_for(name),
+        "project_settings" => @config.project_config_path(name),
+        "socket" => @config.agent_socket_path(name),
+        "log" => @config.agent_log_path(name),
+        "state_dir" => @config.pipeline_state_dir(name),
+        "inbox" => @config.inbox_path("workspace", name)
+      }
+      found = checks.select { |_, path| listed?(path) }.keys
+      found << "state" if @state.load.to_h.key?(name)
+      found
+    end
+
+    def mixed_case_entries(dir, suffix)
+      return [] unless Dir.exist?(dir)
+
+      Dir.children(dir).filter_map do |entry|
+        next if entry.start_with?(".") || (suffix && !entry.end_with?(suffix))
+
+        name = suffix ? entry.delete_suffix(suffix) : entry
+        name if name != name.downcase
+      end
+    end
 
     # @return [Object, nil] the block's value; nil when the lock is taken elsewhere or the daemon answers
     def with_lock(name, wait:)

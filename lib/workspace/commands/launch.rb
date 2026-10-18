@@ -467,7 +467,7 @@ module Workspace
             # Fall back to title matching (exact project name, shortest title wins)
             tmux_name = session_names[project]
             title_to_find = "#{window_prefix}-#{tmux_name}"
-            pattern = /#{Regexp.escape(title_to_find)}(?=[\s\[\]]|$)/
+            pattern = /#{Regexp.escape(title_to_find)}(?=[\s\[\]]|$)/i
             best_id = nil
             best_len = Float::INFINITY
             all_windows.each do |wid, wname|

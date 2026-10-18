@@ -24,10 +24,11 @@ module Workspace
     # @param snapshot_client [Workspace::AgentSnapshotClient, nil] reads the session
     #   monitor's snapshot, to diagnose the context readability of panes whose
     #   agent workspace reads by scraping the pane itself (Codex); nil skips that check
+    # @param name_migration [Workspace::NameMigration, nil] says which mixed-case workspaces are still to be renamed; nil skips that check
     # @param working_dir [String] directory to detect the current project from
     # @param output [IO] output stream for results
     def initialize(config:, state:, hook_installer:, project_detector:, which: nil, git: nil,
-      pipeline_config: nil, launch_mode: nil, project_settings: nil, plan: nil, snapshot_client: nil, working_dir: Dir.pwd, output: $stdout)
+      pipeline_config: nil, launch_mode: nil, project_settings: nil, plan: nil, snapshot_client: nil, name_migration: nil, working_dir: Dir.pwd, output: $stdout)
       @launch_mode = launch_mode || LaunchMode.new(project_settings: ProjectSettings.new(config: config), which: which)
       @config = config
       @state = state
@@ -39,6 +40,7 @@ module Workspace
       @project_settings = project_settings || ProjectSettings.new(config: config)
       @plan = plan
       @snapshot_client = snapshot_client
+      @name_migration = name_migration
       @working_dir = working_dir
       @output = output
       @rows = []
@@ -79,6 +81,7 @@ module Workspace
       dependency_checks.each { |entry| run_dependency_check(entry, mode) }
       check_templates
       check_duplicate_window_ids
+      check_mixed_case_workspaces
       check_session_monitoring
       # A failed --fix is a `fix` row, so `doctor --fix` still exits non-zero
       # when there was nothing it could actually do.
@@ -230,6 +233,28 @@ module Workspace
       else
         add_row("state-window-ids", "ok", "state: no duplicate window IDs")
       end
+    end
+
+    # Warns about a workspace still written with capitals, or a rename that
+    # did not finish; the rename itself is {NameMigration}'s, so its own
+    # knowledge of what it renames says what is left.
+    def check_mixed_case_workspaces
+      return unless @name_migration
+
+      begin
+        pending = @name_migration.pending
+      rescue SystemCallError, IOError, Workspace::Error => e
+        add_row("mixed-case-workspaces", "skipped", "workspace names (could not be checked: #{e.message}, skipped)")
+        return
+      end
+      if pending.empty?
+        add_row("mixed-case-workspaces", "ok", "workspace names: all lowercase")
+        return
+      end
+
+      list = pending.map { |entry| entry["remaining"].empty? ? entry["name"] : "#{entry["name"]} (#{entry["remaining"].join(", ")})" }
+      add_row("mixed-case-workspaces", "warn", "workspace names with capitals, to be renamed to lowercase: #{list.join("; ")}",
+        fix: "the next agentd start renames each one, or run 'workspace launch #{pending.first["workspace"]}' now")
     end
 
     def check_session_monitoring

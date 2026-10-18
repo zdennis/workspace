@@ -718,4 +718,37 @@ RSpec.describe Workspace::Doctor do
       expect(result[:issues]).to eq(result[:rows].count { |r| r[:status] == "fail" })
     end
   end
+
+  describe "mixed-case workspaces" do
+    let(:name_migration) { double("name_migration") }
+
+    def row(result) = result[:rows].find { |r| r[:id] == "mixed-case-workspaces" }
+
+    it "adds an ok row when every name is lowercase" do
+      allow(name_migration).to receive(:pending).and_return([])
+
+      expect(row(build_doctor(name_migration: name_migration).report(headless: true))).to include(status: "ok")
+    end
+
+    it "warns, without failing, and says the next agentd start fixes it" do
+      allow(name_migration).to receive(:pending).and_return([{"name" => "Notes", "workspace" => "notes", "remaining" => %w[tmuxinator_config state]}])
+
+      result = build_doctor(name_migration: name_migration).report(headless: true)
+
+      expect(row(result)).to include(status: "warn")
+      expect(row(result)[:message]).to include("Notes (tmuxinator_config, state)")
+      expect(row(result)[:fix]).to include("agentd start")
+      expect(Workspace::Doctor.document(result)["checks"].map { |c| c["id"] }).to include("mixed-case-workspaces")
+    end
+
+    it "skips the check, not a false ok, when the names can't be read" do
+      allow(name_migration).to receive(:pending).and_raise(Errno::EACCES, "state")
+
+      expect(row(build_doctor(name_migration: name_migration).report(headless: true))).to include(status: "skipped")
+    end
+
+    it "adds no row without a name migration" do
+      expect(row(build_doctor.report(headless: true))).to be_nil
+    end
+  end
 end

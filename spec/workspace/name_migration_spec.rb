@@ -304,4 +304,50 @@ RSpec.describe Workspace::NameMigration do
     expect(listing(config.run_dir)).to contain_exactly(File.basename(config.agent_socket_path(long.downcase)),
       File.basename(config.agent_log_path(long.downcase)))
   end
+
+  describe "#pending" do
+    it "is empty when every name is lowercase" do
+      write(config.config_path_for("notes"), tmuxinator_yml("notes", "notes", root))
+      state.load
+      state["notes"] = {}
+      state.save
+
+      expect(migration.pending).to eq([])
+    end
+
+    it "lists a mixed-case workspace with what is left to rename, and changes nothing" do
+      mixed_case_workspace
+
+      pending = migration.pending
+
+      expect(pending.size).to eq(1)
+      expect(pending.first).to include("name" => "Notes", "workspace" => "notes")
+      expect(pending.first["remaining"]).to include("tmuxinator_config", "project_settings", "state_dir", "inbox", "state", "log", "socket")
+      expect(listing(config.tmuxinator_dir)).to eq(["workspace.Notes.yml"])
+    end
+
+    it "still reports a state key left behind after the config was renamed" do
+      write(config.config_path_for("notes"), tmuxinator_yml("notes", "notes", root))
+      state.load
+      state["Notes"] = {}
+      state.save
+
+      expect(migration.pending).to eq([{"name" => "Notes", "workspace" => "notes", "remaining" => ["state"]}])
+    end
+
+    it "finds a name that is left only as a state directory or a project settings file" do
+      FileUtils.mkdir_p(config.pipeline_state_dir("Old"))
+      write(config.project_config_path("Other"), "hooks: {}\n")
+
+      expect(migration.pending.map { |entry| [entry["name"], entry["remaining"]] })
+        .to eq([["Old", ["state_dir"]], ["Other", ["project_settings"]]])
+    end
+
+    it "is empty after the migration ran" do
+      mixed_case_workspace
+      migration.call("Notes")
+
+      expect(migration.pending).to eq([])
+    end
+  end
 end
