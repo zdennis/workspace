@@ -104,7 +104,7 @@ RSpec.describe Workspace::PlanState do
       row = state.row(workspace: "api.worktree-x", project: "api", path: "/n/IMPLEMENTATION_PLAN.md", plan: parsed, session_live: true,
         panes: panes, open_asks: 0)
 
-      expect(row.keys).to eq(%w[workspace project path exists title status state owner_pane pane_state updated_at signature counts percent
+      expect(row.keys).to eq(%w[workspace project path exists title status state owner_pane pane_state updated_at signature revision counts percent
         current tasks open_asks warnings])
       expect(row).to include("workspace" => "api.worktree-x", "project" => "api", "exists" => true, "title" => "Auth", "status" => "active",
         "state" => "working", "owner_pane" => "%19", "pane_state" => "working", "updated_at" => "2026-10-12T14:03:11Z", "signature" => "1:2",
@@ -198,7 +198,7 @@ RSpec.describe Workspace::PlanState do
       row = state.row(workspace: "w", project: "w", path: "/n/IMPLEMENTATION_PLAN.md", plan: nil)
 
       expect(row).to eq("workspace" => "w", "project" => "w", "path" => "/n/IMPLEMENTATION_PLAN.md", "exists" => false, "title" => nil,
-        "status" => nil, "state" => "empty", "owner_pane" => nil, "pane_state" => nil, "updated_at" => nil, "signature" => nil,
+        "status" => nil, "state" => "empty", "owner_pane" => nil, "pane_state" => nil, "updated_at" => nil, "signature" => nil, "revision" => nil,
         "counts" => {"total" => 0, "done" => 0, "in_progress" => 0, "skipped" => 0, "blocked" => 0, "todo" => 0, "left" => 0},
         "percent" => 0, "current" => nil, "tasks" => [], "open_asks" => 0, "warnings" => [])
     end

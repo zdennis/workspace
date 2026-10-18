@@ -12,6 +12,9 @@ workspace plan init [--name WORKSPACE] [--title TITLE] [--from FILE] [--force] [
 workspace plan start [--name WORKSPACE] [--task ID [--pane PANE | --spawn KIND]] [--json]
 workspace plan pause [--name WORKSPACE] [--interrupt] [--json]
 workspace plan delete [--name WORKSPACE] --yes [--json]
+workspace plan task add --title TEXT [--id ID] [--state STATE] [--reason TEXT] [--phase NAME | --after ID] [--if-revision REV] [--name WORKSPACE] [--json]
+workspace plan task set-state --task ID --state STATE [--reason TEXT] [--if-revision REV] [--name WORKSPACE] [--json]
+workspace plan task move --task ID (--after ID | --before ID | --phase NAME) [--if-revision REV] [--name WORKSPACE] [--json]
 ```
 
 Without `--name`, the workspace is the one detected from the current directory. `--all`, `--file` and `--name` exclude each other, and a flag that does not belong to the subcommand is a usage error. So are `--pane` with `--spawn`, either of them without `--task`, and a `--spawn` kind that is not `claude`, `codex`, `opencode` or `pi`. Every flag also takes the `--flag=value` form.
@@ -27,6 +30,7 @@ Without `--name`, the workspace is the one detected from the current directory. 
 | `start` | Sets `status: active`, then gets an agent working on the plan (see [Start, pause and delete](#start-pause-and-delete)). With `--task`, sends that one task to one pane (see [One task](#one-task)) |
 | `pause` | Sets `status: paused`. Interrupts nothing unless `--interrupt` is given |
 | `delete` | Renames the plan to `IMPLEMENTATION_PLAN.md.deleted-<time>`. Needs `--yes` |
+| `task` | `add`, `set-state` or `move` changes one task line (see [Task verbs](#task-verbs)) |
 
 ## Start, pause and delete
 
@@ -61,6 +65,38 @@ Each verb changes one thing and is safe to repeat. A plan with no file is `no_pl
 A status or owner write changes only that line (the frontmatter is added when the file has none), reads the whole file, goes through a temp file and a rename, and keeps the file's mode. If the file changed between the read and the rename, for instance because the agent saved an edit, the write is made again on what is there now. A second change under the retry writes nothing and fails with `plan_write_conflict`. An agent that saves between the final check and the rename can still lose its edit; that window is a few microseconds.
 
 Every change to the file records [`plan_changed`](README.event-log.md) in the event log, which `init` does too. A change to the checklist, however it was made, also records [`plan_progress`](README.event-log.md) (counts, current task, changed task ids) while the workspace's agent daemon runs.
+
+## Task verbs
+
+`plan task add|set-state|move` change a task without editing the Markdown by hand. Each is an [action document](README.json.md) (`action: "plan task add"`, `"plan task set-state"`, `"plan task move"`) and goes through the one writer of the plan file (a temp file and a rename, with one re-read and retry), so it changes only the line it must: owner comments stay, nothing is renumbered, and an id is never reused.
+
+| Verb | What it does |
+|------|--------------|
+| `add --title TEXT` | Adds a task line. `--id` names it (default: the next number after the highest id with the prefix of the plan's last task, so `T9` after `T8`). `--state` is `todo` by default. The line goes after `--after ID`, or after the last task of `--phase NAME` (after the heading when it has none), or after the plan's last task (at the end of `## Tasks` when there is none). An id that is already used is `task_exists` |
+| `set-state --task ID --state STATE` | Changes the box. A blocked or skipped task ends with ` -- reason`, so those states need `--reason` (`reason_required`) unless the line already has one; a reason for any other state is `invalid_task`. Leaving blocked or skipped takes the reason away. The owner comment stays |
+| `move --task ID` | Moves the whole line (owner comment included) `--after ID`, `--before ID`, or to the end of `--phase NAME`. Exactly one place is given. A task is never moved relative to itself |
+
+States are `todo`, `in_progress`, `done`, `skipped` and `blocked`. A title or reason is one line of 1 to 500 characters with no HTML comment and no ` -- `. An id is a letter or digit first with at least one digit (`T9`, `PROJ-123`). Any of these that cannot be written is `invalid_task` (`details.field`). An unknown task id, in `--task`, `--after` or `--before`, is `unknown_task`; an unknown `--phase` is `unknown_phase`; a plan with no `## Tasks` section is `no_task_section`. A plan that is `done` can still be edited.
+
+### Refusing a stale edit
+
+`plan status --json` gives each plan a `revision`: the first 8 hex digits of the SHA-256 of the file's bytes. Pass it back as `--if-revision=REV` and a verb whose file has since changed (any byte, even one that keeps the size) writes nothing and fails with `stale_revision`, with `details.revision` the current one. The check and the write happen on the same read, so an edit that lands in between is caught too. Every verb's result carries the new `revision`; use it for the next edit.
+
+### Result
+
+One result, `{"workspace","outcome","reason","message","path","pane","task","state","line","phase","revision","counts","percent"}` (`pane` is null; `counts` and `percent` are the plan's after the edit; `set-state` also has `previous_state`):
+
+| Verb | `outcome` |
+|------|-----------|
+| `add` | `added` |
+| `set-state` | `changed`, or `unchanged` when the task already reads that way |
+| `move` | `moved`, or `unchanged` when the task is already in that place |
+
+```json
+{"schema_version":1,"ok":true,"action":"plan task set-state","status":"ok","results":[{"workspace":"api","outcome":"changed","reason":null,"message":null,"path":"/abs/IMPLEMENTATION_PLAN.md","pane":null,"task":"T3","state":"blocked","line":14,"phase":"Phase 1","revision":"4e1f0c2a","counts":{"total":9,"done":4,"in_progress":1,"skipped":0,"blocked":1,"todo":3,"left":5},"percent":44,"previous_state":"in_progress"}],"warnings":[],"summary":{"changed":1}}
+```
+
+Each change that writes records `plan_changed` in the event log, and the agent daemon's plan watcher reports the new counts as a `plan_progress` line. `plan_tasks` in [`capabilities`](README.capabilities.md) is `2` once these verbs and the `revision` exist.
 
 ## The plan file
 
@@ -150,6 +186,7 @@ The plan is also the handoff doc: with no `--handoff-doc`, [`handoff check` and 
 | `state` | See above |
 | `owner_pane`, `pane_state` | The frontmatter's pane, and its state (`working`, `idle`, `waiting`, ...) from the agent daemon; null when unknown |
 | `updated_at`, `signature` | The file's modification time (UTC, to the second) and `mtime_ns:size`. The signature changes when the file does, so a reader can skip a re-read when it is the same |
+| `revision` | The first 8 hex digits of the SHA-256 of the file's bytes (null without a file). Pass it as `--if-revision` to a [task verb](#task-verbs) to refuse an edit made on an old view |
 | `counts`, `percent`, `current` | See above; `current` is null when nothing is left |
 | `tasks` | Every counted task: `id`, `title`, `state` (`todo`, `in_progress`, `done`, `skipped`, `blocked`), `reason`, `phase`, `line`, `owner` (the pane id in its owner comment, or null) and `owner_state` (that pane's state from the agent daemon, null when unknown or without an owner). The daemon is asked when the plan or any task has an owner |
 | `open_asks` | Open `workspace ask` questions in the workspace |
@@ -185,6 +222,7 @@ The plan is also the handoff doc: with no `--handoff-doc`, [`handoff check` and 
 | `confirmation_required` | `delete` was run without `--yes` (`retry.flags` is `["--yes"]`) |
 | `plan_write_conflict` | The plan changed twice while a verb was writing it; nothing was written. Run the verb again |
 | `no_agent_pane`, `pane_busy`, `no_daemon`, `not_delivered`, `not_submitted` | `start` of a workspace with a session found no Claude Code or Codex pane, found the pane waiting for an answer, could not reach the agent daemon, or could not type into the pane. See [`agent-run send`](README.agent-run.md). With `--task`: a `--pane` that runs no coding agent is `no_agent_pane`, and a pane working on something else is `pane_busy` with `details.state` `working` |
+| `stale_revision`, `task_exists`, `invalid_task`, `reason_required`, `unknown_phase`, `no_task_section` | `task add`, `set-state` or `move`: the file changed since `--if-revision` (`details.revision` is the current one), the id is used, the id, title, reason or place cannot be written, a blocked or skipped task has no reason, the phase is not under `## Tasks`, or there is no `## Tasks` section. See [Task verbs](#task-verbs) |
 | `unknown_task`, `task_done`, `task_owned` | `start --task` named an id no task has, a task that is done or skipped, or a task whose owner pane is working on it while another pane (or `--spawn`) was asked for (`details.task`, and `details.owner` for `task_owned`) |
 | `no_session`, `bad_pane`, `wrong_session`, `no_such_pane` | `start --task` with `--pane` or `--spawn` on a workspace with no session, or a `--pane` that is not a pane of its session |
 | `notes_dir_unwritable` | `init` couldn't make the notes directory or write the file, or a verb couldn't write or rename it |

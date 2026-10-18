@@ -116,9 +116,14 @@ The exit code is unchanged by `--json` (1 for most failures, 2 for `not_submitte
 | `no_spine` | `spine set` found no `spine/` folder in the workspace's notes directory (`details.workspace`, `details.dir`). |
 | `unknown_stage` | `spine set` was given a stage path no stage has (`details.path`, `details.stages` lists the paths there are). |
 | `invalid_status` | `spine set --status` is not a status or an alias of one; `unknown` can't be set (`details.status`, `details.allowed`). |
-| `stale_revision` | `spine set --if-revision` named a revision the stage file no longer has. `details.revision` and `details.status` are the current ones. |
+| `stale_revision` | `spine set --if-revision` or `plan task --if-revision` named a revision the file no longer has. `details.revision` is the current one; `details.status` is the stage's for `spine set`, `details.path` the plan's for `plan task`. |
 | `spine_unwritable` | `spine init` could not write (`spine/` is a link, the notes directory could not be made, or a file could not be written or renamed into place; `details.path`; nothing is left half-written). `spine set` can't rewrite the stage file safely: `details.reason` is `link`, `not_a_file`, `too_large` (over 64 KB), `not_utf8`, `no_frontmatter` (no block closed within 100 lines), `no_file` (a folder with no stage file), `missing`, `lock_unavailable` (the lock file in the state folder can't be opened), `unreadable_result` (the change would put the closing `---` past line 100 or the status past the 40-key cap, where it could not be read back), `io_error`, `changed_while_writing`, or `lock_busy` (another write held the workspace's lock for 10 seconds); `details.file` is the file below `spine/`. With `--recursive`, `details.written` lists what was already written. |
-| `unknown_task` | `plan start --task` (or any write to one task line) named an id that no task under `## Tasks` has. `details.path`, `details.task`. |
+| `unknown_task` | `plan start --task`, `plan task` (or any write to one task line) named an id that no task under `## Tasks` has. `details.path`, `details.task`. |
+| `task_exists` | `plan task add` named an id a task already has. `details.path`, `details.task`, `details.line`. |
+| `invalid_task` | `plan task` was given an id, title, reason or place it cannot write (see [`plan`](README.plan.md#task-verbs)). `details.field`. |
+| `reason_required` | `plan task` was asked for a blocked or skipped task with no reason. `details.task`, `details.state`. |
+| `unknown_phase` | `plan task add --phase` or `move --phase` named a heading that is not under `## Tasks`. `details.path`, `details.phase`, `details.phases`. |
+| `no_task_section` | `plan task add` found no `## Tasks` section. `details.path`. |
 | `task_done` | `plan start --task` named a task that is done or skipped. `details.name`, `details.path`, `details.task`, `details.state`. |
 | `task_owned` | `plan start --task`: the task's owner pane is working on it, and another pane (or `--spawn`) was asked for. `details.workspace`, `details.task`, `details.owner`. |
 | `gh_unavailable` | `pr create` (or `finish --pr`) needs `gh`, which is not installed (`details.reason` `missing`) or not logged in (`not_logged_in`, with `details.detail`). |

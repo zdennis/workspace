@@ -1,6 +1,7 @@
 require "json"
 require "fileutils"
 require "time"
+require "digest"
 
 module Workspace
   # One workspace's plan: `IMPLEMENTATION_PLAN.md` in its notes directory, read
@@ -99,6 +100,18 @@ module Workspace
     # @return [String, nil] the file's modification time, UTC, to the second
     attr_reader :updated_at
 
+    # @return [String, nil] {.revision_of} the whole file; nil for a cut-off text that did not come from {.read}
+    attr_reader :revision
+
+    # @return [Integer, nil] the 1-based line of the `## Tasks` heading
+    attr_reader :tasks_heading
+
+    # @return [Integer, nil] the 1-based last line of the `## Tasks` section; nil when it runs to the end of the file
+    attr_reader :tasks_end
+
+    # @return [Array<Hash>] `{"name", "line"}` for each `###` phase heading under `## Tasks`
+    attr_reader :phases
+
     # Parses plan text.
     #
     # @param text [String] the file's text
@@ -106,9 +119,11 @@ module Workspace
     # @param signature [String, nil] see {#signature}
     # @param updated_at [String, nil] see {#updated_at}
     # @param warnings [Array<Hash>] warnings found before parsing, e.g. a read problem
+    # @param revision [String, nil] see {#revision}; worked out from the text when nil and the text is whole
     # @return [PlanFile]
-    def self.parse(text, truncated: false, signature: nil, updated_at: nil, warnings: [])
-      new(text, truncated: truncated, signature: signature, updated_at: updated_at, warnings: warnings)
+    def self.parse(text, truncated: false, signature: nil, updated_at: nil, warnings: [], revision: nil)
+      new(text, truncated: truncated, signature: signature, updated_at: updated_at, warnings: warnings,
+        revision: revision || (truncated ? nil : revision_of(text)))
     end
 
     # Reads and parses a plan file.
@@ -121,6 +136,10 @@ module Workspace
         raise Errno::EISDIR, path if stat.directory?
         bytes = file.read(MAX_BYTES + 1) || +""
         truncated = bytes.bytesize > MAX_BYTES
+        digest = Digest::SHA256.new << bytes
+        while truncated && (chunk = file.read(65_536))
+          digest << chunk
+        end
         bytes = bytes.byteslice(0, MAX_BYTES) if truncated
         if truncated
           cut = bytes.rindex("\n")
@@ -129,7 +148,7 @@ module Workspace
         mtime = stat.mtime
         signature = signature_for(stat)
         parse(bytes.force_encoding(Encoding::UTF_8).scrub, truncated: truncated, signature: signature,
-          updated_at: mtime.utc.iso8601)
+          updated_at: mtime.utc.iso8601, revision: digest.hexdigest[0, 8])
       end
     rescue Errno::ENOENT, Errno::ENOTDIR
       nil
@@ -166,12 +185,39 @@ module Workspace
     # instance because an agent edited it, the edit is made again on what is there now. A file
     # that changes under a second try is left alone.
     def self.set_frontmatter(path, key, value, quote: false)
-      rewrite(path) { |bytes| with_frontmatter_value(bytes, key, value, quote) }
+      rewrite(path) { |bytes| with_frontmatter_value(bytes, key, value, quote) }.changed
     end
     private_class_method :set_frontmatter
 
-    # Leaves an owner as it is in {.set_task}.
+    # Leaves an owner or a reason as it is in {.set_task} and {.change_task}.
     KEEP = Object.new.freeze
+
+    # The result of a write.
+    #
+    # @!attribute changed [Boolean] whether the file changed
+    # @!attribute revision [String] the revision of the file as written (the current one when nothing changed)
+    # @!attribute bytes [String] the file's bytes as written (the current ones when nothing changed)
+    # @!attribute id [String, nil] for {.add_task}, the id the new task got
+    # @!attribute previous_state [String, nil] for {.change_task}, the task's state in the file the write was made on
+    Result = Struct.new(:changed, :revision, :bytes, :id, :previous_state, keyword_init: true) do
+      # @return [PlanFile] the file as written (as it was when nothing changed)
+      def plan = PlanFile.parse(bytes.dup.force_encoding(Encoding::UTF_8).scrub, revision: revision)
+    end
+
+    # Longest title or reason a task verb writes.
+    MAX_TEXT = 500
+
+    # The revision of a file's bytes: the first 8 hex digits of their SHA-256, the way spine files are
+    # revised. It changes with any byte, so an edit that keeps the size and the modification time still
+    # shows.
+    #
+    # @param bytes [String]
+    # @return [String]
+    def self.revision_of(bytes) = Digest::SHA256.hexdigest(bytes.b)[0, 8]
+
+    # @param id [String]
+    # @return [Boolean] whether +id+ may be a task id
+    def self.valid_id?(id) = id.to_s.match?(ID)
 
     # Rewrites one task's line: its box character, its owner comment, or both. Every other byte
     # of the line and of the file stays as it is; a ` -- reason` is not added or removed. Written
@@ -188,28 +234,101 @@ module Workspace
     # @raise [Workspace::Error] code `unknown_task` when no task has the id, `plan_write_conflict` as {.set_status};
     #   a plain error when the line is not UTF-8 or would not read back as asked
     def self.set_task(path, id, state: nil, owner: KEEP)
+      change_task(path, id, state: state, owner: owner, manage_reason: false).changed
+    end
+
+    # Rewrites one task's line like {.set_task}, and also keeps the ` -- reason` the state needs: a skipped or
+    # blocked task has one, any other state has none. Moving a task out of skipped or blocked takes its reason
+    # away; moving it in needs +reason+ unless the line has one. The owner comment stays.
+    #
+    # @param path [String] the plan's absolute path
+    # @param id [String] the task's id
+    # @param state [String, nil] one of {TASK_STATES}; nil leaves the box as it is
+    # @param reason [String, nil, KEEP] the reason to write (only for a skipped or blocked task); {KEEP} leaves it as it is
+    # @param owner [String, nil, KEEP] as {.set_task}
+    # @param if_revision [String, nil] refuse unless the file's {.revision_of} is this
+    # @param manage_reason [Boolean] false leaves the reason alone ({.set_task})
+    # @return [Result]
+    # @raise [Workspace::Error] as {.set_task}, plus `stale_revision`, `reason_required` and `invalid_task`
+    def self.change_task(path, id, state: nil, reason: KEEP, owner: KEEP, if_revision: nil, manage_reason: true)
       raise ArgumentError, "unknown state #{state.inspect}" if state && !STATE_BOXES.key?(state)
       raise ArgumentError, "owner must be a pane id" unless owner.equal?(KEEP) || owner.nil? || owner.to_s.match?(PANE_ID)
-      rewrite(path) { |bytes| with_task_line(bytes, path, id, state, owner) }
+      previous = nil
+      result = rewrite(path, if_revision: if_revision) do |bytes|
+        previous = parse(read_text(bytes)).tasks.find { |task| task.id == id }&.state
+        with_task_line(bytes, path, id, state, owner, reason, manage_reason)
+      end
+      result.previous_state = previous
+      result
+    end
+
+    # Adds a task line, never over another: an id already used is refused. The line goes after the task
+    # +after+, or after the last task of the phase +phase+ (after its heading when it has none), or after the
+    # last task of the plan (at the end of `## Tasks` when there is none). Nothing else in the file changes.
+    #
+    # @param path [String] the plan's absolute path
+    # @param id [String, nil] the new task's id; the next number after the highest one with the prefix of the plan's last task (`T9` after `T8`) when nil
+    # @param title [String] one line, with no ` -- ` and no HTML comment
+    # @param state [String] one of {TASK_STATES}
+    # @param reason [String, nil] needed for a skipped or blocked task, refused for the others
+    # @param phase [String, nil] the `###` heading the task goes under
+    # @param after [String, nil] the id of the task it goes after
+    # @param if_revision [String, nil] refuse unless the file's {.revision_of} is this
+    # @return [Result]
+    # @raise [Workspace::Error] `task_exists`, `invalid_task`, `reason_required`, `unknown_task` (for +after+),
+    #   `unknown_phase`, `no_task_section`, `stale_revision`, `plan_write_conflict`
+    def self.add_task(path, title:, id: nil, state: "todo", reason: nil, phase: nil, after: nil, if_revision: nil)
+      chosen = id
+      result = rewrite(path, if_revision: if_revision) do |bytes|
+        chosen = id || parse(read_text(bytes)).next_id
+        with_added_task(bytes, path, chosen, title, state, reason, phase, after)
+      end
+      result.id = chosen
+      result
+    end
+
+    # Moves one task line, whole, so its owner comment and reason go with it. The new place is after
+    # the task +after+, before the task +before+, or at the end of the phase +phase+ (the task's phase
+    # is whichever heading it ends up under). Nothing else in the file changes.
+    #
+    # @param path [String] the plan's absolute path
+    # @param id [String] the task to move
+    # @param after [String, nil] exactly one of +after+, +before+ and +phase+
+    # @param before [String, nil]
+    # @param phase [String, nil]
+    # @param if_revision [String, nil] refuse unless the file's {.revision_of} is this
+    # @return [Result] +changed+ is false when the task is already there
+    # @raise [Workspace::Error] `unknown_task`, `unknown_phase`, `invalid_task` (no place, two places, or the task relative to itself),
+    #   `stale_revision`, `plan_write_conflict`
+    def self.move_task(path, id, after: nil, before: nil, phase: nil, if_revision: nil)
+      rewrite(path, if_revision: if_revision) { |bytes| with_moved_task(bytes, path, id, after, before, phase) }
     end
 
     # The read, change and rename loop every writer goes through.
-    def self.rewrite(path)
+    def self.rewrite(path, if_revision: nil)
       target = File.realpath(path)
       2.times do
         bytes, signature = File.open(target, "rb") { |file| [file.read, signature_for(file.stat)] }
+        current = revision_of(bytes)
+        if if_revision && if_revision.to_s.downcase != current
+          raise Workspace::Error.new("The plan #{path} changed: its revision is #{current}, not #{if_revision}. Nothing was changed.",
+            code: "stale_revision", details: {"path" => path, "revision" => current})
+        end
         updated = yield(bytes)
-        return false if updated.nil?
-        return true if replace_unless_changed(target, updated, signature)
+        return Result.new(changed: false, revision: current, bytes: bytes) if updated.nil?
+        return Result.new(changed: true, revision: revision_of(updated), bytes: updated) if replace_unless_changed(target, updated, signature)
       end
       raise Workspace::Error.new("The plan #{path} changed while it was being written. Nothing was changed; try again.",
         code: "plan_write_conflict", details: {"path" => path})
     end
     private_class_method :rewrite
 
+    def self.read_text(bytes) = bytes.dup.force_encoding(Encoding::UTF_8).scrub
+    private_class_method :read_text
+
     # @return [String, nil] the new bytes, nil when the line already reads that way
-    def self.with_task_line(bytes, path, id, state, owner)
-      plan = parse(bytes.dup.force_encoding(Encoding::UTF_8).scrub)
+    def self.with_task_line(bytes, path, id, state, owner, reason, manage_reason)
+      plan = parse(read_text(bytes))
       task = plan.tasks.find { |candidate| candidate.id == id }
       raise unknown_task(path, id) unless task
 
@@ -219,16 +338,20 @@ module Workspace
       text = raw.byteslice(0, raw.bytesize - ending.bytesize).dup.force_encoding(Encoding::UTF_8)
       raise Workspace::Error.new("Line #{task.line} of the plan #{path} is not valid UTF-8, so it was not changed.", details: {"path" => path}) unless text.valid_encoding?
 
+      target = state || task.state
+      wanted = manage_reason ? wanted_reason(task, target, reason, id) : task.reason
       updated = text
       updated = updated.sub(/\A- \[.\]/) { "- [#{STATE_BOXES.fetch(state)}]" } if state && task.state != state
+      updated = with_reason(updated, wanted, task.reason) if wanted != task.reason
       updated = with_owner(updated, owner) unless owner.equal?(KEEP)
       return nil if updated == text
 
       lines[task.line - 1] = updated.b + ending
       result = lines.join
-      reread = parse(result.dup.force_encoding(Encoding::UTF_8).scrub)
+      reread = parse(read_text(result))
       check = reread.tasks.find { |candidate| candidate.id == id }
-      reads_back = reread.tasks.size == plan.tasks.size && check && (state.nil? || check.state == state) && (owner.equal?(KEEP) || check.owner == owner)
+      reads_back = reread.tasks.size == plan.tasks.size && check && (state.nil? || check.state == state) &&
+        (owner.equal?(KEEP) || check.owner == owner) && (!manage_reason || (check.reason == wanted && check.title == task.title))
       unless reads_back
         raise Workspace::Error.new("Line #{task.line} of the plan #{path} can't be rewritten to read that way (an open or nested comment?), so nothing was changed.",
           details: {"path" => path, "line" => task.line})
@@ -236,6 +359,160 @@ module Workspace
       result
     end
     private_class_method :with_task_line
+
+    # The reason the line should end with once +target+ is its state.
+    def self.wanted_reason(task, target, reason, id)
+      needs = %w[skipped blocked].include?(target)
+      if reason.equal?(KEEP)
+        wanted = needs ? task.reason : nil
+      else
+        wanted = reason && clean_text("reason", reason)
+        unless needs || wanted.nil?
+          raise invalid_task("A reason belongs only to a skipped or blocked task, not to a #{target} one.", "reason")
+        end
+      end
+      if needs && wanted.nil?
+        raise Workspace::Error.new("Task #{id} becomes #{target}, and a #{target} task ends with ' -- reason': give a reason.",
+          code: "reason_required", details: {"task" => id, "state" => target})
+      end
+      wanted
+    end
+    private_class_method :wanted_reason
+
+    # Replaces, adds or drops the ` -- reason` of a task line, leaving an owner comment where it is.
+    def self.with_reason(text, reason, old)
+      comment = text.match(/[ \t]*#{OWNER_COMMENT}/o)
+      main = comment ? text[0, comment.begin(0)] : text
+      tail = comment ? text[comment.begin(0)..] : ""
+      head = main.match(/\A- \[.\]\s+\S+/)
+      return text unless head
+      cut = old && main.index(/\s+--\s+\S/, head.end(0))
+      main = main[0, cut] if cut
+      main = "#{main.rstrip} -- #{reason}" if reason
+      tail = " #{tail.lstrip}" if reason && !tail.empty?
+      main + tail
+    end
+    private_class_method :with_reason
+
+    # Checks a title or reason a verb is about to write.
+    # @return [String] the text, stripped
+    def self.clean_text(field, value)
+      text = value.to_s.strip
+      if text.empty? || text.length > MAX_TEXT || text.match?(/[[:cntrl:]]/) || text.include?("<!--") || text.include?("-->") ||
+          text.match?(/(\A|\s)--(\s|\z)/)
+        raise invalid_task("The #{field} must be one line of 1 to #{MAX_TEXT} characters with no ' -- ' and no HTML comment.", field)
+      end
+      text
+    end
+    private_class_method :clean_text
+
+    def self.invalid_task(message, field)
+      Workspace::Error.new(message, code: "invalid_task", details: {"field" => field})
+    end
+    private_class_method :invalid_task
+
+    def self.with_added_task(bytes, path, id, title, state, reason, phase, after)
+      raise ArgumentError, "unknown state #{state.inspect}" unless STATE_BOXES.key?(state)
+      raise invalid_task("Give only one of a phase and an anchor task.", "place") if phase && after
+      raise invalid_task("#{id.inspect} is not a task id: a letter or digit first, at least one digit, then letters, digits, . _ -.", "id") unless valid_id?(id)
+      title = clean_text("title", title)
+      needs = %w[skipped blocked].include?(state)
+      reason &&= clean_text("reason", reason)
+      raise invalid_task("A reason belongs only to a skipped or blocked task, not to a #{state} one.", "reason") if reason && !needs
+      raise Workspace::Error.new("A #{state} task ends with ' -- reason': give a reason.", code: "reason_required", details: {"task" => id, "state" => state}) if needs && !reason
+
+      plan = parse(read_text(bytes))
+      used = plan.tasks.find { |task| task.id == id }
+      if used
+        raise Workspace::Error.new("Task #{id} is already on line #{used.line} of the plan #{path}; ids are used once. Use another id.",
+          code: "task_exists", details: {"path" => path, "task" => id, "line" => used.line})
+      end
+      lines, stripped = full_lines(bytes)
+      index = insertion_index(plan, lines, path, phase: phase, after: after)
+      ending = line_ending(lines[[index - 1, 0].max])
+      ending = "\n".b if ending.empty?
+      line = "- [#{STATE_BOXES.fetch(state)}] #{id} #{title}#{" -- #{reason}" if reason}"
+      lines.insert(index, line.b + ending)
+      result = unfull(lines, stripped)
+      reread = parse(read_text(result))
+      added = reread.tasks.find { |task| task.id == id }
+      reads_back = reread.tasks.size == plan.tasks.size + 1 && added && added.title == title && added.state == state && added.reason == reason &&
+        (phase.nil? || added.phase == phase)
+      raise invalid_task("The task line would not read back as asked, so nothing was changed.", "title") unless reads_back
+      result
+    end
+    private_class_method :with_added_task
+
+    def self.with_moved_task(bytes, path, id, after, before, phase)
+      given = [after, before, phase].compact
+      raise invalid_task("Give exactly one place: after a task, before a task, or a phase.", "place") unless given.size == 1
+      raise invalid_task("A task can't be moved relative to itself.", "place") if [after, before].include?(id)
+
+      plan = parse(read_text(bytes))
+      task = plan.tasks.find { |candidate| candidate.id == id } || raise(unknown_task(path, id))
+      lines, stripped = full_lines(bytes)
+      from = task.line - 1
+      target = if before
+        (plan.tasks.find { |candidate| candidate.id == before } || raise(unknown_task(path, before))).line - 1
+      else
+        insertion_index(plan, lines, path, phase: phase, after: after, skip: id)
+      end
+      target -= 1 if target > from
+      return nil if target == from
+
+      moved = lines.delete_at(from)
+      lines.insert(target, moved)
+      result = unfull(lines, stripped)
+      reread = parse(read_text(result))
+      expected = plan.tasks.map(&:id)
+      expected.delete_at(expected.index(id))
+      reads_back = reread.tasks.size == plan.tasks.size && reread.tasks.map(&:id).reject { |other| other == id } == expected
+      raise invalid_task("The plan would not read back with the task moved, so nothing was changed.", "place") unless reads_back
+      result
+    end
+    private_class_method :with_moved_task
+
+    # Where a new or moved line goes: the index in +lines+ it is inserted before.
+    def self.insertion_index(plan, lines, path, phase:, after:, skip: nil)
+      tasks = plan.tasks.reject { |task| task.id == skip }
+      if after
+        anchor = plan.tasks.find { |task| task.id == after } || raise(unknown_task(path, after))
+        return anchor.line
+      end
+      if phase
+        heading = plan.phases.find { |entry| entry["name"] == phase }
+        unless heading
+          raise Workspace::Error.new("No phase '#{phase}' in the plan #{path}.", code: "unknown_phase",
+            details: {"path" => path, "phase" => phase, "phases" => plan.phases.map { |entry| entry["name"] }.uniq})
+        end
+        last = tasks.reverse.find { |task| task.phase == phase }
+        return last ? last.line : heading["line"]
+      end
+      return tasks.last.line if tasks.any?
+      unless plan.tasks_heading
+        raise Workspace::Error.new("The plan #{path} has no '## Tasks' section to add a task to.", code: "no_task_section", details: {"path" => path})
+      end
+      index = [plan.tasks_end || lines.size, lines.size].min
+      index -= 1 while index > plan.tasks_heading && lines[index - 1].strip.empty?
+      index
+    end
+    private_class_method :insertion_index
+
+    # The file's lines, the last one given an ending if it had none; and whether it was given one.
+    def self.full_lines(bytes)
+      lines = bytes.lines
+      return [lines, false] if lines.empty? || !line_ending(lines.last).empty?
+      first = lines.find { |line| !line_ending(line).empty? }
+      lines[-1] = lines.last + (first ? line_ending(first) : "\n".b)
+      [lines, true]
+    end
+    private_class_method :full_lines
+
+    def self.unfull(lines, stripped)
+      lines[-1] = lines.last.byteslice(0, lines.last.bytesize - line_ending(lines.last).bytesize) if stripped
+      lines.join
+    end
+    private_class_method :unfull
 
     # Replaces the first owner comment, drops any others, or adds one at the end of the line.
     def self.with_owner(text, owner)
@@ -342,6 +619,17 @@ module Workspace
     # @return [String, nil] `owner_pane:` from the frontmatter, nil when blank
     def owner_pane = frontmatter["owner_pane"]
 
+    # The id a new task gets: the number after the highest one under the prefix of the last task's id
+    # (`T` when there are no tasks or the last id has no letters-then-number shape).
+    #
+    # @return [String]
+    def next_id
+      shaped = tasks.filter_map { |task| task.id&.match(/\A(.*?)(\d+)\z/) }
+      prefix = shaped.last ? shaped.last[1] : "T"
+      highest = shaped.select { |match| match[1] == prefix }.map { |match| match[2].to_i }.max || 0
+      "#{prefix}#{highest + 1}"
+    end
+
     # @return [String] `active`, `paused` or `done`; `active` when `status:` is absent or not one of them
     def status = STATUSES.include?(frontmatter["status"]) ? frontmatter["status"] : "active"
 
@@ -368,8 +656,10 @@ module Workspace
 
     private_class_method :new
 
-    def initialize(text, truncated:, signature:, updated_at:, warnings:)
+    def initialize(text, truncated:, signature:, updated_at:, warnings:, revision:)
       @signature = signature
+      @revision = revision
+      @phases = []
       @updated_at = updated_at
       @tasks = []
       @warnings = warnings.dup
@@ -433,10 +723,13 @@ module Workspace
         if (heading = line.match(/\A(\#{1,6})(?:\s+(.*?))?(?:\s+\#+)?\s*\z/))
           level = heading[1].size
           if level <= 2
+            @tasks_end = index if in_tasks && @tasks_end.nil?
             in_tasks = level == 2 && heading[2].to_s.casecmp?("Tasks")
+            @tasks_heading ||= index + 1 if in_tasks
             phase = nil
           elsif in_tasks
             phase = heading[2]
+            @phases << {"name" => phase, "line" => index + 1}
           end
           next
         end

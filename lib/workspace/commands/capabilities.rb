@@ -65,7 +65,7 @@ module Workspace
         "plan_progress" => 1,
         "spine_events" => 1,
         "agent_status" => 1,
-        "plan_tasks" => 1
+        "plan_tasks" => 2
       }.freeze
 
       # The exit statuses commands use, by meaning.

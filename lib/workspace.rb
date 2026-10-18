@@ -287,6 +287,7 @@ require_relative "workspace/commands/capabilities"
 require_relative "workspace/commands/parent"
 require_relative "workspace/commands/notes"
 require_relative "workspace/commands/plan_dispatch"
+require_relative "workspace/commands/plan_task"
 require_relative "workspace/commands/plan"
 require_relative "workspace/commands/ticket"
 require_relative "workspace/commands/spine"
@@ -525,6 +526,7 @@ module Workspace
     plan_access = PlanAccess.new(notes: notes_command, tmux: tmux, event_log: event_log)
     plan_dispatch_command = Commands::PlanDispatch.new(access: plan_access, snapshot_client: agent_snapshot_client, sender: send_command,
       binder: binding_command, library: library, runner: run_command, readiness: agent_readiness, main_agent: main_agent, tmux: tmux, output: output)
+    plan_task_command = Commands::PlanTask.new(access: plan_access, output: output)
     plan_command = Commands::Plan.new(notes: notes_command, access: plan_access, dispatch: plan_dispatch_command, catalog: project_catalog,
       plan_state: plan_state, plan_config: plan_config, snapshot_client: agent_snapshot_client, ask_store_for: ask_store_for, task_store: task_store, output: output)
     doctor = Doctor.new(config: config, state: state, hook_installer: hook_installer, project_detector: project_detector, git: git, pipeline_config: pipeline_config, launch_mode: launch_mode, project_settings: project_settings, plan: plan_command, snapshot_client: agent_snapshot_client, name_migration: name_migration, output: output)
@@ -657,6 +659,7 @@ module Workspace
       notes_setup: notes_setup,
       plan_command: plan_command,
       plan_dispatch_command: plan_dispatch_command,
+      plan_task_command: plan_task_command,
       ticket_command: ticket_command,
       spine_command: spine_command,
       spine_init_command: spine_init_command,

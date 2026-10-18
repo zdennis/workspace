@@ -78,7 +78,7 @@ module Workspace
       tasks = plan.tasks.map { |task| task_row(task, panes, session_live, warnings) }
       warnings = warnings.each_with_index.sort_by { |warning, i| [warning["line"] || Float::INFINITY, i] }.map(&:first)
       {"workspace" => workspace, "project" => project, "path" => path, "exists" => true, "title" => plan.title, "status" => plan.status,
-       "state" => derived, "owner_pane" => owner, "pane_state" => pane_state, "updated_at" => plan.updated_at, "signature" => plan.signature,
+       "state" => derived, "owner_pane" => owner, "pane_state" => pane_state, "updated_at" => plan.updated_at, "signature" => plan.signature, "revision" => plan.revision,
        "counts" => plan.counts, "percent" => plan.percent, "current" => plan.current, "tasks" => tasks,
        "open_asks" => open_asks, "warnings" => warnings}
     end
@@ -100,7 +100,7 @@ module Workspace
     def missing_row(workspace, project, path)
       empty = PlanFile.parse("")
       {"workspace" => workspace, "project" => project, "path" => path, "exists" => false, "title" => nil, "status" => nil, "state" => "empty",
-       "owner_pane" => nil, "pane_state" => nil, "updated_at" => nil, "signature" => nil, "counts" => empty.counts, "percent" => 0,
+       "owner_pane" => nil, "pane_state" => nil, "updated_at" => nil, "signature" => nil, "revision" => nil, "counts" => empty.counts, "percent" => 0,
        "current" => nil, "tasks" => [], "open_asks" => 0, "warnings" => []}
     end
 

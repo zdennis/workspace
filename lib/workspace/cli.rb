@@ -73,6 +73,7 @@ module Workspace
     # @param notes_setup [Workspace::NotesSetup, nil] fixes the notes directory of a worktree config `add` creates; nil skips it
     # @param plan_command [Workspace::Commands::Plan, nil] pre-built plan command
     # @param plan_dispatch_command [Workspace::Commands::PlanDispatch, nil] pre-built plan start command
+    # @param plan_task_command [Workspace::Commands::PlanTask, nil] pre-built plan task command
     # @param ticket_command [Workspace::Commands::Ticket, nil] pre-built ticket command
     # @param spine_command [Workspace::Commands::Spine, nil] pre-built spine command
     # @param spine_init_command [Workspace::Commands::SpineInit, nil] pre-built spine init command
@@ -111,7 +112,7 @@ module Workspace
     #   `list --liveness --json` and `status --json`; takes name => state entry
     # @param launch_mode [Workspace::LaunchMode, nil] decides whether launch/start
     #   run headless when no --[no-]headless flag is given; nil builds one
-    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, restart_agent_command: nil, agent_status_command: nil, send_command: nil, ensure_agent_command: nil, name_migration: nil, spine_command: nil, spine_init_command: nil, handoff_command: nil, notes_command: nil, notes_setup: nil, plan_command: nil, plan_dispatch_command: nil, ticket_command: nil, pull_request_command: nil, rebase_command: nil, push_command: nil, projects_command: nil, capabilities_command: nil, daemon_command: nil, ui_command: nil, binding_command: nil, library_command: nil, library: nil, instructions_command: nil, instruction_composer: nil, workflow_command: nil, review_command: nil, restore_command: nil, snapshot_command: nil, events_command: nil, project_actions_command: nil, inbox_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil, liveness: nil, window_liveness: nil, env: ENV, editor_launcher: nil, interactive: nil, workspace_name: nil)
+    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, restart_agent_command: nil, agent_status_command: nil, send_command: nil, ensure_agent_command: nil, name_migration: nil, spine_command: nil, spine_init_command: nil, handoff_command: nil, notes_command: nil, notes_setup: nil, plan_command: nil, plan_dispatch_command: nil, plan_task_command: nil, ticket_command: nil, pull_request_command: nil, rebase_command: nil, push_command: nil, projects_command: nil, capabilities_command: nil, daemon_command: nil, ui_command: nil, binding_command: nil, library_command: nil, library: nil, instructions_command: nil, instruction_composer: nil, workflow_command: nil, review_command: nil, restore_command: nil, snapshot_command: nil, events_command: nil, project_actions_command: nil, inbox_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil, liveness: nil, window_liveness: nil, env: ENV, editor_launcher: nil, interactive: nil, workspace_name: nil)
       @config = config
       @state = state
       @project_config = project_config
@@ -151,6 +152,7 @@ module Workspace
       @notes_command = notes_command
       @plan_command = plan_command
       @plan_dispatch_command = plan_dispatch_command
+      @plan_task_command = plan_task_command
       @ticket_command = ticket_command
       @spine_command = spine_command
       @spine_init_command = spine_init_command
@@ -6954,7 +6956,15 @@ module Workspace
       "init" => %i[name title from force json],
       "start" => %i[name task pane spawn json],
       "pause" => %i[name interrupt json],
-      "delete" => %i[name yes json]
+      "delete" => %i[name yes json],
+      "task" => %i[name task id title state reason phase after before if_revision json]
+    }.freeze
+
+    # The flags each `plan task` verb takes (on top of --name and --json).
+    PLAN_TASK_FLAGS = {
+      "add" => %i[id title state reason phase after if_revision],
+      "set-state" => %i[task state reason if_revision],
+      "move" => %i[task after before phase if_revision]
     }.freeze
 
     def plan_parser(options)
@@ -6965,7 +6975,10 @@ module Workspace
           "       workspace plan init [--name WORKSPACE] [--title TITLE] [--from FILE] [--force] [--json]\n" \
           "       workspace plan start [--name WORKSPACE] [--task ID [--pane PANE | --spawn KIND]] [--json]\n" \
           "       workspace plan pause [--name WORKSPACE] [--interrupt] [--json]\n" \
-          "       workspace plan delete [--name WORKSPACE] --yes [--json]"
+          "       workspace plan delete [--name WORKSPACE] --yes [--json]\n" \
+          "       workspace plan task add --title TEXT [--id ID] [--state STATE] [--reason TEXT] [--phase NAME | --after ID] [--if-revision REV] [--name WORKSPACE] [--json]\n" \
+          "       workspace plan task set-state --task ID --state STATE [--reason TEXT] [--if-revision REV] [--name WORKSPACE] [--json]\n" \
+          "       workspace plan task move --task ID (--after ID | --before ID | --phase NAME) [--if-revision REV] [--name WORKSPACE] [--json]"
         opts.separator ""
         opts.separator "A plan is IMPLEMENTATION_PLAN.md in the workspace's notes directory: one checklist"
         opts.separator "line per task under '## Tasks'. workspace counts it, and works out one state from the"
@@ -6983,15 +6996,24 @@ module Workspace
         opts.separator "  pause    Set status: paused; the agent stops before its next task. --interrupt also presses"
         opts.separator "           the agent's interrupt key (Escape for Claude Code and Codex) in each owner pane that works"
         opts.separator "  delete   Rename the plan to IMPLEMENTATION_PLAN.md.deleted-<time>; needs --yes; the session and worktree stay"
+        opts.separator "  task     add, set-state or move one task line; --if-revision (the revision from status --json) refuses a stale edit"
+        opts.separator "           with stale_revision. States: #{PlanFile::TASK_STATES.join(", ")}; blocked and skipped need --reason"
         opts.separator ""
         opts.on("--name NAME", "Workspace to act on instead of the one detected from the current directory") { |v| take_plan_flag(options, :name, v) }
         opts.on("--all", "status: every workspace") { take_plan_flag(options, :all, true) }
         opts.on("--file PATH", "status: read any file, with no workspace and a state from the file alone") { |v| take_plan_flag(options, :file, v) }
-        opts.on("--title TITLE", "init: the plan's title (default: the workspace task's title)") { |v| take_plan_flag(options, :title, v) }
+        opts.on("--title TITLE", "init: the plan's title (default: the workspace task's title); task add: the task's title") { |v| take_plan_flag(options, :title, v) }
         opts.on("--from FILE", "init: import this document as the plan") { |v| take_plan_flag(options, :from, v) }
         opts.on("--force", "init: replace a plan that is already there") { take_plan_flag(options, :force, true) }
         opts.on("--yes", "delete: confirm the delete") { take_plan_flag(options, :yes, true) }
-        opts.on("--task ID", "start: send only this task (its id, such as T3)") { |v| take_plan_flag(options, :task, v) }
+        opts.on("--task ID", "start: send only this task; task set-state and move: the task (its id, such as T3)") { |v| take_plan_flag(options, :task, v) }
+        opts.on("--id ID", "task add: the new task's id (default: the next number after the plan's last id)") { |v| take_plan_flag(options, :id, v) }
+        opts.on("--state STATE", "task add and set-state: #{PlanFile::TASK_STATES.join(", ")}") { |v| take_plan_flag(options, :state, v) }
+        opts.on("--reason TEXT", "task add and set-state: why a task is blocked or skipped") { |v| take_plan_flag(options, :reason, v) }
+        opts.on("--phase NAME", "task add: the ### heading to add under; task move: move to the end of this phase") { |v| take_plan_flag(options, :phase, v) }
+        opts.on("--after ID", "task add and move: place the task after this task") { |v| take_plan_flag(options, :after, v) }
+        opts.on("--before ID", "task move: place the task before this task") { |v| take_plan_flag(options, :before, v) }
+        opts.on("--if-revision REV", "task: refuse with stale_revision unless the plan's revision is REV") { |v| take_plan_flag(options, :if_revision, v) }
         opts.on("--pane PANE", "start --task: the pane to send it to, a pane id (%19) or window.pane (0.1)") { |v| take_plan_flag(options, :pane, v) }
         opts.on("--spawn KIND", "start --task: start a new agent pane for it (#{Commands::PlanDispatch::AGENT_KINDS.join(", ")})") { |v| take_plan_flag(options, :spawn, v) }
         opts.on("--interrupt", "pause: interrupt the owner panes that are working") { take_plan_flag(options, :interrupt, true) }
@@ -7007,6 +7029,9 @@ module Workspace
         opts.separator "  workspace plan start --task=T4 --pane=%23 --json"
         opts.separator "  workspace plan start --task=T5 --spawn=claude"
         opts.separator "  workspace plan pause --interrupt --json"
+        opts.separator "  workspace plan task add --title \"Write the docs\" --phase=Docs --if-revision=9f8e7d6c --json"
+        opts.separator "  workspace plan task set-state --task=T3 --state=blocked --reason=\"needs the dev database\""
+        opts.separator "  workspace plan task move --task=T5 --after=T1"
         opts.separator "  workspace plan delete --yes"
       end
     end
@@ -7025,9 +7050,19 @@ module Workspace
       subcommand = args.shift
       raise UsageError, "Missing subcommand: one of #{PLAN_FLAGS.keys.join(", ")}.\n\n#{parser.help}" unless subcommand
       raise UsageError, "Unknown plan subcommand: #{subcommand}. Run 'workspace plan --help'." unless PLAN_FLAGS.key?(subcommand)
+      verb = args.shift if subcommand == "task"
       raise UsageError, "Unexpected argument: #{args.first}. Run 'workspace plan --help'." if args.any?
       options[:given].uniq.each do |key|
         raise UsageError, "--#{key} does not apply to 'plan #{subcommand}'. Run 'workspace plan --help'." unless PLAN_FLAGS[subcommand].include?(key)
+      end
+      if subcommand == "task"
+        raise UsageError, "Missing task verb: one of #{PLAN_TASK_FLAGS.keys.join(", ")}. Run 'workspace plan --help'." unless verb
+        raise UsageError, "Unknown plan task verb: #{verb}. One of #{PLAN_TASK_FLAGS.keys.join(", ")}." unless PLAN_TASK_FLAGS.key?(verb)
+        options[:given].uniq.each do |key|
+          next if %i[name json].include?(key) || PLAN_TASK_FLAGS[verb].include?(key)
+          raise UsageError, "--#{key.to_s.tr("_", "-")} does not apply to 'plan task #{verb}'. Run 'workspace plan --help'."
+        end
+        plan_task_usage(verb, options)
       end
       if subcommand == "status" && options[:given].count { |key| %i[name all file].include?(key) } > 1
         raise UsageError, "Give only one of --name, --all and --file."
@@ -7037,7 +7072,7 @@ module Workspace
       if options[:spawn] && !Commands::PlanDispatch::AGENT_KINDS.include?(options[:spawn])
         raise UsageError, "Unknown agent kind for --spawn: #{options[:spawn]}. One of #{Commands::PlanDispatch::AGENT_KINDS.join(", ")}."
       end
-      raise Error, "plan is not available: no plan command was wired" unless @plan_command && @plan_dispatch_command
+      raise Error, "plan is not available: no plan command was wired" unless @plan_command && @plan_dispatch_command && @plan_task_command
 
       return @plan_command.status(all: true, json: options[:json]) if options[:all]
       return @plan_command.status(file: options[:file], json: options[:json]) if options[:file]
@@ -7069,6 +7104,39 @@ module Workspace
         end
       when "delete"
         run_action("plan delete", json: options[:json]) { plan_verb_outcome(name, @plan_command.delete(name: name, yes: options[:yes]), options[:json]) }
+      when "task"
+        run_action("plan task #{verb}", json: options[:json]) { plan_verb_outcome(name, plan_task_row(verb, name, options), options[:json]) }
+      end
+    end
+
+    # Checks what a `plan task` verb needs before anything is read, so a missing flag is a usage error.
+    def plan_task_usage(verb, options)
+      case verb
+      when "add"
+        raise UsageError, "plan task add needs --title." if options[:title].to_s.strip.empty?
+        raise UsageError, "Give only one of --phase and --after." if options[:phase] && options[:after]
+      when "set-state"
+        raise UsageError, "plan task set-state needs --task." unless options[:task]
+        raise UsageError, "plan task set-state needs --state." unless options[:state]
+      when "move"
+        raise UsageError, "plan task move needs --task." unless options[:task]
+        raise UsageError, "Give exactly one of --after, --before and --phase." unless [options[:after], options[:before], options[:phase]].compact.size == 1
+      end
+      if options[:state] && !PlanFile::TASK_STATES.include?(options[:state])
+        raise UsageError, "Unknown task state: #{options[:state]}. One of #{PlanFile::TASK_STATES.join(", ")}."
+      end
+    end
+
+    def plan_task_row(verb, name, options)
+      case verb
+      when "add"
+        @plan_task_command.add(name: name, title: options[:title], id: options[:id], state: options.fetch(:state, "todo"), reason: options[:reason],
+          phase: options[:phase], after: options[:after], if_revision: options[:if_revision])
+      when "set-state"
+        @plan_task_command.set_state(name: name, id: options[:task], state: options[:state], reason: options[:reason], if_revision: options[:if_revision])
+      when "move"
+        @plan_task_command.move(name: name, id: options[:task], after: options[:after], before: options[:before], phase: options[:phase],
+          if_revision: options[:if_revision])
       end
     end
 
@@ -7077,7 +7145,7 @@ module Workspace
     def plan_verb_outcome(name, row, json)
       failed = row["outcome"] == "failed"
       @error_output.puts "Error: could not start the plan for #{name}: #{row["message"]}" if failed && !json
-      extra = row.slice("task", "interrupts").transform_keys(&:to_sym)
+      extra = row.slice("task", "interrupts", "state", "previous_state", "line", "phase", "revision", "counts", "percent").transform_keys(&:to_sym)
       {exit_code: failed ? 1 : 0, warnings: row["warnings"] || [],
        results: [action_row(name, row["outcome"], reason: row["reason"], message: row["message"], path: row["path"], pane: row["pane"], **extra)]}
     end

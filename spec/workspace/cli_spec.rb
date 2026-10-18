@@ -103,6 +103,7 @@ RSpec.describe Workspace::CLI do
       notes_setup: overrides[:notes_setup],
       plan_command: overrides[:plan_command],
       plan_dispatch_command: overrides[:plan_dispatch_command],
+      plan_task_command: overrides[:plan_task_command],
       ticket_command: overrides[:ticket_command],
       spine_command: overrides[:spine_command],
       spine_init_command: overrides[:spine_init_command],
@@ -5802,7 +5803,7 @@ RSpec.describe Workspace::CLI do
   describe "#run with plan" do
     let(:plan_command) { instance_double(Workspace::Commands::Plan, status: [], path: nil, show: nil, init: {"path" => "/n/IMPLEMENTATION_PLAN.md", "message" => nil}) }
     let(:detector) { instance_double(Workspace::ProjectDetector, detect: "detected-ws") }
-    let(:built) { build_test_cli(plan_command: plan_command, plan_dispatch_command: instance_double(Workspace::Commands::PlanDispatch), project_detector: detector, working_dir: "/some/dir") }
+    let(:built) { build_test_cli(plan_command: plan_command, plan_dispatch_command: instance_double(Workspace::Commands::PlanDispatch), plan_task_command: instance_double(Workspace::Commands::PlanTask), project_detector: detector, working_dir: "/some/dir") }
     let(:cli) { built[0] }
     let(:output) { built[1] }
     let(:error_output) { built[2] }
@@ -8591,11 +8592,83 @@ RSpec.describe Workspace::CLI do
     describe "plan start, pause and delete" do
       let(:plan_command) { instance_double(Workspace::Commands::Plan) }
       let(:plan_dispatch_command) { instance_double(Workspace::Commands::PlanDispatch) }
+      let(:plan_task_command) { instance_double(Workspace::Commands::PlanTask) }
       let(:detector) { instance_double(Workspace::ProjectDetector, detect: "detected-ws") }
       let(:row) { {"outcome" => "paused", "reason" => nil, "message" => nil, "path" => "/n/IMPLEMENTATION_PLAN.md", "pane" => nil} }
 
       def plan_cli(**overrides, &block)
-        action_cli(plan_command: plan_command, plan_dispatch_command: plan_dispatch_command, project_detector: detector, **overrides, &block)
+        action_cli(plan_command: plan_command, plan_dispatch_command: plan_dispatch_command, plan_task_command: plan_task_command, project_detector: detector, **overrides, &block)
+      end
+
+      describe "plan task" do
+        let(:task_row) do
+          row.merge("outcome" => "changed", "task" => "T3", "state" => "blocked", "previous_state" => "todo", "line" => 14, "phase" => "P",
+            "revision" => "4e1f0c2a", "counts" => {"total" => 3}, "percent" => 33)
+        end
+
+        it "sends set-state's flags in --flag=value form and prints the result's task fields in the action document" do
+          allow(plan_task_command).to receive(:set_state).and_return(task_row)
+          cli, raw, = plan_cli
+
+          cli.run(["plan", "task", "set-state", "--name=api", "--task=T3", "--state=blocked", "--reason=needs db", "--if-revision=9f8e7d6c", "--json"])
+
+          expect(plan_task_command).to have_received(:set_state).with(name: "api", id: "T3", state: "blocked", reason: "needs db", if_revision: "9f8e7d6c")
+          expect(parse_one(raw)).to include("action" => "plan task set-state", "status" => "ok",
+            "results" => [a_hash_including("workspace" => "api", "outcome" => "changed", "task" => "T3", "state" => "blocked", "previous_state" => "todo",
+              "revision" => "4e1f0c2a", "line" => 14, "counts" => {"total" => 3})])
+        end
+
+        it "sends add's flags, with state todo by default and the workspace of the directory" do
+          allow(plan_task_command).to receive(:add).and_return(task_row.merge("outcome" => "added"))
+          cli, = plan_cli
+
+          cli.run(["plan", "task", "add", "--title", "Write docs", "--phase", "Docs"])
+          cli.run(["plan", "task", "add", "--title=More", "--id=X1", "--state=skipped", "--reason=no", "--after=T1"])
+
+          expect(plan_task_command).to have_received(:add).with(name: "detected-ws", title: "Write docs", id: nil, state: "todo", reason: nil, phase: "Docs", after: nil, if_revision: nil)
+          expect(plan_task_command).to have_received(:add).with(name: "detected-ws", title: "More", id: "X1", state: "skipped", reason: "no", phase: nil, after: "T1", if_revision: nil)
+        end
+
+        it "sends move's place" do
+          allow(plan_task_command).to receive(:move).and_return(task_row.merge("outcome" => "moved"))
+          cli, = plan_cli
+
+          cli.run(["plan", "task", "move", "--task=T3", "--before=T1"])
+          cli.run(["plan", "task", "move", "--task", "T3", "--phase", "Docs"])
+
+          expect(plan_task_command).to have_received(:move).with(name: "detected-ws", id: "T3", after: nil, before: "T1", phase: nil, if_revision: nil)
+          expect(plan_task_command).to have_received(:move).with(name: "detected-ws", id: "T3", after: nil, before: nil, phase: "Docs", if_revision: nil)
+        end
+
+        it "prints a refusal as the json error envelope with its code and details" do
+          allow(plan_task_command).to receive(:set_state).and_raise(Workspace::Error.new("changed", code: "stale_revision", details: {"revision" => "abc12345"}))
+          cli, raw, = plan_cli
+
+          expect(exit_status { cli.run(["plan", "task", "set-state", "--task=T3", "--state=done", "--json"]) }).to eq(1)
+
+          expect(parse_one(raw)).to include("ok" => false, "code" => "stale_revision", "details" => a_hash_including("revision" => "abc12345"))
+        end
+
+        it "is a usage error without a verb, with an unknown verb or state, with a flag the verb does not take, or without what it needs" do
+          cli, _, err = plan_cli
+          [
+            %w[plan task],
+            %w[plan task nope],
+            %w[plan task add],
+            %w[plan task add --title=x --phase=P --after=T1],
+            %w[plan task add --title=x --state=bogus],
+            %w[plan task add --title=x --task=T1],
+            %w[plan task set-state --task=T1],
+            %w[plan task set-state --state=done],
+            %w[plan task move --task=T1],
+            %w[plan task move --task=T1 --after=T2 --before=T3],
+            %w[plan task move --task=T1 --after=T2 --state=done],
+            %w[plan status --state=done]
+          ].each do |argv|
+            expect(exit_status { cli.run(argv) }).not_to eq(0), "expected #{argv.join(" ")} to be refused"
+          end
+          expect(err.string).to include("Missing task verb")
+        end
       end
 
       it "prints pause as an action document with the row's path and pane" do

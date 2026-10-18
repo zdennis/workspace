@@ -685,4 +685,296 @@ RSpec.describe Workspace::PlanFile do
       expect { described_class.set_task(@path, "T1", owner: "%1") }.to raise_error(Errno::ENOENT)
     end
   end
+  describe "task verbs" do
+    around do |example|
+      Dir.mktmpdir("plan-verbs") do |dir|
+        @path = File.join(dir, "IMPLEMENTATION_PLAN.md")
+        example.run
+      end
+    end
+
+    def write(text) = File.binwrite(@path, text)
+
+    def content = File.binread(@path)
+
+    let(:head) { "---\nplan: 1\n---\n# Plan\n\n## Tasks\n" }
+    let(:phased) { head + "### One\n- [ ] T1 First\n- [~] T2 Second <!-- owner: %4 -->\n### Two\n- [ ] T3 Third\n## Task details\nText\n" }
+
+    describe "#revision" do
+      it "is the first 8 hex digits of the SHA-256 of the whole file, and changes with any byte" do
+        write(phased)
+        revision = described_class.read(@path).revision
+
+        expect(revision).to eq(Digest::SHA256.hexdigest(phased)[0, 8])
+        expect(described_class.revision_of(phased)).to eq(revision)
+        write(phased.sub("First", "Firsd"))
+        expect(described_class.read(@path).revision).not_to eq(revision)
+      end
+
+      it "covers the whole file when it is longer than the read limit" do
+        text = phased + ("x" * 100 + "\n") * ((described_class::MAX_BYTES / 101) + 50)
+        write(text)
+
+        expect(described_class.read(@path).revision).to eq(Digest::SHA256.hexdigest(text)[0, 8])
+      end
+    end
+
+    describe "#next_id" do
+      it "continues the prefix of the last task, past the highest number with that prefix" do
+        expect(parse("## Tasks\n- [ ] T1 a\n- [ ] T9 b\n- [ ] T3 c\n").next_id).to eq("T10")
+        expect(parse("## Tasks\n- [ ] T4 a\n- [ ] E2 b\n").next_id).to eq("E3")
+        expect(parse("## Tasks\n- [ ] PROJ-12 a\n").next_id).to eq("PROJ-13")
+        expect(parse("## Tasks\n").next_id).to eq("T1")
+      end
+
+      it "is what add_task uses without an id, and reports the id it chose" do
+        write(phased)
+
+        expect(described_class.add_task(@path, title: "Fourth").id).to eq("T4")
+        expect(described_class.add_task(@path, title: "Fifth").id).to eq("T5")
+      end
+    end
+
+    describe ".add_task" do
+      it "adds after the last task of the plan by default, changing nothing else" do
+        write(phased)
+
+        result = described_class.add_task(@path, id: "T4", title: "Fourth")
+
+        expect(result).to have_attributes(changed: true, revision: described_class.read(@path).revision)
+        expect(content).to eq(phased.sub("- [ ] T3 Third\n", "- [ ] T3 Third\n- [ ] T4 Fourth\n"))
+      end
+
+      it "adds under a phase after that phase's last task, or after its heading when it has none" do
+        write(phased)
+        described_class.add_task(@path, id: "T4", title: "Fourth", phase: "One")
+        expect(described_class.read(@path).tasks.map { |t| [t.id, t.phase] }).to eq([%w[T1 One], %w[T2 One], %w[T4 One], %w[T3 Two]])
+
+        write(head + "### Empty\n### Next\n- [ ] T1 a\n")
+        described_class.add_task(@path, id: "T2", title: "b", phase: "Empty")
+        expect(described_class.read(@path).tasks.map { |t| [t.id, t.phase] }).to eq([%w[T2 Empty], %w[T1 Next]])
+      end
+
+      it "adds after a named task" do
+        write(phased)
+
+        described_class.add_task(@path, id: "T4", title: "Fourth", after: "T1")
+
+        expect(described_class.read(@path).tasks.map(&:id)).to eq(%w[T1 T4 T2 T3])
+      end
+
+      it "adds into an empty Tasks section before the next heading, past blank lines" do
+        write("## Tasks\n\n<!-- hint -->\n\n## Task details\n")
+
+        described_class.add_task(@path, id: "T1", title: "First")
+
+        expect(content).to eq("## Tasks\n\n<!-- hint -->\n- [ ] T1 First\n\n## Task details\n")
+      end
+
+      it "keeps CRLF and adds a line ending to a last line that has none" do
+        write("## Tasks\r\n- [ ] T1 First")
+
+        described_class.add_task(@path, id: "T2", title: "Second")
+
+        expect(content).to eq("## Tasks\r\n- [ ] T1 First\r\n- [ ] T2 Second")
+      end
+
+      it "writes a skipped or blocked task with its reason" do
+        write(phased)
+
+        described_class.add_task(@path, id: "T4", title: "Fourth", state: "blocked", reason: "needs db")
+
+        expect(described_class.read(@path).tasks.last).to have_attributes(id: "T4", state: "blocked", reason: "needs db", title: "Fourth")
+      end
+
+      it "refuses an id that is already used, naming its line, and writes nothing" do
+        write(phased)
+
+        expect { described_class.add_task(@path, id: "T2", title: "Again") }
+          .to raise_error(Workspace::Error) { |e| expect([e.code, e.details["line"]]).to eq(["task_exists", 9]) }
+        expect(content).to eq(phased)
+      end
+
+      it "refuses a bad id, title or reason, a missing reason, an unknown phase or anchor, and a plan with no Tasks section" do
+        write(phased)
+        {
+          {id: "nodigit", title: "x"} => "invalid_task",
+          {id: "T9", title: ""} => "invalid_task",
+          {id: "T9", title: "a -- b"} => "invalid_task",
+          {id: "T9", title: "a <!-- b -->"} => "invalid_task",
+          {id: "T9", title: "a\nb"} => "invalid_task",
+          {id: "T9", title: "x", state: "blocked"} => "reason_required",
+          {id: "T9", title: "x", reason: "why"} => "invalid_task",
+          {id: "T9", title: "x", phase: "Nope"} => "unknown_phase",
+          {id: "T9", title: "x", after: "T77"} => "unknown_task",
+          {id: "T9", title: "x", after: "T1", phase: "Two"} => "invalid_task"
+        }.each do |args, code|
+          expect { described_class.add_task(@path, **args) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq(code) }
+        end
+        write("# Plan\nNo list\n")
+        expect { described_class.add_task(@path, id: "T1", title: "x") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("no_task_section") }
+        expect(content).to eq("# Plan\nNo list\n")
+      end
+
+      it "refuses a stale revision with the current one, writing nothing" do
+        write(phased)
+
+        expect { described_class.add_task(@path, id: "T4", title: "x", if_revision: "deadbeef") }
+          .to raise_error(Workspace::Error) { |e| expect([e.code, e.details["revision"]]).to eq(["stale_revision", described_class.revision_of(phased)]) }
+        expect(content).to eq(phased)
+      end
+
+      it "accepts the current revision, in any case" do
+        write(phased)
+
+        described_class.add_task(@path, id: "T4", title: "x", if_revision: described_class.revision_of(phased).upcase)
+
+        expect(described_class.read(@path).tasks.size).to eq(4)
+      end
+    end
+
+    describe ".change_task" do
+      it "sets a state, keeping the owner comment and every other byte" do
+        write(phased)
+
+        result = described_class.change_task(@path, "T2", state: "done")
+
+        expect(result.changed).to be true
+        expect(content).to eq(phased.sub("- [~] T2 Second <!-- owner: %4 -->", "- [x] T2 Second <!-- owner: %4 -->"))
+      end
+
+      it "writes the reason of a blocked task before the owner comment, and drops it when the task leaves the state" do
+        write(phased)
+
+        described_class.change_task(@path, "T2", state: "blocked", reason: "waiting")
+        expect(content).to include("- [!] T2 Second -- waiting <!-- owner: %4 -->\n")
+        expect(described_class.read(@path).tasks[1]).to have_attributes(state: "blocked", reason: "waiting", owner: "%4", title: "Second")
+
+        described_class.change_task(@path, "T2", state: "todo")
+        expect(content).to eq(phased.sub("- [~] T2", "- [ ] T2"))
+      end
+
+      it "changes the reason of a blocked task and keeps it when only the owner changes" do
+        write(head + "- [!] T1 One -- old\n")
+
+        described_class.change_task(@path, "T1", reason: "new")
+        expect(content).to eq(head + "- [!] T1 One -- new\n")
+        described_class.change_task(@path, "T1", owner: "%3")
+        expect(content).to eq(head + "- [!] T1 One -- new <!-- owner: %3 -->\n")
+      end
+
+      it "needs a reason to block or skip, unless the line has one, and refuses one for other states" do
+        write(phased)
+
+        expect { described_class.change_task(@path, "T1", state: "skipped") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("reason_required") }
+        expect { described_class.change_task(@path, "T1", state: "done", reason: "why") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("invalid_task") }
+        expect { described_class.change_task(@path, "T1", state: "done", reason: "bad -- one") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("invalid_task") }
+        expect(content).to eq(phased)
+      end
+
+      it "refuses to block a task whose title holds a ' -- ', rather than misread the title as a reason" do
+        write(head + "- [ ] T1 a -- b\n")
+
+        expect { described_class.change_task(@path, "T1", state: "blocked", reason: "r") }.to raise_error(Workspace::Error)
+        expect(content).to eq(head + "- [ ] T1 a -- b\n")
+      end
+
+      it "is unchanged when the task already reads that way, and still checks the revision" do
+        write(phased)
+
+        expect(described_class.change_task(@path, "T1", state: "todo").changed).to be false
+        expect { described_class.change_task(@path, "T1", state: "done", if_revision: "00000000") }
+          .to raise_error(Workspace::Error) { |e| expect(e.code).to eq("stale_revision") }
+      end
+
+      it "leaves the reason alone for set_task" do
+        write(head + "- [!] T1 One -- why\n")
+
+        described_class.set_task(@path, "T1", state: "in_progress")
+
+        expect(content).to eq(head + "- [~] T1 One -- why\n")
+      end
+    end
+
+    describe ".move_task" do
+      it "moves a whole line, owner comment included, after or before another task" do
+        write(phased)
+
+        described_class.move_task(@path, "T2", after: "T3")
+        expect(described_class.read(@path).tasks.map { |t| [t.id, t.phase, t.owner] }).to eq([["T1", "One", nil], ["T3", "Two", nil], ["T2", "Two", "%4"]])
+
+        described_class.move_task(@path, "T2", before: "T1")
+        expect(described_class.read(@path).tasks.map(&:id)).to eq(%w[T2 T1 T3])
+        expect(content).to include("- [~] T2 Second <!-- owner: %4 -->\n")
+      end
+
+      it "moves to the end of a phase, and reports unchanged when it is already there" do
+        write(phased)
+
+        expect(described_class.move_task(@path, "T1", phase: "Two").changed).to be true
+        expect(described_class.read(@path).tasks.map { |t| [t.id, t.phase] }).to eq([%w[T2 One], %w[T3 Two], %w[T1 Two]])
+        expect(described_class.move_task(@path, "T1", phase: "Two").changed).to be false
+        expect(described_class.move_task(@path, "T3", before: "T1").changed).to be false
+      end
+
+      it "keeps every other line, so a move and its reverse restore the file" do
+        write(phased)
+
+        described_class.move_task(@path, "T1", after: "T3")
+        described_class.move_task(@path, "T1", before: "T2")
+
+        expect(content).to eq(phased)
+      end
+
+      it "handles a last line with no ending" do
+        write("## Tasks\n- [ ] T1 a\n- [ ] T2 b")
+
+        described_class.move_task(@path, "T2", before: "T1")
+
+        expect(content).to eq("## Tasks\n- [ ] T2 b\n- [ ] T1 a")
+      end
+
+      it "keeps CRLF endings when it moves the last line, which has none, to the middle" do
+        write("## Tasks\r\n- [ ] T1 a\r\n- [ ] T2 b\r\n- [ ] T3 c")
+
+        described_class.move_task(@path, "T3", before: "T2")
+
+        expect(content).to eq("## Tasks\r\n- [ ] T1 a\r\n- [ ] T3 c\r\n- [ ] T2 b")
+      end
+
+      it "refuses an unknown task, anchor or phase, no place or two, and a task relative to itself" do
+        write(phased)
+        {
+          ["T9", {after: "T1"}] => "unknown_task",
+          ["T1", {after: "T9"}] => "unknown_task",
+          ["T1", {before: "T9"}] => "unknown_task",
+          ["T1", {phase: "Nope"}] => "unknown_phase",
+          ["T1", {}] => "invalid_task",
+          ["T1", {after: "T2", before: "T3"}] => "invalid_task",
+          ["T1", {after: "T1"}] => "invalid_task"
+        }.each do |(id, args), code|
+          expect { described_class.move_task(@path, id, **args) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq(code) }
+        end
+        expect(content).to eq(phased)
+      end
+
+      it "refuses a stale revision" do
+        write(phased)
+
+        expect { described_class.move_task(@path, "T1", after: "T3", if_revision: "00000000") }
+          .to raise_error(Workspace::Error) { |e| expect(e.code).to eq("stale_revision") }
+      end
+    end
+
+    it "counts and current follow the written plan, so plan_progress sees the change" do
+      write(phased)
+
+      described_class.change_task(@path, "T1", state: "done")
+      described_class.add_task(@path, id: "T4", title: "Fourth")
+
+      plan = described_class.read(@path)
+      expect(plan.counts).to include("total" => 4, "done" => 1, "in_progress" => 1, "todo" => 2)
+      expect(plan.current).to include("id" => "T2")
+    end
+  end
 end
