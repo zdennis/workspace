@@ -116,10 +116,10 @@ RSpec.describe Workspace::Commands::Capabilities do
       expect(document["features"]).to include("dev_queue" => 2)
     end
 
-    it "reports plan 4 once plan start, pause and delete exist" do
+    it "reports plan 5 once plan start can ask for a draft" do
       command.call(json: true)
 
-      expect(document["features"]).to include("plan" => 4)
+      expect(document["features"]).to include("plan" => 5)
     end
 
     it "reports ticket 2 once ticket list and start --slug exist" do

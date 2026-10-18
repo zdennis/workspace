@@ -171,10 +171,23 @@ RSpec.describe Workspace::Commands::PlanDispatch do
         expect(result["message"]).to include("Could not record the owner pane")
       end
 
-      it "treats a plan with no tasks as startable" do
+      it "launches a plan with no tasks with the draft line, as drafting" do
         write_plan("api", "---\nstatus: paused\n---\n## Tasks\n")
 
-        expect(start["outcome"]).to eq("launched")
+        result = start
+
+        expect(result["outcome"]).to eq("drafting")
+        expect(result["pane"]).to eq("%31")
+        expect(launcher).to have_received(:call).with("api", described_class::DRAFT_PROMPT)
+        expect(output.string).to include("to draft the tasks")
+      end
+
+      it "launches a plan with tasks with the default continue line" do
+        write_plan("api", paused_text)
+
+        start
+
+        expect(launcher).to have_received(:call).with("api")
       end
 
       it "fails with notes_dir_unwritable, before launching, when the status can't be written" do
@@ -199,6 +212,20 @@ RSpec.describe Workspace::Commands::PlanDispatch do
         expect(output.string).to eq("Started the plan for api: sent it to pane %19.\n")
         expect(events).to eq([["api", "plan_changed", {"workspace" => "api", "status" => "active"}]])
         expect(launcher).not_to have_received(:call)
+      end
+
+      it "sends the draft line, as drafting, to a plan with no tasks, bound to the play" do
+        write_plan("api", "---\nstatus: paused\n---\n## Tasks\n")
+
+        result = start
+
+        expect(result["outcome"]).to eq("drafting")
+        expect(result["pane"]).to eq("%19")
+        expect(sender).to have_received(:deliver).with(name: "api", pane: "%19",
+          body: "Read \"/lib/play/implementation-plan.md\" and follow it.\n\n#{described_class::DRAFT_PROMPT}")
+        expect(binder).to have_received(:bind).with(hash_including("kind" => "play", "id" => "play/implementation-plan"))
+        expect(written.status).to eq("active")
+        expect(output.string).to eq("Started the plan for api: sent the draft request to pane %19.\n")
       end
 
       it "is already_working, typing and binding nothing, when the owner pane is working, and still sets the plan active" do

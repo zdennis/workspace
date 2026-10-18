@@ -14,6 +14,11 @@ module Workspace
       # The line `start` gives the agent after the play.
       CONTINUE_PROMPT = "Continue the plan."
 
+      # The line `start` gives the agent after the play when the plan has no tasks yet, and `start --plan`
+      # for a new plan: the agent writes the task list, then stops for the person to read it.
+      DRAFT_PROMPT = "The plan has no tasks yet. Draft them as the play's \"Draft the tasks\" section says, then end your turn. " \
+        "Do not start any task."
+
       # The agent kinds a task may be sent to, and `--spawn` may start: every {AgentProvider}.
       AGENT_KINDS = AgentProvider.all.map(&:key).freeze
 
@@ -56,11 +61,13 @@ module Workspace
       # launched with the play and {CONTINUE_PROMPT}; one with a session gets the same text typed into
       # its main agent pane, which is bound to the play. A pane that is working is left alone.
       # The pane the agent is in is recorded as `owner_pane` (the plan never reads `working` without one).
+      # A plan with no tasks gets {DRAFT_PROMPT} in place of {CONTINUE_PROMPT}, so the agent drafts the
+      # tasks; the outcome is then `drafting` in place of `launched` or `sent`.
       #
       # @param name [String] the workspace
       # @param launch [#call] given the workspace name, launches it with the play and prompt and returns
       #   `{ok:, reason:, message:, pane:}` (the CLI supplies it, since launching is its job)
-      # @return [Hash] the row: `outcome` `launched`, `sent`, `already_working`, or `failed` when the launch could not
+      # @return [Hash] the row: `outcome` `launched`, `sent`, `drafting` (the plan has no tasks), `already_working`, or `failed` when the launch could not
       #   send its prompt (`reason` and `message` say why); `pane` is the pane the agent is in, when known
       # @raise [Workspace::Error] `no_plan`, `plan_done`, `notes_dir_unwritable`, `plan_write_conflict`; with a session,
       #   `no_daemon`, `no_agent_pane`, `pane_busy` (the pane waits on a person), and the codes of {Workspace::Commands::Send#deliver}
@@ -247,12 +254,13 @@ module Workspace
       end
 
       def start_by_launch(name, file, plan, launch)
-        result = launch.call(name)
+        drafting = plan.tasks.empty?
+        result = drafting ? launch.call(name, DRAFT_PROMPT) : launch.call(name)
         return @access.row("failed", file, reason: result[:reason], message: result[:message]) unless result[:ok]
         note = record_owner(name, file, plan, result[:pane])
-        @output.puts "Started the plan for #{name}: launched it with the #{PLAY} play."
+        @output.puts "Started the plan for #{name}: launched it with the #{PLAY} play#{" to draft the tasks" if drafting}."
         @output.puts note if note
-        @access.row("launched", file, pane: result[:pane], message: note)
+        @access.row(drafting ? "drafting" : "launched", file, pane: result[:pane], message: note)
       end
 
       def start_in_pane(name, file, plan)
@@ -267,12 +275,13 @@ module Workspace
           raise Workspace::Error.new("Pane #{id} of '#{name}' is waiting for an answer, so nothing was typed. Answer it, then start the plan again.",
             code: "pane_busy", details: {"workspace" => name, "pane" => id})
         end
+        drafting = plan.tasks.empty?
         play = @library.pack(PLAY, cwd: nil).first
-        @sender.deliver(name: name, pane: id, body: @library.play_prompt(play, CONTINUE_PROMPT))
+        @sender.deliver(name: name, pane: id, body: @library.play_prompt(play, drafting ? DRAFT_PROMPT : CONTINUE_PROMPT))
         notes = [bind_play(name, id, play), record_owner(name, file, plan, id)].compact
-        @output.puts "Started the plan for #{name}: sent it to pane #{id}."
+        @output.puts "Started the plan for #{name}: sent #{drafting ? "the draft request" : "it"} to pane #{id}."
         notes.each { |note| @output.puts note }
-        @access.row("sent", file, pane: id, message: notes.empty? ? nil : notes.join(" "))
+        @access.row(drafting ? "drafting" : "sent", file, pane: id, message: notes.empty? ? nil : notes.join(" "))
       end
 
       def fetch_panes(name)

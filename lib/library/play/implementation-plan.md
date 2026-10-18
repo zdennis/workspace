@@ -26,6 +26,16 @@ Every task is one line at column 0 in `## Tasks`:
 - Group tasks under `### Phase name` headings if you want. Do not nest tasks.
 - A line may end with an owner comment naming the tmux pane working that task: `- [~] T3 Add the token store <!-- owner: %19 -->`. Keep the comment when you change the box. workspace writes it when it sends one task to a pane.
 
+## Draft the tasks
+
+When you are told the plan has no tasks yet, your only job is to write them:
+
+1. Read the goal: the plan's `title:`, `## Start here`, and any prompt you were given. Explore the code as far as you need to split the goal into tasks.
+2. Write one task line per task under `## Tasks`, each with a new id, in the order they should be done. Group them under `### Phase name` headings if that helps. Put anything longer than a line in `## Task details`.
+3. Fill `## Start here` with the goal and how a fresh conversation should pick the work up. Put questions you could not settle in `## Open questions`.
+4. Run `workspace plan status` and fix every warning it prints.
+5. End your turn. Do not start any task: the person reads the plan first and starts it with `workspace plan start`.
+
 ## Work the plan
 
 1. Take the first `[ ]` task whose dependencies are done and that has no owner comment, or names your pane, and change its box to `[~]` before you start. Skip a task another pane owns. Keep one task at `[~]` unless you run independent tasks in parallel. If you were sent one task (`Work on plan task T3 only`), do that task alone and end your turn when it is done or blocked.

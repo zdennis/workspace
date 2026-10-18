@@ -50,7 +50,7 @@ module Workspace
         "handoff_auto" => 2,
         "handoff_codex" => 1,
         "dev_queue" => 2,
-        "plan" => 4,
+        "plan" => 5,
         "ticket" => 2,
         "spine" => 1,
         "spine_set" => 1,

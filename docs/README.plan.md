@@ -38,6 +38,7 @@ Each verb changes one thing and is safe to repeat. A plan with no file is `no_pl
 
 - **`start`** sets `status: active` and then does the first of these that applies:
   - The workspace has no tmux session: it is launched like `launch --play implementation-plan --prompt "Continue the plan."`, so the agent is told the play and the line, the notes pack and the other automatic packs ride along, and the pane is bound to the play. Outcome `launched`, or a `failed` row with the launch's reason (`prompt_not_sent`, `session_not_started`) when the prompt could not be sent; the status stays `active`.
+  - A plan with no tasks (a new one from `plan init`, or `start --plan`) is not refused: the line is "The plan has no tasks yet. Draft them as the play's \"Draft the tasks\" section says, then end your turn. Do not start any task." in place of "Continue the plan.", in both of the cases above and below, and the outcome is `drafting` in place of `launched` or `sent`. The agent writes the task lines and `## Start here`, runs `plan status`, and stops for you to read the plan; run `plan start` again to have it work the tasks. A plan with tasks keeps the behavior described here.
   - The workspace has a session and its main agent pane (the plan's `owner_pane` when that is a live Claude Code or Codex pane, else the first such pane the agent daemon lists) is working: nothing is typed. Outcome `already_working`.
   - The pane is idle: the play and "Continue the plan." are typed into it and the pane is bound to the play (a pane bound to a workflow run or a review keeps that binding). Outcome `sent`. A pane that waits for an answer is not typed into (`pane_busy`), and a session whose agent daemon does not answer is `no_daemon`; with no Claude Code or Codex pane it is `no_agent_pane`.
 
@@ -200,7 +201,7 @@ The plan is also the handoff doc: with no `--handoff-doc`, [`handoff check` and 
 
 | Verb | `outcome` | Notes |
 |------|-----------|-------|
-| `start` | `launched`, `sent`, `already_working`, `failed` | `pane` is the pane id the agent is in (null when a launch did not say); `failed` carries `reason` and `message` and exits 1 |
+| `start` | `launched`, `sent`, `drafting` (the plan had no tasks), `already_working`, `failed` | `pane` is the pane id the agent is in (null when a launch did not say); `failed` carries `reason` and `message` and exits 1 |
 | `start --task` | `launched`, `sent`, `spawned`, `already_working`, `failed` | The result also has `task` (the id). `pane` is the pane the task went to; for `spawned`, and for a `failed` spawn, it is the new pane |
 | `pause` | `paused`, `unchanged` | `pane` is null. With `--interrupt`, the result also has `interrupts` (see [`pause`](#start-pause-and-delete)) |
 | `delete` | `deleted` | `message` is `Renamed to <path>.`; `pane` is null |
