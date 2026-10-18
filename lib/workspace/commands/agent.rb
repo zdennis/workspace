@@ -58,6 +58,8 @@ module Workspace
       #   its pane, and on a timer; nil leaves workflow runs alone
       # @param agent_restart_factory [#call] builds the {Workspace::AgentRestart}
       #   that runs one `restart_agent` message
+      # @param hook_event_log_factory [#call, nil] given the workspace name, builds the
+      #   {Workspace::HookEventLog} each forwarded hook event is written to; nil writes none
       # @param logger [Workspace::Logger] debug logger
       # @param output [IO] output stream for user-facing messages
       # @param error_output [IO] error output stream for errors
@@ -88,6 +90,7 @@ module Workspace
         workflow_nudger: nil,
         scan_slots: nil,
         agent_restart_factory: nil,
+        hook_event_log_factory: nil,
         logger: Workspace::Logger.new, output: $stdout, error_output: $stderr)
         @config = config
         @tmux = tmux
@@ -110,6 +113,7 @@ module Workspace
         @workflow_nudger = workflow_nudger
         @scan_slots = scan_slots
         @agent_restart_factory = agent_restart_factory || method(:build_agent_restart)
+        @hook_event_log_factory = hook_event_log_factory
         # Restart workers by pane id, so one pane is restarted once at a time.
         @restarts = {}
         # When the main agent's current turn began, by pane id, for the workflow nudger.
@@ -181,6 +185,7 @@ module Workspace
         @server = UNIXServer.new(socket_path)
         install_signal_handlers
 
+        @hook_event_log = @hook_event_log_factory&.call(name)
         @session_monitor = @session_monitor_factory.call(name)
         @session_monitor.start
 
@@ -343,6 +348,7 @@ module Workspace
         when "restart_agent" then handle_restart_agent(message, client)
         when "session_event"
           @session_monitor&.record(message)
+          @hook_event_log&.record(message)
           nudge_workflow(message) if @workflow_nudger && message["agent_id"].nil?
           reply_to(client, "ok" => true)
         when "sessions"

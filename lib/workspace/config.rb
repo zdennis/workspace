@@ -236,6 +236,14 @@ module Workspace
       File.join(state_dir, ".workflows", "archive")
     end
 
+    # Dotted, like {#task_dir}, so no workspace name can produce it. Each agent
+    # daemon appends its hook events to `<workspace>.jsonl` here.
+    #
+    # @return [String] path to the directory holding every daemon's hook event file
+    def hook_events_dir
+      File.join(state_dir, ".events")
+    end
+
     # @return [String] path to the JSON file binding tmux panes to a run, review or play
     def pane_bindings_path
       File.join(state_dir, "bindings.json")

@@ -2028,6 +2028,41 @@ RSpec.describe Workspace::Commands::Agent do
       end
     end
 
+    context "with a hook event log" do
+      let(:events_dir) { File.join(Dir.mktmpdir, ".events") }
+      let(:built_for) { [] }
+
+      subject(:agent) do
+        described_class.new(
+          config: config, tmux: tmux, work_coordinator_client: client,
+          pipeline_config: pipeline_config, pipeline_state: pipeline_state,
+          epoch_generator: -> { "wa-TESTEPOCH" }, signal_trapper: signal_trapper,
+          sentinel_poller_factory: sentinel_poller_factory, token_generator: token_generator,
+          clock: -> { now }, retry_backoff: 0, session_monitor_factory: ->(_name) { monitor },
+          hook_event_log_factory: ->(name) {
+            built_for << name
+            Workspace::HookEventLog.new(dir: events_dir, workspace: name, boot_id: "BOOT")
+          },
+          output: output, error_output: error_output
+        )
+      end
+
+      after { FileUtils.remove_entry(File.dirname(events_dir)) }
+
+      it "writes each forwarded event to the daemon's own file, after the monitor has it" do
+        run_agent do
+          send_event("tool_start", tool: "Bash", tool_use_id: "t1")
+          send_event("stop")
+
+          expect(recorded_events).to eq(%w[tool_start stop])
+        end
+
+        lines = File.readlines(File.join(events_dir, "myapp.jsonl")).map { |line| JSON.parse(line) }
+        expect(built_for).to eq(["myapp"])
+        expect(lines.map { |l| l.values_at("type", "workspace", "boot_id", "seq", "tool") }).to eq([["tool_started", "myapp", "BOOT", 1, "Bash"]])
+      end
+    end
+
     it "has the nudger look at the workspace's runs on a timer" do
       stub_const("#{described_class}::SOCKET_POLL_INTERVAL", 0.02)
       stub_const("#{described_class}::WORKFLOW_TICK_PASSES", 2)

@@ -145,6 +145,7 @@ require_relative "workspace/config_schema"
 require_relative "workspace/config_schema_docs"
 require_relative "workspace/config_layering"
 require_relative "workspace/event_log"
+require_relative "workspace/hook_event_log"
 require_relative "workspace/state"
 require_relative "workspace/git"
 require_relative "workspace/which"
@@ -567,6 +568,7 @@ module Workspace
       label_reader: TranscriptLabel.new,
       task_store: task_store,
       workflow_nudger: workflow_nudger,
+      hook_event_log_factory: ->(name) { HookEventLog.new(dir: config.hook_events_dir, workspace: name, boot_id: Commands::Agent.ulid, logger: logger) },
       logger: logger,
       output: output,
       error_output: error_output
