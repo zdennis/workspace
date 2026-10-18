@@ -202,15 +202,24 @@ module Workspace
       end
     end
 
-    # The payloads of the events of one type and project written since a time.
+    # Bytes from the end of the log {#recent} reads.
+    RECENT_TAIL = 256 * 1024
+
+    # The payloads of the events of one type and project written since a time, found in the
+    # last {RECENT_TAIL} bytes of the log (an event further back is not seen).
     #
     # @param type [String] event type
     # @param project [String] project name
     # @param since [Time] events stamped earlier than this are left out
     # @return [Array<Hash>] the `data` hashes, oldest first; empty when the log can't be read
     def recent(type:, project:, since:)
-      events.filter_map do |event|
-        next unless event["type"] == type && event["project"] == project && event["data"].is_a?(Hash)
+      tail_lines.filter_map do |line|
+        event = begin
+          JSON.parse(line)
+        rescue JSON::ParserError
+          next
+        end
+        next unless event.is_a?(Hash) && event["type"] == type && event["project"] == project && event["data"].is_a?(Hash)
         stamp = begin
           Time.iso8601(event["timestamp"].to_s)
         rescue ArgumentError
@@ -317,6 +326,21 @@ module Workspace
     # across a compaction.
     GONE_STATES = ["closed", "exited"].freeze
     private_constant :GONE_STATES
+
+    # The whole lines in the last {RECENT_TAIL} bytes; a partial first line is dropped.
+    def tail_lines
+      return [] unless File.exist?(@config.event_log_file)
+      File.open(@config.event_log_file, "rb") do |file|
+        offset = [file.size - RECENT_TAIL, 0].max
+        file.seek(offset)
+        lines = file.read.to_s.force_encoding(Encoding::UTF_8).lines
+        lines.shift if offset.positive?
+        lines.map(&:strip).reject(&:empty?)
+      end
+    rescue SystemCallError, IOError => e
+      warn_unreadable(e)
+      []
+    end
 
     # Reads every event, raising if the file can't be read.
     def read_events

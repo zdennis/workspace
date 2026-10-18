@@ -51,6 +51,19 @@ RSpec.describe Workspace::EventLog do
     end
   end
 
+  describe "#recent with a log larger than the tail" do
+    it "reads only the last lines, dropping the partial first one" do
+      line = ->(n, project) { JSON.generate({"timestamp" => "2026-10-17T10:05:00.000Z", "type" => "spine_changed", "project" => project, "data" => {"n" => n}}) + "\n" }
+      filler = line.call(0, "other") * 4_000
+      expect(filler.bytesize).to be > Workspace::EventLog::RECENT_TAIL
+      File.write(event_log_file, line.call(1, "a") + filler + line.call(2, "a"))
+
+      result = event_log.recent(type: "spine_changed", project: "a", since: Time.utc(2026, 1, 1))
+
+      expect(result).to eq([{"n" => 2}])
+    end
+  end
+
   describe "#events" do
     it "returns empty array when file does not exist" do
       expect(event_log.events).to eq([])
@@ -427,7 +440,7 @@ RSpec.describe Workspace::EventLog do
       allow(project_settings).to receive(:load_global).and_return({"event_log_compact_threshold" => "1kb"})
 
       el = described_class.new(config: config, project_settings: project_settings, error_output: output)
-      File.write(event_log_file, "x" * 2_000) # 2KB > 1KB threshold
+      File.write(event_log_file, "x" * 4_000) # 2KB > 1KB threshold
       el.warn_if_large
       expect(output.string).to include("event-log compact")
     end
