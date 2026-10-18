@@ -97,7 +97,7 @@ workspace <subcommand> [options]
 | kill | [README](docs/README.kill.md) | Kill a worktree project and remove its worktree |
 | launch | [README](docs/README.launch.md) | Launch tmuxinator projects in iTerm2 windows, or headless in plain tmux |
 | layout | [README](docs/README.layout.md) | Save/restore tmux pane layouts (auto-saved before resize) |
-| library | [README](docs/README.library.md) | Store named plays, prompts, agents and skills, globally or per project, beside the built-in packs (alias: `lib`) |
+| library | [README](docs/README.library.md) | Store named plays, prompts, agents, skills and spine templates, globally or per project, beside the built-in packs (alias: `lib`) |
 | list | [README](docs/README.list.md) | List active projects (`--all` for all available) |
 | list-projects | [README](docs/README.list-projects.md) | Alias for `list --all` |
 | lock | [README](docs/README.lock.md) | Acquire, release, inspect, or clear a shared repo-wide lock; print agent instructions |
@@ -124,7 +124,7 @@ workspace <subcommand> [options]
 | review | [README](docs/README.review.md) | Show a workspace's finished work for review, or list the workspaces that are ready |
 | snapshot | [README](docs/README.snapshot.md) | Print everything a UI polls (projects, panes, git, questions, locks, dev) as one JSON document |
 | sessions | [README](docs/README.sessions.md) | Show coding-agent sessions and sub-agents running in a project's panes |
-| spine | [README](docs/README.spine.md) | Read a workspace's plan spine (the stage files in `spine/` of its notes directory): `show` lists the stages with canonical statuses, a revision per file, roll-ups and warnings; `set` changes one stage's status (and optionally its sub-stages') in the stage file's frontmatter |
+| spine | [README](docs/README.spine.md) | Read a workspace's plan spine (the stage files in `spine/` of its notes directory): `show` lists the stages with canonical statuses, a revision per file, roll-ups and warnings; `init` creates the folder from a template; `set` changes one stage's status (and optionally its sub-stages') in the stage file's frontmatter |
 | start | [README](docs/README.start.md) | Create a git worktree and launch it (from JIRA key, PR/issue URL, or branch) |
 | status | [README](docs/README.status.md) | Show detailed state of tracked launcher sessions |
 | statusline | [README](docs/README.statusline.md) | Render Claude Code's status line (install as its statusLine command) |

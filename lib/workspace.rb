@@ -287,6 +287,7 @@ require_relative "workspace/commands/notes"
 require_relative "workspace/commands/plan"
 require_relative "workspace/commands/ticket"
 require_relative "workspace/commands/spine"
+require_relative "workspace/commands/spine_init"
 require_relative "workspace/commands/projects"
 require_relative "workspace/commands/review"
 require_relative "workspace/commands/restore"
@@ -381,6 +382,7 @@ module Workspace
     start_ref = StartRef.new(git: git, lineage: lineage)
     start_command = Commands::Start.new(git: git, project_config: project_config, project_settings: project_settings, launch_command: launch_command, lineage: lineage, hook_installer: hook_installer, task_store: task_store, event_log: event_log, library: library, library_installer: library_installer, notes_setup: notes_setup, instruction_composer: instruction_composer, start_ref: start_ref, main_agent: MainAgent.new(project_config: project_config), output: output, input: input)
     spine_command = Commands::Spine.new(notes: notes_command, writer: SpineWriter.new, event_log: event_log, lock_dir: config.spine_lock_dir, output: output)
+    spine_init_command = Commands::SpineInit.new(notes: notes_command, library: library, project_config: project_config, git: git, task_store: task_store, output: output)
     ticket_command = Commands::Ticket.new(git: git, project_config: project_config, start_ref: start_ref, source: TicketSource.new, output: output)
     send_command = Commands::Send.new(locator: pane_locator, tmux: tmux, output: output)
     focus_command = Commands::Focus.new(state: state, window_manager: window_manager, tmux: tmux, pane_locator: pane_locator, output: output)
@@ -648,6 +650,7 @@ module Workspace
       plan_command: plan_command,
       ticket_command: ticket_command,
       spine_command: spine_command,
+      spine_init_command: spine_init_command,
       pull_request_command: pull_request_command,
       rebase_command: rebase_command,
       push_command: push_command,

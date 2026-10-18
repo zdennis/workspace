@@ -74,6 +74,7 @@ module Workspace
     # @param plan_command [Workspace::Commands::Plan, nil] pre-built plan command
     # @param ticket_command [Workspace::Commands::Ticket, nil] pre-built ticket command
     # @param spine_command [Workspace::Commands::Spine, nil] pre-built spine command
+    # @param spine_init_command [Workspace::Commands::SpineInit, nil] pre-built spine init command
     # @param pull_request_command [Workspace::Commands::PullRequest, nil] pre-built pr command
     # @param rebase_command [Workspace::Commands::Rebase, nil] pre-built rebase command
     # @param push_command [Workspace::Commands::Push, nil] pre-built push command
@@ -109,7 +110,7 @@ module Workspace
     #   `list --liveness --json` and `status --json`; takes name => state entry
     # @param launch_mode [Workspace::LaunchMode, nil] decides whether launch/start
     #   run headless when no --[no-]headless flag is given; nil builds one
-    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, restart_agent_command: nil, agent_status_command: nil, send_command: nil, ensure_agent_command: nil, name_migration: nil, spine_command: nil, handoff_command: nil, notes_command: nil, notes_setup: nil, plan_command: nil, ticket_command: nil, pull_request_command: nil, rebase_command: nil, push_command: nil, projects_command: nil, capabilities_command: nil, daemon_command: nil, ui_command: nil, binding_command: nil, library_command: nil, library: nil, instructions_command: nil, instruction_composer: nil, workflow_command: nil, review_command: nil, restore_command: nil, snapshot_command: nil, events_command: nil, project_actions_command: nil, inbox_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil, liveness: nil, window_liveness: nil, env: ENV, editor_launcher: nil, interactive: nil, workspace_name: nil)
+    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, restart_agent_command: nil, agent_status_command: nil, send_command: nil, ensure_agent_command: nil, name_migration: nil, spine_command: nil, spine_init_command: nil, handoff_command: nil, notes_command: nil, notes_setup: nil, plan_command: nil, ticket_command: nil, pull_request_command: nil, rebase_command: nil, push_command: nil, projects_command: nil, capabilities_command: nil, daemon_command: nil, ui_command: nil, binding_command: nil, library_command: nil, library: nil, instructions_command: nil, instruction_composer: nil, workflow_command: nil, review_command: nil, restore_command: nil, snapshot_command: nil, events_command: nil, project_actions_command: nil, inbox_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil, liveness: nil, window_liveness: nil, env: ENV, editor_launcher: nil, interactive: nil, workspace_name: nil)
       @config = config
       @state = state
       @project_config = project_config
@@ -150,6 +151,7 @@ module Workspace
       @plan_command = plan_command
       @ticket_command = ticket_command
       @spine_command = spine_command
+      @spine_init_command = spine_init_command
       @pull_request_command = pull_request_command
       @rebase_command = rebase_command
       @push_command = push_command
@@ -543,7 +545,7 @@ module Workspace
           sessions        Show coding-agent sessions and sub-agents in a workspace
           snapshot        Print everything a UI polls (projects, panes, git, asks, locks, dev) as one JSON document
           step            For the agent on a workflow step: report on it (done), or see what it is (status)
-          spine           Read a workspace's plan spine (spine/ in its notes directory): show, set a stage's status
+          spine           Read a workspace's plan spine (spine/ in its notes directory): show, init, set a stage's status
           start           Create a worktree and launch it (from JIRA key, PR URL or #n, or branch)
           status          Show detailed state of tracked launcher sessions
           set-command     Set the shell command for a pane in a project config (--pane <N>)
@@ -4308,8 +4310,9 @@ module Workspace
         opts.separator "  update    replace an existing entry's content, or repoint its link"
         opts.separator "  remove    delete the entry or its link from the store; the source file is never touched"
         opts.separator ""
-        opts.on("--kind KIND", "agent, play, prompt or skill (add: required; list: a filter);",
-          "add --kind skill takes a directory holding SKILL.md") { |v| options[:kind] = v }
+        opts.on("--kind KIND", "agent, play, prompt, skill or spine (add: required; list: a filter);",
+          "add --kind skill takes a directory holding SKILL.md;",
+          "add --kind spine takes a folder of plan-spine stage files (a template for 'spine init')") { |v| options[:kind] = v }
         opts.on("--as NAME", "add: the entry name (lowercase letters, digits and hyphens)") { |v| options[:name] = v }
         opts.on("--link", "add, update: store a symlink to PATH instead of a copy") { options[:link] = true }
         opts.on("--force", "add: replace an entry that has different content") { options[:force] = true }
@@ -4325,6 +4328,7 @@ module Workspace
         opts.separator "  workspace library add --kind play --link ~/Notes/Agent\\ Orchestration\\ Playbook.md"
         opts.separator "  workspace library add kickoff.md --kind prompt --project"
         opts.separator "  workspace library list --kind play --json"
+        opts.separator "  workspace library add ~/Notes/spine-template --kind spine --as team --link"
         opts.separator "  workspace start feature/x --prompt \"$(workspace library show prompt/kickoff)\""
         opts.separator "  workspace library remove play/agent-orchestration-playbook --yes"
       end
@@ -4364,7 +4368,7 @@ module Workspace
       when "add"
         path = args.shift
         raise UsageError, "library add needs a PATH, or - for stdin." unless path
-        raise UsageError, "library add needs --kind play or --kind prompt." unless options[:kind]
+        raise UsageError, "library add needs --kind (one of #{Workspace::LibraryStore::KINDS.join(", ")})." unless options[:kind]
         raise UsageError, "Unexpected argument: #{args.first}. Run 'workspace library --help'." if args.any?
         path, body = (path == "-") ? [nil, @input.read] : [path, nil]
         library_action("library add", options) do
@@ -6672,6 +6676,8 @@ module Workspace
         opts.separator "such as verify or implement/api). It rewrites only the status, note, updated and updated_by"
         opts.separator "lines of the stage file and writes a spine_changed event. Writers of a workspace take turns."
         opts.separator ""
+        opts.separator "Other verb: init (create the folder from a template; run 'workspace spine init --help')."
+        opts.separator ""
         opts.on("--name NAME", "The workspace (default: the one detected from the current directory)") { |v| options[:name] = v }
         opts.on("--status VALUE", "set: not_started, in_progress, blocked, completed or skipped (or an alias such as done)") { |v| options[:status] = v }
         opts.on("--note TEXT", "set: one line of at most 300 characters. Without it the note is cleared when the status changes, kept when not") { |v| options[:note] = v }
@@ -6691,7 +6697,52 @@ module Workspace
       end
     end
 
+    def spine_init_parser(options)
+      OptionParser.new do |opts|
+        opts.banner = "Usage: workspace spine init [WORKSPACE] [--name WORKSPACE] [--template NAME] [--dry-run] [--json]"
+        opts.separator ""
+        opts.separator "Create the spine/ folder in a workspace's notes directory from a spine template (a library"
+        opts.separator "entry of kind spine; the built-in 'default' has the stages research to ship, and a main"
+        opts.separator "checkout gets no ship stage). {{WORKSPACE}}, {{BRANCH}} and {{TITLE}} in the template are"
+        opts.separator "filled in. Nothing is overwritten: when spine/ exists the answer is 'exists' and nothing is"
+        opts.separator "written. The notes directory is made if needed, as 'notes dir --create' does."
+        opts.separator ""
+        opts.on("--name NAME", "The workspace (default: the one detected from the current directory)") { |v| options[:name] = v }
+        opts.on("--template NAME", "The spine template (default: default). See: workspace library list --kind spine") { |v| options[:template] = v }
+        opts.on("--dry-run", "Say what would be written and write nothing") { options[:dry_run] = true }
+        opts.on("--json", "Print one JSON document (see docs/README.spine.md)") { options[:json] = true }
+        opts.on("-h", "--help", "Show this help") { options[:help] = true }
+        opts.separator ""
+        opts.separator "Examples:"
+        opts.separator "  workspace spine init --dry-run    # preview the files for the workspace you are in"
+        opts.separator "  workspace spine init api.worktree-login --template=team --json"
+      end
+    end
+
+    # `spine init`: kept apart from the other spine verbs; `args` still holds the verb.
+    def cmd_spine_init(args)
+      options = {json: false, name: nil, template: nil, dry_run: false}
+      parser = spine_init_parser(options)
+      args.shift
+      parser.parse!(args)
+      return @output.puts(parser.help) if options[:help]
+
+      positional = settle_name(args.shift)
+      raise UsageError, "Unexpected argument: #{args.first}. Run 'workspace spine init --help'." if args.any?
+      if positional && options[:name] && positional != options[:name]
+        raise UsageError, "Give the workspace once: '#{positional}' and --name #{options[:name]} differ."
+      end
+      raise Error, "spine init is not available: no spine init command was wired" unless @spine_init_command
+
+      name = options[:name] || positional || @project_detector.detect(@working_dir)
+      raise Error.new("No workspace found for #{@working_dir}. Run from inside a workspace or pass --name.", code: "not_in_workspace", details: {"path" => @working_dir}) unless name
+
+      @spine_init_command.call(name: name, template: options[:template], dry_run: options[:dry_run], json: options[:json])
+    end
+
     def cmd_spine(args)
+      return cmd_spine_init(args) if args.first == "init"
+
       options = {json: false, name: nil}
       parser = spine_parser(options)
       parser.parse!(args)

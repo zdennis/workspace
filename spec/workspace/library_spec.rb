@@ -368,4 +368,55 @@ RSpec.describe Workspace::Library do
       }
     end
   end
+
+  describe "#spine_template" do
+    let(:global) { library.global_store }
+    let(:project) { library.project_store("app") }
+
+    before do
+      resolve_cwd_to("app")
+      FileUtils.mkdir_p(File.join(@dir, "builtin/spine/default"))
+      File.write(File.join(@dir, "builtin/spine/default/10-research.md"), "b\n")
+    end
+
+    def folder(store, name)
+      FileUtils.mkdir_p(File.join(store.dir, "spine", name))
+      File.write(File.join(store.dir, "spine", name, "10-a.md"), "x\n")
+    end
+
+    it "finds the built-in default" do
+      expect(library.spine_template("default", cwd: "/work/app")).to include("ref" => "spine/default", "scope" => "builtin", "files" => ["10-research.md"])
+    end
+
+    it "layers project over global over built-in" do
+      folder(global, "default")
+      folder(global, "team")
+      expect(library.spine_template("default", cwd: "/work/app")["scope"]).to eq("global")
+
+      folder(project, "team")
+      expect(library.spine_template("team", cwd: "/work/app")["scope"]).to eq("project")
+    end
+
+    it "does not see a project template from outside the project" do
+      folder(project, "mine")
+      expect { library.spine_template("mine", cwd: nil) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("unknown_template") }
+    end
+
+    it "answers unknown_template with the scopes searched, also for a bad name, and ignores other kinds" do
+      global.write("play", "other", "# P\n")
+
+      expect { library.spine_template("other", cwd: "/work/app") }.to raise_error(Workspace::Error) { |e|
+        expect(e.code).to eq("unknown_template")
+        expect(e.details).to eq("template" => "other", "scopes" => ["project:app", "global", "builtin"])
+      }
+      expect { library.spine_template("Bad Name", cwd: "/work/app") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("unknown_template") }
+    end
+
+    it "reports an unreadable link as library_source_missing" do
+      FileUtils.mkdir_p(File.join(global.dir, "spine"))
+      File.symlink(File.join(@dir, "gone"), global.path_for("spine", "dead"))
+
+      expect { library.spine_template("dead", cwd: "/work/app") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("library_source_missing") }
+    end
+  end
 end

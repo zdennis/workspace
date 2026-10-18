@@ -583,9 +583,10 @@ RSpec.describe Workspace::InstructionComposer, "with the packs workspace ships" 
   it "ships exactly the nine packs, as plays, each readable with a description" do
     shipped = Workspace::LibraryStore.new(dir: builtin_dir, scope: "builtin")
 
-    expect(Dir.children(builtin_dir)).to eq(["play"])
-    expect(shipped.entries.map { |e| e["ref"] }).to eq(%w[play/binding play/commits play/dev play/handoff play/implementation-plan play/notes play/orchestrator play/research play/review])
-    expect(shipped.entries).to all(include("readable" => true, "link" => nil, "description" => a_string_matching(/\A\S.{10,}/)))
+    expect(Dir.children(builtin_dir).sort).to eq(%w[play spine])
+    plays = shipped.entries(kind: "play")
+    expect(plays.map { |e| e["ref"] }).to eq(%w[play/binding play/commits play/dev play/handoff play/implementation-plan play/notes play/orchestrator play/research play/review])
+    expect(plays).to all(include("readable" => true, "link" => nil, "description" => a_string_matching(/\A\S.{10,}/)))
   end
 
   it "composes the research pack by name: findings note in the notes directory, no repository changes" do

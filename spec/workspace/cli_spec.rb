@@ -104,6 +104,7 @@ RSpec.describe Workspace::CLI do
       plan_command: overrides[:plan_command],
       ticket_command: overrides[:ticket_command],
       spine_command: overrides[:spine_command],
+      spine_init_command: overrides[:spine_init_command],
       pull_request_command: overrides[:pull_request_command],
       rebase_command: overrides[:rebase_command],
       push_command: overrides[:push_command],
@@ -655,6 +656,7 @@ RSpec.describe Workspace::CLI do
       cli.run(["list", "--liveness", "--json"])
       expect(JSON.parse(output.string)).to eq([{"name" => "gone", "alive" => false, "window_alive" => false}, {"name" => "up", "alive" => true, "window_alive" => true}])
       output.truncate(0)
+      output.rewind
       output.rewind
       cli.run(["list", "--liveness"])
       expect(output.string).to eq("gone  [dead]\nup    [alive]\n")
@@ -4550,6 +4552,7 @@ RSpec.describe Workspace::CLI do
         expect(daemon_command.calls).to eq([])
 
         output.truncate(0)
+        output.rewind
         cli.run(["help"])
         expect(output.string).to match(/^\s+agentd\s.*agentd restart/)
 
@@ -4884,6 +4887,7 @@ RSpec.describe Workspace::CLI do
         "entry" => include("ref" => "play/kickoff"))
 
       output.truncate(0)
+      output.rewind
       output.rewind
       cli.run(["library", "add", "x.md", "--kind", "play", "--json", "--dry-run"])
       expect(JSON.parse(output.string)).to include("status" => "dry_run")
@@ -5464,6 +5468,7 @@ RSpec.describe Workspace::CLI do
       [["workflow", "approve", "wr_1", "--note", cut], ["workflow", "reject", "wr_1", "--note", cut], ["workflow", "resume", "wr_1", "--note", cut],
         ["workflow", "run", "rpiv", "--note", cut], ["workflow", "run", "rpiv", "--input", "task=#{cut}"]].each do |argv|
         output.truncate(0)
+        output.rewind
         output.rewind
         expect { cli.run(argv + ["--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
 
@@ -6146,6 +6151,55 @@ RSpec.describe Workspace::CLI do
     end
   end
 
+  describe "#run with spine init" do
+    let(:spine_init_command) { instance_double(Workspace::Commands::SpineInit, call: nil) }
+    let(:detector) { instance_double(Workspace::ProjectDetector, detect: "detected-ws") }
+    let(:built) { build_test_cli(spine_init_command: spine_init_command, project_detector: detector, working_dir: "/some/dir") }
+    let(:cli) { built[0] }
+    let(:output) { built[1] }
+
+    it "inits the workspace detected from the working directory with the defaults" do
+      cli.run(["spine", "init"])
+
+      expect(spine_init_command).to have_received(:call).with(name: "detected-ws", template: nil, dry_run: false, json: false)
+    end
+
+    it "takes the workspace, --template and --dry-run in either form" do
+      cli.run(["spine", "init", "api", "--template", "team", "--dry-run", "--json"])
+      cli.run(["spine", "init", "--name=web", "--template=docs", "--json"])
+
+      expect(spine_init_command).to have_received(:call).with(name: "api", template: "team", dry_run: true, json: true)
+      expect(spine_init_command).to have_received(:call).with(name: "web", template: "docs", dry_run: false, json: true)
+    end
+
+    it "fails with not_in_workspace outside a workspace, and refuses two different names" do
+      allow(detector).to receive(:detect).and_return(nil)
+      expect { cli.run(["spine", "init", "--json"]) }.to raise_error(FakeSystemExit)
+      expect(JSON.parse(output.string)).to include("ok" => false, "code" => "not_in_workspace")
+
+      output.truncate(0)
+      output.rewind
+      expect { cli.run(["spine", "init", "a", "--name", "b", "--json"]) }.to raise_error(FakeSystemExit)
+      expect(JSON.parse(output.string)).to include("ok" => false, "code" => "usage")
+      expect(spine_init_command).not_to have_received(:call)
+    end
+
+    it "prints a refusal from the command as the envelope" do
+      allow(spine_init_command).to receive(:call).and_raise(Workspace::Error.new("No template.", code: "unknown_template", details: {"template" => "x"}))
+
+      expect { cli.run(["spine", "init", "api", "--template", "x", "--json"]) }.to raise_error(FakeSystemExit)
+      expect(JSON.parse(output.string)).to include("ok" => false, "code" => "unknown_template", "details" => {"template" => "x"})
+    end
+
+    it "shows its own help and rejects extra arguments" do
+      cli.run(["spine", "init", "--help"])
+      expect(output.string).to include("workspace spine init").and include("--template").and include("--dry-run")
+
+      expect { cli.run(["spine", "init", "a", "b", "--json"]) }.to raise_error(FakeSystemExit)
+      expect(spine_init_command).not_to have_received(:call)
+    end
+  end
+
   describe "#run with rebase and push" do
     let(:rebase_command) { instance_double(Workspace::Commands::Rebase, call: nil) }
     let(:push_command) { instance_double(Workspace::Commands::Push, call: nil) }
@@ -6396,9 +6450,11 @@ RSpec.describe Workspace::CLI do
       expect(error_output.string).to include("Unknown ui subcommand: bogus")
       expect(error_output.string).not_to include("Missing subcommand")
       error_output.truncate(0)
+      output.rewind
       expect { cli.run(["ui"]) }.to raise_error(FakeSystemExit)
       expect(error_output.string).to include("Missing subcommand: open")
       error_output.truncate(0)
+      output.rewind
       allow(detector).to receive(:detect).and_return(nil)
       expect { cli.run(["ui", "open", "task"]) }.to raise_error(FakeSystemExit)
       expect(error_output.string).to include("task needs a workspace: name one, pass --name")
@@ -6414,11 +6470,13 @@ RSpec.describe Workspace::CLI do
       [["ui", "bogus", "--json"], ["ui", "open", "--json"], ["ui", "--json"]].each do |argv|
         output.truncate(0)
         output.rewind
+        output.rewind
         expect { cli.run(argv) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }, argv.inspect
         expect(JSON.parse(output.string)).to include("ok" => false, "code" => "usage"), argv.inspect
       end
       allow(detector).to receive(:detect).and_return(nil)
       output.truncate(0)
+      output.rewind
       output.rewind
       expect { cli.run(["ui", "open", "task", "--json"]) }.to raise_error(FakeSystemExit)
       expect(JSON.parse(output.string)).to include("code" => "usage", "error" => a_string_including("pass --name"))
@@ -6609,6 +6667,7 @@ RSpec.describe Workspace::CLI do
       expect { cli.run(["daemon", "log", "app", "--lines", "abc"]) }.to raise_error(FakeSystemExit)
       expect(error_output.string).to include("invalid argument: --lines abc")
       output.truncate(0)
+      output.rewind
       expect { cli.run(["daemon", "log", "app", "--lines", "abc", "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
 
       expect(JSON.parse(output.string)).to include("ok" => false, "code" => "usage")
@@ -6620,6 +6679,7 @@ RSpec.describe Workspace::CLI do
       expect { cli.run(["daemon", "log", "app", "--lines", "0"]) }.to raise_error(FakeSystemExit)
       expect(error_output.string).to include("--lines must be a whole number from 1 to 10000")
       output.truncate(0)
+      output.rewind
       expect { cli.run(["daemon", "log", "app", "--lines", "10001", "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
 
       expect(JSON.parse(output.string)).to include("ok" => false, "code" => "usage")
@@ -6630,6 +6690,7 @@ RSpec.describe Workspace::CLI do
 
       %w[status log].each do |sub|
         output.truncate(0)
+        output.rewind
         output.rewind
         expect { cli.run(["daemon", sub, "nope", "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
 
@@ -6698,6 +6759,7 @@ RSpec.describe Workspace::CLI do
       expect { cli.run(["review", "a", "b"]) }.to raise_error(FakeSystemExit)
       expect(error_output.string).to include("Unexpected argument: b")
       output.truncate(0)
+      output.rewind
       expect { cli.run(["review", "a", "b", "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
 
       expect(JSON.parse(output.string)).to include("ok" => false, "code" => "usage")

@@ -295,6 +295,7 @@ RSpec.describe Workspace::Commands::Library do
       command.add(kind: "prompt", path: source("fix.md", "fix it\n"), cwd: cwd)
       output.truncate(0)
       output.rewind
+      output.rewind
     end
 
     it "lists every visible entry as a table, hidden ones marked" do
@@ -343,6 +344,7 @@ RSpec.describe Workspace::Commands::Library do
 
       output.truncate(0)
       output.rewind
+      output.rewind
       command.list(scope: "builtin", json: true, cwd: cwd)
       expect(JSON.parse(output.string)["entries"].map { |e| e.slice("ref", "scope", "project", "effective") }).to eq([
         {"ref" => "play/kickoff", "scope" => "builtin", "project" => nil, "effective" => true},
@@ -351,11 +353,13 @@ RSpec.describe Workspace::Commands::Library do
 
       output.truncate(0)
       output.rewind
+      output.rewind
       command.show("kickoff", scope: "builtin", cwd: cwd)
       command.show("play/orchestrator", cwd: cwd)
       expect(output.string).to eq("Built-in kickoff.\n---\ndescription: Delegate to sub-agents\n---\nDelegate.\n")
 
       output.truncate(0)
+      output.rewind
       output.rewind
       command.info("orchestrator", json: true, cwd: cwd)
       expect(JSON.parse(output.string)["entry"]).to include("scope" => "builtin", "path" => library.builtin_store.path_for("play", "orchestrator"))
@@ -381,6 +385,7 @@ RSpec.describe Workspace::Commands::Library do
       expect(output.string).to eq("# Project kickoff\n")
 
       output.truncate(0)
+      output.rewind
       output.rewind
       command.show("play/kickoff", scope: "global", json: true, cwd: cwd)
       doc = JSON.parse(output.string)
@@ -452,6 +457,75 @@ RSpec.describe Workspace::Commands::Library do
       expect { command.remove("play/missing", yes: true, cwd: cwd) }.to raise_error(Workspace::Error)
 
       expect(event_log.events).to be_empty
+    end
+  end
+
+  describe "spine templates" do
+    def template_dir(name = "team-template", files: {"10-research.md" => "r\n", "README.md" => "---\ndescription: Team\n---\n"})
+      File.join(@dir, name).tap do |dir|
+        files.each do |rel, text|
+          FileUtils.mkdir_p(File.dirname(File.join(dir, rel)))
+          File.write(File.join(dir, rel), text)
+        end
+      end
+    end
+    let(:store_path) { File.join(@dir, "library/global/spine/team") }
+
+    it "copies a folder of stage files, named with --as, and lists it with description and files" do
+      result = command.add(kind: "spine", path: template_dir, name: "team", cwd: cwd)
+
+      expect(result.outcome).to eq("added")
+      expect(File.read(File.join(store_path, "10-research.md"))).to eq("r\n")
+
+      output.truncate(0)
+      output.rewind
+      command.list(kind: "spine", cwd: cwd, json: true)
+      entry = JSON.parse(output.string)["entries"].first
+      expect(entry).to include("ref" => "spine/team", "scope" => "global", "description" => "Team", "files" => %w[10-research.md README.md])
+    end
+
+    it "links a folder and reads files through the link" do
+      source = template_dir
+      command.add(kind: "spine", path: source, name: "team", link: true, cwd: cwd)
+
+      expect(File.symlink?(store_path)).to be(true)
+      expect(File.readlink(store_path)).to eq(source)
+    end
+
+    it "stores into a project with --project" do
+      command.add(kind: "spine", path: template_dir, name: "team", scope: "project", project: "app", cwd: cwd)
+
+      expect(File.directory?(File.join(@dir, "library/projects/app/spine/team"))).to be(true)
+    end
+
+    it "is unchanged when added again with the same files, and needs --force for different ones" do
+      command.add(kind: "spine", path: template_dir, name: "team", cwd: cwd)
+      expect(command.add(kind: "spine", path: template_dir, name: "team", cwd: cwd).outcome).to eq("unchanged")
+
+      other = template_dir("other", files: {"10-x.md" => "x\n"})
+      expect { command.add(kind: "spine", path: other, name: "team", cwd: cwd) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("library_entry_exists") }
+      expect(command.add(kind: "spine", path: other, name: "team", force: true, cwd: cwd).outcome).to eq("replaced")
+    end
+
+    it "refuses a file, a folder with no markdown, a missing path and stdin" do
+      file = source("one.md", "x")
+      expect { command.add(kind: "spine", path: file, name: "a", cwd: cwd) }.to raise_error(Workspace::UsageError, /folder of stage files/)
+      expect { command.add(kind: "spine", path: template_dir("empty", files: {"notes.txt" => "n"}), name: "b", cwd: cwd) }
+        .to raise_error(Workspace::Error) { |e| expect(e.code).to eq("library_source_missing") }
+      expect { command.add(kind: "spine", path: File.join(@dir, "none"), name: "c", cwd: cwd) }
+        .to raise_error(Workspace::Error) { |e| expect(e.code).to eq("library_source_missing") }
+      expect { command.add(kind: "spine", body: "x", name: "d", cwd: cwd) }.to raise_error(Workspace::UsageError, /folder of stage files/)
+      expect(Dir.exist?(File.join(@dir, "library/global/spine"))).to be(false)
+    end
+
+    it "shows the README.md of a template" do
+      command.add(kind: "spine", path: template_dir, name: "team", cwd: cwd)
+      output.truncate(0)
+      output.rewind
+
+      command.show("spine/team", cwd: cwd)
+
+      expect(output.string).to eq("---\ndescription: Team\n---\n")
     end
   end
 end

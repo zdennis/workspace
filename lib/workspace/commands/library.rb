@@ -205,9 +205,15 @@ module Workspace
       # What to store: `{target:}` to link, `{tree:}` to copy a skill's
       # directory, or `{body:}` to write a file (a skill's `SKILL.md`).
       def source_for(kind, source, body, link, ref)
+        raise UsageError, "A spine template is a folder of stage files: give its path, not stdin (-)." if kind == "spine" && body
         return {body: body} if body && !link
         raise UsageError, "--link needs a file path, not stdin (-)." unless source
-        if (body_file = Workspace::LibraryStore::DIRECTORY_KINDS[kind])
+        if Workspace::LibraryStore::OPTIONAL_BODY.include?(kind)
+          raise Errno::ENOENT, source unless File.exist?(source)
+          raise UsageError, "#{source} is a file, and a #{kind} is a folder of stage files." unless File.directory?(source)
+          raise Errno::ENOENT, "#{source}/*.md" if Dir.glob("**/*.md", base: File.realpath(source)).empty?
+          link ? {target: source} : {tree: source}
+        elsif (body_file = Workspace::LibraryStore::DIRECTORY_KINDS[kind])
           raise Errno::ENOENT, source unless File.exist?(source)
           raise UsageError, "#{source} is a file, and a #{kind} is a directory holding #{body_file}." unless File.directory?(source)
           inside = File.join(source, body_file)

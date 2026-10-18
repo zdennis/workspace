@@ -69,6 +69,38 @@ A refusal is the standard error document. With `--recursive` the run stops at th
 
 `spine_set` in [`capabilities`](README.capabilities.md) is `1` when this verb exists.
 
+## spine init
+
+```sh
+workspace spine init [WORKSPACE] [--name WORKSPACE] [--template NAME] [--dry-run] [--json]
+```
+
+Creates the `spine/` folder in the workspace's notes directory from a template: a library entry of kind `spine`, a folder of stage files (see [`library`](README.library.md)). Templates layer like plays: a project's entry hides a global one of the same name, which hides the built-in `default`. A linked template is read through its link when `init` runs.
+
+| Option | Description |
+|--------|-------------|
+| `WORKSPACE`, `--name WORKSPACE` | As for `show` |
+| `--template NAME` | The template. Default: `default` |
+| `--dry-run` | Say what would be written and write nothing, not even the notes directory |
+| `--json` | Print one JSON document |
+
+The built-in `default` has `10-research.md`, `20-plan.md`, `30-implement.md`, `40-verify.md`, `50-review.md`, `60-ship.md`, `goal.md` and `README.md`. Every stage has `spine: 1`, `title`, `description`, `kind`, `status: not_started`, `depends_on`, `gates` (Research `checklist`; Plan `plan`, `checklist`; Implement `plan`; Verify `checklist`, `ci`; Review `review`; Ship `pushed`, `pr`, `ci`, `merged`), a short brief and a `## Done when` list. A main checkout (a workspace name without a `.worktree-` part) gets any template without its Ship stage (`NN-ship.md` or `NN-ship/`).
+
+Placeholders in every UTF-8 file are filled: `{{WORKSPACE}}` is the workspace name, `{{BRANCH}}` the checkout's branch (empty on a detached HEAD), `{{TITLE}}` the workspace's task title, else the branch, else the name, folded to one line. Other text is copied as it is. Links inside a template and names starting with a dot are not copied.
+
+`init` never overwrites. When `spine/` exists (even an empty folder or a file), the outcome is `exists` and nothing is written; a `spine` that is a link is refused with `spine_unwritable`. The notes directory is made when needed, as `notes dir --create` does. The files are written into a temporary folder beside `spine/` and renamed into place, so a reader sees all of the spine or none.
+
+```json
+{ "schema_version": 1, "ok": true, "workspace": "fix-oauth-refresh", "outcome": "created",
+  "template": {"name": "default", "scope": "builtin"},
+  "dir": "/src/api/.worktrees/fix-oauth-refresh/tmp/workspace-notes/spine",
+  "files": ["10-research.md", "20-plan.md", "30-implement.md", "40-verify.md", "50-review.md", "60-ship.md", "README.md", "goal.md"] }
+```
+
+`outcome` is `created`, `exists` (`files` is empty) or `would_create` (`--dry-run`; `files` is what would be written). `template.scope` is `builtin`, `global` or `project`. Errors: `unknown_workspace`, `unknown_template`, `notes_dir_unresolved`, `config_parse`, `spine_unwritable` (below).
+
+`spine_init` in [`capabilities`](README.capabilities.md) is `1` when this command exists.
+
 ## The spine folder
 
 The folder is `spine/` in the workspace's notes directory (see [`notes`](README.notes.md)), found the way `notes dir` finds it. The name is fixed.
@@ -188,3 +220,5 @@ A link is never followed. A linked `spine`, stage file, `goal.md` or stage folde
 | `not_in_workspace` | No workspace given and none detected from the current directory |
 | `notes_dir_unresolved` | The notes directory can't be worked out (see [`notes`](README.notes.md)) |
 | `usage` | A missing or unknown subcommand, an extra argument, or two different workspace names (`show`); see above for `set` |
+| `unknown_template` | `spine init`: no `spine` library entry has that name (`details.template`, `details.scopes`) |
+| `spine_unwritable` | `spine init`: `spine/` is a link, or the notes directory or a file could not be written (`details.path`); for `spine set` see above |

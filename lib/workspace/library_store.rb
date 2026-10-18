@@ -10,11 +10,16 @@ module Workspace
   class LibraryStore
     # The kinds an entry can have. An agent is a Claude Code subagent file; a
     # play is a document an agent reads and follows; a prompt is short text
-    # sent as typed; a skill is a directory holding `SKILL.md`.
-    KINDS = %w[agent play prompt skill].freeze
+    # sent as typed; a skill is a directory holding `SKILL.md`; a spine is a
+    # template directory of plan-spine stage files.
+    KINDS = %w[agent play prompt skill spine].freeze
 
     # Kinds stored as a directory, and the file inside it that holds the body.
-    DIRECTORY_KINDS = {"skill" => "SKILL.md"}.freeze
+    DIRECTORY_KINDS = {"skill" => "SKILL.md", "spine" => "README.md"}.freeze
+
+    # Directory kinds whose body file may be missing: a spine template needs no
+    # `README.md`, which only describes it.
+    OPTIONAL_BODY = %w[spine].freeze
 
     # Entry names: lowercase letters, digits and hyphens.
     NAME = /\A[a-z0-9]+(-[a-z0-9]+)*\z/
@@ -185,19 +190,34 @@ module Workspace
       path = path_for(kind, name)
       link = File.symlink?(path) ? File.readlink(path) : nil
       body = body_path(kind, name)
-      readable = File.file?(body) && File.readable?(body)
+      has_body = File.file?(body) && File.readable?(body)
+      readable = OPTIONAL_BODY.include?(kind) ? File.directory?(path) && File.readable?(path) : has_body
       stat = begin
         File.stat(path)
       rescue SystemCallError
         File.lstat(path)
       end
-      {
+      result = {
         "kind" => kind, "name" => name, "ref" => "#{kind}/#{name}",
         "scope" => @scope, "project" => @project,
         "path" => path, "link" => link, "readable" => readable,
-        "description" => readable ? description(File.read(body)) : nil,
+        "description" => has_body ? description(File.read(body)) : nil,
         "updated_at" => stat.mtime.utc.iso8601
       }
+      result["files"] = readable ? template_files(path) : [] if kind == "spine"
+      result
+    end
+
+    # The regular files of a template directory by relative path, sorted; a link
+    # inside it and a name starting with a dot are left out.
+    def template_files(path)
+      root = File.realpath(path)
+      Dir.glob("**/*", base: root).sort.select do |rel|
+        full = File.join(root, rel)
+        File.file?(full) && !File.symlink?(full)
+      end
+    rescue SystemCallError
+      []
     end
 
     # The `description:` frontmatter key when the file has one, else its first heading.

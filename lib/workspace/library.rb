@@ -169,6 +169,30 @@ module Workspace
       entry.slice("ref", "kind", "name", "scope", "path")
     end
 
+    # The spine template `spine init` copies, looked up from `cwd` (its
+    # project, then global, then the built-in `default`) and checked readable.
+    #
+    # @param name [String] a template name
+    # @param cwd [String] a workspace's checkout, which names its project
+    # @return [Hash] "ref", "name", "scope", "path" (the template's folder) and "files"
+    # @raise [Workspace::Error] code `unknown_template`, or `library_source_missing` when it can't be read
+    def spine_template(name, cwd:)
+      stores = stores(cwd: expand(cwd))
+      unless name.to_s.match?(LibraryStore::NAME)
+        raise Error.new("'#{name.to_s[0, 60]}' is not a spine template name: lowercase letters, digits and hyphens.",
+          code: "unknown_template", details: {"template" => name.to_s[0, 60]})
+      end
+      entry = begin
+        resolve("spine/#{name}", stores)
+      rescue Error => e
+        raise unless e.code == "unknown_library_entry"
+        raise Error.new("No spine template '#{name}'. List them with: workspace library list --kind spine",
+          code: "unknown_template", details: {"template" => name, "scopes" => e.details["scopes"]})
+      end
+      raise source_missing(entry) unless entry["readable"]
+      entry.slice("ref", "name", "scope", "path", "files")
+    end
+
     # The text sent to the agent when it starts: one line pointing at the
     # play's file, so the agent can read it again after `/clear`, then the
     # composed packs, then any prompt text, each part separated by a blank line.

@@ -1,6 +1,6 @@
 # workspace library
 
-Store named plays, prompts, agents and skills, globally or for one project, and read them back by name. A play is a document an agent reads and follows; a prompt is short text sent as typed; an agent is a Claude Code subagent file; a skill is a directory holding `SKILL.md`. `start --agent` and `--skill` copy agents and skills into a new worktree. `lib` is an alias for `library`, and `workspace library` alone lists.
+Store named plays, prompts, agents, skills and spine templates, globally or for one project, and read them back by name. A play is a document an agent reads and follows; a prompt is short text sent as typed; an agent is a Claude Code subagent file; a skill is a directory holding `SKILL.md`; a spine template is a folder of plan-spine stage files that [`spine init`](README.spine.md#spine-init) copies into a workspace. `start --agent` and `--skill` copy agents and skills into a new worktree. `lib` is an alias for `library`, and `workspace library` alone lists.
 
 ## Usage
 
@@ -50,6 +50,8 @@ The description is the `description:` frontmatter key if the file has one, else 
 | Built-in (read-only) | `--builtin` | `lib/library/<kind>/<name>.md` inside workspace |
 
 A skill is stored as a directory, `skill/<name>/`, holding `SKILL.md` and any other files it came with. `add --kind skill PATH` takes a directory with a `SKILL.md` in it (a file is a usage error) and copies the whole tree, or with `--link` links the directory. `add - --kind skill --as NAME` stores stdin as the `SKILL.md` of a new directory. A skill entry's `path` is the directory, `show` prints its `SKILL.md`, and `remove` deletes the directory, or only the link. Two copies of a skill hold the same content when they have the same files with the same bytes.
+
+A spine template is stored as a directory, `spine/<name>/`, like a skill, but needs no particular file: `add --kind spine FOLDER [--as NAME] [--project] [--link]` takes a folder with at least one `.md` file in it (a file is a usage error; stdin is refused) and copies the whole tree, or with `--link` links the folder, which `spine init` then reads through the link when it runs. The built-in `default` ships in `lib/library/spine/default/`. A template's optional `README.md` gives its `description` (the frontmatter key, else the first heading). `list --kind spine --json` entries carry `files`, the template's regular files by relative path (links inside it and dot files are left out). `show` prints the template's `README.md`. `start --agent`/`--skill` and the plays never see spine entries, and a project template hides a global one of the same name, which hides the built-in.
 
 The store is a directory of files with no index: `add` copies the file in, or `add --link` makes a symlink, and `info` reports which. Link a note in Obsidian or iCloud and edits to it take effect on the next read; an evicted or deleted target is reported as unreadable, and `show` fails with `library_source_missing`.
 

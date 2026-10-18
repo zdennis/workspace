@@ -33,6 +33,7 @@ module Workspace
       "editor_failed" => "config edit: $VISUAL or $EDITOR is not a valid command, or the editor could not be run. details.path.",
       "notes_dir_unresolved" => "The notes directory can't be worked out: the project's rule uses {branch} and the checkout is on no branch.",
       "notes_dir_unwritable" => "notes dir --create couldn't make the notes directory or list it in info/exclude, or a plan verb couldn't write or rename the plan file.",
+      "unknown_template" => "spine init was given a template name no spine library entry has. details.template, details.scopes.",
       "no_plan" => "The workspace has no IMPLEMENTATION_PLAN.md in its notes directory.",
       "plan_exists" => "plan init would replace a plan that is already there; pass --force.",
       "plan_done" => "plan start or pause was run on a plan that is done (status: done, or nothing left to do).",
@@ -54,7 +55,7 @@ module Workspace
       "unknown_stage" => "spine set: no stage has that path. details.path, details.stages (the paths there are).",
       "invalid_status" => "spine set: --status is not a status or an alias of one (unknown is not settable). details.status, details.allowed.",
       "stale_revision" => "spine set --if-revision: the stage file changed since that revision. details.revision and details.status are the current ones.",
-      "spine_unwritable" => "spine set: the stage file cannot be rewritten safely, or another spine write did not finish in time. details.reason: link, not_a_file, too_large, not_utf8, no_frontmatter, no_file, missing, lock_unavailable, unreadable_result, io_error, changed_while_writing or lock_busy; details.file.",
+      "spine_unwritable" => "spine set or spine init: the stage file cannot be rewritten safely, another spine write did not finish in time, or spine init cannot write the spine (its path is a link, or the notes directory or files cannot be written; details.path). details.reason: link, not_a_file, too_large, not_utf8, no_frontmatter, no_file, missing, lock_unavailable, unreadable_result, io_error, changed_while_writing or lock_busy; details.file.",
       "handoff_unsupported_agent" => "The handoff pack was asked for, but the project's main agent is not Claude Code or Codex.",
       # Codes the agent daemon puts in its replies; `agent-run` passes them through.
       "malformed_message" => "The daemon couldn't parse the request.",

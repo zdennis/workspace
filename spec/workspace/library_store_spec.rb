@@ -226,4 +226,44 @@ RSpec.describe Workspace::LibraryStore do
       expect(File.read(source)).to eq("keep")
     end
   end
+
+  describe "a spine template" do
+    def template(name = "src-spine", readme: "---\ndescription: Two stages\n---\n# T\n")
+      File.join(@dir, name).tap do |dir|
+        FileUtils.mkdir_p(File.join(dir, "30-implement"))
+        File.write(File.join(dir, "README.md"), readme) if readme
+        File.write(File.join(dir, "10-research.md"), "r\n")
+        File.write(File.join(dir, "30-implement", "10-api.md"), "a\n")
+        File.write(File.join(dir, ".hidden.md"), "h\n")
+      end
+    end
+
+    it "is a directory, described by README.md and listing its regular files" do
+      store.copy_tree("spine", "team", template)
+
+      expect(store.find("spine", "team")).to include("ref" => "spine/team", "path" => File.join(@dir, "global/spine/team"),
+        "link" => nil, "readable" => true, "description" => "Two stages",
+        "files" => %w[10-research.md 30-implement/10-api.md README.md])
+      expect(store.entries(kind: "spine").map { |e| e["name"] }).to eq(["team"])
+    end
+
+    it "needs no README.md: it is readable with no description" do
+      store.copy_tree("spine", "bare", template("bare", readme: nil))
+
+      expect(store.find("spine", "bare")).to include("readable" => true, "description" => nil)
+    end
+
+    it "is read through a link, and a link to a missing folder is unreadable with no files" do
+      store.link("spine", "vault", template)
+      expect(store.find("spine", "vault")).to include("link" => template, "readable" => true, "files" => include("10-research.md"))
+
+      FileUtils.rm_rf(template)
+      expect(store.find("spine", "vault")).to include("readable" => false, "files" => [])
+    end
+
+    it "gives only spine entries a files list" do
+      store.write("play", "p", "# P\n")
+      expect(store.find("play", "p")).not_to have_key("files")
+    end
+  end
 end
