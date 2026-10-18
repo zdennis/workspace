@@ -31,7 +31,8 @@ module Workspace
       # @param notes [Workspace::Commands::Notes] answers where a workspace's notes are
       # @param access [Workspace::PlanAccess] finds the plan, writes its status, records `plan_changed`
       # @param dispatch [Workspace::Commands::PlanDispatch] interrupts the owner panes for `pause --interrupt`
-      # @param catalog [Workspace::ProjectCatalog] lists the workspaces for `--all`
+      # @param catalog [Workspace::ProjectCatalog] lists the workspaces for `--all` and `--group`
+      # @param groups [Workspace::ProjectGroups] resolves `--group` to its repositories
       # @param plan_state [Workspace::PlanState] works out each row
       # @param plan_config [Workspace::PlanConfig] reads `plan.stall_seconds`
       # @param snapshot_client [Workspace::AgentSnapshotClient] reads the owner pane's state from the daemon
@@ -39,12 +40,13 @@ module Workspace
       # @param task_store [Workspace::TaskStore] gives `init` a default title
       # @param clock [#call] returns the current Time, for the name of a deleted plan
       # @param output [IO] output stream
-      def initialize(notes:, access:, dispatch:, catalog:, plan_state:, plan_config:, snapshot_client:, ask_store_for:, task_store:,
+      def initialize(notes:, access:, dispatch:, catalog:, groups:, plan_state:, plan_config:, snapshot_client:, ask_store_for:, task_store:,
         clock: -> { Time.now }, output: $stdout)
         @notes = notes
         @access = access
         @dispatch = dispatch
         @catalog = catalog
+        @groups = groups
         @plan_state = plan_state
         @plan_config = plan_config
         @snapshot_client = snapshot_client
@@ -68,6 +70,36 @@ module Workspace
           @output.puts JSON.generate({"schema_version" => JSON_SCHEMA_VERSION, "ok" => true, "plans" => rows})
         else
           rows.each { |row| print_row(row) }
+        end
+        rows
+      end
+
+      # Prints the plan of every workspace of every repository in a group: the rows of {#rows}, each with the
+      # `repository` id it belongs to. The JSON document is the `status --json` one plus `group: {id, name}` and
+      # `repositories: [{id, name, path, exists}]` (every member, even one with no workspace rows);
+      # the lines are grouped under a heading per repository.
+      #
+      # @param group [String] a group id, slug or name
+      # @param json [Boolean] print one JSON document instead of lines
+      # @return [Array<Hash>] the rows
+      # @raise [Workspace::Error] `unknown_group`
+      def status_group(group:, json: false)
+        found = @groups.find(group)
+        projects = @catalog.all
+        by_repository = found.repositories.to_h { |repository| [repository, group_rows(repository, projects)] }
+        rows = by_repository.values.flatten(1)
+        if json
+          @output.puts JSON.generate({"schema_version" => JSON_SCHEMA_VERSION, "ok" => true, "group" => {"id" => found.id, "name" => found.name},
+                                      "repositories" => found.repositories.map { |r| {"id" => r.id, "name" => r.name, "path" => r.path, "exists" => r.exists} },
+                                      "plans" => rows})
+        else
+          @output.puts "#{found.name} (#{found.id})"
+          @output.puts "  no repositories: add one with 'workspace projects group add GROUP PATH'" if by_repository.empty?
+          by_repository.each do |repository, repository_rows|
+            @output.puts "#{repository.name}  #{repository.path}#{"  (checkout missing)" unless repository.exists}"
+            @output.puts "  no workspaces" if repository_rows.empty?
+            repository_rows.each { |row| print_row(row, indent: "  ") }
+          end
         end
         rows
       end
@@ -242,6 +274,17 @@ module Workspace
         @plan_state.row(workspace: nil, project: nil, path: path, plan: PlanFile.read(path))
       end
 
+      def group_rows(repository, projects)
+        project = projects.find { |candidate| candidate.id == repository.id }
+        names = project ? project.members.select { |member| member.configured && member.exists }.map(&:workspace).uniq : []
+        memo = {}
+        names.map do |name|
+          row_for(name, memo)
+        rescue Workspace::Error => e
+          broken_row(name, e)
+        end.map { |row| row.merge("repository" => repository.id) }
+      end
+
       def all_workspaces
         @catalog.all.flat_map(&:members).select { |member| member.configured && member.exists }.map(&:workspace).uniq
       end
@@ -258,20 +301,20 @@ module Workspace
         0
       end
 
-      def print_row(row)
+      def print_row(row, indent: "")
         label = row["workspace"] || row["path"]
         if row["exists"]
           counts = row["counts"]
           current = row["current"]
           line = "#{label}  #{row["state"]}  #{counts["done"] + counts["skipped"]}/#{counts["total"]} (#{row["percent"]}%)"
           line += "  #{[current["id"], current["title"]].compact.join(" ")}" if current
-          @output.puts line
+          @output.puts "#{indent}#{line}"
         else
-          @output.puts "#{label}  no plan"
+          @output.puts "#{indent}#{label}  no plan"
         end
         row["warnings"].each do |warning|
           where = warning["line"] ? "line #{warning["line"]}: " : ""
-          @output.puts "  #{where}#{warning["code"]}: #{warning["message"]}"
+          @output.puts "#{indent}  #{where}#{warning["code"]}: #{warning["message"]}"
         end
       end
 

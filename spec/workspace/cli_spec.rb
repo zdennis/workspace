@@ -6006,8 +6006,23 @@ RSpec.describe Workspace::CLI do
       expect { cli.run(["plan", "show", "--json"]) }.to raise_error(FakeSystemExit)
     end
 
-    it "rejects more than one of --name, --all and --file" do
-      [%w[--name a --all], %w[--all --file x], %w[--name a --file x]].each do |flags|
+    it "passes --group to status_group, also in the --group=value form, without looking for a workspace" do
+      allow(plan_command).to receive(:status_group)
+
+      cli.run(["plan", "status", "--group", "billing", "--json"])
+      cli.run(["plan", "status", "--group=ops"])
+
+      expect(plan_command).to have_received(:status_group).with(group: "billing", json: true)
+      expect(plan_command).to have_received(:status_group).with(group: "ops", json: false)
+      expect(detector).not_to have_received(:detect)
+    end
+
+    it "rejects --group on a subcommand other than status" do
+      expect { cli.run(["plan", "path", "--group", "billing"]) }.to raise_error(FakeSystemExit)
+    end
+
+    it "rejects more than one of --name, --all, --file and --group" do
+      [%w[--name a --all], %w[--all --file x], %w[--name a --file x], %w[--group g --all], %w[--group g --name a], %w[--group g --file x]].each do |flags|
         expect { cli.run(["plan", "status", *flags, "--json"]) }.to raise_error(FakeSystemExit), flags.inspect
         expect(JSON.parse(output.string.lines.last)).to include("code" => "usage"), flags.inspect
       end

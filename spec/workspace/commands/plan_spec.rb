@@ -22,6 +22,7 @@ RSpec.describe Workspace::Commands::Plan do
       Workspace::ProjectCatalog::Member.new(workspace: "api.worktree-gone", path: "/r/g", kind: "worktree", configured: true, exists: false)]
   end
   let(:catalog) { instance_double(Workspace::ProjectCatalog, all: [Workspace::ProjectCatalog::Project.new(name: "api", id: "/r/api/.git", path: "/r/api", vcs: "git", members: members)]) }
+  let(:groups) { instance_double(Workspace::ProjectGroups) }
   let(:tmux) { instance_double(Workspace::Tmux, sessions: ["api", "api-worktree-x"], custom_socket_option: nil) }
   let(:snapshot_client) { instance_double(Workspace::AgentSnapshotClient) }
   let(:ask_store) { instance_double(Workspace::AskStore, list: []) }
@@ -36,7 +37,7 @@ RSpec.describe Workspace::Commands::Plan do
   end
   subject(:command) do
     described_class.new(notes: notes, access: Workspace::PlanAccess.new(notes: notes, tmux: tmux, event_log: event_log), dispatch: dispatch,
-      catalog: catalog, plan_state: Workspace::PlanState.new(clock: -> { now }), plan_config: plan_config,
+      catalog: catalog, groups: groups, plan_state: Workspace::PlanState.new(clock: -> { now }), plan_config: plan_config,
       snapshot_client: snapshot_client, ask_store_for: ->(_workspace) { ask_store }, task_store: task_store, clock: -> { now }, output: output)
   end
 
@@ -70,6 +71,80 @@ RSpec.describe Workspace::Commands::Plan do
       - [~] T2 Second
       - [ ] T3 Third
     MD
+  end
+
+  describe "#status_group" do
+    let(:other_members) { [Workspace::ProjectCatalog::Member.new(workspace: "web", path: "/r/web", kind: "main", configured: true, exists: true)] }
+    let(:repositories) do
+      [Workspace::ProjectGroups::Repository.new(id: "/r/api/.git", path: "/r/api", name: "api", exists: true),
+        Workspace::ProjectGroups::Repository.new(id: "/r/web/.git", path: "/r/web", name: "web", exists: true),
+        Workspace::ProjectGroups::Repository.new(id: "/r/none/.git", path: "/r/none", name: "none", exists: false)]
+    end
+    let(:group) { Workspace::ProjectGroups::Group.new(slug: "billing", name: "Billing", path: "/g/billing.yml", repositories: repositories) }
+
+    before do
+      notes_dirs["web"] = File.join(@dir, "web-notes")
+      allow(catalog).to receive(:all).and_return([
+        Workspace::ProjectCatalog::Project.new(name: "api", id: "/r/api/.git", path: "/r/api", vcs: "git", members: members),
+        Workspace::ProjectCatalog::Project.new(name: "web", id: "/r/web/.git", path: "/r/web", vcs: "git", members: other_members)
+      ])
+      allow(groups).to receive(:find).with("billing").and_return(group)
+      write_plan("api", "## Tasks\n- [ ] T1 a\n")
+      write_plan("web", "## Tasks\n- [x] T1 a\n")
+    end
+
+    it "prints today's rows for every workspace of every member repository, with the group and each row's repository" do
+      command.status_group(group: "billing", json: true)
+
+      expect(document).to include("schema_version" => 1, "ok" => true, "group" => {"id" => "group:billing", "name" => "Billing"})
+      expect(document["plans"].map { |row| [row["workspace"], row["repository"]] }).to eq(
+        [["api", "/r/api/.git"], ["api.worktree-x", "/r/api/.git"], ["web", "/r/web/.git"]]
+      )
+      expect(document["repositories"].map { |r| [r["name"], r["exists"]] }).to eq([["api", true], ["web", true], ["none", false]])
+      expect(document["plans"].first).to include("project" => "api", "exists" => true, "counts" => a_hash_including("total" => 1))
+    end
+
+    it "prints rows under a heading per repository, with repositories that have no workspaces or no checkout" do
+      command.status_group(group: "billing")
+
+      lines = output.string.lines.map(&:chomp)
+      expect(lines.first).to eq("Billing (group:billing)")
+      expect(lines).to include("api  /r/api", "web  /r/web", "none  /r/none  (checkout missing)", "  no workspaces")
+      expect(lines.index("web  /r/web")).to be > lines.index("api  /r/api")
+      expect(lines).to include(a_string_starting_with("  web  "))
+    end
+
+    it "turns a workspace whose notes directory can't be worked out into a warning row" do
+      notes_dirs.delete("api.worktree-x")
+
+      command.status_group(group: "billing", json: true)
+
+      row = document["plans"].find { |r| r["workspace"] == "api.worktree-x" }
+      expect(row).to include("path" => nil, "repository" => "/r/api/.git")
+      expect(row["warnings"].first).to include("code" => "unknown_workspace")
+    end
+
+    it "says how to add a repository to an empty group" do
+      allow(groups).to receive(:find).with("billing").and_return(Workspace::ProjectGroups::Group.new(slug: "billing", name: "Billing", path: "/g", repositories: []))
+
+      command.status_group(group: "billing")
+
+      expect(output.string.lines.map(&:chomp)).to eq(["Billing (group:billing)", "  no repositories: add one with 'workspace projects group add GROUP PATH'"])
+    end
+
+    it "prints an empty group" do
+      allow(groups).to receive(:find).with("billing").and_return(Workspace::ProjectGroups::Group.new(slug: "billing", name: "Billing", path: "/g", repositories: []))
+
+      command.status_group(group: "billing", json: true)
+
+      expect(document).to include("group" => {"id" => "group:billing", "name" => "Billing"}, "plans" => [])
+    end
+
+    it "passes the unknown_group error on" do
+      allow(groups).to receive(:find).and_raise(Workspace::Error.new("Unknown group 'x'.", code: "unknown_group"))
+
+      expect { command.status_group(group: "x") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("unknown_group") }
+    end
   end
 
   describe "#status" do

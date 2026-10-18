@@ -45,7 +45,7 @@ RSpec.describe Workspace::Commands::PlanDispatch do
       runner: runner, readiness: readiness, main_agent: main_agent, tmux: tmux, prompt_timeout: 30, output: output)
   end
   let(:plan_command) do
-    Workspace::Commands::Plan.new(notes: notes, access: access, dispatch: command, catalog: instance_double(Workspace::ProjectCatalog),
+    Workspace::Commands::Plan.new(notes: notes, access: access, dispatch: command, catalog: instance_double(Workspace::ProjectCatalog), groups: instance_double(Workspace::ProjectGroups),
       plan_state: Workspace::PlanState.new(clock: -> { now }), plan_config: instance_double(Workspace::PlanConfig),
       snapshot_client: snapshot_client, ask_store_for: ->(_workspace) {}, task_store: instance_double(Workspace::TaskStore),
       clock: -> { now }, output: output)

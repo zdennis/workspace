@@ -5,7 +5,7 @@ Read, start, pause and delete a workspace's plan: the counted task list in `IMPL
 ## Usage
 
 ```sh
-workspace plan status [--name WORKSPACE | --all | --file PATH] [--json]
+workspace plan status [--name WORKSPACE | --all | --file PATH | --group GROUP] [--json]
 workspace plan path [--name WORKSPACE] [--json]
 workspace plan show [--name WORKSPACE]
 workspace plan init [--name WORKSPACE] [--title TITLE] [--from FILE] [--force] [--json]
@@ -17,13 +17,13 @@ workspace plan task set-state --task ID --state STATE [--reason TEXT] [--if-revi
 workspace plan task move --task ID (--after ID | --before ID | --phase NAME) [--if-revision REV] [--name WORKSPACE] [--json]
 ```
 
-Without `--name`, the workspace is the one detected from the current directory. `--all`, `--file` and `--name` exclude each other, and a flag that does not belong to the subcommand is a usage error. So are `--pane` with `--spawn`, either of them without `--task`, and a `--spawn` kind that is not `claude`, `codex`, `opencode` or `pi`. Every flag also takes the `--flag=value` form.
+Without `--name`, the workspace is the one detected from the current directory. `--all`, `--file`, `--group` and `--name` exclude each other, and a flag that does not belong to the subcommand is a usage error. So are `--pane` with `--spawn`, either of them without `--task`, and a `--spawn` kind that is not `claude`, `codex`, `opencode` or `pi`. Every flag also takes the `--flag=value` form.
 
 ## Subcommands
 
 | Subcommand | What it does |
 |------------|--------------|
-| `status` | Counts the plan and reports its state. A workspace with no plan is a row with `exists: false`, not an error. `--all` lists every configured workspace whose checkout exists; `--file PATH` parses any file, with `workspace: null` and a state from the file alone (no session, pane or question is read) |
+| `status` | Counts the plan and reports its state. A workspace with no plan is a row with `exists: false`, not an error. `--all` lists every configured workspace whose checkout exists; `--file PATH` parses any file, with `workspace: null` and a state from the file alone (no session, pane or question is read); `--group GROUP` is the [merged view of a group](#a-groups-plans) |
 | `path` | Prints the plan's absolute path alone, whether or not the file exists. Makes nothing |
 | `show` | Prints the plan file as it is. Fails with `no_plan` when there is none |
 | `init` | Writes a new plan into the notes directory, making the directory first. `--title` sets the title (default: the title of the workspace's task, else none). `--from FILE` imports an existing document as the plan: it gets new frontmatter unless it has its own (then `--title` is ignored). Fails with `plan_exists` when a plan is there; `--force` replaces it. The file is written whole or not at all |
@@ -172,6 +172,23 @@ A fact that can't be read never decides a state. A tmux that can't be asked, or 
 The `rpiv` workflow's plan and implement steps compose this play, and its plan step writes the run's tasks into this file, so `plan status` shows a run's progress. The run's `plan.md` under `.workflow/` is only the note for the approval gate.
 
 The plan is also the handoff doc: with no `--handoff-doc`, [`handoff check` and `new`](README.handoff.md#the-default-doc) use `IMPLEMENTATION_PLAN.md` when it exists, and `new` binds the pane to this play. [`doctor`](README.doctor.md) warns on a paused plan whose owner pane is working and on a `[~]` task in a workspace with no session.
+
+## A group's plans
+
+`plan status --group GROUP` shows the plans of a [group of repositories](README.projects.md) (`GROUP`, like `group:billing`, `billing` or `Billing`, is its `group:<slug>` id, its slug or its name, ignoring case, as for `projects group add`): the rows `plan status` gives for every configured workspace, with an existing checkout, of every repository in the group. It is read-only. There is no group plan file; each workspace keeps its own `IMPLEMENTATION_PLAN.md`, and `plan start`, `pause` and the task verbs still act on one workspace. `--group` excludes `--name`, `--all` and `--file`, and only `status` takes it. A group no file matches fails with `unknown_group`.
+
+```
+Billing (group:billing)
+api  /src/api
+  api  working  7/20 (40%)  T9 Add the token store
+  api.worktree-x  no plan
+web  /src/web
+  no workspaces
+```
+
+A line at the left margin is a repository (name and main checkout; `(checkout missing)` when the directory is gone) and the indented lines are its workspaces.
+
+With `--json` the document is the `plan status --json` one with a top-level `group` (`{"id":"group:billing","name":"Billing"}`), a `repositories` list (`{id, name, path, exists}` for every repository in the group, so one with no rows or a missing checkout can be told apart), and each row has one more field, `repository`: the id (the realpath of the git common dir) of the repository the workspace belongs to, the same `id` that `projects list` gives. `plans` lists the repositories in the order the group's file does. A repository with no configured workspaces has no row. An empty group is `"plans":[]`.
 
 ## JSON output
 

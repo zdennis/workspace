@@ -33,7 +33,7 @@ module Workspace
       "editor_failed" => "config edit: $VISUAL or $EDITOR is not a valid command, or the editor could not be run. details.path.",
       "notes_dir_unresolved" => "The notes directory can't be worked out: the project's rule uses {branch} and the checkout is on no branch.",
       "notes_dir_unwritable" => "notes dir --create couldn't make the notes directory or list it in info/exclude, or a plan verb couldn't write or rename the plan file.",
-      "unknown_group" => "projects group add named a group no file in ~/.config/workspace/groups/ matches. details.group.",
+      "unknown_group" => "projects group add or plan status --group named a group no file in ~/.config/workspace/groups/ matches. details.group.",
       "group_exists" => "projects group create: a group with that slug already has a file. details.group, details.path.",
       "invalid_group_name" => "projects group create: the name has no letters or digits, has a control character, or makes a slug over 64 characters. details.name.",
       "repository_in_group" => "projects group add: the repository is already in another group. details.repository, details.group, details.path.",

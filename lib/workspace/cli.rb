@@ -7121,7 +7121,7 @@ module Workspace
     end
 
     PLAN_FLAGS = {
-      "status" => %i[name all file json],
+      "status" => %i[name all file group json],
       "path" => %i[name json],
       "show" => %i[name],
       "init" => %i[name title from force json],
@@ -7140,7 +7140,7 @@ module Workspace
 
     def plan_parser(options)
       OptionParser.new do |opts|
-        opts.banner = "Usage: workspace plan status [--name WORKSPACE | --all | --file PATH] [--json]\n" \
+        opts.banner = "Usage: workspace plan status [--name WORKSPACE | --all | --file PATH | --group GROUP] [--json]\n" \
           "       workspace plan path [--name WORKSPACE] [--json]\n" \
           "       workspace plan show [--name WORKSPACE]\n" \
           "       workspace plan init [--name WORKSPACE] [--title TITLE] [--from FILE] [--force] [--json]\n" \
@@ -7172,6 +7172,7 @@ module Workspace
         opts.separator ""
         opts.on("--name NAME", "Workspace to act on instead of the one detected from the current directory") { |v| take_plan_flag(options, :name, v) }
         opts.on("--all", "status: every workspace") { take_plan_flag(options, :all, true) }
+        opts.on("--group GROUP", "status: every workspace of every repository in a group (group:billing, billing or Billing; see projects group list)") { |v| take_plan_flag(options, :group, v) }
         opts.on("--file PATH", "status: read any file, with no workspace and a state from the file alone") { |v| take_plan_flag(options, :file, v) }
         opts.on("--title TITLE", "init: the plan's title (default: the workspace task's title); task add: the task's title") { |v| take_plan_flag(options, :title, v) }
         opts.on("--from FILE", "init: import this document as the plan") { |v| take_plan_flag(options, :from, v) }
@@ -7194,6 +7195,7 @@ module Workspace
         opts.separator "Examples:"
         opts.separator "  workspace plan status    # api.worktree-x  working  7/20 (40%)  T9 Add the token store"
         opts.separator "  workspace plan status --all --json"
+        opts.separator "  workspace plan status --group billing --json"
         opts.separator "  workspace plan init --title \"Auth rewrite\""
         opts.separator "  workspace plan path    # /src/api/tmp/workspace-notes/IMPLEMENTATION_PLAN.md"
         opts.separator "  workspace plan start --name api.worktree-x --json"
@@ -7235,8 +7237,8 @@ module Workspace
         end
         plan_task_usage(verb, options)
       end
-      if subcommand == "status" && options[:given].count { |key| %i[name all file].include?(key) } > 1
-        raise UsageError, "Give only one of --name, --all and --file."
+      if subcommand == "status" && options[:given].count { |key| %i[name all file group].include?(key) } > 1
+        raise UsageError, "Give only one of --name, --all, --file and --group."
       end
       raise UsageError, "Give only one of --pane and --spawn." if options[:pane] && options[:spawn]
       raise UsageError, "--pane and --spawn need --task. Run 'workspace plan --help'." if (options[:pane] || options[:spawn]) && !options[:task]
@@ -7245,6 +7247,7 @@ module Workspace
       end
       raise Error, "plan is not available: no plan command was wired" unless @plan_command && @plan_dispatch_command && @plan_task_command
 
+      return @plan_command.status_group(group: options[:group], json: options[:json]) if options[:group]
       return @plan_command.status(all: true, json: options[:json]) if options[:all]
       return @plan_command.status(file: options[:file], json: options[:json]) if options[:file]
 
