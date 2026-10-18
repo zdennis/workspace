@@ -5,11 +5,11 @@ RSpec.describe Workspace::ConfigSchema do
 
   it "lists the settable keys in the order `config set` has always reported them" do
     expect(described_class.project_keys.map(&:name)).to eq(%w[dev.up dev.ready dev.stop_timeout dev.startup_timeout dev.ready_timeout dev.kill_grace dev.release_on_session_end dev.instructions locks.idle_grace locks.ps_timeout locks.reap_interval alerts.notify alerts.idle_after agentd.poll_interval handoff.threshold handoff.check_prompt handoff.resume_prompt handoff.auto commands.test commands.lint notes.dir notes.default_dir notes.instructions plan.stall_seconds])
-    expect(described_class.global_keys.map(&:name)).to eq(%w[statusline.command context.source context.pattern launch.headless workflows.defaults.include])
+    expect(described_class.global_keys.map(&:name)).to eq(%w[statusline.command context.source context.pattern launch.headless workflows.defaults.include events.rotate_size])
   end
 
   it "names the keys a running daemon only reads at startup" do
-    expect(described_class.restart_required_names).to eq(%w[locks.ps_timeout locks.reap_interval alerts.notify alerts.idle_after agentd.poll_interval])
+    expect(described_class.restart_required_names).to eq(%w[locks.ps_timeout locks.reap_interval alerts.notify alerts.idle_after agentd.poll_interval events.rotate_size])
   end
 
   it "tells settable keys from keys that are only documented" do
@@ -86,7 +86,7 @@ RSpec.describe Workspace::ConfigSchema do
     end
 
     it "gives every key a type" do
-      expect(described_class.all.map(&:type).uniq - %i[command duration percent text path enum regex boolean mapping]).to eq([])
+      expect(described_class.all.map(&:type).uniq - %i[command duration percent text path enum regex boolean mapping size]).to eq([])
       expect(described_class.key("dev.stop_timeout").type).to eq(:duration)
     end
   end
@@ -167,6 +167,13 @@ RSpec.describe Workspace::ConfigSchema do
       expect { described_class.parse("dev.kill_grace", "61") }.to raise_error(ArgumentError, /at most 60s/)
       expect { described_class.parse("locks.ps_timeout", "0.5") }.to raise_error(ArgumentError, /at least 1s and at most 60s/)
       expect(described_class.parse("locks.ps_timeout", "1m")).to eq(60.0)
+    end
+
+    it "parses events.rotate_size as a size of at least 64KB" do
+      expect { described_class.parse("events.rotate_size", "10KB") }.to raise_error(ArgumentError, /at least 64KB/)
+      expect { described_class.parse("events.rotate_size", "abc") }.to raise_error(ArgumentError, /expected a size/)
+      expect(described_class.parse("events.rotate_size", "1MB")).to eq(1_048_576)
+      expect(described_class.parse("events.rotate_size", "65536")).to eq(65_536)
     end
 
     it "checks a handoff threshold, a notify command, a prompt and launch.headless" do

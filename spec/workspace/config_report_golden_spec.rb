@@ -51,6 +51,9 @@ RSpec.describe Workspace::ConfigReport, "golden documents" do
         old = JSON.parse(File.read(File.join(fixtures, old_file)))
         now = JSON.parse(File.read(File.join(fixtures, new_file)))
         added = %w[overridable_in layers doc choices min max unit]
+        # Keys declared since v1 have no old document to compare with.
+        since_v1 = %w[events.rotate_size]
+        now = now.merge("keys" => now["keys"].reject { |k| since_v1.include?(k["key"]) })
 
         expect(now.except("keys", "unknown_keys")).to eq(old.except("keys", "unknown_keys"))
         expect(now["keys"].map { |k| k["key"] }).to eq(old["keys"].map { |k| k["key"] })

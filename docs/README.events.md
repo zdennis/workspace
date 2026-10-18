@@ -52,7 +52,7 @@ Nothing that can hold a secret is written: no command text, tool input or output
 
 **`boot_id` and `seq`.** `boot_id` is new each time the daemon starts, and `seq` starts at 1 for each boot and goes up by 1 for each line that daemon writes. The same `boot_id` with a skipped `seq` means a line is missing (one the daemon couldn't write, or one rotated away). A new `boot_id` means the daemon restarted. A reader can de-duplicate on `boot_id` and `seq`.
 
-**Files and rotation.** Each daemon writes only its own file, so one busy workspace never pushes another's lines out, and none of these lines reach the event log: its rotation and [`event-log compact`](README.event-log.md) never see them. When a file passes 5MB it is renamed to `<workspace>.jsonl.1`, replacing the one before, so about 10MB is kept per workspace. `kill` and `finish` leave the file in place.
+**Files and rotation.** Each daemon writes only its own file, so one busy workspace never pushes another's lines out, and none of these lines reach the event log: its rotation and [`event-log compact`](README.event-log.md) never see them. When a file passes 5MB (the default; set [`events.rotate_size`](README.config.md) to change it, read when the daemon starts) it is renamed to `<workspace>.jsonl.1`, replacing the one before, so about twice that size is kept per workspace. `kill` and `finish` leave the file in place.
 
 ### Stream lines
 

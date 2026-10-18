@@ -222,6 +222,12 @@ module Workspace
     end
     private_constant :NOTES_DEFAULT_DIR
 
+    # Smallest `events.rotate_size`, in bytes: below it a daemon would rotate away lines a follower has yet to read.
+    MIN_EVENTS_ROTATE_SIZE = 64 * 1024
+
+    EVENTS_ROTATE_SIZE = ->(value) { ByteSize.parse_at_least(value, min: MIN_EVENTS_ROTATE_SIZE) }
+    private_constant :EVENTS_ROTATE_SIZE
+
     PERCENT = lambda do |value|
       pct = Integer(value)
       raise ArgumentError, "must be between 1 and 100" unless pct.between?(1, 100)
@@ -344,6 +350,8 @@ module Workspace
       Key.new(name: "workflows.defaults.include", scope: :global, resolve: :layered, overridable_in: [:global, :project, :worktree], type: :text, settable: true, examples: ["binding, commits"], default: DEFAULT_PACKS, parser: PACK_LIST,
         doc: "Instruction packs every workflow step and [`workspace instructions compose`](README.instructions.md) start with, " \
           "as names separated by commas (default `binding, orchestrator, commits`)"),
+      Key.new(name: "events.rotate_size", scope: :global, type: :size, unit: "bytes", settable: true, examples: ["512KB", "5MB"], default: 5 * 1024 * 1024, restart: true, min: MIN_EVENTS_ROTATE_SIZE, parser: EVENTS_ROTATE_SIZE,
+        doc: "Size at which a daemon's hook-event file rotates to `<workspace>.jsonl.1` (default `5MB`, at least `64KB`). A byte count or a number with a `KB`, `MB` or `GB` suffix, where `1KB` is 1024 bytes; see [`workspace events`](README.events.md)"),
       Key.new(name: "hooks", scope: :global, type: :mapping, sensitive: true, resolve: :none, settable: false, doc: "Global hooks applied to all projects"),
       Key.new(name: "layouts", scope: :global, type: :mapping, resolve: :merge, settable: false, doc: "Default tmux pane layouts"),
       Key.new(name: "event_log_compact_threshold", scope: :global, type: :text, settable: false,

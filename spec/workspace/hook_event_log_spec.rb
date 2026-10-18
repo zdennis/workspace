@@ -115,6 +115,14 @@ RSpec.describe Workspace::HookEventLog do
     expect(lines(small.path).map { |l| l["seq"] }).to eq([7])
   end
 
+  it "rotates at the size it is given" do
+    one_kb = described_class.new(dir: dir, workspace: "Proj", boot_id: "B", clock: clock, rotate_threshold: Workspace::ByteSize.parse("1KB"))
+    20.times { one_kb.record(event("tool_start", tool: "Read")) }
+
+    expect(File.exist?("#{one_kb.path}.1")).to be(true)
+    expect(File.size(one_kb.path)).to be <= 1024 + 200
+  end
+
   it "leaves the rotation to the writer holding the lock, and keeps appending" do
     small = described_class.new(dir: dir, workspace: "Proj", boot_id: "B", clock: clock, rotate_threshold: 200)
     small.record(event("tool_start", tool: "Read"))

@@ -1067,6 +1067,36 @@
       "problems": []
     },
     {
+      "key": "events.rotate_size",
+      "scope": "global",
+      "type": "size",
+      "value": null,
+      "masked": false,
+      "default": 5242880,
+      "effective": 5242880,
+      "source": "default",
+      "source_file": null,
+      "line": null,
+      "column": null,
+      "resolve": "global",
+      "target_layer": "global",
+      "affects": [
+        "main",
+        "main.worktree-a"
+      ],
+      "applies": "daemon_restart",
+      "settable": true,
+      "sensitive": false,
+      "overridable_in": [
+        "global"
+      ],
+      "layers": [],
+      "doc": "Size at which a daemon's hook-event file rotates to `<workspace>.jsonl.1` (default `5MB`, at least `64KB`). A byte count or a number with a `KB`, `MB` or `GB` suffix, where `1KB` is 1024 bytes; see [`workspace events`](README.events.md)",
+      "problems": [],
+      "min": 65536,
+      "unit": "bytes"
+    },
+    {
       "key": "hooks",
       "scope": "global",
       "type": "mapping",

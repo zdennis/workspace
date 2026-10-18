@@ -188,6 +188,8 @@ require_relative "workspace/agent_snapshot_client"
 require_relative "workspace/project_agents"
 require_relative "workspace/project_facts"
 require_relative "workspace/duration"
+require_relative "workspace/byte_size"
+require_relative "workspace/events_config"
 require_relative "workspace/dev_config"
 require_relative "workspace/lock_namespace"
 require_relative "workspace/bound_run"
@@ -410,6 +412,8 @@ module Workspace
       nil
     end
     ps_timeout = cwd_project_name ? lock_config.ps_timeout_for(cwd_project_name) : ProcessTree::DEFAULT_TIMEOUT
+    events_config = EventsConfig.new(config_resolver: config_resolver, error_output: error_output)
+    events_rotate_size = nil
     reap_interval = cwd_project_name ? lock_config.reap_interval_for(cwd_project_name) : LockReaper::DEFAULT_INTERVAL
     process_tree = ProcessTree.new(logger: logger, timeout: ps_timeout)
     run_liveness = RunLiveness.new(dir: config.workflow_runs_dir)
@@ -573,7 +577,7 @@ module Workspace
       label_reader: TranscriptLabel.new,
       task_store: task_store,
       workflow_nudger: workflow_nudger,
-      hook_event_log_factory: ->(name) { HookEventLog.new(dir: config.hook_events_dir, workspace: name, boot_id: Commands::Agent.ulid, logger: logger) },
+      hook_event_log_factory: ->(name) { HookEventLog.new(dir: config.hook_events_dir, workspace: name, boot_id: Commands::Agent.ulid, rotate_threshold: (events_rotate_size ||= events_config.rotate_size), logger: logger) },
       logger: logger,
       output: output,
       error_output: error_output
