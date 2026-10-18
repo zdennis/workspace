@@ -507,6 +507,17 @@ RSpec.describe Workspace::InstructionComposer do
         expect(composer.compose_start(cwd: "/work/app")["skipped"]).to eq([])
       end
 
+      it "judges the agent kind a new workspace is given, not the project's" do
+        allow(main_agent).to receive(:kind).with("app").and_return("opencode")
+        auto("true")
+
+        expect(composer.start_packs(cwd: "/work/app", agent_kind: "codex").map { |p| p["name"] }).to eq(%w[notes handoff])
+        expect(composer.compose_start(cwd: "/work/app", agent_kind: "pi")["skipped"].first["reason"]).to eq("handoff_unsupported_agent")
+        expect { composer.start_packs(cwd: "/work/app", handoff: true, agent_kind: "pi") }.to raise_error(Workspace::Error) { |e|
+          expect(e.details).to eq("kind" => "pi")
+        }
+      end
+
       it "describes a project that runs no known agent as such" do
         auto("true")
         allow(main_agent).to receive(:kind).and_return("none")

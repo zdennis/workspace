@@ -785,6 +785,8 @@ module Workspace
       handoff = nil
       agents = []
       skills = []
+      no_launch = false
+      agent_kind = nil
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: workspace start [options] <jira-key|jira-url|pr-url|pr-ref|branch>"
         opts.separator ""
@@ -835,6 +837,16 @@ module Workspace
           "(repeatable), the same way. Unknown names fail before the worktree is created") do |v|
           skills << v
         end
+        opts.on("--agent-kind KIND", "The coding agent the main agent pane runs: #{AgentProvider.all.map(&:key).join(", ")}.",
+          "Named -kind because --agent copies a library agent. Applies to a config this run",
+          "writes (default claude); an unknown kind fails before anything is created") do |v|
+          agent_kind = v
+        end
+        opts.on("--no-launch", "Create the worktree, config and task and start nothing; run",
+          "`workspace launch` later. Cannot be combined with --prompt, --prompt-timeout, --play,",
+          "or --pack or --handoff; the automatic packs are not sent") do
+          no_launch = true
+        end
         opts.on("--base REF", "Branch/ref to create a new branch from, instead of prompting") do |v|
           base = v
         end
@@ -869,6 +881,8 @@ module Workspace
         opts.separator "  workspace start PROJ-123 --prompt \"Fix the login bug\"    # with an initial agent prompt"
         opts.separator "  workspace start PROJ-123 --play kickoff --prompt \"Start at step 2.\"    # point the agent at a library play"
         opts.separator "  workspace start PROJ-123 --agent reviewer --skill write-tests    # copy library entries into the worktree"
+        opts.separator "  workspace start PROJ-123 --agent-kind codex    # the main agent pane runs Codex"
+        opts.separator "  workspace start PROJ-123 --no-launch    # create the worktree and config, launch nothing"
         opts.separator "  workspace start PROJ-123 --title \"Fix the login bug\"    # name the task shown in `workspace sessions`"
         opts.separator "  workspace start PROJ-123 --headless --yes --json    # non-interactive, e.g. from CI"
         opts.separator "  workspace start PROJ-123 --base main --yes --json    # non-interactive, branch from main, not the default base"
@@ -890,6 +904,8 @@ module Workspace
       start_options[:handoff] = handoff unless handoff.nil?
       start_options[:agents] = agents if agents.any?
       start_options[:skills] = skills if skills.any?
+      start_options[:no_launch] = true if no_launch
+      start_options[:agent_kind] = agent_kind if agent_kind
       start_options[:headless] = true if @launch_mode.resolve(headless).headless?
       result = @start_command.call(args.first, **start_options)
       @exit_handler.exit(result[:exit_code]) if result && !result[:exit_code].zero?

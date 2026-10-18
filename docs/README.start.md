@@ -20,6 +20,8 @@ workspace start [options] <jira-key|jira-url|pr-url|pr-ref|issue-url|branch>
 | `--handoff` / `--no-handoff` | Send, or never send, the `handoff` pack for this run, whatever the `handoff.auto` key says. See [Packs](#packs) |
 | `--agent NAME` | Copy a [library](README.library.md) agent into the worktree's `.claude/agents/`; repeatable. See [Agents and skills](#agents-and-skills) |
 | `--skill NAME` | Copy a library skill directory into the worktree's `.claude/skills/`; repeatable |
+| `--agent-kind KIND` | The coding agent the main agent pane runs: `claude` (the default), `codex`, `opencode` or `pi`. Named `-kind` because `--agent` copies a library agent. See [Agent kind and `--no-launch`](#agent-kind-and---no-launch) |
+| `--no-launch` | Create the worktree, config and task and start nothing. See [Agent kind and `--no-launch`](#agent-kind-and---no-launch) |
 | `--base REF` | Branch/ref a new branch is created from, instead of prompting |
 | `--yes` | Accept every default instead of prompting (e.g. the default base branch) |
 | `--title TITLE` | A human title for the workspace's task; it is the first `display_label` of its panes in [`sessions --json`](README.sessions.md). See [Tasks](#tasks) |
@@ -103,6 +105,12 @@ Both flags repeat, and a name given twice is copied once. `NAME` is a bare name,
 
 A linked entry is copied too, from the file it points to: change the library entry and run `start` again to refresh the copy. An untracked file or directory already at that path is replaced. One the repo tracks, compared ignoring case as macOS volumes do, is never touched: `start` notes that it kept it, on stderr or in `warnings` under `--json`, and does not fail. Nothing is copied when `.claude`, `.claude/agents` or `.claude/skills` is a symlink, since git can not see tracked files through it and the copy would land outside the worktree; that is noted the same way. If git can not say whether a path is tracked, `start` stops with an error after the worktree and its config are made, before launching; run it again once git works. Each path copied is added to the repo's `info/exclude` so `git status` stays clean. For a worktree that is the main checkout's `.git/info/exclude`, which every worktree of the repo shares. An existing or adopted worktree gets the same copies. The exclude lines stay after the worktree is removed, so a file of the same name that you later create in the main checkout is hidden from `git status` until you delete its line. Symlinks inside a skill directory are copied as symlinks, so a relative one may not resolve in the worktree.
 
+### Agent kind and `--no-launch`
+
+`--agent-kind KIND` picks the coding agent the new workspace's main agent pane runs. `KIND` is a coding-agent key, in any case: `claude`, `codex`, `opencode` or `pi`. It swaps the Claude Code pane of the worktree template for the agent's executable (`codex`); with no flag the pane stays `claude --dangerously-skip-permissions`. An unknown kind fails with `unknown_agent_kind` (`details.kind`, `details.known`) before anything is created. It only shapes a config this run writes: a workspace whose config already exists keeps its panes, and `start` notes `--agent-kind <kind> was not applied` (a `warnings` line under `--json`). A kind whose executable is not on `PATH` is noted too, and the pane starts nothing. The `handoff` pack is judged against the chosen kind, not the project's.
+
+`--no-launch` does everything `start` does but launch: the worktree, its config, the task, hooks, notes directory and library copies. It starts no session and touches none that is running, and exits 0 with `Not launching <workspace>; start it with `workspace launch <workspace>``. Start it later with [`launch`](README.launch.md). Because there is no agent to send to, `--no-launch` with `--prompt`, `--prompt-timeout`, `--play`, `--pack` or `--handoff` is a usage error before anything is created, and the automatic packs (`notes`, `dev`, `handoff`) are not sent: `packs` is `[]`. `launch --prompt` and `launch --pack` send them afterwards. `--no-packs` and `--no-handoff` are accepted and change nothing. `--headless` has no effect.
+
 ### Tasks
 
 `start` records a task for the new workspace: its title (`--title`, optional), the input it started from (`ref`), its branch and worktree path. The record is one JSON file, `<id>.json`, under `~/.local/state/workspace/.tasks/` (`$XDG_STATE_HOME/workspace/.tasks/`), mode 0600, written under a lock so concurrent `start`s never clobber each other. It lives there rather than in the worktree because removing a worktree deletes its untracked files.
@@ -117,7 +125,7 @@ On success, one line of JSON on stdout (nothing else is written to stdout under
 `--json`):
 
 ```json
-{"schema_version":1,"ok":true,"project":"myproject","workspace":"myproject.worktree-PROJ-123","path":"/path/to/.worktrees/PROJ-123","branch":"PROJ-123","base":null,"created":true,"headless":false}
+{"schema_version":1,"ok":true,"project":"myproject","workspace":"myproject.worktree-proj-123","path":"/path/to/.worktrees/PROJ-123","branch":"PROJ-123","base":null,"created":true,"headless":false,"launched":true,"agent_kind":"claude"}
 ```
 
 - `ok` — `true` for the success doc, even one carrying `error`/`prompt_failures`
@@ -146,6 +154,8 @@ On success, one line of JSON on stdout (nothing else is written to stdout under
   (the repo tracks that path, so it was kept), or `skipped_linked` (`.claude` or the
   directory under it is a symlink); each skip also adds a `warnings` line. They sit beside
   `play`, not inside it (see [Agents and skills](#agents-and-skills))
+- `launched` — whether the session was started: `false` with `--no-launch`, or when the session could not be started
+- `agent_kind` — the agent the workspace's main pane runs, read from its config after it is written (`claude`, `codex`, ...; `none` when the config runs no known agent). For a workspace whose config already existed this is what that config runs, which may differ from `--agent-kind`
 - `headless` — whether the session was started headless (see
   [`launch`](README.launch.md#headless))
 - `session_reused` — present only when the workspace's tmux session was
@@ -170,7 +180,7 @@ the coding agent. In that case the success doc above is still emitted, but with
 `error` and `prompt_failures` added and exit code 1:
 
 ```json
-{"schema_version":1,"ok":true,"project":"myproject","workspace":"myproject.worktree-PROJ-123","path":"/path/to/.worktrees/PROJ-123","branch":"PROJ-123","base":null,"created":true,"headless":false,"error":"Prompt was not sent to every workspace.","prompt_failures":{"myproject.worktree-PROJ-123":"agent never became ready"}}
+{"schema_version":1,"ok":true,"project":"myproject","workspace":"myproject.worktree-proj-123","path":"/path/to/.worktrees/PROJ-123","branch":"PROJ-123","base":null,"created":true,"headless":false,"error":"Prompt was not sent to every workspace.","prompt_failures":{"myproject.worktree-PROJ-123":"agent never became ready"}}
 ```
 
 Headless, when tmuxinator can't start the session (it fails, times out after 60
@@ -183,7 +193,7 @@ already existed — the success doc includes a `warnings` array instead of print
 to stderr:
 
 ```json
-{"schema_version":1,"ok":true,"project":"myproject","workspace":"myproject.worktree-PROJ-123","path":"/path/to/.worktrees/PROJ-123","branch":"PROJ-123","base":null,"created":false,"headless":false,"warnings":["Note: --base ignored; branch 'PROJ-123' already exists."]}
+{"schema_version":1,"ok":true,"project":"myproject","workspace":"myproject.worktree-proj-123","path":"/path/to/.worktrees/PROJ-123","branch":"PROJ-123","base":null,"created":false,"headless":false,"warnings":["Note: --base ignored; branch 'PROJ-123' already exists."]}
 ```
 
 ## Examples

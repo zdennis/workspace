@@ -1668,6 +1668,19 @@ RSpec.describe Workspace::CLI do
       expect(start_command).not_to have_received(:call).with("PROJ-3", any_args)
     end
 
+    it "passes --no-launch and --agent-kind (in either spelling) through to start" do
+      start_command = double("start", call: {exit_code: 0})
+      cli, = build_test_cli(start_command: start_command)
+
+      cli.run(["start", "--no-launch", "--agent-kind=codex", "PROJ-1"])
+      cli.run(["start", "--agent-kind", "claude", "PROJ-2"])
+
+      expect(start_command).to have_received(:call).with("PROJ-1", prompt: nil, prompt_timeout: nil,
+        base: nil, yes: false, json: false, no_launch: true, agent_kind: "codex")
+      expect(start_command).to have_received(:call).with("PROJ-2", prompt: nil, prompt_timeout: nil,
+        base: nil, yes: false, json: false, agent_kind: "claude")
+    end
+
     it "passes --handoff and --no-handoff through to start, and refuses --handoff with --no-packs" do
       start_command = double("start", call: {exit_code: 0, prompt_failures: {}})
       cli, _, error_output = build_test_cli(start_command: start_command)

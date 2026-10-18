@@ -90,12 +90,13 @@ module Workspace
     # @param none [Boolean] drop the automatic packs (`--no-packs`)
     # @param handoff [Boolean, nil] `--handoff` (true: send the `handoff` pack, as a "flag" pack),
     #   `--no-handoff` (false: never), or nil to follow `handoff.auto`
+    # @param agent_kind [String, nil] the main agent kind a new workspace is given (`start --agent-kind`), judged instead of the project's
     # @return [Array<Hash{String=>String}>] each pack's "name" and "source" ("config" or "flag")
     # @raise [Workspace::UsageError] for +none+ together with +packs+ or with +handoff+ true
     # @raise [Workspace::Error] code `handoff_unsupported_agent` for +handoff+ true when the main
     #   agent is not Claude Code or Codex
-    def start_packs(cwd:, packs: [], none: false, handoff: nil)
-      start_selection(cwd: cwd, packs: packs, none: none, handoff: handoff).first
+    def start_packs(cwd:, packs: [], none: false, handoff: nil, agent_kind: nil)
+      start_selection(cwd: cwd, packs: packs, none: none, handoff: handoff, agent_kind: agent_kind).first
     end
 
     # Composes the {#start_packs}. Every pack is read here, so an unknown name
@@ -106,8 +107,8 @@ module Workspace
     #   each with "name", "source", "reason" (`handoff_unsupported_agent`) and a "message"
     #   for a warning; nil text and no packs when none applies
     # @raise [Workspace::UsageError, Workspace::Error] see {#start_packs} and {#compose}
-    def compose_start(cwd:, packs: [], none: false, handoff: nil)
-      entries, skipped = start_selection(cwd: cwd, packs: packs, none: none, handoff: handoff)
+    def compose_start(cwd:, packs: [], none: false, handoff: nil, agent_kind: nil)
+      entries, skipped = start_selection(cwd: cwd, packs: packs, none: none, handoff: handoff, agent_kind: agent_kind)
       return {"packs" => [], "text" => nil, "skipped" => skipped} if entries.empty?
       result = compose(packs: entries.map { |entry| entry["name"] }, cwd: cwd)
       sources = entries.to_h { |entry| [entry["name"], entry["source"]] }
@@ -153,14 +154,14 @@ module Workspace
     private
 
     # The entries {#start_packs} lists, and the config-driven packs left out.
-    def start_selection(cwd:, packs:, none:, handoff:)
+    def start_selection(cwd:, packs:, none:, handoff:, agent_kind: nil)
       raise UsageError, "--no-packs cannot be combined with --pack." if none && packs.any?
       raise UsageError, "--no-packs cannot be combined with --handoff." if none && handoff == true
       lineage = @lineage.resolve(cwd: cwd)
       project = lineage.name
       workspace = lineage.worktree || project
       automatic = (none ? [] : automatic_start_packs(workspace)).map { |pack| {"name" => pack, "source" => "config"} }
-      extra, skipped = handoff_pack(project, workspace, none: none, handoff: handoff)
+      extra, skipped = handoff_pack(project, workspace, none: none, handoff: handoff, agent_kind: agent_kind)
       flagged = packs.map { |pack| {"name" => pack.sub(%r{\Aplay/}, ""), "source" => "flag"} }
       [(automatic + extra + flagged).uniq { |pack| pack["name"] }, skipped]
     end
@@ -178,11 +179,11 @@ module Workspace
     end
 
     # @return [Array(Array<Hash>, Array<Hash>)] the `handoff` entry to send, and the one to report as skipped
-    def handoff_pack(project, workspace, none:, handoff:)
+    def handoff_pack(project, workspace, none:, handoff:, agent_kind: nil)
       flag = handoff == true
       raise Error, "--handoff is not available: no handoff config was wired." if flag && (@handoff_config.nil? || @main_agent.nil?)
       return [[], []] if handoff == false || (!flag && (none || @handoff_config.nil? || @main_agent.nil? || !@handoff_config.auto?(workspace)))
-      kind = @main_agent.kind(project)
+      kind = agent_kind || @main_agent.kind(project)
       return [[{"name" => "handoff", "source" => flag ? "flag" : "config"}], []] if HANDOFF_AGENTS.include?(kind)
       if flag
         raise Error.new("--handoff needs Claude Code or Codex as the main agent, and #{project}'s is #{kind_words(kind)}.",

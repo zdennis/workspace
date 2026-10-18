@@ -67,7 +67,7 @@ module Workspace
     #   in every pane through the template's `{{PRE_WINDOW}}` line, which is dropped without one
     # @return [String] the config name
     # @raise [Workspace::Error] if the worktree template is missing
-    def create_worktree(project_name, worktree_name, worktree_path, branch_name, quiet: false, task_id: nil)
+    def create_worktree(project_name, worktree_name, worktree_path, branch_name, quiet: false, task_id: nil, agent_kind: nil)
       project_name = WorkspaceName.normalize(project_name)
       tmux_session_name = "#{project_name}.wt-#{@git.sanitize_for_filesystem(worktree_name)}"
         .tr(".", "-").downcase
@@ -93,6 +93,7 @@ module Workspace
         .gsub("{{CONFIG_PATH}}", config_path)
         .sub(/^\{\{PRE_WINDOW\}\}\n/, task_id ? "pre_window: export WORKSPACE_TASK=#{task_id}\n" : "")
 
+      content = with_agent_kind(content, agent_kind) if agent_kind
       File.write(config_path, content)
       @output.puts "Created config: #{config_path}" unless quiet
       config_name
@@ -187,7 +188,33 @@ module Workspace
       projects.find { |other| other == name } || projects.find { |other| WorkspaceName.same?(other, name) }
     end
 
+    # Refuses an agent kind the installed worktree template cannot take, so `start` fails before it
+    # creates anything.
+    #
+    # @param kind [String] an {AgentProvider} key
+    # @raise [Workspace::Error] code `template_outdated` when the template has no Claude Code pane to swap
+    def check_agent_kind!(kind)
+      return if kind == "claude" || !File.exist?(@config.worktree_template_path)
+      return if File.read(@config.worktree_template_path).match?(AGENT_PANE)
+      raise Workspace::Error.new("The worktree template has no Claude Code pane to swap for #{kind}; run `workspace init --force` to refresh it.",
+        code: "template_outdated", details: {"kind" => kind})
+    end
+
+    AGENT_PANE = /^(\s*- )claude --dangerously-skip-permissions.*$/
+
     private
+
+    # Swaps the template's Claude Code pane for another agent's executable. Works on the installed
+    # template whatever its age, since it matches the pane line rather than a placeholder.
+    def with_agent_kind(content, kind)
+      return content if kind == "claude"
+      provider = AgentProvider.all.find { |candidate| candidate.key == kind }
+      swapped = content.sub(AGENT_PANE) { "#{$1}#{provider.executable}" }
+      if swapped == content
+        raise Workspace::Error, "The worktree template has no Claude Code pane to swap for #{kind}; run `workspace init --force` to refresh it."
+      end
+      swapped
+    end
 
     def same_directory?(first, second)
       return false if first.nil? || second.nil?

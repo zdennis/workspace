@@ -25,7 +25,7 @@ It reads constants, config paths and the `PATH`. It starts no process and touche
    "actions_manifest":0,"agent_send":1,"agent_spawn":1,"focus_pane":1,"state_done":1,
    "doctor_json":1,"daemon_control":4,"config_json":2,"config_scopes":2,"tmux_show":1,"tasks":1,"event_emitters":1,
    "ui_open":3,"pane_bindings":3,"library":4,"library_play":2,"library_copy":1,"instructions":1,"restore":1,
-   "workflow":2,"window_state":1,"cleanup_dry_run":1,"notes":1,"start_packs":2,
+   "workflow":2,"window_state":1,"cleanup_dry_run":1,"notes":1,"start_packs":2,"start_agent":1,
    "handoff_auto":2,"handoff_codex":1,"dev_queue":2,"plan":4,"inbox":3,"ask_withdraw":1,"review":1,"add_json":1,"plan_progress":1},
  "exit_codes":{"ok":0,"failed":1,"not_submitted":2,"partial":3,"lock_cleared":4,"timeout":75},
  "paths":{"event_log":"/Users/me/.workspace-events.jsonl","hook_events":"/Users/me/.local/state/workspace/.events",
@@ -91,6 +91,7 @@ It reads constants, config paths and the `PATH`. It starts no process and touche
 | `add_json` | `add --json` prints one action document, one row per path with outcome `created` or `exists` (see [`add`](README.add.md)) |
 | `plan_progress` | The event log records `plan_progress` (`workspace`, `counts`, `current`, `changed`) whenever a workspace's plan checklist changes, however it was edited; `events --follow --json` carries it (see [`event-log`](README.event-log.md)) |
 | `start_packs` | `start` and `launch` send the instruction packs that apply (`--pack`, `--no-packs`, the `notes.instructions` key) and report `packs` rows in `--json`; `instructions compose --start` prints them (see [`start`](README.start.md#packs)). Level 2: the `dev.instructions` key and the automatic `dev` pack for a project with `dev.up`, and a `dev.configured` row in `config show --json` |
+| `start_agent` | `start --agent-kind KIND` picks the coding agent of the main pane (`claude`, `codex`, ...), `start --no-launch` creates the worktree and config and starts nothing, and `start --json` reports `launched` and `agent_kind` (see [`start`](README.start.md#agent-kind-and---no-launch)); an unknown kind is `unknown_agent_kind` |
 | `event_emitters` | The event log records `ask_created`, `ask_answered`, `lock_released`, `lock_cleared`, `worktree_started`, `worktree_finished`, `daemon_started`, `daemon_stopped` and `config_changed` (see [`event-log`](README.event-log.md#state-and-lifecycle-events)) |
 
 ## Examples

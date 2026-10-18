@@ -374,7 +374,7 @@ module Workspace
       handoff_config: HandoffConfig.new(config_resolver: config_resolver, error_output: error_output),
       main_agent: MainAgent.new(project_config: project_config))
     start_ref = StartRef.new(git: git, lineage: lineage)
-    start_command = Commands::Start.new(git: git, project_config: project_config, project_settings: project_settings, launch_command: launch_command, lineage: lineage, hook_installer: hook_installer, task_store: task_store, event_log: event_log, library: library, library_installer: library_installer, notes_setup: notes_setup, instruction_composer: instruction_composer, start_ref: start_ref, output: output, input: input)
+    start_command = Commands::Start.new(git: git, project_config: project_config, project_settings: project_settings, launch_command: launch_command, lineage: lineage, hook_installer: hook_installer, task_store: task_store, event_log: event_log, library: library, library_installer: library_installer, notes_setup: notes_setup, instruction_composer: instruction_composer, start_ref: start_ref, main_agent: MainAgent.new(project_config: project_config), output: output, input: input)
     spine_command = Commands::Spine.new(notes: notes_command, output: output)
     ticket_command = Commands::Ticket.new(git: git, project_config: project_config, start_ref: start_ref, source: TicketSource.new, output: output)
     send_command = Commands::Send.new(locator: pane_locator, tmux: tmux, output: output)

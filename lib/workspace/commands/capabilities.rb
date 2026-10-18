@@ -46,6 +46,7 @@ module Workspace
         "cleanup_dry_run" => 1,
         "notes" => 1,
         "start_packs" => 2,
+        "start_agent" => 1,
         "handoff_auto" => 2,
         "handoff_codex" => 1,
         "dev_queue" => 2,

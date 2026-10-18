@@ -1627,4 +1627,119 @@ RSpec.describe Workspace::Commands::Start do
       expect(JSON.parse(output.string)).not_to have_key("notes_dir")
     end
   end
+  describe "#call with --no-launch and --agent-kind" do
+    let(:main_agent) { double("main_agent", kind: "claude") }
+    let(:which) { ->(_exe) { true } }
+    let(:name) { "myproject.worktree-PROJ-123" }
+    subject(:command) do
+      described_class.new(git: git, project_config: project_config, project_settings: project_settings,
+        launch_command: launch_command, main_agent: main_agent, which: which, output: output, error_output: error_output, input: input)
+    end
+
+    before do
+      allow(git).to receive(:root).and_return(tmpdir)
+      allow(git).to receive(:parse_start_input).with("PROJ-123").and_return({type: :jira_key, value: "PROJ-123"})
+      allow(git).to receive(:sanitize_for_filesystem).with("PROJ-123").and_return("PROJ-123")
+      allow(git).to receive(:worktree_exists?).and_return(false)
+      allow(git).to receive(:find_worktree_by_branch).and_return(nil)
+      allow(git).to receive(:branch_exists?).with("PROJ-123").and_return(true)
+      allow(git).to receive(:create_worktree)
+      allow(project_config).to receive(:create_worktree).and_return(name)
+      allow(project_config).to receive(:check_agent_kind!)
+      allow(launch_command).to receive(:call)
+    end
+
+    it "creates the worktree and config and launches nothing" do
+      result = command.call("PROJ-123", no_launch: true)
+
+      expect(git).to have_received(:create_worktree)
+      expect(project_config).to have_received(:create_worktree)
+      expect(launch_command).not_to have_received(:call)
+      expect(result).to be_nil
+      expect(output.string).to include("Not launching #{name}")
+    end
+
+    it "reports launched false, no packs and the agent kind in --json" do
+      allow(main_agent).to receive(:kind).with(name).and_return("codex")
+
+      result = command.call("PROJ-123", no_launch: true, json: true)
+
+      expect(result).to eq({exit_code: 0})
+      expect(JSON.parse(output.string)).to include("ok" => true, "launched" => false, "agent_kind" => "codex", "packs" => [], "workspace" => name)
+    end
+
+    it "reports launched true after a launch" do
+      allow(launch_command).to receive(:call).and_return({exit_code: 0})
+
+      command.call("PROJ-123", json: true)
+
+      expect(JSON.parse(output.string)).to include("launched" => true, "agent_kind" => "claude")
+    end
+
+    it "reports launched false when the session did not start" do
+      allow(launch_command).to receive(:call).and_return({exit_code: 1, start_failures: {name => "tmux died"}})
+
+      command.call("PROJ-123", json: true)
+
+      expect(JSON.parse(output.string)).to include("launched" => false)
+    end
+
+    {prompt: "hi", prompt_timeout: 5, play: "kickoff", packs: %w[review], handoff: true}.each do |option, value|
+      it "refuses --no-launch with #{option}, before anything is created" do
+        result = command.call("PROJ-123", **{:no_launch => true, :json => true, option => value})
+
+        expect(result).to eq({exit_code: 1})
+        expect(JSON.parse(output.string)).to include("ok" => false, "code" => "usage")
+        expect(git).not_to have_received(:create_worktree)
+      end
+    end
+
+    it "accepts --no-launch with --no-packs and --no-handoff" do
+      result = command.call("PROJ-123", no_launch: true, no_packs: true, handoff: false, json: true)
+
+      expect(result).to eq({exit_code: 0})
+    end
+
+    it "passes the agent kind to the config" do
+      command.call("PROJ-123", agent_kind: "Codex")
+
+      expect(project_config).to have_received(:create_worktree).with(anything, anything, anything, anything, quiet: false, agent_kind: "codex")
+    end
+
+    it "fails an unknown kind before creating anything" do
+      result = command.call("PROJ-123", agent_kind: "gemini", json: true)
+
+      expect(result).to eq({exit_code: 1})
+      doc = JSON.parse(output.string)
+      expect(doc).to include("ok" => false, "code" => "unknown_agent_kind")
+      expect(doc["details"]).to include("kind" => "gemini", "known" => include("claude", "codex"))
+      expect(git).not_to have_received(:create_worktree)
+    end
+
+    it "fails before creating anything when the template cannot take the kind" do
+      allow(project_config).to receive(:check_agent_kind!).and_raise(Workspace::Error.new("old", code: "template_outdated"))
+
+      result = command.call("PROJ-123", agent_kind: "codex", json: true)
+
+      expect(result).to eq({exit_code: 1})
+      expect(JSON.parse(output.string)).to include("code" => "template_outdated")
+      expect(git).not_to have_received(:create_worktree)
+    end
+
+    it "warns when an existing config kept a different kind" do
+      command.call("PROJ-123", agent_kind: "codex", no_launch: true, json: true)
+
+      expect(JSON.parse(output.string)["warnings"].join).to match(/--agent-kind codex was not applied.*runs claude/)
+    end
+
+    it "warns when the agent is not on PATH" do
+      allow(main_agent).to receive(:kind).and_return("codex")
+      missing = described_class.new(git: git, project_config: project_config, project_settings: project_settings,
+        launch_command: launch_command, main_agent: main_agent, which: ->(_) { false }, output: output, error_output: error_output, input: input)
+
+      missing.call("PROJ-123", agent_kind: "codex", no_launch: true, json: true)
+
+      expect(JSON.parse(output.string)["warnings"].join).to include("codex is not on your PATH")
+    end
+  end
 end

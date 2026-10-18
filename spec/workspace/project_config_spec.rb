@@ -140,6 +140,48 @@ RSpec.describe Workspace::ProjectConfig do
       end
     end
 
+    describe "#check_agent_kind!" do
+      it "raises template_outdated for a template with no Claude Code pane" do
+        path = File.join(tmpdir, "t.yml")
+        File.write(path, "panes:\n  - echo hi\n")
+        allow(config).to receive(:worktree_template_path).and_return(path)
+
+        expect { pc.check_agent_kind!("codex") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("template_outdated") }
+        expect { pc.check_agent_kind!("claude") }.not_to raise_error
+      end
+    end
+
+    context "with an agent kind" do
+      let(:template_path) { File.join(tmpdir, "project-worktree-template.yml") }
+
+      def written = File.read(File.join(tmpdir, "workspace.myapp.worktree-proj-123.yml"))
+
+      before { allow(config).to receive(:worktree_template_path).and_return(template_path) }
+
+      it "swaps the Claude Code pane for the agent's executable" do
+        File.write(template_path, "windows:\n  - w:\n      panes:\n        - echo hi\n        - claude --dangerously-skip-permissions --continue || claude --dangerously-skip-permissions\n")
+
+        pc.create_worktree("myapp", "PROJ-123", "/tmp/wt", "PROJ-123", agent_kind: "codex")
+
+        expect(written).to eq("windows:\n  - w:\n      panes:\n        - echo hi\n        - codex\n")
+      end
+
+      it "leaves the template alone for claude" do
+        File.write(template_path, "panes:\n  - claude --dangerously-skip-permissions\n")
+
+        pc.create_worktree("myapp", "PROJ-123", "/tmp/wt", "PROJ-123", agent_kind: "claude")
+
+        expect(written).to include("claude --dangerously-skip-permissions")
+      end
+
+      it "refuses a template with no Claude Code pane" do
+        File.write(template_path, "panes:\n  - echo hi\n")
+
+        expect { pc.create_worktree("myapp", "PROJ-123", "/tmp/wt", "PROJ-123", agent_kind: "codex") }
+          .to raise_error(Workspace::Error, /workspace init --force/)
+      end
+    end
+
     it "names a worktree's config the way create_worktree does" do
       expect(pc.worktree_config_name("MyApp", "PROJ-123")).to eq("myapp.worktree-proj-123")
     end

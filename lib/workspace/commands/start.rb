@@ -33,9 +33,11 @@ module Workspace
       # @param instruction_composer [Workspace::InstructionComposer, nil] composes the packs sent with the first
       #   prompt (the automatic `notes` pack, and `packs:`); nil sends none
       # @param start_ref [Workspace::StartRef, nil] reads the input and finds the project; nil builds one from +git+ and +lineage+
+      # @param main_agent [Workspace::MainAgent, nil] reads which agent the new workspace's main pane runs, for the
+      #   `agent_kind` the JSON reports; nil leaves it out
       def initialize(git:, project_config:, project_settings:, launch_command:, lineage: WorkspaceLineage.new,
         hook_installer: nil, which: nil, task_store: nil, event_log: nil, library: nil, library_installer: nil,
-        notes_setup: nil, instruction_composer: nil, start_ref: nil, output: $stdout, input: $stdin, error_output: $stderr)
+        notes_setup: nil, instruction_composer: nil, start_ref: nil, main_agent: nil, output: $stdout, input: $stdin, error_output: $stderr)
         @git = git
         @project_config = project_config
         @project_settings = project_settings
@@ -50,6 +52,7 @@ module Workspace
         @library_installer = library_installer
         @notes_setup = notes_setup
         @instruction_composer = instruction_composer
+        @main_agent = main_agent
         @output = output
         @input = input
         @error_output = error_output
@@ -73,6 +76,11 @@ module Workspace
       #   resolved like +play+ before anything is created, and reported as `agents` and `skills`
       # @param headless [Boolean] launch the session in the background with plain
       #   tmux instead of in iTerm2 (see Commands::Launch#call)
+      # @param no_launch [Boolean] create the worktree, config and task and start nothing; refused with
+      #   +prompt+, +prompt_timeout+, +play+, +packs+ or +handoff: true+, which all need an agent to send to.
+      #   The automatic packs are not sent (+packs+ reports +[]+); `workspace launch` sends them later
+      # @param agent_kind [String, nil] an {AgentProvider} key for the main agent pane of a config this run writes
+      #   (`codex`); nil keeps the template's Claude Code. Checked before anything is created
       # @param json [Boolean] emit the documented JSON schema instead of plain text; on
       #   an error, prints `{"schema_version":1,"ok":false,"error":"..."}` to stdout and returns
       #   +{exit_code: 1}+ instead of raising
@@ -83,9 +91,9 @@ module Workspace
       # @raise [Workspace::UsageError] if a prompt would block on a non-TTY stdin and
       #   neither +base+ nor +yes+ resolves it (unless +json+ is true)
       def call(input_string, prompt: nil, prompt_timeout: nil, base: nil, yes: false, headless: false, json: false, title: nil, play: nil,
-        agents: [], skills: [], packs: [], no_packs: false, handoff: nil)
+        agents: [], skills: [], packs: [], no_packs: false, handoff: nil, no_launch: false, agent_kind: nil)
         options = {prompt: prompt, prompt_timeout: prompt_timeout, base: base, yes: yes, headless: headless, title: title, play: play,
-                   agents: agents, skills: skills, packs: packs, no_packs: no_packs, handoff: handoff}
+                   agents: agents, skills: skills, packs: packs, no_packs: no_packs, handoff: handoff, no_launch: no_launch, agent_kind: agent_kind}
         return call_json(input_string, **options) if json
 
         start!(input_string, quiet: false, **options)
@@ -104,9 +112,13 @@ module Workspace
 
       # @return [Hash] when quiet is true, +{exit_code:, json:}+; otherwise the
       #   launch result, or nil if branch selection was cancelled
-      def start!(input_string, prompt:, prompt_timeout:, base:, yes:, headless:, quiet:, title: nil, play: nil, agents: [], skills: [], packs: [], no_packs: false, handoff: nil)
+      def start!(input_string, prompt:, prompt_timeout:, base:, yes:, headless:, quiet:, title: nil, play: nil, agents: [], skills: [], packs: [], no_packs: false, handoff: nil, no_launch: false, agent_kind: nil)
         root = @git.root
         raise Workspace::Error, "Not inside a git repository." unless root
+        check_no_launch!(no_launch, prompt: prompt, prompt_timeout: prompt_timeout, play: play, packs: packs, handoff: handoff)
+        @agent_kind = check_agent_kind!(agent_kind)
+        @project_config.check_agent_kind!(@agent_kind) if @agent_kind
+        @no_launch = no_launch
 
         interactive = !quiet && !yes && stdin_tty?
         @warnings = []
@@ -121,7 +133,7 @@ module Workspace
         root = project.root
         project_name = @project_config.existing_name(project.name) || WorkspaceName.normalize(project.name)
         @play = play && resolve_play(play, root)
-        @packs = resolve_packs(root, packs, no_packs, handoff, quiet: quiet)
+        @packs = no_launch ? nil : resolve_packs(root, packs, no_packs, handoff, quiet: quiet, agent_kind: @agent_kind)
         @copies = resolve_copies({"agent" => agents, "skill" => skills}, root)
         ref = @start_ref.call(input_string)
 
@@ -197,6 +209,7 @@ module Workspace
         task = start_task(project_name, worktree_dir_name, worktree_path, branch_name)
         worktree_options = {quiet: quiet}
         worktree_options[:task_id] = task["id"] if task
+        worktree_options[:agent_kind] = @agent_kind if @agent_kind
         config_name = @project_config.create_worktree(project_name, worktree_dir_name, worktree_path, branch_name, **worktree_options)
         @project_settings.ensure_exists(project_name)
         seed_worktree_hooks(project_name, config_name)
@@ -205,6 +218,14 @@ module Workspace
         copied = copy_library_entries(worktree_path, quiet: quiet)
         write_project_marker(worktree_path, config_name)
         record_started(config_name, project_name, branch_name, created: created, task: task)
+        agent_kind = report_agent_kind(config_name, quiet: quiet)
+        if @no_launch
+          log(quiet, "Not launching #{config_name}; start it with `workspace launch #{config_name}`.")
+          @project_settings.ensure_exists(config_name)
+          return unless quiet
+          return {exit_code: 0, json: start_json(project_name, config_name, worktree_path, branch_name, base, created, headless,
+            notes_dir, task, copied, agent_kind, launched: false)}
+        end
         log(quiet, "Launching #{config_name}...")
         text = (@play || @packs) ? @library.play_prompt(@play, prompt, packs: @packs&.fetch("text")) : prompt
         prompts = text ? {config_name => text} : {}
@@ -216,19 +237,9 @@ module Workspace
         return result unless quiet
 
         exit_code = result ? result[:exit_code] : 0
-        json = {
-          "schema_version" => JSON_SCHEMA_VERSION, "ok" => true,
-          "project" => project_name,
-          "workspace" => config_name,
-          "path" => worktree_path,
-          "branch" => branch_name,
-          "base" => base,
-          "created" => created,
-          "headless" => headless
-        }
-        json["notes_dir"] = notes_dir if notes_dir
-        json["task"] = {"id" => task["id"], "title" => task["title"]} if task
-        %w[agent skill].each { |kind| json["#{kind}s"] = copied[kind] if copied.key?(kind) }
+        started = !(result && result[:start_failures] && result[:start_failures][config_name])
+        json = start_json(project_name, config_name, worktree_path, branch_name, base, created, headless,
+          notes_dir, task, copied, agent_kind, launched: started)
         json["play"] = @play.merge("delivered" => delivered?(result, config_name), "pane" => result&.dig(:bound_panes, config_name)) if @play
         skipped = result&.dig(:skipped_prompts, config_name)
         @warnings << skipped if skipped
@@ -247,6 +258,69 @@ module Workspace
         json["warnings"] = @warnings if @warnings&.any?
 
         {exit_code: exit_code, json: json}
+      end
+
+      def start_json(project_name, config_name, worktree_path, branch_name, base, created, headless, notes_dir, task, copied, agent_kind, launched:)
+        json = {
+          "schema_version" => JSON_SCHEMA_VERSION, "ok" => true,
+          "project" => project_name,
+          "workspace" => config_name,
+          "path" => worktree_path,
+          "branch" => branch_name,
+          "base" => base,
+          "created" => created,
+          "headless" => headless,
+          "launched" => launched,
+          "agent_kind" => agent_kind
+        }
+        json["notes_dir"] = notes_dir if notes_dir
+        json["task"] = {"id" => task["id"], "title" => task["title"]} if task
+        %w[agent skill].each { |kind| json["#{kind}s"] = copied[kind] if copied.key?(kind) }
+        if @no_launch
+          json["packs"] = []
+          json["warnings"] = @warnings if @warnings&.any?
+        end
+        json
+      end
+
+      # What a launch would send or wait for has nowhere to go, so each is refused rather than dropped.
+      def check_no_launch!(no_launch, prompt:, prompt_timeout:, play:, packs:, handoff:)
+        return unless no_launch
+        flags = []
+        flags << "--prompt" if prompt
+        flags << "--prompt-timeout" if prompt_timeout
+        flags << "--play" if play
+        flags << "--pack" if packs.any?
+        flags << "--handoff" if handoff == true
+        return if flags.empty?
+        raise Workspace::UsageError, "--no-launch starts no agent, so it cannot be combined with #{flags.join(", ")}. " \
+          "Drop the flag, or send the text with `workspace launch` afterwards."
+      end
+
+      # @return [String, nil] the kind, lowercase
+      def check_agent_kind!(kind)
+        return if kind.nil?
+        known = AgentProvider.all.map(&:key)
+        return kind.downcase if known.include?(kind.downcase)
+        raise Workspace::Error.new("Unknown --agent-kind '#{kind}'. Known: #{known.join(", ")}.",
+          code: "unknown_agent_kind", details: {"kind" => kind, "known" => known})
+      end
+
+      # The kind the config ended up running. A config that already existed keeps its panes, so a
+      # different --agent-kind is noted, not applied.
+      #
+      # @return [String, nil] nil when no MainAgent was wired
+      def report_agent_kind(config_name, quiet:)
+        actual = @main_agent&.kind(config_name)
+        message =
+          if @agent_kind && actual && actual != @agent_kind
+            "Note: --agent-kind #{@agent_kind} was not applied; #{config_name}'s existing config runs #{actual}."
+          elsif @agent_kind && !@which.call(AgentProvider.all.find { |p| p.key == @agent_kind }.executable)
+            "Note: #{@agent_kind} is not on your PATH, so its pane will not start an agent."
+          end
+        return actual unless message
+        quiet ? @warnings << message : @error_output.puts(message)
+        actual
       end
 
       # The play is checked before anything is created, so an unknown name or an
@@ -272,14 +346,14 @@ module Workspace
       # unknown name or an unreadable pack changes nothing.
       #
       # @return [Hash, nil] from {Workspace::InstructionComposer#compose_start}; nil when none applies
-      def resolve_packs(root, packs, none, handoff, quiet:)
+      def resolve_packs(root, packs, none, handoff, quiet:, agent_kind: nil)
         @skipped_packs = []
         unless @instruction_composer
           raise Workspace::Error, "--pack is not available: no library was wired." if packs.any?
           raise Workspace::Error, "--handoff is not available: no library was wired." if handoff == true
           return nil
         end
-        composed = @instruction_composer.compose_start(cwd: root, packs: packs, none: none, handoff: handoff)
+        composed = @instruction_composer.compose_start(cwd: root, packs: packs, none: none, handoff: handoff, agent_kind: agent_kind)
         @skipped_packs = composed["skipped"] || []
         @skipped_packs.each { |pack| quiet ? @warnings << pack["message"] : @error_output.puts("Warning: #{pack["message"]}") }
         composed["packs"].empty? ? nil : composed

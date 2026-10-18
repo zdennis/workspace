@@ -48,6 +48,8 @@ module Workspace
       "no_upstream" => "rebase --onto upstream: the branch has no upstream configured. details.branch.",
       "upstream_gone" => "rebase --onto upstream: the branch's upstream no longer exists on the remote. details.branch, details.upstream.",
       "push_rejected" => "push: origin refused the push, or the upstream has commits the branch never had so the push was not forced. details.branch, details.upstream, details.detail, details.reason (origin_refused, would_delete_commits, upstream_has_other_commits, upstream_mismatch).",
+      "template_outdated" => "start --agent-kind: the installed worktree template has no Claude Code pane to swap; run init --force. details.kind. Nothing was created.",
+      "unknown_agent_kind" => "start --agent-kind named a kind that is not a known coding agent. details.kind, details.known. Nothing was created.",
       "handoff_unsupported_agent" => "The handoff pack was asked for, but the project's main agent is not Claude Code or Codex.",
       # Codes the agent daemon puts in its replies; `agent-run` passes them through.
       "malformed_message" => "The daemon couldn't parse the request.",
