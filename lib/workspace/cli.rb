@@ -4771,8 +4771,9 @@ module Workspace
     end
 
     def cmd_add(args)
+      json = false
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace add <path> [path2] ..."
+        opts.banner = "Usage: workspace add [--json] <path> [path2] ..."
         opts.separator ""
         opts.separator "Add tmuxinator configs for project directories."
         opts.separator "Uses the directory name as the project name."
@@ -4786,38 +4787,86 @@ module Workspace
         opts.separator "set up (see 'workspace notes dir'): stored as the config's notes.dir,"
         opts.separator "created, and kept out of git status. A problem there is a warning."
         opts.separator ""
+        opts.separator "Options:"
+        opts.on("--json", "Print one action document (see docs/README.json.md) instead of text, which goes",
+          "to stderr; one row per path, outcome created, exists or failed (a refused name), with",
+          "root and config_path. A path that is not a directory is the not_a_directory error and",
+          "nothing is added (without --json, such a path is skipped and the others are added)") { json = true }
+        opts.separator ""
         opts.separator "Examples:"
         opts.separator "  workspace add ~/Code/my-project   # add a project by path"
         opts.separator "  workspace add .    # add the current directory"
         opts.separator "  workspace add ~/Code/project-a ~/Code/project-b    # add multiple projects"
+        opts.separator "  workspace add --json ~/Code/my-project    # created or exists, as JSON"
       end
       parser.parse!(args)
 
       raise UsageError, parser.help if args.empty?
 
-      args.each do |arg|
+      targets = args.map do |arg|
         name, root = @project_config.resolve_project_arg(arg)
-        root ||= File.expand_path(arg)
-        unless File.directory?(root)
-          @error_output.puts "Error: Not a directory: #{root}"
-          next
-        end
-        created = !@project_config.exists?(name)
-        @project_config.create(name, root)
-        @project_settings.ensure_exists(name)
-        @output.puts "Project name: #{name}"
-        setup_notes_for_added_worktree(name) if created && File.basename(File.dirname(root)) == ".worktrees"
+        [name, root || File.expand_path(arg)]
+      rescue Workspace::Error => e
+        raise unless e.code == "workspace_name_case_conflict"
+
+        [e, File.expand_path(arg)]
       end
+
+      if json
+        bad = targets.find { |_, root| !File.directory?(root) }
+        raise Error.new("Not a directory: #{bad[1]}", code: "not_a_directory", details: {"path" => bad[1]}) if bad
+      end
+
+      run_action("add", json: json) do
+        warnings = []
+        rows = targets.map do |name, root|
+          unless File.directory?(root)
+            @error_output.puts "Error: Not a directory: #{root}"
+            next
+          end
+          if name.is_a?(Workspace::Error)
+            raise name unless json
+
+            next action_row(name.details["name"], "failed", reason: name.code, message: name.message, root: root, details: name.details)
+          end
+          add_one_project(name, root, json: json, warnings: warnings)
+        end
+        {results: rows.compact, warnings: warnings}
+      end
+    end
+
+    # Adds one project for `cmd_add`. With `json`, returns the action row
+    # (`created` or `exists`, or `failed` for a refused name) and collects notes
+    # warnings; otherwise a refusal raises as it always did.
+    def add_one_project(name, root, json:, warnings:)
+      created = @project_config.existing_name(name).nil?
+      name = @project_config.create(name, root) || name
+      @project_settings.ensure_exists(name)
+      @output.puts "Project name: #{name}" unless json
+      worktree = created && File.basename(File.dirname(root)) == ".worktrees"
+      notes = worktree ? setup_notes_for_added_worktree(name, json: json) : nil
+      return unless json
+
+      warnings.concat(notes["warnings"]) if notes
+      action_row(name, created ? "created" : "exists", root: root,
+        config_path: @project_config.config_path_for(name), notes_dir: notes && notes["dir"])
+    rescue Workspace::Error => e
+      raise unless json && e.code == "workspace_name_case_conflict"
+
+      action_row(name, "failed", reason: e.code, message: e.message, root: root, details: e.details)
     end
 
     # A worktree config `add` just made gets its notes directory fixed the way
     # `start` fixes one. Problems are warnings; the config is already made.
-    def setup_notes_for_added_worktree(name)
+    #
+    # @return [Hash, nil] the notes setup result
+    def setup_notes_for_added_worktree(name, json: false)
       return unless @notes_setup
 
       result = @notes_setup.call(name)
       result["warnings"].each { |message| @error_output.puts message }
-      @output.puts "Notes directory: #{result["dir"]}" if result["dir"]
+      @output.puts "Notes directory: #{result["dir"]}" if result["dir"] && !json
+      result
     end
 
     def cmd_statusline(args)

@@ -899,13 +899,139 @@ RSpec.describe Workspace::CLI do
   describe "#run with add" do
     let(:root) { Dir.mktmpdir }
     let(:worktree_root) { File.join(root, ".worktrees", "x").tap { |dir| FileUtils.mkdir_p(dir) } }
-    let(:project_config) { instance_double(Workspace::ProjectConfig, exists?: false, create: nil) }
+    let(:project_config) { instance_double(Workspace::ProjectConfig, existing_name: nil) }
     let(:notes_setup) { instance_double(Workspace::NotesSetup) }
 
     after { FileUtils.remove_entry(root) }
 
     before do
       allow(project_config).to receive(:resolve_project_arg) { |arg| [(arg == worktree_root) ? "repo-x" : "plain", File.expand_path(arg)] }
+      allow(project_config).to receive(:create) { |name, _root| name }
+      allow(project_config).to receive(:config_path_for) { |name| "/cfg/#{name}.yml" }
+    end
+
+    describe "--json" do
+      it "reports created with the name, root and config path" do
+        cli, output, = build_test_cli(project_config: project_config, notes_setup: notes_setup)
+
+        cli.run(["add", "--json", root])
+
+        doc = JSON.parse(output.string)
+        expect(doc).to include("action" => "add", "status" => "ok")
+        expect(doc["results"]).to eq([{"workspace" => "plain", "outcome" => "created", "reason" => nil, "message" => nil,
+                                       "root" => root, "config_path" => "/cfg/plain.yml", "notes_dir" => nil}])
+      end
+
+      it "reports exists for a config already there, under the name create returns" do
+        allow(project_config).to receive(:existing_name).and_return("Plain")
+        allow(project_config).to receive(:create).and_return("Plain")
+        cli, output, = build_test_cli(project_config: project_config, notes_setup: notes_setup)
+
+        cli.run(["add", "--json", root])
+
+        row = JSON.parse(output.string)["results"].first
+        expect(row).to include("workspace" => "Plain", "outcome" => "exists", "config_path" => "/cfg/Plain.yml")
+      end
+
+      it "keeps stdout to one document" do
+        cli, output, = build_test_cli(project_config: project_config, notes_setup: notes_setup)
+
+        cli.run(["add", "--json", root])
+
+        expect(output.string.lines.size).to eq(1)
+      end
+
+      it "gives a created worktree config its notes_dir and the setup warnings" do
+        allow(notes_setup).to receive(:call).and_return("dir" => "/notes/x", "warnings" => ["Warning: slow"])
+        cli, output, = build_test_cli(project_config: project_config, notes_setup: notes_setup)
+
+        cli.run(["add", "--json", worktree_root])
+
+        doc = JSON.parse(output.string)
+        expect(doc["results"].first).to include("outcome" => "created", "notes_dir" => "/notes/x")
+        expect(doc["warnings"]).to eq(["Warning: slow"])
+      end
+
+      it "refuses a path that is not a directory before adding anything" do
+        cli, output, = build_test_cli(project_config: project_config, notes_setup: notes_setup)
+        missing = File.join(root, "nope")
+
+        expect { cli.run(["add", "--json", root, missing]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+
+        doc = JSON.parse(output.string)
+        expect(doc).to include("ok" => false, "code" => "not_a_directory")
+        expect(doc["details"]).to eq("path" => missing)
+        expect(project_config).not_to have_received(:create)
+      end
+
+      it "accepts flags after the paths" do
+        cli, output, = build_test_cli(project_config: project_config, notes_setup: notes_setup)
+
+        cli.run(["add", root, "--json"])
+
+        expect(JSON.parse(output.string)["results"].size).to eq(1)
+      end
+
+      it "turns a case conflict into a failed row and still adds the other paths" do
+        other = Dir.mktmpdir
+        allow(project_config).to receive(:resolve_project_arg) { |arg| [(arg == other) ? "other" : "plain", File.expand_path(arg)] }
+        allow(project_config).to receive(:create) do |name, _root|
+          raise Workspace::Error.new("clash", code: "workspace_name_case_conflict", details: {"name" => name}) if name == "plain"
+          name
+        end
+        cli, output, = build_test_cli(project_config: project_config, notes_setup: notes_setup)
+
+        expect { cli.run(["add", "--json", root, other]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(3) }
+
+        doc = JSON.parse(output.string)
+        expect(doc["status"]).to eq("partial")
+        expect(doc["results"].map { |r| [r["outcome"], r["reason"]] }).to eq([["failed", "workspace_name_case_conflict"], ["created", nil]])
+      ensure
+        FileUtils.remove_entry(other)
+      end
+    end
+
+    it "turns a conflict found while resolving a path into a failed row" do
+      other = Dir.mktmpdir
+      allow(project_config).to receive(:resolve_project_arg) do |arg|
+        raise Workspace::Error.new("clash", code: "workspace_name_case_conflict", details: {"name" => "plain"}) if arg == root
+        ["other", File.expand_path(arg)]
+      end
+      cli, output, = build_test_cli(project_config: project_config, notes_setup: notes_setup)
+
+      expect { cli.run(["add", "--json", root, other]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(3) }
+
+      rows = JSON.parse(output.string)["results"]
+      expect(rows.map { |r| [r["workspace"], r["outcome"], r["reason"]] }).to eq([["plain", "failed", "workspace_name_case_conflict"], ["other", "created", nil]])
+    ensure
+      FileUtils.remove_entry(other)
+    end
+
+    it "reports exists with no notes_dir for a worktree config already there" do
+      allow(project_config).to receive(:existing_name).with("repo-x").and_return("repo-x")
+      allow(notes_setup).to receive(:call)
+      cli, output, = build_test_cli(project_config: project_config, notes_setup: notes_setup)
+
+      cli.run(["add", "--json", worktree_root])
+
+      expect(JSON.parse(output.string)["results"].first).to include("outcome" => "exists", "notes_dir" => nil)
+      expect(notes_setup).not_to have_received(:call)
+    end
+
+    it "skips a path that is not a directory without --json and adds the rest" do
+      cli, output, error_output = build_test_cli(project_config: project_config, notes_setup: notes_setup)
+
+      cli.run(["add", File.join(root, "nope"), root])
+
+      expect(error_output.string).to include("Not a directory")
+      expect(output.string).to include("Project name: plain")
+    end
+
+    it "still raises a case conflict without --json" do
+      allow(project_config).to receive(:create).and_raise(Workspace::Error.new("clash", code: "workspace_name_case_conflict"))
+      cli, = build_test_cli(project_config: project_config, notes_setup: notes_setup)
+
+      expect { cli.run(["add", root]) }.to raise_error(FakeSystemExit)
     end
 
     it "sets up the notes directory of a worktree config it creates" do
@@ -928,7 +1054,7 @@ RSpec.describe Workspace::CLI do
     end
 
     it "leaves a worktree config that already exists as it is" do
-      allow(project_config).to receive(:exists?).with("repo-x").and_return(true)
+      allow(project_config).to receive(:existing_name).with("repo-x").and_return("repo-x")
       allow(notes_setup).to receive(:call)
       cli, = build_test_cli(project_config: project_config, notes_setup: notes_setup)
 

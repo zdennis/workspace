@@ -26,7 +26,7 @@ To ask which of these a given CLI supports, run `workspace capabilities --json` 
 
 ## Actions
 
-These commands take `--json` and print one action document: `launch`, `stop`, `kill`, `relaunch`, `restore`, `focus`, `repair`, `cleanup`, `deactivate`, `reactivate`, `dev up`, `dev down`, `dev wait`, `dev leave`, `lock release`, `config set`, `config unset`, `config edit`, `daemon restart` (also with `--all`), `agentd restart`, `pipeline start`, `pipeline advance`, `pipeline reset`, `prune`, `ui open`, `binding set`, `binding show`, `binding clear`, `library add`, `library update`, `library remove`, `workflow run`, `workflow resume`, `workflow cancel`, `workflow approve`, `workflow reject` and `step done`. (`finish`, `start`, `lock clear` and `projects stop|kill` have their own pages; `projects stop|kill` use the same shape.)
+These commands take `--json` and print one action document: `add`, `launch`, `stop`, `kill`, `relaunch`, `restore`, `focus`, `repair`, `cleanup`, `deactivate`, `reactivate`, `dev up`, `dev down`, `dev wait`, `dev leave`, `lock release`, `config set`, `config unset`, `config edit`, `daemon restart` (also with `--all`), `agentd restart`, `pipeline start`, `pipeline advance`, `pipeline reset`, `prune`, `ui open`, `binding set`, `binding show`, `binding clear`, `library add`, `library update`, `library remove`, `workflow run`, `workflow resume`, `workflow cancel`, `workflow approve`, `workflow reject` and `step done`. (`finish`, `start`, `lock clear` and `projects stop|kill` have their own pages; `projects stop|kill` use the same shape.)
 
 ```json
 {"schema_version":1,"ok":true,"action":"stop","status":"ok",
@@ -106,6 +106,7 @@ The exit code is unchanged by `--json` (1 for most failures, 2 for `not_submitte
 | `handoff_unsupported_agent` | `start --handoff` or `launch --handoff` was given for a project whose main agent is not Claude Code or Codex, so the `handoff` pack would not work. `details.kind` is the agent found (`opencode`, `pi`), or `none` when the project config runs no known agent. Nothing was created. The config key `handoff.auto` never raises it: there the pack is skipped with a warning (see [`handoff`](README.handoff.md#automatic-handoff)). |
 | `notes_dir_unwritable` | `notes dir --create` couldn't make the directory or list it in `info/exclude`, or a `plan` verb couldn't write or rename the plan file. `details.path` is the directory. |
 | `no_plan` | `plan show`, `start`, `pause` or `delete` found no `IMPLEMENTATION_PLAN.md` in the workspace's notes directory. `details.name`, `details.path`. |
+| `not_a_directory` | `add --json` was given a path that is not a directory; nothing was added. `details.path`. |
 | `plan_exists` | `plan init` found a plan already there and `--force` was not given. `details.path`. |
 | `plan_done` | `plan start` or `plan pause` found a plan that is done (`status: done`, or nothing left to do). `details.name`, `details.path`. |
 | `plan_write_conflict` | The plan file changed twice while a `plan` verb was writing it, so nothing was written; run the verb again. `details.path`. |
