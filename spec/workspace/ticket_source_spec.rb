@@ -213,6 +213,120 @@ RSpec.describe Workspace::TicketSource do
     end
   end
 
+  describe "#list" do
+    let(:gh_issues) { [{"number" => 7, "title" => "Crash\non start\e[1m", "url" => "https://github.com/o/r/issues/7", "state" => "OPEN", "updatedAt" => "2026-10-16T09:00:00Z"}] }
+    let(:gh_prs) { [{"number" => 9, "title" => "Add x", "url" => "https://github.com/o/r/pull/9", "state" => "OPEN", "updatedAt" => "2026-10-17T13:00:00Z"}] }
+    let(:jira_issues) do
+      [{"key" => "PROJ-1", "self" => "https://acme.atlassian.net/rest/api/2/issue/10001",
+        "fields" => {"summary" => "Fix login", "status" => {"name" => "In Progress"}, "updated" => "2026-10-17T14:30:00.000+0200"}}]
+    end
+    let(:replies) { {"issue" => JSON.generate(gh_issues), "pr" => JSON.generate(gh_prs), "jira" => JSON.generate(jira_issues)} }
+    let(:runner) do
+      lambda do |argv, chdir:, timeout:|
+        calls << {argv: argv, chdir: chdir, timeout: timeout}
+        reply = replies.fetch((argv[0] == "jira") ? "jira" : argv[1])
+        reply.is_a?(Proc) ? reply.call : [reply, "", true]
+      end
+    end
+
+    def list(**options) = source.list(filter: "assigned", limit: 20, chdir: "/repo", **options)
+
+    it "reads gh issues, gh pull requests and jira in the checkout, within the time limit, with the assigned filter" do
+      list
+
+      expect(calls.map { |c| c[:argv] }).to contain_exactly(
+        %w[gh issue list --state open --limit 20 --json number,title,url,state,updatedAt --assignee @me],
+        %w[gh pr list --state open --limit 20 --json number,title,url,state,updatedAt --assignee @me],
+        ["jira", "issue", "list", "-q", "assignee = currentUser() AND resolution = Unresolved", "--order-by", "updated", "--raw", "--paginate", "0:20"]
+      )
+      expect(calls.map { |c| [c[:chdir], c[:timeout]] }.uniq).to eq([["/repo", 3]])
+    end
+
+    it "asks for recently changed tickets for the recent filter" do
+      source.list(filter: "recent", limit: 5, chdir: "/repo")
+
+      argvs = calls.map { |c| c[:argv] }
+      expect(argvs).to include(%w[gh issue list --state open --limit 5 --json number,title,url,state,updatedAt --search sort:updated-desc])
+      expect(argvs.find { |a| a[0] == "jira" }).to include("updated >= -14d", "0:5")
+    end
+
+    it "returns rows from every source, newest first, as one line of plain text each" do
+      rows = list["rows"]
+
+      expect(rows.map { |r| r["ref"] }).to eq(["https://github.com/o/r/pull/9", "PROJ-1", "https://github.com/o/r/issues/7"])
+      expect(rows[1]).to eq("ref" => "PROJ-1", "kind" => "jira", "source" => "jira", "title" => "Fix login",
+        "url" => "https://acme.atlassian.net/browse/PROJ-1", "state" => "In Progress", "updated_at" => "2026-10-17T14:30:00.000+0200")
+      expect(rows[2]).to include("kind" => "github_issue", "source" => "gh", "state" => "open", "title" => "Crash on start [1m")
+    end
+
+    it "cuts the merged rows to the limit" do
+      expect(source.list(filter: "assigned", limit: 2, chdir: "/repo")["rows"].size).to eq(2)
+    end
+
+    it "asks only the sources named" do
+      list(sources: ["jira"])
+
+      expect(calls.map { |c| c[:argv][0] }).to eq(["jira"])
+    end
+
+    it "reads a jira reply that wraps the issues in an object" do
+      replies["jira"] = JSON.generate("issues" => jira_issues)
+
+      expect(list(sources: ["jira"])["rows"].map { |r| r["ref"] }).to eq(["PROJ-1"])
+    end
+
+    it "leaves out a row with no URL or key" do
+      replies["issue"] = JSON.generate([{"number" => 1, "title" => "x"}])
+      replies["jira"] = JSON.generate([{"fields" => {}}])
+
+      expect(list["rows"].map { |r| r["ref"] }).to eq(["https://github.com/o/r/pull/9"])
+    end
+
+    it "makes a missing tool one warning and keeps the other rows" do
+      source = described_class.new(runner: runner, which: ->(exe) { exe != "gh" }, timeout: 3)
+
+      result = source.list(filter: "assigned", limit: 20, chdir: "/repo")
+
+      expect(result["rows"].map { |r| r["source"] }).to eq(["jira"])
+      expect(result["warnings"]).to eq([{"source" => "gh", "code" => "ticket_source_unavailable", "reason" => "missing", "message" => "`gh` is not installed."}])
+    end
+
+    it "makes a timeout, a failure and an unreadable reply warnings, never a raise" do
+      replies["issue"] = -> { raise Timeout::Error }
+      replies["pr"] = -> { ["", "gh: To get started with GitHub CLI, please run: gh auth login\nmore", false] }
+      replies["jira"] = "not json"
+
+      result = list
+
+      expect(result["rows"]).to eq([])
+      expect(result["warnings"]).to contain_exactly(
+        include("source" => "gh", "reason" => "timeout", "message" => "`gh` did not answer in time."),
+        include("source" => "gh", "reason" => "error", "detail" => "gh: To get started with GitHub CLI, please run: gh auth login"),
+        include("source" => "jira", "reason" => "error", "detail" => "unreadable reply from jira")
+      )
+    end
+
+    it "says a missing gh once, though it is asked twice" do
+      source = described_class.new(runner: runner, which: ->(exe) { exe != "gh" }, timeout: 3)
+
+      expect(source.list(filter: "assigned", limit: 20, chdir: "/repo", sources: ["gh"])["warnings"].size).to eq(1)
+    end
+
+    it "treats a jira reply that is a bare string or null as an unreadable reply" do
+      ['"x"', "null", "3"].each do |reply|
+        replies["jira"] = reply
+
+        expect(list(sources: ["jira"])).to include("rows" => [], "warnings" => [include("source" => "jira", "reason" => "error")]), reply
+      end
+    end
+
+    it "treats a reply that is not a list as an unreadable reply" do
+      replies["issue"] = JSON.generate("oops" => 1)
+
+      expect(list(sources: ["gh"])["warnings"]).to include(include("reason" => "error", "detail" => "unreadable reply from gh"))
+    end
+  end
+
   describe ".run" do
     it "returns what the command printed and whether it succeeded" do
       expect(described_class.run(["sh", "-c", "echo out; echo err >&2"], chdir: Dir.pwd, timeout: 5)).to eq(["out\n", "err\n", true])

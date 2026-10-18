@@ -551,7 +551,7 @@ module Workspace
           set-command     Set the shell command for a pane in a project config (--pane <N>)
           statusline      Render Claude Code's status line (install as its statusLine command)
           stop            Stop active workspace projects and their tmux sessions
-          ticket          Look up a ticket (JIRA key, pull request, issue or branch) the way start reads it (show)
+          ticket          Look up a ticket (JIRA key, pull request, issue or branch) the way start reads it (show), or list yours (list)
           tile            Tile all windows for a project across the screen
           tmux            Show a workspace's tmuxinator file as windows and panes (tmux show --json)
           ui              Open a workspace-ui:// link: a task, a review, notes or the inbox
@@ -6639,14 +6639,28 @@ module Workspace
 
     def ticket_parser(options)
       OptionParser.new do |opts|
-        opts.banner = "Usage: workspace ticket show REF [--name WORKSPACE] [--json]"
+        opts.banner = "Usage: workspace ticket show REF [--name WORKSPACE] [--json]\n       workspace ticket list [--assigned|--recent] [--source gh|jira] [--limit N] [--name WORKSPACE] [--json]"
         opts.separator ""
-        opts.separator "Read a ticket the way 'workspace start' reads its argument, and say whether a worktree for"
+        opts.separator "show: read a ticket the way 'workspace start' reads its argument, and say whether a worktree for"
         opts.separator "it already exists. REF is a JIRA key or URL, a pull request URL or #n, a GitHub issue URL,"
         opts.separator "or a branch name. Title and body come from gh (pull requests and issues) or jira (JIRA keys);"
         opts.separator "a plain branch has none. Writes nothing, creates nothing, fetches nothing from git."
         opts.separator ""
+        opts.separator "list: tickets to pick from, newest change first: open GitHub issues and pull requests (gh) and"
+        opts.separator "JIRA issues (jira), assigned to you (the default) or changed lately. A tool that is missing, slow"
+        opts.separator "or signed out is a warning, and the other still answers. Each row says whether a workspace exists."
+        opts.separator ""
         opts.on("--name NAME", "Look in this workspace's project instead of the one detected from the current directory") { |v| options[:name] = v }
+        opts.on("--assigned", "list: open tickets assigned to you (the default)") do
+          raise UsageError, "Use --assigned or --recent, not both." if options[:filter] == "recent"
+          options[:filter] = "assigned"
+        end
+        opts.on("--recent", "list: open tickets changed lately, whoever they are assigned to") do
+          raise UsageError, "Use --assigned or --recent, not both." if options[:filter] == "assigned"
+          options[:filter] = "recent"
+        end
+        opts.on("--source SOURCE", "list: ask only gh or jira (repeatable; default both)") { |v| (options[:sources] ||= []) << v }
+        opts.on("--limit N", Integer, "list: at most N tickets, 1 to #{Workspace::Commands::Ticket::MAX_LIMIT} (default #{Workspace::Commands::Ticket::DEFAULT_LIMIT})") { |v| options[:limit] = v }
         opts.on("--json", "Print one JSON document (see docs/README.ticket.md)") { options[:json] = true }
         opts.on("-h", "--help", "Show this help") { options[:help] = true }
         opts.separator ""
@@ -6654,6 +6668,8 @@ module Workspace
         opts.separator "  workspace ticket show PROJ-123"
         opts.separator "  workspace ticket show https://github.com/acme/api/pull/41 --json"
         opts.separator "  workspace ticket show feature/login --name api"
+        opts.separator "  workspace ticket list --json    # what is assigned to me"
+        opts.separator "  workspace ticket list --recent --source=gh --limit=10"
       end
     end
 
@@ -6664,8 +6680,17 @@ module Workspace
       return @output.puts(parser.help) if options[:help]
 
       subcommand = args.shift
-      raise UsageError, "Missing subcommand: show.\n\n#{parser.help}" unless subcommand
-      raise UsageError, "Unknown ticket subcommand: #{subcommand}. Run 'workspace ticket --help'." unless subcommand == "show"
+      raise UsageError, "Missing subcommand: show or list.\n\n#{parser.help}" unless subcommand
+      raise UsageError, "Unknown ticket subcommand: #{subcommand}. Run 'workspace ticket --help'." unless %w[show list].include?(subcommand)
+      if subcommand == "list"
+        raise UsageError, "Unexpected argument: #{args.first}. Run 'workspace ticket --help'." if args.any?
+        raise Error, "ticket is not available: no ticket command was wired" unless @ticket_command
+
+        return @ticket_command.list(name: options[:name], filter: options[:filter] || "assigned", limit: options[:limit] || Workspace::Commands::Ticket::DEFAULT_LIMIT,
+          sources: options[:sources] || [], json: options[:json])
+      end
+      list_only = {filter: "--assigned/--recent", sources: "--source", limit: "--limit"}.select { |key, _| options.key?(key) }.values
+      raise UsageError, "#{list_only.first} applies to 'ticket list' only." if list_only.any?
       ref = args.shift
       raise UsageError, "Missing REF: a JIRA key or URL, a pull request or issue URL or #n, or a branch.\n\n#{parser.help}" unless ref
       raise UsageError, "Unexpected argument: #{args.first}. Run 'workspace ticket --help'." if args.any?

@@ -5976,7 +5976,7 @@ RSpec.describe Workspace::CLI do
   end
 
   describe "#run with ticket" do
-    let(:ticket_command) { instance_double(Workspace::Commands::Ticket, show: nil) }
+    let(:ticket_command) { instance_double(Workspace::Commands::Ticket, show: nil, list: nil) }
     let(:built) { build_test_cli(ticket_command: ticket_command) }
     let(:cli) { built[0] }
     let(:output) { built[1] }
@@ -6010,6 +6010,26 @@ RSpec.describe Workspace::CLI do
 
       expect(output.string).to include("workspace ticket show").and include("--name")
       expect(ticket_command).not_to have_received(:show)
+    end
+
+    it "runs ticket list with its defaults, and with each option in either spelling" do
+      cli, = built
+
+      cli.run(["ticket", "list"])
+      cli.run(["ticket", "list", "--recent", "--limit=5", "--source=gh", "--source", "jira", "--name=api", "--json"])
+
+      expect(ticket_command).to have_received(:list).with(name: nil, filter: "assigned", limit: 20, sources: [], json: false)
+      expect(ticket_command).to have_received(:list).with(name: "api", filter: "recent", limit: 5, sources: %w[gh jira], json: true)
+    end
+
+    it "refuses list options on show, a ref or extra words on list, and a limit that is not a number" do
+      [["ticket", "show", "A-1", "--recent"], ["ticket", "show", "A-1", "--limit", "3"], ["ticket", "list", "A-1"],
+        ["ticket", "list", "--limit", "many"], ["ticket", "list", "--assigned", "--recent"]].each do |argv|
+        expect { cli.run(argv + ["--json"]) }.to raise_error(FakeSystemExit), argv.inspect
+        expect(JSON.parse(output.string.lines.last)).to include("ok" => false), argv.inspect
+      end
+      expect(ticket_command).not_to have_received(:show)
+      expect(ticket_command).not_to have_received(:list)
     end
 
     it "rejects a missing subcommand, an unknown one, a missing ref and extra arguments as usage errors" do

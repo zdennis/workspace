@@ -15,12 +15,51 @@ module Workspace
       # @param start_ref [Workspace::StartRef] the resolution `start` uses
       # @param source [Workspace::TicketSource] reads the ticket
       # @param output [IO]
-      def initialize(git:, project_config:, start_ref:, source:, output: $stdout)
+      # @param error_output [IO] where `list` prints a source's warning when it is not asked for `--json`
+      def initialize(git:, project_config:, start_ref:, source:, output: $stdout, error_output: $stderr)
         @git = git
         @project_config = project_config
         @start_ref = start_ref
         @source = source
         @output = output
+        @error_output = error_output
+      end
+
+      # Default and largest number of tickets `list` returns.
+      DEFAULT_LIMIT = 20
+      MAX_LIMIT = 100
+      FILTERS = %w[assigned recent].freeze
+
+      # `ticket list`: tickets to pick from, newest change first, from `gh` (issues
+      # and pull requests) and `jira`. Reads only. A source that is missing, slow
+      # or failing is a warning and the others still answer.
+      #
+      # @param name [String, nil] a workspace whose project to look in; nil means the project of the current directory
+      # @param filter [String] `assigned` (open, assigned to me) or `recent` (changed lately, anyone's)
+      # @param limit [Integer] 1 to {MAX_LIMIT}
+      # @param sources [Array<String>] any of `gh`, `jira`; empty means both
+      # @param json [Boolean] print the document documented in docs/README.ticket.md
+      # @return [void]
+      # @raise [Workspace::UsageError] an unknown filter or source, or a limit out of range
+      # @raise [Workspace::Error] `unknown_workspace`, or not in a git repository
+      def list(name: nil, filter: "assigned", limit: DEFAULT_LIMIT, sources: [], json: false)
+        raise Workspace::UsageError, "Unknown filter '#{filter}': use #{FILTERS.join(" or ")}." unless FILTERS.include?(filter)
+        raise Workspace::UsageError, "--limit must be a whole number from 1 to #{MAX_LIMIT}." unless limit.is_a?(Integer) && limit.between?(1, MAX_LIMIT)
+        unknown = sources - Workspace::TicketSource::SOURCES
+        raise Workspace::UsageError, "Unknown source '#{unknown.first}': use #{Workspace::TicketSource::SOURCES.join(" or ")}." if unknown.any?
+
+        project = @start_ref.project(checkout_root(name))
+        found = @source.list(filter: filter, limit: limit, chdir: project.root, sources: sources.empty? ? Workspace::TicketSource::SOURCES : sources.uniq)
+        branches = @git.worktree_branches(repo: project.root)
+        tickets = found["rows"].map { |row| list_row(row, project, branches) }
+
+        document = {"schema_version" => JSON_SCHEMA_VERSION, "ok" => true, "filter" => filter, "limit" => limit,
+                    "tickets" => tickets, "warnings" => found["warnings"]}
+        if json
+          @output.puts JSON.generate(document)
+        else
+          print_list(document)
+        end
       end
 
       # @param input [String] JIRA key or URL, pull request URL or ref, issue URL, or branch name
@@ -46,6 +85,28 @@ module Workspace
       end
 
       private
+
+      # A `show` document without the body, plus where the ticket came from and when it changed.
+      def list_row(row, project, branches)
+        ref = @start_ref.call(row["ref"])
+        slug_branch = @start_ref.slugged(ref, row["title"]).branch
+        candidates = [slug_branch, ref.branch]
+        candidates += branches.select { |branch| branch.start_with?("#{ref.branch}-") } if %w[jira github_issue].include?(ref.kind)
+        workspace = candidates.uniq.filter_map { |branch| existing_workspace(project, branch) }.first
+        {"ref" => row["ref"], "kind" => ref.kind, "key" => ref.key, "title" => row["title"], "url" => row["url"],
+         "source" => row["source"], "state" => row["state"], "updated_at" => row["updated_at"], "branch" => ref.branch,
+         "slug_branch" => slug_branch, "workspace" => workspace}
+      end
+
+      def print_list(document)
+        document["tickets"].each do |ticket|
+          marker = ticket["workspace"] ? "  [workspace: #{ticket["workspace"]}]" : ""
+          kind = (ticket["kind"] == "github_pr") ? " (pull request)" : ""
+          @output.puts "#{ticket["key"]}#{kind}  #{ticket["state"]}  #{ticket["title"]}#{marker}".rstrip
+        end
+        @output.puts "No tickets." if document["tickets"].empty?
+        document["warnings"].each { |warning| @error_output.puts "Warning: #{warning["message"]}" }
+      end
 
       def checkout_root(name)
         root = name ? @project_config.project_root_for(name) : @git.root

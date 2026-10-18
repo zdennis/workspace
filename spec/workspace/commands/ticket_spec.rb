@@ -145,6 +145,103 @@ RSpec.describe Workspace::Commands::Ticket do
     end
   end
 
+  describe "#list" do
+    let(:error_output) { StringIO.new }
+    let(:rows) do
+      [{"ref" => "PROJ-123", "kind" => "jira", "source" => "jira", "title" => "Fix the login redirect", "url" => "https://acme.atlassian.net/browse/PROJ-123", "state" => "In Progress", "updated_at" => "2026-10-17T09:00:00Z"},
+        {"ref" => "https://github.com/o/r/issues/7", "kind" => "github_issue", "source" => "gh", "title" => "Crash", "url" => "https://github.com/o/r/issues/7", "state" => "open", "updated_at" => "2026-10-16T09:00:00Z"},
+        {"ref" => "https://github.com/o/r/pull/9", "kind" => "github_pr", "source" => "gh", "title" => "Add x", "url" => "https://github.com/o/r/pull/9", "state" => "open", "updated_at" => "2026-10-15T09:00:00Z"}]
+    end
+    let(:warnings) { [] }
+    let(:source) { instance_double(Workspace::TicketSource, list: {"rows" => rows, "warnings" => warnings}) }
+    subject(:command) { described_class.new(git: git, project_config: project_config, start_ref: start_ref, source: source, output: output, error_output: error_output) }
+
+    it "prints one document with a row per ticket shaped like show without the body" do
+      in_repo { command.list(json: true) }
+
+      expect(output.string.lines.size).to eq(1)
+      expect(document).to include("schema_version" => 1, "ok" => true, "filter" => "assigned", "limit" => 20, "warnings" => [])
+      expect(document["tickets"].first).to eq(
+        "ref" => "PROJ-123", "kind" => "jira", "key" => "PROJ-123", "title" => "Fix the login redirect",
+        "url" => "https://acme.atlassian.net/browse/PROJ-123", "source" => "jira", "state" => "In Progress",
+        "updated_at" => "2026-10-17T09:00:00Z", "branch" => "PROJ-123", "slug_branch" => "PROJ-123-fix-the-login-redirect", "workspace" => nil
+      )
+      expect(document["tickets"].map { |t| [t["kind"], t["key"], t["branch"], t["slug_branch"]] }).to eq(
+        [["jira", "PROJ-123", "PROJ-123", "PROJ-123-fix-the-login-redirect"],
+          ["github_issue", "o/r#7", "issue-7", "issue-7-crash"],
+          ["github_pr", "o/r#9", "pr-9", "pr-9"]]
+      )
+    end
+
+    it "asks the source with the filter, limit and the project's checkout" do
+      in_repo { command.list(filter: "recent", limit: 5, sources: ["gh"], json: true) }
+
+      expect(source).to have_received(:list).with(filter: "recent", limit: 5, chdir: repo, sources: ["gh"])
+      expect(document).to include("filter" => "recent", "limit" => 5)
+    end
+
+    it "asks every source when none is named" do
+      in_repo { command.list(json: true) }
+
+      expect(source).to have_received(:list).with(hash_including(sources: %w[gh jira]))
+    end
+
+    it "names the workspace that exists for a ticket's plain branch, its slugged branch, or an older slug" do
+      sh("worktree", "add", "-q", "-b", "issue-7", File.join(repo, ".worktrees", "issue-7"))
+      sh("worktree", "add", "-q", "-b", "PROJ-123-older-title", File.join(repo, ".worktrees", "PROJ-123-older-title"))
+      sh("worktree", "add", "-q", "-b", "pr-9", File.join(repo, ".worktrees", "pr-9"))
+
+      in_repo { command.list(json: true) }
+
+      expect(document["tickets"].map { |t| t["workspace"] }).to eq(["api.worktree-PROJ-123-older-title", "api.worktree-issue-7", "api.worktree-pr-9"])
+    end
+
+    it "carries the source's warnings in the document, and still exits normally" do
+      warnings << {"source" => "gh", "code" => "ticket_source_unavailable", "reason" => "missing", "message" => "`gh` is not installed."}
+
+      in_repo { command.list(json: true) }
+
+      expect(document["warnings"]).to eq(warnings)
+      expect(error_output.string).to eq("")
+    end
+
+    it "prints text rows on stdout and warnings on stderr" do
+      warnings << {"source" => "gh", "code" => "ticket_source_unavailable", "reason" => "timeout", "message" => "`gh` did not answer in time."}
+      sh("worktree", "add", "-q", "-b", "issue-7", File.join(repo, ".worktrees", "issue-7"))
+
+      in_repo { command.list }
+
+      expect(output.string.lines.map(&:chomp)).to eq(
+        ["PROJ-123  In Progress  Fix the login redirect", "o/r#7  open  Crash  [workspace: api.worktree-issue-7]", "o/r#9 (pull request)  open  Add x"]
+      )
+      expect(error_output.string).to eq("Warning: `gh` did not answer in time.\n")
+    end
+
+    it "says so when there are no tickets" do
+      allow(source).to receive(:list).and_return({"rows" => [], "warnings" => []})
+
+      in_repo { command.list }
+
+      expect(output.string).to eq("No tickets.\n")
+    end
+
+    it "refuses a bad filter, limit or source before asking anything" do
+      [{filter: "all"}, {limit: 0}, {limit: 101}, {limit: "5"}, {sources: ["svn"]}].each do |bad|
+        expect { in_repo { command.list(**bad, json: true) } }.to raise_error(Workspace::UsageError)
+      end
+      expect(source).not_to have_received(:list)
+    end
+
+    it "looks in the project --name names, and fails with unknown_workspace for an unknown one" do
+      allow(project_config).to receive(:project_root_for).with("api").and_return(repo)
+
+      Dir.chdir(@dir) { command.list(name: "api", json: true) }
+      expect(source).to have_received(:list).with(hash_including(chdir: repo))
+
+      expect { command.list(name: "nope", json: true) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("unknown_workspace") }
+    end
+  end
+
   describe "#show as text" do
     it "prints the key and title, the URL, a note about an existing workspace, and the body" do
       sh("worktree", "add", "-q", "-b", "PROJ-123", File.join(repo, ".worktrees", "PROJ-123"))

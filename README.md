@@ -131,7 +131,7 @@ workspace <subcommand> [options]
 | step | [README](docs/README.workflow.md) | For the agent on a workflow step: report on it (`done`) or see what it is (`status`) |
 | stop | [README](docs/README.stop.md) | Stop active workspace projects and their tmux sessions |
 | tile | [README](docs/README.tile.md) | Tile windows across the screen (`--all` for all projects) |
-| ticket | [README](docs/README.ticket.md) | Look up a ticket the way `start` reads it (`show`): a JIRA key, pull request, issue or branch, with its title and body from `gh` or `jira` and whether a workspace for it already exists |
+| ticket | [README](docs/README.ticket.md) | Look up a ticket the way `start` reads it (`show`): a JIRA key, pull request, issue or branch, with its title and body from `gh` or `jira` and whether a workspace for it already exists; or list the tickets assigned to you or changed lately (`list`) |
 | tmux | [README](docs/README.tmux.md) | Show a workspace's tmuxinator file as windows and panes |
 | ui | [README](docs/README.ui.md) | Open a `workspace-ui://` link: a task, a review, notes or the inbox |
 | version | [README](docs/README.version.md) | Print the workspace version |

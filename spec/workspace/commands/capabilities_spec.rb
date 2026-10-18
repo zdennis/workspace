@@ -122,10 +122,10 @@ RSpec.describe Workspace::Commands::Capabilities do
       expect(document["features"]).to include("plan" => 4)
     end
 
-    it "reports ticket 1 once ticket show exists" do
+    it "reports ticket 2 once ticket list and start --slug exist" do
       command.call(json: true)
 
-      expect(document["features"]).to include("ticket" => 1)
+      expect(document["features"]).to include("ticket" => 2)
     end
 
     it "reports spine 1 once spine show exists" do

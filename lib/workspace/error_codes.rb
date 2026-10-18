@@ -40,7 +40,7 @@ module Workspace
       "plan_write_conflict" => "The plan file changed twice while a plan verb was writing it, so nothing was written; run the verb again.",
       "not_a_directory" => "add --json: a path is not a directory; the reason of that path's failed row. details.path.",
       "ticket_not_found" => "ticket show: the ticket tool says no ticket has that key, number or URL.",
-      "ticket_source_unavailable" => "ticket show: gh or jira is not installed, did not answer in time, or failed; details.source says which.",
+      "ticket_source_unavailable" => "ticket show: gh or jira is not installed, did not answer in time, or failed; details.source says which. ticket list and start --title-from-ticket report it as a warning instead.",
       "gh_unavailable" => "pr create (or finish --pr): gh is not installed or is not logged in; details.reason says which (missing or not_logged_in).",
       "nothing_to_push" => "pr create: the branch has no commits ahead of its base, so there is nothing to open a pull request for.",
       "dirty_worktree" => "rebase: the workspace has changes to tracked files; commit or stash them first. details.path, details.files.",

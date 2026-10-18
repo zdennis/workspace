@@ -127,7 +127,7 @@ The exit code is unchanged by `--json` (1 for most failures, 2 for `not_submitte
 | `fetch_failed` | `rebase --onto update\|remote\|upstream` or `push`: `git fetch origin` failed. `details.remote`, `details.detail`. |
 | `push_rejected` | `push`: origin refused the push, or the upstream has commits the branch never had so the push was not forced. `details.branch`, `details.upstream`, `details.detail`, `details.reason`: `origin_refused` (origin said no), `would_delete_commits` (the branch is only behind its upstream, so pushing would delete commits), `upstream_has_other_commits` (the upstream has commits the branch never had, or its reflog no longer shows them) or `upstream_mismatch` (the upstream is not `origin/<branch>`). |
 | `ticket_not_found` | `ticket show` asked `gh` or `jira` for a ticket the tool says does not exist. `details.source`, `details.ref`. |
-| `ticket_source_unavailable` | `ticket show` could not read the ticket: `gh` or `jira` is not installed (`details.reason` `missing`), did not answer in time (`timeout`) or failed (`error`, with `details.detail`). `details.source`. |
+| `ticket_source_unavailable` | `ticket show` could not read the ticket (`ticket list` and `start --title-from-ticket` report it as a warning instead): `gh` or `jira` is not installed (`details.reason` `missing`), did not answer in time (`timeout`) or failed (`error`, with `details.detail`). `details.source`. |
 
 The registry lives in `Workspace::ErrorCodes`; a spec checks that every code a raise site names is listed there and on this page. More codes arrive with the commands that need them.
 
