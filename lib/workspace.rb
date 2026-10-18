@@ -372,11 +372,12 @@ module Workspace
     notes_command = Commands::Notes.new(notes_dir: NotesDir.new(git: git), project_config: project_config, config_resolver: config_resolver,
       git_exclude: GitExclude.new(git: git), output: output)
     notes_setup = NotesSetup.new(notes: notes_command, project_settings: project_settings)
+    spine_command = Commands::Spine.new(notes: notes_command, writer: SpineWriter.new, event_log: event_log, lock_dir: config.spine_lock_dir, output: output)
     commands_config = CommandsConfig.new(config_resolver: config_resolver)
     instruction_composer = InstructionComposer.new(library: library, lineage: lineage,
       commands_config: commands_config, pane_bindings: pane_bindings, workflow_config: WorkflowConfig.new(config_resolver: config_resolver),
       notes_config: NotesConfig.new(config_resolver: config_resolver),
-      dev_config: DevConfig.new(config_resolver: config_resolver),
+      dev_config: DevConfig.new(config_resolver: config_resolver), spine: spine_command,
       handoff_config: HandoffConfig.new(config_resolver: config_resolver, error_output: error_output),
       main_agent: MainAgent.new(project_config: project_config))
     start_ref = StartRef.new(git: git, lineage: lineage)

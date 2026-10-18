@@ -55,6 +55,7 @@ module Workspace
         "spine" => 1,
         "spine_set" => 1,
         "spine_init" => 1,
+        "spine_pack" => 1,
         "pr_create" => 1,
         "rebase" => 2,
         "inbox" => 3,

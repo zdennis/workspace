@@ -1,7 +1,7 @@
 module Workspace
   # Builds the instructions an agent is given from library packs. A pack is a
   # play: the built-in ones (`binding`, `orchestrator`, `commits`, `review`, `notes`,
-  # `handoff`, `dev`)
+  # `handoff`, `dev`, `spine`)
   # ship with workspace and can't be replaced, and any other play can be
   # named as a pack too (see {Library#pack}).
   #
@@ -35,8 +35,10 @@ module Workspace
     #   automatic `dev` pack
     # @param main_agent [Workspace::MainAgent, nil] says whether the project runs Claude Code,
     #   which the `handoff` pack needs
+    # @param spine [Workspace::Commands::Spine, nil] says whether a workspace has a `spine/`; nil adds
+    #   no automatic `spine` pack
     def initialize(library:, lineage:, commands_config:, pane_bindings:, workflow_config: nil, notes_config: nil,
-      handoff_config: nil, main_agent: nil, dev_config: nil)
+      handoff_config: nil, main_agent: nil, dev_config: nil, spine: nil)
       @library = library
       @lineage = lineage
       @commands_config = commands_config
@@ -46,6 +48,7 @@ module Workspace
       @handoff_config = handoff_config
       @main_agent = main_agent
       @dev_config = dev_config
+      @spine = spine
     end
 
     # @param packs [Array<String>, nil] pack names (`name` or `play/name`), in the order
@@ -80,7 +83,8 @@ module Workspace
 
     # The packs `start` and `launch` send an agent with its first prompt: the
     # automatic ones the config asks for (`notes`, unless `notes.instructions`
-    # is false; `dev`, when the project sets `dev.up` and `dev.instructions` is not
+    # is false; `spine`, when the workspace has a `spine/` in its notes
+    # directory; `dev`, when the project sets `dev.up` and `dev.instructions` is not
     # false; `handoff`, when `handoff.auto` is true and the main agent is
     # Claude Code), then the ones named with `--pack`. A pack named twice is
     # listed once, where it is first named.
@@ -174,6 +178,7 @@ module Workspace
     def automatic_start_packs(workspace)
       packs = []
       packs << "notes" if @notes_config&.instructions?(workspace)
+      packs << "spine" if @spine&.exists?(name: workspace)
       packs << "dev" if @dev_config&.configured?(workspace) && @dev_config.instructions?(workspace)
       packs
     end

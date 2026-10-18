@@ -21,6 +21,7 @@ A pack is a [library](README.library.md) play. workspace ships nine:
 | `implementation-plan` | Keep the workspace's `IMPLEMENTATION_PLAN.md` as a counted task list (`[ ]`, `[~]`, `[x]`, `[-]`, `[!]` lines), work it one task at a time, stop when its `status:` is `paused`, and use it as the handoff doc. Not sent automatically: name it with `--pack implementation-plan` or `--play`; `workspace handoff new` binds the pane to it when a plan exists (see [`plan`](README.plan.md#the-implementation-plan-play)) |
 | `research` | Answer the goal by reading, run only read-only commands, change no repository file and never commit, and write one findings note (answer first, evidence as `path:line`, open questions) in the notes directory. Not sent automatically: name it with `--pack research` or `--play` |
 | `notes` | Where this workspace's working notes go (`workspace notes dir --create`), what belongs there, how to name files, to read the plan first, to write as you work, and never to commit them |
+| `spine` | Keep this workspace's plan spine current: find `spine/` through `workspace notes dir`, change a stage's status only with `workspace spine set` (`in_progress` on starting, `blocked` with a one-line `--note`, `completed` only when every `Done when` item is met and checked), tick `Done when` items as they are met, work only on its own stage and sub-stages, leave other files, numbers, `gates` and `depends_on` alone, and list artifacts in `artifacts:`. Sent by `start` and `launch` when the workspace has a `spine/` folder in its notes directory (see [`spine`](README.spine.md#telling-agents-the-convention)) |
 
 With no `--pack`, the default packs are composed: `binding`, `orchestrator` and `commits`, in that order, or the ones the global key `workflows.defaults.include` names (`workspace config set workflows.defaults.include "binding, commits"`). `--pack` repeats, and packs are composed in the order given; a name given twice is composed once.
 
@@ -29,7 +30,7 @@ With no `--pack`, the default packs are composed: `binding`, `orchestrator` and 
 | `--pack NAME` | A pack to compose: `NAME` or `play/NAME` |
 | `--pane PANE` | The pane id (`%19`) whose binding follows the `binding` pack (default `$TMUX_PANE`, unless `--name` is given) |
 | `--name WORKSPACE` | Compose for this workspace instead of the current directory |
-| `--start` | Print what [`start`](README.start.md#packs) and [`launch`](README.launch.md#details) send with the first prompt, and send nothing: the automatic packs (`notes`, unless `notes.instructions` is `false`; `dev`, when the project sets `dev.up` and `dev.instructions` is not `false`), then each `--pack`. Without `--pack` the default packs are not used; `--pane` is refused |
+| `--start` | Print what [`start`](README.start.md#packs) and [`launch`](README.launch.md#details) send with the first prompt, and send nothing: the automatic packs (`notes`, unless `notes.instructions` is `false`; `spine`, when the workspace has a `spine/` folder in its notes directory; `dev`, when the project sets `dev.up` and `dev.instructions` is not `false`), then each `--pack`. Without `--pack` the default packs are not used; `--pane` is refused |
 | `--no-packs` | With `--start`: leave out the automatic packs; cannot be combined with `--pack` |
 | `--json` | Print one JSON document |
 

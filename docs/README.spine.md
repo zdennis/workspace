@@ -101,6 +101,14 @@ Placeholders in every UTF-8 file are filled: `{{WORKSPACE}}` is the workspace na
 
 `spine_init` in [`capabilities`](README.capabilities.md) is `1` when this command exists.
 
+## Telling agents the convention
+
+The built-in `spine` play ("Keep this workspace's plan spine current", `workspace library show spine --builtin`) teaches an agent the rules: where `spine/` is, `workspace spine set <stage-path> --status in_progress` when it starts a stage, `--status blocked --note "<why>"` when stuck, ticking `## Done when` items as each is met, `--status completed` only when all are met and checked, working on its own stage and sub-stages only, leaving other files, numbers, `gates` and `depends_on` alone, and listing artifacts in `artifacts:`. It names `spine set` for status changes and allows editing `status:` by hand only when the command is missing; `owner:` and the `Done when` ticks are edited in the file, since `spine set` does not write them.
+
+It is an automatic pack, like `notes`: [`start`](README.start.md#packs), [`launch`](README.launch.md) and `workspace instructions compose --start` add `spine` after `notes` (and before `dev`) whenever the workspace's `spine/` folder exists in its notes directory, found the way `show` finds it and never through a link. It is reported with `source: "config"` like the other automatic packs, `--no-packs` drops it, and it is recorded in the pane's [binding](README.binding.md#packs) `packs`, so SessionStart repeats it after `/clear` or compaction. A workspace without `spine/` gets nothing new.
+
+`spine_pack` in [`capabilities`](README.capabilities.md) is `1` when the play and the automatic pack exist.
+
 ## The spine folder
 
 The folder is `spine/` in the workspace's notes directory (see [`notes`](README.notes.md)), found the way `notes dir` finds it. The name is fixed.

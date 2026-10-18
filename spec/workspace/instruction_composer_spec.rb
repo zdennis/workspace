@@ -367,6 +367,61 @@ RSpec.describe Workspace::InstructionComposer do
       ])
     end
 
+    describe "the spine pack" do
+      let(:spine) { instance_double(Workspace::Commands::Spine) }
+      subject(:composer) do
+        described_class.new(library: library, lineage: lineage, commands_config: commands_config, pane_bindings: pane_bindings,
+          notes_config: notes_config, dev_config: dev_config, spine: spine)
+      end
+      let(:dev_config) { Workspace::DevConfig.new(config_resolver: Workspace::ConfigResolver.new(project_settings: project_settings)) }
+
+      before { library.builtin_store.write("play", "spine", "Keep the spine current.\n") }
+
+      it "comes from config, after notes, when the workspace has a spine/" do
+        allow(spine).to receive(:exists?).with(name: "app").and_return(true)
+
+        expect(composer.start_packs(cwd: "/work/app")).to eq([{"name" => "notes", "source" => "config"}, {"name" => "spine", "source" => "config"}])
+        expect(composer.compose_start(cwd: "/work/app")["packs"].map { |p| [p["ref"], p["scope"], p["source"]] })
+          .to eq([["play/notes", "builtin", "config"], ["play/spine", "builtin", "config"]])
+      end
+
+      it "sits between notes and dev" do
+        library.builtin_store.write("play", "dev", "Queue.\n")
+        allow(spine).to receive(:exists?).and_return(true)
+        allow(project_settings).to receive(:load).with("app").and_return({"dev" => {"up" => "./start-dev"}})
+
+        expect(composer.start_packs(cwd: "/work/app").map { |p| p["name"] }).to eq(%w[notes spine dev])
+      end
+
+      it "is not listed without a spine/, and not with --no-packs" do
+        allow(spine).to receive(:exists?).and_return(false)
+        expect(composer.start_packs(cwd: "/work/app").map { |p| p["name"] }).to eq(%w[notes])
+
+        allow(spine).to receive(:exists?).and_return(true)
+        expect(composer.start_packs(cwd: "/work/app", none: true)).to eq([])
+      end
+
+      it "is kept when notes.instructions is false, and listed once when also named with --pack" do
+        allow(spine).to receive(:exists?).and_return(true)
+        allow(project_settings).to receive(:load).with("app").and_return({"notes" => {"instructions" => "false"}})
+
+        expect(composer.start_packs(cwd: "/work/app").map { |p| p["name"] }).to eq(%w[spine])
+        expect(composer.start_packs(cwd: "/work/app", packs: %w[play/spine]).map { |p| [p["name"], p["source"]] }).to eq([["spine", "config"]])
+      end
+
+      it "is not added when no spine was wired" do
+        expect(described_class.new(library: library, lineage: lineage, commands_config: commands_config, pane_bindings: pane_bindings,
+          notes_config: notes_config).start_packs(cwd: "/work/app").map { |p| p["name"] }).to eq(%w[notes])
+      end
+
+      it "is bound with the other delivered packs, so SessionStart repeats it" do
+        allow(spine).to receive(:exists?).and_return(true)
+        names = Workspace::InstructionComposer.pack_names(composer.compose_start(cwd: "/work/app")["packs"])
+
+        expect(library.packs_binding(names)).to include("packs" => %w[notes spine])
+      end
+    end
+
     describe "the dev pack" do
       let(:dev_config) { Workspace::DevConfig.new(config_resolver: Workspace::ConfigResolver.new(project_settings: project_settings)) }
       subject(:composer) do
@@ -580,12 +635,12 @@ RSpec.describe Workspace::InstructionComposer, "with the packs workspace ships" 
       pane_bindings: Workspace::PaneBindings.new(path: "/nonexistent/bindings.json"))
   end
 
-  it "ships exactly the nine packs, as plays, each readable with a description" do
+  it "ships exactly the ten packs, as plays, each readable with a description" do
     shipped = Workspace::LibraryStore.new(dir: builtin_dir, scope: "builtin")
 
     expect(Dir.children(builtin_dir).sort).to eq(%w[play spine])
     plays = shipped.entries(kind: "play")
-    expect(plays.map { |e| e["ref"] }).to eq(%w[play/binding play/commits play/dev play/handoff play/implementation-plan play/notes play/orchestrator play/research play/review])
+    expect(plays.map { |e| e["ref"] }).to eq(%w[play/binding play/commits play/dev play/handoff play/implementation-plan play/notes play/orchestrator play/research play/review play/spine])
     expect(plays).to all(include("readable" => true, "link" => nil, "description" => a_string_matching(/\A\S.{10,}/)))
   end
 
@@ -602,6 +657,16 @@ RSpec.describe Workspace::InstructionComposer, "with the packs workspace ships" 
     expect(result["packs"].map { |p| [p["ref"], p["scope"]] }).to eq([["play/notes", "builtin"]])
     expect(result["text"]).to start_with("## From pack notes (built-in)\n\nKeep your working notes in this workspace's notes directory")
     expect(result["text"]).to include("`workspace notes dir --create`").and include("`IMPLEMENTATION_PLAN.md`").and include("Never commit the notes.")
+    expect(result["text"]).not_to match(/^---$|^description:/)
+  end
+
+  it "composes the spine pack by name: spine set for each change, the stage's own files only, nothing marked done unchecked" do
+    result = composer.compose(cwd: "/work/app", packs: %w[spine])
+
+    expect(result["packs"].map { |p| [p["ref"], p["scope"]] }).to eq([["play/spine", "builtin"]])
+    expect(result["text"]).to start_with("## From pack spine (built-in)\n\nThis workspace has a plan spine")
+    expect(result["text"]).to include("`workspace notes dir`", "workspace spine set <stage-path> --status in_progress",
+      '--status blocked --note "<why, one line>"', "## Done when", "--status completed", "`gates`", "`depends_on`", "`artifacts:`")
     expect(result["text"]).not_to match(/^---$|^description:/)
   end
 

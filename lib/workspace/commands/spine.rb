@@ -100,6 +100,19 @@ module Workspace
         end
       end
 
+      # Whether the workspace has a `spine/` folder in its notes directory. A link named `spine` is not
+      # one, and nothing is read, created or written.
+      #
+      # @param name [String] the workspace
+      # @return [Boolean] false too when the notes directory can't be worked out
+      def exists?(name:)
+        dir = File.join(real(@notes.info(name: name)["dir"]), SpineTree::DIR_NAME)
+        stat = File.lstat(dir)
+        stat.directory? && !stat.symlink?
+      rescue Workspace::Error, SystemCallError
+        false
+      end
+
       # @param name [String] the workspace
       # @return [SpineTree] the spine in the workspace's notes directory
       # @raise [Workspace::Error] as {#show}

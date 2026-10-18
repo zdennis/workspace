@@ -618,7 +618,7 @@ module Workspace
           packs << v
         end
         opts.on("--no-packs", "Send no automatic packs (the notes pack, unless notes.instructions is false;",
-          "the dev pack, when dev.up is set; the handoff pack, when handoff.auto is true);",
+          "the spine pack, when spine/ exists; the dev pack, when dev.up is set; the handoff pack, when handoff.auto is true);",
           "cannot be combined with --pack") do
           no_packs = true
         end
@@ -827,7 +827,7 @@ module Workspace
           packs << v
         end
         opts.on("--no-packs", "Send no automatic packs (the notes pack, unless notes.instructions is false;",
-          "the dev pack, when dev.up is set; the handoff pack, when handoff.auto is true);",
+          "the spine pack, when spine/ exists; the dev pack, when dev.up is set; the handoff pack, when handoff.auto is true);",
           "cannot be combined with --pack") do
           no_packs = true
         end
