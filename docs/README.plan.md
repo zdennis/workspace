@@ -9,12 +9,12 @@ workspace plan status [--name WORKSPACE | --all | --file PATH] [--json]
 workspace plan path [--name WORKSPACE] [--json]
 workspace plan show [--name WORKSPACE]
 workspace plan init [--name WORKSPACE] [--title TITLE] [--from FILE] [--force] [--json]
-workspace plan start [--name WORKSPACE] [--json]
-workspace plan pause [--name WORKSPACE] [--json]
+workspace plan start [--name WORKSPACE] [--task ID [--pane PANE | --spawn KIND]] [--json]
+workspace plan pause [--name WORKSPACE] [--interrupt] [--json]
 workspace plan delete [--name WORKSPACE] --yes [--json]
 ```
 
-Without `--name`, the workspace is the one detected from the current directory. `--all`, `--file` and `--name` exclude each other, and a flag that does not belong to the subcommand is a usage error.
+Without `--name`, the workspace is the one detected from the current directory. `--all`, `--file` and `--name` exclude each other, and a flag that does not belong to the subcommand is a usage error. So are `--pane` with `--spawn`, either of them without `--task`, and a `--spawn` kind that is not `claude`, `codex`, `opencode` or `pi`. Every flag also takes the `--flag=value` form.
 
 ## Subcommands
 
@@ -24,8 +24,8 @@ Without `--name`, the workspace is the one detected from the current directory. 
 | `path` | Prints the plan's absolute path alone, whether or not the file exists. Makes nothing |
 | `show` | Prints the plan file as it is. Fails with `no_plan` when there is none |
 | `init` | Writes a new plan into the notes directory, making the directory first. `--title` sets the title (default: the title of the workspace's task, else none). `--from FILE` imports an existing document as the plan: it gets new frontmatter unless it has its own (then `--title` is ignored). Fails with `plan_exists` when a plan is there; `--force` replaces it. The file is written whole or not at all |
-| `start` | Sets `status: active`, then gets an agent working on the plan (see [Start, pause and delete](#start-pause-and-delete)) |
-| `pause` | Sets `status: paused`. Interrupts nothing |
+| `start` | Sets `status: active`, then gets an agent working on the plan (see [Start, pause and delete](#start-pause-and-delete)). With `--task`, sends that one task to one pane (see [One task](#one-task)) |
+| `pause` | Sets `status: paused`. Interrupts nothing unless `--interrupt` is given |
 | `delete` | Renames the plan to `IMPLEMENTATION_PLAN.md.deleted-<time>`. Needs `--yes` |
 
 ## Start, pause and delete
@@ -38,8 +38,25 @@ Each verb changes one thing and is safe to repeat. A plan with no file is `no_pl
   - The pane is idle: the play and "Continue the plan." are typed into it and the pane is bound to the play (a pane bound to a workflow run or a review keeps that binding). Outcome `sent`. A pane that waits for an answer is not typed into (`pane_busy`), and a session whose agent daemon does not answer is `no_daemon`; with no Claude Code or Codex pane it is `no_agent_pane`.
 
   Where it knows the pane the agent is in, `start` writes it into the frontmatter as `owner_pane` (adding the line when it is missing), so a plan whose pane id went stale after a `restore` reads `working` again. An unwritable `owner_pane` is a note in `message`; the launch or send still stands.
-- **`pause`** sets `status: paused` (`paused`, or `unchanged` when it already was). It interrupts nothing: the agent re-reads `status:` before each task and stops, and whoever pauses sends the agent the key if it should stop sooner. [`doctor`](README.doctor.md) warns when a paused plan's owner pane is still working.
+- **`pause`** sets `status: paused` (`paused`, or `unchanged` when it already was). On its own it interrupts nothing: the agent re-reads `status:` before each task and stops. [`doctor`](README.doctor.md) warns when a paused plan's owner pane is still working.
+
+  With `--interrupt`, once the status is written, each owner pane (the plan's `owner_pane` and the owners of the tasks still left) that the agent daemon lists as `working` gets its agent's interrupt key: `Escape` for Claude Code and Codex. OpenCode and Pi have no key listed yet, so their panes are left to stop before their next task. A pane that is idle or waiting gets nothing, since `Escape` there would start Claude Code's rewind or answer a permission prompt. The row's `interrupts` lists each owner pane as `{pane, kind, outcome, message}`, where `outcome` is `sent`, `not_working`, `unsupported` (no key for its kind), `gone` (the daemon does not list it) or `failed` (`message` says why). A daemon that does not answer leaves `interrupts` empty and adds a `no_daemon` entry to the document's `warnings`; the pause still stands and the exit code is 0.
 - **`delete`** needs `--yes`, or fails with `confirmation_required` (`retry.flags` is `["--yes"]`). It renames the file to `IMPLEMENTATION_PLAN.md.deleted-<UTC time>` in the same directory (`-1`, `-2` after it when that name is taken) and touches neither the session nor the worktree. The row's `path` is the plan's path and `message` names the new file.
+
+### One task
+
+`plan start --task=ID [--pane=PANE | --spawn=KIND]` sends one task to one pane, so several agents can work tasks side by side and each can be steered.
+
+- It refuses an id no task has (`unknown_task`), a task that is done or skipped (`task_done`), and a plan that is done (`plan_done`). Once nothing below refuses the task either, it sets `status: active`, before anything is typed, so the agent never reads `paused`. A refused task leaves the plan as it was.
+- The pane is the first of these:
+  1. `--pane`: a pane id (`%19`) or `window.pane` (`0.1`) of the workspace's own session, checked as for [`agent-run send`](README.agent-run.md). The agent daemon must list it as a coding-agent pane, or the result is `no_agent_pane`.
+  2. `--spawn=KIND`: a new pane split below the bottom one, running `claude`, `codex`, `opencode` or `pi`. The task is typed once that agent's screen settles (and, for Claude Code, shows its prompt), within 60 seconds. An agent that is not ready is a `failed` row with reason `prompt_not_sent` and the new `pane`, so it can be found and closed.
+  3. The task's owner, when the daemon lists it as a coding-agent pane.
+  4. The main agent pane, chosen as plain `start` chooses it.
+- A workspace with no session is launched as plain `start` launches it, with the task's line as the prompt (outcome `launched`). With `--pane` or `--spawn` it is `no_session` instead.
+- The same refusals as plain `start` apply to the chosen pane: one that waits for an answer is `pane_busy`. One that is working is `pane_busy` too, unless it already owns this task (outcome `already_working`, nothing typed). A task whose owner pane is working is `task_owned` when a different pane, or `--spawn`, was asked for, so one task never gets two agents.
+- What is typed is the play and `Work on plan task ID only. Do not take other tasks; end your turn when it is done or blocked.` The task's title is not typed; the agent reads it from the file. The pane is bound to the play with `focus: "plan task ID"`, which the SessionStart hook repeats after a `/clear`. A pane bound to a workflow run or a review keeps that binding.
+- Once the text is typed, the pane is written onto the task line as its owner (`<!-- owner: %19 -->`, replacing an older owner), and a `[ ]` task becomes `[~]`; other boxes stay as they are. A line that can't be written is a note in `message`, and the send still stands.
 
 A status or owner write changes only that line (the frontmatter is added when the file has none), reads the whole file, goes through a temp file and a rename, and keeps the file's mode. If the file changed between the read and the rename, for instance because the agent saved an edit, the write is made again on what is there now. A second change under the retry writes nothing and fails with `plan_write_conflict`. An agent that saves between the final check and the rename can still lose its edit; that window is a few microseconds.
 
@@ -74,7 +91,7 @@ Anything here is free text and is not counted.
 - **Frontmatter** is optional: `plan: 1`, `title`, `status` (`active`, `paused` or `done`; `active` when absent) and `owner_pane` (a tmux pane id such as `%19`). It is read line by line as `key: value`, so a stray colon never makes the file unreadable. A double-quoted value is read as JSON would read it.
 - **A task** is a line at column 0, `- [S] ID Title`, under a `## Tasks` heading. `S` is a space (to do), `~` (in progress), `x` or `X` (done), `-` (skipped) or `!` (blocked). Skipped and blocked tasks end ` -- reason`.
 - **An id** is the first word, and it must contain a digit (`T1`, `CLI-D18`, `1.2`). A trailing colon is allowed. A first word with a digit is always read as the id (`404 page` has the id `404`), so start a task with its id.
-- **An owner** is an HTML comment at the end of a task line, `<!-- owner: %19 -->`: the tmux pane working that task. Only a pane id is read; no comment means no owner. Older CLIs strip the comment like any other, so the line still reads as the same plain task, and a plan without owners reads as before. The frontmatter `owner_pane` is the pane working the plan as a whole.
+- **An owner** is an HTML comment at the end of a task line, `<!-- owner: %19 -->`: the tmux pane working that task, which [`start --task`](#one-task) writes. Only a pane id is read; no comment means no owner. Older CLIs strip the comment like any other, so the line still reads as the same plain task, and a plan without owners reads as before. The frontmatter `owner_pane` is the pane working the plan as a whole.
 - **Not counted:** indented checkboxes, fenced code, HTML comments, and everything under a later `#` or `##` heading such as `## Task details`.
 - **Phase:** the nearest heading above the task that is not `Tasks` (`###` and deeper headings under `## Tasks`).
 - Counts: `left = todo + in_progress + blocked`; `percent = (done + skipped) / total`, rounded. `current` is the first in-progress task, else the first to do.
@@ -147,10 +164,16 @@ The plan is also the handoff doc: with no `--handoff-doc`, [`handoff check` and 
 | Verb | `outcome` | Notes |
 |------|-----------|-------|
 | `start` | `launched`, `sent`, `already_working`, `failed` | `pane` is the pane id the agent is in (null when a launch did not say); `failed` carries `reason` and `message` and exits 1 |
-| `pause` | `paused`, `unchanged` | `pane` is null |
+| `start --task` | `launched`, `sent`, `spawned`, `already_working`, `failed` | The result also has `task` (the id). `pane` is the pane the task went to; for `spawned`, and for a `failed` spawn, it is the new pane |
+| `pause` | `paused`, `unchanged` | `pane` is null. With `--interrupt`, the result also has `interrupts` (see [`pause`](#start-pause-and-delete)) |
 | `delete` | `deleted` | `message` is `Renamed to <path>.`; `pane` is null |
 
-`plan` in [`capabilities`](README.capabilities.md) is `4` once `start`, `pause` and `delete` exist; each level is described there.
+```json
+{"schema_version":1,"ok":true,"action":"plan start","status":"ok","results":[{"workspace":"api","outcome":"spawned","reason":null,"message":null,"path":"/abs/IMPLEMENTATION_PLAN.md","pane":"%23","task":"T5"}],"warnings":[],"summary":{"spawned":1}}
+{"schema_version":1,"ok":true,"action":"plan pause","status":"ok","results":[{"workspace":"api","outcome":"paused","reason":null,"message":null,"path":"/abs/IMPLEMENTATION_PLAN.md","pane":null,"interrupts":[{"pane":"%19","kind":"claude","outcome":"sent","message":null},{"pane":"%23","kind":"claude","outcome":"not_working","message":null}]}],"warnings":[],"summary":{"paused":1}}
+```
+
+`plan` in [`capabilities`](README.capabilities.md) is `4` once `start`, `pause` and `delete` exist; each level is described there. `plan_tasks` is `1` once tasks have owners, `start --task` and `pause --interrupt` exist.
 
 ## Errors
 
@@ -161,11 +184,13 @@ The plan is also the handoff doc: with no `--handoff-doc`, [`handoff check` and 
 | `plan_done` | `start` or `pause` found a plan that is done (`details.name`, `details.path`) |
 | `confirmation_required` | `delete` was run without `--yes` (`retry.flags` is `["--yes"]`) |
 | `plan_write_conflict` | The plan changed twice while a verb was writing it; nothing was written. Run the verb again |
-| `no_agent_pane`, `pane_busy`, `no_daemon`, `not_delivered`, `not_submitted` | `start` of a workspace with a session found no Claude Code or Codex pane, found the pane waiting for an answer, could not reach the agent daemon, or could not type into the pane. See [`agent-run send`](README.agent-run.md) |
+| `no_agent_pane`, `pane_busy`, `no_daemon`, `not_delivered`, `not_submitted` | `start` of a workspace with a session found no Claude Code or Codex pane, found the pane waiting for an answer, could not reach the agent daemon, or could not type into the pane. See [`agent-run send`](README.agent-run.md). With `--task`: a `--pane` that runs no coding agent is `no_agent_pane`, and a pane working on something else is `pane_busy` with `details.state` `working` |
+| `unknown_task`, `task_done`, `task_owned` | `start --task` named an id no task has, a task that is done or skipped, or a task whose owner pane is working on it while another pane (or `--spawn`) was asked for (`details.task`, and `details.owner` for `task_owned`) |
+| `no_session`, `bad_pane`, `wrong_session`, `no_such_pane` | `start --task` with `--pane` or `--spawn` on a workspace with no session, or a `--pane` that is not a pane of its session |
 | `notes_dir_unwritable` | `init` couldn't make the notes directory or write the file, or a verb couldn't write or rename it |
 | `error` | `init --from FILE` couldn't read the file (no more specific code) |
 | `unknown_workspace`, `not_in_workspace`, `notes_dir_unresolved`, `config_parse` | As for [`notes dir`](README.notes.md#errors) |
 
-A `start` that fails after setting the status (`pane_busy`, `no_daemon`, `no_agent_pane`, a send that did not arrive, or a `failed` launch row) leaves the plan `active`; the status write is the first step, and running `start` again is safe.
+A plain `start` that fails after setting the status (`pane_busy`, `no_daemon`, `no_agent_pane`, a send that did not arrive, or a `failed` launch row) leaves the plan `active`; the status write is the first step, and running `start` again is safe.
 
 Exit 0, or 1 with an error (the [`--json` error envelope](README.json.md) under `--json`).

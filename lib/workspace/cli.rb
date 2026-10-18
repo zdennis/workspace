@@ -6950,8 +6950,8 @@ module Workspace
       "path" => %i[name json],
       "show" => %i[name],
       "init" => %i[name title from force json],
-      "start" => %i[name json],
-      "pause" => %i[name json],
+      "start" => %i[name task pane spawn json],
+      "pause" => %i[name interrupt json],
       "delete" => %i[name yes json]
     }.freeze
 
@@ -6961,8 +6961,8 @@ module Workspace
           "       workspace plan path [--name WORKSPACE] [--json]\n" \
           "       workspace plan show [--name WORKSPACE]\n" \
           "       workspace plan init [--name WORKSPACE] [--title TITLE] [--from FILE] [--force] [--json]\n" \
-          "       workspace plan start [--name WORKSPACE] [--json]\n" \
-          "       workspace plan pause [--name WORKSPACE] [--json]\n" \
+          "       workspace plan start [--name WORKSPACE] [--task ID [--pane PANE | --spawn KIND]] [--json]\n" \
+          "       workspace plan pause [--name WORKSPACE] [--interrupt] [--json]\n" \
           "       workspace plan delete [--name WORKSPACE] --yes [--json]"
         opts.separator ""
         opts.separator "A plan is IMPLEMENTATION_PLAN.md in the workspace's notes directory: one checklist"
@@ -6975,8 +6975,11 @@ module Workspace
         opts.separator "  show     Print the plan file"
         opts.separator "  init     Write a new plan, or import an existing document with --from"
         opts.separator "  start    Set status: active, then launch the workspace with the implementation-plan play, or send"
-        opts.separator "           the main agent pane the play and \"Continue the plan.\" (a working pane is left alone)"
-        opts.separator "  pause    Set status: paused; interrupts nothing (the agent stops before its next task)"
+        opts.separator "           the main agent pane the play and \"Continue the plan.\" (a working pane is left alone)."
+        opts.separator "           With --task, send that one task to --pane, a new agent pane (--spawn), the task's owner,"
+        opts.separator "           or the main agent pane; the pane is written onto the task line as its owner"
+        opts.separator "  pause    Set status: paused; the agent stops before its next task. --interrupt also presses"
+        opts.separator "           the agent's interrupt key (Escape for Claude Code and Codex) in each owner pane that works"
         opts.separator "  delete   Rename the plan to IMPLEMENTATION_PLAN.md.deleted-<time>; needs --yes; the session and worktree stay"
         opts.separator ""
         opts.on("--name NAME", "Workspace to act on instead of the one detected from the current directory") { |v| take_plan_flag(options, :name, v) }
@@ -6986,6 +6989,10 @@ module Workspace
         opts.on("--from FILE", "init: import this document as the plan") { |v| take_plan_flag(options, :from, v) }
         opts.on("--force", "init: replace a plan that is already there") { take_plan_flag(options, :force, true) }
         opts.on("--yes", "delete: confirm the delete") { take_plan_flag(options, :yes, true) }
+        opts.on("--task ID", "start: send only this task (its id, such as T3)") { |v| take_plan_flag(options, :task, v) }
+        opts.on("--pane PANE", "start --task: the pane to send it to, a pane id (%19) or window.pane (0.1)") { |v| take_plan_flag(options, :pane, v) }
+        opts.on("--spawn KIND", "start --task: start a new agent pane for it (#{Commands::Plan::AGENT_KINDS.join(", ")})") { |v| take_plan_flag(options, :spawn, v) }
+        opts.on("--interrupt", "pause: interrupt the owner panes that are working") { take_plan_flag(options, :interrupt, true) }
         opts.on("--json", "Print one JSON document (see docs/README.plan.md)") { take_plan_flag(options, :json, true) }
         opts.on("-h", "--help", "Show this help") { options[:help] = true }
         opts.separator ""
@@ -6995,7 +7002,9 @@ module Workspace
         opts.separator "  workspace plan init --title \"Auth rewrite\""
         opts.separator "  workspace plan path    # /src/api/tmp/workspace-notes/IMPLEMENTATION_PLAN.md"
         opts.separator "  workspace plan start --name api.worktree-x --json"
-        opts.separator "  workspace plan pause"
+        opts.separator "  workspace plan start --task=T4 --pane=%23 --json"
+        opts.separator "  workspace plan start --task=T5 --spawn=claude"
+        opts.separator "  workspace plan pause --interrupt --json"
         opts.separator "  workspace plan delete --yes"
       end
     end
@@ -7021,6 +7030,11 @@ module Workspace
       if subcommand == "status" && options[:given].count { |key| %i[name all file].include?(key) } > 1
         raise UsageError, "Give only one of --name, --all and --file."
       end
+      raise UsageError, "Give only one of --pane and --spawn." if options[:pane] && options[:spawn]
+      raise UsageError, "--pane and --spawn need --task. Run 'workspace plan --help'." if (options[:pane] || options[:spawn]) && !options[:task]
+      if options[:spawn] && !Commands::Plan::AGENT_KINDS.include?(options[:spawn])
+        raise UsageError, "Unknown agent kind for --spawn: #{options[:spawn]}. One of #{Commands::Plan::AGENT_KINDS.join(", ")}."
+      end
       raise Error, "plan is not available: no plan command was wired" unless @plan_command
 
       return @plan_command.status(all: true, json: options[:json]) if options[:all]
@@ -7039,26 +7053,38 @@ module Workspace
           {exit_code: 0, results: [action_row(name, "created", message: created["message"], path: created["path"])]}
         end
       when "start"
-        run_action("plan start", json: options[:json]) { plan_verb_outcome(name, @plan_command.start(name: name, launch: plan_launcher), options[:json]) }
+        run_action("plan start", json: options[:json]) do
+          row = if options[:task]
+            @plan_command.start_task(name: name, task_id: options[:task], pane: options[:pane], spawn: options[:spawn], launch: plan_launcher)
+          else
+            @plan_command.start(name: name, launch: plan_launcher)
+          end
+          plan_verb_outcome(name, row, options[:json])
+        end
       when "pause"
-        run_action("plan pause", json: options[:json]) { plan_verb_outcome(name, @plan_command.pause(name: name), options[:json]) }
+        run_action("plan pause", json: options[:json]) do
+          plan_verb_outcome(name, @plan_command.pause(name: name, interrupt: options.fetch(:interrupt, false)), options[:json])
+        end
       when "delete"
         run_action("plan delete", json: options[:json]) { plan_verb_outcome(name, @plan_command.delete(name: name, yes: options[:yes]), options[:json]) }
       end
     end
 
     # The action result for a plan verb's row; a failed one also says why on stderr when there is no document.
+    # A row's `task` and `interrupts` ride along in the result, and its `warnings` go to the document's.
     def plan_verb_outcome(name, row, json)
       failed = row["outcome"] == "failed"
       @error_output.puts "Error: could not start the plan for #{name}: #{row["message"]}" if failed && !json
-      {exit_code: failed ? 1 : 0, results: [action_row(name, row["outcome"], reason: row["reason"], message: row["message"], path: row["path"], pane: row["pane"])]}
+      extra = row.slice("task", "interrupts").transform_keys(&:to_sym)
+      {exit_code: failed ? 1 : 0, warnings: row["warnings"] || [],
+       results: [action_row(name, row["outcome"], reason: row["reason"], message: row["message"], path: row["path"], pane: row["pane"], **extra)]}
     end
 
     # What `plan start` uses to launch a workspace that has no session: `launch --play implementation-plan
-    # --prompt "Continue the plan."`, with the packs a launch sends. Returns `{ok:, reason:, message:, pane:}`.
+    # --prompt "Continue the plan."` (or a task's prompt), with the packs a launch sends. Returns `{ok:, reason:, message:, pane:}`.
     def plan_launcher
-      lambda do |workspace|
-        launched = launch_projects([workspace], play: Commands::Plan::PLAY, prompt: Commands::Plan::CONTINUE_PROMPT, with_packs: true)
+      lambda do |workspace, prompt = Commands::Plan::CONTINUE_PROMPT|
+        launched = launch_projects([workspace], play: Commands::Plan::PLAY, prompt: prompt, with_packs: true)
         row = launch_rows(launched[:projects], launched[:result], plays: launched[:plays], packs: launched[:packs], skipped_packs: launched[:skipped_packs], prompts: launched[:prompts]).first
         pane = row.dig("play", "pane") || row["pane"]
         {ok: row["outcome"] != "failed", reason: row["reason"], message: row["message"], pane: pane}

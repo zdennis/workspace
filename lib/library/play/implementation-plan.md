@@ -24,10 +24,11 @@ Every task is one line at column 0 in `## Tasks`:
 - The id is a letter prefix and a number (`T3`, `E7`, `PROJ-123`, `C2x`), used once. Never renumber a task; add a new id.
 - Keep the title to one line. Put anything longer under `### T3 Title` in `## Task details`, in sentences and plain bullets. Never write a checkbox there: only column-0 checkbox lines count.
 - Group tasks under `### Phase name` headings if you want. Do not nest tasks.
+- A line may end with an owner comment naming the tmux pane working that task: `- [~] T3 Add the token store <!-- owner: %19 -->`. Keep the comment when you change the box. workspace writes it when it sends one task to a pane.
 
 ## Work the plan
 
-1. Take the first `[ ]` task whose dependencies are done and change its box to `[~]` before you start. Keep one task at `[~]` unless you run independent tasks in parallel.
+1. Take the first `[ ]` task whose dependencies are done and that has no owner comment, or names your pane, and change its box to `[~]` before you start. Skip a task another pane owns. Keep one task at `[~]` unless you run independent tasks in parallel. If you were sent one task (`Work on plan task T3 only`), do that task alone and end your turn when it is done or blocked.
 2. Do the task, or delegate it to a sub-agent to save your context. Check the result yourself.
 3. Change `[~]` to `[x]` only when the result is verified: tests pass, the change is committed if the project commits, the files exist. Change only the bracket character.
 4. If you cannot finish it, make it `[!]` with the reason, add an entry to Open questions, and go on to the next task. Do not wait for the person.

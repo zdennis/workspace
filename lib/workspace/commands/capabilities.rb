@@ -63,7 +63,8 @@ module Workspace
         "review" => 1,
         "add_json" => 1,
         "plan_progress" => 1,
-        "agent_status" => 1
+        "agent_status" => 1,
+        "plan_tasks" => 1
       }.freeze
 
       # The exit statuses commands use, by meaning.

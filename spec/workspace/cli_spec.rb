@@ -8597,7 +8597,7 @@ RSpec.describe Workspace::CLI do
       end
 
       it "prints pause as an action document with the row's path and pane" do
-        allow(plan_command).to receive(:pause).with(name: "api").and_return(row)
+        allow(plan_command).to receive(:pause).with(name: "api", interrupt: false).and_return(row)
         cli, raw, = plan_cli
 
         cli.run(["plan", "pause", "--name", "api", "--json"])
@@ -8612,7 +8612,7 @@ RSpec.describe Workspace::CLI do
 
         cli.run(["plan", "pause", "--json"])
 
-        expect(plan_command).to have_received(:pause).with(name: "detected-ws")
+        expect(plan_command).to have_received(:pause).with(name: "detected-ws", interrupt: false)
         expect(parse_one(raw)).to include("status" => "ok")
       end
 
@@ -8734,6 +8734,64 @@ RSpec.describe Workspace::CLI do
         cli.run(["plan", "start", "--name", "api"])
 
         expect(launched).to include(ok: true, pane: "%7")
+      end
+
+      it "sends --task, --pane and --spawn to start_task in the --flag=value form, and reports the task in the result" do
+        allow(plan_command).to receive(:start_task).and_return(row.merge("outcome" => "spawned", "pane" => "%23", "task" => "T5"))
+        cli, raw, = plan_cli
+
+        cli.run(["plan", "start", "--name=api", "--task=T5", "--spawn=codex", "--json"])
+        cli.run(["plan", "start", "--name", "api", "--task", "T6", "--pane", "%4"])
+
+        expect(plan_command).to have_received(:start_task).with(name: "api", task_id: "T5", pane: nil, spawn: "codex", launch: kind_of(Proc))
+        expect(plan_command).to have_received(:start_task).with(name: "api", task_id: "T6", pane: "%4", spawn: nil, launch: kind_of(Proc))
+        expect(parse_one(raw)).to include("action" => "plan start", "status" => "ok",
+          "results" => [a_hash_including("workspace" => "api", "outcome" => "spawned", "pane" => "%23", "task" => "T5")])
+      end
+
+      it "gives start_task a launcher that sends the task's line instead of the continue line" do
+        allow(plan_command).to receive(:start_task) do |name:, task_id:, launch:, **|
+          launch.call(name, Workspace::Commands::Plan.task_prompt(task_id))
+          row.merge("outcome" => "launched", "task" => task_id)
+        end
+        state = CLITestHelpers::FakeState.new
+        project_config = CLITestHelpers::FakeProjectConfig.new("api" => "/work/api")
+        library = Workspace::Library.new(
+          config: instance_double(Workspace::Config, library_dir: Dir.mktmpdir, builtin_library_dir: File.expand_path("../../lib/library", __dir__)),
+          lineage: instance_double(Workspace::WorkspaceLineage, resolve: Workspace::WorkspaceLineage::Lineage.new(name: "api")), project_config: project_config
+        )
+        launch = nil
+        cli, = plan_cli(state: state, project_config: project_config, library: library) do |out|
+          launch = launch_class.new(state: state, output: out, result: {bound_panes: {"api" => "%5"}})
+          {launch_command: launch}
+        end
+
+        cli.run(["plan", "start", "--name", "api", "--task", "T3"])
+
+        prompt = launch.calls.first.last[:prompts]["api"]
+        expect(prompt).to end_with("Work on plan task T3 only. Do not take other tasks; end your turn when it is done or blocked.")
+      end
+
+      it "refuses --pane with --spawn, either without --task, and an unknown --spawn kind" do
+        cli, raw, = plan_cli
+
+        [%w[start --task T1 --pane %1 --spawn claude], %w[start --pane %1], %w[start --spawn claude], %w[start --task T1 --spawn vim],
+          %w[pause --task T1], %w[start --interrupt]].each do |argv|
+          expect(exit_status { cli.run(["plan", *argv, "--json"]) }).to eq(1), argv.inspect
+        end
+        expect(raw.string.lines.map { |l| JSON.parse(l)["code"] }).to all(eq("usage"))
+      end
+
+      it "passes --interrupt to pause and puts the interrupts in the result and the warnings in the document" do
+        interrupts = [{"pane" => "%19", "kind" => "claude", "outcome" => "sent", "message" => nil}]
+        allow(plan_command).to receive(:pause).and_return(row.merge("interrupts" => interrupts, "warnings" => [{"code" => "no_daemon", "message" => "x"}]))
+        cli, raw, = plan_cli
+
+        cli.run(["plan", "pause", "--name", "api", "--interrupt", "--json"])
+
+        expect(plan_command).to have_received(:pause).with(name: "api", interrupt: true)
+        expect(parse_one(raw)).to include("status" => "ok", "warnings" => [{"code" => "no_daemon", "message" => "x"}],
+          "results" => [a_hash_including("outcome" => "paused", "interrupts" => interrupts)])
       end
 
       it "rejects --yes on start and pause, and --all on delete" do

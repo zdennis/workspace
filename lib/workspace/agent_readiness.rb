@@ -75,15 +75,17 @@ module Workspace
     #
     # @param session_name [String] tmux session name
     # @param deadline [Numeric] a time from {#deadline_in}
+    # @param only_pane [String, nil] a tmux pane id: wait on that pane alone, not the
+    #   session's preferred agent pane (a pane `plan start --spawn` just made)
     # @return [Result]
-    def wait(session_name, deadline:)
+    def wait(session_name, deadline:, only_pane: nil)
       screen = nil
       quiet_since = nil
       pane_id = nil
       found = {}
 
       loop do
-        found = find_agent_pane(session_name)
+        found = find_agent_pane(session_name, only: only_pane)
         if found[:id]
           if found[:id] != pane_id
             pane_id = found[:id]
@@ -131,9 +133,13 @@ module Workspace
     #
     # @return [Hash] :id, :target and :label when an agent is running, or
     #   :reason when none is
-    def find_agent_pane(session_name)
+    def find_agent_pane(session_name, only: nil)
       details = @tmux.pane_details(session_name, window: nil)
       return {reason: "tmux session '#{session_name}' has no panes (is it running?)"} if details.empty?
+      if only
+        details = details.select { |detail| detail[:id] == only }
+        return {reason: "pane #{only} is not in tmux session '#{session_name}'"} if details.empty?
+      end
 
       begin
         tree = @process_tree.snapshot

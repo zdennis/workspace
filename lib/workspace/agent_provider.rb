@@ -65,6 +65,10 @@ module Workspace
     # printed "72% context left" instead; that format is gone.
     CODEX_CONTEXT_PATTERN = 'Context\s+(\d{1,3})% used'
 
+    # The key Claude Code and Codex both stop a running turn on ("esc to interrupt" in their
+    # footers). OpenCode and Pi have none listed until their keys are checked against a live pane.
+    INTERRUPT_KEYS = ["Escape"].freeze
+
     # @return [Array<AgentProvider>] every known provider
     def self.all
       @all ||= [
@@ -76,14 +80,16 @@ module Workspace
           events: CLAUDE_EVENTS,
           background_markers: CLAUDE_BACKGROUND,
           ready_pattern: CLAUDE_READY_PATTERN,
-          restartable: true
+          restartable: true,
+          interrupt_keys: INTERRUPT_KEYS
         ),
         new(
           key: "codex",
           label: "Codex",
           executable: "codex",
           restartable: true,
-          context_pattern: CODEX_CONTEXT_PATTERN
+          context_pattern: CODEX_CONTEXT_PATTERN,
+          interrupt_keys: INTERRUPT_KEYS
         ),
         new(
           key: "opencode",
@@ -144,7 +150,7 @@ module Workspace
     end
 
     attr_reader :key, :label, :executable, :settings_path, :events, :background_markers, :ready_pattern,
-      :clear_command, :context_pattern
+      :clear_command, :context_pattern, :interrupt_keys
 
     # @return [Boolean] whether handoff may clear this agent and type a resume prompt into it
     def restartable?
@@ -182,9 +188,10 @@ module Workspace
     # @param context_pattern [String, nil] regex source with one capture group, applied to the
     #   pane's screen to read context use when the agent has no status line workspace can route
     # @param context_remaining [Boolean] whether that capture is the percent left, not used
+    # @param interrupt_keys [Array<String>] tmux key names that stop the agent mid-turn (`plan pause --interrupt`); empty when unknown
     def initialize(key:, label:, executable:, settings_path: nil, events: nil,
       background_markers: [], path_segment_matching: true, ready_pattern: nil,
-      restartable: false, clear_command: "/clear", context_pattern: nil, context_remaining: false)
+      restartable: false, clear_command: "/clear", context_pattern: nil, context_remaining: false, interrupt_keys: [])
       @key = key
       @label = label
       @executable = executable
@@ -197,6 +204,7 @@ module Workspace
       @clear_command = clear_command
       @context_pattern = context_pattern
       @context_remaining = context_remaining
+      @interrupt_keys = interrupt_keys.freeze
     end
 
     # @return [Boolean] whether workspace can route this agent's statusLine

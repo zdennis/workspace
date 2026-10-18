@@ -245,6 +245,12 @@ RSpec.describe Workspace::PaneBindings do
       TEXT
     end
 
+    it "repeats a play binding's focus, such as the plan task the pane was sent" do
+      text = store.context_for("kind" => "play", "id" => "play/implementation-plan", "focus" => "plan task T3", "instructions" => "/p.md")
+
+      expect(text.lines.map(&:chomp).first(2)).to eq(["This pane is following play play/implementation-plan.", "Focus: plan task T3."])
+    end
+
     it "describes a review with its focus" do
       expect(store.context_for("kind" => "review", "id" => "acme/api#835", "focus" => "security"))
         .to eq("This pane is bound to review acme/api#835.\nFocus: security.")

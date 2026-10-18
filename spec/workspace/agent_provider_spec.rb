@@ -23,6 +23,11 @@ RSpec.describe Workspace::AgentProvider do
       expect(described_class.find("nope")).to be_nil
     end
 
+    it "lists Escape as the interrupt key of Claude Code and Codex, and none for the agents not checked yet" do
+      expect(%w[claude codex opencode pi].to_h { |key| [key, described_class.find(key).interrupt_keys] })
+        .to eq("claude" => ["Escape"], "codex" => ["Escape"], "opencode" => [], "pi" => [])
+    end
+
     it "gives Claude Code a ready pattern matching its prompt, but leaves other providers without one" do
       claude = described_class.find("claude")
 

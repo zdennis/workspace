@@ -43,10 +43,15 @@ RSpec.describe Workspace::Commands::Plan do
     end
   end
   let(:launcher) { double("launcher", call: nil) }
+  let(:runner) { instance_double(Workspace::Commands::Run, call: "%23") }
+  let(:readiness) do
+    instance_double(Workspace::AgentReadiness, deadline_in: 99.0,
+      wait: Workspace::AgentReadiness::Result.new(ready: true, pane: "0.2", pane_id: "%23", label: "Claude Code"))
+  end
   subject(:command) do
     described_class.new(notes: notes, catalog: catalog, plan_state: Workspace::PlanState.new(clock: -> { now }), plan_config: plan_config,
       tmux: tmux, snapshot_client: snapshot_client, ask_store_for: ->(_workspace) { ask_store }, task_store: task_store, sender: sender, binder: binder, library: library, event_log: event_log,
-      clock: -> { now }, output: output)
+      runner: runner, readiness: readiness, prompt_timeout: 30, clock: -> { now }, output: output)
   end
 
   before do
@@ -969,6 +974,235 @@ RSpec.describe Workspace::Commands::Plan do
 
           expect(start["message"]).to include("could not bind").and include("Could not record the owner pane")
         end
+      end
+    end
+  end
+
+  describe "one task" do
+    let(:task_text) { "---\nstatus: paused\nowner_pane: \"%19\"\n---\n## Tasks\n- [x] T1 a\n- [ ] T2 b\n- [~] T3 c <!-- owner: %20 -->\n- [-] T4 d -- no\n" }
+    let(:pane_rows) do
+      [{"pane_id" => "%19", "kind" => "claude", "state" => "idle"}, {"pane_id" => "%20", "kind" => "claude", "state" => "idle"},
+        {"pane_id" => "%21", "kind" => "codex", "state" => "idle"}, {"pane_id" => "%22", "kind" => nil, "state" => "idle"}]
+    end
+    let(:task_body) { "Read \"/lib/play/implementation-plan.md\" and follow it.\n\n#{described_class.task_prompt("T2")}" }
+
+    before do
+      write_plan("api", task_text)
+      allow(snapshot_client).to receive(:fetch).with("api", timeout: 1.0).and_return("panes" => pane_rows)
+      allow(sender).to receive(:locate) { |_name, pane| {id: pane, session: "api"} }
+      allow(launcher).to receive(:call).and_return(ok: true, reason: nil, message: nil, pane: "%31")
+    end
+
+    def start_task(id = "T2", **options) = command.start_task(name: "api", task_id: id, launch: launcher, **options)
+
+    def task(id) = Workspace::PlanFile.read(plan_path).tasks.find { |t| t.id == id }
+
+    describe "#start_task" do
+      it "sends the task to the named pane, binds it with the task as focus, and writes the pane onto the line as owner, in progress" do
+        result = start_task(pane: "%21")
+
+        expect(result).to eq("outcome" => "sent", "reason" => nil, "message" => nil, "path" => plan_path, "pane" => "%21", "task" => "T2")
+        expect(sender).to have_received(:deliver).with(name: "api", pane: "%21", body: task_body)
+        expect(binder).to have_received(:bind).with(:workspace => "api", :pane => "%21", "kind" => "play", "id" => "play/implementation-plan",
+          "instructions" => "/lib/play/implementation-plan.md", "focus" => "plan task T2")
+        expect(File.read(plan_path)).to include("- [ ] T2 b".sub("[ ]", "[~]") + " <!-- owner: %21 -->\n")
+        expect(Workspace::PlanFile.read(plan_path)).to have_attributes(status: "active", owner_pane: "%19")
+        expect(output.string).to eq("Started task T2 of the plan for api: sent it to pane %21.\n")
+        expect(events_log.map { |e| e[:data]["status"] }).to eq(%w[active active])
+      end
+
+      it "sends a task with no owner to the main agent pane, and one with a live owner to its owner" do
+        expect(start_task["pane"]).to eq("%19")
+        expect(start_task("T3")["pane"]).to eq("%20")
+        expect(task("T3")).to have_attributes(state: "in_progress", owner: "%20")
+      end
+
+      it "is already_working, typing nothing, when the task's own owner pane works" do
+        pane_rows[1]["state"] = "working"
+
+        result = start_task("T3")
+
+        expect(result).to include("outcome" => "already_working", "pane" => "%20", "task" => "T3")
+        expect(sender).not_to have_received(:deliver)
+      end
+
+      it "refuses task_owned when the owner works and another pane is named, or a spawn is asked for" do
+        pane_rows[1]["state"] = "working"
+
+        [{pane: "%21"}, {spawn: "claude"}].each do |options|
+          expect { start_task("T3", **options) }.to raise_error(Workspace::Error) { |e|
+            expect(e.code).to eq("task_owned")
+            expect(e.details).to include("task" => "T3", "owner" => "%20")
+          }
+        end
+        expect(sender).not_to have_received(:deliver)
+        expect(runner).not_to have_received(:call)
+      end
+
+      it "refuses pane_busy for a named pane that works on something else or waits on a person" do
+        {"working" => "working", "waiting" => "waiting"}.each do |state, detail|
+          pane_rows[2]["state"] = state
+          expect { start_task(pane: "%21") }.to raise_error(Workspace::Error) { |e|
+            expect(e.code).to eq("pane_busy")
+            expect(e.details).to include("pane" => "%21", "state" => detail)
+          }
+        end
+        expect(sender).not_to have_received(:deliver)
+      end
+
+      it "refuses no_agent_pane for a named pane that runs no coding agent or that the daemon does not list" do
+        %w[%22 %40].each do |pane|
+          expect { start_task(pane: pane) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("no_agent_pane") }
+        end
+      end
+
+      it "passes the locator's refusal through for a pane outside the session" do
+        allow(sender).to receive(:locate).and_raise(Workspace::Error.new("no", code: "wrong_session"))
+
+        expect { start_task(pane: "%99") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("wrong_session") }
+      end
+
+      it "leaves a paused plan paused, and records nothing, when the task is refused at the pane" do
+        pane_rows[2]["state"] = "waiting"
+
+        expect { start_task(pane: "%21") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("pane_busy") }
+        expect(File.read(plan_path)).to eq(task_text)
+        expect(events_log).to eq([])
+      end
+
+      it "refuses no_daemon before spawning when the task has an owner and the daemon does not answer" do
+        allow(snapshot_client).to receive(:fetch).and_raise(Workspace::AgentSnapshotClient::Unavailable.new("down", reason: :no_daemon))
+
+        expect { start_task("T3", spawn: "claude") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("no_daemon") }
+        expect(runner).not_to have_received(:call)
+      end
+
+      it "rejects a pane and a spawn together, and an unknown kind, as programming errors" do
+        expect { start_task(pane: "%21", spawn: "claude") }.to raise_error(ArgumentError)
+        expect { start_task(spawn: "vim") }.to raise_error(ArgumentError)
+      end
+
+      it "refuses unknown_task, task_done and plan_done before writing anything" do
+        expect { start_task("T9") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("unknown_task") }
+        %w[T1 T4].each do |id|
+          expect { start_task(id) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("task_done") }
+        end
+        expect(File.read(plan_path)).to eq(task_text)
+        write_plan("api", "---\nstatus: done\n---\n## Tasks\n- [ ] T2 b\n")
+        expect { start_task }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("plan_done") }
+      end
+
+      it "spawns a new agent pane, waits on that pane alone, and sends the task there" do
+        result = start_task(spawn: "codex")
+
+        expect(runner).to have_received(:call).with("api", "codex", split: true)
+        expect(readiness).to have_received(:deadline_in).with(30)
+        expect(readiness).to have_received(:wait).with("api", deadline: 99.0, only_pane: "%23")
+        expect(sender).to have_received(:deliver).with(name: "api", pane: "%23", body: task_body)
+        expect(result).to include("outcome" => "spawned", "pane" => "%23", "task" => "T2")
+        expect(task("T2")).to have_attributes(state: "in_progress", owner: "%23")
+        expect(output.string).to eq("Started task T2 of the plan for api: sent it to new pane %23.\n")
+      end
+
+      it "reports a spawned agent that never got ready as failed with prompt_not_sent and the new pane, typing nothing" do
+        allow(readiness).to receive(:wait).and_return(Workspace::AgentReadiness::Result.new(ready: false, reason: "still starting up"))
+
+        result = start_task(spawn: "claude")
+
+        expect(result).to include("outcome" => "failed", "reason" => "prompt_not_sent", "pane" => "%23", "task" => "T2")
+        expect(result["message"]).to include("still starting up")
+        expect(sender).not_to have_received(:deliver)
+        expect(task("T2").owner).to be_nil
+      end
+
+      it "launches a workspace with no session with the task's line, and records the launched pane as owner" do
+        allow(tmux).to receive(:sessions).and_return([])
+
+        result = start_task
+
+        expect(launcher).to have_received(:call).with("api", described_class.task_prompt("T2"))
+        expect(result).to include("outcome" => "launched", "pane" => "%31", "task" => "T2")
+        expect(task("T2").owner).to eq("%31")
+      end
+
+      it "refuses no_session with --pane or --spawn when there is no session, after nothing was written" do
+        allow(tmux).to receive(:sessions).and_return([])
+
+        [{pane: "%19"}, {spawn: "claude"}].each do |options|
+          expect { start_task(**options) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("no_session") }
+        end
+        expect(File.read(plan_path)).to eq(task_text)
+      end
+
+      it "keeps the send and says so in message when the owner can't be written" do
+        allow(Workspace::PlanFile).to receive(:set_task).and_raise(Workspace::Error.new("boom"))
+
+        result = start_task
+
+        expect(result["outcome"]).to eq("sent")
+        expect(result["message"]).to include("Could not record the owner on task T2 (boom)")
+      end
+
+      it "leaves the box as it is when the agent already moved the task on" do
+        allow(sender).to receive(:deliver) do
+          File.write(plan_path, File.read(plan_path).sub("- [ ] T2 b", "- [x] T2 b"))
+          {"pane" => "%19", "mode" => "text", "submitted" => true}
+        end
+
+        start_task
+
+        expect(task("T2")).to have_attributes(state: "done", owner: "%19")
+      end
+    end
+
+    describe "#pause with interrupt" do
+      it "presses each working owner pane's interrupt key and lists every owner of the plan and of the tasks left" do
+        write_plan("api", task_text.sub("paused", "active").sub("- [ ] T2 b", "- [ ] T2 b <!-- owner: %21 -->").sub("- [x] T1 a", "- [x] T1 a <!-- owner: %22 -->"))
+        pane_rows[0]["state"] = "working"
+        pane_rows[1]["state"] = "working"
+        pane_rows[1]["kind"] = "opencode"
+
+        result = command.pause(name: "api", interrupt: true)
+
+        expect(result).to include("outcome" => "paused", "warnings" => [])
+        expect(result["interrupts"]).to eq([
+          {"pane" => "%19", "kind" => "claude", "outcome" => "sent", "message" => nil},
+          {"pane" => "%21", "kind" => "codex", "outcome" => "not_working", "message" => nil},
+          {"pane" => "%20", "kind" => "opencode", "outcome" => "unsupported", "message" => nil}
+        ])
+        expect(sender).to have_received(:deliver).once.with(name: "api", pane: "%19", keys: ["Escape"])
+        expect(Workspace::PlanFile.read(plan_path).status).to eq("paused")
+      end
+
+      it "reports an owner the daemon does not list as gone, and a key that did not arrive as failed" do
+        write_plan("api", task_text.sub("%20", "%44"))
+        pane_rows[0]["state"] = "working"
+        allow(sender).to receive(:deliver).and_raise(Workspace::Error.new("tmux said no", code: "not_delivered"))
+
+        result = command.pause(name: "api", interrupt: true)
+
+        expect(result["interrupts"]).to eq([
+          {"pane" => "%19", "kind" => "claude", "outcome" => "failed", "message" => "tmux said no"},
+          {"pane" => "%44", "kind" => nil, "outcome" => "gone", "message" => nil}
+        ])
+      end
+
+      it "still pauses, with a no_daemon warning and no interrupts, when the daemon does not answer" do
+        write_plan("api", task_text.sub("paused", "active"))
+        allow(snapshot_client).to receive(:fetch).and_raise(Workspace::AgentSnapshotClient::Unavailable.new("no daemon", reason: :no_daemon))
+
+        result = command.pause(name: "api", interrupt: true)
+
+        expect(result).to include("outcome" => "paused", "interrupts" => [], "warnings" => [{"code" => "no_daemon", "message" => "no daemon"}])
+        expect(Workspace::PlanFile.read(plan_path).status).to eq("paused")
+      end
+
+      it "asks nothing of the daemon when no pane owns anything, and nothing at all without interrupt" do
+        write_plan("api", "## Tasks\n- [ ] T1 a\n")
+
+        expect(command.pause(name: "api", interrupt: true)).to include("interrupts" => [], "warnings" => [])
+        expect(command.pause(name: "api")).not_to have_key("interrupts")
+        expect(snapshot_client).not_to have_received(:fetch)
       end
     end
   end

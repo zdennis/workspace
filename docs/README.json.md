@@ -119,6 +119,8 @@ The exit code is unchanged by `--json` (1 for most failures, 2 for `not_submitte
 | `stale_revision` | `spine set --if-revision` named a revision the stage file no longer has. `details.revision` and `details.status` are the current ones. |
 | `spine_unwritable` | `spine init` could not write (`spine/` is a link, the notes directory could not be made, or a file could not be written or renamed into place; `details.path`; nothing is left half-written). `spine set` can't rewrite the stage file safely: `details.reason` is `link`, `not_a_file`, `too_large` (over 64 KB), `not_utf8`, `no_frontmatter` (no block closed within 100 lines), `no_file` (a folder with no stage file), `missing`, `lock_unavailable` (the lock file in the state folder can't be opened), `unreadable_result` (the change would put the closing `---` past line 100 or the status past the 40-key cap, where it could not be read back), `io_error`, `changed_while_writing`, or `lock_busy` (another write held the workspace's lock for 10 seconds); `details.file` is the file below `spine/`. With `--recursive`, `details.written` lists what was already written. |
 | `unknown_task` | `plan start --task` (or any write to one task line) named an id that no task under `## Tasks` has. `details.path`, `details.task`. |
+| `task_done` | `plan start --task` named a task that is done or skipped. `details.name`, `details.path`, `details.task`, `details.state`. |
+| `task_owned` | `plan start --task`: the task's owner pane is working on it, and another pane (or `--spawn`) was asked for. `details.workspace`, `details.task`, `details.owner`. |
 | `gh_unavailable` | `pr create` (or `finish --pr`) needs `gh`, which is not installed (`details.reason` `missing`) or not logged in (`not_logged_in`, with `details.detail`). |
 | `nothing_to_push` | `pr create`: the branch has no commits ahead of its base. `details.branch`, `details.base`. |
 | `dirty_worktree` | `rebase`: the workspace has changes to tracked files. `details.path`, `details.files`. |
@@ -153,7 +155,7 @@ The registry lives in `Workspace::ErrorCodes`; a spec checks that every code a r
 | `wrong_session` | The pane belongs to another tmux session. `details.pane`, and `details.session`, the workspace's own session (also from `send`, `focus --pane`, `ask answer --deliver`, and from `agent-run restart` and `handoff` before the daemon is asked). |
 | `no_such_pane` | No pane matches the reference. `details.pane` (also from `send`, `focus --pane`, `ask answer --deliver`, and from `agent-run restart` and `handoff` before the daemon is asked). |
 | `pane_gone` | The pane closed before or during the restart. |
-| `pane_busy` | The pane didn't go quiet in time; nothing was typed. |
+| `pane_busy` | The pane didn't go quiet in time, or `plan start` found it waiting on a person (or, with `--task`, working on something else); nothing was typed. `plan start` gives `details.workspace`, `details.pane` and, with `--task`, `details.state`. |
 | `pane_in_pipeline` | A pipeline stage is running on the pane; pass force to restart it. |
 | `not_an_agent` | The pane is running a shell, not a coding agent. |
 | `unsupported_agent` | The pane's agent can't be restarted. |
@@ -187,7 +189,7 @@ The registry lives in `Workspace::ErrorCodes`; a spec checks that every code a r
 | `invalid_workflow` | A workflow definition file doesn't pass the checks. `details.workflow`, `details.path`, `details.problems`. |
 | `input_required` | workflow run is missing a required input. `details.workflow`, `details.inputs` (each `name` and `description`). |
 | `workflow_command_unset` | A step's check names the project's test or lint command and the project has none. `details.workflow`, `details.project`, `details.commands`. |
-| `no_agent_pane` | No pane of the workspace runs Claude Code, so a workflow has nowhere to run. `details.workspace`. |
+| `no_agent_pane` | No pane of the workspace runs Claude Code, so a workflow has nowhere to run; or `plan start` found no agent pane to type into (with `--task --pane`, the named pane runs no coding agent the agent daemon knows, and `details.pane` names it). `details.workspace`. |
 | `pane_has_run` | The pane already runs another workflow run. `details.pane`, `details.run_id`. |
 | `unknown_run` | No workflow run has that id. `details.run_id`; `details.path` when a run file of that id exists and can't be read as a run. |
 | `run_not_active` | The workflow run has finished, so nothing more can happen to it. `details.run_id`, `details.state`. |

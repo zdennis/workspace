@@ -192,6 +192,7 @@ module Workspace
       return "This pane was started with instruction packs#{where}." if entry["instructions"].nil? && packs_for(entry).any?
 
       lines = ["This pane is following play #{entry["id"]}#{where}."]
+      lines << "Focus: #{entry["focus"]}." if entry["focus"]
       lines << "Instructions: #{entry["instructions"]}. Read it again and keep following it if it is no longer in your context." if entry["instructions"]
       lines.join("\n")
     end

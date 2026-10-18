@@ -49,6 +49,24 @@ RSpec.describe Workspace::AgentReadiness do
     expect(tmux).to have_received(:capture_screen).with("%2").at_least(:once)
   end
 
+  it "waits on the one pane named by only_pane, not the session's preferred agent pane" do
+    panes.replace([{id: "%2", window: 0, index: 0, pid: 200, command: "claude"}, {id: "%9", window: 0, index: 1, pid: 900, command: "codex"}])
+    screens.replace(["Codex ready"])
+
+    result = readiness.wait("proj", deadline: readiness.deadline_in(60), only_pane: "%9")
+
+    expect(result).to be_ready
+    expect(result.pane_id).to eq("%9")
+    expect(tmux).not_to have_received(:capture_screen).with("%2")
+  end
+
+  it "is not ready, saying so, when only_pane is not in the session" do
+    result = readiness.wait("proj", deadline: readiness.deadline_in(1), only_pane: "%40")
+
+    expect(result).not_to be_ready
+    expect(result.reason).to eq("pane %40 is not in tmux session 'proj'")
+  end
+
   it "finds an agent running in a window other than the first" do
     panes.replace([{id: "%1", window: 0, index: 0, pid: 100, command: "zsh"}, {id: "%7", window: 2, index: 1, pid: 700, command: "claude"}])
 

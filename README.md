@@ -105,7 +105,7 @@ workspace <subcommand> [options]
 | notes | [README](docs/README.notes.md) | Print where a workspace's notes are kept (`dir`; `--create` makes the directory and keeps it out of git) |
 | parent | [README](docs/README.parent.md) | Print the parent workspace of the current (or given) workspace |
 | pipeline | [README](docs/README.pipeline.md) | Deprecated (use `workflow`): inspect and drive a project's agent pipeline |
-| plan | [README](docs/README.plan.md) | Read a workspace's plan (`IMPLEMENTATION_PLAN.md` in its notes directory): `status` counts it and works out its state, `path`, `show`, `init` to write one, and `start`, `pause` and `delete` to run it |
+| plan | [README](docs/README.plan.md) | Read a workspace's plan (`IMPLEMENTATION_PLAN.md` in its notes directory): `status` counts it and works out its state, `path`, `show`, `init` to write one, `start`, `pause` and `delete` to run it, and `start --task` to send one task to one pane |
 | pr | [README](docs/README.pr.md) | Open a pull request for a workspace's branch without finishing it (`create`): pushes the branch if needed, returns an existing pull request |
 | projects | [README](docs/README.projects.md) | Group workspaces by repository: main checkout plus worktrees (`list` for running counts, `list --git` for unsaved work, `show` for one project's agents, git state, asks, pipeline, locks and dev env, `members` for a script-friendly list of its workspaces, `stop` to stop them all, `kill` to remove all its worktrees) |
 | prune | [README](docs/README.prune.md) | Remove worktree projects whose PR is closed or merged |
