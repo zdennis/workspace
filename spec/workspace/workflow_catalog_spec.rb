@@ -157,5 +157,31 @@ RSpec.describe Workspace::WorkflowCatalog do
       expect(steps["implement"]["include"]).to eq(%w[notes implementation-plan])
       expect(steps["implement"]["prompt"]).to include("workspace plan path")
     end
+
+    describe "the plan step's status check" do
+      require "tmpdir"
+      require "open3"
+
+      def check_exit(plans_json)
+        Dir.mktmpdir do |bin|
+          File.write(File.join(bin, "workspace"), "#!/bin/sh\ncat <<'JSON'\n#{plans_json}\nJSON\n")
+          File.chmod(0o755, File.join(bin, "workspace"))
+          allow(config).to receive(:workflows_dir).and_return(global_dir)
+          command = catalog.find("rpiv").steps.find { |step| step["id"] == "plan" }["status"]["run"]
+          _out, status = Open3.capture2e({"PATH" => "#{bin}:#{ENV["PATH"]}"}, "sh", "-c", command)
+          status.exitstatus
+        end
+      end
+
+      it "passes only for a plan that exists and has a task" do
+        expect(check_exit('{"plans":[{"exists":true,"counts":{"total":3}}]}')).to eq(0)
+      end
+
+      it "fails for no plan file, a plan with no tasks, or no row" do
+        expect(check_exit('{"plans":[{"exists":false,"counts":{"total":0}}]}')).to eq(1)
+        expect(check_exit('{"plans":[{"exists":true,"counts":{"total":0}}]}')).to eq(1)
+        expect(check_exit('{"plans":[]}')).to eq(1)
+      end
+    end
   end
 end

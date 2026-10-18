@@ -127,7 +127,7 @@ Text in `instructions` and `prompt` may use `{{workspace}}`, `{{branch}}`, `{{ar
 
 ### The `rpiv` preset
 
-`rpiv` is the one workflow that ships: research (`research.md`), plan (the workspace plan, `IMPLEMENTATION_PLAN.md` in the notes directory, in the `implementation-plan` syntax, plus `plan.md` for the gate), implement (`implement.md`) and verify (`verify.md`). Verify holds `test-db`, so runs in worktrees of one repository verify one at a time; it is checked with the project's `commands.test`, and a failure goes back to implement up to three times in the same conversation. Its `max_attempts` is 10, which leaves room for those three trips and one rejected plan. A project with no `commands.test` is refused before anything starts (code `workflow_command_unset`):
+`rpiv` is the one workflow that ships: research (`research.md`), plan (the workspace plan, `IMPLEMENTATION_PLAN.md` in the notes directory, in the `implementation-plan` syntax, plus `plan.md` for the gate), which is only done once the plan file exists and has a task (its `status:` check reads `plan status --json`), implement (`implement.md`) and verify (`verify.md`). Verify holds `test-db`, so runs in worktrees of one repository verify one at a time; it is checked with the project's `commands.test`, and a failure goes back to implement up to three times in the same conversation. Its `max_attempts` is 10, which leaves room for those three trips and one rejected plan. A project with no `commands.test` is refused before anything starts (code `workflow_command_unset`):
 
 ```sh
 workspace config set commands.test "bundle exec rspec"

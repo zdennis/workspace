@@ -46,6 +46,10 @@ steps:
       finished until plan.md exists.
       Don't change code.
     produces: [plan.md]
+    # Done only when the workspace plan exists and has at least one task.
+    status:
+      run: |
+        workspace plan status --json | ruby -rjson -e 'plan = JSON.parse($stdin.read)["plans"].to_a.first; exit(plan && plan["exists"] && plan["counts"]["total"].to_i > 0 ? 0 : 1)'
     gate: approve
     timeout: 45m
 
