@@ -67,6 +67,13 @@ RSpec.describe Workspace::HookEventLog do
     expect(lines.last).to include("agent_id" => nil, "tool_use_id" => "toolu_9", "description" => "Review the diff", "subagent_type" => "reviewer")
   end
 
+  it "writes a sub-agent the agent names itself (Codex) as a sub-agent start alone, with its id" do
+    log.record(event("subagent_start", subagent_id: "sub-7", subagent_type: "explorer", agent_kind: "codex"))
+
+    expect(lines.map { |l| l["type"] }).to eq(["subagent_started"])
+    expect(lines.last).to include("agent_id" => "sub-7", "subagent_type" => "explorer")
+  end
+
   it "writes sub-agent stops, session starts and ends, and prompts" do
     log.record(event("subagent_stop", agent_id: "sub-1"))
     log.record(event("session_start", kind: "claude", source: "resume"))

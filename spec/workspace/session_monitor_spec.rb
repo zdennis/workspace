@@ -1338,6 +1338,18 @@ RSpec.describe Workspace::SessionMonitor do
         expect(pane("%2")["current_tool"]).to eq("Task")
       end
 
+      it "takes a sub-agent the agent names itself (Codex) with its id and no tool to wait on, and closes that one on its stop" do
+        monitor.record("event" => "subagent_start", "pane_id" => "%2", "subagent_id" => "sub-1", "agent" => {"name" => "explorer"})
+        monitor.record("event" => "subagent_start", "pane_id" => "%2", "subagent_id" => "sub-2", "agent" => {"name" => "worker"})
+
+        expect(pane("%2")["subagents"].map { |s| s["agent_id"] }).to eq(%w[sub-1 sub-2])
+        expect(pane("%2")["current_tool"]).to be_nil
+
+        monitor.record("event" => "subagent_stop", "pane_id" => "%2", "agent_id" => "sub-2")
+
+        expect(pane("%2")["subagents"].map { |s| s["agent_id"] }).to eq(["sub-1"])
+      end
+
       it "falls back to the sub-agent's name without a description" do
         monitor.record("event" => "subagent_start", "pane_id" => "%2", "agent" => {"name" => "x"})
 

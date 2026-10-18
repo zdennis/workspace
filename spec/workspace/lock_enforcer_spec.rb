@@ -53,7 +53,7 @@ RSpec.describe Workspace::LockEnforcer do
       expect(enforcer(lock_holder: holder_agent).check(tool_name: "Edit")).to be_nil
     end
 
-    %w[Edit Write MultiEdit NotebookEdit].each do |tool|
+    %w[Edit Write MultiEdit NotebookEdit apply_patch].each do |tool|
       it "denies #{tool} by a non-holder with the lock's pane and task" do
         hold(holder_agent, task: "PROJ-12")
 

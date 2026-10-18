@@ -189,8 +189,11 @@ module Workspace
       end
 
       capable = AgentProvider.all.select { |p| p.supports_hooks? && @which.call(p.executable) }
+      hooks_fixed = install_user_hooks(capable.select(&:user_scoped?))
       statusline_capable = capable.select(&:supports_statusline?)
       if statusline_capable.empty?
+        return if hooks_fixed
+
         scraped = scraped_context_providers
         if scraped.any?
           @output.puts "--fix: nothing to fix: #{scraped.map(&:label).join(", ")} " \
@@ -206,6 +209,20 @@ module Workspace
           project_settings: @project_settings)
       end
       @output.puts "Restart any running Claude Code sessions for the statusLine change to take effect."
+    end
+
+    # Installs the hooks an agent keeps in its own user-level config (Codex's
+    # `hooks.json`), which `init` and `start` also install. A file that can't
+    # be read is a failed fix, and the other fixes still run.
+    #
+    # @return [Boolean] whether any file was changed
+    def install_user_hooks(providers)
+      providers.map do |provider|
+        @hook_installer.install(provider, @working_dir, Commands::Init::HOOK_COMMAND)
+      rescue Workspace::Error => e
+        add_row("fix", "fail", "--fix: #{provider.label} hooks not installed: #{e.message}")
+        false
+      end.any?
     end
 
     # The providers on PATH whose context usage workspace reads by scraping
@@ -264,15 +281,17 @@ module Workspace
         return
       end
 
-      capable = AgentProvider.all.select { |p| p.supports_hooks? && @which.call(p.executable) }
-      if capable.empty?
+      all_capable = AgentProvider.all.select { |p| p.supports_hooks? && @which.call(p.executable) }
+      user_capable, capable = all_capable.partition(&:user_scoped?)
+      if all_capable.empty?
         add_row("hooks", "skipped", "session monitoring hooks (no hook-capable agent detected, skipped)", project: project)
       elsif capable.any? { |p| @hook_installer.installed?(p, @working_dir, Commands::Init::HOOK_COMMAND) }
         add_row("hooks", "ok", "session monitoring hooks installed for #{project}", project: project)
-      else
+      elsif capable.any?
         add_row("hooks", "fail", "session monitoring hooks not installed for #{project}",
           fix: "run 'workspace init' from the project directory", fix_command: "workspace init", project: project)
       end
+      user_capable.each { |provider| check_user_hooks(provider, project) }
 
       agent_running = @config.agent_running?(project)
       if agent_running
@@ -288,6 +307,23 @@ module Workspace
       check_scraped_pane_context(project) if agent_running
       check_pipeline_config(project)
       check_plans(project)
+    end
+
+    # An agent whose hooks live in its own user-level config (Codex) is
+    # checked once, not per project. Missing hooks only leave its panes on
+    # pane activity, so this warns rather than counting as an issue. Whether
+    # the agent trusts them can't be read from outside, so the hint says how.
+    def check_user_hooks(provider, project)
+      id = "hooks-#{provider.key}"
+      path = @hook_installer.settings_path_for(provider, @working_dir)
+      if @hook_installer.installed?(provider, @working_dir, Commands::Init::HOOK_COMMAND)
+        add_row(id, "ok", "#{provider.label} hooks installed in #{path}", hints: [provider.hook_trust_hint].compact, project: project)
+      else
+        add_row(id, "warn", "#{provider.label} hooks not installed in #{path} (its panes are watched by activity only)",
+          fix: "run 'workspace doctor --fix'", fix_command: "workspace doctor --fix", project: project)
+      end
+    rescue Workspace::Error => e
+      add_row(id, "warn", "#{provider.label} hooks can't be checked: #{e.message}", project: project)
     end
 
     # Warns rather than counting as an issue: a status line not routed

@@ -120,7 +120,7 @@ module Workspace
 
     private
 
-    SLOT_FIELDS = %w[pane_slot pane_id tmux_server session_id transcript_path cwd layout at].freeze
+    SLOT_FIELDS = %w[pane_slot pane_id tmux_server session_id transcript_path cwd layout at kind].freeze
     private_constant :SLOT_FIELDS
 
     def parse(line)

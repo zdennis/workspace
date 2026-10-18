@@ -77,16 +77,18 @@ module Workspace
         return @output.puts "  No detected agent supports hooks; nothing to install." if installable.empty?
 
         @output.puts ""
-        @output.puts "  Would add: #{@hook_installer.summary(installable.first, HOOK_COMMAND)}"
+        installable.each do |provider|
+          @output.puts "  Would add: #{@hook_installer.summary(provider, HOOK_COMMAND)}#{" to #{provider.label}" if installable.size > 1}"
+        end
 
-        return installable.each { |provider| @hook_installer.install(provider, project_root, HOOK_COMMAND, dry_run: dry_run) } if hooks
+        return installable.each { |provider| install_hooks(provider, project_root, dry_run) } if hooks
 
         loop do
           case prompt_action(installable)
           when "v"
-            @hook_installer.preview(installable.first, HOOK_COMMAND)
+            installable.each { |provider| @hook_installer.preview(provider, HOOK_COMMAND) }
           when "i"
-            installable.each { |provider| @hook_installer.install(provider, project_root, HOOK_COMMAND, dry_run: dry_run) }
+            installable.each { |provider| install_hooks(provider, project_root, dry_run) }
             break
           else
             break
@@ -94,10 +96,21 @@ module Workspace
         end
       end
 
+      # A user-level hook file (Codex's) is not the project's: one that can't
+      # be read is reported and the rest of init goes on.
+      def install_hooks(provider, project_root, dry_run)
+        @hook_installer.install(provider, project_root, HOOK_COMMAND, dry_run: dry_run)
+      rescue Workspace::Error => e
+        raise unless provider.user_scoped?
+
+        @error_output.puts "  warn    #{provider.label} hooks not installed: #{e.message}"
+      end
+
       def report_agents(detected, missing, project_root)
         detected.each do |provider|
           status = if provider.supports_hooks?
-            @hook_installer.settings_path_for(provider, project_root)
+            path = @hook_installer.settings_path_for(provider, project_root)
+            provider.user_scoped? ? "#{path} (user-level, for every project)" : path
           else
             "no hook support yet -- monitored by pane activity only"
           end

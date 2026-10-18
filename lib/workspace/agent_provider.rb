@@ -34,6 +34,36 @@ module Workspace
       "PostToolUse" => nil
     }.freeze
 
+    # Codex's hook events, in its `hooks.json` (the same shape as Claude
+    # Code's settings). `PermissionRequest` fires when Codex is about to ask
+    # for approval; it is what puts a Codex pane in the `waiting` state, and
+    # the PostToolUse after it takes the pane out. `SubagentStart` names the
+    # sub-agent itself, so no tool is watched for it. `Interrupt` ends a turn
+    # the person stopped.
+    CODEX_EVENTS = {
+      "SessionStart" => nil,
+      "SessionEnd" => nil,
+      "UserPromptSubmit" => nil,
+      "Stop" => nil,
+      "Interrupt" => nil,
+      "SubagentStart" => nil,
+      "SubagentStop" => nil,
+      "PreToolUse" => nil,
+      "PermissionRequest" => nil,
+      "PostToolUse" => nil
+    }.freeze
+
+    # Seconds Codex gives each workspace hook. Codex waits 600s by default,
+    # far more than `session-event` needs; `SessionEnd` and `Interrupt`
+    # accept at most 3.
+    CODEX_HOOK_TIMEOUTS = {"SessionEnd" => 3, "Interrupt" => 3}.tap { |h| h.default = 10 }.freeze
+
+    # What a pane can learn from an agent's hooks, in the names `sessions
+    # --json` reports as `hook_events`: the events stream's types, plus
+    # `turn_ended` (a Stop) and `waiting` (a permission prompt or a question).
+    HOOK_EVENT_TYPES = %w[session_started session_ended prompt_submitted tool_started tool_finished
+      subagent_started subagent_stopped turn_ended waiting].freeze
+
     # Subcommands that mark a background helper rather than an interactive
     # session. Claude Code leaves a daemon and pty helpers in a pane's process
     # tree, and matching one would report the pane as busy long after the
@@ -81,7 +111,8 @@ module Workspace
           background_markers: CLAUDE_BACKGROUND,
           ready_pattern: CLAUDE_READY_PATTERN,
           restartable: true,
-          interrupt_keys: INTERRUPT_KEYS
+          interrupt_keys: INTERRUPT_KEYS,
+          hook_events: HOOK_EVENT_TYPES
         ),
         new(
           key: "codex",
@@ -89,7 +120,18 @@ module Workspace
           executable: "codex",
           restartable: true,
           context_pattern: CODEX_CONTEXT_PATTERN,
-          interrupt_keys: INTERRUPT_KEYS
+          interrupt_keys: INTERRUPT_KEYS,
+          # Codex trusts each hook by file path and hash, and loads a project's
+          # `.codex/` only once the project is trusted, so a file per worktree
+          # would need reviewing in every new worktree. One user-level file is
+          # reviewed once, with `/hooks` in Codex.
+          settings_path: "hooks.json",
+          user_config_dir: ".codex",
+          user_config_env: "CODEX_HOME",
+          events: CODEX_EVENTS,
+          hook_timeouts: CODEX_HOOK_TIMEOUTS,
+          hook_events: HOOK_EVENT_TYPES,
+          hook_trust_hint: "Codex skips new or changed hooks until you trust them: run /hooks in Codex and trust the `workspace session-event --agent codex` entries"
         ),
         new(
           key: "opencode",
@@ -150,7 +192,7 @@ module Workspace
     end
 
     attr_reader :key, :label, :executable, :settings_path, :events, :background_markers, :ready_pattern,
-      :clear_command, :context_pattern, :interrupt_keys
+      :clear_command, :context_pattern, :interrupt_keys, :hook_events, :hook_trust_hint
 
     # @return [Boolean] whether handoff may clear this agent and type a resume prompt into it
     def restartable?
@@ -174,6 +216,7 @@ module Workspace
     # @param label [String] human-readable name
     # @param executable [String] binary name to detect on PATH
     # @param settings_path [String, nil] hook settings file, relative to project root
+    #   (or to +user_config_dir+ when that is set)
     # @param events [Hash, nil] event name => matcher (nil matcher means "all")
     # @param background_markers [Array<String>] leading subcommands that mark
     #   a background helper, not an interactive session
@@ -189,9 +232,22 @@ module Workspace
     #   pane's screen to read context use when the agent has no status line workspace can route
     # @param context_remaining [Boolean] whether that capture is the percent left, not used
     # @param interrupt_keys [Array<String>] tmux key names that stop the agent mid-turn (`plan pause --interrupt`); empty when unknown
+    # @param user_config_dir [String, nil] the agent's own config directory under the home
+    #   directory; set, +settings_path+ is relative to it rather than to the project
+    # @param user_config_env [String, nil] environment variable that moves that directory
+    # @param hook_timeouts [Hash, nil] event name => seconds the agent gives the hook
+    # @param hook_events [Array<String>] the {HOOK_EVENT_TYPES} this agent's hooks can report
+    # @param hook_trust_hint [String, nil] what a person must do in the agent before
+    #   newly installed hooks run, printed after an install
     def initialize(key:, label:, executable:, settings_path: nil, events: nil,
       background_markers: [], path_segment_matching: true, ready_pattern: nil,
-      restartable: false, clear_command: "/clear", context_pattern: nil, context_remaining: false, interrupt_keys: [])
+      restartable: false, clear_command: "/clear", context_pattern: nil, context_remaining: false, interrupt_keys: [],
+      user_config_dir: nil, user_config_env: nil, hook_timeouts: nil, hook_events: [], hook_trust_hint: nil)
+      @hook_trust_hint = hook_trust_hint
+      @user_config_dir = user_config_dir
+      @user_config_env = user_config_env
+      @hook_timeouts = hook_timeouts
+      @hook_events = hook_events
       @key = key
       @label = label
       @executable = executable
@@ -220,6 +276,33 @@ module Workspace
       !settings_path.nil? && !events.nil?
     end
 
+    # @return [Boolean] whether the hooks live in the agent's user-level config
+    #   directory (see {#user_config_path}) rather than in each project
+    def user_scoped?
+      !@user_config_dir.nil?
+    end
+
+    # @param env [Hash] process environment
+    # @param home [String] the home directory
+    # @return [String, nil] the user-level hook file, or nil for a project-scoped agent
+    def user_config_path(env:, home:)
+      return nil unless user_scoped?
+
+      moved = @user_config_env && env[@user_config_env]
+      dir = (moved.is_a?(String) && !moved.empty?) ? File.expand_path(moved, home) : File.join(home, @user_config_dir)
+      File.join(dir, settings_path)
+    end
+
+    # The command a hook runs. Claude Code's is +base+ itself, as installed
+    # before other agents had hooks; any other agent's names itself, so
+    # `session-event` reads the payload by that agent's event names.
+    #
+    # @param base [String] e.g. "workspace session-event"
+    # @return [String]
+    def hook_command(base)
+      (key == "claude") ? base : "#{base} --agent #{key}"
+    end
+
     # Builds the settings fragment that routes this agent's hook events to the
     # given command.
     #
@@ -227,7 +310,8 @@ module Workspace
     # @return [Hash] a settings fragment ready to merge into the agent's config
     def hook_settings(command)
       entries = events.map do |event, matcher|
-        hook = {"type" => "command", "command" => command}
+        hook = {"type" => "command", "command" => hook_command(command)}
+        hook["timeout"] = @hook_timeouts[event] if @hook_timeouts
         entry = matcher ? {"matcher" => matcher} : {}
         [event, [entry.merge("hooks" => [hook])]]
       end

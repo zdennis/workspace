@@ -11,6 +11,8 @@ RSpec.describe Workspace::Doctor do
     unless overrides.key?(:hook_installer)
       allow(hook_installer).to receive(:statusline_installed?).and_return(true)
       allow(hook_installer).to receive(:local_statusline_command).and_return(nil)
+      allow(hook_installer).to receive(:settings_path_for).and_return("/codex-home/hooks.json")
+      allow(hook_installer).to receive(:install).and_return(false)
     end
 
     described_class.new(
@@ -189,10 +191,72 @@ RSpec.describe Workspace::Doctor do
     end
   end
 
+  describe "Codex's user-level hooks" do
+    before do
+      allow(project_detector).to receive(:detect).and_return("myapp")
+      allow(config).to receive(:agent_running?).with("myapp").and_return(true)
+    end
+
+    def codex_row(result)
+      result[:rows].find { |r| r[:id] == "hooks-codex" }
+    end
+
+    it "reports them installed, with how to trust them, and no project hooks row when only Codex is on PATH" do
+      allow(hook_installer).to receive(:installed?).and_return(true)
+
+      result = build_doctor(which: ->(exe) { exe == "codex" }).report(headless: true)
+
+      expect(codex_row(result)).to include(status: "ok", message: "Codex hooks installed in /codex-home/hooks.json")
+      expect(codex_row(result)[:hints].first).to include("/hooks")
+      expect(result[:rows].map { |r| r[:id] }).not_to include("hooks")
+    end
+
+    it "warns, without failing doctor, when they are missing, and names doctor --fix" do
+      allow(hook_installer).to receive(:installed?).and_return(false)
+
+      result = build_doctor(which: ->(exe) { exe == "codex" }).report(headless: true)
+
+      expect(codex_row(result)).to include(status: "warn", fix_command: "workspace doctor --fix")
+    end
+
+    it "keeps the project hooks row about Claude Code alone when both are on PATH" do
+      codex = Workspace::AgentProvider.find("codex")
+      allow(hook_installer).to receive(:installed?) { |provider, *| provider != codex }
+
+      result = build_doctor(which: ->(exe) { %w[claude codex].include?(exe) }).report(headless: true)
+
+      expect(result[:rows].find { |r| r[:id] == "hooks" }).to include(status: "ok")
+      expect(codex_row(result)).to include(status: "warn")
+    end
+
+    it "installs them on --fix, and says nothing about having nothing to fix" do
+      allow(hook_installer).to receive(:installed?).and_return(true)
+      doctor = build_doctor(which: ->(exe) { exe == "codex" })
+      expect(hook_installer).to receive(:install)
+        .with(Workspace::AgentProvider.find("codex"), anything, "workspace session-event").and_return(true)
+
+      doctor.report(headless: true, fix: true)
+
+      expect(output.string).not_to include("nothing to fix")
+    end
+
+    it "reports a hook file it can't read as a failed --fix, and a warning row" do
+      allow(hook_installer).to receive(:installed?).and_raise(Workspace::Error, "bad json")
+      doctor = build_doctor(which: ->(exe) { exe == "codex" })
+      allow(hook_installer).to receive(:install).and_raise(Workspace::Error, "bad json")
+
+      result = doctor.report(headless: true, fix: true)
+
+      expect(result[:rows].find { |r| r[:id] == "fix" }).to include(status: "fail", message: "--fix: Codex hooks not installed: bad json")
+      expect(codex_row(result)).to include(status: "warn", message: "Codex hooks can't be checked: bad json")
+    end
+  end
+
   describe "agents read by scraping their own panes (Codex)" do
     before do
       allow(project_detector).to receive(:detect).and_return("myapp")
       allow(config).to receive(:agent_socket_path).with("myapp").and_return("/tmp/does-not-exist-workspace-myapp.sock")
+      allow(hook_installer).to receive(:installed?).and_return(true)
     end
 
     it "reports Codex context as read from its own pane when only Codex is on PATH, without the Claude routing warning" do

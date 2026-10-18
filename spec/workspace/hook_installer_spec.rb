@@ -115,6 +115,108 @@ RSpec.describe Workspace::HookInstaller do
         .to raise_error(Workspace::Error, /not valid JSON/)
       expect(File.read(settings_path)).to eq("{ not json")
     end
+
+    it "refuses a settings file whose hooks are not an object" do
+      write_settings("hooks" => [])
+
+      expect { installer.install(provider, tmpdir, command) }
+        .to raise_error(Workspace::Error, /"hooks" object/)
+    end
+
+    it "says whether it changed the file" do
+      expect(installer.install(provider, tmpdir, command)).to be true
+      expect(installer.install(provider, tmpdir, command)).to be false
+    end
+
+    it "keeps an updated entry where it stood, so the groups after it keep their place" do
+      own = {"hooks" => [{"type" => "command", "command" => "/bin/own"}]}
+      old = {"hooks" => [{"type" => "command", "command" => command, "timeout" => 99}]}
+      write_settings("hooks" => {"Stop" => [old, own]})
+
+      installer.install(provider, tmpdir, command)
+
+      expect(settings["hooks"]["Stop"]).to eq([{"hooks" => [{"type" => "command", "command" => command}]}, own])
+    end
+  end
+
+  describe "for Codex, whose hooks are user-level" do
+    let(:codex) { Workspace::AgentProvider.find("codex") }
+    let(:home) { Dir.mktmpdir }
+    let(:codex_path) { File.join(home, ".codex", "hooks.json") }
+
+    subject(:installer) { described_class.new(backup: backup, output: output, input: input, env: {}, home: home) }
+
+    after { FileUtils.remove_entry(home) }
+
+    def codex_hooks
+      JSON.parse(File.read(codex_path))["hooks"]
+    end
+
+    it "writes the home directory's hooks.json, whatever the project" do
+      installer.install(codex, tmpdir, command)
+
+      expect(installer.settings_path_for(codex, tmpdir)).to eq(codex_path)
+      expect(codex_hooks["PermissionRequest"].first["hooks"].first)
+        .to eq("type" => "command", "command" => "workspace session-event --agent codex", "timeout" => 10)
+      expect(File.exist?(settings_path)).to be false
+      expect(installer.installed?(codex, "/elsewhere", command)).to be true
+    end
+
+    it "writes under CODEX_HOME when it is set" do
+      moved = File.join(home, "moved")
+      installer = described_class.new(backup: backup, output: output, input: input, env: {"CODEX_HOME" => moved}, home: home)
+
+      installer.install(codex, tmpdir, command)
+
+      expect(File.exist?(File.join(moved, "hooks.json"))).to be true
+    end
+
+    it "appends after the person's own groups, keeps them as they were, and backs the file up" do
+      FileUtils.mkdir_p(File.dirname(codex_path))
+      own = {"hooks" => [{"type" => "command", "command" => "/bin/orca-hook", "timeout" => 10}]}
+      File.write(codex_path, JSON.generate("description" => "mine", "hooks" => {"PreToolUse" => [own]}))
+
+      installer.install(codex, tmpdir, command)
+
+      expect(JSON.parse(File.read(codex_path))["description"]).to eq("mine")
+      expect(codex_hooks["PreToolUse"].first).to eq(own)
+      expect(codex_hooks["PreToolUse"].size).to eq(2)
+      expect(Dir.glob("#{codex_path}.workspace-backup-*").size).to eq(1)
+      expect(output.string).to include("note    Codex skips new or changed hooks")
+    end
+
+    it "is a no-op the second time, with no note and no backup" do
+      installer.install(codex, tmpdir, command)
+      output.truncate(0)
+      output.rewind
+
+      expect(installer.install(codex, tmpdir, command)).to be false
+      expect(output.string).to include("skip")
+      expect(output.string).not_to include("note")
+      expect(Dir.glob("#{codex_path}.workspace-backup-*")).to be_empty
+    end
+
+    it "writes through a symlinked hooks.json, keeping the link and the file's mode, and leaves no temp file" do
+      real = File.join(home, "dotfiles", "hooks.json")
+      FileUtils.mkdir_p(File.dirname(real))
+      File.write(real, JSON.generate("hooks" => {}))
+      File.chmod(0o600, real)
+      FileUtils.mkdir_p(File.dirname(codex_path))
+      File.symlink(real, codex_path)
+
+      installer.install(codex, tmpdir, command)
+
+      expect(File.symlink?(codex_path)).to be true
+      expect(JSON.parse(File.read(real))["hooks"]).to have_key("PreToolUse")
+      expect(File.stat(real).mode & 0o777).to eq(0o600)
+      expect(Dir.glob(File.join(home, "**", "*workspace-tmp*"))).to be_empty
+    end
+
+    it "prints no note when quiet" do
+      installer.install(codex, tmpdir, command, quiet: true)
+
+      expect(output.string).to eq("")
+    end
   end
 
   describe "#installed?" do

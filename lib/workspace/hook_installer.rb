@@ -17,17 +17,26 @@ module Workspace
     #   settings file, read (never written) so a user-level statusLine
     #   command isn't silently shadowed by a project-level one; Claude Code
     #   deep-merges settings with the project file's keys taking precedence
-    def initialize(backup:, output: $stdout, input: $stdin, user_settings_path: File.expand_path("~/.claude/settings.json"))
+    # @param env [Hash] process environment, for an agent whose config
+    #   directory an environment variable moves (`CODEX_HOME`)
+    # @param home [String] home directory holding a user-scoped agent's config
+    def initialize(backup:, output: $stdout, input: $stdin, user_settings_path: File.expand_path("~/.claude/settings.json"),
+      env: ENV, home: Dir.home)
       @backup = backup
       @output = output
       @input = input
       @user_settings_path = user_settings_path
+      @env = env
+      @home = home
     end
 
     # @param provider [Workspace::AgentProvider]
-    # @param project_root [String] directory holding the agent's settings file
+    # @param project_root [String] directory holding the agent's settings file;
+    #   not used for an agent whose hooks are user-scoped (Codex)
     # @return [String] absolute path to the agent's settings file
     def settings_path_for(provider, project_root)
+      return provider.user_config_path(env: @env, home: @home) if provider.user_scoped?
+
       File.join(project_root, provider.settings_path)
     end
 
@@ -83,7 +92,7 @@ module Workspace
     # @return [String]
     def summary(provider, command)
       events = provider.hook_settings(command)["hooks"].keys.join(", ")
-      "#{events} hooks running `#{command}`"
+      "#{events} hooks running `#{provider.hook_command(command)}`"
     end
 
     # Merges the hooks into the agent's settings file, backing it up first.
@@ -92,8 +101,8 @@ module Workspace
     # @param project_root [String]
     # @param command [String]
     # @param dry_run [Boolean] report without writing
-    # @param quiet [Boolean] suppress the "skip"/"update"/"create"/"backup" progress lines
-    # @return [void]
+    # @param quiet [Boolean] suppress the "skip"/"update"/"create"/"backup"/"note" progress lines
+    # @return [Boolean] whether the file was (or, in a dry run, would be) changed
     def install(provider, project_root, command, dry_run: false, quiet: false)
       path = settings_path_for(provider, project_root)
       existed = File.exist?(path)
@@ -102,15 +111,16 @@ module Workspace
 
       if merged == existing
         @output.puts "  skip    #{path} (hooks already installed)" unless quiet
-        return
+        return false
       end
 
       @backup.backup(path, dry_run: dry_run, quiet: quiet)
-      unless dry_run
-        FileUtils.mkdir_p(File.dirname(path))
-        File.write(path, JSON.pretty_generate(merged) + "\n")
+      write_settings(path, merged) unless dry_run
+      unless quiet
+        @output.puts "  #{existed ? "update" : "create"}  #{path}"
+        @output.puts "  note    #{provider.hook_trust_hint}" if provider.hook_trust_hint
       end
-      @output.puts "  #{existed ? "update" : "create"}  #{path}" unless quiet
+      true
     end
 
     # @param provider [Workspace::AgentProvider]
@@ -188,6 +198,21 @@ module Workspace
     end
 
     private
+
+    # Written to a temp file beside the target and renamed over it, so the
+    # agent never reads a half-written file. A symlinked file (a dotfiles
+    # repo) is written at its target, so the link survives; an existing
+    # file keeps its mode.
+    def write_settings(path, settings)
+      target = File.exist?(path) ? File.realpath(path) : path
+      FileUtils.mkdir_p(File.dirname(target))
+      temp = "#{target}.workspace-tmp-#{Process.pid}"
+      File.write(temp, JSON.pretty_generate(settings) + "\n")
+      File.chmod(File.stat(target).mode & 0o7777, temp) if File.exist?(target)
+      File.rename(temp, target)
+    ensure
+      FileUtils.rm_f(temp) if temp && File.exist?(temp)
+    end
 
     # Saves a status-line command workspace is about to displace, so it isn't
     # lost. Written under `statusline.command` only if that key isn't already
@@ -273,7 +298,10 @@ module Workspace
     def read_settings(path)
       return {} unless File.exist?(path)
 
-      JSON.parse(File.read(path))
+      settings = JSON.parse(File.read(path))
+      return settings if settings.is_a?(Hash) && (settings["hooks"].nil? || settings["hooks"].is_a?(Hash))
+
+      raise Workspace::Error, "Cannot install hooks: #{path} does not hold a JSON object with a \"hooks\" object. Fix or move it, then re-run."
     rescue JSON::ParserError
       raise Workspace::Error,
         "Cannot install hooks: #{path} is not valid JSON. Fix or move it, then re-run."
@@ -297,8 +325,11 @@ module Workspace
         current = hooks[event] ||= []
         entries.each do |entry|
           if entry["matcher"].nil?
+            # Replaced where it stands, so the groups after it keep their
+            # place: Codex keys its trust in a hook on the group's index.
+            index = current.find_index { |e| commands_in(e) == commands_in(entry) }
             current.reject! { |e| commands_in(e) == commands_in(entry) }
-            current << entry
+            index ? current.insert(index, entry) : current << entry
           else
             index = current.find_index { |e| same_command?(e, entry) }
             current[index] = entry if index

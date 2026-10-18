@@ -242,6 +242,8 @@ module Workspace
 
       # What rules a slot out whatever the session looks like.
       def precheck(slot)
+        # The ledger names the agent only when it isn't Claude Code, the one agent resumed here.
+        return skip("other_agent", "The pane ran #{slot["kind"]}, which restore does not resume.") if slot["kind"] && slot["kind"] != "claude"
         return skip("ended", "The session ended (#{slot["end_reason"]}).") unless RESUMABLE_END_REASONS.include?(slot["end_reason"])
         return unmatched("no_session_id", "The ledger has no usable session id for this pane.") unless slot["session_id"].to_s.match?(SESSION_ID)
         return unmatched("cwd_missing", "The session's directory is gone: #{slot["cwd"].inspect}.") unless slot["cwd"].is_a?(String) && File.directory?(slot["cwd"])

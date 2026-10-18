@@ -8,8 +8,22 @@ RSpec.describe Workspace::AgentProvider do
       expect(claude.settings_path).to eq(File.join(".claude", "settings.json"))
     end
 
-    it "includes agents that have no hook system yet" do
-      expect(described_class.find("codex").supports_hooks?).to be false
+    it "includes agents that have no hook system workspace can install into" do
+      expect(described_class.find("opencode").supports_hooks?).to be false
+      expect(described_class.find("pi").supports_hooks?).to be false
+      expect(described_class.find("opencode").hook_events).to eq([])
+      expect(described_class.find("pi").hook_events).to eq([])
+    end
+
+    it "gives Codex user-level hooks reporting every hook event type" do
+      codex = described_class.find("codex")
+
+      expect(codex.supports_hooks?).to be true
+      expect(codex.user_scoped?).to be true
+      expect(codex.hook_events).to eq(described_class::HOOK_EVENT_TYPES)
+      expect(codex.hook_trust_hint).to include("/hooks")
+      expect(described_class.find("claude").user_scoped?).to be false
+      expect(described_class.find("claude").hook_events).to eq(described_class::HOOK_EVENT_TYPES)
     end
 
     it "only Claude Code supports statusLine routing" do
@@ -95,6 +109,48 @@ RSpec.describe Workspace::AgentProvider do
     it "subscribes to Notification and PostToolUse, which start and end a pane's wait" do
       expect(settings["hooks"]).to include("Notification", "PostToolUse")
       expect(settings["hooks"]["PostToolUse"].first).not_to have_key("matcher")
+    end
+
+    it "gives Claude Code's hooks no timeout, as before" do
+      expect(settings["hooks"].values.flatten.flat_map { |e| e["hooks"] }).to all(satisfy { |h| !h.key?("timeout") })
+    end
+
+    describe "for Codex" do
+      subject(:settings) { described_class.find("codex").hook_settings("workspace session-event") }
+
+      it "runs session-event naming the agent, for every Codex event workspace maps" do
+        commands = settings["hooks"].values.flatten.flat_map { |e| e["hooks"] }.map { |h| h["command"] }
+
+        expect(commands.uniq).to eq(["workspace session-event --agent codex"])
+        expect(settings["hooks"].keys).to contain_exactly("SessionStart", "SessionEnd", "UserPromptSubmit", "Stop",
+          "Interrupt", "SubagentStart", "SubagentStop", "PreToolUse", "PermissionRequest", "PostToolUse")
+      end
+
+      it "sets a short timeout, at most 3 seconds where Codex allows no more" do
+        timeout = ->(event) { settings["hooks"][event].first["hooks"].first["timeout"] }
+
+        expect(timeout.call("PreToolUse")).to eq(10)
+        expect(timeout.call("SessionEnd")).to eq(3)
+        expect(timeout.call("Interrupt")).to eq(3)
+      end
+    end
+  end
+
+  describe "#user_config_path" do
+    let(:codex) { described_class.find("codex") }
+
+    it "is the hook file under the home directory" do
+      expect(codex.user_config_path(env: {}, home: "/h")).to eq("/h/.codex/hooks.json")
+    end
+
+    it "follows CODEX_HOME, unless it is empty" do
+      expect(codex.user_config_path(env: {"CODEX_HOME" => "/c"}, home: "/h")).to eq("/c/hooks.json")
+      expect(codex.user_config_path(env: {"CODEX_HOME" => ""}, home: "/h")).to eq("/h/.codex/hooks.json")
+      expect(codex.user_config_path(env: {"CODEX_HOME" => "rel"}, home: "/h")).to eq("/h/rel/hooks.json")
+    end
+
+    it "is nil for an agent whose hooks are per project" do
+      expect(described_class.find("claude").user_config_path(env: {}, home: "/h")).to be_nil
     end
   end
 end

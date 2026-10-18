@@ -34,7 +34,9 @@ For each detected coding agent that supports hooks (e.g. Claude Code), `init` re
 
 You're then asked to **[v]iew** the full settings fragment before deciding, **[i]nstall** it, or do **[n]othing** (the default). Viewing re-prompts afterward so you can still install or decline.
 
-Installing merges the hooks into the agent's own settings file (e.g. `.claude/settings.json`) rather than overwriting it, and is idempotent — hooks already present are left alone, so re-running `init` is always safe. `--install-hooks` skips the prompt and installs immediately; `--no-install-hooks` skips the phase entirely.
+Installing merges the hooks into the agent's own settings file (e.g. `.claude/settings.json`) rather than overwriting it, and is idempotent — hooks already present are left alone, so re-running `init` is always safe. The file is backed up first (`<file>.workspace-backup-<timestamp>`). `--install-hooks` skips the prompt and installs immediately; `--no-install-hooks` skips the phase entirely.
+
+Codex's hooks are user-level: they go into `$CODEX_HOME/hooks.json` (default `~/.codex/hooks.json`) once, for every project, and run `workspace session-event --agent codex`. Your own entries in that file are kept, and workspace's are added after them. Codex skips new or changed hooks until you trust them, so after an install `init` prints a note: run `/hooks` in Codex and trust the `workspace session-event --agent codex` entries. Until then a Codex pane is watched by pane activity only.
 
 ## Examples
 

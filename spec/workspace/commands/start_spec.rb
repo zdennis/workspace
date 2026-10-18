@@ -271,6 +271,33 @@ RSpec.describe Workspace::Commands::Start do
         end
       end
 
+      context "when Codex is detected" do
+        let(:which) { ->(exe) { exe == "codex" } }
+        let(:codex_home) { File.join(tmpdir, "codex-home") }
+        let(:codex_path) { File.join(codex_home, "hooks.json") }
+        let(:hook_installer) { Workspace::HookInstaller.new(backup: backup, output: output, input: input, env: {"CODEX_HOME" => codex_home}, home: tmpdir) }
+
+        it "installs its user-level hooks, not into the worktree, and notes once in the JSON warnings how to trust them" do
+          command.call("PROJ-123", json: true)
+
+          expect(JSON.parse(File.read(codex_path))["hooks"]).to have_key("PermissionRequest")
+          expect(File).not_to exist(File.join(worktree_path, ".codex"))
+          expect(JSON.parse(output.string)["warnings"]).to include(a_string_including("run /hooks in Codex"))
+        end
+
+        it "warns rather than fails when Codex's hook file can't be read" do
+          FileUtils.mkdir_p(codex_home)
+          File.write(codex_path, "{ nope")
+
+          command.call("PROJ-123", json: true)
+
+          payload = JSON.parse(output.string)
+          expect(payload["ok"]).to be true
+          expect(payload["warnings"]).to include(a_string_including("Codex hooks not installed"))
+          expect(File.read(codex_path)).to eq("{ nope")
+        end
+      end
+
       context "when no hook-capable agent is detected" do
         let(:which) { ->(_exe) { false } }
 

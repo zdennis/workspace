@@ -4761,6 +4761,7 @@ module Workspace
 
     def cmd_session_event(args)
       workspace = nil
+      agent = nil
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: workspace session-event [options]"
         opts.separator ""
@@ -4776,15 +4777,19 @@ module Workspace
         opts.on("--workspace NAME", "Send to NAME instead of the pane's session") do |value|
           workspace = value
         end
+        opts.on("--agent KIND", "Read the payload as KIND's hook events: claude (the default) or codex") do |value|
+          agent = value
+        end
         opts.separator ""
         opts.separator "Examples:"
         opts.separator "  echo '{\"hook_event_name\":\"SessionStart\",\"session_id\":\"abc\"}' | workspace session-event"
         opts.separator "  echo '{\"hook_event_name\":\"Stop\"}' | workspace session-event --workspace my-project"
         opts.separator "  echo '{\"hook_event_name\":\"PreToolUse\",\"tool_name\":\"Edit\"}' | workspace session-event --workspace my-project"
+        opts.separator "  echo '{\"hook_event_name\":\"PermissionRequest\",\"tool_name\":\"Bash\"}' | workspace session-event --agent=codex"
       end
       parser.parse!(args)
 
-      result = @session_event_command.call(workspace: workspace)
+      result = @session_event_command.call(workspace: workspace, agent: agent)
       @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
     end
 

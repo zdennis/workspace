@@ -29,6 +29,29 @@ module Workspace
         "PostToolUse" => "tool_use"
       }.freeze
 
+      # Codex's hooks (see {Workspace::AgentProvider::CODEX_EVENTS}). A
+      # PermissionRequest is the approval prompt, so it starts a wait the way
+      # Claude Code's Notification does; an Interrupt ends the turn.
+      CODEX_EVENTS = {
+        "SessionStart" => "session_start",
+        "SessionEnd" => "session_end",
+        "UserPromptSubmit" => "user_prompt",
+        "Stop" => "stop",
+        "Interrupt" => "stop",
+        "SubagentStart" => "subagent_start",
+        "SubagentStop" => "subagent_stop",
+        "PreToolUse" => "tool_start",
+        "PermissionRequest" => "notification",
+        "PostToolUse" => "tool_use"
+      }.freeze
+
+      # Each agent's table, by the provider key `--agent` names.
+      AGENT_EVENTS = {"claude" => CLAUDE_EVENTS, "codex" => CODEX_EVENTS}.freeze
+
+      # The agent a payload is read as when `--agent` is not given: the hooks
+      # installed before other agents had any run `session-event` bare.
+      DEFAULT_AGENT = "claude"
+
       # The hooks recorded in the session ledger, as the names it stores.
       LEDGER_EVENTS = {"SessionStart" => "session_start", "SessionEnd" => "session_end"}.freeze
 
@@ -56,6 +79,9 @@ module Workspace
 
       # Longest tool name, tool use id and session source or reason forwarded.
       MAX_NAME_LENGTH = 64
+
+      # Longest sub-agent id forwarded.
+      MAX_ID_LENGTH = 128
 
       # Longest file path forwarded; a longer one is left out rather than cut,
       # since a cut path names a different file.
@@ -118,8 +144,14 @@ module Workspace
       #
       # @param workspace [String, nil] overrides the workspace the event is sent
       #   to; normally derived from the pane the hook is running in
+      # @param agent [String, nil] the agent whose hook this is (`claude`, `codex`),
+      #   which says how its event names read; nil is {DEFAULT_AGENT}. An agent
+      #   with no table here is dropped, rather than read by another agent's names.
       # @return [Hash] {exit_code:} — 2 when an edit is denied, 0 otherwise
-      def call(workspace: nil)
+      def call(workspace: nil, agent: nil)
+        @agent = agent.nil? ? DEFAULT_AGENT : agent.downcase
+        return ok { "session-event: unknown agent #{agent.inspect}, dropped" } unless AGENT_EVENTS.key?(@agent)
+
         payload = parse(@input.read)
         return ok unless payload.is_a?(Hash)
 
@@ -186,7 +218,7 @@ module Workspace
         hook = payload["hook_event_name"]
         return unless @session_ledger && LEDGER_EVENTS.key?(hook)
 
-        @session_ledger.record(
+        entry = {
           "event" => LEDGER_EVENTS[hook],
           "workspace" => workspace,
           "pane_slot" => @tmux.pane_slot(pane_id),
@@ -198,7 +230,11 @@ module Workspace
           "cwd" => text_field(payload, "cwd"),
           "source" => text_field(payload, "source"),
           "reason" => text_field(payload, "reason")
-        )
+        }
+        # Named only for an agent other than Claude Code, as before other agents
+        # had hooks; `restore` resumes Claude Code sessions only.
+        entry["kind"] = @agent unless claude?
+        @session_ledger.record(entry)
       rescue => e
         @logger.debug { "session-event: ledger write failed (#{e.class}: #{e.message})" }
       end
@@ -240,27 +276,55 @@ module Workspace
 
       def translate(payload, pane_id, workspace)
         hook = payload["hook_event_name"]
-        name = CLAUDE_EVENTS[hook]
+        name = AGENT_EVENTS.fetch(@agent)[hook]
         return nil unless name
 
-        name = "subagent_start" if hook == "PreToolUse" && payload["tool_name"] == SUBAGENT_TOOL
+        name = "subagent_start" if claude? && hook == "PreToolUse" && payload["tool_name"] == SUBAGENT_TOOL
 
         {
           "type" => "session_event",
           "workspace" => workspace,
           "event" => name,
+          "agent_kind" => @agent,
           "pane_id" => pane_id,
           "session_id" => payload["session_id"],
           "cwd" => payload["cwd"],
           "transcript_path" => text_field(payload, "transcript_path"),
           # Set only when the hook fired inside a sub-agent, so the daemon can
           # tell its events from the main agent's.
-          "agent_id" => payload["agent_id"],
+          "agent_id" => agent_id_for(payload),
           "agent" => agent_for(payload),
           "message" => message_for(payload),
           "prompt" => prompt_for(payload),
           "stop_reason" => stop_reason_for(payload)
-        }.merge(tool_fields(payload), session_fields(payload)).compact
+        }.merge(tool_fields(payload), session_fields(payload), codex_subagent_fields(payload)).compact
+      end
+
+      def claude?
+        @agent == DEFAULT_AGENT
+      end
+
+      def codex?
+        @agent == "codex"
+      end
+
+      # Codex's SubagentStart comes from the main agent and names the
+      # sub-agent it starts in `agent_id`; that id goes out as `subagent_id`,
+      # so the event still counts as the main agent's.
+      def agent_id_for(payload)
+        return nil if codex? && payload["hook_event_name"] == "SubagentStart"
+
+        name_or_id(payload["agent_id"])
+      end
+
+      def codex_subagent_fields(payload)
+        return {} if !codex? || payload["hook_event_name"] != "SubagentStart"
+
+        {"subagent_id" => name_or_id(payload["agent_id"]), "subagent_type" => name_field(payload, "agent_type")}
+      end
+
+      def name_or_id(value)
+        value.is_a?(String) ? clean(value, MAX_ID_LENGTH) : value
       end
 
       # What the events stream needs to know about a tool use: its name and id,
@@ -280,7 +344,7 @@ module Workspace
           duration = payload["duration_ms"]
           fields["duration_ms"] = duration.round if duration.is_a?(Numeric) && duration >= 0
         end
-        if fields["tool"] == SUBAGENT_TOOL && hook == "PreToolUse" && payload["tool_input"].is_a?(Hash)
+        if claude? && fields["tool"] == SUBAGENT_TOOL && hook == "PreToolUse" && payload["tool_input"].is_a?(Hash)
           fields["description"] = clean(payload["tool_input"]["description"], MAX_DESCRIPTION_LENGTH)
           fields["subagent_type"] = clean(payload["tool_input"]["subagent_type"], MAX_NAME_LENGTH)
         end
@@ -289,8 +353,8 @@ module Workspace
 
       def session_fields(payload)
         case payload["hook_event_name"]
-        when "SessionStart" then {"kind" => "claude", "source" => name_field(payload, "source")}
-        when "SessionEnd" then {"kind" => "claude", "reason" => name_field(payload, "reason")}
+        when "SessionStart" then {"kind" => @agent, "source" => name_field(payload, "source")}
+        when "SessionEnd" then {"kind" => @agent, "reason" => name_field(payload, "reason")}
         else {}
         end
       end
@@ -340,14 +404,22 @@ module Workspace
         cleaned unless cleaned.empty?
       end
 
+      # Codex's approval prompt carries the command it asks about in its tool
+      # input, which is never forwarded; the wait is described by the tool's name.
       def message_for(payload)
+        if codex? && payload["hook_event_name"] == "PermissionRequest"
+          tool = name_field(payload, "tool_name")
+          return tool ? "Approval requested for #{tool}" : "Approval requested"
+        end
+
         message = payload["message"]
-        return nil unless payload["hook_event_name"] == "Notification" && message.is_a?(String)
+        return nil unless claude? && payload["hook_event_name"] == "Notification" && message.is_a?(String)
 
         message[0, MAX_MESSAGE_LENGTH]
       end
 
       def stop_reason_for(payload)
+        return "interrupted" if codex? && payload["hook_event_name"] == "Interrupt"
         return nil unless payload["hook_event_name"] == "Stop"
 
         text_field(payload, "stop_reason")&.then { |reason| reason[0, MAX_STOP_REASON_LENGTH] }
@@ -358,14 +430,21 @@ module Workspace
         value.is_a?(String) ? value : nil
       end
 
+      # Only Claude Code's prompt is forwarded, for the pane label it falls
+      # back to; no other agent's prompt text leaves the hook.
       def prompt_for(payload)
         prompt = payload["prompt"]
-        return nil unless payload["hook_event_name"] == "UserPromptSubmit" && prompt.is_a?(String)
+        return nil unless claude? && payload["hook_event_name"] == "UserPromptSubmit" && prompt.is_a?(String)
 
         prompt[0, MAX_PROMPT_LENGTH]
       end
 
       def agent_for(payload)
+        if codex?
+          type = name_field(payload, "agent_type") if payload["hook_event_name"] == "SubagentStart"
+          return type ? {"name" => type} : nil
+        end
+
         input = payload["tool_input"]
         return nil unless payload["hook_event_name"] == "PreToolUse" && payload["tool_name"] == SUBAGENT_TOOL && input.is_a?(Hash)
 

@@ -14,7 +14,8 @@ module Workspace
   class LockEnforcer
     # Tools whose PreToolUse hook is gated. A Bash-based edit (`sed`, `git
     # apply`, codegen) isn't covered — the lock stays advisory for those.
-    EDIT_TOOLS = %w[Edit Write MultiEdit NotebookEdit].freeze
+    # `apply_patch` is how Codex edits a file.
+    EDIT_TOOLS = %w[Edit Write MultiEdit NotebookEdit apply_patch].freeze
 
     LOCK_NAME = "edit"
 

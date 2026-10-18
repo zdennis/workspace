@@ -17,14 +17,14 @@ RSpec.describe Workspace::Commands::SessionEvent do
     allow(tmux).to receive(:server_pid_for_pane).and_return(nil)
   end
 
-  def invoke(payload, workspace: nil)
+  def invoke(payload, workspace: nil, agent: nil)
     command = described_class.new(config: config, tmux: tmux,
       input: StringIO.new(payload.is_a?(String) ? payload : JSON.generate(payload)), env: env)
-    command.call(workspace: workspace)
+    command.call(workspace: workspace, agent: agent)
   end
 
   # Stands up a listener, runs the hook, and returns what arrived.
-  def deliver(payload)
+  def deliver(payload, agent = nil)
     File.unlink(socket_path) if File.exist?(socket_path)
     server = UNIXServer.new(socket_path)
     received = nil
@@ -34,7 +34,7 @@ RSpec.describe Workspace::Commands::SessionEvent do
       client.puts(JSON.generate("ok" => true))
       client.close
     end
-    invoke(payload)
+    invoke(payload, agent: agent)
     listener.join(2)
     received
   ensure
@@ -782,7 +782,114 @@ RSpec.describe Workspace::Commands::SessionEvent do
 
         entry = JSON.parse(File.read(File.join(dir, "ledger.jsonl")))
         expect(entry).to include("event" => "session_start", "pane_slot" => "proj:0.1", "session_id" => "s1")
+        expect(entry).not_to have_key("kind")
       end
+    end
+
+    it "names the agent on a Codex session, so restore leaves it alone" do
+      described_class.new(config: config, tmux: tmux, input: StringIO.new(JSON.generate("hook_event_name" => "SessionStart")),
+        env: env, session_ledger: ledger).call(agent: "codex")
+
+      expect(ledger).to have_received(:record).with(hash_including("event" => "session_start", "kind" => "codex"))
+    end
+  end
+
+  it "reads every hook event an agent is installed with, and only those, per agent" do
+    described_class::AGENT_EVENTS.each do |key, table|
+      expect(table.keys).to match_array(Workspace::AgentProvider.find(key).events.keys), key
+    end
+  end
+
+  describe "Codex hooks (--agent codex)" do
+    def codex(payload)
+      deliver(payload, "codex")
+    end
+
+    it "marks every event with the agent's kind, and Claude Code's as claude" do
+      expect(codex("hook_event_name" => "Stop")).to include("event" => "stop", "agent_kind" => "codex")
+      expect(deliver("hook_event_name" => "Stop")).to include("agent_kind" => "claude")
+    end
+
+    it "maps Codex's events onto workspace's" do
+      {
+        "SessionStart" => "session_start", "SessionEnd" => "session_end", "UserPromptSubmit" => "user_prompt",
+        "Stop" => "stop", "Interrupt" => "stop", "SubagentStop" => "subagent_stop", "PreToolUse" => "tool_start",
+        "PostToolUse" => "tool_use", "PermissionRequest" => "notification", "SubagentStart" => "subagent_start"
+      }.each do |hook, event|
+        expect(codex("hook_event_name" => hook)["event"]).to eq(event), hook
+      end
+    end
+
+    it "drops Codex events it does not map" do
+      expect(Socket).not_to receive(:new)
+
+      %w[PreCompact PostCompact Notification].each { |hook| invoke({"hook_event_name" => hook}, agent: "codex") }
+    end
+
+    it "says a PermissionRequest is waiting on approval by tool name only, never the command" do
+      event = codex("hook_event_name" => "PermissionRequest", "tool_name" => "Bash",
+        "tool_input" => {"command" => "rm -rf /secret", "description" => "delete the secret"})
+
+      expect(event["message"]).to eq("Approval requested for Bash")
+      expect(JSON.generate(event)).not_to include("secret")
+    end
+
+    it "never forwards the prompt, tool input, tool response or last assistant message" do
+      events = [
+        codex("hook_event_name" => "UserPromptSubmit", "prompt" => "my secret prompt"),
+        codex("hook_event_name" => "PreToolUse", "tool_name" => "Bash", "tool_use_id" => "c1", "tool_input" => {"command" => "cat secret"}),
+        codex("hook_event_name" => "PostToolUse", "tool_name" => "Bash", "tool_use_id" => "c1",
+          "tool_input" => {"command" => "cat secret"}, "tool_response" => "secret output"),
+        codex("hook_event_name" => "Stop", "last_assistant_message" => "secret reply"),
+        codex("hook_event_name" => "SubagentStop", "agent_id" => "a1", "last_assistant_message" => "secret reply")
+      ]
+
+      events.each { |event| expect(JSON.generate(event)).not_to include("secret") }
+      expect(events[1]).to include("tool" => "Bash", "tool_use_id" => "c1")
+      expect(events[2]).to include("tool" => "Bash", "ok" => true)
+    end
+
+    it "sends a SubagentStart as the main agent's, naming the sub-agent it starts" do
+      event = codex("hook_event_name" => "SubagentStart", "agent_id" => "sub-7", "agent_type" => "explorer")
+
+      expect(event).not_to have_key("agent_id")
+      expect(event).to include("subagent_id" => "sub-7", "subagent_type" => "explorer", "agent" => {"name" => "explorer"})
+    end
+
+    it "sends a SubagentStop with the stopping sub-agent's id" do
+      expect(codex("hook_event_name" => "SubagentStop", "agent_id" => "sub-7")).to include("agent_id" => "sub-7")
+    end
+
+    it "does not take a PreToolUse for a tool named Task as a sub-agent start" do
+      expect(codex("hook_event_name" => "PreToolUse", "tool_name" => "Task")["event"]).to eq("tool_start")
+    end
+
+    it "gives an Interrupt the stop reason interrupted" do
+      expect(codex("hook_event_name" => "Interrupt")).to include("event" => "stop", "stop_reason" => "interrupted")
+    end
+
+    it "names codex as the session's kind" do
+      expect(codex("hook_event_name" => "SessionStart", "source" => "startup")).to include("kind" => "codex", "source" => "startup")
+    end
+
+    it "gates Codex's apply_patch on the edit lock, with exit 2" do
+      enforcer = instance_double(Workspace::LockEnforcer)
+      allow(enforcer).to receive(:check) { |tool_name:, **| (tool_name == "apply_patch") ? "edit lock held by another agent" : nil }
+
+      result = described_class.new(config: config, tmux: tmux, env: env, error_output: StringIO.new, lock_enforcer: enforcer,
+        input: StringIO.new(JSON.generate("hook_event_name" => "PreToolUse", "tool_name" => "apply_patch"))).call(agent: "codex")
+
+      expect(result).to eq(exit_code: 2)
+    end
+
+    it "drops an agent it has no table for, exiting 0, rather than read it by Claude Code's names" do
+      expect(Socket).not_to receive(:new)
+
+      expect(invoke({"hook_event_name" => "PreToolUse", "tool_name" => "Edit"}, agent: "opencode")).to eq(exit_code: 0)
+    end
+
+    it "takes the agent's name in any case" do
+      expect(deliver({"hook_event_name" => "Stop"}, "Codex")).to include("agent_kind" => "codex")
     end
   end
 end

@@ -29,6 +29,7 @@ Run `workspace restore --dry-run` first. It prints what would happen and changes
 - A pane that already runs a coding agent. Running `restore` twice does not type twice.
 - A pane running another program (an editor, a server). It is reported as not matched (`pane_busy`), and nothing is typed.
 - A session whose transcript file is gone (`transcript_missing`). Claude Code no longer has the conversation, so no pane is made for it.
+- A session of an agent other than Claude Code (`other_agent`). A Codex session's ledger entry names its `kind`, and only Claude Code sessions are resumed.
 - A session you ended yourself. A `SessionEnd` with any reason other than `other` (`prompt_input_exit`, `logout`, `clear`) means the session is over. `other` is what a closed terminal, a killed tmux server and a shutdown record, so those sessions are restored.
 
 ### Which session belongs to which pane
@@ -128,7 +129,7 @@ Every row has the same keys. `kind` is `workspace` for a launch row (its `slot` 
 | `restored` | | The resume command was typed into the pane |
 | `would_restore`, `would_launch` | | Dry run only |
 | `launched` | | The workspace's session was started |
-| `skipped` | `config_pane`, `agent_running`, `ended` | Nothing to do; see "What restore leaves alone" |
+| `skipped` | `config_pane`, `agent_running`, `ended`, `other_agent` | Nothing to do; see "What restore leaves alone" |
 | `unmatched` | `no_window`, `pane_busy`, `pane_unknown`, `pane_ambiguous`, `no_session_id`, `cwd_missing`, `transcript_missing`, `not_launched`, `no_config` | The recorded pane could not be matched to a pane restore can use. `pane_unknown`: the process table could not be read. `pane_ambiguous`: an agent runs where an entry with no server id points. `no_session_id`: the ledger has no valid session id. `not_launched`: the workspace's session could not be launched (see its workspace row). `no_config` (dry run, workspace row): the session is not running and the workspace has no tmuxinator config |
 | `failed` | `launch_failed`, `no_config`, `split_failed`, `pane_not_found`, `not_delivered` | The workspace could not be launched, tmux could not make the pane, or the command did not reach it |
 

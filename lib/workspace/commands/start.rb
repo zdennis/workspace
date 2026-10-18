@@ -647,7 +647,7 @@ module Workspace
         return unless @hook_installer
 
         AgentProvider.all.select { |p| p.supports_hooks? && @which.call(p.executable) }.each do |provider|
-          @hook_installer.install(provider, worktree_path, Commands::Init::HOOK_COMMAND, quiet: quiet)
+          install_provider_hooks(provider, worktree_path, quiet: quiet)
         end
 
         AgentProvider.all.select { |p| p.supports_statusline? && @which.call(p.executable) }.each do |provider|
@@ -656,6 +656,17 @@ module Workspace
           next unless quiet && notices.any?
           notices.each { |notice| @warnings << "Note: #{notice}." }
         end
+      end
+
+      # A user-level hook file (Codex's) is not the worktree's: one that can't
+      # be read is a warning, not a failed start.
+      def install_provider_hooks(provider, worktree_path, quiet:)
+        changed = @hook_installer.install(provider, worktree_path, Commands::Init::HOOK_COMMAND, quiet: quiet)
+        @warnings << "Note: #{provider.hook_trust_hint}." if changed && quiet && provider.hook_trust_hint
+      rescue Workspace::Error => e
+        raise unless provider.user_scoped?
+
+        @warnings << "Note: #{provider.label} hooks not installed: #{e.message}"
       end
 
       def write_project_marker(worktree_path, config_name)

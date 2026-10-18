@@ -94,6 +94,8 @@ module Workspace
       types = LINES[event["event"]]
       pane_id = event["pane_id"]
       return [] unless types && pane_id.is_a?(String)
+      # A sub-agent the agent names itself (Codex) started with no tool call.
+      types -= ["tool_started"] if event["event"] == "subagent_start" && event["subagent_id"]
 
       @lock.synchronize do
         types.filter_map { |type| write_line(type, pane_id, fields_for(type, event)) }
@@ -134,7 +136,7 @@ module Workspace
       when "tool_finished"
         tool_fields(event).merge("ok" => event["ok"] != false, "duration_ms" => duration(event))
       when "subagent_started"
-        {"agent_id" => nil, "tool_use_id" => text(event["tool_use_id"], MAX_ID),
+        {"agent_id" => text(event["subagent_id"], MAX_ID), "tool_use_id" => text(event["tool_use_id"], MAX_ID),
          "description" => text(event["description"], MAX_DESCRIPTION), "subagent_type" => text(event["subagent_type"], MAX_NAME)}
       when "subagent_stopped" then {"agent_id" => text(event["agent_id"], MAX_ID)}
       when "session_started" then {"kind" => text(event["kind"], MAX_NAME), "source" => text(event["source"], MAX_NAME)}

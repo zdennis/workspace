@@ -124,15 +124,57 @@ RSpec.describe Workspace::Commands::Init do
     end
 
     context "when the only installed agent has no hook support" do
-      let(:which) { ->(exe) { exe == "codex" } }
+      let(:which) { ->(exe) { exe == "opencode" } }
 
       it "reports it as monitored by pane activity and installs nothing" do
         command.call(project_root: project_root)
 
-        expect(output.string).to include("found   Codex")
+        expect(output.string).to include("found   OpenCode")
         expect(output.string).to include("no hook support yet")
         expect(output.string).to include("nothing to install")
         expect(output.string).not_to include("Install these hooks")
+      end
+    end
+
+    context "when Codex is installed" do
+      let(:hook_installer) { Workspace::HookInstaller.new(backup: backup, output: output, input: input, env: {}, home: tmpdir) }
+      let(:which) { ->(exe) { %w[claude codex].include?(exe) } }
+
+      before { FileUtils.mkdir_p(File.join(tmpdir, ".codex")) }
+
+      it "lists Codex's user-level hook file and what each agent would get" do
+        command.call(project_root: project_root)
+
+        expect(output.string).to include("found   Codex        #{File.join(tmpdir, ".codex", "hooks.json")} (user-level, for every project)")
+        expect(output.string).to include("`workspace session-event --agent codex` to Codex")
+        expect(output.string).to include("[v]iew, [i]nstall for Claude Code, Codex, or [n]othing?")
+      end
+
+      it "installs into Codex's hooks.json, keeping the person's own hooks, and says how to trust them" do
+        path = File.join(tmpdir, ".codex", "hooks.json")
+        own = {"type" => "command", "command" => "/bin/own-hook"}
+        File.write(path, JSON.generate("hooks" => {"Stop" => [{"hooks" => [own]}]}))
+
+        command.call(project_root: project_root, hooks: true)
+
+        stop = JSON.parse(File.read(path))["hooks"]["Stop"]
+        expect(stop.first["hooks"]).to eq([own])
+        expect(stop.last["hooks"].first["command"]).to eq("workspace session-event --agent codex")
+        expect(Dir.glob("#{path}.workspace-backup-*")).not_to be_empty
+        expect(output.string).to include("note    Codex skips new or changed hooks until you trust them")
+        expect(File.exist?(settings_path)).to be true
+      end
+
+      it "warns and goes on when Codex's hooks.json can't be read" do
+        path = File.join(tmpdir, ".codex", "hooks.json")
+        File.write(path, "{ nope")
+
+        command.call(project_root: project_root, hooks: true)
+
+        expect(error_output.string).to include("warn    Codex hooks not installed:")
+        expect(File.read(path)).to eq("{ nope")
+        expect(File.exist?(settings_path)).to be true
+        expect(output.string).to include("Done!")
       end
     end
 

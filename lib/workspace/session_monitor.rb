@@ -645,8 +645,13 @@ module Workspace
       case event["event"]
       when "subagent_start"
         pane.delete(:done)
-        pane[:agents] << {name: agent_name(event), state: "running", started_at: @clock.now,
-          description: self.class.clean_message(event["description"])&.slice(0, 120), tool_use_id: event["tool_use_id"]}
+        agent = {
+          name: agent_name(event), state: "running", started_at: @clock.now,
+          description: self.class.clean_message(event["description"])&.slice(0, 120), tool_use_id: event["tool_use_id"]
+        }
+        # A sub-agent the agent names itself (Codex) is known by its id from the start.
+        agent[:agent_id] = event["subagent_id"] if event["subagent_id"]
+        pane[:agents] << agent
       when "subagent_stop"
         # Claude Code's SubagentStop does not say which sub-agent finished, so
         # the oldest running one is closed. With sub-agents running in parallel
@@ -680,7 +685,9 @@ module Workspace
 
       case event["event"]
       when "tool_start", "subagent_start"
-        name = event["tool"] || ((event["event"] == "subagent_start") ? "Task" : nil)
+        # A sub-agent the agent names itself (Codex's SubagentStart) has no
+        # tool call to wait on; Claude Code's comes from its Task call.
+        name = event["tool"] || ((event["event"] == "subagent_start" && !event["subagent_id"]) ? "Task" : nil)
         if main && name
           open.delete(id || :anonymous)
           open[id || :anonymous] = {tool: self.class.clean_message(name)&.slice(0, 64), since: @clock.now}

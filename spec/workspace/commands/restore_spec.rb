@@ -538,6 +538,18 @@ RSpec.describe Workspace::Commands::Restore do
       expect(tmux.delivered.size).to eq(1)
     end
 
+    it "leaves alone a pane whose ledger names an agent other than Claude Code" do
+      started("api:0.4", sid(1), kind: "codex")
+      ended("api:0.4", sid(1), "other")
+
+      result = call
+
+      expect(rows(result)).to match([include("outcome" => "skipped", "reason" => "other_agent",
+        "message" => "The pane ran codex, which restore does not resume.")])
+      expect(tmux.split_count).to eq(0)
+      expect(tmux.delivered).to be_empty
+    end
+
     it "does not restore a session the user ended" do
       %w[prompt_input_exit logout clear].each_with_index do |reason, index|
         started("api:0.#{index + 4}", sid(index))
