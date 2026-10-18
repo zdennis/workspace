@@ -5,7 +5,8 @@ require "fileutils"
 module Workspace
   # One agent daemon's high-rate log of hook events: `<dir>/<workspace>.jsonl`,
   # one typed JSON line per tool start and finish, sub-agent start and stop,
-  # session start and end, and prompt submitted. `workspace events` reads it,
+  # session start and end, and prompt submitted, plus the `agent_status` lines
+  # agents post (`agent status post`). `workspace events` reads it,
   # together with the lifecycle event log, which never sees these lines.
   #
   # Each daemon has its own file, so the daemon is its only writer (two overlap
@@ -27,7 +28,7 @@ module Workspace
     DEFAULT_ROTATE_THRESHOLD = 5 * 1_048_576
 
     # The line types this log writes.
-    TYPES = %w[tool_started tool_finished subagent_started subagent_stopped session_started session_ended prompt_submitted].freeze
+    TYPES = %w[tool_started tool_finished subagent_started subagent_stopped session_started session_ended prompt_submitted agent_status].freeze
 
     # The lines each forwarded session event becomes.
     LINES = {

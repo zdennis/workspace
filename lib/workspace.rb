@@ -146,6 +146,9 @@ require_relative "workspace/config_schema_docs"
 require_relative "workspace/config_layering"
 require_relative "workspace/event_log"
 require_relative "workspace/hook_event_log"
+require_relative "workspace/agent_status_requests"
+require_relative "workspace/typing_safety"
+require_relative "workspace/agent_status_desk"
 require_relative "workspace/event_stream"
 require_relative "workspace/state"
 require_relative "workspace/git"
@@ -293,6 +296,7 @@ require_relative "workspace/commands/project_actions"
 require_relative "workspace/commands/config"
 require_relative "workspace/commands/statusline"
 require_relative "workspace/commands/restart_agent"
+require_relative "workspace/commands/agent_status"
 require_relative "workspace/commands/ensure_agent"
 require_relative "workspace/commands/daemon"
 require_relative "workspace/commands/ui"
@@ -596,6 +600,8 @@ module Workspace
     )
 
     restart_agent_command = Commands::RestartAgent.new(config: config, locator: pane_locator, output: output)
+    agent_status_command = Commands::AgentStatus.new(client: agent_snapshot_client, locator: pane_locator, tmux: tmux, output: output,
+      workspace_for_session: ->(session) { project_config.available_projects.find { |name| tmux.session_name_for(name) == session } || session })
     handoff_config = HandoffConfig.new(config_resolver: config_resolver, project_config: project_config,
       lineage: lineage, error_output: error_output)
     handoff_command = Commands::Handoff.new(config: config, tmux: tmux, locator: pane_locator, handoff_config: handoff_config,
@@ -673,6 +679,7 @@ module Workspace
       liveness: Liveness.new(tmux: tmux),
       window_liveness: WindowLiveness.new(window_manager: window_manager),
       restart_agent_command: restart_agent_command,
+      agent_status_command: agent_status_command,
       send_command: send_command,
       ensure_agent_command: ensure_agent_command,
       name_migration: name_migration,

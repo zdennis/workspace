@@ -26,7 +26,7 @@ Without `--json`, each line is `at  workspace  type  key=value ...`, like [`even
 The stream has two kinds of source:
 
 - **The event log**, `~/.workspace-events.jsonl` ([`event-log`](README.event-log.md)): state changes and lifecycle events such as `plan_changed`, `plan_progress` (a plan task changed state), `inbox_changed`, `ask_created`, `agent_state`. Its lines are printed as they are in the log (`timestamp`, `type`, `project`, `data`), with `source: "lifecycle"`, `at` (the `timestamp`) and `workspace` (`data.workspace`, else `project`) added.
-- **Each agent daemon's hook event file**, `~/.local/state/workspace/.events/<workspace>.jsonl` (the `hook_events` path in [`capabilities --json`](README.capabilities.md)). [`agentd`](README.agentd.md) writes one line for each hook event [`session-event`](README.session-event.md) forwards. Its lines are printed as they are in the file, with `source: "hook"` added.
+- **Each agent daemon's hook event file**, `~/.local/state/workspace/.events/<workspace>.jsonl` (the `hook_events` path in [`capabilities --json`](README.capabilities.md)). [`agentd`](README.agentd.md) writes one line for each hook event [`session-event`](README.session-event.md) forwards, and one for each [`agent status post`](README.agent.md#status). Its lines are printed as they are in the file, with `source: "hook"` added.
 
 Every printed line also carries `cursor`. Lines from different sources come out in time order, and lines from one file always keep that file's order.
 
@@ -45,6 +45,7 @@ Every line has `type`, `at` (ISO 8601, UTC, milliseconds), `workspace` (the name
 | `session_started` | `kind` (`claude`), `source` (`startup`, `resume`, `clear` or `compact`) |
 | `session_ended` | `kind`, `reason` |
 | `prompt_submitted` | none |
+| `agent_status` | `summary` (cut to 500 characters), `task` (or `null`), `progress` (`{"done": N, "total": M}` or `null`), `reply_to` (the status request it answers, or `null`). Posted by an agent with [`agent status post`](README.agent.md#status), not by a hook |
 
 `path` is the file an `Edit`, `Write`, `Read`, `MultiEdit`, `NotebookEdit` or `NotebookRead` works on, relative to the checkout (the nearest directory at or above the agent's working directory that holds `.git`). A file outside the checkout has no `path`.
 

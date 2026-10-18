@@ -64,13 +64,26 @@ module Workspace
       version.is_a?(String) ? version : nil
     end
 
+    # Sends one message to the daemon and reads its one-line reply.
+    #
+    # @param name [String] workspace name
+    # @param message [Hash] the message; "workspace" is filled in
+    # @param timeout [Numeric, nil] seconds to wait for the reply; nil uses the default
+    # @return [Hash, nil] the parsed reply, or nil when it isn't JSON
+    # @raise [Unavailable] if no daemon is listening or it doesn't answer in time
+    # @raise [Workspace::Error] if the daemon closes the connection
+    def exchange_message(name, message, timeout: nil)
+      exchange(name, message, timeout || @timeout)
+    end
+
     private
 
-    def exchange(name, type, limit)
+    def exchange(name, type_or_message, limit)
+      message = type_or_message.is_a?(Hash) ? type_or_message : {"type" => type_or_message}
       deadline = @clock.call + limit
       socket = @connector.call(@config.agent_socket_path(name))
       begin
-        socket.puts(JSON.generate("type" => type, "workspace" => name))
+        socket.puts(JSON.generate(message.merge("workspace" => name)))
         reply = read_line(socket, deadline, name, limit)
       ensure
         socket.close unless socket.closed?

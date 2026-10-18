@@ -257,6 +257,21 @@ module Workspace
       end
     end
 
+    # What {Workspace::TypingSafety} goes by for a pane: its kind, its
+    # {#restart_state}, and the names of the main agent's tools still running.
+    #
+    # @param pane_id [String] tmux pane id
+    # @return [Hash, nil] `:kind`, `:state`, `:open_tools`, or nil when the
+    #   pane hasn't been scanned yet
+    def typing_facts(pane_id)
+      state = restart_state(pane_id)
+      @lock.synchronize do
+        pane = @panes[pane_id]
+        next unless pane && state
+        {kind: pane[:kind], state: state, open_tools: (pane[:open_tools] || {}).values.map { |t| t[:tool] }}
+      end
+    end
+
     # Reaps stale lock holds in the namespaces the panes are working in, when
     # the reaper is due. Runs on the scan thread, never the agent's accept
     # loop, so a slow `git` only delays the next scan. A lock store another

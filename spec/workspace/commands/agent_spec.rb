@@ -2144,6 +2144,79 @@ RSpec.describe Workspace::Commands::Agent do
       end
     end
 
+    context "with an agent status desk" do
+      let(:built) { [] }
+      let(:release) { Queue.new }
+      let(:desk) do
+        Class.new do
+          def initialize(release) = @release = release
+
+          def post(message) = {"ok" => true, "summary" => message["summary"]}
+
+          def request(message)
+            @release.pop
+            {"ok" => true, "request_id" => "sr-1", "pane_id" => message["pane_id"]}
+          end
+        end.new(release)
+      end
+
+      subject(:agent) do
+        described_class.new(
+          config: config, tmux: tmux, work_coordinator_client: client,
+          pipeline_config: pipeline_config, pipeline_state: pipeline_state,
+          epoch_generator: -> { "wa-TESTEPOCH" }, signal_trapper: signal_trapper,
+          sentinel_poller_factory: sentinel_poller_factory, token_generator: token_generator,
+          clock: -> { now }, retry_backoff: 0, session_monitor_factory: ->(_name) { monitor },
+          agent_status_desk_factory: ->(**args) {
+            built << args
+            desk
+          },
+          output: output, error_output: error_output
+        )
+      end
+
+      def send_message(message)
+        UNIXSocket.open(agent_socket_path) do |socket|
+          socket.puts(message.merge("workspace" => "myapp").to_json)
+          JSON.parse(socket.gets)
+        end
+      end
+
+      it "builds the desk with the workspace, its session, the monitor and the delivery lock" do
+        run_agent do
+          expect(built.size).to eq(1)
+          expect(built.first).to include(workspace: "myapp", session_monitor: monitor, hook_event_log: nil)
+          expect(built.first[:delivery_lock]).to be_a(Mutex)
+        end
+      end
+
+      it "answers a status post on the accept loop" do
+        run_agent do
+          expect(send_message("type" => "status_post", "pane_id" => "%5", "summary" => "hi")).to eq("ok" => true, "summary" => "hi")
+        end
+      end
+
+      it "answers a status request from a worker, serving hook events meanwhile" do
+        run_agent do
+          reply = Thread.new { send_message("type" => "status_request", "pane_id" => "%5") }
+
+          expect(send_event("stop")).to eq("ok" => true)
+          release << :go
+          expect(reply.value).to eq("ok" => true, "request_id" => "sr-1", "pane_id" => "%5")
+        end
+      end
+
+      it "answers internal_error when the request raises, and keeps serving" do
+        allow(desk).to receive(:request).and_raise(IOError, "tmux went away")
+
+        run_agent do
+          expect(send_message("type" => "status_request", "pane_id" => "%5"))
+            .to eq("ok" => false, "error" => "internal_error", "message" => "tmux went away")
+          expect(send_event("stop")).to eq("ok" => true)
+        end
+      end
+    end
+
     it "has the nudger look at the workspace's runs on a timer" do
       stub_const("#{described_class}::SOCKET_POLL_INTERVAL", 0.02)
       stub_const("#{described_class}::WORKFLOW_TICK_PASSES", 2)

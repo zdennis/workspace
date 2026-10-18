@@ -20,9 +20,9 @@ RSpec.describe Workspace::ErrorCodes do
   end
 
   it "registers every code the agent daemon can reply with" do
-    sources = %w[lib/workspace/commands/agent.rb lib/workspace/agent_restart.rb].map { |path| File.read(File.join(root, path)) }.join
-    literals = sources.scan(/"error" => "([a-z_]+)"|restart_error\("([a-z_]+)"|\bfailure\("([a-z_]+)"|\? "([a-z_]+)" : "([a-z_]+)"\)/).flatten.compact
-    expect(literals).to include("pane_busy", "not_delivered", "not_submitted", "stale_token")
+    sources = %w[lib/workspace/commands/agent.rb lib/workspace/agent_restart.rb lib/workspace/agent_status_desk.rb lib/workspace/typing_safety.rb].map { |path| File.read(File.join(root, path)) }.join
+    literals = sources.scan(/"error" => "([a-z_]+)"|restart_error\("([a-z_]+)"|\bfailure\("([a-z_]+)"|\? "([a-z_]+)" : "([a-z_]+)"\)|\berror\("([a-z_]+)"|code: "([a-z_]+)"/).flatten.compact
+    expect(literals).to include("pane_busy", "not_delivered", "not_submitted", "stale_token", "status_request_open", "pane_not_ready")
     expect(literals.uniq - described_class::REGISTRY.keys).to eq([])
   end
 

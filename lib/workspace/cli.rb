@@ -56,6 +56,8 @@ module Workspace
     #   to lowercase before `launch` starts it; nil renames nothing
     # @param restart_agent_command [Workspace::Commands::RestartAgent, nil] pre-built
     #   `agent-run restart` command; optional so test builders need not wire it
+    # @param agent_status_command [Workspace::Commands::AgentStatus, nil] pre-built
+    #   `agent status` command; optional so test builders need not wire it
     # @param send_command [Workspace::Commands::Send, nil] pre-built
     #   `agent-run send` command; optional so test builders need not wire it
     # @param handoff_command [Workspace::Commands::Handoff, nil] pre-built
@@ -107,7 +109,7 @@ module Workspace
     #   `list --liveness --json` and `status --json`; takes name => state entry
     # @param launch_mode [Workspace::LaunchMode, nil] decides whether launch/start
     #   run headless when no --[no-]headless flag is given; nil builds one
-    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, restart_agent_command: nil, send_command: nil, ensure_agent_command: nil, name_migration: nil, spine_command: nil, handoff_command: nil, notes_command: nil, notes_setup: nil, plan_command: nil, ticket_command: nil, pull_request_command: nil, rebase_command: nil, push_command: nil, projects_command: nil, capabilities_command: nil, daemon_command: nil, ui_command: nil, binding_command: nil, library_command: nil, library: nil, instructions_command: nil, instruction_composer: nil, workflow_command: nil, review_command: nil, restore_command: nil, snapshot_command: nil, events_command: nil, project_actions_command: nil, inbox_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil, liveness: nil, window_liveness: nil, env: ENV, editor_launcher: nil, interactive: nil, workspace_name: nil)
+    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, restart_agent_command: nil, agent_status_command: nil, send_command: nil, ensure_agent_command: nil, name_migration: nil, spine_command: nil, handoff_command: nil, notes_command: nil, notes_setup: nil, plan_command: nil, ticket_command: nil, pull_request_command: nil, rebase_command: nil, push_command: nil, projects_command: nil, capabilities_command: nil, daemon_command: nil, ui_command: nil, binding_command: nil, library_command: nil, library: nil, instructions_command: nil, instruction_composer: nil, workflow_command: nil, review_command: nil, restore_command: nil, snapshot_command: nil, events_command: nil, project_actions_command: nil, inbox_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil, liveness: nil, window_liveness: nil, env: ENV, editor_launcher: nil, interactive: nil, workspace_name: nil)
       @config = config
       @state = state
       @project_config = project_config
@@ -158,6 +160,7 @@ module Workspace
       @ask_command = ask_command
       @inbox_command = inbox_command
       @restart_agent_command = restart_agent_command
+      @agent_status_command = agent_status_command
       @send_command = send_command
       @ensure_agent_command = ensure_agent_command
       @name_migration = name_migration
@@ -486,7 +489,7 @@ module Workspace
 
         Subcommands:
           add             Add a tmuxinator config for a project directory
-          agent           Drive a workspace agent: agent run "prompt" (umbrella)
+          agent           Drive a workspace agent: agent run "prompt", agent status request|post
           agentd          Run the long-lived workspace agent daemon for a project, or replace it (agentd restart)
           agent-run       Send a message to a running agent, or type into a pane (command, inject, restart, send)
           alfred          Manage the Alfred workflow for workspace focus
@@ -1558,6 +1561,7 @@ module Workspace
 
       case subcommand
       when "run" then cmd_agent_run_prompt(rest)
+      when "status" then cmd_agent_status(rest)
       when "help" then @output.puts agent_help
       when nil
         if args.include?("--help") || args.include?("-h")
@@ -1593,6 +1597,7 @@ module Workspace
 
         Subcommands:
           run PROMPT    Send a prompt to the workspace's pipeline (a "command" message)
+          status        Ask an agent pane for a status line, or post one (see `agent status --help`)
 
         The long-lived agent daemon now runs as `workspace agentd`
         (see docs/README.agentd.md). During the deprecation window, daemon-era
@@ -1610,6 +1615,115 @@ module Workspace
           workspace agent run --name myapp --work-item WC-42 "Add OAuth support" --dry-run
           workspace agentd myapp    # start the daemon for myapp
       HELP
+    end
+
+    def agent_status_help
+      <<~HELP
+        Usage: workspace agent status request --pane PANE [--name NAME] [--json]
+               workspace agent status post --summary TEXT [--task ID] [--progress N/M] [--reply-to ID] [--json]
+
+        Ask an agent pane for a status line, and answer one (see docs/README.agent.md).
+
+        request  Types a fixed line carrying a request id into the pane, asking its agent to run
+                 `agent status post --reply-to ID`. Refused (pane_not_ready, nothing typed) unless
+                 Claude Code runs there, no permission prompt or question is open, no AskUserQuestion
+                 or ExitPlanMode is running, and its input prompt is on screen with no draft in it.
+                 Enter is pressed only if the prompt is still there once the line is pasted.
+                 One request is open per pane at a time (status_request_open); it expires after
+                 #{AgentStatusRequests::DEFAULT_TTL / 60} minutes.
+        post     Run by an agent in its own pane ($TMUX_PANE). Logs an agent_status line, shown by
+                 `workspace events --follow --types agent_status`. With --reply-to, accepted only from
+                 the pane that was asked, while the request is open. The summary is cut to
+                 #{AgentStatusDesk::MAX_SUMMARY} characters and never typed anywhere.
+
+        Exit codes: 0 done; 1 refused or failed; 2 (request) the line landed but wasn't confirmed
+          submitted: the request stays open, so check the pane before asking again.
+
+        Examples:
+          workspace agent status request --name api --pane %19 --json
+          workspace agent status post --summary "Writing specs for the parser" --progress 3/7
+          workspace agent status post --reply-to sr-0a1b2c3d4e5f --summary "Waiting on CI" --json
+      HELP
+    end
+
+    def cmd_agent_status(args)
+      verb = args.first&.start_with?("-") ? nil : args.shift
+      case verb
+      when "request" then cmd_agent_status_request(args)
+      when "post" then cmd_agent_status_post(args)
+      when "help", nil
+        unless verb == "help" || args.include?("--help") || args.include?("-h")
+          raise UsageError, "Missing agent status verb (request or post).\n\n#{agent_status_help}"
+        end
+        @output.puts agent_status_help
+      else
+        raise UsageError, "Unknown agent status verb: #{verb}.\n\n#{agent_status_help}"
+      end
+    end
+
+    def cmd_agent_status_request(args)
+      name = nil
+      pane = nil
+      json = false
+      parser = OptionParser.new do |opts|
+        opts.banner = "Usage: workspace agent status request --pane PANE [--name NAME] [--json]"
+        opts.separator ""
+        opts.separator "Ask the agent in one pane for a status line. The agent daemon types a fixed line"
+        opts.separator "carrying a request id; the agent answers with `workspace agent status post --reply-to ID`."
+        opts.separator "Nothing is typed unless the pane can take text safely (see `agent status --help`)."
+        opts.separator ""
+        opts.separator "Options:"
+        opts.on("--name NAME", "Workspace name (default: detected from cwd)") { |v| name = v }
+        opts.on("--pane PANE", "Pane id (%19) or window.pane (0.1)  (required)") { |v| pane = v }
+        opts.on("--json", "Print one JSON document: request_id, pane, pane_id, expires_at, delivery") { json = true }
+        opts.separator ""
+        opts.separator "Exit codes: 0 typed and submitted; 1 refused or failed; 2 landed but not confirmed submitted."
+        opts.separator ""
+        opts.separator "Examples:"
+        opts.separator "  workspace agent status request --name api --pane %19"
+        opts.separator "  workspace agent status request --pane=0.1 --json"
+      end
+      parser.parse!(args)
+      raise UsageError, "Unexpected argument: #{args.first}\n\n#{parser.help}" if args.any?
+      name ||= @project_detector.detect(@working_dir)
+      raise UsageError, "Missing workspace name (pass --name).\n\n#{parser.help}" if name.nil?
+      raise UsageError, "Missing --pane.\n\n#{parser.help}" if pane.nil? || pane.strip.empty?
+      raise Error, "workspace agent status is not available in this build" unless @agent_status_command
+
+      @agent_status_command.request(name: name, pane: pane, json: json)
+    end
+
+    def cmd_agent_status_post(args)
+      summary = nil
+      task = nil
+      progress = nil
+      reply_to = nil
+      json = false
+      parser = OptionParser.new do |opts|
+        opts.banner = "Usage: workspace agent status post --summary TEXT [--task ID] [--progress N/M] [--reply-to ID] [--json]"
+        opts.separator ""
+        opts.separator "Post this pane's status as an agent_status event line. Run by an agent in its own"
+        opts.separator "tmux pane: the pane is $TMUX_PANE and the workspace is the one whose tmux session it is in."
+        opts.separator ""
+        opts.separator "Options:"
+        opts.on("--summary TEXT", "One line on what the agent is doing (required; cut to #{AgentStatusDesk::MAX_SUMMARY} characters)") { |v| summary = v }
+        opts.on("--task ID", "The task being worked on") { |v| task = v }
+        opts.on("--progress N/M", "Steps done out of the total, e.g. 3/7") { |v| progress = v }
+        opts.on("--reply-to ID", "The status request this answers (from the typed line)") { |v| reply_to = v }
+        opts.on("--json", "Print one JSON document: the line as logged, plus truncated") { json = true }
+        opts.separator ""
+        opts.separator "Examples:"
+        opts.separator "  workspace agent status post --summary \"Writing specs for the parser\" --task T3 --progress 3/7"
+        opts.separator "  workspace agent status post --reply-to=sr-0a1b2c3d4e5f --summary \"Waiting on CI\" --json"
+      end
+      parser.parse!(args)
+      raise UsageError, "Unexpected argument: #{args.first}\n\n#{parser.help}" if args.any?
+      raise UsageError, "Missing --summary.\n\n#{parser.help}" if summary.nil? || summary.strip.empty?
+      raise UsageError, "--reply-to can't be empty.\n\n#{parser.help}" if reply_to && reply_to.strip.empty?
+      raise Error, "workspace agent status is not available in this build" unless @agent_status_command
+
+      @agent_status_command.post(summary: summary, task: task, progress: progress && Commands::AgentStatus.parse_progress(progress),
+        reply_to: reply_to&.strip, json: json)
     end
 
     AGENTD_RUN_FLAGS = %w[-f --force --ensure].freeze

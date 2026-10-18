@@ -60,7 +60,8 @@ module Workspace
         "ask_withdraw" => 1,
         "review" => 1,
         "add_json" => 1,
-        "plan_progress" => 1
+        "plan_progress" => 1,
+        "agent_status" => 1
       }.freeze
 
       # The exit statuses commands use, by meaning.

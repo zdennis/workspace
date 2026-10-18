@@ -71,6 +71,21 @@ RSpec.describe Workspace::AgentSnapshotClient do
     end
   end
 
+  describe "#exchange_message" do
+    def client_call = client.exchange_message("proj", {"type" => "status_post", "pane_id" => "%1"}, timeout: 0.5)
+
+    it "sends the message with the workspace filled in and returns the parsed reply" do
+      outcome = with_daemon { |conn| conn.puts(JSON.generate("ok" => true, "seq" => 3)) }
+
+      expect(outcome).to eq([:ok, {"ok" => true, "seq" => 3}])
+      expect(@request).to eq("type" => "status_post", "pane_id" => "%1", "workspace" => "proj")
+    end
+
+    it "raises Unavailable when nothing listens on the socket path" do
+      expect { client_call }.to raise_error(described_class::Unavailable) { |e| expect(e.reason).to eq(:no_daemon) }
+    end
+  end
+
   describe "#fetch" do
     it "sends a sessions request for the workspace and returns the parsed reply" do
       outcome = with_daemon { |conn| conn.puts(JSON.generate(snapshot)) }

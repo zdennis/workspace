@@ -60,6 +60,9 @@ module Workspace
       #   that runs one `restart_agent` message
       # @param hook_event_log_factory [#call, nil] given the workspace name, builds the
       #   {Workspace::HookEventLog} each forwarded hook event is written to; nil writes none
+      # @param agent_status_desk_factory [#call, nil] given the workspace, its tmux session, the session
+      #   monitor, the hook event log and the delivery lock, builds the {Workspace::AgentStatusDesk}
+      #   that answers `status_request` and `status_post`; nil builds the default one
       # @param name_migration [Workspace::NameMigration, nil] renames a mixed-case workspace
       #   to lowercase before the socket is claimed; nil renames nothing
       # @param plan_progress_watcher_factory [#call, nil] given the workspace name, builds the
@@ -95,6 +98,7 @@ module Workspace
         scan_slots: nil,
         agent_restart_factory: nil,
         hook_event_log_factory: nil,
+        agent_status_desk_factory: nil,
         name_migration: nil,
         plan_progress_watcher_factory: nil,
         logger: Workspace::Logger.new, output: $stdout, error_output: $stderr)
@@ -122,6 +126,7 @@ module Workspace
         @agent_restart_factory = agent_restart_factory || method(:build_agent_restart)
         @hook_event_log_factory = hook_event_log_factory
         @plan_progress_watcher_factory = plan_progress_watcher_factory
+        @agent_status_desk_factory = agent_status_desk_factory || method(:build_agent_status_desk)
         # Restart workers by pane id, so one pane is restarted once at a time.
         @restarts = {}
         # When the main agent's current turn began, by pane id, for the workflow nudger.
@@ -199,6 +204,8 @@ module Workspace
         @session_monitor.start
         @plan_progress_watcher = @plan_progress_watcher_factory&.call(name)
         @plan_progress_watcher&.start
+        @agent_status_desk = @agent_status_desk_factory.call(workspace: name, session_name: @tmux_session,
+          session_monitor: @session_monitor, hook_event_log: @hook_event_log, delivery_lock: @delivery_lock)
 
         @output.puts "workspace agent '#{name}' ready"
         log_activity("daemon_started", "workspace" => name, "daemon" => "agent", "pid" => Process.pid)
@@ -363,6 +370,8 @@ module Workspace
           @hook_event_log&.record(message)
           nudge_workflow(message) if @workflow_nudger && message["agent_id"].nil?
           reply_to(client, "ok" => true)
+        when "status_request" then handle_status_request(message, client)
+        when "status_post" then reply_to(client, @agent_status_desk.post(message))
         when "sessions"
           reply_to(client, @session_monitor&.snapshot || {"workspace" => @current_name, "panes" => []})
         when "version"
@@ -410,6 +419,29 @@ module Workspace
         end
 
         reply_to(client, reply)
+      end
+
+      # Answers a status request from a worker thread, which owns +client+:
+      # checking and typing take seconds, and the accept loop keeps serving
+      # hook events meanwhile.
+      #
+      # @return [Symbol] :handed_off
+      def handle_status_request(message, client)
+        Thread.new do
+          reply = begin
+            @agent_status_desk.request(message)
+          rescue => e
+            {"ok" => false, "error" => "internal_error", "message" => e.message}
+          end
+          reply_to(client, reply)
+        ensure
+          begin
+            client&.close
+          rescue IOError, SystemCallError
+            nil
+          end
+        end
+        :handed_off
       end
 
       # A pane named as "window.pane", optionally prefixed with its session.
@@ -1116,6 +1148,11 @@ module Workspace
           @state_lock.synchronize { @coordinator_unavailable = false }
           drain_pending_reports
         end
+      end
+
+      def build_agent_status_desk(workspace:, session_name:, session_monitor:, hook_event_log:, delivery_lock:)
+        AgentStatusDesk.new(tmux: @tmux, workspace: workspace, session_name: session_name, session_monitor: session_monitor,
+          hook_event_log: hook_event_log, delivery_lock: delivery_lock, logger: @logger)
       end
 
       # Watches for the agent's socket file going missing — macOS sweeps old

@@ -803,6 +803,28 @@ RSpec.describe Workspace::SessionMonitor do
     end
   end
 
+  describe "#typing_facts" do
+    before { monitor.scan }
+
+    it "returns nil for a pane it hasn't scanned" do
+      expect(monitor.typing_facts("%9")).to be_nil
+    end
+
+    it "gives the pane's kind, its restart state and the main agent's running tools" do
+      monitor.record("pane_id" => "%2", "event" => "user_prompt")
+      monitor.record("pane_id" => "%2", "event" => "tool_start", "tool" => "AskUserQuestion", "tool_use_id" => "t1")
+      monitor.record("pane_id" => "%2", "event" => "tool_start", "tool" => "Read", "tool_use_id" => "t2", "agent_id" => "sub-1")
+
+      expect(monitor.typing_facts("%2")).to eq(kind: "claude", state: "working", open_tools: ["AskUserQuestion"])
+    end
+
+    it "says waiting while a notification is open" do
+      monitor.record("pane_id" => "%2", "event" => "notification", "message" => "Allow?")
+
+      expect(monitor.typing_facts("%2")).to include(state: "waiting")
+    end
+  end
+
   describe "#snapshot" do
     it "orders panes by index" do
       monitor.scan

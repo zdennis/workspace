@@ -94,6 +94,7 @@ RSpec.describe Workspace::CLI do
       statusline_command: overrides[:statusline_command] || CLITestHelpers::FakeStatuslineCommand.new,
       ask_command: ask_command,
       restart_agent_command: overrides[:restart_agent_command],
+      agent_status_command: overrides[:agent_status_command],
       send_command: overrides[:send_command],
       ensure_agent_command: overrides[:ensure_agent_command],
       name_migration: overrides[:name_migration],
@@ -1291,6 +1292,63 @@ RSpec.describe Workspace::CLI do
 
       expect { cli.run(["agent-run"]) }.to raise_error(FakeSystemExit)
       expect(error_output.string).to include("restart    Clear the coding agent in one pane")
+    end
+  end
+
+  describe "#run agent status" do
+    let(:status_command) { double("agent status", request: {}, post: {}) }
+
+    it "passes request's pane and name, in either flag form" do
+      cli, = build_test_cli(agent_status_command: status_command)
+
+      cli.run(["agent", "status", "request", "--name=myapp", "--pane=%18", "--json"])
+
+      expect(status_command).to have_received(:request).with(name: "myapp", pane: "%18", json: true)
+    end
+
+    it "passes post's fields, with progress parsed" do
+      cli, = build_test_cli(agent_status_command: status_command)
+
+      cli.run(["agent", "status", "post", "--summary=Writing specs", "--task", "T3", "--progress=3/7", "--reply-to", " sr-abc ", "--json"])
+
+      expect(status_command).to have_received(:post).with(summary: "Writing specs", task: "T3",
+        progress: {"done" => 3, "total" => 7}, reply_to: "sr-abc", json: true)
+    end
+
+    [
+      [%w[request --name myapp], "Missing --pane."],
+      [%w[post], "Missing --summary."],
+      [["post", "--summary", "ok", "--progress", "8/7"], "--progress must be N/M"],
+      [%w[post --summary ok extra], "Unexpected argument: extra"],
+      [%w[nope], "Unknown agent status verb: nope."],
+      [%w[], "Missing agent status verb"]
+    ].each do |args, message|
+      it "reports #{args.join(" ")} as a usage error, as JSON with --json" do
+        cli, output = build_test_cli(agent_status_command: status_command)
+
+        expect { cli.run(["agent", "status", *args, "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+        expect(JSON.parse(output.string)).to include("ok" => false, "code" => "usage")
+        expect(JSON.parse(output.string)["error"]).to include(message)
+      end
+    end
+
+    it "exits 2 when the request landed but wasn't confirmed submitted" do
+      allow(status_command).to receive(:request)
+        .and_raise(Workspace::Commands::Run::NotSubmittedError.new("check the pane", code: "not_submitted", details: {"request_id" => "sr-abc"}))
+      cli, output = build_test_cli(agent_status_command: status_command)
+
+      expect { cli.run(["agent", "status", "request", "--name", "myapp", "--pane", "%18", "--json"]) }
+        .to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(2) }
+      expect(JSON.parse(output.string)).to include("code" => "not_submitted", "details" => {"request_id" => "sr-abc"})
+    end
+
+    it "prints the status help, and lists status in the agent help" do
+      cli, output = build_test_cli
+
+      cli.run(["agent", "status", "--help"])
+      cli.run(["agent", "help"])
+
+      expect(output.string).to include("workspace agent status post --summary TEXT").and include("status        Ask an agent pane")
     end
   end
 
@@ -4197,8 +4255,8 @@ RSpec.describe Workspace::CLI do
         agent_command = CLITestHelpers::FakeAgentCommand.new
         cli, _, error_output = build_test_cli(agent_command: agent_command)
 
-        expect { cli.run(["agent", "status"]) }.to raise_error(FakeSystemExit)
-        expect(error_output.string).to include("Unknown agent subcommand: status")
+        expect { cli.run(["agent", "frobnicate"]) }.to raise_error(FakeSystemExit)
+        expect(error_output.string).to include("Unknown agent subcommand: frobnicate")
         expect(error_output.string).to include("workspace agentd")
         expect(agent_command.calls).to be_empty
       end

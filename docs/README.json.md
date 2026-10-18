@@ -92,7 +92,7 @@ The exit code is unchanged by `--json` (1 for most failures, 2 for `not_submitte
 | `confirmation_required` | A prompt would have read stdin while `--no-input` or `WORKSPACE_NO_INPUT` was set, or `plan delete` was run without `--yes` (`details.name`, `details.path`, `retry.flags` `["--yes"]`). `details.prompt` is the question; `retry` names the flag that answers it, when there is one (`--force` or `--yes`, destructive). |
 | `no_session` | The workspace has no running tmux session. `details.workspace` (from `send`, `focus --pane`, `ask answer --deliver`, `agent-run restart`, `handoff`). |
 | `bad_keys` | `agent-run send --keys` named something that isn't a tmux key name, or too many keys. `details.keys`. |
-| `no_pane` | The question wasn't asked from a tmux pane, so `ask answer --deliver` has nowhere to type. `details.question`. |
+| `no_pane` | The question wasn't asked from a tmux pane, so `ask answer --deliver` has nowhere to type (`details.question`); or `agent status post` was run outside a tmux pane (`$TMUX_PANE` unset). |
 | `stale_pane` | `ask answer --deliver` can't be sure the question's pane is the one that asked: tmux restarted since, or the question was recorded without the tmux server. `details.question`, `details.pane`. |
 | `focus_failed` | tmux couldn't select the pane for `focus --pane`; the window is already in front. |
 | `no_window` | `focus` found no iTerm window recorded for the workspace. `details.workspace`. |
@@ -161,6 +161,13 @@ The registry lives in `Workspace::ErrorCodes`; a spec checks that every code a r
 | `restart_in_progress` | A restart is already running on the pane. |
 | `agent_stopped` | The agent stopped during the restart. |
 | `not_bound` | The pane isn't bound to a run, review or play (`binding show`, `binding clear`), or not to a workflow run (`step done`, `step status`). |
+| `pane_not_ready` | `agent status request`: the pane can't take typed text safely now; nothing was typed. `details.reason`: `unknown` (not scanned or not identified yet), `unsupported_agent` (an agent whose input prompt can't be recognized, so a dialog can't be ruled out), `waiting` (a permission prompt or question is open), `question_open` (`AskUserQuestion` or `ExitPlanMode` is running), `no_input_prompt` (the agent's input prompt isn't on screen), `input_not_empty` (the input line holds a draft), `input_changed` (from the check after pasting, which then answers `not_submitted`). `details.pane`, `details.pane_id`. See [`agent`](README.agent.md). |
+| `status_request_open` | `agent status request`: the pane already has an open status request; nothing was typed. `details.request_id`, `details.expires_at`. |
+| `status_request_unknown` | `agent status post --reply-to`: no open request has that id (already answered, never made, or the agent daemon restarted). `details.request_id`. |
+| `status_request_expired` | `agent status post --reply-to`: the request expired before the reply. `details.request_id`. |
+| `status_reply_wrong_pane` | `agent status post --reply-to`: the reply came from a pane other than the one asked; the request stays open. `details.request_id`. |
+| `status_request_stale` | `agent status post --reply-to`: the pane id was reused since the request (a new tmux server; its pid differs). `details.request_id`. |
+| `status_not_logged` | `agent status post`: the agent daemon couldn't write the `agent_status` line. |
 | `unknown_library_entry` | No library entry has that name in the scopes searched. `details.ref`, `details.scopes` in the order searched, e.g. `["project:api", "global", "builtin"]` (see [`library`](README.library.md)). |
 | `ambiguous_library_entry` | A bare library name matches more than one kind. `details.ref`, `details.candidates`. |
 | `library_entry_exists` | `library add` would replace an entry with different content. `details.ref`, `details.scope`; `retry` names `--force` (destructive). |

@@ -61,6 +61,7 @@ A macOS CLI (Ruby) for managing tmuxinator-based development workspaces in iTerm
 - `lib/workspace/pipeline_state.rb` — In-flight work item tracking, disk-persisted to `~/.local/state/workspace/<name>/pipeline.json`
 - `lib/workspace/sentinel_poller.rb` — Background poller watching tmux panes for `WORKSPACE_DONE:` sentinel
 - `lib/workspace/session_monitor.rb` — Per-pane coding-agent and sub-agent state (working/idle/waiting), keyed on tmux pane id; fires alerts
+- `lib/workspace/agent_status_desk.rb` — The daemon's side of `agent status request|post`: `TypingSafety` (`typing_safety.rb`) decides whether a pane can take typed text, `AgentStatusRequests` (`agent_status_requests.rb`) holds one expiring request per pane tied to its pid, and each post is an `agent_status` line in the `HookEventLog`; `Commands::AgentStatus` is the CLI side
 - `lib/workspace/context_reader.rb` — A pane's context use: the status-line reading, a `context.pattern` scrape, or, when given the pane's agent kind, a scrape by `context.patterns` or the provider's own pattern (Codex)
 - `lib/workspace/session_ledger.rb` — Flock-guarded append-only `ledger.jsonl` of SessionStart/SessionEnd (with pane slot, tmux server pid and window layout), written by `session-event`; `#slots_for` streams it into the latest session per pane slot for `restore`; `#open_session_for` names the session open in a pane, which `dev up` records as `started_by`
 - `lib/workspace/alert_config.rb` — Reads a project's `alerts.notify` and `alerts.idle_after`
