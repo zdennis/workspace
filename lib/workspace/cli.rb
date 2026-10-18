@@ -4784,7 +4784,8 @@ module Workspace
         opts.separator "workspace's is refused (workspace_name_case_conflict); the same directory's"
         opts.separator "mixed-case config is reused."
         opts.separator "A path that is not a directory, or whose name is refused, is skipped with an"
-        opts.separator "error message; the other paths are still added."
+        opts.separator "error message; the other paths are still added. Exit status: 0 if none was"
+        opts.separator "skipped, 3 if some were, 1 if all were (the same with --json)."
         opts.separator "A new config for a path inside .worktrees/ also gets its notes directory"
         opts.separator "set up (see 'workspace notes dir'): stored as the config's notes.dir,"
         opts.separator "created, and kept out of git status. A problem there is a warning."
@@ -4826,7 +4827,13 @@ module Workspace
           end
           add_one_project(name, root, json: json, warnings: warnings)
         end
-        {results: rows.compact, warnings: warnings}
+        failed = rows.count { |row| row && row["outcome"] == "failed" }
+        exit_code = if failed == 0
+          0
+        else
+          ((failed == targets.size) ? 1 : 3)
+        end
+        {results: rows.compact, warnings: warnings, exit_code: exit_code}
       end
     end
 
@@ -4851,11 +4858,10 @@ module Workspace
       refuse_add(name, root, e, json: json)
     end
 
-    # A path `add` skips: an error line on stderr in text mode, a `failed` row
-    # (reason is the error's code) with `--json`. The other paths carry on.
+    # A path `add` skips: an error line on stderr and a `failed` row (reason is
+    # the error's code; only `--json` prints it). The other paths carry on.
     def refuse_add(name, root, error, json:)
       @error_output.puts "Error: #{error.message}"
-      return unless json
 
       action_row(name, "failed", reason: error.code, message: error.message, root: root, details: error.details)
     end

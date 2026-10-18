@@ -1038,10 +1038,16 @@ RSpec.describe Workspace::CLI do
     it "skips a path that is not a directory without --json and adds the rest" do
       cli, output, error_output = build_test_cli(project_config: project_config, notes_setup: notes_setup)
 
-      cli.run(["add", File.join(root, "nope"), root])
+      expect { cli.run(["add", File.join(root, "nope"), root]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(3) }
 
       expect(error_output.string).to include("Not a directory")
       expect(output.string).to include("Project name: plain")
+    end
+
+    it "exits 1 without --json when every path is skipped" do
+      cli, = build_test_cli(project_config: project_config, notes_setup: notes_setup)
+
+      expect { cli.run(["add", File.join(root, "nope")]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
     end
 
     it "skips a path whose name is refused with a message and adds the rest without --json" do
@@ -1053,7 +1059,7 @@ RSpec.describe Workspace::CLI do
       end
       cli, output, error_output = build_test_cli(project_config: project_config, notes_setup: notes_setup)
 
-      cli.run(["add", root, other])
+      expect { cli.run(["add", root, other]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(3) }
 
       expect(error_output.string).to include("Error: clash")
       expect(output.string).to include("Project name: other")

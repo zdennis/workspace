@@ -22,7 +22,7 @@ workspace add [--json] <path> [path2] ...
 - A path that cannot be added is a `failed` row, never a whole-document error; the other paths are still added. `reason` is `not_a_directory` (`details.path`) or `workspace_name_case_conflict` (`details` as in [JSON output](README.json.md)), and `message` says why.
 - The document is always printed. Exit status: 0 when no row failed (`status` `ok`), 3 when some rows failed (`partial`), 1 when every row failed (`failed`).
 
-Without `--json`, a path that is not a directory or whose name is refused is skipped with an `Error:` line on stderr and the other paths are still added; the exit status stays 0.
+Without `--json`, a path that is not a directory or whose name is refused is skipped with an `Error:` line on stderr and the other paths are still added; the exit status follows the same rule: 0 when none was skipped, 3 when some were, 1 when all were.
 
 Feature `add_json` in [`capabilities`](README.capabilities.md).
 
