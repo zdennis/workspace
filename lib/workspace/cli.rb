@@ -801,6 +801,7 @@ module Workspace
       no_launch = false
       spine = nil
       no_spine = false
+      plan = nil
       agent_kind = nil
       title_from_ticket = false
       slug = false
@@ -873,6 +874,12 @@ module Workspace
         opts.on("--no-spine", "Do not run 'workspace spine init', even when spine.auto is true") do
           no_spine = true
         end
+        opts.on("--plan=[TITLE]", "Run 'workspace plan init' in the new worktree (TITLE, else the task title) and send the",
+          "implementation-plan play with the first prompt, so the agent drafts the plan's tasks. --prompt becomes",
+          "the goal. A plan already there is kept. With --no-launch the plan is made and nothing is sent.",
+          "Cannot be combined with --play. Give the title with an '=': write --plan=\"Add SSO\"") do |v|
+          plan = v || true
+        end
         opts.on("--base REF", "Branch/ref to create a new branch from, instead of prompting") do |v|
           base = v
         end
@@ -919,6 +926,7 @@ module Workspace
         opts.separator "  workspace start PROJ-123 --agent-kind codex    # the main agent pane runs Codex"
         opts.separator "  workspace start PROJ-123 --no-launch    # create the worktree and config, launch nothing"
         opts.separator "  workspace start PROJ-123 --spine=team    # also make the plan spine from the 'team' template"
+        opts.separator "  workspace start PROJ-123 --plan --prompt \"Add SSO login\"    # the agent drafts a plan for that goal first"
         opts.separator "  workspace start PROJ-123 --title \"Fix the login bug\"    # name the task shown in `workspace sessions`"
         opts.separator "  workspace start PROJ-123 --slug    # branch and task title from the ticket: PROJ-123-fix-the-login-bug"
         opts.separator "  workspace start PROJ-123 --headless --yes --json    # non-interactive, e.g. from CI"
@@ -945,6 +953,7 @@ module Workspace
       raise UsageError, "--spine cannot be combined with --no-spine." if spine && no_spine
       start_options[:spine] = false if no_spine
       start_options[:spine] = spine if spine
+      start_options[:plan] = plan if plan
       start_options[:agent_kind] = agent_kind if agent_kind
       start_options[:title_from_ticket] = true if title_from_ticket
       start_options[:slug] = true if slug

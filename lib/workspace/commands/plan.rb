@@ -133,10 +133,11 @@ module Workspace
       # @param title [String, nil] the plan's title; the workspace's task title when nil, else none
       # @param from [String, nil] a document to import: it becomes the plan, under new frontmatter unless it has its own
       # @param force [Boolean] replace a plan that is already there
+      # @param print [Boolean] print `Created <path>`; false for a caller that prints its own (`start --plan`)
       # @return [Hash] `path` and `message` (set when an imported document has no tasks to count)
       # @raise [Workspace::Error] `plan_exists` when a plan is there and +force+ is not set,
       #   `notes_dir_unwritable` when the directory or file can't be written
-      def init(name:, title: nil, from: nil, force: false)
+      def init(name:, title: nil, from: nil, force: false, print: true)
         file = path_for(name)
         raise plan_exists(file) if File.exist?(file) && !force
         imported = from && read_import(from)
@@ -145,8 +146,10 @@ module Workspace
         title = clean_title(title || task_title(name))
         write(file, imported ? imported_text(imported, title) : new_text(title), force: force)
         message = "The imported document has no tasks under '## Tasks' yet: add one line per task." if imported && PlanFile.read(file).tasks.empty?
-        @output.puts "Created #{file}"
-        @output.puts message if message
+        if print
+          @output.puts "Created #{file}"
+          @output.puts message if message
+        end
         @access.record_change(name, PlanFile.read(file).status)
         {"path" => file, "message" => message}
       end

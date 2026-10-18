@@ -22,6 +22,7 @@ workspace start [options] <jira-key|jira-url|pr-url|pr-ref|issue-url|branch>
 | `--skill NAME` | Copy a library skill directory into the worktree's `.claude/skills/`; repeatable |
 | `--agent-kind KIND` | The coding agent the main agent pane runs: `claude` (the default), `codex`, `opencode` or `pi`. Named `-kind` because `--agent` copies a library agent. See [Agent kind and `--no-launch`](#agent-kind-and---no-launch) |
 | `--no-launch` | Create the worktree, config and task and start nothing. See [Agent kind and `--no-launch`](#agent-kind-and---no-launch) |
+| `--plan[=TITLE]` | Run [`plan init`](README.plan.md) for the new workspace and send the agent the `implementation-plan` play so it drafts the plan's tasks. `TITLE` is the plan's title (default: the task's title). Not with `--play`. See [Plan](#plan) |
 | `--spine[=NAME]` / `--no-spine` | Run, or never run, [`spine init`](README.spine.md#spine-init) for the new workspace, whatever `spine.auto` says. `NAME` is the template (default: `spine.template`). See [Spine](#spine) |
 | `--base REF` | Branch/ref a new branch is created from, instead of prompting |
 | `--yes` | Accept every default instead of prompting (e.g. the default base branch) |
@@ -83,8 +84,19 @@ and/or `--yes` alongside it when the branch might need to be created.
 
 With `--spine[=NAME]`, or `spine.auto` true in the config and no `--no-spine`, `start` runs [`spine init`](README.spine.md#spine-init) for the new workspace once its worktree, config and notes directory exist and before it composes the first prompt, so the automatic `spine` pack is sent to the new agent. `--spine=NAME` uses that template; `--spine` alone and `spine.auto` use the resolved `spine.template`. The two flags together are a usage error. An existing `spine/` is left alone (`outcome: exists`), also in a worktree that `start` reuses. A failed init (an unknown template, an unwritable notes directory) is a warning, never a failure of `start`. With `--no-launch` init still runs and no prompt is sent.
 
-### Plays
 
+### Plan
+
+With `--plan[=TITLE]`, `start` runs [`plan init`](README.plan.md) for the new workspace once its notes directory exists, and sends the agent the built-in `implementation-plan` play (found built-in first, as `plan start` finds it) with the first prompt, so the agent's first job is to fill `## Tasks`. The title is `TITLE`, else the task title (`--title`, `--title-from-ticket`). Give it with an `=`: `--plan "Add SSO"` would take `Add SSO` as the ref. How it combines:
+
+- `--prompt`: the first prompt is the play, the packs, the line "The plan has no tasks yet. Draft them as the play's "Draft the tasks" section says, then end your turn. Do not start any task.", then `The goal: <prompt>`. Without `--prompt` the agent takes the goal from the plan's title.
+- `--play`: refused with a usage error, because the first prompt carries one play. Add other text with `--prompt` or `--pack`.
+- `--no-launch`: the plan is still made, nothing is sent, and `plan.drafting` is `false`. Run `plan start` later to send the draft request.
+- `--spine` and `spine.auto`: independent. Both run; the spine pack rides along with the play.
+- A plan already in the notes directory (a reused worktree) is kept, never replaced (`plan.outcome` `exists`). The draft line is sent only if it has no tasks; with tasks the agent gets the play and the `--prompt` text alone.
+- A plan that cannot be written (`notes_dir_unwritable`) is a warning, never a failure of `start`: no play is sent, and the other prompt text goes as usual.
+
+The pane is bound to the play, as `plan start` binds it. After the agent has drafted the tasks, `workspace plan start` has it work them.
 `--play NAME` sends the coding agent one line, then any `--prompt` text after a blank line:
 
 ```
@@ -165,6 +177,7 @@ On success, one line of JSON on stdout (nothing else is written to stdout under
   pane id (`%5`) bound to the play, or `null` when it was not delivered or the
   pane could not be bound
 - `spine` — present only when `spine init` ran: `{"outcome", "template"}`. `outcome` is `created`, `exists` or `failed`; `template` is `{"name", "scope", "source"}` as in [`spine init`](README.spine.md#spine-init) (on `failed`, `{"name", "source"}` when known, plus `error`, the error code). A failure is also in `warnings`
+- `plan` — present only with `--plan`: `{"path", "outcome", "title", "drafting"}`. `outcome` is `created`, `exists` or `failed` (then there is no `path`, and `error` is the error code). `title` is the plan's title when it has one. `drafting` is whether the draft request was sent with the first prompt (`false` with `--no-launch`, a plan that has tasks, or a failed init). The play it sent is the `play` object. A failure is also in `warnings`
 - `packs` — always present: one `{"name", "source", "delivered", "pane"}` object per pack sent, in order, `[]` when none applied. `source` is `config` (automatic) or `flag` (`--pack`); `delivered` is whether the prompt carrying it was sent, and `pane` the tmux pane id it went to (`null` when not delivered). With an explicit prompt, play or pack, an undelivered pack rides the same `prompt_not_sent` failure as the prompt; automatic packs alone only warn (see Packs). A config-driven pack that was left out has `delivered: false`, `pane: null` and a `reason` (`handoff_unsupported_agent`); only such rows carry `reason`
 - `agents`, `skills` — present only with `--agent` or `--skill`: one object per entry,
   `{"ref", "scope", "source", "path", "outcome"}`. `source` is the library path

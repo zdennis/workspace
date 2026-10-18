@@ -1773,6 +1773,19 @@ RSpec.describe Workspace::CLI do
       expect(start_command).not_to have_received(:call).with("PROJ-4", anything)
     end
 
+    it "passes --plan and --plan=TITLE through to start, without eating the ref" do
+      start_command = double("start", call: {exit_code: 0})
+      cli, = build_test_cli(start_command: start_command)
+
+      cli.run(["start", "--plan", "PROJ-1"])
+      cli.run(["start", "--plan=Add SSO", "PROJ-2"])
+      cli.run(["start", "PROJ-3"])
+
+      expect(start_command).to have_received(:call).with("PROJ-1", hash_including(plan: true))
+      expect(start_command).to have_received(:call).with("PROJ-2", hash_including(plan: "Add SSO"))
+      expect(start_command).to have_received(:call).with("PROJ-3", hash_not_including(:plan))
+    end
+
     it "passes --handoff and --no-handoff through to start, and refuses --handoff with --no-packs" do
       start_command = double("start", call: {exit_code: 0, prompt_failures: {}})
       cli, _, error_output = build_test_cli(start_command: start_command)

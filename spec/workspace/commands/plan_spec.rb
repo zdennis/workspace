@@ -414,6 +414,13 @@ RSpec.describe Workspace::Commands::Plan do
       expect(output.string).to eq("Created #{plan_path}\n")
     end
 
+    it "prints nothing with print: false" do
+      command.init(name: "api", title: "Auth rewrite", print: false)
+
+      expect(output.string).to eq("")
+      expect(File).to exist(plan_path)
+    end
+
     it "takes the title from the task store when none is given" do
       allow(task_store).to receive(:active_for).with("api").and_return("title" => "From the task")
 

@@ -38,9 +38,10 @@ module Workspace
       # @param spine_init [Workspace::Commands::SpineInit, nil] makes the workspace's `spine/` for `--spine` and `spine.auto`; nil refuses `--spine`
       # @param spine_config [Workspace::SpineConfig, nil] reads `spine.auto`; nil never runs init unasked
       # @param ticket_source [Workspace::TicketSource, nil] reads the ticket's title for +title_from_ticket+ and +slug+; nil reads none
+      # @param plan_command [Workspace::Commands::Plan, nil] writes the new plan for `--plan` (`plan init`); nil refuses `--plan`
       def initialize(git:, project_config:, project_settings:, launch_command:, lineage: WorkspaceLineage.new,
         hook_installer: nil, which: nil, task_store: nil, event_log: nil, library: nil, library_installer: nil,
-        notes_setup: nil, instruction_composer: nil, start_ref: nil, main_agent: nil, ticket_source: nil, spine_init: nil, spine_config: nil, output: $stdout, input: $stdin, error_output: $stderr)
+        notes_setup: nil, instruction_composer: nil, start_ref: nil, main_agent: nil, ticket_source: nil, spine_init: nil, spine_config: nil, plan_command: nil, output: $stdout, input: $stdin, error_output: $stderr)
         @git = git
         @project_config = project_config
         @project_settings = project_settings
@@ -59,6 +60,7 @@ module Workspace
         @ticket_source = ticket_source
         @spine_init = spine_init
         @spine_config = spine_config
+        @plan_command = plan_command
         @output = output
         @input = input
         @error_output = error_output
@@ -94,6 +96,11 @@ module Workspace
       # @param spine [String, Boolean, nil] `--spine[=NAME]` (a name, or true for the resolved `spine.template`) runs
       #   `spine init` once the worktree exists; false (`--no-spine`) never does; nil follows `spine.auto`. Run before the
       #   first prompt is composed, so the automatic `spine` pack goes to the new agent. A failure is a warning
+      # @param plan [String, Boolean, nil] `--plan[=TITLE]` runs `plan init` in the new worktree (a title, or true for the task's
+      #   title) and sends the implementation-plan play with the first prompt, bound to the pane like `plan start`. A new or
+      #   empty plan also gets the draft request ({PlanDispatch::DRAFT_PROMPT}) ahead of +prompt+, which becomes the goal. Refused
+      #   with +play+; with +no_launch+ the plan is made and nothing is sent. A plan that exists is kept; a failed init is a warning
+      #   and sends no play. The JSON payload reports it as `plan`
       # @param json [Boolean] emit the documented JSON schema instead of plain text; on
       #   an error, prints `{"schema_version":1,"ok":false,"error":"..."}` to stdout and returns
       #   +{exit_code: 1}+ instead of raising
@@ -104,10 +111,10 @@ module Workspace
       # @raise [Workspace::UsageError] if a prompt would block on a non-TTY stdin and
       #   neither +base+ nor +yes+ resolves it (unless +json+ is true)
       def call(input_string, prompt: nil, prompt_timeout: nil, base: nil, yes: false, headless: false, json: false, title: nil, play: nil,
-        agents: [], skills: [], packs: [], no_packs: false, handoff: nil, no_launch: false, agent_kind: nil, title_from_ticket: false, slug: false, spine: nil)
+        agents: [], skills: [], packs: [], no_packs: false, handoff: nil, no_launch: false, agent_kind: nil, title_from_ticket: false, slug: false, spine: nil, plan: nil)
         options = {prompt: prompt, prompt_timeout: prompt_timeout, base: base, yes: yes, headless: headless, title: title, play: play,
                    agents: agents, skills: skills, packs: packs, no_packs: no_packs, handoff: handoff, no_launch: no_launch, agent_kind: agent_kind,
-                   title_from_ticket: title_from_ticket, slug: slug, spine: spine}
+                   title_from_ticket: title_from_ticket, slug: slug, spine: spine, plan: plan}
         return call_json(input_string, **options) if json
 
         start!(input_string, quiet: false, **options)
@@ -126,7 +133,7 @@ module Workspace
 
       # @return [Hash] when quiet is true, +{exit_code:, json:}+; otherwise the
       #   launch result, or nil if branch selection was cancelled
-      def start!(input_string, prompt:, prompt_timeout:, base:, yes:, headless:, quiet:, title: nil, play: nil, agents: [], skills: [], packs: [], no_packs: false, handoff: nil, no_launch: false, agent_kind: nil, title_from_ticket: false, slug: false, spine: nil)
+      def start!(input_string, prompt:, prompt_timeout:, base:, yes:, headless:, quiet:, title: nil, play: nil, agents: [], skills: [], packs: [], no_packs: false, handoff: nil, no_launch: false, agent_kind: nil, title_from_ticket: false, slug: false, spine: nil, plan: nil)
         root = @git.root
         raise Workspace::Error, "Not inside a git repository." unless root
         check_no_launch!(no_launch, prompt: prompt, prompt_timeout: prompt_timeout, play: play, packs: packs, handoff: handoff)
@@ -135,6 +142,9 @@ module Workspace
         @no_launch = no_launch
         raise Workspace::Error, "--spine is not available: no spine init command was wired." if spine && !@spine_init
         @spine_flag = spine
+        check_plan!(plan, play: play)
+        @plan_flag = plan
+        @plan_result = nil
         @spine_result = nil
         @pack_args = {packs: packs, none: no_packs, handoff: handoff}
 
@@ -151,6 +161,7 @@ module Workspace
         root = project.root
         project_name = @project_config.existing_name(project.name) || WorkspaceName.normalize(project.name)
         @play = play && resolve_play(play, root)
+        @play ||= resolve_plan_play(root) if plan && !no_launch
         @packs = no_launch ? nil : resolve_packs(root, packs, no_packs, handoff, quiet: quiet, agent_kind: @agent_kind)
         @copies = resolve_copies({"agent" => agents, "skill" => skills}, root)
         ref = @start_ref.call(input_string)
@@ -236,6 +247,7 @@ module Workspace
         install_agent_hooks(worktree_path, quiet: quiet)
         copied = copy_library_entries(worktree_path, quiet: quiet)
         write_project_marker(worktree_path, config_name)
+        setup_plan(config_name, quiet: quiet)
         setup_spine(config_name, worktree_path, quiet: quiet)
         record_started(config_name, project_name, branch_name, created: created, task: task)
         agent_kind = report_agent_kind(config_name, quiet: quiet)
@@ -247,7 +259,8 @@ module Workspace
             notes_dir, task, copied, agent_kind, launched: false)}
         end
         log(quiet, "Launching #{config_name}...")
-        text = (@play || @packs) ? @library.play_prompt(@play, prompt, packs: @packs&.fetch("text")) : prompt
+        first_prompt = drafting? ? [PlanDispatch::DRAFT_PROMPT, ("The goal: #{prompt}" if prompt)].compact.join("\n\n") : prompt
+        text = (@play || @packs) ? @library.play_prompt(@play, first_prompt, packs: @packs&.fetch("text")) : first_prompt
         prompts = text ? {config_name => text} : {}
         bindings = pane_bindings_for(config_name)
         @prompt = prompt
@@ -295,6 +308,7 @@ module Workspace
         }
         json["notes_dir"] = notes_dir if notes_dir
         json["spine"] = @spine_result if @spine_result
+        json["plan"] = @plan_result if @plan_result
         json["task"] = {"id" => task["id"], "title" => task["title"]} if task
         %w[agent skill].each { |kind| json["#{kind}s"] = copied[kind] if copied.key?(kind) }
         if @no_launch
@@ -302,6 +316,47 @@ module Workspace
           json["warnings"] = @warnings if @warnings&.any?
         end
         json
+      end
+
+      # `--plan` sends the implementation-plan play, which is the one play a first prompt carries.
+      def check_plan!(plan, play:)
+        return unless plan
+        raise Workspace::Error, "--plan is not available: no plan command was wired." unless @plan_command && @library
+        raise Workspace::UsageError, "--plan sends the implementation-plan play, so it cannot be combined with --play. Drop --play, or add the other text with --prompt or --pack." if play
+      end
+
+      # The built-in play, found like `plan start` finds it: a project's own play of that name never takes its place.
+      def resolve_plan_play(root)
+        @library.pack(PlanDispatch::PLAY, cwd: root).first
+      end
+
+      # Whether the first prompt carries the draft request: the plan is new or has no tasks, and an agent is launched.
+      def drafting?
+        @plan_result && @plan_result["drafting"]
+      end
+
+      # Runs `plan init` for `--plan`. A plan already there is kept (outcome `exists`); a failed init is a warning, and the
+      # plan play is not sent. Run before the first prompt is composed.
+      def setup_plan(config_name, quiet:)
+        return unless @plan_flag
+        title = @plan_flag if @plan_flag.is_a?(String)
+        begin
+          path = @plan_command.init(name: config_name, title: title, print: false)["path"]
+          outcome = "created"
+        rescue Workspace::Error => e
+          raise unless e.code == "plan_exists"
+          path = e.details["path"]
+          outcome = "exists"
+        end
+        plan = PlanFile.read(path)
+        log(quiet, "Plan #{outcome}: #{path}")
+        @plan_result = {"path" => path, "outcome" => outcome, "title" => plan&.title,
+                        "drafting" => !@no_launch && (plan.nil? || plan.tasks.empty?)}
+      rescue Workspace::Error, SystemCallError => e
+        message = "Could not make the plan: #{e.message}"
+        quiet ? @warnings << message : @error_output.puts("Warning: #{message}")
+        @play = nil
+        @plan_result = {"path" => nil, "outcome" => "failed", "error" => (e.respond_to?(:code) ? e.code : nil), "drafting" => false}.compact
       end
 
       # What a launch would send or wait for has nowhere to go, so each is refused rather than dropped.

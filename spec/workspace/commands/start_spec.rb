@@ -2065,4 +2065,123 @@ RSpec.describe Workspace::Commands::Start do
       expect { bare.call("PROJ-123", spine: true) }.to raise_error(Workspace::Error, /--spine is not available/)
     end
   end
+
+  describe "#call with --plan" do
+    let(:name) { "myproject.worktree-PROJ-123" }
+    let(:plan_play) { {"ref" => "play/implementation-plan", "path" => "/lib/play/implementation-plan.md"} }
+    let(:library) { double("library", pack: [plan_play, "body"]) }
+    let(:plan_command) { double("plan_command") }
+    let(:plan_file) { File.join(tmpdir, "IMPLEMENTATION_PLAN.md") }
+    let(:plan_text) { "---\nplan: 1\ntitle: \"Add SSO\"\nstatus: active\n---\n\n## Tasks\n" }
+    subject(:command) do
+      described_class.new(git: git, project_config: project_config, project_settings: project_settings, launch_command: launch_command,
+        library: library, plan_command: plan_command, output: output, error_output: error_output, input: input)
+    end
+
+    before do
+      allow(git).to receive(:root).and_return(tmpdir)
+      allow(git).to receive(:parse_start_input).with("PROJ-123").and_return({type: :jira_key, value: "PROJ-123"})
+      allow(git).to receive(:sanitize_for_filesystem).with("PROJ-123").and_return("PROJ-123")
+      allow(git).to receive(:worktree_exists?).and_return(false)
+      allow(git).to receive(:find_worktree_by_branch).and_return(nil)
+      allow(git).to receive(:branch_exists?).with("PROJ-123").and_return(true)
+      allow(git).to receive(:create_worktree)
+      allow(project_config).to receive(:create_worktree).and_return(name)
+      allow(launch_command).to receive(:call)
+      allow(library).to receive(:play_prompt) { |play, prompt, packs: nil| ["Read \"#{play["path"]}\"", packs, prompt].compact.join("\n\n") }
+      allow(library).to receive(:play_binding) { |play, packs: []| {"kind" => "play", "id" => play["ref"]} }
+      allow(plan_command).to receive(:init) do |**|
+        File.write(plan_file, plan_text)
+        {"path" => plan_file, "message" => nil}
+      end
+    end
+
+    let(:draft) { Workspace::Commands::PlanDispatch::DRAFT_PROMPT }
+
+    it "runs plan init quietly, sends the play with the draft line, binds the pane to the play and reports plan beside play" do
+      command.call("PROJ-123", plan: true, json: true)
+
+      expect(plan_command).to have_received(:init).with(name: name, title: nil, print: false)
+      expect(launch_command).to have_received(:call).with([name],
+        hash_including(prompts: {name => "Read \"/lib/play/implementation-plan.md\"\n\n#{draft}"}, bindings: {name => {"kind" => "play", "id" => "play/implementation-plan"}}))
+      payload = JSON.parse(output.string)
+      expect(payload["plan"]).to eq("path" => plan_file, "outcome" => "created", "title" => "Add SSO", "drafting" => true)
+      expect(payload["play"]).to include("ref" => "play/implementation-plan", "delivered" => false)
+    end
+
+    it "passes --plan=TITLE to plan init" do
+      command.call("PROJ-123", plan: "Add SSO", json: true)
+
+      expect(plan_command).to have_received(:init).with(name: name, title: "Add SSO", print: false)
+    end
+
+    it "sends --prompt after the draft line as the goal" do
+      command.call("PROJ-123", plan: true, prompt: "Add SSO login", json: true)
+
+      expect(launch_command).to have_received(:call).with([name],
+        hash_including(prompts: {name => "Read \"/lib/play/implementation-plan.md\"\n\n#{draft}\n\nThe goal: Add SSO login"}))
+    end
+
+    it "keeps a plan that is already there and sends the play with the prompt alone when it has tasks" do
+      allow(plan_command).to receive(:init).and_raise(Workspace::Error.new("There is already a plan.", code: "plan_exists", details: {"path" => plan_file}))
+      File.write(plan_file, plan_text + "- [ ] T1 First\n")
+
+      command.call("PROJ-123", plan: true, prompt: "Go", json: true)
+
+      expect(JSON.parse(output.string)["plan"]).to include("outcome" => "exists", "drafting" => false)
+      expect(launch_command).to have_received(:call).with([name], hash_including(prompts: {name => "Read \"/lib/play/implementation-plan.md\"\n\nGo"}))
+    end
+
+    it "asks for a draft when the plan that is already there has no tasks" do
+      allow(plan_command).to receive(:init).and_raise(Workspace::Error.new("There is already a plan.", code: "plan_exists", details: {"path" => plan_file}))
+      File.write(plan_file, plan_text)
+
+      command.call("PROJ-123", plan: true, json: true)
+
+      expect(JSON.parse(output.string)["plan"]).to include("outcome" => "exists", "drafting" => true)
+    end
+
+    it "makes the plan and sends nothing with --no-launch" do
+      result = command.call("PROJ-123", plan: true, no_launch: true, json: true)
+
+      expect(result).to eq({exit_code: 0})
+      expect(launch_command).not_to have_received(:call)
+      expect(JSON.parse(output.string)["plan"]).to eq("path" => plan_file, "outcome" => "created", "title" => "Add SSO", "drafting" => false)
+    end
+
+    it "makes a failed init a warning, with no play sent and plan reported as failed" do
+      allow(plan_command).to receive(:init).and_raise(Workspace::Error.new("Can't write.", code: "notes_dir_unwritable"))
+
+      result = command.call("PROJ-123", plan: true, prompt: "Go", json: true)
+
+      expect(result).to eq({exit_code: 0})
+      payload = JSON.parse(output.string)
+      expect(payload["plan"]).to eq("outcome" => "failed", "error" => "notes_dir_unwritable", "drafting" => false)
+      expect(payload["warnings"].join).to include("Could not make the plan: Can't write.")
+      expect(payload).not_to include("play")
+      expect(launch_command).to have_received(:call).with([name], hash_including(prompts: {name => "Go"}))
+    end
+
+    it "refuses --play with --plan before anything is created" do
+      expect { command.call("PROJ-123", plan: true, play: "kickoff") }.to raise_error(Workspace::UsageError, /--plan sends the implementation-plan play/)
+      expect(git).not_to have_received(:create_worktree)
+    end
+
+    it "refuses --plan when no plan command was wired" do
+      bare = described_class.new(git: git, project_config: project_config, project_settings: project_settings, launch_command: launch_command,
+        library: library, output: output, error_output: error_output, input: input)
+
+      expect { bare.call("PROJ-123", plan: true) }.to raise_error(Workspace::Error, /--plan is not available/)
+    end
+
+    it "prints one plain line and leaves plan out of --json when not asked" do
+      command.call("PROJ-123", plan: true)
+      expect(output.string).to include("Plan created: #{plan_file}")
+
+      output.truncate(0)
+      output.rewind
+      command.call("PROJ-123", json: true)
+      expect(JSON.parse(output.string)).not_to include("plan")
+    end
+  end
 end
