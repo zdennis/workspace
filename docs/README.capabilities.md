@@ -23,7 +23,7 @@ It reads constants, config paths and the `PATH`. It starts no process and touche
  "features":{"envelope":1,"error_codes":1,"name_scope":1,"no_input":1,"action_json":1,
    "sessions":1,"locks_json":2,"git_facts":1,"prune_safe":1,"snapshot":4,"events_follow":1,
    "actions_manifest":0,"agent_send":1,"agent_spawn":1,"focus_pane":1,"state_done":1,
-   "doctor_json":0,"daemon_control":4,"config_json":2,"config_scopes":2,"tmux_show":1,"tasks":1,"event_emitters":1,
+   "doctor_json":1,"daemon_control":4,"config_json":2,"config_scopes":2,"tmux_show":1,"tasks":1,"event_emitters":1,
    "ui_open":3,"pane_bindings":3,"library":4,"library_play":2,"library_copy":1,"instructions":1,"restore":1,
    "workflow":1,"window_state":1,"cleanup_dry_run":1,"notes":1,"start_packs":2,
    "handoff_auto":2,"handoff_codex":1,"dev_queue":2,"plan":4,"inbox":3,"ask_withdraw":1},
@@ -60,7 +60,7 @@ It reads constants, config paths and the `PATH`. It starts no process and touche
 | `agent_spawn` | `launch --json` rows carry `prompt_sent` and `pane`, and `run --split --json` names the new pane, so a caller need not compare two `sessions` reads to find the pane it started or sent to (see [`launch`](README.launch.md#json-output), [`run`](README.run.md#json-output)) |
 | `focus_pane` | `focus --pane` selects a pane after focusing the window |
 | `state_done` | `sessions --json` panes can report `state: "done"` with a `stop_reason` (see [`sessions`](README.sessions.md)) |
-| `doctor_json` | Not available yet |
+| `doctor_json` | `doctor --json` (see [`doctor`](README.doctor.md#json-output)) |
 | `daemon_control` | `daemon status`, `daemon restart`, `daemon list` and `daemon log` (see [`daemon`](README.daemon.md)). Revision 2 adds `agentd restart`, `wc_socket` in the restart row, a restart that keeps the old daemon's work-coordinator socket (failure reason `wc_socket_unknown` when it can't be read back), and a 2-second limit on `lsof`, after which `status` gives `pid: null` and `restart` fails with `not_stopped`. Revision 3 adds `daemon list` and `daemon restart --all`. Revision 4 adds `version` to each `daemon list` row |
 | `config_json` | `config show --json` and `config validate --json` (see [`config`](README.config.md)). Revision 2 adds `effective_path` on the `notes.dir` and `notes.default_dir` rows, the `notes.default_dir` key, type `path` and the `shared_notes_dir` warning |
 | `config_scopes` | `config set/get/unset/show --scope global|project|workspace`, the `layers[]`, `overridable_in`, `doc`, `choices`, `min`, `max` and `unit` fields of `config show --json` rows, `unset --json`, `comments_preserved` in the write rows, and `config edit` (see [`config`](README.config.md#scopes)). `config_json` stays at 2. Revision 2 adds `config keys [QUERY] [--settable] [--json]` (see [`config keys`](README.config.md#config-keys)) |

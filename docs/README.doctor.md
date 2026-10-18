@@ -5,7 +5,7 @@ Check that all required dependencies are installed and configured.
 ## Usage
 
 ```sh
-workspace doctor [--headless | --no-headless] [--fix]
+workspace doctor [--headless | --no-headless] [--fix] [--json]
 ```
 
 ## Options
@@ -14,6 +14,7 @@ workspace doctor [--headless | --no-headless] [--fix]
 |--------|-------------|
 | `--headless` / `--no-headless` | Check for a headless setup, which skips the iTerm2 and window-tool checks, or for an iTerm2 one. The default follows the same rule as [`launch`](README.launch.md#headless) |
 | `--fix` | Route Claude's `statusLine` through `workspace statusline`, backing up `settings.json` first. The only fix `doctor` performs today; everything else it reports has to be fixed by hand. Restart any running Claude Code sessions afterward — Claude Code doesn't reload `statusLine` mid-session. Reports and fails (non-zero exit) when run outside a workspace project, or when no agent on `PATH` supports `statusLine` (only Claude Code does). A machine with only Codex on `PATH` reports nothing to fix instead of failing, since Codex's context usage is read by scraping its own pane — no `statusLine` to route |
+| `--json` | Print one JSON document with a row per check ([below](#json-output)) instead of the text report. The exit code is the same: 1 when a check failed |
 
 ## Details
 
@@ -35,7 +36,35 @@ Also verifies that tmuxinator templates are installed and checks the state file 
 
 **Plans** — also warns (`⚠`, doesn't fail the check, and prints nothing when all is well) about the current project's [plans](README.plan.md): a plan whose `status:` is `paused` while its owner pane is still working, and a plan with a `[~]` task in a workspace that has no tmux session (the plan reads `stopped`). The fix line names `workspace plan start --name <workspace>`. A plan that can't be read is skipped.
 
+A `--fix` that cannot do anything is reported as a failed check (`✗  --fix: ...`) among the others.
+
 Exits with a non-zero status if any issues are found, so it can be used in scripts.
+
+## JSON output
+
+`doctor --json` runs the same checks and prints one document on stdout. Anything `--fix` prints goes to stderr.
+
+```json
+{"schema_version":1,"ok":true,"healthy":false,
+ "mode":{"headless":false,"reason":"iTerm2"},
+ "checks":[
+  {"id":"tmux","ok":true,"status":"ok","message":"tmux (3+)","fix":null,"fix_command":null,"project":null},
+  {"id":"window-tool","ok":false,"status":"fail","message":"window-tool (not found)",
+   "fix":"https://github.com/zdennis/window-tool","fix_command":null,"project":null},
+  {"id":"hooks","ok":false,"status":"fail","message":"session monitoring hooks not installed for myapp",
+   "fix":"run 'workspace init' from the project directory","fix_command":"workspace init","project":"myapp"}],
+ "summary":{"ok":1,"warn":0,"fail":2,"skipped":0,"issues":2}}
+```
+
+- `ok` at the top is `true` whenever the checks ran, as for the other report documents; read `healthy` for the verdict. `healthy` is true when no check failed and `--fix` did not fail. The exit code is 0 when healthy and 1 otherwise, with the document still printed.
+- Each check has `id` (stable), `ok` (false only for `status` `fail`), `status`, `message` (the text report's line without its symbol), `fix`, `fix_command` and `project`.
+- `status` is `ok`, `warn` (worth a look, not counted as an issue), `fail` (counted in `summary.issues`) or `skipped` (not needed here, e.g. iTerm2 headless, or no project to check).
+- `fix` is the text after the report's `↳` (an install hint, or a sentence naming the command). `fix_command` is the same fix as a command to run when it is one, else `null`. Both are `null` when there is nothing to do.
+- `project` names the project a check is about, and is `null` for machine-wide checks.
+- Ids so far: `ruby`, `tmux`, `tmuxinator`, `iterm2`, `window-tool`, `git`, `gh`, `ascii-banner`, `templates`, `state-window-ids`, `session-monitoring` (not inside a project), `hooks`, `agent`, `edit-lock-hooks`, `statusline`, `context-<agent>`, `pipeline-config`, `pipeline-deprecated`, `pipeline-sentinel`, `plan`. A few ids can appear more than once (one row per pane, plan or warning). Treat an unknown id as a check this version of your tool does not know, and show its `message`.
+- `--fix` with `--json` still performs the fix; when it cannot (outside a project, no statusLine-capable agent) there is a row with id `fix` and `status` `fail`. Its progress text goes to stderr. `summary.issues` equals `summary.fail`.
+- `id` is not unique in a document: key a row by `id`, `project` and `message`.
+- The capability is `doctor_json` 1 in [`capabilities --json`](README.capabilities.md).
 
 ## Example
 

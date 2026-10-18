@@ -4600,6 +4600,7 @@ module Workspace
     def cmd_doctor(args)
       headless = nil
       fix = false
+      json = false
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: workspace doctor [options]"
         opts.separator ""
@@ -4614,15 +4615,22 @@ module Workspace
           "settings.json first); the only fix this performs today") do
           fix = true
         end
+        opts.on("--json", "Print one JSON document with a row per check (see docs/README.doctor.md);",
+          "exits 1 when a check failed") { json = true }
         opts.separator ""
         opts.separator "Examples:"
         opts.separator "  workspace doctor    # check the current machine's setup"
+        opts.separator "  workspace doctor --json    # the same checks as one document"
         opts.separator "  workspace doctor --fix    # also route Claude's statusLine through workspace statusline"
         opts.separator "  workspace doctor --headless    # check for a headless setup (skips iTerm2 and window-tool)"
       end
       parser.parse!(args)
 
-      @doctor.run(headless: headless, fix: fix)
+      return @doctor.run(headless: headless, fix: fix) unless json
+
+      result = divert_output { @doctor.report(headless: headless, fix: fix) }
+      @output.puts JSON.generate(Doctor.document(result))
+      @exit_handler.exit(1) if result[:issues].positive?
     end
 
     def cmd_relaunch(args)

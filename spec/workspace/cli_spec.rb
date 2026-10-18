@@ -845,6 +845,35 @@ RSpec.describe Workspace::CLI do
     end
   end
 
+  describe "#run with doctor --json" do
+    let(:failing) do
+      {mode: {"headless" => true, "reason" => "no display"}, issues: 1,
+       rows: [{id: "tmux", status: "fail", message: "tmux (not found)", hints: [], fix: "brew install tmux", fix_command: "brew install tmux", project: nil},
+         {id: "git", status: "ok", message: "git (2+)", hints: [], fix: nil, fix_command: nil, project: nil}]}
+    end
+
+    it "prints one document and exits 1 when a check failed" do
+      doctor = CLITestHelpers::FakeDoctor.new
+      doctor.result = failing
+      cli, output, = build_test_cli(doctor: doctor)
+
+      expect { cli.run(["doctor", "--json", "--headless"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+
+      doc = JSON.parse(output.string)
+      expect(doc).to include("schema_version" => 1, "ok" => true, "healthy" => false)
+      expect(doc["checks"].map { |c| [c["id"], c["ok"]] }).to eq([["tmux", false], ["git", true]])
+      expect(doc["checks"].first).to include("fix_command" => "brew install tmux")
+      expect(doc["summary"]).to eq("ok" => 1, "warn" => 0, "fail" => 1, "skipped" => 0, "issues" => 1)
+      expect(doctor.headless).to be true
+    end
+
+    it "exits 0 when nothing failed" do
+      cli, output, = build_test_cli
+      cli.run(["doctor", "--json"])
+      expect(JSON.parse(output.string)).to include("healthy" => true, "checks" => [])
+    end
+  end
+
   describe "#run with stop" do
     it "stops all active projects when none specified" do
       cli, output, _ = build_test_cli

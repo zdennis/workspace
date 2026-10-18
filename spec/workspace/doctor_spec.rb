@@ -668,4 +668,54 @@ RSpec.describe Workspace::Doctor do
       expect(output.string).not_to include("not needed headless")
     end
   end
+
+  describe "#report and .document" do
+    it "returns rows with stable ids and prints nothing" do
+      state["proj-a"] = {"iterm_window_id" => 100}
+      state["proj-b"] = {"iterm_window_id" => 100}
+
+      result = build_doctor.report(headless: true)
+
+      row = result[:rows].find { |r| r[:id] == "state-window-ids" }
+      expect(row).to include(status: "fail", fix: "run 'workspace stop' then 'workspace launch' for affected projects")
+      expect(result[:rows].map { |r| r[:id] }).to include("ruby", "git", "templates")
+      expect(result[:rows].find { |r| r[:id] == "iterm2" }[:status]).to eq("skipped")
+      expect(result[:issues]).to eq(result[:rows].count { |r| r[:status] == "fail" })
+      expect(output.string).to eq("")
+    end
+
+    it "builds the JSON document, marking only fail rows not ok" do
+      result = {mode: {"headless" => false, "reason" => "iTerm2"}, issues: 1, rows: [
+        {id: "a", status: "warn", message: "m", fix: "do", fix_command: nil, project: "p"},
+        {id: "b", status: "fail", message: "n", fix: nil, fix_command: nil, project: nil}
+      ]}
+
+      doc = described_class.document(result)
+
+      expect(doc).to include("schema_version" => 1, "ok" => true, "healthy" => false)
+      expect(doc["checks"].map { |c| c["ok"] }).to eq([true, false])
+      expect(doc["checks"].first).to eq("id" => "a", "ok" => true, "status" => "warn", "message" => "m", "fix" => "do", "fix_command" => nil, "project" => "p")
+      expect(doc["summary"]).to eq("ok" => 0, "warn" => 1, "fail" => 1, "skipped" => 0, "issues" => 1)
+    end
+
+    it "gives per-project rows their project and a fix command for hooks" do
+      allow(project_detector).to receive(:detect).and_return("myapp")
+      allow(hook_installer).to receive(:installed?).and_return(false)
+      allow(config).to receive(:agent_socket_path).with("myapp").and_return("/tmp/does-not-exist-workspace-myapp.sock")
+
+      result = build_doctor(which: ->(_exe) { true }).report(headless: true)
+
+      hooks = result[:rows].find { |r| r[:id] == "hooks" }
+      expect(hooks).to include(status: "fail", project: "myapp", fix_command: "workspace init")
+    end
+
+    it "reports a failed --fix as a fail row" do
+      allow(project_detector).to receive(:detect).and_return(nil)
+
+      result = build_doctor.report(headless: true, fix: true)
+
+      expect(result[:rows].find { |r| r[:id] == "fix" }).to include(status: "fail")
+      expect(result[:issues]).to eq(result[:rows].count { |r| r[:status] == "fail" })
+    end
+  end
 end

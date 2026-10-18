@@ -329,10 +329,17 @@ module CLITestHelpers
 
   class FakeDoctor
     attr_reader :headless, :fix
+    attr_writer :result
 
     def run(headless: nil, fix: false)
       @headless = headless
       @fix = fix
+    end
+
+    def report(headless: nil, fix: false)
+      @headless = headless
+      @fix = fix
+      @result || {mode: {"headless" => false, "reason" => "test"}, rows: [], issues: 0}
     end
   end
 
