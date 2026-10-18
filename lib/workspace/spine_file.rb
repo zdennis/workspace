@@ -176,8 +176,13 @@ module Workspace
     def status_raw = value("status")
 
     # @return [String] one of {STATUSES}, or `unknown`
-    def status
-      raw = status_raw
+    def status = self.class.canonical_status(status_raw)
+
+    # Reads a status word the way a stage file is read.
+    #
+    # @param raw [String, nil] a status or an alias, in any case, with `-` or spaces for `_`
+    # @return [String] one of {STATUSES}, or `unknown` for nil and for a word that is neither
+    def self.canonical_status(raw)
       return "unknown" unless raw
       word = raw.downcase.gsub(/[-\s]+/, "_")
       return word if STATUSES.include?(word)
