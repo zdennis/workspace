@@ -6719,11 +6719,10 @@ module Workspace
       end
     end
 
-    # `spine init`: kept apart from the other spine verbs; `args` still holds the verb.
+    # `spine init`: kept apart from the other spine verbs; `args` no longer holds the verb.
     def cmd_spine_init(args)
       options = {json: false, name: nil, template: nil, dry_run: false}
       parser = spine_init_parser(options)
-      args.shift
       parser.parse!(args)
       return @output.puts(parser.help) if options[:help]
 
@@ -6740,8 +6739,30 @@ module Workspace
       @spine_init_command.call(name: name, template: options[:template], dry_run: options[:dry_run], json: options[:json])
     end
 
+    # The verb of a spine command line: the first word that is not an option or the value of --name,
+    # so options may come before it (`spine --name X init`).
+    def spine_verb_index(args)
+      skip = false
+      args.each_with_index do |arg, i|
+        if skip
+          skip = false
+        elsif %w[--name --template --status --note --if-revision --by].include?(arg)
+          skip = true
+        elsif arg == "--"
+          return nil
+        elsif !arg.start_with?("-")
+          return i
+        end
+      end
+      nil
+    end
+
     def cmd_spine(args)
-      return cmd_spine_init(args) if args.first == "init"
+      index = spine_verb_index(args)
+      if index && args[index] == "init"
+        args.delete_at(index)
+        return cmd_spine_init(args)
+      end
 
       options = {json: false, name: nil}
       parser = spine_parser(options)

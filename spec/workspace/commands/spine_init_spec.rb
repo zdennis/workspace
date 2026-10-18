@@ -140,8 +140,47 @@ RSpec.describe Workspace::Commands::SpineInit do
 
   it "answers exists on a dry run too" do
     FileUtils.mkdir_p(spine_dir)
+    File.write(File.join(spine_dir, "x.md"), "x")
     command.call(name: "api", dry_run: true, json: true)
     expect(document["outcome"]).to eq("exists")
+  end
+
+  it "fills an existing spine/ that has no entries at all" do
+    FileUtils.mkdir_p(spine_dir)
+
+    command.call(name: "api", json: true)
+
+    expect(document["outcome"]).to eq("created")
+    expect(Dir.children(spine_dir)).to include("10-research.md", "goal.md")
+  end
+
+  it "reports an empty spine/ as would_create on a dry run" do
+    FileUtils.mkdir_p(spine_dir)
+    command.call(name: "api", dry_run: true, json: true)
+    expect(document["outcome"]).to eq("would_create")
+    expect(Dir.children(spine_dir)).to eq([])
+  end
+
+  it "keeps exists for a spine/ holding only a hidden file, and for a file named spine" do
+    FileUtils.mkdir_p(spine_dir)
+    File.write(File.join(spine_dir, ".keep"), "")
+    command.call(name: "api", json: true)
+    expect(document["outcome"]).to eq("exists")
+
+    output.truncate(0)
+    output.rewind
+    FileUtils.rm_rf(spine_dir)
+    File.write(spine_dir, "a file")
+    command.call(name: "api", json: true)
+    expect(document["outcome"]).to eq("exists")
+    expect(File.read(spine_dir)).to eq("a file")
+  end
+
+  it "lets a config_parse error from the notes directory through, writing nothing" do
+    allow(notes).to receive(:info).and_raise(Workspace::ConfigParseError.new("/cfg.yml", "bad yaml"))
+
+    expect { command.call(name: "api", json: true) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("config_parse") }
+    expect(File.exist?(notes_dir)).to be(false)
   end
 
   it "refuses a spine that is a link, writing nothing through it" do

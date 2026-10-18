@@ -6172,6 +6172,18 @@ RSpec.describe Workspace::CLI do
       expect(spine_init_command).to have_received(:call).with(name: "web", template: "docs", dry_run: false, json: true)
     end
 
+    it "accepts options before the verb" do
+      cli.run(["spine", "--name", "api", "init", "--dry-run"])
+      cli.run(["spine", "--json", "init", "--template=team"])
+      cli.run(["spine", "--name=web", "--json", "init"])
+      cli.run(["spine", "--template", "docs", "init", "api"])
+      expect(spine_init_command).to have_received(:call).with(name: "api", template: "docs", dry_run: false, json: false)
+
+      expect(spine_init_command).to have_received(:call).with(name: "api", template: nil, dry_run: true, json: false)
+      expect(spine_init_command).to have_received(:call).with(name: "detected-ws", template: "team", dry_run: false, json: true)
+      expect(spine_init_command).to have_received(:call).with(name: "web", template: nil, dry_run: false, json: true)
+    end
+
     it "fails with not_in_workspace outside a workspace, and refuses two different names" do
       allow(detector).to receive(:detect).and_return(nil)
       expect { cli.run(["spine", "init", "--json"]) }.to raise_error(FakeSystemExit)

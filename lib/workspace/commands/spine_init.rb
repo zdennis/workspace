@@ -67,9 +67,16 @@ module Workspace
         if File.symlink?(spine_dir)
           raise unwritable(spine_dir, "#{spine_dir} is a link, and spine init does not write through links")
         end
-        return ["exists", []] if File.exist?(spine_dir)
+        return ["exists", []] if File.exist?(spine_dir) && !empty_directory?(spine_dir)
         files = template_files(entry["path"], entry["files"], main)
         [dry_run ? "would_create" : "created", files]
+      end
+
+      # A folder with no entries at all, hidden ones included: nothing there to overwrite.
+      def empty_directory?(path)
+        File.directory?(path) && Dir.empty?(path)
+      rescue SystemCallError
+        false
       end
 
       def template_files(path, files, main)

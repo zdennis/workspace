@@ -88,7 +88,7 @@ The built-in `default` has `10-research.md`, `20-plan.md`, `30-implement.md`, `4
 
 Placeholders in every UTF-8 file are filled: `{{WORKSPACE}}` is the workspace name, `{{BRANCH}}` the checkout's branch (empty on a detached HEAD), `{{TITLE}}` the workspace's task title, else the branch, else the name, folded to one line. Other text is copied as it is. Links inside a template and names starting with a dot are not copied.
 
-`init` never overwrites. When `spine/` exists (even an empty folder or a file), the outcome is `exists` and nothing is written; a `spine` that is a link is refused with `spine_unwritable`. The notes directory is made when needed, as `notes dir --create` does. The files are written into a temporary folder beside `spine/` and renamed into place, so a reader sees all of the spine or none.
+`init` never overwrites. When `spine/` exists with anything in it (a hidden file counts) or is a file, the outcome is `exists`; a `spine/` folder with no entries at all is filled in (`created`) and nothing is written; a `spine` that is a link is refused with `spine_unwritable`. The notes directory is made when needed, as `notes dir --create` does. The files are written into a temporary folder beside `spine/` and renamed into place, so a reader sees all of the spine or none.
 
 ```json
 { "schema_version": 1, "ok": true, "workspace": "fix-oauth-refresh", "outcome": "created",
