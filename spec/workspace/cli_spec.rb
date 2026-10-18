@@ -952,16 +952,33 @@ RSpec.describe Workspace::CLI do
         expect(doc["warnings"]).to eq(["Warning: slow"])
       end
 
-      it "refuses a path that is not a directory before adding anything" do
+      it "gives a path that is not a directory a failed row and still adds the others (partial, exit 3)" do
+        cli, output, = build_test_cli(project_config: project_config, notes_setup: notes_setup)
+        missing = File.join(root, "nope")
+        allow(project_config).to receive(:resolve_project_arg) { |arg| [(arg == missing) ? "nope" : "plain", File.expand_path(arg)] }
+
+        expect { cli.run(["add", "--json", missing, root]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(3) }
+
+        doc = JSON.parse(output.string)
+        expect(doc["status"]).to eq("partial")
+        expect(doc["results"].map { |r| [r["workspace"], r["outcome"], r["reason"]] }).to eq([["nope", "failed", "not_a_directory"], ["plain", "created", nil]])
+        expect(doc["results"].first["details"]).to eq("path" => missing)
+        expect(project_config).to have_received(:create).once
+      end
+
+      it "exits 1 when every path failed, still printing the document" do
         cli, output, = build_test_cli(project_config: project_config, notes_setup: notes_setup)
         missing = File.join(root, "nope")
 
-        expect { cli.run(["add", "--json", root, missing]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+        expect { cli.run(["add", "--json", missing]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
 
-        doc = JSON.parse(output.string)
-        expect(doc).to include("ok" => false, "code" => "not_a_directory")
-        expect(doc["details"]).to eq("path" => missing)
-        expect(project_config).not_to have_received(:create)
+        expect(JSON.parse(output.string)).to include("status" => "failed")
+      end
+
+      it "exits 0 when no row failed" do
+        cli, = build_test_cli(project_config: project_config, notes_setup: notes_setup)
+
+        expect { cli.run(["add", "--json", root]) }.not_to raise_error
       end
 
       it "accepts flags after the paths" do
@@ -1027,11 +1044,21 @@ RSpec.describe Workspace::CLI do
       expect(output.string).to include("Project name: plain")
     end
 
-    it "still raises a case conflict without --json" do
-      allow(project_config).to receive(:create).and_raise(Workspace::Error.new("clash", code: "workspace_name_case_conflict"))
-      cli, = build_test_cli(project_config: project_config, notes_setup: notes_setup)
+    it "skips a path whose name is refused with a message and adds the rest without --json" do
+      other = Dir.mktmpdir
+      allow(project_config).to receive(:resolve_project_arg) { |arg| [(arg == other) ? "other" : "plain", File.expand_path(arg)] }
+      allow(project_config).to receive(:create) do |name, _root|
+        raise Workspace::Error.new("clash", code: "workspace_name_case_conflict") if name == "plain"
+        name
+      end
+      cli, output, error_output = build_test_cli(project_config: project_config, notes_setup: notes_setup)
 
-      expect { cli.run(["add", root]) }.to raise_error(FakeSystemExit)
+      cli.run(["add", root, other])
+
+      expect(error_output.string).to include("Error: clash")
+      expect(output.string).to include("Project name: other")
+    ensure
+      FileUtils.remove_entry(other)
     end
 
     it "sets up the notes directory of a worktree config it creates" do

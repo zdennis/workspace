@@ -19,8 +19,10 @@ workspace add [--json] <path> [path2] ...
 
 - `outcome` is `created` (a config was written) or `exists` (one was already there, even under a mixed-case name; `workspace` is then its own name and nothing is changed).
 - `notes_dir` is the notes directory set up for a new `.worktrees/` config, else `null`; problems setting it up are `warnings`.
-- A path that is not a directory is the `not_a_directory` error envelope (`details.path`), checked for every path first, so nothing is added.
-- A name refused by `workspace_name_case_conflict` is a `failed` row with that `reason` and `details`; the other paths are still added and the status is `partial` (or `failed` if none were).
+- A path that cannot be added is a `failed` row, never a whole-document error; the other paths are still added. `reason` is `not_a_directory` (`details.path`) or `workspace_name_case_conflict` (`details` as in [JSON output](README.json.md)), and `message` says why.
+- The document is always printed. Exit status: 0 when no row failed (`status` `ok`), 3 when some rows failed (`partial`), 1 when every row failed (`failed`).
+
+Without `--json`, a path that is not a directory or whose name is refused is skipped with an `Error:` line on stderr and the other paths are still added; the exit status stays 0.
 
 Feature `add_json` in [`capabilities`](README.capabilities.md).
 

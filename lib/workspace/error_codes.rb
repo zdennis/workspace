@@ -37,7 +37,7 @@ module Workspace
       "plan_exists" => "plan init would replace a plan that is already there; pass --force.",
       "plan_done" => "plan start or pause was run on a plan that is done (status: done, or nothing left to do).",
       "plan_write_conflict" => "The plan file changed twice while a plan verb was writing it, so nothing was written; run the verb again.",
-      "not_a_directory" => "add --json: a path is not a directory, so nothing was added. details.path.",
+      "not_a_directory" => "add --json: a path is not a directory; the reason of that path's failed row. details.path.",
       "ticket_not_found" => "ticket show: the ticket tool says no ticket has that key, number or URL.",
       "ticket_source_unavailable" => "ticket show: gh or jira is not installed, did not answer in time, or failed; details.source says which.",
       "gh_unavailable" => "pr create (or finish --pr): gh is not installed or is not logged in; details.reason says which (missing or not_logged_in).",

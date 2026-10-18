@@ -4783,15 +4783,17 @@ module Workspace
         opts.separator "New names are lowercase. A name that differs only in case from another"
         opts.separator "workspace's is refused (workspace_name_case_conflict); the same directory's"
         opts.separator "mixed-case config is reused."
+        opts.separator "A path that is not a directory, or whose name is refused, is skipped with an"
+        opts.separator "error message; the other paths are still added."
         opts.separator "A new config for a path inside .worktrees/ also gets its notes directory"
         opts.separator "set up (see 'workspace notes dir'): stored as the config's notes.dir,"
         opts.separator "created, and kept out of git status. A problem there is a warning."
         opts.separator ""
         opts.separator "Options:"
         opts.on("--json", "Print one action document (see docs/README.json.md) instead of text, which goes",
-          "to stderr; one row per path, outcome created, exists or failed (a refused name), with",
-          "root and config_path. A path that is not a directory is the not_a_directory error and",
-          "nothing is added (without --json, such a path is skipped and the others are added)") { json = true }
+          "to stderr; one row per path, outcome created, exists or failed (reason not_a_directory or",
+          "workspace_name_case_conflict), with root and config_path. A failed path is skipped and the",
+          "others are added. Exit 0 if no row failed, 3 if some did, 1 if all did") { json = true }
         opts.separator ""
         opts.separator "Examples:"
         opts.separator "  workspace add ~/Code/my-project   # add a project by path"
@@ -4812,22 +4814,15 @@ module Workspace
         [e, File.expand_path(arg)]
       end
 
-      if json
-        bad = targets.find { |_, root| !File.directory?(root) }
-        raise Error.new("Not a directory: #{bad[1]}", code: "not_a_directory", details: {"path" => bad[1]}) if bad
-      end
-
       run_action("add", json: json) do
         warnings = []
         rows = targets.map do |name, root|
-          unless File.directory?(root)
-            @error_output.puts "Error: Not a directory: #{root}"
-            next
-          end
           if name.is_a?(Workspace::Error)
-            raise name unless json
-
-            next action_row(name.details["name"], "failed", reason: name.code, message: name.message, root: root, details: name.details)
+            next refuse_add(name.details["name"], root, name, json: json)
+          end
+          unless File.directory?(root)
+            error = Workspace::Error.new("Not a directory: #{root}", code: "not_a_directory", details: {"path" => root})
+            next refuse_add(name, root, error, json: json)
           end
           add_one_project(name, root, json: json, warnings: warnings)
         end
@@ -4836,8 +4831,8 @@ module Workspace
     end
 
     # Adds one project for `cmd_add`. With `json`, returns the action row
-    # (`created` or `exists`, or `failed` for a refused name) and collects notes
-    # warnings; otherwise a refusal raises as it always did.
+    # (`created` or `exists`) and collects notes warnings. A refused name is
+    # handled by {#refuse_add}.
     def add_one_project(name, root, json:, warnings:)
       created = @project_config.existing_name(name).nil?
       name = @project_config.create(name, root) || name
@@ -4851,9 +4846,18 @@ module Workspace
       action_row(name, created ? "created" : "exists", root: root,
         config_path: @project_config.config_path_for(name), notes_dir: notes && notes["dir"])
     rescue Workspace::Error => e
-      raise unless json && e.code == "workspace_name_case_conflict"
+      raise unless e.code == "workspace_name_case_conflict"
 
-      action_row(name, "failed", reason: e.code, message: e.message, root: root, details: e.details)
+      refuse_add(name, root, e, json: json)
+    end
+
+    # A path `add` skips: an error line on stderr in text mode, a `failed` row
+    # (reason is the error's code) with `--json`. The other paths carry on.
+    def refuse_add(name, root, error, json:)
+      @error_output.puts "Error: #{error.message}"
+      return unless json
+
+      action_row(name, "failed", reason: error.code, message: error.message, root: root, details: error.details)
     end
 
     # A worktree config `add` just made gets its notes directory fixed the way
