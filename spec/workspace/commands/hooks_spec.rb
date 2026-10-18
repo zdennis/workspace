@@ -20,7 +20,7 @@ RSpec.describe Workspace::Commands::Hooks do
 
       expect(result).to include("agent" => "codex", "path" => codex_path, "removed" => 10, "dry_run" => false)
       expect(result["backup"]).to start_with("#{codex_path}.workspace-backup-")
-      expect(JSON.parse(File.read(codex_path))["hooks"]).to eq({})
+      expect(JSON.parse(File.read(codex_path))).not_to have_key("hooks")
     end
 
     it "refuses an agent workspace installs no hooks for, naming the ones it does" do
