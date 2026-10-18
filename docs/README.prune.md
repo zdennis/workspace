@@ -14,6 +14,8 @@ workspace prune [options]
 |--------|-------------|
 | `--dry-run` | Show what would be removed without making any changes |
 | `-f, --force` | Skip confirmation, and remove candidates even with unsaved work |
+| `--name NAME` | Prune only this workspace; repeatable. Without `--json`, a name that is no candidate is a `not_prunable` error |
+| `--json` | Print one action document of per-candidate rows; skips the confirmation, not the unsaved-work check (see below) |
 
 ## Details
 
@@ -55,3 +57,20 @@ workspace prune
 # Prune without prompting, and remove candidates with unsaved work too
 workspace prune --force
 ```
+
+## JSON output
+
+`prune --json` prints one action document on stdout (see [JSON output](README.json.md#actions)); the scan text goes to stderr. It never asks for confirmation, but the unsaved-work check still runs: only `--force` skips it. `--name=WS` (repeatable) limits the run to those workspaces; the other candidates come back as `not_selected` and are untouched. Capability `prune_safe` revision 2.
+
+```json
+{"schema_version":1,"ok":true,"action":"prune","status":"partial",
+ "results":[
+  {"name":"feat-a","branch":"feat-a","reason":"merged","outcome":"removed","error":null,"message":null,"pr_number":12,"pr_url":"https://github.com/o/r/pull/12"},
+  {"name":"feat-b","branch":"feat-b","reason":"closed","outcome":"skipped_unsaved","error":"unsaved_work","message":"Skipped feat-b: 2 changed file(s) ...","pr_number":13,"pr_url":"..."}],
+ "warnings":[],"summary":{"removed":1,"skipped_unsaved":1}}
+```
+
+- One row per candidate: `name`, `branch` (null when the directory is gone), `reason` (`merged`, `closed` or `directory_gone`), `outcome`, `error` (a fixed code, or null), `message`, `pr_number` and `pr_url`.
+- `outcome` is `removed`, `skipped_unsaved` (`error` is `unsaved_work` or `unsaved_unknown`), `failed` (`error` is `prune_remove_failed` when git refused, or `not_prunable` for a `--name` that is no candidate; that row has a null `branch` and `reason`), or `not_selected`. With `--dry-run` the selected rows are `would_remove` and nothing changes (the unsaved-work check runs only when a worktree is removed, so a dry run can say `would_remove` for a row the real run skips as `skipped_unsaved`); `status` is `dry_run`.
+- `status` counts the selected rows only: `ok` when all were removed, `partial` when some were removed and some skipped or failed, `failed` when none were. A run with no candidates is `ok` with no rows.
+- Exit status: 0 for `ok` and `dry_run`, 3 for `partial`, 1 for `failed`.

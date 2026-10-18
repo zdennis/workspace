@@ -19,7 +19,7 @@ module Workspace
         "sessions" => 1,
         "locks_json" => 2,
         "git_facts" => 1,
-        "prune_safe" => 1,
+        "prune_safe" => 2,
         "snapshot" => 4,
         "events_follow" => 1,
         "actions_manifest" => 0,

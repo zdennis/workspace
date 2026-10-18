@@ -21,7 +21,7 @@ It reads constants, config paths and the `PATH`. It starts no process and touche
 ```json
 {"schema_version":1,"ok":true,"version":"0.27.1",
  "features":{"envelope":1,"error_codes":1,"name_scope":1,"no_input":1,"action_json":1,
-   "sessions":1,"locks_json":2,"git_facts":1,"prune_safe":1,"snapshot":4,"events_follow":1,
+   "sessions":1,"locks_json":2,"git_facts":1,"prune_safe":2,"snapshot":4,"events_follow":1,
    "actions_manifest":0,"agent_send":1,"agent_spawn":1,"focus_pane":1,"state_done":1,
    "doctor_json":1,"daemon_control":4,"config_json":2,"config_scopes":2,"tmux_show":1,"tasks":1,"event_emitters":1,
    "ui_open":3,"pane_bindings":3,"library":4,"library_play":2,"library_copy":1,"instructions":1,"restore":1,
@@ -52,7 +52,7 @@ It reads constants, config paths and the `PATH`. It starts no process and touche
 | `sessions` | `sessions --json` |
 | `locks_json` | `lock status --json` and `lock clear --json`. Revision 2: a holder or waiter can be a workflow run (`"kind": "run"` with `run_id` and `step`, and no `pid`), a run holder can carry a `delegate`, and `dev status --json` reports `running: false` for a run that holds `devenv` with no dev environment under it (see [`lock`](README.lock.md) and [`dev`](README.dev.md)) |
 | `git_facts` | `projects show` reports git facts per workspace |
-| `prune_safe` | `prune` skips a worktree with unsaved work and reports it, rather than removing it |
+| `prune_safe` | `prune` skips a worktree with unsaved work and reports it, rather than removing it. Revision 2: `prune --json [--name=WS]...` prints an action document with a row per candidate (see [`prune`](README.prune.md)) |
 | `snapshot` | `snapshot --json` (see [`snapshot`](README.snapshot.md)); `sessions --json` panes carry `display_label` (see [`sessions`](README.sessions.md)). Revision 1 was `display_label` alone; revision 3 adds each member's `plan`; revision 4 reports `task` for stopped and ended workspaces |
 | `events_follow` | `events [--follow] [--json] [--types] [--since CURSOR]` reads the event log and every agent daemon's hook events (`tool_started`, `tool_finished`, `subagent_started`, `subagent_stopped`, `session_started`, `session_ended`, `prompt_submitted`, each with `boot_id` and `seq`) as one stream, with an opaque cursor on every line (see [`events`](README.events.md)) |
 | `actions_manifest` | Not available yet |

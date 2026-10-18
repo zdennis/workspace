@@ -527,4 +527,135 @@ RSpec.describe Workspace::Commands::Prune do
       end
     end
   end
+
+  describe "#call_structured" do
+    let(:clean_root) { File.join(tmpdir, "wt-clean") }
+    let(:dirty_root) { File.join(tmpdir, "wt-dirty") }
+    let(:gone_root) { File.join(tmpdir, "wt-gone") }
+
+    before do
+      make_worktree_dir(clean_root)
+      make_worktree_dir(dirty_root)
+      allow(project_config).to receive(:available_projects).and_return(%w[wt-clean wt-dirty wt-gone])
+      allow(project_config).to receive(:project_root_for).with("wt-clean").and_return(clean_root)
+      allow(project_config).to receive(:project_root_for).with("wt-dirty").and_return(dirty_root)
+      allow(project_config).to receive(:project_root_for).with("wt-gone").and_return(gone_root)
+      allow(git).to receive(:linked_worktree?).and_return(true)
+      allow(git).to receive(:worktree_branch).with(clean_root).and_return("clean")
+      allow(git).to receive(:worktree_branch).with(dirty_root).and_return("dirty")
+      allow_any_instance_of(described_class).to receive(:gh_usable?).and_return(true)
+      allow_any_instance_of(described_class).to receive(:pr_status).with("clean", clean_root).and_return({number: 1, url: "u1", state: "MERGED"})
+      allow_any_instance_of(described_class).to receive(:pr_status).with("dirty", dirty_root).and_return({number: 2, url: "u2", state: "CLOSED"})
+      allow(git).to receive(:worktree_exists?).and_return(true)
+      allow(git).to receive(:worktree_exists?).with(gone_root).and_return(false)
+      allow(git).to receive(:remove_worktree)
+      allow(project_config).to receive(:remove)
+      allow(project_settings).to receive(:remove)
+    end
+
+    def row(rows, name) = rows.find { |r| r["name"] == name }
+
+    it "removes every candidate without reading input and reports a row each" do
+      rows = command.call_structured
+
+      expect(rows.map { |r| [r["name"], r["outcome"]] }).to eq([%w[wt-clean removed], %w[wt-dirty removed], %w[wt-gone removed]])
+      expect(row(rows, "wt-clean")).to include("branch" => "clean", "reason" => "merged", "error" => nil, "pr_number" => 1, "pr_url" => "u1")
+      expect(row(rows, "wt-dirty")["reason"]).to eq("closed")
+      expect(row(rows, "wt-gone")).to include("branch" => nil, "reason" => "directory_gone")
+    end
+
+    it "still checks for unsaved work (force: false) and reports skipped_unsaved" do
+      unsaved = {changed_files: 2, unpushed_commits: 0, branch: "dirty"}
+      allow(git).to receive(:remove_worktree).with(dirty_root, force: false).and_raise(Workspace::UnsavedWorkError.new("unsaved", unsaved: unsaved))
+
+      rows = command.call_structured
+
+      expect(row(rows, "wt-dirty")).to include("outcome" => "skipped_unsaved", "error" => "unsaved_work")
+      expect(row(rows, "wt-dirty")["message"]).to include("2 changed file(s)")
+      expect(row(rows, "wt-clean")["outcome"]).to eq("removed")
+      expect(project_config).not_to have_received(:remove).with("wt-dirty")
+    end
+
+    it "reports unsaved_unknown when git cannot check" do
+      allow(git).to receive(:remove_worktree).with(dirty_root, force: false).and_raise(Workspace::UnsavedWorkError.new("unsaved", unsaved: :unknown))
+
+      expect(row(command.call_structured, "wt-dirty")).to include("outcome" => "skipped_unsaved", "error" => "unsaved_unknown")
+    end
+
+    it "reports a git refusal as failed with prune_remove_failed" do
+      allow(git).to receive(:remove_worktree).with(dirty_root, force: false).and_raise(Workspace::Error, "locked")
+
+      expect(row(command.call_structured, "wt-dirty")).to include("outcome" => "failed", "error" => "prune_remove_failed")
+    end
+
+    it "removes unsaved work only with force" do
+      command.call_structured(force: true)
+
+      expect(git).to have_received(:remove_worktree).with(dirty_root, force: true)
+    end
+
+    it "removes only the named candidates, ignoring case, and marks the rest not_selected" do
+      rows = command.call_structured(names: ["WT-Clean"])
+
+      expect(row(rows, "wt-clean")["outcome"]).to eq("removed")
+      expect(row(rows, "wt-dirty")["outcome"]).to eq("not_selected")
+      expect(row(rows, "wt-gone")["outcome"]).to eq("not_selected")
+      expect(git).not_to have_received(:remove_worktree).with(dirty_root, anything)
+    end
+
+    it "gives a failed not_prunable row for a name that is no candidate" do
+      rows = command.call_structured(names: ["nope"])
+
+      expect(row(rows, "nope")).to include("outcome" => "failed", "error" => "not_prunable")
+      expect(rows.count { |r| r["outcome"] == "not_selected" }).to eq(3)
+    end
+
+    it "keeps the typed spelling of an unknown name and reports it once" do
+      rows = command.call_structured(names: ["Nope", "nope"])
+
+      expect(rows.select { |r| r["error"] == "not_prunable" }.map { |r| r["name"] }).to eq(["Nope"])
+    end
+
+    it "saves state after removing" do
+      expect(state).to receive(:save).once.and_call_original
+      command.call_structured
+    end
+
+    it "does not save state on a dry run" do
+      expect(state).not_to receive(:save)
+      command.call_structured(dry_run: true)
+    end
+
+    it "stops a live session and drops the state entry of a removed candidate" do
+      state["wt-clean"] = {"unique_id" => "x"}
+      expect(stop_command).to receive(:call).with(["wt-clean"])
+
+      command.call_structured(names: ["wt-clean"])
+
+      expect(state["wt-clean"]).to be_nil
+    end
+
+    it "dry run reports would_remove and changes nothing" do
+      rows = command.call_structured(dry_run: true, names: ["wt-clean"])
+
+      expect(row(rows, "wt-clean")["outcome"]).to eq("would_remove")
+      expect(row(rows, "wt-dirty")["outcome"]).to eq("not_selected")
+      expect(git).not_to have_received(:remove_worktree)
+      expect(project_config).not_to have_received(:remove)
+    end
+
+    it "returns no rows when nothing is eligible" do
+      allow(project_config).to receive(:available_projects).and_return([])
+
+      expect(command.call_structured).to eq([])
+    end
+  end
+
+  describe "#call with names" do
+    it "raises not_prunable for a name that is no candidate" do
+      allow(project_config).to receive(:available_projects).and_return([])
+
+      expect { command.call(names: ["x"]) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("not_prunable") }
+    end
+  end
 end

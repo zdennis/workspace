@@ -35,10 +35,11 @@ module Workspace
       # @param force [Boolean] skip confirmation prompt, and remove a candidate's
       #   worktree even if it has unsaved work
       # @return [Array<String>] names of pruned (or would-be-pruned) projects
-      def call(dry_run: false, force: false)
+      def call(dry_run: false, force: false, names: [])
         @state.load
 
         candidates = detect_candidates
+        candidates = select_named(candidates, names) if names.any?
 
         if candidates.empty?
           @output.puts "No projects eligible for pruning found."
@@ -84,7 +85,65 @@ module Workspace
         removed
       end
 
+      # The structured form of {#call} for `--json`: scans, then removes the
+      # selected candidates (all of them when `names` is empty) without asking
+      # for confirmation. The unsaved-work check still runs unless `force`.
+      #
+      # @param dry_run [Boolean] report `would_remove` rows and change nothing
+      # @param force [Boolean] remove a candidate even if it has unsaved work
+      # @param names [Array<String>] workspaces to prune; empty selects every candidate
+      # @return [Array<Hash>] one row per candidate, plus a failed row per name that is no
+      #   candidate; keys "name", "branch", "reason", "outcome", "error", "message",
+      #   "pr_number", "pr_url"
+      def call_structured(dry_run: false, force: false, names: [])
+        @state.load
+        candidates = detect_candidates
+        names = names.uniq { |n| n.downcase }
+        wanted = names.map(&:downcase)
+        selected = candidates.select { |c| wanted.empty? || wanted.include?(c[:project].downcase) }
+
+        rows = []
+        begin
+          candidates.each do |c|
+            rows << if !selected.include?(c)
+              structured_row(c, "not_selected")
+            elsif dry_run
+              structured_row(c, "would_remove")
+            else
+              result = try_remove(c, force: force)
+              structured_row(c, result[:outcome], error: result[:error], message: result[:message])
+            end
+          end
+        ensure
+          @state.save unless dry_run
+        end
+        known = candidates.map { |c| c[:project].downcase }
+        names.reject { |n| known.include?(n.downcase) }.each do |missing|
+          rows << {"name" => missing, "branch" => nil, "reason" => nil, "outcome" => "failed", "error" => "not_prunable",
+                   "message" => "#{missing} is not a prune candidate.", "pr_number" => nil, "pr_url" => nil}
+        end
+        rows
+      end
+
       private
+
+      # @param candidates [Array<Hash>]
+      # @param names [Array<String>]
+      # @return [Array<Hash>] the candidates named, ignoring case
+      def select_named(candidates, names)
+        wanted = names.map(&:downcase)
+        missing = wanted - candidates.map { |c| c[:project].downcase }
+        if missing.any?
+          raise Workspace::Error.new("Not a prune candidate: #{missing.join(", ")}", code: "not_prunable", details: {names: missing})
+        end
+        candidates.select { |c| wanted.include?(c[:project].downcase) }
+      end
+
+      def structured_row(candidate, outcome, error: nil, message: nil)
+        reason = (candidate[:pr_state] == "GONE") ? "directory_gone" : candidate[:pr_state].to_s.downcase
+        {"name" => candidate[:project], "branch" => candidate[:branch], "reason" => reason, "outcome" => outcome,
+         "error" => error, "message" => message, "pr_number" => candidate[:pr_number], "pr_url" => candidate[:pr_url]}
+      end
 
       # Builds the list of projects eligible for pruning.
       #
@@ -235,7 +294,18 @@ module Workspace
         end
       end
 
-      # Removes a single candidate project: its worktree, tmuxinator config,
+      # Removes a single candidate project and prints a line when it is skipped.
+      #
+      # @param candidate [Hash] a candidate hash from detect_candidates
+      # @param force [Boolean] remove even if the worktree has unsaved work
+      # @return [Boolean] true if the candidate was removed, false if it was skipped
+      def remove_candidate(candidate, force:)
+        result = try_remove(candidate, force: force)
+        @output.puts "  #{result[:message]}" if result[:message]
+        result[:outcome] == "removed"
+      end
+
+      # Removes a candidate project: its worktree, tmuxinator config,
       # project settings and state entry, then stops its session last (see
       # Commands::Kill#call for why). Git#remove_worktree checks for unsaved
       # work right before removing, unless force is set; a candidate with
@@ -244,8 +314,9 @@ module Workspace
       #
       # @param candidate [Hash] a candidate hash from detect_candidates
       # @param force [Boolean] remove even if the worktree has unsaved work
-      # @return [Boolean] true if the candidate was removed, false if it was skipped
-      def remove_candidate(candidate, force:)
+      # @return [Hash] :outcome ("removed", "skipped_unsaved" or "failed"); for a
+      #   skip also :error (a code) and :message
+      def try_remove(candidate, force:)
         path = candidate[:worktree_path]
         project = candidate[:project]
 
@@ -253,11 +324,10 @@ module Workspace
           begin
             @git.remove_worktree(path, force: force)
           rescue Workspace::UnsavedWorkError => e
-            report_skip(candidate, e.unsaved)
-            return false
+            return {outcome: "skipped_unsaved", error: (e.unsaved == :unknown) ? "unsaved_unknown" : "unsaved_work",
+                    message: skip_message(candidate, e.unsaved)}
           rescue Workspace::Error => e
-            @output.puts "  Skipped #{project}: #{e.message}"
-            return false
+            return {outcome: "failed", error: "prune_remove_failed", message: "Skipped #{project}: #{e.message}"}
           end
         end
 
@@ -265,20 +335,18 @@ module Workspace
         @project_settings.remove(project)
         @stop_command.call([project]) if @state[project]
         @state.delete(project)
-        true
+        {outcome: "removed"}
       end
 
-      # Prints a one-line notice that a candidate was skipped due to unsaved work.
-      #
       # @param candidate [Hash] the skipped candidate hash
       # @param unsaved [Hash, Symbol] the :unsaved_work result (a Hash, or :unknown)
-      # @return [void]
-      def report_skip(candidate, unsaved)
+      # @return [String] a one-line notice that a candidate was skipped due to unsaved work
+      def skip_message(candidate, unsaved)
         if unsaved == :unknown
-          @output.puts "  Skipped #{candidate[:project]}: git couldn't check #{candidate[:worktree_path]} for unsaved work."
+          "Skipped #{candidate[:project]}: git couldn't check #{candidate[:worktree_path]} for unsaved work."
         else
           branch = unsaved[:branch] || "HEAD"
-          @output.puts "  Skipped #{candidate[:project]}: #{unsaved[:changed_files]} changed file(s) and " \
+          "Skipped #{candidate[:project]}: #{unsaved[:changed_files]} changed file(s) and " \
             "#{unsaved[:unpushed_commits]} unpushed commit(s) on #{branch}. Commit/push, or rerun with --force."
         end
       end

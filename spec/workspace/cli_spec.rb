@@ -9033,6 +9033,78 @@ RSpec.describe Workspace::CLI do
       end
     end
 
+    describe "prune" do
+      def prune_row(name, outcome, error: nil)
+        {"name" => name, "branch" => name, "reason" => "merged", "outcome" => outcome, "error" => error, "message" => nil, "pr_number" => 1, "pr_url" => "u"}
+      end
+
+      it "prints one action document and exits 0 when every selected row was removed" do
+        prune = double("prune", call_structured: [prune_row("a", "removed"), prune_row("b", "not_selected")])
+        cli, raw, = action_cli(prune_command: prune)
+
+        expect(exit_status { cli.run(["prune", "--json", "--name=a"]) }).to eq(0)
+
+        expect(prune).to have_received(:call_structured).with(dry_run: false, force: false, names: ["a"])
+        doc = parse_one(raw)
+        expect(doc).to include("action" => "prune", "status" => "ok", "summary" => {"removed" => 1, "not_selected" => 1})
+        expect(doc["results"].first).to include("name" => "a", "branch" => "a", "reason" => "merged", "outcome" => "removed", "error" => nil)
+      end
+
+      it "exits 3 with status partial when some rows were skipped" do
+        prune = double("prune", call_structured: [prune_row("a", "removed"), prune_row("b", "skipped_unsaved", error: "unsaved_work")])
+        cli, raw, = action_cli(prune_command: prune)
+
+        expect(exit_status { cli.run(["prune", "--json"]) }).to eq(3)
+
+        expect(parse_one(raw)).to include("status" => "partial")
+      end
+
+      it "exits 1 with status failed when nothing selected was removed" do
+        prune = double("prune", call_structured: [prune_row("a", "skipped_unsaved", error: "unsaved_work"), prune_row("b", "not_selected")])
+        cli, raw, = action_cli(prune_command: prune)
+
+        expect(exit_status { cli.run(["prune", "--json", "--name", "a"]) }).to eq(1)
+
+        expect(parse_one(raw)).to include("status" => "failed")
+      end
+
+      it "with --dry-run reports status dry_run and exit 0, and passes --force through" do
+        prune = double("prune", call_structured: [prune_row("a", "would_remove")])
+        cli, raw, = action_cli(prune_command: prune)
+
+        expect(exit_status { cli.run(["prune", "--dry-run", "--force", "--json"]) }).to eq(0)
+
+        expect(prune).to have_received(:call_structured).with(dry_run: true, force: true, names: [])
+        expect(parse_one(raw)).to include("status" => "dry_run", "summary" => {"would_remove" => 1})
+      end
+
+      it "does not call a dry run ok when a named workspace is no candidate" do
+        prune = double("prune", call_structured: [prune_row("nope", "failed", error: "not_prunable")])
+        cli, raw, = action_cli(prune_command: prune)
+
+        expect(exit_status { cli.run(["prune", "--dry-run", "--json", "--name=nope"]) }).to eq(1)
+
+        expect(parse_one(raw)).to include("status" => "failed")
+      end
+
+      it "passes --name to the text command without --json" do
+        prune = double("prune", call: [])
+        cli, = action_cli(prune_command: prune)
+
+        cli.run(["prune", "--name=x"])
+
+        expect(prune).to have_received(:call).with(dry_run: false, force: false, names: ["x"])
+      end
+
+      it "is ok with no rows when nothing is eligible" do
+        cli, raw, = action_cli(prune_command: double("prune", call_structured: []))
+
+        expect(exit_status { cli.run(["prune", "--json"]) }).to eq(0)
+
+        expect(parse_one(raw)).to include("status" => "ok", "results" => [])
+      end
+    end
+
     describe "cleanup" do
       let(:zombies) do
         [{project: "old-a", tmux_alive: false, window_alive: false}, {project: "old-b", tmux_alive: true, window_alive: nil}]

@@ -5670,6 +5670,8 @@ module Workspace
     def cmd_prune(args)
       dry_run = false
       force = false
+      json = false
+      names = []
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: workspace prune [options]"
         opts.separator ""
@@ -5684,6 +5686,11 @@ module Workspace
         opts.separator "(and reported) rather than removed; the rest are still pruned. --force"
         opts.separator "removes those anyway, along with skipping the confirmation prompt."
         opts.separator ""
+        opts.separator "With --json the confirmation is skipped but the unsaved-work check still"
+        opts.separator "runs. Output is one action document (see docs/README.prune.md); the scan"
+        opts.separator "text goes to stderr. Exit 0 when every selected candidate was removed (or"
+        opts.separator "on a dry run), 3 when some were skipped or failed, 1 when none were removed."
+        opts.separator ""
         opts.separator "Requires the `gh` CLI to be installed and authenticated."
         opts.separator ""
         opts.separator "Options:"
@@ -5693,15 +5700,36 @@ module Workspace
         opts.on("-f", "--force", "Skip confirmation, and skip the uncommitted/unpushed-work check") do
           force = true
         end
+        opts.on("--name NAME", "Prune only this workspace (repeatable; others are not_selected)") { |v| names << v }
+        opts.on("--json", "Print one action document of per-candidate rows; no confirmation prompt") { json = true }
         opts.separator ""
         opts.separator "Examples:"
+        opts.separator "  workspace prune --dry-run --json    # the candidates as rows, would_remove"
+        opts.separator "  workspace prune --json --name=feat-a --name=feat-b    # prune two, skip unsaved work"
         opts.separator "  workspace prune --dry-run    # see what would be pruned without changing anything"
         opts.separator "  workspace prune    # prune with a confirmation prompt"
         opts.separator "  workspace prune --force    # prune without prompting, including candidates with unsaved work"
       end
       parser.parse!(args)
 
-      @prune_command.call(dry_run: dry_run, force: force)
+      unless json
+        @prune_command.call(dry_run: dry_run, force: force, names: names)
+        return
+      end
+
+      run_action("prune", json: true) do
+        rows = @prune_command.call_structured(dry_run: dry_run, force: force, names: names)
+        chosen = rows.reject { |r| r["outcome"] == "not_selected" }
+        removed = chosen.count { |r| %w[removed would_remove].include?(r["outcome"]) }
+        status = if dry_run && chosen.none? { |r| r["outcome"] == "failed" }
+          "dry_run"
+        elsif removed == chosen.size
+          "ok"
+        else
+          removed.zero? ? "failed" : "partial"
+        end
+        {results: rows, status: status}
+      end
     end
 
     def cmd_set_pane_command(args)

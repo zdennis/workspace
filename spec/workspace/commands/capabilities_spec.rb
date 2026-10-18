@@ -37,7 +37,7 @@ RSpec.describe Workspace::Commands::Capabilities do
 
       features = document["features"]
       expect(features.values).to all(be_a(Integer))
-      expect(features).to include("prune_safe" => 1)
+      expect(features).to include("prune_safe" => 2)
       expect(features).to include("envelope" => 1, "error_codes" => 1, "no_input" => 1, "name_scope" => 1, "action_json" => 1, "sessions" => 1)
       expect(features).to include("snapshot" => 4, "agent_send" => 1, "focus_pane" => 1, "actions_manifest" => 0)
       expect(features).to include("config_json" => 2, "config_scopes" => 2, "tmux_show" => 1, "state_done" => 1, "tasks" => 1, "event_emitters" => 1, "daemon_control" => 4, "ui_open" => 3, "pane_bindings" => 3, "library" => 4, "library_play" => 2, "library_copy" => 1, "instructions" => 1, "start_packs" => 2, "handoff_auto" => 2, "handoff_codex" => 1, "inbox" => 3, "ask_withdraw" => 1, "review" => 1)

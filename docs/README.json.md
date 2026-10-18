@@ -26,7 +26,7 @@ To ask which of these a given CLI supports, run `workspace capabilities --json` 
 
 ## Actions
 
-These commands take `--json` and print one action document: `launch`, `stop`, `kill`, `relaunch`, `restore`, `focus`, `repair`, `cleanup`, `deactivate`, `reactivate`, `dev up`, `dev down`, `dev wait`, `dev leave`, `lock release`, `config set`, `config unset`, `config edit`, `daemon restart` (also with `--all`), `agentd restart`, `pipeline start`, `pipeline advance`, `pipeline reset`, `ui open`, `binding set`, `binding show`, `binding clear`, `library add`, `library update`, `library remove`, `workflow run`, `workflow resume`, `workflow cancel`, `workflow approve`, `workflow reject` and `step done`. (`finish`, `start`, `lock clear` and `projects stop|kill` have their own pages; `projects stop|kill` use the same shape.)
+These commands take `--json` and print one action document: `launch`, `stop`, `kill`, `relaunch`, `restore`, `focus`, `repair`, `cleanup`, `deactivate`, `reactivate`, `dev up`, `dev down`, `dev wait`, `dev leave`, `lock release`, `config set`, `config unset`, `config edit`, `daemon restart` (also with `--all`), `agentd restart`, `pipeline start`, `pipeline advance`, `pipeline reset`, `prune`, `ui open`, `binding set`, `binding show`, `binding clear`, `library add`, `library update`, `library remove`, `workflow run`, `workflow resume`, `workflow cancel`, `workflow approve`, `workflow reject` and `step done`. (`finish`, `start`, `lock clear` and `projects stop|kill` have their own pages; `projects stop|kill` use the same shape.)
 
 ```json
 {"schema_version":1,"ok":true,"action":"stop","status":"ok",
@@ -86,6 +86,8 @@ The exit code is unchanged by `--json` (1 for most failures, 2 for `not_submitte
 | `unreadable_reply` | The agent daemon's reply couldn't be read. |
 | `unsaved_work` | The worktree has uncommitted changes or unpushed commits. `details` has the counts; `retry` is `--force`. |
 | `unsaved_unknown` | git couldn't tell whether the worktree has unsaved work. `retry` is `--force`. |
+| `not_prunable` | prune: a `--name` is not a prune candidate (text mode; with `--json` it is a failed row). `details.names`. |
+| `prune_remove_failed` | prune --json: a row's `error` when git refused to remove the worktree (locked, for example). Appears in rows only. |
 | `not_submitted` | Text reached the pane but wasn't confirmed submitted; check before resending. |
 | `confirmation_required` | A prompt would have read stdin while `--no-input` or `WORKSPACE_NO_INPUT` was set, or `plan delete` was run without `--yes` (`details.name`, `details.path`, `retry.flags` `["--yes"]`). `details.prompt` is the question; `retry` names the flag that answers it, when there is one (`--force` or `--yes`, destructive). |
 | `no_session` | The workspace has no running tmux session. `details.workspace` (from `send`, `focus --pane`, `ask answer --deliver`, `agent-run restart`, `handoff`). |
