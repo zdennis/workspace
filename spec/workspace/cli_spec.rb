@@ -112,6 +112,7 @@ RSpec.describe Workspace::CLI do
       push_command: overrides[:push_command],
       projects_command: overrides[:projects_command],
       capabilities_command: overrides[:capabilities_command],
+      hooks_command: overrides[:hooks_command],
       restore_command: overrides[:restore_command],
       daemon_command: overrides[:daemon_command],
       ui_command: overrides[:ui_command],
@@ -4660,6 +4661,81 @@ RSpec.describe Workspace::CLI do
       expect(output.string).to include("capture")
     end
   end
+
+describe "#run with hooks uninstall" do
+  let(:hooks_command) do
+    Class.new do
+      attr_reader :calls
+
+      def initialize(removed)
+        @removed = removed
+        @calls = []
+      end
+
+      def uninstall(agent:, dry_run: false)
+        @calls << {agent: agent, dry_run: dry_run}
+        raise Workspace::Error.new("nope", code: "unknown_agent_kind") if agent == "bogus"
+        {"agent" => agent, "path" => "/h/hooks.json", "removed" => @removed, "backup" => (@removed.zero? ? nil : "/h/hooks.json.bak"), "dry_run" => dry_run}
+      end
+    end
+  end
+
+  it "removes the hooks and names the file and its backup" do
+    command = hooks_command.new(3)
+    cli, output, _ = build_test_cli(hooks_command: command)
+
+    cli.run(["hooks", "uninstall", "--agent", "codex"])
+
+    expect(command.calls).to eq([{agent: "codex", dry_run: false}])
+    expect(output.string).to include("Removed 3 workspace hook(s) from /h/hooks.json (backup: /h/hooks.json.bak).")
+  end
+
+  it "says nothing was there" do
+    cli, output, _ = build_test_cli(hooks_command: hooks_command.new(0))
+
+    cli.run(["hooks", "uninstall", "--agent=codex"])
+
+    expect(output.string).to include("No workspace hooks in /h/hooks.json; nothing to remove.")
+  end
+
+  it "reports a dry run as would_remove with --json" do
+    cli, output, _ = build_test_cli(hooks_command: hooks_command.new(2))
+
+    cli.run(["hooks", "uninstall", "--agent", "codex", "--dry-run", "--json"])
+
+    doc = JSON.parse(output.string)
+    expect(doc["status"]).to eq("dry_run")
+    expect(doc["results"].first).to include("outcome" => "would_remove", "removed" => 2)
+  end
+
+  it "requires --agent" do
+    cli, output, _ = build_test_cli(hooks_command: hooks_command.new(0))
+
+    expect { cli.run(["hooks", "uninstall", "--json"]) }.to raise_error(FakeSystemExit)
+    expect(JSON.parse(output.string)).to include("ok" => false, "code" => "usage")
+  end
+
+  it "rejects an extra argument" do
+    cli, output, _ = build_test_cli(hooks_command: hooks_command.new(0))
+
+    expect { cli.run(["hooks", "uninstall", "--agent", "codex", "extra", "--json"]) }.to raise_error(FakeSystemExit)
+    expect(JSON.parse(output.string)).to include("code" => "usage")
+  end
+
+  it "rejects an unknown subcommand" do
+    cli, output, _ = build_test_cli(hooks_command: hooks_command.new(0))
+
+    expect { cli.run(["hooks", "install", "--json"]) }.to raise_error(FakeSystemExit)
+    expect(JSON.parse(output.string)).to include("ok" => false)
+  end
+
+  it "carries a command error through the JSON envelope" do
+    cli, output, _ = build_test_cli(hooks_command: hooks_command.new(0))
+
+    expect { cli.run(["hooks", "uninstall", "--agent", "bogus", "--json"]) }.to raise_error(FakeSystemExit)
+    expect(JSON.parse(output.string)).to include("ok" => false, "code" => "unknown_agent_kind")
+  end
+end
 
   describe "#run with capabilities" do
     it "dispatches to capabilities_command#call without --json" do

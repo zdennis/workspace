@@ -315,6 +315,8 @@ module Workspace
     # the agent trusts them can't be read from outside, so the hint says how.
     def check_user_hooks(provider, project)
       id = "hooks-#{provider.key}"
+      return if @rows.any? { |row| row[:id] == id }
+
       path = @hook_installer.settings_path_for(provider, @working_dir)
       if @hook_installer.installed?(provider, @working_dir, Commands::Init::HOOK_COMMAND)
         add_row(id, "ok", "#{provider.label} hooks installed in #{path}", hints: [provider.hook_trust_hint].compact, project: project)

@@ -187,6 +187,15 @@ RSpec.describe Workspace::HookInstaller do
         expect(settings["hooks"]).to eq("Stop" => [own, {"hooks" => [{"type" => "command", "command" => "/bin/mine"}]}])
       end
 
+      it "drops the hooks key when nothing of the person's is left in it" do
+        write_codex("description" => "mine")
+        installer.install(codex, tmpdir, command)
+
+        installer.uninstall(codex, tmpdir, command)
+
+        expect(JSON.parse(File.read(codex_path))).to eq("description" => "mine")
+      end
+
       it "keeps an event the person left empty" do
         write_codex("hooks" => {"Notification" => []})
         installer.install(codex, tmpdir, command)

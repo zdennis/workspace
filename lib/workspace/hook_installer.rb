@@ -104,6 +104,10 @@ module Workspace
     # @param quiet [Boolean] suppress the "skip"/"update"/"create"/"backup"/"note" progress lines
     # @return [Boolean] whether the file was (or, in a dry run, would be) changed
     def install(provider, project_root, command, dry_run: false, quiet: false)
+      with_user_lock(provider, project_root, dry_run) { install_unlocked(provider, project_root, command, dry_run: dry_run, quiet: quiet) }
+    end
+
+    def install_unlocked(provider, project_root, command, dry_run:, quiet:)
       path = settings_path_for(provider, project_root)
       existed = File.exist?(path)
       existing = read_settings(path)
@@ -135,6 +139,10 @@ module Workspace
     # @param dry_run [Boolean] report without writing
     # @return [Hash] `:path`, `:removed` (handlers taken out), `:backup` (path or nil)
     def uninstall(provider, project_root, command, dry_run: false)
+      with_user_lock(provider, project_root, dry_run) { uninstall_unlocked(provider, project_root, command, dry_run: dry_run) }
+    end
+
+    def uninstall_unlocked(provider, project_root, command, dry_run:)
       path = settings_path_for(provider, project_root)
       return {path: path, removed: 0, backup: nil} unless File.exist?(path)
 
@@ -158,6 +166,8 @@ module Workspace
         hooks.delete(event) if taken.positive? && groups.empty?
       end
       return {path: path, removed: 0, backup: nil} if removed.zero?
+
+      result.delete("hooks") if hooks.empty?
 
       return {path: path, removed: removed, backup: nil} if dry_run
 
@@ -240,7 +250,24 @@ module Workspace
       notices
     end
 
+    private :install_unlocked, :uninstall_unlocked
+
     private
+
+    # A user-scoped file (Codex) is shared by every workspace process, so a
+    # read-merge-rename holds an exclusive lock on its directory; two runs
+    # then cannot lose each other's edit or backup.
+    def with_user_lock(provider, project_root, dry_run)
+      return yield if dry_run || !provider.user_scoped?
+
+      dir = File.dirname(settings_path_for(provider, project_root))
+      return yield unless File.directory?(dir)
+
+      File.open(dir) do |handle|
+        handle.flock(File::LOCK_EX)
+        yield
+      end
+    end
 
     # Written to a temp file beside the target and renamed over it, so the
     # agent never reads a half-written file. A symlinked file (a dotfiles
