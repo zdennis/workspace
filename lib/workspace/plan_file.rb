@@ -222,6 +222,22 @@ module Workspace
       {"code" => code, "line" => line, "message" => message}
     end
 
+    # A double-quoted value is read as JSON would (so `\"` works), and kept as written when it is not valid JSON;
+    # single quotes are stripped. Shared with {SpineFile}, which reads the same frontmatter dialect.
+    #
+    # @param value [String] the text after `key:`
+    # @return [String]
+    def self.unquote_value(value)
+      if value.match?(/\A".*"\z/m)
+        begin
+          return JSON.parse(value)
+        rescue JSON::ParserError
+          return value[1..-2]
+        end
+      end
+      value.sub(/\A'(.*)'\z/) { $1 }
+    end
+
     # The plan's path in a notes directory.
     #
     # @param dir [String] the notes directory
@@ -299,17 +315,7 @@ module Workspace
       close + 1
     end
 
-    # A double-quoted value is read as JSON would (so `\"` works), and kept as written when it is not valid JSON.
-    def unquote(value)
-      if value.match?(/\A".*"\z/m)
-        begin
-          return JSON.parse(value)
-        rescue JSON::ParserError
-          return value[1..-2]
-        end
-      end
-      value.sub(/\A'(.*)'\z/) { $1 }
-    end
+    def unquote(value) = self.class.unquote_value(value)
 
     def read_body(lines, first)
       fence = nil

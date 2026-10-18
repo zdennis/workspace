@@ -51,6 +51,7 @@ module Workspace
         "dev_queue" => 2,
         "plan" => 4,
         "ticket" => 1,
+        "spine" => 1,
         "pr_create" => 1,
         "rebase" => 2,
         "inbox" => 3,

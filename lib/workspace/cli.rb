@@ -16,7 +16,7 @@ module Workspace
     # hint).
     SUBCOMMANDS = %w[
       init doctor launch start stop add add-project kill finish relaunch restore
-      focus deactivate reactivate tile resize capture agent agentd lock dev parent notes plan ticket pr rebase push projects
+      focus deactivate reactivate tile resize capture agent agentd lock dev parent notes plan ticket spine pr rebase push projects
       capabilities daemon sessions review snapshot ask inbox session-event agent-run handoff pipeline run library lib instructions workflow step
       run-and-report report-run-status layout config tmux statusline current
       list-projects list status repair cleanup prune set-command event-log events
@@ -71,6 +71,7 @@ module Workspace
     # @param notes_setup [Workspace::NotesSetup, nil] fixes the notes directory of a worktree config `add` creates; nil skips it
     # @param plan_command [Workspace::Commands::Plan, nil] pre-built plan command
     # @param ticket_command [Workspace::Commands::Ticket, nil] pre-built ticket command
+    # @param spine_command [Workspace::Commands::Spine, nil] pre-built spine command
     # @param pull_request_command [Workspace::Commands::PullRequest, nil] pre-built pr command
     # @param rebase_command [Workspace::Commands::Rebase, nil] pre-built rebase command
     # @param push_command [Workspace::Commands::Push, nil] pre-built push command
@@ -106,7 +107,7 @@ module Workspace
     #   `list --liveness --json` and `status --json`; takes name => state entry
     # @param launch_mode [Workspace::LaunchMode, nil] decides whether launch/start
     #   run headless when no --[no-]headless flag is given; nil builds one
-    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, restart_agent_command: nil, send_command: nil, ensure_agent_command: nil, name_migration: nil, handoff_command: nil, notes_command: nil, notes_setup: nil, plan_command: nil, ticket_command: nil, pull_request_command: nil, rebase_command: nil, push_command: nil, projects_command: nil, capabilities_command: nil, daemon_command: nil, ui_command: nil, binding_command: nil, library_command: nil, library: nil, instructions_command: nil, instruction_composer: nil, workflow_command: nil, review_command: nil, restore_command: nil, snapshot_command: nil, events_command: nil, project_actions_command: nil, inbox_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil, liveness: nil, window_liveness: nil, env: ENV, editor_launcher: nil, interactive: nil, workspace_name: nil)
+    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, restart_agent_command: nil, send_command: nil, ensure_agent_command: nil, name_migration: nil, spine_command: nil, handoff_command: nil, notes_command: nil, notes_setup: nil, plan_command: nil, ticket_command: nil, pull_request_command: nil, rebase_command: nil, push_command: nil, projects_command: nil, capabilities_command: nil, daemon_command: nil, ui_command: nil, binding_command: nil, library_command: nil, library: nil, instructions_command: nil, instruction_composer: nil, workflow_command: nil, review_command: nil, restore_command: nil, snapshot_command: nil, events_command: nil, project_actions_command: nil, inbox_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil, liveness: nil, window_liveness: nil, env: ENV, editor_launcher: nil, interactive: nil, workspace_name: nil)
       @config = config
       @state = state
       @project_config = project_config
@@ -146,6 +147,7 @@ module Workspace
       @notes_command = notes_command
       @plan_command = plan_command
       @ticket_command = ticket_command
+      @spine_command = spine_command
       @pull_request_command = pull_request_command
       @rebase_command = rebase_command
       @push_command = push_command
@@ -255,6 +257,8 @@ module Workspace
         cmd_plan(args)
       when "ticket"
         cmd_ticket(args)
+      when "spine"
+        cmd_spine(args)
       when "pr"
         cmd_pr(args)
       when "rebase"
@@ -536,6 +540,7 @@ module Workspace
           sessions        Show coding-agent sessions and sub-agents in a workspace
           snapshot        Print everything a UI polls (projects, panes, git, asks, locks, dev) as one JSON document
           step            For the agent on a workflow step: report on it (done), or see what it is (status)
+          spine           Read a workspace's plan spine (spine/ in its notes directory): show
           start           Create a worktree and launch it (from JIRA key, PR URL or #n, or branch)
           status          Show detailed state of tracked launcher sessions
           set-command     Set the shell command for a pane in a project config (--pane <N>)
@@ -6519,6 +6524,49 @@ module Workspace
       raise Error, "ticket is not available: no ticket command was wired" unless @ticket_command
 
       @ticket_command.show(ref, name: options[:name], json: options[:json])
+    end
+
+    def spine_parser(options)
+      OptionParser.new do |opts|
+        opts.banner = "Usage: workspace spine show [WORKSPACE] [--name WORKSPACE] [--json]"
+        opts.separator ""
+        opts.separator "Read a workspace's plan spine: the stage files in spine/ of its notes directory, one"
+        opts.separator "Markdown file per stage (10-research.md, 20-plan.md, ...), and sub-stages in a folder named"
+        opts.separator "like a stage file without .md. Statuses are read as one of not_started, in_progress,"
+        opts.separator "blocked, completed, skipped or unknown. A bad file is a warning in the answer, never an"
+        opts.separator "error, and nothing is written, created or followed through a link."
+        opts.separator ""
+        opts.on("--name NAME", "The workspace (default: the one detected from the current directory)") { |v| options[:name] = v }
+        opts.on("--json", "Print one JSON document (see docs/README.spine.md)") { options[:json] = true }
+        opts.on("-h", "--help", "Show this help") { options[:help] = true }
+        opts.separator ""
+        opts.separator "Examples:"
+        opts.separator "  workspace spine show    # the spine of the workspace you are in"
+        opts.separator "  workspace spine show api.worktree-login --json"
+        opts.separator "  workspace spine show --name=api.worktree-login --json"
+      end
+    end
+
+    def cmd_spine(args)
+      options = {json: false, name: nil}
+      parser = spine_parser(options)
+      parser.parse!(args)
+      return @output.puts(parser.help) if options[:help]
+
+      subcommand = args.shift
+      raise UsageError, "Missing subcommand: show.\n\n#{parser.help}" unless subcommand
+      raise UsageError, "Unknown spine subcommand: #{subcommand}. Run 'workspace spine --help'." unless subcommand == "show"
+      positional = settle_name(args.shift)
+      raise UsageError, "Unexpected argument: #{args.first}. Run 'workspace spine --help'." if args.any?
+      if positional && options[:name] && positional != options[:name]
+        raise UsageError, "Give the workspace once: '#{positional}' and --name #{options[:name]} differ."
+      end
+      raise Error, "spine is not available: no spine command was wired" unless @spine_command
+
+      name = options[:name] || positional || @project_detector.detect(@working_dir)
+      raise Error.new("No workspace found for #{@working_dir}. Run from inside a workspace or pass --name.", code: "not_in_workspace", details: {"path" => @working_dir}) unless name
+
+      @spine_command.show(name: name, json: options[:json])
     end
 
     def pr_parser(options)

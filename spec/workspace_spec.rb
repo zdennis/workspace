@@ -139,6 +139,15 @@ RSpec.describe Workspace do
       expect(ticket.instance_variable_get(:@source)).to be_a(Workspace::TicketSource)
     end
 
+    it "wires the spine command to the notes command" do
+      cli = Workspace.build_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new)
+
+      spine = cli.instance_variable_get(:@spine_command)
+
+      expect(spine).to be_a(Workspace::Commands::Spine)
+      expect(spine.instance_variable_get(:@notes)).to equal(cli.instance_variable_get(:@notes_command))
+    end
+
     it "gives finish the same pull request command that pr create runs" do
       cli = Workspace.build_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new)
 

@@ -42,6 +42,9 @@ A macOS CLI (Ruby) for managing tmuxinator-based development workspaces in iTerm
 - `lib/workspace/notes_dir.rb` — The one resolver for a workspace's notes directory: its own `notes.dir`, else the project's `notes.default_dir` rule, else `tmp/workspace-notes` in the checkout; `Commands::Notes#info` returns the answer as a Hash (`dir` prints it) and `#files_inside_worktree` counts the files `kill` and `finish` would delete
 - `lib/workspace/notes_setup.rb` — Fixes a new worktree's notes directory for `start` and `add`: writes the computed path as the worktree's own `notes.dir` (never over an existing value), makes the directory and its `info/exclude` line; every problem comes back as a warning, never an error
 - `lib/workspace/plan_file.rb` — The parser for a workspace's `IMPLEMENTATION_PLAN.md` (`PlanFile.parse(text)`, `PlanFile.read(path)`; nil when the file is missing): frontmatter, the `- [S] ID Title` tasks under `## Tasks`, `counts`, `percent`, `current`, `warnings`; it never fails. `PlanFile.set_status` and `.set_owner_pane` are the only writers of the file: one frontmatter line, through a temp file and rename, with one re-read and retry
+- `lib/workspace/spine_file.rb` — One spine file (a stage file or `goal.md`) read without following links, never failing: `PlanFile`'s frontmatter dialect plus `[a, b]` and indented `- a` lists, status aliases to the six canonical values, the `## Done when` checklist, `revision` (short SHA-256 of all bytes), `key_span`/`frontmatter_lines` for `spine set`, warnings with codes
+- `lib/workspace/spine_tree.rb` — Walks `spine/` in the notes dir (`<number>-<id>.md` stages, a folder named like a stage file for sub-stages, to 3 levels; the 64/24/96 limits); `Stage` holds the file, children, `rollup` and the dependency checks; `#find(path)`, `#to_h` is the `spine show --json` document
+- `lib/workspace/commands/spine.rb` — `spine show [WS] [--name WS] [--json]`: the notes dir through `Commands::Notes#info`, then `SpineTree`; read-only, a bad file is a warning, never an error
 - `lib/workspace/plan_state.rb` — `PlanState#derive` picks the one plan `state` (`empty`, `done`, `paused`, `stopped`, `waiting`, `working`, `blocked`, `stalled`, `idle`) from the parsed plan and the facts; `#row` builds the row `plan status --json` and, minus `tasks`, each member's `plan` in `snapshot` (from the snapshot's own reads)
 - `lib/workspace/plan_config.rb` — Reads a project's `plan.stall_seconds`
 - `lib/workspace/start_ref.rb` — What `start` and `ticket show` make of a ref (JIRA key or URL, pull request, issue, branch): its `kind`, `key` and `branch`, and `#project` for the project a worktree would join (the parent repo from inside a linked worktree)
@@ -120,7 +123,7 @@ A macOS CLI (Ruby) for managing tmuxinator-based development workspaces in iTerm
 
 ## Subcommands
 
-init, doctor, launch, start, add, stop, kill, finish, relaunch, restore, focus, list, status, whereis, agent, daemon, pipeline, sessions, review, snapshot, session-event, lock, dev, parent, notes, plan, ticket, pr, rebase, push, projects, ask, inbox, capabilities, ui, binding, library, instructions, workflow, step
+init, doctor, launch, start, add, stop, kill, finish, relaunch, restore, focus, list, status, whereis, agent, daemon, pipeline, sessions, review, snapshot, session-event, lock, dev, parent, notes, plan, ticket, spine, pr, rebase, push, projects, ask, inbox, capabilities, ui, binding, library, instructions, workflow, step
 
 ## Adding a Subcommand
 

@@ -102,6 +102,7 @@ RSpec.describe Workspace::CLI do
       notes_setup: overrides[:notes_setup],
       plan_command: overrides[:plan_command],
       ticket_command: overrides[:ticket_command],
+      spine_command: overrides[:spine_command],
       pull_request_command: overrides[:pull_request_command],
       rebase_command: overrides[:rebase_command],
       push_command: overrides[:push_command],
@@ -5935,6 +5936,74 @@ RSpec.describe Workspace::CLI do
 
       expect { cli.run(["ticket", "show", "PROJ-1"]) }.to raise_error(FakeSystemExit)
       expect(error_output.string).to include("ticket is not available")
+    end
+  end
+
+  describe "#run with spine" do
+    let(:spine_command) { instance_double(Workspace::Commands::Spine, show: nil) }
+    let(:detector) { instance_double(Workspace::ProjectDetector, detect: "detected-ws") }
+    let(:built) { build_test_cli(spine_command: spine_command, project_detector: detector, working_dir: "/some/dir") }
+    let(:cli) { built[0] }
+    let(:output) { built[1] }
+    let(:error_output) { built[2] }
+
+    it "shows the spine of the workspace detected from the working directory" do
+      cli.run(["spine", "show"])
+
+      expect(detector).to have_received(:detect).with("/some/dir")
+      expect(spine_command).to have_received(:show).with(name: "detected-ws", json: false)
+    end
+
+    it "takes the workspace as an argument, as --name, or as --name=" do
+      cli.run(["spine", "show", "api", "--json"])
+      cli.run(["spine", "show", "--json", "--name=api"])
+      cli.run(["spine", "show", "--name", "api", "api"])
+
+      expect(spine_command).to have_received(:show).with(name: "api", json: true).twice
+      expect(spine_command).to have_received(:show).with(name: "api", json: false)
+    end
+
+    it "fails with not_in_workspace outside a workspace" do
+      allow(detector).to receive(:detect).and_return(nil)
+
+      expect { cli.run(["spine", "show", "--json"]) }.to raise_error(FakeSystemExit)
+      expect(JSON.parse(output.string)).to include("ok" => false, "code" => "not_in_workspace")
+    end
+
+    it "refuses two different workspaces as a usage error" do
+      expect { cli.run(["spine", "show", "api", "--name", "web", "--json"]) }.to raise_error(FakeSystemExit)
+
+      expect(JSON.parse(output.string)).to include("ok" => false, "code" => "usage")
+      expect(spine_command).not_to have_received(:show)
+    end
+
+    it "prints a command's failure as the envelope under --json" do
+      allow(spine_command).to receive(:show).and_raise(Workspace::Error.new("Unknown workspace 'x'.", code: "unknown_workspace", details: {"name" => "x"}))
+
+      expect { cli.run(["spine", "show", "x", "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+      expect(JSON.parse(output.string)).to include("ok" => false, "code" => "unknown_workspace")
+    end
+
+    it "shows help" do
+      cli.run(["spine", "--help"])
+
+      expect(output.string).to include("workspace spine show").and include("--name").and include("--json")
+      expect(spine_command).not_to have_received(:show)
+    end
+
+    it "rejects a missing subcommand, an unknown one and extra arguments as usage errors" do
+      [["spine"], ["spine", "bogus"], ["spine", "show", "a", "b"]].each do |argv|
+        expect { cli.run(argv + ["--json"]) }.to raise_error(FakeSystemExit), argv.inspect
+        expect(JSON.parse(output.string.lines.last)).to include("ok" => false, "code" => "usage"), argv.inspect
+      end
+      expect(spine_command).not_to have_received(:show)
+    end
+
+    it "says so when no spine command was wired" do
+      cli, _, error_output, = build_test_cli
+
+      expect { cli.run(["spine", "show", "api"]) }.to raise_error(FakeSystemExit)
+      expect(error_output.string).to include("spine is not available")
     end
   end
 
