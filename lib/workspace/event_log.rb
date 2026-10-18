@@ -458,7 +458,7 @@ module Workspace
       true
     end
 
-    # A time that can't be read is kept rather than guessed at.
+    # Drops the panes whose last state is over STALE_PANE_SECONDS older than the newest one.
     def drop_stale_panes(panes)
       times = panes.values.filter_map { |d|
         begin
@@ -472,6 +472,7 @@ module Workspace
       panes.reject! { |_, d| older_than?(d["since"], cutoff) }
     end
 
+    # A time that can't be read is kept rather than guessed at.
     def older_than?(time, cutoff)
       Time.iso8601(time.to_s) < cutoff
     rescue ArgumentError
