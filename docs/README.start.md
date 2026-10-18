@@ -180,7 +180,7 @@ the coding agent. In that case the success doc above is still emitted, but with
 `error` and `prompt_failures` added and exit code 1:
 
 ```json
-{"schema_version":1,"ok":true,"project":"myproject","workspace":"myproject.worktree-proj-123","path":"/path/to/.worktrees/PROJ-123","branch":"PROJ-123","base":null,"created":true,"headless":false,"error":"Prompt was not sent to every workspace.","prompt_failures":{"myproject.worktree-PROJ-123":"agent never became ready"}}
+{"schema_version":1,"ok":true,"project":"myproject","workspace":"myproject.worktree-proj-123","path":"/path/to/.worktrees/PROJ-123","branch":"PROJ-123","base":null,"created":true,"headless":false,"error":"Prompt was not sent to every workspace.","prompt_failures":{"myproject.worktree-proj-123":"agent never became ready"}}
 ```
 
 Headless, when tmuxinator can't start the session (it fails, times out after 60
