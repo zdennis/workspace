@@ -108,9 +108,15 @@ The exit code is unchanged by `--json` (1 for most failures, 2 for `not_submitte
 | `hook_settings_unreadable` | `hooks uninstall` (and, as a warning, `init`, `start`, `doctor --fix`) found a coding agent's hook settings file that is not valid JSON, or not an object with a `hooks` object, and left it alone. `details.path` is the file. |
 | `handoff_unsupported_agent` | `start --handoff` or `launch --handoff` was given for a project whose main agent is not Claude Code or Codex, so the `handoff` pack would not work. `details.kind` is the agent found (`opencode`, `pi`), or `none` when the project config runs no known agent. Nothing was created. The config key `handoff.auto` never raises it: there the pack is skipped with a warning (see [`handoff`](README.handoff.md#automatic-handoff)). |
 | `notes_dir_unwritable` | `notes dir --create` couldn't make the directory or list it in `info/exclude`, or a `plan` verb couldn't write or rename the plan file. `details.path` is the directory. |
+| `unknown_group` | `projects group add` named a group that no file in `~/.config/workspace/groups/` matches (by id, slug or name). `details.group`. |
+| `group_exists` | `projects group create`: a group with that slug already has a file. `details.group`, `details.path`. |
+| `invalid_group_name` | `projects group create`: the name has no letters or digits, has a control character, or makes a slug over 64 characters. `details.name`. |
+| `repository_in_group` | `projects group add`: the repository is already in another group; a repository is in at most one. `details.repository`, `details.group`, `details.path` (the other group's file). |
+| `not_a_repository` | `projects group add`: the path is not inside a git checkout. `details.path`. |
+| `group_not_supported` | `projects stop` or `projects kill` was given a `group:` id. Stop or kill each repository's project instead. `details.id`. |
 | `unknown_template` | `spine init --template NAME` (or the default) found no `spine` library entry of that name, or the name is not lowercase letters, digits and hyphens. `details.template`, `details.scopes` in the order searched, `details.source` (`flag`, `worktree`, `project`, `global` or `default`: where the name came from; see [`spine`](README.spine.md)). Nothing was written. |
 | `no_plan` | `plan show`, `start`, `pause` or `delete` found no `IMPLEMENTATION_PLAN.md` in the workspace's notes directory. `details.name`, `details.path`. |
-| `not_a_directory` | `add --json`: a path is not a directory. Not an envelope: it is the `reason` of that path's `failed` row. `details.path`. |
+| `not_a_directory` | `add --json`: a path is not a directory. In `add --json` it is the `reason` of that path's `failed` row, not an envelope; `projects group add` fails with it as an error envelope. `details.path`. |
 | `plan_exists` | `plan init` found a plan already there and `--force` was not given. `details.path`. |
 | `plan_done` | `plan start` or `plan pause` found a plan that is done (`status: done`, or nothing left to do). `details.name`, `details.path`. |
 | `plan_write_conflict` | The plan file changed twice while a `plan` verb was writing it, so nothing was written; run the verb again. `details.path`. |

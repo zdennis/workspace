@@ -111,6 +111,7 @@ RSpec.describe Workspace::CLI do
       rebase_command: overrides[:rebase_command],
       push_command: overrides[:push_command],
       projects_command: overrides[:projects_command],
+      groups_command: overrides[:groups_command],
       capabilities_command: overrides[:capabilities_command],
       hooks_command: overrides[:hooks_command],
       restore_command: overrides[:restore_command],
@@ -6950,6 +6951,45 @@ RSpec.describe Workspace::CLI do
       cli.run(["help"])
 
       expect(output.string).to include("review          Show a workspace's finished work for review")
+    end
+  end
+
+  describe "#run with projects group" do
+    let(:groups_command) { CLITestHelpers::FakeGroupsCommand.new }
+    let(:built) { build_test_cli(groups_command: groups_command) }
+    let(:cli) { built[0] }
+    let(:output) { built[1] }
+
+    it "creates a group from a name with spaces" do
+      cli.run(["projects", "group", "create", "My Shop", "--json"])
+
+      expect(groups_command.calls).to eq([{create: "My Shop", json: true}])
+    end
+
+    it "adds a path to a group" do
+      cli.run(["projects", "group", "add", "billing", "/src/api"])
+
+      expect(groups_command.calls).to eq([{add: "billing", path: "/src/api", json: false}])
+    end
+
+    it "lists groups" do
+      cli.run(["projects", "--json", "group", "list"])
+
+      expect(groups_command.calls).to eq([{list: true, json: true}])
+    end
+
+    it "prints help without running anything" do
+      cli.run(["projects", "group", "--help"])
+
+      expect(output.string).to include("workspace projects group create NAME")
+      expect(groups_command.calls).to be_empty
+    end
+
+    [[%w[add billing], /needs GROUP PATH/], [%w[list extra], /Unexpected argument: extra/], [%w[remove], /Unknown projects group subcommand/]].each do |args, message|
+      it "refuses projects group #{args.join(" ")}" do
+        expect { cli.run(["projects", "group", *args]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+        expect(built[2].string).to match(message)
+      end
     end
   end
 

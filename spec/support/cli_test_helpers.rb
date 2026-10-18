@@ -586,6 +586,29 @@ module CLITestHelpers
     end
   end
 
+  class FakeGroupsCommand
+    attr_reader :calls
+
+    def initialize
+      @calls = []
+    end
+
+    def create(name:, json: false)
+      @calls << {create: name, json: json}
+      {exit_code: 0}
+    end
+
+    def add(group:, path:, json: false)
+      @calls << {add: group, path: path, json: json}
+      {exit_code: 0}
+    end
+
+    def list(json: false)
+      @calls << {list: true, json: json}
+      {exit_code: 0}
+    end
+  end
+
   class FakeProjectsCommand
     attr_reader :calls
     attr_accessor :result

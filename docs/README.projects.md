@@ -12,6 +12,7 @@ workspace projects show [NAME|PATH] [--json] [--no-agents] [--no-git] [--timeout
 workspace projects members [NAME|PATH] [--path] [--all] [--timeout SECONDS] [--json]
 workspace projects stop [NAME] [--dry-run] [--json]
 workspace projects kill NAME [--dry-run] [--yes] [--force] [--discard-unsaved] [--timeout DURATION] [--json]
+workspace projects group create|add|list ...   # see "Groups"
 ```
 
 A bare `workspace projects` runs `list`.
@@ -497,9 +498,67 @@ messages are for people and their wording can change.
 Usage errors (including `--json` without `--yes` or `--dry-run`) and an unknown
 or ambiguous NAME print `{"schema_version":1,"ok":false,"error":"..."}` instead and exit 1.
 
+## Groups
+
+A group names several repositories that belong together (a multi-repository project).
+"Project" above still means one repository; a group sits on top of projects and
+changes none of their rows. Its id is `group:<slug>`, so it can't be mistaken for a
+project's path id.
+
+```sh
+workspace projects group create NAME [--json]
+workspace projects group add GROUP PATH [--json]
+workspace projects group list [--json]
+```
+
+Each group is one file, `~/.config/workspace/groups/<slug>.yml`, that you may edit by hand
+(this is how a repository is removed):
+
+```yaml
+name: Billing
+repositories:
+  - id: /Users/z/src/api/.git
+    path: /Users/z/src/api
+```
+
+- `create NAME` makes an empty group. The slug is NAME in lowercase with runs of other characters
+  turned into one dash (`My Shop!` is `my-shop`). A name with no letter or digit, or a slug over 64
+  characters, is `invalid_group_name`; a slug that has a file is `group_exists`.
+- `add GROUP PATH` adds the repository containing PATH, a main checkout or one of its worktrees.
+  GROUP is an id, a slug or a name. A repository is kept by the realpath of its git common dir (a
+  project's `id`), so a moved checkout keeps its group. A repository is in at most one group:
+  adding it to a second is `repository_in_group`. Adding it again to the same group changes nothing
+  (`outcome` is `already_member`). A PATH that is not a directory is `not_a_directory`, one outside
+  git is `not_a_repository`, an unknown GROUP is `unknown_group`.
+- `list` prints every group with its repositories. A repository whose directory is gone stays in the
+  file and shows `exists: false`. A group file that can't be parsed is left out of the list, and
+  `add` refuses with `config_parse` while any such file exists, since it could hide a repository's
+  membership. `create` and `add` rewrite the whole file, so YAML comments and extra keys are not kept.
+  `add` exits 0 for both outcomes (`added` and `already_member`); read `outcome`.
+
+`projects stop` and `projects kill` refuse a `group:` id with `group_not_supported`; stop or kill
+each repository's project instead.
+
+### Groups JSON
+
+Every document has `schema_version` 1 and `ok: true`. A group is
+`{"id": "group:billing", "name": "Billing", "path": "<its file>", "repositories": [...]}`, and a
+repository is `{"id", "name", "path", "exists"}`.
+
+- `create`: `{"schema_version":1,"ok":true,"action":"create","group":{...}}`
+- `add`: `{"schema_version":1,"ok":true,"action":"add","outcome":"added"|"already_member","group":{...},"repository":{...}}`
+- `list`: `{"schema_version":1,"ok":true,"groups":[{...}]}`
+
+Failures are the usual `{"ok": false, "error", "code", "details"}` document (codes in
+[`README.json.md`](README.json.md)) and exit 1.
+
 ## Examples
 
 ```sh
+$ workspace projects group create Billing
+$ workspace projects group add billing ~/src/api
+$ workspace projects group list --json
+
 $ workspace projects kill app --dry-run
 $ workspace projects kill app                    # asks first
 $ workspace projects kill app --yes --json

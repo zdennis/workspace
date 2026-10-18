@@ -188,6 +188,7 @@ require_relative "workspace/timed_process"
 require_relative "workspace/workspace_checkout"
 require_relative "workspace/ticket_source"
 require_relative "workspace/project_catalog"
+require_relative "workspace/project_groups"
 require_relative "workspace/agent_snapshot_client"
 require_relative "workspace/project_agents"
 require_relative "workspace/project_facts"
@@ -295,6 +296,7 @@ require_relative "workspace/commands/ticket"
 require_relative "workspace/commands/spine"
 require_relative "workspace/commands/spine_init"
 require_relative "workspace/commands/projects"
+require_relative "workspace/commands/groups"
 require_relative "workspace/commands/review"
 require_relative "workspace/commands/restore"
 require_relative "workspace/commands/snapshot"
@@ -523,6 +525,8 @@ module Workspace
       lock_holder: lock_holder, dev: dev_command, agents: ProjectAgents.new(client: agent_snapshot_client),
       git: git, catalog: project_catalog, error_output: error_output)
     projects_command = Commands::Projects.new(catalog: project_catalog, tmux: tmux, facts: project_facts, output: output, error_output: error_output)
+    project_groups = ProjectGroups.new(config: config, git: git)
+    groups_command = Commands::Groups.new(groups: project_groups, output: output)
     plan_config = PlanConfig.new(config_resolver: config_resolver, error_output: error_output)
     plan_state = PlanState.new
     plan_access = PlanAccess.new(notes: notes_command, tmux: tmux, event_log: event_log)
@@ -684,6 +688,7 @@ module Workspace
       snapshot_command: snapshot_command,
       events_command: events_command,
       project_actions_command: project_actions_command,
+      groups_command: groups_command,
       agent_command: agent_command,
       sessions_command: sessions_command,
       session_event_command: session_event_command,

@@ -97,6 +97,7 @@ module Workspace
     # @param inbox_command [Workspace::Commands::Inbox, nil] pre-built inbox command
     # @param config_report [Workspace::ConfigReport, nil] builds the `config show/validate --json` documents
     # @param tmuxinator_report [Workspace::TmuxinatorReport, nil] builds the `tmux show --json` document
+    # @param groups_command [Workspace::Commands::Groups, nil] pre-built `projects group` command
     # @param project_actions_command [Workspace::Commands::ProjectActions, nil] pre-built project-wide actions command
     # @param clock [#call] returns the current Time, for relative deadline display
     # @param liveness [#call, nil] maps project names to true, false, or nil
@@ -112,7 +113,7 @@ module Workspace
     #   `list --liveness --json` and `status --json`; takes name => state entry
     # @param launch_mode [Workspace::LaunchMode, nil] decides whether launch/start
     #   run headless when no --[no-]headless flag is given; nil builds one
-    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, hooks_command: nil, restart_agent_command: nil, agent_status_command: nil, send_command: nil, ensure_agent_command: nil, name_migration: nil, spine_command: nil, spine_init_command: nil, handoff_command: nil, notes_command: nil, notes_setup: nil, plan_command: nil, plan_dispatch_command: nil, plan_task_command: nil, ticket_command: nil, pull_request_command: nil, rebase_command: nil, push_command: nil, projects_command: nil, capabilities_command: nil, daemon_command: nil, ui_command: nil, binding_command: nil, library_command: nil, library: nil, instructions_command: nil, instruction_composer: nil, workflow_command: nil, review_command: nil, restore_command: nil, snapshot_command: nil, events_command: nil, project_actions_command: nil, inbox_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil, liveness: nil, window_liveness: nil, env: ENV, editor_launcher: nil, interactive: nil, workspace_name: nil)
+    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, hooks_command: nil, restart_agent_command: nil, agent_status_command: nil, send_command: nil, ensure_agent_command: nil, name_migration: nil, spine_command: nil, spine_init_command: nil, handoff_command: nil, notes_command: nil, notes_setup: nil, plan_command: nil, plan_dispatch_command: nil, plan_task_command: nil, ticket_command: nil, pull_request_command: nil, rebase_command: nil, push_command: nil, projects_command: nil, groups_command: nil, capabilities_command: nil, daemon_command: nil, ui_command: nil, binding_command: nil, library_command: nil, library: nil, instructions_command: nil, instruction_composer: nil, workflow_command: nil, review_command: nil, restore_command: nil, snapshot_command: nil, events_command: nil, project_actions_command: nil, inbox_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil, liveness: nil, window_liveness: nil, env: ENV, editor_launcher: nil, interactive: nil, workspace_name: nil)
       @config = config
       @state = state
       @project_config = project_config
@@ -173,6 +174,7 @@ module Workspace
       @name_migration = name_migration
       @handoff_command = handoff_command
       @projects_command = projects_command
+      @groups_command = groups_command
       @capabilities_command = capabilities_command
       @daemon_command = daemon_command
       @ui_command = ui_command
@@ -6395,6 +6397,8 @@ module Workspace
         else
           cmd_projects_kill(rest)
         end
+      when "group"
+        cmd_projects_group(rest)
       when "help" then @output.puts projects_help
       else
         raise UsageError, "Unknown projects subcommand: #{subcommand}. Run 'workspace projects --help'."
@@ -6407,6 +6411,7 @@ module Workspace
     def projects_help
       <<~HELP
         Usage: workspace projects [list [--running] | show [NAME|PATH] | members [NAME|PATH] | stop [NAME|PATH] [--dry-run]
+                                  | group create NAME | group add GROUP PATH | group list
                                   | kill NAME|PATH [--dry-run] [--yes] [--force] [--discard-unsaved] [--timeout DURATION]] [--json]
 
         Group workspaces by repository.
@@ -6435,6 +6440,11 @@ module Workspace
                             state), never the main checkout. Checks every worktree first and removes
                             nothing if any has unsaved work, can't be checked, is gone, or runs the dev
                             env. Asks first; NAME is required. See 'workspace projects kill --help'.
+
+          group create|add|list
+                            Named groups of repositories (ids like group:billing), kept in
+                            ~/.config/workspace/groups/. A repository is in at most one group.
+                            See 'workspace projects group --help'. stop and kill refuse a group id.
 
         Options:
           --dry-run   stop, kill: show what would happen and change nothing
@@ -6641,6 +6651,67 @@ module Workspace
       result = @project_actions_command.kill(name: args.first, dry_run: options[:dry_run], yes: options[:yes], force: options[:force],
         discard_unsaved: options[:discard_unsaved], json: options[:json], git_timeout: options[:timeout])
       @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
+    end
+
+    def projects_group_help
+      <<~HELP
+        Usage: workspace projects group create NAME [--json]
+               workspace projects group add GROUP PATH [--json]
+               workspace projects group list [--json]
+
+        A group names several repositories that belong together. Its id is group:<slug>
+        (the slug is NAME in lowercase with dashes). Each repository is kept by the
+        realpath of its git common dir, so a moved checkout stays in its group. The group
+        is a file at ~/.config/workspace/groups/<slug>.yml that you may edit by hand.
+
+        Subcommands:
+          create NAME       Make an empty group
+          add GROUP PATH    Add the repository containing PATH (a main checkout or a worktree).
+                            GROUP is an id, a slug or a name. A repository in another group is
+                            refused; adding it again to the same group does nothing.
+          list              Every group with its repositories (exists: false when one is gone)
+
+        Options:
+          --json            Print schema-versioned JSON (see docs/README.projects.md)
+
+        Examples:
+          workspace projects group create Billing
+          workspace projects group add billing ~/src/api
+          workspace projects group list --json
+      HELP
+    end
+
+    def cmd_projects_group(args)
+      sub = args.index { |a| !a.start_with?("-") }
+      action = sub && args[sub]
+      rest = sub ? args[0...sub] + args[(sub + 1)..] : args.dup
+      if action.nil? || action == "help" || args.include?("--help") || args.include?("-h")
+        @output.puts projects_group_help
+        return
+      end
+      unless %w[create add list].include?(action)
+        raise UsageError, "Unknown projects group subcommand: #{action}. Run 'workspace projects group --help'."
+      end
+      json = false
+      OptionParser.new { |opts| opts.on("--json") { json = true } }.parse!(rest)
+      raise Error, "projects group is not available: no groups command was wired" unless @groups_command
+
+      arity = {"create" => 1, "add" => 2, "list" => 0}.fetch(action)
+      usage = {"create" => "NAME", "add" => "GROUP PATH", "list" => ""}.fetch(action)
+      if rest.size < arity
+        raise UsageError, "projects group #{action} needs #{usage}. Run 'workspace projects group --help'."
+      elsif rest.size > arity
+        raise UsageError, "Unexpected argument: #{rest[arity]}. Run 'workspace projects group --help'."
+      end
+      result = case action
+      when "create" then @groups_command.create(name: rest[0], json: json)
+      when "add" then @groups_command.add(group: rest[0], path: rest[1], json: json)
+      else @groups_command.list(json: json)
+      end
+      @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
+    rescue OptionParser::ParseError, UsageError => e
+      raise unless json_requested?(false, args)
+      emit_json_error(Commands::Projects::JSON_SCHEMA_VERSION, e, message: e.message.lines.first.strip)
     end
 
     def cmd_projects_list(args)

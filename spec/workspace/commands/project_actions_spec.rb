@@ -117,6 +117,23 @@ RSpec.describe Workspace::Commands::ProjectActions do
 
   before { build_app }
 
+  describe "a group id" do
+    it "is refused by stop and kill with group_not_supported, naming nothing to act on" do
+      stopped, stop_payload = run_json(name: "group:billing")
+      killed = command.kill(name: "group:billing", yes: true, json: true)
+      kill_payload = JSON.parse(output.string.lines.last)
+
+      expect([stopped, killed]).to all(eq({exit_code: 1}))
+      expect(stop_payload).to include("ok" => false, "code" => "group_not_supported", "details" => {"id" => "group:billing"})
+      expect(kill_payload).to include("ok" => false, "code" => "group_not_supported")
+      expect(events).to be_empty
+    end
+
+    it "raises the same error without --json" do
+      expect { command.stop(name: "group:billing") }.to raise_error(Workspace::Error, /group id/)
+    end
+  end
+
   describe "#stop" do
     context "when nothing is running" do
       it "says so, stops nothing and exits 0" do

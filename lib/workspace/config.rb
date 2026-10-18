@@ -67,6 +67,17 @@ module Workspace
       File.join(workspace_projects_dir, "#{name}.yml")
     end
 
+    # @return [String] path to the project groups directory, one `<slug>.yml` each
+    def groups_dir
+      File.join(workspace_config_dir, "groups")
+    end
+
+    # @param slug [String] the group slug
+    # @return [String] path to the group's file
+    def group_path(slug)
+      File.join(groups_dir, "#{slug}.yml")
+    end
+
     # @return [String] path to the library of named plays and prompts (`library`)
     def library_dir
       File.join(workspace_config_dir, "library")

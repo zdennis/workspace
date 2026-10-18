@@ -98,6 +98,7 @@ module Workspace
         @own_session_name = nil
         @own_session_known = false
         with_json_errors(json) do
+          refuse_group!("projects stop", name)
           project = name ? @catalog.find(name) : @catalog.for_cwd(cwd)
           @state.load
           members = ordered_members(project)
@@ -202,6 +203,7 @@ module Workspace
         @own_session_name = nil
         @own_session_known = false
         with_json_errors(json) do
+          refuse_group!("projects kill", name)
           unwired = {kill_command: @kill_command, git: @git, lock_namespace: @lock_namespace, lock_holder: @lock_holder}
             .select { |_, collaborator| collaborator.nil? }.keys
           raise Workspace::Error, "projects kill is not available: no #{unwired.join(", ")} was wired" if unwired.any?
@@ -508,6 +510,12 @@ module Workspace
         end
         return nil unless @own_session_name
         members.find { |m| @tmux.session_name_for(m.workspace) == @own_session_name }
+      end
+
+      def refuse_group!(verb, name)
+        return unless ProjectGroups.group_id?(name)
+        raise Workspace::Error.new("#{verb} doesn't take a group id (#{name}): stop or kill each repository's project by name or path.",
+          code: "group_not_supported", details: {"id" => name})
       end
 
       # Runs the block. Under +json+ any error becomes the JSON error object

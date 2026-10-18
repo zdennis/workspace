@@ -20,6 +20,7 @@ A macOS CLI (Ruby) for managing tmuxinator-based development workspaces in iTerm
 - `lib/workspace/tmux.rb` — Tmux session management
 - `lib/workspace/project_config.rb` — Tmuxinator config generation
 - `lib/workspace/project_catalog.rb` — Groups workspaces into projects (main checkout + worktrees) by the realpath of each checkout's git common dir, read from `.git` files; backs `projects`
+- `lib/workspace/project_groups.rb` — Groups of repositories (`group:<slug>` ids), one hand-editable file each at `~/.config/workspace/groups/<slug>.yml`; members keyed by the realpath of the git common dir, at most one group per repository, a gone repository reads `exists: false`; writes under one flock through a temp file and rename; `#group_for_project` is the lookup by project id. `Commands::Groups` is `projects group create|add|list`; `projects stop`/`kill` refuse a `group:` id. `ProjectCatalog` knows nothing of groups
 - `lib/workspace/osascript_runner.rb` — Runs one AppleScript through `osascript` with a 5s limit; past it the process group is stopped and the answer is empty with `timed_out`; `ITerm` and `WindowManager#close_window` go through it
 - `lib/workspace/iterm.rb` — iTerm2 session/pane lifecycle (AppleScript); `#last_call_timed_out?` says iTerm2 did not answer, which `stop` turns into a warning
 - `lib/workspace/window_manager.rb` — iTerm2 window operations: find, focus, position, close
