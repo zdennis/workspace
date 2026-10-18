@@ -192,6 +192,8 @@ module Workspace
         pane[:session_id] = event["session_id"] || pane[:session_id]
         note_label_source(pane, event)
         pane[:last_event_at] = @clock.now
+        # Events from before agents other than Claude Code had hooks carry no kind.
+        pane[:hook_kind] = event["agent_kind"] || "claude"
         track_tools(pane, event)
         apply_event(pane, event)
       end
@@ -792,8 +794,24 @@ module Workspace
       unless pane[:kind] == "shell"
         apply_context(result, pane, now)
         apply_tool_status(result, pane)
+        apply_hook_mode(result, pane)
       end
       result
+    end
+
+    # `hook_mode`: "hooks" once the daemon has had a hook event from the
+    # pane's current kind of agent, "scrape" for a recognized agent it has
+    # not (no hooks installed, not trusted yet, or none since a daemon
+    # restart), "none" for a pane not yet identified. `hook_events`: the event
+    # types that kind of agent's hooks can report, whatever the mode.
+    def apply_hook_mode(result, pane)
+      provider = @providers.find { |p| p.key == pane[:kind] }
+      result["hook_mode"] = if provider.nil?
+        "none"
+      else
+        (pane[:hook_kind] == pane[:kind]) ? "hooks" : "scrape"
+      end
+      result["hook_events"] = provider ? provider.hook_events.dup : []
     end
 
     # `last_event_at`, `current_tool` (the name of the main agent's most

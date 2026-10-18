@@ -42,7 +42,7 @@ Each pane shows its index, kind, title, state, how long it's been idle, a LOCK c
 
 A pane leaves `waiting` on the agent's next hook event: a submitted prompt, a finished tool (`PostToolUse`, which follows an approved permission prompt), or the turn or session ending. It also leaves `waiting` when the pane no longer runs an agent. The main agent and each sub-agent keep their own wait: two sub-agents can wait on a person at once, each alerting once, and an event from one agent (main or sub-agent) ends only that agent's wait, never another's. A new prompt, stop, or session start/end clears all of a pane's waits at once. `sessions` shows the pane's oldest wait (its time and message) when more than one is active. `waiting` needs the `Notification` and `PostToolUse` hooks, which `workspace init` installs; a project whose hooks predate them shows only `working`/`idle` until `workspace init` is re-run (`workspace doctor` reports the hooks as not installed until then).
 
-`waiting` is detected for Claude Code only. Other agents (Codex, OpenCode, Pi) have no equivalent hook wired up, so their panes only ever show `working` or `idle`, never `waiting`.
+`waiting` is detected for Claude Code and, once its hooks are installed and trusted, Codex (on an approval prompt, Codex's `PermissionRequest`; see [hook mode](#hook-mode)). OpenCode and Pi have no hook workspace can install, so their panes only ever show `working` or `idle`, never `waiting`.
 
 The waiting message is cleaned before it is shown or passed on: each run of whitespace and control characters becomes a single space, and it is cut to 200 characters. `sessions --json` and the `WORKSPACE_ALERT_*` variables get the same cleaned text; the table further shortens it to 60 characters for display.
 
@@ -54,7 +54,7 @@ The waiting message is cleaned before it is shown or passed on: each run of whit
 
 ### Tool status fields
 
-A coding-agent pane (any pane whose `kind` isn't `"shell"`) carries four fields built from the hook events the agent daemon receives (see [`events`](README.events.md)), so one read answers "busy or hung?" without following the stream. A shell pane carries none of them. They are held in the daemon's memory, so a restarted daemon starts with them empty until the next hook event. A pane whose agent has no hooks reports `null`s and an empty `subagents`.
+A coding-agent pane (any pane whose `kind` isn't `"shell"`) carries four fields (and the two [hook mode](#hook-mode) fields) built from the hook events the agent daemon receives (see [`events`](README.events.md)), so one read answers "busy or hung?" without following the stream. A shell pane carries none of them. They are held in the daemon's memory, so a restarted daemon starts with them empty until the next hook event. A pane whose agent has no hooks reports `null`s and an empty `subagents`.
 
 | Field | Meaning |
 |-------|---------|
@@ -64,6 +64,36 @@ A coding-agent pane (any pane whose `kind` isn't `"shell"`) carries four fields 
 | `subagents` | The sub-agents running now, each `{"agent_id", "description", "since"}`. `description` is the Task call's description (cut to 120 characters; the sub-agent's name when it has none) and `since` is ISO 8601 UTC. `agent_id` is `null` until it can be told which sub-agent an id belongs to: Claude Code names a sub-agent only once it runs, so the id is taken from its first hook event when exactly one running sub-agent has none, and from its stop. A sub-agent leaves the list when its stop is seen, or when the turn or session ends. Its Task call returning does not end it, since a background Task returns at once. With sub-agents in parallel and no id, a stop closes the oldest running one |
 
 `current_tool` ends on the tool's PostToolUse, and on the turn or session ending or a new prompt, so a tool whose finish was never seen does not stay current past the turn. A pane that is `working` with `current_tool: "Bash"` since 12 seconds ago is busy; one whose `last_event_at` is many minutes old is probably hung. The older `agents` list stays as it was.
+
+### Hook mode
+
+Each coding-agent pane also says how the daemon knows what its agent is doing, so a reader can tell a pane that can report `waiting` from one that can't without going by its `kind` (capability `agent_hooks` 1). A shell pane carries neither field.
+
+| Field | Meaning |
+|-------|---------|
+| `hook_mode` | `hooks` once the daemon has had a hook event from the pane's current kind of agent. `scrape` for a recognized agent it has had none from: its hooks aren't installed, Codex hasn't been told to trust them yet, or the daemon restarted and no event has come since. Such a pane is watched by screen activity alone (`working`/`idle`), with context read from the screen where the agent has a pattern. `none` for a pane whose agent isn't identified yet (`kind: "unknown"`) |
+| `hook_events` | The event types that kind of agent's hooks can report, whatever the mode: any of `session_started`, `session_ended`, `prompt_submitted`, `tool_started`, `tool_finished`, `subagent_started`, `subagent_stopped`, `turn_ended`, `waiting`. Empty for an agent with no hooks |
+
+`hook_mode` goes by events received, not by files: a trusted, installed hook that hasn't fired yet reads `scrape` until the agent's next event (a Claude Code or Codex session reports `SessionStart` as it opens). A pane where Claude Code exits and Codex starts reads `scrape` again until Codex's first event. `hooks` means the agent has reported at least once since the daemon started, not that it is reporting now: it stays `hooks` if the hooks are later removed or no longer trusted, until another kind of agent takes the pane. `last_event_at` says how recent the last report was.
+
+Read `hook_mode` to decide what a pane can tell you; `hook_events: []` alone does not tell an agent with no hooks from a pane not identified yet. The `hook_events` names are the [events stream](README.events.md)'s line types, plus `turn_ended` (the agent's turn ended: `state` becomes `done`) and `waiting` (it can put the pane in `state: "waiting"`).
+
+One row per agent kind:
+
+| Kind | `hook_events` | Hook surface | Reports | Cannot report |
+|---|---|---|---|---|
+| `claude` | all nine | Per project: `.claude/settings.json` `hooks`, installed by `init` and `start` | Every type. `waiting` from `Notification`: a permission prompt, or input wanted after a quiet spell | A sub-agent's id until it runs (see `subagents`) |
+| `codex` | all nine | User-level: `$CODEX_HOME/hooks.json` (default `~/.codex/hooks.json`), installed by `init`, `start` and `doctor --fix`; Codex runs them only once trusted with `/hooks` | Every type. `waiting` from `PermissionRequest` (an approval prompt); `turn_ended` from `Stop` and `Interrupt`; sub-agents from `SubagentStart`/`SubagentStop`, with their ids | `waiting` for a question asked in plain text (Codex has no `Notification`); tool events for hosted tools such as web search; which sub-agent a tool ran in; a session-end reason (always `other`). `restore` does not resume Codex sessions |
+| `opencode` | none | Plugins only (JavaScript in `.opencode/plugins/`); no command hook workspace can install | Activity only: `working`/`idle` | Every type |
+| `pi` | none | Extensions only (TypeScript in `~/.pi/agent/extensions/`); no command hook workspace can install | Activity only: `working`/`idle` | Every type |
+
+```json
+{"pane_id":"%7","index":1,"kind":"codex","label":"Codex","state":"waiting",
+ "waiting_message":"Approval requested for Bash","current_tool":"Bash",
+ "hook_mode":"hooks",
+ "hook_events":["session_started","session_ended","prompt_submitted","tool_started","tool_finished",
+   "subagent_started","subagent_stopped","turn_ended","waiting"]}
+```
 
 **LOCK column** — shows this pane's relationship to every lock in the project's namespace ([`workspace lock`](README.lock.md)), not just `edit`: a pane holding or queued for more than one lock (e.g. `edit` plus a `devenv` process lock) shows all of them, space-joined, `edit` first and any others alphabetical after it — `edit ✓ devenv #2`. A pane with no lock relationship shows blank, including one with no agent at all. A lock a workflow run holds or waits for shows in the pane that run's step runs in. A dead holder or waiter (its process no longer alive) never shows `✓`, and is skipped when numbering each lock's queue, so `#1` always refers to the next live waiter. The namespace is resolved from the *rendered workspace's* project root (its tmuxinator config), not the command's own working directory, so `workspace sessions other-project` always shows `other-project`'s lock state, never whatever project happens to be in front of it. If that project's root can't be resolved, the column is hidden rather than guessed. The lock store is loaded once per render (never once per pane), so the column costs one extra file read, not a `git`/`ps` call per row.
 

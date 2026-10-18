@@ -1257,6 +1257,69 @@ RSpec.describe Workspace::SessionMonitor do
     end
   end
 
+  describe "hook mode" do
+    let(:all_events) { Workspace::AgentProvider::HOOK_EVENT_TYPES }
+
+    def run_codex_in_pane
+      allow(snapshot).to receive(:find_descendant).with(200, ["claude"], hash_including(include_root: true)).and_return(nil)
+      allow(snapshot).to receive(:find_descendant).with(200, ["codex"], hash_including(include_root: true))
+        .and_return({pid: 260, command: "codex", args: "codex"})
+    end
+
+    it "is scrape for a recognized agent no hook event has reached, listing what its hooks can report" do
+      monitor.scan
+
+      expect(pane("%2")).to include("kind" => "claude", "hook_mode" => "scrape", "hook_events" => all_events)
+    end
+
+    it "is hooks once the pane's agent has sent an event; an event with no kind is Claude Code's" do
+      monitor.scan
+      monitor.record("event" => "session_start", "pane_id" => "%2")
+
+      expect(pane("%2")["hook_mode"]).to eq("hooks")
+    end
+
+    it "is hooks for a Codex pane once a Codex event arrives, not on a Claude Code one" do
+      run_codex_in_pane
+      monitor.scan
+      monitor.record("event" => "tool_start", "pane_id" => "%2", "agent_kind" => "claude")
+      expect(pane("%2")).to include("kind" => "codex", "hook_mode" => "scrape")
+
+      monitor.record("event" => "notification", "pane_id" => "%2", "agent_kind" => "codex", "message" => "Approval requested for Bash")
+
+      expect(pane("%2")).to include("hook_mode" => "hooks", "hook_events" => all_events, "state" => "waiting",
+        "waiting_message" => "Approval requested for Bash")
+    end
+
+    it "goes back to scrape when another kind of agent takes the pane over" do
+      monitor.scan
+      monitor.record("event" => "session_start", "pane_id" => "%2", "agent_kind" => "claude")
+      run_codex_in_pane
+
+      monitor.scan
+
+      expect(pane("%2")).to include("kind" => "codex", "hook_mode" => "scrape")
+    end
+
+    it "lists no events for an agent with no hooks" do
+      allow(snapshot).to receive(:find_descendant).with(200, ["claude"], hash_including(include_root: true)).and_return(nil)
+      allow(snapshot).to receive(:find_descendant).with(200, ["opencode"], hash_including(include_root: true))
+        .and_return({pid: 270, command: "opencode", args: "opencode"})
+      monitor.scan
+
+      expect(pane("%2")).to include("kind" => "opencode", "hook_mode" => "scrape", "hook_events" => [])
+    end
+
+    it "is none for a pane not identified yet, and absent on a shell pane" do
+      monitor.record("event" => "stop", "pane_id" => "%9")
+
+      expect(pane("%9")).to include("kind" => "unknown", "hook_mode" => "none", "hook_events" => [])
+      monitor.scan
+      expect(pane("%1")).not_to have_key("hook_mode")
+      expect(pane("%1")).not_to have_key("hook_events")
+    end
+  end
+
   describe "per-pane tool status" do
     before { monitor.scan }
 
