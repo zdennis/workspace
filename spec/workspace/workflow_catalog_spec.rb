@@ -147,5 +147,15 @@ RSpec.describe Workspace::WorkflowCatalog do
       expect(steps[3]).to include("uses" => ["test-db"], "status" => {"command" => "test", "timeout" => 1200},
         "on_fail" => {"goto" => "implement", "max" => 3, "context" => "continue"}, "include" => ["review"])
     end
+
+    it "has the plan and implement steps work the workspace plan, with the implementation-plan syntax composed in" do
+      allow(config).to receive(:workflows_dir).and_return(global_dir)
+      steps = catalog.find("rpiv").steps.to_h { |step| [step["id"], step] }
+
+      expect(steps["plan"]["include"]).to eq(%w[notes implementation-plan])
+      expect(steps["plan"]["prompt"]).to include("workspace plan path").and include("IMPLEMENTATION_PLAN.md")
+      expect(steps["implement"]["include"]).to eq(%w[notes implementation-plan])
+      expect(steps["implement"]["prompt"]).to include("workspace plan path")
+    end
   end
 end

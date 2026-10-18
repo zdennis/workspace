@@ -8,7 +8,7 @@ Print the instructions an agent is given, built from library packs.
 workspace instructions compose [--pack NAME]... [--pane %ID] [--name WORKSPACE] [--json]
 ```
 
-A pack is a [library](README.library.md) play. workspace ships eight:
+A pack is a [library](README.library.md) play. workspace ships nine:
 
 | Pack | What it tells the agent |
 |---|---|
@@ -19,6 +19,7 @@ A pack is a [library](README.library.md) play. workspace ships eight:
 | `handoff` | Run `workspace handoff check` after every task and hand off to a fresh conversation before the context runs out; sent by `start` and `launch` only for Claude Code, with `--handoff` or `handoff.auto` (see [`handoff`](README.handoff.md#automatic-handoff)) |
 | `dev` | Queue for the project's one shared dev environment before implementing, testing or verifying (`workspace dev up --queue`, then `workspace dev wait`), never test against another worktree's server, and release it with `workspace dev down` when done; sent by `start` and `launch` when the project sets `dev.up` (see [`dev`](README.dev.md#instructions-for-agents)). A workflow step that declares `uses: [devenv]` never gets it |
 | `implementation-plan` | Keep the workspace's `IMPLEMENTATION_PLAN.md` as a counted task list (`[ ]`, `[~]`, `[x]`, `[-]`, `[!]` lines), work it one task at a time, stop when its `status:` is `paused`, and use it as the handoff doc. Not sent automatically: name it with `--pack implementation-plan` or `--play`; `workspace handoff new` binds the pane to it when a plan exists (see [`plan`](README.plan.md#the-implementation-plan-play)) |
+| `research` | Answer the goal by reading, run only read-only commands, change no repository file and never commit, and write one findings note (answer first, evidence as `path:line`, open questions) in the notes directory. Not sent automatically: name it with `--pack research` or `--play` |
 | `notes` | Where this workspace's working notes go (`workspace notes dir --create`), what belongs there, how to name files, to read the plan first, to write as you work, and never to commit them |
 
 With no `--pack`, the default packs are composed: `binding`, `orchestrator` and `commits`, in that order, or the ones the global key `workflows.defaults.include` names (`workspace config set workflows.defaults.include "binding, commits"`). `--pack` repeats, and packs are composed in the order given; a name given twice is composed once.

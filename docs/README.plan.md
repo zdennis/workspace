@@ -112,6 +112,8 @@ A fact that can't be read never decides a state. A tmux that can't be asked, or 
 
 `play/implementation-plan` is a built-in [play](README.library.md) (`lib/library/play/implementation-plan.md`) that teaches an agent this file: where to find it (`workspace plan path`), the task syntax, taking a task to `[~]` and then `[x]` only once it is verified, re-reading `status:` before each task, and stopping on `paused`. Send it with `--pack implementation-plan` or `--play implementation-plan`; it is not one of the packs sent automatically. It names `workspace plan status` and `workspace plan start`.
 
+The `rpiv` workflow's plan and implement steps compose this play, and its plan step writes the run's tasks into this file, so `plan status` shows a run's progress. The run's `plan.md` under `.workflow/` is only the note for the approval gate.
+
 The plan is also the handoff doc: with no `--handoff-doc`, [`handoff check` and `new`](README.handoff.md#the-default-doc) use `IMPLEMENTATION_PLAN.md` when it exists, and `new` binds the pane to this play. [`doctor`](README.doctor.md) warns on a paused plan whose owner pane is working and on a `[~]` task in a workspace with no session.
 
 ## JSON output

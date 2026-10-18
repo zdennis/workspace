@@ -32,10 +32,18 @@ steps:
 
   plan:
     title: Plan
+    include: [notes, implementation-plan]
     prompt: |
-      Using {{artifacts}}/research.md, write {{artifacts}}/plan.md: the change as a list
-      of commits, each with files touched, tests to add, and how you'll know it works.
-      Call out anything that needs the dev environment or the test database.
+      Using {{artifacts}}/research.md, write the plan as the workspace plan: the
+      IMPLEMENTATION_PLAN.md that `workspace plan path` names (run `workspace plan init --title "<title>"` first if it does not exist), in the syntax the
+      implementation-plan instructions give, so `workspace plan status` shows it.
+      One task per commit, in order, with the files touched, tests to add and how you'll
+      know it works under that task in Task details. Call out anything that needs the
+      dev environment or the test database. Set `status: active` and leave every task `[ ]`.
+      You only write the plan here; do not start any task, and do not set `status: done`.
+      Then write {{artifacts}}/plan.md for the approval gate: the approach, the risks, and
+      the path of the plan file. Do not copy the task list into it. The step is not
+      finished until plan.md exists.
       Don't change code.
     produces: [plan.md]
     gate: approve
@@ -43,10 +51,13 @@ steps:
 
   implement:
     title: Implement
+    include: [notes, implementation-plan]
     prompt: |
-      Implement {{artifacts}}/plan.md one commit at a time. Run the relevant tests
-      before each commit. If the plan turns out wrong, update plan.md and say why.
-      Write {{artifacts}}/implement.md listing the commits you made.
+      Implement the workspace plan (`workspace plan path`) one task at a time, marking
+      each task as the instructions say. Run the relevant tests before each commit. If the
+      plan turns out wrong, update the plan file and say why in {{artifacts}}/implement.md.
+      Write {{artifacts}}/implement.md listing the commits you made before you set the
+      plan's `status: done`; the run is waiting on that file.
     produces: [implement.md]
     timeout: 3h
 
@@ -54,7 +65,7 @@ steps:
     title: Verify
     include: [review]
     prompt: |
-      Verify the work against {{artifacts}}/plan.md. Run the full test suite and the
+      Verify the work against the workspace plan (`workspace plan path`). Run the full test suite and the
       linter, then review the branch's diff against its base.
       Write {{artifacts}}/verify.md: test results, review findings, and what you fixed.
       If anything blocking remains, run `workspace step done --status fail --summary "<what is left>"`
