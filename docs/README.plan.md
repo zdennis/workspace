@@ -63,7 +63,7 @@ owner_pane: "%19"
 - [x] T1 Add the user table
 - [-] T2 Rename the column -- the old name stays
 ### Phase 2
-- [~] T3 Add the token store
+- [~] T3 Add the token store <!-- owner: %19 -->
 - [ ] T4 Wire the login form
 - [!] T5 Rotate the signing key -- waiting on ops
 
@@ -74,6 +74,7 @@ Anything here is free text and is not counted.
 - **Frontmatter** is optional: `plan: 1`, `title`, `status` (`active`, `paused` or `done`; `active` when absent) and `owner_pane` (a tmux pane id such as `%19`). It is read line by line as `key: value`, so a stray colon never makes the file unreadable. A double-quoted value is read as JSON would read it.
 - **A task** is a line at column 0, `- [S] ID Title`, under a `## Tasks` heading. `S` is a space (to do), `~` (in progress), `x` or `X` (done), `-` (skipped) or `!` (blocked). Skipped and blocked tasks end ` -- reason`.
 - **An id** is the first word, and it must contain a digit (`T1`, `CLI-D18`, `1.2`). A trailing colon is allowed. A first word with a digit is always read as the id (`404 page` has the id `404`), so start a task with its id.
+- **An owner** is an HTML comment at the end of a task line, `<!-- owner: %19 -->`: the tmux pane working that task. Only a pane id is read; no comment means no owner. Older CLIs strip the comment like any other, so the line still reads as the same plain task, and a plan without owners reads as before. The frontmatter `owner_pane` is the pane working the plan as a whole.
 - **Not counted:** indented checkboxes, fenced code, HTML comments, and everything under a later `#` or `##` heading such as `## Task details`.
 - **Phase:** the nearest heading above the task that is not `Tasks` (`###` and deeper headings under `## Tasks`).
 - Counts: `left = todo + in_progress + blocked`; `percent = (done + skipped) / total`, rounded. `current` is the first in-progress task, else the first to do.
@@ -86,7 +87,9 @@ The parser never fails. It reads at most 1 MB, and it returns `warnings` for wha
 | `bad_state` | A box character is not one of the six states (counted as to do), or `status:` is not `active`, `paused` or `done` (read as `active`) |
 | `duplicate_id` | An id is used on an earlier line (both are counted) |
 | `missing_reason` | A skipped or blocked task has no ` -- reason` (counted) |
+| `bad_owner` | An owner comment holds something that is not a tmux pane id (the task has no owner) |
 | `owner_pane_unknown` | `owner_pane` is not a pane of the workspace's session; only said when the agent daemon answered and the session runs |
+| `task_owner_unknown` | The owner of a task still left (to do, in progress or blocked) is not a pane of the workspace's session (the warning names the task line); only said when the agent daemon answered and the session runs |
 | `truncated` | The file is longer than 1 MB; only the start was read |
 | `unreadable` | The file exists but can't be read; reported as an empty plan |
 
@@ -119,7 +122,7 @@ The plan is also the handoff doc: with no `--handoff-doc`, [`handoff check` and 
 ## JSON output
 
 ```json
-{"schema_version":1,"ok":true,"plans":[{"workspace":"api.worktree-x","project":"api","path":"/abs/IMPLEMENTATION_PLAN.md","exists":true,"title":"Auth rewrite","status":"active","state":"working","owner_pane":"%19","pane_state":"working","updated_at":"2026-10-12T14:03:11Z","signature":"1791850994123456789:8841","counts":{"total":20,"done":7,"in_progress":1,"skipped":1,"blocked":0,"todo":11,"left":12},"percent":40,"current":{"id":"T9","title":"Add the token store","phase":"Phase 2"},"tasks":[{"id":"T1","title":"Add the user table","state":"done","reason":null,"phase":"Phase 1","line":14}],"open_asks":0,"warnings":[{"code":"no_id","line":31,"message":"No task id: start the task with an id such as T1."}]}]}
+{"schema_version":1,"ok":true,"plans":[{"workspace":"api.worktree-x","project":"api","path":"/abs/IMPLEMENTATION_PLAN.md","exists":true,"title":"Auth rewrite","status":"active","state":"working","owner_pane":"%19","pane_state":"working","updated_at":"2026-10-12T14:03:11Z","signature":"1791850994123456789:8841","counts":{"total":20,"done":7,"in_progress":1,"skipped":1,"blocked":0,"todo":11,"left":12},"percent":40,"current":{"id":"T9","title":"Add the token store","phase":"Phase 2"},"tasks":[{"id":"T1","title":"Add the user table","state":"done","reason":null,"phase":"Phase 1","line":14,"owner":null,"owner_state":null}],"open_asks":0,"warnings":[{"code":"no_id","line":31,"message":"No task id: start the task with an id such as T1."}]}]}
 ```
 
 | Field | Meaning |
@@ -131,7 +134,7 @@ The plan is also the handoff doc: with no `--handoff-doc`, [`handoff check` and 
 | `owner_pane`, `pane_state` | The frontmatter's pane, and its state (`working`, `idle`, `waiting`, ...) from the agent daemon; null when unknown |
 | `updated_at`, `signature` | The file's modification time (UTC, to the second) and `mtime_ns:size`. The signature changes when the file does, so a reader can skip a re-read when it is the same |
 | `counts`, `percent`, `current` | See above; `current` is null when nothing is left |
-| `tasks` | Every counted task: `id`, `title`, `state` (`todo`, `in_progress`, `done`, `skipped`, `blocked`), `reason`, `phase`, `line` |
+| `tasks` | Every counted task: `id`, `title`, `state` (`todo`, `in_progress`, `done`, `skipped`, `blocked`), `reason`, `phase`, `line`, `owner` (the pane id in its owner comment, or null) and `owner_state` (that pane's state from the agent daemon, null when unknown or without an owner). The daemon is asked when the plan or any task has an owner |
 | `open_asks` | Open `workspace ask` questions in the workspace |
 | `warnings` | `{code, line, message}`; `line` is null for a warning about the whole file |
 

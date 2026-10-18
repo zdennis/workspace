@@ -110,7 +110,53 @@ RSpec.describe Workspace::PlanState do
         "state" => "working", "owner_pane" => "%19", "pane_state" => "working", "updated_at" => "2026-10-12T14:03:11Z", "signature" => "1:2",
         "percent" => 50, "open_asks" => 0, "warnings" => [])
       expect(row["current"]).to eq("id" => "T2", "title" => "b", "phase" => "Phase 1")
-      expect(row["tasks"].first).to eq("id" => "T1", "title" => "a", "state" => "done", "reason" => nil, "phase" => "Phase 1", "line" => 7)
+      expect(row["tasks"].first).to eq("id" => "T1", "title" => "a", "state" => "done", "reason" => nil, "phase" => "Phase 1", "line" => 7,
+        "owner" => nil, "owner_state" => nil)
+    end
+
+    describe "task owners" do
+      let(:owned) do
+        Workspace::PlanFile.parse("## Tasks\n- [~] T1 a <!-- owner: %19 -->\n- [~] T2 b <!-- owner: %4 -->\n- [ ] T3 c\n")
+      end
+
+      it "gives each task its owner and the owner pane's state from the daemon" do
+        row = state.row(workspace: "w", project: "w", path: "/p", plan: owned, session_live: true,
+          panes: [{"pane_id" => "%19", "state" => "working"}, {"pane_id" => "%4", "state" => "idle"}])
+
+        expect(row["tasks"].map { |task| task.values_at("id", "state", "owner", "owner_state") }).to eq([
+          ["T1", "in_progress", "%19", "working"], ["T2", "in_progress", "%4", "idle"], ["T3", "todo", nil, nil]
+        ])
+        expect(row["warnings"]).to eq([])
+      end
+
+      it "warns task_owner_unknown, with the task's line, for an owner the daemon does not list" do
+        row = state.row(workspace: "w", project: "w", path: "/p", plan: owned, session_live: true, panes: [{"pane_id" => "%19", "state" => "idle"}])
+
+        expect(row["warnings"]).to contain_exactly(a_hash_including("code" => "task_owner_unknown", "line" => 3))
+        expect(row["tasks"][1]["owner_state"]).to be_nil
+      end
+
+      it "does not warn about the gone owner of a done or skipped task, and sorts the warnings by line" do
+        plan = Workspace::PlanFile.parse("## Tasks\n- [x] T1 a <!-- owner: %1 -->\n- [-] T2 b -- no <!-- owner: %1 -->\n- [ ] T3 c <!-- owner: %1 -->\n- [ ] no id\n")
+        row = state.row(workspace: "w", project: "w", path: "/p", plan: plan, session_live: true, panes: [])
+
+        expect(row["warnings"].map { |w| w.values_at("code", "line") }).to eq([["task_owner_unknown", 4], ["no_id", 5]])
+      end
+
+      it "leaves owner_state null and does not warn when the panes are unknown or the session is stopped" do
+        [[true, nil], [false, []]].each do |live, panes|
+          row = state.row(workspace: "w", project: "w", path: "/p", plan: owned, session_live: live, panes: panes)
+
+          expect(row["tasks"].map { |task| task["owner_state"] }).to eq([nil, nil, nil])
+          expect(row["warnings"]).to eq([])
+        end
+      end
+
+      it "does not let a task owner decide the plan's state" do
+        row = state.row(workspace: "w", project: "w", path: "/p", plan: owned, session_live: true, panes: [{"pane_id" => "%19", "state" => "working"}, {"pane_id" => "%4", "state" => "idle"}])
+
+        expect(row).to include("state" => "idle", "owner_pane" => nil, "pane_state" => nil)
+      end
     end
 
     it "warns owner_pane_unknown when the daemon knows panes and none is the owner" do

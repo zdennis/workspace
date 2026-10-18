@@ -23,6 +23,9 @@ module Workspace
     # Seconds an owner pane may idle before the plan reads `stalled` (the default of `plan.stall_seconds`).
     DEFAULT_STALL_SECONDS = ConfigSchema.default("plan.stall_seconds")
 
+    # The task states counted in `left`.
+    LEFT_STATES = %w[todo in_progress blocked].freeze
+
     # @param clock [#call] returns the current Time
     def initialize(clock: -> { Time.now })
       @clock = clock
@@ -72,13 +75,27 @@ module Workspace
       pane_state = pane && pane["state"]
       derived = derive(plan: plan, session_live: session_live, pane_state: pane_state, pane_since: pane && pane["state_since"],
         open_asks: open_asks, stall_seconds: stall_seconds)
+      tasks = plan.tasks.map { |task| task_row(task, panes, session_live, warnings) }
+      warnings = warnings.each_with_index.sort_by { |warning, i| [warning["line"] || Float::INFINITY, i] }.map(&:first)
       {"workspace" => workspace, "project" => project, "path" => path, "exists" => true, "title" => plan.title, "status" => plan.status,
        "state" => derived, "owner_pane" => owner, "pane_state" => pane_state, "updated_at" => plan.updated_at, "signature" => plan.signature,
-       "counts" => plan.counts, "percent" => plan.percent, "current" => plan.current, "tasks" => plan.tasks.map(&:to_h),
+       "counts" => plan.counts, "percent" => plan.percent, "current" => plan.current, "tasks" => tasks,
        "open_asks" => open_asks, "warnings" => warnings}
     end
 
     private
+
+    # A task with its owner pane's state (`owner_state`, nil when unknown); an owner of a task
+    # still left that the daemon does not list adds `task_owner_unknown` to +warnings+ (a done
+    # task keeps its owner comment after the pane is gone, which is no problem).
+    def task_row(task, panes, session_live, warnings)
+      owner = task.owner
+      pane = owner && panes&.find { |candidate| candidate["pane_id"] == owner }
+      if owner && panes && !pane && session_live != false && LEFT_STATES.include?(task.state)
+        warnings << PlanFile.warning("task_owner_unknown", task.line, "Task #{task.id || "on line #{task.line}"} is owned by #{owner}, which is not a pane of this workspace's session.")
+      end
+      task.to_h.merge("owner_state" => pane && pane["state"])
+    end
 
     def missing_row(workspace, project, path)
       empty = PlanFile.parse("")

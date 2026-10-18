@@ -354,9 +354,14 @@ module Workspace
         return @plan_state.row(workspace: name, project: project, path: file, plan: plan) if plan.nil? || plan.tasks.empty?
 
         live = session_live?(name, memo)
-        panes = (plan.owner_pane && live != false) ? read_panes(name) : nil
+        panes = (owned?(plan) && live != false) ? read_panes(name) : nil
         @plan_state.row(workspace: name, project: project, path: file, plan: plan, session_live: live, panes: panes,
           open_asks: open_asks(name), stall_seconds: @plan_config.stall_seconds_for(name))
+      end
+
+      # Whether the plan or any of its tasks names an owner pane, so the daemon is worth asking.
+      def owned?(plan)
+        !plan.owner_pane.nil? || plan.tasks.any?(&:owner)
       end
 
       def broken_row(name, error)

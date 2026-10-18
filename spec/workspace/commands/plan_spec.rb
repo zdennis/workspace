@@ -97,6 +97,15 @@ RSpec.describe Workspace::Commands::Plan do
       expect(row["tasks"].size).to eq(3)
     end
 
+    it "asks the daemon for the task owners' states when only tasks have owners" do
+      write_plan("api", "## Tasks\n- [~] T1 a <!-- owner: %7 -->\n- [ ] T2 b\n")
+      allow(snapshot_client).to receive(:fetch).with("api", timeout: 1.0).and_return("panes" => [{"pane_id" => "%7", "state" => "working"}])
+
+      command.status(names: ["api"], json: true)
+
+      expect(document["plans"].first["tasks"].first).to include("id" => "T1", "owner" => "%7", "owner_state" => "working")
+    end
+
     it "names the parent project of a worktree workspace" do
       write_plan("api.worktree-x", "## Tasks\n- [ ] T1 a\n")
 

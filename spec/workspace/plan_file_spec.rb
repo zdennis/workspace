@@ -545,4 +545,144 @@ RSpec.describe Workspace::PlanFile do
       expect(content).to eq("---\nstatus: active\nstatus: paused\n---\n" + body)
     end
   end
+
+  describe ".parse task owners" do
+    it "reads the pane id of an owner comment at the end of a task line" do
+      plan = parse(plan_text("## Tasks", "- [~] T1 First <!-- owner: %19 -->", "- [!] T2 Second -- needs a key <!--owner:%4-->", "- [ ] T3 Third"))
+
+      expect(plan.tasks.map { |t| [t.id, t.title, t.state, t.reason, t.owner] }).to eq([
+        ["T1", "First", "in_progress", nil, "%19"], ["T2", "Second", "blocked", "needs a key", "%4"], ["T3", "Third", "todo", nil, nil]
+      ])
+      expect(plan.tasks.first.to_h).to include("owner" => "%19")
+      expect(plan.warnings).to eq([])
+    end
+
+    it "reads the same id, title, state, reason, counts and current with or without owners" do
+      plain = parse(plan_text("## Tasks", "- [~] T1 First", "- [!] T2 Second -- why", "- [ ] T3 Third"))
+      owned = parse(plan_text("## Tasks", "- [~] T1 First <!-- owner: %19 -->", "- [!] T2 Second -- why <!-- owner: %4 -->", "- [ ] T3 Third"))
+
+      strip = ->(plan) { plan.tasks.map { |t| t.to_h.except("owner") } }
+      expect(strip.call(owned)).to eq(strip.call(plain))
+      expect([owned.counts, owned.current, owned.percent]).to eq([plain.counts, plain.current, plain.percent])
+    end
+
+    it "ignores other comments and takes the first owner comment" do
+      plan = parse(plan_text("## Tasks", "- [ ] T1 First <!-- note --> <!-- owner: %2 --> <!-- owner: %3 -->"))
+
+      expect(plan.tasks.first.owner).to eq("%2")
+      expect(plan.tasks.first.title).to eq("First")
+    end
+
+    it "warns bad_owner and gives no owner for a value that is not a pane id; an empty one is no owner" do
+      plan = parse(plan_text("## Tasks", "- [ ] T1 First <!-- owner: alice -->", "- [ ] T2 Second <!-- owner: -->"))
+
+      expect(plan.tasks.map(&:owner)).to eq([nil, nil])
+      expect(plan.warnings).to contain_exactly(a_hash_including("code" => "bad_owner", "line" => 2))
+    end
+
+    it "does not read an owner from a comment that is still open at the end of the line" do
+      plan = parse(plan_text("## Tasks", "- [ ] T1 First <!-- owner: %2", "-->", "- [ ] T2 Second"))
+
+      expect(plan.tasks.map { |t| [t.id, t.owner] }).to eq([["T1", nil], ["T2", nil]])
+    end
+  end
+
+  describe ".set_task" do
+    around do |example|
+      Dir.mktmpdir("plan-task") do |dir|
+        @path = File.join(dir, "IMPLEMENTATION_PLAN.md")
+        example.run
+      end
+    end
+
+    def write(text) = File.binwrite(@path, text)
+
+    def content = File.binread(@path)
+
+    let(:head) { "---\nplan: 1\n---\n# Plan\n\n## Tasks\n" }
+
+    it "adds an owner comment and changes the box, keeping every other byte" do
+      write(head + "- [ ] T1 One\n- [ ] T2 Two  \n## Task details\n- [ ] T2 not a task\n")
+
+      expect(described_class.set_task(@path, "T2", state: "in_progress", owner: "%19")).to be true
+
+      expect(content).to eq(head + "- [ ] T1 One\n- [~] T2 Two <!-- owner: %19 -->\n## Task details\n- [ ] T2 not a task\n")
+      expect(described_class.read(@path).tasks.last.to_h).to include("id" => "T2", "state" => "in_progress", "owner" => "%19")
+    end
+
+    it "replaces an owner in place and keeps a reason and CRLF line endings" do
+      write("## Tasks\r\n- [!] T1 One -- why <!-- owner: %3 --> tail\r\n")
+
+      described_class.set_task(@path, "T1", owner: "%8")
+
+      expect(content).to eq("## Tasks\r\n- [!] T1 One -- why <!-- owner: %8 --> tail\r\n")
+    end
+
+    it "removes the owner comment with owner: nil" do
+      write("## Tasks\n- [~] T1 One <!-- owner: %3 -->\n")
+
+      described_class.set_task(@path, "T1", state: "todo", owner: nil)
+
+      expect(content).to eq("## Tasks\n- [ ] T1 One\n")
+    end
+
+    it "leaves the owner alone by default and writes nothing when the line already reads that way" do
+      write("## Tasks\n- [~] T1 One <!-- owner: %3 -->\n")
+
+      expect(described_class.set_task(@path, "T1", state: "in_progress")).to be false
+      expect(described_class.set_task(@path, "T1", owner: "%3")).to be false
+      expect(described_class.set_task(@path, "T1", state: "done")).to be true
+      expect(content).to eq("## Tasks\n- [x] T1 One <!-- owner: %3 -->\n")
+    end
+
+    it "fixes an unknown box character when it sets the state" do
+      write("## Tasks\n- [é] T1 One\n")
+
+      described_class.set_task(@path, "T1", state: "blocked")
+
+      expect(content).to eq("## Tasks\n- [!] T1 One\n")
+    end
+
+    it "raises unknown_task for an id that is not a task" do
+      write("## Tasks\n- [ ] T1 One\n## Task details\n- [ ] T9 not counted\n")
+
+      expect { described_class.set_task(@path, "T9", owner: "%1") }
+        .to raise_error(Workspace::Error) { |error| expect(error.code).to eq("unknown_task") }
+      expect(content).to eq("## Tasks\n- [ ] T1 One\n## Task details\n- [ ] T9 not counted\n")
+    end
+
+    it "refuses an owner that would not read back: after a comment left open, or inside a nested one" do
+      ["## Tasks\n- [ ] T1 One <!-- open\n-->\n", "## Tasks\n- [ ] T1 One <!-- x <!-- owner: %1 -->\n"].each do |text|
+        write(text)
+
+        expect { described_class.set_task(@path, "T1", owner: "%8") }.to raise_error(Workspace::Error, /can't be rewritten/)
+        expect(content).to eq(text)
+      end
+    end
+
+    it "removes a malformed owner comment with owner: nil" do
+      write("## Tasks\n- [ ] T1 One <!-- owner: alice -->\n")
+
+      expect(described_class.set_task(@path, "T1", owner: nil)).to be true
+
+      expect(content).to eq("## Tasks\n- [ ] T1 One\n")
+    end
+
+    it "keeps one owner comment: replaces the first and drops the rest" do
+      write("## Tasks\n- [ ] T1 One <!-- owner: %2 --> <!-- note --> <!-- owner: %3 -->\n")
+
+      described_class.set_task(@path, "T1", owner: "%9")
+
+      expect(content).to eq("## Tasks\n- [ ] T1 One <!-- owner: %9 --> <!-- note -->\n")
+    end
+
+    it "rejects a value that is not a pane id before reading anything" do
+      expect { described_class.set_task(@path, "T1", owner: "alice") }.to raise_error(ArgumentError)
+      expect { described_class.set_task(@path, "T1", state: "nope") }.to raise_error(ArgumentError)
+    end
+
+    it "raises ENOENT when there is no file" do
+      expect { described_class.set_task(@path, "T1", owner: "%1") }.to raise_error(Errno::ENOENT)
+    end
+  end
 end

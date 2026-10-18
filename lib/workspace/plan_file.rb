@@ -17,6 +17,9 @@ module Workspace
   # - A task is a column-0 line `- [S] ID Title` under a `## Tasks` heading. `S` is
   #   a space (to do), `~` (in progress), `x` or `X` (done), `-` (skipped) or `!`
   #   (blocked). Skipped and blocked tasks end ` -- reason`.
+  # - A task may end with an owner comment, `<!-- owner: %19 -->`: the tmux pane
+  #   working it. Older readers strip it like any other comment, so the line still
+  #   reads as the same plain task.
   # - Not counted: indented checkboxes, fenced code, HTML comments, and anything
   #   after the next `#` or `##` heading (such as `## Task details`).
   # - A task's phase is the nearest heading above it that is not `Tasks`.
@@ -46,6 +49,15 @@ module Workspace
     KEY_LINE = /\A([A-Za-z_][\w-]*)\s*:\s*(.*?)\s*\z/
     private_constant :KEY_LINE
 
+    # A tmux pane id, the only value an owner comment may hold.
+    PANE_ID = /\A%\d+\z/
+
+    # The box character written for each state.
+    STATE_BOXES = {"todo" => " ", "in_progress" => "~", "done" => "x", "skipped" => "-", "blocked" => "!"}.freeze
+
+    OWNER_COMMENT = /<!--\s*owner\s*:(.*?)-->/i
+    private_constant :OWNER_COMMENT
+
     # One task line.
     #
     # @!attribute id [String, nil] the first word when it looks like an id (it has a digit); nil otherwise
@@ -54,10 +66,11 @@ module Workspace
     # @!attribute reason [String, nil] the text after ` -- ` on a skipped or blocked task
     # @!attribute phase [String, nil] the nearest heading above that is not `Tasks`
     # @!attribute line [Integer] the 1-based line number in the file
-    Task = Struct.new(:id, :title, :state, :reason, :phase, :line, keyword_init: true) do
+    # @!attribute owner [String, nil] the pane id in the line's `<!-- owner: %19 -->` comment; nil without one
+    Task = Struct.new(:id, :title, :state, :reason, :phase, :line, :owner, keyword_init: true) do
       # @return [Hash] the task as `plan status --json` lists it
       def to_h
-        {"id" => id, "title" => title, "state" => state, "reason" => reason, "phase" => phase, "line" => line}
+        {"id" => id, "title" => title, "state" => state, "reason" => reason, "phase" => phase, "line" => line, "owner" => owner}
       end
     end
 
@@ -153,17 +166,96 @@ module Workspace
     # instance because an agent edited it, the edit is made again on what is there now. A file
     # that changes under a second try is left alone.
     def self.set_frontmatter(path, key, value, quote: false)
+      rewrite(path) { |bytes| with_frontmatter_value(bytes, key, value, quote) }
+    end
+    private_class_method :set_frontmatter
+
+    # Leaves an owner as it is in {.set_task}.
+    KEEP = Object.new.freeze
+
+    # Rewrites one task's line: its box character, its owner comment, or both. Every other byte
+    # of the line and of the file stays as it is; a ` -- reason` is not added or removed. Written
+    # like {.set_status}: whole file read, temp file and rename, one retry when the file changed
+    # under the write. The new text is parsed again before it is written, and a line that would
+    # not read back as asked (an owner inside a comment left open, say) is refused.
+    #
+    # @param path [String] the plan's absolute path
+    # @param id [String] the task's id (the first task with it when the id is repeated)
+    # @param state [String, nil] one of {TASK_STATES}; nil leaves the box as it is
+    # @param owner [String, nil, KEEP] a pane id such as `%19` to set, nil to remove the comment, {KEEP} to leave it
+    # @return [Boolean] whether the file changed
+    # @raise [Errno::ENOENT] when there is no file
+    # @raise [Workspace::Error] code `unknown_task` when no task has the id, `plan_write_conflict` as {.set_status};
+    #   a plain error when the line is not UTF-8 or would not read back as asked
+    def self.set_task(path, id, state: nil, owner: KEEP)
+      raise ArgumentError, "unknown state #{state.inspect}" if state && !STATE_BOXES.key?(state)
+      raise ArgumentError, "owner must be a pane id" unless owner.equal?(KEEP) || owner.nil? || owner.to_s.match?(PANE_ID)
+      rewrite(path) { |bytes| with_task_line(bytes, path, id, state, owner) }
+    end
+
+    # The read, change and rename loop every writer goes through.
+    def self.rewrite(path)
       target = File.realpath(path)
       2.times do
         bytes, signature = File.open(target, "rb") { |file| [file.read, signature_for(file.stat)] }
-        updated = with_frontmatter_value(bytes, key, value, quote)
+        updated = yield(bytes)
         return false if updated.nil?
         return true if replace_unless_changed(target, updated, signature)
       end
       raise Workspace::Error.new("The plan #{path} changed while it was being written. Nothing was changed; try again.",
         code: "plan_write_conflict", details: {"path" => path})
     end
-    private_class_method :set_frontmatter
+    private_class_method :rewrite
+
+    # @return [String, nil] the new bytes, nil when the line already reads that way
+    def self.with_task_line(bytes, path, id, state, owner)
+      plan = parse(bytes.dup.force_encoding(Encoding::UTF_8).scrub)
+      task = plan.tasks.find { |candidate| candidate.id == id }
+      raise unknown_task(path, id) unless task
+
+      lines = bytes.lines
+      raw = lines[task.line - 1]
+      ending = line_ending(raw)
+      text = raw.byteslice(0, raw.bytesize - ending.bytesize).dup.force_encoding(Encoding::UTF_8)
+      raise Workspace::Error.new("Line #{task.line} of the plan #{path} is not valid UTF-8, so it was not changed.", details: {"path" => path}) unless text.valid_encoding?
+
+      updated = text
+      updated = updated.sub(/\A- \[.\]/) { "- [#{STATE_BOXES.fetch(state)}]" } if state && task.state != state
+      updated = with_owner(updated, owner) unless owner.equal?(KEEP)
+      return nil if updated == text
+
+      lines[task.line - 1] = updated.b + ending
+      result = lines.join
+      reread = parse(result.dup.force_encoding(Encoding::UTF_8).scrub)
+      check = reread.tasks.find { |candidate| candidate.id == id }
+      reads_back = reread.tasks.size == plan.tasks.size && check && (state.nil? || check.state == state) && (owner.equal?(KEEP) || check.owner == owner)
+      unless reads_back
+        raise Workspace::Error.new("Line #{task.line} of the plan #{path} can't be rewritten to read that way (an open or nested comment?), so nothing was changed.",
+          details: {"path" => path, "line" => task.line})
+      end
+      result
+    end
+    private_class_method :with_task_line
+
+    # Replaces the first owner comment, drops any others, or adds one at the end of the line.
+    def self.with_owner(text, owner)
+      found = false
+      updated = text.gsub(/([ \t]*)#{OWNER_COMMENT}/o) do
+        keep = owner && !found
+        found = true
+        keep ? "#{$1}<!-- owner: #{owner} -->" : ""
+      end
+      return updated if owner.nil? || found
+      "#{text.sub(/[ \t]+\z/, "")} <!-- owner: #{owner} -->"
+    end
+    private_class_method :with_owner
+
+    # @param path [String]
+    # @param id [String]
+    # @return [Workspace::Error] code `unknown_task`
+    def self.unknown_task(path, id)
+      Workspace::Error.new("No task #{id} in the plan #{path}.", code: "unknown_task", details: {"path" => path, "task" => id})
+    end
 
     def self.frontmatter_of(path)
       read(path)&.frontmatter || raise(Errno::ENOENT, path)
@@ -336,6 +428,7 @@ module Workspace
           fence = [opening[1][0], opening[1].size]
           next
         end
+        raw = line
         line, in_comment = strip_comments(line)
         if (heading = line.match(/\A(\#{1,6})(?:\s+(.*?))?(?:\s+\#+)?\s*\z/))
           level = heading[1].size
@@ -347,7 +440,7 @@ module Workspace
           end
           next
         end
-        read_task(line, index + 1, phase) if in_tasks
+        read_task(line, raw, index + 1, phase) if in_tasks
       end
     end
 
@@ -363,9 +456,10 @@ module Workspace
       start ? [line[0, start], true] : [line, false]
     end
 
-    def read_task(line, number, phase)
+    def read_task(line, raw, number, phase)
       match = line.match(/\A- \[(.)\](?:\s+(.*))?\z/)
       return unless match
+      owner = read_owner(raw, number)
       rest = match[2].to_s.strip
       state = BOX_STATES[match[1]]
       unless state
@@ -383,7 +477,18 @@ module Workspace
         title, reason = split_reason(title)
         @warnings << self.class.warning("missing_reason", number, "A #{state} task ends with ' -- reason'.") unless reason
       end
-      @tasks << Task.new(id: id, title: title, state: state, reason: reason, phase: phase, line: number)
+      @tasks << Task.new(id: id, title: title, state: state, reason: reason, phase: phase, line: number, owner: owner)
+    end
+
+    # The pane id in the line's first closed `<!-- owner: ... -->` comment.
+    def read_owner(raw, number)
+      comment = raw.scan(/<!--(.*?)-->/).flatten.find { |text| text.match?(/\A\s*owner\s*:/i) }
+      return unless comment
+      value = comment.sub(/\A\s*owner\s*:/i, "").strip
+      return if value.empty?
+      return value if value.match?(PANE_ID)
+      @warnings << self.class.warning("bad_owner", number, "Owner '#{value[0, 40]}' is not a tmux pane id such as %19; the task has no owner.")
+      nil
     end
 
     def split_id(rest)
