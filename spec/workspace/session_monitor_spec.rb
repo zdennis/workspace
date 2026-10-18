@@ -410,6 +410,14 @@ RSpec.describe Workspace::SessionMonitor do
       end
     end
 
+    it "keeps waiting when another tool starts, since tools run side by side" do
+      notify
+
+      monitor.record("event" => "tool_start", "pane_id" => "%2", "tool" => "Read")
+
+      expect(pane("%2")).to include("state" => "waiting", "waiting_since" => now.iso8601)
+    end
+
     it "keeps the main agent waiting when a sub-agent stops or uses a tool" do
       notify
 

@@ -387,15 +387,155 @@ RSpec.describe Workspace::Commands::SessionEvent do
       expect(received["workspace"]).to eq("other")
     end
 
-    context "events it must not forward" do
-      it "ignores a PreToolUse for a tool other than Task" do
-        expect(UNIXSocket).not_to receive(:open)
+    describe "tool uses" do
+      let(:checkout) { File.join(tmpdir, "repo") }
 
-        invoke({"hook_event_name" => "PreToolUse", "tool_name" => "Read"})
+      before do
+        FileUtils.mkdir_p(File.join(checkout, "src", "app"))
+        FileUtils.mkdir_p(File.join(checkout, ".git"))
       end
 
+      it "forwards a PreToolUse for any tool as a tool start with its name and id" do
+        event = deliver("hook_event_name" => "PreToolUse", "tool_name" => "Bash", "tool_use_id" => "toolu_1",
+          "tool_input" => {"command" => "rm -rf secret", "description" => "Delete the secret"})
+
+        expect(event).to include("event" => "tool_start", "tool" => "Bash", "tool_use_id" => "toolu_1")
+        expect(event).not_to have_key("agent")
+        expect(event).not_to have_key("path")
+      end
+
+      it "never forwards the tool's input, its response, or the command" do
+        event = deliver("hook_event_name" => "PostToolUse", "tool_name" => "Bash", "cwd" => checkout,
+          "tool_input" => {"command" => "echo hunter2"}, "tool_response" => {"stdout" => "hunter2"})
+
+        expect(JSON.generate(event)).not_to include("hunter2")
+        expect(event.keys).not_to include("tool_input", "tool_response")
+      end
+
+      it "names a sub-agent only on a Task start, never from another tool's description" do
+        event = deliver("hook_event_name" => "PostToolUse", "tool_name" => "Bash",
+          "tool_input" => {"command" => "ls", "description" => "List files"})
+
+        expect(event).not_to have_key("agent")
+        expect(JSON.generate(event)).not_to include("List files")
+      end
+
+      it "forwards a PostToolUse with the tool, whether it worked, and a duration the payload gives" do
+        event = deliver("hook_event_name" => "PostToolUse", "tool_name" => "Bash", "tool_use_id" => "toolu_1",
+          "duration_ms" => 1234.4, "tool_response" => {"stdout" => "x"})
+
+        expect(event).to include("event" => "tool_use", "tool" => "Bash", "ok" => true, "duration_ms" => 1234)
+      end
+
+      it "reads a failed tool from the response, and leaves out a duration that is not a number" do
+        [{"is_error" => true}, {"success" => false}, {"interrupted" => true}].each do |response|
+          event = deliver("hook_event_name" => "PostToolUse", "tool_name" => "Write", "tool_response" => response, "duration_ms" => "5")
+
+          expect(event).to include("ok" => false)
+          expect(event).not_to have_key("duration_ms")
+        end
+      end
+
+      it "counts a response that is not an object as a tool that worked" do
+        expect(deliver("hook_event_name" => "PostToolUse", "tool_name" => "Read", "tool_response" => "text")).to include("ok" => true)
+      end
+
+      it "forwards a file tool's path relative to the checkout, from a directory inside it" do
+        %w[Edit Write Read MultiEdit].each do |tool|
+          event = deliver("hook_event_name" => "PreToolUse", "tool_name" => tool, "cwd" => File.join(checkout, "src"),
+            "tool_input" => {"file_path" => File.join(checkout, "src", "app", "x.ts"), "content" => "secret"})
+
+          expect(event["path"]).to eq("src/app/x.ts")
+          expect(JSON.generate(event)).not_to include("secret")
+        end
+      end
+
+      it "reads a notebook tool's notebook_path, and resolves a relative path against cwd" do
+        event = deliver("hook_event_name" => "PostToolUse", "tool_name" => "NotebookEdit", "cwd" => File.join(checkout, "src"),
+          "tool_input" => {"notebook_path" => "../nb/a.ipynb"})
+
+        expect(event["path"]).to eq("nb/a.ipynb")
+      end
+
+      it "leaves out a path outside the checkout, one with control characters, and a non-file tool's" do
+        outside = deliver("hook_event_name" => "PreToolUse", "tool_name" => "Read", "cwd" => checkout,
+          "tool_input" => {"file_path" => "/etc/passwd"})
+        control = deliver("hook_event_name" => "PreToolUse", "tool_name" => "Read", "cwd" => checkout,
+          "tool_input" => {"file_path" => File.join(checkout, "a\e[31m.rb")})
+        grep = deliver("hook_event_name" => "PreToolUse", "tool_name" => "Grep", "cwd" => checkout,
+          "tool_input" => {"path" => File.join(checkout, "src")})
+        nowhere = deliver("hook_event_name" => "PreToolUse", "tool_name" => "Read", "cwd" => "/",
+          "tool_input" => {"file_path" => "/etc/passwd"})
+
+        [outside, control, grep, nowhere].each { |event| expect(event).not_to have_key("path") }
+      end
+
+      it "forwards a Task start as a sub-agent start with its description and type, cut and cleaned" do
+        event = deliver("hook_event_name" => "PreToolUse", "tool_name" => "Task", "tool_use_id" => "toolu_9",
+          "tool_input" => {"description" => "Review\nthe #{"x" * 300}", "subagent_type" => "reviewer", "prompt" => "the secret plan"})
+
+        expect(event).to include("event" => "subagent_start", "tool" => "Task", "tool_use_id" => "toolu_9", "subagent_type" => "reviewer")
+        expect(event["description"]).to start_with("Review the x")
+        expect(event["description"].length).to eq(described_class::MAX_DESCRIPTION_LENGTH)
+        expect(JSON.generate(event)).not_to include("secret plan")
+      end
+
+      it "cuts a tool name and leaves out one that is not text" do
+        expect(deliver("hook_event_name" => "PreToolUse", "tool_name" => "T" * 100)["tool"].length).to eq(described_class::MAX_NAME_LENGTH)
+        expect(deliver("hook_event_name" => "PreToolUse", "tool_name" => 7)).not_to have_key("tool")
+      end
+    end
+
+    it "forwards a session start's source and a session end's reason, with the agent kind" do
+      expect(deliver("hook_event_name" => "SessionStart", "source" => "resume")).to include("kind" => "claude", "source" => "resume")
+      expect(deliver("hook_event_name" => "SessionEnd", "reason" => "logout")).to include("kind" => "claude", "reason" => "logout")
+      expect(deliver("hook_event_name" => "Stop")).not_to have_key("kind")
+    end
+
+    describe "a daemon that doesn't answer" do
+      let(:fast) { {connect_timeout: 0.05, reply_timeout: 0.05} }
+
+      def invoke_fast(payload)
+        described_class.new(config: config, tmux: tmux, input: StringIO.new(JSON.generate(payload)), env: env, **fast)
+          .call
+      end
+
+      it "gives up on the reply in time, and the line still reaches the daemon" do
+        server = UNIXServer.new(socket_path)
+        started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+
+        expect(invoke_fast("hook_event_name" => "PreToolUse", "tool_name" => "Bash")).to eq(exit_code: 0)
+
+        expect(Process.clock_gettime(Process::CLOCK_MONOTONIC) - started).to be < 1
+        client = server.accept
+        expect(JSON.parse(client.gets)).to include("event" => "tool_start")
+        client.close
+      ensure
+        server&.close
+      end
+
+      it "exits 0 when the socket is there but nothing listens on it" do
+        server = UNIXServer.new(socket_path)
+        server.close
+
+        expect(invoke_fast("hook_event_name" => "Stop")).to eq(exit_code: 0)
+      end
+    end
+
+    it "still denies an edit with exit 2, and forwards nothing for it" do
+      enforcer = instance_double(Workspace::LockEnforcer, check: "edit lock held by another agent")
+      error_output = StringIO.new
+      result = described_class.new(config: config, tmux: tmux, env: env, error_output: error_output, lock_enforcer: enforcer,
+        input: StringIO.new(JSON.generate("hook_event_name" => "PreToolUse", "tool_name" => "Edit"))).call
+
+      expect(result).to eq(exit_code: 2)
+      expect(error_output.string).to include("edit lock held")
+      expect(config).not_to have_received(:agent_socket_path)
+    end
+
+    context "events it must not forward" do
       it "ignores a hook event it does not subscribe to" do
-        expect(UNIXSocket).not_to receive(:open)
+        expect(Socket).not_to receive(:new)
 
         invoke({"hook_event_name" => "PreCompact"})
       end

@@ -603,6 +603,10 @@ module Workspace
     # Notification payload carries no tool call id, so a wait can't be tied
     # to one prompt more tightly than to the agent that raised it.
     def apply_event(pane, event)
+      # A tool starting says nothing about a wait: with tools run side by side, one
+      # can start while another waits on a permission prompt.
+      return if event["event"] == "tool_start"
+
       if event["event"] == "notification"
         # A repeat notification during one wait keeps the original start, so
         # the wait is timed (and alerted) once. So does the first one after a

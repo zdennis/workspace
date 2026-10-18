@@ -1,4 +1,5 @@
 require "socket"
+require "io/wait"
 require "json"
 
 module Workspace
@@ -11,6 +12,9 @@ module Workspace
     # degrades the thing it is meant to observe, and session monitoring is not
     # worth interrupting someone's work for. Every failure path here exits 0.
     class SessionEvent
+      # A step of the delivery to the daemon ran past its time limit.
+      class DeliveryTimeout < StandardError; end
+
       # Maps each agent's own event names onto workspace's vocabulary. A new
       # agent adds a table here and an entry in {Workspace::AgentProvider}.
       CLAUDE_EVENTS = {
@@ -19,7 +23,8 @@ module Workspace
         "UserPromptSubmit" => "user_prompt",
         "Stop" => "stop",
         "SubagentStop" => "subagent_stop",
-        "PreToolUse" => "subagent_start",
+        # A PreToolUse for the Task tool is "subagent_start" instead; see {#translate}.
+        "PreToolUse" => "tool_start",
         "Notification" => "notification",
         "PostToolUse" => "tool_use"
       }.freeze
@@ -42,6 +47,30 @@ module Workspace
       # Longest stop reason forwarded to the daemon.
       MAX_STOP_REASON_LENGTH = 64
 
+      # The tool whose PreToolUse starts a sub-agent.
+      SUBAGENT_TOOL = "Task"
+
+      # Tools that work on one file, named by `file_path` or `notebook_path`
+      # in their input. Only these forward a path, made relative to the checkout.
+      FILE_TOOLS = %w[Edit Write Read MultiEdit NotebookEdit NotebookRead].freeze
+
+      # Longest tool name, tool use id and session source or reason forwarded.
+      MAX_NAME_LENGTH = 64
+
+      # Longest file path forwarded; a longer one is left out rather than cut,
+      # since a cut path names a different file.
+      MAX_PATH_LENGTH = 1024
+
+      # Longest sub-agent description forwarded.
+      MAX_DESCRIPTION_LENGTH = 120
+
+      # Seconds to wait for the daemon's socket to take the connection and the
+      # line, and then for its reply. A daemon that is hung or restarting costs a hook
+      # at most the two together; a line already written stays in the
+      # socket's buffer and the daemon reads it when it gets to it.
+      CONNECT_TIMEOUT = 0.2
+      REPLY_TIMEOUT = 0.3
+
       # @param config [Workspace::Config] socket path lookups
       # @param tmux [Workspace::Tmux] resolves the pane's session name
       # @param input [IO] stream the hook payload arrives on
@@ -62,8 +91,13 @@ module Workspace
       #   binding lists, added after its subject; nil leaves them out
       # @param dev_session_release [Workspace::DevSessionRelease, nil] stops the dev environment a session
       #   started when that session ends (never on `clear`); nil leaves it running
+      # @param connect_timeout [Numeric] seconds to wait for the daemon's socket to take the connection
+      # @param reply_timeout [Numeric] seconds to wait for the daemon's reply
       def initialize(config:, tmux:, input: $stdin, env: ENV, output: $stdout, error_output: $stderr, logger: Workspace::Logger.new,
-        lock_idle_tracker: nil, lock_enforcer: nil, session_ledger: nil, pane_bindings: nil, instruction_composer: nil, dev_session_release: nil)
+        lock_idle_tracker: nil, lock_enforcer: nil, session_ledger: nil, pane_bindings: nil, instruction_composer: nil, dev_session_release: nil,
+        connect_timeout: CONNECT_TIMEOUT, reply_timeout: REPLY_TIMEOUT)
+        @connect_timeout = connect_timeout
+        @reply_timeout = reply_timeout
         @dev_session_release = dev_session_release
         @config = config
         @tmux = tmux
@@ -209,8 +243,7 @@ module Workspace
         name = CLAUDE_EVENTS[hook]
         return nil unless name
 
-        # PreToolUse fires for every tool; only the Task tool starts a sub-agent.
-        return nil if hook == "PreToolUse" && payload["tool_name"] != "Task"
+        name = "subagent_start" if hook == "PreToolUse" && payload["tool_name"] == SUBAGENT_TOOL
 
         {
           "type" => "session_event",
@@ -227,7 +260,84 @@ module Workspace
           "message" => message_for(payload),
           "prompt" => prompt_for(payload),
           "stop_reason" => stop_reason_for(payload)
-        }.compact
+        }.merge(tool_fields(payload), session_fields(payload)).compact
+      end
+
+      # What the events stream needs to know about a tool use: its name and id,
+      # a file tool's path, and on PostToolUse whether it worked. The input and
+      # the response are read here and never forwarded.
+      def tool_fields(payload)
+        hook = payload["hook_event_name"]
+        return {} unless hook == "PreToolUse" || hook == "PostToolUse"
+
+        fields = {
+          "tool" => name_field(payload, "tool_name"),
+          "tool_use_id" => name_field(payload, "tool_use_id"),
+          "path" => relative_path(payload)
+        }
+        if hook == "PostToolUse"
+          fields["ok"] = tool_ok?(payload["tool_response"])
+          duration = payload["duration_ms"]
+          fields["duration_ms"] = duration.round if duration.is_a?(Numeric) && duration >= 0
+        end
+        if fields["tool"] == SUBAGENT_TOOL && hook == "PreToolUse" && payload["tool_input"].is_a?(Hash)
+          fields["description"] = clean(payload["tool_input"]["description"], MAX_DESCRIPTION_LENGTH)
+          fields["subagent_type"] = clean(payload["tool_input"]["subagent_type"], MAX_NAME_LENGTH)
+        end
+        fields
+      end
+
+      def session_fields(payload)
+        case payload["hook_event_name"]
+        when "SessionStart" then {"kind" => "claude", "source" => name_field(payload, "source")}
+        when "SessionEnd" then {"kind" => "claude", "reason" => name_field(payload, "reason")}
+        else {}
+        end
+      end
+
+      # Claude Code runs PostToolUse after a tool returns, failed or not; the
+      # response says which for the tools that report it.
+      def tool_ok?(response)
+        return true unless response.is_a?(Hash)
+        !(response["is_error"] == true || response["success"] == false || response["interrupted"] == true)
+      end
+
+      # The file a file tool works on, relative to the checkout the hook ran in:
+      # the nearest directory at or above `cwd` holding `.git`. A file outside it,
+      # or a path with control characters in it, is left out.
+      def relative_path(payload)
+        return nil unless FILE_TOOLS.include?(payload["tool_name"])
+        input = payload["tool_input"]
+        return nil unless input.is_a?(Hash)
+        raw = input["file_path"] || input["notebook_path"]
+        cwd = text_field(payload, "cwd")
+        return nil unless raw.is_a?(String) && !raw.empty? && cwd && !raw.match?(/[[:cntrl:]]/)
+
+        root = checkout_root(File.expand_path(cwd))
+        return nil unless root
+        path = File.expand_path(raw, cwd)
+        return nil unless path.start_with?("#{root}/")
+        relative = path.delete_prefix("#{root}/")
+        relative if relative.length <= MAX_PATH_LENGTH
+      end
+
+      def checkout_root(dir)
+        loop do
+          return dir if File.exist?(File.join(dir, ".git"))
+          parent = File.dirname(dir)
+          return nil if parent == dir
+          dir = parent
+        end
+      end
+
+      def name_field(payload, key)
+        clean(payload[key], MAX_NAME_LENGTH)
+      end
+
+      def clean(value, limit)
+        return nil unless value.is_a?(String)
+        cleaned = value.gsub(/[[:space:][:cntrl:]]+/, " ").strip[0, limit]
+        cleaned unless cleaned.empty?
       end
 
       def message_for(payload)
@@ -257,26 +367,62 @@ module Workspace
 
       def agent_for(payload)
         input = payload["tool_input"]
-        return nil unless input.is_a?(Hash)
+        return nil unless payload["hook_event_name"] == "PreToolUse" && payload["tool_name"] == SUBAGENT_TOOL && input.is_a?(Hash)
 
         name = input["subagent_type"] || input["description"]
         name ? {"name" => name} : nil
       end
 
       # A missing or dead socket is the normal case when no daemon is running,
-      # so it is logged and swallowed rather than reported.
+      # so it is logged and swallowed rather than reported. Every step is
+      # bounded ({CONNECT_TIMEOUT}, {REPLY_TIMEOUT}), since this now runs before
+      # every tool call and a hung daemon must not stall the agent.
       def deliver(workspace, event)
         path = @config.agent_socket_path(workspace)
-        UNIXSocket.open(path) do |socket|
-          socket.puts(JSON.generate(event))
-          # The daemon answers every connection. Reading the reply before
-          # closing keeps it from writing into a socket we already dropped,
-          # which it would report as a dropped message on its stderr.
-          socket.gets
+        socket = Socket.new(:UNIX, :STREAM)
+        deadline = now + @connect_timeout
+        connect(socket, path, deadline)
+        write(socket, JSON.generate(event) + "\n", deadline)
+        # The daemon answers every connection. Waiting a moment for the reply
+        # keeps it from writing into a socket already dropped; a reply that
+        # doesn't come in time is given up on, and the daemon logs that quietly.
+        if socket.wait_readable(@reply_timeout)
+          socket.read_nonblock(4096, exception: false)
+          @logger.debug { "session-event: sent #{event["event"]} for #{event["pane_id"]}" }
+        else
+          @logger.debug { "session-event: sent #{event["event"]} for #{event["pane_id"]}; no reply in #{@reply_timeout}s" }
         end
-        @logger.debug { "session-event: sent #{event["event"]} for #{event["pane_id"]}" }
-      rescue SystemCallError, IOError => e
-        @logger.debug { "session-event: no daemon listening on #{path} (#{e.message})" }
+      rescue SystemCallError, IOError, DeliveryTimeout => e
+        @logger.debug { "session-event: could not deliver to #{path} (#{e.class}: #{e.message})" }
+      ensure
+        socket&.close
+      end
+
+      def now
+        Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      end
+
+      # Connecting and writing share one deadline, so together they take at most {CONNECT_TIMEOUT}.
+      def connect(socket, path, deadline)
+        address = Socket.sockaddr_un(path)
+        return if socket.connect_nonblock(address, exception: false) == 0
+        raise DeliveryTimeout, "connect timed out" unless socket.wait_writable([deadline - now, 0].max)
+        result = socket.connect_nonblock(address, exception: false)
+        raise DeliveryTimeout, "connect timed out" if result == :wait_writable
+      rescue Errno::EISCONN
+        nil
+      end
+
+      def write(socket, line, deadline)
+        until line.empty?
+          written = socket.write_nonblock(line, exception: false)
+          if written == :wait_writable
+            remaining = deadline - now
+            raise DeliveryTimeout, "write timed out" unless remaining > 0 && socket.wait_writable(remaining)
+          else
+            line = line.byteslice(written..)
+          end
+        end
       end
     end
   end
