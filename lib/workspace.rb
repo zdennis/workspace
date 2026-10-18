@@ -234,6 +234,7 @@ require_relative "workspace/notes_setup"
 require_relative "workspace/plan_file"
 require_relative "workspace/spine_file"
 require_relative "workspace/spine_tree"
+require_relative "workspace/spine_writer"
 require_relative "workspace/plan_state"
 require_relative "workspace/plan_progress_watcher"
 require_relative "workspace/plan_config"
@@ -375,7 +376,7 @@ module Workspace
       main_agent: MainAgent.new(project_config: project_config))
     start_ref = StartRef.new(git: git, lineage: lineage)
     start_command = Commands::Start.new(git: git, project_config: project_config, project_settings: project_settings, launch_command: launch_command, lineage: lineage, hook_installer: hook_installer, task_store: task_store, event_log: event_log, library: library, library_installer: library_installer, notes_setup: notes_setup, instruction_composer: instruction_composer, start_ref: start_ref, main_agent: MainAgent.new(project_config: project_config), output: output, input: input)
-    spine_command = Commands::Spine.new(notes: notes_command, output: output)
+    spine_command = Commands::Spine.new(notes: notes_command, writer: SpineWriter.new, event_log: event_log, lock_dir: config.spine_lock_dir, output: output)
     ticket_command = Commands::Ticket.new(git: git, project_config: project_config, start_ref: start_ref, source: TicketSource.new, output: output)
     send_command = Commands::Send.new(locator: pane_locator, tmux: tmux, output: output)
     focus_command = Commands::Focus.new(state: state, window_manager: window_manager, tmux: tmux, pane_locator: pane_locator, output: output)

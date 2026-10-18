@@ -50,6 +50,11 @@ module Workspace
       "push_rejected" => "push: origin refused the push, or the upstream has commits the branch never had so the push was not forced. details.branch, details.upstream, details.detail, details.reason (origin_refused, would_delete_commits, upstream_has_other_commits, upstream_mismatch).",
       "template_outdated" => "start --agent-kind: the installed worktree template has no Claude Code pane to swap; run init --force. details.kind. Nothing was created.",
       "unknown_agent_kind" => "start --agent-kind named a kind that is not a known coding agent. details.kind, details.known. Nothing was created.",
+      "no_spine" => "spine set: the workspace has no spine/ folder in its notes directory. details.workspace, details.dir.",
+      "unknown_stage" => "spine set: no stage has that path. details.path, details.stages (the paths there are).",
+      "invalid_status" => "spine set: --status is not a status or an alias of one (unknown is not settable). details.status, details.allowed.",
+      "stale_revision" => "spine set --if-revision: the stage file changed since that revision. details.revision and details.status are the current ones.",
+      "spine_unwritable" => "spine set: the stage file cannot be rewritten safely, or another spine write did not finish in time. details.reason: link, not_a_file, too_large, not_utf8, no_frontmatter, no_file, missing, lock_unavailable, unreadable_result, io_error, changed_while_writing or lock_busy; details.file.",
       "handoff_unsupported_agent" => "The handoff pack was asked for, but the project's main agent is not Claude Code or Codex.",
       # Codes the agent daemon puts in its replies; `agent-run` passes them through.
       "malformed_message" => "The daemon couldn't parse the request.",

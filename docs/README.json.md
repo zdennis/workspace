@@ -112,6 +112,11 @@ The exit code is unchanged by `--json` (1 for most failures, 2 for `not_submitte
 | `plan_exists` | `plan init` found a plan already there and `--force` was not given. `details.path`. |
 | `plan_done` | `plan start` or `plan pause` found a plan that is done (`status: done`, or nothing left to do). `details.name`, `details.path`. |
 | `plan_write_conflict` | The plan file changed twice while a `plan` verb was writing it, so nothing was written; run the verb again. `details.path`. |
+| `no_spine` | `spine set` found no `spine/` folder in the workspace's notes directory (`details.workspace`, `details.dir`). |
+| `unknown_stage` | `spine set` was given a stage path no stage has (`details.path`, `details.stages` lists the paths there are). |
+| `invalid_status` | `spine set --status` is not a status or an alias of one; `unknown` can't be set (`details.status`, `details.allowed`). |
+| `stale_revision` | `spine set --if-revision` named a revision the stage file no longer has. `details.revision` and `details.status` are the current ones. |
+| `spine_unwritable` | `spine set` can't rewrite the stage file safely: `details.reason` is `link`, `not_a_file`, `too_large` (over 64 KB), `not_utf8`, `no_frontmatter` (no block closed within 100 lines), `no_file` (a folder with no stage file), `missing`, `lock_unavailable` (the lock file in the state folder can't be opened), `unreadable_result` (the change would put the closing `---` past line 100 or the status past the 40-key cap, where it could not be read back), `io_error`, `changed_while_writing`, or `lock_busy` (another write held the workspace's lock for 10 seconds); `details.file` is the file below `spine/`. With `--recursive`, `details.written` lists what was already written. |
 | `gh_unavailable` | `pr create` (or `finish --pr`) needs `gh`, which is not installed (`details.reason` `missing`) or not logged in (`not_logged_in`, with `details.detail`). |
 | `nothing_to_push` | `pr create`: the branch has no commits ahead of its base. `details.branch`, `details.base`. |
 | `dirty_worktree` | `rebase`: the workspace has changes to tracked files. `details.path`, `details.files`. |

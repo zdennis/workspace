@@ -53,6 +53,7 @@ module Workspace
         "plan" => 4,
         "ticket" => 1,
         "spine" => 1,
+        "spine_set" => 1,
         "pr_create" => 1,
         "rebase" => 2,
         "inbox" => 3,

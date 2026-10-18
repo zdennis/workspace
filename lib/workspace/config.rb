@@ -181,6 +181,14 @@ module Workspace
       File.join(state_dir, ".inbox")
     end
 
+    # Dotted, like {#inbox_dir}, so no workspace name can produce it. Holds the lock files `spine set`
+    # takes per workspace; the notes directory never holds one.
+    #
+    # @return [String] path to the directory holding one lock file per workspace
+    def spine_lock_dir
+      File.join(state_dir, ".spine")
+    end
+
     # @param kind [String] `"workspace"`, `"project"` or `"global"`
     # @param key [String, nil] the workspace name; for a project the realpath of
     #   its git common dir (or its name when it has none); unused for global

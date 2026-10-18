@@ -6018,6 +6018,74 @@ RSpec.describe Workspace::CLI do
       expect { cli.run(["spine", "show", "api"]) }.to raise_error(FakeSystemExit)
       expect(error_output.string).to include("spine is not available")
     end
+
+    describe "set" do
+      before { allow(spine_command).to receive(:set) }
+
+      def expect_set(**expected)
+        defaults = {note: nil, if_revision: nil, recursive: false, by: nil, json: false}
+        expect(spine_command).to have_received(:set).with(**defaults.merge(expected))
+      end
+
+      it "takes the workspace and the stage path, with every flag in either form" do
+        cli.run(["spine", "set", "api", "implement/api", "--status", "done", "--note", "all green", "--if-revision=9f8e7d6c", "--recursive", "--by=alice", "--json"])
+
+        expect_set(name: "api", path: "implement/api", status: "done", note: "all green", if_revision: "9f8e7d6c", recursive: true, by: "alice", json: true)
+      end
+
+      it "takes --flag=value for --status and --note, and flags before the arguments" do
+        cli.run(["spine", "set", "--status=blocked", "--note=waiting: on CI", "api", "verify"])
+
+        expect_set(name: "api", path: "verify", status: "blocked", note: "waiting: on CI")
+      end
+
+      it "reads one argument as the path of the workspace detected from the working directory" do
+        cli.run(["spine", "set", "verify", "--status", "in_progress"])
+
+        expect(detector).to have_received(:detect).with("/some/dir")
+        expect_set(name: "detected-ws", path: "verify", status: "in_progress")
+      end
+
+      it "reads the one argument as the path when --name is given" do
+        cli.run(["spine", "set", "--name=api", "verify", "--status", "done"])
+
+        expect_set(name: "api", path: "verify", status: "done")
+      end
+
+      it "needs --status and a path" do
+        [["spine", "set", "api", "verify", "--json"], ["spine", "set", "--status", "done", "--json"]].each do |argv|
+          expect { cli.run(argv) }.to raise_error(FakeSystemExit), argv.inspect
+          expect(JSON.parse(output.string.lines.last)).to include("ok" => false, "code" => "usage"), argv.inspect
+        end
+        expect(spine_command).not_to have_received(:set)
+      end
+
+      it "refuses a third argument" do
+        expect { cli.run(["spine", "set", "api", "verify", "extra", "--status", "done", "--json"]) }.to raise_error(FakeSystemExit)
+
+        expect(JSON.parse(output.string)).to include("code" => "usage")
+      end
+
+      it "fails with not_in_workspace outside a workspace" do
+        allow(detector).to receive(:detect).and_return(nil)
+
+        expect { cli.run(["spine", "set", "verify", "--status", "done", "--json"]) }.to raise_error(FakeSystemExit)
+        expect(JSON.parse(output.string)).to include("ok" => false, "code" => "not_in_workspace")
+      end
+
+      it "prints a refusal as the envelope with its details" do
+        allow(spine_command).to receive(:set).and_raise(Workspace::Error.new("changed", code: "stale_revision", details: {"revision" => "abc", "status" => "blocked"}))
+
+        expect { cli.run(["spine", "set", "api", "verify", "--status", "done", "--json"]) }.to raise_error(FakeSystemExit)
+        expect(JSON.parse(output.string)).to include("ok" => false, "code" => "stale_revision", "details" => {"revision" => "abc", "status" => "blocked"})
+      end
+
+      it "lists set in the help" do
+        cli.run(["spine", "--help"])
+
+        expect(output.string).to include("workspace spine set").and include("--status").and include("--if-revision").and include("--recursive").and include("--by")
+      end
+    end
   end
 
   describe "#run with rebase and push" do

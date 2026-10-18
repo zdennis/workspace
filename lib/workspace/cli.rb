@@ -540,7 +540,7 @@ module Workspace
           sessions        Show coding-agent sessions and sub-agents in a workspace
           snapshot        Print everything a UI polls (projects, panes, git, asks, locks, dev) as one JSON document
           step            For the agent on a workflow step: report on it (done), or see what it is (status)
-          spine           Read a workspace's plan spine (spine/ in its notes directory): show
+          spine           Read a workspace's plan spine (spine/ in its notes directory): show, set a stage's status
           start           Create a worktree and launch it (from JIRA key, PR URL or #n, or branch)
           status          Show detailed state of tracked launcher sessions
           set-command     Set the shell command for a pane in a project config (--pane <N>)
@@ -6544,15 +6544,26 @@ module Workspace
 
     def spine_parser(options)
       OptionParser.new do |opts|
-        opts.banner = "Usage: workspace spine show [WORKSPACE] [--name WORKSPACE] [--json]"
+        opts.banner = "Usage: workspace spine show [WORKSPACE] [--name WORKSPACE] [--json]\n" \
+                      "       workspace spine set [WORKSPACE] STAGE-PATH --status VALUE [--note TEXT] [--if-revision REV]\n" \
+                      "                           [--recursive] [--by LABEL] [--json]"
         opts.separator ""
-        opts.separator "Read a workspace's plan spine: the stage files in spine/ of its notes directory, one"
+        opts.separator "show reads a workspace's plan spine: the stage files in spine/ of its notes directory, one"
         opts.separator "Markdown file per stage (10-research.md, 20-plan.md, ...), and sub-stages in a folder named"
         opts.separator "like a stage file without .md. Statuses are read as one of not_started, in_progress,"
         opts.separator "blocked, completed, skipped or unknown. A bad file is a warning in the answer, never an"
         opts.separator "error, and nothing is written, created or followed through a link."
         opts.separator ""
+        opts.separator "set changes one stage's status (STAGE-PATH is the ids joined with /, as show reports `path`,"
+        opts.separator "such as verify or implement/api). It rewrites only the status, note, updated and updated_by"
+        opts.separator "lines of the stage file and writes a spine_changed event. Writers of a workspace take turns."
+        opts.separator ""
         opts.on("--name NAME", "The workspace (default: the one detected from the current directory)") { |v| options[:name] = v }
+        opts.on("--status VALUE", "set: not_started, in_progress, blocked, completed or skipped (or an alias such as done)") { |v| options[:status] = v }
+        opts.on("--note TEXT", "set: one line of at most 300 characters. Without it the note is cleared when the status changes, kept when not") { |v| options[:note] = v }
+        opts.on("--if-revision REV", "set: refuse with stale_revision unless the stage file's revision (from show) is REV") { |v| options[:if_revision] = v }
+        opts.on("--recursive", "set: also set every sub-stage that is not completed or skipped") { options[:recursive] = true }
+        opts.on("--by LABEL", "set: the updated_by label (default: the agent and pane id of $TMUX_PANE, else person)") { |v| options[:by] = v }
         opts.on("--json", "Print one JSON document (see docs/README.spine.md)") { options[:json] = true }
         opts.on("-h", "--help", "Show this help") { options[:help] = true }
         opts.separator ""
@@ -6560,6 +6571,9 @@ module Workspace
         opts.separator "  workspace spine show    # the spine of the workspace you are in"
         opts.separator "  workspace spine show api.worktree-login --json"
         opts.separator "  workspace spine show --name=api.worktree-login --json"
+        opts.separator "  workspace spine set verify --status in_progress"
+        opts.separator "  workspace spine set api.worktree-login review --status=completed --note=\"2 nits, fixed\" --json"
+        opts.separator "  workspace spine set api.worktree-login implement --status completed --recursive --if-revision 9f8e7d6c"
       end
     end
 
@@ -6570,8 +6584,10 @@ module Workspace
       return @output.puts(parser.help) if options[:help]
 
       subcommand = args.shift
-      raise UsageError, "Missing subcommand: show.\n\n#{parser.help}" unless subcommand
-      raise UsageError, "Unknown spine subcommand: #{subcommand}. Run 'workspace spine --help'." unless subcommand == "show"
+      raise UsageError, "Missing subcommand: show or set.\n\n#{parser.help}" unless subcommand
+      raise UsageError, "Unknown spine subcommand: #{subcommand}. Run 'workspace spine --help'." unless %w[show set].include?(subcommand)
+      return cmd_spine_set(args, options, parser) if subcommand == "set"
+
       positional = settle_name(args.shift)
       raise UsageError, "Unexpected argument: #{args.first}. Run 'workspace spine --help'." if args.any?
       if positional && options[:name] && positional != options[:name]
@@ -6583,6 +6599,21 @@ module Workspace
       raise Error.new("No workspace found for #{@working_dir}. Run from inside a workspace or pass --name.", code: "not_in_workspace", details: {"path" => @working_dir}) unless name
 
       @spine_command.show(name: name, json: options[:json])
+    end
+
+    def cmd_spine_set(args, options, parser)
+      raise UsageError, "Missing --status.\n\n#{parser.help}" unless options[:status]
+      positional = (args.size > 1 && !options[:name]) ? settle_name(args.shift) : nil
+      path = args.shift
+      raise UsageError, "Missing STAGE-PATH, the stage's ids joined with / (as 'spine show' reports path).\n\n#{parser.help}" unless path
+      raise UsageError, "Unexpected argument: #{args.first}. Run 'workspace spine --help'." if args.any?
+      raise Error, "spine is not available: no spine command was wired" unless @spine_command
+
+      name = options[:name] || positional || @project_detector.detect(@working_dir)
+      raise Error.new("No workspace found for #{@working_dir}. Run from inside a workspace or pass --name.", code: "not_in_workspace", details: {"path" => @working_dir}) unless name
+
+      @spine_command.set(name: name, path: path, status: options[:status], note: options[:note], if_revision: options[:if_revision],
+        recursive: options[:recursive] || false, by: options[:by], json: options[:json])
     end
 
     def pr_parser(options)

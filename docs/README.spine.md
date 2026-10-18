@@ -1,6 +1,6 @@
 # workspace spine
 
-Read a workspace's plan spine. The spine is the stage level of a workspace's plan (research, plan, implement, verify, ...): one Markdown file per stage in a `spine/` folder of the workspace's notes directory. The task level is [`IMPLEMENTATION_PLAN.md`](README.plan.md), which the spine links to and does not replace.
+Read a workspace's plan spine, and set a stage's status. The spine is the stage level of a workspace's plan (research, plan, implement, verify, ...): one Markdown file per stage in a `spine/` folder of the workspace's notes directory. The task level is [`IMPLEMENTATION_PLAN.md`](README.plan.md), which the spine links to and does not replace.
 
 ## Usage
 
@@ -20,6 +20,54 @@ workspace spine show [WORKSPACE] [--name WORKSPACE] [--json]
 Plain output is a short summary: one line per stage with its status, owner, `Done when` counts and the codes of its warnings.
 
 `spine` in [`capabilities`](README.capabilities.md) is `1` when this command exists.
+
+## Setting a status
+
+```sh
+workspace spine set [WORKSPACE] STAGE-PATH --status VALUE [--note TEXT] [--if-revision REV] [--recursive] [--by LABEL] [--json]
+```
+
+`STAGE-PATH` is the stage's ids joined with `/` (`verify`, `implement/api`), as `show` reports `path`. With `--name WORKSPACE` the one argument is the path.
+
+| Option | Description |
+|--------|-------------|
+| `--status VALUE` | Required. A status or an alias (see Status), written as the canonical value. `unknown` is refused (`invalid_status`) |
+| `--note TEXT` | One line of at most 300 characters, written as `note:`. Without it the note is cleared when the status changes and kept when it stays. An empty `--note ""` clears it |
+| `--if-revision REV` | Refuse with `stale_revision` unless the stage file's current `revision` is `REV`. With `--recursive` it checks the named stage's file only |
+| `--recursive` | Also set every sub-stage, at any depth, that is neither `completed` nor `skipped`, parents first, each file written whole. A sub-stage that is a folder with no file is left out |
+| `--by LABEL` | The `updated_by` label (at most 100 characters). Default: `<agent> <pane>` (such as `claude %6`) when `$TMUX_PANE` is a pane the workspace's agent daemon has logged as a coding agent, else `person` |
+
+The file's `status`, `note`, `updated` (now, UTC) and `updated_by` lines are the only bytes that change: the other lines, the body, line endings (LF or CRLF), a byte order mark, comments, unknown keys and lists stay as they were. A key that is missing is added at the end of the frontmatter block; a note being cleared is removed. A note or label that is not plain words is written as a double-quoted string. Nothing is written when the stage already reads the status and the note would not change; the stage is in `unchanged`.
+
+The file is read as bytes, opened without following a link, written to a temp file in the same folder (a dot name, so it is never read as a stage), fsynced and renamed over the original. If the file changes between the read and the rename, the write starts over once, then is refused (`changed_while_writing`). Writers of one workspace take turns through a lock file in the CLI's state folder (`$XDG_STATE_HOME/workspace/.spine/`, never the notes folder), waited for up to 10 seconds, so two calls that overlap both land, the second one on top of the first. An editor holding an unsaved buffer is not covered by the lock.
+
+Each file written appends one [`spine_changed`](README.event-log.md) line to the event log, carrying the new `revision`.
+
+```json
+{
+  "schema_version": 1, "ok": true, "workspace": "fix-oauth-refresh",
+  "written": [
+    {"path": "verify", "file": "40-verify.md", "status": "completed", "previous": "in_progress", "revision": "0c1d2e3f",
+     "updated": "2026-10-17T22:01:00Z", "updated_by": "person", "note": null}
+  ],
+  "unchanged": [{"path": "review", "file": "50-review.md", "status": "completed", "revision": "5a6b7c8d"}]
+}
+```
+
+`written` and `unchanged` are in tree order. Plain output is one line per stage.
+
+A refusal is the standard error document. With `--recursive` the run stops at the first refusal of a stage file and `details.written` lists the stages already written (rows as above); a refusal before any write (`invalid_status`, `no_spine`, `unknown_stage`, `lock_busy`) has no `written`. A stage already written reads the status on a second run and lands in `unchanged`, so running the same command again finishes the job; `--if-revision` then guards the named stage only, which may by then be unchanged.
+
+| `code` | When |
+|--------|------|
+| `invalid_status` | `--status` is not a status or an alias; `unknown` can't be set (`details.status`, `details.allowed`) |
+| `no_spine` | The workspace has no `spine/` folder (`details.workspace`, `details.dir`) |
+| `unknown_stage` | No stage has that path (`details.path`, `details.stages`) |
+| `stale_revision` | `--if-revision` differs from the file's revision; `details.revision` and `details.status` are the current ones |
+| `spine_unwritable` | The file can't be rewritten safely. `details.reason`: `link`, `not_a_file`, `too_large` (over 64 KB), `not_utf8`, `no_frontmatter` (no opening `---`, or none closed within 100 lines), `no_file` (a stage folder without a file), `missing`, `lock_unavailable` (the lock file in the state folder can't be opened), `unreadable_result` (the change would not read back: the closing `---` would pass line 100 or the status the 40-key cap), `io_error`, `changed_while_writing`, or `lock_busy`; `details.file` |
+| `usage` | A missing `--status` or path, or a `--note` or `--by` that is not one short line |
+
+`spine_set` in [`capabilities`](README.capabilities.md) is `1` when this verb exists.
 
 ## The spine folder
 
@@ -139,4 +187,4 @@ A link is never followed. A linked `spine`, stage file, `goal.md` or stage folde
 | `unknown_workspace` | The workspace has no known checkout (`details.name`) |
 | `not_in_workspace` | No workspace given and none detected from the current directory |
 | `notes_dir_unresolved` | The notes directory can't be worked out (see [`notes`](README.notes.md)) |
-| `usage` | A missing or unknown subcommand, an extra argument, or two different workspace names |
+| `usage` | A missing or unknown subcommand, an extra argument, or two different workspace names (`show`); see above for `set` |
