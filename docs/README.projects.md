@@ -23,6 +23,7 @@ A bare `workspace projects` runs `list`.
 |------|---------|----------|
 | project | The main checkout of one repository plus all of its linked worktrees. Identified by the realpath of the git common dir. | `name`, `id`, `path` |
 | workspace | One tmuxinator config (`~/.config/tmuxinator/workspace.<name>.yml`). A project member that has a config. | `workspaces` (count) |
+| group | Several repositories that belong together (a multi-repository project). Id `group:<slug>`, kept in `~/.config/workspace/groups/<slug>.yml`. See [Groups](#groups). | `group` (`id`, `name`) |
 | member | A checkout in the project: the main checkout or one worktree. | |
 
 Every other `[project]` argument in the CLI (`launch`, `stop`, `sessions`,
@@ -544,6 +545,11 @@ repositories:
 
 Every `projects list` row and `projects show` project, and every [`snapshot`](README.snapshot.md)
 project, carries `group`: `{"id", "name"}` of the group its repository is in, or `null`.
+
+What groups cover: `projects group create|add|list|show`, the `group` key on project and snapshot
+rows, and `plan status --group GROUP` (a read-only merged view of the member workspaces' plans).
+What it does not: starting work across several repositories at once (run `start` once per
+repository), a plan file owned by the group, and `stop` or `kill` on a group.
 
 `projects stop` and `projects kill` refuse a `group:` id with `group_not_supported`, and so do
 `projects show` and `projects members`: stop, kill or show each repository's project, or use

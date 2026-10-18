@@ -537,7 +537,7 @@ module Workspace
           plan            Show and run a workspace's plan (IMPLEMENTATION_PLAN.md): status, path, show, init, start, pause, delete
           pipeline        Deprecated (use workflow): inspect and drive a project's agent pipeline
           pr              Open a pull request for a workspace's branch without finishing it (create)
-          projects        Group workspaces by repository (main checkout + worktrees)
+          projects        Group workspaces by repository (main checkout + worktrees); name several repositories as a group
           prune           Remove worktree projects whose PR is closed or merged
           push            Push a workspace's branch to origin, forcing with a lease only after a rebase
           reactivate      Reactivate Claude in a project's tmux pane

@@ -26,7 +26,7 @@ It reads constants, config paths and the `PATH`. It starts no process and touche
    "doctor_json":1,"daemon_control":4,"config_json":2,"config_scopes":2,"tmux_show":1,"tasks":1,"event_emitters":1,
    "ui_open":3,"pane_bindings":3,"library":5,"library_play":2,"library_copy":1,"instructions":1,"restore":1,
    "workflow":2,"window_state":1,"cleanup_dry_run":1,"notes":1,"start_packs":2,"start_agent":1,"start_plan":1,
-   "handoff_auto":2,"handoff_codex":1,"dev_queue":2,"plan":5,"inbox":3,"ask_withdraw":1,"review":1,"add_json":1,"plan_progress":1,"spine_events":1,"agent_status":1,"plan_tasks":2,"agent_hooks":1},
+   "handoff_auto":2,"handoff_codex":1,"dev_queue":2,"plan":5,"inbox":3,"ask_withdraw":1,"review":1,"add_json":1,"plan_progress":1,"spine_events":1,"agent_status":1,"plan_tasks":2,"agent_hooks":1,"projects_multi":1},
  "exit_codes":{"ok":0,"failed":1,"not_submitted":2,"partial":3,"lock_cleared":4,"timeout":75},
  "paths":{"event_log":"/Users/me/.workspace-events.jsonl","hook_events":"/Users/me/.local/state/workspace/.events",
    "run_dir":"/Users/me/.local/workspace/run",
@@ -51,6 +51,7 @@ It reads constants, config paths and the `PATH`. It starts no process and touche
 | `action_json` | `--json` action documents on the lifecycle commands, `dev up|down`, `lock release`, `config set`, `pipeline start|advance|reset`, and `agent run --json` |
 | `sessions` | `sessions --json`. Revision 2: each coding-agent pane carries `last_event_at`, `current_tool`, `current_tool_since` and `subagents` (see [`sessions`](README.sessions.md#tool-status-fields)) |
 | `locks_json` | `lock status --json` and `lock clear --json`. Revision 2: a holder or waiter can be a workflow run (`"kind": "run"` with `run_id` and `step`, and no `pid`), a run holder can carry a `delegate`, and `dev status --json` reports `running: false` for a run that holds `devenv` with no dev environment under it (see [`lock`](README.lock.md) and [`dev`](README.dev.md)) |
+| `projects_multi` | Groups of repositories: `projects group create\|add\|list\|show [--json]` (ids `group:<slug>`, files in `~/.config/workspace/groups/`), a `group` key (`{id, name}` or `null`) on every `projects list`/`projects show` project and `snapshot` project row, and `plan status --group GROUP` for the merged plan view. Not covered: multi-repository `start`, a group-owned plan file, `stop`/`kill` on a group (see [`projects`](README.projects.md#groups)) |
 | `git_facts` | `projects show` reports git facts per workspace |
 | `prune_safe` | `prune` skips a worktree with unsaved work and reports it, rather than removing it. Revision 2: `prune --json [--name=WS]...` prints an action document with a row per candidate (see [`prune`](README.prune.md)) |
 | `snapshot` | `snapshot --json` (see [`snapshot`](README.snapshot.md)); `sessions --json` panes carry `display_label` (see [`sessions`](README.sessions.md)). Revision 1 was `display_label` alone; revision 3 adds each member's `plan`; revision 4 reports `task` for stopped and ended workspaces |
