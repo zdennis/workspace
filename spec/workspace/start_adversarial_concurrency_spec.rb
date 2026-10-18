@@ -20,6 +20,10 @@ module T5StartConcurrencyFakes
   end
 
   class ProjectConfig
+    def existing_name(_name) = nil
+
+    def settle_worktree_name(project, dir, _path) = "#{project}.worktree-#{dir}"
+
     def create_worktree(project_name, worktree_name, _path, _branch, quiet: false)
       "#{project_name}.worktree-#{worktree_name}"
     end
@@ -31,6 +35,7 @@ module T5StartConcurrencyFakes
     end
 
     def config_path_for(name) = File.join(@dir, "workspace.#{name}.yml")
+    def tmuxinator_dir = @dir
 
     def worktree_template_path
       File.expand_path("../../lib/templates/workspace.project-worktree-template.yml", __dir__)

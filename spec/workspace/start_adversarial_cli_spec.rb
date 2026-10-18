@@ -145,7 +145,8 @@ RSpec.describe "workspace start adversarial CLI specs" do
       output = StringIO.new
       error_output = StringIO.new
       git = double("git")
-      project_config = double("project_config")
+      project_config = double("project_config", existing_name: nil)
+      allow(project_config).to receive(:settle_worktree_name) { |project, dir, _path| "#{project}.worktree-#{dir}" }
       project_settings = CLITestHelpers::FakeProjectSettings.new
       launch_command = double("launch_command", call: {exit_code: 0})
 
@@ -184,7 +185,8 @@ RSpec.describe "workspace start adversarial CLI specs" do
     begin
       output = StringIO.new
       git = double("git")
-      project_config = double("project_config")
+      project_config = double("project_config", existing_name: nil)
+      allow(project_config).to receive(:settle_worktree_name) { |project, dir, _path| "#{project}.worktree-#{dir}" }
       project_settings = CLITestHelpers::FakeProjectSettings.new
       launch_command = double("launch_command")
 

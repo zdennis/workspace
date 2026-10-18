@@ -4069,9 +4069,13 @@ RSpec.describe Workspace::CLI do
       end
 
       context "when a config exists under a different case" do
-        let(:project_config) { instance_double(Workspace::ProjectConfig, available_projects: ["Notes"]) }
+        let(:project_config) do
+          instance_double(Workspace::ProjectConfig, available_projects: ["Notes"]).tap do |pc|
+            allow(pc).to receive(:existing_name) { |name| %w[Notes].find { |known| known.casecmp?(name) } }
+          end
+        end
         let(:built) do
-          build_test_cli(daemon_command: daemon_command, agent_command: agent_command, project_detector: detector, working_dir: "/some/dir",
+          build_test_cli(daemon_command: daemon_command, agent_command: agent_command, project_detector: detector, working_dir: "/some/dir", project_config: project_config,
             workspace_name: Workspace::WorkspaceName.new(project_config: project_config))
         end
 
@@ -4086,11 +4090,16 @@ RSpec.describe Workspace::CLI do
           expect(agent_command.calls.map { |call| call[:name] }).to eq(["Notes", "Notes"])
         end
 
-        it "leaves a name no config matches as given, in both forms" do
-          cli.run(["agentd", "restart", "Fresh"])
-          cli.run(["agentd", "restart", "--name", "Fresh"])
+        it "refuses a name no config matches, in every agentd form" do
+          [["agentd", "restart", "Fresh"], ["agentd", "restart", "--name", "Fresh"], ["agentd", "Fresh"],
+            ["agentd", "--ensure", "Fresh"], ["agentd", "--force", "--name", "Fresh"]].each do |args|
+            expect { cli.run(args) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+          end
 
-          expect(daemon_command.calls).to eq([{restart: "Fresh", wc_socket: nil}] * 2)
+          expect(error_output.string.scan("Unknown workspace 'Fresh'").size).to eq(5)
+
+          expect(daemon_command.calls).to eq([])
+          expect(agent_command.calls).to eq([])
         end
 
         it "leaves a --name after -- alone and a trailing --name without a value" do

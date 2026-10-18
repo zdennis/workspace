@@ -66,7 +66,8 @@ module Workspace
           return nil if path.nil? || File.expand_path(path) == File.expand_path(project.root)
           dir = File.basename(path)
         end
-        @project_config.worktree_config_name(project.name, dir)
+        name = @project_config.worktree_config_name(project.name, dir)
+        @project_config.existing_name(name) || name
       end
 
       def print_text(document)

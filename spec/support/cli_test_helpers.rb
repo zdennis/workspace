@@ -288,6 +288,18 @@ module CLITestHelpers
       name
     end
 
+    def existing_name(name)
+      name
+    end
+
+    def settle_worktree_name(project, dir, _path)
+      "#{project}.worktree-#{dir}"
+    end
+
+    def settle_new_name(name, _root)
+      name
+    end
+
     def create_worktree(_pn, _wn, _wp, _bn)
       "test-config"
     end

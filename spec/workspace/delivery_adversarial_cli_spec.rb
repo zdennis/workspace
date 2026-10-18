@@ -136,7 +136,8 @@ RSpec.describe "delivery adversarial (CLI/UX)" do
       allow(git).to receive(:find_worktree_by_branch).and_return(nil)
       allow(git).to receive(:branch_exists?).with("PROJ-123").and_return(true)
       allow(git).to receive(:create_worktree)
-      project_config = double("project_config", create_worktree: "myproject.worktree-PROJ-123")
+      project_config = double("project_config", create_worktree: "myproject.worktree-PROJ-123", existing_name: nil)
+      allow(project_config).to receive(:settle_worktree_name) { |project, dir, _path| "#{project}.worktree-#{dir}" }
       project_settings = CLITestHelpers::FakeProjectSettings.new
       launch_command = double("launch_command", call: {exit_code: 0, prompt_failures: {}})
 

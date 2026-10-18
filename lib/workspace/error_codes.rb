@@ -8,6 +8,7 @@ module Workspace
       "error" => "Any failure without a more specific code.",
       "usage" => "A bad option, a missing or extra argument, or an unknown subcommand.",
       "unknown_workspace" => "The named workspace isn't known.",
+      "workspace_name_case_conflict" => "A new workspace's name differs only in case from the name of an existing workspace with a different directory. details.name, details.existing, details.existing_root.",
       "not_in_workspace" => "No workspace could be detected from the working directory.",
       "no_daemon" => "No agent daemon is running for the workspace.",
       "connection_failed" => "The agent daemon's socket refused or dropped the connection.",

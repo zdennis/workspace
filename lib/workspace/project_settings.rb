@@ -70,9 +70,9 @@ module Workspace
     # @param project_name [String] project name
     # @return [void]
     def ensure_exists(project_name)
-      path = project_config_path(project_name)
-      return if File.exist?(path)
-      save(project_name, {"hooks" => {}, "layouts" => {}})
+      return if File.exist?(project_config_path(project_name))
+      return if existing_names.any? { |other| WorkspaceName.same?(other, project_name) }
+      save(WorkspaceName.normalize(project_name), {"hooks" => {}, "layouts" => {}})
     end
 
     # @param project_name [String] project name
@@ -110,6 +110,10 @@ module Workspace
     end
 
     private
+
+    def existing_names
+      Dir.glob(File.join(File.dirname(project_config_path("x")), "*.yml")).map { |f| File.basename(f, ".yml") }
+    end
 
     def read_strict(path)
       return {} unless File.exist?(path)

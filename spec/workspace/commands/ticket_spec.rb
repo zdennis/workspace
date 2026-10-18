@@ -34,6 +34,7 @@ RSpec.describe Workspace::Commands::Ticket do
     sh("init", "-q")
     sh("commit", "-q", "--allow-empty", "-m", "init")
     allow(project_config).to receive(:worktree_config_name) { |project, dir| "#{project}.worktree-#{dir}" }
+    allow(project_config).to receive(:existing_name).and_return(nil)
     allow(project_config).to receive(:project_root_for).and_return(nil)
   end
 
@@ -55,6 +56,15 @@ RSpec.describe Workspace::Commands::Ticket do
       in_repo { command.show("PROJ-123", json: true) }
 
       expect(document["workspace"]).to eq("api.worktree-PROJ-123")
+    end
+
+    it "names the workspace by the spelling its config already has" do
+      sh("worktree", "add", "-q", "-b", "PROJ-123", File.join(repo, ".worktrees", "PROJ-123"))
+      allow(project_config).to receive(:existing_name).with("api.worktree-PROJ-123").and_return("Api.worktree-PROJ-123")
+
+      in_repo { command.show("PROJ-123", json: true) }
+
+      expect(document["workspace"]).to eq("Api.worktree-PROJ-123")
     end
 
     it "names the worktree of a pull request by its pr-<n> branch" do

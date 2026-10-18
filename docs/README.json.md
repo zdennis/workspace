@@ -79,6 +79,7 @@ The exit code is unchanged by `--json` (1 for most failures, 2 for `not_submitte
 | `error` | Any failure without a more specific code. |
 | `usage` | A bad option, a missing or extra argument, or an unknown subcommand. |
 | `unknown_workspace` | The named workspace isn't known. `details.name`. |
+| `workspace_name_case_conflict` | A new workspace would have a name that differs only in case from an existing workspace with a different directory (`add`, `launch PATH`, `start`). The existing one is renamed to lowercase the next time its agentd starts. `details.name`, `details.existing`, `details.existing_root`. |
 | `not_in_workspace` | No workspace could be detected from the working directory. `details.path`. |
 | `no_daemon` | No agent daemon is running for the workspace. |
 | `connection_failed` | The agent daemon's socket refused or dropped the connection. |

@@ -122,7 +122,7 @@ On success, one line of JSON on stdout (nothing else is written to stdout under
 
 - `ok` — `true` for the success doc, even one carrying `error`/`prompt_failures`
 - `project` — the parent project name
-- `workspace` — the generated tmuxinator config name
+- `workspace` — the generated tmuxinator config name, in lowercase (`myproject.worktree-proj-123`) unless a config for the same worktree already exists under mixed case; one that differs only in case from another worktree's config is refused with `workspace_name_case_conflict`
 - `path` — the worktree's filesystem path
 - `branch` — the branch checked out in the worktree
 - `base` — the ref the branch was created from, or `null` when the branch (or

@@ -119,7 +119,7 @@ module Workspace
         # target the parent project.
         note_parent_repo(project.root, quiet: quiet) if project.from_worktree
         root = project.root
-        project_name = project.name
+        project_name = @project_config.existing_name(project.name) || WorkspaceName.normalize(project.name)
         @play = play && resolve_play(play, root)
         @packs = resolve_packs(root, packs, no_packs, handoff, quiet: quiet)
         @copies = resolve_copies({"agent" => agents, "skill" => skills}, root)
@@ -167,6 +167,7 @@ module Workspace
             "with `git worktree add #{worktree_path} #{branch_name}`."
         end
 
+        @project_config.settle_worktree_name(project_name, worktree_dir_name, worktree_path)
         create_worktree_directory(root)
         begin
           if pr
@@ -381,7 +382,7 @@ module Workspace
       def start_task(project_name, worktree_dir_name, worktree_path, branch_name)
         return unless @task_store
 
-        workspace = @project_config.worktree_config_name(project_name, worktree_dir_name)
+        workspace = @project_config.settle_worktree_name(project_name, worktree_dir_name, worktree_path)
         @task_store.start(workspace: workspace, title: @task_title, ref: @task_ref, branch: branch_name, path: worktree_path)
       end
 

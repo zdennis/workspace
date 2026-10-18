@@ -12,11 +12,13 @@ module Workspace
     end
 
     # @param arg [String] a project name or path
-    # @return [Array(String, String), Array(String, nil)] [project_name, project_root] or [name, nil]
+    # @return [Array(String, String), Array(String, nil)] [project_name, project_root] or [name, nil];
+    #   a name taken from a path is settled by {#settle_new_name}
+    # @raise [Workspace::Error] code `workspace_name_case_conflict` (see {#settle_new_name})
     def resolve_project_arg(arg)
       if arg == "." || arg.include?("/") || File.directory?(arg)
         root = File.expand_path(arg)
-        [WorkspaceLineage.name_from_path(root), root]
+        [settle_new_name(WorkspaceLineage.name_from_path(root), root), root]
       else
         [arg, nil]
       end
@@ -26,7 +28,9 @@ module Workspace
     # @param root [String] project root directory
     # @return [String] the project name
     # @raise [Workspace::Error] if the template is missing
+    # @raise [Workspace::Error] code `workspace_name_case_conflict` (see {#settle_new_name})
     def create(name, root)
+      name = settle_new_name(name, root)
       config_path = @config.config_path_for(name)
       if File.exist?(config_path)
         @output.puts "Config already exists: #{config_path}"
@@ -50,9 +54,9 @@ module Workspace
 
     # @param project_name [String] parent project name
     # @param worktree_name [String] worktree directory name
-    # @return [String] the config name {#create_worktree} gives that worktree
+    # @return [String] the config name {#create_worktree} gives that worktree (lowercase)
     def worktree_config_name(project_name, worktree_name)
-      "#{project_name}.worktree-#{@git.sanitize_for_filesystem(worktree_name)}"
+      WorkspaceName.normalize("#{project_name}.worktree-#{@git.sanitize_for_filesystem(worktree_name)}")
     end
 
     # @param project_name [String] parent project name
@@ -64,9 +68,10 @@ module Workspace
     # @return [String] the config name
     # @raise [Workspace::Error] if the worktree template is missing
     def create_worktree(project_name, worktree_name, worktree_path, branch_name, quiet: false, task_id: nil)
+      project_name = WorkspaceName.normalize(project_name)
       tmux_session_name = "#{project_name}.wt-#{@git.sanitize_for_filesystem(worktree_name)}"
-        .tr(".", "-")
-      config_name = worktree_config_name(project_name, worktree_name)
+        .tr(".", "-").downcase
+      config_name = settle_worktree_name(project_name, worktree_name, worktree_path)
       config_path = @config.config_path_for(config_name)
 
       if File.exist?(config_path)
@@ -135,7 +140,62 @@ module Workspace
         .sort
     end
 
+    # The name a new config is written under: lowercase. A config already on disk
+    # whose name differs only in case (found by comparing the real file names, as
+    # the file system itself ignores case) decides it:
+    # - the same workspace (same root directory), written earlier with mixed
+    #   case: its own name, so the config is reused and keeps working until its
+    #   agentd start migrates it;
+    # - another workspace (different root): refused, as the two would share one
+    #   set of files and one socket on a case-insensitive file system.
+    #
+    # @param name [String] the name wanted
+    # @param root [String, nil] the directory the workspace is for
+    # @return [String]
+    # @raise [Workspace::Error] code `workspace_name_case_conflict`, details `name`, `existing`, `existing_root`
+    def settle_new_name(name, root)
+      wanted = WorkspaceName.normalize(name)
+      variants = available_projects.select { |other| other != wanted && WorkspaceName.same?(other, wanted) }
+      return wanted if variants.empty?
+
+      same = variants.find { |other| root && same_directory?(project_root_for(other), root) }
+      return same if same
+
+      existing = variants.first
+      existing_root = project_root_for(existing)
+      raise Workspace::Error.new(
+        "Can't create workspace '#{wanted}': workspace '#{existing}' (#{existing_root || "root unknown"}) already exists and differs only in case. " \
+        "'#{existing}' will be renamed to lowercase the next time its agentd starts; " \
+        "until then, use '#{existing}' (see `workspace list`) or use a different directory name.",
+        code: "workspace_name_case_conflict",
+        details: {"name" => wanted, "existing" => existing, "existing_root" => existing_root}
+      )
+    end
+
+    # @param project_name [String] parent project name
+    # @param worktree_name [String] worktree directory name
+    # @param worktree_path [String] full path to the worktree
+    # @return [String] the config name a worktree gets: {#worktree_config_name} settled by {#settle_new_name}
+    # @raise [Workspace::Error] code `workspace_name_case_conflict`
+    def settle_worktree_name(project_name, worktree_name, worktree_path)
+      settle_new_name(worktree_config_name(project_name, worktree_name), worktree_path)
+    end
+
+    # @return [String, nil] the config name that matches +name+ ignoring case, the exact spelling first
+    def existing_name(name)
+      projects = available_projects
+      projects.find { |other| other == name } || projects.find { |other| WorkspaceName.same?(other, name) }
+    end
+
     private
+
+    def same_directory?(first, second)
+      return false if first.nil? || second.nil?
+
+      File.realpath(first) == File.realpath(second)
+    rescue SystemCallError
+      File.expand_path(first) == File.expand_path(second)
+    end
 
     def read_project_root(name)
       path = config_path_for(name)

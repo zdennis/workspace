@@ -186,6 +186,25 @@ RSpec.describe Workspace::ProjectSettings do
     end
   end
 
+  describe "#ensure_exists case" do
+    let(:projects_dir) { File.join(tmpdir, "projects") }
+
+    it "writes a new file under a lowercase name" do
+      settings.ensure_exists("NewProject")
+
+      expect(Dir.children(projects_dir)).to eq(["newproject.yml"])
+    end
+
+    it "leaves a mixed-case file already there alone" do
+      FileUtils.mkdir_p(projects_dir)
+      File.write(File.join(projects_dir, "Existing.yml"), YAML.dump({"hooks" => {}}))
+
+      settings.ensure_exists("existing")
+
+      expect(Dir.children(projects_dir)).to eq(["Existing.yml"])
+    end
+  end
+
   describe "#layouts_for" do
     it "returns empty hash when no layouts exist" do
       expect(settings.layouts_for("myproject")).to eq({})

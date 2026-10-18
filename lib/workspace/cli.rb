@@ -428,6 +428,14 @@ module Workspace
       (@workspace_name && name) ? (@workspace_name.match(name) || name) : name
     end
 
+    # @raise [Workspace::Error] code `unknown_workspace` when no config exists for +name+ (ignoring case)
+    def require_known_workspace!(name)
+      return if @project_config.existing_name(name)
+
+      raise Error.new("Unknown workspace '#{name}': it has no config. See `workspace list`, or create one with `workspace add PATH` (`workspace add .` for this directory).",
+        code: "unknown_workspace", details: {"name" => name})
+    end
+
     # The directory a per-workspace command acts from: the named workspace's
     # root for `--name`, else the detected working directory.
     #
@@ -612,6 +620,10 @@ module Workspace
         opts.separator "Note: --reattach uses tmux -CC attach which may trigger an iTerm dialog."
         opts.separator "To suppress it, set iTerm > Settings > General > tmux >"
         opts.separator "  'When attaching, restore windows' to 'Always'."
+        opts.separator ""
+        opts.separator "A directory path creates a config named in lowercase. A name that differs only"
+        opts.separator "in case from another workspace's is refused (workspace_name_case_conflict); the"
+        opts.separator "same directory's mixed-case config is reused."
         opts.separator ""
         opts.separator "Examples:"
         opts.separator "  workspace launch my-project    # launch one project by name"
@@ -1582,6 +1594,8 @@ module Workspace
         opts.separator "Run the long-lived workspace agent daemon for a project."
         opts.separator "Registers with the work-coordinator and serves commands until terminated."
         opts.separator ""
+        opts.separator "The workspace must already have a config; an unknown name is refused (unknown_workspace)."
+        opts.separator ""
         opts.separator "Subcommands:"
         opts.separator "  restart    Stop the agent running for the workspace and start a new one in the background;"
         opts.separator "             see `workspace agentd restart --help`. A workspace named restart needs --name,"
@@ -1606,6 +1620,7 @@ module Workspace
       raise UsageError, "Unexpected argument: #{args.first}.\n\n#{parser.help}" if args.any?
       name ||= @project_detector.detect(@working_dir)
       raise UsageError, parser.help if name.nil?
+      require_known_workspace!(name)
 
       if ensure_running
         raise UsageError, "--ensure and --force can't be combined: --ensure never replaces a running agent.\n\n#{parser.help}" if force
@@ -1656,6 +1671,7 @@ module Workspace
       raise UsageError, "Unexpected argument: #{args.first}. Run 'workspace agentd restart --help'." if args.any?
       name ||= @project_detector.detect(@working_dir)
       raise UsageError, "Missing workspace name.\n\n#{parser.help}" unless name
+      require_known_workspace!(name)
 
       daemon_restart(name, options)
     rescue OptionParser::ParseError, UsageError => e
@@ -4731,6 +4747,9 @@ module Workspace
         opts.separator "For paths inside .worktrees/, prefixes with the repo name"
         opts.separator "(e.g. repo/.worktrees/MYJIRA-123 → repo-MYJIRA-123)."
         opts.separator "Does nothing if a config already exists."
+        opts.separator "New names are lowercase. A name that differs only in case from another"
+        opts.separator "workspace's is refused (workspace_name_case_conflict); the same directory's"
+        opts.separator "mixed-case config is reused."
         opts.separator "A new config for a path inside .worktrees/ also gets its notes directory"
         opts.separator "set up (see 'workspace notes dir'): stored as the config's notes.dir,"
         opts.separator "created, and kept out of git status. A problem there is a warning."

@@ -6,7 +6,9 @@ RSpec.describe Workspace::Commands::Start do
   let(:error_output) { StringIO.new }
   let(:input) { StringIO.new }
   let(:git) { double("git") }
-  let(:project_config) { double("project_config") }
+  let(:project_config) do
+    double("project_config", existing_name: nil).tap { |pc| allow(pc).to receive(:settle_worktree_name) { |project, dir, _path| "#{project}.worktree-#{dir}" } }
+  end
   let(:project_settings) { CLITestHelpers::FakeProjectSettings.new }
   let(:launch_command) { double("launch_command") }
 
@@ -58,6 +60,30 @@ RSpec.describe Workspace::Commands::Start do
         expect(project_config).to have_received(:create_worktree)
           .with(File.basename(tmpdir), "pr-123", pr_worktree_path, "pr-123", quiet: false)
         expect(launch_command).to have_received(:call).with(["myproject.worktree-pr-123"], prompts: {})
+      end
+
+      it "gives the worktree the parent project's name in lowercase, or the spelling its config already has" do
+        stub_pr({type: :pr_url, value: "https://github.com/org/repo/pull/123", repo: "org/repo", number: "123"})
+        parent = File.basename(tmpdir)
+        allow(project_config).to receive(:existing_name).with(parent).and_return(nil)
+
+        command.call("https://github.com/org/repo/pull/123")
+        expect(project_config).to have_received(:create_worktree).with(parent.downcase, anything, anything, anything, anything)
+
+        allow(project_config).to receive(:existing_name).with(parent).and_return("Existing-Spelling")
+        command.call("https://github.com/org/repo/pull/123")
+        expect(project_config).to have_received(:create_worktree).with("Existing-Spelling", anything, anything, anything, anything)
+      end
+
+      it "refuses a case-only name clash before it checks anything out" do
+        stub_pr({type: :pr_url, value: "https://github.com/org/repo/pull/123", repo: "org/repo", number: "123"})
+        allow(project_config).to receive(:settle_worktree_name)
+          .and_raise(Workspace::Error.new("clash", code: "workspace_name_case_conflict"))
+
+        expect { command.call("https://github.com/org/repo/pull/123") }
+          .to raise_error(Workspace::Error) { |e| expect(e.code).to eq("workspace_name_case_conflict") }
+        expect(git).not_to have_received(:checkout_pr_worktree)
+        expect(launch_command).not_to have_received(:call)
       end
 
       it "never resolves the head branch name or creates the worktree itself, which is wrong for forks" do
@@ -1345,7 +1371,7 @@ RSpec.describe Workspace::Commands::Start do
         end
 
         before do
-          allow(project_config).to receive(:worktree_config_name).and_return("myproject.worktree-PROJ-123")
+          allow(project_config).to receive(:settle_worktree_name).and_return("myproject.worktree-PROJ-123")
           allow(launch_command).to receive(:call).and_return({exit_code: 0, prompt_failures: {}})
         end
 
@@ -1465,7 +1491,7 @@ RSpec.describe Workspace::Commands::Start do
       allow(git).to receive(:find_worktree_by_branch).and_return(nil)
       allow(git).to receive(:branch_exists?).with("feature").and_return(true)
       allow(git).to receive(:create_worktree)
-      allow(project_config).to receive(:worktree_config_name).and_return("app.worktree-feature")
+      allow(project_config).to receive(:settle_worktree_name).and_return("app.worktree-feature")
       allow(project_config).to receive(:create_worktree).and_return("app.worktree-feature")
       allow(launch_command).to receive(:call)
     end

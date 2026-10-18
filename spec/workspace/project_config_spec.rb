@@ -38,13 +38,13 @@ RSpec.describe Workspace::ProjectConfig do
 
     it "prefixes with repo name for paths inside .worktrees/" do
       name, root = pc.resolve_project_arg("/path/to/repo-a/.worktrees/MYJIRA-123")
-      expect(name).to eq("repo-a-MYJIRA-123")
+      expect(name).to eq("repo-a-myjira-123")
       expect(root).to eq("/path/to/repo-a/.worktrees/MYJIRA-123")
     end
 
     it "prefixes with repo name for .worktrees/ paths with a trailing slash" do
       name, root = pc.resolve_project_arg("/path/to/repo-a/.worktrees/MYJIRA-123/")
-      expect(name).to eq("repo-a-MYJIRA-123")
+      expect(name).to eq("repo-a-myjira-123")
       expect(root).to eq("/path/to/repo-a/.worktrees/MYJIRA-123")
     end
 
@@ -108,9 +108,9 @@ RSpec.describe Workspace::ProjectConfig do
 
       result = pc.create_worktree("myapp", "PROJ-123", "/tmp/worktrees/PROJ-123", "PROJ-123")
 
-      expect(result).to eq("myapp.worktree-PROJ-123")
-      content = File.read(File.join(tmpdir, "workspace.myapp.worktree-PROJ-123.yml"))
-      expect(content).to include("name: myapp-wt-PROJ-123")
+      expect(result).to eq("myapp.worktree-proj-123")
+      content = File.read(File.join(tmpdir, "workspace.myapp.worktree-proj-123.yml"))
+      expect(content).to include("name: myapp-wt-proj-123")
       expect(content).to include("root: /tmp/worktrees/PROJ-123")
       expect(content).to include("project: myapp")
       expect(content).to include("branch: PROJ-123")
@@ -124,24 +124,24 @@ RSpec.describe Workspace::ProjectConfig do
         allow(config).to receive(:worktree_template_path).and_return(template_path)
       end
 
-      def written = File.read(File.join(tmpdir, "workspace.myapp.worktree-PROJ-123.yml"))
+      def written = File.read(File.join(tmpdir, "workspace.myapp.worktree-proj-123.yml"))
 
       it "exports WORKSPACE_TASK in every pane when given a task id" do
         pc.create_worktree("myapp", "PROJ-123", "/tmp/wt", "PROJ-123", task_id: "ab12cd34")
 
-        expect(written).to eq("name: myapp-wt-PROJ-123\npre_window: export WORKSPACE_TASK=ab12cd34\nwindows: []\n")
+        expect(written).to eq("name: myapp-wt-proj-123\npre_window: export WORKSPACE_TASK=ab12cd34\nwindows: []\n")
         expect(YAML.safe_load(written)["pre_window"]).to eq("export WORKSPACE_TASK=ab12cd34")
       end
 
       it "drops the line without a task id" do
         pc.create_worktree("myapp", "PROJ-123", "/tmp/wt", "PROJ-123")
 
-        expect(written).to eq("name: myapp-wt-PROJ-123\nwindows: []\n")
+        expect(written).to eq("name: myapp-wt-proj-123\nwindows: []\n")
       end
     end
 
     it "names a worktree's config the way create_worktree does" do
-      expect(pc.worktree_config_name("myapp", "PROJ-123")).to eq("myapp.worktree-PROJ-123")
+      expect(pc.worktree_config_name("MyApp", "PROJ-123")).to eq("myapp.worktree-proj-123")
     end
 
     it "raises error when worktree template is missing" do
@@ -214,6 +214,97 @@ RSpec.describe Workspace::ProjectConfig do
       File.write(File.join(tmpdir, "other-tool.yml"), "")
 
       expect(pc.available_projects).to eq(["alpha", "beta"])
+    end
+  end
+
+  describe "lowercase names" do
+    subject(:pc) { described_class.new(config: config, output: output, git: git) }
+
+    let(:template_path) { File.join(tmpdir, "project-template.yml") }
+    let(:worktree_template_path) { File.join(tmpdir, "project-worktree-template.yml") }
+    let(:root) { Dir.mktmpdir("notes-root") }
+    let(:other_root) { Dir.mktmpdir("other-root") }
+
+    before do
+      File.write(template_path, "name: {{PROJECT_NAME}}\nroot: {{PROJECT_ROOT}}\n")
+      File.write(worktree_template_path, "name: {{TMUX_SESSION_NAME}}\nroot: {{WORKTREE_PATH}}\n")
+      allow(config).to receive_messages(project_template_path: template_path, worktree_template_path: worktree_template_path)
+    end
+
+    after do
+      FileUtils.remove_entry(root)
+      FileUtils.remove_entry(other_root)
+    end
+
+    it "writes a new config under a lowercase name" do
+      expect(pc.create("Notes", root)).to eq("notes")
+      expect(Dir.glob(File.join(tmpdir, "workspace.*.yml")).map { |f| File.basename(f) }).to eq(["workspace.notes.yml"])
+    end
+
+    it "names a path argument in lowercase" do
+      dir = File.join(root, "MyApp")
+      FileUtils.mkdir_p(dir)
+      expect(pc.resolve_project_arg(dir)).to eq(["myapp", dir])
+    end
+
+    it "refuses a new name that differs only in case from another workspace's" do
+      File.write(File.join(tmpdir, "workspace.Notes.yml"), "name: Notes\nroot: #{other_root}\n")
+
+      expect { pc.create("notes", root) }.to raise_error(Workspace::Error) { |e|
+        expect(e.code).to eq("workspace_name_case_conflict")
+        expect(e.message).to include("'Notes'").and include("next time its agentd starts")
+        expect(e.details).to include("existing" => "Notes", "name" => "notes", "existing_root" => other_root)
+      }
+      expect(Dir.glob(File.join(tmpdir, "workspace.*.yml")).size).to eq(1)
+    end
+
+    it "reuses the mixed-case config of the same workspace (same root)" do
+      File.write(File.join(tmpdir, "workspace.Notes.yml"), "name: Notes\nroot: #{root}\n")
+
+      expect(pc.create("notes", root)).to eq("Notes")
+      expect(pc.resolve_project_arg(root).last).to eq(root)
+      expect(Dir.glob(File.join(tmpdir, "workspace.*.yml")).size).to eq(1)
+    end
+
+    it "reuses the variant with the same root when several differ only in case" do
+      allow(pc).to receive_messages(available_projects: %w[NOTES Notes])
+      allow(pc).to receive(:project_root_for).with("NOTES").and_return(other_root)
+      allow(pc).to receive(:project_root_for).with("Notes").and_return(root)
+
+      expect(pc.settle_new_name("notes", root)).to eq("Notes")
+    end
+
+    it "refuses when the existing config has no readable root" do
+      File.write(File.join(tmpdir, "workspace.Notes.yml"), "name: Notes\n")
+
+      expect { pc.settle_new_name("notes", root) }.to raise_error(Workspace::Error, /root unknown/)
+    end
+
+    it "does not refuse the exact existing name" do
+      File.write(File.join(tmpdir, "workspace.notes.yml"), "name: notes\nroot: #{root}\n")
+      expect(pc.create("notes", other_root)).to eq("notes")
+    end
+
+    it "writes a worktree config in lowercase and refuses a case-only clash with another directory" do
+      expect(pc.create_worktree("MyApp", "Feat-1", "/tmp/wt/Feat-1", "Feat-1", quiet: true)).to eq("myapp.worktree-feat-1")
+
+      File.write(File.join(tmpdir, "workspace.MyApp.worktree-FEAT-2.yml"), "root: /tmp/wt/two\n")
+      expect { pc.create_worktree("myapp", "feat-2", "/tmp/wt/other", "feat-2", quiet: true) }
+        .to raise_error(Workspace::Error) { |e| expect(e.code).to eq("workspace_name_case_conflict") }
+    end
+
+    it "reuses an existing mixed-case worktree config for the same worktree directory" do
+      wt = File.join(root, "Feat-1")
+      FileUtils.mkdir_p(wt)
+      File.write(File.join(tmpdir, "workspace.MyApp.worktree-Feat-1.yml"), "root: #{wt}\n")
+
+      expect(pc.create_worktree("MyApp", "Feat-1", wt, "Feat-1", quiet: true)).to eq("MyApp.worktree-Feat-1")
+    end
+
+    it "#existing_name finds the on-disk spelling ignoring case" do
+      File.write(File.join(tmpdir, "workspace.Notes.yml"), "name: Notes\n")
+      expect(pc.existing_name("notes")).to eq("Notes")
+      expect(pc.existing_name("other")).to be_nil
     end
   end
 end
