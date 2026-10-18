@@ -44,6 +44,7 @@ RSpec.describe Workspace::Commands::Plan do
   end
   let(:launcher) { double("launcher", call: nil) }
   let(:runner) { instance_double(Workspace::Commands::Run, call: "%23") }
+  let(:main_agent) { instance_double(Workspace::MainAgent).tap { |agent| allow(agent).to receive(:spawn_command) { |_ws, kind| "#{kind} --from-config" } } }
   let(:readiness) do
     instance_double(Workspace::AgentReadiness, deadline_in: 99.0,
       wait: Workspace::AgentReadiness::Result.new(ready: true, pane: "0.2", pane_id: "%23", label: "Claude Code"))
@@ -51,7 +52,7 @@ RSpec.describe Workspace::Commands::Plan do
   subject(:command) do
     described_class.new(notes: notes, catalog: catalog, plan_state: Workspace::PlanState.new(clock: -> { now }), plan_config: plan_config,
       tmux: tmux, snapshot_client: snapshot_client, ask_store_for: ->(_workspace) { ask_store }, task_store: task_store, sender: sender, binder: binder, library: library, event_log: event_log,
-      runner: runner, readiness: readiness, prompt_timeout: 30, clock: -> { now }, output: output)
+      runner: runner, readiness: readiness, main_agent: main_agent, prompt_timeout: 30, clock: -> { now }, output: output)
   end
 
   before do
@@ -1095,7 +1096,8 @@ RSpec.describe Workspace::Commands::Plan do
       it "spawns a new agent pane, waits on that pane alone, and sends the task there" do
         result = start_task(spawn: "codex")
 
-        expect(runner).to have_received(:call).with("api", "codex", split: true)
+        expect(main_agent).to have_received(:spawn_command).with("api", "codex")
+        expect(runner).to have_received(:call).with("api", "codex --from-config", split: true)
         expect(readiness).to have_received(:deadline_in).with(30)
         expect(readiness).to have_received(:wait).with("api", deadline: 99.0, only_pane: "%23")
         expect(sender).to have_received(:deliver).with(name: "api", pane: "%23", body: task_body)

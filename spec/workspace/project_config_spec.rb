@@ -140,6 +140,27 @@ RSpec.describe Workspace::ProjectConfig do
       end
     end
 
+    describe "#agent_pane_command" do
+      it "is the template's Claude Code pane for claude, the executable for another kind, and nil when unknown" do
+        path = File.join(tmpdir, "t.yml")
+        File.write(path, "panes:\n  - claude --dangerously-skip-permissions --continue || claude --dangerously-skip-permissions  \n")
+        allow(config).to receive(:worktree_template_path).and_return(path)
+
+        expect(pc.agent_pane_command("claude")).to eq("claude --dangerously-skip-permissions --continue || claude --dangerously-skip-permissions")
+        expect(pc.agent_pane_command("codex")).to eq("codex")
+        expect(pc.agent_pane_command("vim")).to be_nil
+      end
+
+      it "is nil for claude when the template is missing or has no Claude Code pane" do
+        path = File.join(tmpdir, "t.yml")
+        allow(config).to receive(:worktree_template_path).and_return(path)
+        expect(pc.agent_pane_command("claude")).to be_nil
+
+        File.write(path, "panes:\n  - echo hi\n")
+        expect(pc.agent_pane_command("claude")).to be_nil
+      end
+    end
+
     describe "#check_agent_kind!" do
       it "raises template_outdated for a template with no Claude Code pane" do
         path = File.join(tmpdir, "t.yml")

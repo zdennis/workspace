@@ -200,7 +200,20 @@ module Workspace
         code: "template_outdated", details: {"kind" => kind})
     end
 
-    AGENT_PANE = /^(\s*- )claude --dangerously-skip-permissions.*$/
+    AGENT_PANE = /^(\s*- )(claude --dangerously-skip-permissions.*)$/
+
+    # The pane command a new worktree config runs for an agent kind (`start --agent-kind`): the
+    # installed worktree template's Claude Code pane for `claude`, else the agent's executable.
+    #
+    # @param kind [String] an {AgentProvider} key
+    # @return [String, nil] nil for `claude` when the template has no Claude Code pane, or for an unknown kind
+    def agent_pane_command(kind)
+      unless kind == "claude"
+        return AgentProvider.find(kind)&.executable
+      end
+      return unless File.exist?(@config.worktree_template_path)
+      File.read(@config.worktree_template_path)[AGENT_PANE, 2]&.strip
+    end
 
     private
 
@@ -208,8 +221,7 @@ module Workspace
     # template whatever its age, since it matches the pane line rather than a placeholder.
     def with_agent_kind(content, kind)
       return content if kind == "claude"
-      provider = AgentProvider.all.find { |candidate| candidate.key == kind }
-      swapped = content.sub(AGENT_PANE) { "#{$1}#{provider.executable}" }
+      swapped = content.sub(AGENT_PANE) { "#{$1}#{agent_pane_command(kind)}" }
       if swapped == content
         raise Workspace::Error, "The worktree template has no Claude Code pane to swap for #{kind}; run `workspace init --force` to refresh it."
       end

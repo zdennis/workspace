@@ -34,7 +34,56 @@ module Workspace
       "none"
     end
 
+    # Words that make an agent command resume an old conversation; a new pane must start a fresh one.
+    RESUME_FLAGS = %w[--continue -c --resume -r resume].freeze
+
+    # The command a new pane runs to start a fresh +kind+ agent for the workspace (`plan start --spawn`):
+    # the workspace's own pane command for that kind when its config has one, else the command a new
+    # worktree config would run for it ({ProjectConfig#agent_pane_command}), else the bare executable.
+    # Of a chain such as `claude --flag --continue || claude --flag`, the first part that starts the
+    # agent without resuming is taken, so a spawned Claude Code keeps the main pane's flags but not its conversation.
+    #
+    # @param workspace [String] the workspace (its own tmuxinator config is read)
+    # @param kind [String] an {AgentProvider} key
+    # @return [String]
+    def spawn_command(workspace, kind)
+      provider = AgentProvider.find(kind) || raise(ArgumentError, "unknown agent kind #{kind.inspect}")
+      [*own_commands(workspace), @project_config.agent_pane_command(kind)].compact.each do |command|
+        fresh = fresh_part(command, provider)
+        return fresh if fresh
+      end
+      provider.executable
+    end
+
     private
+
+    def own_commands(workspace)
+      path = @project_config.config_path_for(workspace)
+      return [] unless File.exist?(path)
+      config = YAML.safe_load_file(path)
+      config.is_a?(Hash) ? pane_commands(config["windows"]) : []
+    rescue SystemCallError, Psych::Exception
+      []
+    end
+
+    # The first part of +command+ that runs +provider+'s program without resuming, as written. Only
+    # that part is kept: a `cd src && claude` pane gives `claude`.
+    def fresh_part(command, provider)
+      parts(command).map(&:strip).find do |part|
+        words = program_words(part)
+        File.basename(words.first.to_s) == provider.executable && (words.drop(1) & RESUME_FLAGS).empty?
+      end
+    end
+
+    # The commands a shell line chains with `||`, `&&`, `;`, `|` or newlines.
+    def parts(command) = command.split(/\|\||&&|;|\||\n/)
+
+    # The words of one command from its program on, past environment settings and wrapper words.
+    def program_words(part)
+      words = part.split
+      words.shift while words.first&.match?(/\A\w+=/) || PREFIXES.include?(words.first) || words.first(2) == %w[bundle exec]
+      words
+    end
 
     # The commands of every pane, in file order; a window's own keys (root, layout, ...) are not commands.
     def pane_commands(windows)
@@ -55,9 +104,8 @@ module Workspace
     end
 
     def provider_of(command)
-      command.split(/\|\||&&|;|\||\n/).each do |part|
-        words = part.split
-        words.shift while words.first&.match?(/\A\w+=/) || PREFIXES.include?(words.first) || words.first(2) == %w[bundle exec]
+      parts(command).each do |part|
+        words = program_words(part)
         provider = AgentProvider.all.find { |candidate| candidate.executable == File.basename(words.first.to_s) }
         return provider if provider
       end

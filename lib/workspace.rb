@@ -373,16 +373,17 @@ module Workspace
       git_exclude: GitExclude.new(git: git), output: output)
     notes_setup = NotesSetup.new(notes: notes_command, project_settings: project_settings)
     spine_command = Commands::Spine.new(notes: notes_command, writer: SpineWriter.new, event_log: event_log, lock_dir: config.spine_lock_dir, output: output)
+    main_agent = MainAgent.new(project_config: project_config)
     commands_config = CommandsConfig.new(config_resolver: config_resolver)
     instruction_composer = InstructionComposer.new(library: library, lineage: lineage,
       commands_config: commands_config, pane_bindings: pane_bindings, workflow_config: WorkflowConfig.new(config_resolver: config_resolver),
       notes_config: NotesConfig.new(config_resolver: config_resolver),
       dev_config: DevConfig.new(config_resolver: config_resolver), spine: spine_command,
       handoff_config: HandoffConfig.new(config_resolver: config_resolver, error_output: error_output),
-      main_agent: MainAgent.new(project_config: project_config))
+      main_agent: main_agent)
     start_ref = StartRef.new(git: git, lineage: lineage)
     ticket_source = TicketSource.new
-    start_command = Commands::Start.new(git: git, project_config: project_config, project_settings: project_settings, launch_command: launch_command, lineage: lineage, hook_installer: hook_installer, task_store: task_store, event_log: event_log, library: library, library_installer: library_installer, notes_setup: notes_setup, instruction_composer: instruction_composer, start_ref: start_ref, main_agent: MainAgent.new(project_config: project_config), ticket_source: ticket_source, output: output, input: input)
+    start_command = Commands::Start.new(git: git, project_config: project_config, project_settings: project_settings, launch_command: launch_command, lineage: lineage, hook_installer: hook_installer, task_store: task_store, event_log: event_log, library: library, library_installer: library_installer, notes_setup: notes_setup, instruction_composer: instruction_composer, start_ref: start_ref, main_agent: main_agent, ticket_source: ticket_source, output: output, input: input)
     spine_command = Commands::Spine.new(notes: notes_command, writer: SpineWriter.new, event_log: event_log, lock_dir: config.spine_lock_dir, output: output)
     spine_init_command = Commands::SpineInit.new(notes: notes_command, library: library, project_config: project_config, git: git, task_store: task_store, output: output)
     ticket_command = Commands::Ticket.new(git: git, project_config: project_config, start_ref: start_ref, source: ticket_source, output: output, error_output: error_output)
@@ -521,7 +522,7 @@ module Workspace
     plan_command = Commands::Plan.new(notes: notes_command, catalog: project_catalog, plan_state: plan_state,
       plan_config: plan_config, tmux: tmux,
       snapshot_client: agent_snapshot_client, ask_store_for: ask_store_for, task_store: task_store, sender: send_command, binder: binding_command,
-      library: library, event_log: event_log, runner: run_command, readiness: agent_readiness, output: output)
+      library: library, event_log: event_log, runner: run_command, readiness: agent_readiness, main_agent: main_agent, output: output)
     doctor = Doctor.new(config: config, state: state, hook_installer: hook_installer, project_detector: project_detector, git: git, pipeline_config: pipeline_config, launch_mode: launch_mode, project_settings: project_settings, plan: plan_command, snapshot_client: agent_snapshot_client, name_migration: name_migration, output: output)
     snapshot_command = Commands::Snapshot.new(catalog: project_catalog, facts: project_facts, tmux: tmux, state: state, config: config,
       snapshot_client: agent_snapshot_client, sessions: sessions_command, git: git, pull_request_status: PullRequestStatus.new,

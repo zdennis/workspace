@@ -80,4 +80,54 @@ RSpec.describe Workspace::MainAgent do
     allow(project_config).to receive(:config_path_for).with("bad").and_return(path)
     expect(main_agent.kind("bad")).to eq("none")
   end
+
+  describe "#spawn_command" do
+    let(:template_command) { "claude --dangerously-skip-permissions --continue || claude --dangerously-skip-permissions" }
+
+    before { allow(project_config).to receive(:agent_pane_command) { |kind| (kind == "claude") ? template_command : kind } }
+
+    it "takes the workspace's own pane command for the kind, without the part that resumes a conversation" do
+      config_with(["echo hi", "claude --dangerously-skip-permissions --model opus --continue || claude --dangerously-skip-permissions --model opus"])
+
+      expect(main_agent.spawn_command("app", "claude")).to eq("claude --dangerously-skip-permissions --model opus")
+    end
+
+    it "keeps an environment prefix and flags of another agent's pane" do
+      config_with(["FOO=1 codex --yolo"])
+
+      expect(main_agent.spawn_command("app", "codex")).to eq("FOO=1 codex --yolo")
+    end
+
+    it "falls back to the command a new worktree config runs for the kind when the workspace runs another agent" do
+      config_with(["codex --yolo"])
+
+      expect(main_agent.spawn_command("app", "claude")).to eq("claude --dangerously-skip-permissions")
+      expect(main_agent.spawn_command("app", "opencode")).to eq("opencode")
+    end
+
+    it "falls back the same way with no config, and to the executable when every command resumes" do
+      allow(project_config).to receive(:config_path_for).with("app").and_return(File.join(@dir, "none.yml"))
+      expect(main_agent.spawn_command("app", "claude")).to eq("claude --dangerously-skip-permissions")
+
+      allow(project_config).to receive(:agent_pane_command).and_return("claude --resume")
+      expect(main_agent.spawn_command("app", "claude")).to eq("claude")
+
+      allow(project_config).to receive(:agent_pane_command).and_return(nil)
+      expect(main_agent.spawn_command("app", "claude")).to eq("claude")
+    end
+
+    it "falls back past a config that can't be parsed, and keeps only the agent part of a chained pane" do
+      path = File.join(@dir, "bad.yml")
+      File.write(path, "a: [\n")
+      allow(project_config).to receive(:config_path_for).with("bad").and_return(path)
+      expect(main_agent.spawn_command("bad", "claude")).to eq("claude --dangerously-skip-permissions")
+
+      config_with(["cd src && codex --yolo"])
+      expect(main_agent.spawn_command("app", "codex")).to eq("codex --yolo")
+    end
+
+    it "rejects an unknown kind" do
+      expect { main_agent.spawn_command("app", "vim") }.to raise_error(ArgumentError)
+    end
+  end
 end

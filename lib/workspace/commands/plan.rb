@@ -59,13 +59,15 @@ module Workspace
       # @param library [Workspace::Library] finds the built-in play
       # @param event_log [Workspace::EventLog] gets `plan_changed`
       # @param runner [Workspace::Commands::Run] splits a new pane and starts an agent in it for `start --spawn`
+      # @param main_agent [Workspace::MainAgent] says which command starts a fresh agent of a kind for the workspace
       # @param readiness [Workspace::AgentReadiness] waits for that agent before its task is typed
       # @param prompt_timeout [Numeric] seconds the new agent may take to be ready
       # @param clock [#call] returns the current Time, for the name of a deleted plan
       # @param output [IO] output stream
       def initialize(notes:, catalog:, plan_state:, plan_config:, tmux:, snapshot_client:, ask_store_for:, task_store:, sender:, binder:, library:,
-        event_log:, runner:, readiness:, prompt_timeout: AgentReadiness::DEFAULT_TIMEOUT, clock: -> { Time.now }, output: $stdout)
+        event_log:, runner:, readiness:, main_agent:, prompt_timeout: AgentReadiness::DEFAULT_TIMEOUT, clock: -> { Time.now }, output: $stdout)
         @runner = runner
+        @main_agent = main_agent
         @readiness = readiness
         @prompt_timeout = prompt_timeout
         @notes = notes
@@ -352,7 +354,7 @@ module Workspace
           end
         end
         provider = AgentProvider.find(kind)
-        id = @runner.call(name, provider.executable, split: true)
+        id = @runner.call(name, @main_agent.spawn_command(name, kind), split: true)
         ready = @readiness.wait(@tmux.session_name_for(name), deadline: @readiness.deadline_in(@prompt_timeout), only_pane: id)
         unless ready.ready?
           message = "Started #{provider.label} in new pane #{id}, but it was not ready for the task in #{@prompt_timeout}s (#{ready.reason}); nothing was typed."
