@@ -113,15 +113,14 @@ module Workspace
         return false
       end
       return false unless @changed_at && now - @changed_at >= SETTLE
-      @changed_at = nil
-      record_changes
+      record_changes.tap { @changed_at = nil }
     end
 
     private
 
     def take_baseline
       @signature = @notes_dir && signature_of
-      @stages = @notes_dir && read_stages
+      @stages = @notes_dir && read_stages(nil)
       @changed_at = nil
     end
 
@@ -161,11 +160,15 @@ module Workspace
     end
 
     # @return [Hash{String => Hash}] what is compared, by stage file name below `spine/`, in tree order
-    def read_stages
+    def read_stages(previous)
       stages = {}
       SpineTree.read(@notes_dir).each_stage do |stage|
         file = stage.file
-        next unless file&.read?
+        next unless file
+        unless file.read?
+          stages[stage.relative] = previous[stage.relative] if previous&.key?(stage.relative)
+          next
+        end
         stages[stage.relative] = {"path" => stage.path, "status" => file.status, "note" => file.value("note"),
                                   "updated" => file.value("updated"), "updated_by" => file.value("updated_by"),
                                   "revision" => file.revision}
@@ -175,7 +178,7 @@ module Workspace
 
     def record_changes
       previous = @stages
-      current = read_stages
+      current = read_stages(previous)
       @stages = current
       return false if previous.nil?
       own = nil

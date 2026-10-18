@@ -208,6 +208,16 @@ RSpec.describe Workspace::SpineWatcher do
     FileUtils.remove_entry(outside)
   end
 
+  it "treats a stage file that can no longer be read as unchanged, not removed" do
+    stage("40-verify.md")
+    watcher.baseline
+
+    File.binwrite(File.join(spine, "40-verify.md"), "---\nstatus: completed\n---\n\xFF\xFE")
+    settle
+
+    expect(recorded).to be_empty
+  end
+
   it "skips a workspace whose notes directory is unresolved, then baselines once it resolves" do
     resolved[0] = nil
     watcher.baseline
