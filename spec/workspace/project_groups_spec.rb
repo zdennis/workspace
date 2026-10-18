@@ -163,6 +163,45 @@ RSpec.describe Workspace::ProjectGroups do
     end
   end
 
+  describe "#groups_by_project_id" do
+    it "maps each grouped repository id to its group" do
+      api = repo("api")
+      web = repo("web")
+      groups.create("Billing")
+      groups.create("Shop")
+      groups.add("billing", api)
+      groups.add("shop", web)
+
+      map = groups.groups_by_project_id
+
+      expect(map.transform_values(&:id)).to eq(File.join(api, ".git") => "group:billing", File.join(web, ".git") => "group:shop")
+    end
+
+    it "is empty with no groups" do
+      expect(groups.groups_by_project_id).to eq({})
+    end
+  end
+
+  describe "#unreadable" do
+    it "names group files that are not YAML or not a mapping, with a message" do
+      groups.create("Billing")
+      File.write(File.join(@root, "groups", "bad.yml"), "name: [unclosed\n")
+      File.write(File.join(@root, "groups", "list.yml"), "- a\n")
+
+      result = groups.unreadable
+
+      expect(result.map { |w| w["path"] }).to eq([File.join(@root, "groups", "bad.yml"), File.join(@root, "groups", "list.yml")])
+      expect(result.last["message"]).to eq("not a mapping")
+      expect(result.first["message"]).not_to be_empty
+    end
+
+    it "is empty when every file reads" do
+      groups.create("Billing")
+
+      expect(groups.unreadable).to eq([])
+    end
+  end
+
   describe ".group_id?" do
     it "recognizes the prefix" do
       expect(described_class.group_id?("group:billing")).to be true

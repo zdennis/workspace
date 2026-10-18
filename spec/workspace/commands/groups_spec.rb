@@ -121,6 +121,110 @@ RSpec.describe Workspace::Commands::Groups do
       command.list(json: true)
 
       expect(json["groups"].map { |g| g["id"] }).to eq(%w[group:admin group:billing])
+      expect(json["warnings"]).to eq([])
+    end
+
+    context "with a group file that can't be parsed" do
+      let(:error_output) { StringIO.new }
+      subject(:command) { described_class.new(groups: store, output: output, error_output: error_output) }
+
+      before do
+        command.create(name: "Billing")
+        File.write(File.join(@root, "groups", "broken.yml"), "name: [unclosed\n")
+        File.write(File.join(@root, "groups", "list.yml"), "- just\n- a list\n")
+        output.truncate(0)
+        output.rewind
+      end
+
+      it "names each in warnings with --json and still lists the rest" do
+        command.list(json: true)
+
+        expect(json["groups"].map { |g| g["id"] }).to eq(["group:billing"])
+        expect(json["warnings"].map { |w| w["path"] }).to eq([File.join(@root, "groups", "broken.yml"), File.join(@root, "groups", "list.yml")])
+        expect(json["warnings"].map { |w| w["message"] }).to all(be_a(String).and(satisfy { |m| !m.empty? }))
+      end
+
+      it "warns on stderr in text and keeps stdout to the table" do
+        command.list
+
+        expect(error_output.string).to include("warning: skipped #{File.join(@root, "groups", "broken.yml")}")
+        expect(output.string).not_to include("warning")
+      end
+    end
+  end
+
+  describe "#show" do
+    let(:api) { make_main_checkout(File.join(@root, "api")) }
+    let(:calls) { [] }
+    let(:projects) do
+      log = calls
+      Class.new do
+        define_method(:group_documents) do |group, **options|
+          log << options
+          group.repositories.map do |repository|
+            next {repository: repository, project: nil, document: nil} unless repository.name == "api"
+            {repository: repository, project: :project, document: {"schema_version" => 1, "ok" => true, "project" => {"name" => "api"}}}
+          end
+        end
+
+        define_method(:print_document) { |_project, _document| nil }
+      end.new
+    end
+    subject(:command) { described_class.new(groups: store, projects: projects, output: output) }
+
+    before do
+      command.create(name: "Billing")
+      command.add(group: "billing", path: api)
+      gone = make_main_checkout(File.join(@root, "gone"))
+      command.add(group: "billing", path: gone)
+      FileUtils.rm_rf(gone)
+      output.truncate(0)
+      output.rewind
+    end
+
+    it "prints id, name, path and a show document or {id, path, exists} per repository" do
+      expect(command.show(group: "billing", json: true)).to eq({exit_code: 0})
+
+      expect(json).to include("schema_version" => 1, "ok" => true, "id" => "group:billing", "name" => "Billing",
+        "path" => File.join(@root, "groups", "billing.yml"))
+      expect(json["repositories"]).to eq([
+        {"schema_version" => 1, "ok" => true, "project" => {"name" => "api"}},
+        {"id" => File.join(@root, "gone", ".git"), "path" => File.join(@root, "gone"), "exists" => false}
+      ])
+    end
+
+    it "passes the options on to the projects command" do
+      command.show(group: "billing", json: true, agents: false, git: false, timeout: 2.0)
+
+      expect(calls).to eq([{agents: false, git: false, timeout: 2.0}])
+    end
+
+    it "accepts a slug or a name" do
+      command.show(group: "Billing", json: true)
+
+      expect(json["id"]).to eq("group:billing")
+    end
+
+    it "prints a coded error with --json and exits 1 for an unknown group" do
+      expect(command.show(group: "nope", json: true)).to eq({exit_code: 1})
+      expect(json).to include("ok" => false, "code" => "unknown_group")
+    end
+
+    it "says so when no projects command was wired" do
+      bare = described_class.new(groups: store, output: output)
+
+      expect { bare.show(group: "billing") }.to raise_error(Workspace::Error, /no projects command was wired/)
+    end
+
+    it "raises for an unknown group without --json" do
+      expect { command.show(group: "nope") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("unknown_group") }
+    end
+
+    it "prints a header and the gone repository in text" do
+      command.show(group: "billing")
+
+      expect(output.string).to include("Group  Billing (group:billing)")
+      expect(output.string).to match(/Project  gone .*MISSING \(repository gone\)/)
     end
   end
 end

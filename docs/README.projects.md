@@ -12,7 +12,7 @@ workspace projects show [NAME|PATH] [--json] [--no-agents] [--no-git] [--timeout
 workspace projects members [NAME|PATH] [--path] [--all] [--timeout SECONDS] [--json]
 workspace projects stop [NAME] [--dry-run] [--json]
 workspace projects kill NAME [--dry-run] [--yes] [--force] [--discard-unsaved] [--timeout DURATION] [--json]
-workspace projects group create|add|list ...   # see "Groups"
+workspace projects group create|add|list|show ...   # see "Groups"
 ```
 
 A bare `workspace projects` runs `list`.
@@ -121,7 +121,7 @@ broken checkout.
 ```json
 {"schema_version":1,"projects":[
   {"name":"workspace","id":"/Users/z/src/workspace/.git","path":"/Users/z/src/workspace",
-   "vcs":"git","workspaces":3,"running":2}
+   "vcs":"git","workspaces":3,"running":2,"group":{"id":"group:billing","name":"Billing"}}
 ]}
 ```
 
@@ -135,6 +135,7 @@ With `--git` each project also has `"unsaved":{"members":2,"unknown":1,"missing"
 | `vcs` | `git`, `none` (checkout exists, not in git), `broken` (`.git` file points at a missing git dir) or `unknown` (checkout gone) |
 | `workspaces` | Number of workspaces in the project |
 | `running` | How many of them have a running tmux session |
+| `group` | `{"id","name"}` of the [group](#groups) the repository is in, or `null` |
 
 Errors under `--json` print `{"schema_version":1,"ok":false,"error":"..."}` on stdout and
 exit 1, whatever the order of the flags.
@@ -238,7 +239,7 @@ succeeds and says so in place of the locks and dev lines.
 
 ```json
 {"schema_version":1,
- "project":{"name":"app","id":"/Users/z/src/app/.git","path":"/Users/z/src/app","vcs":"git"},
+ "project":{"name":"app","id":"/Users/z/src/app/.git","path":"/Users/z/src/app","vcs":"git","group":null},
  "members":[
    {"workspace":"app.worktree-login","path":"/Users/z/src/app/.worktrees/login","kind":"worktree",
     "configured":true,"exists":true,"running":true,"headless":true,
@@ -509,6 +510,7 @@ project's path id.
 workspace projects group create NAME [--json]
 workspace projects group add GROUP PATH [--json]
 workspace projects group list [--json]
+workspace projects group show GROUP [--json] [--no-agents] [--no-git] [--timeout SECONDS]
 ```
 
 Each group is one file, `~/.config/workspace/groups/<slug>.yml`, that you may edit by hand
@@ -531,13 +533,21 @@ repositories:
   (`outcome` is `already_member`). A PATH that is not a directory is `not_a_directory`, one outside
   git is `not_a_repository`, an unknown GROUP is `unknown_group`.
 - `list` prints every group with its repositories. A repository whose directory is gone stays in the
-  file and shows `exists: false`. A group file that can't be parsed is left out of the list, and
-  `add` refuses with `config_parse` while any such file exists, since it could hide a repository's
-  membership. `create` and `add` rewrite the whole file, so YAML comments and extra keys are not kept.
+  file and shows `exists: false`. A group file that can't be parsed is left out of the list and named
+  in `warnings` (`--json`) or on stderr (text), and `add` refuses with `config_parse` while any such
+  file exists, since it could hide a repository's membership. `create` and `add` rewrite the whole
+  file, so YAML comments and extra keys are not kept.
   `add` exits 0 for both outcomes (`added` and `already_member`); read `outcome`.
+- `show GROUP` prints each repository as `projects show` does, with the same `--no-agents`,
+  `--no-git` and `--timeout`. A repository whose directory is gone, or that has no workspace
+  config, has no project to show: it is `{id, path, exists}` (`exists: false` when gone).
 
-`projects stop` and `projects kill` refuse a `group:` id with `group_not_supported`; stop or kill
-each repository's project instead.
+Every `projects list` row and `projects show` project, and every [`snapshot`](README.snapshot.md)
+project, carries `group`: `{"id", "name"}` of the group its repository is in, or `null`.
+
+`projects stop` and `projects kill` refuse a `group:` id with `group_not_supported`, and so do
+`projects show` and `projects members`: stop, kill or show each repository's project, or use
+`projects group show`.
 
 ### Groups JSON
 
@@ -547,7 +557,9 @@ repository is `{"id", "name", "path", "exists"}`.
 
 - `create`: `{"schema_version":1,"ok":true,"action":"create","group":{...}}`
 - `add`: `{"schema_version":1,"ok":true,"action":"add","outcome":"added"|"already_member","group":{...},"repository":{...}}`
-- `list`: `{"schema_version":1,"ok":true,"groups":[{...}]}`
+- `list`: `{"schema_version":1,"ok":true,"groups":[{...}],"warnings":[{"path","message"}]}`
+- `show`: `{"schema_version":1,"ok":true,"id","name","path","repositories":[...]}`, each entry a
+  `projects show` document (with its own `schema_version` and `ok`), or `{"id","path","exists"}`.
 
 Failures are the usual `{"ok": false, "error", "code", "details"}` document (codes in
 [`README.json.md`](README.json.md)) and exit 1.

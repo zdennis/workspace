@@ -524,9 +524,9 @@ module Workspace
     project_facts = ProjectFacts.new(tmux: tmux, state: state, config: config, lock_namespace: lock_namespace,
       lock_holder: lock_holder, dev: dev_command, agents: ProjectAgents.new(client: agent_snapshot_client),
       git: git, catalog: project_catalog, error_output: error_output)
-    projects_command = Commands::Projects.new(catalog: project_catalog, tmux: tmux, facts: project_facts, output: output, error_output: error_output)
     project_groups = ProjectGroups.new(config: config, git: git)
-    groups_command = Commands::Groups.new(groups: project_groups, output: output)
+    projects_command = Commands::Projects.new(catalog: project_catalog, tmux: tmux, facts: project_facts, output: output, error_output: error_output, groups: project_groups)
+    groups_command = Commands::Groups.new(groups: project_groups, projects: projects_command, output: output, error_output: error_output)
     plan_config = PlanConfig.new(config_resolver: config_resolver, error_output: error_output)
     plan_state = PlanState.new
     plan_access = PlanAccess.new(notes: notes_command, tmux: tmux, event_log: event_log)
@@ -540,7 +540,7 @@ module Workspace
     snapshot_command = Commands::Snapshot.new(catalog: project_catalog, facts: project_facts, tmux: tmux, state: state, config: config,
       snapshot_client: agent_snapshot_client, sessions: sessions_command, git: git, pull_request_status: PullRequestStatus.new,
       ask_store_for: ask_store_for, plan: plan_command, plan_state: plan_state, plan_config: plan_config, task_store: task_store,
-      output: output, error_output: error_output)
+      output: output, error_output: error_output, groups: project_groups)
     events_command = Commands::Events.new(
       stream_factory: -> { EventStream.new(lifecycle_path: config.event_log_file, hook_dir: config.hook_events_dir) }, output: output
     )

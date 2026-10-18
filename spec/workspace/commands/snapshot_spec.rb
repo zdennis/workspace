@@ -141,6 +141,7 @@ RSpec.describe Workspace::Commands::Snapshot do
     records = task_records
     Class.new { define_method(:latest_by_workspace) { records } }.new
   end
+  let(:groups) { nil }
   let(:stall_seconds) { 300 }
   let(:plan_config) do
     seconds = stall_seconds
@@ -151,7 +152,7 @@ RSpec.describe Workspace::Commands::Snapshot do
     described_class.new(catalog: catalog, facts: facts, tmux: tmux, state: state, config: config, snapshot_client: snapshot_client,
       sessions: sessions, git: git, pull_request_status: pull_request_status, ask_store_for: ask_store_for, plan: plan_command,
       plan_state: Workspace::PlanState.new(clock: -> { now }), plan_config: plan_config, task_store: task_store, output: output,
-      error_output: error_output, clock: clock)
+      error_output: error_output, clock: clock, groups: groups)
   end
 
   after { FileUtils.remove_entry(tmpdir) }
@@ -668,6 +669,41 @@ RSpec.describe Workspace::Commands::Snapshot do
       snapshot.call
 
       expect(parsed["cursor"]).to end_with(":2")
+    end
+  end
+
+  describe "the group key" do
+    let(:lookups) { [] }
+    let(:groups) do
+      calls = lookups
+      group = Struct.new(:id, :name).new("group:billing", "Billing")
+      Class.new do
+        define_method(:groups_by_project_id) { (calls << :read) && {"/src/app/.git" => group} }
+      end.new
+    end
+
+    it "is the group's id and name on a grouped project and null on the rest" do
+      snapshot.call
+
+      expect(parsed["projects"].to_h { |p| [p["name"], p["group"]] }).to eq(
+        "app" => {"id" => "group:billing", "name" => "Billing"}, "other" => nil
+      )
+    end
+
+    it "reads the groups once for the whole document" do
+      snapshot.call
+
+      expect(lookups).to eq([:read])
+    end
+
+    context "without a groups store" do
+      let(:groups) { nil }
+
+      it "is null on every project" do
+        snapshot.call
+
+        expect(parsed["projects"].map { |p| p["group"] }).to eq([nil, nil])
+      end
     end
   end
 end

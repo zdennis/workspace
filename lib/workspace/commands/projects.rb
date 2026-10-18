@@ -28,7 +28,9 @@ module Workspace
       # @param output [IO] stream for the table or JSON
       # @param error_output [IO] stream for notes that must stay out of script-readable output
       # @param home [String] home directory, abbreviated to `~` in the table
-      def initialize(catalog:, tmux:, facts:, output: $stdout, error_output: $stderr, home: Dir.home)
+      # @param groups [Workspace::ProjectGroups, nil] says which group each project's repository is in; nil means none has one
+      def initialize(catalog:, tmux:, facts:, output: $stdout, error_output: $stderr, home: Dir.home, groups: nil)
+        @groups = groups
         @catalog = catalog
         @tmux = tmux
         @facts = facts
@@ -59,9 +61,10 @@ module Workspace
       #   {DEFAULT_AGENT_TIMEOUT} for daemons and {ProjectFacts::DEFAULT_GIT_TIMEOUT} for git (the worktree listing included)
       # @param cwd [String] directory used when +name+ is nil
       # @return [Hash] `{exit_code:}`; 1 only after a JSON error payload was printed
-      # @raise [Workspace::Error] if the project can't be found, unless +json+ is set
+      # @raise [Workspace::Error] if the project can't be found, or +name+ is a `group:` id (code `group_not_supported`), unless +json+ is set
       # @raise [Workspace::UsageError] if +name+ matches several projects, unless +json+ is set
       def show(name: nil, json: false, agents: true, git: true, timeout: nil, cwd: Dir.pwd)
+        refuse_group!("projects show", name)
         project = name ? @catalog.find(name) : @catalog.for_cwd(cwd)
         payload = show_payload(project, agents: agents, git: git, timeout: timeout)
         if json
@@ -100,6 +103,7 @@ module Workspace
       # @raise [Workspace::Error] if the project can't be found or the worktree listing times out, unless +json+ is set
       # @raise [Workspace::UsageError] if +name+ matches several projects, unless +json+ is set
       def members(name: nil, path: false, all: false, json: false, timeout: nil, cwd: Dir.pwd)
+        refuse_group!("projects members", name)
         project = name ? @catalog.find(name) : @catalog.for_cwd(cwd)
         members = project_members(project, all: all, timeout: timeout)
         if json
@@ -118,6 +122,35 @@ module Workspace
         {exit_code: 1}
       end
 
+      # The `projects show` document of every repository in a group, for
+      # `projects group show`. A repository whose directory is gone, or that
+      # has no workspace config, has no project and so no document.
+      #
+      # @param group [Workspace::ProjectGroups::Group]
+      # @param agents [Boolean] see {#show}
+      # @param git [Boolean] see {#show}
+      # @param timeout [Numeric, nil] see {#show}
+      # @return [Array<Hash>] `{repository:, project:, document:}` per repository, +project+ and +document+ nil when it has none
+      def group_documents(group, agents: true, git: true, timeout: nil)
+        by_id = @catalog.all.to_h { |project| [project.id, project] }
+        groups = group_map
+        sessions = running_sessions
+        group.repositories.map do |repository|
+          project = by_id[repository.id] if repository.exists
+          document = show_payload(project, agents: agents, git: git, timeout: timeout, group_map: groups, sessions: sessions) if project
+          {repository: repository, project: project, document: document}
+        end
+      end
+
+      # Prints one project's `show` text for a document from {#group_documents}.
+      #
+      # @param project [Workspace::ProjectCatalog::Project]
+      # @param document [Hash]
+      # @return [void]
+      def print_document(project, document)
+        print_show(project, document)
+      end
+
       # @param running_only [Boolean] only projects with at least one running workspace
       # @param json [Boolean] print the schema-versioned JSON payload instead of a table
       # @param git [Boolean] add each project's unsaved-work count, which costs
@@ -126,7 +159,8 @@ module Workspace
       # @raise [Workspace::Error] on failure, unless +json+ is set
       def list(running_only: false, json: false, git: false)
         sessions = running_sessions
-        rows = @catalog.all.map { |project| row_for(project, sessions) }
+        groups = group_map
+        rows = @catalog.all.map { |project| row_for(project, sessions).merge(group: groups[project.id]) }
         rows = rows.select { |row| row[:running].positive? } if running_only
         if git
           deadline = @facts.git_deadline
@@ -148,6 +182,21 @@ module Workspace
       end
 
       private
+
+      # Every grouped repository, read once per command call.
+      def group_map
+        @groups ? @groups.groups_by_project_id : {}
+      end
+
+      def group_json(group)
+        group && {"id" => group.id, "name" => group.name}
+      end
+
+      def refuse_group!(verb, name)
+        return unless ProjectGroups.group_id?(name)
+        raise Workspace::Error.new("#{verb} doesn't take a group id (#{name}): use 'workspace projects group show #{name}'.",
+          code: "group_not_supported", details: {"id" => name})
+      end
 
       # The configured members; with +all+ also the unconfigured worktrees,
       # whose listing is one git subprocess bounded by the default git timeout.
@@ -213,7 +262,8 @@ module Workspace
           "path" => project.path,
           "vcs" => project.vcs,
           "workspaces" => project.members.size,
-          "running" => row[:running]
+          "running" => row[:running],
+          "group" => group_json(row[:group])
         }
         if git
           json["unsaved"] = row[:unsaved]&.slice("members", "unknown", "missing", "total", "incomplete")
@@ -265,13 +315,14 @@ module Workspace
         notes.empty? ? "" : "(#{notes.join(", ")})"
       end
 
-      def show_payload(project, agents:, git:, timeout:)
-        gathered = @facts.for_project(project, sessions: running_sessions, agents: agents, timeout: timeout || DEFAULT_AGENT_TIMEOUT,
+      def show_payload(project, agents:, git:, timeout:, group_map: self.group_map, sessions: running_sessions)
+        gathered = @facts.for_project(project, sessions: sessions, agents: agents, timeout: timeout || DEFAULT_AGENT_TIMEOUT,
           git: git, git_timeout: timeout)
         members, locks, dev, errors = gathered.values_at(:members, :locks, :dev, :errors)
         payload = {
           "schema_version" => JSON_SCHEMA_VERSION, "ok" => true,
-          "project" => {"name" => project.name, "id" => project.id, "path" => project.path, "vcs" => project.vcs},
+          "project" => {"name" => project.name, "id" => project.id, "path" => project.path, "vcs" => project.vcs,
+                        "group" => group_json(group_map[project.id])},
           "members" => members,
           "locks" => locks,
           "dev" => dev,

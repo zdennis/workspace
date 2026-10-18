@@ -6411,7 +6411,7 @@ module Workspace
     def projects_help
       <<~HELP
         Usage: workspace projects [list [--running] | show [NAME|PATH] | members [NAME|PATH] | stop [NAME|PATH] [--dry-run]
-                                  | group create NAME | group add GROUP PATH | group list
+                                  | group create NAME | group add GROUP PATH | group list | group show GROUP
                                   | kill NAME|PATH [--dry-run] [--yes] [--force] [--discard-unsaved] [--timeout DURATION]] [--json]
 
         Group workspaces by repository.
@@ -6441,10 +6441,10 @@ module Workspace
                             nothing if any has unsaved work, can't be checked, is gone, or runs the dev
                             env. Asks first; NAME is required. See 'workspace projects kill --help'.
 
-          group create|add|list
+          group create|add|list|show
                             Named groups of repositories (ids like group:billing), kept in
                             ~/.config/workspace/groups/. A repository is in at most one group.
-                            See 'workspace projects group --help'. stop and kill refuse a group id.
+                            See 'workspace projects group --help'. stop, kill, show and members refuse a group id.
 
         Options:
           --dry-run   stop, kill: show what would happen and change nothing
@@ -6658,6 +6658,7 @@ module Workspace
         Usage: workspace projects group create NAME [--json]
                workspace projects group add GROUP PATH [--json]
                workspace projects group list [--json]
+               workspace projects group show GROUP [--json] [--no-agents] [--no-git] [--timeout SECONDS]
 
         A group names several repositories that belong together. Its id is group:<slug>
         (the slug is NAME in lowercase with dashes). Each repository is kept by the
@@ -6669,10 +6670,14 @@ module Workspace
           add GROUP PATH    Add the repository containing PATH (a main checkout or a worktree).
                             GROUP is an id, a slug or a name. A repository in another group is
                             refused; adding it again to the same group does nothing.
-          list              Every group with its repositories (exists: false when one is gone)
+          list              Every group with its repositories (exists: false when one is gone).
+                            A group file that can't be read is named in "warnings" (--json) or on stderr.
+          show GROUP        Each repository as 'projects show' shows it
 
         Options:
           --json            Print schema-versioned JSON (see docs/README.projects.md)
+          --no-agents, --no-git, --timeout SECONDS
+                            For show: the same as 'projects show'
 
         Examples:
           workspace projects group create Billing
@@ -6689,15 +6694,24 @@ module Workspace
         @output.puts projects_group_help
         return
       end
-      unless %w[create add list].include?(action)
+      unless %w[create add list show].include?(action)
         raise UsageError, "Unknown projects group subcommand: #{action}. Run 'workspace projects group --help'."
       end
       json = false
-      OptionParser.new { |opts| opts.on("--json") { json = true } }.parse!(rest)
+      show_options = {agents: true, git: true, timeout: nil}
+      OptionParser.new do |opts|
+        opts.on("--json") { json = true }
+        if action == "show"
+          opts.on("--no-agents") { show_options[:agents] = false }
+          opts.on("--no-git") { show_options[:git] = false }
+          opts.on("--timeout SECONDS", Float) { |seconds| show_options[:timeout] = seconds }
+        end
+      end.parse!(rest)
+      validate_projects_timeout(show_options[:timeout])
       raise Error, "projects group is not available: no groups command was wired" unless @groups_command
 
-      arity = {"create" => 1, "add" => 2, "list" => 0}.fetch(action)
-      usage = {"create" => "NAME", "add" => "GROUP PATH", "list" => ""}.fetch(action)
+      arity = {"create" => 1, "add" => 2, "list" => 0, "show" => 1}.fetch(action)
+      usage = {"create" => "NAME", "add" => "GROUP PATH", "list" => "", "show" => "GROUP"}.fetch(action)
       if rest.size < arity
         raise UsageError, "projects group #{action} needs #{usage}. Run 'workspace projects group --help'."
       elsif rest.size > arity
@@ -6706,6 +6720,7 @@ module Workspace
       result = case action
       when "create" then @groups_command.create(name: rest[0], json: json)
       when "add" then @groups_command.add(group: rest[0], path: rest[1], json: json)
+      when "show" then @groups_command.show(group: rest[0], json: json, **show_options)
       else @groups_command.list(json: json)
       end
       @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?

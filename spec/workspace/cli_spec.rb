@@ -6993,6 +6993,23 @@ RSpec.describe Workspace::CLI do
       expect(groups_command.calls).to eq([{list: true, json: true}])
     end
 
+    it "shows a group with its options" do
+      cli.run(["projects", "group", "show", "billing", "--json", "--no-agents", "--no-git", "--timeout", "2"])
+
+      expect(groups_command.calls).to eq([{show: "billing", json: true, agents: false, git: false, timeout: 2.0}])
+    end
+
+    it "shows a group with the defaults" do
+      cli.run(["projects", "group", "show", "billing"])
+
+      expect(groups_command.calls).to eq([{show: "billing", json: false, agents: true, git: true, timeout: nil}])
+    end
+
+    it "refuses a bad --timeout for group show" do
+      expect { cli.run(["projects", "group", "show", "billing", "--timeout", "0"]) }.to raise_error(FakeSystemExit)
+      expect(groups_command.calls).to be_empty
+    end
+
     it "prints help without running anything" do
       cli.run(["projects", "group", "--help"])
 
@@ -7000,7 +7017,7 @@ RSpec.describe Workspace::CLI do
       expect(groups_command.calls).to be_empty
     end
 
-    [[%w[add billing], /needs GROUP PATH/], [%w[list extra], /Unexpected argument: extra/], [%w[remove], /Unknown projects group subcommand/]].each do |args, message|
+    [[%w[add billing], /needs GROUP PATH/], [%w[show], /needs GROUP/], [%w[list extra], /Unexpected argument: extra/], [%w[remove], /Unknown projects group subcommand/]].each do |args, message|
       it "refuses projects group #{args.join(" ")}" do
         expect { cli.run(["projects", "group", *args]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
         expect(built[2].string).to match(message)

@@ -278,7 +278,8 @@ RSpec.describe Workspace::Commands::Projects do
             "path" => main,
             "vcs" => "git",
             "workspaces" => 3,
-            "running" => 1
+            "running" => 1,
+            "group" => nil
           }]
         )
       end
@@ -673,7 +674,7 @@ RSpec.describe Workspace::Commands::Projects do
         expect(command.show(name: "app", json: true, git: false)).to eq(exit_code: 0)
 
         expect(payload["schema_version"]).to eq(1)
-        expect(payload["project"]).to eq("name" => "app", "id" => File.join(@root, "app", ".git"), "path" => File.join(@root, "app"), "vcs" => "git")
+        expect(payload["project"]).to eq("name" => "app", "id" => File.join(@root, "app", ".git"), "path" => File.join(@root, "app"), "vcs" => "git", "group" => nil)
         expect(payload["members"].map { |m| m["workspace"] }).to eq(%w[app app.worktree-login app.worktree-old])
         expect(member("app")).to include("kind" => "main", "configured" => true, "exists" => true, "running" => true,
           "headless" => false, "open_asks" => 0, "pipeline" => {"entries" => 2})
@@ -1550,6 +1551,95 @@ RSpec.describe Workspace::Commands::Projects do
         command.list(git: true)
 
         expect(output.string).to match(%r{^real\s+2\s+0\s+1 of 3\s+~/real\s+\(1 unconfigured worktree\)$})
+      end
+    end
+  end
+
+  describe "groups" do
+    let(:group_config) do
+      Struct.new(:groups_dir) do
+        def group_path(slug) = File.join(groups_dir, "#{slug}.yml")
+      end.new(File.join(@root, "groups"))
+    end
+    let(:group_store) { Workspace::ProjectGroups.new(config: group_config, git: Workspace::Git.new(output: StringIO.new, input: StringIO.new)) }
+
+    subject(:command) do
+      described_class.new(catalog: catalog, tmux: tmux, facts: facts, output: output, error_output: error_output, home: @root, groups: group_store)
+    end
+
+    def payload = JSON.parse(output.string)
+
+    before do
+      @app = build_app_with_worktrees
+      other = make_main_checkout(File.join(@root, "other"))
+      roots["other"] = other
+      group_store.create("Billing")
+      group_store.add("billing", @app)
+    end
+
+    it "adds group to every list row, null for an ungrouped project" do
+      command.list(json: true)
+
+      expect(payload["projects"].to_h { |p| [p["name"], p["group"]] }).to eq(
+        "app" => {"id" => "group:billing", "name" => "Billing"}, "other" => nil
+      )
+    end
+
+    it "keeps the rest of a list row as it was" do
+      command.list(json: true)
+
+      expect(payload["projects"].first.keys).to eq(%w[name id path vcs workspaces running group])
+    end
+
+    it "adds group to the project of a show document" do
+      command.show(name: "app", json: true, agents: false, git: false)
+
+      expect(payload["project"]["group"]).to eq("id" => "group:billing", "name" => "Billing")
+    end
+
+    it "is null in a show document of an ungrouped project" do
+      command.show(name: "other", json: true, agents: false, git: false)
+
+      expect(payload["project"]["group"]).to be_nil
+    end
+
+    it "reads the groups once per list call" do
+      expect(group_store).to receive(:groups_by_project_id).once.and_call_original
+
+      command.list(json: true)
+    end
+
+    it "leaves the members document alone" do
+      command.members(name: "app", json: true)
+
+      expect(payload["project"].keys).to eq(%w[name id path vcs])
+    end
+
+    %i[show members].each do |verb|
+      it "refuses a group id in #{verb} with group_not_supported, pointing at projects group show" do
+        expect(command.public_send(verb, name: "group:billing", json: true)).to eq(exit_code: 1)
+
+        expect(payload).to include("ok" => false, "code" => "group_not_supported", "details" => {"id" => "group:billing"})
+        expect(payload["error"]).to include("projects group show group:billing")
+      end
+
+      it "raises group_not_supported from #{verb} without --json" do
+        expect { command.public_send(verb, name: "group:billing") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("group_not_supported") }
+      end
+    end
+
+    describe "#group_documents" do
+      it "gives a show document for a repository with a project, none for a gone one or one with no workspaces" do
+        loner = make_main_checkout(File.join(@root, "loner"))
+        gone = make_main_checkout(File.join(@root, "gone"))
+        group_store.add("billing", loner)
+        group_store.add("billing", gone)
+        FileUtils.rm_rf(gone)
+
+        entries = command.group_documents(group_store.find("billing"), agents: false, git: false)
+
+        expect(entries.map { |e| [e[:repository].name, e[:document] ? "document" : nil] }).to eq([["app", "document"], ["loner", nil], ["gone", nil]])
+        expect(entries.first[:document]["project"]["group"]).to eq("id" => "group:billing", "name" => "Billing")
       end
     end
   end

@@ -45,8 +45,10 @@ module Workspace
       # @param error_output [IO] stream for warnings that must stay out of script-readable output
       # @param clock [#now] time source, injected for tests
       # @param agent_timeout [Numeric] seconds to wait for each agent daemon
+      # @param groups [Workspace::ProjectGroups, nil] says which group each project's repository is in; nil means none has one
       def initialize(catalog:, facts:, tmux:, state:, config:, snapshot_client:, sessions:, git:, pull_request_status:, ask_store_for:, plan:, plan_state:, plan_config:, task_store:,
-        output: $stdout, error_output: $stderr, clock: Time, agent_timeout: DEFAULT_AGENT_TIMEOUT)
+        output: $stdout, error_output: $stderr, clock: Time, agent_timeout: DEFAULT_AGENT_TIMEOUT, groups: nil)
+        @groups = groups
         @catalog = catalog
         @facts = facts
         @tmux = tmux
@@ -75,6 +77,7 @@ module Workspace
       # @return [Hash] `{exit_code:}`; 1 only after a JSON error payload was printed
       def call(names: [], pr: false)
         @stored_tasks = nil
+        @group_map = @groups ? @groups.groups_by_project_id : {}
         cursor, cursor_warning = event_cursor
         warnings = []
         warnings << cursor_warning if cursor_warning
@@ -206,7 +209,8 @@ module Workspace
           member_row(facts, gathered, daemons[facts["workspace"]], prs[facts["workspace"]], sessions, unavailable, warnings)
         end
         gathered[:gone].each { |member| warnings << {"code" => "checkout_missing", "workspace" => member.workspace, "message" => "Checkout is gone: #{member.path}"} }
-        {"id" => project.id, "name" => project.name, "members" => members, "locks" => lock_rows(gathered[:locks]), "dev" => gathered[:dev]}
+        group = @group_map[project.id]
+        {"id" => project.id, "name" => project.name, "group" => group && {"id" => group.id, "name" => group.name}, "members" => members, "locks" => lock_rows(gathered[:locks]), "dev" => gathered[:dev]}
       end
 
       def member_row(facts, gathered, daemon, pr, sessions, unavailable, warnings)

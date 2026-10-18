@@ -113,7 +113,7 @@ The exit code is unchanged by `--json` (1 for most failures, 2 for `not_submitte
 | `invalid_group_name` | `projects group create`: the name has no letters or digits, has a control character, or makes a slug over 64 characters. `details.name`. |
 | `repository_in_group` | `projects group add`: the repository is already in another group; a repository is in at most one. `details.repository`, `details.group`, `details.path` (the other group's file). |
 | `not_a_repository` | `projects group add`: the path is not inside a git checkout. `details.path`. |
-| `group_not_supported` | `projects stop` or `projects kill` was given a `group:` id. Stop or kill each repository's project instead. `details.id`. |
+| `group_not_supported` | `projects stop`, `kill`, `show` or `members` was given a `group:` id. Act on each repository's project instead, or read the group with `projects group show`. `details.id`. |
 | `unknown_template` | `spine init --template NAME` (or the default) found no `spine` library entry of that name, or the name is not lowercase letters, digits and hyphens. `details.template`, `details.scopes` in the order searched, `details.source` (`flag`, `worktree`, `project`, `global` or `default`: where the name came from; see [`spine`](README.spine.md)). Nothing was written. |
 | `no_plan` | `plan show`, `start`, `pause` or `delete` found no `IMPLEMENTATION_PLAN.md` in the workspace's notes directory. `details.name`, `details.path`. |
 | `not_a_directory` | `add --json`: a path is not a directory. In `add --json` it is the `reason` of that path's `failed` row, not an envelope; `projects group add` fails with it as an error envelope. `details.path`. |

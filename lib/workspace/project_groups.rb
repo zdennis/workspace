@@ -83,6 +83,28 @@ module Workspace
       all.find { |group| group.repositories.any? { |repository| repository.id == project_id } }
     end
 
+    # Every grouped repository id mapped to its group, read once, for rows
+    # that each need their repository's group.
+    #
+    # @return [Hash{String => Group}]
+    def groups_by_project_id
+      all.each_with_object({}) do |group, map|
+        group.repositories.each { |repository| map[repository.id] ||= group }
+      end
+    end
+
+    # The group files that can't be read, so a listing can say what it left out.
+    #
+    # @return [Array<Hash>] `{"path" =>, "message" =>}`, sorted by path
+    def unreadable
+      Dir.glob(File.join(@config.groups_dir, "*.yml")).sort.filter_map do |path|
+        data = YAML.safe_load_file(path)
+        {"path" => path, "message" => "not a mapping"} unless data.is_a?(Hash)
+      rescue Psych::Exception, SystemCallError => e
+        {"path" => path, "message" => e.message.lines.first.to_s.strip}
+      end
+    end
+
     # Makes an empty group.
     #
     # @param name [String]

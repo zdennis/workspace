@@ -38,7 +38,7 @@ module Workspace
       "invalid_group_name" => "projects group create: the name has no letters or digits, has a control character, or makes a slug over 64 characters. details.name.",
       "repository_in_group" => "projects group add: the repository is already in another group. details.repository, details.group, details.path.",
       "not_a_repository" => "projects group add: the path is not inside a git checkout. details.path.",
-      "group_not_supported" => "projects stop or kill was given a group: id; groups are not acted on as a whole. details.id.",
+      "group_not_supported" => "projects stop, kill, show or members was given a group: id; groups are not acted on as a whole (projects group show reads one). details.id.",
       "unknown_template" => "spine init was given a template name no spine library entry has. details.template, details.scopes, details.source.",
       "no_plan" => "The workspace has no IMPLEMENTATION_PLAN.md in its notes directory.",
       "plan_exists" => "plan init would replace a plan that is already there; pass --force.",

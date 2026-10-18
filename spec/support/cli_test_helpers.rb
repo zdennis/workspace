@@ -607,6 +607,11 @@ module CLITestHelpers
       @calls << {list: true, json: json}
       {exit_code: 0}
     end
+
+    def show(group:, json: false, agents: true, git: true, timeout: nil)
+      @calls << {show: group, json: json, agents: agents, git: git, timeout: timeout}
+      {exit_code: 0}
+    end
   end
 
   class FakeProjectsCommand

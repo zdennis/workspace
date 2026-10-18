@@ -29,7 +29,7 @@ The daemons are read in parallel, one second each: a daemon serves one connectio
 
 ```json
 {"schema_version":1,"ok":true,"generated_at":"2026-10-02T20:30:01.120Z","cursor":"ev:9100811:184233",
- "projects":[{"id":"/src/api/.git","name":"api","members":[
+ "projects":[{"id":"/src/api/.git","name":"api","group":{"id":"group:billing","name":"Billing"},"members":[
    {"workspace":"api.worktree-fix-login","kind":"worktree","path":"/src/api-fix-login",
     "tmux_session":"api-wt-fix-login","running":true,"headless":false,"iterm_window_id":31337,
     "daemon":{"up":true,"pid":null,"log_path":"/Users/me/.local/state/workspace/api.worktree-fix-login/agent.log"},
@@ -53,6 +53,7 @@ The daemons are read in parallel, one second each: a daemon serves one connectio
 ```
 
 - `cursor` is `ev:<inode>:<byte offset>` of the event log, read before anything else, so an event written while the snapshot is gathered lies after it. A log that doesn't exist yet is `ev:0:0`; one that can't be read gives a null `cursor` and a `cursor_unavailable` warning.
+- `group` on each project is `{"id","name"}` of the [group](README.projects.md#groups) its repository is in, or `null`.
 - Members are configured workspaces whose checkout exists. A configured workspace whose checkout is gone gives a `checkout_missing` warning instead of a member; worktrees with no workspace config are not listed (see [`projects show`](README.projects.md)).
 - `daemon.pid` is always null for now: the daemon doesn't record it. `daemon.log_path` is where its log is written when started in the background.
 - `git` is null only when the project has no usable git repository (no git, a broken checkout, or an unknown one); git failing or timing out for a checkout is `git.available: false`, never null. `git.base` is the base branch `review` compares against, null when it can't be found. `git.pr` is present only with `--pr`: `{"available":false,"reason":"gh_missing"|"timeout"|"error"|"git_unavailable"}`, `{"available":true,"found":false}`, or the pull request, with `state` lowercased and `checks` one of `failing`, `pending`, `passing` or `none`.
