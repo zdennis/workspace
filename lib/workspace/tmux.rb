@@ -71,6 +71,30 @@ module Workspace
       system("tmux", *(project && socket_arguments(project)), "kill-session", "-t", "=#{name}")
     end
 
+    # @param name [String] tmux session name, matched exactly (tmux compares case)
+    # @param project [String, nil] tmuxinator config name whose custom socket (-L/-S) to ask
+    # @return [Boolean] whether the session exists; false when tmux has no server
+    # @raise [Workspace::Error] if tmux doesn't answer within +command_timeout+
+    def session_exists?(name, project: nil)
+      run_bounded(*(project && socket_arguments(project)), "has-session", "-t", "=#{name}", capture: false).last
+    rescue SystemCallError
+      false
+    end
+
+    # Pane ids stay the same across a rename.
+    #
+    # @param name [String] the session's current name, matched exactly
+    # @param new_name [String]
+    # @param project [String, nil] tmuxinator config name whose custom socket (-L/-S) to use
+    # @return [Boolean] whether tmux renamed it
+    # @raise [Workspace::Error] if tmux doesn't answer within +command_timeout+
+    def rename_session(name, new_name, project: nil)
+      @logger.debug { "tmux: renaming session #{name} to #{new_name}" }
+      run_bounded(*(project && socket_arguments(project)), "rename-session", "-t", "=#{name}", new_name, capture: false).last
+    rescue SystemCallError
+      false
+    end
+
     # @param session_name [String] tmux session name
     # @param window_index [String, Integer] window index
     # @param new_name [String] new window name

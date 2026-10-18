@@ -144,6 +144,44 @@ RSpec.describe Workspace::Commands::EnsureAgent do
     expect(error_output.string).to include("Warning: names the bare WORKSPACE_DONE: marker")
   end
 
+  describe "renaming a mixed-case workspace" do
+    let(:migrations) { [] }
+    let(:migration_result) { Workspace::NameMigration::Result.new(name: "myapp", from: "MyApp", renamed: [], warnings: ["MyApp: state not renamed (taken)"]) }
+    let(:name_migration) do
+      double("name_migration").tap do |migration|
+        allow(migration).to receive(:lock_path) { |name| config.agent_lock_path(name.downcase) }
+        allow(migration).to receive(:call) do |name|
+          lock_free = File.open(lock_path, File::RDWR) { |file| file.flock(File::LOCK_EX | File::LOCK_NB) }
+          migrations << [name, lock_free]
+          migration_result
+        end
+      end
+    end
+
+    it "renames under the startup lock, then starts the daemon under the lowercase name" do
+      result = build(name_migration: name_migration).call(name: "MyApp")
+
+      expect(result.status).to eq(:started)
+      expect(migrations).to eq([["MyApp", false]])
+      expect(spawns.pop).to eq(["myapp", nil, log_path])
+    end
+
+    it "renames nothing while a daemon answers" do
+      daemon_up[0] = true
+
+      build(name_migration: name_migration).call(name: "MyApp")
+
+      expect(migrations).to be_empty
+    end
+
+    it "keys the startup lock on the lowercase name, so every spelling shares it" do
+      build(name_migration: name_migration).call(name: "MyApp")
+
+      expect(config).to have_received(:agent_lock_path).with("myapp")
+      expect(config).not_to have_received(:agent_lock_path).with("MyApp")
+    end
+  end
+
   describe "default spawner" do
     it "starts the CLI's agentd detached, appending its output to the log file" do
       ensurer = described_class.new(config: config, pipeline_config: pipeline_config, sleeper: sleeper, clock: -> { now[0] }, error_output: error_output)

@@ -35,9 +35,13 @@ module Workspace
       # @param clock [#call] monotonic seconds
       # @param timeout [Numeric] seconds to wait for the daemon's socket
       # @param error_output [IO]
+      # @param name_migration [Workspace::NameMigration, nil] renames a mixed-case
+      #   workspace to lowercase before its daemon starts; nil renames nothing
       def initialize(config:, pipeline_config:, spawner: method(:spawn_agentd), sleeper: ->(seconds) { sleep(seconds) },
-        clock: -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) }, timeout: DEFAULT_TIMEOUT, error_output: $stderr)
+        clock: -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) }, timeout: DEFAULT_TIMEOUT, error_output: $stderr,
+        name_migration: nil)
         @config = config
+        @name_migration = name_migration
         @pipeline_config = pipeline_config
         @spawner = spawner
         @sleeper = sleeper
@@ -56,6 +60,7 @@ module Workspace
           # Another caller may have started it while we waited for the lock.
           next Result.new(:running) if @config.agent_running?(name)
 
+          name = @name_migration.call(name).name if @name_migration
           log_path = @config.agent_log_path(name)
           next Result.new(:invalid_config) unless pipeline_usable?(name, log_path)
 
@@ -89,8 +94,10 @@ module Workspace
         Result.new(:failed, "it did not answer within #{@timeout}s; see #{log_path}")
       end
 
+      # Keyed on the lowercase name, so every spelling of a name shares the lock
+      # (a long name's lock file name carries a hash of the name).
       def with_lock(name)
-        File.open(@config.agent_lock_path(name), File::RDWR | File::CREAT, 0o600) do |file|
+        File.open(@name_migration&.lock_path(name) || @config.agent_lock_path(WorkspaceName.normalize(name)), File::RDWR | File::CREAT, 0o600) do |file|
           file.flock(File::LOCK_EX)
           yield
         end

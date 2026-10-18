@@ -60,6 +60,8 @@ module Workspace
       #   that runs one `restart_agent` message
       # @param hook_event_log_factory [#call, nil] given the workspace name, builds the
       #   {Workspace::HookEventLog} each forwarded hook event is written to; nil writes none
+      # @param name_migration [Workspace::NameMigration, nil] renames a mixed-case workspace
+      #   to lowercase before the socket is claimed; nil renames nothing
       # @param logger [Workspace::Logger] debug logger
       # @param output [IO] output stream for user-facing messages
       # @param error_output [IO] error output stream for errors
@@ -91,7 +93,9 @@ module Workspace
         scan_slots: nil,
         agent_restart_factory: nil,
         hook_event_log_factory: nil,
+        name_migration: nil,
         logger: Workspace::Logger.new, output: $stdout, error_output: $stderr)
+        @name_migration = name_migration
         @config = config
         @tmux = tmux
         @work_coordinator_client = work_coordinator_client
@@ -161,6 +165,7 @@ module Workspace
       # @param force [Boolean] kill any running agent before starting
       # @return [Boolean] false when the agent refused to start, true after a clean shutdown
       def call(name:, wc_socket: nil, force: false)
+        name = migrate_name(name)
         @current_name = name
         @tmux_session = @tmux.session_name_for(name)
         socket_path = @config.agent_socket_path(name)
@@ -1251,6 +1256,21 @@ module Workspace
       def build_sentinel_poller(session_name:, pane:, token:, deadline:)
         SentinelPoller.new(tmux: @tmux, session_name: session_name, pane: pane, token: token,
           deadline: deadline, clock: @clock, logger: @logger, error_output: @error_output)
+      end
+
+      # Renames a mixed-case workspace to lowercase when no daemon answers for it,
+      # under the startup lock. A lock held elsewhere is an `agentd --ensure`
+      # that renamed it before starting this daemon, so it is left alone. With
+      # a migration wired, the daemon runs under the lowercase name whatever the outcome.
+      def migrate_name(name)
+        return name unless @name_migration
+
+        result = @name_migration.call_locked(name, wait: false)
+        return WorkspaceName.normalize(name) unless result
+
+        @error_output.puts "workspace agent: renamed workspace '#{result.from}' to '#{result.name}'" if result.from
+        result.warnings.each { |warning| @error_output.puts "Warning: #{warning}" }
+        result.name
       end
 
       # Returns true when the socket path is free to bind (cleaning up a stale

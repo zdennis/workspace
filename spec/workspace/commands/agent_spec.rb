@@ -1425,6 +1425,57 @@ RSpec.describe Workspace::Commands::Agent do
     end
   end
 
+  describe "starting for a mixed-case workspace" do
+    let(:migrations) { [] }
+    let(:migration_result) { Workspace::NameMigration::Result.new(name: "myapp", from: "MyApp", renamed: [], warnings: ["MyApp: lock not renamed (busy)"]) }
+    let(:name_migration) do
+      double("name_migration").tap do |migration|
+        allow(migration).to receive(:call_locked) do |name, wait:|
+          migrations << [name, wait]
+          migration_result
+        end
+      end
+    end
+    let(:running) { UNIXServer.new(agent_socket_path) }
+    let(:accepter) do
+      Thread.new do
+        loop { running.accept.close }
+      rescue IOError, Errno::EBADF
+        nil
+      end
+    end
+
+    subject(:agent) do
+      described_class.new(config: config, tmux: tmux, work_coordinator_client: client, pipeline_config: pipeline_config,
+        pipeline_state: pipeline_state, signal_trapper: signal_trapper, name_migration: name_migration, output: output, error_output: error_output)
+    end
+
+    # A daemon already answers for the lowercase name, so the agent stops right after the rename.
+    before { accepter }
+
+    after do
+      running.close
+      accepter.kill
+    end
+
+    it "renames without waiting for the startup lock, logs it, and runs under the lowercase name" do
+      expect(agent.call(name: "MyApp")).to be false
+
+      expect(migrations).to eq([["MyApp", false]])
+      expect(error_output.string).to include("workspace agent: renamed workspace 'MyApp' to 'myapp'",
+        "Warning: MyApp: lock not renamed (busy)", "workspace agent 'myapp' is already running")
+    end
+
+    it "runs under the lowercase name when the lock is held elsewhere or a daemon answers" do
+      allow(name_migration).to receive(:call_locked).and_return(nil)
+
+      expect(agent.call(name: "MyApp")).to be false
+
+      expect(error_output.string).to include("workspace agent 'myapp' is already running")
+      expect(error_output.string).not_to include("renamed")
+    end
+  end
+
   describe "starting a second agent for the same workspace" do
     it "refuses to start and leaves the running agent untouched" do
       coordinator.start

@@ -34,7 +34,7 @@ Reuses existing launcher panes when available instead of creating new windows.
 
 You can pass either a project name (matching an existing tmuxinator config) or a directory path (which will auto-create a config).
 
-New workspace names are lowercase (`~/Code/MyApp` becomes `myapp`; a branch's worktree is `myapp.worktree-proj-123`). If a config already exists whose name differs only in case, a different workspace (another directory) is refused with `workspace_name_case_conflict`, naming the existing workspace; it is renamed to lowercase the next time its agentd starts. The same workspace (same directory) written earlier with mixed case, such as `~/Notes` for an existing `Notes`, is reused under its own name.
+New workspace names are lowercase (`~/Code/MyApp` becomes `myapp`; a branch's worktree is `myapp.worktree-proj-123`). If a config already exists whose name differs only in case, a different workspace (another directory) is refused with `workspace_name_case_conflict`, naming the existing workspace; it is renamed to lowercase the next time its agentd starts. The same workspace (same directory) written earlier with mixed case, such as `~/Notes` for an existing `Notes`, is reused. `launch` renames a mixed-case workspace to lowercase before it starts the session, unless its agent is running (see [Renaming a mixed-case workspace](README.agentd.md#renaming-a-mixed-case-workspace)).
 
 Also starts the [session-monitoring agent daemon](README.agentd.md) for each launched project, unless one is already running for it. This is what powers [`workspace sessions`](README.sessions.md); run `workspace doctor` to check whether it's set up correctly for the current project.
 

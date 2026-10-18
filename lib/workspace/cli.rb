@@ -52,6 +52,8 @@ module Workspace
     # @param agent_command [Workspace::Commands::Agent] pre-built agent command
     # @param ensure_agent_command [Workspace::Commands::EnsureAgent, nil] pre-built
     #   `agentd --ensure` command
+    # @param name_migration [Workspace::NameMigration, nil] renames a mixed-case workspace
+    #   to lowercase before `launch` starts it; nil renames nothing
     # @param restart_agent_command [Workspace::Commands::RestartAgent, nil] pre-built
     #   `agent-run restart` command; optional so test builders need not wire it
     # @param send_command [Workspace::Commands::Send, nil] pre-built
@@ -104,7 +106,7 @@ module Workspace
     #   `list --liveness --json` and `status --json`; takes name => state entry
     # @param launch_mode [Workspace::LaunchMode, nil] decides whether launch/start
     #   run headless when no --[no-]headless flag is given; nil builds one
-    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, restart_agent_command: nil, send_command: nil, ensure_agent_command: nil, handoff_command: nil, notes_command: nil, notes_setup: nil, plan_command: nil, ticket_command: nil, pull_request_command: nil, rebase_command: nil, push_command: nil, projects_command: nil, capabilities_command: nil, daemon_command: nil, ui_command: nil, binding_command: nil, library_command: nil, library: nil, instructions_command: nil, instruction_composer: nil, workflow_command: nil, review_command: nil, restore_command: nil, snapshot_command: nil, events_command: nil, project_actions_command: nil, inbox_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil, liveness: nil, window_liveness: nil, env: ENV, editor_launcher: nil, interactive: nil, workspace_name: nil)
+    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, restart_agent_command: nil, send_command: nil, ensure_agent_command: nil, name_migration: nil, handoff_command: nil, notes_command: nil, notes_setup: nil, plan_command: nil, ticket_command: nil, pull_request_command: nil, rebase_command: nil, push_command: nil, projects_command: nil, capabilities_command: nil, daemon_command: nil, ui_command: nil, binding_command: nil, library_command: nil, library: nil, instructions_command: nil, instruction_composer: nil, workflow_command: nil, review_command: nil, restore_command: nil, snapshot_command: nil, events_command: nil, project_actions_command: nil, inbox_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil, liveness: nil, window_liveness: nil, env: ENV, editor_launcher: nil, interactive: nil, workspace_name: nil)
       @config = config
       @state = state
       @project_config = project_config
@@ -156,6 +158,7 @@ module Workspace
       @restart_agent_command = restart_agent_command
       @send_command = send_command
       @ensure_agent_command = ensure_agent_command
+      @name_migration = name_migration
       @handoff_command = handoff_command
       @projects_command = projects_command
       @capabilities_command = capabilities_command
@@ -661,7 +664,10 @@ module Workspace
     # created. Packs are sent only when +with_packs+ is true (`launch` itself), so
     # `relaunch` and `restore` do not type them into an agent again.
     def launch_projects(args, reattach: false, headless: nil, prompt: nil, prompt_timeout: nil, play: nil, packs: [], no_packs: false, handoff: nil, with_packs: false)
+      # A mixed-case workspace is renamed to lowercase before anything is keyed on its name
+      # (see NameMigration), as its agent daemon would rename it once started.
       resolved = args.map { |arg| @project_config.resolve_project_arg(arg) }
+        .map { |name, root| [settle_launch_name(name), root] }
       plays = play ? resolved.to_h { |name, root| [name, resolve_play(play, root || @project_config.project_root_for(name))] } : {}
       composed = with_packs ? compose_launch_packs(resolved, packs, no_packs, handoff) : {}
       skipped_packs = composed.transform_values { |c| c["skipped"] || [] }.reject { |_, skipped| skipped.empty? }
@@ -692,6 +698,16 @@ module Workspace
         @hook_runner.run(p, "post_launch")
       end
       {exit_code: result && result[:exit_code], projects: projects, result: result, plays: plays, packs: composed, skipped_packs: skipped_packs, prompts: prompts}
+    end
+
+    # The lowercase name once a mixed-case workspace is renamed; the name as
+    # given when nothing was renamed, or its agent daemon is running.
+    def settle_launch_name(name)
+      result = @name_migration&.call_locked(name)
+      return name unless result
+
+      result.warnings.each { |warning| @error_output.puts "Warning: #{warning}" }
+      result.from ? result.name : name
     end
 
     # The packs `launch` sends each project, from its root's library and config; a
@@ -1600,6 +1616,8 @@ module Workspace
         opts.separator "Registers with the work-coordinator and serves commands until terminated."
         opts.separator ""
         opts.separator "The workspace must already have a config; an unknown name is refused (unknown_workspace)."
+        opts.separator "A workspace with a mixed-case name is renamed to lowercase before the agent starts"
+        opts.separator "(see docs/README.agentd.md); a step that fails is a warning in the daemon log."
         opts.separator ""
         opts.separator "Subcommands:"
         opts.separator "  restart    Stop the agent running for the workspace and start a new one in the background;"

@@ -173,6 +173,16 @@ RSpec.describe Workspace do
       expect(restore.instance_variable_get(:@agent_ensurer)).to equal(cli.instance_variable_get(:@ensure_agent_command))
     end
 
+    it "wires one name migration into agentd and agentd --ensure" do
+      cli = Workspace.build_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new)
+
+      migration = cli.instance_variable_get(:@ensure_agent_command).instance_variable_get(:@name_migration)
+
+      expect(migration).to be_a(Workspace::NameMigration)
+      expect(cli.instance_variable_get(:@agent_command).instance_variable_get(:@name_migration)).to equal(migration)
+      expect(migration.instance_variable_get(:@state)).to equal(cli.instance_variable_get(:@state))
+    end
+
     it "wires the dev environment's release to session end, and the same dev command and ledger into kill and dev up" do
       cli = Workspace.build_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new)
 

@@ -40,6 +40,23 @@ The new agent keeps the work-coordinator socket the old one was started with. `-
 
 The workspace must have a config: a name is matched to existing configs ignoring case, and one that matches none is refused with `unknown_workspace`, for `agentd`, `agentd --ensure` and `agentd restart`.
 
+### Renaming a mixed-case workspace
+
+Workspace names are lowercase. A workspace written earlier with a mixed-case name (`Notes`) is renamed to lowercase (`notes`) when its agent starts, before the agent binds its socket, while no agent runs for it and the startup lock is held (`agentd --ensure` and `agentd restart` hold it from before the start; a foreground `agentd` takes it if it is free, and leaves the rename to whoever holds it). `launch` does the same before it starts the session, so the session starts under the name it keeps. Renamed:
+
+- the tmuxinator config `workspace.<name>.yml`, and inside it the `name:` line, the `tmux ... -t <session>:` targets and the `workspace-<session>` window (the `root:` line keeps its case)
+- the live tmux session, with `tmux rename-session` (pane ids don't change)
+- `~/.config/workspace/projects/<name>.yml`
+- the agent's `.sock`, `.log` and `.lock` files in `~/.local/workspace/run/`
+- the state directory `~/.local/state/workspace/<name>/`
+- the workspace's inbox file, and the project's inbox file when this workspace names the project
+- the workspace's key in `~/.workspace-state.json`
+- the `.workspace-project` marker in a worktree's checkout
+
+A project's worktree workspaces (`<project>.worktree-<dir>`) are renamed with it, each with its own session. A worktree whose agent is running or starting is left alone, with a warning, and is renamed when its agent next starts.
+
+The config is renamed last, and only when every other step went through, so once it is lowercase the rename is done and later starts do nothing. A step that fails, or whose lowercase name is already taken, is left as it was with a `Warning:` line in the daemon log (and on stderr from `launch` or a foreground `agentd`); the config keeps its mixed-case name so the next start tries again, and the agent starts under the lowercase name anyway. Each renamed workspace writes a `workspace_renamed` event-log line (see [the event log](README.event-log.md)). macOS file systems ignore case, so the names are compared from directory listings, and a rename that changes only case goes through a temporary name.
+
 To check on or read the log of a running agent without holding a terminal, use [`workspace daemon`](README.daemon.md).
 
 **`--ensure`** — makes sure the workspace has an agent without taking the terminal: if one answers on the socket it prints `agentd for <name> is already running` and exits 0; otherwise it starts one detached (output in the daemon log, `~/.local/workspace/run/workspace-<name>.log`), waits up to 5 seconds for it to answer, prints `Started agentd for <name>` and exits 0. A leftover socket file from a dead agent doesn't count as running. Concurrent calls, including `workspace launch` starting the same workspace, are serialized on `workspace-<name>.lock` in that directory, so they never start two agents. It exits 1 with the reason when the agent can't be started or doesn't answer in time, or when the project's pipeline config is invalid. `workspace launch` runs the same check for each project it launches; a failure there is a warning and the launch carries on. `--wc-socket` is passed through to a newly started agent. Only `--ensure` callers take the lock: a plain `workspace agentd` started by hand at the same instant can still race one.

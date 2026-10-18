@@ -14,6 +14,7 @@ A macOS CLI (Ruby) for managing tmuxinator-based development workspaces in iTerm
 - `lib/workspace/config_schema_docs.rb` — Renders the schema into the generated blocks of `docs/README.config.md`; `script/generate-config-docs [--check]` runs it, and a spec fails on drift
 - `lib/workspace/state.rb` — JSON-persisted session state
 - `lib/workspace/git.rb` — Git and worktree operations
+- `lib/workspace/name_migration.rb` — Renames a mixed-case workspace (and its worktree workspaces) to lowercase before its agentd starts, under the startup lock: tmux session, configs, run files, state dir, inbox files, state key, marker, tmuxinator config last (held back while any step failed); a failed step is a warning in the daemon log; writes `workspace_renamed`. `EnsureAgent` calls `#call` under its startup lock (keyed on the lowercase name); `launch` and a foreground `agentd` call `#call_locked`
 - `lib/workspace/which.rb` — Shared default PATH lookup for injectable `which:` collaborators
 - `lib/workspace/doctor.rb` — Dependency checking; warns on a paused plan whose owner pane is working and on a `[~]` task in a workspace with no session
 - `lib/workspace/tmux.rb` — Tmux session management

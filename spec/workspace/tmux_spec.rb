@@ -74,6 +74,33 @@ RSpec.describe Workspace::Tmux do
       ENV["PATH"] = bin
       expect(tmux.start_server).to be_nil
     end
+
+    describe "#session_exists? and #rename_session" do
+      let(:args_file) { File.join(tmpdir, "args") }
+
+      before { fake_tmux(%(echo "$@" >> '#{args_file}'\n[ "$1" = has-session ] && [ "$3" = "=Notes" ] && exit 0\n[ "$1" = rename-session ] && exit 0\nexit 1)) }
+
+      it "matches the session name exactly" do
+        expect(tmux.session_exists?("Notes")).to be(true)
+        expect(tmux.session_exists?("notes")).to be(false)
+        expect(File.read(args_file)).to eq("has-session -t =Notes\nhas-session -t =notes\n")
+      end
+
+      it "renames the exactly named session" do
+        expect(tmux.rename_session("Notes", "notes")).to be(true)
+        expect(File.read(args_file)).to eq("rename-session -t =Notes notes\n")
+      end
+
+      it "talks to the project's custom socket" do
+        FileUtils.mkdir_p(File.join(tmpdir, "tmuxinator"))
+        File.write(File.join(tmpdir, "tmuxinator", "workspace.Notes.yml"), "name: Notes\ntmux_options: -CC -L mysocket\n")
+
+        tmux.session_exists?("Notes", project: "Notes")
+        tmux.rename_session("Notes", "notes", project: "Notes")
+
+        expect(File.read(args_file)).to eq("-L mysocket has-session -t =Notes\n-L mysocket rename-session -t =Notes notes\n")
+      end
+    end
   end
 
   describe "#command_for" do

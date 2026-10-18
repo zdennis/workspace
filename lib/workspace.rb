@@ -246,6 +246,7 @@ require_relative "workspace/workflow_nudger"
 require_relative "workspace/hook_installer"
 require_relative "workspace/hook_runner"
 require_relative "workspace/workspace_name"
+require_relative "workspace/name_migration"
 require_relative "workspace/project_detector"
 require_relative "workspace/commands/sessions"
 require_relative "workspace/commands/session_event"
@@ -346,7 +347,10 @@ module Workspace
     # Pre-build command objects so CLI delegates rather than constructs
     stop_command = Commands::Stop.new(state: state, iterm: iterm, window_manager: window_manager, tmux: tmux, output: output, error_output: error_output)
     agent_readiness = AgentReadiness.new(tmux: tmux, process_tree: ProcessTree.new(logger: logger), logger: logger)
-    ensure_agent_command = Commands::EnsureAgent.new(config: config, pipeline_config: pipeline_config, error_output: error_output)
+    name_migration = NameMigration.new(config: config, project_config: project_config, tmux: tmux, state: state, event_log: event_log,
+      project_catalog_factory: -> { ProjectCatalog.new(project_config: project_config, git: git) })
+    ensure_agent_command = Commands::EnsureAgent.new(config: config, pipeline_config: pipeline_config, error_output: error_output,
+      name_migration: name_migration)
     pane_locator = PaneLocator.new(tmux: tmux)
     pane_bindings = PaneBindings.new(path: config.pane_bindings_path, logger: logger, error_output: error_output)
     binding_command = Commands::Binding.new(bindings: pane_bindings, locator: pane_locator, tmux: tmux, output: output)
@@ -577,6 +581,7 @@ module Workspace
       label_reader: TranscriptLabel.new,
       task_store: task_store,
       workflow_nudger: workflow_nudger,
+      name_migration: name_migration,
       hook_event_log_factory: ->(name) { HookEventLog.new(dir: config.hook_events_dir, workspace: name, boot_id: Commands::Agent.ulid, rotate_threshold: (events_rotate_size ||= events_config.rotate_size), logger: logger) },
       logger: logger,
       output: output,
@@ -662,6 +667,7 @@ module Workspace
       restart_agent_command: restart_agent_command,
       send_command: send_command,
       ensure_agent_command: ensure_agent_command,
+      name_migration: name_migration,
       handoff_command: handoff_command,
       logger: logger,
       output: output,

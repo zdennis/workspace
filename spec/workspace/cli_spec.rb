@@ -96,6 +96,7 @@ RSpec.describe Workspace::CLI do
       restart_agent_command: overrides[:restart_agent_command],
       send_command: overrides[:send_command],
       ensure_agent_command: overrides[:ensure_agent_command],
+      name_migration: overrides[:name_migration],
       handoff_command: overrides[:handoff_command],
       notes_command: overrides[:notes_command],
       notes_setup: overrides[:notes_setup],
@@ -1395,6 +1396,32 @@ RSpec.describe Workspace::CLI do
       }
       expect(launch_command).to have_received(:call).with(["myproject"], reattach: false, prompts: {"myproject" => "go"}, report_panes: true)
       expect(hook_runner.runs).to include(project: "myproject", event: "post_launch", env: {})
+    end
+
+    it "launches a mixed-case workspace under the lowercase name its rename gives it" do
+      launch_command = double("launch", call: {exit_code: 0, prompt_failures: {}})
+      migration = double("name_migration")
+      allow(migration).to receive(:call_locked).with("MyProject")
+        .and_return(Workspace::NameMigration::Result.new(name: "myproject", from: "MyProject", renamed: [], warnings: ["MyProject: state not renamed (taken)"]))
+      cli, _, error_output = build_test_cli(launch_command: launch_command, name_migration: migration)
+
+      cli.run(["launch", "--prompt", "go", "MyProject"])
+
+      expect(launch_command).to have_received(:call).with(["myproject"], reattach: false, prompts: {"myproject" => "go"}, report_panes: true)
+      expect(error_output.string).to include("Warning: MyProject: state not renamed (taken)")
+    end
+
+    it "launches under the name as given when nothing was renamed or its daemon runs" do
+      launch_command = double("launch", call: {exit_code: 0, prompt_failures: {}})
+      migration = double("name_migration")
+      allow(migration).to receive(:call_locked).with("Other").and_return(nil)
+      allow(migration).to receive(:call_locked).with("Plain")
+        .and_return(Workspace::NameMigration::Result.new(name: "plain", from: nil, renamed: [], warnings: []))
+      cli, = build_test_cli(launch_command: launch_command, name_migration: migration)
+
+      cli.run(["launch", "Other", "Plain"])
+
+      expect(launch_command).to have_received(:call).with(%w[Other Plain], reattach: false, prompts: {})
     end
 
     it "exits 0 when launch sent every prompt" do
