@@ -57,6 +57,13 @@ module Workspace
     # dropped by {#compact}.
     AGENT_STATE_MAX_AGE = 7 * 24 * 60 * 60
 
+    # Pane states that say the pane is gone.
+    GOODBYE_STATES = ["closed", "exited"].freeze
+
+    # How much older than a project's newest pane state a pane's last state
+    # may be before {#last_live_agent_states} ignores the pane.
+    STALE_PANE_SECONDS = 24 * 60 * 60
+
     # @param config [Workspace::Config] configuration for file paths
     # @param project_settings [Workspace::ProjectSettings, nil] for reading global config
     # @param error_output [IO] error output stream for warnings (stderr)
@@ -137,6 +144,41 @@ module Workspace
     # @return [Hash{String => Hash}] pane id => that pane's last agent_state data
     def latest_agent_states(project)
       latest_by_pane(AGENT_STATE, project)
+    end
+
+    # Each pane's last state that was not a goodbye, for readers that ask
+    # about a workspace whose daemon is gone. A pane whose log ends in
+    # `closed` or `exited` still answers with the state it had before, so a
+    # stopped workspace keeps its last verdict until {#compact} drops the
+    # project from the log (it does once the project leaves the state file).
+    # Two kinds of pane are left out so an old pane can't decide for the
+    # workspace: one that closed while `working` or `waiting` (its agent was
+    # cut off, not finished), and one whose state began over
+    # {STALE_PANE_SECONDS} before the project's newest pane state (a pane id
+    # from an earlier tmux session).
+    #
+    # @param projects [Array<String>] project names
+    # @return [Hash{String => Hash{String => Hash}}] project => pane id => that
+    #   pane's last live agent_state data; a project without any is absent
+    def last_live_agent_states(projects)
+      wanted = projects.to_a
+      last = {}
+      live = {}
+      events.each do |event|
+        next unless event["type"] == AGENT_STATE && wanted.include?(event["project"])
+        data = event["data"]
+        next unless data.is_a?(Hash) && data["pane_id"]
+        key = [event["project"], data["pane_id"]]
+        last[key] = data
+        live[key] = data unless GOODBYE_STATES.include?(data["state"])
+      end
+      found = {}
+      live.each do |key, data|
+        next if GOODBYE_STATES.include?(last[key]["state"]) && ["working", "waiting"].include?(data["state"])
+        (found[key.first] ||= {})[key.last] = data
+      end
+      found.each_value { |panes| drop_stale_panes(panes) }
+      found
     end
 
     # The latest idle {AGENT_ALERT} of each pane of a project, and its latest
@@ -417,6 +459,19 @@ module Workspace
     end
 
     # A time that can't be read is kept rather than guessed at.
+    def drop_stale_panes(panes)
+      times = panes.values.filter_map { |d|
+        begin
+          Time.iso8601(d["since"].to_s)
+        rescue
+          nil
+        end
+      }
+      return if times.empty?
+      cutoff = times.max - STALE_PANE_SECONDS
+      panes.reject! { |_, d| older_than?(d["since"], cutoff) }
+    end
+
     def older_than?(time, cutoff)
       Time.iso8601(time.to_s) < cutoff
     rescue ArgumentError

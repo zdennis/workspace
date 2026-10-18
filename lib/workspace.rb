@@ -514,7 +514,7 @@ module Workspace
     )
     review_command = Commands::Review.new(catalog: project_catalog, git: git, snapshot_client: agent_snapshot_client, task_store: task_store,
       ask_store_for: ask_store_for, session_ledger: session_ledger, transcript_summary: TranscriptSummary.new, pull_request_status: PullRequestStatus.new,
-      output: output, error_output: error_output)
+      event_log: event_log, output: output, error_output: error_output)
     # Hook output goes to stderr so it never lands in the JSON on stdout.
     json_hook_runner = HookRunner.new(project_settings: project_settings, project_config: project_config, output: error_output, error_output: error_output, logger: logger)
     project_actions_command = Commands::ProjectActions.new(catalog: project_catalog, stop_command: stop_command, kill_command: kill_command,

@@ -88,8 +88,14 @@ RSpec.describe Workspace::Commands::Review do
     Class.new { define_method(:call) { |path| calls << path && result } }.new
   end
 
+  let(:recorded_states) { {} }
+  let(:event_log) do
+    table = recorded_states
+    Class.new { define_method(:last_live_agent_states) { |names| table.slice(*names) } }.new
+  end
+
   subject(:review) do
-    described_class.new(catalog: catalog, git: git, snapshot_client: snapshot_client, task_store: task_store, ask_store_for: ask_store_for,
+    described_class.new(catalog: catalog, event_log: event_log, git: git, snapshot_client: snapshot_client, task_store: task_store, ask_store_for: ask_store_for,
       session_ledger: session_ledger, transcript_summary: Workspace::TranscriptSummary.new, pull_request_status: pull_request_status,
       output: output, error_output: error_output, git_timeout: 2)
   end
@@ -506,10 +512,79 @@ RSpec.describe Workspace::Commands::Review do
       expect(parsed["reviews"]).to eq([{
         "workspace" => "app.worktree-fix", "path" => "/src/app.worktree-fix", "branch" => "fix", "base" => "origin/main", "ahead" => 2,
         "changed_files" => 1, "agent" => {"state" => "done", "stop_reason" => "end_turn", "state_since" => "2026-10-02T10:00:00Z"},
+        "agent_state_source" => "live",
         "task" => {"id" => "t1", "title" => "Fix login", "ref" => "JIRA-1", "created_at" => "2026-10-02T09:00:00Z"}, "open_asks" => 1
       }])
       expect(parsed["unavailable"]).to eq([])
-      expect(parsed["summary"]).to eq("checked" => 3, "ready" => 1, "not_running" => 1, "unavailable" => 0)
+      expect(parsed["summary"]).to eq("checked" => 3, "ready" => 1, "ready_recorded" => 0, "not_running" => 1, "unavailable" => 0)
+    end
+
+    context "with a stopped workspace" do
+      def recorded(pane_id, state, kind: "claude", **extra)
+        {"pane_id" => pane_id, "kind" => kind, "state" => state, "since" => "2026-10-02T11:00:00.000Z"}.merge(extra)
+      end
+
+      it "reports it from the last recorded state, marked as recorded" do
+        recorded_states["app.worktree-new"] = {"%5" => recorded("%5", "done", "stop_reason" => "end_turn"), "%6" => recorded("%6", "idle", kind: "shell")}
+
+        review.list(json: true)
+
+        row = parsed["reviews"].find { |r| r["workspace"] == "app.worktree-new" }
+        expect(row).to include("ahead" => 3, "agent_state_source" => "recorded",
+          "agent" => {"state" => "done", "stop_reason" => "end_turn", "state_since" => "2026-10-02T11:00:00.000Z"})
+        expect(parsed["reviews"].map { |r| r["agent_state_source"] }).to eq(["live", "recorded"])
+        expect(parsed["summary"]).to eq("checked" => 3, "ready" => 2, "ready_recorded" => 1, "not_running" => 1, "unavailable" => 0)
+      end
+
+      it "leaves it out when the last recorded state was not done" do
+        recorded_states["app.worktree-new"] = {"%5" => recorded("%5", "working")}
+
+        review.list(json: true)
+
+        expect(parsed["reviews"].map { |r| r["workspace"] }).to eq(["app.worktree-fix"])
+        expect(parsed["summary"]).to include("ready_recorded" => 0, "not_running" => 1)
+      end
+
+      it "leaves it out when nothing is recorded, or it is not ahead" do
+        review.list(json: true)
+        expect(parsed["reviews"].size).to eq(1)
+
+        output.truncate(0)
+        output.rewind
+        recorded_states["app.worktree-new"] = {"%5" => recorded("%5", "done")}
+        git_facts["/src/app.worktree-new"][:ahead] = 0
+        review.list(json: true)
+        expect(parsed["reviews"].size).to eq(1)
+      end
+
+      it "does not use the record when the daemon timed out" do
+        snapshots["app.worktree-new"] = Workspace::AgentSnapshotClient::Unavailable.new("slow", reason: :timeout)
+        recorded_states["app.worktree-new"] = {"%5" => recorded("%5", "done")}
+
+        review.list(json: true)
+
+        expect(parsed["reviews"].map { |r| r["workspace"] }).to eq(["app.worktree-fix"])
+        expect(parsed["unavailable"]).to eq([{"workspace" => "app.worktree-new", "reason" => "timeout"}])
+      end
+
+      it "shows a table column for the source" do
+        recorded_states["app.worktree-new"] = {"%5" => recorded("%5", "done")}
+
+        review.list
+
+        expect(output.string).to match(/AGENT\n?/)
+        expect(output.string).to match(/app\.worktree-new\s+new\s+3\s+0\s+stopped/)
+        expect(output.string).to match(/app\.worktree-fix.*running/)
+      end
+
+      it "makes show ready from the record" do
+        recorded_states["app.worktree-new"] = {"%5" => recorded("%5", "done", "stop_reason" => "end_turn")}
+
+        review.show(name: "app.worktree-new", json: true)
+
+        expect(parsed).to include("ready" => true)
+        expect(parsed["agent"]).to include("available" => true, "source" => "recorded", "state" => "done", "done_pane_id" => "%5")
+      end
     end
 
     it "does not call gh" do

@@ -54,7 +54,8 @@ module Workspace
         "pr_create" => 1,
         "rebase" => 2,
         "inbox" => 3,
-        "ask_withdraw" => 1
+        "ask_withdraw" => 1,
+        "review" => 1
       }.freeze
 
       # The exit statuses commands use, by meaning.

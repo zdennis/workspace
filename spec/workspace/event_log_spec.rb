@@ -191,6 +191,36 @@ RSpec.describe Workspace::EventLog do
     end
   end
 
+  describe "#last_live_agent_states" do
+    it "keeps a pane's last state from before it closed, for the asked projects only" do
+      event_log.record(type: "agent_state", project: "proj1", data: {"pane_id" => "%1", "state" => "working"})
+      event_log.record(type: "agent_state", project: "proj1", data: {"pane_id" => "%1", "state" => "done"})
+      event_log.record(type: "agent_state", project: "proj1", data: {"pane_id" => "%1", "state" => "closed"})
+      event_log.record(type: "agent_state", project: "proj1", data: {"pane_id" => "%2", "state" => "exited"})
+      event_log.record(type: "agent_state", project: "other", data: {"pane_id" => "%1", "state" => "idle"})
+
+      states = event_log.last_live_agent_states(["proj1", "proj2"])
+
+      expect(states.keys).to eq(["proj1"])
+      expect(states["proj1"].transform_values { |d| d["state"] }).to eq({"%1" => "done"})
+    end
+
+    it "ignores a pane cut off while working and a pane a day older than the newest" do
+      record = ->(pane, state, since) { event_log.record(type: "agent_state", project: "p", data: {"pane_id" => pane, "state" => state, "since" => since}) }
+      record.call("%1", "working", "2026-10-02T10:00:00.000Z")
+      record.call("%1", "closed", "2026-10-02T10:05:00.000Z")
+      record.call("%2", "done", "2026-09-20T10:00:00.000Z")
+      record.call("%3", "done", "2026-10-02T10:01:00.000Z")
+      record.call("%3", "closed", "2026-10-02T10:05:00.000Z")
+
+      expect(event_log.last_live_agent_states(["p"])["p"].keys).to eq(["%3"])
+    end
+
+    it "is empty when the log is missing" do
+      expect(event_log.last_live_agent_states(["proj1"])).to eq({})
+    end
+  end
+
   describe "#compact with activity" do
     it "keeps each live pane's latest agent_state and drops other activity" do
       event_log.append(type: "launched", project: "proj1", data: {"unique_id" => "uid1"})

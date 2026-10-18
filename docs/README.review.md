@@ -39,19 +39,25 @@ Checks every configured, existing checkout of the project: it asks the agent dae
       "ahead": 2,
       "changed_files": 1,
       "agent": {"state": "done", "stop_reason": "end_turn", "state_since": "2026-10-02T10:00:00Z"},
+      "agent_state_source": "live",
       "task": {"id": "9f2c", "title": "Fix login", "ref": "JIRA-1", "created_at": "2026-10-02T09:00:00Z"},
       "open_asks": 1
     }
   ],
   "unavailable": [{"workspace": "app.worktree-new", "reason": "timeout"}],
-  "summary": {"checked": 3, "ready": 1, "not_running": 1, "unavailable": 1}
+  "summary": {"checked": 3, "ready": 1, "ready_recorded": 0, "not_running": 1, "unavailable": 1}
 }
 ```
 
 - `task` is `null` for a workspace with no active task; `"task_unavailable": true` is added when the task store couldn't be read. `open_asks` is `null` with `"asks_unavailable": true` when the question store couldn't be opened (a store with unparseable content is skipped with a warning on stderr and reads as empty, as in `workspace ask list`). `changed_files` counts uncommitted changes to tracked files.
-- A workspace with no agent daemon running (`no_daemon`) is counted in `summary.not_running` only. Any other reason it couldn't be checked is listed in `unavailable`: `timeout` or `error` from the agent daemon, or, for a done workspace git couldn't answer for, git's own reason (`no_base`, `error` or `timeout`).
-- `list` only returns ready workspaces; `summary.checked` minus `ready`, `not_running` and `unavailable` is the number checked and found not ready.
-- Text output is a table; the unavailable workspaces are named on stderr.
+- `agent_state_source` is `live` when the agent daemon answered and `recorded` when the verdict comes from the last recorded state of a stopped workspace (see [Stopped workspaces](#stopped-workspaces)). `summary.ready_recorded` counts the recorded rows among `ready`.
+- A workspace with no agent daemon running (`no_daemon`) is counted in `summary.not_running`, whether or not a recorded state made it ready; one with nothing recorded is counted there only. Any other reason it couldn't be checked is listed in `unavailable`: `timeout` or `error` from the agent daemon, or, for a done workspace git couldn't answer for, git's own reason (`no_base`, `error` or `timeout`).
+- `list` only returns ready workspaces. `summary.checked` minus the rows `ready` and `unavailable`, minus the `not_running` ones that were not ready, is the number checked and found not ready.
+- Text output is a table (with an `AGENT` column, `running` or `stopped`, when any row is recorded); the unavailable workspaces are named on stderr.
+
+### Stopped workspaces
+
+Stopping a finished agent frees its resources, so its committed work would otherwise vanish from the list. When a workspace has no agent daemon (`no_daemon`), `list` and `show` judge it by the last states the [event log](README.event-log.md) recorded for its agent panes: the state each pane was in before it closed or exited. If those say `done` (the same precedence as for a live agent: waiting, working, done, idle) and the branch is ahead, the workspace is ready with `agent_state_source: "recorded"`; `agent.state_since` is when that state began. A pane that closed while `working` or `waiting` (its agent was cut off) and a pane whose last state is over a day older than the newest one are ignored, so a pane id left over from an earlier tmux session can't decide. A workspace with no recorded state, or whose last state was not `done`, is not reported. The record lives in the event log, so it is gone once the log compacts a project that left the state file or rotates past it; the workspace is then `not_running` again. A daemon that is slow or fails (`timeout`, `error`) never falls back to the record.
 
 ## `review show`
 
@@ -66,6 +72,7 @@ Checks every configured, existing checkout of the project: it asks the agent dae
   "task": {"id": "9f2c", "title": "Fix login", "ref": "JIRA-1", "created_at": "2026-10-02T09:00:00Z"},
   "agent": {
     "available": true,
+    "source": "live",
     "state": "done",
     "stop_reason": "end_turn",
     "state_since": "2026-10-02T10:00:00Z",
@@ -94,6 +101,7 @@ Checks every configured, existing checkout of the project: it asks the agent dae
 }
 ```
 
+- A stopped workspace is judged as in [Stopped workspaces](#stopped-workspaces); `agent.source` is `live` or `recorded`, and `ready` follows the same rule.
 - `ready` is `false` both when the work isn't ready and when it can't be told; check `agent.available` and `git.available` to tell them apart.
 - `agent.state` is the first that any agent pane (shell panes are ignored) is in, in the order `waiting`, `working`, `done`, `idle`; `null` when there is no agent pane. `agent.available` is `false` with a `reason` (`no_daemon`, `timeout`, or `error` with a `detail` message) when the daemon didn't answer, and then the other agent keys are absent.
 - `git.available` is `false` with a `reason` (`no_base`, `error` or `timeout`) when git couldn't answer (the diffstat or commit list failing counts: `error`); then only `available` and `reason` are present. `diffstat` is the change from the merge base with the base to HEAD (what a pull request shows), committed work only; a binary file has `null` counts. `entries` is cut at 200 files, with `diffstat.truncated` set, and `commits` at 50 (compare its length with `ahead`); the totals always cover everything. `changed_files` and `unpushed_commits` are never `null` in an available block: git failing to count them makes the block unavailable (`error`).

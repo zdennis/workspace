@@ -44,12 +44,14 @@ module Workspace
       # @param session_ledger [Workspace::SessionLedger] sessions and transcripts per workspace
       # @param transcript_summary [Workspace::TranscriptSummary] reads the last assistant message
       # @param pull_request_status [Workspace::PullRequestStatus] reads the branch's pull request
+      # @param event_log [Workspace::EventLog, nil] where the last agent states of a stopped
+      #   workspace are read; nil leaves stopped workspaces out
       # @param output [IO] stream for the packet, list or JSON
       # @param error_output [IO] stream for warnings that must stay out of script-readable output
       # @param agent_timeout [Numeric] seconds to wait for each agent daemon
       # @param git_timeout [Numeric] seconds each workspace's git reads may take
       def initialize(catalog:, git:, snapshot_client:, task_store:, ask_store_for:, session_ledger:, transcript_summary:, pull_request_status:,
-        output: $stdout, error_output: $stderr, agent_timeout: DEFAULT_AGENT_TIMEOUT, git_timeout: DEFAULT_GIT_TIMEOUT)
+        event_log: nil, output: $stdout, error_output: $stderr, agent_timeout: DEFAULT_AGENT_TIMEOUT, git_timeout: DEFAULT_GIT_TIMEOUT)
         @catalog = catalog
         @git = git
         @snapshot_client = snapshot_client
@@ -58,6 +60,7 @@ module Workspace
         @session_ledger = session_ledger
         @transcript_summary = transcript_summary
         @pull_request_status = pull_request_status
+        @event_log = event_log
         @output = output
         @error_output = error_output
         @agent_timeout = agent_timeout
@@ -131,8 +134,10 @@ module Workspace
         unavailable = []
         not_running = 0
         members = project.members.select { |m| m.configured && m.exists }
+        recorded = recorded_lookup(members.map(&:workspace))
         members.each do |member|
-          agent = agent_facts(member.workspace)
+          agent = agent_facts(member.workspace, recorded)
+          not_running += 1 if agent["source"] == "recorded"
           if !agent["available"]
             (agent["reason"] == "no_daemon") ? not_running += 1 : unavailable << unavailable_row(member, agent["reason"])
             next
@@ -151,7 +156,8 @@ module Workspace
           "project" => {"name" => project.name, "id" => project.id, "path" => project.path},
           "reviews" => rows,
           "unavailable" => unavailable,
-          "summary" => {"checked" => members.size, "ready" => rows.size, "not_running" => not_running, "unavailable" => unavailable.size}
+          "summary" => {"checked" => members.size, "ready" => rows.size, "ready_recorded" => rows.count { |r| r["agent_state_source"] == "recorded" },
+                        "not_running" => not_running, "unavailable" => unavailable.size}
         }
       end
 
@@ -166,6 +172,7 @@ module Workspace
           "workspace" => member.workspace, "path" => member.path, "branch" => git["branch"], "base" => git["base"],
           "ahead" => git["ahead"], "changed_files" => git["changed_files"],
           "agent" => agent.slice("state", "stop_reason", "state_since"),
+          "agent_state_source" => agent["source"],
           "task" => task,
           "open_asks" => asks["unavailable"] ? nil : asks["open"].size
         }.merge(task_unavailable ? {"task_unavailable" => true} : {}).merge(asks["unavailable"] ? {"asks_unavailable" => true} : {})
@@ -173,7 +180,7 @@ module Workspace
 
       def packet(member)
         workspace = member.workspace
-        agent = agent_facts(workspace)
+        agent = agent_facts(workspace, recorded_lookup([workspace]))
         task, task_unavailable = task_state(workspace)
         git = git_facts(member.path, detail: true)
         ledger = ledger_facts(workspace, task, agent)
@@ -191,22 +198,51 @@ module Workspace
         }.merge(task_unavailable ? {"task_unavailable" => true} : {})
       end
 
-      def agent_facts(workspace)
+      # The agent's state from its daemon. A workspace with no daemon running
+      # is judged by the last states the event log recorded for its panes
+      # (`source` "recorded"), when it holds any; `reason` stays `no_daemon`
+      # otherwise.
+      def agent_facts(workspace, recorded = nil)
         snapshot = @snapshot_client.fetch(workspace, timeout: @agent_timeout)
         panes = Array(snapshot["panes"]).select { |pane| pane["kind"] != "shell" }
         pane_facts = panes.map do |pane|
           {"pane_id" => pane["pane_id"], "kind" => pane["kind"], "state" => pane["state"], "stop_reason" => pane["stop_reason"],
            "state_since" => pane["state_since"]}
         end
-        state = STATE_PRECEDENCE.find { |s| pane_facts.any? { |p| p["state"] == s } }
-        done = pane_facts.select { |p| p["state"] == "done" }.max_by { |p| p["state_since"].to_s }
-        {"available" => true, "state" => state, "stop_reason" => (state == "done") ? done["stop_reason"] : nil,
-         "state_since" => (state == "done") ? done["state_since"] : nil, "done_pane_id" => (state == "done") ? done["pane_id"] : nil,
-         "panes" => pane_facts}
+        agent_state_facts(pane_facts, "live")
       rescue AgentSnapshotClient::Unavailable => e
-        {"available" => false, "reason" => e.reason.to_s}
+        (e.reason.to_s == "no_daemon" && recorded_agent_facts(workspace, recorded)) || {"available" => false, "reason" => e.reason.to_s}
       rescue Workspace::Error => e
         {"available" => false, "reason" => "error", "detail" => e.message.lines.first.to_s.strip[0, MAX_ASK_TEXT]}
+      end
+
+      def agent_state_facts(pane_facts, source)
+        state = STATE_PRECEDENCE.find { |s| pane_facts.any? { |p| p["state"] == s } }
+        done = pane_facts.select { |p| p["state"] == "done" }.max_by { |p| p["state_since"].to_s }
+        {"available" => true, "source" => source, "state" => state, "stop_reason" => (state == "done") ? done["stop_reason"] : nil,
+         "state_since" => (state == "done") ? done["state_since"] : nil, "done_pane_id" => (state == "done") ? done["pane_id"] : nil,
+         "panes" => pane_facts}
+      end
+
+      # Only a no_daemon answer falls back to the record; a daemon that is slow
+      # or wrong says nothing about the agent.
+      def recorded_agent_facts(workspace, recorded)
+        return nil unless recorded
+        panes = recorded.call[workspace]
+        return nil unless panes
+        pane_facts = panes.values.reject { |d| d["kind"] == "shell" }.map do |d|
+          {"pane_id" => d["pane_id"], "kind" => d["kind"], "state" => d["state"], "stop_reason" => d["stop_reason"], "state_since" => d["since"]}
+        end
+        return nil if pane_facts.empty?
+        agent_state_facts(pane_facts, "recorded")
+      end
+
+      # Reads the event log at most once, and only when a workspace has no
+      # daemon. An unreadable log reads as nothing recorded.
+      def recorded_lookup(workspaces)
+        return nil unless @event_log
+        found = nil
+        lambda { found ||= @event_log.last_live_agent_states(workspaces) }
       end
 
       # The active task and whether the store couldn't be read: an unreadable store
@@ -353,7 +389,7 @@ module Workspace
         return "no agent panes" unless agent["state"]
         reason = agent["stop_reason"] ? " (#{agent["stop_reason"]})" : ""
         since = agent["state_since"] ? " since #{agent["state_since"]}" : ""
-        "#{agent["state"]}#{reason}#{since}"
+        "#{agent["state"]}#{reason}#{since}#{" (stopped, last recorded state)" if agent["source"] == "recorded"}"
       end
 
       def git_line(git)
@@ -386,6 +422,10 @@ module Workspace
         else
           header = %w[WORKSPACE BRANCH AHEAD ASKS TASK]
           lines = rows.map { |r| [r["workspace"], r["branch"].to_s, r["ahead"].to_s, r["open_asks"].to_s, (r.dig("task", "title") || "").to_s] }
+          if rows.any? { |r| r["agent_state_source"] == "recorded" }
+            header << "AGENT"
+            lines.each_with_index { |line, i| line << ((rows[i]["agent_state_source"] == "recorded") ? "stopped" : "running") }
+          end
           widths = header.each_index.map { |i| ([header[i]] + lines.map { |l| l[i] }).map(&:length).max }
           ([header] + lines).each { |line| say line.each_with_index.map { |cell, i| cell.ljust(widths[i]) }.join("  ").rstrip }
         end
