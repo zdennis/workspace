@@ -30,7 +30,9 @@ module Workspace
     # @param project_settings [Workspace::ProjectSettings] where each layer's file lives
     # @param project_config [Workspace::ProjectConfig] lists the workspaces a change reaches and finds a checkout's root
     # @param notes_dir [Workspace::NotesDir] computes the `effective_path` of the notes keys
-    def initialize(project_settings:, project_config:, notes_dir:)
+    # @param library [Workspace::Library, nil] finds the spine templates `spine.template` names; nil checks none
+    def initialize(project_settings:, project_config:, notes_dir:, library: nil)
+      @library = library
       @project_settings = project_settings
       @project_config = project_config
       @notes_dir = notes_dir
@@ -326,7 +328,7 @@ module Workspace
       scope = (file.layer == "global") ? :global : :project
       declared = declared_keys(file.layer, scope)
       read_here = declared.reject { |key| unread_here?(key, file) }
-      value_problems(file, read_here) + escaped_path_problems(file, read_here) + shared_notes_problems(file, scan) + unknown_problems(file, declared, scope) + not_read_problems(file, declared, scan)
+      value_problems(file, read_here) + escaped_path_problems(file, read_here) + shared_notes_problems(file, scan) + spine_template_problems(file, scan, read_here) + unknown_problems(file, declared, scope) + not_read_problems(file, declared, scan)
     end
 
     # The keys a file of this layer holds: those of its scope, plus any layered key that may be set in the layer.
@@ -382,6 +384,23 @@ module Workspace
       return [] unless worktrees?(scan)
       [located(file, "warning", "shared_notes_dir", "notes.default_dir",
         "notes.default_dir is an absolute path with no {workspace} or {branch}, so the worktrees of this project would all use the same notes directory. Add {workspace} or {branch} to the path.")]
+    end
+
+    # A `spine.template` that names no library entry: `spine init` would answer `unknown_template`. Checked
+    # against the workspace's own library (the project's entries, the global ones, the built-in), only in a file
+    # whose value parses.
+    def spine_template_problems(file, scan, declared)
+      return [] unless @library && declared.any? { |key| key.name == "spine.template" }
+      name = dig(file.data, %w[spine template])
+      return [] unless name.is_a?(String) && name.match?(LibraryStore::NAME)
+      root = @project_config.project_root_for(scan.workspace)
+      return [] unless root
+      @library.spine_template(name, cwd: root)
+      []
+    rescue Workspace::Error => e
+      raise unless e.code == "unknown_template"
+      [located(file, "warning", "unknown_spine_template", "spine.template",
+        "spine.template names '#{name}', and no spine template has that name. List them with: workspace library list --kind spine")]
     end
 
     def worktrees?(scan)

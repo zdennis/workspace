@@ -821,6 +821,68 @@
       ]
     },
     {
+      "key": "spine.template",
+      "scope": "project",
+      "type": "text",
+      "value": null,
+      "masked": false,
+      "default": "default",
+      "effective": "default",
+      "source": "default",
+      "source_file": null,
+      "line": null,
+      "column": null,
+      "resolve": "layered",
+      "target_layer": "worktree",
+      "affects": [
+        "main.worktree-a"
+      ],
+      "applies": "next_call",
+      "settable": true,
+      "sensitive": false,
+      "overridable_in": [
+        "global",
+        "project",
+        "worktree"
+      ],
+      "layers": [],
+      "doc": "The name of the `spine` library template that `spine init` and `start --spine` use when no `--template` is given (lowercase letters, digits and hyphens; default `default`, the built-in one). A worktree can set its own with `--name`; an unknown name is a `config validate` warning and `spine init` answers `unknown_template`",
+      "problems": []
+    },
+    {
+      "key": "spine.auto",
+      "scope": "project",
+      "type": "boolean",
+      "value": null,
+      "masked": false,
+      "default": false,
+      "effective": false,
+      "source": "default",
+      "source_file": null,
+      "line": null,
+      "column": null,
+      "resolve": "layered",
+      "target_layer": "worktree",
+      "affects": [
+        "main.worktree-a"
+      ],
+      "applies": "next_call",
+      "settable": true,
+      "sensitive": false,
+      "overridable_in": [
+        "global",
+        "project",
+        "worktree"
+      ],
+      "layers": [],
+      "doc": "`true` or `false`: whether `start` runs [`spine init`](README.spine.md#spine-init) with the resolved `spine.template` once the worktree exists, so the new agent is sent the `spine` pack. `start --spine[=NAME]` and `--no-spine` override it for one start",
+      "problems": [],
+      "choices": [
+        "true",
+        "false"
+      ]
+    },
+    {
       "key": "plan.stall_seconds",
       "scope": "project",
       "type": "duration",

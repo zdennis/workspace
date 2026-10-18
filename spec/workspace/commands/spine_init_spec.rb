@@ -55,10 +55,18 @@ RSpec.describe Workspace::Commands::SpineInit do
 
     expect(output.string.lines.size).to eq(1)
     expect(document).to include("schema_version" => 1, "ok" => true, "workspace" => "api.worktree-fix", "outcome" => "created",
-      "template" => {"name" => "default", "scope" => "builtin"}, "dir" => spine_dir)
+      "template" => {"name" => "default", "scope" => "builtin", "source" => "default"}, "dir" => spine_dir)
     expect(document["files"]).to eq(%w[10-research.md 20-plan.md 30-implement.md 40-verify.md 50-review.md 60-ship.md README.md goal.md])
     expect(Dir.children(spine_dir).sort).to eq(document["files"].sort)
     expect(Dir.children(notes_dir)).to eq(["spine"])
+  end
+
+  it "prints nothing with print: false and still returns the answer and writes the files" do
+    answer = command.call(name: "api", print: false)
+
+    expect(output.string).to eq("")
+    expect(answer).to include("outcome" => "created", "template" => {"name" => "default", "scope" => "builtin", "source" => "default"})
+    expect(File.exist?(File.join(spine_dir, "goal.md"))).to be(true)
   end
 
   it "gives a main checkout the default without its ship stage" do
@@ -238,9 +246,61 @@ RSpec.describe Workspace::Commands::SpineInit do
 
     command.call(name: "api.worktree-fix", json: true)
 
-    expect(document["template"]).to eq("name" => "default", "scope" => "global")
+    expect(document["template"]).to eq("name" => "default", "scope" => "global", "source" => "default")
     expect(document["files"]).to eq(%w[10-mine.md sub/20-x.md])
     expect(File.read(File.join(spine_dir, "10-mine.md"))).to include("for api.worktree-fix")
+  end
+
+  describe "with spine.template configured" do
+    let(:layers) { {global: {}, project: {}, worktree: {}} }
+    let(:project_settings) { instance_double(Workspace::ProjectSettings) }
+    let(:spine_config) { Workspace::SpineConfig.new(config_resolver: Workspace::ConfigResolver.new(project_settings: project_settings)) }
+    subject(:command) do
+      described_class.new(notes: notes, library: library, project_config: project_config, git: git, task_store: task_store, spine_config: spine_config, output: output)
+    end
+
+    before do
+      allow(project_settings).to receive(:load_global) { layers[:global] }
+      allow(project_settings).to receive(:load).with("api") { layers[:project] }
+      allow(project_settings).to receive(:load).with("api.worktree-fix") { layers[:worktree] }
+      global_template("team", "10-team.md" => "team {{WORKSPACE}}\n")
+      global_template("mine", "10-mine.md" => "mine\n")
+    end
+
+    it "uses the resolved template and reports the layer it came from" do
+      {global: "global", project: "project", worktree: "worktree"}.each do |layer, source|
+        layers[layer] = {"spine" => {"template" => "team"}}
+        FileUtils.rm_rf(notes_dir)
+        command.call(name: "api.worktree-fix", json: true)
+        expect(document["template"]).to eq("name" => "team", "scope" => "global", "source" => source)
+        expect(document["files"]).to eq(["10-team.md"])
+        output.truncate(0)
+        output.rewind
+      end
+    end
+
+    it "lets --template win over every layer, as source flag" do
+      layers[:worktree] = {"spine" => {"template" => "team"}}
+      command.call(name: "api.worktree-fix", template: "mine", json: true)
+      expect(document["template"]).to include("name" => "mine", "source" => "flag")
+    end
+
+    it "names the layer in unknown_template when the configured name has no entry" do
+      layers[:project] = {"spine" => {"template" => "gone"}}
+      expect { command.call(name: "api.worktree-fix") }.to raise_error(Workspace::Error) { |e|
+        expect(e.code).to eq("unknown_template")
+        expect(e.details).to include("template" => "gone", "source" => "project")
+        expect(e.message).to include("spine.template in the project's config")
+      }
+      expect(File.exist?(notes_dir)).to be(false)
+    end
+
+    it "names --template as the source of a bad flag" do
+      expect { command.call(name: "api", template: "nope") }.to raise_error(Workspace::Error) { |e|
+        expect(e.details["source"]).to eq("flag")
+        expect(e.message).to include("--template")
+      }
+    end
   end
 
   it "omits a custom template's ship stage in a main checkout, file or folder" do

@@ -82,7 +82,7 @@ Creates the `spine/` folder in the workspace's notes directory from a template: 
 | Option | Description |
 |--------|-------------|
 | `WORKSPACE`, `--name WORKSPACE` | As for `show` |
-| `--template NAME` | The template. Default: `default` |
+| `--template NAME` | The template. Default: the workspace's `spine.template` (see below), else `default` |
 | `--dry-run` | Say what would be written and write nothing, not even the notes directory |
 | `--json` | Print one JSON document |
 
@@ -94,14 +94,31 @@ Placeholders in every UTF-8 file are filled: `{{WORKSPACE}}` is the workspace na
 
 ```json
 { "schema_version": 1, "ok": true, "workspace": "fix-oauth-refresh", "outcome": "created",
-  "template": {"name": "default", "scope": "builtin"},
+  "template": {"name": "default", "scope": "builtin", "source": "default"},
   "dir": "/src/api/.worktrees/fix-oauth-refresh/tmp/workspace-notes/spine",
   "files": ["10-research.md", "20-plan.md", "30-implement.md", "40-verify.md", "50-review.md", "60-ship.md", "README.md", "goal.md"] }
 ```
 
-`outcome` is `created`, `exists` (`files` is empty) or `would_create` (`--dry-run`; `files` is what would be written). `template.scope` is `builtin`, `global` or `project`. Errors: `unknown_workspace`, `unknown_template`, `notes_dir_unresolved`, `config_parse`, `spine_unwritable` (below).
+`outcome` is `created`, `exists` (`files` is empty) or `would_create` (`--dry-run`; `files` is what would be written). `template.scope` is `builtin`, `global` or `project`; `template.source` says where the name came from: `flag` (`--template`), `worktree`, `project` or `global` (the layer of `spine.template` that set it) or `default`. Errors: `unknown_workspace`, `unknown_template`, `notes_dir_unresolved`, `config_parse`, `spine_unwritable` (below).
 
-`spine_init` in [`capabilities`](README.capabilities.md) is `1` when this command exists.
+`spine_init` in [`capabilities`](README.capabilities.md) is `1` when this command exists, `2` when the template and `start` can be chosen by config (below).
+
+## Choosing the template by config
+
+Two [config keys](README.config.md) choose the template without a flag. Both layer global, then project, then the workspace's own (worktree) file, the nearest one winning, and `config show --json` reports each with its `source`.
+
+| Key | Default | Meaning |
+|-----|---------|---------|
+| `spine.template` | `default` | The `spine` library template `spine init` uses when `--template` is not given, and `start` uses for its init. A name no library entry has is a [`config validate`](README.config.md) warning (`unknown_spine_template`), and `spine init` answers `unknown_template` naming the layer it came from |
+| `spine.auto` | `false` | When `true`, [`start`](README.start.md#spine) runs `spine init` once the new worktree exists |
+
+```sh
+workspace config set spine.template team                      # the project's default
+workspace config set spine.template docs --name api.worktree-login   # one workspace's own
+workspace config set spine.auto true
+```
+
+`start --spine[=NAME]` and `--no-spine` override both keys for that start.
 
 ## Telling agents the convention
 
@@ -230,5 +247,5 @@ A link is never followed. A linked `spine`, stage file, `goal.md` or stage folde
 | `not_in_workspace` | No workspace given and none detected from the current directory |
 | `notes_dir_unresolved` | The notes directory can't be worked out (see [`notes`](README.notes.md)) |
 | `usage` | A missing or unknown subcommand, an extra argument, or two different workspace names (`show`); see above for `set` |
-| `unknown_template` | `spine init`: no `spine` library entry has that name (`details.template`, `details.scopes`) |
+| `unknown_template` | `spine init`: no `spine` library entry has that name (`details.template`, `details.scopes`, `details.source`; the message says where the name came from) |
 | `spine_unwritable` | `spine init`: `spine/` is a link, or the notes directory or a file could not be written (`details.path`); for `spine set` see above |

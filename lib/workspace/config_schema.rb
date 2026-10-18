@@ -262,6 +262,12 @@ module Workspace
     end
     private_constant :BOOLEAN
 
+    SPINE_TEMPLATE = lambda do |value|
+      return value if value.is_a?(String) && value.match?(LibraryStore::NAME)
+      raise ArgumentError, "must be a spine template name: lowercase letters, digits and hyphens"
+    end
+    private_constant :SPINE_TEMPLATE
+
     # The instruction packs every composed set of instructions starts with, unless `workflows.defaults.include` names others.
     DEFAULT_PACKS = %w[binding orchestrator commits].freeze
 
@@ -333,6 +339,11 @@ module Workspace
       # notes.instructions and plan.stall_seconds are preferences.
       Key.new(name: "notes.instructions", scope: :project, resolve: :layered, overridable_in: [:global, :project, :worktree], type: :boolean, settable: true, default: true, parser: BOOLEAN,
         doc: "`true` or `false`: whether `start` and `launch` send the agent the built-in `notes` pack (where working notes go) with its first prompt (default `true`); `--no-packs` skips it for one run"),
+      # spine.template and spine.auto choose how a workspace gets its plan spine (`spine init`, `start`).
+      Key.new(name: "spine.template", scope: :project, resolve: :layered, overridable_in: [:global, :project, :worktree], type: :text, settable: true, default: "default", examples: ["default", "team"], parser: SPINE_TEMPLATE,
+        doc: "The name of the `spine` library template that `spine init` and `start --spine` use when no `--template` is given (lowercase letters, digits and hyphens; default `default`, the built-in one). A worktree can set its own with `--name`; an unknown name is a `config validate` warning and `spine init` answers `unknown_template`"),
+      Key.new(name: "spine.auto", scope: :project, resolve: :layered, overridable_in: [:global, :project, :worktree], type: :boolean, settable: true, default: false, parser: BOOLEAN,
+        doc: "`true` or `false`: whether `start` runs [`spine init`](README.spine.md#spine-init) with the resolved `spine.template` once the worktree exists, so the new agent is sent the `spine` pack. `start --spine[=NAME]` and `--no-spine` override it for one start"),
       Key.new(name: "plan.stall_seconds", scope: :project, resolve: :layered, overridable_in: [:global, :project, :worktree], type: :duration, settable: true, examples: ["300", "10m"], default: 300, parser: POSITIVE_DURATION,
         doc: "How long the agent pane that owns a workspace's plan may sit idle before [`workspace plan status`](README.plan.md) reads the plan as `stalled` (default `5m`)"),
       # statusline.command, context.*, launch.headless describe the machine and are read where no workspace is known: global only.

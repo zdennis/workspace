@@ -6751,7 +6751,7 @@ module Workspace
         opts.separator "written. The notes directory is made if needed, as 'notes dir --create' does."
         opts.separator ""
         opts.on("--name NAME", "The workspace (default: the one detected from the current directory)") { |v| options[:name] = v }
-        opts.on("--template NAME", "The spine template (default: default). See: workspace library list --kind spine") { |v| options[:template] = v }
+        opts.on("--template NAME", "The spine template (default: the spine.template config, else default). See: workspace library list --kind spine") { |v| options[:template] = v }
         opts.on("--dry-run", "Say what would be written and write nothing") { options[:dry_run] = true }
         opts.on("--json", "Print one JSON document (see docs/README.spine.md)") { options[:json] = true }
         opts.on("-h", "--help", "Show this help") { options[:help] = true }

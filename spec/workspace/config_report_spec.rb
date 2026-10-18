@@ -712,6 +712,53 @@ RSpec.describe Workspace::ConfigReport do
       expect(report.validate("api")).to include("valid" => true)
     end
 
+    describe "spine keys" do
+      let(:library) { instance_double(Workspace::Library) }
+      subject(:report) { described_class.new(project_settings: settings, project_config: project_config, notes_dir: notes_dir, library: library) }
+
+      before do
+        allow(library).to receive(:spine_template) do |name, cwd:|
+          raise Workspace::Error.new("No spine template '#{name}'.", code: "unknown_template") if name == "gone"
+          {"name" => name}
+        end
+      end
+
+      it "reports spine.template and spine.auto with their defaults and the layer that set them" do
+        write(:global, "spine:\n  template: team\n")
+        write("api", "spine:\n  auto: true\n")
+        write("api.worktree-fix", "spine:\n  template: docs\n")
+
+        doc = report.show("api.worktree-fix")
+        expect(key_row(doc, "spine.template")).to include("default" => "default", "effective" => "docs", "source" => "worktree", "settable" => true)
+        expect(key_row(doc, "spine.auto")).to include("default" => false, "effective" => "true", "source" => "project")
+        expect(key_row(doc, "spine.template")["layers"].map { |l| l["layer"] }).to include("worktree", "global")
+        expect(key_row(report.show("api"), "spine.template")).to include("effective" => "team", "source" => "global")
+        expect(key_row(report.show("other"), "spine.auto")).to include("effective" => false, "source" => "default")
+      end
+
+      it "warns on a spine.template no library entry has, in the file that names it" do
+        write("api", "spine:\n  template: gone\n")
+
+        problems = report.validate("api")
+        expect(problems["valid"]).to be(true)
+        expect(problems["problems"].map { |p| [p["layer"], p["code"], p["severity"], p["key"]] }).to eq([["project", "unknown_spine_template", "warning", "spine.template"]])
+      end
+
+      it "does not warn on a known template, and refuses a badly spelled name as an invalid value" do
+        write("api", "spine:\n  template: team\n")
+        expect(report.validate("api")["problems"]).to eq([])
+
+        write("api", "spine:\n  template: Not Valid\n")
+        expect(report.validate("api")["problems"].map { |p| p["code"] }).to eq(["invalid_value"])
+      end
+
+      it "checks a worktree's own file against its own checkout" do
+        write("api.worktree-fix", "spine:\n  template: gone\n")
+        expect(report.validate("api.worktree-fix")["problems"].map { |p| [p["layer"], p["code"]] }).to eq([["worktree", "unknown_spine_template"]])
+        expect(library).to have_received(:spine_template).with("gone", cwd: "/src/api/.worktrees/fix")
+      end
+    end
+
     it "raises unknown_workspace for a name nothing knows" do
       expect { report.validate("nope") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("unknown_workspace") }
     end

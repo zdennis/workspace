@@ -164,6 +164,7 @@ require_relative "workspace/library"
 require_relative "workspace/library_installer"
 require_relative "workspace/commands_config"
 require_relative "workspace/notes_config"
+require_relative "workspace/spine_config"
 require_relative "workspace/main_agent"
 require_relative "workspace/instruction_composer"
 require_relative "workspace/project_config"
@@ -377,6 +378,8 @@ module Workspace
       git_exclude: GitExclude.new(git: git), output: output)
     notes_setup = NotesSetup.new(notes: notes_command, project_settings: project_settings)
     spine_command = Commands::Spine.new(notes: notes_command, writer: SpineWriter.new, event_log: event_log, lock_dir: config.spine_lock_dir, output: output)
+    spine_config = SpineConfig.new(config_resolver: config_resolver)
+    spine_init_command = Commands::SpineInit.new(notes: notes_command, library: library, project_config: project_config, git: git, task_store: task_store, spine_config: spine_config, output: output)
     main_agent = MainAgent.new(project_config: project_config)
     commands_config = CommandsConfig.new(config_resolver: config_resolver)
     instruction_composer = InstructionComposer.new(library: library, lineage: lineage,
@@ -388,8 +391,6 @@ module Workspace
     start_ref = StartRef.new(git: git, lineage: lineage)
     ticket_source = TicketSource.new
     start_command = Commands::Start.new(git: git, project_config: project_config, project_settings: project_settings, launch_command: launch_command, lineage: lineage, hook_installer: hook_installer, task_store: task_store, event_log: event_log, library: library, library_installer: library_installer, notes_setup: notes_setup, instruction_composer: instruction_composer, start_ref: start_ref, main_agent: main_agent, ticket_source: ticket_source, output: output, input: input)
-    spine_command = Commands::Spine.new(notes: notes_command, writer: SpineWriter.new, event_log: event_log, lock_dir: config.spine_lock_dir, output: output)
-    spine_init_command = Commands::SpineInit.new(notes: notes_command, library: library, project_config: project_config, git: git, task_store: task_store, output: output)
     ticket_command = Commands::Ticket.new(git: git, project_config: project_config, start_ref: start_ref, source: ticket_source, output: output, error_output: error_output)
     send_command = Commands::Send.new(locator: pane_locator, tmux: tmux, output: output)
     focus_command = Commands::Focus.new(state: state, window_manager: window_manager, tmux: tmux, pane_locator: pane_locator, output: output)
@@ -546,7 +547,7 @@ module Workspace
       state: state, tmux: tmux, git: git, lock_namespace: lock_namespace, lock_holder: lock_holder,
       hook_runner: hook_runner, json_hook_runner: json_hook_runner, output: output, error_output: error_output, input: input)
     config_command = Commands::Config.new(project_settings: project_settings, lineage: lineage, file_backup: file_backup, event_log: event_log, project_config: project_config, output: output, error_output: error_output)
-    config_report = ConfigReport.new(project_settings: project_settings, project_config: project_config, notes_dir: NotesDir.new(git: git))
+    config_report = ConfigReport.new(project_settings: project_settings, project_config: project_config, notes_dir: NotesDir.new(git: git), library: library)
     tmuxinator_report = TmuxinatorReport.new(config: config, tmux: tmux)
     restore_command = Commands::Restore.new(ledger: session_ledger, tmux: tmux, pane_bindings: pane_bindings, tmuxinator_report: tmuxinator_report,
       process_tree: process_tree, agent_ensurer: ensure_agent_command, output: output, error_output: error_output)

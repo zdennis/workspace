@@ -33,7 +33,7 @@ module Workspace
       "editor_failed" => "config edit: $VISUAL or $EDITOR is not a valid command, or the editor could not be run. details.path.",
       "notes_dir_unresolved" => "The notes directory can't be worked out: the project's rule uses {branch} and the checkout is on no branch.",
       "notes_dir_unwritable" => "notes dir --create couldn't make the notes directory or list it in info/exclude, or a plan verb couldn't write or rename the plan file.",
-      "unknown_template" => "spine init was given a template name no spine library entry has. details.template, details.scopes.",
+      "unknown_template" => "spine init was given a template name no spine library entry has. details.template, details.scopes, details.source.",
       "no_plan" => "The workspace has no IMPLEMENTATION_PLAN.md in its notes directory.",
       "plan_exists" => "plan init would replace a plan that is already there; pass --force.",
       "plan_done" => "plan start or pause was run on a plan that is done (status: done, or nothing left to do).",

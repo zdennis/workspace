@@ -13,7 +13,14 @@ module Workspace
       JSON_SCHEMA_VERSION = 1
 
       # The template used when none is named.
-      DEFAULT_TEMPLATE = "default"
+      DEFAULT_TEMPLATE = SpineConfig::DEFAULT_TEMPLATE
+
+      # How an error says where the template name came from.
+      SOURCE_WORDS = {
+        "flag" => "named with --template", "worktree" => "set by spine.template in the workspace's own config",
+        "project" => "set by spine.template in the project's config", "global" => "set by spine.template in the global config",
+        "default" => "the built-in default"
+      }.freeze
 
       # The stage file (and folder) a main checkout's spine leaves out: it has no branch to ship.
       SHIP_STAGE = /\A\d{1,3}-ship(\.md)?\z/
@@ -23,8 +30,10 @@ module Workspace
       # @param project_config [Workspace::ProjectConfig] gives a workspace's checkout
       # @param git [Workspace::Git] names the checkout's branch
       # @param task_store [Workspace::TaskStore] gives the workspace's task title
+      # @param spine_config [Workspace::SpineConfig, nil] gives the template a call without one uses; nil is `default`
       # @param output [IO]
-      def initialize(notes:, library:, project_config:, git:, task_store:, output: $stdout)
+      def initialize(notes:, library:, project_config:, git:, task_store:, spine_config: nil, output: $stdout)
+        @spine_config = spine_config
         @notes = notes
         @library = library
         @project_config = project_config
@@ -34,17 +43,19 @@ module Workspace
       end
 
       # @param name [String] the workspace
-      # @param template [String, nil] the template name; nil is `default`
+      # @param template [String, nil] the template name; nil is the workspace's `spine.template`, else `default`
       # @param dry_run [Boolean] report what would be written and write nothing
       # @param json [Boolean] print the document documented in docs/README.spine.md instead of a sentence
+      # @param print [Boolean] false prints nothing and only returns the answer (for a caller with its own output)
       # @return [Hash] the answer: `outcome` is `created`, `exists` or `would_create`
       # @raise [Workspace::Error] `unknown_workspace`, `unknown_template`, `notes_dir_unresolved`,
       #   `config_parse` or `spine_unwritable`
-      def call(name:, template: nil, dry_run: false, json: false)
+      def call(name:, template: nil, dry_run: false, json: false, print: true)
         root = @project_config.project_root_for(name)
         raise Error.new("Unknown workspace '#{name}'. Run 'workspace list --all' to see the names.", code: "unknown_workspace", details: {"name" => name}) unless root
         root = File.expand_path(root)
-        entry = @library.spine_template(template || DEFAULT_TEMPLATE, cwd: root)
+        chosen = choose_template(name, template)
+        entry = find_template(chosen, root)
         notes_dir = @notes.info(name: name)["dir"]
         spine_dir = File.join(real(notes_dir), "spine")
         main = WorkspaceLineage.split_worktree_name(name).nil?
@@ -53,13 +64,29 @@ module Workspace
         outcome = "exists" if outcome == "created" && !write(name, root, spine_dir, files)
 
         answer = {"workspace" => name, "outcome" => outcome,
-                  "template" => {"name" => entry["name"], "scope" => entry["scope"]},
+                  "template" => {"name" => entry["name"], "scope" => entry["scope"], "source" => chosen["source"]},
                   "dir" => spine_dir, "files" => (outcome == "exists") ? [] : files.map(&:first)}
-        print(answer, json)
+        show(answer, json) if print
         answer
       end
 
       private
+
+      # @return [Hash{String=>String}] the template's "name" and "source" (`flag`, `worktree`, `project`,
+      #   `global` or `default`)
+      def choose_template(name, flag)
+        return {"name" => flag, "source" => "flag"} if flag
+        @spine_config&.template(name) || {"name" => DEFAULT_TEMPLATE, "source" => "default"}
+      end
+
+      # @raise [Workspace::Error] `unknown_template`, naming where the name came from
+      def find_template(chosen, root)
+        @library.spine_template(chosen["name"], cwd: root)
+      rescue Error => e
+        raise unless e.code == "unknown_template"
+        raise Error.new("#{e.message.delete_suffix(".")} (#{SOURCE_WORDS.fetch(chosen["source"])}).",
+          code: "unknown_template", details: (e.details || {}).merge("source" => chosen["source"]))
+      end
 
       # @return [Array(String, Array<Array(String, String)>)] the outcome and the template's
       #   `[relative path, source path]` pairs
@@ -146,7 +173,7 @@ module Workspace
         Error.new("Can't write the spine: #{reason.to_s.delete_suffix(".")}.", code: "spine_unwritable", details: {"path" => path})
       end
 
-      def print(answer, json)
+      def show(answer, json)
         if json
           @output.puts JSON.generate({"schema_version" => JSON_SCHEMA_VERSION, "ok" => true}.merge(answer))
           return
