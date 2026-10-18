@@ -21,7 +21,7 @@ module Workspace
         "git_facts" => 1,
         "prune_safe" => 1,
         "snapshot" => 4,
-        "events_follow" => 0,
+        "events_follow" => 1,
         "actions_manifest" => 0,
         "agent_send" => 1,
         "agent_spawn" => 1,
@@ -98,7 +98,7 @@ module Workspace
           "version" => Workspace::VERSION,
           "features" => FEATURES,
           "exit_codes" => EXIT_CODES,
-          "paths" => {"event_log" => @config.event_log_file, "run_dir" => @config.run_dir, "library" => @config.library_dir},
+          "paths" => {"event_log" => @config.event_log_file, "hook_events" => @config.hook_events_dir, "run_dir" => @config.run_dir, "library" => @config.library_dir},
           "dependencies" => dependencies.transform_values { |path| {"path" => path} }
         }
       end

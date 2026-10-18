@@ -19,7 +19,7 @@ module Workspace
       focus deactivate reactivate tile resize capture agent agentd lock dev parent notes plan ticket pr rebase push projects
       capabilities daemon sessions review snapshot ask inbox session-event agent-run handoff pipeline run library lib instructions workflow step
       run-and-report report-run-status layout config tmux statusline current
-      list-projects list status repair cleanup prune set-command event-log
+      list-projects list status repair cleanup prune set-command event-log events
       whereis lookup dir alfred version help
     ].freeze
 
@@ -84,6 +84,7 @@ module Workspace
     # @param workflow_command [Workspace::Commands::Workflow, nil] pre-built `workflow` and `step` command
     # @param review_command [Workspace::Commands::Review, nil] pre-built review command
     # @param restore_command [Workspace::Commands::Restore, nil] pre-built restore command
+    # @param events_command [Workspace::Commands::Events, nil] pre-built events command
     # @param snapshot_command [Workspace::Commands::Snapshot, nil] pre-built snapshot command
     # @param inbox_command [Workspace::Commands::Inbox, nil] pre-built inbox command
     # @param config_report [Workspace::ConfigReport, nil] builds the `config show/validate --json` documents
@@ -103,7 +104,7 @@ module Workspace
     #   `list --liveness --json` and `status --json`; takes name => state entry
     # @param launch_mode [Workspace::LaunchMode, nil] decides whether launch/start
     #   run headless when no --[no-]headless flag is given; nil builds one
-    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, restart_agent_command: nil, send_command: nil, ensure_agent_command: nil, handoff_command: nil, notes_command: nil, notes_setup: nil, plan_command: nil, ticket_command: nil, pull_request_command: nil, rebase_command: nil, push_command: nil, projects_command: nil, capabilities_command: nil, daemon_command: nil, ui_command: nil, binding_command: nil, library_command: nil, library: nil, instructions_command: nil, instruction_composer: nil, workflow_command: nil, review_command: nil, restore_command: nil, snapshot_command: nil, project_actions_command: nil, inbox_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil, liveness: nil, window_liveness: nil, env: ENV, editor_launcher: nil, interactive: nil, workspace_name: nil)
+    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, restart_agent_command: nil, send_command: nil, ensure_agent_command: nil, handoff_command: nil, notes_command: nil, notes_setup: nil, plan_command: nil, ticket_command: nil, pull_request_command: nil, rebase_command: nil, push_command: nil, projects_command: nil, capabilities_command: nil, daemon_command: nil, ui_command: nil, binding_command: nil, library_command: nil, library: nil, instructions_command: nil, instruction_composer: nil, workflow_command: nil, review_command: nil, restore_command: nil, snapshot_command: nil, events_command: nil, project_actions_command: nil, inbox_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil, liveness: nil, window_liveness: nil, env: ENV, editor_launcher: nil, interactive: nil, workspace_name: nil)
       @config = config
       @state = state
       @project_config = project_config
@@ -169,6 +170,7 @@ module Workspace
       @review_command = review_command
       @restore_command = restore_command
       @snapshot_command = snapshot_command
+      @events_command = events_command
       @config_report = config_report
       @tmuxinator_report = tmuxinator_report
       @project_actions_command = project_actions_command
@@ -324,6 +326,8 @@ module Workspace
         cmd_set_pane_command(args)
       when "event-log"
         cmd_event_log(args)
+      when "events"
+        cmd_events(args)
       when "whereis"
         cmd_whereis(args)
       when "lookup"
@@ -492,6 +496,7 @@ module Workspace
           dir             Print the root directory of a workspace project
           doctor          Check that all required dependencies are installed
           event-log       Show or compact the event log (state changes and agent activity)
+          events          Read or follow the event log and every agent's hook events as one stream
           finish          Verify a worktree is clean and pushed, then remove it (optionally opens a PR)
           focus           Bring a project's iTerm window to the front (not for headless projects)
           handoff         Check context usage and hand off to a fresh conversation
@@ -5780,6 +5785,45 @@ module Workspace
 
     # `workspace event-log show --json`'s schema version.
     EVENT_LOG_JSON_SCHEMA_VERSION = 1
+
+    def cmd_events(args)
+      options = {follow: false, json: false, types: [], since: nil}
+      help = false
+      parser = OptionParser.new do |opts|
+        opts.banner = "Usage: workspace events [--follow] [--json] [--types A,B] [--since CURSOR]"
+        opts.separator ""
+        opts.separator "Read the event log (#{@config.event_log_file}) and every agent daemon's"
+        opts.separator "hook events (#{@config.hook_events_dir}/<workspace>.jsonl) as one stream,"
+        opts.separator "oldest first. Each line carries a cursor; pass it to --since to resume"
+        opts.separator "after that line. Only files are read, so a slow reader never holds up a daemon."
+        opts.separator ""
+        opts.separator "Hook event types: #{HookEventLog::TYPES.join(", ")}."
+        opts.separator "Stream lines: follow_started (first, with a cursor) and gap (the cursor is older"
+        opts.separator "than what is kept; the lines after its time follow)."
+        opts.separator ""
+        opts.separator "Options:"
+        opts.on("--follow", "Keep reading new lines until stopped (JSONL with --json)") { options[:follow] = true }
+        opts.on("--json", "JSON: one line per event with --follow, else one {schema_version, ok, events, cursor} document") { options[:json] = true }
+        opts.on("--types A,B", "Only these types (repeatable, or comma-separated)") do |value|
+          options[:types].concat(value.split(",").map(&:strip).reject(&:empty?))
+        end
+        opts.on("--since CURSOR", "Resume after the line that printed CURSOR") { |value| options[:since] = value }
+        opts.on("-h", "--help", "Show this help") { help = true }
+        opts.separator ""
+        opts.separator "Without --since, --follow starts at the end of every file, and a plain read prints"
+        opts.separator "what is kept: the current event log and each daemon's file and its rotated copy."
+        opts.separator ""
+        opts.separator "Examples:"
+        opts.separator "  workspace events --follow --json"
+        opts.separator "  workspace events --follow --json --types tool_started,tool_finished --since \"$CURSOR\""
+        opts.separator "  workspace events --types session_started,session_ended"
+      end
+      parser.parse!(args)
+      return @output.puts(parser.help) if help
+      raise UsageError, "Unexpected argument: #{args.first}\n\n#{parser.help}" unless args.empty?
+
+      @events_command.call(**options)
+    end
 
     def cmd_event_log(args)
       # The subcommand is the first non-option argument, so a leading flag

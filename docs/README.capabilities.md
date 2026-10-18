@@ -21,14 +21,15 @@ It reads constants, config paths and the `PATH`. It starts no process and touche
 ```json
 {"schema_version":1,"ok":true,"version":"0.27.1",
  "features":{"envelope":1,"error_codes":1,"name_scope":1,"no_input":1,"action_json":1,
-   "sessions":1,"locks_json":2,"git_facts":1,"prune_safe":1,"snapshot":4,"events_follow":0,
+   "sessions":1,"locks_json":2,"git_facts":1,"prune_safe":1,"snapshot":4,"events_follow":1,
    "actions_manifest":0,"agent_send":1,"agent_spawn":1,"focus_pane":1,"state_done":1,
    "doctor_json":0,"daemon_control":4,"config_json":2,"config_scopes":2,"tmux_show":1,"tasks":1,"event_emitters":1,
    "ui_open":3,"pane_bindings":3,"library":4,"library_play":2,"library_copy":1,"instructions":1,"restore":1,
    "workflow":1,"window_state":1,"cleanup_dry_run":1,"notes":1,"start_packs":2,
    "handoff_auto":2,"handoff_codex":1,"dev_queue":2,"plan":4,"inbox":3,"ask_withdraw":1},
  "exit_codes":{"ok":0,"failed":1,"not_submitted":2,"partial":3,"lock_cleared":4,"timeout":75},
- "paths":{"event_log":"/Users/me/.workspace-events.jsonl","run_dir":"/Users/me/.local/workspace/run",
+ "paths":{"event_log":"/Users/me/.workspace-events.jsonl","hook_events":"/Users/me/.local/state/workspace/.events",
+   "run_dir":"/Users/me/.local/workspace/run",
    "library":"/Users/me/.config/workspace/library"},
  "dependencies":{"window_tool":{"path":"/opt/homebrew/bin/window-tool"},
    "gh":{"path":"/opt/homebrew/bin/gh"},"tmux":{"path":null}}}
@@ -36,7 +37,7 @@ It reads constants, config paths and the `PATH`. It starts no process and touche
 
 - `features` maps each name to an integer revision. `0` means this CLI doesn't have it, and a name missing from the map means the same. Check `features.no_input >= 1`; don't compare `version`. A revision goes up when the feature's output changes in a way a reader must handle. An older CLI that predates this command answers `Unknown subcommand` (exit 1), so treat that as "no features".
 - `exit_codes` names the statuses commands use: `not_submitted` (2, `run`), `partial` (3, `--json` action documents), `lock_cleared` (4, a queued lock wait whose lock was cleared) and `timeout` (75, `--max-wait` ran out).
-- `paths` are absolute.
+- `paths` are absolute. `hook_events` is the directory of the agent daemons' hook event files, which [`events`](README.events.md) reads.
 - `dependencies` gives the first match on `PATH` for each tool, or `null` when it isn't there. Nothing is run, so there is no version.
 
 ### Features
@@ -53,7 +54,7 @@ It reads constants, config paths and the `PATH`. It starts no process and touche
 | `git_facts` | `projects show` reports git facts per workspace |
 | `prune_safe` | `prune` skips a worktree with unsaved work and reports it, rather than removing it |
 | `snapshot` | `snapshot --json` (see [`snapshot`](README.snapshot.md)); `sessions --json` panes carry `display_label` (see [`sessions`](README.sessions.md)). Revision 1 was `display_label` alone; revision 3 adds each member's `plan`; revision 4 reports `task` for stopped and ended workspaces |
-| `events_follow` | Not available yet |
+| `events_follow` | `events [--follow] [--json] [--types] [--since CURSOR]` reads the event log and every agent daemon's hook events (`tool_started`, `tool_finished`, `subagent_started`, `subagent_stopped`, `session_started`, `session_ended`, `prompt_submitted`, each with `boot_id` and `seq`) as one stream, with an opaque cursor on every line (see [`events`](README.events.md)) |
 | `actions_manifest` | Not available yet |
 | `agent_send` | `agent-run send --pane` types text or tmux keys into one named pane; `ask answer --deliver` types an answer into the asking pane |
 | `agent_spawn` | `launch --json` rows carry `prompt_sent` and `pane`, and `run --split --json` names the new pane, so a caller need not compare two `sessions` reads to find the pane it started or sent to (see [`launch`](README.launch.md#json-output), [`run`](README.run.md#json-output)) |

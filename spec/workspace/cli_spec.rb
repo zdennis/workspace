@@ -117,6 +117,7 @@ RSpec.describe Workspace::CLI do
       library: overrides[:library],
       review_command: overrides[:review_command],
       snapshot_command: overrides[:snapshot_command],
+      events_command: overrides[:events_command],
       project_actions_command: overrides[:project_actions_command],
       inbox_command: overrides[:inbox_command],
       config_report: overrides[:config_report],
@@ -4444,6 +4445,43 @@ RSpec.describe Workspace::CLI do
       expect(JSON.parse(output.string)).to include("ok" => false, "code" => "usage", "error" => "--path and --json cannot be used together.")
       expect(error_output.string).to eq("")
       expect(parent_command.calls).to be_empty
+    end
+  end
+
+  describe "#run with events" do
+    let(:events_command) { instance_double(Workspace::Commands::Events, call: nil) }
+    let(:built) { build_test_cli(events_command: events_command) }
+    let(:cli) { built[0] }
+    let(:output) { built[1] }
+
+    it "passes --follow, --json, every --types value and --since" do
+      cli.run(["events", "--follow", "--json", "--types", "tool_started, tool_finished", "--types", "gap", "--since", "1.abc"])
+      cli.run(["events"])
+
+      expect(events_command).to have_received(:call).with(follow: true, json: true, types: %w[tool_started tool_finished gap], since: "1.abc")
+      expect(events_command).to have_received(:call).with(follow: false, json: false, types: [], since: nil)
+    end
+
+    it "emits the JSON usage envelope for an extra argument" do
+      expect { cli.run(["events", "--json", "extra"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+
+      expect(JSON.parse(output.string)).to include("ok" => false, "code" => "usage")
+      expect(events_command).not_to have_received(:call)
+    end
+
+    it "reports a cursor it can't read as invalid_cursor" do
+      allow(events_command).to receive(:call).and_raise(Workspace::EventStream::InvalidCursor)
+
+      expect { cli.run(["events", "--json", "--since", "x"]) }.to raise_error(FakeSystemExit)
+
+      expect(JSON.parse(output.string)).to include("ok" => false, "code" => "invalid_cursor")
+    end
+
+    it "lists the hook event types and the stream lines in its help" do
+      cli.run(["events", "--help"])
+
+      expect(output.string).to include("Usage: workspace events", "tool_started, tool_finished", "follow_started", "gap")
+      expect(events_command).not_to have_received(:call)
     end
   end
 

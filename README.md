@@ -87,6 +87,7 @@ workspace <subcommand> [options]
 | dir | [README](docs/README.dir.md) | Print the root directory of a workspace project |
 | doctor | [README](docs/README.doctor.md) | Check that all required dependencies are installed |
 | event-log | [README](docs/README.event-log.md) | Show or compact the append-only event log of state changes and agent activity |
+| events | [README](docs/README.events.md) | Read or follow the event log and every agent's hook events (tool, sub-agent, session, prompt) as one stream, resumable by cursor |
 | finish | [README](docs/README.finish.md) | Verify a worktree is clean and pushed, then remove it (optionally opens a PR) |
 | focus | [README](docs/README.focus.md) | Bring a project's iTerm window to the front |
 | handoff | [README](docs/README.handoff.md) | Check context usage and hand off to a fresh conversation |

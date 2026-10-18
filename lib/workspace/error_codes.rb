@@ -85,6 +85,7 @@ module Workspace
       "unknown_derived_item" => "No derived source produces that id right now (inbox ack or snooze); see `inbox list --include-derived`. `details.id`.",
       "ask_not_open" => "`ask answer` or `ask withdraw` named a question that is no longer open (answered or withdrawn). `details.id`, `details.status`.",
       "use_ask_answer" => "An `ask:` id can't be acked or snoozed: a question leaves the inbox when it is answered or withdrawn. `details.id`.",
+      "invalid_cursor" => "events --since was given something that isn't a cursor an events line printed.",
       "invalid_workflow" => "A workflow definition file doesn't pass the checks.",
       "input_required" => "workflow run is missing a required input.",
       "workflow_command_unset" => "A step's check names the project's test or lint command and the project has none.",

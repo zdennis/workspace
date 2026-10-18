@@ -5,7 +5,7 @@ require "fileutils"
 
 RSpec.describe Workspace::Commands::Capabilities do
   let(:output) { StringIO.new }
-  let(:config) { instance_double(Workspace::Config, event_log_file: "/home/z/.workspace-events.jsonl", run_dir: "/home/z/.local/workspace/run", library_dir: "/home/z/.config/workspace/library") }
+  let(:config) { instance_double(Workspace::Config, event_log_file: "/home/z/.workspace-events.jsonl", hook_events_dir: "/home/z/.local/state/workspace/.events", run_dir: "/home/z/.local/workspace/run", library_dir: "/home/z/.config/workspace/library") }
   let(:bin_dir) { Dir.mktmpdir("capabilities-bin") }
   let(:path_env) { bin_dir }
   subject(:command) { described_class.new(config: config, path_env: path_env, output: output) }
@@ -52,7 +52,7 @@ RSpec.describe Workspace::Commands::Capabilities do
     it "reports the event log, run and library directories from config" do
       command.call(json: true)
 
-      expect(document["paths"]).to eq("event_log" => "/home/z/.workspace-events.jsonl", "run_dir" => "/home/z/.local/workspace/run", "library" => "/home/z/.config/workspace/library")
+      expect(document["paths"]).to eq("event_log" => "/home/z/.workspace-events.jsonl", "hook_events" => "/home/z/.local/state/workspace/.events", "run_dir" => "/home/z/.local/workspace/run", "library" => "/home/z/.config/workspace/library")
     end
 
     it "reports the path of each dependency found on PATH" do

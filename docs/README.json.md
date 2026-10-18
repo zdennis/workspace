@@ -164,6 +164,7 @@ The registry lives in `Workspace::ErrorCodes`; a spec checks that every code a r
 | `unknown_derived_item` | `inbox ack` or `inbox snooze` named a derived id that no source produces right now (a pane that is no longer waiting, a stored item id given to `ack`). `details.id`. |
 | `ask_not_open` | `ask answer` or `ask withdraw` named a question that is already answered or withdrawn. `details.id`, `details.status`. |
 | `use_ask_answer` | `inbox ack` or `inbox snooze` named an `ask:` id; answer the question with `ask answer` (or close it with `ask withdraw`) instead. `details.id`. |
+| `invalid_cursor` | `events --since` was given something that isn't a cursor an `events` line printed. |
 | `invalid_workflow` | A workflow definition file doesn't pass the checks. `details.workflow`, `details.path`, `details.problems`. |
 | `input_required` | workflow run is missing a required input. `details.workflow`, `details.inputs` (each `name` and `description`). |
 | `workflow_command_unset` | A step's check names the project's test or lint command and the project has none. `details.workflow`, `details.project`, `details.commands`. |

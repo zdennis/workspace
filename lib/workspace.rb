@@ -146,6 +146,7 @@ require_relative "workspace/config_schema_docs"
 require_relative "workspace/config_layering"
 require_relative "workspace/event_log"
 require_relative "workspace/hook_event_log"
+require_relative "workspace/event_stream"
 require_relative "workspace/state"
 require_relative "workspace/git"
 require_relative "workspace/which"
@@ -279,6 +280,7 @@ require_relative "workspace/commands/projects"
 require_relative "workspace/commands/review"
 require_relative "workspace/commands/restore"
 require_relative "workspace/commands/snapshot"
+require_relative "workspace/commands/events"
 require_relative "workspace/commands/project_actions"
 require_relative "workspace/commands/config"
 require_relative "workspace/commands/statusline"
@@ -503,6 +505,9 @@ module Workspace
       snapshot_client: agent_snapshot_client, sessions: sessions_command, git: git, pull_request_status: PullRequestStatus.new,
       ask_store_for: ask_store_for, plan: plan_command, plan_state: plan_state, plan_config: plan_config, task_store: task_store,
       output: output, error_output: error_output)
+    events_command = Commands::Events.new(
+      stream_factory: -> { EventStream.new(lifecycle_path: config.event_log_file, hook_dir: config.hook_events_dir) }, output: output
+    )
     review_command = Commands::Review.new(catalog: project_catalog, git: git, snapshot_client: agent_snapshot_client, task_store: task_store,
       ask_store_for: ask_store_for, session_ledger: session_ledger, transcript_summary: TranscriptSummary.new, pull_request_status: PullRequestStatus.new,
       output: output, error_output: error_output)
@@ -636,6 +641,7 @@ module Workspace
       review_command: review_command,
       restore_command: restore_command,
       snapshot_command: snapshot_command,
+      events_command: events_command,
       project_actions_command: project_actions_command,
       agent_command: agent_command,
       sessions_command: sessions_command,

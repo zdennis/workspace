@@ -55,6 +55,8 @@ The same log records what agents and pipelines do. `reconstruct` ignores these e
 | `lock_wait_abandoned` | `lock acquire --wait` interrupted | `lock`, `pid`, `waited_seconds`, `exit_code` |
 | `lock_wait_started`, `lock_acquired`, `lock_released` | a [workflow run](README.workflow.md) taking, getting or giving up a lock a step uses | `lock`, `run_id`, `step`, `workspace`; `position` and `holder` for a wait (the holder's `run_id` and `step` when a run holds the lock, else its `pid`; `pane`, `worktree` and `task` when known); `waited_seconds` for an acquire that ended a wait |
 
+Hook-rate activity (each tool start and finish, sub-agent start and stop, session start and end, and prompt submitted) is not written here. Each agent daemon writes it to its own file, so it never rotates this log's history away and `compact` never handles it. [`workspace events`](README.events.md) reads those files and this log together as one stream, with a cursor to resume from.
+
 An acquire that doesn't wait records nothing here; `locks.jsonl` in the lock store already audits every acquire and release.
 
 ### State and lifecycle events
