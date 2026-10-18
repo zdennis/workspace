@@ -121,7 +121,7 @@ RSpec.describe Workspace::AgentProvider do
       it "runs session-event naming the agent, for every Codex event workspace maps" do
         commands = settings["hooks"].values.flatten.flat_map { |e| e["hooks"] }.map { |h| h["command"] }
 
-        expect(commands.uniq).to eq(["workspace session-event --agent codex"])
+        expect(commands.uniq).to eq(["if [ -n \"$TMUX_PANE\" ]; then workspace session-event --agent codex; else cat >/dev/null; fi"])
         expect(settings["hooks"].keys).to contain_exactly("SessionStart", "SessionEnd", "UserPromptSubmit", "Stop",
           "Interrupt", "SubagentStart", "SubagentStop", "PreToolUse", "PermissionRequest", "PostToolUse")
       end
@@ -133,6 +133,35 @@ RSpec.describe Workspace::AgentProvider do
         expect(timeout.call("SessionEnd")).to eq(3)
         expect(timeout.call("Interrupt")).to eq(3)
       end
+    end
+  end
+
+  describe "#hook_command for Codex" do
+    let(:codex) { described_class.find("codex") }
+
+    # A stand-in for `workspace session-event` that says it ran and exits 2,
+    # as a denied edit does; the agent flag lands after the `:`.
+    def run_hook(env)
+      require "open3"
+      Open3.capture3(env, "/bin/sh", "-c", codex.hook_command("printf ran; exit 2; :"), stdin_data: "{\"hook_event_name\":\"Stop\"}")
+    end
+
+    it "starts nothing outside a tmux pane, reads the payload, and exits 0" do
+      out, err, status = run_hook({"TMUX_PANE" => nil})
+
+      expect([out, err, status.exitstatus]).to eq(["", "", 0])
+    end
+
+    it "runs session-event in a tmux pane and passes its exit status on" do
+      out, _err, status = run_hook({"TMUX_PANE" => "%3"})
+
+      expect([out, status.exitstatus]).to eq(["ran", 2])
+    end
+
+    it "lists the unguarded command it used to install, so an upgrade replaces it" do
+      expect(codex.hook_commands("workspace session-event"))
+        .to eq([codex.hook_command("workspace session-event"), "workspace session-event --agent codex"])
+      expect(described_class.find("claude").hook_commands("workspace session-event")).to eq(["workspace session-event"])
     end
   end
 

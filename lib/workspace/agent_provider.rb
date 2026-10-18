@@ -131,7 +131,7 @@ module Workspace
           events: CODEX_EVENTS,
           hook_timeouts: CODEX_HOOK_TIMEOUTS,
           hook_events: HOOK_EVENT_TYPES,
-          hook_trust_hint: "Codex skips new or changed hooks until you trust them: run /hooks in Codex and trust the `workspace session-event --agent codex` entries"
+          hook_trust_hint: "Codex skips new or changed hooks until you trust them: run /hooks in Codex and trust the `workspace session-event --agent codex` entries; `workspace hooks uninstall --agent codex` takes them out"
         ),
         new(
           key: "opencode",
@@ -297,11 +297,34 @@ module Workspace
     # before other agents had hooks; any other agent's names itself, so
     # `session-event` reads the payload by that agent's event names.
     #
+    # A user-level hook runs in every session of the agent on the machine,
+    # so it is guarded in the shell: outside a tmux pane (no `$TMUX_PANE`,
+    # where `session-event` would drop the event anyway) Ruby never starts,
+    # and the payload is read and thrown away so the agent's write to the
+    # hook's stdin doesn't fail.
+    #
     # @param base [String] e.g. "workspace session-event"
     # @return [String]
     def hook_command(base)
+      return base if key == "claude"
+      return unguarded_hook_command(base) unless user_scoped?
+
+      "if [ -n \"$TMUX_PANE\" ]; then #{unguarded_hook_command(base)}; else cat >/dev/null; fi"
+    end
+
+    # Every command this agent's hooks have run, the current one first, so an
+    # upgrade replaces an older entry in place and an uninstall finds it.
+    #
+    # @param base [String] e.g. "workspace session-event"
+    # @return [Array<String>]
+    def hook_commands(base)
+      [hook_command(base), unguarded_hook_command(base)].uniq
+    end
+
+    def unguarded_hook_command(base)
       (key == "claude") ? base : "#{base} --agent #{key}"
     end
+    private :unguarded_hook_command
 
     # Builds the settings fragment that routes this agent's hook events to the
     # given command.

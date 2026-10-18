@@ -70,7 +70,7 @@ module Workspace
     # @return [Boolean] whether every wanted hook is already present
     def installed?(provider, project_root, command)
       existing = read_settings(settings_path_for(provider, project_root))
-      merge(existing, provider.hook_settings(command)) == existing
+      merge(existing, provider.hook_settings(command), ours: provider.hook_commands(command)) == existing
     end
 
     # Prints the settings fragment workspace wants to add.
@@ -107,7 +107,7 @@ module Workspace
       path = settings_path_for(provider, project_root)
       existed = File.exist?(path)
       existing = read_settings(path)
-      merged = merge(existing, provider.hook_settings(command))
+      merged = merge(existing, provider.hook_settings(command), ours: provider.hook_commands(command))
 
       if merged == existing
         @output.puts "  skip    #{path} (hooks already installed)" unless quiet
@@ -121,6 +121,49 @@ module Workspace
         @output.puts "  note    #{provider.hook_trust_hint}" if provider.hook_trust_hint
       end
       true
+    end
+
+    # Takes workspace's hooks back out of the agent's settings file, backing
+    # it up first. Only hook handlers running one of workspace's commands
+    # (the current one or an older one) go; a group left with no handler
+    # goes with them, and an event left with no group. The person's own
+    # hooks and every other key stay as they were. Idempotent.
+    #
+    # @param provider [Workspace::AgentProvider]
+    # @param project_root [String]
+    # @param command [String] the base hook command, e.g. "workspace session-event"
+    # @param dry_run [Boolean] report without writing
+    # @return [Hash] `:path`, `:removed` (handlers taken out), `:backup` (path or nil)
+    def uninstall(provider, project_root, command, dry_run: false)
+      path = settings_path_for(provider, project_root)
+      return {path: path, removed: 0, backup: nil} unless File.exist?(path)
+
+      ours = provider.hook_commands(command)
+      result = read_settings(path)
+      hooks = result["hooks"] || {}
+      removed = 0
+      hooks.keys.each do |event|
+        groups = hooks[event]
+        next unless groups.is_a?(Array)
+
+        taken = 0
+        groups.reject! do |group|
+          next false unless group.is_a?(Hash) && group["hooks"].is_a?(Array)
+          before = group["hooks"].size
+          group["hooks"].reject! { |hook| hook.is_a?(Hash) && ours.include?(hook["command"]) }
+          taken += before - group["hooks"].size
+          before.positive? && group["hooks"].empty?
+        end
+        removed += taken
+        hooks.delete(event) if taken.positive? && groups.empty?
+      end
+      return {path: path, removed: 0, backup: nil} if removed.zero?
+
+      return {path: path, removed: removed, backup: nil} if dry_run
+
+      backup = @backup.backup(path, quiet: true)
+      write_settings(path, result)
+      {path: path, removed: removed, backup: backup}
     end
 
     # @param provider [Workspace::AgentProvider]
@@ -301,10 +344,14 @@ module Workspace
       settings = JSON.parse(File.read(path))
       return settings if settings.is_a?(Hash) && (settings["hooks"].nil? || settings["hooks"].is_a?(Hash))
 
-      raise Workspace::Error, "Cannot install hooks: #{path} does not hold a JSON object with a \"hooks\" object. Fix or move it, then re-run."
+      raise unreadable(path, "does not hold a JSON object with a \"hooks\" object")
     rescue JSON::ParserError
-      raise Workspace::Error,
-        "Cannot install hooks: #{path} is not valid JSON. Fix or move it, then re-run."
+      raise unreadable(path, "is not valid JSON")
+    end
+
+    def unreadable(path, problem)
+      Workspace::Error.new("Cannot change hooks: #{path} #{problem}. Fix or move it, then re-run.",
+        code: "hook_settings_unreadable", details: {"path" => path})
     end
 
     # Appends our entries to each event's list, matched on the command string so
@@ -317,7 +364,11 @@ module Workspace
     # installed for the same command, so upgrading `PreToolUse` from `Task`
     # to "all tools" replaces the old entry in place instead of leaving a
     # stale duplicate behind.
-    def merge(existing, fragment)
+    #
+    # +ours+ lists the commands an earlier version installed (Codex's before
+    # it was guarded): a group holding only one of them is ours too, and is
+    # upgraded in place rather than left beside the new one.
+    def merge(existing, fragment, ours: [])
       result = deep_dup(existing)
       hooks = result["hooks"] ||= {}
 
@@ -327,8 +378,9 @@ module Workspace
           if entry["matcher"].nil?
             # Replaced where it stands, so the groups after it keep their
             # place: Codex keys its trust in a hook on the group's index.
-            index = current.find_index { |e| commands_in(e) == commands_in(entry) }
-            current.reject! { |e| commands_in(e) == commands_in(entry) }
+            mine = ->(e) { commands_in(e) == commands_in(entry) || (commands_in(e).size == 1 && ours.include?(commands_in(e).first)) }
+            index = current.find_index(&mine)
+            current.reject!(&mine)
             index ? current.insert(index, entry) : current << entry
           else
             index = current.find_index { |e| same_command?(e, entry) }

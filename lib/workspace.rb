@@ -260,6 +260,7 @@ require_relative "workspace/name_migration"
 require_relative "workspace/project_detector"
 require_relative "workspace/commands/sessions"
 require_relative "workspace/commands/session_event"
+require_relative "workspace/commands/hooks"
 require_relative "workspace/commands/init"
 require_relative "workspace/commands/claude"
 require_relative "workspace/commands/launch"
@@ -398,6 +399,7 @@ module Workspace
     layout_command = Commands::Layout.new(state: state, tmux: tmux, project_settings: project_settings, output: output)
     resize_command = Commands::Resize.new(tmux: tmux, layout_command: layout_command, output: output, error_output: error_output)
     init_command = Commands::Init.new(config: config, hook_installer: hook_installer, output: output, error_output: error_output, input: input)
+    hooks_command = Commands::Hooks.new(hook_installer: hook_installer)
     repair_command = Commands::Repair.new(state: state, iterm: iterm, window_manager: window_manager, output: output)
     cleanup_command = Commands::Cleanup.new(state: state, window_liveness: WindowLiveness.new(window_manager: window_manager), tmux: tmux, output: output, input: input)
     prune_command = Commands::Prune.new(state: state, project_config: project_config, project_settings: project_settings, git: git, stop_command: stop_command, output: output, input: input)
@@ -685,6 +687,7 @@ module Workspace
       agent_command: agent_command,
       sessions_command: sessions_command,
       session_event_command: session_event_command,
+      hooks_command: hooks_command,
       config_command: config_command,
       config_report: config_report,
       tmuxinator_report: tmuxinator_report,

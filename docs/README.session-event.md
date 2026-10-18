@@ -42,7 +42,7 @@ With `--agent codex` (how [`init`](README.init.md#agent-session-hooks) installs 
 | `SubagentStart`, `SubagentStop` | `subagent_start`, `subagent_stop` | The sub-agent's own id and `agent_type`; no `Task` tool is watched for it |
 | `Stop`, `Interrupt` | `stop` | An `Interrupt` carries `stop_reason: "interrupted"`. `last_assistant_message` is not forwarded |
 
-The hooks are user-level, so they run in every Codex session on the machine, including ones outside a workspace. Outside tmux the hook does only the lock checks (file reads; no subprocess unless a lock is held from the pane) and exits, so the cost is starting Ruby, a few tenths of a second per tool call. `SessionEnd` and `Interrupt` hooks get 3 seconds, the most Codex allows; the rest get 10.
+The hooks are user-level, so they run in every Codex session on the machine, including ones outside a workspace. The installed command is guarded in the shell: `if [ -n "$TMUX_PANE" ]; then workspace session-event --agent codex; else cat >/dev/null; fi`. A Codex session outside tmux pays one `sh` and one `cat` per hook (a few milliseconds) and never starts Ruby; it gets no edit lock check either. A Codex session in a tmux pane that isn't a workspace's still starts Ruby (a few tenths of a second) and drops the event. `workspace hooks uninstall --agent codex` removes the hooks (see [`hooks`](README.hooks.md)). `SessionEnd` and `Interrupt` hooks get 3 seconds, the most Codex allows; the rest get 10.
 
 `PreCompact` and `PostCompact` are ignored. Codex has no `Notification` event, so a Codex pane is `waiting` only on an approval prompt, not on a question asked in plain text. A `SessionStart` for a bound pane prints the same `additionalContext`, which Codex adds as developer context.
 

@@ -17,7 +17,7 @@ module Workspace
     SUBCOMMANDS = %w[
       init doctor launch start stop add add-project kill finish relaunch restore
       focus deactivate reactivate tile resize capture agent agentd lock dev parent notes plan ticket spine pr rebase push projects
-      capabilities daemon sessions review snapshot ask inbox session-event agent-run handoff pipeline run library lib instructions workflow step
+      capabilities daemon sessions review snapshot ask inbox hooks session-event agent-run handoff pipeline run library lib instructions workflow step
       run-and-report report-run-status layout config tmux statusline current
       list-projects list status repair cleanup prune set-command event-log events
       whereis lookup dir alfred version help
@@ -112,7 +112,7 @@ module Workspace
     #   `list --liveness --json` and `status --json`; takes name => state entry
     # @param launch_mode [Workspace::LaunchMode, nil] decides whether launch/start
     #   run headless when no --[no-]headless flag is given; nil builds one
-    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, restart_agent_command: nil, agent_status_command: nil, send_command: nil, ensure_agent_command: nil, name_migration: nil, spine_command: nil, spine_init_command: nil, handoff_command: nil, notes_command: nil, notes_setup: nil, plan_command: nil, plan_dispatch_command: nil, plan_task_command: nil, ticket_command: nil, pull_request_command: nil, rebase_command: nil, push_command: nil, projects_command: nil, capabilities_command: nil, daemon_command: nil, ui_command: nil, binding_command: nil, library_command: nil, library: nil, instructions_command: nil, instruction_composer: nil, workflow_command: nil, review_command: nil, restore_command: nil, snapshot_command: nil, events_command: nil, project_actions_command: nil, inbox_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil, liveness: nil, window_liveness: nil, env: ENV, editor_launcher: nil, interactive: nil, workspace_name: nil)
+    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, hooks_command: nil, restart_agent_command: nil, agent_status_command: nil, send_command: nil, ensure_agent_command: nil, name_migration: nil, spine_command: nil, spine_init_command: nil, handoff_command: nil, notes_command: nil, notes_setup: nil, plan_command: nil, plan_dispatch_command: nil, plan_task_command: nil, ticket_command: nil, pull_request_command: nil, rebase_command: nil, push_command: nil, projects_command: nil, capabilities_command: nil, daemon_command: nil, ui_command: nil, binding_command: nil, library_command: nil, library: nil, instructions_command: nil, instruction_composer: nil, workflow_command: nil, review_command: nil, restore_command: nil, snapshot_command: nil, events_command: nil, project_actions_command: nil, inbox_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil, liveness: nil, window_liveness: nil, env: ENV, editor_launcher: nil, interactive: nil, workspace_name: nil)
       @config = config
       @state = state
       @project_config = project_config
@@ -125,6 +125,7 @@ module Workspace
       @workspace_name = workspace_name
       @sessions_command = sessions_command
       @session_event_command = session_event_command
+      @hooks_command = hooks_command
       @launch_command = launch_command
       @kill_command = kill_command
       @finish_command = finish_command
@@ -302,6 +303,8 @@ module Workspace
         cmd_ask(args)
       when "inbox"
         cmd_inbox(args)
+      when "hooks"
+        cmd_hooks(args)
       when "session-event"
         cmd_session_event(args)
       when "agent-run"
@@ -544,6 +547,7 @@ module Workspace
           run             Send a shell command to a pane in a running project's tmux session
           run-and-report  Run a command as a subprocess, capture stdout/stderr/exit status
           report-run-status  Internal: write run result for --wait (called by shell wrapper)
+          hooks           Remove workspace's hooks from a coding agent's settings (hooks uninstall)
           session-event   Forward one agent hook event to its daemon (installed by init)
           review          Show a workspace's finished work for review, or list the ones ready
           sessions        Show coding-agent sessions and sub-agents in a workspace
@@ -4757,6 +4761,73 @@ module Workspace
     rescue OptionParser::ParseError, UsageError => e
       raise unless json_requested?(options[:json], given)
       emit_json_error(Commands::Snapshot::JSON_SCHEMA_VERSION, e, message: e.message.lines.first.strip)
+    end
+
+    def cmd_hooks(args)
+      case args.shift
+      when "uninstall" then cmd_hooks_uninstall(args)
+      when "help", "--help", "-h", nil then @output.puts hooks_help
+      else raise UsageError, hooks_help
+      end
+    end
+
+    def hooks_help
+      <<~HELP
+        Usage: workspace hooks <subcommand> [options]
+
+        Manage the hooks workspace installs into coding agents' own settings
+        ('workspace init', 'start' and 'doctor --fix' install them).
+
+        Subcommands:
+          uninstall   Remove workspace's hooks for one agent, keeping your own
+
+        Examples:
+          workspace hooks uninstall --agent codex --dry-run
+          workspace hooks uninstall --agent=codex --json
+      HELP
+    end
+
+    def cmd_hooks_uninstall(args)
+      agent = nil
+      dry_run = false
+      json = false
+      parser = OptionParser.new do |opts|
+        opts.banner = "Usage: workspace hooks uninstall --agent KIND [--dry-run] [--json]"
+        opts.separator ""
+        opts.separator "Remove workspace's hooks from KIND's settings file: Codex's"
+        opts.separator "$CODEX_HOME/hooks.json (default ~/.codex/hooks.json), or for claude"
+        opts.separator "this project's .claude/settings.json. Only handlers running"
+        opts.separator "'workspace session-event' go; your own hooks and every other key stay."
+        opts.separator "The file is backed up first. Running it again changes nothing."
+        opts.separator "'workspace init', 'start' or 'doctor --fix' install them again."
+        opts.separator ""
+        opts.separator "Options:"
+        opts.on("--agent KIND", "The agent whose hooks to remove: codex or claude") { |v| agent = v }
+        opts.on("--dry-run", "Say what would be removed, and change nothing") { dry_run = true }
+        opts.on("--json", "Print one action document") { json = true }
+        opts.separator ""
+        opts.separator "Examples:"
+        opts.separator "  workspace hooks uninstall --agent codex --dry-run"
+        opts.separator "  workspace hooks uninstall --agent=codex --json"
+      end
+      parser.parse!(args)
+      raise UsageError, "Unexpected argument: #{args.first}\n\n#{parser.help}" if args.any?
+      raise UsageError, "--agent is required.\n\n#{parser.help}" unless agent
+
+      run_action("hooks uninstall", json: json) do
+        result = @hooks_command.uninstall(agent: agent, dry_run: dry_run)
+        outcome = if result["removed"].zero?
+          "not_installed"
+        else
+          dry_run ? "would_remove" : "removed"
+        end
+        unless json
+          verb = dry_run ? "Would remove" : "Removed"
+          @output.puts(result["removed"].zero? ? "No workspace hooks in #{result["path"]}; nothing to remove." :
+            "#{verb} #{result["removed"]} workspace hook(s) from #{result["path"]}#{" (backup: #{result["backup"]})" if result["backup"] && !dry_run}.")
+        end
+        {results: [action_row(nil, outcome, **result.transform_keys(&:to_sym))], status: dry_run ? "dry_run" : nil}
+      end
     end
 
     def cmd_session_event(args)

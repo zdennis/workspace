@@ -152,12 +152,90 @@ RSpec.describe Workspace::HookInstaller do
       JSON.parse(File.read(codex_path))["hooks"]
     end
 
+    def write_codex(hash)
+      FileUtils.mkdir_p(File.dirname(codex_path))
+      File.write(codex_path, JSON.generate(hash))
+    end
+
+    let(:unguarded) { "workspace session-event --agent codex" }
+    let(:guarded) { codex.hook_command(command) }
+    let(:own) { {"hooks" => [{"type" => "command", "command" => "/bin/own"}]} }
+
+    it "upgrades an unguarded entry to the guarded command where it stood, without a duplicate" do
+      write_codex("hooks" => {"Stop" => [{"hooks" => [{"type" => "command", "command" => unguarded, "timeout" => 10}]}, own]})
+
+      expect(installer.installed?(codex, tmpdir, command)).to be false
+      installer.install(codex, tmpdir, command)
+
+      expect(codex_hooks["Stop"].map { |g| g["hooks"].first["command"] }).to eq([guarded, "/bin/own"])
+      expect(codex_hooks.values.flatten.flat_map { |g| g["hooks"] }.map { |h| h["command"] }).not_to include(unguarded)
+      expect(installer.installed?(codex, tmpdir, command)).to be true
+    end
+
+    describe "#uninstall" do
+      it "takes out only workspace's handlers, the old unguarded ones too, keeping the person's and other keys" do
+        mixed = {"hooks" => [{"type" => "command", "command" => "/bin/mine"}, {"type" => "command", "command" => unguarded}]}
+        write_codex("description" => "mine", "hooks" => {"Stop" => [own, mixed], "PreToolUse" => []})
+        installer.install(codex, tmpdir, command)
+
+        result = installer.uninstall(codex, tmpdir, command)
+
+        expect(result[:removed]).to eq(11)
+        expect(result[:backup]).to start_with("#{codex_path}.workspace-backup-")
+        settings = JSON.parse(File.read(codex_path))
+        expect(settings["description"]).to eq("mine")
+        expect(settings["hooks"]).to eq("Stop" => [own, {"hooks" => [{"type" => "command", "command" => "/bin/mine"}]}])
+      end
+
+      it "keeps an event the person left empty" do
+        write_codex("hooks" => {"Notification" => []})
+        installer.install(codex, tmpdir, command)
+
+        installer.uninstall(codex, tmpdir, command)
+
+        expect(codex_hooks).to eq("Notification" => [])
+      end
+
+      it "changes nothing, and backs nothing up, the second time" do
+        installer.install(codex, tmpdir, command)
+        installer.uninstall(codex, tmpdir, command)
+        before = File.read(codex_path)
+        backups = Dir.glob("#{codex_path}.workspace-backup-*").size
+
+        expect(installer.uninstall(codex, tmpdir, command)).to include(removed: 0, backup: nil)
+        expect(File.read(codex_path)).to eq(before)
+        expect(Dir.glob("#{codex_path}.workspace-backup-*").size).to eq(backups)
+      end
+
+      it "counts but writes nothing on a dry run" do
+        installer.install(codex, tmpdir, command)
+        before = File.read(codex_path)
+
+        expect(installer.uninstall(codex, tmpdir, command, dry_run: true)).to include(removed: 10, backup: nil)
+        expect(File.read(codex_path)).to eq(before)
+      end
+
+      it "reports nothing to remove when there is no file" do
+        expect(installer.uninstall(codex, tmpdir, command)).to eq(path: codex_path, removed: 0, backup: nil)
+        expect(File.exist?(codex_path)).to be false
+      end
+
+      it "refuses a file it cannot parse, with a code, and leaves it alone" do
+        FileUtils.mkdir_p(File.dirname(codex_path))
+        File.write(codex_path, "{ nope")
+
+        expect { installer.uninstall(codex, tmpdir, command) }
+          .to raise_error(Workspace::Error) { |e| expect(e.code).to eq("hook_settings_unreadable") }
+        expect(File.read(codex_path)).to eq("{ nope")
+      end
+    end
+
     it "writes the home directory's hooks.json, whatever the project" do
       installer.install(codex, tmpdir, command)
 
       expect(installer.settings_path_for(codex, tmpdir)).to eq(codex_path)
       expect(codex_hooks["PermissionRequest"].first["hooks"].first)
-        .to eq("type" => "command", "command" => "workspace session-event --agent codex", "timeout" => 10)
+        .to eq("type" => "command", "command" => "if [ -n \"$TMUX_PANE\" ]; then workspace session-event --agent codex; else cat >/dev/null; fi", "timeout" => 10)
       expect(File.exist?(settings_path)).to be false
       expect(installer.installed?(codex, "/elsewhere", command)).to be true
     end

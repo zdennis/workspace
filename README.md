@@ -120,6 +120,7 @@ workspace <subcommand> [options]
 | set-command | [README](docs/README.set-command.md) | Set the shell command for a pane in a project config |
 | repair | [README](docs/README.repair.md) | Rebuild state from live iTerm windows |
 | resize | [README](docs/README.resize.md) | Resize tmux panes for a running project |
+| hooks | [README](docs/README.hooks.md) | Remove workspace's hooks from a coding agent's settings (`hooks uninstall --agent codex`) |
 | session-event | [README](docs/README.session-event.md) | Forward one coding-agent hook event to a workspace's agent daemon |
 | review | [README](docs/README.review.md) | Show a workspace's finished work for review, or list the workspaces that are ready |
 | snapshot | [README](docs/README.snapshot.md) | Print everything a UI polls (projects, panes, git, questions, locks, dev) as one JSON document |

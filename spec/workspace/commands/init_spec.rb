@@ -146,7 +146,7 @@ RSpec.describe Workspace::Commands::Init do
         command.call(project_root: project_root)
 
         expect(output.string).to include("found   Codex        #{File.join(tmpdir, ".codex", "hooks.json")} (user-level, for every project)")
-        expect(output.string).to include("`workspace session-event --agent codex` to Codex")
+        expect(output.string).to include("`if [ -n \"$TMUX_PANE\" ]; then workspace session-event --agent codex; else cat >/dev/null; fi` to Codex")
         expect(output.string).to include("[v]iew, [i]nstall for Claude Code, Codex, or [n]othing?")
       end
 
@@ -159,7 +159,7 @@ RSpec.describe Workspace::Commands::Init do
 
         stop = JSON.parse(File.read(path))["hooks"]["Stop"]
         expect(stop.first["hooks"]).to eq([own])
-        expect(stop.last["hooks"].first["command"]).to eq("workspace session-event --agent codex")
+        expect(stop.last["hooks"].first["command"]).to eq("if [ -n \"$TMUX_PANE\" ]; then workspace session-event --agent codex; else cat >/dev/null; fi")
         expect(Dir.glob("#{path}.workspace-backup-*")).not_to be_empty
         expect(output.string).to include("note    Codex skips new or changed hooks until you trust them")
         expect(File.exist?(settings_path)).to be true
