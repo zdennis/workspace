@@ -659,6 +659,21 @@ RSpec.describe Workspace::Git do
     end
   end
 
+  describe "#worktree_branches" do
+    it "lists the branch of every worktree, the main one included, and none for a detached one" do
+      Dir.mktmpdir("wt-branches") do |dir|
+        repo = File.realpath(dir)
+        run = ->(*args) { Open3.capture2e("git", "-C", repo, "-c", "user.name=t", "-c", "user.email=t@example.com", *args) }
+        run.call("init", "-q", "-b", "main")
+        run.call("commit", "-q", "--allow-empty", "-m", "init")
+        run.call("worktree", "add", "-q", "-b", "PROJ-1-x", File.join(repo, "a"))
+        run.call("worktree", "add", "-q", "--detach", File.join(repo, "b"))
+
+        expect(git.worktree_branches(repo: repo)).to contain_exactly("main", "PROJ-1-x")
+      end
+    end
+  end
+
   describe "#find_worktree_by_branch" do
     it "returns the worktree path when a worktree exists for the branch" do
       porcelain = <<~OUTPUT

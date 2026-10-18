@@ -792,6 +792,8 @@ module Workspace
       skills = []
       no_launch = false
       agent_kind = nil
+      title_from_ticket = false
+      slug = false
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: workspace start [options] <jira-key|jira-url|pr-url|pr-ref|branch>"
         opts.separator ""
@@ -859,6 +861,15 @@ module Workspace
           "`workspace sessions --json`. The panes also get WORKSPACE_TASK=<task id>") do |v|
           title = v
         end
+        opts.on("--title-from-ticket", "Use the ticket's title (gh or jira) as the task title when --title is not given.",
+          "A ticket that cannot be read is a warning, not an error") do
+          title_from_ticket = true
+        end
+        opts.on("--slug", "Add the title's words to the branch of a JIRA or issue ref (PROJ-123-fix-login,",
+          "issue-42-fix-login). Takes the words from --title, else from the ticket (implies --title-from-ticket).",
+          "A worktree already made for the plain branch is reused") do
+          slug = true
+        end
         opts.on("--yes", "Accept every default instead of prompting (e.g. the default base branch)") do
           yes = true
         end
@@ -889,6 +900,7 @@ module Workspace
         opts.separator "  workspace start PROJ-123 --agent-kind codex    # the main agent pane runs Codex"
         opts.separator "  workspace start PROJ-123 --no-launch    # create the worktree and config, launch nothing"
         opts.separator "  workspace start PROJ-123 --title \"Fix the login bug\"    # name the task shown in `workspace sessions`"
+        opts.separator "  workspace start PROJ-123 --slug    # branch and task title from the ticket: PROJ-123-fix-the-login-bug"
         opts.separator "  workspace start PROJ-123 --headless --yes --json    # non-interactive, e.g. from CI"
         opts.separator "  workspace start PROJ-123 --base main --yes --json    # non-interactive, branch from main, not the default base"
       end
@@ -911,6 +923,8 @@ module Workspace
       start_options[:skills] = skills if skills.any?
       start_options[:no_launch] = true if no_launch
       start_options[:agent_kind] = agent_kind if agent_kind
+      start_options[:title_from_ticket] = true if title_from_ticket
+      start_options[:slug] = true if slug
       start_options[:headless] = true if @launch_mode.resolve(headless).headless?
       result = @start_command.call(args.first, **start_options)
       @exit_handler.exit(result[:exit_code]) if result && !result[:exit_code].zero?

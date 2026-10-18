@@ -369,6 +369,13 @@ module Workspace
       end
     end
 
+    # @param repo [String] path to any directory inside the repo (defaults to Dir.pwd)
+    # @return [Array<String>] the branch each worktree has checked out, the main one included; a detached one has none
+    def worktree_branches(repo: Dir.pwd)
+      stdout, _ = capture_git("-C", repo, "worktree", "list", "--porcelain")
+      stdout.each_line.filter_map { |line| line.strip.delete_prefix("branch refs/heads/") if line.start_with?("branch refs/heads/") }
+    end
+
     # Returns the worktree path for a branch, if one exists anywhere.
     #
     # @param branch_name [String] the branch name to search for

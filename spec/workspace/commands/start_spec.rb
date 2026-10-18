@@ -1410,6 +1410,166 @@ RSpec.describe Workspace::Commands::Start do
         end
       end
 
+      context "with --title-from-ticket and --slug" do
+        let(:task_store) { Workspace::TaskStore.new(dir: File.join(tmpdir, "tasks")) }
+        let(:fetched) { {"title" => "Fix the Login: redirect (v2)!", "body" => nil, "url" => nil} }
+        let(:ticket_source) { instance_double(Workspace::TicketSource, fetch: fetched) }
+        let(:ticket_command) do
+          described_class.new(git: git, project_config: project_config, project_settings: project_settings,
+            launch_command: launch_command, task_store: task_store, ticket_source: ticket_source,
+            output: output, error_output: error_output, input: input)
+        end
+        let(:payload) { JSON.parse(output.string) }
+
+        before do
+          allow(git).to receive(:sanitize_for_filesystem) { |name| name }
+          allow(git).to receive(:branch_exists?).and_return(true)
+          allow(git).to receive(:worktree_branches).and_return([])
+          allow(project_config).to receive(:settle_worktree_name).and_return("myproject.worktree-PROJ-123")
+          allow(launch_command).to receive(:call).and_return({exit_code: 0, prompt_failures: {}})
+        end
+
+        it "fills the task title from the ticket" do
+          ticket_command.call("PROJ-123", json: true, title_from_ticket: true)
+
+          expect(payload["task"]["title"]).to eq("Fix the Login: redirect (v2)!")
+          expect(payload["branch"]).to eq("PROJ-123")
+          expect(ticket_source).to have_received(:fetch).with(an_object_having_attributes(kind: "jira"), chdir: tmpdir)
+        end
+
+        it "keeps an explicit --title and reads no ticket for it" do
+          ticket_command.call("PROJ-123", json: true, title_from_ticket: true, title: "Mine")
+
+          expect(payload["task"]["title"]).to eq("Mine")
+          expect(ticket_source).not_to have_received(:fetch)
+        end
+
+        it "puts the title's words in the branch of a JIRA ref with --slug, and fills the title" do
+          ticket_command.call("PROJ-123", json: true, slug: true)
+
+          expect(payload["branch"]).to eq("PROJ-123-fix-the-login-redirect-v2")
+          expect(payload["task"]["title"]).to eq("Fix the Login: redirect (v2)!")
+          expect(git).to have_received(:create_worktree).with(File.join(tmpdir, ".worktrees", "PROJ-123-fix-the-login-redirect-v2"), "PROJ-123-fix-the-login-redirect-v2", base: nil, quiet: true)
+        end
+
+        it "slugs the --title it was given" do
+          ticket_command.call("PROJ-123", json: true, slug: true, title: "Other words")
+
+          expect(payload["branch"]).to eq("PROJ-123-other-words")
+          expect(ticket_source).not_to have_received(:fetch)
+        end
+
+        it "slugs an issue ref's issue-<n> branch" do
+          allow(git).to receive(:parse_start_input).with("https://github.com/o/r/issues/7")
+            .and_return({type: :issue_url, value: "issue-7", repo: "o/r", number: "7"})
+
+          ticket_command.call("https://github.com/o/r/issues/7", json: true, slug: true)
+
+          expect(payload["branch"]).to eq("issue-7-fix-the-login-redirect-v2")
+        end
+
+        it "warns and keeps the plain branch and no title when the ticket cannot be read" do
+          allow(ticket_source).to receive(:fetch).and_raise(Workspace::Error.new("`jira` is not installed.", code: "ticket_source_unavailable"))
+
+          ticket_command.call("PROJ-123", json: true, slug: true)
+
+          expect(payload["branch"]).to eq("PROJ-123")
+          expect(payload["task"]["title"]).to be_nil
+          expect(payload["warnings"]).to include(/Could not read the ticket's title \(ticket_source_unavailable\).*not installed/, /--slug left the branch as 'PROJ-123'/)
+        end
+
+        def reuse_worktree(*branches, path_of:)
+          allow(git).to receive(:worktree_branches).and_return(branches)
+          allow(git).to receive(:worktree_exists?).with(File.join(tmpdir, ".worktrees", path_of)).and_return(true)
+        end
+
+        it "reuses the worktree already made for the plain branch" do
+          reuse_worktree("PROJ-123", path_of: "PROJ-123")
+
+          ticket_command.call("PROJ-123", json: true, slug: true)
+
+          expect(payload["branch"]).to eq("PROJ-123")
+          expect(payload["created"]).to be(false)
+        end
+
+        it "reuses the worktree an earlier --slug run made, even when the ticket was retitled or cannot be read" do
+          reuse_worktree("PROJ-123-old-title", "PROJ-1234-other", path_of: "PROJ-123-old-title")
+          allow(ticket_source).to receive(:fetch).and_raise(Workspace::Error.new("`jira` did not answer in time.", code: "ticket_source_unavailable"))
+
+          ticket_command.call("PROJ-123", json: true, slug: true)
+
+          expect(payload["branch"]).to eq("PROJ-123-old-title")
+          expect(payload["created"]).to be(false)
+        end
+
+        it "prefers the worktree of the slugged branch over the plain one" do
+          reuse_worktree("PROJ-123", "PROJ-123-fix-the-login-redirect-v2", path_of: "PROJ-123-fix-the-login-redirect-v2")
+
+          ticket_command.call("PROJ-123", json: true, slug: true)
+
+          expect(payload["branch"]).to eq("PROJ-123-fix-the-login-redirect-v2")
+        end
+
+        it "does not mistake another ticket whose key starts the same for this one" do
+          allow(git).to receive(:worktree_branches).and_return(["PROJ-1234-other"])
+
+          ticket_command.call("PROJ-123", json: true, slug: true)
+
+          expect(payload["branch"]).to eq("PROJ-123-fix-the-login-redirect-v2")
+          expect(payload["created"]).to be(true)
+        end
+
+        it "strips control characters from a ticket title" do
+          allow(ticket_source).to receive(:fetch).and_return({"title" => "Fix\u0000 it\e[31m now\n", "body" => nil, "url" => nil})
+
+          ticket_command.call("PROJ-123", json: true, slug: true)
+
+          expect(payload["task"]["title"]).to eq("Fix it [31m now")
+          expect(payload["branch"]).to eq("PROJ-123-fix-it-31m-now")
+        end
+
+        it "warns when --slug is given and no ticket source is wired" do
+          bare = described_class.new(git: git, project_config: project_config, project_settings: project_settings,
+            launch_command: launch_command, task_store: task_store, output: output, error_output: error_output, input: input)
+
+          bare.call("PROJ-123", json: true, slug: true)
+
+          expect(payload["branch"]).to eq("PROJ-123")
+          expect(payload["warnings"]).to include(/--slug left the branch as 'PROJ-123'/)
+        end
+
+        it "fills the title of a pull request from gh without changing its branch" do
+          allow(git).to receive(:parse_start_input).with("#9").and_return({type: :pr_url, value: "#9", repo: nil, number: "9"})
+          allow(git).to receive(:local_branch_exists?).and_return(false)
+          allow(git).to receive(:checkout_pr_worktree)
+
+          ticket_command.call("#9", json: true, title_from_ticket: true)
+
+          expect(payload["branch"]).to eq("pr-9")
+          expect(payload["task"]["title"]).to eq("Fix the Login: redirect (v2)!")
+          expect(payload["warnings"]).to be_nil
+        end
+
+        it "leaves a pull request's pr-<n> branch alone" do
+          allow(git).to receive(:parse_start_input).with("#9").and_return({type: :pr_url, value: "#9", repo: nil, number: "9"})
+          allow(git).to receive(:local_branch_exists?).and_return(false)
+          allow(git).to receive(:checkout_pr_worktree)
+
+          ticket_command.call("#9", json: true, slug: true)
+
+          expect(payload["branch"]).to eq("pr-9")
+          expect(payload["warnings"]).to include(/--slug left the branch as 'pr-9'/)
+        end
+
+        it "prints the warning on stderr outside --json" do
+          allow(ticket_source).to receive(:fetch).and_raise(Workspace::Error.new("`jira` did not answer in time.", code: "ticket_source_unavailable"))
+
+          ticket_command.call("PROJ-123", yes: true, title_from_ticket: true)
+
+          expect(error_output.string).to include("Warning: Could not read the ticket's title")
+        end
+      end
+
       it "reports no task and passes no task id without a task store" do
         allow(launch_command).to receive(:call).and_return({exit_code: 0, prompt_failures: {}})
 

@@ -25,6 +25,8 @@ workspace start [options] <jira-key|jira-url|pr-url|pr-ref|issue-url|branch>
 | `--base REF` | Branch/ref a new branch is created from, instead of prompting |
 | `--yes` | Accept every default instead of prompting (e.g. the default base branch) |
 | `--title TITLE` | A human title for the workspace's task; it is the first `display_label` of its panes in [`sessions --json`](README.sessions.md). See [Tasks](#tasks) |
+| `--title-from-ticket` | Fill the task title from the ticket (`gh` for an issue or pull request, `jira` for a JIRA key) when `--title` is not given. A ticket that cannot be read is a warning, not an error. See [Ticket titles and `--slug`](#ticket-titles-and---slug) |
+| `--slug` | Add the title's words to the branch of a JIRA or issue ref: `PROJ-123-fix-the-login-bug`, `issue-42-fix-the-login-bug`. Takes the words from `--title`, else from the ticket (it implies `--title-from-ticket`) |
 | `--headless` / `--no-headless` | Start the session in the background with plain tmux instead of iTerm2; the default follows [`launch`](README.launch.md#headless) |
 | `--json` | Emit the JSON schema below instead of plain text; never prompts. Only the JSON document goes to stdout — progress and warnings go to stderr or the `warnings` field (see [`--json` output](#--json-output)) |
 
@@ -110,6 +112,17 @@ A linked entry is copied too, from the file it points to: change the library ent
 `--agent-kind KIND` picks the coding agent the new workspace's main agent pane runs. `KIND` is a coding-agent key, in any case: `claude`, `codex`, `opencode` or `pi`. It swaps the Claude Code pane of the worktree template for the agent's executable (`codex`); with no flag the pane stays `claude --dangerously-skip-permissions`. An unknown kind fails with `unknown_agent_kind` (`details.kind`, `details.known`) before anything is created. It only shapes a config this run writes: a workspace whose config already exists keeps its panes, and `start` notes `--agent-kind <kind> was not applied` (a `warnings` line under `--json`). A kind whose executable is not on `PATH` is noted too, and the pane starts nothing. The `handoff` pack is judged against the chosen kind, not the project's.
 
 `--no-launch` does everything `start` does but launch: the worktree, its config, the task, hooks, notes directory and library copies. It starts no session and touches none that is running, and exits 0 with `Not launching <workspace>; start it with `workspace launch <workspace>``. Start it later with [`launch`](README.launch.md). Because there is no agent to send to, `--no-launch` with `--prompt`, `--prompt-timeout`, `--play`, `--pack` or `--handoff` is a usage error before anything is created, and the automatic packs (`notes`, `dev`, `handoff`) are not sent: `packs` is `[]`. `launch --prompt` and `launch --pack` send them afterwards. `--no-packs` and `--no-handoff` are accepted and change nothing. `--headless` has no effect.
+
+### Ticket titles and `--slug`
+
+By default a JIRA ref gives the branch `PROJ-123`, an issue `issue-42`, and the task has no title. `--title-from-ticket` reads the title with the same lookup as [`ticket show`](README.ticket.md) (10 seconds, no prompt, no credential handled by `workspace`) and uses it as the task title, unless `--title` is given. `--slug` adds the title's words to the branch, which is also the worktree directory and the workspace name: `PROJ-123-fix-the-login-bug`, `issue-42-fix-the-login-bug`.
+
+- The slug is lowercase ASCII letters and digits joined by single hyphens (accents are dropped), cut at a word boundary to 40 characters, so the branch is always a valid ref. A JIRA key keeps its case in the branch; the workspace name is lowercase as usual.
+- `--slug` takes the words from `--title` when given, else from the ticket, and so implies `--title-from-ticket`.
+- A pull request (`pr-<n>`) and a plain branch are never changed; `--slug` on them, or on a ref whose ticket has no usable title, leaves the branch as it is and adds a warning.
+- A ticket that cannot be read (`gh` or `jira` missing, signed out, slow) is a warning in `warnings` (stderr without `--json`); `start` carries on with the plain branch and no title.
+- A worktree already made for the ticket is reused, not duplicated: the one on the slugged branch, else on the plain branch (`PROJ-123`), else on any branch that starts `PROJ-123-` (an earlier `--slug` run under an older title, or when the ticket cannot be read now). A `start` without `--slug` after a slugged one looks only for the plain branch, so pass `--slug` each time.
+- The ticket's title has control characters and runs of whitespace replaced by single spaces before it is used.
 
 ### Tasks
 

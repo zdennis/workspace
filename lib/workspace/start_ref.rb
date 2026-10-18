@@ -46,6 +46,39 @@ module Workspace
       end
     end
 
+    # The longest slug, in characters.
+    SLUG_MAX = 40
+
+    # A title as a branch-name suffix: lowercase ASCII letters and digits joined
+    # by single hyphens, cut at a word boundary, so any title gives a valid git ref.
+    #
+    # @param title [String, nil]
+    # @return [String] empty when the title has no letters or digits
+    def self.slug(title)
+      text = title.to_s.scrub("").unicode_normalize(:nfkd).gsub(/\p{Mn}/, "").downcase.gsub(/[^a-z0-9]+/, "-").gsub(/\A-|-\z/, "")
+      return text if text.length <= SLUG_MAX
+
+      cut = text[0, SLUG_MAX]
+      cut = cut.sub(/-[^-]*\z/, "") unless text[SLUG_MAX] == "-" || !cut.include?("-")
+      cut.sub(/-\z/, "")
+    end
+
+    # The ref with the title's words added to its branch (`PROJ-123-fix-login`,
+    # `issue-42-fix-login`). A pull request or a plain branch, a missing title
+    # and a title with no letters or digits all come back unchanged.
+    #
+    # @param ref [Ref]
+    # @param title [String, nil]
+    # @return [Ref]
+    def slugged(ref, title)
+      return ref unless %w[jira github_issue].include?(ref.kind)
+
+      suffix = self.class.slug(title)
+      return ref if suffix.empty?
+
+      ref.dup.tap { |copy| copy.branch = "#{ref.branch}-#{suffix}" }
+    end
+
     # The project a worktree for the ref would be added to. Run from inside a
     # linked worktree, that is the parent repository, not the worktree.
     #

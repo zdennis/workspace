@@ -57,6 +57,57 @@ RSpec.describe Workspace::StartRef do
     end
   end
 
+  describe ".slug" do
+    it "makes lowercase hyphenated ASCII" do
+      expect(described_class.slug("Fix the Login: redirect (v2)!")).to eq("fix-the-login-redirect-v2")
+      expect(described_class.slug("Café  crème -- à la mode")).to eq("cafe-creme-a-la-mode")
+    end
+
+    it "is empty for a title with no letters or digits, and for nil" do
+      expect(described_class.slug("日本語 !!!")).to eq("")
+      expect(described_class.slug(nil)).to eq("")
+    end
+
+    it "does not fail on bytes that are not valid UTF-8" do
+      expect(described_class.slug("Fix \xFF login".b.force_encoding("UTF-8"))).to eq("fix-login")
+    end
+
+    it "cuts a long title at a word boundary" do
+      slug = described_class.slug("Make the login redirect go to the page the person asked for originally")
+
+      expect(slug).to eq("make-the-login-redirect-go-to-the-page")
+      expect(slug.length).to be <= described_class::SLUG_MAX
+    end
+
+    it "cuts one very long word at the limit" do
+      expect(described_class.slug("a" * 100)).to eq("a" * 40)
+    end
+
+    it "gives a valid git ref component" do
+      ["../x", "a/b\\c", "x.lock", "-rf", "a..b", "@{", "~^:?*[ "].each do |title|
+        expect(described_class.slug(title)).to match(/\A[a-z0-9]*(-[a-z0-9]+)*\z/)
+      end
+    end
+  end
+
+  describe "#slugged" do
+    it "adds the slug to a JIRA key and to an issue branch, leaving the original ref alone" do
+      jira = resolver.call("PROJ-123")
+      issue = resolver.call("https://github.com/o/r/issues/42")
+
+      expect(resolver.slugged(jira, "Fix login").branch).to eq("PROJ-123-fix-login")
+      expect(resolver.slugged(issue, "Fix login").branch).to eq("issue-42-fix-login")
+      expect(jira.branch).to eq("PROJ-123")
+    end
+
+    it "leaves a pull request, a branch, and a ref with no usable title unchanged" do
+      expect(resolver.slugged(resolver.call("#9"), "Fix").branch).to eq("pr-9")
+      expect(resolver.slugged(resolver.call("feature/x"), "Fix").branch).to eq("feature/x")
+      expect(resolver.slugged(resolver.call("PROJ-1"), nil).branch).to eq("PROJ-1")
+      expect(resolver.slugged(resolver.call("PROJ-1"), "!!!").branch).to eq("PROJ-1")
+    end
+  end
+
   describe "#project" do
     around do |example|
       Dir.mktmpdir("start-ref") do |dir|

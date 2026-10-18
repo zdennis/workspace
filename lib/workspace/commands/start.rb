@@ -35,9 +35,10 @@ module Workspace
       # @param start_ref [Workspace::StartRef, nil] reads the input and finds the project; nil builds one from +git+ and +lineage+
       # @param main_agent [Workspace::MainAgent, nil] reads which agent the new workspace's main pane runs, for the
       #   `agent_kind` the JSON reports; nil leaves it out
+      # @param ticket_source [Workspace::TicketSource, nil] reads the ticket's title for +title_from_ticket+ and +slug+; nil reads none
       def initialize(git:, project_config:, project_settings:, launch_command:, lineage: WorkspaceLineage.new,
         hook_installer: nil, which: nil, task_store: nil, event_log: nil, library: nil, library_installer: nil,
-        notes_setup: nil, instruction_composer: nil, start_ref: nil, main_agent: nil, output: $stdout, input: $stdin, error_output: $stderr)
+        notes_setup: nil, instruction_composer: nil, start_ref: nil, main_agent: nil, ticket_source: nil, output: $stdout, input: $stdin, error_output: $stderr)
         @git = git
         @project_config = project_config
         @project_settings = project_settings
@@ -53,6 +54,7 @@ module Workspace
         @notes_setup = notes_setup
         @instruction_composer = instruction_composer
         @main_agent = main_agent
+        @ticket_source = ticket_source
         @output = output
         @input = input
         @error_output = error_output
@@ -81,6 +83,10 @@ module Workspace
       #   The automatic packs are not sent (+packs+ reports +[]+); `workspace launch` sends them later
       # @param agent_kind [String, nil] an {AgentProvider} key for the main agent pane of a config this run writes
       #   (`codex`); nil keeps the template's Claude Code. Checked before anything is created
+      # @param title_from_ticket [Boolean] fill +title+ from the ticket (JIRA key, issue or pull request) when none is
+      #   given; a ticket that cannot be read is a warning and the title stays empty
+      # @param slug [Boolean] add the title's words to the branch of a JIRA or issue ref (`issue-42-fix-login`);
+      #   implies +title_from_ticket+, and is ignored with a warning when no title is found
       # @param json [Boolean] emit the documented JSON schema instead of plain text; on
       #   an error, prints `{"schema_version":1,"ok":false,"error":"..."}` to stdout and returns
       #   +{exit_code: 1}+ instead of raising
@@ -91,9 +97,10 @@ module Workspace
       # @raise [Workspace::UsageError] if a prompt would block on a non-TTY stdin and
       #   neither +base+ nor +yes+ resolves it (unless +json+ is true)
       def call(input_string, prompt: nil, prompt_timeout: nil, base: nil, yes: false, headless: false, json: false, title: nil, play: nil,
-        agents: [], skills: [], packs: [], no_packs: false, handoff: nil, no_launch: false, agent_kind: nil)
+        agents: [], skills: [], packs: [], no_packs: false, handoff: nil, no_launch: false, agent_kind: nil, title_from_ticket: false, slug: false)
         options = {prompt: prompt, prompt_timeout: prompt_timeout, base: base, yes: yes, headless: headless, title: title, play: play,
-                   agents: agents, skills: skills, packs: packs, no_packs: no_packs, handoff: handoff, no_launch: no_launch, agent_kind: agent_kind}
+                   agents: agents, skills: skills, packs: packs, no_packs: no_packs, handoff: handoff, no_launch: no_launch, agent_kind: agent_kind,
+                   title_from_ticket: title_from_ticket, slug: slug}
         return call_json(input_string, **options) if json
 
         start!(input_string, quiet: false, **options)
@@ -112,7 +119,7 @@ module Workspace
 
       # @return [Hash] when quiet is true, +{exit_code:, json:}+; otherwise the
       #   launch result, or nil if branch selection was cancelled
-      def start!(input_string, prompt:, prompt_timeout:, base:, yes:, headless:, quiet:, title: nil, play: nil, agents: [], skills: [], packs: [], no_packs: false, handoff: nil, no_launch: false, agent_kind: nil)
+      def start!(input_string, prompt:, prompt_timeout:, base:, yes:, headless:, quiet:, title: nil, play: nil, agents: [], skills: [], packs: [], no_packs: false, handoff: nil, no_launch: false, agent_kind: nil, title_from_ticket: false, slug: false)
         root = @git.root
         raise Workspace::Error, "Not inside a git repository." unless root
         check_no_launch!(no_launch, prompt: prompt, prompt_timeout: prompt_timeout, play: play, packs: packs, handoff: handoff)
@@ -136,6 +143,7 @@ module Workspace
         @packs = no_launch ? nil : resolve_packs(root, packs, no_packs, handoff, quiet: quiet, agent_kind: @agent_kind)
         @copies = resolve_copies({"agent" => agents, "skill" => skills}, root)
         ref = @start_ref.call(input_string)
+        ref = apply_ticket_title(ref, root, quiet: quiet, title_from_ticket: title_from_ticket || slug, slug: slug)
 
         # A PR is checked out by `gh pr checkout` under its own number, never by
         # its head branch name, which for a fork PR can name an unrelated branch
@@ -445,6 +453,39 @@ module Workspace
         @input.respond_to?(:tty?) && @input.tty?
       rescue IOError
         false
+      end
+
+      # Fills the task title from the ticket when none was given, and with +slug+
+      # adds the title's words to the branch. A ticket that cannot be read, or a
+      # ref with no title, is a warning: the plain branch and no title are used.
+      def apply_ticket_title(ref, root, quiet:, title_from_ticket:, slug:)
+        return ref unless title_from_ticket
+
+        warn_user = ->(message) { quiet ? @warnings << message : @error_output.puts("Warning: #{message}") }
+        if @task_title.nil? && @ticket_source
+          begin
+            @task_title = @ticket_source.fetch(ref, chdir: root)["title"]&.scrub&.gsub(/[[:space:][:cntrl:]]+/, " ")&.strip&.then { |t| t unless t.empty? }
+          rescue Workspace::Error => e
+            warn_user.call("Could not read the ticket's title (#{e.code}): #{e.message}")
+          end
+        end
+        return ref unless slug
+
+        slugged = @start_ref.slugged(ref, @task_title)
+        # A worktree already made for this ticket (plain or slugged, even under an
+        # older title) is reused, not duplicated under a new name.
+        if %w[jira github_issue].include?(ref.kind)
+          existing = @git.worktree_branches(repo: root)
+          reuse = [slugged.branch, ref.branch].find { |branch| existing.include?(branch) } ||
+            existing.find { |branch| branch.start_with?("#{ref.branch}-") }
+          return ref.dup.tap { |copy| copy.branch = reuse } if reuse
+        end
+        if slugged.branch == ref.branch
+          warn_user.call("--slug left the branch as '#{ref.branch}': it applies to JIRA and issue refs whose ticket has a title with letters or digits.")
+          return ref
+        end
+
+        slugged
       end
 
       def log(quiet, message)
