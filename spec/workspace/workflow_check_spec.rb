@@ -61,8 +61,16 @@ RSpec.describe Workspace::WorkflowCheck do
   end
 
   it "stops a command that runs past its time limit, with everything it started" do
-    # The time limit passes the moment the command has started its child.
-    timed = described_class.new(clock: -> { File.size?(marker) ? 100 : 0 }, sleeper: ->(_) { Thread.pass }, kill_grace: 1_000)
+    # The time limit passes the moment the command has started its child. The first look at the
+    # clock (which sets the deadline) always reads 0, so a child that is quick to start its own
+    # child cannot move the deadline out of reach.
+    looked = false
+    clock = lambda do
+      first = !looked
+      looked = true
+      (!first && File.size?(marker)) ? 100 : 0
+    end
+    timed = described_class.new(clock: clock, sleeper: ->(_) { Thread.pass }, kill_grace: 1_000)
 
     result = timed.call(command: "sleep 30 & echo $! > #{marker}; wait", cwd: @dir, timeout: 25, log: log)
 
