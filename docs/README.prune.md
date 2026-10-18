@@ -12,7 +12,7 @@ workspace prune [options]
 
 | Option | Description |
 |--------|-------------|
-| `--dry-run` | Show what would be removed without making any changes |
+| `--dry-run` | Show what would be removed without making any changes; candidates with unsaved work are reported as skipped, as a real run would |
 | `-f, --force` | Skip confirmation, and remove candidates even with unsaved work |
 | `--name NAME` | Prune only this workspace; repeatable. Without `--json`, a name that is no candidate is a `not_prunable` error |
 | `--json` | Print one action document of per-candidate rows; skips the confirmation, not the unsaved-work check (see below) |
@@ -60,7 +60,7 @@ workspace prune --force
 
 ## JSON output
 
-`prune --json` prints one action document on stdout (see [JSON output](README.json.md#actions)); the scan text goes to stderr. It never asks for confirmation, but the unsaved-work check still runs: only `--force` skips it. `--name=WS` (repeatable) limits the run to those workspaces; the other candidates come back as `not_selected` and are untouched. Capability `prune_safe` revision 2.
+`prune --json` prints one action document on stdout (see [JSON output](README.json.md#actions)); the scan text goes to stderr. It removes every selected worktree without asking (narrow with `--name`, or preview with `--dry-run`), but the unsaved-work check still runs: only `--force` skips it. `--name=WS` (repeatable) limits the run to those workspaces; the other candidates come back as `not_selected` and are untouched. Capability `prune_safe` revision 2.
 
 ```json
 {"schema_version":1,"ok":true,"action":"prune","status":"partial",
@@ -71,6 +71,6 @@ workspace prune --force
 ```
 
 - One row per candidate: `name`, `branch` (null when the directory is gone), `reason` (`merged`, `closed` or `directory_gone`), `outcome`, `error` (a fixed code, or null), `message`, `pr_number` and `pr_url`.
-- `outcome` is `removed`, `skipped_unsaved` (`error` is `unsaved_work` or `unsaved_unknown`), `failed` (`error` is `prune_remove_failed` when git refused, or `not_prunable` for a `--name` that is no candidate; that row has a null `branch` and `reason`), or `not_selected`. With `--dry-run` the selected rows are `would_remove` and nothing changes (the unsaved-work check runs only when a worktree is removed, so a dry run can say `would_remove` for a row the real run skips as `skipped_unsaved`); `status` is `dry_run`.
+- `outcome` is `removed`, `skipped_unsaved` (`error` is `unsaved_work` or `unsaved_unknown`), `failed` (`error` is `prune_remove_failed` when git refused, or `not_prunable` for a `--name` that is no candidate; that row has a null `branch` and `reason`), or `not_selected`. With `--dry-run` nothing changes, but the unsaved-work check runs as a real run would run it: a selected row is `would_remove`, or `skipped_unsaved` (same `error`) when a real run would skip it; `--force` skips the check. `status` is `dry_run` and the exit is 0 whichever rows are skipped.
 - `status` counts the selected rows only: `ok` when all were removed, `partial` when some were removed and some skipped or failed, `failed` when none were. A run with no candidates is `ok` with no rows.
 - Exit status: 0 for `ok` and `dry_run`, 3 for `partial`, 1 for `failed`.

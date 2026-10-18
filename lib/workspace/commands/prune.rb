@@ -49,8 +49,10 @@ module Workspace
         print_table(candidates)
 
         if dry_run
+          skips = candidates.map { |c| [c, preview_skip(c, force: force)] }.select { |_, r| r }
+          skips.each { |_, r| @output.puts "  #{r[:message]}" }
           @output.puts "\n(dry run — no changes made)"
-          return candidates.map { |c| c[:project] }
+          return candidates.map { |c| c[:project] } - skips.map { |c, _| c[:project] }
         end
 
         unless force
@@ -108,7 +110,8 @@ module Workspace
             rows << if !selected.include?(c)
               structured_row(c, "not_selected")
             elsif dry_run
-              structured_row(c, "would_remove")
+              skip = preview_skip(c, force: force)
+              skip ? structured_row(c, skip[:outcome], error: skip[:error], message: skip[:message]) : structured_row(c, "would_remove")
             else
               result = try_remove(c, force: force)
               structured_row(c, result[:outcome], error: result[:error], message: result[:message])
@@ -292,6 +295,19 @@ module Workspace
 
           @output.puts ""
         end
+      end
+
+      # The unsaved-work check a removal would run, without removing anything.
+      #
+      # @param candidate [Hash] a candidate hash from detect_candidates
+      # @param force [Boolean] when true the check is skipped, as in removal
+      # @return [Hash, nil] the skip result {:outcome, :error, :message}, or nil when a removal would proceed
+      def preview_skip(candidate, force:)
+        return nil if force || !@git.worktree_exists?(candidate[:worktree_path])
+        unsaved = @git.unsaved_work(candidate[:worktree_path])
+        return nil unless unsaved
+        {outcome: "skipped_unsaved", error: (unsaved == :unknown) ? "unsaved_unknown" : "unsaved_work",
+         message: skip_message(candidate, unsaved)}
       end
 
       # Removes a single candidate project and prints a line when it is skipped.

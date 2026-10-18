@@ -223,6 +223,24 @@ RSpec.describe Workspace::Commands::Prune do
         allow(git).to receive(:worktree_branch).with(project_root).and_return("feature/dry")
         allow_any_instance_of(described_class).to receive(:gh_usable?).and_return(true)
         allow_any_instance_of(described_class).to receive(:pr_status).with("feature/dry", project_root).and_return({number: 5, url: "https://github.com/org/repo/pull/5", state: "MERGED"})
+        allow(git).to receive(:worktree_exists?).with(project_root).and_return(true)
+        allow(git).to receive(:unsaved_work).with(project_root).and_return(nil)
+      end
+
+      it "reports a candidate with unsaved work as skipped and leaves it out of the result" do
+        allow(git).to receive(:unsaved_work).with(project_root).and_return({changed_files: 2, unpushed_commits: 0, branch: "feature/dry"})
+        expect(git).not_to receive(:remove_worktree)
+
+        result = command.call(dry_run: true)
+
+        expect(result).to eq([])
+        expect(output.string).to include("Skipped wt-dry: 2 changed file(s)")
+      end
+
+      it "does not check for unsaved work with --force" do
+        expect(git).not_to receive(:unsaved_work)
+
+        expect(command.call(dry_run: true, force: true)).to eq(["wt-dry"])
       end
 
       it "prints the table and dry-run notice without removing anything" do
@@ -549,6 +567,7 @@ RSpec.describe Workspace::Commands::Prune do
       allow(git).to receive(:worktree_exists?).and_return(true)
       allow(git).to receive(:worktree_exists?).with(gone_root).and_return(false)
       allow(git).to receive(:remove_worktree)
+      allow(git).to receive(:unsaved_work).and_return(nil)
       allow(project_config).to receive(:remove)
       allow(project_settings).to receive(:remove)
     end
@@ -633,6 +652,25 @@ RSpec.describe Workspace::Commands::Prune do
       command.call_structured(names: ["wt-clean"])
 
       expect(state["wt-clean"]).to be_nil
+    end
+
+    it "dry run reports skipped_unsaved with the same error codes removal would" do
+      allow(git).to receive(:unsaved_work).with(dirty_root).and_return({changed_files: 1, unpushed_commits: 0, branch: "dirty"})
+      allow(git).to receive(:unsaved_work).with(clean_root).and_return(:unknown)
+      allow(git).to receive(:unsaved_work).with(gone_root).and_return(nil)
+
+      rows = command.call_structured(dry_run: true)
+
+      expect(row(rows, "wt-dirty")).to include("outcome" => "skipped_unsaved", "error" => "unsaved_work")
+      expect(row(rows, "wt-clean")).to include("outcome" => "skipped_unsaved", "error" => "unsaved_unknown")
+      expect(row(rows, "wt-gone")["outcome"]).to eq("would_remove")
+      expect(git).not_to have_received(:remove_worktree)
+    end
+
+    it "dry run with force skips the unsaved-work check" do
+      expect(git).not_to receive(:unsaved_work)
+
+      expect(command.call_structured(dry_run: true, force: true).map { |r| r["outcome"] }).to all(eq("would_remove"))
     end
 
     it "dry run reports would_remove and changes nothing" do

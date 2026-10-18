@@ -5686,6 +5686,8 @@ module Workspace
         opts.separator "(and reported) rather than removed; the rest are still pruned. --force"
         opts.separator "removes those anyway, along with skipping the confirmation prompt."
         opts.separator ""
+        opts.separator "--json removes every selected worktree without asking; narrow it with"
+        opts.separator "--name or preview it with --dry-run (which runs the same unsaved-work check)."
         opts.separator "With --json the confirmation is skipped but the unsaved-work check still"
         opts.separator "runs. Output is one action document (see docs/README.prune.md); the scan"
         opts.separator "text goes to stderr. Exit 0 when every selected candidate was removed (or"
