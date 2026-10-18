@@ -876,7 +876,7 @@ module Workspace
         end
         opts.on("--plan=[TITLE]", "Run 'workspace plan init' in the new worktree (TITLE, else the task title) and send the",
           "implementation-plan play with the first prompt, so the agent drafts the plan's tasks. --prompt becomes",
-          "the goal. A plan already there is kept. With --no-launch the plan is made and nothing is sent.",
+          "the goal (without it, the plan's title). A plan already there is kept. With --no-launch the plan is made and nothing is sent.",
           "Cannot be combined with --play. Give the title with an '=': write --plan=\"Add SSO\"") do |v|
           plan = v || true
         end

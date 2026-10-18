@@ -142,7 +142,7 @@ module Workspace
         @no_launch = no_launch
         raise Workspace::Error, "--spine is not available: no spine init command was wired." if spine && !@spine_init
         @spine_flag = spine
-        check_plan!(plan, play: play)
+        check_plan!(plan, play: play, ref: input_string)
         @plan_flag = plan
         @plan_result = nil
         @spine_result = nil
@@ -319,8 +319,11 @@ module Workspace
       end
 
       # `--plan` sends the implementation-plan play, which is the one play a first prompt carries.
-      def check_plan!(plan, play:)
+      def check_plan!(plan, play:, ref:)
         return unless plan
+        if ref.to_s.match?(/\s/)
+          raise Workspace::UsageError, "--plan was given a title after a space, so #{ref.inspect} was read as the ref. Give the title with an '=': --plan=#{ref.inspect}."
+        end
         raise Workspace::Error, "--plan is not available: no plan command was wired." unless @plan_command && @library
         raise Workspace::UsageError, "--plan sends the implementation-plan play, so it cannot be combined with --play. Drop --play, or add the other text with --prompt or --pack." if play
       end
@@ -349,14 +352,21 @@ module Workspace
           outcome = "exists"
         end
         plan = PlanFile.read(path)
-        log(quiet, "Plan #{outcome}: #{path}")
+        drafting = !@no_launch && (plan.nil? || plan.tasks.empty?)
+        note = if @no_launch
+          " (nothing sent: run `workspace plan start` to have the agent draft the tasks)"
+        elsif !drafting
+          " (it has tasks, so the agent is not asked to redraft)"
+        end
+        log(quiet, "Plan #{outcome}: #{path}#{note}")
         @plan_result = {"path" => path, "outcome" => outcome, "title" => plan&.title,
-                        "drafting" => !@no_launch && (plan.nil? || plan.tasks.empty?)}
+                        "drafting" => drafting}.compact
       rescue Workspace::Error, SystemCallError => e
-        message = "Could not make the plan: #{e.message}"
+        message = "Could not make the plan: #{e.message} The agent starts without it; run `workspace plan init`, then `workspace plan start`."
         quiet ? @warnings << message : @error_output.puts("Warning: #{message}")
         @play = nil
-        @plan_result = {"path" => nil, "outcome" => "failed", "error" => (e.respond_to?(:code) ? e.code : nil), "drafting" => false}.compact
+        @plan_result = {"path" => nil, "outcome" => "failed", "drafting" => false}
+        @plan_result["error"] = e.code if e.respond_to?(:code) && e.code
       end
 
       # What a launch would send or wait for has nowhere to go, so each is refused rather than dropped.

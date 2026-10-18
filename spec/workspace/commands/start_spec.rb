@@ -2156,10 +2156,33 @@ RSpec.describe Workspace::Commands::Start do
 
       expect(result).to eq({exit_code: 0})
       payload = JSON.parse(output.string)
-      expect(payload["plan"]).to eq("outcome" => "failed", "error" => "notes_dir_unwritable", "drafting" => false)
-      expect(payload["warnings"].join).to include("Could not make the plan: Can't write.")
+      expect(payload["plan"]).to eq("path" => nil, "outcome" => "failed", "error" => "notes_dir_unwritable", "drafting" => false)
+      expect(payload["warnings"].join).to include("Could not make the plan: Can't write.", "workspace plan init")
       expect(payload).not_to include("play")
       expect(launch_command).to have_received(:call).with([name], hash_including(prompts: {name => "Go"}))
+    end
+
+    it "refuses a ref with a space: --plan took the title as the ref" do
+      expect { command.call("Add SSO", plan: true) }.to raise_error(Workspace::UsageError, /--plan=/)
+      expect(git).not_to have_received(:create_worktree)
+    end
+
+    it "says nothing was sent with --no-launch, and that a plan with tasks is not redrafted" do
+      command.call("PROJ-123", plan: true, no_launch: true)
+      expect(output.string).to include("nothing sent: run `workspace plan start`")
+
+      output.truncate(0)
+      File.write(plan_file, plan_text + "- [ ] T1 First\n")
+      allow(plan_command).to receive(:init).and_raise(Workspace::Error.new("exists", code: "plan_exists", details: {"path" => plan_file}))
+      command.call("PROJ-123", plan: true)
+      expect(output.string).to include("not asked to redraft")
+    end
+
+    it "leaves title out of the plan object when the plan has none" do
+      File.write(plan_file, "---\nplan: 1\nstatus: active\n---\n\n## Tasks\n")
+      allow(plan_command).to receive(:init).and_return({"path" => plan_file})
+      command.call("PROJ-123", plan: true, json: true)
+      expect(JSON.parse(output.string)["plan"]).not_to include("title")
     end
 
     it "refuses --play with --plan before anything is created" do
