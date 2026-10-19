@@ -69,6 +69,9 @@ module Workspace
       #   {Workspace::PlanProgressWatcher} that records `plan_progress`; nil watches nothing
       # @param spine_watcher_factory [#call, nil] given the workspace name, builds the
       #   {Workspace::SpineWatcher} that records `spine_changed` for edits made by hand; nil watches nothing
+      # @param spine_owner_report_factory [#call, nil] given the workspace name, builds the
+      #   {Workspace::SpineOwnerReport} that records `spine_changed` with `change: "owner_finished"` when
+      #   a stage owner's turn ends (Stop hook) or its stage is set completed; nil reports nothing
       # @param logger [Workspace::Logger] debug logger
       # @param output [IO] output stream for user-facing messages
       # @param error_output [IO] error output stream for errors
@@ -104,6 +107,7 @@ module Workspace
         name_migration: nil,
         plan_progress_watcher_factory: nil,
         spine_watcher_factory: nil,
+        spine_owner_report_factory: nil,
         logger: Workspace::Logger.new, output: $stdout, error_output: $stderr)
         @name_migration = name_migration
         @config = config
@@ -130,6 +134,7 @@ module Workspace
         @hook_event_log_factory = hook_event_log_factory
         @plan_progress_watcher_factory = plan_progress_watcher_factory
         @spine_watcher_factory = spine_watcher_factory
+        @spine_owner_report_factory = spine_owner_report_factory
         @agent_status_desk_factory = agent_status_desk_factory || method(:build_agent_status_desk)
         # Restart workers by pane id, so one pane is restarted once at a time.
         @restarts = {}
@@ -208,7 +213,9 @@ module Workspace
         @session_monitor.start
         @plan_progress_watcher = @plan_progress_watcher_factory&.call(name)
         @plan_progress_watcher&.start
+        @spine_owner_report = @spine_owner_report_factory&.call(name)
         @spine_watcher = @spine_watcher_factory&.call(name)
+        @spine_watcher.owner_report = @spine_owner_report if @spine_watcher.respond_to?(:owner_report=)
         @spine_watcher&.start
         @agent_status_desk = @agent_status_desk_factory.call(workspace: name, session_name: @tmux_session,
           session_monitor: @session_monitor, hook_event_log: @hook_event_log, delivery_lock: @delivery_lock)
@@ -376,6 +383,7 @@ module Workspace
           @session_monitor&.record(message)
           @hook_event_log&.record(message)
           nudge_workflow(message) if @workflow_nudger && message["agent_id"].nil?
+          report_owner_finished(message) if @spine_owner_report && message["agent_id"].nil?
           reply_to(client, "ok" => true)
         when "status_request" then handle_status_request(message, client)
         when "status_post" then reply_to(client, @agent_status_desk.post(message))
@@ -1207,6 +1215,13 @@ module Workspace
         when "session_start", "session_end" then @turn_starts.delete(pane_id)
         when "stop" then @workflow_nudger.turn_ended(@current_name, pane_id, turn_started: @turn_starts[pane_id])
         end
+      end
+
+      # The main agent's turn ended (the Stop hook): a stage the pane owns is reported as finished.
+      def report_owner_finished(message)
+        return unless message["event"] == "stop"
+        pane_id = message["pane_id"]
+        Thread.new { @spine_owner_report.turn_ended(pane_id) }
       end
 
       def start_socket_watcher(socket_path, needs_registration: false)

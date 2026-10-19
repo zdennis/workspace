@@ -119,6 +119,10 @@ Each file written appends one [`spine_changed`](README.event-log.md) line to the
 
 A stage changed some other way, by hand in an editor or by an agent's edit tool, is logged too while the workspace's agent daemon runs (`spine_events` in [`capabilities`](README.capabilities.md)): see [`event-log`](README.event-log.md). The daemon recognises a `spine set` or `spine verify` write by its revision, so one write is one line.
 
+### Owner finished
+
+When the agent that owns a started stage finishes, the daemon writes one `spine_changed` line with `change: "owner_finished"` (`spine_report` in [`capabilities`](README.capabilities.md)): `path`, `owner` (the pane id, as `spine start` wrote it) and `state`. Two things trigger it: the pane's turn ends (the Stop hook; for Codex also an interrupt) while it owns a stage that is `in_progress`, or a stage with an owner moves to `completed` (written by `spine set` or by hand). `state` is `completed`, `checking` (completed, check still pending) or `in_progress`. An `in_progress` line means the turn ended with the work not claimed done, and is written at every turn end; a completed stage is reported once, when it is set, and the Stop that follows adds nothing. A pane that owns no stage, and a sub-agent's stop, write nothing. The daemon must be running; a turn that ended while it was down is not reported.
+
 ```json
 {
   "schema_version": 1, "ok": true, "workspace": "fix-oauth-refresh",
@@ -330,7 +334,7 @@ The built-in `spine` play ("Keep this workspace's stages current", `workspace li
 
 It is an automatic pack, like `notes`: [`start`](README.start.md#packs), [`launch`](README.launch.md) and `workspace instructions compose --start` add `spine` after `notes` (and before `dev`) whenever the workspace's `spine/` folder exists in its notes directory, found the way `show` finds it and never through a link. It is reported with `source: "config"` like the other automatic packs, `--no-packs` drops it, and it is recorded in the pane's [binding](README.binding.md#packs) `packs`, so SessionStart repeats it after `/clear` or compaction. A workspace without `spine/` gets nothing new.
 
-`spine_pack` in [`capabilities`](README.capabilities.md) is `3` when the play and the automatic pack exist and the play teaches `spine set --owner`, `spine check`, `spine show --evaluate` and the checker and driver roles.
+`spine_pack` in [`capabilities`](README.capabilities.md) is `4` (the play and the brief `spine start` types tell the agent to set the stage's status and stop without waiting to be asked, and to write its handoff doc and stop at the context threshold) when the play and the automatic pack exist and the play teaches `spine set --owner`, `spine check`, `spine show --evaluate` and the checker and driver roles.
 
 ## The spine folder
 

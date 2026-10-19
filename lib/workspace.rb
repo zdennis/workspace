@@ -253,6 +253,7 @@ require_relative "workspace/spine_writer"
 require_relative "workspace/plan_state"
 require_relative "workspace/plan_access"
 require_relative "workspace/plan_progress_watcher"
+require_relative "workspace/spine_owner_report"
 require_relative "workspace/spine_watcher"
 require_relative "workspace/hooks_config"
 require_relative "workspace/plan_config"
@@ -653,6 +654,7 @@ module Workspace
       name_migration: name_migration,
       plan_progress_watcher_factory: ->(name) { PlanProgressWatcher.new(workspace: name, path_resolver: plan_command.method(:path_for), event_log: event_log, logger: logger) },
       spine_watcher_factory: ->(name) { SpineWatcher.new(workspace: name, dir_resolver: ->(ws) { notes_command.info(name: ws)["dir"] }, event_log: event_log, logger: logger) },
+      spine_owner_report_factory: ->(name) { SpineOwnerReport.new(workspace: name, dir_resolver: ->(ws) { notes_command.info(name: ws)["dir"] }, event_log: event_log, logger: logger) },
       hook_event_log_factory: ->(name) { HookEventLog.new(dir: config.hook_events_dir, workspace: name, boot_id: Commands::Agent.ulid, rotate_threshold: (events_rotate_size ||= events_config.rotate_size), logger: logger) },
       logger: logger,
       output: output,

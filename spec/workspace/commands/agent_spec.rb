@@ -2079,6 +2079,37 @@ RSpec.describe Workspace::Commands::Agent do
       end
     end
 
+    context "with a spine owner report" do
+      let(:turns) { [] }
+      let(:reporter) do
+        turns_seen = turns
+        Class.new { define_method(:turn_ended) { |pane| turns_seen << pane } }.new
+      end
+
+      subject(:agent) do
+        described_class.new(
+          config: config, tmux: tmux, work_coordinator_client: client,
+          pipeline_config: pipeline_config, pipeline_state: pipeline_state,
+          epoch_generator: -> { "wa-TESTEPOCH" }, signal_trapper: signal_trapper,
+          sentinel_poller_factory: sentinel_poller_factory, token_generator: token_generator,
+          clock: -> { now }, retry_backoff: 0, session_monitor_factory: ->(_name) { monitor },
+          spine_owner_report_factory: ->(_name) { reporter }, output: output, error_output: error_output
+        )
+      end
+
+      it "hands a main agent's stop to the report, and nothing else" do
+        run_agent do
+          send_event("stop")
+          send_event("stop", agent_id: "sub-1")
+          send_event("user_prompt")
+
+          Timeout.timeout(2) { sleep 0.01 until turns.size >= 1 }
+          sleep 0.05
+          expect(turns).to eq(["%5"])
+        end
+      end
+    end
+
     context "with a hook event log" do
       let(:events_dir) { File.join(Dir.mktmpdir, ".events") }
       let(:built_for) { [] }

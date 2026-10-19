@@ -31,6 +31,9 @@ module Workspace
     MAX_LEVELS = SpineTree::MAX_DEPTH + 1
     private_constant :MAX_WALK, :MAX_LEVELS
 
+    # @return [Workspace::SpineOwnerReport, nil] told when a stage with an owner is set `completed`
+    attr_accessor :owner_report
+
     # @param workspace [String] the workspace name
     # @param dir_resolver [#call] given the workspace name, returns its notes directory, or nil
     # @param event_log [Workspace::EventLog] gets `spine_changed`, and says what `spine set` wrote
@@ -193,6 +196,9 @@ module Workspace
           elsif after.nil?
             {"workspace" => @workspace, "path" => before["path"], "change" => "removed"}
           elsif %w[status note owner check checked_by check_note].any? { |key| before[key] != after[key] }
+            if after["status"] == "completed" && before["status"] != "completed" && after["owner"]
+              @owner_report&.stage_completed(after["path"], after["owner"], after["check"])
+            end
             own ||= own_revisions
             next if own[after["path"]] == after["revision"]
             line = {"workspace" => @workspace, "path" => after["path"], "status" => after["status"], "previous" => before["status"],

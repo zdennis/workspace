@@ -45,7 +45,9 @@ module Workspace
           "Its file is #{JSON.generate(File.join(dir, stage.relative))}. Read #{JSON.generate(File.join(dir, "goal.md"))} and that file first: " \
           "the stage file is your brief, and its Done when says when you are finished. " \
           "The stage already reads in_progress#{" with this pane as its owner" if owned}; " \
-          "keep it current with workspace spine set as the spine pack says, and end your turn when it is completed or blocked." \
+          "keep it current with workspace spine set as the spine pack says. When you are done or blocked, set the stage's status and stop; " \
+          "do not wait to be asked, the workspace tells the person when your turn ends. " \
+          "If you reach the context threshold first, write your handoff doc and stop; the person's workspace app may ask for it." \
           "#{rework(stage)}"
       end
 

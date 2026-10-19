@@ -15,6 +15,8 @@ Change stages only with these commands, never by editing `status:`, `owner:` or 
 - If the stage has a `check:` line, completed is only your claim. `spine show --evaluate --json` then reads the stage as `checking` until someone else checks it. Claim it, say so, and stop. Never run `spine verify` on a stage you worked on.
 - Do the same for your own sub-stages, each on its own path. `--recursive` sets a stage and every unfinished sub-stage under it; use it only when all of them are really in that state.
 
+When you are done or blocked, set the stage's status as above and stop. Do not wait to be asked: the workspace records that your turn ended on a stage you own and tells the person. If you reach the context threshold first, write your handoff doc and stop; the person's workspace app may ask for it.
+
 Stay in your lane. Work only on the stage you were started on and its sub-stages. Do not change another stage's file, the numbers in file names, `gates`, or `depends_on`, and do not rename, move, add or delete stage files unless the person asked you to. Do not run `spine start` for another stage unless you are the driver (see below). If the stage is wrong or in your way, say so in your note or to the person.
 
 ## If you check a stage
