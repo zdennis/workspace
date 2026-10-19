@@ -45,7 +45,15 @@ module Workspace
           "Its file is #{JSON.generate(File.join(dir, stage.relative))}. Read #{JSON.generate(File.join(dir, "goal.md"))} and that file first: " \
           "the stage file is your brief, and its Done when says when you are finished. " \
           "The stage already reads in_progress#{" with this pane as its owner" if owned}; " \
-          "keep it current with workspace spine set as the spine pack says, and end your turn when it is completed or blocked."
+          "keep it current with workspace spine set as the spine pack says, and end your turn when it is completed or blocked." \
+          "#{rework(stage)}"
+      end
+
+      # @return [String] a sentence about the failed check when the stage is being reworked, else empty
+      def self.rework(stage)
+        return "" unless stage.file&.check_failed?
+        note = stage.file.value("check_note")
+        " Its last check failed#{" (#{JSON.generate(note)})" if note}: fix what the check found before you complete it again."
       end
 
       # @param spine [Workspace::Commands::Spine] reads the stages and makes the locked write
@@ -100,7 +108,7 @@ module Workspace
       # The refusals the file alone decides; made again under the write lock.
       def refuse(name, tree, stage, if_revision)
         raise @spine.no_file(stage) unless stage.file
-        if DONE.include?(stage.status)
+        if DONE.include?(stage.status) && !stage.file.check_failed?
           raise Workspace::Error.new("Stage #{stage.path} of '#{name}' is #{stage.status}, so there is nothing to start. " \
             "Reopen it with: workspace spine set #{name} #{stage.path} --status in_progress",
             code: "stage_done", details: {"workspace" => name, "path" => stage.path, "status" => stage.status})
@@ -133,7 +141,9 @@ module Workspace
       # @return [String, nil] `check_pending` or `check_failed` when the sibling claims completed without a passing check
       def wait_reason(sibling)
         return "check_failed" if sibling.check_failed?
-        "check_pending" if sibling.awaiting_check?
+        return "check_pending" if sibling.awaiting_check?
+        sub = sibling.children.map { |child| wait_reason(child) }
+        sub.include?("check_failed") ? "check_failed" : sub.compact.first
       end
 
       def find_play(stage, ref, cwd)
@@ -162,7 +172,7 @@ module Workspace
         id = target["pane_id"]
         refuse_owned(name, stage, owner) if owner && owner["state"] == "working" && owner["pane_id"] != id
         @panes.require_agent(name, target, "stage")
-        if target["state"] == "working" && owner_id == id
+        if target["state"] == "working" && owner_id == id && !stage.file.check_failed?
           @output.puts "Stage #{stage.path} of #{name} is already being worked on in pane #{id}."
           return doc(name, stage, "already_working", pane: id, play: job[:play])
         end

@@ -118,6 +118,24 @@ RSpec.describe Workspace::Commands::SpineStart do
     expect(bound[2]).to include("id" => "play/custom", "packs" => ["spine"], "focus" => "spine stage verify")
   end
 
+  it "starts a completed stage whose check failed, as rework: in_progress, check required, the note in the brief" do
+    write("40-verify.md", "---\nstatus: completed\nkind: verify\ncheck: failed\nchecked_by: claude %27\ncheck_note: missed two commands\n---\n")
+    doc = start
+
+    expect(doc).to include("outcome" => "sent", "status" => "in_progress", "previous" => "completed")
+    expect(stage_file.check).to eq("required")
+    body = nil
+    expect(sender).to have_received(:deliver) { |**args| body = args[:body] }
+    expect(body).to include("Its last check failed", "missed two commands")
+  end
+
+  it "still refuses a completed stage whose check passed or is pending" do
+    write("40-verify.md", "---\nstatus: completed\ncheck: passed\n---\n")
+    expect(refusal { start }.code).to eq("stage_done")
+    write("40-verify.md", "---\nstatus: completed\ncheck: pending\n---\n")
+    expect(refusal { start }.code).to eq("stage_done")
+  end
+
   describe "refusals leave the file untouched and type nothing" do
     before { @before = stage_text("40-verify.md") }
 
@@ -160,7 +178,10 @@ RSpec.describe Workspace::Commands::SpineStart do
       write("10-research/10-a.md", "---\nstatus: completed\ncheck: required\n---\n")
       error = refusal { start }
       expect(error.code).to eq("stage_waiting")
-      expect(error.details).to include("waits_on" => ["research"], "reasons" => {})
+      expect(error.details).to include("waits_on" => ["research"], "reasons" => {"research" => "check_pending"})
+
+      write("10-research/20-b.md", "---\nstatus: completed\ncheck: failed\n---\n")
+      expect(refusal { start }.details["reasons"]).to eq("research" => "check_failed")
     end
 
     it "refuses a stale --if-revision" do

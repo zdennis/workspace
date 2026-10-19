@@ -73,7 +73,7 @@ module Workspace
       "unknown_agent_kind" => "start --agent-kind named a kind that is not a known coding agent, or hooks uninstall --agent one with no hooks. details.kind, details.known. Nothing was created or changed.",
       "hook_settings_unreadable" => "A coding agent's hook settings file (Codex's hooks.json, Claude Code's settings.json) is not a JSON object with a hooks object, so workspace left it alone. details.path.",
       "no_spine" => "spine set, spine check, spine verify, spine goal set or spine start: the workspace has no spine/ folder in its notes directory. details.workspace, details.dir.",
-      "stage_done" => "spine start: the stage file says completed or skipped. details.workspace, details.path, details.status.",
+      "stage_done" => "spine start: the stage file says completed or skipped (not a completed stage whose check failed, which start reopens for rework). details.workspace, details.path, details.status.",
       "check_not_required" => "spine verify: the stage's file has no check: line, so it has not opted in to a check. details.workspace, details.path.",
       "stage_not_completed" => "spine verify: the stage's file does not say completed, so there is nothing to check yet. details.workspace, details.path, details.status.",
       "stage_waiting" => "spine start: a stage in the stage's depends_on is not completed or skipped by its file, or claims completed without a passing check. details.workspace, details.path, details.waits_on, details.reasons (id to check_pending or check_failed).",

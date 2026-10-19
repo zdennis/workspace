@@ -7121,7 +7121,7 @@ module Workspace
         opts.separator "owner when it is a live agent pane, else the main Claude Code or Codex pane; a workspace with"
         opts.separator "no session is launched. It first sets the stage in_progress with that pane as its owner, then"
         opts.separator "types the brief (the play, the spine pack, and the stage's path and file), then binds the pane."
-        opts.separator "Refuses a stage that is completed or skipped (stage_done) or whose depends_on stages are not"
+        opts.separator "Refuses a stage that is completed or skipped (stage_done; not one whose check failed, which it reopens) or whose depends_on stages are not"
         opts.separator "(stage_waiting), and a pane that is busy (pane_busy)."
         opts.separator ""
         opts.separator "Other verb: init (create the folder from a template; run 'workspace spine init --help')."

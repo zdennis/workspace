@@ -263,8 +263,8 @@ With `--spawn` the write waits until the new agent is ready, since its pane id i
 |--------|------|
 | `no_spine`, `unknown_stage` | As for `set` |
 | `spine_unwritable` | As for `set`; `no_file` for a stage that is only a folder |
-| `stage_done` | The file says `completed` or `skipped` (`details.status`); the message gives `spine set --status in_progress` to reopen it |
-| `stage_waiting` | A stage in its `depends_on` is not `completed` or `skipped` by its file (a folder-only stage by its sub-stages); `details.waits_on`. File statuses only, so `start` runs no `gh`: a dependency `--evaluate` reads as `disputed` does not hold it back. A dependency that claims `completed` while its check is `required`, `pending` or `failed` holds it back; `details.reasons` maps its id to `check_pending` or `check_failed` (a folder-only dependency, held by a sub-stage's check, has no reason) |
+| `stage_done` | The file says `completed` or `skipped` (`details.status`); the message gives `spine set --status in_progress` to reopen it. A `completed` stage whose `check` is `failed` is not refused: `start` reopens it for rework (`in_progress`, `check: required`; the document's `previous` is `completed`, which marks a rework) and the brief quotes the `check_note` |
+| `stage_waiting` | A stage in its `depends_on` is not `completed` or `skipped` by its file (a folder-only stage by its sub-stages); `details.waits_on`. File statuses only, so `start` runs no `gh`: a dependency `--evaluate` reads as `disputed` does not hold it back. A dependency that claims `completed` while its check is `required`, `pending` or `failed` holds it back; `details.reasons` maps its id to `check_pending` or `check_failed` (a folder-only dependency, held by a sub-stage's check, gets that sub-stage's reason, `check_failed` winning over `check_pending`) |
 | `stale_revision` | `--if-revision` differs from the file's revision |
 | `stage_owned` | Its owner pane is working on it and another pane, or `--spawn`, was asked for (`details.owner`) |
 | `pane_busy` | The pane waits on a person or works on something else (`details.state`) |

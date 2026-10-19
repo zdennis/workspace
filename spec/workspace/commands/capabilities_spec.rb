@@ -134,10 +134,10 @@ RSpec.describe Workspace::Commands::Capabilities do
       expect(document["features"]).to include("ticket" => 2)
     end
 
-    it "reports spine 2 once spine show has roll-ups, --stage and --body" do
+    it "reports spine 3 once spine show has roll-ups, --stage, --body and the check counts" do
       command.call(json: true)
 
-      expect(document["features"]).to include("spine" => 2)
+      expect(document["features"]).to include("spine" => 3)
     end
 
     it "reports spine_eval 3 once spine show --evaluate judges the check and infers stages without a spine/" do
@@ -152,10 +152,10 @@ RSpec.describe Workspace::Commands::Capabilities do
       expect(document["features"]).to include("spine_set" => 3)
     end
 
-    it "reports spine_start 1 once spine start writes, delivers and binds" do
+    it "reports spine_start 2 once spine start writes, delivers, binds and reopens a failed check" do
       command.call(json: true)
 
-      expect(document["features"]).to include("spine_start" => 1)
+      expect(document["features"]).to include("spine_start" => 2)
     end
 
     it "reports spine_verify 1 and spine_set 3 once spine verify records a check" do
