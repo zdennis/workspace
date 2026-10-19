@@ -39,7 +39,7 @@ RSpec.describe Workspace::Commands::Capabilities do
       expect(features.values).to all(be_a(Integer))
       expect(features).to include("prune_safe" => 2)
       expect(features).to include("envelope" => 1, "error_codes" => 1, "no_input" => 1, "name_scope" => 1, "action_json" => 1, "sessions" => 2)
-      expect(features).to include("snapshot" => 4, "agent_send" => 1, "focus_pane" => 1, "actions_manifest" => 0)
+      expect(features).to include("snapshot" => 5, "agent_send" => 1, "focus_pane" => 1, "actions_manifest" => 0)
       expect(features).to include("config_json" => 2, "config_scopes" => 2, "tmux_show" => 1, "state_done" => 1, "tasks" => 1, "event_emitters" => 1, "daemon_control" => 4, "ui_open" => 3, "pane_bindings" => 3, "library" => 5, "spine_init" => 2, "library_play" => 2, "library_copy" => 1, "instructions" => 1, "start_packs" => 2, "handoff_auto" => 2, "handoff_codex" => 1, "inbox" => 3, "ask_withdraw" => 1, "review" => 1, "add_json" => 1, "start_agent" => 1, "start_plan" => 1, "plan_progress" => 1, "spine_events" => 2, "agent_status" => 1, "agent_hooks" => 1, "projects_multi" => 1)
     end
 
@@ -204,7 +204,7 @@ RSpec.describe Workspace::Commands::Capabilities do
 
       expect(output.string).to include("workspace #{Workspace::VERSION}")
       expect(output.string).to match(/^  envelope +1$/)
-      expect(output.string).to match(/^  snapshot +4$/)
+      expect(output.string).to match(/^  snapshot +5$/)
       expect(output.string).to include("  gh          #{File.join(bin_dir, "gh")}")
       expect(output.string).to include("  tmux        not found")
     end

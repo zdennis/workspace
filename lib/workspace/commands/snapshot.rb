@@ -1,3 +1,4 @@
+require "digest"
 require "json"
 require "time"
 
@@ -41,12 +42,14 @@ module Workspace
       # @param plan_state [Workspace::PlanState] works out each plan's state from the snapshot's own reads
       # @param plan_config [Workspace::PlanConfig] reads `plan.stall_seconds`
       # @param task_store [Workspace::TaskStore] read once per run for the task of a member whose daemon gave none
+      # @param spine [Workspace::Commands::Spine] reads each workspace's `spine/` folder
+      # @param spine_facts [Workspace::SpineFacts] maps the snapshot's own reads into the facts the stages are judged against
       # @param output [IO] stream for the JSON document
       # @param error_output [IO] stream for warnings that must stay out of script-readable output
       # @param clock [#now] time source, injected for tests
       # @param agent_timeout [Numeric] seconds to wait for each agent daemon
       # @param groups [Workspace::ProjectGroups, nil] says which group each project's repository is in; nil means none has one
-      def initialize(catalog:, facts:, tmux:, state:, config:, snapshot_client:, sessions:, git:, pull_request_status:, ask_store_for:, plan:, plan_state:, plan_config:, task_store:,
+      def initialize(catalog:, facts:, tmux:, state:, config:, snapshot_client:, sessions:, git:, pull_request_status:, ask_store_for:, plan:, plan_state:, plan_config:, task_store:, spine:, spine_facts:,
         output: $stdout, error_output: $stderr, clock: Time, agent_timeout: DEFAULT_AGENT_TIMEOUT, groups: nil)
         @groups = groups
         @catalog = catalog
@@ -63,6 +66,8 @@ module Workspace
         @plan_state = plan_state
         @plan_config = plan_config
         @task_store = task_store
+        @spine = spine
+        @spine_facts = spine_facts
         @output = output
         @error_output = error_output
         @clock = clock
@@ -77,6 +82,8 @@ module Workspace
       # @return [Hash] `{exit_code:}`; 1 only after a JSON error payload was printed
       def call(names: [], pr: false)
         @stored_tasks = nil
+        @raw_prs = {}
+        @plan_files = {}
         @group_map = @groups ? @groups.groups_by_project_id : {}
         cursor, cursor_warning = event_cursor
         warnings = []
@@ -178,23 +185,28 @@ module Workspace
       def read_pull_requests(pairs)
         threads = pairs.filter_map do |member, git|
           next unless git
-          next [member["workspace"], {"available" => false, "reason" => "git_unavailable"}] unless git["available"] && git["branch"]
+          next [member["workspace"], [{"available" => false, "reason" => "git_unavailable"}, nil]] unless git["available"] && git["branch"]
           [member["workspace"], Thread.new do
             Thread.current.report_on_exception = false
             pull_request(member["path"])
           end]
         end
-        threads.to_h { |workspace, thread| [workspace, thread.is_a?(Thread) ? thread.value : thread] }
+        results = threads.to_h { |workspace, thread| [workspace, thread.is_a?(Thread) ? thread.value : thread] }
+        @raw_prs = results.transform_values(&:last)
+        results.transform_values(&:first)
       end
 
+      # @return [Array(Hash, Hash)] the block `git.pr` shows, and the answer as {PullRequestStatus} gave it
+      #   (the error block when it raised)
       def pull_request(path)
         pr = @pull_request_status.call(path)
-        return {"available" => false, "reason" => pr["reason"]} unless pr["available"]
-        return {"available" => true, "found" => false} unless pr["found"]
-        {"available" => true, "found" => true, "number" => pr["number"], "url" => pr["url"], "state" => pr["state"].to_s.downcase,
-         "draft" => pr["draft"], "review_decision" => pr["review_decision"], "checks" => checks_label(pr["checks"])}
+        return [{"available" => false, "reason" => pr["reason"]}, pr] unless pr["available"]
+        return [{"available" => true, "found" => false}, pr] unless pr["found"]
+        [{"available" => true, "found" => true, "number" => pr["number"], "url" => pr["url"], "state" => pr["state"].to_s.downcase,
+          "draft" => pr["draft"], "review_decision" => pr["review_decision"], "checks" => checks_label(pr["checks"])}, pr]
       rescue => e
-        {"available" => false, "reason" => "error", "detail" => e.message.lines.first.to_s.strip}
+        failed = {"available" => false, "reason" => "error", "detail" => e.message.lines.first.to_s.strip}
+        [failed, failed]
       end
 
       def checks_label(checks)
@@ -230,6 +242,7 @@ module Workspace
           "pipeline" => facts["pipeline"],
           "plan" => plan_block(workspace, running, member_panes, member_questions, facts, warnings)
         }
+        row["spine"] = spine_block(workspace, facts["path"], gathered[:git_by_workspace][workspace], daemon, snapshot, member_questions, warnings)
         row["task"] = snapshot ? snapshot["task"] : stored_task(workspace, warnings)
         row
       end
@@ -262,7 +275,7 @@ module Workspace
       # with its `state` and `counts` as PlanFile reports them.
       def plan_block(workspace, running, member_panes, member_questions, facts, warnings)
         path = @plan.path_for(workspace)
-        plan = PlanFile.read(path)
+        plan = plan_file(workspace, path)
         return nil unless plan
         open_asks = member_questions ? member_questions.size : facts["open_asks"].to_i
         row = @plan_state.row(workspace: workspace, project: nil, path: path, plan: plan, session_live: running, panes: member_panes,
@@ -271,6 +284,85 @@ module Workspace
       rescue => e
         warnings << {"code" => "plan_unavailable", "workspace" => workspace, "message" => e.message.lines.first.to_s.strip}
         nil
+      end
+
+      # The parsed plan, read once per member whichever block asks first; nil when there is no plan file.
+      def plan_file(workspace, path = @plan.path_for(workspace))
+        @plan_files.fetch(workspace) { @plan_files[workspace] = PlanFile.read(path) }
+      end
+
+      # The stages of the member's `spine/`, judged by {SpineEvaluator} against the reads the snapshot
+      # already made, through {SpineFacts#facts_from}: the plan file, the git block (plus one
+      # `upstream_config` read for a branch with no upstream), the daemon panes (which give the review
+      # agent's state too) and, with `--pr`, the pull request. Nothing here runs `gh` or asks a daemon (a review gate in a workspace with no daemon reads the event log, as `review show` does).
+      # `{"exists" => false}` when there is no `spine/` folder; nil, with a `spine_unavailable` warning,
+      # when it can't be looked for.
+      def spine_block(workspace, path, git_fact, daemon, snapshot, member_questions, warnings)
+        tree = @spine.read(workspace)
+        return {"exists" => false} unless tree.exists
+        gates = SpineFacts.gates_in(tree.stages)
+        review = gates.include?("review")
+        readings = SpineFacts::Readings.new(
+          plan: spine_plan(workspace), git: spine_git(path, git_fact), pull_request: @raw_prs[workspace],
+          panes: snapshot && Array(snapshot["panes"]), daemon_reason: spine_daemon_reason(daemon), asks: member_questions,
+          review_ahead: review ? @spine_facts.commits_ahead_of_base(path) : nil, review: review
+        )
+        result = @spine_facts.facts_from(workspace, readings)
+        docs = SpineEvaluator.evaluate_stages(tree.stages, result.facts)
+        spine_row(tree, docs, partial: spine_partial?(docs, result.facts, review))
+      rescue Workspace::Error, SystemCallError => e
+        warnings << {"code" => "spine_unavailable", "workspace" => workspace, "message" => e.message.lines.first.to_s.strip}
+        nil
+      end
+
+      def spine_row(tree, docs, partial:)
+        current = docs.find { |doc| doc["path"] == SpineEvaluator.current(docs) }
+        counts = SpineRollup::STATES.to_h { |state| [state, 0] }
+        docs.each { |doc| counts[counts.key?(doc["state"]) ? doc["state"] : "unknown"] += 1 }
+        {"exists" => true, "current" => current&.fetch("path"), "title" => current&.fetch("title"), "state" => current&.fetch("state"),
+         "status" => current&.fetch("status"), "owner" => current&.fetch("owner"), "owner_state" => current&.fetch("owner_state"),
+         "stages" => docs.size, "counts" => counts, "signature" => spine_signature(tree), "partial" => partial}
+      end
+
+      # 8 hex of the SHA-256 over the goal file's and every stage file's revision, in tree order.
+      def spine_signature(tree)
+        revisions = [tree.goal&.revision]
+        tree.each_stage { |stage| revisions << stage.file&.revision }
+        Digest::SHA256.hexdigest(revisions.compact.join("\n"))[0, 8]
+      end
+
+      # Whether a declared gate went unjudged: a gate left `unchecked`, or a review gate decided
+      # on the agent alone because the pull request wasn't read.
+      def spine_partial?(docs, facts, review)
+        return true if review && facts.review && facts.pr.nil?
+        docs.any? { |doc| doc["gate_results"].any? { |gate| gate["result"] == "unchecked" } || spine_partial?(doc["children"], facts, false) }
+      end
+
+      # The plan as {SpineFacts::Readings} wants it: `:missing` without a file, nil when it can't be read.
+      def spine_plan(workspace)
+        plan = plan_file(workspace) || :missing
+        plan unless plan != :missing && plan.warnings.any? { |warning| warning["code"] == "unreadable" }
+      rescue Workspace::Error, SystemCallError
+        nil
+      end
+
+      # The git block as {SpineFacts::Readings} wants it. A branch with no upstream costs one
+      # `upstream_config` read, to tell a deleted remote branch from a branch never pushed.
+      def spine_git(path, fact)
+        return nil unless fact && fact["available"]
+        branch = fact["branch"]
+        return {"branch" => nil} unless branch
+        upstream = fact["upstream"]
+        {"branch" => branch, "upstream" => upstream, "ahead" => fact["ahead"],
+         "upstream_configured" => upstream ? true : !@git.upstream_config(path, branch).nil?}
+      rescue Workspace::Error, SystemCallError
+        nil
+      end
+
+      def spine_daemon_reason(daemon)
+        return "no_daemon" unless daemon
+        code = daemon[:code]
+        [nil, "timeout", "no_daemon"].include?(code) ? code : "error"
       end
 
       def iterm_window_id(workspace)

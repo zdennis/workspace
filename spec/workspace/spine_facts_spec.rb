@@ -229,6 +229,12 @@ RSpec.describe Workspace::SpineFacts do
     end
   end
 
+  describe "#commits_ahead_of_base" do
+    it "asks the review reader" do
+      expect(spine_facts.commits_ahead_of_base("/src/app")).to eq(2)
+    end
+  end
+
   describe "review" do
     let(:panes) { [{"pane_id" => "%1", "kind" => "claude", "state" => "done"}] }
 

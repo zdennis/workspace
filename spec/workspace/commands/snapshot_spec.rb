@@ -110,8 +110,15 @@ RSpec.describe Workspace::Commands::Snapshot do
     Class.new { define_method(:annotate) { |name, snapshot| (log << name) && snapshot } }.new
   end
 
+  let(:upstream_config_calls) { [] }
+  let(:upstream_configs) { {} }
   let(:git) do
-    Class.new { define_method(:base_ref) { |path| (path == "/src/other") ? raise(Workspace::Error, "no base") : "origin/main" } }.new
+    calls = upstream_config_calls
+    configs = upstream_configs
+    Class.new do
+      define_method(:base_ref) { |path| (path == "/src/other") ? raise(Workspace::Error, "no base") : "origin/main" }
+      define_method(:upstream_config) { |path, branch| (calls << [path, branch]) && configs[path] }
+    end.new
   end
   let(:pr_calls) { [] }
   let(:pr_result) { {"available" => true, "found" => true, "number" => 812, "url" => "https://x/812", "state" => "OPEN", "draft" => false, "review_decision" => nil, "checks" => {"total" => 3, "passing" => 1, "failing" => 1, "pending" => 1, "failed" => ["ci"]}} }
@@ -148,10 +155,37 @@ RSpec.describe Workspace::Commands::Snapshot do
     Class.new { define_method(:stall_seconds_for) { |_name| seconds } }.new
   end
 
+  let(:review_agent) { {"available" => true, "state" => "done"} }
+  let(:review_ahead) { 2 }
+  let(:review) do
+    agent = review_agent
+    ahead = review_ahead
+    Class.new do
+      define_method(:agent_facts_from) { |_workspace, **| agent }
+      define_method(:commits_ahead_of_base) { |_path| ahead }
+    end.new
+  end
+  let(:spine_facts) do
+    Workspace::SpineFacts.new(git: git, pull_request_status: pull_request_status, snapshot_client: snapshot_client, review: review,
+      ask_store_for: ask_store_for, which: ->(_) {})
+  end
+  let(:notes_dirs) { Hash.new { |_, name| File.join(tmpdir, "notes", name) } }
+  let(:spine) do
+    dirs = notes_dirs
+    notes = Class.new do
+      define_method(:info) do |name:|
+        dir = dirs[name]
+        raise dir if dir.is_a?(Exception)
+        {"dir" => dir}
+      end
+    end.new
+    Workspace::Commands::Spine.new(notes: notes)
+  end
+
   subject(:snapshot) do
     described_class.new(catalog: catalog, facts: facts, tmux: tmux, state: state, config: config, snapshot_client: snapshot_client,
       sessions: sessions, git: git, pull_request_status: pull_request_status, ask_store_for: ask_store_for, plan: plan_command,
-      plan_state: Workspace::PlanState.new(clock: -> { now }), plan_config: plan_config, task_store: task_store, output: output,
+      plan_state: Workspace::PlanState.new(clock: -> { now }), plan_config: plan_config, task_store: task_store, spine: spine, spine_facts: spine_facts, output: output,
       error_output: error_output, clock: clock, groups: groups)
   end
 
@@ -298,7 +332,7 @@ RSpec.describe Workspace::Commands::Snapshot do
       broken = ->(_workspace) { raise IOError, "ask store broken" }
       described_class.new(catalog: catalog, facts: facts, tmux: tmux, state: state, config: config, snapshot_client: snapshot_client,
         sessions: sessions, git: git, pull_request_status: pull_request_status, ask_store_for: broken, plan: plan_command,
-        plan_state: Workspace::PlanState.new(clock: -> { now }), plan_config: plan_config, task_store: task_store, output: output, error_output: error_output,
+        plan_state: Workspace::PlanState.new(clock: -> { now }), plan_config: plan_config, task_store: task_store, spine: spine, spine_facts: spine_facts, output: output, error_output: error_output,
         clock: clock).call
 
       expect(member_row(parsed, "app.worktree-fix")["plan"]["state"]).to eq("waiting")
@@ -325,7 +359,7 @@ RSpec.describe Workspace::Commands::Snapshot do
       end.new
       described_class.new(catalog: catalog, facts: facts, tmux: table, state: state, config: config, snapshot_client: snapshot_client,
         sessions: sessions, git: git, pull_request_status: pull_request_status, ask_store_for: ask_store_for, plan: plan_command,
-        plan_state: Workspace::PlanState.new(clock: -> { now }), plan_config: plan_config, task_store: task_store, output: output, error_output: error_output,
+        plan_state: Workspace::PlanState.new(clock: -> { now }), plan_config: plan_config, task_store: task_store, spine: spine, spine_facts: spine_facts, output: output, error_output: error_output,
         clock: clock).call
 
       expect(member_row(parsed, "other")["plan"]["state"]).to eq("idle")
@@ -337,7 +371,7 @@ RSpec.describe Workspace::Commands::Snapshot do
       described_class.new(catalog: catalog, facts: facts, tmux: tmux, state: state, config: config, snapshot_client: snapshot_client,
         sessions: sessions, git: git, pull_request_status: pull_request_status, ask_store_for: ask_store_for, plan: plan_command,
         plan_state: Workspace::PlanState.new(clock: -> { now }),
-        plan_config: Class.new { def stall_seconds_for(_name) = 60 }.new, task_store: task_store, output: output, error_output: error_output, clock: clock).call
+        plan_config: Class.new { def stall_seconds_for(_name) = 60 }.new, task_store: task_store, spine: spine, spine_facts: spine_facts, output: output, error_output: error_output, clock: clock).call
 
       expect(member_row(parsed, "app.worktree-fix")["plan"]["state"]).to eq("stalled")
     end
@@ -704,6 +738,175 @@ RSpec.describe Workspace::Commands::Snapshot do
 
         expect(parsed["projects"].map { |p| p["group"] }).to eq([nil, nil])
       end
+    end
+  end
+
+  describe "spine" do
+    def write_spine(name, relative, text)
+      path = File.join(tmpdir, "notes", name, "spine", relative)
+      FileUtils.mkdir_p(File.dirname(path))
+      File.write(path, text)
+    end
+
+    def write_plan(name, text)
+      path = plan_paths[name]
+      FileUtils.mkdir_p(File.dirname(path))
+      File.write(path, text)
+    end
+
+    def spine_of(name) = member_row(parsed, name)["spine"]
+
+    def call_again(**options)
+      output.truncate(0)
+      output.rewind
+      snapshot.call(**options)
+    end
+
+    it "is {exists: false} for a member with no spine folder" do
+      snapshot.call
+
+      expect(parsed["projects"].flat_map { |p| p["members"] }.map { |m| m["spine"] }).to all(eq({"exists" => false}))
+      expect(parsed["warnings"].map { |w| w["code"] }).not_to include("spine_unavailable")
+    end
+
+    it "summarises the stages: the current one, its owner, the top-level counts and a signature" do
+      write_spine("app.worktree-fix", "goal.md", "---\ntitle: Ship it\n---\n")
+      write_spine("app.worktree-fix", "10-research.md", "---\nstatus: done\n---\n")
+      write_spine("app.worktree-fix", "20-implement.md", "---\nstatus: active\nowner: \"%19\"\ntitle: Build it\n---\n")
+      write_spine("app.worktree-fix", "30-ship.md", "---\nstatus: todo\n---\n")
+      snapshot.call
+
+      block = spine_of("app.worktree-fix")
+      expect(block).to include("exists" => true, "current" => "implement", "title" => "Build it", "state" => "in_progress",
+        "status" => "in_progress", "owner" => "%19", "owner_state" => "waiting", "stages" => 3, "partial" => false)
+      expect(block["counts"]).to eq({"completed" => 1, "in_progress" => 1, "not_started" => 1, "blocked" => 0, "skipped" => 0, "unknown" => 0, "disputed" => 0})
+      expect(block["signature"]).to match(/\A\h{8}\z/)
+    end
+
+    it "has no current stage when every stage is done" do
+      write_spine("app", "10-research.md", "---\nstatus: done\n---\n")
+      snapshot.call
+
+      expect(spine_of("app")).to include("exists" => true, "current" => nil, "title" => nil, "state" => nil, "owner_state" => nil, "stages" => 1)
+    end
+
+    describe "signature" do
+      before do
+        write_spine("app", "10-a.md", "---\nstatus: todo\n---\n")
+        write_spine("app", "20-b.md", "---\nstatus: todo\n---\n")
+      end
+
+      it "is the same for the same files and changes when a status is edited" do
+        snapshot.call
+        first = spine_of("app")["signature"]
+        call_again
+        expect(spine_of("app")["signature"]).to eq(first)
+
+        write_spine("app", "20-b.md", "---\nstatus: active\n---\n")
+        call_again
+        expect(spine_of("app")["signature"]).not_to eq(first)
+      end
+
+      it "also covers goal.md" do
+        snapshot.call
+        first = spine_of("app")["signature"]
+        write_spine("app", "goal.md", "---\ntitle: New goal\n---\n")
+        call_again
+
+        expect(spine_of("app")["signature"]).not_to eq(first)
+      end
+    end
+
+    describe "gates from the snapshot's own reads" do
+      it "passes the plan gate when the plan file already read has no open task" do
+        write_plan("app", "---\nplan: 1\nstatus: active\n---\n\n## Tasks\n\n- [x] T1 Done thing\n")
+        write_spine("app", "10-build.md", "---\nstatus: done\ngates: [plan]\n---\n")
+        snapshot.call
+
+        expect(spine_of("app")["counts"]).to include("completed" => 1, "disputed" => 0)
+      end
+
+      it "disputes a completed stage whose plan gate fails" do
+        write_plan("app", "---\nplan: 1\nstatus: active\n---\n\n## Tasks\n\n- [ ] T1 Open thing\n")
+        write_spine("app", "10-build.md", "---\nstatus: done\ngates: [plan]\n---\n")
+        snapshot.call
+
+        expect(spine_of("app")).to include("current" => "build", "state" => "disputed", "status" => "completed")
+        expect(spine_of("app")["counts"]["disputed"]).to eq(1)
+      end
+
+      it "leaves the pull request gates unchecked and the block partial without --pr, and reads no pull request" do
+        write_spine("app", "10-ship.md", "---\nstatus: done\ngates: [pr, ci]\n---\n")
+        snapshot.call
+
+        expect(pr_calls).to be_empty
+        expect(spine_of("app")).to include("current" => nil, "partial" => true)
+        expect(spine_of("app")["counts"]).to include("completed" => 1)
+      end
+
+      it "uses the pull request the snapshot read with --pr, and is then not partial" do
+        write_spine("app", "10-ship.md", "---\nstatus: done\ngates: [pr, ci]\n---\n")
+        snapshot.call(pr: true)
+
+        expect(pr_calls.size).to eq(2)
+        expect(spine_of("app")).to include("partial" => false, "state" => "disputed")
+      end
+
+      it "decides a review gate on the agent alone without --pr, and says partial" do
+        write_spine("app", "10-review.md", "---\nstatus: done\ngates: [review]\n---\n")
+        snapshot.call
+
+        expect(spine_of("app")).to include("current" => nil, "partial" => true)
+      end
+
+      it "is not partial for a review gate when the pull request was read with --pr" do
+        write_spine("app", "10-review.md", "---\nstatus: done\ngates: [review]\n---\n")
+        snapshot.call(pr: true)
+
+        expect(spine_of("app")).to include("partial" => false)
+      end
+
+      it "is partial when only a sub-stage declares an unchecked gate" do
+        write_spine("app", "10-ship.md", "---\nstatus: active\n---\n")
+        write_spine("app", "10-ship/10-pr.md", "---\nstatus: done\ngates: [pr]\n---\n")
+        snapshot.call
+
+        expect(spine_of("app")).to include("partial" => true, "stages" => 1)
+      end
+
+      it "reads a deleted remote branch as unchecked, not never pushed, with one upstream_config read" do
+        write_spine("app.worktree-fix", "10-push.md", "---\nstatus: done\ngates: [pushed]\n---\n")
+        upstream_configs["/src/app.worktree-fix"] = ["origin", "refs/heads/fix"]
+        snapshot.call
+
+        expect(upstream_config_calls).to eq([["/src/app.worktree-fix", "fix"]])
+        expect(spine_of("app.worktree-fix")).to include("current" => nil, "partial" => true)
+      end
+
+      it "calls a branch with no upstream and no config never pushed" do
+        write_spine("app.worktree-fix", "10-push.md", "---\nstatus: done\ngates: [pushed]\n---\n")
+        snapshot.call
+
+        expect(spine_of("app.worktree-fix")).to include("state" => "disputed", "partial" => false)
+      end
+    end
+
+    describe "partial facts" do
+      it "leaves gates unchecked and the owner unknown when git and the daemon gave nothing" do
+        write_spine("other", "10-build.md", "---\nstatus: done\nowner: \"%3\"\ngates: [pushed]\n---\n")
+        write_spine("other", "20-next.md", "---\nstatus: active\nowner: \"%3\"\n---\n")
+        snapshot.call
+
+        expect(spine_of("other")).to include("exists" => true, "current" => "next", "owner_state" => "unknown", "partial" => true)
+      end
+    end
+
+    it "is null with a spine_unavailable warning when the notes directory can't be worked out" do
+      notes_dirs["app"] = Workspace::Error.new("no notes dir", code: "notes_dir_unresolved")
+      snapshot.call
+
+      expect(member_row(parsed, "app")["spine"]).to be_nil
+      expect(parsed["warnings"]).to include(a_hash_including("code" => "spine_unavailable", "workspace" => "app"))
     end
   end
 end

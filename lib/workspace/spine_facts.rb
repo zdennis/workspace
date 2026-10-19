@@ -98,6 +98,13 @@ module Workspace
         daemon_reason: daemon_reason, asks: asks, review_ahead: review_ahead, review: review))
     end
 
+    # @param checkout [String] the workspace's checkout
+    # @return [Integer, nil] commits the branch has that its base lacks, for {Readings#review_ahead};
+    #   nil when git can't answer within the time limit
+    def commits_ahead_of_base(checkout)
+      bounded(@git_timeout) { @review.commits_ahead_of_base(checkout) }
+    end
+
     # @param stages [Array<SpineTree::Stage>]
     # @return [Array<String>] the gates declared by these stages and every stage under them
     def self.gates_in(stages)

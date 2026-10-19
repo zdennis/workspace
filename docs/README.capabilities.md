@@ -21,7 +21,7 @@ It reads constants, config paths and the `PATH`. It starts no process and touche
 ```json
 {"schema_version":1,"ok":true,"version":"0.27.1",
  "features":{"envelope":1,"error_codes":1,"name_scope":1,"no_input":1,"action_json":1,
-   "sessions":2,"locks_json":2,"git_facts":1,"prune_safe":2,"snapshot":4,"events_follow":1,
+   "sessions":2,"locks_json":2,"git_facts":1,"prune_safe":2,"snapshot":5,"events_follow":1,
    "actions_manifest":0,"agent_send":1,"agent_spawn":1,"focus_pane":1,"state_done":1,
    "doctor_json":1,"daemon_control":4,"config_json":2,"config_scopes":2,"tmux_show":1,"tasks":1,"event_emitters":1,
    "ui_open":3,"pane_bindings":3,"library":5,"library_play":2,"library_copy":1,"instructions":1,"restore":1,
@@ -54,7 +54,7 @@ It reads constants, config paths and the `PATH`. It starts no process and touche
 | `projects_multi` | Groups of repositories: `projects group create\|add\|list\|show [--json]` (ids `group:<slug>`, files in `~/.config/workspace/groups/`), a `group` key (`{id, name}` or `null`) on every `projects list`/`projects show` project and `snapshot` project row, and `plan status --group GROUP` for the merged plan view. Not covered: multi-repository `start`, a group-owned plan file, `stop`/`kill` on a group (see [`projects`](README.projects.md#groups)) |
 | `git_facts` | `projects show` reports git facts per workspace |
 | `prune_safe` | `prune` skips a worktree with unsaved work and reports it, rather than removing it. Revision 2: `prune --json [--name=WS]...` prints an action document with a row per candidate (see [`prune`](README.prune.md)) |
-| `snapshot` | `snapshot --json` (see [`snapshot`](README.snapshot.md)); `sessions --json` panes carry `display_label` (see [`sessions`](README.sessions.md)). Revision 1 was `display_label` alone; revision 3 adds each member's `plan`; revision 4 reports `task` for stopped and ended workspaces |
+| `snapshot` | `snapshot --json` (see [`snapshot`](README.snapshot.md)); `sessions --json` panes carry `display_label` (see [`sessions`](README.sessions.md)). Revision 1 was `display_label` alone; revision 3 adds each member's `plan`; revision 4 reports `task` for stopped and ended workspaces; revision 5 adds each member's `spine` summary |
 | `events_follow` | `events [--follow] [--json] [--types] [--since CURSOR]` reads the event log and every agent daemon's hook events (`tool_started`, `tool_finished`, `subagent_started`, `subagent_stopped`, `session_started`, `session_ended`, `prompt_submitted`, each with `boot_id` and `seq`) as one stream, with an opaque cursor on every line (see [`events`](README.events.md)) |
 | `actions_manifest` | Not available yet |
 | `agent_send` | `agent-run send --pane` types text or tmux keys into one named pane; `ask answer --deliver` types an answer into the asking pane |
