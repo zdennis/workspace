@@ -169,4 +169,94 @@ RSpec.describe Workspace::Commands::Focus do
       expect { command.call("proj", pane: "%3") }.to raise_error(Workspace::Error, /runs headless/)
     end
   end
+
+  describe "#cycle" do
+    let(:liveness) { double("window_liveness") }
+    let(:front) { [] }
+    let(:cycler) do
+      allow(window_manager).to receive(:focus_by_id).and_return(true)
+      allow(window_manager).to receive(:window_ids_front_to_back) { front }
+      described_class.new(state: state, window_manager: window_manager, window_liveness: liveness, output: output)
+    end
+
+    before do
+      state["bravo"] = {"iterm_window_id" => 2}
+      state["alpha"] = {"iterm_window_id" => 1}
+      state["charlie"] = {"iterm_window_id" => 3}
+      state["dead"] = {"iterm_window_id" => 9}
+      state["quiet"] = {"headless" => true}
+      state.save
+      allow(liveness).to receive(:call).and_return(
+        "alpha" => true, "bravo" => true, "charlie" => true, "dead" => false, "quiet" => nil
+      )
+    end
+
+    it "focuses the next live project by name after the one in front" do
+      front.replace([2, 1, 3])
+
+      expect(cycler.cycle).to eq("charlie")
+      expect(window_manager).to have_received(:focus_by_id).with(3, highlight: nil)
+    end
+
+    it "wraps around past the last" do
+      front.replace([3, 1, 2])
+
+      expect(cycler.cycle).to eq("alpha")
+    end
+
+    it "goes the other way with reverse" do
+      front.replace([1, 2, 3])
+
+      expect(cycler.cycle(reverse: true)).to eq("charlie")
+    end
+
+    it "steps back from the middle" do
+      front.replace([2])
+
+      expect(cycler.cycle(reverse: true)).to eq("alpha")
+    end
+
+    it "starts at the first when no tracked window is in front" do
+      front.replace([77])
+
+      expect(cycler.cycle).to eq("alpha")
+      expect(cycler.cycle(reverse: true)).to eq("charlie")
+    end
+
+    it "skips closed and headless projects" do
+      front.replace([3])
+
+      expect(cycler.cycle).to eq("alpha")
+    end
+
+    it "passes shake and highlight on to the focus" do
+      front.replace([1])
+      allow(window_manager).to receive(:shake_by_id)
+
+      cycler.cycle(shake: true, highlight: "blue")
+
+      expect(window_manager).to have_received(:focus_by_id).with(2, highlight: "blue")
+      expect(window_manager).to have_received(:shake_by_id).with(2)
+    end
+
+    it "still cycles when the window order cannot be read" do
+      allow(window_manager).to receive(:window_ids_front_to_back).and_raise(Workspace::Error, "no window-tool")
+      allow(window_manager).to receive(:focus_by_id).and_return(true)
+      command = described_class.new(state: state, window_manager: window_manager, window_liveness: liveness, output: output)
+
+      expect(command.cycle).to eq("alpha")
+    end
+
+    it "refuses with no_windows_to_cycle when no window is live" do
+      allow(liveness).to receive(:call).and_return("alpha" => false, "quiet" => nil)
+
+      expect { cycler.cycle }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("no_windows_to_cycle") }
+    end
+
+    it "explains a build with no liveness" do
+      bare = described_class.new(state: state, window_manager: window_manager, output: output)
+
+      expect { bare.cycle }.to raise_error(Workspace::Error, /not available in this build/)
+    end
+  end
 end

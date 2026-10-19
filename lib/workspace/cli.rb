@@ -1102,6 +1102,8 @@ module Workspace
       highlight_color = "green"
       json = false
       pane = nil
+      cycle = false
+      reverse = false
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: workspace focus [options] [project]"
         opts.separator ""
@@ -1121,9 +1123,13 @@ module Workspace
         end
         opts.on("--pane PANE", "Also select this pane once the window is up front: a pane id (%19) or",
           "window.pane (0.1). Must belong to the project's tmux session") { |v| pane = v }
+        opts.on("--cycle", "Focus the next tracked project with a live window, by name, after the one in front") { cycle = true }
+        opts.on("--reverse", "With --cycle, go to the previous one") { reverse = true }
         opts.on("--json", "Print one action document (see docs/README.json.md) instead of text, which goes to stderr") { json = true }
         opts.separator ""
         opts.separator "Examples:"
+        opts.separator "  workspace focus --cycle    # focus the next workspace window; repeat to keep going"
+        opts.separator "  workspace focus --cycle --reverse    # go the other way"
         opts.separator "  workspace focus    # focus the current directory's project"
         opts.separator "  workspace focus my-notes --pane %19    # focus the window and select pane %19"
         opts.separator "  workspace focus my-notes    # focus a specific project"
@@ -1132,6 +1138,21 @@ module Workspace
         opts.separator "  workspace focus --highlight --color blue my-notes    # highlight in another color"
       end
       parser.parse!(args)
+
+      raise UsageError, "--reverse needs --cycle\n\n#{parser.help}" if reverse && !cycle
+      if cycle
+        raise UsageError, "--cycle takes no project or --pane\n\n#{parser.help}" if args.any? || pane
+        return run_action("focus", json: json) do
+          project = @focus_command.cycle(reverse: reverse, shake: shake, highlight: highlight ? highlight_color : nil)
+          @hook_runner.run(project, "post_focus")
+          if json
+            @state.load
+            {results: [action_row(project, "focused", iterm_window_id: @state.dig(project, "iterm_window_id"))]}
+          else
+            {}
+          end
+        end
+      end
 
       project = settle_name(args.first) || @project_detector.detect(@working_dir)
       raise UsageError, parser.help unless project

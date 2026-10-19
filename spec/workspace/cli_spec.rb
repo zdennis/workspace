@@ -10005,6 +10005,67 @@ RSpec.describe Workspace::CLI do
       end
     end
 
+    describe "focus --cycle" do
+      let(:state) do
+        CLITestHelpers::FakeState.new.tap do |s|
+          s["api"] = {"iterm_window_id" => 77}
+          s["web"] = {"iterm_window_id" => 78}
+        end
+      end
+      let(:windows) do
+        Class.new(CLITestHelpers::FakeWindowManager) {
+          def window_ids_front_to_back = [77, 78]
+        }.new
+      end
+      let(:liveness) { ->(entries) { entries.to_h { |name, _| [name, true] } } }
+
+      def cycle_cli(hooks: CLITestHelpers::FakeHookRunner.new, liveness: self.liveness)
+        action_cli(state: state, hook_runner: hooks) do |out|
+          {focus_command: Workspace::Commands::Focus.new(state: state, window_manager: windows, window_liveness: liveness, output: out)}
+        end
+      end
+
+      it "reports the next workspace focused" do
+        hooks = CLITestHelpers::FakeHookRunner.new
+        cli, raw, = cycle_cli(hooks: hooks)
+
+        cli.run(["focus", "--cycle", "--json"])
+
+        expect(parse_one(raw)["results"]).to eq([{"workspace" => "web", "outcome" => "focused", "reason" => nil, "message" => nil, "iterm_window_id" => 78}])
+        expect(hooks.runs.map { |r| r[:event] }).to eq(["post_focus"])
+      end
+
+      it "goes back with --reverse" do
+        cli, raw, = cycle_cli
+
+        cli.run(["focus", "--cycle", "--reverse", "--json"])
+
+        expect(parse_one(raw)["results"].first["workspace"]).to eq("web")
+      end
+
+      it "answers no live window with no_windows_to_cycle" do
+        none = ->(entries) { entries.to_h { |name, _| [name, false] } }
+        cli, raw, = cycle_cli(liveness: none)
+
+        expect(exit_status { cli.run(["focus", "--cycle", "--json"]) }).to eq(1)
+
+        expect(parse_one(raw)).to include("ok" => false, "code" => "no_windows_to_cycle")
+      end
+
+      it "refuses a project, --pane, or --reverse alone" do
+        {
+          ["focus", "--cycle", "api"] => /takes no project/,
+          ["focus", "--cycle", "--pane", "%3"] => /takes no project or --pane/,
+          ["focus", "--reverse", "api"] => /needs --cycle/
+        }.each do |argv, message|
+          cli, _, err = cycle_cli
+
+          expect(exit_status { cli.run(argv) }).to eq(1)
+          expect(err.string).to match(message)
+        end
+      end
+    end
+
     describe "focus --pane" do
       let(:tmux) { CLITestHelpers::FakeTmuxServer.new("api" => [{id: "%3", window: 0, index: 0}, {id: "%19", window: 1, index: 2}], "web" => [{id: "%7", window: 0, index: 0}]) }
       let(:state) do

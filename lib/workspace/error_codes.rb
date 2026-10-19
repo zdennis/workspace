@@ -25,6 +25,7 @@ module Workspace
       "stale_pane" => "The question's pane may not be the one that asked (tmux restarted since, or the question predates the check).",
       "focus_failed" => "tmux couldn't select the pane; the window is already in front.",
       "no_window" => "The workspace has no iTerm window recorded.",
+      "no_windows_to_cycle" => "focus --cycle found no tracked workspace with a live iTerm window.",
       "window_gone" => "The recorded iTerm window no longer exists.",
       "checkout_missing" => "The workspace's checkout directory no longer exists.",
       "config_parse" => "A config file exists but can't be parsed as a YAML mapping.",

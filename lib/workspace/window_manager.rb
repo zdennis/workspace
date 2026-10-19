@@ -58,6 +58,18 @@ module Workspace
       result
     end
 
+    # Window ids of iTerm2's windows in the order window-tool lists them,
+    # which is front to back, so the first is the one in front.
+    #
+    # @return [Array<Integer>]
+    # @raise [Workspace::Error] when window-tool fails
+    def window_ids_front_to_back
+      require "json"
+      output, _, status = window_tool("list", "--app", "iTerm2", "--json")
+      raise Workspace::Error, "window-tool list failed. Is window-tool installed?" unless status.success?
+      JSON.parse(output).map { |w| w["window_id"].to_i }
+    end
+
     # @param window_id [String, Integer] window ID (CGWindowID)
     # @param highlight [String, nil] color to highlight the window after focusing
     # @return [Boolean] whether the window was focused
