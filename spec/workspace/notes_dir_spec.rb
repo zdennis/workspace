@@ -7,6 +7,36 @@ RSpec.describe Workspace::NotesDir do
 
   before { allow(git).to receive(:worktree_branch).with("/src/api/.worktrees/x").and_return(branch) }
 
+  describe "#resolve with a main checkout directory" do
+    def resolve(main_dir:, template: nil, stored: nil, worktree: true)
+      notes_dir.resolve(stored: stored, template: template, worktree: worktree, root: "/src/api/.worktrees/x", workspace: "api.worktree-x", main_dir: main_dir)
+    end
+
+    it "adds the filesystem-safe branch to the main directory" do
+      expect(resolve(main_dir: "/tmp/my-notes").path).to eq("/tmp/my-notes/feature-login")
+    end
+
+    it "lets the rule, a stored value, or a main checkout win over it" do
+      expect(resolve(main_dir: "/tmp/my-notes", template: "/n/{workspace}").path).to eq("/n/api.worktree-x")
+      expect(resolve(main_dir: "/tmp/my-notes", stored: "/mine").path).to eq("/mine")
+      expect(resolve(main_dir: "/tmp/my-notes", worktree: false).path).to eq("/src/api/.worktrees/x/tmp/workspace-notes")
+    end
+
+    it "falls back to the checkout's own default without a main directory or a branch" do
+      expect(resolve(main_dir: nil).path).to eq("/src/api/.worktrees/x/tmp/workspace-notes")
+      allow(git).to receive(:worktree_branch).with("/src/api/.worktrees/x").and_return(nil)
+      expect(resolve(main_dir: "/tmp/my-notes").path).to eq("/src/api/.worktrees/x/tmp/workspace-notes")
+    end
+  end
+
+  describe "#main_dir" do
+    it "is the stored notes.dir, else tmp/workspace-notes in the main checkout, else nil" do
+      expect(notes_dir.main_dir(stored: "/n", root: "/src/api")).to eq("/n")
+      expect(notes_dir.main_dir(stored: nil, root: "/src/api")).to eq("/src/api/tmp/workspace-notes")
+      expect(notes_dir.main_dir(stored: nil, root: nil)).to be_nil
+    end
+  end
+
   describe "#default_path" do
     def path(template, root: "/src/api/.worktrees/x", workspace: "api.worktree-x")
       notes_dir.default_path(template, root: root, workspace: workspace)

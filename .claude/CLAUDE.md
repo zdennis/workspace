@@ -14,7 +14,7 @@ A macOS CLI (Ruby) for managing tmuxinator-based development workspaces in iTerm
 - `lib/workspace/notes_carry.rb` — Moves `IMPLEMENTATION_PLAN.md` and `spine/` (the old ones renamed `.moved-<time>`) and copies each `--carry-note` into the new notes directory, never over a file; problems are warnings
 - `lib/library/play/promote.md` — The `promote` pack: tell the person what moves, run promote, seed the spine and plan, write `HANDOFF.md`, start the agent, stop
 - `lib/workspace/config_schema.rb` — The one table of config keys: scope, settable, default, value parser, restart flag, doc text; readers, `config set/get/unset` and the docs take their key lists and checks from it
-- `lib/workspace/notes_dir.rb` — The one resolver for where a workspace's notes go: its own `notes.dir`, else the directory the project's `notes.default_dir` rule computes (`tmp/workspace-notes` in the checkout when unset); `config show --json` reports it as `effective_path`
+- `lib/workspace/notes_dir.rb` — The one resolver for where a workspace's notes go: its own `notes.dir`, else the directory the project's `notes.default_dir` rule computes, else (a linked worktree) the main checkout workspace's effective notes dir plus the sanitized branch (`tmp/workspace-notes` in the checkout when unset); `config show --json` reports it as `effective_path`
 - `lib/workspace/config_schema_docs.rb` — Renders the schema into the generated blocks of `docs/README.config.md`; `script/generate-config-docs [--check]` runs it, and a spec fails on drift
 - `lib/workspace/state.rb` — JSON-persisted session state
 - `lib/workspace/git.rb` — Git and worktree operations

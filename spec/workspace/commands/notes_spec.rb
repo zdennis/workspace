@@ -49,9 +49,47 @@ RSpec.describe Workspace::Commands::Notes do
 
   describe "#dir" do
     it "prints the absolute path alone, tmp/workspace-notes in the checkout by default" do
+      command.dir(name: "api")
+
+      expect(output.string).to eq("#{repo}/tmp/workspace-notes\n")
+    end
+
+    it "gives a worktree the main checkout's tmp/workspace-notes plus its branch when nothing is set" do
+      command.dir(name: "api.worktree-x", json: true)
+
+      expect(JSON.parse(output.string)).to include("dir" => "#{repo}/tmp/workspace-notes/feature-x", "source" => "default", "inside_worktree" => false)
+    end
+
+    it "gives a worktree the project's notes.dir plus its branch" do
+      write_config("api", "notes:\n  dir: /tmp/my-notes\n")
+
+      command.dir(name: "api.worktree-x")
+
+      expect(output.string).to eq("/tmp/my-notes/feature-x\n")
+    end
+
+    it "lets the project's notes.default_dir rule win over the main checkout's directory" do
+      write_config("api", "notes:\n  dir: /tmp/my-notes\n  default_dir: /notes/{workspace}\n")
+
+      command.dir(name: "api.worktree-x")
+
+      expect(output.string).to eq("/notes/api.worktree-x\n")
+    end
+
+    it "falls back to tmp/workspace-notes in the worktree when the main workspace has no checkout" do
+      roots.delete("api")
+
       command.dir(name: "api.worktree-x")
 
       expect(output.string).to eq("#{linked}/tmp/workspace-notes\n")
+    end
+
+    it "lists a default inside the main checkout in the shared info/exclude with create" do
+      command.dir(name: "api.worktree-x", create: true)
+
+      expect(Dir.exist?("#{repo}/tmp/workspace-notes/feature-x")).to be true
+      expect(File.read(exclude_file)).to include("/tmp/workspace-notes/feature-x/")
+      expect(command.info(name: "api.worktree-x")).to include("excluded" => true, "inside_worktree" => false)
     end
 
     it "does not create anything or touch the exclude file without create" do
@@ -107,15 +145,15 @@ RSpec.describe Workspace::Commands::Notes do
 
       command.dir(name: "api.worktree-x")
 
-      expect(output.string).to eq("#{linked}/tmp/workspace-notes\n")
+      expect(output.string).to eq("#{repo}/tmp/workspace-notes/feature-x\n")
     end
 
     it "prints the JSON document with the plan's fields" do
-      command.dir(name: "api.worktree-x", json: true)
+      command.dir(name: "api", json: true)
 
       expect(JSON.parse(output.string)).to eq(
-        "schema_version" => 1, "ok" => true, "workspace" => "api.worktree-x",
-        "dir" => "#{linked}/tmp/workspace-notes", "source" => "default",
+        "schema_version" => 1, "ok" => true, "workspace" => "api",
+        "dir" => "#{repo}/tmp/workspace-notes", "source" => "default",
         "exists" => false, "inside_worktree" => true, "excluded" => false
       )
     end
@@ -130,16 +168,16 @@ RSpec.describe Workspace::Commands::Notes do
 
     context "with create" do
       it "makes the directory and lists the rooted line in the common dir's info/exclude" do
-        command.dir(name: "api.worktree-x", create: true, json: true)
+        command.dir(name: "api", create: true, json: true)
 
         expect(JSON.parse(output.string)).to include("exists" => true, "inside_worktree" => true, "excluded" => true)
-        expect(Dir.exist?("#{linked}/tmp/workspace-notes")).to be true
+        expect(Dir.exist?("#{repo}/tmp/workspace-notes")).to be true
         expect(File.read(exclude_file).lines.map(&:chomp)).to include("/tmp/workspace-notes/")
       end
 
       it "keeps notes out of git status and writes no config" do
-        command.dir(name: "api.worktree-x", create: true)
-        File.write("#{linked}/tmp/workspace-notes/plan.md", "x\n")
+        command.dir(name: "api", create: true)
+        File.write("#{repo}/tmp/workspace-notes/plan.md", "x\n")
 
         status, = Open3.capture2("git", "-C", linked, "status", "--porcelain")
         expect(status).to eq("")
@@ -147,7 +185,7 @@ RSpec.describe Workspace::Commands::Notes do
       end
 
       it "lists the line once however often it runs" do
-        2.times { command.dir(name: "api.worktree-x", create: true) }
+        2.times { command.dir(name: "api", create: true) }
 
         expect(File.read(exclude_file).lines.map(&:chomp).count("/tmp/workspace-notes/")).to eq(1)
       end
@@ -171,13 +209,13 @@ RSpec.describe Workspace::Commands::Notes do
       end
 
       it "raises notes_dir_unwritable naming the path when the directory can't be made" do
-        FileUtils.mkdir_p(File.join(linked, "tmp"))
-        File.write(File.join(linked, "tmp", "workspace-notes"), "a file\n")
+        FileUtils.mkdir_p(File.join(repo, "tmp"))
+        File.write(File.join(repo, "tmp", "workspace-notes"), "a file\n")
 
-        expect { command.dir(name: "api.worktree-x", create: true) }.to raise_error(Workspace::Error) { |e|
+        expect { command.dir(name: "api", create: true) }.to raise_error(Workspace::Error) { |e|
           expect(e.code).to eq("notes_dir_unwritable")
-          expect(e.details).to eq("path" => "#{linked}/tmp/workspace-notes")
-          expect(e.message).to include("#{linked}/tmp/workspace-notes")
+          expect(e.details).to eq("path" => "#{repo}/tmp/workspace-notes")
+          expect(e.message).to include("#{repo}/tmp/workspace-notes")
         }
         expect(output.string).to eq("")
       end
@@ -222,18 +260,18 @@ RSpec.describe Workspace::Commands::Notes do
       expect(JSON.parse(output.string)).to include("dir" => "/notes/api", "source" => "default")
     end
 
-    it "does not use the project's notes.dir for a worktree" do
+    it "does not use the project's notes.dir as is for a worktree, only with its branch added" do
       write_config("api", "notes:\n  dir: /elsewhere/project\n")
 
       command.dir(name: "api.worktree-x", json: true)
 
-      expect(JSON.parse(output.string)).to include("dir" => "#{linked}/tmp/workspace-notes", "source" => "default")
+      expect(JSON.parse(output.string)).to include("dir" => "/elsewhere/project/feature-x", "source" => "default")
     end
 
     it "reports an existing directory as existing" do
-      FileUtils.mkdir_p("#{linked}/tmp/workspace-notes")
+      FileUtils.mkdir_p("#{repo}/tmp/workspace-notes")
 
-      command.dir(name: "api.worktree-x", json: true)
+      command.dir(name: "api", json: true)
 
       expect(JSON.parse(output.string)).to include("exists" => true)
     end
@@ -266,24 +304,24 @@ RSpec.describe Workspace::Commands::Notes do
 
   describe "#info" do
     it "returns the answer dir prints, as a Hash, and prints nothing" do
-      expect(command.info(name: "api.worktree-x")).to eq(
-        "workspace" => "api.worktree-x", "dir" => "#{linked}/tmp/workspace-notes", "source" => "default",
+      expect(command.info(name: "api")).to eq(
+        "workspace" => "api", "dir" => "#{repo}/tmp/workspace-notes", "source" => "default",
         "exists" => false, "inside_worktree" => true, "excluded" => false
       )
       expect(output.string).to eq("")
     end
 
     it "makes the directory and the exclude line with create" do
-      answer = command.info(name: "api.worktree-x", create: true)
+      answer = command.info(name: "api", create: true)
 
       expect(answer).to include("exists" => true, "excluded" => true)
       expect(File.read(exclude_file).lines.map(&:chomp)).to include("/tmp/workspace-notes/")
     end
 
     it "raises notes_dir_unwritable when create can't make the directory" do
-      File.write("#{linked}/tmp", "a file where the directory should go")
+      File.write("#{repo}/tmp", "a file where the directory should go")
 
-      expect { command.info(name: "api.worktree-x", create: true) }.to raise_error(Workspace::Error) { |e|
+      expect { command.info(name: "api", create: true) }.to raise_error(Workspace::Error) { |e|
         expect(e.code).to eq("notes_dir_unwritable")
       }
     end
@@ -291,18 +329,18 @@ RSpec.describe Workspace::Commands::Notes do
 
   describe "#files_inside_worktree" do
     it "counts the files of a notes directory inside the checkout, hidden and nested ones included" do
-      FileUtils.mkdir_p("#{linked}/tmp/workspace-notes/sub")
-      File.write("#{linked}/tmp/workspace-notes/plan.md", "x")
-      File.write("#{linked}/tmp/workspace-notes/sub/a.md", "x")
-      File.write("#{linked}/tmp/workspace-notes/.hidden", "x")
+      FileUtils.mkdir_p("#{repo}/tmp/workspace-notes/sub")
+      File.write("#{repo}/tmp/workspace-notes/plan.md", "x")
+      File.write("#{repo}/tmp/workspace-notes/sub/a.md", "x")
+      File.write("#{repo}/tmp/workspace-notes/.hidden", "x")
 
-      expect(command.files_inside_worktree(name: "api.worktree-x")).to eq("dir" => "#{linked}/tmp/workspace-notes", "files" => 3)
+      expect(command.files_inside_worktree(name: "api")).to eq("dir" => "#{repo}/tmp/workspace-notes", "files" => 3)
     end
 
     it "is nil when the directory is missing or holds no files" do
-      expect(command.files_inside_worktree(name: "api.worktree-x")).to be_nil
-      FileUtils.mkdir_p("#{linked}/tmp/workspace-notes/empty")
-      expect(command.files_inside_worktree(name: "api.worktree-x")).to be_nil
+      expect(command.files_inside_worktree(name: "api")).to be_nil
+      FileUtils.mkdir_p("#{repo}/tmp/workspace-notes/empty")
+      expect(command.files_inside_worktree(name: "api")).to be_nil
     end
 
     it "is nil for a directory outside the checkout" do

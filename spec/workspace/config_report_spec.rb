@@ -419,17 +419,23 @@ RSpec.describe Workspace::ConfigReport do
     end
 
     it "falls back to tmp/workspace-notes when no default_dir is set and to the project's notes.dir for a main checkout" do
-      expect(key_row(report.show("api.worktree-fix"), "notes.dir")["effective_path"]).to eq("/src/api/.worktrees/fix/tmp/workspace-notes")
+      expect(key_row(report.show("api.worktree-fix"), "notes.dir")["effective_path"]).to eq("/src/api/tmp/workspace-notes/feature-fix")
       expect(key_row(report.show("api.worktree-fix"), "notes.default_dir")["effective_path"]).to eq("/src/api/.worktrees/fix/tmp/workspace-notes")
 
       write("api", "notes:\n  dir: /shared/notes\n")
       expect(key_row(report.show("api"), "notes.dir")["effective_path"]).to eq("/shared/notes")
     end
 
+    it "reports the project's notes.dir plus the branch as a worktree's effective_path" do
+      write("api", "notes:\n  dir: /tmp/my-notes\n")
+
+      expect(key_row(report.show("api.worktree-fix"), "notes.dir")["effective_path"]).to eq("/tmp/my-notes/feature-fix")
+    end
+
     it "uses the computed default when the stored notes.dir is invalid" do
       write("api.worktree-fix", "notes:\n  dir: relative/notes\n")
 
-      expect(key_row(report.show("api.worktree-fix"), "notes.dir")["effective_path"]).to eq("/src/api/.worktrees/fix/tmp/workspace-notes")
+      expect(key_row(report.show("api.worktree-fix"), "notes.dir")["effective_path"]).to eq("/src/api/tmp/workspace-notes/feature-fix")
     end
 
     it "gives a null effective_path when the checkout is unknown, the file is unreadable, or the stored value is invalid" do

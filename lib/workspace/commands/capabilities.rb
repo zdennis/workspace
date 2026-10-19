@@ -47,7 +47,7 @@ module Workspace
         "window_state" => 1,
         "window_position" => 1,
         "cleanup_dry_run" => 1,
-        "notes" => 1,
+        "notes" => 2,
         "start_packs" => 2,
         "start_agent" => 1,
         "start_plan" => 1,

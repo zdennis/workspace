@@ -117,7 +117,7 @@ module Workspace
       "spine_init_failed" => "promote warning: the spine asked for could not be made.",
       "plan_init_failed" => "promote warning: the plan asked for could not be made.",
       "launch_failed" => "promote warning: --launch did not start the workspace or deliver its first prompt (exit 1); the move and the workspace are done.",
-      "same_notes_dir" => "promote warning: the main and the new notes directories are the same, or one holds the other; nothing was carried. path.",
+      "same_notes_dir" => "promote warning: the main and the new notes directories are the same, or the main one is inside the new one or the new one is inside what would be moved; nothing was carried. path.",
       "notes_link" => "promote warning: the plan, the spine or a file in it is a link, so it was not moved. path.",
       "notes_not_file" => "promote warning: IMPLEMENTATION_PLAN.md is not a file, so it was not moved. path.",
       "notes_not_directory" => "promote warning: spine is not a directory, so it was not moved. path.",

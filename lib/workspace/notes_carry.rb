@@ -37,7 +37,7 @@ module Workspace
       from = File.expand_path(from)
       to = File.expand_path(to)
       if nested?(from, to)
-        warn_item("same_notes_dir", "The main checkout's notes directory (#{from}) and the new workspace's (#{to}) are the same, or one holds the other; nothing was carried.", "path" => to)
+        warn_item("same_notes_dir", "The main checkout's notes directory (#{from}) and the new workspace's (#{to}) are the same, or one is inside what would be moved; nothing was carried.", "path" => to)
         return {"plan" => "skipped", "spine" => "skipped", "ship" => nil, "warnings" => @warnings,
                 "carried" => carry_notes.map { |p| {"path" => p, "outcome" => "skipped"} }}
       end
@@ -52,10 +52,13 @@ module Workspace
 
     private
 
+    # The new directory may sit inside the main one (the default is `<main notes>/<branch>`), but not
+    # inside what is moved, and the main one may not sit inside the new one.
     def nested?(from, to)
       a = real(from) + "/"
       b = real(to) + "/"
-      a.start_with?(b) || b.start_with?(a)
+      return true if a.start_with?(b)
+      b.start_with?(a + "spine/") || b.start_with?(a + PLAN_FILE + "/")
     end
 
     def real(path)

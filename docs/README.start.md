@@ -59,7 +59,7 @@ Before launching, `start` installs each detected coding agent's hooks (session m
 
 ### Notes directory
 
-`start` fixes the new workspace's notes directory (see [`notes`](README.notes.md)). It works out the path the way `workspace notes dir` does (the project's `notes.default_dir` rule, else `tmp/workspace-notes` in the worktree), writes it as `notes.dir` in the worktree's own config file, makes the directory, and, when it is inside the worktree, lists it in the repository's `info/exclude` so `git status` stays clean. The path is fixed at that moment, so changing the project's rule later does not move this worktree's notes.
+`start` fixes the new workspace's notes directory (see [`notes`](README.notes.md)). It works out the path the way `workspace notes dir` does (the project's `notes.default_dir` rule, else the main checkout workspace's notes directory plus the branch, e.g. `/tmp/my-notes/research-dx` when the project's `notes.dir` is `/tmp/my-notes`, with `tmp/workspace-notes` in the main checkout as that directory when it has no `notes.dir`), writes it as `notes.dir` in the worktree's own config file, makes the directory, and, when it is inside the worktree, lists it in the repository's `info/exclude` so `git status` stays clean. The path is fixed at that moment, so changing the project's rule later does not move this worktree's notes.
 
 A `notes.dir` already in the worktree's config is never overwritten; `start` makes the directory that value names. This runs for a reused or adopted worktree too, so it fills in a worktree started before this existed. If the directory can't be made or the config can't be written, `start` carries on and says so on stderr (a `warnings` line under `--json`); it never fails because of notes.
 

@@ -232,6 +232,18 @@ RSpec.describe Workspace::NotesCarry do
     expect(Dir.children(File.join(from, "spine"))).to eq(["goal.md"])
   end
 
+  it "carries when the new directory is inside the main one, as the default <main notes>/<branch> is" do
+    put(from, "IMPLEMENTATION_PLAN.md", "plan\n")
+    put(from, "a.md", "a\n")
+    inner = File.join(from, "feature-x")
+
+    result = carry.call(from: from, to: inner, name: "api.worktree-x", carry_notes: ["a.md"])
+
+    expect(result).to include("plan" => "moved", "warnings" => [])
+    expect(result["carried"]).to eq([{"path" => "a.md", "outcome" => "copied"}])
+    expect(File.read(File.join(inner, "IMPLEMENTATION_PLAN.md"))).to eq("plan\n")
+  end
+
   it "warns when add_missing_ship answers skipped" do
     put(from, "spine/goal.md")
     allow(spine_init).to receive(:add_missing_ship).and_return("outcome" => "skipped", "files" => [])

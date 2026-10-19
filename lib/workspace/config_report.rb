@@ -270,8 +270,22 @@ module Workspace
         @notes_dir.default_path(template, root: root, workspace: scan.workspace)
       else
         stored = valid_value(key, scan, problems)
-        @notes_dir.resolve(stored: stored, template: template, worktree: scan.worktree?, root: root, workspace: scan.workspace).path
+        main_dir = (scan.worktree? && template.nil?) ? main_notes_dir(scan.parent) : nil
+        @notes_dir.resolve(stored: stored, template: template, worktree: scan.worktree?, root: root, workspace: scan.workspace, main_dir: main_dir).path
       end
+    end
+
+    # The main checkout workspace's notes directory, for a worktree with no rule of its own.
+    def main_notes_dir(parent)
+      main_root = @project_config.project_root_for(parent)
+      return nil unless main_root
+      stored = begin
+        raw = @project_settings.load(parent).dig("notes", "dir")
+        raw.nil? ? nil : ConfigSchema.parse("notes.dir", raw)
+      rescue ArgumentError, TypeError, Workspace::Error
+        nil
+      end
+      @notes_dir.main_dir(stored: stored, root: File.expand_path(main_root))
     end
 
     # The winning stored value of a key as its reader parses it, nil when unset or when it has an error (as {#effective} treats it).

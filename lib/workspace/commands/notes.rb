@@ -9,8 +9,9 @@ module Workspace
     #
     # The path comes from {Workspace::NotesDir}: the workspace's own `notes.dir`
     # (a worktree's own file, or the project's for a main checkout), else the
-    # project's `notes.default_dir` rule, else `tmp/workspace-notes` in the
-    # checkout. A stored value that fails its key's checks counts as unset, as it
+    # project's `notes.default_dir` rule, else (for a linked worktree) the main
+    # checkout workspace's notes directory plus the branch, else
+    # `tmp/workspace-notes` in the checkout. A stored value that fails its key's checks counts as unset, as it
     # does in `config show`. Nothing here writes config.
     class Notes
       # @param notes_dir [Workspace::NotesDir] the resolver
@@ -60,9 +61,10 @@ module Workspace
         real_root = real(root)
         real_path = real(path)
         inside = real_path.start_with?("#{real_root}/")
-        pattern = inside ? exclude_pattern(real_root, real_path) : nil
+        keeper = inside ? real_root : main_root_holding(name, real_path)
+        pattern = keeper ? exclude_pattern(keeper, real_path) : nil
         make(path, root, pattern) if create
-        excluded = inside ? @git_exclude.listed?(root, pattern) : true
+        excluded = pattern ? @git_exclude.listed?(root, pattern) : true
 
         {"workspace" => name, "dir" => path, "source" => result.source,
          "exists" => Dir.exist?(path), "inside_worktree" => inside, "excluded" => excluded}
@@ -96,13 +98,33 @@ module Workspace
 
       def resolve(name, root)
         view = @config_resolver.view(workspace: name)
-        result = @notes_dir.resolve(stored: valid(view, "dir"), template: valid(view, "default_dir"),
-          worktree: !WorkspaceLineage.split_worktree_name(name).nil?, root: root, workspace: name)
+        parent = WorkspaceLineage.split_worktree_name(name)&.first
+        template = valid(view, "default_dir")
+        main_dir = (parent && template.nil?) ? main_notes_dir(parent) : nil
+        result = @notes_dir.resolve(stored: valid(view, "dir"), template: template,
+          worktree: !parent.nil?, root: root, workspace: name, main_dir: main_dir)
         return result if result.path
         raise Workspace::Error.new(
           "Can't work out the notes directory for '#{name}': notes.default_dir uses {branch} and the checkout at #{root} is on no branch (detached HEAD). Check out a branch, or set notes.dir for this workspace.",
           code: "notes_dir_unresolved", details: {"name" => name, "path" => root}
         )
+      end
+
+      # The notes directory of the main checkout workspace +parent+; nil when it has no known checkout.
+      def main_notes_dir(parent)
+        main_root = @project_config.project_root_for(parent)
+        return nil unless main_root
+        @notes_dir.main_dir(stored: valid(@config_resolver.view(workspace: parent), "dir"), root: File.expand_path(main_root))
+      end
+
+      # The real root of the main checkout when +path+ is inside it but the workspace +name+ is a
+      # worktree elsewhere, so its notes still get a line in the shared `info/exclude`.
+      def main_root_holding(name, real_path)
+        parent = WorkspaceLineage.split_worktree_name(name)&.first
+        main_root = parent && @project_config.project_root_for(parent)
+        return nil unless main_root
+        main_root = real(File.expand_path(main_root))
+        real_path.start_with?("#{main_root}/") ? main_root : nil
       end
 
       # The stored `notes.<leaf>`, nil when unset or not valid for the key.

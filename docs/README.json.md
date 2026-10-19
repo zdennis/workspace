@@ -204,7 +204,7 @@ The exit code is unchanged by `--json` (1 for most failures, 2 for `not_submitte
 | `spine_init_failed` | The spine asked for could not be made. |
 | `plan_init_failed` | The plan asked for could not be made. |
 | `launch_failed` | `--launch` did not start the workspace or deliver its first prompt (exit 1); the move and the workspace are done. |
-| `same_notes_dir` | The main and new notes directories are the same, or one holds the other; nothing was carried. `path`. |
+| `same_notes_dir` | The main and new notes directories are the same, or the main one is inside the new one or the new one is inside what would be moved; nothing was carried. `path`. |
 | `notes_link` | The plan, the spine or a file in it is a link, so it was not moved. `path`. |
 | `notes_not_file` | `IMPLEMENTATION_PLAN.md` is not a file. `path`. |
 | `notes_not_directory` | `spine` is not a directory. `path`. |

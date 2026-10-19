@@ -743,7 +743,7 @@
           "active": true
         }
       ],
-      "doc": "Directory where one workspace's notes are kept, as an absolute path; other tools read it to know where to store notes. A worktree reads only its own value (set it with `--name`), never the project's; the main checkout reads the project's (unset: the directory `notes.default_dir` gives it)",
+      "doc": "Directory where one workspace's notes are kept, as an absolute path; other tools read it to know where to store notes. A worktree reads only its own value (set it with `--name`), never the project's; the main checkout reads the project's (unset: the directory `notes.default_dir` gives it). A new worktree is given the main checkout's notes directory plus its branch (unless `notes.default_dir` is set) and keeps that value",
       "problems": [],
       "effective_path": "/tmp/golden-notes/a"
     },
@@ -783,7 +783,7 @@
           "active": true
         }
       ],
-      "doc": "The rule that gives each workspace its notes directory when it has no `notes.dir`: an absolute path, `~/…`, or a path relative to the worktree with no `..`; `{workspace}` and `{branch}` are filled in per workspace, so give an outside-the-repo path one or the other (unset: `tmp/workspace-notes` inside the worktree)",
+      "doc": "The rule that gives each workspace its notes directory when it has no `notes.dir`: an absolute path, `~/…`, or a path relative to the worktree with no `..`; `{workspace}` and `{branch}` are filled in per workspace, so give an outside-the-repo path one or the other (unset: a worktree gets the main checkout's notes directory plus its branch; the main checkout gets its `notes.dir`, else `tmp/workspace-notes`)",
       "problems": [],
       "effective_path": "/home/me/notes/main.worktree-a"
     },

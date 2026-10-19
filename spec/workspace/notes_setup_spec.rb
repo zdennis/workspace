@@ -50,16 +50,38 @@ RSpec.describe Workspace::NotesSetup do
   it "writes the computed path as the worktree's notes.dir, makes the directory and lists it in info/exclude" do
     result = setup.call("api.worktree-x")
 
-    expect(result).to eq("dir" => "#{linked}/tmp/workspace-notes", "warnings" => [])
-    expect(stored("api.worktree-x")).to eq("#{linked}/tmp/workspace-notes")
-    expect(Dir.exist?("#{linked}/tmp/workspace-notes")).to be true
-    expect(File.read(File.join(repo, ".git", "info", "exclude")).lines.map(&:chomp)).to include("/tmp/workspace-notes/")
+    expect(result).to eq("dir" => "#{repo}/tmp/workspace-notes/feature-x", "warnings" => [])
+    expect(stored("api.worktree-x")).to eq("#{repo}/tmp/workspace-notes/feature-x")
+    expect(Dir.exist?("#{repo}/tmp/workspace-notes/feature-x")).to be true
+    expect(File.read(File.join(repo, ".git", "info", "exclude")).lines.map(&:chomp)).to include("/tmp/workspace-notes/feature-x/")
+  end
+
+  it "writes the project's notes.dir plus the branch when the project sets one" do
+    write_config("api", "notes:\n  dir: #{@dir}/my-notes\n")
+
+    result = setup.call("api.worktree-x")
+
+    expect(result["dir"]).to eq("#{@dir}/my-notes/feature-x")
+    expect(stored("api.worktree-x")).to eq("#{@dir}/my-notes/feature-x")
+    expect(Dir.exist?("#{@dir}/my-notes/feature-x")).to be true
+  end
+
+  it "keeps the stored default when the project's notes.dir changes, and a later notes.dir still overrides it" do
+    setup.call("api.worktree-x")
+    write_config("api", "notes:\n  dir: #{@dir}/my-notes\n")
+    expect(notes.info(name: "api.worktree-x")["dir"]).to eq("#{repo}/tmp/workspace-notes/feature-x")
+
+    data = settings.load("api.worktree-x")
+    data["notes"]["dir"] = "#{@dir}/mine"
+    settings.save("api.worktree-x", data)
+
+    expect(notes.info(name: "api.worktree-x")["dir"]).to eq("#{@dir}/mine")
   end
 
   it "gives a worktree with no config file the usual defaults beside notes.dir" do
     setup.call("api.worktree-x")
 
-    expect(settings.load("api.worktree-x")).to eq("hooks" => {}, "layouts" => {}, "notes" => {"dir" => "#{linked}/tmp/workspace-notes"})
+    expect(settings.load("api.worktree-x")).to eq("hooks" => {}, "layouts" => {}, "notes" => {"dir" => "#{repo}/tmp/workspace-notes/feature-x"})
   end
 
   it "fixes the path from the project's rule, so a later change to the rule does not move it" do
@@ -78,7 +100,7 @@ RSpec.describe Workspace::NotesSetup do
 
     setup.call("api.worktree-x")
 
-    expect(settings.load("api.worktree-x")).to eq("hooks" => {"post_launch" => "echo hi"}, "notes" => {"other" => 1, "dir" => "#{linked}/tmp/workspace-notes"})
+    expect(settings.load("api.worktree-x")).to eq("hooks" => {"post_launch" => "echo hi"}, "notes" => {"other" => 1, "dir" => "#{repo}/tmp/workspace-notes/feature-x"})
   end
 
   it "never writes over an existing notes.dir, and sets up the directory that value names" do
@@ -115,7 +137,7 @@ RSpec.describe Workspace::NotesSetup do
 
     result = setup.call("api.worktree-x")
 
-    expect(Dir.exist?("#{linked}/tmp/workspace-notes")).to be true
+    expect(Dir.exist?("#{repo}/tmp/workspace-notes/feature-x")).to be true
     expect(result["warnings"].size).to eq(1)
     expect(result["warnings"].first).to include("could not record the notes directory")
   end
@@ -123,18 +145,18 @@ RSpec.describe Workspace::NotesSetup do
   it "is safe to repeat" do
     2.times { setup.call("api.worktree-x") }
 
-    expect(File.read(File.join(repo, ".git", "info", "exclude")).lines.map(&:chomp).count("/tmp/workspace-notes/")).to eq(1)
+    expect(File.read(File.join(repo, ".git", "info", "exclude")).lines.map(&:chomp).count("/tmp/workspace-notes/feature-x/")).to eq(1)
   end
 
   it "keeps the written path when the directory can't be made, and says so as a warning" do
-    File.write("#{linked}/tmp", "a file where the directory should go")
+    File.write("#{repo}/tmp", "a file where the directory should go")
 
     result = setup.call("api.worktree-x")
 
-    expect(stored("api.worktree-x")).to eq("#{linked}/tmp/workspace-notes")
-    expect(result["dir"]).to eq("#{linked}/tmp/workspace-notes")
+    expect(stored("api.worktree-x")).to eq("#{repo}/tmp/workspace-notes/feature-x")
+    expect(result["dir"]).to eq("#{repo}/tmp/workspace-notes/feature-x")
     expect(result["warnings"].size).to eq(1)
-    expect(result["warnings"].first).to start_with("Warning: could not finish setting up the notes directory for api.worktree-x").and include("#{linked}/tmp/workspace-notes")
+    expect(result["warnings"].first).to start_with("Warning: could not finish setting up the notes directory for api.worktree-x").and include("#{repo}/tmp/workspace-notes/feature-x")
   end
 
   it "warns and writes nothing when the path can't be worked out" do

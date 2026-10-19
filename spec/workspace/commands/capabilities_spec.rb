@@ -101,7 +101,7 @@ RSpec.describe Workspace::Commands::Capabilities do
     it "reports notes once notes dir exists" do
       command.call(json: true)
 
-      expect(document["features"]).to include("notes" => 1)
+      expect(document["features"]).to include("notes" => 2)
     end
 
     it "reports agent_spawn once launch and run name the pane they used" do
