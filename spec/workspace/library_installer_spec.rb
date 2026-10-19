@@ -429,6 +429,16 @@ RSpec.describe Workspace::LibraryInstaller do
         expect(File.read(dest)).to eq("You review.\n")
       end
 
+      it "installs through a symlinked user directory, as a dotfiles-managed ~/.claude is" do
+        real = File.join(@dir, "dotfiles-agents")
+        FileUtils.mkdir_p(real)
+        FileUtils.mkdir_p(File.join(home, ".claude"))
+        File.symlink(real, File.join(home, ".claude", "agents"))
+
+        expect(installer.install_user(entry("agent", "reviewer"))["result"]).to eq("installed")
+        expect(File.read(File.join(real, "reviewer.md"))).to eq("You review.\n")
+      end
+
       it "refuses a name that climbs out of the directory" do
         bad = entry("agent", "reviewer").merge("name" => "../x")
 

@@ -232,7 +232,8 @@ module Workspace
       parts = path.split("/").reject { |part| part.empty? || part == "." }
       raise ArgumentError, "must name a directory inside the checkout, not its root" if parts.empty?
       raise ArgumentError, "must not contain \"..\"; it would leave the checkout" if parts.include?("..")
-      raise ArgumentError, "must not be inside .git" if parts.first == ".git"
+      raise ArgumentError, "must not be inside .git" if parts.any? { |part| part.casecmp?(".git") }
+      raise ArgumentError, "must not contain * ? [ ] or \\, which git reads as a pattern in info/exclude" if path.match?(/[*?\[\]\\]/)
       parts.join("/")
     end
     private_constant :INSTALL_DIR
@@ -245,8 +246,9 @@ module Workspace
       raise ArgumentError, "must not contain a newline or other control character" if path.match?(/[[:cntrl:]]/)
       raise ArgumentError, "must be absolute or start with \"~/\"; \"~user\" and relative paths are not expanded" unless path.start_with?("/", "~/")
       raise ArgumentError, "must not contain \"..\"" if path.split("/").include?("..")
-      raise ArgumentError, "must name a directory, not the home directory or \"/\"" if %w[/ ~/].include?(path.sub(%r{/+\z}, "/"))
-      path.sub(%r{(?<=.)/+\z}, "")
+      parts = path.split("/").reject { |part| part.empty? || part == "." }
+      raise ArgumentError, "must name a directory, not the home directory or \"/\"" if parts.empty? || parts == ["~"]
+      (path.start_with?("/") ? "/" : "") + parts.join("/")
     end
     private_constant :USER_INSTALL_DIR
 

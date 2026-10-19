@@ -69,6 +69,9 @@ RSpec.describe Workspace::ConfigSchema do
       expect { parse("~/skills") }.to raise_error(ArgumentError, /relative to the checkout/)
       expect { parse(".") }.to raise_error(ArgumentError, /not its root/)
       expect { parse(".git/hooks") }.to raise_error(ArgumentError, /\.git/)
+      expect { parse(".GIT/hooks") }.to raise_error(ArgumentError, /\.git/)
+      expect { parse("a/.git") }.to raise_error(ArgumentError, /\.git/)
+      %w[**/x a[b] a?b a\\b].each { |glob| expect { parse(glob) }.to raise_error(ArgumentError, /pattern/) }
       expect { parse(" ") }.to raise_error(ArgumentError, /blank/)
       expect { parse(" a") }.to raise_error(ArgumentError, /whitespace/)
       expect { parse("a\nb") }.to raise_error(ArgumentError, /control character/)
@@ -95,6 +98,9 @@ RSpec.describe Workspace::ConfigSchema do
       expect { parse("~bob/skills") }.to raise_error(ArgumentError, /absolute or start with/)
       expect { parse("~/a/../b") }.to raise_error(ArgumentError, /"\.\."/)
       expect { parse("~/") }.to raise_error(ArgumentError, /not the home/)
+      expect { parse("~/.") }.to raise_error(ArgumentError, /not the home/)
+      expect { parse("/./") }.to raise_error(ArgumentError, /not the home/)
+      expect(parse("~/./x//y/")).to eq("~/x/y")
       expect { parse("/") }.to raise_error(ArgumentError, /not the home/)
     end
   end

@@ -168,7 +168,7 @@ module Workspace
         @play = play && resolve_play(play, root)
         @play ||= resolve_plan_play(root) if plan && !no_launch
         @packs = no_launch ? nil : resolve_packs(root, packs, no_packs, handoff, quiet: quiet, agent_kind: @agent_kind)
-        @copies = resolve_copies({"agent" => agents, "skill" => skills}, root)
+        @copies = resolve_copies({"agent" => agents, "skill" => skills}, root, project_name)
         ref = @start_ref.call(input_string)
         ref = apply_ticket_title(ref, root, quiet: quiet, title_from_ticket: title_from_ticket || slug, slug: slug)
 
@@ -452,9 +452,10 @@ module Workspace
 
       # Agents and skills are checked before anything is created, like the
       # play. A name given twice is copied once.
-      def resolve_copies(refs_by_kind, root)
+      def resolve_copies(refs_by_kind, root, project_name)
         refs_by_kind.reject { |_, refs| refs.nil? || refs.empty? }.to_h do |kind, refs|
           raise Workspace::Error, "--#{kind} is not available: no library was wired." unless @library && @library_installer
+          @library_installer.relative_path(kind, "x", project: project_name) # a bad library.install.*_dir fails before anything is created
           [kind, refs.map { |ref| @library.copyable(kind, ref, cwd: root) }.uniq { |e| e["ref"] }]
         end
       end

@@ -770,6 +770,7 @@ RSpec.describe Workspace::Commands::Start do
         allow(project_config).to receive(:exists?).and_return(false)
         allow(project_config).to receive(:create_worktree).and_return("myproject.worktree-PROJ-123")
         allow(launch_command).to receive(:call).and_return({exit_code: 0, prompt_failures: {}})
+        allow(installer).to receive(:relative_path).and_return(".claude/x")
         allow(installer).to receive(:copy) { |entry, worktree:, project:| copied(entry["ref"]) }
         library.global_store.write("agent", "reviewer", "You review.\n")
         library.global_store.write("agent", "planner", "You plan.\n")
@@ -791,6 +792,14 @@ RSpec.describe Workspace::Commands::Start do
 
         expect(output.string).to include("Copied agent/reviewer to #{File.join(worktree_path, ".claude/agents/reviewer.md")}")
           .and include("Copied skill/write-tests to #{File.join(worktree_path, ".claude/skills/write-tests")}")
+      end
+
+      it "fails on a bad install directory before the worktree is created" do
+        allow(installer).to receive(:relative_path).and_raise(Workspace::Error.new("bad", code: "invalid_library_install_dir"))
+
+        expect { kit_command.call("PROJ-123", skills: ["write-tests"]) }
+          .to raise_error(Workspace::Error) { |e| expect(e.code).to eq("invalid_library_install_dir") }
+        expect(git).not_to have_received(:create_worktree)
       end
 
       it "copies a name given twice once" do
