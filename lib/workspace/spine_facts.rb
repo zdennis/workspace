@@ -46,7 +46,8 @@ module Workspace
     #   `no_upstream`, `gh_missing`, `timeout`, `error`, `not_found`, `unknown_state`, `no_daemon`,
     #   `nothing_ahead`, `no_review_gate` (`not_read` with `gh` `not_needed`: no gate needed it, or
     #   the caller didn't read it)
-    Result = Struct.new(:facts, :sources, :reasons, keyword_init: true)
+    # @!attribute readings [Readings, nil] what the facts were mapped from, for {SpineInferred}
+    Result = Struct.new(:facts, :sources, :reasons, :readings, keyword_init: true)
 
     # @param git [Workspace::Git] branch, upstream and ahead reads
     # @param pull_request_status [Workspace::PullRequestStatus] the one `gh pr view`
@@ -128,7 +129,7 @@ module Workspace
         review: review_fact(workspace, readings, sources, reasons),
         panes: panes_of(readings.panes, readings.asks, readings.daemon_reason, sources, reasons)
       )
-      Result.new(facts: facts, sources: sources, reasons: reasons)
+      Result.new(facts: facts, sources: sources, reasons: reasons, readings: readings)
     end
 
     private

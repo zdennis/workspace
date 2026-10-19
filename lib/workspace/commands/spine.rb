@@ -41,10 +41,14 @@ module Workspace
       # @param clock [#call] returns the current Time
       # @param lock_wait [Numeric] seconds `set` waits for another writer before it gives up
       # @param spine_facts [Workspace::SpineFacts, #call, nil] what `show --evaluate` reads the facts with; a callable is called when first needed
+      # @param spine_inferred [Workspace::SpineInferred, #call, nil] what `show --evaluate` infers the stages with when there
+      #   is no `spine/`; a callable is called when first needed
       # @param output [IO]
-      def initialize(notes:, writer: nil, event_log: nil, lock_dir: nil, env: ENV, clock: -> { Time.now }, lock_wait: 10, spine_facts: nil, output: $stdout)
+      def initialize(notes:, writer: nil, event_log: nil, lock_dir: nil, env: ENV, clock: -> { Time.now }, lock_wait: 10, spine_facts: nil,
+        spine_inferred: nil, output: $stdout)
         @notes = notes
         @spine_facts = spine_facts
+        @spine_inferred = spine_inferred
         @writer = writer
         @event_log = event_log
         @lock_dir = lock_dir
@@ -177,7 +181,8 @@ module Workspace
       # @param body [Boolean] add the text after the frontmatter: to the one stage, else to the goal
       # @param evaluate [Boolean] judge every stage against the plan, git, the pull request, the review agent
       #   and the panes (see {SpineEvaluator}); the only form of `show` that starts a process. A source that
-      #   can't answer leaves its gates `unchecked`; it never fails the command
+      #   can't answer leaves its gates `unchecked`; it never fails the command. With no `spine/`, the stages are
+      #   inferred (see {SpineInferred}) and listed under `inferred`
       # @return [void]
       # @raise [Workspace::Error] `unknown_workspace`, `notes_dir_unresolved` or `config_parse`; `unknown_stage` for a +stage+ that is not there
       def show(name:, json: false, stage: nil, body: false, evaluate: false)
@@ -268,8 +273,13 @@ module Workspace
       private
 
       def show_evaluated(name, tree, found, json, body)
-        reading = tree.exists ? live_facts(name, tree) : nil
+        inferrer = tree.exists ? nil : wired_inferred
+        reading = (tree.exists || inferrer) ? live_facts(name, tree) : nil
         verdict = SpineEvaluator.call(tree, reading ? reading.facts : SpineEvaluator::Facts.new)
+        if inferrer && reading
+          verdict["inferred"] = inferrer.infer(workspace: name, checkout: @notes.checkout_root(name), result: reading)
+          verdict["current"] = SpineEvaluator.current(verdict["inferred"])
+        end
         sources = reading ? reading.sources : NOT_READ
         evaluated_at = @clock.call.utc.strftime("%Y-%m-%dT%H:%M:%SZ")
         verdict["goal"] = tree.to_h(body: true)["goal"] if body && !found
@@ -292,9 +302,11 @@ module Workspace
       def live_facts(name, tree)
         reader = @spine_facts.respond_to?(:read) ? @spine_facts : @spine_facts&.call
         return nil unless reader
-        reader.read(workspace: name, checkout: @notes.checkout_root(name), notes_dir: File.dirname(tree.dir),
-          gates: SpineFacts.gates_in(tree.stages))
+        gates = tree.exists ? SpineFacts.gates_in(tree.stages) : SpineInferred::FACT_GATES
+        reader.read(workspace: name, checkout: @notes.checkout_root(name), notes_dir: File.dirname(tree.dir), gates: gates)
       end
+
+      def wired_inferred = @spine_inferred.respond_to?(:infer) ? @spine_inferred : @spine_inferred&.call
 
       def find_doc(docs, path)
         docs.each do |doc|
@@ -307,7 +319,12 @@ module Workspace
 
       def print_evaluated(name, tree, verdict, sources, body)
         unless tree.exists
-          @output.puts "#{name}: no spine/ in #{File.dirname(tree.dir)}"
+          inferred = verdict["inferred"]
+          @output.puts "#{name}: no spine/ in #{File.dirname(tree.dir)}#{"; inferred stages:" if inferred}"
+          return unless inferred
+          @output.puts "Current: #{verdict["current"] || "none"}"
+          print_verdicts(inferred, 0)
+          print_sources(sources)
           return
         end
         count = 0
@@ -341,6 +358,7 @@ module Workspace
           line << " (#{doc["owner_state"]})" if doc["owner_state"]
           line << "  waits on #{doc["waits_on"].join(", ")}" unless doc["waits_on"].empty?
           line << "  dimmed" if doc["dimmed"]
+          line << "  from #{doc["source"]}" if doc["inferred"]
           @output.puts line
           doc["disputes"].each { |dispute| @output.puts "#{pad}#{dispute["message"]}" }
           doc["gate_results"].each do |gate|

@@ -23,7 +23,7 @@ workspace spine check [WORKSPACE] STAGE-PATH --item N [--item N ...] (--done | -
 
 Plain output is a short summary: one line per stage with its status, owner, `Done when` counts and the codes of its warnings.
 
-`spine` in [`capabilities`](README.capabilities.md) is `2` when this command has the roll-up described below, `--stage` and `--body`; `spine_eval` is `1` when it has `--evaluate`.
+`spine` in [`capabilities`](README.capabilities.md) is `2` when this command has the roll-up described below, `--stage` and `--body`; `spine_eval` is `1` when it has `--evaluate`, and `2` when `--evaluate` infers stages for a workspace with no `spine/`.
 
 ## Evaluating the stages
 
@@ -31,7 +31,7 @@ Plain output is a short summary: one line per stage with its status, owner, `Don
 
 Each source is read at most once, whatever the number of stages: the plan file; the checkout's upstream and ahead count (and the branch's upstream config, to tell "never pushed" from "remote branch deleted"); one `gh pr view` (limit 5 s), only when `gh` is on the PATH and a stage declares `pr`, `ci`, `merged` or `review` (or `pushed` while git can't pass it); one agent-daemon snapshot (limit 1 s), which gives owner liveness and the review agent's state; and the open questions. `gh` and the daemon are read in parallel, so the worst case is about 5 s plus the local git calls. A source that can't answer leaves its gates `unchecked` and is named in `sources`; it never fails the command.
 
-`--stage PATH --evaluate` evaluates the whole tree (a verdict depends on siblings and children) and prints the one stage. `--body` works as above. A workspace with no `spine/` answers as plain `show` does, with `current: null` and every source `not_needed`.
+`--stage PATH --evaluate` evaluates the whole tree (a verdict depends on siblings and children) and prints the one stage. `--body` works as above. A workspace with no `spine/` gets [inferred stages](#inferred-stages).
 
 Added to each stage (children too), beside the keys above, which keep their meaning:
 
@@ -68,6 +68,28 @@ Gate facts: `pushed` passes for a merged pull request; a deleted remote branch o
 Plain output adds `Current:` and one line per stage with its `state` (and `(file says X)` when disputed), `looks completed`, the owner and its state, `waits on`, each dispute and each gate that is not a pass, and `Not read:` for a source that was unavailable.
 
 Gates move with git and CI, not with files, so a reader that keeps the evaluation on screen should run it again on a timer.
+
+### Inferred stages
+
+With no `spine/`, `--evaluate` guesses the stages, by the same rules as the app (`src/core/spine/inferred.ts`), so both show the same ones. Plain `show` does not: it stays a file read and answers `exists: false` with no `inferred`. The document is plain `show`'s (`exists: false`, `stages: []`) plus the evaluated top-level keys and `inferred`: Research, Plan, Implement, Verify, Review, and Ship for a linked worktree only (the project's own checkout has no Ship). Each is a stage in the evaluated shape above, with `file: null`, `path` and `id` equal to its `kind`, numbers 10 to 60, `inferred: true` and `source`, what decided its status: `plan`, `workflow`, `review` or `pr`. `current` is the first inferred stage not `completed` or `skipped`. `--stage` still answers `unknown_stage`, since there is no stage file to find.
+
+```json
+{"exists": false, "stages": [], "evaluated": true, "current": "implement",
+ "inferred": [{"path": "research", "kind": "research", "status": "skipped", "state": "skipped", "inferred": true, "source": "plan", "...": "..."}]}
+```
+
+| Stage | Status |
+|-------|--------|
+| Research | `unknown` when the plan file could not be read, `skipped` when it exists, else `not_started` |
+| Plan | `not_started` with no plan file; `in_progress` while it has no tasks or none started, done, skipped or blocked (waiting for approval); else `completed` |
+| Implement | From the plan's tasks: `not_started` with no plan or no tasks, `completed` when none are left (or the plan is done), `blocked` when a task is, `in_progress` once a task is started or the plan's owner pane works or waits. Its `owner` is the plan's `owner_pane` |
+| Verify | From the pull request's checks: `blocked` when failing, `in_progress` while running, `completed` when they pass and Implement is completed; else `not_started` |
+| Review | `in_progress` when the review agent is `done` and the branch is ahead of its base, else `not_started` |
+| Ship | `in_progress` while the pull request is open, else `not_started`; it declares the gates `pushed`, `pr`, `ci` and `merged` |
+
+The first workflow run still going in the workspace that has a step named `research`, `plan`, `implement` or `verify` outranks the plan for those stages (`source: "workflow"`): a step that is `pending` reads `not_started`; `waiting`, `running` or `checking`, `in_progress`; `passed`, `completed`; `failed`, `blocked`. The run's pane owns the stage of its current step. A merged pull request makes Review and Ship `completed` and every stage not `completed` `skipped` (`source: "pr"`).
+
+What it reads is what `--evaluate` reads (the plan file, git, the daemon snapshot, the open questions), plus the run files and the pane bindings, and always the one `gh pr view`, whatever the gates, when `gh` is on the PATH and the branch has an upstream: Verify, Ship and the merged rule read the pull request. That costs up to the 5 s `gh` limit on each call. Without `gh` (or with no answer) those stages read as they do with no pull request. The plan's own state is derived as `plan status` does, with the session taken as live when the daemon answers and unknown when it does not.
 
 ## Setting a status, note or owner
 

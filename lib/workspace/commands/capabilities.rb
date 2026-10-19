@@ -54,7 +54,7 @@ module Workspace
         "plan" => 5,
         "ticket" => 2,
         "spine" => 2,
-        "spine_eval" => 1,
+        "spine_eval" => 2,
         "spine_set" => 2,
         "spine_start" => 1,
         "spine_check" => 1,

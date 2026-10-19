@@ -242,6 +242,7 @@ require_relative "workspace/spine_file"
 require_relative "workspace/spine_rollup"
 require_relative "workspace/spine_evaluator"
 require_relative "workspace/spine_facts"
+require_relative "workspace/spine_inferred"
 require_relative "workspace/spine_tree"
 require_relative "workspace/spine_writer"
 require_relative "workspace/plan_state"
@@ -386,9 +387,12 @@ module Workspace
     notes_command = Commands::Notes.new(notes_dir: NotesDir.new(git: git), project_config: project_config, config_resolver: config_resolver,
       git_exclude: GitExclude.new(git: git), output: output)
     notes_setup = NotesSetup.new(notes: notes_command, project_settings: project_settings)
-    # Read through a closure: the review command SpineFacts needs is built further down.
+    # Read through closures: the review command SpineFacts needs, and the workflow store and panes
+    # SpineInferred needs, are built further down.
     spine_facts = nil
-    spine_command = Commands::Spine.new(notes: notes_command, writer: SpineWriter.new, event_log: event_log, lock_dir: config.spine_lock_dir, spine_facts: -> { spine_facts }, output: output)
+    spine_inferred = nil
+    spine_command = Commands::Spine.new(notes: notes_command, writer: SpineWriter.new, event_log: event_log, lock_dir: config.spine_lock_dir,
+      spine_facts: -> { spine_facts }, spine_inferred: -> { spine_inferred }, output: output)
     spine_config = SpineConfig.new(config_resolver: config_resolver)
     spine_init_command = Commands::SpineInit.new(notes: notes_command, library: library, project_config: project_config, git: git, task_store: task_store, spine_config: spine_config, output: output)
     main_agent = MainAgent.new(project_config: project_config)
@@ -557,6 +561,7 @@ module Workspace
       event_log: event_log, output: output, error_output: error_output)
     spine_facts = SpineFacts.new(git: git, pull_request_status: PullRequestStatus.new(timeout: SpineFacts::GH_TIMEOUT), snapshot_client: agent_snapshot_client,
       review: review_command, ask_store_for: ask_store_for)
+    spine_inferred = SpineInferred.new(workflow_store: workflow_store, workflow_panes: workflow_panes, git: git, plan_state: plan_state)
     snapshot_command = Commands::Snapshot.new(catalog: project_catalog, facts: project_facts, tmux: tmux, state: state, config: config,
       snapshot_client: agent_snapshot_client, sessions: sessions_command, git: git, pull_request_status: PullRequestStatus.new,
       ask_store_for: ask_store_for, plan: plan_command, plan_state: plan_state, plan_config: plan_config, task_store: task_store,

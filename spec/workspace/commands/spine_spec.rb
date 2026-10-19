@@ -355,6 +355,76 @@ RSpec.describe Workspace::Commands::Spine do
       expect(document["sources"].values.uniq).to eq(["not_needed"])
     end
 
+    context "with no spine/ and an inferrer wired" do
+      let(:inferrer_class) do
+        Class.new do
+          attr_reader :calls
+
+          def initialize = @calls = []
+
+          def infer(**args)
+            @calls << args
+            [{"path" => "research", "number" => 10, "id" => "research", "state" => "skipped", "status" => "skipped", "owner" => nil,
+              "owner_state" => nil, "waits_on" => [], "disputes" => [], "gate_results" => [], "children" => [], "inferred" => true, "source" => "plan"},
+              {"path" => "plan", "number" => 20, "id" => "plan", "state" => "in_progress", "status" => "in_progress", "owner" => "%4",
+               "owner_state" => "working", "waits_on" => [], "disputes" => [], "gate_results" => [], "children" => [], "inferred" => true, "source" => "workflow"}]
+          end
+        end
+      end
+      let(:inferrer) { inferrer_class.new }
+      subject(:command) { described_class.new(notes: notes, spine_facts: reader, spine_inferred: -> { inferrer }, clock: -> { now }, output: output) }
+
+      before { FileUtils.rm_rf(File.join(@notes, "spine")) }
+
+      it "reads the facts with the gates the inferred stages need, and lists them under inferred" do
+        command.show(name: "api", json: true, evaluate: true)
+
+        expect(reader.calls).to eq([{workspace: "api", checkout: "/src/api", notes_dir: @notes, gates: %w[pushed pr ci merged review]}])
+        expect(inferrer.calls).to eq([{workspace: "api", checkout: "/src/api", result: result}])
+        expect(document).to include("exists" => false, "stages" => [], "current" => "plan", "sources" => result.sources)
+        expect(document["inferred"].map { |s| s["path"] }).to eq(%w[research plan])
+      end
+
+      it "keeps plain show a file read with no inferred stages" do
+        command.show(name: "api", json: true)
+
+        expect(reader.calls).to be_empty
+        expect(inferrer.calls).to be_empty
+        expect(document).to include("exists" => false)
+        expect(document).not_to have_key("inferred")
+      end
+
+      it "prints the inferred stages with their source" do
+        command.show(name: "api", evaluate: true)
+
+        expect(output.string).to include("no spine/ in #{@notes}; inferred stages:", "Current: plan", "10 research  skipped  from plan",
+          "20 plan  in_progress  owner %4 (working)  from workflow", "Not read: panes (unavailable)")
+      end
+
+      it "infers nothing without a facts reader" do
+        bare = described_class.new(notes: notes, spine_inferred: inferrer, clock: -> { now }, output: output)
+
+        bare.show(name: "api", json: true, evaluate: true)
+
+        expect(inferrer.calls).to be_empty
+        expect(document).not_to have_key("inferred")
+      end
+
+      it "infers nothing when there is a spine/" do
+        write("30-implement.md", "---\nstatus: todo\n---\n")
+
+        command.show(name: "api", json: true, evaluate: true)
+
+        expect(inferrer.calls).to be_empty
+        expect(document).to include("exists" => true)
+        expect(document).not_to have_key("inferred")
+      end
+
+      it "still refuses --stage with unknown_stage" do
+        expect { command.show(name: "api", json: true, evaluate: true, stage: "plan") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("unknown_stage") }
+      end
+    end
+
     it "evaluates without a wired reader, every gate unchecked" do
       bare = described_class.new(notes: notes, clock: -> { now }, output: output)
 
