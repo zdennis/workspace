@@ -103,6 +103,9 @@ module Workspace
       #   empty plan also gets the draft request ({PlanDispatch::DRAFT_PROMPT}) ahead of +prompt+, which becomes the goal. Refused
       #   with +play+; with +no_launch+ the plan is made and nothing is sent. A plan that exists is kept; a failed init is a warning
       #   and sends no play. The JSON payload reports it as `plan`
+      # @param promoted [Boolean] the worktree at `.worktrees/<branch>` was just made by `promote`: the `worktree_started` event
+      #   says `created: true, promoted: true` and the "already exists" line is not printed
+      # @param root [String, nil] the main checkout to start in, in place of the working directory's repository
       # @param json [Boolean] emit the documented JSON schema instead of plain text; on
       #   an error, prints `{"schema_version":1,"ok":false,"error":"..."}` to stdout and returns
       #   +{exit_code: 1}+ instead of raising
@@ -113,10 +116,10 @@ module Workspace
       # @raise [Workspace::UsageError] if a prompt would block on a non-TTY stdin and
       #   neither +base+ nor +yes+ resolves it (unless +json+ is true)
       def call(input_string, prompt: nil, prompt_timeout: nil, base: nil, yes: false, headless: false, json: false, title: nil, play: nil,
-        agents: [], skills: [], packs: [], no_packs: false, handoff: nil, no_launch: false, agent_kind: nil, title_from_ticket: false, slug: false, spine: nil, plan: nil)
+        agents: [], skills: [], packs: [], no_packs: false, handoff: nil, no_launch: false, agent_kind: nil, title_from_ticket: false, slug: false, spine: nil, plan: nil, promoted: false, root: nil)
         options = {prompt: prompt, prompt_timeout: prompt_timeout, base: base, yes: yes, headless: headless, title: title, play: play,
                    agents: agents, skills: skills, packs: packs, no_packs: no_packs, handoff: handoff, no_launch: no_launch, agent_kind: agent_kind,
-                   title_from_ticket: title_from_ticket, slug: slug, spine: spine, plan: plan}
+                   title_from_ticket: title_from_ticket, slug: slug, spine: spine, plan: plan, promoted: promoted, root: root}
         return call_json(input_string, **options) if json
 
         start!(input_string, quiet: false, **options)
@@ -135,8 +138,8 @@ module Workspace
 
       # @return [Hash] when quiet is true, +{exit_code:, json:}+; otherwise the
       #   launch result, or nil if branch selection was cancelled
-      def start!(input_string, prompt:, prompt_timeout:, base:, yes:, headless:, quiet:, title: nil, play: nil, agents: [], skills: [], packs: [], no_packs: false, handoff: nil, no_launch: false, agent_kind: nil, title_from_ticket: false, slug: false, spine: nil, plan: nil)
-        root = @git.root
+      def start!(input_string, prompt:, prompt_timeout:, base:, yes:, headless:, quiet:, title: nil, play: nil, agents: [], skills: [], packs: [], no_packs: false, handoff: nil, no_launch: false, agent_kind: nil, title_from_ticket: false, slug: false, spine: nil, plan: nil, promoted: false, root: nil)
+        root ||= @git.root
         raise Workspace::Error, "Not inside a git repository." unless root
         check_no_launch!(no_launch, prompt: prompt, prompt_timeout: prompt_timeout, play: play, packs: packs, handoff: handoff)
         @agent_kind = check_agent_kind!(agent_kind)
@@ -181,7 +184,7 @@ module Workspace
         if @git.worktree_exists?(worktree_path)
           note_base_ignored(branch_name, quiet: quiet) if base && !pr
           return finish_worktree(project_name, worktree_dir_name, worktree_path, branch_name,
-            base: nil, created: false, prompt: prompt, prompt_timeout: prompt_timeout, headless: headless, quiet: quiet, already_exists: true)
+            base: nil, created: promoted, prompt: prompt, prompt_timeout: prompt_timeout, headless: headless, quiet: quiet, already_exists: !promoted, promoted: promoted)
         end
 
         if pr
@@ -234,7 +237,7 @@ module Workspace
       # Shared tail of every branch: config generation, hook seeding/installation,
       # marker, launch, and (when quiet) the JSON payload.
       def finish_worktree(project_name, worktree_dir_name, worktree_path, branch_name, base:, created:,
-        prompt:, prompt_timeout:, headless:, quiet:, already_exists: false, adopted: false)
+        prompt:, prompt_timeout:, headless:, quiet:, already_exists: false, adopted: false, promoted: false)
         log(quiet, "Worktree already exists at: #{worktree_path}") if already_exists
         log(quiet, "Adopting existing worktree at: #{worktree_path}") if adopted
 
@@ -251,7 +254,7 @@ module Workspace
         write_project_marker(worktree_path, config_name)
         setup_plan(config_name, quiet: quiet)
         setup_spine(config_name, worktree_path, quiet: quiet)
-        record_started(config_name, project_name, branch_name, created: created, task: task)
+        record_started(config_name, project_name, branch_name, created: created, task: task, promoted: promoted)
         agent_kind = report_agent_kind(config_name, quiet: quiet)
         if @no_launch
           log(quiet, "Not launching #{config_name}; start it with `workspace launch #{config_name}`.")
@@ -487,8 +490,9 @@ module Workspace
 
       # Branch, parent project and task id only: no path, title or prompt.
       # EventLog#record never raises.
-      def record_started(config_name, project_name, branch_name, created:, task:)
+      def record_started(config_name, project_name, branch_name, created:, task:, promoted: false)
         data = {"workspace" => config_name, "parent" => project_name, "branch" => branch_name, "created" => created}
+        data["promoted"] = true if promoted
         data["task"] = task["id"] if task
         @event_log&.record(type: "worktree_started", project: config_name, data: data)
       end

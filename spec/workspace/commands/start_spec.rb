@@ -1731,6 +1731,33 @@ RSpec.describe Workspace::Commands::Start do
       expect(event_log.events.map { |e| e["data"]["created"] }).to eq([false])
     end
 
+    it "records created true and promoted true for a promoted worktree, and does not say it already exists" do
+      allow(git).to receive(:worktree_exists?).with(worktree_path).and_return(true)
+
+      command.call("feature", yes: true, promoted: true)
+
+      expect(event_log.events.map { |e| e["data"] }).to match([include("created" => true, "promoted" => true)])
+      expect(output.string).not_to include("already exists")
+      expect(git).not_to have_received(:create_worktree)
+    end
+
+    it "leaves promoted out of the event for an ordinary start" do
+      command.call("feature", yes: true)
+
+      expect(event_log.events.fetch(0)["data"]).not_to have_key("promoted")
+    end
+
+    it "starts in the given root instead of the working directory's repository" do
+      other = File.join(tmpdir, "elsewhere")
+      FileUtils.mkdir_p(other)
+      allow(git).to receive(:root).and_return(nil)
+      allow(git).to receive(:worktree_exists?).with(File.join(other, ".worktrees", "feature")).and_return(true)
+
+      command.call("feature", yes: true, promoted: true, root: other)
+
+      expect(event_log.events.fetch(0)["data"]).to include("parent" => "elsewhere", "branch" => "feature")
+    end
+
     it "records the event before launching, so a launch failure still shows the worktree" do
       allow(launch_command).to receive(:call).and_raise(Workspace::Error, "no tmux")
 
