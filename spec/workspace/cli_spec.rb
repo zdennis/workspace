@@ -5202,11 +5202,19 @@ RSpec.describe Workspace::CLI do
       it "passes the workspace, --force and --dry-run to install, and the working directory" do
         cli.run(["library", "install", "skill/x", "--name", "app", "--force", "--dry-run"])
         cli.run(["library", "install", "skill/x"])
+        cli.run(["library", "install", "skill/x", "--user", "--force"])
 
         expect(library_command.calls).to eq([
-          [:install, {ref: "skill/x", name: "app", force: true, dry_run: true, cwd: "/some/dir"}],
-          [:install, {ref: "skill/x", name: nil, force: false, dry_run: false, cwd: "/some/dir"}]
+          [:install, {ref: "skill/x", name: "app", force: true, dry_run: true, user: false, cwd: "/some/dir"}],
+          [:install, {ref: "skill/x", name: nil, force: false, dry_run: false, user: false, cwd: "/some/dir"}],
+          [:install, {ref: "skill/x", name: nil, force: true, dry_run: false, user: true, cwd: "/some/dir"}]
         ])
+      end
+
+      it "refuses --user with --name, and for uninstall" do
+        expect { cli.run(["library", "install", "skill/x", "--user", "--name=app"]) }.to raise_error(FakeSystemExit)
+        expect { cli.run(["library", "uninstall", "skill/x", "--user"]) }.to raise_error(FakeSystemExit)
+        expect(library_command.calls).to be_empty
       end
 
       it "passes the workspace, --force and --dry-run to uninstall" do
@@ -5219,7 +5227,7 @@ RSpec.describe Workspace::CLI do
         cli.run(["library", "install", "skill/x", "--name", "app", "--json"])
 
         expect(JSON.parse(output.string)).to eq("schema_version" => 1, "ok" => true, "ref" => "skill/x", "workspace" => "app",
-          "result" => "installed", "path" => "/w/app/.claude/skills/x", "dry_run" => false)
+          "result" => "installed", "path" => "/w/app/.claude/skills/x", "dry_run" => false, "user" => false)
       end
 
       it "emits the error envelope for a refusal under --json" do

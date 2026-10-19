@@ -770,7 +770,7 @@ RSpec.describe Workspace::Commands::Start do
         allow(project_config).to receive(:exists?).and_return(false)
         allow(project_config).to receive(:create_worktree).and_return("myproject.worktree-PROJ-123")
         allow(launch_command).to receive(:call).and_return({exit_code: 0, prompt_failures: {}})
-        allow(installer).to receive(:copy) { |entry, worktree:| copied(entry["ref"]) }
+        allow(installer).to receive(:copy) { |entry, worktree:, project:| copied(entry["ref"]) }
         library.global_store.write("agent", "reviewer", "You review.\n")
         library.global_store.write("agent", "planner", "You plan.\n")
         library.global_store.write("skill", "write-tests", "# Tests\n")
@@ -779,11 +779,11 @@ RSpec.describe Workspace::Commands::Start do
 
       it "copies each entry into the worktree after its config is written and before launch" do
         expect(project_config).to receive(:create_worktree).ordered.and_return("myproject.worktree-PROJ-123")
-        expect(installer).to receive(:copy).with(hash_including("ref" => "agent/reviewer"), worktree: worktree_path).ordered
+        expect(installer).to receive(:copy).with(hash_including("ref" => "agent/reviewer"), worktree: worktree_path, project: kind_of(String)).ordered
           .and_return(copied("agent/reviewer"))
-        expect(installer).to receive(:copy).with(hash_including("ref" => "agent/planner"), worktree: worktree_path).ordered
+        expect(installer).to receive(:copy).with(hash_including("ref" => "agent/planner"), worktree: worktree_path, project: kind_of(String)).ordered
           .and_return(copied("agent/planner"))
-        expect(installer).to receive(:copy).with(hash_including("ref" => "skill/write-tests"), worktree: worktree_path).ordered
+        expect(installer).to receive(:copy).with(hash_including("ref" => "skill/write-tests"), worktree: worktree_path, project: kind_of(String)).ordered
           .and_return(copied("skill/write-tests"))
         expect(launch_command).to receive(:call).ordered.and_return({exit_code: 0, prompt_failures: {}})
 
@@ -858,7 +858,7 @@ RSpec.describe Workspace::Commands::Start do
 
         kit_command.call("PROJ-123", skills: ["write-tests"])
 
-        expect(installer).to have_received(:copy).with(hash_including("ref" => "skill/write-tests"), worktree: worktree_path)
+        expect(installer).to have_received(:copy).with(hash_including("ref" => "skill/write-tests"), worktree: worktree_path, project: kind_of(String))
         expect(git).not_to have_received(:create_worktree)
       end
 
@@ -869,7 +869,7 @@ RSpec.describe Workspace::Commands::Start do
 
         kit_command.call("PROJ-123", agents: ["reviewer"])
 
-        expect(installer).to have_received(:copy).with(hash_including("ref" => "agent/reviewer"), worktree: elsewhere)
+        expect(installer).to have_received(:copy).with(hash_including("ref" => "agent/reviewer"), worktree: elsewhere, project: kind_of(String))
       end
 
       it "fails an unknown agent or skill before creating anything" do

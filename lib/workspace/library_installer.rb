@@ -1,21 +1,26 @@
 require "fileutils"
 
 module Workspace
-  # Copies a library agent or skill into a checkout, where Claude Code loads
-  # it: `.claude/agents/<name>.md` or `.claude/skills/<name>/`. A path the
+  # Copies a library agent or skill into a checkout, where the coding agent loads
+  # it: `<agents dir>/<name>.md` or `<skills dir>/<name>/`, `.claude/agents` and
+  # `.claude/skills` unless `library.install.*` says otherwise. A path the
   # repo tracks is never overwritten. Each copy is listed in the repo's
   # `info/exclude` (the common dir's, for a linked worktree), so the checkout
   # stays clean.
   class LibraryInstaller
-    # Where each kind goes, relative to the checkout root.
-    DESTINATIONS = {
-      "agent" => ->(name) { File.join(".claude", "agents", "#{name}.md") },
-      "skill" => ->(name) { File.join(".claude", "skills", name) }
-    }.freeze
-
     # @param git [Workspace::Git] answers whether a path is tracked, and where the common dir is
-    def initialize(git:)
+    # @param dirs [Workspace::LibraryInstallDirs] where each kind goes
+    def initialize(git:, dirs: LibraryInstallDirs.new)
       @git = git
+      @dirs = dirs
+    end
+
+    # @param kind [String] "agent" or "skill"
+    # @param name [String] a valid library name
+    # @param project [String, nil] the workspace or project whose `library.install.*` values apply
+    # @return [String] where the copy goes, relative to the checkout root
+    def relative_path(kind, name, project: nil)
+      File.join(@dirs.relative(kind, project: project), (kind == "agent") ? "#{name}.md" : name)
     end
 
     # Copies one entry into +worktree+. An untracked file or directory already
@@ -23,12 +28,13 @@ module Workspace
     #
     # @param entry [Hash] from {Workspace::Library#copyable}: "ref", "kind", "name", "scope", "path"
     # @param worktree [String] the checkout root
+    # @param project [String, nil] the workspace or project whose `library.install.*` values apply
     # @return [Hash] "ref", "scope", "source" (the library path), "path" (in the checkout) and
     #   "outcome": "copied", "replaced", "unchanged", "skipped_tracked" when the repo tracks the path, or
-    #   "skipped_linked" when `.claude` or the kind's directory under it is a symlink
+    #   "skipped_linked" when the install directory or a parent of it is a symlink
     # @raise [Workspace::Error] when git can't tell whether the path is tracked
-    def copy(entry, worktree:)
-      rel = DESTINATIONS.fetch(entry["kind"]).call(entry["name"])
+    def copy(entry, worktree:, project: nil)
+      rel = relative_path(entry["kind"], entry["name"], project: project)
       dest = File.join(worktree, rel)
       result = {"ref" => entry["ref"], "scope" => entry["scope"], "source" => entry["path"], "path" => dest}
       # Through a linked directory, git can't see what is tracked, and the copy
@@ -53,27 +59,37 @@ module Workspace
     #
     # @param entry [Hash] from {Workspace::Library#copyable}
     # @param worktree [String] the checkout root
+    # @param project [String, nil] the workspace or project whose `library.install.*` values apply
     # @param force [Boolean] replace different content
     # @param dry_run [Boolean] report and write nothing
     # @return [Hash] "result" ("installed", "unchanged", or "would_install" on a dry run) and "path"
     # @raise [Workspace::Error] codes `library_install_exists`, `path_tracked`, `library_path_outside`
-    def install(entry, worktree:, force: false, dry_run: false)
-      rel = DESTINATIONS.fetch(entry["kind"]).call(entry["name"])
+    def install(entry, worktree:, project: nil, force: false, dry_run: false)
+      rel = relative_path(entry["kind"], entry["name"], project: project)
       dest = File.join(worktree, rel)
       guard!(worktree, rel, entry["ref"], dest)
-      exists = File.exist?(dest) || File.symlink?(dest)
-      if exists && !File.symlink?(dest) && LibraryStore.snapshot(dest) == LibraryStore.snapshot(entry["path"])
-        return {"result" => "unchanged", "path" => dest}
+      outcome = write_copy(entry, dest, force: force, dry_run: dry_run)
+      exclude(worktree, "/#{rel}#{"/" if entry["kind"] == "skill"}") if outcome == "installed"
+      {"result" => outcome, "path" => dest}
+    end
+
+    # Copies one entry into the user-level directory (`library.install.user_skills_dir`
+    # or `user_agents_dir`), for `library install --user`. There is no git and no
+    # `info/exclude` there; the exists and `--force` rule is the same as {#install}.
+    #
+    # @param entry [Hash] from {Workspace::Library#copyable}
+    # @param force [Boolean] replace different content
+    # @param dry_run [Boolean] report and write nothing
+    # @return [Hash] "result" ("installed", "unchanged", or "would_install" on a dry run) and "path"
+    # @raise [Workspace::Error] codes `library_install_exists`, `invalid_library_install_dir`
+    def install_user(entry, force: false, dry_run: false)
+      dir = @dirs.user(entry["kind"])
+      dest = File.join(dir, (entry["kind"] == "agent") ? "#{entry["name"]}.md" : entry["name"])
+      unless File.dirname(File.expand_path(dest)) == File.expand_path(dir)
+        raise Error.new("#{dest} is not directly under #{dir}; #{entry["ref"]} was not touched.",
+          code: "library_path_outside", details: {"ref" => entry["ref"], "path" => dest})
       end
-      if exists && !force
-        raise Error.new("#{dest} exists with different content than #{entry["ref"]}; pass --force to replace it.",
-          code: "library_install_exists", details: {"ref" => entry["ref"], "path" => dest},
-          retry_with: {"flags" => ["--force"], "destructive" => true})
-      end
-      return {"result" => "would_install", "path" => dest} if dry_run
-      place(entry["path"], dest)
-      exclude(worktree, "/#{rel}#{"/" if entry["kind"] == "skill"}")
-      {"result" => "installed", "path" => dest}
+      {"result" => write_copy(entry, dest, force: force, dry_run: dry_run), "path" => dest}
     end
 
     # Removes the worktree copy of a library agent or skill, and nothing else:
@@ -83,14 +99,15 @@ module Workspace
     # @param kind [String] "agent" or "skill"
     # @param name [String] a valid library name
     # @param worktree [String] the checkout root
+    # @param project [String, nil] the workspace or project whose `library.install.*` values apply
     # @param dry_run [Boolean] report and write nothing
     # @param entry [Hash, nil] the library entry the copy came from; when given, a copy
     #   that differs from it (or is a symlink) is refused unless +force+
     # @param force [Boolean] remove a locally modified copy
     # @return [Hash] "result" ("removed", "absent", or "would_remove" on a dry run) and "path"
     # @raise [Workspace::Error] codes `library_uninstall_modified`, `path_tracked`, `library_path_outside`
-    def uninstall(kind, name, worktree:, dry_run: false, entry: nil, force: false)
-      rel = DESTINATIONS.fetch(kind).call(name)
+    def uninstall(kind, name, worktree:, project: nil, dry_run: false, entry: nil, force: false)
+      rel = relative_path(kind, name, project: project)
       dest = File.join(worktree, rel)
       guard!(worktree, rel, "#{kind}/#{name}", dest)
       return {"result" => "absent", "path" => dest} unless File.exist?(dest) || File.symlink?(dest)
@@ -106,16 +123,28 @@ module Workspace
 
     private
 
-    # Refuses a destination that is not directly under the checkout's
-    # `.claude/skills/` or `.claude/agents/` (a symlinked `.claude` or kind
-    # directory, or a name that climbs out), or that the repo tracks.
+    # The shared step of both installs: "unchanged" when the same content is
+    # there, `library_install_exists` over different content without +force+,
+    # else "would_install" or the copy ("installed").
+    def write_copy(entry, dest, force:, dry_run:)
+      exists = File.exist?(dest) || File.symlink?(dest)
+      return "unchanged" if exists && !File.symlink?(dest) && LibraryStore.snapshot(dest) == LibraryStore.snapshot(entry["path"])
+      if exists && !force
+        raise Error.new("#{dest} exists with different content than #{entry["ref"]}; pass --force to replace it.",
+          code: "library_install_exists", details: {"ref" => entry["ref"], "path" => dest},
+          retry_with: {"flags" => ["--force"], "destructive" => true})
+      end
+      return "would_install" if dry_run
+      place(entry["path"], dest)
+      "installed"
+    end
+
+    # Refuses a destination that is not directly under the install directory
+    # (a name that climbs out), under a symlinked directory, or that the repo tracks.
     def guard!(worktree, rel, ref, dest)
-      parent = File.dirname(rel)
-      allowed = %w[skills agents].map { |d| File.join(".claude", d) }
-      outside = !allowed.include?(parent) ||
-        File.dirname(File.expand_path(dest)) != File.join(File.expand_path(worktree), parent)
+      outside = File.dirname(File.expand_path(dest)) != File.join(File.expand_path(worktree), File.dirname(rel))
       if outside
-        raise Error.new("#{dest} is not under #{worktree}/.claude/skills/ or .claude/agents/; #{ref} was not touched.",
+        raise Error.new("#{dest} is not directly under #{File.join(worktree, File.dirname(rel))}; #{ref} was not touched.",
           code: "library_path_outside", details: {"ref" => ref, "path" => dest})
       end
       if linked_parent?(worktree, rel)
@@ -127,7 +156,7 @@ module Workspace
         code: "path_tracked", details: {"ref" => ref, "path" => dest})
     end
 
-    # Whether `.claude` or `.claude/<kind>s` under +worktree+ is a symlink.
+    # Whether the install directory, or a directory above it, under +worktree+ is a symlink.
     def linked_parent?(worktree, rel)
       parts = File.dirname(rel).split(File::SEPARATOR)
       (1..parts.size).any? { |n| File.symlink?(File.join(worktree, *parts.first(n))) }

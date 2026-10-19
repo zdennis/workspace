@@ -4,8 +4,8 @@ RSpec.describe Workspace::ConfigSchema do
   let(:root) { File.expand_path("../..", __dir__) }
 
   it "lists the settable keys in the order `config set` has always reported them" do
-    expect(described_class.project_keys.map(&:name)).to eq(%w[dev.up dev.ready dev.stop_timeout dev.startup_timeout dev.ready_timeout dev.kill_grace dev.release_on_session_end dev.instructions locks.idle_grace locks.ps_timeout locks.reap_interval alerts.notify alerts.idle_after agentd.poll_interval handoff.threshold handoff.check_prompt handoff.resume_prompt handoff.auto commands.test commands.lint notes.dir notes.default_dir notes.instructions spine.template spine.auto plan.stall_seconds])
-    expect(described_class.global_keys.map(&:name)).to eq(%w[statusline.command context.source context.pattern launch.headless launch.restore_window_position workflows.defaults.include events.rotate_size codex.hooks.install])
+    expect(described_class.project_keys.map(&:name)).to eq(%w[dev.up dev.ready dev.stop_timeout dev.startup_timeout dev.ready_timeout dev.kill_grace dev.release_on_session_end dev.instructions locks.idle_grace locks.ps_timeout locks.reap_interval alerts.notify alerts.idle_after agentd.poll_interval handoff.threshold handoff.check_prompt handoff.resume_prompt handoff.auto commands.test commands.lint notes.dir notes.default_dir library.install.skills_dir library.install.agents_dir notes.instructions spine.template spine.auto plan.stall_seconds])
+    expect(described_class.global_keys.map(&:name)).to eq(%w[library.install.user_skills_dir library.install.user_agents_dir statusline.command context.source context.pattern launch.headless launch.restore_window_position workflows.defaults.include events.rotate_size codex.hooks.install])
   end
 
   it "names the keys a running daemon only reads at startup" do
@@ -50,6 +50,52 @@ RSpec.describe Workspace::ConfigSchema do
 
     it "rejects a placeholder other than {workspace} and {branch}" do
       expect { parse("/n/{project}") }.to raise_error(ArgumentError, /{project}.*{workspace}.*{branch}/)
+    end
+  end
+
+  describe "library.install.skills_dir and agents_dir" do
+    def parse(value) = described_class.parse("library.install.skills_dir", value)
+
+    it "tidies a relative path inside the checkout" do
+      expect(parse(".agents/skills")).to eq(".agents/skills")
+      expect(parse("./vendor//skills/")).to eq("vendor/skills")
+      expect(described_class.parse("library.install.agents_dir", ".claude/agents")).to eq(".claude/agents")
+    end
+
+    it "rejects a path that leaves the checkout, the root, .git, blank, padded or control-character values" do
+      expect { parse("../shared") }.to raise_error(ArgumentError, /"\.\."/)
+      expect { parse("a/../../x") }.to raise_error(ArgumentError, /"\.\."/)
+      expect { parse("/abs/skills") }.to raise_error(ArgumentError, /relative to the checkout/)
+      expect { parse("~/skills") }.to raise_error(ArgumentError, /relative to the checkout/)
+      expect { parse(".") }.to raise_error(ArgumentError, /not its root/)
+      expect { parse(".git/hooks") }.to raise_error(ArgumentError, /\.git/)
+      expect { parse(" ") }.to raise_error(ArgumentError, /blank/)
+      expect { parse(" a") }.to raise_error(ArgumentError, /whitespace/)
+      expect { parse("a\nb") }.to raise_error(ArgumentError, /control character/)
+    end
+
+    it "defaults to the Claude Code directories and layers global then project" do
+      expect(described_class.default("library.install.skills_dir")).to eq(".claude/skills")
+      expect(described_class.default("library.install.agents_dir")).to eq(".claude/agents")
+      expect(described_class.key("library.install.skills_dir").overridable_in).to eq([:global, :project])
+    end
+  end
+
+  describe "library.install.user_skills_dir and user_agents_dir" do
+    def parse(value) = described_class.parse("library.install.user_skills_dir", value)
+
+    it "accepts an absolute path or one under ~/" do
+      expect(parse("~/.agents/skills/")).to eq("~/.agents/skills")
+      expect(parse("/srv/skills")).to eq("/srv/skills")
+      expect(described_class.default("library.install.user_agents_dir")).to eq("~/.claude/agents")
+    end
+
+    it "rejects a relative path, ~user, .., the home directory and /" do
+      expect { parse("skills") }.to raise_error(ArgumentError, /absolute or start with/)
+      expect { parse("~bob/skills") }.to raise_error(ArgumentError, /absolute or start with/)
+      expect { parse("~/a/../b") }.to raise_error(ArgumentError, /"\.\."/)
+      expect { parse("~/") }.to raise_error(ArgumentError, /not the home/)
+      expect { parse("/") }.to raise_error(ArgumentError, /not the home/)
     end
   end
 

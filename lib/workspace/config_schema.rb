@@ -222,6 +222,34 @@ module Workspace
     end
     private_constant :NOTES_DEFAULT_DIR
 
+    # `library.install.skills_dir` and `agents_dir`: a directory in the checkout.
+    INSTALL_DIR = lambda do |value|
+      path = value.to_s
+      raise ArgumentError, "must not be blank" if path.strip.empty?
+      raise ArgumentError, "has leading or trailing whitespace; remove it" unless path == path.strip
+      raise ArgumentError, "must not contain a newline or other control character" if path.match?(/[[:cntrl:]]/)
+      raise ArgumentError, "must be a path relative to the checkout, such as .agents/skills; use library.install.user_*_dir for a directory outside it" if path.start_with?("/", "~")
+      parts = path.split("/").reject { |part| part.empty? || part == "." }
+      raise ArgumentError, "must name a directory inside the checkout, not its root" if parts.empty?
+      raise ArgumentError, "must not contain \"..\"; it would leave the checkout" if parts.include?("..")
+      raise ArgumentError, "must not be inside .git" if parts.first == ".git"
+      parts.join("/")
+    end
+    private_constant :INSTALL_DIR
+
+    # `library.install.user_skills_dir` and `user_agents_dir`: an absolute directory or one under `~/`.
+    USER_INSTALL_DIR = lambda do |value|
+      path = value.to_s
+      raise ArgumentError, "must not be blank" if path.strip.empty?
+      raise ArgumentError, "has leading or trailing whitespace; remove it" unless path == path.strip
+      raise ArgumentError, "must not contain a newline or other control character" if path.match?(/[[:cntrl:]]/)
+      raise ArgumentError, "must be absolute or start with \"~/\"; \"~user\" and relative paths are not expanded" unless path.start_with?("/", "~/")
+      raise ArgumentError, "must not contain \"..\"" if path.split("/").include?("..")
+      raise ArgumentError, "must name a directory, not the home directory or \"/\"" if %w[/ ~/].include?(path.sub(%r{/+\z}, "/"))
+      path.sub(%r{(?<=.)/+\z}, "")
+    end
+    private_constant :USER_INSTALL_DIR
+
     # Smallest `events.rotate_size`, in bytes: below it a daemon would rotate away lines a follower has yet to read.
     MIN_EVENTS_ROTATE_SIZE = 64 * 1024
 
@@ -336,6 +364,15 @@ module Workspace
       # notes.default_dir is a machine-wide rule such as ~/notes/{workspace}; a worktree's own place is notes.dir.
       Key.new(name: "notes.default_dir", scope: :project, resolve: :layered, overridable_in: [:global, :project], type: :path, settable: true, examples: ["~/notes/{workspace}", "tmp/workspace-notes"], parser: NOTES_DEFAULT_DIR,
         doc: "The rule that gives each workspace its notes directory when it has no `notes.dir`: an absolute path, `~/…`, or a path relative to the worktree with no `..`; `{workspace}` and `{branch}` are filled in per workspace, so give an outside-the-repo path one or the other (unset: `tmp/workspace-notes` inside the worktree)"),
+      # library.install.* choose where `library install` and `start --skill/--agent` put copies; read when the command runs.
+      Key.new(name: "library.install.skills_dir", scope: :project, resolve: :layered, overridable_in: [:global, :project], type: :path, settable: true, default: ".claude/skills", examples: [".claude/skills", ".agents/skills"], parser: INSTALL_DIR,
+        doc: "Directory, relative to the checkout, where `library install` and `start --skill` copy a library skill (default `.claude/skills`); no `..` and not inside `.git`. Changing it does not move copies already installed (see [`library`](README.library.md#install-directories))"),
+      Key.new(name: "library.install.agents_dir", scope: :project, resolve: :layered, overridable_in: [:global, :project], type: :path, settable: true, default: ".claude/agents", examples: [".claude/agents", ".agents/agents"], parser: INSTALL_DIR,
+        doc: "Directory, relative to the checkout, where `library install` and `start --agent` copy a library agent (default `.claude/agents`); same rules as `library.install.skills_dir`"),
+      Key.new(name: "library.install.user_skills_dir", scope: :global, type: :path, settable: true, default: "~/.claude/skills", examples: ["~/.claude/skills", "~/.agents/skills"], parser: USER_INSTALL_DIR,
+        doc: "Directory, absolute or under `~/`, where `library install --user` copies a library skill (default `~/.claude/skills`)"),
+      Key.new(name: "library.install.user_agents_dir", scope: :global, type: :path, settable: true, default: "~/.claude/agents", examples: ["~/.claude/agents"], parser: USER_INSTALL_DIR,
+        doc: "Directory, absolute or under `~/`, where `library install --user` copies a library agent (default `~/.claude/agents`)"),
       # notes.instructions and plan.stall_seconds are preferences.
       Key.new(name: "notes.instructions", scope: :project, resolve: :layered, overridable_in: [:global, :project, :worktree], type: :boolean, settable: true, default: true, parser: BOOLEAN,
         doc: "`true` or `false`: whether `start` and `launch` send the agent the built-in `notes` pack (where working notes go) with its first prompt (default `true`); `--no-packs` skips it for one run"),

@@ -161,6 +161,7 @@ require_relative "workspace/pane_locator"
 require_relative "workspace/pane_bindings"
 require_relative "workspace/library_store"
 require_relative "workspace/library"
+require_relative "workspace/library_install_dirs"
 require_relative "workspace/library_installer"
 require_relative "workspace/commands_config"
 require_relative "workspace/notes_config"
@@ -386,7 +387,7 @@ module Workspace
     lineage = WorkspaceLineage.new
     task_store = TaskStore.new(dir: config.task_dir, error_output: error_output)
     library = Library.new(config: config, lineage: lineage, project_config: project_config)
-    library_installer = LibraryInstaller.new(git: git)
+    library_installer = LibraryInstaller.new(git: git, dirs: LibraryInstallDirs.new(config_resolver: config_resolver))
     notes_command = Commands::Notes.new(notes_dir: NotesDir.new(git: git), project_config: project_config, config_resolver: config_resolver,
       git_exclude: GitExclude.new(git: git), output: output)
     notes_setup = NotesSetup.new(notes: notes_command, project_settings: project_settings)

@@ -788,6 +788,120 @@
       "effective_path": "/home/me/notes/main.worktree-a"
     },
     {
+      "key": "library.install.skills_dir",
+      "scope": "project",
+      "type": "path",
+      "value": null,
+      "masked": false,
+      "default": ".claude/skills",
+      "effective": ".claude/skills",
+      "source": "default",
+      "source_file": null,
+      "line": null,
+      "column": null,
+      "resolve": "layered",
+      "target_layer": "project",
+      "affects": [
+        "main",
+        "main.worktree-a"
+      ],
+      "applies": "next_call",
+      "settable": true,
+      "sensitive": false,
+      "overridable_in": [
+        "global",
+        "project"
+      ],
+      "layers": [],
+      "doc": "Directory, relative to the checkout, where `library install` and `start --skill` copy a library skill (default `.claude/skills`); no `..` and not inside `.git`. Changing it does not move copies already installed (see [`library`](README.library.md#install-directories))",
+      "problems": []
+    },
+    {
+      "key": "library.install.agents_dir",
+      "scope": "project",
+      "type": "path",
+      "value": null,
+      "masked": false,
+      "default": ".claude/agents",
+      "effective": ".claude/agents",
+      "source": "default",
+      "source_file": null,
+      "line": null,
+      "column": null,
+      "resolve": "layered",
+      "target_layer": "project",
+      "affects": [
+        "main",
+        "main.worktree-a"
+      ],
+      "applies": "next_call",
+      "settable": true,
+      "sensitive": false,
+      "overridable_in": [
+        "global",
+        "project"
+      ],
+      "layers": [],
+      "doc": "Directory, relative to the checkout, where `library install` and `start --agent` copy a library agent (default `.claude/agents`); same rules as `library.install.skills_dir`",
+      "problems": []
+    },
+    {
+      "key": "library.install.user_skills_dir",
+      "scope": "global",
+      "type": "path",
+      "value": null,
+      "masked": false,
+      "default": "~/.claude/skills",
+      "effective": "~/.claude/skills",
+      "source": "default",
+      "source_file": null,
+      "line": null,
+      "column": null,
+      "resolve": "global",
+      "target_layer": "global",
+      "affects": [
+        "main",
+        "main.worktree-a"
+      ],
+      "applies": "next_call",
+      "settable": true,
+      "sensitive": false,
+      "overridable_in": [
+        "global"
+      ],
+      "layers": [],
+      "doc": "Directory, absolute or under `~/`, where `library install --user` copies a library skill (default `~/.claude/skills`)",
+      "problems": []
+    },
+    {
+      "key": "library.install.user_agents_dir",
+      "scope": "global",
+      "type": "path",
+      "value": null,
+      "masked": false,
+      "default": "~/.claude/agents",
+      "effective": "~/.claude/agents",
+      "source": "default",
+      "source_file": null,
+      "line": null,
+      "column": null,
+      "resolve": "global",
+      "target_layer": "global",
+      "affects": [
+        "main",
+        "main.worktree-a"
+      ],
+      "applies": "next_call",
+      "settable": true,
+      "sensitive": false,
+      "overridable_in": [
+        "global"
+      ],
+      "layers": [],
+      "doc": "Directory, absolute or under `~/`, where `library install --user` copies a library agent (default `~/.claude/agents`)",
+      "problems": []
+    },
+    {
       "key": "notes.instructions",
       "scope": "project",
       "type": "boolean",

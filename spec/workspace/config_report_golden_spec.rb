@@ -52,7 +52,8 @@ RSpec.describe Workspace::ConfigReport, "golden documents" do
         now = JSON.parse(File.read(File.join(fixtures, new_file)))
         added = %w[overridable_in layers doc choices min max unit]
         # Keys declared since v1 have no old document to compare with.
-        since_v1 = %w[launch.restore_window_position events.rotate_size spine.template spine.auto codex.hooks.install]
+        since_v1 = %w[launch.restore_window_position events.rotate_size spine.template spine.auto codex.hooks.install
+          library.install.skills_dir library.install.agents_dir library.install.user_skills_dir library.install.user_agents_dir]
         now = now.merge("keys" => now["keys"].reject { |k| since_v1.include?(k["key"]) })
 
         expect(now.except("keys", "unknown_keys")).to eq(old.except("keys", "unknown_keys"))

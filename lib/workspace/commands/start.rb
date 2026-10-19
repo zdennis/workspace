@@ -250,7 +250,7 @@ module Workspace
         seed_worktree_hooks(project_name, config_name)
         notes_dir = setup_notes(config_name, quiet: quiet)
         install_agent_hooks(worktree_path, quiet: quiet)
-        copied = copy_library_entries(worktree_path, quiet: quiet)
+        copied = copy_library_entries(worktree_path, project_name, quiet: quiet)
         write_project_marker(worktree_path, config_name)
         setup_plan(config_name, quiet: quiet)
         setup_spine(config_name, worktree_path, quiet: quiet)
@@ -460,10 +460,10 @@ module Workspace
       end
 
       # @return [Hash{String=>Array<Hash>}] each kind asked for, to the copy results
-      def copy_library_entries(worktree_path, quiet:)
+      def copy_library_entries(worktree_path, project_name, quiet:)
         @copies.transform_values do |entries|
           entries.map do |entry|
-            @library_installer.copy(entry, worktree: worktree_path).tap { |result| report_copy(result, quiet: quiet) }
+            @library_installer.copy(entry, worktree: worktree_path, project: project_name).tap { |result| report_copy(result, quiet: quiet) }
           end
         end
       end

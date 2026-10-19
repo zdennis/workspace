@@ -286,5 +286,16 @@ RSpec.describe Workspace do
       expect(installer).to be_a(Workspace::LibraryInstaller)
       expect(installer.instance_variable_get(:@git)).to equal(start_command.instance_variable_get(:@git))
     end
+
+    it "gives the one library installer to start and to library, reading the install directories from config" do
+      cli = Workspace.build_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new)
+
+      installer = cli.instance_variable_get(:@start_command).instance_variable_get(:@library_installer)
+      library_command = cli.instance_variable_get(:@library_command)
+
+      expect(library_command.instance_variable_get(:@installer)).to equal(installer)
+      expect(installer.instance_variable_get(:@dirs)).to be_a(Workspace::LibraryInstallDirs)
+      expect(installer.instance_variable_get(:@dirs).instance_variable_get(:@config_resolver)).to be_a(Workspace::ConfigResolver)
+    end
   end
 end

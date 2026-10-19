@@ -537,6 +537,7 @@ RSpec.describe Workspace::Commands::Library do
 
     before do
       allow(checkout).to receive(:resolve).with("app", working_dir: anything, allow_detached: true).and_return(target)
+      allow(installer).to receive(:relative_path) { |kind, name, **| File.join(".claude", "#{kind}s", (kind == "agent") ? "#{name}.md" : name) }
       command.add(kind: "skill", path: skill_dir("global body"), name: "tests", cwd: cwd)
       command.add(kind: "skill", path: skill_dir("project body"), name: "tests", scope: "project", cwd: cwd)
       command.add(kind: "play", body: "p", name: "kickoff", cwd: cwd)
@@ -552,16 +553,16 @@ RSpec.describe Workspace::Commands::Library do
     end
 
     it "installs the entry from the target workspace's project store, reporting the document" do
-      expect(installer).to receive(:install) do |entry, worktree:, force:, dry_run:|
+      expect(installer).to receive(:install) do |entry, worktree:, project:, force:, dry_run:|
         expect(entry).to include("ref" => "skill/tests", "scope" => "project")
-        expect([worktree, force, dry_run]).to eq([cwd, true, false])
+        expect([worktree, project, force, dry_run]).to eq([cwd, "app", true, false])
         {"result" => "installed", "path" => "#{cwd}/.claude/skills/tests"}
       end
 
       result = command.install("tests", name: "app", force: true, cwd: "/elsewhere")
 
       expect(result.to_h).to eq("schema_version" => 1, "ok" => true, "ref" => "skill/tests", "workspace" => "app",
-        "result" => "installed", "path" => "#{cwd}/.claude/skills/tests", "dry_run" => false)
+        "result" => "installed", "path" => "#{cwd}/.claude/skills/tests", "dry_run" => false, "user" => false)
       expect(output.string).to eq("Installed skill/tests at #{cwd}/.claude/skills/tests (workspace app).\n")
     end
 
@@ -583,9 +584,9 @@ RSpec.describe Workspace::Commands::Library do
     end
 
     it "uninstalls by a library ref, or by what is installed once the entry is gone, without touching the library" do
-      expect(installer).to receive(:uninstall).with("skill", "tests", worktree: cwd, dry_run: true, entry: a_hash_including("ref" => "skill/tests"), force: false)
+      expect(installer).to receive(:uninstall).with("skill", "tests", worktree: cwd, project: "app", dry_run: true, entry: a_hash_including("ref" => "skill/tests"), force: false)
         .and_return({"result" => "would_remove", "path" => "#{cwd}/.claude/skills/tests"})
-      expect(installer).to receive(:uninstall).with("agent", "gone", worktree: cwd, dry_run: false, entry: nil, force: false)
+      expect(installer).to receive(:uninstall).with("agent", "gone", worktree: cwd, project: "app", dry_run: false, entry: nil, force: false)
         .and_return({"result" => "absent", "path" => "#{cwd}/.claude/agents/gone.md"})
 
       expect(command.uninstall("tests", name: "app", dry_run: true, cwd: cwd).result).to eq("would_remove")
@@ -597,10 +598,24 @@ RSpec.describe Workspace::Commands::Library do
     end
 
     it "passes --force through to uninstall without reading the library entry" do
-      expect(installer).to receive(:uninstall).with("skill", "tests", worktree: cwd, dry_run: false, entry: nil, force: true)
+      expect(installer).to receive(:uninstall).with("skill", "tests", worktree: cwd, project: "app", dry_run: false, entry: nil, force: true)
         .and_return({"result" => "removed", "path" => "#{cwd}/.claude/skills/tests"})
 
       expect(command.uninstall("skill/tests", name: "app", force: true, cwd: cwd).result).to eq("removed")
+    end
+
+    it "installs at user level with no workspace, from the working directory's library" do
+      expect(checkout).not_to receive(:resolve)
+      expect(installer).to receive(:install_user) do |entry, force:, dry_run:|
+        expect(entry).to include("ref" => "skill/tests", "scope" => "project")
+        expect([force, dry_run]).to eq([false, false])
+        {"result" => "installed", "path" => "/home/me/.agents/skills/tests"}
+      end
+
+      result = command.install("skill/tests", user: true, cwd: cwd)
+
+      expect(result.to_h).to include("workspace" => nil, "result" => "installed", "path" => "/home/me/.agents/skills/tests", "user" => true)
+      expect(output.string).to eq("Installed skill/tests at /home/me/.agents/skills/tests (user level).\n")
     end
 
     it "reports a dry-run install as would_install" do

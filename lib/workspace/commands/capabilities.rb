@@ -39,7 +39,7 @@ module Workspace
         "pane_bindings" => 3,
         "library" => 5,
         "library_play" => 2,
-        "library_copy" => 2,
+        "library_copy" => 3,
         "instructions" => 1,
         "restore" => 1,
         "workflow" => 2,

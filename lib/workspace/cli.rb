@@ -4371,7 +4371,7 @@ module Workspace
           "       workspace library add PATH|- --kind KIND [--as NAME] [--link] [--force] [--project [NAME]] [--dry-run] [--json]\n" \
           "       workspace library update REF PATH|- [--link] [--project [NAME]] [--dry-run] [--json]\n" \
           "       workspace library remove REF [--yes] [--project [NAME]] [--dry-run] [--json]\n" \
-          "       workspace library install REF [--name WS] [--force] [--dry-run] [--json]\n" \
+          "       workspace library install REF [--name WS | --user] [--force] [--dry-run] [--json]\n" \
           "       workspace library uninstall REF [--name WS] [--force] [--dry-run] [--json]"
         opts.separator ""
         opts.separator "A store of named plays, prompts, agents and skills under #{@config.library_dir}."
@@ -4396,9 +4396,11 @@ module Workspace
         opts.separator "  update    replace an existing entry's content, or repoint its link"
         opts.separator "  remove    delete the entry or its link from the store; the source file is never touched"
         opts.separator "  install   copy a library skill or agent into an existing workspace's checkout"
-        opts.separator "            (.claude/skills/NAME/ or .claude/agents/NAME.md), as start --skill/--agent does for"
-        opts.separator "            a new one: identical content is unchanged, different content needs --force, a path"
-        opts.separator "            the repo tracks is never overwritten; the copy is listed in info/exclude"
+        opts.separator "            (.claude/skills/NAME/ or .claude/agents/NAME.md unless library.install.skills_dir or"
+        opts.separator "            agents_dir says otherwise), as start --skill/--agent does for a new one: identical"
+        opts.separator "            content is unchanged, different content needs --force, a path the repo tracks is"
+        opts.separator "            never overwritten; the copy is listed in info/exclude. --user copies to your home-level"
+        opts.separator "            directory instead (library.install.user_skills_dir, user_agents_dir; ~/.claude/... by default)"
         opts.separator "  uninstall delete that copy from the checkout; a copy that differs from the library entry needs --force;"
         opts.separator "            the library entry and the info/exclude line stay"
         opts.separator ""
@@ -4408,6 +4410,7 @@ module Workspace
         opts.on("--as NAME", "add: the entry name (lowercase letters, digits and hyphens)") { |v| options[:name] = v }
         opts.on("--link", "add, update: store a symlink to PATH instead of a copy") { options[:link] = true }
         opts.on("--force", "add: replace an entry that has different content;", "install: replace a copy that has different content;", "uninstall: remove a copy that differs from the library entry") { options[:force] = true }
+        opts.on("--user", "install: copy to the user-level directory instead of a workspace") { options[:user] = true }
         opts.on("--yes", "remove: don't ask") { options[:yes] = true }
         opts.on("--global", "reads: only the global store") { options[:global] = true }
         opts.on("--builtin", "reads: only the entries that ship with workspace") { options[:builtin] = true }
@@ -4429,7 +4432,7 @@ module Workspace
     end
 
     def cmd_library(args)
-      options = {json: false, link: false, force: false, yes: false, dry_run: false}
+      options = {json: false, link: false, force: false, yes: false, dry_run: false, user: false}
       given = args.dup
       parser = library_parser(options)
       subcommand = args.shift if LIBRARY_SUBCOMMANDS.include?(args.first)
@@ -4490,9 +4493,13 @@ module Workspace
         end
         raise UsageError, "Unexpected argument: #{args.first}. Run 'workspace library --help'." if args.any?
         workspace = options[:project].is_a?(String) ? options[:project] : nil
+        if options[:user]
+          raise UsageError, "--user is for library install; uninstall takes --name WS." unless subcommand == "install"
+          raise UsageError, "--user copies to the user-level directory, so it takes no --name." if options[:project]
+        end
         library_install_action(options) do
           if subcommand == "install"
-            @library_command.install(ref, name: workspace, force: options[:force], dry_run: options[:dry_run], cwd: @working_dir)
+            @library_command.install(ref, name: workspace, force: options[:force], dry_run: options[:dry_run], user: options[:user], cwd: @working_dir)
           else
             @library_command.uninstall(ref, name: workspace, force: options[:force], dry_run: options[:dry_run], cwd: @working_dir)
           end

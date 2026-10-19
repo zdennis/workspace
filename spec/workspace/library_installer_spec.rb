@@ -349,4 +349,92 @@ RSpec.describe Workspace::LibraryInstaller do
         .to raise_error(Workspace::Error) { |e| expect(e.code).to eq("library_path_outside") }
     end
   end
+
+  describe "with configured install directories" do
+    let(:home) { File.join(@dir, "home") }
+    let(:dirs) { instance_double(Workspace::LibraryInstallDirs) }
+    subject(:installer) { described_class.new(git: git, dirs: dirs) }
+
+    before do
+      allow(dirs).to receive(:relative) { |kind, **| (kind == "skill") ? ".agents/skills" : "vendor/agents" }
+      allow(dirs).to receive(:user) { |kind| File.join(home, (kind == "skill") ? ".agents/skills" : ".claude/agents") }
+    end
+
+    it "copies a skill and an agent into the configured directories and excludes those paths" do
+      skill = installer.install(entry("skill", "write-tests"), worktree: worktree, project: "app")
+      agent = installer.install(entry("agent", "reviewer"), worktree: worktree, project: "app")
+
+      expect(skill["path"]).to eq(File.join(worktree, ".agents", "skills", "write-tests"))
+      expect(agent["path"]).to eq(File.join(worktree, "vendor", "agents", "reviewer.md"))
+      expect(File.read(File.join(skill["path"], "scripts", "run.sh"))).to eq("echo\n")
+      expect(File.read(exclude).lines.map(&:chomp)).to include("/.agents/skills/write-tests/", "/vendor/agents/reviewer.md")
+      expect(File.exist?(File.join(worktree, ".claude", "skills", "write-tests"))).to be(false)
+      expect(status).to eq("")
+    end
+
+    it "asks the directories for the project it was given" do
+      expect(dirs).to receive(:relative).with("skill", project: "app").and_return(".agents/skills")
+
+      installer.install(entry("skill", "write-tests"), worktree: worktree, project: "app")
+    end
+
+    it "copy (for start) uses them too, and refuses a tracked path there" do
+      FileUtils.mkdir_p(File.join(worktree, ".agents", "skills", "write-tests"))
+      File.write(File.join(worktree, ".agents", "skills", "write-tests", "SKILL.md"), "mine\n")
+      run_git("-C", worktree, "add", "-f", ".agents")
+
+      expect(installer.copy(entry("agent", "reviewer"), worktree: worktree, project: "app")["path"]).to eq(File.join(worktree, "vendor", "agents", "reviewer.md"))
+      expect(installer.copy(entry("skill", "write-tests"), worktree: worktree, project: "app")["outcome"]).to eq("skipped_tracked")
+    end
+
+    it "uninstalls from the configured directory" do
+      installer.install(entry("skill", "write-tests"), worktree: worktree)
+
+      expect(installer.uninstall("skill", "write-tests", worktree: worktree)["result"]).to eq("removed")
+      expect(File.exist?(File.join(worktree, ".agents", "skills", "write-tests"))).to be(false)
+      expect { installer.uninstall("skill", "../x", worktree: worktree) }
+        .to raise_error(Workspace::Error) { |e| expect(e.code).to eq("library_path_outside") }
+    end
+
+    it "refuses a symlinked configured directory with path_linked" do
+      FileUtils.mkdir_p(File.join(@dir, "elsewhere"))
+      File.symlink(File.join(@dir, "elsewhere"), File.join(worktree, ".agents"))
+
+      expect { installer.install(entry("skill", "write-tests"), worktree: worktree) }
+        .to raise_error(Workspace::Error) { |e| expect(e.code).to eq("path_linked") }
+      expect(Dir.children(File.join(@dir, "elsewhere"))).to be_empty
+    end
+
+    describe "#install_user" do
+      it "installs, reports unchanged, and writes nothing on a dry run or to the repo" do
+        dest = File.join(home, ".agents", "skills", "write-tests")
+
+        expect(installer.install_user(entry("skill", "write-tests"), dry_run: true)).to eq("result" => "would_install", "path" => dest)
+        expect(File.exist?(dest)).to be(false)
+        expect(installer.install_user(entry("skill", "write-tests"))).to eq("result" => "installed", "path" => dest)
+        expect(File.read(File.join(dest, "scripts", "run.sh"))).to eq("echo\n")
+        expect(installer.install_user(entry("skill", "write-tests"))["result"]).to eq("unchanged")
+        expect(File.exist?(exclude) ? File.read(exclude) : "").not_to include("write-tests")
+      end
+
+      it "refuses different content unless forced, as install does" do
+        dest = File.join(home, ".claude", "agents", "reviewer.md")
+        FileUtils.mkdir_p(File.dirname(dest))
+        File.write(dest, "mine\n")
+
+        expect { installer.install_user(entry("agent", "reviewer")) }
+          .to raise_error(Workspace::Error) { |e| expect(e.code).to eq("library_install_exists") }
+        expect(File.read(dest)).to eq("mine\n")
+        expect(installer.install_user(entry("agent", "reviewer"), force: true)["result"]).to eq("installed")
+        expect(File.read(dest)).to eq("You review.\n")
+      end
+
+      it "refuses a name that climbs out of the directory" do
+        bad = entry("agent", "reviewer").merge("name" => "../x")
+
+        expect { installer.install_user(bad) }
+          .to raise_error(Workspace::Error) { |e| expect(e.code).to eq("library_path_outside") }
+      end
+    end
+  end
 end
