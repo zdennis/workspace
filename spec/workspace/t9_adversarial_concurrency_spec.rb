@@ -73,7 +73,7 @@ class T9ITerm
     @commands = []
   end
 
-  def session_map = {}
+  def session_map = {@uid => "1"}
 
   def find_existing_sessions(_state, live_sessions: nil) = {}
 

@@ -358,7 +358,7 @@ module Workspace
         missing_panes = new_projects - new_session_ids.keys
         if missing_panes.any?
           log("Retrying #{missing_panes.size} missing launcher pane(s)...")
-          retry_wid = @iterm.find_launcher_window_id(new_session_ids.transform_values { |uid| {"unique_id" => uid} }) || launcher_wid
+          retry_wid = @iterm.find_launcher_window_id(new_session_ids.transform_values { |uid| {"unique_id" => uid} }, live_sessions: @iterm.session_map) || launcher_wid
           retried = @iterm.create_launcher_panes(missing_panes, commands, launcher_wid: retry_wid)
           new_session_ids = new_session_ids.merge(verified_panes(retried))
         end

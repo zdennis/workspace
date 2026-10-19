@@ -206,7 +206,7 @@ RSpec.describe Workspace::Commands::Launch do
       end
 
       it "keeps the panes when iTerm cannot list its sessions" do
-        allow(iterm).to receive(:session_map).and_return({}, *[nil]).and_invoke(->{ {} }, ->{ raise Workspace::Error, "no iTerm" })
+        allow(iterm).to receive(:session_map).and_invoke(-> { {} }, -> { raise Workspace::Error, "no iTerm" })
 
         command.call(["proj1"])
 
