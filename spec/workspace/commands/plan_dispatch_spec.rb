@@ -41,8 +41,9 @@ RSpec.describe Workspace::Commands::PlanDispatch do
   end
   let(:access) { Workspace::PlanAccess.new(notes: notes, tmux: tmux, event_log: event_log) }
   subject(:command) do
-    described_class.new(access: access, snapshot_client: snapshot_client, sender: sender, binder: binder, library: library,
-      runner: runner, readiness: readiness, main_agent: main_agent, tmux: tmux, prompt_timeout: 30, output: output)
+    panes = Workspace::PaneDispatch.new(snapshot_client: snapshot_client, sender: sender, binder: binder, library: library,
+      runner: runner, readiness: readiness, main_agent: main_agent, tmux: tmux, prompt_timeout: 30)
+    described_class.new(access: access, panes: panes, library: library, output: output)
   end
   let(:plan_command) do
     Workspace::Commands::Plan.new(notes: notes, access: access, dispatch: command, catalog: instance_double(Workspace::ProjectCatalog), groups: instance_double(Workspace::ProjectGroups),

@@ -227,6 +227,7 @@ require_relative "workspace/transcript_label"
 require_relative "workspace/session_monitor"
 require_relative "workspace/scan_slot_limiter"
 require_relative "workspace/agent_provider"
+require_relative "workspace/pane_dispatch"
 require_relative "workspace/file_backup"
 require_relative "workspace/process_group_terminator"
 require_relative "workspace/process_holder_stopper"
@@ -537,8 +538,9 @@ module Workspace
     plan_config = PlanConfig.new(config_resolver: config_resolver, error_output: error_output)
     plan_state = PlanState.new
     plan_access = PlanAccess.new(notes: notes_command, tmux: tmux, event_log: event_log)
-    plan_dispatch_command = Commands::PlanDispatch.new(access: plan_access, snapshot_client: agent_snapshot_client, sender: send_command,
-      binder: binding_command, library: library, runner: run_command, readiness: agent_readiness, main_agent: main_agent, tmux: tmux, output: output)
+    pane_dispatch = PaneDispatch.new(snapshot_client: agent_snapshot_client, sender: send_command, binder: binding_command, library: library,
+      runner: run_command, readiness: agent_readiness, main_agent: main_agent, tmux: tmux)
+    plan_dispatch_command = Commands::PlanDispatch.new(access: plan_access, panes: pane_dispatch, library: library, output: output)
     plan_task_command = Commands::PlanTask.new(access: plan_access, output: output)
     plan_command = Commands::Plan.new(notes: notes_command, access: plan_access, dispatch: plan_dispatch_command, catalog: project_catalog, groups: project_groups,
       plan_state: plan_state, plan_config: plan_config, snapshot_client: agent_snapshot_client, ask_store_for: ask_store_for, task_store: task_store, output: output)

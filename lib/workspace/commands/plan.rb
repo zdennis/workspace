@@ -26,7 +26,7 @@ module Workspace
       JSON_SCHEMA_VERSION = 1
 
       # Seconds the agent daemon may take to answer.
-      DAEMON_TIMEOUT = PlanDispatch::DAEMON_TIMEOUT
+      DAEMON_TIMEOUT = PaneDispatch::DAEMON_TIMEOUT
 
       # @param notes [Workspace::Commands::Notes] answers where a workspace's notes are
       # @param access [Workspace::PlanAccess] finds the plan, writes its status, records `plan_changed`

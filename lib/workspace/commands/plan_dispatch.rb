@@ -20,10 +20,7 @@ module Workspace
         "Do not start any task."
 
       # The agent kinds a task may be sent to, and `--spawn` may start: every {AgentProvider}.
-      AGENT_KINDS = AgentProvider.all.map(&:key).freeze
-
-      # Seconds the agent daemon may take to answer.
-      DAEMON_TIMEOUT = 1.0
+      AGENT_KINDS = PaneDispatch::AGENT_KINDS
 
       # @param task_id [String]
       # @return [String] the line `start --task` gives the agent after the play
@@ -32,28 +29,13 @@ module Workspace
       end
 
       # @param access [Workspace::PlanAccess] finds the plan and writes its status
-      # @param snapshot_client [Workspace::AgentSnapshotClient] reads the panes' states from the daemon
-      # @param sender [Workspace::Commands::Send] types into a pane
-      # @param binder [Workspace::Commands::Binding] binds that pane to the plan play
-      # @param library [Workspace::Library] finds the built-in play
-      # @param runner [Workspace::Commands::Run] splits a new pane and starts an agent in it for `start --spawn`
-      # @param main_agent [Workspace::MainAgent] says which command starts a fresh agent of a kind for the workspace
-      # @param readiness [Workspace::AgentReadiness] waits for that agent before its task is typed
-      # @param tmux [Workspace::Tmux] names the workspace's session
-      # @param prompt_timeout [Numeric] seconds the new agent may take to be ready
+      # @param panes [Workspace::PaneDispatch] reads, picks, spawns, types into and binds the panes
+      # @param library [Workspace::Library] finds the built-in play and words its prompt
       # @param output [IO] output stream
-      def initialize(access:, snapshot_client:, sender:, binder:, library:, runner:, readiness:, main_agent:, tmux:,
-        prompt_timeout: AgentReadiness::DEFAULT_TIMEOUT, output: $stdout)
+      def initialize(access:, panes:, library:, output: $stdout)
         @access = access
-        @snapshot_client = snapshot_client
-        @sender = sender
-        @binder = binder
+        @panes = panes
         @library = library
-        @runner = runner
-        @main_agent = main_agent
-        @readiness = readiness
-        @tmux = tmux
-        @prompt_timeout = prompt_timeout
         @output = output
       end
 
@@ -121,7 +103,7 @@ module Workspace
         owners = [plan.owner_pane, *left.map(&:owner)].compact.uniq
         return [[], []] if owners.empty?
         panes = begin
-          Array(@snapshot_client.fetch(name, timeout: DAEMON_TIMEOUT)["panes"])
+          @panes.panes(name)
         rescue Workspace::Error => e
           @output.puts "Could not read the panes to interrupt them: #{e.message}"
           return [[], [{"code" => "no_daemon", "message" => e.message}]]
@@ -154,11 +136,10 @@ module Workspace
       end
 
       def task_in_pane(name, file, plan, task, named)
-        panes = Array(fetch_panes(name)["panes"])
+        panes = @panes.panes(name)
         owner = task.owner && panes.find { |candidate| candidate["pane_id"] == task.owner }
         target = if named
-          id = @sender.locate(name, named)[:id]
-          panes.find { |candidate| candidate["pane_id"] == id } || {"pane_id" => id}
+          @panes.named(name, named, panes)
         else
           (owner if owner && AGENT_KINDS.include?(owner["kind"])) || main_pane(name, plan, panes)
         end
@@ -167,53 +148,38 @@ module Workspace
           raise Workspace::Error.new("Task #{task.id} of '#{name}' is being worked on in pane #{owner["pane_id"]}, so it was not sent to #{id}. " \
             "Pause that pane first, or send the task there.", code: "task_owned", details: {"workspace" => name, "task" => task.id, "owner" => owner["pane_id"]})
         end
-        unless AGENT_KINDS.include?(target["kind"])
-          raise Workspace::Error.new("Pane #{id} of '#{name}' runs no coding agent the agent daemon knows, so the task was not typed into it.",
-            code: "no_agent_pane", details: {"workspace" => name, "pane" => id})
-        end
+        @panes.require_agent(name, target, "task")
         if target["state"] == "working" && task.owner == id
           @access.write_status(name, file, "active")
           @output.puts "Task #{task.id} of the plan for #{name} is already being worked on in pane #{id}."
           return task_row("already_working", file, task, pane: id)
         end
-        refuse_busy(name, target)
+        @panes.refuse_busy(name, target, "task")
         deliver_task(name, file, task, id, "sent")
-      end
-
-      def refuse_busy(name, pane)
-        id = pane["pane_id"]
-        if pane["state"] == "waiting"
-          raise Workspace::Error.new("Pane #{id} of '#{name}' is waiting for an answer, so nothing was typed. Answer it, then start the task again.",
-            code: "pane_busy", details: {"workspace" => name, "pane" => id, "state" => "waiting"})
-        end
-        return unless pane["state"] == "working"
-        raise Workspace::Error.new("Pane #{id} of '#{name}' is working on something else, so nothing was typed. Send the task to another pane, " \
-          "or use --spawn.", code: "pane_busy", details: {"workspace" => name, "pane" => id, "state" => "working"})
       end
 
       def task_by_spawn(name, file, task, kind)
         if task.owner
-          owner = Array(fetch_panes(name)["panes"]).find { |candidate| candidate["pane_id"] == task.owner }
+          owner = @panes.panes(name).find { |candidate| candidate["pane_id"] == task.owner }
           if owner && owner["state"] == "working"
             raise Workspace::Error.new("Task #{task.id} of '#{name}' is being worked on in pane #{task.owner}, so no new agent was started. Pause that pane first.",
               code: "task_owned", details: {"workspace" => name, "task" => task.id, "owner" => task.owner})
           end
         end
-        provider = AgentProvider.find(kind)
-        id = @runner.call(name, @main_agent.spawn_command(name, kind), split: true)
-        ready = @readiness.wait(@tmux.session_name_for(name), deadline: @readiness.deadline_in(@prompt_timeout), only_pane: id)
-        unless ready.ready?
-          message = "Started #{provider.label} in new pane #{id}, but it was not ready for the task in #{@prompt_timeout}s (#{ready.reason}); nothing was typed."
-          return task_row("failed", file, task, reason: "prompt_not_sent", message: message, pane: id)
+        spawned = @panes.spawn(name, kind)
+        unless spawned.ready?
+          message = "Started #{spawned.label} in new pane #{spawned.pane}, but it was not ready for the task in #{@panes.prompt_timeout}s " \
+            "(#{spawned.ready.reason}); nothing was typed."
+          return task_row("failed", file, task, reason: "prompt_not_sent", message: message, pane: spawned.pane)
         end
-        deliver_task(name, file, task, id, "spawned")
+        deliver_task(name, file, task, spawned.pane, "spawned")
       end
 
       def deliver_task(name, file, task, id, outcome)
         @access.write_status(name, file, "active")
         play = @library.pack(PLAY, cwd: nil).first
-        @sender.deliver(name: name, pane: id, body: @library.play_prompt(play, self.class.task_prompt(task.id)))
-        notes = [bind_play(name, id, play, focus: "plan task #{task.id}"), record_task_owner(name, file, task, id)].compact
+        @panes.deliver(name, id, body: @library.play_prompt(play, self.class.task_prompt(task.id)))
+        notes = [@panes.bind_play(name, id, play, focus: "plan task #{task.id}"), record_task_owner(name, file, task, id)].compact
         @output.puts "Started task #{task.id} of the plan for #{name}: sent it to #{(outcome == "spawned") ? "new pane" : "pane"} #{id}."
         notes.each { |note| @output.puts note }
         task_row(outcome, file, task, pane: id, message: notes.empty? ? nil : notes.join(" "))
@@ -245,7 +211,7 @@ module Workspace
           @output.puts "Pane #{id} works, but workspace knows no interrupt key for #{pane["kind"] || "its agent"}; it stops before its next task."
           return entry.merge("outcome" => "unsupported")
         end
-        @sender.deliver(name: name, pane: id, keys: keys)
+        @panes.deliver(name, id, keys: keys)
         @output.puts "Interrupted pane #{id} (#{keys.join(" ")})."
         entry.merge("outcome" => "sent")
       rescue Workspace::Error => e
@@ -264,8 +230,7 @@ module Workspace
       end
 
       def start_in_pane(name, file, plan)
-        panes = Array(fetch_panes(name)["panes"])
-        pane = main_pane(name, plan, panes)
+        pane = main_pane(name, plan, @panes.panes(name))
         id = pane["pane_id"]
         if pane["state"] == "working"
           @output.puts "The plan for #{name} is already being worked on in pane #{id}."
@@ -277,39 +242,16 @@ module Workspace
         end
         drafting = plan.tasks.empty?
         play = @library.pack(PLAY, cwd: nil).first
-        @sender.deliver(name: name, pane: id, body: @library.play_prompt(play, drafting ? DRAFT_PROMPT : CONTINUE_PROMPT))
-        notes = [bind_play(name, id, play), record_owner(name, file, plan, id)].compact
+        @panes.deliver(name, id, body: @library.play_prompt(play, drafting ? DRAFT_PROMPT : CONTINUE_PROMPT))
+        notes = [@panes.bind_play(name, id, play), record_owner(name, file, plan, id)].compact
         @output.puts "Started the plan for #{name}: sent #{drafting ? "the draft request" : "it"} to pane #{id}."
         notes.each { |note| @output.puts note }
         @access.row(drafting ? "drafting" : "sent", file, pane: id, message: notes.empty? ? nil : notes.join(" "))
       end
 
-      def fetch_panes(name)
-        @snapshot_client.fetch(name, timeout: DAEMON_TIMEOUT)
-      rescue AgentSnapshotClient::Unavailable => e
-        raise Workspace::Error.new(e.message, code: "no_daemon", details: {"workspace" => name})
-      end
-
       # The plan's owner when it is a live Claude Code or Codex pane, else the first one.
       def main_pane(name, plan, panes)
-        agents = panes.select { |pane| %w[claude codex].include?(pane["kind"]) && pane["pane_id"] }
-        agents.find { |pane| pane["pane_id"] == plan.owner_pane } || agents.first ||
-          raise(Workspace::Error.new("No pane of '#{name}' runs Claude Code or Codex, so there is nowhere to send the plan.",
-            code: "no_agent_pane", details: {"workspace" => name}))
-      end
-
-      # A pane bound to a run or review keeps that binding; a play binding keeps its packs. A +focus+
-      # (the task sent) is repeated by the SessionStart hook after a `/clear`.
-      # @return [String, nil] a note when the pane could not be bound
-      def bind_play(name, pane, play, focus: nil)
-        existing = @binder.live(pane: pane)
-        return if existing && existing["kind"] != "play"
-        fields = @library.play_binding(play, packs: Array(existing && existing["packs"]))
-        fields = fields.merge("focus" => focus) if focus
-        @binder.bind(workspace: name, pane: pane, **fields)
-        nil
-      rescue Workspace::Error, SystemCallError => e
-        "Sent, but could not bind pane #{pane} to the play (#{e.message})."
+        @panes.main_pane(name, panes, preferred: plan.owner_pane, what: "the plan")
       end
 
       # @return [String, nil] a note when the owner could not be written
