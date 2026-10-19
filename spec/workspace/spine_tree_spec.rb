@@ -289,8 +289,8 @@ RSpec.describe Workspace::SpineTree do
       implement = doc["stages"].first
       cache = implement["children"][1]
 
-      expect(implement["rollup"]).to eq("status" => "in_progress", "counts" => {"completed" => 1, "in_progress" => 1, "not_started" => 0, "blocked" => 0, "skipped" => 0, "unknown" => 1})
-      expect(cache["rollup"]).to eq("status" => "blocked", "counts" => {"completed" => 0, "in_progress" => 0, "not_started" => 1, "blocked" => 1, "skipped" => 0, "unknown" => 0})
+      expect(implement["rollup"]).to eq("status" => "in_progress", "done" => 1, "total" => 3, "counts" => {"completed" => 1, "in_progress" => 1, "not_started" => 0, "blocked" => 0, "skipped" => 0, "unknown" => 1, "disputed" => 0})
+      expect(cache["rollup"]).to eq("status" => "blocked", "done" => 0, "total" => 2, "counts" => {"completed" => 0, "in_progress" => 0, "not_started" => 1, "blocked" => 1, "skipped" => 0, "unknown" => 0, "disputed" => 0})
       expect(implement["children"][0]).not_to have_key("rollup")
     end
 
@@ -320,13 +320,87 @@ RSpec.describe Workspace::SpineTree do
       stage("p").rollup["status"]
     end
 
-    it("is completed when all are completed or skipped, with one completed") { expect(rollup_for("done", "skip", "completed")).to eq("completed") }
+    it("is completed when every child that is not skipped is completed") { expect(rollup_for("done", "skip", "completed")).to eq("completed") }
     it("is blocked when any is blocked") { expect(rollup_for("done", "stuck", "todo")).to eq("blocked") }
     it("is in progress when any is in progress or completed") { expect(rollup_for("done", "todo")).to eq("in_progress") }
     it("is in progress for a lone in-progress child") { expect(rollup_for("active", "todo")).to eq("in_progress") }
     it("is not started when none started, counting unknown as not started") { expect(rollup_for("todo", "what")).to eq("not_started") }
-    it("is not started when everything is skipped") { expect(rollup_for("skip", "skip")).to eq("not_started") }
+    it("is skipped when everything is skipped") { expect(rollup_for("skip", "skip")).to eq("skipped") }
     it("ignores skipped children when others are underway") { expect(rollup_for("skip", "todo")).to eq("not_started") }
+
+    it "counts a folder-only child by its own roll-up" do
+      write("10-p.md", status: "todo")
+      write("10-p/10-a.md", status: "completed")
+      write("10-p/20-b/10-x.md", status: "completed")
+      write("10-p/20-b/20-y.md", status: "completed")
+
+      rollup = stage("p").rollup
+
+      expect(rollup).to include("status" => "completed", "done" => 2, "total" => 2)
+      expect(rollup["counts"]).to include("completed" => 2, "unknown" => 0)
+    end
+
+    it "takes a folder-only child whose sub-stages are all skipped as skipped" do
+      write("10-p.md", status: "todo")
+      write("10-p/10-a.md", status: "completed")
+      write("10-p/20-b/10-x.md", status: "skipped")
+
+      expect(stage("p").rollup).to include("status" => "completed", "done" => 1, "total" => 1)
+      expect(stage("p").rollup["counts"]).to include("skipped" => 1)
+    end
+
+    it "gives a folder-only child that is under way the in-progress state" do
+      write("10-p.md", status: "todo")
+      write("10-p/10-a/10-b.md", status: "active")
+
+      expect(stage("p").rollup).to include("status" => "in_progress", "done" => 0, "total" => 1)
+    end
+  end
+
+  describe Workspace::SpineRollup do
+    # [states, status, done, total], mirroring rollUp in workspace-ui's src/core/spine/model.ts
+    {
+      [] => nil,
+      %w[skipped] => ["skipped", 0, 0],
+      %w[skipped skipped] => ["skipped", 0, 0],
+      %w[completed] => ["completed", 1, 1],
+      %w[completed skipped] => ["completed", 1, 1],
+      %w[completed completed] => ["completed", 2, 2],
+      %w[completed blocked] => ["blocked", 1, 2],
+      %w[blocked not_started] => ["blocked", 0, 2],
+      %w[blocked in_progress] => ["blocked", 0, 2],
+      %w[in_progress not_started] => ["in_progress", 0, 2],
+      %w[completed not_started] => ["in_progress", 1, 2],
+      %w[disputed not_started] => ["in_progress", 0, 2],
+      %w[disputed] => ["in_progress", 0, 1],
+      %w[disputed completed] => ["in_progress", 1, 2],
+      %w[not_started not_started] => ["not_started", 0, 2],
+      %w[unknown not_started] => ["not_started", 0, 2],
+      %w[unknown] => ["not_started", 0, 1],
+      %w[skipped not_started] => ["not_started", 0, 1],
+      %w[skipped blocked] => ["blocked", 0, 1]
+    }.each do |states, expected|
+      it "rolls #{states.inspect} up to #{expected.inspect}" do
+        result = described_class.call(states)
+
+        if expected.nil?
+          expect(result).to be_nil
+        else
+          expect([result["status"], result["done"], result["total"]]).to eq(expected)
+          expect(result["counts"].values.sum).to eq(states.size)
+        end
+      end
+    end
+
+    it "counts a state it does not know as unknown" do
+      expect(described_class.call(%w[weird])["counts"]["unknown"]).to eq(1)
+    end
+
+    it "takes the roll-up's status for a stage with none of its own" do
+      expect(described_class.effective("unknown", {"status" => "completed"})).to eq("completed")
+      expect(described_class.effective("unknown", nil)).to eq("unknown")
+      expect(described_class.effective("blocked", {"status" => "completed"})).to eq("blocked")
+    end
   end
 
   describe "a folder without a stage file" do

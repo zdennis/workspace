@@ -32,9 +32,6 @@ module Workspace
     # Values `gates:` may hold.
     GATES = %w[plan checklist pushed pr ci merged review].freeze
 
-    # The counts a roll-up lists, in this order.
-    ROLLUP_STATES = %w[completed in_progress not_started blocked skipped unknown].freeze
-
     STAGE_FILE = /\A(\d{1,3})-([a-z0-9][a-z0-9-]{0,62})\.md\z/
     STAGE_DIR = /\A(\d{1,3})-([a-z0-9][a-z0-9-]{0,62})\z/
     private_constant :STAGE_FILE, :STAGE_DIR
@@ -64,21 +61,13 @@ module Workspace
       # @return [String] the `title:`, else the id with its hyphens read as spaces and a capital first letter
       def title = file&.value("title") || id.tr("-", " ").sub(/\A./, &:upcase)
 
-      # @return [Hash, nil] `status` over the children and `counts`; nil without children
+      # @return [String] the status, or, for a stage with none of its own and sub-stages, its roll-up's
+      def effective_state = SpineRollup.effective(status, rollup)
+
+      # @return [Hash, nil] {SpineRollup} over the children's effective states, computed bottom-up; nil without children
       def rollup
         return nil if children.empty?
-        counts = ROLLUP_STATES.to_h { |state| [state, 0] }
-        children.each { |child| counts[child.status] += 1 }
-        status = if counts["completed"].positive? && counts["completed"] + counts["skipped"] == children.size
-          "completed"
-        elsif counts["blocked"].positive?
-          "blocked"
-        elsif counts["in_progress"] + counts["completed"] > 0
-          "in_progress"
-        else
-          "not_started"
-        end
-        {"status" => status, "counts" => counts}
+        SpineRollup.call(children.map(&:effective_state))
       end
 
       # @return [Hash] the stage as `spine show --json` lists it

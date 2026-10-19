@@ -204,7 +204,7 @@ A link is never followed. A linked `spine`, stage file, `goal.md` or stage folde
       "depends_on": ["plan"], "gates": ["plan"], "artifacts": ["IMPLEMENTATION_PLAN.md"], "play": null, "agent": null,
       "updated": "2026-10-17T21:40:00Z", "updated_by": "claude %6", "modified_at": "2026-10-17T21:40:02Z",
       "done_when": {"total": 4, "done": 2, "items": [{"text": "...", "done": true, "line": 18}]},
-      "rollup": {"status": "in_progress", "counts": {"completed": 1, "in_progress": 1, "not_started": 1, "blocked": 0, "skipped": 0, "unknown": 0}},
+      "rollup": {"status": "in_progress", "done": 1, "total": 3, "counts": {"completed": 1, "in_progress": 1, "not_started": 1, "blocked": 0, "skipped": 0, "unknown": 0, "disputed": 0}},
       "warnings": [{"code": "bad_line", "line": 7, "message": "..."}],
       "truncated": false,
       "children": [{"path": "implement/api", "file": "30-implement/10-api.md", "...": "same shape"}]
@@ -229,7 +229,7 @@ A link is never followed. A linked `spine`, stage file, `goal.md` or stage folde
 | `kind`, `depends_on`, `gates` | After the checks above: always a known kind, and only known gates and sibling ids |
 | `modified_at` | The file's modification time, UTC, to the second |
 | `done_when` | The `## Done when` checklist: `total`, `done` and the `items` with their line |
-| `rollup` | Only on a stage with children. `status` is `completed` when every child is completed or skipped and one is completed; else `blocked` when any child is blocked; else `in_progress` when any is in progress or completed; else `not_started`. A child's own `status` is used; `unknown` counts as not started and a skipped child is not counted (it still shows in `counts`) |
+| `rollup` | Only on a stage with children: `status`, `done`, `total` and `counts`. It reads each child's effective state: the child's own `status`, or, when it has none (`unknown`, as a folder with no stage file always does) and has sub-stages of its own, the status of its own roll-up, worked out from the bottom up. Over the children that are not skipped (`total` counts them, `done` the completed ones): `skipped` when none are left; `completed` when all are completed; else `blocked` when any is blocked; else `in_progress` when any is in progress, completed or disputed; else `not_started`. A leaf with no status counts as not started. `counts` lists every child by effective state (`completed`, `in_progress`, `not_started`, `blocked`, `skipped`, `unknown`, `disputed`), skipped ones included; `disputed` is 0 until a verdict is evaluated. A skipped stage still reports its `rollup` |
 | `warnings` | `{"code", "line", "message"}`, plus `value` for the codes that name one; `line` is `null` for a warning about the whole file |
 | `truncated` (stage) | Whether only the start of the file was read |
 | `truncated` (top level) | `entries`, `stages` or `null` |
