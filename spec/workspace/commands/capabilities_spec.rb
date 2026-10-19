@@ -134,6 +134,12 @@ RSpec.describe Workspace::Commands::Capabilities do
       expect(document["features"]).to include("spine" => 2)
     end
 
+    it "reports spine_eval 1 once spine show has --evaluate" do
+      command.call(json: true)
+
+      expect(document["features"]).to include("spine_eval" => 1)
+    end
+
     it "reports spine_set 2 once spine set takes --owner and --note alone" do
       command.call(json: true)
 

@@ -6274,7 +6274,7 @@ RSpec.describe Workspace::CLI do
       cli.run(["spine", "show"])
 
       expect(detector).to have_received(:detect).with("/some/dir")
-      expect(spine_command).to have_received(:show).with(name: "detected-ws", json: false, stage: nil, body: false)
+      expect(spine_command).to have_received(:show).with(name: "detected-ws", json: false, stage: nil, body: false, evaluate: false)
     end
 
     it "takes the workspace as an argument, as --name, or as --name=" do
@@ -6282,22 +6282,30 @@ RSpec.describe Workspace::CLI do
       cli.run(["spine", "show", "--json", "--name=api"])
       cli.run(["spine", "show", "--name", "api", "api"])
 
-      expect(spine_command).to have_received(:show).with(name: "api", json: true, stage: nil, body: false).twice
-      expect(spine_command).to have_received(:show).with(name: "api", json: false, stage: nil, body: false)
+      expect(spine_command).to have_received(:show).with(name: "api", json: true, stage: nil, body: false, evaluate: false).twice
+      expect(spine_command).to have_received(:show).with(name: "api", json: false, stage: nil, body: false, evaluate: false)
+    end
+
+    it "passes --evaluate to show, and refuses it with set" do
+      cli.run(["spine", "show", "api", "--evaluate", "--json"])
+
+      expect(spine_command).to have_received(:show).with(name: "api", json: true, stage: nil, body: false, evaluate: true)
+      expect { cli.run(["spine", "set", "verify", "--status", "completed", "--evaluate"]) }.to raise_error(FakeSystemExit)
+      expect(error_output.string).to include("--evaluate are for")
     end
 
     it "passes --stage and --body to show, and a lone positional stays the workspace" do
       cli.run(["spine", "show", "api", "--stage", "implement/api", "--body", "--json"])
       cli.run(["spine", "show", "--stage=verify"])
 
-      expect(spine_command).to have_received(:show).with(name: "api", json: true, stage: "implement/api", body: true)
-      expect(spine_command).to have_received(:show).with(name: "detected-ws", json: false, stage: "verify", body: false)
+      expect(spine_command).to have_received(:show).with(name: "api", json: true, stage: "implement/api", body: true, evaluate: false)
+      expect(spine_command).to have_received(:show).with(name: "detected-ws", json: false, stage: "verify", body: false, evaluate: false)
     end
 
-    it "refuses --stage and --body on spine set" do
+    it "refuses --stage, --body and --evaluate on spine set" do
       expect { cli.run(["spine", "set", "verify", "--status", "done", "--stage", "x"]) }.to raise_error(FakeSystemExit)
 
-      expect(error_output.string).to include("--stage and --body are for 'spine show'")
+      expect(error_output.string).to include("--stage, --body and --evaluate are for 'spine show'")
     end
 
     it "fails with not_in_workspace outside a workspace" do

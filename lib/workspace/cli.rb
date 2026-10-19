@@ -6925,7 +6925,7 @@ module Workspace
 
     def spine_parser(options)
       OptionParser.new do |opts|
-        opts.banner = "Usage: workspace spine show [WORKSPACE] [--name WORKSPACE] [--stage STAGE-PATH] [--body] [--json]\n" \
+        opts.banner = "Usage: workspace spine show [WORKSPACE] [--name WORKSPACE] [--stage STAGE-PATH] [--body] [--evaluate] [--json]\n" \
                       "       workspace spine set [WORKSPACE] STAGE-PATH [--status VALUE] [--note TEXT] [--owner VALUE]\n" \
                       "                           [--if-revision REV] [--recursive] [--by LABEL] [--json]"
         opts.separator ""
@@ -6945,6 +6945,7 @@ module Workspace
         opts.on("--name NAME", "The workspace (default: the one detected from the current directory)") { |v| options[:name] = v }
         opts.on("--stage STAGE-PATH", "show: only that stage (with its sub-stages); unknown_stage when there is none") { |v| options[:stage] = v }
         opts.on("--body", "show: add the text after the frontmatter (16 KB at most) to the stage, or to the goal without --stage") { options[:body] = true }
+        opts.on("--evaluate", "show: judge each stage against the plan, git, the pull request, the review agent and the panes (reads gh and the agent daemon, up to about 5s; an unreadable source leaves its gates unchecked)") { options[:evaluate] = true }
         opts.on("--status VALUE", "set: not_started, in_progress, blocked, completed or skipped (or an alias such as done)") { |v| options[:status] = v }
         opts.on("--note TEXT", "set: one line of at most 300 characters; alone it changes only the note (empty clears it). With a new status and no --note the note is cleared") { |v| options[:note] = v }
         opts.on("--owner VALUE", "set: who works the stage: a pane id such as %6, you, or an agent label; one line of at most 64 characters (empty clears it). Not with --recursive") { |v| options[:owner] = v }
@@ -6959,6 +6960,7 @@ module Workspace
         opts.separator "  workspace spine show api.worktree-login --json"
         opts.separator "  workspace spine show --name=api.worktree-login --json"
         opts.separator "  workspace spine show --stage implement/api --body --json"
+        opts.separator "  workspace spine show --evaluate --json    # state, gate_results, disputes and current for every stage"
         opts.separator "  workspace spine set verify --status in_progress"
         opts.separator "  workspace spine set verify --owner %6 --note \"waiting on CI\""
         opts.separator "  workspace spine set api.worktree-login review --status=completed --note=\"2 nits, fixed\" --json"
@@ -7053,11 +7055,11 @@ module Workspace
       name = options[:name] || positional || @project_detector.detect(@working_dir)
       raise Error.new("No workspace found for #{@working_dir}. Run from inside a workspace or pass --name.", code: "not_in_workspace", details: {"path" => @working_dir}) unless name
 
-      @spine_command.show(name: name, json: options[:json], stage: options[:stage], body: options[:body] || false)
+      @spine_command.show(name: name, json: options[:json], stage: options[:stage], body: options[:body] || false, evaluate: options[:evaluate] || false)
     end
 
     def cmd_spine_set(args, options, parser)
-      raise UsageError, "--stage and --body are for 'spine show'; 'spine set' takes the stage path as an argument." if options[:stage] || options[:body]
+      raise UsageError, "--stage, --body and --evaluate are for 'spine show'; 'spine set' takes the stage path as an argument." if options[:stage] || options[:body] || options[:evaluate]
       raise UsageError, "Give at least one of --status, --note and --owner.\n\n#{parser.help}" unless options[:status] || options[:note] || options[:owner]
       positional = (args.size > 1 && !options[:name]) ? settle_name(args.shift) : nil
       path = args.shift

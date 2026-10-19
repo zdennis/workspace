@@ -384,7 +384,9 @@ module Workspace
     notes_command = Commands::Notes.new(notes_dir: NotesDir.new(git: git), project_config: project_config, config_resolver: config_resolver,
       git_exclude: GitExclude.new(git: git), output: output)
     notes_setup = NotesSetup.new(notes: notes_command, project_settings: project_settings)
-    spine_command = Commands::Spine.new(notes: notes_command, writer: SpineWriter.new, event_log: event_log, lock_dir: config.spine_lock_dir, output: output)
+    # Read through a closure: the review command SpineFacts needs is built further down.
+    spine_facts = nil
+    spine_command = Commands::Spine.new(notes: notes_command, writer: SpineWriter.new, event_log: event_log, lock_dir: config.spine_lock_dir, spine_facts: -> { spine_facts }, output: output)
     spine_config = SpineConfig.new(config_resolver: config_resolver)
     spine_init_command = Commands::SpineInit.new(notes: notes_command, library: library, project_config: project_config, git: git, task_store: task_store, spine_config: spine_config, output: output)
     main_agent = MainAgent.new(project_config: project_config)

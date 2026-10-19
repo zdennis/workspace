@@ -5,7 +5,7 @@ Read a workspace's plan spine, and set a stage's status. The spine is the stage 
 ## Usage
 
 ```sh
-workspace spine show [WORKSPACE] [--name WORKSPACE] [--stage STAGE-PATH] [--body] [--json]
+workspace spine show [WORKSPACE] [--name WORKSPACE] [--stage STAGE-PATH] [--body] [--evaluate] [--json]
 ```
 
 ## Options
@@ -15,13 +15,58 @@ workspace spine show [WORKSPACE] [--name WORKSPACE] [--stage STAGE-PATH] [--body
 | `WORKSPACE`, `--name WORKSPACE` | The workspace to read. Default: the one detected from the current directory. Give it once; two different names are a usage error |
 | `--stage STAGE-PATH` | Only that stage, with its sub-stages (`verify`, `implement/api`, as `path` reports). Its own flag because the one positional is the workspace. A path no stage has is `unknown_stage` with the paths there are, the one place `show` errors on content |
 | `--body` | Add the text after the frontmatter: to the stage with `--stage`, else to `goal` (stage bodies are never added to the whole tree). At most 16 KB (16384 bytes), cut on a character boundary; read without following links |
+| `--evaluate` | Judge every stage against the evidence and add `state`, `gate_results`, `disputes` and more (see [Evaluating the stages](#evaluating-the-stages)). Reads `gh` and the agent daemon; works with `--stage` and `--body` |
 | `--json` | Print one JSON document |
 
 `show` only reads. It creates no folder and writes no file, never follows a link, and never fails because of what a file holds: a problem is a `warnings` entry, and the exit status stays 0. The only errors are `unknown_workspace`, `notes_dir_unresolved` and `config_parse` (the notes directory can't be worked out), and `not_in_workspace`. A workspace with no `spine/` answers `exists: false`.
 
 Plain output is a short summary: one line per stage with its status, owner, `Done when` counts and the codes of its warnings.
 
-`spine` in [`capabilities`](README.capabilities.md) is `2` when this command has the roll-up described below, `--stage` and `--body`.
+`spine` in [`capabilities`](README.capabilities.md) is `2` when this command has the roll-up described below, `--stage` and `--body`; `spine_eval` is `1` when it has `--evaluate`.
+
+## Evaluating the stages
+
+`--evaluate` is opt-in; plain `show` stays a file read that starts no process. A stage's `status` is the file's claim. `--evaluate` checks it against the evidence (the gates the stage declares, its `## Done when` list and its sub-stages) and reports the verdict beside it. It is the same verdict as the app's (`src/core/spine/model.ts`, `facts.ts`).
+
+Each source is read at most once, whatever the number of stages: the plan file; the checkout's upstream and ahead count (and the branch's upstream config, to tell "never pushed" from "remote branch deleted"); one `gh pr view` (limit 5 s), only when `gh` is on the PATH and a stage declares `pr`, `ci`, `merged` or `review` (or `pushed` while git can't pass it); one agent-daemon snapshot (limit 1 s), which gives owner liveness and the review agent's state; and the open questions. `gh` and the daemon are read in parallel, so the worst case is about 5 s plus the local git calls. A source that can't answer leaves its gates `unchecked` and is named in `sources`; it never fails the command.
+
+`--stage PATH --evaluate` evaluates the whole tree (a verdict depends on siblings and children) and prints the one stage. `--body` works as above. A workspace with no `spine/` answers as plain `show` does, with `current: null` and every source `not_needed`.
+
+Added to each stage (children too), beside the keys above, which keep their meaning:
+
+```json
+{
+  "path": "verify", "status": "completed", "state": "disputed", "from_sub_stages": false, "looks_completed": false,
+  "gate_results": [
+    {"gate": "checklist", "result": "pass", "reason": "all_ticked", "message": "3 of 3 ticked"},
+    {"gate": "ci", "result": "fail", "reason": "checks_failing", "message": "1 of 6 checks failing"}
+  ],
+  "disputes": [{"kind": "gate", "gate": "ci", "message": "Marked completed, but CI is failing"}],
+  "waits_on": [], "owner_state": "idle", "owner_since": null, "dimmed": false, "current": null
+}
+```
+
+At the top level (and in the `--stage` document): `"evaluated": true`, `"evaluated_at"` (UTC), `"current"` (a path or `null`) and `"sources": {"plan", "git", "gh", "review", "panes"}`, each `ok`, `unavailable` or `not_needed`, so a reader can say why a gate reads unchecked.
+
+| Field | Meaning |
+|-------|---------|
+| `state` | The file's claim, or `disputed` when evidence holds a `completed` claim back. A stage with no status of its own (`unknown`) and sub-stages takes its roll-up's status, with `from_sub_stages: true` |
+| `looks_completed` | A `not_started` or `in_progress` stage with some evidence (a gate, a non-empty Done when, or completed sub-stages), every gate `pass`, nothing unticked and nothing open. It never moves the stage |
+| `gate_results` | One entry per declared gate: `gate`, `result` (`pass`, `fail`, `pending`, `unchecked`), `reason` (a stable code) and `message` (words). `pending` and `unchecked` never dispute |
+| `disputes` | Why a `completed` claim is held back. `kind` is `gate` (with `gate`), `done_when` (`done`, `total`) or `sub_stages` (`open`, `total`), each with a `message`. Unticked criteria are named once, as `done_when`, not again as a failing `checklist` gate |
+| `waits_on` | The sibling ids in `depends_on` that are not `completed` or `skipped` by evaluated state |
+| `current` (document) | The first top-level stage whose evaluated state is not `completed` or `skipped` (`disputed` and `unknown` count as not done) |
+| `current` (stage) | The same for the stage's children: a child path or `null` |
+| `owner_state` | Set when `owner` is a pane id: `working`, `waiting` (waiting, or has an open question), `idle` (an agent at rest, or a shell pane), `gone` (the daemon answered and the pane is not among its panes) or `unknown` (it didn't answer). `null` when the owner is `you`, a label or empty |
+| `owner_since` | When the owner pane started working, when `owner_state` is `working` |
+| `dimmed` | `true` under a skipped parent |
+| `rollup` | Over the children's evaluated states, so `counts.disputed` can be above 0 |
+
+Gate facts: `pushed` passes for a merged pull request; a deleted remote branch or an ahead count git could not give is `unchecked`; no upstream is a fail. `pr` reads "no pull request" (a fail) for a branch never pushed, and `unchecked` when the remote is gone and no merged pull request is on record, or when `gh` can't say. `review` is `unchecked` when the agent's state can't be read or the branch is 0 commits ahead; it passes when the agent is `done` and the review decision is not `CHANGES_REQUESTED`. `ci` is `unchecked` with no pull request or no checks. `checklist`, once declared, fails on an empty list.
+
+Plain output adds `Current:` and one line per stage with its `state` (and `(file says X)` when disputed), `looks completed`, the owner and its state, `waits on`, each dispute and each gate that is not a pass, and `Not read:` for a source that was unavailable.
+
+Gates move with git and CI, not with files, so a reader that keeps the evaluation on screen should run it again on a timer.
 
 ## Setting a status, note or owner
 
@@ -259,6 +304,6 @@ With `--stage`, the document is `{"schema_version", "ok", "workspace", "dir", "g
 | `not_in_workspace` | No workspace given and none detected from the current directory |
 | `notes_dir_unresolved` | The notes directory can't be worked out (see [`notes`](README.notes.md)) |
 | `unknown_stage` | `show --stage` or `set`: no stage has that path (`details.path`, `details.stages`) |
-| `usage` | A missing or unknown subcommand, an extra argument, or two different workspace names (`show`); `--stage` or `--body` with `set`; see above for `set` |
+| `usage` | A missing or unknown subcommand, an extra argument, or two different workspace names (`show`); `--stage`, `--body` or `--evaluate` with `set`; see above for `set` |
 | `unknown_template` | `spine init`: no `spine` library entry has that name (`details.template`, `details.scopes`, `details.source`; the message says where the name came from) |
 | `spine_unwritable` | `spine init`: `spine/` is a link, or the notes directory or a file could not be written (`details.path`); for `spine set` see above |

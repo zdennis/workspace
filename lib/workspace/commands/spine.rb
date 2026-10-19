@@ -27,6 +27,9 @@ module Workspace
       # Pane kinds that are not a coding agent.
       NOT_AGENTS = %w[shell unknown].freeze
 
+      # The sources of an evaluation that read nothing (no stages to judge, or no reader wired).
+      NOT_READ = %w[plan git gh review panes].to_h { |source| [source, "not_needed"] }.freeze
+
       # Characters a one-line value may not hold: controls, format characters and line separators.
       UNFIT = /[\p{Cc}\p{Cf}  ]/
 
@@ -37,9 +40,11 @@ module Workspace
       # @param env [Hash] environment lookup (`TMUX_PANE`)
       # @param clock [#call] returns the current Time
       # @param lock_wait [Numeric] seconds `set` waits for another writer before it gives up
+      # @param spine_facts [Workspace::SpineFacts, #call, nil] what `show --evaluate` reads the facts with; a callable is called when first needed
       # @param output [IO]
-      def initialize(notes:, writer: nil, event_log: nil, lock_dir: nil, env: ENV, clock: -> { Time.now }, lock_wait: 10, output: $stdout)
+      def initialize(notes:, writer: nil, event_log: nil, lock_dir: nil, env: ENV, clock: -> { Time.now }, lock_wait: 10, spine_facts: nil, output: $stdout)
         @notes = notes
+        @spine_facts = spine_facts
         @writer = writer
         @event_log = event_log
         @lock_dir = lock_dir
@@ -100,11 +105,15 @@ module Workspace
       # @param json [Boolean] print the document documented in docs/README.spine.md instead of a short summary
       # @param stage [String, nil] a stage path: show that one stage (and its sub-stages) instead of the tree
       # @param body [Boolean] add the text after the frontmatter: to the one stage, else to the goal
+      # @param evaluate [Boolean] judge every stage against the plan, git, the pull request, the review agent
+      #   and the panes (see {SpineEvaluator}); the only form of `show` that starts a process. A source that
+      #   can't answer leaves its gates `unchecked`; it never fails the command
       # @return [void]
       # @raise [Workspace::Error] `unknown_workspace`, `notes_dir_unresolved` or `config_parse`; `unknown_stage` for a +stage+ that is not there
-      def show(name:, json: false, stage: nil, body: false)
+      def show(name:, json: false, stage: nil, body: false, evaluate: false)
         tree = read(name)
         found = stage && (tree.find(stage) || raise(unknown_stage(name, stage, tree)))
+        return show_evaluated(name, tree, found, json, body) if evaluate
         if json
           head = {"schema_version" => JSON_SCHEMA_VERSION, "ok" => true, "workspace" => name}
           doc = if found
@@ -143,6 +152,95 @@ module Workspace
       end
 
       private
+
+      def show_evaluated(name, tree, found, json, body)
+        reading = tree.exists ? live_facts(name, tree) : nil
+        verdict = SpineEvaluator.call(tree, reading ? reading.facts : SpineEvaluator::Facts.new)
+        sources = reading ? reading.sources : NOT_READ
+        evaluated_at = @clock.call.utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+        verdict["goal"] = tree.to_h(body: true)["goal"] if body && !found
+        stage_doc = found && find_doc(verdict["stages"], found.path)
+        stage_doc&.merge!(SpineTree.body_keys(found.file)) if body
+        unless json
+          return print_evaluated_stage(stage_doc, sources, body, found) if found
+          return print_evaluated(name, tree, verdict, sources, body)
+        end
+        head = {"schema_version" => JSON_SCHEMA_VERSION, "ok" => true, "workspace" => name}
+        tail = {"evaluated" => true, "evaluated_at" => evaluated_at, "current" => verdict["current"], "sources" => sources}
+        doc = if found
+          head.merge("dir" => verdict["dir"], "goal" => verdict["goal"], "stage" => stage_doc).merge(tail)
+        else
+          head.merge(verdict).merge(tail)
+        end
+        @output.puts JSON.generate(doc)
+      end
+
+      def live_facts(name, tree)
+        reader = @spine_facts.respond_to?(:read) ? @spine_facts : @spine_facts&.call
+        return nil unless reader
+        reader.read(workspace: name, checkout: @notes.checkout_root(name), notes_dir: File.dirname(tree.dir),
+          gates: SpineFacts.gates_in(tree.stages))
+      end
+
+      def find_doc(docs, path)
+        docs.each do |doc|
+          return doc if doc["path"] == path
+          found = find_doc(doc["children"], path)
+          return found if found
+        end
+        nil
+      end
+
+      def print_evaluated(name, tree, verdict, sources, body)
+        unless tree.exists
+          @output.puts "#{name}: no spine/ in #{File.dirname(tree.dir)}"
+          return
+        end
+        count = 0
+        tree.each_stage { count += 1 }
+        @output.puts "#{name}: #{count} #{(count == 1) ? "stage" : "stages"} in #{tree.dir}"
+        @output.puts "Goal: #{tree.goal.value("title")}" if tree.goal&.value("title")
+        print_body(tree.goal, body)
+        @output.puts "Current: #{verdict["current"] || "none"}"
+        print_verdicts(verdict["stages"], 0)
+        print_sources(sources)
+        tree.warnings.each { |w| @output.puts "warning #{w["code"]}: #{w["message"]}" }
+      end
+
+      def print_evaluated_stage(doc, sources, body, stage)
+        @output.puts "Current: #{doc["current"] || "none"}"
+        print_verdicts([doc], 0)
+        stage.file&.value("description")&.then { |text| @output.puts "Description: #{text}" }
+        stage.all_warnings.each { |w| @output.puts "warning #{w["code"]}: #{w["message"]}" }
+        print_body(stage.file, body)
+        print_sources(sources)
+      end
+
+      def print_verdicts(docs, depth)
+        docs.each do |doc|
+          pad = "  " * (depth + 1)
+          line = "#{"  " * depth}#{doc["number"]} #{doc["id"]}  #{doc["state"]}"
+          line << " (file says #{doc["status"]})" if doc["state"] == "disputed"
+          line << " (from sub-stages)" if doc["from_sub_stages"]
+          line << "  looks completed" if doc["looks_completed"]
+          line << "  owner #{doc["owner"]}" if doc["owner"]
+          line << " (#{doc["owner_state"]})" if doc["owner_state"]
+          line << "  waits on #{doc["waits_on"].join(", ")}" unless doc["waits_on"].empty?
+          line << "  dimmed" if doc["dimmed"]
+          @output.puts line
+          doc["disputes"].each { |dispute| @output.puts "#{pad}#{dispute["message"]}" }
+          doc["gate_results"].each do |gate|
+            next if gate["result"] == "pass" || (gate["result"] == "fail" && doc["state"] == "disputed")
+            @output.puts "#{pad}#{gate["gate"]} #{gate["result"]}: #{gate["message"]}"
+          end
+          print_verdicts(doc["children"], depth + 1)
+        end
+      end
+
+      def print_sources(sources)
+        off = sources.reject { |_, status| status == "ok" || status == "not_needed" }
+        @output.puts "Not read: #{off.map { |source, status| "#{source} (#{status})" }.join(", ")}" unless off.empty?
+      end
 
       def one_line(text, flag, limit)
         return nil if text.nil?

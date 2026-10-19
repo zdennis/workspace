@@ -268,4 +268,142 @@ RSpec.describe Workspace::Commands::Spine do
       expect(output.string).to include("Goal: Ship it", "Build the thing.")
     end
   end
+
+  describe "#show with evaluate" do
+    let(:reader_class) do
+      Class.new do
+        attr_reader :calls
+
+        def initialize(result)
+          @result = result
+          @calls = []
+        end
+
+        def read(**args)
+          @calls << args
+          @result
+        end
+      end
+    end
+    let(:reader) { reader_class.new(result) }
+    let(:facts) { Workspace::SpineEvaluator::Facts.new(pr: Workspace::SpineEvaluator::PrFact.new(state: "open", checks: "fail", failing: 1, total: 6)) }
+    let(:result) { Workspace::SpineFacts::Result.new(facts: facts, sources: {"plan" => "ok", "git" => "ok", "gh" => "ok", "review" => "not_needed", "panes" => "unavailable"}, reasons: {}) }
+    let(:now) { Time.utc(2026, 10, 18, 12, 0, 0) }
+    subject(:command) { described_class.new(notes: notes, spine_facts: reader, clock: -> { now }, output: output) }
+
+    def document = JSON.parse(output.string)
+
+    before do
+      allow(notes).to receive(:checkout_root).with("api").and_return("/src/api")
+      write("goal.md", "---\ntitle: Ship it\n---\n# Goal\nBody.\n")
+      write("30-implement.md", "---\nstatus: done\ngates: [ci]\nowner: \"%6\"\n---\n# Implement\n")
+      write("40-verify.md", "---\nstatus: todo\ndepends_on: [implement]\n---\n# Verify\n")
+    end
+
+    it "evaluates every stage and adds the verdict keys and the top-level ones" do
+      command.show(name: "api", json: true, evaluate: true)
+
+      expect(document).to include("evaluated" => true, "evaluated_at" => "2026-10-18T12:00:00Z", "current" => "implement",
+        "sources" => result.sources, "ok" => true, "workspace" => "api")
+      implement, verify = document["stages"]
+      expect(implement).to include("status" => "completed", "state" => "disputed", "owner_state" => "unknown", "looks_completed" => false)
+      expect(implement["gate_results"].first).to include("gate" => "ci", "result" => "fail", "reason" => "checks_failing")
+      expect(implement["disputes"].first).to include("kind" => "gate", "gate" => "ci")
+      expect(verify).to include("state" => "not_started", "waits_on" => ["implement"])
+    end
+
+    it "reads the facts once, for the checkout, the notes directory and every declared gate" do
+      command.show(name: "api", json: true, evaluate: true)
+
+      expect(reader.calls).to eq([{workspace: "api", checkout: "/src/api", notes_dir: @notes, gates: ["ci"]}])
+    end
+
+    it "keeps plain show free of any read" do
+      command.show(name: "api", json: true)
+
+      expect(reader.calls).to be_empty
+      expect(document).not_to have_key("evaluated")
+    end
+
+    it "prints the one stage with the whole tree evaluated, and its body" do
+      command.show(name: "api", json: true, evaluate: true, stage: "implement", body: true)
+
+      expect(document.keys).to eq(%w[schema_version ok workspace dir goal stage evaluated evaluated_at current sources])
+      expect(document["stage"]).to include("path" => "implement", "state" => "disputed", "body" => "# Implement\n")
+      expect(document["current"]).to eq("implement")
+    end
+
+    it "adds goal.body without --stage" do
+      command.show(name: "api", json: true, evaluate: true, body: true)
+
+      expect(document["goal"]).to include("body" => "# Goal\nBody.\n")
+      expect(document["stages"].first).not_to have_key("body")
+    end
+
+    it "raises unknown_stage before reading anything" do
+      expect { command.show(name: "api", json: true, evaluate: true, stage: "nope") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("unknown_stage") }
+      expect(reader.calls).to be_empty
+    end
+
+    it "reads nothing and answers with no current when there is no spine/" do
+      FileUtils.rm_rf(File.join(@notes, "spine"))
+
+      command.show(name: "api", json: true, evaluate: true)
+
+      expect(reader.calls).to be_empty
+      expect(document).to include("exists" => false, "evaluated" => true, "current" => nil)
+      expect(document["sources"].values.uniq).to eq(["not_needed"])
+    end
+
+    it "evaluates without a wired reader, every gate unchecked" do
+      bare = described_class.new(notes: notes, clock: -> { now }, output: output)
+
+      bare.show(name: "api", json: true, evaluate: true)
+
+      expect(document["stages"].first["gate_results"].first["result"]).to eq("unchecked")
+    end
+
+    it "takes a callable that returns the reader" do
+      lazy = described_class.new(notes: notes, spine_facts: -> { reader }, clock: -> { now }, output: output)
+
+      lazy.show(name: "api", json: true, evaluate: true)
+
+      expect(reader.calls.size).to eq(1)
+    end
+
+    it "prints a compact verdict per stage and names the sources it could not read" do
+      command.show(name: "api", evaluate: true)
+
+      expect(output.string).to include("Current: implement", "30 implement  disputed (file says completed)  owner %6 (unknown)",
+        "Marked completed, but CI is failing", "40 verify  not_started  waits on implement", "Not read: panes (unavailable)")
+    end
+
+    it "finds a sub-stage by its path" do
+      write("30-implement/10-api.md", "---\nstatus: done\n---\nAPI\n")
+
+      command.show(name: "api", json: true, evaluate: true, stage: "implement/api")
+
+      expect(document["stage"]).to include("path" => "implement/api", "state" => "completed")
+    end
+
+    it "prints pending and unchecked gates, sub-stage roll-ups, looks completed and dimmed in text" do
+      write("50-ship.md", "---\nstatus: skipped\n---\n")
+      write("50-ship/10-tag.md", "---\nstatus: todo\n---\n")
+      write("60-docs.md", "---\nstatus: todo\n---\n## Done when\n- [x] written\n")
+      write("70-folder/10-a.md", "---\nstatus: done\n---\n")
+
+      command.show(name: "api", evaluate: true)
+
+      expect(output.string).to include("60 docs  not_started  looks completed")
+      expect(output.string).to match(/10 tag  not_started  dimmed/)
+      expect(output.string).to include("70 folder  completed (from sub-stages)")
+    end
+
+    it "prints one evaluated stage as text" do
+      command.show(name: "api", evaluate: true, stage: "verify", body: true)
+
+      expect(output.string).to include("40 verify  not_started", "# Verify")
+      expect(output.string).not_to include("implement  disputed")
+    end
+  end
 end

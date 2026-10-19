@@ -83,13 +83,16 @@ module Workspace
         nil
       end
 
-      private
-
+      # @param name [String] the workspace
+      # @return [String] its checkout root
+      # @raise [Workspace::Error] `unknown_workspace`
       def checkout_root(name)
         root = @project_config.project_root_for(name)
         raise Workspace::Error.new("Unknown workspace '#{name}'. Run 'workspace list --all' to see the names.", code: "unknown_workspace", details: {"name" => name}) unless root
         File.expand_path(root)
       end
+
+      private
 
       def resolve(name, root)
         view = @config_resolver.view(workspace: name)

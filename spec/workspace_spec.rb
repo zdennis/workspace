@@ -148,6 +148,16 @@ RSpec.describe Workspace do
       expect(spine.instance_variable_get(:@notes)).to equal(cli.instance_variable_get(:@notes_command))
     end
 
+    it "wires the spine command to SpineFacts, built over the review command" do
+      cli = Workspace.build_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new)
+
+      reader = cli.instance_variable_get(:@spine_command).instance_variable_get(:@spine_facts).call
+
+      expect(reader).to be_a(Workspace::SpineFacts)
+      expect(reader.instance_variable_get(:@review)).to be_a(Workspace::Commands::Review)
+      expect(reader.instance_variable_get(:@pull_request_status)).to be_a(Workspace::PullRequestStatus)
+    end
+
     it "gives finish the same pull request command that pr create runs" do
       cli = Workspace.build_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new)
 
