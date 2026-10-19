@@ -1,4 +1,6 @@
 require "tmpdir"
+require "timeout"
+require "rbconfig"
 
 RSpec.describe Workspace::State do
   let(:tmpdir) { Dir.mktmpdir }
@@ -191,6 +193,78 @@ RSpec.describe Workspace::State do
 
       loaded = new_state.load
       expect(loaded.keys).to contain_exactly("proj2", "proj3")
+    end
+
+    # A second process sets an entry and saves while this save sits between
+    # reading the log and renaming its file into place. Without a lock around
+    # the read and the rename, this save's older view lands last and the state
+    # file loses the other process's entry until some later save.
+    it "keeps another process's entry when its save lands while this save is writing" do
+      home = Dir.mktmpdir
+      home_config = Workspace::Config.new(workspace_dir: home)
+      # The child process reads these paths from its HOME.
+      allow(home_config).to receive(:state_file).and_return(File.join(home, ".workspace-state.json"))
+      allow(home_config).to receive(:event_log_file).and_return(File.join(home, ".workspace-events.jsonl"))
+      marker = File.join(home, "saving")
+      first = described_class.new(config: home_config, event_log: Workspace::EventLog.new(config: home_config))
+      first.load
+      first["proj-a"] = {"unique_id" => "uid-a"}
+
+      script = <<~CHILD
+        require "workspace"
+        config = Workspace::Config.new(workspace_dir: ENV["HOME"])
+        state = Workspace::State.new(config: config, event_log: Workspace::EventLog.new(config: config)).load
+        state["proj-b"] = {"unique_id" => "uid-b"}
+        File.write(#{marker.inspect}, "")
+        state.save
+      CHILD
+      env = {"HOME" => home, "XDG_STATE_HOME" => File.join(home, "state"),
+             "XDG_CONFIG_HOME" => File.join(home, "config"), "SKIP_SIMPLECOV" => "1"}
+      pid = nil
+      allow(File).to receive(:write).and_wrap_original do |original, path, *rest|
+        if path.end_with?(".tmp") && pid.nil?
+          pid = Process.spawn(env, RbConfig.ruby, "-I", File.expand_path("../../lib", __dir__), "-e", script,
+            out: File::NULL, err: File::NULL)
+          Timeout.timeout(30) { sleep 0.01 until File.exist?(marker) }
+          sleep 0.5
+        end
+        original.call(path, *rest)
+      end
+
+      begin
+        first.save
+      ensure
+        Timeout.timeout(30) { Process.wait(pid) } if pid
+      end
+
+      expect($?.success?).to be(true)
+      expect(JSON.parse(File.read(home_config.state_file)).keys).to contain_exactly("proj-a", "proj-b")
+    ensure
+      FileUtils.remove_entry(home)
+    end
+
+    it "saves without the lock once another holder keeps it past the wait" do
+      stub_const("Workspace::State::LOCK_WAIT", 0.05)
+      state = new_state.load
+      state["proj1"] = {"unique_id" => "uid1"}
+
+      File.open("#{state_file}.lock", File::RDWR | File::CREAT) do |held|
+        held.flock(File::LOCK_EX)
+        state.save
+      end
+
+      expect(JSON.parse(File.read(state_file)).keys).to eq(["proj1"])
+    end
+
+    it "saves without the lock when the lock file can't be opened" do
+      allow(File).to receive(:open).and_call_original
+      allow(File).to receive(:open).with("#{state_file}.lock", any_args).and_raise(Errno::EACCES)
+      state = new_state.load
+      state["proj1"] = {"unique_id" => "uid1"}
+
+      state.save
+
+      expect(JSON.parse(File.read(state_file)).keys).to eq(["proj1"])
     end
 
     it "writes each save through its own temp file and leaves none behind" do

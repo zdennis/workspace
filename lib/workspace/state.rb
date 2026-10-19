@@ -6,6 +6,9 @@ module Workspace
   # Wraps JSON-persisted workspace state for tracked sessions.
   # The event log is the source of truth; the state file is a materialized view.
   class State
+    # Seconds a save waits for the state file's lock before writing without it.
+    LOCK_WAIT = 5
+
     # @param config [Workspace::Config] configuration providing state_file path
     # @param event_log [Workspace::EventLog] append-only event log
     # @param logger [Workspace::Logger] debug logger
@@ -55,20 +58,22 @@ module Workspace
     # that can't be read leaves the state file as it was, rather than
     # writing it out empty.
     #
+    # The read of the log and the rename happen under an exclusive flock on
+    # a sidecar lock file. Without it, a save that read the log before
+    # another process's append could rename its file in after that
+    # process's save, and the state file would lose the other entry. A lock
+    # that can't be opened or taken within {LOCK_WAIT} seconds (a stuck
+    # holder, a filesystem without flock) does not stop the save: it writes
+    # anyway, as saves did before the lock.
+    #
     # @return [void]
     # @raise [Workspace::Error] if the event log can't be read
     def save
-      @data = @event_log.reconstruct(strict: true)
-      @logger.debug { "state: saving #{@data.keys.size} project(s) to #{@config.state_file}" }
-      backup_state_file
-      # Each save writes its own temp file, so two processes saving at once
-      # never rename one another's file out from under them.
-      tmp = "#{@config.state_file}.#{Process.pid}.#{SecureRandom.hex(4)}.tmp"
-      File.write(tmp, JSON.pretty_generate(@data))
-      File.rename(tmp, @config.state_file)
-    rescue
-      File.delete(tmp) if tmp && File.exist?(tmp)
-      raise
+      lock = open_lock
+      @logger.debug { "state: saving without the state file lock" } unless lock && acquire(lock)
+      write_state_file
+    ensure
+      lock&.close
     end
 
     # @param key [String]
@@ -144,6 +149,37 @@ module Workspace
     end
 
     private
+
+    def open_lock
+      File.open("#{@config.state_file}.lock", File::RDWR | File::CREAT, 0o600)
+    rescue SystemCallError => e
+      @logger.debug { "state: can't open the lock file (#{e.class}: #{e.message})" }
+      nil
+    end
+
+    def acquire(lock)
+      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + LOCK_WAIT
+      until lock.flock(File::LOCK_EX | File::LOCK_NB)
+        return false if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
+        sleep 0.01
+      end
+      true
+    rescue SystemCallError => e
+      @logger.debug { "state: can't lock the state file (#{e.class}: #{e.message})" }
+      false
+    end
+
+    def write_state_file
+      @data = @event_log.reconstruct(strict: true)
+      @logger.debug { "state: saving #{@data.keys.size} project(s) to #{@config.state_file}" }
+      backup_state_file
+      tmp = "#{@config.state_file}.#{Process.pid}.#{SecureRandom.hex(4)}.tmp"
+      File.write(tmp, JSON.pretty_generate(@data))
+      File.rename(tmp, @config.state_file)
+    rescue
+      File.delete(tmp) if tmp && File.exist?(tmp)
+      raise
+    end
 
     def backup_state_file
       src = @config.state_file
