@@ -42,7 +42,7 @@ RSpec.describe Workspace::Commands::PlanDispatch do
   let(:access) { Workspace::PlanAccess.new(notes: notes, tmux: tmux, event_log: event_log) }
   subject(:command) do
     panes = Workspace::PaneDispatch.new(snapshot_client: snapshot_client, sender: sender, binder: binder, library: library,
-      runner: runner, readiness: readiness, main_agent: main_agent, tmux: tmux, prompt_timeout: 30)
+      runner: runner, readiness: readiness, main_agent: main_agent, tmux: tmux, project_config: double("project_config", project_root_for: "/w/api"), prompt_timeout: 30)
     described_class.new(access: access, panes: panes, library: library, output: output)
   end
   let(:plan_command) do
@@ -487,7 +487,7 @@ RSpec.describe Workspace::Commands::PlanDispatch do
         result = start_task(spawn: "codex")
 
         expect(main_agent).to have_received(:spawn_command).with("api", "codex")
-        expect(runner).to have_received(:call).with("api", "codex --from-config", split: true)
+        expect(runner).to have_received(:call).with("api", "codex --from-config", split: true, cwd: "/w/api")
         expect(readiness).to have_received(:deadline_in).with(30)
         expect(readiness).to have_received(:wait).with("api", deadline: 99.0, only_pane: "%23")
         expect(sender).to have_received(:deliver).with(name: "api", pane: "%23", body: task_body)

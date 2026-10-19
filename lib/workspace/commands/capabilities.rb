@@ -80,7 +80,8 @@ module Workspace
         "projects_multi" => 1,
         "json_envelope" => 1,
         "remove" => 1,
-        "promote" => 1
+        "promote" => 1,
+        "split_cwd" => 1
       }.freeze
 
       # The exit statuses commands use, by meaning.

@@ -555,7 +555,7 @@ module Workspace
     plan_state = PlanState.new
     plan_access = PlanAccess.new(notes: notes_command, tmux: tmux, event_log: event_log)
     pane_dispatch = PaneDispatch.new(snapshot_client: agent_snapshot_client, sender: send_command, binder: binding_command, library: library,
-      runner: run_command, readiness: agent_readiness, main_agent: main_agent, tmux: tmux)
+      runner: run_command, readiness: agent_readiness, main_agent: main_agent, tmux: tmux, project_config: project_config)
     plan_dispatch_command = Commands::PlanDispatch.new(access: plan_access, panes: pane_dispatch, library: library, output: output)
     spine_start_command = Commands::SpineStart.new(spine: spine_command, panes: pane_dispatch, library: library, composer: instruction_composer,
       notes: notes_command, output: output)

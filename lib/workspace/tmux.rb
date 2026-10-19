@@ -668,8 +668,8 @@ module Workspace
     # @param pane [Integer, nil] pane index to split; nil targets the window (tmux picks active pane)
     # @param vertical [Boolean] true = side-by-side (-h), false = top/bottom (-v, default)
     # @return [Integer, nil] index of the newly created pane, or nil if the split failed
-    def split_window(session_name, window: "0", pane: nil, vertical: false)
-      split_pane(session_name, window: window, pane: pane, vertical: vertical)&.fetch(:index)
+    def split_window(session_name, window: "0", pane: nil, vertical: false, cwd: nil)
+      split_pane(session_name, window: window, pane: pane, vertical: vertical, cwd: cwd)&.fetch(:index)
     end
 
     # Splits a pane like {#split_window}, and reports the new pane's id too.
@@ -677,13 +677,15 @@ module Workspace
     # Uses `-P -F '#{pane_index} #{pane_id}'`, so the index and the id (e.g. `%23`)
     # both come from tmux itself.
     #
+    # @param cwd [String, nil] directory the new pane starts in (`-c`); without it the session's path
+    #   (tmux would otherwise use the working directory of the command that asked)
     # @return [Hash, nil] +{index: Integer, id: String}+, or nil if the split failed
-    def split_pane(session_name, window: "0", pane: nil, vertical: false)
+    def split_pane(session_name, window: "0", pane: nil, vertical: false, cwd: nil)
       target = session_target(session_name, pane ? "#{window}.#{pane}" : window)
       @logger.debug { "tmux: split-window #{vertical ? "-h" : "-v"} -t #{target}" }
       stdout, _, status = Open3.capture3(
         "tmux", "split-window", (vertical ? "-h" : "-v"), "-t", target,
-        "-P", "-F", "\#{pane_index} \#{pane_id}"
+        "-c", (cwd.to_s.empty? ? "\#{session_path}" : cwd.to_s), "-P", "-F", "\#{pane_index} \#{pane_id}"
       )
       return nil unless status.success?
       index, id = stdout.strip.split(" ", 2)

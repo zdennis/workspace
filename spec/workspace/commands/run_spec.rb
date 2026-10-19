@@ -117,8 +117,14 @@ RSpec.describe Workspace::Commands::Run do
       it "splits the last pane and sends command to the pane index tmux reported" do
         command.call("myproject", "tail -f log/dev.log", split: true)
 
-        expect(tmux).to have_received(:split_pane).with("myproject", pane: 2, vertical: false)
+        expect(tmux).to have_received(:split_pane).with("myproject", pane: 2, vertical: false, cwd: nil)
         expect(tmux).to have_received(:deliver).with("myproject", "0.3", "tail -f log/dev.log", enter: true)
+      end
+
+      it "starts the new pane in cwd" do
+        command.call("myproject", "claude", split: true, cwd: "/w/api")
+
+        expect(tmux).to have_received(:split_pane).with("myproject", pane: 2, vertical: false, cwd: "/w/api")
       end
 
       it "returns the id of the new pane" do
@@ -178,7 +184,7 @@ RSpec.describe Workspace::Commands::Run do
       it "splits side-by-side (vertical: true)" do
         command.call("myproject", "rails console", split: true, vertical: true)
 
-        expect(tmux).to have_received(:split_pane).with("myproject", pane: 2, vertical: true)
+        expect(tmux).to have_received(:split_pane).with("myproject", pane: 2, vertical: true, cwd: nil)
       end
     end
 

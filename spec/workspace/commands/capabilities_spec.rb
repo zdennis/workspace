@@ -187,6 +187,12 @@ RSpec.describe Workspace::Commands::Capabilities do
       expect(document["features"]).to include("spine_report" => 1)
     end
 
+    it "reports split_cwd 1 once splits start in the workspace folder" do
+      command.call(json: true)
+
+      expect(document["features"]).to include("split_cwd" => 1)
+    end
+
     it "reports pr_create 1 once pr create exists" do
       command.call(json: true)
 

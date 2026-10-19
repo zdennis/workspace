@@ -46,7 +46,7 @@ RSpec.describe Workspace::Commands::SpineStart do
   let(:launcher) { double("launcher") }
   let(:panes) do
     Workspace::PaneDispatch.new(snapshot_client: snapshot_client, sender: sender, binder: binder, library: library,
-      runner: runner, readiness: readiness, main_agent: main_agent, tmux: tmux, prompt_timeout: 30)
+      runner: runner, readiness: readiness, main_agent: main_agent, tmux: tmux, project_config: double("project_config", project_root_for: "/w/api"), prompt_timeout: 30)
   end
   subject(:command) { described_class.new(spine: spine, panes: panes, library: library, composer: composer, notes: notes, output: output) }
 
@@ -273,7 +273,7 @@ RSpec.describe Workspace::Commands::SpineStart do
     it "waits for the new agent, then writes it as the owner, types and binds" do
       doc = start(spawn: "codex")
 
-      expect(runner).to have_received(:call).with("api", "codex --from-config", split: true)
+      expect(runner).to have_received(:call).with("api", "codex --from-config", split: true, cwd: "/w/api")
       expect(readiness).to have_received(:wait).with("api", deadline: 9.0, only_pane: "%23")
       expect(steps.first[2]).to include("owner: \"%23\"", "updated_by: codex %23")
       expect(doc).to include("outcome" => "spawned", "pane" => "%23", "owner" => "%23")

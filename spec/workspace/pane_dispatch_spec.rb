@@ -10,9 +10,10 @@ RSpec.describe Workspace::PaneDispatch do
   let(:ready) { Workspace::AgentReadiness::Result.new(ready: true, pane: "0.2", pane_id: "%23", label: "Claude Code") }
   let(:readiness) { instance_double(Workspace::AgentReadiness, deadline_in: 9.0, wait: ready) }
   let(:tmux) { instance_double(Workspace::Tmux, session_name_for: "api") }
+  let(:project_config) { instance_double(Workspace::ProjectConfig, project_root_for: "/w/api") }
   subject(:dispatch) do
     described_class.new(snapshot_client: snapshot_client, sender: sender, binder: binder, library: library,
-      runner: runner, readiness: readiness, main_agent: main_agent, tmux: tmux, prompt_timeout: 30)
+      runner: runner, readiness: readiness, main_agent: main_agent, tmux: tmux, project_config: project_config, prompt_timeout: 30)
   end
 
   describe "#session_live?" do
@@ -68,8 +69,18 @@ RSpec.describe Workspace::PaneDispatch do
 
       expect(spawned).to have_attributes(pane: "%23", label: "Claude Code")
       expect(spawned).to be_ready
-      expect(runner).to have_received(:call).with("api", "claude", split: true)
+      expect(runner).to have_received(:call).with("api", "claude", split: true, cwd: "/w/api")
       expect(readiness).to have_received(:wait).with("api", deadline: 9.0, only_pane: "%23")
+    end
+  end
+
+  describe "#spawn without a known root" do
+    it "splits with no cwd" do
+      allow(project_config).to receive(:project_root_for).and_return(nil)
+
+      dispatch.spawn("api", "claude")
+
+      expect(runner).to have_received(:call).with("api", "claude", split: true, cwd: nil)
     end
   end
 

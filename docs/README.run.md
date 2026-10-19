@@ -47,7 +47,7 @@ A paste large enough to trigger Claude Code's own large-paste widget (the `[Past
 
 **Pane targeting** — by default the bottommost pane is used (highest pane index at invocation time). Use `--pane N` for a specific zero-based index, `--pane 0.1` for `window.pane` (as shown by `workspace sessions`), `--pane %19` for a tmux pane id (from `workspace sessions --json`), or `--pane bottom` / `--bottom` to be explicit.
 
-**Split panes** — `--split` creates a new horizontal pane below the bottommost pane, then sends the command there. `--split --vertical` splits side-by-side instead. The split uses `tmux split-window -P -F '#{pane_index} #{pane_id}'` to capture the new pane's index and id atomically.
+**Split panes** — `--split` creates a new horizontal pane below the bottommost pane, then sends the command there. `--split --vertical` splits side-by-side instead. The new pane starts in the workspace's folder, not the directory `workspace` ran in (`-c`: the workspace's root, else the session's path). The split uses `tmux split-window -P -F '#{pane_index} #{pane_id}'` to capture the new pane's index and id atomically.
 
 **Waiting for results** — `--wait` writes two UUID-keyed files to `~/.workspace-runs/` before sending anything to tmux:
 
