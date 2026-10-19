@@ -548,7 +548,7 @@ module Workspace
           reactivate      Reactivate Claude in a project's tmux pane
           rebase          Rebase a workspace's branch onto the default branch (--onto local|update|remote|upstream)
           relaunch        Stop and relaunch all active workspace projects
-          remove          Delete a stopped project's config, settings and state entry (not worktree projects)
+          remove          Forget a stopped project: delete its generated config and state (your files stay)
           repair          Rebuild state from live iTerm windows
           resize          Resize tmux panes for a running project
           restore         Bring back agent panes after a reboot: recreate them and resume their sessions
@@ -6163,7 +6163,7 @@ module Workspace
         opts.on("--yes", "Skip the confirmation prompt") { yes = true }
         opts.on("--dry-run", "List what would be removed; no prompt, nothing changes") { dry_run = true }
         opts.on("--json", "Print one action document (see docs/README.json.md) instead of text, which goes",
-          "to stderr; a refusal is the error envelope. The prompt still asks: pass --yes in scripts") { json = true }
+          "to stderr; a refusal is the error envelope. --json does not imply --yes: pass --yes in scripts") { json = true }
         opts.separator ""
         opts.separator "Examples:"
         opts.separator "  workspace remove myproject --dry-run    # see which files would go"

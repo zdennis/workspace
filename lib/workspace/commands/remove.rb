@@ -47,7 +47,7 @@ module Workspace
         verb = dry_run ? "Would remove" : "Remove"
         files.each { |path| @output.puts "#{verb}: #{path}" }
         @output.puts "#{verb} state entry: #{name}" if in_state
-        @output.puts "The project directory and its notes are not touched."
+        @output.puts "The project directory, its worktrees and its notes are not touched."
 
         unless yes || dry_run
           answer = Prompt.ask(@input, @output, "Remove workspace '#{name}'? [y/N] ", retry_flags: ["--yes"], destructive: true)&.strip
@@ -60,7 +60,11 @@ module Workspace
         backups = []
         unless dry_run
           files.each do |path|
-            backup = @file_backup.backup(path, quiet: true)
+            backup = begin
+              @file_backup.backup(path, quiet: true)
+            rescue SystemCallError => e
+              raise Workspace::Error, "Could not back up #{path} (#{e.message}); nothing was removed."
+            end
             raise Workspace::Error, "Could not back up #{path}; nothing was removed." unless backup
             backups << backup
           end
@@ -72,6 +76,7 @@ module Workspace
           end
           @output.puts "Removed workspace '#{name}'."
           backups.each { |path| @output.puts "  backup  #{path}" }
+          @output.puts "Restore by copying a backup back to its original path." if backups.any?
         end
         {"workspace" => name, "outcome" => dry_run ? "would_remove" : "removed",
          "files" => files, "backups" => backups, "state_entry" => in_state}
