@@ -4800,24 +4800,32 @@ module Workspace
 
     def cmd_hooks_uninstall(args)
       agent = nil
+      name = nil
+      project = nil
       dry_run = false
       json = false
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace hooks uninstall --agent KIND [--dry-run] [--json]"
+        opts.banner = "Usage: workspace hooks uninstall --agent KIND [--name WS | --project [NAME]] [--dry-run] [--json]"
         opts.separator ""
         opts.separator "Remove workspace's hooks from KIND's settings file: Codex's"
         opts.separator "$CODEX_HOME/hooks.json (default ~/.codex/hooks.json), or for claude"
-        opts.separator "this project's .claude/settings.json. Only handlers running"
+        opts.separator "the .claude/settings.json of the current directory's project, or of"
+        opts.separator "the checkouts --name or --project pick. Only handlers running"
         opts.separator "'workspace session-event' go; your own hooks and every other key stay."
         opts.separator "The file is backed up first. Running it again changes nothing."
         opts.separator "'workspace init', 'start' or 'doctor --fix' install them again."
         opts.separator ""
         opts.separator "Options:"
         opts.on("--agent KIND", "The agent whose hooks to remove: codex or claude") { |v| agent = v }
+        opts.on("--name WS", "claude: the checkout of workspace WS, not the current directory") { |v| name = v }
+        opts.on("--project [NAME]", "claude: every checkout of the project (main and worktrees); NAME is a project,",
+          "a path in it or a member workspace, default the current directory's") { |v| project = v.to_s.empty? || v }
         opts.on("--dry-run", "Say what would be removed, and change nothing") { dry_run = true }
-        opts.on("--json", "Print one action document") { json = true }
+        opts.on("--json", "Print one action document (exit 3 when some checkouts failed)") { json = true }
         opts.separator ""
         opts.separator "Examples:"
+        opts.separator "  workspace hooks uninstall --agent claude --project --dry-run"
+        opts.separator "  workspace hooks uninstall --agent claude --name my-feature"
         opts.separator "  workspace hooks uninstall --agent codex --dry-run"
         opts.separator "  workspace hooks uninstall --agent=codex --json"
       end
@@ -4825,7 +4833,11 @@ module Workspace
       raise UsageError, "Unexpected argument: #{args.first}\n\n#{parser.help}" if args.any?
       raise UsageError, "--agent is required.\n\n#{parser.help}" unless agent
 
+      raise UsageError, "--name and --project can't be combined.\n\n#{parser.help}" if name && project
+
       run_action("hooks uninstall", json: json) do
+        next hooks_uninstall_targets(agent, name, project, dry_run, json) if name || project
+
         result = @hooks_command.uninstall(agent: agent, dry_run: dry_run)
         outcome = if result["removed"].zero?
           "not_installed"
@@ -4839,6 +4851,28 @@ module Workspace
         end
         {results: [action_row(nil, outcome, **result.transform_keys(&:to_sym))], status: dry_run ? "dry_run" : nil}
       end
+    end
+
+    # `hooks uninstall --name/--project`: one row per checkout.
+    def hooks_uninstall_targets(agent, name, project, dry_run, json)
+      rows = @hooks_command.uninstall_in(agent: agent, name: name, project: project, dry_run: dry_run)
+      results = rows.map do |row|
+        extra = row.reject { |key, _| %w[workspace outcome reason message].include?(key) }
+        action_row(row["workspace"], row["outcome"], reason: row["reason"], message: row["message"], **extra.transform_keys(&:to_sym))
+      end
+      derived = JsonEnvelope.action_status(results)
+      unless json
+        results.each do |row|
+          label = row["workspace"] || row["checkout"]
+          @output.puts case row["outcome"]
+          when "failed", "skipped" then "#{label}: #{row["outcome"]}: #{row["message"]}"
+          when "not_installed" then "#{label}: no workspace hooks in #{row["path"]}; nothing to remove."
+          else "#{label}: #{(row["outcome"] == "removed") ? "Removed" : "Would remove"} #{row["removed"]} workspace hook(s) from #{row["path"]}#{" (backup: #{row["backup"]})" if row["backup"]}."
+          end
+        end
+      end
+      {results: results, status: (dry_run && derived == "ok") ? "dry_run" : nil,
+       exit_code: JsonEnvelope::ACTION_EXIT_CODES.fetch(derived)}
     end
 
     def cmd_session_event(args)

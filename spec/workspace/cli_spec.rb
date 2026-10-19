@@ -4729,6 +4729,97 @@ RSpec.describe Workspace::CLI do
       expect(JSON.parse(output.string)).to include("ok" => false, "code" => "usage")
     end
 
+    describe "--name and --project" do
+      let(:targeted) do
+        Class.new do
+          attr_reader :calls
+
+          def initialize(rows)
+            @rows = rows
+            @calls = []
+          end
+
+          def uninstall_in(**args)
+            @calls << args
+            @rows
+          end
+        end
+      end
+
+      def row(workspace, outcome, **extra)
+        {"workspace" => workspace, "checkout" => "/p/#{workspace}", "outcome" => outcome, "reason" => extra[:reason],
+         "message" => extra[:message], "agent" => "claude", "path" => "/p/#{workspace}/.claude/settings.json",
+         "removed" => (outcome == "removed") ? 2 : 0, "backup" => nil, "dry_run" => false}
+      end
+
+      it "passes --name and prints a line per checkout" do
+        command = targeted.new([row("main", "removed")])
+        cli, output, _ = build_test_cli(hooks_command: command)
+
+        cli.run(["hooks", "uninstall", "--agent", "claude", "--name=main"])
+
+        expect(command.calls).to eq([{agent: "claude", name: "main", project: nil, dry_run: false}])
+        expect(output.string).to include("main: Removed 2 workspace hook(s) from /p/main/.claude/settings.json.")
+      end
+
+      it "takes --project with a value, or bare for the current directory's project" do
+        command = targeted.new([row("main", "not_installed")])
+        cli, output, _ = build_test_cli(hooks_command: command)
+
+        cli.run(["hooks", "uninstall", "--agent", "claude", "--project", "app"])
+        cli.run(["hooks", "uninstall", "--agent", "claude", "--project"])
+
+        expect(command.calls.map { |c| c[:project] }).to eq(["app", true])
+        expect(output.string).to include("main: no workspace hooks in")
+      end
+
+      it "reports one row per checkout and exits 3 when only some failed" do
+        rows = [row("main", "removed"), row("wt", "failed", reason: "hook_settings_unreadable", message: "bad json")]
+        cli, output, _ = build_test_cli(hooks_command: targeted.new(rows))
+
+        expect { cli.run(["hooks", "uninstall", "--agent", "claude", "--project", "--json"]) }
+          .to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(3) }
+        doc = JSON.parse(output.string)
+        expect(doc).to include("status" => "partial")
+        expect(doc["results"].map { |r| r.values_at("workspace", "outcome", "path") }).to eq(
+          [["main", "removed", "/p/main/.claude/settings.json"], ["wt", "failed", "/p/wt/.claude/settings.json"]]
+        )
+        expect(doc["results"].last).to include("reason" => "hook_settings_unreadable", "checkout" => "/p/wt")
+      end
+
+      it "exits 3 without --json too, and exits 0 for a dry run" do
+        rows = [row("main", "removed"), row("wt", "failed", reason: "x", message: "bad")]
+        cli, output, _ = build_test_cli(hooks_command: targeted.new(rows))
+        expect { cli.run(["hooks", "uninstall", "--agent", "claude", "--project"]) }
+          .to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(3) }
+        expect(output.string).to include("wt: failed: bad")
+
+        cli, output, _ = build_test_cli(hooks_command: targeted.new([row("main", "would_remove")]))
+        cli.run(["hooks", "uninstall", "--agent", "claude", "--project", "--dry-run", "--json"])
+        expect(JSON.parse(output.string)).to include("status" => "dry_run")
+      end
+
+      it "exits 1 when every checkout failed, and prints a skipped checkout by its path" do
+        rows = [row("a", "failed", reason: "x", message: "bad"), row("b", "failed", reason: "x", message: "bad")]
+        cli, _, _ = build_test_cli(hooks_command: targeted.new(rows))
+        expect { cli.run(["hooks", "uninstall", "--agent", "claude", "--project", "--json"]) }
+          .to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+
+        skipped = row(nil, "skipped", reason: "checkout_missing", message: "/p/x does not exist").merge("checkout" => "/p/x")
+        cli, output, _ = build_test_cli(hooks_command: targeted.new([skipped]))
+        cli.run(["hooks", "uninstall", "--agent", "claude", "--project"])
+        expect(output.string).to include("/p/x: skipped: /p/x does not exist")
+      end
+
+      it "refuses --name with --project" do
+        cli, output, _ = build_test_cli(hooks_command: targeted.new([]))
+
+        expect { cli.run(["hooks", "uninstall", "--agent", "claude", "--name", "a", "--project", "b", "--json"]) }
+          .to raise_error(FakeSystemExit)
+        expect(JSON.parse(output.string)).to include("code" => "usage")
+      end
+    end
+
     it "rejects an extra argument" do
       cli, output, _ = build_test_cli(hooks_command: hooks_command.new(0))
 

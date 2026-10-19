@@ -5,7 +5,7 @@ Manage the hooks workspace installs into coding agents' own settings files. [`in
 ## Usage
 
 ```sh
-workspace hooks uninstall --agent KIND [--dry-run] [--json]
+workspace hooks uninstall --agent KIND [--name WS | --project [NAME]] [--dry-run] [--json]
 ```
 
 ## Options
@@ -13,6 +13,8 @@ workspace hooks uninstall --agent KIND [--dry-run] [--json]
 | Option | Description |
 |--------|-------------|
 | `--agent KIND` | The agent whose hooks to remove: `codex` or `claude` (any case). Required |
+| `--name WS` | `claude` only: the checkout of workspace `WS` instead of the current directory |
+| `--project [NAME]` | `claude` only: every checkout of the project, main and worktrees (a worktree without a workspace config too). `NAME` is a project name, a path in it or a member workspace; bare, it is the current directory's project. Not with `--name` |
 | `--dry-run` | Say what would be removed, and change nothing |
 | `--json` | Print one action document (below) |
 
@@ -24,9 +26,19 @@ The file is backed up first (`hooks.json.workspace-backup-<timestamp>`, see [`in
 
 `workspace init`, `start` and `doctor --fix` install the hooks again when Codex is on `PATH`; run `init --no-install-hooks` to skip that step.
 
+### Other checkouts (`--name`, `--project`)
+
+Without them, `claude` works on the checkout of the current directory. `--name WS` works on that workspace's checkout and `--project` on every checkout of the project; each gets its own file, backup and result. A checkout whose directory is gone is `skipped`; one whose file can't be read is `failed` and the others still go. Codex's file is user-level, so `--agent codex` with `--name` or `--project` (or both flags together) is a `usage` error. Unknown names fail with `unknown_workspace`, `not_in_workspace` or an uncoded `error` when no project is found.
+
+With `--name` or `--project` each result row also has `checkout` (the directory) and `workspace` (`null` for a worktree with no config); `path` is its settings file. `status` is `partial` and the exit code 3 when some checkouts failed, `failed` and 1 when all did, in text mode too. A row's `outcome` can also be `failed` (`reason` is the error code, such as `hook_settings_unreadable`) or `skipped` (`reason` `checkout_missing`).
+
+```sh
+workspace hooks uninstall --agent claude --project --dry-run --json
+```
+
 ### JSON output
 
-One [action document](README.json.md) with one row:
+One [action document](README.json.md) with one row (one per checkout with `--name`/`--project`):
 
 ```json
 {"schema_version":1,"ok":true,"action":"hooks uninstall","status":"ok",

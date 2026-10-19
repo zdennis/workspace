@@ -400,7 +400,6 @@ module Workspace
     layout_command = Commands::Layout.new(state: state, tmux: tmux, project_settings: project_settings, output: output)
     resize_command = Commands::Resize.new(tmux: tmux, layout_command: layout_command, output: output, error_output: error_output)
     init_command = Commands::Init.new(config: config, hook_installer: hook_installer, output: output, error_output: error_output, input: input)
-    hooks_command = Commands::Hooks.new(hook_installer: hook_installer)
     repair_command = Commands::Repair.new(state: state, iterm: iterm, window_manager: window_manager, output: output)
     cleanup_command = Commands::Cleanup.new(state: state, window_liveness: WindowLiveness.new(window_manager: window_manager), tmux: tmux, output: output, input: input)
     prune_command = Commands::Prune.new(state: state, project_config: project_config, project_settings: project_settings, git: git, stop_command: stop_command, output: output, input: input)
@@ -521,6 +520,7 @@ module Workspace
     finish_command = Commands::Finish.new(git: git, project_config: project_config, kill_command: kill_command, project_detector: project_detector, pull_request: pull_request_command, output: output, error_output: error_output, input: input)
     parent_command = Commands::Parent.new(lineage: lineage, project_config: project_config, output: output)
     project_catalog = ProjectCatalog.new(project_config: project_config, git: git)
+    hooks_command = Commands::Hooks.new(hook_installer: hook_installer, checkout: workspace_checkout, catalog: project_catalog)
     project_facts = ProjectFacts.new(tmux: tmux, state: state, config: config, lock_namespace: lock_namespace,
       lock_holder: lock_holder, dev: dev_command, agents: ProjectAgents.new(client: agent_snapshot_client),
       git: git, catalog: project_catalog, error_output: error_output)
