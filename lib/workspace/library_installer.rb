@@ -96,8 +96,8 @@ module Workspace
     # @param worktree [String] the checkout root
     # @param project [String, nil] the workspace or project whose `library.install.*` values apply
     # @param dry_run [Boolean] report and write nothing
-    # @param entry [Hash, nil] the library entry the copy came from; when given, a copy
-    #   that differs from it (or is a symlink) is refused unless +force+
+    # @param entry [Array<Hash>, Hash, nil] the library entries of that kind and name, in lookup order;
+    #   when given, a copy that matches none of them (or is a symlink) is refused unless +force+
     # @param force [Boolean] remove a locally modified copy
     # @return [Hash] "result" ("removed", "absent", or "would_remove" on a dry run) and "path"
     # @raise [Workspace::Error] codes `library_uninstall_modified`, `path_tracked`, `library_path_outside`
@@ -115,7 +115,7 @@ module Workspace
     # @param kind [String] "agent" or "skill"
     # @param name [String] a valid library name
     # @param dry_run [Boolean] report and write nothing
-    # @param entry [Hash, nil] the library entry the copy came from; see {#uninstall}
+    # @param entry [Array<Hash>, Hash, nil] the library entries the copy may have come from; see {#uninstall}
     # @param force [Boolean] remove a locally modified copy
     # @return [Hash] "result" ("removed", "absent", or "would_remove" on a dry run) and "path"
     # @raise [Workspace::Error] codes `library_uninstall_modified`, `library_path_outside`, `invalid_library_install_dir`
@@ -183,9 +183,11 @@ module Workspace
 
     def remove_copy(dest, entry:, force:, dry_run:)
       return {"result" => "absent", "path" => dest} unless File.exist?(dest) || File.symlink?(dest)
-      if entry && !force && modified?(dest, entry)
-        raise Error.new("#{dest} differs from #{entry["ref"]} in the library, so it may hold local edits; pass --force to remove it.",
-          code: "library_uninstall_modified", details: {"ref" => entry["ref"], "path" => dest},
+      candidates = [entry].flatten.compact
+      if candidates.any? && !force && candidates.all? { |e| modified?(dest, e) }
+        ref = candidates.first["ref"]
+        raise Error.new("#{dest} differs from #{ref} in the library, so it may hold local edits; pass --force to remove it.",
+          code: "library_uninstall_modified", details: {"ref" => ref, "path" => dest},
           retry_with: {"flags" => ["--force"], "destructive" => true})
       end
       return {"result" => "would_remove", "path" => dest} if dry_run

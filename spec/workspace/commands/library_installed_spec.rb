@@ -77,6 +77,44 @@ RSpec.describe Workspace::Commands::Library, "#installed" do
     ])
   end
 
+  describe "a copy of a shadowed entry" do
+    before do
+      add_entry("skill", "pdf-tools", "# Global\n")
+      add_entry("skill", "pdf-tools", "# Project\n", scope: "project")
+    end
+
+    it "reads as matching the store whose entry it equals, not modified" do
+      skill(File.join(app, ".claude/skills"), "pdf-tools", "# Global\n")
+
+      command.installed(cwd: app, json: true)
+
+      expect(json["copies"].first).to include("entry" => "global", "modified" => false)
+    end
+
+    it "reports the first-found scope, modified, when it matches neither" do
+      skill(File.join(app, ".claude/skills"), "pdf-tools", "# Edited\n")
+
+      command.installed(cwd: app, json: true)
+
+      expect(json["copies"].first).to include("entry" => "project", "modified" => true)
+    end
+
+    it "uninstalls it without --force in a workspace and at user level, but refuses one matching neither" do
+      skill(File.join(app, ".claude/skills"), "pdf-tools", "# Global\n")
+      expect(command.uninstall("skill/pdf-tools", name: "app", cwd: app).result).to eq("removed")
+
+      skill(File.join(home, ".claude/skills"), "pdf-tools", "# Global\n")
+      expect(command.uninstall("skill/pdf-tools", user: true, cwd: app).result).to eq("removed")
+
+      skill(File.join(app, ".claude/skills"), "pdf-tools", "# Edited\n")
+      expect { command.uninstall("skill/pdf-tools", name: "app", cwd: app) }
+        .to raise_error(Workspace::Error) { |e| expect(e.code).to eq("library_uninstall_modified") }
+      skill(File.join(home, ".claude/skills"), "pdf-tools", "# Edited\n")
+      expect { command.uninstall("skill/pdf-tools", user: true, cwd: app) }
+        .to raise_error(Workspace::Error) { |e| expect(e.code).to eq("library_uninstall_modified") }
+    end
+  end
+
   it "leaves out hand-made items that no entry and no exclude line names" do
     skill(File.join(app, ".claude/skills"), "mine")
     FileUtils.mkdir_p(File.join(app, ".claude/agents"))

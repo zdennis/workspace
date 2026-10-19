@@ -239,7 +239,7 @@ module Workspace
         return uninstall_user(ref, force: force, dry_run: dry_run, cwd: cwd) if user
         target = @checkout.resolve(name, working_dir: cwd, allow_detached: true)
         kind, entry_name = installed_kind(ref, target["path"], target["workspace"])
-        library_entry = force ? nil : library_entry_for(kind, entry_name, target["path"])
+        library_entry = force ? nil : library_entries_for(kind, entry_name, target["path"])
         found = @installer.uninstall(kind, entry_name, worktree: target["path"], project: target["workspace"], dry_run: dry_run, entry: library_entry, force: force)
         finish_install("#{kind}/#{entry_name}", target, found, dry_run, {"removed" => "Removed", "absent" => "Absent", "would_remove" => "Would remove"})
       end
@@ -267,13 +267,14 @@ module Workspace
         root = target ? target["path"] : cwd
         entries = @library.entries(@library.stores(cwd: root))
         copies = (kind ? [kind] : Workspace::Library::COPY_KINDS.keys).flat_map do |k|
-          effective = entries.select { |e| e["kind"] == k && e["effective"] }.to_h { |e| [e["name"], e] }
+          of_kind = entries.select { |e| e["kind"] == k }
+          effective = of_kind.select { |e| e["effective"] }.to_h { |e| [e["name"], e] }
           found = if target
             @installer.installed(k, worktree: root, project: target["workspace"], known: effective.keys)
           else
             @installer.installed_user(k, known: effective.keys)
           end
-          found.map { |c| installed_row(k, c, effective[c["name"]]) }
+          found.map { |c| installed_row(k, c, of_kind.select { |e| e["name"] == c["name"] }) }
         end
         workspace = target && target["workspace"]
         if json
@@ -313,28 +314,35 @@ module Workspace
         InstallResult.new(entry["ref"], nil, found["result"], found["path"], dry_run, true, entry)
       end
 
-      # `uninstall --user`: the copy is compared with the entry the working directory's project sees.
+      # `uninstall --user`: the copy is compared with the entries the working directory's project and global see.
       def uninstall_user(ref, force:, dry_run:, cwd:)
         kind, entry_name = installed_kind(ref, cwd, nil, user: true)
-        library_entry = force ? nil : library_entry_for(kind, entry_name, cwd)
+        library_entry = force ? nil : library_entries_for(kind, entry_name, cwd)
         found = @installer.uninstall_user(kind, entry_name, dry_run: dry_run, entry: library_entry, force: force)
         verb = {"removed" => "Removed", "absent" => "Absent", "would_remove" => "Would remove"}.fetch(found["result"])
         @output.puts "#{verb} #{kind}/#{entry_name} #{(found["result"] == "absent") ? "at" : "from"} #{found["path"]} (user level)."
         InstallResult.new("#{kind}/#{entry_name}", nil, found["result"], found["path"], dry_run, true)
       end
 
-      # The library entry an installed copy is compared with; nil when it is gone.
-      def library_entry_for(kind, name, root)
-        @library.copyable(kind, "#{kind}/#{name}", cwd: root)
-      rescue Error => e
-        raise unless e.code == "unknown_library_entry"
-        nil
+      # The library entries an installed copy may have come from: the entry of that
+      # kind and name in every store (project, global), the one a lookup would use
+      # first. nil when the entry is gone. The copy counts as unmodified when it
+      # matches any of them. Raises `library_source_missing` when entries exist but none can be read.
+      def library_entries_for(kind, name, root)
+        found = @library.entries(@library.stores(cwd: root), kind: kind).select { |e| e["name"] == name }
+        readable = found.select { |e| e["readable"] }
+        @library.copyable(kind, "#{kind}/#{name}", cwd: root) if found.any? && readable.empty?
+        readable.empty? ? nil : readable.map { |e| e.slice("ref", "kind", "name", "scope", "path") }
       end
 
-      def installed_row(kind, copy, entry)
+      # +entries+ are every entry of the copy's kind and name, effective first. `entry` is the
+      # scope of the one the copy matches, else of the first (with `modified` true).
+      def installed_row(kind, copy, entries)
+        match = entries.select { |e| e["readable"] }.find { |e| !@installer.modified?(copy["path"], e) }
+        shown = match || entries.first
         {"kind" => kind, "name" => copy["name"], "ref" => "#{kind}/#{copy["name"]}", "path" => copy["path"],
-         "entry" => entry && entry["scope"],
-         "modified" => entry ? (!entry["readable"] || @installer.modified?(copy["path"], entry)) : false}
+         "entry" => shown && shown["scope"],
+         "modified" => entries.any? && match.nil?}
       end
 
       def not_copyable(ref, kind)

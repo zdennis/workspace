@@ -585,7 +585,7 @@ RSpec.describe Workspace::Commands::Library do
     end
 
     it "uninstalls by a library ref, or by what is installed once the entry is gone, without touching the library" do
-      expect(installer).to receive(:uninstall).with("skill", "tests", worktree: cwd, project: "app", dry_run: true, entry: a_hash_including("ref" => "skill/tests"), force: false)
+      expect(installer).to receive(:uninstall).with("skill", "tests", worktree: cwd, project: "app", dry_run: true, entry: a_collection_including(a_hash_including("ref" => "skill/tests", "scope" => "project"), a_hash_including("scope" => "global")), force: false)
         .and_return({"result" => "would_remove", "path" => "#{cwd}/.claude/skills/tests"})
       expect(installer).to receive(:uninstall).with("agent", "gone", worktree: cwd, project: "app", dry_run: false, entry: nil, force: false)
         .and_return({"result" => "absent", "path" => "#{cwd}/.claude/agents/gone.md"})
@@ -655,7 +655,7 @@ RSpec.describe Workspace::Commands::Library do
 
     it "uninstalls at user level, comparing with the working directory's library entry" do
       expect(checkout).not_to receive(:resolve)
-      expect(installer).to receive(:uninstall_user).with("skill", "tests", dry_run: true, entry: a_hash_including("ref" => "skill/tests"), force: false)
+      expect(installer).to receive(:uninstall_user).with("skill", "tests", dry_run: true, entry: a_collection_including(a_hash_including("ref" => "skill/tests", "scope" => "project"), a_hash_including("scope" => "global")), force: false)
         .and_return({"result" => "would_remove", "path" => "/home/me/.claude/skills/tests"})
 
       result = command.uninstall("skill/tests", user: true, dry_run: true, cwd: cwd)
