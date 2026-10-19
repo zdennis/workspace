@@ -1,4 +1,5 @@
 require "open3"
+require "shellwords"
 
 module Workspace
   # Checks that all required dependencies are installed and configured.
@@ -26,10 +27,11 @@ module Workspace
     #   monitor's snapshot, to diagnose the context readability of panes whose
     #   agent workspace reads by scraping the pane itself (Codex); nil skips that check
     # @param name_migration [Workspace::NameMigration, nil] says which mixed-case workspaces are still to be renamed; nil skips that check
+    # @param project_catalog [Workspace::ProjectCatalog, nil] lists the known projects' repositories for the leftover promote snapshot check; nil skips it
     # @param working_dir [String] directory to detect the current project from
     # @param output [IO] output stream for results
     def initialize(config:, state:, hook_installer:, project_detector:, which: nil, git: nil,
-      pipeline_config: nil, hooks_config: nil, launch_mode: nil, project_settings: nil, plan: nil, snapshot_client: nil, name_migration: nil, working_dir: Dir.pwd, output: $stdout)
+      pipeline_config: nil, hooks_config: nil, launch_mode: nil, project_settings: nil, plan: nil, snapshot_client: nil, name_migration: nil, project_catalog: nil, working_dir: Dir.pwd, output: $stdout)
       @launch_mode = launch_mode || LaunchMode.new(project_settings: ProjectSettings.new(config: config), which: which)
       @config = config
       @state = state
@@ -43,6 +45,7 @@ module Workspace
       @plan = plan
       @snapshot_client = snapshot_client
       @name_migration = name_migration
+      @project_catalog = project_catalog
       @working_dir = working_dir
       @output = output
       @rows = []
@@ -84,6 +87,7 @@ module Workspace
       check_templates
       check_duplicate_window_ids
       check_mixed_case_workspaces
+      check_promote_snapshots
       check_session_monitoring
       # A failed --fix is a `fix` row, so `doctor --fix` still exits non-zero
       # when there was nothing it could actually do.
@@ -274,6 +278,39 @@ module Workspace
       list = pending.map { |entry| entry["remaining"].empty? ? entry["name"] : "#{entry["name"]} (#{entry["remaining"].join(", ")})" }
       add_row("mixed-case-workspaces", "warn", "workspace names with capitals, to be renamed to lowercase: #{list.join("; ")}",
         fix: "the next agentd start renames each one, or run 'workspace launch #{pending.first["workspace"]}' now")
+    end
+
+    # Warns about a promote that stopped part way: `CheckoutMove` keeps the
+    # user's work under a private ref that `git stash list` does not show, so
+    # this is where a person finds it. Read-only; the ref is never deleted.
+    def check_promote_snapshots
+      return unless @project_catalog && @git
+
+      projects = @project_catalog.all.select { |project| project.vcs == "git" }.uniq(&:id)
+      found = 0
+      unread = 0
+      projects.each do |project|
+        refs = @git.refs_under(project.path, CheckoutMove::REF_PREFIX)
+        if refs.nil?
+          add_row("promote-snapshot", "skipped", "promote snapshots for #{project.name} (could not be checked, skipped)", project: project.name)
+          unread += 1
+          next
+        end
+        next if refs.empty?
+        found += refs.size
+        hints = refs.first(5).flat_map do |entry|
+          ["#{entry[:ref]} (#{entry[:date]})"] +
+            CheckoutMove.leftover_commands(project.path, entry[:ref], entry[:sha]).map { |command| "  #{command}" }
+        end
+        hints << "and #{refs.size - 5} more: git -C #{Shellwords.escape(project.path)} for-each-ref #{CheckoutMove::REF_PREFIX}" if refs.size > 5
+        fix = "run the apply command and check the work; delete the ref with the update-ref command only once the apply succeeded"
+        add_row("promote-snapshot", "warn",
+          "#{project.name}: #{refs.size} leftover promote snapshot#{"s" if refs.size > 1} (a promote stopped part way; your work is in the ref)",
+          fix: fix, hints: hints + ["fix: #{fix}"], project: project.name)
+      end
+      add_row("promote-snapshot", "ok", "promote snapshots: none left behind") if found.zero? && unread.zero? && projects.any?
+    rescue Workspace::Error, SystemCallError, IOError => e
+      add_row("promote-snapshot", "skipped", "promote snapshots (could not be checked: #{e.message}, skipped)")
     end
 
     def check_session_monitoring

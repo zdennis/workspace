@@ -838,4 +838,94 @@ RSpec.describe Workspace::Doctor do
       expect(row(build_doctor.report(headless: true))).to be_nil
     end
   end
+
+  describe "leftover promote snapshots" do
+    include MoveRepos
+
+    let(:git) { Workspace::Git.new(output: StringIO.new, input: StringIO.new) }
+    let(:catalog) { double("catalog", all: [project]) }
+    let(:project) { Struct.new(:name, :id, :path, :vcs).new("api", repo, repo, "git") }
+
+    def rows(result) = result[:rows].select { |r| r[:id] == "promote-snapshot" }
+
+    def doctor = build_doctor(git: git, project_catalog: catalog)
+
+    it "adds an ok row when no snapshot ref is left" do
+      expect(rows(doctor.report(headless: true))).to contain_exactly(include(status: "ok"))
+    end
+
+    it "warns for each leftover ref with its date and the recovery commands, and deletes nothing" do
+      head = rev("HEAD")
+      sh("update-ref", "refs/workspace/promote/abc", head)
+      sh("update-ref", "refs/workspace/promote/def", head)
+
+      result = doctor.report(headless: true)
+      row = rows(result).first
+
+      expect(rows(result).size).to eq(1)
+      expect(row).to include(status: "warn", project: "api")
+      expect(row[:message]).to include("api: 2 leftover promote snapshots")
+      text = row[:hints].join("\n")
+      expect(text).to match(%r{refs/workspace/promote/abc \(\d{4}-\d\d-\d\dT})
+      expect(text).to include("git -C #{repo} stash apply --index #{head}")
+      expect(text).to include("git -C #{repo} update-ref -d refs/workspace/promote/def #{head}")
+      expect(result[:issues]).to eq(0)
+      expect(sh("for-each-ref", "refs/workspace/promote/")).to include("promote/abc", "promote/def")
+      expect(Workspace::Doctor.document(result)["checks"].map { |c| c["id"] }).to include("promote-snapshot")
+    end
+
+    it "gives the same commands as move_incomplete's recover list" do
+      head = rev("HEAD")
+
+      expect(Workspace::CheckoutMove.leftover_commands(repo, "refs/workspace/promote/abc", head))
+        .to eq(["git -C #{repo} stash apply --index #{head}", "git -C #{repo} update-ref -d refs/workspace/promote/abc #{head}"])
+    end
+
+    it "skips a project whose repository git cannot read" do
+      allow(git).to receive(:refs_under).and_return(nil)
+
+      expect(rows(doctor.report(headless: true))).to contain_exactly(include(status: "skipped"))
+    end
+
+    it "lists five refs and counts the rest" do
+      head = rev("HEAD")
+      6.times { |i| sh("update-ref", "refs/workspace/promote/r#{i}", head) }
+
+      row = rows(doctor.report(headless: true)).first
+
+      expect(row[:message]).to include("6 leftover")
+      expect(row[:hints].grep(/\Arefs\/workspace/).size).to eq(5)
+      expect(row[:hints].join("\n")).to include("and 1 more: git -C #{repo} for-each-ref refs/workspace/promote/")
+    end
+
+    it "lists refs oldest first and gives nil for a path git cannot read" do
+      head = rev("HEAD")
+      sh("update-ref", "refs/workspace/promote/b", head)
+
+      expect(git.refs_under(repo, "refs/workspace/promote/")).to contain_exactly(include(ref: "refs/workspace/promote/b", sha: head))
+      expect(git.refs_under(repo, "refs/workspace/other/")).to eq([])
+      expect(git.refs_under(File.join(@dir, "missing"), "refs/workspace/promote/")).to be_nil
+    end
+
+    it "collapses projects sharing an id and shows no ok row beside a skipped one" do
+      other = Struct.new(:name, :id, :path, :vcs).new("api-2", repo, repo, "git")
+      allow(catalog).to receive(:all).and_return([project, other])
+      allow(git).to receive(:refs_under).and_return(nil)
+
+      expect(rows(doctor.report(headless: true))).to contain_exactly(include(status: "skipped"))
+    end
+
+    it "skips the check when the catalog raises" do
+      allow(catalog).to receive(:all).and_raise(Workspace::Error, "boom")
+
+      expect(rows(doctor.report(headless: true))).to contain_exactly(include(status: "skipped", message: include("boom")))
+    end
+
+    it "ignores a project that is not a git repository and adds no row without a catalog" do
+      project.vcs = "none"
+
+      expect(rows(doctor.report(headless: true))).to be_empty
+      expect(rows(build_doctor(git: git).report(headless: true))).to be_empty
+    end
+  end
 end

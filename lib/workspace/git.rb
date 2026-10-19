@@ -900,6 +900,22 @@ module Workspace
       success
     end
 
+    # The refs under +prefix+, oldest first.
+    #
+    # @param path [String] any checkout of the repository
+    # @param prefix [String] a ref prefix ending in `/`
+    # @return [Array<Hash>, nil] `{ref:, sha:, date:}` each (`date` is the commit's ISO date);
+    #   nil when git could not answer
+    def refs_under(path, prefix)
+      stdout, _, status = capture_git("-C", path, "for-each-ref", "--sort=creatordate",
+        "--format=%(refname) %(objectname) %(creatordate:iso-strict)", prefix)
+      return nil unless status.success?
+      stdout.scrub.lines.filter_map do |line|
+        ref, sha, date = line.chomp.split(" ", 3)
+        {ref: ref, sha: sha, date: date} if ref && sha
+      end
+    end
+
     # Deletes +ref+, only while it still points at +sha+.
     #
     # @param path [String] any checkout of the repository

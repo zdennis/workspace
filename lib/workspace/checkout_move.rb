@@ -48,6 +48,18 @@ module Workspace
       SUBMODULE_CHANGES, HIDDEN_FILES, PATH_CONFLICTS, NO_DEFAULT_BRANCH, BRANCH_REQUIRED, BRANCH_EXISTS, BRANCH_CHECKED_OUT,
       WORKTREE_EXISTS, NOTHING_TO_MOVE, STASH_FAILED, MOVE_FAILED, MOVE_INCOMPLETE].freeze
 
+    # The commands that get the work back from a snapshot ref and then clear it,
+    # as `details.recover` lists them and `doctor` shows them for a leftover ref.
+    #
+    # @param path [String] a checkout of the repository
+    # @param ref [String] the snapshot ref
+    # @param sha [String] the commit it points at
+    # @return [Array<String>] the apply command, then the one that deletes the ref
+    def self.leftover_commands(path, ref, sha)
+      git = "git -C #{Shellwords.escape(path)}"
+      ["#{git} stash apply --index #{sha}", "#{git} update-ref -d #{ref} #{sha}"]
+    end
+
     # A step that did not reach the state it should have.
     class StepFailed < StandardError; end
 
@@ -444,8 +456,9 @@ module Workspace
           # Applied back but not matching what was recorded: show what the snapshot holds, and keep it.
           commands << "#{git} stash show --include-untracked --stat #{@sha}"
         elsif @sha
-          commands << "#{git} stash apply --index #{@sha}"
-          commands << "#{git} update-ref -d #{@ref} #{@sha}" if @pinned
+          apply, delete = CheckoutMove.leftover_commands(@root, @ref, @sha)
+          commands << apply
+          commands << delete if @pinned
         end
         commands.first(RECOVER_LIMIT)
       end
