@@ -664,8 +664,8 @@ RSpec.describe Workspace::InstructionComposer, "with the packs workspace ships" 
     result = composer.compose(cwd: "/work/app", packs: %w[spine])
 
     expect(result["packs"].map { |p| [p["ref"], p["scope"]] }).to eq([["play/spine", "builtin"]])
-    expect(result["text"]).to start_with("## From pack spine (built-in)\n\nThis workspace has a plan spine")
-    expect(result["text"]).to include("`workspace notes dir`", "workspace spine set <stage-path> --status in_progress",
+    expect(result["text"]).to start_with("## From pack spine (built-in)\n\nThis workspace has stages")
+    expect(result["text"]).to include("`workspace notes dir`", "workspace spine set <stage-path> --status in_progress --owner", "workspace spine check <stage-path> --item N --done", "spine show --stage <stage-path> --evaluate --json", "gate_results", "disputes", "Do not run `spine start`",
       '--status blocked --note "<why, one line>"', "## Done when", "--status completed", "`gates`", "`depends_on`", "`artifacts:`")
     expect(result["text"]).not_to match(/^---$|^description:/)
   end

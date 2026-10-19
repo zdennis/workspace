@@ -1,6 +1,6 @@
 # workspace spine
 
-Read a workspace's plan spine, set a stage's status, and start an agent on a stage. The spine is the stage level of a workspace's plan (research, plan, implement, verify, ...): one Markdown file per stage in a `spine/` folder of the workspace's notes directory. The task level is [`IMPLEMENTATION_PLAN.md`](README.plan.md), which the spine links to and does not replace.
+Read a workspace's stages (`workspace spine`), set a stage's status, and start an agent on a stage. The stages are the step level of a workspace's plan (research, plan, implement, verify, ...): one Markdown file per stage in a `spine/` folder of the workspace's notes directory. The task level is [`IMPLEMENTATION_PLAN.md`](README.plan.md), which the stages link to and does not replace.
 
 ## Usage
 
@@ -279,11 +279,11 @@ workspace config set spine.auto true
 
 ## Telling agents the convention
 
-The built-in `spine` play ("Keep this workspace's plan spine current", `workspace library show spine --builtin`) teaches an agent the rules: where `spine/` is, `workspace spine set <stage-path> --status in_progress` when it starts a stage, `--status blocked --note "<why>"` when stuck, ticking `## Done when` items as each is met, `--status completed` only when all are met and checked, working on its own stage and sub-stages only, leaving other files, numbers, `gates` and `depends_on` alone, and listing artifacts in `artifacts:`. It names `spine set` for status changes and allows editing `status:` by hand only when the command is missing; `owner:` and the `Done when` ticks are edited in the file, since `spine set` does not write them.
+The built-in `spine` play ("Keep this workspace's stages current", `workspace library show spine --builtin`) teaches an agent the rules: where `spine/` is; `workspace spine set <stage-path> --status in_progress --owner "$TMUX_PANE"` when it starts a stage; `--status blocked --note "<why>"` when stuck; `spine check --item N --done` for each `## Done when` item it has met and checked; `spine show --stage <stage-path> --evaluate` before it claims a stage done, and no `completed` while a gate fails or a dispute is open; working on its own stage and sub-stages only (no `spine start` for another stage); leaving other files, numbers, `gates` and `depends_on` alone; and listing artifacts in `artifacts:`. It tells the agent to change `status:`, `owner:` and the `Done when` boxes only through these commands.
 
 It is an automatic pack, like `notes`: [`start`](README.start.md#packs), [`launch`](README.launch.md) and `workspace instructions compose --start` add `spine` after `notes` (and before `dev`) whenever the workspace's `spine/` folder exists in its notes directory, found the way `show` finds it and never through a link. It is reported with `source: "config"` like the other automatic packs, `--no-packs` drops it, and it is recorded in the pane's [binding](README.binding.md#packs) `packs`, so SessionStart repeats it after `/clear` or compaction. A workspace without `spine/` gets nothing new.
 
-`spine_pack` in [`capabilities`](README.capabilities.md) is `1` when the play and the automatic pack exist.
+`spine_pack` in [`capabilities`](README.capabilities.md) is `2` when the play and the automatic pack exist and the play teaches `spine set --owner`, `spine check` and `spine show --evaluate`.
 
 ## The spine folder
 

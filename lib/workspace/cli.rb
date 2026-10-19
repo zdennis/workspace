@@ -557,7 +557,7 @@ module Workspace
           sessions        Show coding-agent sessions and sub-agents in a workspace
           snapshot        Print everything a UI polls (projects, panes, git, asks, locks, dev) as one JSON document
           step            For the agent on a workflow step: report on it (done), or see what it is (status)
-          spine           Read a workspace's plan spine (spine/ in its notes directory): show, init, set a stage's status, tick its checklist, start an agent on a stage
+          spine           Read and set a workspace's stages (stage files in spine/ in its notes directory): show, init, set a stage's status, tick its checklist, start an agent on a stage
           start           Create a worktree and launch it (from JIRA key, PR URL or #n, or branch)
           status          Show detailed state of tracked launcher sessions
           set-command     Set the shell command for a pane in a project config (--pane <N>)
@@ -929,7 +929,7 @@ module Workspace
         opts.separator "  workspace start PROJ-123 --agent reviewer --skill write-tests    # copy library entries into the worktree"
         opts.separator "  workspace start PROJ-123 --agent-kind codex    # the main agent pane runs Codex"
         opts.separator "  workspace start PROJ-123 --no-launch    # create the worktree and config, launch nothing"
-        opts.separator "  workspace start PROJ-123 --spine=team    # also make the plan spine from the 'team' template"
+        opts.separator "  workspace start PROJ-123 --spine=team    # also make the stages from the 'team' template"
         opts.separator "  workspace start PROJ-123 --plan --prompt \"Add SSO login\"    # the agent drafts a plan for that goal first"
         opts.separator "  workspace start PROJ-123 --title \"Fix the login bug\"    # name the task shown in `workspace sessions`"
         opts.separator "  workspace start PROJ-123 --slug    # branch and task title from the ticket: PROJ-123-fix-the-login-bug"
@@ -6936,7 +6936,7 @@ module Workspace
                       "       workspace spine start [WORKSPACE] STAGE-PATH [--pane PANE | --spawn KIND] [--play REF]\n" \
                       "                             [--if-revision REV] [--json]"
         opts.separator ""
-        opts.separator "show reads a workspace's plan spine: the stage files in spine/ of its notes directory, one"
+        opts.separator "show reads a workspace's stages: the stage files in spine/ of its notes directory, one"
         opts.separator "Markdown file per stage (10-research.md, 20-plan.md, ...), and sub-stages in a folder named"
         opts.separator "like a stage file without .md. Statuses are read as one of not_started, in_progress,"
         opts.separator "blocked, completed, skipped or unknown. A bad file is a warning in the answer, never an"

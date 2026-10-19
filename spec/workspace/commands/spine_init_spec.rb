@@ -82,7 +82,7 @@ RSpec.describe Workspace::Commands::SpineInit do
 
     goal = File.read(File.join(spine_dir, "goal.md"))
     expect(goal).to include("title: Fix OAuth refresh (ACME-412)", "branch zd/fix-oauth", "api.worktree-fix")
-    expect(File.read(File.join(spine_dir, "README.md"))).to include("# Plan spine for api.worktree-fix")
+    expect(File.read(File.join(spine_dir, "README.md"))).to include("# Stages for api.worktree-fix")
     expect(Dir.glob(File.join(spine_dir, "*")).map { |f| File.read(f) }.join).not_to match(/\{\{(WORKSPACE|BRANCH|TITLE)\}\}/)
   end
 

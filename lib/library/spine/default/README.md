@@ -2,7 +2,7 @@
 description: Research, plan, implement, verify, review and ship, one file per stage
 ---
 
-# Plan spine for {{WORKSPACE}}
+# Stages for {{WORKSPACE}}
 
 This folder is the stage level of the workspace's plan. Each numbered file is one stage, and `goal.md` says what the work is for.
 
