@@ -42,44 +42,6 @@ Wrap all --json output in a standard envelope object (e.g. {"data": ..., "warnin
 
 The current approach builds all panes in one AppleScript that concatenates uid/project output. If the output is truncated with many panes, some projects silently fail to register. Creating panes one at a time (or in smaller batches) would be more reliable, though slower. Consider a hybrid approach: batch creation with per-pane verification and retry.
 
-### `agent-run`/`send_keys` doesn't reliably submit multi-line text into Claude Code
-
-`Tmux#send_keys` (`lib/workspace/tmux.rb:49`) only sends a second Enter when
-the pasted text exceeds 1000 bytes (the `large_paste` heuristic), on the
-assumption that only large pastes collapse into Claude Code's
-`pasted_content` widget. In practice, a multi-line body well under 1000
-bytes can still collapse into that widget, and the single Enter then just
-dismisses the widget instead of submitting — the text is left sitting,
-unsubmitted, at the prompt. Repeated `workspace agent-run command` calls in
-that state each append another pasted block instead of one being submitted,
-compounding the problem.
-
-Reproduced via `workspace agent-run command --work-item <ref> --body "<3-4
-line sentence, ~300 bytes>"`: the text appeared at the prompt but never
-submitted until a manual `tmux send-keys -t <target> Enter` was sent
-outside of workspace.
-
-Ideas:
-- Detect multi-line text (not just byte size) and always send the
-  dismiss-then-submit double Enter for it.
-- Expose a CLI primitive for sending a bare Enter/newline to a pane (there
-  currently isn't one — recovering the stuck pane required raw `tmux
-  send-keys ... Enter`, bypassing `workspace` entirely).
-- Consider clearing any stray unsubmitted input before pasting a new
-  command, so a missed submission doesn't silently concatenate with the
-  next one.
-
-Related: `Tmux#send_keys`/`#tmux_load_buffer` (`lib/workspace/tmux.rb:49,103`)
-don't guard against an empty `text`. `workspace agent-run command --body ""`
-(sent as a bare-Enter nudge, to work around the above) writes zero bytes to
-`tmux load-buffer`'s stdin, which never creates the named buffer even though
-the load command itself reports success. The following `paste-buffer` and
-the `ensure`'s `delete-buffer` then both fail against a nonexistent buffer,
-logging `no buffer ws_send_<id>` / `unknown buffer: ws_send_<id>` to the
-`workspace agent` daemon's own stderr. Fix: either short-circuit `send_keys`
-for empty text (skip straight to sending Enter), or have callers pass a
-single space instead of `""`.
-
 ### `wait-until-content --since-start` reflow limitation
 
 If a pane is reflowed mid-wait (e.g. a rewrapping resize), the content anchor
@@ -112,3 +74,21 @@ sessions that aren't actively being used.
   specified
 - Consider `--all` flags to deactivate/reactivate all active projects
   at once
+
+### `agent-run`/`send_keys` doesn't reliably submit multi-line text into Claude Code
+
+Originally, `Tmux#send_keys` sent a second Enter only for pastes over
+1000 bytes (the `large_paste` heuristic), so a multi-line body under that
+size could collapse into Claude Code's `pasted_content` widget and sit
+unsubmitted at the prompt. The heuristic is gone from `lib/`.
+`Tmux#deliver` (`lib/workspace/tmux.rb:184-218`) now reads the pane back
+and, in `#submit` (`tmux.rb:313-321`), presses Enter a second time when the
+screen is unchanged. Empty text is short-circuited (`tmux.rb:187-188`), so
+a bare-Enter nudge no longer writes an empty paste buffer.
+
+For a bare Enter, use `workspace agent-run send --name WS --pane P --keys Enter`
+(documented in `docs/README.agent-run.md:75,101`).
+
+Still open (low value, not implemented): clear any stray unsubmitted input
+before pasting a new command, so a missed submission doesn't silently
+concatenate with the next one.
