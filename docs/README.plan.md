@@ -170,7 +170,7 @@ A fact that can't be read never decides a state. A tmux that can't be asked, or 
 
 ## The implementation-plan play
 
-`play/implementation-plan` is a built-in [play](README.library.md) (`lib/library/play/implementation-plan.md`) that teaches an agent this file: where to find it (`workspace plan path`), the task syntax, taking a task to `[~]` and then `[x]` only once it is verified, re-reading `status:` before each task, and stopping on `paused`. Send it with `--pack implementation-plan` or `--play implementation-plan`; it is not one of the packs sent automatically. It names `workspace plan status` and `workspace plan start`.
+`play/implementation-plan` is a built-in [play](README.library.md) (`lib/library/play/implementation-plan.md`) that teaches an agent this file: where to find it (`workspace plan path`), the task syntax, taking a task to `[~]` and then `[x]` only once it is verified (for a spine stage with a `check:` line, claiming the stage `completed` and leaving the verdict to a separate checker), re-reading `status:` before each task, and stopping on `paused`. Send it with `--pack implementation-plan` or `--play implementation-plan`; it is not one of the packs sent automatically. It names `workspace plan status` and `workspace plan start`.
 
 The `rpiv` workflow's plan and implement steps compose this play, and its plan step writes the run's tasks into this file, so `plan status` shows a run's progress. The run's `plan.md` under `.workflow/` is only the note for the approval gate.
 

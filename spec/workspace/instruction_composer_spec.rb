@@ -665,9 +665,15 @@ RSpec.describe Workspace::InstructionComposer, "with the packs workspace ships" 
 
     expect(result["packs"].map { |p| [p["ref"], p["scope"]] }).to eq([["play/spine", "builtin"]])
     expect(result["text"]).to start_with("## From pack spine (built-in)\n\nThis workspace has stages")
-    expect(result["text"]).to include("`workspace notes dir`", "workspace spine set <stage-path> --status in_progress --owner", "workspace spine check <stage-path> --item N --done", "spine show --stage <stage-path> --evaluate --json", "gate_results", "disputes", "Do not run `spine start`",
+    expect(result["text"]).to include("`workspace notes dir`", "workspace spine set <stage-path> --status in_progress --owner", "workspace spine check <stage-path> --item N --done", "spine show --stage <stage-path> --evaluate --json", "gate_results", "disputes", "spine verify <stage-path> --pass", "spine verify <stage-path> --fail", "waits_on", "check_failed", "Do not run `spine start` for another stage unless you are the driver", "## If you check a stage", "## If you drive the stages", "Never run `spine verify` on a stage you worked on", "stage_waiting",
       '--status blocked --note "<why, one line>"', "## Done when", "--status completed", "`gates`", "`depends_on`", "`artifacts:`")
     expect(result["text"]).not_to match(/^---$|^description:/)
+  end
+
+  it "composes the implementation-plan pack with the spine check rule: claim, then a separate checker" do
+    result = composer.compose(cwd: "/work/app", packs: %w[implementation-plan])
+
+    expect(result["text"]).to include("workspace spine verify <stage-path> --pass|--fail", "waits_on", "check_failed", "never in `spine set --note`")
   end
 
   it "composes the promote pack by name: the real verbs in order, then stop working on it here" do

@@ -175,10 +175,10 @@ RSpec.describe Workspace::Commands::Capabilities do
       expect(document["features"]).to include("spine_goal" => 1)
     end
 
-    it "reports spine_pack 2 once the spine pack uses check, owner and evaluate" do
+    it "reports spine_pack 3 once the spine pack teaches the checker and driver roles" do
       command.call(json: true)
 
-      expect(document["features"]).to include("spine_pack" => 2)
+      expect(document["features"]).to include("spine_pack" => 3)
     end
 
     it "reports pr_create 1 once pr create exists" do
