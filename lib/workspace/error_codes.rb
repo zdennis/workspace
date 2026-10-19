@@ -52,7 +52,7 @@ module Workspace
       "plan_write_conflict" => "The plan file changed twice while a plan verb was writing it, so nothing was written; run the verb again.",
       "not_a_directory" => "add --json: a path is not a directory; the reason of that path's failed row (an error envelope from projects group add). details.path.",
       "task_exists" => "plan task add: a task already has that id. details.path, details.task, details.line.",
-      "invalid_task" => "plan task: an id, title, reason or place that cannot be written (an id without a digit, a title or reason that is empty, over 500 characters, has a line break, an HTML comment or ' -- ', a reason for a state that has none, or a move relative to itself or with no place). details.field.",
+      "invalid_task" => "plan task: an id, title, reason or place that cannot be written (an id without a digit, a title (also for `set-title`) or reason that is empty, over 500 characters, has a line break, an HTML comment or ' -- ', a reason for a state that has none, or a move relative to itself or with no place). details.field.",
       "reason_required" => "plan task: a blocked or skipped task ends with ' -- reason' and none was given. details.task, details.state.",
       "unknown_phase" => "plan task add or move: no ### heading under ## Tasks has that name. details.path, details.phase, details.phases.",
       "no_task_section" => "plan task add: the plan has no '## Tasks' section to add to. details.path.",

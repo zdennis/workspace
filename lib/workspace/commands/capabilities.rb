@@ -74,7 +74,7 @@ module Workspace
         "plan_progress" => 1,
         "spine_events" => 2,
         "agent_status" => 1,
-        "plan_tasks" => 2,
+        "plan_tasks" => 3,
         "agent_hooks" => 1,
         "projects_multi" => 1,
         "json_envelope" => 1,

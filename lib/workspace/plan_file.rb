@@ -304,6 +304,19 @@ module Workspace
       rewrite(path, if_revision: if_revision) { |bytes| with_moved_task(bytes, path, id, after, before, phase) }
     end
 
+    # Replaces one task's title, keeping its box, id, ` -- reason`, owner comment and place.
+    #
+    # @param path [String] the plan's absolute path
+    # @param id [String] the task's id
+    # @param title [String] one line of 1 to {MAX_TEXT} characters, with no ` -- ` and no HTML comment
+    # @param if_revision [String, nil] refuse unless the file's {.revision_of} is this
+    # @return [Result] +changed+ is false when the title already reads that way
+    # @raise [Workspace::Error] `unknown_task`, `invalid_task` (a bad title, or a line that would not read back),
+    #   `stale_revision`, `plan_write_conflict`
+    def self.retitle_task(path, id, title:, if_revision: nil)
+      rewrite(path, if_revision: if_revision) { |bytes| with_new_title(bytes, path, id, title) }
+    end
+
     # The read, change and rename loop every writer goes through.
     def self.rewrite(path, if_revision: nil)
       target = File.realpath(path)
@@ -359,6 +372,35 @@ module Workspace
       result
     end
     private_class_method :with_task_line
+
+    def self.with_new_title(bytes, path, id, title)
+      title = clean_text("title", title)
+      plan = parse(read_text(bytes))
+      task = plan.tasks.find { |candidate| candidate.id == id } || raise(unknown_task(path, id))
+      return nil if task.title == title
+
+      lines = bytes.lines
+      raw = lines[task.line - 1]
+      ending = line_ending(raw)
+      text = raw.byteslice(0, raw.bytesize - ending.bytesize).dup.force_encoding(Encoding::UTF_8)
+      raise Workspace::Error.new("Line #{task.line} of the plan #{path} is not valid UTF-8, so it was not changed.", details: {"path" => path}) unless text.valid_encoding?
+
+      head = text.match(/\A- \[.\]\s+\S+\s+/)
+      start = head&.end(0)
+      unless start && text[start, task.title.length] == task.title
+        raise invalid_task("Line #{task.line} of the plan #{path} can't be rewritten with that title, so nothing was changed.", "title")
+      end
+      updated = text[0, start] + title + text[(start + task.title.length)..]
+      lines[task.line - 1] = updated.b + ending
+      result = lines.join
+      reread = parse(read_text(result))
+      check = reread.tasks.find { |candidate| candidate.id == id }
+      reads_back = reread.tasks.size == plan.tasks.size && check && check.title == title && check.state == task.state &&
+        check.reason == task.reason && check.owner == task.owner
+      raise invalid_task("The task line would not read back as asked, so nothing was changed.", "title") unless reads_back
+      result
+    end
+    private_class_method :with_new_title
 
     # The reason the line should end with once +target+ is its state.
     def self.wanted_reason(task, target, reason, id)

@@ -1,6 +1,6 @@
 module Workspace
   module Commands
-    # `workspace plan task add|set-state|move`: changes one task line of a workspace's plan so
+    # `workspace plan task add|set-state|set-title|move`: changes one task line of a workspace's plan so
     # people, agents and the app need not edit the Markdown by hand. Each verb goes through a
     # {PlanFile} writer (temp file and rename, one re-read and retry), changes only the line it
     # must, keeps owner comments, never renumbers, and refuses an id that is already used.
@@ -59,6 +59,22 @@ module Workspace
         task_row(result.changed ? "changed" : "unchanged", name, file, result, id).merge("previous_state" => result.previous_state)
       end
 
+      # Changes a task's title. Its id, state, reason, owner and place stay.
+      #
+      # @param name [String] the workspace
+      # @param id [String] the task's id
+      # @param title [String] the new title, one line
+      # @param if_revision [String, nil] refuse unless the plan's revision is this
+      # @return [Hash] the row: `outcome` `changed` or `unchanged`, plus `task`, `title`, `state`, `line`, `phase`, `revision`, `counts`, `percent`
+      # @raise [Workspace::Error] `no_plan`, `stale_revision`, `unknown_task`, `invalid_task`,
+      #   `notes_dir_unwritable`, `plan_write_conflict`
+      def set_title(name:, id:, title:, if_revision: nil)
+        file, = @access.require_plan(name)
+        result = write(name, file) { PlanFile.retitle_task(file, id, title: title, if_revision: if_revision) }
+        @output.puts result.changed ? "Set the title of task #{id} of the plan for #{name}." : "Task #{id} of the plan for #{name} already has that title."
+        task_row(result.changed ? "changed" : "unchanged", name, file, result, id)
+      end
+
       # Moves a task to a new place in the file; its phase is the heading it ends up under.
       #
       # @param name [String] the workspace
@@ -88,7 +104,7 @@ module Workspace
       def task_row(outcome, name, file, result, id)
         plan = result.plan
         task = plan.tasks.find { |candidate| candidate.id == id }
-        @access.row(outcome, file).merge("task" => id, "state" => task&.state, "line" => task&.line, "phase" => task&.phase,
+        @access.row(outcome, file).merge("task" => id, "state" => task&.state, "title" => task&.title, "line" => task&.line, "phase" => task&.phase,
           "revision" => result.revision, "counts" => plan.counts, "percent" => plan.percent)
       end
     end

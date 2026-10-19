@@ -9310,6 +9310,17 @@ RSpec.describe Workspace::CLI do
               "revision" => "4e1f0c2a", "line" => 14, "counts" => {"total" => 3})])
         end
 
+        it "sends set-title's flags and prints the title in the action document" do
+          allow(plan_task_command).to receive(:set_title).and_return(task_row.merge("title" => "New"))
+          cli, raw, = plan_cli
+
+          cli.run(["plan", "task", "set-title", "--name=api", "--task=T3", "--title=New", "--if-revision=9f8e7d6c", "--json"])
+
+          expect(plan_task_command).to have_received(:set_title).with(name: "api", id: "T3", title: "New", if_revision: "9f8e7d6c")
+          expect(parse_one(raw)).to include("action" => "plan task set-title", "status" => "ok",
+            "results" => [a_hash_including("task" => "T3", "title" => "New")])
+        end
+
         it "sends add's flags, with state todo by default and the workspace of the directory" do
           allow(plan_task_command).to receive(:add).and_return(task_row.merge("outcome" => "added"))
           cli, = plan_cli
@@ -9352,6 +9363,9 @@ RSpec.describe Workspace::CLI do
             %w[plan task add --title=x --task=T1],
             %w[plan task set-state --task=T1],
             %w[plan task set-state --state=done],
+            %w[plan task set-title --task=T1],
+            %w[plan task set-title --title=x],
+            %w[plan task set-title --task=T1 --title=x --state=done],
             %w[plan task move --task=T1],
             %w[plan task move --task=T1 --after=T2 --before=T3],
             %w[plan task move --task=T1 --after=T2 --state=done],

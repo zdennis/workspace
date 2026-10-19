@@ -977,4 +977,56 @@ RSpec.describe Workspace::PlanFile do
       expect(plan.current).to include("id" => "T2")
     end
   end
+
+  describe ".retitle_task" do
+    around do |example|
+      Dir.mktmpdir("plan-retitle") do |dir|
+        @path = File.join(dir, "IMPLEMENTATION_PLAN.md")
+        example.run
+      end
+    end
+
+    def write(text) = File.binwrite(@path, text)
+
+    def content = File.binread(@path).force_encoding(Encoding::UTF_8)
+
+    it "keeps CRLF endings and every other line byte for byte" do
+      write("---\r\nstatus: active\r\n---\r\n## Tasks\r\n- [ ] T1 One\r\n- [!] T2 Two -- why <!-- owner: %3 -->\r\n")
+
+      result = described_class.retitle_task(@path, "T2", title: "Deux")
+
+      expect(result.changed).to be(true)
+      expect(content).to eq("---\r\nstatus: active\r\n---\r\n## Tasks\r\n- [ ] T1 One\r\n- [!] T2 Deux -- why <!-- owner: %3 -->\r\n")
+    end
+
+    it "writes and reads back a multibyte title" do
+      write("## Tasks\n- [ ] T1 Ünï\n- [ ] T2 Two\n")
+
+      described_class.retitle_task(@path, "T1", title: "Проверка ✓")
+
+      expect(content).to eq("## Tasks\n- [ ] T1 Проверка ✓\n- [ ] T2 Two\n")
+      expect(described_class.read(@path).tasks.first.title).to eq("Проверка ✓")
+    end
+
+    it "changes nothing when the title is the same" do
+      write("## Tasks\n- [ ] T1 One\n")
+
+      expect(described_class.retitle_task(@path, "T1", title: "One").changed).to be(false)
+      expect(content).to eq("## Tasks\n- [ ] T1 One\n")
+    end
+
+    it "refuses a bad title and an unknown task, leaving the file alone" do
+      write("## Tasks\n- [ ] T1 One\n")
+
+      expect { described_class.retitle_task(@path, "T1", title: "a -- b") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("invalid_task") }
+      expect { described_class.retitle_task(@path, "T7", title: "x") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("unknown_task") }
+      expect(content).to eq("## Tasks\n- [ ] T1 One\n")
+    end
+
+    it "refuses a line that is not valid UTF-8" do
+      write("## Tasks\n- [ ] T1 One \xFF\n".b)
+
+      expect { described_class.retitle_task(@path, "T1", title: "x") }.to raise_error(Workspace::Error)
+    end
+  end
 end

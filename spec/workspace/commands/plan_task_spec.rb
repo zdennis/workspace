@@ -128,6 +128,62 @@ RSpec.describe Workspace::Commands::PlanTask do
     end
   end
 
+  describe "#set_title" do
+    it "changes only the title, keeping the box, reason, owner and place, and records plan_changed" do
+      write_plan
+      seen = revision
+
+      row = command.set_title(name: "api", id: "T2", title: "Second, reworded", if_revision: seen)
+
+      expect(row).to include("outcome" => "changed", "task" => "T2", "title" => "Second, reworded", "state" => "in_progress", "line" => 7)
+      expect(row["revision"]).to eq(revision)
+      expect(File.read(plan_path)).to eq(plan_text.sub("Second", "Second, reworded"))
+      expect(events.size).to eq(1)
+    end
+
+    it "keeps a reason and an owner comment on the same line" do
+      write_plan("---\nstatus: active\n---\n## Tasks\n- [!] T1 Old name -- needs db <!-- owner: %4 -->\n")
+
+      command.set_title(name: "api", id: "T1", title: "New name")
+
+      expect(File.read(plan_path)).to include("- [!] T1 New name -- needs db <!-- owner: %4 -->\n")
+    end
+
+    it "is unchanged, recording nothing, when the title is the same" do
+      write_plan
+
+      row = command.set_title(name: "api", id: "T1", title: "First")
+
+      expect(row).to include("outcome" => "unchanged")
+      expect(events).to be_empty
+      expect(output.string).to include("already has that title")
+    end
+
+    it "refuses empty, multi-line, over-long and comment titles with invalid_task, writing nothing" do
+      write_plan
+
+      ["", "  ", "two\nlines", "a" * 501, "x -- y", "x <!-- y -->"].each do |bad|
+        expect { command.set_title(name: "api", id: "T1", title: bad) }.to raise_error(Workspace::Error) { |e|
+          expect(e.code).to eq("invalid_task")
+          expect(e.details).to include("field" => "title")
+        }
+      end
+      expect(File.read(plan_path)).to eq(plan_text)
+    end
+
+    it "refuses an unknown task and a stale revision" do
+      write_plan
+
+      expect { command.set_title(name: "api", id: "T9", title: "x") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("unknown_task") }
+      expect { command.set_title(name: "api", id: "T1", title: "x", if_revision: "00000000") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("stale_revision") }
+      expect(File.read(plan_path)).to eq(plan_text)
+    end
+
+    it "fails with no_plan when there is no plan" do
+      expect { command.set_title(name: "api", id: "T1", title: "x") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("no_plan") }
+    end
+  end
+
   describe "#move" do
     it "moves a task and reports its new phase and line" do
       write_plan

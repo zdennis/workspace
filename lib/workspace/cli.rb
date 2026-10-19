@@ -7593,6 +7593,7 @@ module Workspace
     PLAN_TASK_FLAGS = {
       "add" => %i[id title state reason phase after if_revision],
       "set-state" => %i[task state reason if_revision],
+      "set-title" => %i[task title if_revision],
       "move" => %i[task after before phase if_revision]
     }.freeze
 
@@ -7607,6 +7608,7 @@ module Workspace
           "       workspace plan delete [--name WORKSPACE] --yes [--json]\n" \
           "       workspace plan task add --title TEXT [--id ID] [--state STATE] [--reason TEXT] [--phase NAME | --after ID] [--if-revision REV] [--name WORKSPACE] [--json]\n" \
           "       workspace plan task set-state --task ID --state STATE [--reason TEXT] [--if-revision REV] [--name WORKSPACE] [--json]\n" \
+          "       workspace plan task set-title --task ID --title TEXT [--if-revision REV] [--name WORKSPACE] [--json]\n" \
           "       workspace plan task move --task ID (--after ID | --before ID | --phase NAME) [--if-revision REV] [--name WORKSPACE] [--json]"
         opts.separator ""
         opts.separator "A plan is IMPLEMENTATION_PLAN.md in the workspace's notes directory: one checklist"
@@ -7625,18 +7627,18 @@ module Workspace
         opts.separator "  pause    Set status: paused; the agent stops before its next task. --interrupt also presses"
         opts.separator "           the agent's interrupt key (Escape for Claude Code and Codex) in each owner pane that works"
         opts.separator "  delete   Rename the plan to IMPLEMENTATION_PLAN.md.deleted-<time>; needs --yes; the session and worktree stay"
-        opts.separator "  task     add, set-state or move one task line; --if-revision (the revision from status --json) refuses a stale edit"
+        opts.separator "  task     add, set-state, set-title or move one task line; --if-revision (the revision from status --json) refuses a stale edit"
         opts.separator "           with stale_revision. States: #{PlanFile::TASK_STATES.join(", ")}; blocked and skipped need --reason"
         opts.separator ""
         opts.on("--name NAME", "Workspace to act on instead of the one detected from the current directory") { |v| take_plan_flag(options, :name, v) }
         opts.on("--all", "status: every workspace") { take_plan_flag(options, :all, true) }
         opts.on("--group GROUP", "status: every workspace of every repository in a group (group:billing, billing or Billing; see projects group list)") { |v| take_plan_flag(options, :group, v) }
         opts.on("--file PATH", "status: read any file, with no workspace and a state from the file alone") { |v| take_plan_flag(options, :file, v) }
-        opts.on("--title TITLE", "init: the plan's title (default: the workspace task's title); task add: the task's title") { |v| take_plan_flag(options, :title, v) }
+        opts.on("--title TITLE", "init: the plan's title (default: the workspace task's title); task add: the task's title; task set-title: the new title") { |v| take_plan_flag(options, :title, v) }
         opts.on("--from FILE", "init: import this document as the plan") { |v| take_plan_flag(options, :from, v) }
         opts.on("--force", "init: replace a plan that is already there") { take_plan_flag(options, :force, true) }
         opts.on("--yes", "delete: confirm the delete") { take_plan_flag(options, :yes, true) }
-        opts.on("--task ID", "start: send only this task; task set-state and move: the task (its id, such as T3)") { |v| take_plan_flag(options, :task, v) }
+        opts.on("--task ID", "start: send only this task; task set-state, set-title and move: the task (its id, such as T3)") { |v| take_plan_flag(options, :task, v) }
         opts.on("--id ID", "task add: the new task's id (default: the next number after the plan's last id)") { |v| take_plan_flag(options, :id, v) }
         opts.on("--state STATE", "task add and set-state: #{PlanFile::TASK_STATES.join(", ")}") { |v| take_plan_flag(options, :state, v) }
         opts.on("--reason TEXT", "task add and set-state: why a task is blocked or skipped") { |v| take_plan_flag(options, :reason, v) }
@@ -7662,6 +7664,7 @@ module Workspace
         opts.separator "  workspace plan pause --interrupt --json"
         opts.separator "  workspace plan task add --title \"Write the docs\" --phase=Docs --if-revision=9f8e7d6c --json"
         opts.separator "  workspace plan task set-state --task=T3 --state=blocked --reason=\"needs the dev database\""
+        opts.separator "  workspace plan task set-title --task=T3 --title=\"Write the token store docs\""
         opts.separator "  workspace plan task move --task=T5 --after=T1"
         opts.separator "  workspace plan delete --yes"
       end
@@ -7750,6 +7753,9 @@ module Workspace
       when "set-state"
         raise UsageError, "plan task set-state needs --task." unless options[:task]
         raise UsageError, "plan task set-state needs --state." unless options[:state]
+      when "set-title"
+        raise UsageError, "plan task set-title needs --task." unless options[:task]
+        raise UsageError, "plan task set-title needs --title." if options[:title].nil?
       when "move"
         raise UsageError, "plan task move needs --task." unless options[:task]
         raise UsageError, "Give exactly one of --after, --before and --phase." unless [options[:after], options[:before], options[:phase]].compact.size == 1
@@ -7766,6 +7772,8 @@ module Workspace
           phase: options[:phase], after: options[:after], if_revision: options[:if_revision])
       when "set-state"
         @plan_task_command.set_state(name: name, id: options[:task], state: options[:state], reason: options[:reason], if_revision: options[:if_revision])
+      when "set-title"
+        @plan_task_command.set_title(name: name, id: options[:task], title: options[:title], if_revision: options[:if_revision])
       when "move"
         @plan_task_command.move(name: name, id: options[:task], after: options[:after], before: options[:before], phase: options[:phase],
           if_revision: options[:if_revision])
@@ -7777,7 +7785,7 @@ module Workspace
     def plan_verb_outcome(name, row, json)
       failed = row["outcome"] == "failed"
       @error_output.puts "Error: could not start the plan for #{name}: #{row["message"]}" if failed && !json
-      extra = row.slice("task", "interrupts", "state", "previous_state", "line", "phase", "revision", "counts", "percent").transform_keys(&:to_sym)
+      extra = row.slice("task", "interrupts", "state", "title", "previous_state", "line", "phase", "revision", "counts", "percent").transform_keys(&:to_sym)
       {exit_code: failed ? 1 : 0, warnings: row["warnings"] || [],
        results: [action_row(name, row["outcome"], reason: row["reason"], message: row["message"], path: row["path"], pane: row["pane"], **extra)]}
     end
