@@ -7089,7 +7089,8 @@ module Workspace
                       "                              [--if-revision REV] [--json]\n" \
                       "       workspace spine goal set [WORKSPACE] TEXT [--if-revision REV] [--by LABEL] [--json]\n" \
                       "       workspace spine start [WORKSPACE] STAGE-PATH [--pane PANE | --spawn KIND] [--play REF]\n" \
-                      "                             [--if-revision REV] [--json]"
+                      "                             [--if-revision REV] [--json]\n" \
+                      "       workspace spine start [WORKSPACE] STAGE-PATH --fan-out [--spawn KIND] [--max N] [--json]"
         opts.separator ""
         opts.separator "show reads a workspace's stages: the stage files in spine/ of its notes directory, one"
         opts.separator "Markdown file per stage (10-research.md, 20-plan.md, ...), and sub-stages in a folder named"
@@ -7124,6 +7125,13 @@ module Workspace
         opts.separator "Refuses a stage that is completed or skipped (stage_done; not one whose check failed, which it reopens) or whose depends_on stages are not"
         opts.separator "(stage_waiting), and a pane that is busy (pane_busy)."
         opts.separator ""
+        opts.separator "start --fan-out starts every sub-stage of STAGE-PATH (the folder named like its file) that is not"
+        opts.separator "started and has no unmet depends_on, each in its own new pane (--spawn, default the main agent's"
+        opts.separator "kind), at most --max (default 3); the rest are skipped. One result per sub-stage: spawned, refused"
+        opts.separator "(with the code start would give, such as stage_waiting or stage_owned) or skipped. Exit status 1"
+        opts.separator "only when nothing was spawned and something was refused. A stopped workspace (no_session), no"
+        opts.separator "daemon (no_daemon) or a stage without sub-stages (no_substages) refuses the whole fan-out."
+        opts.separator ""
         opts.separator "Other verb: init (create the folder from a template; run 'workspace spine init --help')."
         opts.separator ""
         opts.on("--name NAME", "The workspace (default: the one detected from the current directory)") { |v| options[:name] = v }
@@ -7141,6 +7149,8 @@ module Workspace
         opts.on("--undone", "check: untick the items") { options[:check_undone] = true }
         opts.on("--pane PANE", "start: the pane to send the stage to, a pane id (%21) or window.pane (0.1) of the workspace's session") { |v| options[:pane] = v }
         opts.on("--spawn KIND", "start: split a new pane and start that agent in it (#{Commands::SpineStart::AGENT_KINDS.join(", ")})") { |v| options[:spawn] = v }
+        opts.on("--fan-out", "start: start every startable sub-stage of STAGE-PATH, each in a new pane") { options[:fan_out] = true }
+        opts.on("--max N", Integer, "start --fan-out: spawn at most N panes (default #{Commands::SpineStart::DEFAULT_FAN_OUT})") { |v| options[:max] = v }
         opts.on("--play REF", "start: the play to send (default: the stage's play:, else research, implementation-plan or review by its kind)") { |v| options[:play] = v }
         opts.on("--recursive", "set: also set every sub-stage that is not completed or skipped") { options[:recursive] = true }
         opts.on("--by LABEL", "set: the updated_by label; verify: the checked_by label (default: the agent and pane id of $TMUX_PANE, else person)") { |v| options[:by] = v }
@@ -7165,6 +7175,7 @@ module Workspace
         opts.separator "  workspace spine start verify    # the stage's owner pane, else the main agent pane"
         opts.separator "  workspace spine start api.worktree-login implement/api --spawn codex --json"
         opts.separator "  workspace spine start research --pane %21 --play team-research"
+        opts.separator "  workspace spine start implement --fan-out --max=2 --json    # one new agent per ready sub-stage"
       end
     end
 
@@ -7253,8 +7264,8 @@ module Workspace
         raise UsageError, "--item, --done and --undone are for 'spine check'. Run 'workspace spine --help'."
       end
       return cmd_spine_start(args, options, parser) if subcommand == "start"
-      if options[:pane] || options[:spawn] || options[:play]
-        raise UsageError, "--pane, --spawn and --play are for 'spine start'. Run 'workspace spine --help'."
+      if options[:pane] || options[:spawn] || options[:play] || options[:fan_out] || options[:max]
+        raise UsageError, "--pane, --spawn, --play, --fan-out and --max are for 'spine start'. Run 'workspace spine --help'."
       end
       return cmd_spine_set(args, options, parser) if subcommand == "set"
 
@@ -7352,6 +7363,13 @@ module Workspace
         raise UsageError, "spine start takes --pane, --spawn, --play, --if-revision and --json; the other options are for show and set."
       end
       raise UsageError, "Give only one of --pane and --spawn." if options[:pane] && options[:spawn]
+      raise UsageError, "--max is for 'spine start --fan-out'." if options[:max] && !options[:fan_out]
+      if options[:fan_out]
+        raise UsageError, "--fan-out starts new panes (--spawn); it cannot be combined with --pane." if options[:pane]
+        raise UsageError, "--fan-out cannot be combined with --if-revision: it starts several stage files." if options[:if_revision]
+        raise UsageError, "--play is not used by --fan-out: each sub-stage gets its own play." if options[:play]
+        raise UsageError, "--max must be at least 1." if options[:max] && options[:max] < 1
+      end
       if options[:spawn] && !Commands::SpineStart::AGENT_KINDS.include?(options[:spawn])
         raise UsageError, "Unknown agent kind for --spawn: #{options[:spawn]}. One of #{Commands::SpineStart::AGENT_KINDS.join(", ")}."
       end
@@ -7365,12 +7383,15 @@ module Workspace
       raise Error.new("No workspace found for #{@working_dir}. Run from inside a workspace or pass --name.", code: "not_in_workspace", details: {"path" => @working_dir}) unless name
 
       start = -> {
+        next @spine_start_command.fan_out(name: name, path: path, spawn: options[:spawn], max: options[:max] || Commands::SpineStart::DEFAULT_FAN_OUT) if options[:fan_out]
         @spine_start_command.start(name: name, path: path, pane: options[:pane], spawn: options[:spawn], play: options[:play],
           if_revision: options[:if_revision], launch: spine_launcher)
       }
       doc = options[:json] ? divert_output(&start) : start.call
       if options[:json]
         @output.puts JSON.generate(doc)
+      elsif !doc["ok"] && doc["results"]
+        @error_output.puts "Error: nothing was spawned for the sub-stages of #{doc["path"]} of #{name}; every startable sub-stage was refused (#{doc["results"].filter_map { |entry| entry["code"] if entry["result"] == "refused" }.uniq.join(", ")})."
       elsif !doc["ok"]
         @error_output.puts "Error: could not start stage #{doc["path"]} of #{name}: #{doc["message"]}"
       end

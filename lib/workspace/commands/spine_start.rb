@@ -24,6 +24,12 @@ module Workspace
       # The agent kinds `--spawn` may start.
       AGENT_KINDS = PaneDispatch::AGENT_KINDS
 
+      # Bumped whenever the `--fan-out` document's shape changes in a backward-incompatible way.
+      FAN_OUT_SCHEMA_VERSION = 1
+
+      # Panes `--fan-out` spawns at most, without `--max`.
+      DEFAULT_FAN_OUT = 3
+
       # The pack every brief carries.
       PACK = "spine"
 
@@ -63,8 +69,10 @@ module Workspace
       # @param library [Workspace::Library] finds the play and words the prompt
       # @param composer [Workspace::InstructionComposer] composes the `spine` pack
       # @param notes [Workspace::Commands::Notes] names the workspace's checkout, where plays and packs are looked up
+      # @param main_agent [Workspace::MainAgent, nil] says which agent kind `--fan-out` spawns when none is named
       # @param output [IO]
-      def initialize(spine:, panes:, library:, composer:, notes:, output: $stdout)
+      def initialize(spine:, panes:, library:, composer:, notes:, main_agent: nil, output: $stdout)
+        @main_agent = main_agent
         @spine = spine
         @panes = panes
         @library = library
@@ -105,7 +113,69 @@ module Workspace
         spawn ? by_spawn(job, spawn) : in_pane(job, pane)
       end
 
+      # Starts every sub-stage of a stage that can start, each in its own new pane, as `start` with
+      # `spawn:` does for one: not started, no unmet `depends_on`, not owned by a working pane. At most +max+
+      # panes are spawned; a startable sub-stage past the cap is `skipped`.
+      #
+      # @param name [String] the workspace
+      # @param path [String] the parent stage's path
+      # @param launch [#call] as for {#start}; unused, since a fan-out never launches
+      # @param spawn [String, nil] one of {AGENT_KINDS}; default the kind of the workspace's main agent pane (claude when unknown)
+      # @param max [Integer] panes to spawn at most
+      # @return [Hash] `results` (one `{path, result: spawned|refused|skipped, pane, code, message}` per sub-stage, in order),
+      #   `spawned`, `refused`, `skipped` counts, and `ok` (false only when nothing was spawned and something was refused)
+      # @raise [Workspace::Error] as {#start} for the stage; `no_session`, `no_daemon` and `no_substages` refuse the whole fan-out
+      def fan_out(name:, path:, launch: nil, spawn: nil, max: DEFAULT_FAN_OUT)
+        raise ArgumentError, "max must be at least 1" unless max.is_a?(Integer) && max >= 1
+        kind = spawn || default_kind(name)
+        raise ArgumentError, "unknown agent kind #{kind.inspect}" unless AGENT_KINDS.include?(kind)
+        _tree, parent = @spine.stage!(name, path)
+        if parent.children.empty?
+          raise Workspace::Error.new("Stage #{parent.path} of '#{name}' has no sub-stages to fan out; start it with: workspace spine start #{Shellwords.escape(name)} #{Shellwords.escape(parent.path)}",
+            code: "no_substages", details: {"workspace" => name, "path" => parent.path})
+        end
+        raise no_session(name) if @panes.session_live?(name) == false
+        rows = @panes.panes(name)
+        results = []
+        spawned = 0
+        parent.children.each do |child|
+          results << fan_out_one(name, child, kind, launch, rows, spawned >= max, max)
+          spawned += 1 if results.last["result"] == "spawned"
+        end
+        counts = %w[spawned refused skipped].to_h { |result| [result, results.count { |entry| entry["result"] == result }] }
+        @output.puts "Fan-out of #{parent.path} in #{name}: #{counts["spawned"]} spawned, #{counts["refused"]} refused, #{counts["skipped"]} skipped."
+        results.each { |entry| @output.puts "  #{entry["path"]}: #{entry["result"]}#{" in #{entry["pane"]}" if entry["pane"]}#{" (#{entry["code"]}: #{entry["message"]})" if entry["code"]}" }
+        {"schema_version" => FAN_OUT_SCHEMA_VERSION, "ok" => !(counts["spawned"].zero? && counts["refused"].positive?), "workspace" => name,
+         "path" => parent.path, "agent" => kind, "max" => max, "results" => results}.merge(counts)
+      end
+
       private
+
+      def default_kind(name)
+        kind = @main_agent&.kind(name)
+        AGENT_KINDS.include?(kind) ? kind : "claude"
+      end
+
+      def fan_out_one(name, child, kind, launch, rows, capped, max)
+        entry = {"path" => child.path, "result" => nil, "pane" => nil, "code" => nil, "message" => nil}
+        status = child.status
+        if status != "not_started"
+          owner = child.file&.value("owner")
+          row = owner && rows.find { |candidate| candidate["pane_id"] == owner }
+          if row && row["state"] == "working" && !DONE.include?(status)
+            return entry.merge("result" => "refused", "code" => "stage_owned", "message" => "being worked on in pane #{owner}")
+          end
+          return entry.merge("result" => "skipped", "code" => DONE.include?(status) ? "stage_done" : "already_started", "message" => "status is #{status}")
+        end
+        return entry.merge("result" => "skipped", "code" => "max_reached", "message" => "past --max #{max}") if capped
+        begin
+          doc = start(name: name, path: child.path, launch: launch, spawn: kind)
+        rescue Workspace::Error => e
+          return entry.merge("result" => "refused", "code" => e.code || "error", "message" => e.message, "pane" => e.details && e.details["pane"])
+        end
+        return entry.merge("result" => "spawned", "pane" => doc["pane"], "message" => doc["message"]) if doc["ok"]
+        entry.merge("result" => "refused", "code" => doc["reason"] || "failed", "pane" => doc["pane"], "message" => doc["message"])
+      end
 
       # The refusals the file alone decides; made again under the write lock.
       def refuse(name, tree, stage, if_revision)

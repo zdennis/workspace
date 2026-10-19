@@ -345,4 +345,103 @@ RSpec.describe Workspace::Commands::SpineStart do
     expect(refusal { start }.code).to eq("stage_done")
     expect(sender).not_to have_received(:deliver)
   end
+
+  describe "#fan_out" do
+    let(:ids) { %w[%31 %32 %33 %34].each }
+    let(:main_agent) { instance_double(Workspace::MainAgent, spawn_command: "claude", kind: "claude") }
+    subject(:command) { described_class.new(spine: spine, panes: panes, library: library, composer: composer, notes: notes, main_agent: main_agent, output: output) }
+
+    before do
+      allow(runner).to receive(:call) { ids.next }
+      allow(sender).to receive(:deliver) do |name:, pane:, body:|
+        steps << [:deliver, pane, body]
+        {"pane" => pane, "submitted" => true}
+      end
+      write("50-build.md", "---\nstatus: not_started\n---\n")
+      %w[a b c d].each { |id| write("50-build/10-#{id}.md", "---\nstatus: not_started\ntitle: Part #{id}\n---\n") }
+    end
+
+    def fan(**args) = command.fan_out(name: "api", path: "build", launch: launcher, **args)
+
+    def entries(doc) = doc["results"].to_h { |entry| [entry["path"], entry] }
+
+    it "spawns an agent for every startable sub-stage up to the default cap of 3, skipping the rest" do
+      doc = fan
+
+      expect(doc).to include("ok" => true, "spawned" => 3, "refused" => 0, "skipped" => 1, "max" => 3, "agent" => "claude")
+      expect(doc["results"].select { |entry| entry["result"] == "spawned" }.map { |entry| entry["pane"] }).to eq(%w[%31 %32 %33])
+      expect(doc["results"].find { |entry| entry["result"] == "skipped" }).to include("code" => "max_reached")
+      expect(runner).to have_received(:call).exactly(3).times
+      expect(steps.count { |step| step[0] == :bind }).to eq(3)
+    end
+
+    it "types each pane a brief naming its own sub-stage file, and writes the owner" do
+      doc = fan(max: 2)
+
+      expect(doc["spawned"]).to eq(2)
+      bodies = steps.select { |step| step[0] == :deliver }.map(&:last)
+      expect(bodies[0]).to include(File.join(@notes, "spine", "50-build", "10-a.md").to_json)
+      expect(bodies[1]).to include(File.join(@notes, "spine", "50-build", "10-b.md").to_json)
+      expect(stage_file("50-build/10-a.md").value("owner")).to eq("%31")
+    end
+
+    it "uses the kind given to --spawn" do
+      fan(spawn: "codex", max: 1)
+
+      expect(main_agent).to have_received(:spawn_command).with("api", "codex")
+    end
+
+    it "refuses a waiting sub-stage and an owned one without counting them against the cap" do
+      write("50-build/10-a.md", "---\nstatus: not_started\ndepends_on: [c]\n---\n")
+      write("50-build/10-b.md", "---\nstatus: in_progress\nowner: \"%21\"\n---\n")
+      pane_rows.find { |row| row["pane_id"] == "%21" }["state"] = "working"
+      write("50-build/10-d.md", "---\nstatus: completed\n---\n")
+      doc = fan(max: 1)
+
+      by_path = entries(doc)
+      expect(by_path["build/a"]).to include("result" => "refused", "code" => "stage_waiting")
+      expect(by_path["build/b"]).to include("result" => "refused", "code" => "stage_owned")
+      expect(by_path["build/c"]).to include("result" => "spawned", "pane" => "%31")
+      expect(by_path["build/d"]).to include("result" => "skipped", "code" => "stage_done")
+      expect(doc).to include("ok" => true, "spawned" => 1, "refused" => 2, "skipped" => 1)
+    end
+
+    it "is not ok when nothing was spawned and something was refused" do
+      write("50-build/10-a.md", "---\nstatus: not_started\ndepends_on: [b]\n---\n")
+      write("50-build/10-b.md", "---\nstatus: blocked\n---\n")
+      %w[c d].each { |id| write("50-build/10-#{id}.md", "---\nstatus: completed\n---\n") }
+      doc = fan
+
+      expect(doc).to include("ok" => false, "spawned" => 0, "refused" => 1)
+    end
+
+    it "refuses as a whole when the workspace has no session, claiming nothing" do
+      sessions.clear
+
+      expect(refusal { fan }.code).to eq("no_session")
+      expect(runner).not_to have_received(:call)
+      expect(stage_file("50-build/10-a.md").status).to eq("not_started")
+    end
+
+    it "refuses as a whole when the agent daemon does not answer" do
+      allow(snapshot_client).to receive(:fetch).and_raise(Workspace::AgentSnapshotClient::Unavailable.new("no daemon", reason: :no_socket))
+
+      expect(refusal { fan }.code).to eq("no_daemon")
+      expect(runner).not_to have_received(:call)
+    end
+
+    it "refuses a stage with no sub-stages" do
+      error = refusal { command.fan_out(name: "api", path: "verify", launch: launcher) }
+
+      expect(error.code).to eq("no_substages")
+      expect(error.details).to include("path" => "verify")
+    end
+
+    it "defaults the kind to the main agent's, and claude when that is none" do
+      allow(main_agent).to receive(:kind).and_return("codex")
+      expect(fan(max: 1)["agent"]).to eq("codex")
+      allow(main_agent).to receive(:kind).and_return("none")
+      expect(fan(max: 1)["agent"]).to eq("claude")
+    end
+  end
 end

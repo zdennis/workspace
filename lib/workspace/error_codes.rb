@@ -78,6 +78,7 @@ module Workspace
       "stage_not_completed" => "spine verify: the stage's file does not say completed, so there is nothing to check yet. details.workspace, details.path, details.status.",
       "stage_waiting" => "spine start: a stage in the stage's depends_on is not completed or skipped by its file, or claims completed without a passing check. details.workspace, details.path, details.waits_on, details.reasons (id to check_pending or check_failed).",
       "stage_owned" => "spine start: the stage's owner pane is working on it and another pane (or --spawn) was asked for. details.workspace, details.path, details.owner.",
+      "no_substages" => "spine start --fan-out: the stage has no sub-stages to start. details.workspace, details.path.",
       "unknown_stage" => "spine set, spine check, spine verify, spine start, spine show --stage: no stage has that path. details.path, details.stages (the paths there are).",
       "unknown_item" => "spine check: the stage's ## Done when checklist has no item with that number. details.item, details.total, details.file.",
       "invalid_status" => "spine set: --status is not a status or an alias of one (unknown is not settable). details.status, details.allowed.",

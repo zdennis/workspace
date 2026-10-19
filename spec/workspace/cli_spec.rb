@@ -6738,7 +6738,64 @@ RSpec.describe Workspace::CLI do
     it "lists start in the help" do
       cli.run(["spine", "--help"])
 
-      expect(output.string).to include("workspace spine start").and include("--spawn").and include("--play")
+      expect(output.string).to include("workspace spine start").and include("--spawn").and include("--play").and include("--fan-out").and include("--max")
+    end
+
+    describe "--fan-out" do
+      let(:fan_doc) do
+        {"schema_version" => 1, "ok" => true, "workspace" => "api", "path" => "implement", "agent" => "claude", "max" => 3,
+         "results" => [{"path" => "implement/a", "result" => "spawned", "pane" => "%31", "code" => nil, "message" => nil}],
+         "spawned" => 1, "refused" => 0, "skipped" => 0}
+      end
+
+      before { allow(spine_start_command).to receive(:fan_out).and_return(fan_doc) }
+
+      it "fans out with the default cap and the kind left to the command" do
+        cli.run(["spine", "start", "implement", "--fan-out", "--json"])
+
+        expect(spine_start_command).to have_received(:fan_out).with(name: "detected-ws", path: "implement", spawn: nil, max: 3)
+        expect(JSON.parse(output.string)).to eq(fan_doc)
+        expect(spine_start_command).not_to have_received(:start)
+      end
+
+      it "takes --max N, --max=N and --spawn" do
+        cli.run(["spine", "start", "api", "implement", "--fan-out", "--max", "2", "--spawn", "codex"])
+        cli.run(["spine", "start", "api", "implement", "--fan-out", "--max=5"])
+
+        expect(spine_start_command).to have_received(:fan_out).with(name: "api", path: "implement", spawn: "codex", max: 2)
+        expect(spine_start_command).to have_received(:fan_out).with(name: "api", path: "implement", spawn: nil, max: 5)
+      end
+
+      it "exits 1 when nothing was spawned and something was refused, keeping the document" do
+        allow(spine_start_command).to receive(:fan_out).and_return(fan_doc.merge("ok" => false, "spawned" => 0, "refused" => 1))
+
+        expect { cli.run(["spine", "start", "implement", "--fan-out", "--json"]) }.to raise_error(FakeSystemExit)
+        expect(JSON.parse(output.string)).to include("ok" => false, "refused" => 1)
+      end
+
+      it "names the refusal codes on stderr without --json" do
+        refused = fan_doc.merge("ok" => false, "spawned" => 0, "refused" => 1,
+          "results" => [{"path" => "implement/a", "result" => "refused", "pane" => nil, "code" => "stage_waiting", "message" => "x"}])
+        allow(spine_start_command).to receive(:fan_out).and_return(refused)
+
+        expect { cli.run(["spine", "start", "implement", "--fan-out"]) }.to raise_error(FakeSystemExit)
+        expect(error_output.string).to include("nothing was spawned", "stage_waiting")
+      end
+
+      it "prints a whole refusal as the error envelope" do
+        allow(spine_start_command).to receive(:fan_out).and_raise(Workspace::Error.new("none", code: "no_substages", details: {"path" => "implement"}))
+
+        expect { cli.run(["spine", "start", "implement", "--fan-out", "--json"]) }.to raise_error(FakeSystemExit)
+        expect(JSON.parse(output.string)).to include("ok" => false, "code" => "no_substages")
+      end
+
+      it "refuses --pane, --if-revision, --play, a --max below 1, and --max without --fan-out" do
+        [%w[--fan-out --pane %1], %w[--fan-out --if-revision abc], %w[--fan-out --play research], %w[--fan-out --max 0], %w[--max 2]].each do |extra|
+          expect { cli.run(["spine", "start", "implement", *extra, "--json"]) }.to raise_error(FakeSystemExit)
+        end
+        expect(output.string.lines.map { |line| JSON.parse(line)["code"] }.uniq).to eq(["usage"])
+        expect(spine_start_command).not_to have_received(:fan_out)
+      end
     end
   end
 

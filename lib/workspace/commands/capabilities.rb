@@ -61,6 +61,7 @@ module Workspace
         "spine_set" => 3,
         "spine_verify" => 1,
         "spine_start" => 2,
+        "spine_fanout" => 1,
         "spine_check" => 1,
         "spine_goal" => 1,
         "spine_init" => 2,

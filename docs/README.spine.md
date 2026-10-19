@@ -233,6 +233,7 @@ When the file changed, one [`spine_changed`](README.event-log.md) line is record
 
 ```sh
 workspace spine start [WORKSPACE] STAGE-PATH [--pane PANE | --spawn KIND] [--play REF] [--if-revision REV] [--json]
+workspace spine start [WORKSPACE] STAGE-PATH --fan-out [--spawn KIND] [--max N] [--json]
 ```
 
 Gets an agent working on one stage. `STAGE-PATH` is as for `set`: with two arguments the first is the workspace, and with `--name WORKSPACE` the one argument is the path. It is modelled on [`plan start --task`](README.plan.md#one-task).
@@ -278,6 +279,40 @@ A `--spawn` pane starts in the workspace's checkout, whatever directory `spine s
 | `usage` | A missing path, `--pane` with `--spawn`, an unknown `--spawn` kind, or an option of `show` or `set` |
 
 `spine_start` in [`capabilities`](README.capabilities.md) is `1` when this verb exists.
+
+### spine start --fan-out
+
+```sh
+workspace spine start [WORKSPACE] STAGE-PATH --fan-out [--spawn KIND] [--max N] [--json]
+```
+
+Starts one agent per sub-stage of `STAGE-PATH` (the stages in the folder named like its file). Each sub-stage that is `not_started` goes through the same `spine start --spawn` steps as one stage (claim under the spine lock, a new pane in the workspace checkout, the brief naming that sub-stage's file, the binding), one after another, so every refusal of the single form applies to it: `stage_waiting` (an unmet `depends_on`, including a check that is pending or failed), `stage_owned`, `pane_busy`, and a pane that was not ready (`prompt_not_sent`).
+
+| Option | Description |
+|--------|-------------|
+| `--spawn KIND` | The agent to start in each pane. Default: the kind of the workspace's main agent pane (`claude` when there is none) |
+| `--max N` | Spawn at most `N` panes (default 3, `--max=N` works too). A startable sub-stage past the cap is `skipped` with code `max_reached`; refusals do not count against the cap |
+
+`--pane`, `--if-revision` and `--play` are usage errors with `--fan-out` (many stage files, each with its own play), and so is `--max` without `--fan-out`.
+
+```json
+{"schema_version": 1, "ok": true, "workspace": "fix-oauth", "path": "implement", "agent": "claude", "max": 3,
+ "results": [
+   {"path": "implement/api", "result": "spawned", "pane": "%31", "code": null, "message": null},
+   {"path": "implement/ui", "result": "refused", "pane": null, "code": "stage_waiting", "message": "Stage implement/ui of 'fix-oauth' depends on api, ..."},
+   {"path": "implement/docs", "result": "skipped", "pane": null, "code": "already_started", "message": "status is in_progress"}],
+ "spawned": 1, "refused": 1, "skipped": 1}
+```
+
+A sub-stage that is not `not_started` is `skipped` (`stage_done` for `completed` or `skipped`, `already_started` otherwise), except one whose owner pane is working: that is `refused` with `stage_owned`. Fan-out never reopens a completed stage whose check failed; start that one by name. A refusal that follows a split names the new pane, which is left open.
+
+A `spawned` entry's `message` is null unless the pane could not be bound (the single form's note). The `ok: false` document has `results` and no top-level `code`; read each entry's `code`.
+
+Exit status is 0 unless nothing was spawned and at least one sub-stage was refused (`ok: false`, exit 1, the document still on stdout under `--json`). All skipped, or nothing startable, is exit 0.
+
+These refuse the whole fan-out as an error (`ok: false`, a `code`), before anything is claimed: `no_spine`, `unknown_stage`, `no_substages` (the stage has no sub-stages; use plain `spine start`), `no_session` (the workspace is not running), `no_daemon`.
+
+`spine_fanout` in [`capabilities`](README.capabilities.md) is `1` when `--fan-out` exists.
 
 ## spine init
 

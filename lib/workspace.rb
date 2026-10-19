@@ -558,7 +558,7 @@ module Workspace
       runner: run_command, readiness: agent_readiness, main_agent: main_agent, tmux: tmux, project_config: project_config)
     plan_dispatch_command = Commands::PlanDispatch.new(access: plan_access, panes: pane_dispatch, library: library, output: output)
     spine_start_command = Commands::SpineStart.new(spine: spine_command, panes: pane_dispatch, library: library, composer: instruction_composer,
-      notes: notes_command, output: output)
+      notes: notes_command, main_agent: main_agent, output: output)
     plan_task_command = Commands::PlanTask.new(access: plan_access, output: output)
     plan_command = Commands::Plan.new(notes: notes_command, access: plan_access, dispatch: plan_dispatch_command, catalog: project_catalog, groups: project_groups,
       plan_state: plan_state, plan_config: plan_config, snapshot_client: agent_snapshot_client, ask_store_for: ask_store_for, task_store: task_store, output: output)

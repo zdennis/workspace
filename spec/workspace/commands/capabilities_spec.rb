@@ -158,6 +158,12 @@ RSpec.describe Workspace::Commands::Capabilities do
       expect(document["features"]).to include("spine_start" => 2)
     end
 
+    it "reports spine_fanout 1 once spine start --fan-out starts the sub-stages of a stage" do
+      command.call(json: true)
+
+      expect(document["features"]).to include("spine_fanout" => 1)
+    end
+
     it "reports spine_verify 1 and spine_set 3 once spine verify records a check" do
       command.call(json: true)
       expect(document["features"]).to include("spine_verify" => 1, "spine_set" => 3)
