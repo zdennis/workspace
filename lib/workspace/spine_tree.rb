@@ -81,7 +81,8 @@ module Workspace
           "depends_on" => depends_on, "gates" => gates, "artifacts" => file ? file.list("artifacts") : [],
           "play" => file&.value("play"), "agent" => file&.value("agent"),
           "updated" => file&.value("updated"), "updated_by" => file&.value("updated_by"),
-          "modified_at" => file&.modified_at,
+          "check" => file&.check, "checked_by" => file&.value("checked_by"), "checked_at" => file&.value("checked_at"),
+          "check_note" => file&.value("check_note"), "modified_at" => file&.modified_at,
           "done_when" => file ? file.done_when : {"total" => 0, "done" => 0, "items" => []},
           "rollup" => rollup, "warnings" => all_warnings, "truncated" => file ? file.truncated : false,
           "children" => children.map(&:to_h)

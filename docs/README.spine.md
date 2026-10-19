@@ -7,6 +7,7 @@ Read a workspace's stages (`workspace spine`), set a stage's status, and start a
 ```sh
 workspace spine show [WORKSPACE] [--name WORKSPACE] [--stage STAGE-PATH] [--body] [--evaluate] [--json]
 workspace spine check [WORKSPACE] STAGE-PATH --item N [--item N ...] (--done | --undone) [--if-revision REV] [--json]
+workspace spine verify [WORKSPACE] STAGE-PATH (--pass | --fail) --note TEXT [--by LABEL] [--if-revision REV] [--json]
 ```
 
 ## Options
@@ -114,7 +115,7 @@ The file is read as bytes, opened without following a link, written to a temp fi
 
 Each file written appends one [`spine_changed`](README.event-log.md) line to the event log, carrying the new `revision` and the `owner` after; a write that changed only the owner has `change: "owner"`.
 
-A stage changed some other way, by hand in an editor or by an agent's edit tool, is logged too while the workspace's agent daemon runs (`spine_events` in [`capabilities`](README.capabilities.md)): see [`event-log`](README.event-log.md). The daemon recognises a `spine set` write by its revision, so one write is one line.
+A stage changed some other way, by hand in an editor or by an agent's edit tool, is logged too while the workspace's agent daemon runs (`spine_events` in [`capabilities`](README.capabilities.md)): see [`event-log`](README.event-log.md). The daemon recognises a `spine set` or `spine verify` write by its revision, so one write is one line.
 
 ```json
 {
@@ -127,7 +128,7 @@ A stage changed some other way, by hand in an editor or by an agent's edit tool,
 }
 ```
 
-`written` and `unchanged` are in tree order. Plain output is one line per stage.
+`written` and `unchanged` are in tree order. For a stage that has opted in to a check, a `written` row also has `check` (the value after), and the event has `check` and, when it moved, `previous_check`. Plain output is one line per stage.
 
 A refusal is the standard error document. With `--recursive` the run stops at the first refusal of a stage file and `details.written` lists the stages already written (rows as above); a refusal before any write (`invalid_status`, `no_spine`, `unknown_stage`, `lock_busy`) has no `written`. A stage already written reads the status on a second run and lands in `unchanged`, so running the same command again finishes the job; `--if-revision` then guards the named stage only, which may by then be unchanged.
 
@@ -141,6 +142,48 @@ A refusal is the standard error document. With `--recursive` the run stops at th
 | `usage` | A missing `--status` or path, or a `--note` or `--by` that is not one short line |
 
 `spine_set` in [`capabilities`](README.capabilities.md) is `2` when this verb takes `--owner` and accepts `--note` or `--owner` without `--status`. The 64-character limit on `--owner` applies to the command; a hand-edited owner is read up to 500 characters.
+
+## Checking a stage apart from its claim
+
+A stage's `status` is its claim. A stage can also ask for a separate check: a second reader (a checker agent, a person) looks at the finished work and gives a verdict, so a worker saying `completed` is not the last word. The check is recorded in its own frontmatter lines, never in `note`:
+
+| Key | Meaning |
+|-----|---------|
+| `check` | `required`, `pending`, `passed` or `failed` |
+| `checked_by` | Who gave the verdict (`claude %27`, `person`), at most 100 characters |
+| `checked_at` | When, UTC ISO |
+| `check_note` | What was checked and found, one line of at most 300 characters |
+
+**Opt-in is the presence of a `check:` line.** A stage with no `check:` (or one holding a value that is not one of the four, which is the warning `unknown_check`) has no check; its `check`, `checked_by`, `checked_at` and `check_note` read `null` in `spine show --json`, and nothing here changes how it behaves. One mechanism was chosen on purpose: a stage opts in by writing `check: required` in its file (a template, `spine init`'s output or a hand edit), so the request needs no second switch (a `checked` gate would have to be listed in `gates:` and kept in step with the value). `required` is the resting value: the stage asks for a check and has none to give yet.
+
+`spine set` keeps the check in step with the claim, only for a stage that has opted in and only when the status changes: setting `completed` writes `check: pending` and removes `checked_by`, `checked_at` and `check_note`; setting any other status (a reopening) writes `check: required` and removes the same three lines. A call that leaves the status alone (a new `--note`, or `--status completed` on a completed stage) does not touch them. `spine verify` writes the verdict. The reset on reopening is deliberate and loses a failed verdict's `check_note`: copy it into the stage's `note` or the brief before reopening. A hand edit that sets `status: completed` without `spine set` leaves `check` as it was; `spine verify` accepts a completed stage whose check is `required`.
+
+## spine verify
+
+```sh
+workspace spine verify [WORKSPACE] STAGE-PATH (--pass | --fail) --note TEXT [--by LABEL] [--if-revision REV] [--json]
+```
+
+Records the verdict of a check. It writes `check` (`passed` for `--pass`, `failed` for `--fail`), `checked_by`, `checked_at` (now, UTC) and `check_note`, and no other line: `status`, `note`, `owner`, `updated` and `updated_by` stay, since the claim did not change. Every other byte stays as `spine set` keeps it, and the write takes the same lock and temp-file-and-rename path. A verdict can be replaced: running `verify` again on a `passed` or `failed` stage overwrites the four lines.
+
+| Option | Description |
+|--------|-------------|
+| `--pass`, `--fail` | The verdict; exactly one is required (a usage error otherwise) |
+| `--note TEXT` | Required. One line of at most 300 characters, written as `check_note:`. A verdict with no reason is not accepted |
+| `--by LABEL` | The `checked_by` label (at most 100 characters). Default as for `set`: `<agent> <pane>` (such as `claude %27`) when `$TMUX_PANE` is a pane the agent daemon has logged as a coding agent, else `person`. The label is the only record of which pane checked |
+| `--if-revision REV` | Refuse with `stale_revision` unless the stage file's `revision` is `REV` |
+
+Refusals: `check_not_required` (the file has no `check:` line; nothing is written), `stage_not_completed` (the file's status is not `completed`; `details.status`), `unknown_stage`, `no_spine`, `stale_revision` (checked before the two above), `spine_unwritable`. A stage that is only a folder is `spine_unwritable` with reason `no_file`.
+
+When a line changed, one [`spine_changed`](README.event-log.md) line is recorded with `change: "check"`, `check`, `previous_check`, `status`, `check_note`, `by` and the new `revision`. The agent daemon recognises the write by its revision (as it does for `set`), so one write is one line. The same verdict, label and note again writes nothing and records nothing (`changed: false`), whatever the time, so a retry does not churn the revision; `checked_at` and `checked_by` are the verdict's time and author, since `updated` and `updated_by` keep the claim's. A file with `check: bogus` is `check_not_required` too, with `details.value` naming the bad value.
+
+```json
+{"schema_version": 1, "ok": true, "workspace": "fix-oauth-refresh", "path": "verify", "file": "40-verify.md",
+ "check": "passed", "previous_check": "pending", "checked_by": "claude %27", "checked_at": "2026-10-19T18:56:28Z",
+ "check_note": "74 commands classed, no gaps", "changed": true, "revision": "0c1d2e3f"}
+```
+
+`spine_verify` in [`capabilities`](README.capabilities.md) is `1`. `spine_set` is `3` when `set` keeps the check in step with the status. `spine show` does not yet judge the check: `--evaluate`'s `state` and `waits_on` still follow the claim, so a completed stage with `check: pending` reads `completed` there until a later revision of `spine_eval`.
 
 ## spine check
 
@@ -311,6 +354,8 @@ The same dialect as the plan file: a block between two `---` lines at the top, r
 | `artifacts` | paths or https URLs | Links for the stage |
 | `play`, `agent` | a library ref; `claude`, `codex` | The play and agent a start uses |
 | `updated`, `updated_by` | ISO date-time; `person` or an agent label | When and by whom the status was last set |
+| `check` | `required`, `pending`, `passed`, `failed` | Opts the stage in to a separate check; an unknown value reads as no check (`unknown_check`). See [Checking a stage apart from its claim](#checking-a-stage-apart-from-its-claim) |
+| `checked_by`, `checked_at`, `check_note` | a label; ISO date-time; one line (300 characters) | The verdict `spine verify` gives |
 
 Other keys are ignored. `kind` and `gates` are read case-insensitively. A value that starts with `[` but is not a whole `[...]` list is read as text. The body is free Markdown; one part is read: the column-0 `- [ ]` and `- [x]` lines under a `## Done when` heading, up to the next heading (not indented, not in fenced code or HTML comments).
 
@@ -359,7 +404,7 @@ A link is never followed. A linked `spine`, stage file, `goal.md` or stage folde
       "title": "Implement", "description": "Make the refresh path safe under concurrent requests",
       "status": "in_progress", "status_raw": "active", "note": null, "kind": "implement", "owner": "%6",
       "depends_on": ["plan"], "gates": ["plan"], "artifacts": ["IMPLEMENTATION_PLAN.md"], "play": null, "agent": null,
-      "updated": "2026-10-17T21:40:00Z", "updated_by": "claude %6", "modified_at": "2026-10-17T21:40:02Z",
+      "updated": "2026-10-17T21:40:00Z", "updated_by": "claude %6", "check": null, "checked_by": null, "checked_at": null, "check_note": null, "modified_at": "2026-10-17T21:40:02Z",
       "done_when": {"total": 4, "done": 2, "items": [{"text": "...", "done": true, "line": 18}]},
       "rollup": {"status": "in_progress", "done": 1, "total": 3, "counts": {"completed": 1, "in_progress": 1, "not_started": 1, "blocked": 0, "skipped": 0, "unknown": 0, "disputed": 0}},
       "warnings": [{"code": "bad_line", "line": 7, "message": "..."}],
@@ -403,7 +448,7 @@ With `--stage`, the document is `{"schema_version", "ok", "workspace", "dir", "g
 
 ### Warning codes
 
-`no_frontmatter`, `bad_line`, `duplicate_key`, `duplicate_id` (the second stage with an id; `depends_on` means the first), `unknown_kind`, `unknown_gate`, `unknown_dependency`, `dependency_cycle`, `clipped`, `not_utf8`, `link`, `not_a_file`, `too_large`, `folder_without_file`, `too_deep`, `newer_format`.
+`no_frontmatter`, `bad_line`, `duplicate_key`, `duplicate_id` (the second stage with an id; `depends_on` means the first), `unknown_kind`, `unknown_gate`, `unknown_check`, `unknown_dependency`, `dependency_cycle`, `clipped`, `not_utf8`, `link`, `not_a_file`, `too_large`, `folder_without_file`, `too_deep`, `newer_format`.
 
 ## Errors
 

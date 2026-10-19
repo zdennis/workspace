@@ -566,7 +566,7 @@ module Workspace
           sessions        Show coding-agent sessions and sub-agents in a workspace
           snapshot        Print everything a UI polls (projects, panes, git, asks, locks, dev) as one JSON document
           step            For the agent on a workflow step: report on it (done), or see what it is (status)
-          spine           Read and set a workspace's stages (stage files in spine/ in its notes directory): show, init, set a stage's status, tick its checklist, start an agent on a stage
+          spine           Read and set a workspace's stages (stage files in spine/ in its notes directory): show, init, set a stage's status, tick its checklist, record a check verdict (verify), start an agent on a stage
           start           Create a worktree and launch it (from JIRA key, PR URL or #n, or branch)
           status          Show detailed state of tracked launcher sessions
           set-command     Set the shell command for a pane in a project config (--pane <N>)
@@ -7085,6 +7085,8 @@ module Workspace
                       "                           [--if-revision REV] [--recursive] [--by LABEL] [--json]\n" \
                       "       workspace spine check [WORKSPACE] STAGE-PATH --item N [--item N ...] (--done | --undone)\n" \
                       "                             [--if-revision REV] [--by LABEL] [--json]\n" \
+                      "       workspace spine verify [WORKSPACE] STAGE-PATH (--pass | --fail) --note TEXT [--by LABEL]\n" \
+                      "                              [--if-revision REV] [--json]\n" \
                       "       workspace spine goal set [WORKSPACE] TEXT [--if-revision REV] [--by LABEL] [--json]\n" \
                       "       workspace spine start [WORKSPACE] STAGE-PATH [--pane PANE | --spawn KIND] [--play REF]\n" \
                       "                             [--if-revision REV] [--json]"
@@ -7105,6 +7107,12 @@ module Workspace
         opts.separator "the frontmatter. An item already in the asked state is left alone. It writes a spine_changed event"
         opts.separator "with change done_when. Refuses an item that is not there (unknown_item)."
         opts.separator ""
+        opts.separator "verify records a separate check of a completed stage: check (passed with --pass, failed with --fail),"
+        opts.separator "checked_by, checked_at and check_note, and no other line. A stage opts in with a check: line in its file"
+        opts.separator "(check: required); 'set --status completed' then makes it check: pending, and any other status resets it"
+        opts.separator "to required. Refuses a stage that has not opted in (check_not_required) and one that is not completed"
+        opts.separator "(stage_not_completed). It writes a spine_changed event with change check."
+        opts.separator ""
         opts.separator "goal set writes title: in spine/goal.md (one line, at most 120 characters), keeping the rest of an"
         opts.separator "existing file, and makes the file (spine: 1, title, a '# TEXT' heading) when it is missing. Refuses"
         opts.separator "a workspace with no spine/ (no_spine). It writes a spine_changed event with change goal."
@@ -7123,9 +7131,11 @@ module Workspace
         opts.on("--body", "show: add the text after the frontmatter (16 KB at most) to the stage, or to the goal without --stage") { options[:body] = true }
         opts.on("--evaluate", "show: judge each stage against the plan, git, the pull request, the review agent and the panes (reads gh and the agent daemon, up to about 5s; an unreadable source leaves its gates unchecked)") { options[:evaluate] = true }
         opts.on("--status VALUE", "set: not_started, in_progress, blocked, completed or skipped (or an alias such as done)") { |v| options[:status] = v }
-        opts.on("--note TEXT", "set: one line of at most 300 characters; alone it changes only the note (empty clears it). With a new status and no --note the note is cleared") { |v| options[:note] = v }
+        opts.on("--note TEXT", "set: one line of at most 300 characters; alone it changes only the note (empty clears it). With a new status and no --note the note is cleared. verify: the verdict's note, required, 300 characters at most") { |v| options[:note] = v }
+        opts.on("--pass", "verify: the stage passed its check") { options[:pass] = true }
+        opts.on("--fail", "verify: the stage failed its check") { options[:fail] = true }
         opts.on("--owner VALUE", "set: who works the stage: a pane id such as %6, you, or an agent label; one line of at most 64 characters (empty clears it). Not with --recursive") { |v| options[:owner] = v }
-        opts.on("--if-revision REV", "set, goal set, start: refuse with stale_revision unless the stage file's (goal.md's for goal set) revision (from show) is REV") { |v| options[:if_revision] = v }
+        opts.on("--if-revision REV", "set, verify, goal set, start: refuse with stale_revision unless the stage file's (goal.md's for goal set) revision (from show) is REV") { |v| options[:if_revision] = v }
         opts.on("--item N", Integer, "check: the checklist item, 1-based; repeat for several") { |v| (options[:items] ||= []) << v }
         opts.on("--done", "check: tick the items") { options[:check_done] = true }
         opts.on("--undone", "check: untick the items") { options[:check_undone] = true }
@@ -7133,7 +7143,7 @@ module Workspace
         opts.on("--spawn KIND", "start: split a new pane and start that agent in it (#{Commands::SpineStart::AGENT_KINDS.join(", ")})") { |v| options[:spawn] = v }
         opts.on("--play REF", "start: the play to send (default: the stage's play:, else research, implementation-plan or review by its kind)") { |v| options[:play] = v }
         opts.on("--recursive", "set: also set every sub-stage that is not completed or skipped") { options[:recursive] = true }
-        opts.on("--by LABEL", "set: the updated_by label (default: the agent and pane id of $TMUX_PANE, else person)") { |v| options[:by] = v }
+        opts.on("--by LABEL", "set: the updated_by label; verify: the checked_by label (default: the agent and pane id of $TMUX_PANE, else person)") { |v| options[:by] = v }
         opts.on("--json", "Print one JSON document (see docs/README.spine.md)") { options[:json] = true }
         opts.on("-h", "--help", "Show this help") { options[:help] = true }
         opts.separator ""
@@ -7149,6 +7159,8 @@ module Workspace
         opts.separator "  workspace spine set api.worktree-login implement --status completed --recursive --if-revision 9f8e7d6c"
         opts.separator "  workspace spine check verify --item 2 --done"
         opts.separator "  workspace spine check api.worktree-login implement/api --item 1 --item 3 --undone --if-revision 9f8e7d6c --json"
+        opts.separator "  workspace spine verify relationships --pass --note \"74 commands classed, no gaps\""
+        opts.separator "  workspace spine verify api.worktree-login verify --fail --note \"item 2 is not in the diff\" --by=\"claude %27\" --json"
         opts.separator "  workspace spine goal set \"Fix the OAuth refresh race\""
         opts.separator "  workspace spine start verify    # the stage's owner pane, else the main agent pane"
         opts.separator "  workspace spine start api.worktree-login implement/api --spawn codex --json"
@@ -7229,8 +7241,12 @@ module Workspace
       return @output.puts(parser.help) if options[:help]
 
       subcommand = args.shift
-      raise UsageError, "Missing subcommand: show, set, check, goal, start or init.\n\n#{parser.help}" unless subcommand
-      raise UsageError, "Unknown spine subcommand: #{subcommand}. Run 'workspace spine --help'." unless %w[show set check start goal].include?(subcommand)
+      raise UsageError, "Missing subcommand: show, set, check, verify, goal, start or init.\n\n#{parser.help}" unless subcommand
+      raise UsageError, "Unknown spine subcommand: #{subcommand}. Run 'workspace spine --help'." unless %w[show set check start goal verify].include?(subcommand)
+      if options[:pass] || options[:fail]
+        raise UsageError, "--pass and --fail are for 'spine verify'. Run 'workspace spine --help'." unless subcommand == "verify"
+      end
+      return cmd_spine_verify(args, options, parser) if subcommand == "verify"
       return cmd_spine_goal(args, options, parser) if subcommand == "goal"
       return cmd_spine_check(args, options, parser) if subcommand == "check"
       if options[:items] || options[:check_done] || options[:check_undone]
@@ -7269,6 +7285,26 @@ module Workspace
 
       @spine_command.set(name: name, path: path, status: options[:status], note: options[:note], owner: options[:owner], if_revision: options[:if_revision],
         recursive: options[:recursive] || false, by: options[:by], json: options[:json])
+    end
+
+    def cmd_spine_verify(args, options, parser)
+      if options[:stage] || options[:body] || options[:evaluate] || options[:status] || options[:owner] || options[:recursive] || options[:pane] || options[:spawn] || options[:play] || options[:items] || options[:check_done] || options[:check_undone]
+        raise UsageError, "spine verify takes --pass, --fail, --note, --by, --if-revision, --name and --json; the other options are for show, set, check and start."
+      end
+      raise UsageError, "Give only one of --pass and --fail." if options[:pass] && options[:fail]
+      raise UsageError, "Give --pass or --fail." unless options[:pass] || options[:fail]
+      raise UsageError, "Give --note TEXT: what was checked and what was found." if options[:note].to_s.strip.empty?
+      positional = (args.size > 1 && !options[:name]) ? settle_name(args.shift) : nil
+      path = args.shift
+      raise UsageError, "Missing STAGE-PATH, the stage's ids joined with / (as 'spine show' reports path).\n\n#{parser.help}" unless path
+      raise UsageError, "Unexpected argument: #{args.first}. Run 'workspace spine --help'." if args.any?
+      raise Error, "spine is not available: no spine command was wired" unless @spine_command
+
+      name = options[:name] || positional || @project_detector.detect(@working_dir)
+      raise Error.new("No workspace found for #{@working_dir}. Run from inside a workspace or pass --name.", code: "not_in_workspace", details: {"path" => @working_dir}) unless name
+
+      @spine_command.verify(name: name, path: path, verdict: options[:pass] ? "passed" : "failed", note: options[:note],
+        by: options[:by], if_revision: options[:if_revision], json: options[:json])
     end
 
     def cmd_spine_goal(args, options, parser)

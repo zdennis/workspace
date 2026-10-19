@@ -180,6 +180,33 @@ RSpec.describe Workspace::SpineFile do
     end
   end
 
+  describe "#check" do
+    it "reads the four values, in any case" do
+      %w[required pending passed failed].each do |word|
+        file = parse("---\nstatus: completed\ncheck: #{word.upcase}\n---\n")
+        expect(file.check).to eq(word)
+        expect(file.warnings).to be_empty
+      end
+    end
+
+    it "is nil without the key, with an empty one, and with an unknown value, which is a warning and not an error" do
+      expect(parse("---\nstatus: completed\n---\n").check).to be_nil
+      expect(parse("---\nstatus: completed\ncheck:\n---\n").check).to be_nil
+      file = parse("---\nstatus: completed\ncheck: maybe\n---\n")
+      expect(file.check).to be_nil
+      expect(file.read?).to be(true)
+      expect(file.warnings).to eq([{"code" => "unknown_check", "line" => 3, "message" => "check maybe is not one of required, pending, passed, failed, so the stage has no check.", "value" => "maybe"}])
+    end
+
+    it "reads checked_by, checked_at and check_note as plain values, the note cut at 300 characters" do
+      file = parse("---\nstatus: completed\ncheck: failed\nchecked_by: claude %27\nchecked_at: 2026-10-19T18:56:28Z\ncheck_note: #{"n" * 310}\n---\n")
+      expect(file.value("checked_by")).to eq("claude %27")
+      expect(file.value("checked_at")).to eq("2026-10-19T18:56:28Z")
+      expect(file.value("check_note").size).to eq(300)
+      expect(file.warnings.map { |w| w["code"] }).to eq(["clipped"])
+    end
+  end
+
   describe "#done_when" do
     it "counts column-0 boxes under ## Done when up to the next heading" do
       file = parse(<<~MD)

@@ -21,10 +21,12 @@ RSpec.describe Workspace::SpineWatcher do
 
   after { FileUtils.remove_entry(notes) }
 
-  def stage(name, status: "in_progress", note: nil, owner: nil, updated: nil, updated_by: nil, body: "Body\n")
+  def stage(name, status: "in_progress", note: nil, owner: nil, updated: nil, updated_by: nil, check: nil, checked_by: nil, body: "Body\n")
     lines = ["---", "spine: 1", "status: #{status}"]
     lines << "note: #{note}" if note
     lines << "owner: #{owner}" if owner
+    lines << "check: #{check}" if check
+    lines << "checked_by: #{checked_by}" if checked_by
     lines << "updated: #{updated}" if updated
     lines << "updated_by: #{updated_by}" if updated_by
     path = File.join(spine, name)
@@ -127,6 +129,30 @@ RSpec.describe Workspace::SpineWatcher do
     watcher.baseline
 
     stage("40-verify.md", owner: "you")
+    recent_lines << {"path" => "verify", "revision" => revision("40-verify.md")}
+    settle
+
+    expect(recorded).to be_empty
+  end
+
+  it "records a hand-edited check as change check, by the checked_by label" do
+    stage("40-verify.md", status: "completed", check: "pending")
+    watcher.baseline
+
+    stage("40-verify.md", status: "completed", check: "passed", checked_by: "claude %27")
+    settle
+
+    expect(recorded.map { |r| r[:data] }).to eq([{
+      "workspace" => "ws", "path" => "verify", "status" => "completed", "previous" => "completed", "note" => nil, "owner" => nil,
+      "by" => "claude %27", "revision" => revision("40-verify.md"), "check" => "passed", "previous_check" => "pending", "change" => "check"
+    }])
+  end
+
+  it "skips a check change that is a spine verify write" do
+    stage("40-verify.md", status: "completed", check: "pending")
+    watcher.baseline
+
+    stage("40-verify.md", status: "completed", check: "failed", checked_by: "claude %27")
     recent_lines << {"path" => "verify", "revision" => revision("40-verify.md")}
     settle
 

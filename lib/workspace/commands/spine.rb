@@ -21,6 +21,9 @@ module Workspace
       # The longest `--by`.
       MAX_BY = 100
 
+      # The verdicts `spine verify` writes.
+      VERDICTS = %w[passed failed].freeze
+
       # What `updated_by` holds when the caller is not a known agent pane.
       PERSON = "person"
 
@@ -132,6 +135,43 @@ module Workspace
           record_check(name, stage, result, by) if result.changed
         end
         report_check(name, stage, result, done, json)
+      end
+
+      # Records a verdict on one completed stage that has opted in to a check (a `check:` key): `check`,
+      # `checked_by`, `checked_at` and `check_note` are written and nothing else, under the same write lock as {#set}.
+      # It records `spine_changed` with `change: "check"` and the verdict when the file changed. The same verdict
+      # again, by the same label and with the same note writes nothing, whatever the time.
+      #
+      # @param name [String] the workspace
+      # @param path [String] a stage path
+      # @param verdict [String] `passed` or `failed`
+      # @param note [String] one line of at most 300 characters, not empty: what was checked and found
+      # @param by [String, nil] the `checked_by` label (at most 100 characters); default the agent label of `$TMUX_PANE`, else `person`
+      # @param if_revision [String, nil] refuse with `stale_revision` unless the stage file's revision is this
+      # @param json [Boolean] print one JSON document instead of a summary
+      # @return [void]
+      # @raise [Workspace::UsageError] a verdict other than `passed` or `failed`; a note or label that is empty or not one short line
+      # @raise [Workspace::Error] `no_spine`, `unknown_stage`, `check_not_required`, `stage_not_completed`, `stale_revision`, `spine_unwritable`
+      def verify(name:, path:, verdict:, note:, by: nil, if_revision: nil, json: false)
+        raise Workspace::UsageError, "The verdict is passed or failed." unless VERDICTS.include?(verdict)
+        note = one_line(note, "--note", SpineFile::VALUE_LIMITS.fetch("check_note"))
+        raise Workspace::UsageError, "Give --note TEXT: what was checked and what was found." if note.nil? || note.empty?
+        by = one_line(by, "--by", MAX_BY)
+        raise Workspace::UsageError, "--by can't be empty." if by&.empty?
+
+        notes_dir = @notes.info(name: name)["dir"]
+        stage = result = nil
+        with_lock(name) do
+          _, stage = stage!(name, path, SpineTree.read(real(notes_dir)))
+          raise no_file(stage) unless stage.file
+          by ||= default_by(name)
+          result = @writer.verify(stage.file.path, relative: stage.relative, check: verdict, by: by, note: note,
+            at: @clock.call.utc.strftime("%Y-%m-%dT%H:%M:%SZ"), if_revision: if_revision) do |file|
+            refuse_verify(name, stage, file)
+          end
+          record_verify(name, stage, result) if result.changed
+        end
+        report_verify(name, stage, result, json)
       end
 
       # Sets the goal's `title:` (see {SpineWriter#goal}), under the same write lock as {#set}; makes `spine/goal.md`
@@ -418,7 +458,9 @@ module Workspace
         end
         entry = {"path" => stage.path, "file" => stage.relative, "status" => result.status, "previous" => result.previous,
                  "revision" => result.revision, "updated" => updated, "updated_by" => by, "note" => result.note, "owner" => result.owner}
-        @what[stage.path] = [field_change("note", result.previous_note, result.note), field_change("owner", result.previous_owner, result.owner)].compact.join(", ")
+        entry["check"] = result.check if result.check
+        @what[stage.path] = [field_change("note", result.previous_note, result.note), field_change("owner", result.previous_owner, result.owner),
+          ((result.check != result.previous_check) ? "check #{result.check}" : nil)].compact.join(", ")
         written << entry
         record_change(name, stage, result, by)
       end
@@ -427,7 +469,41 @@ module Workspace
         data = {"workspace" => name, "path" => stage.path, "status" => result.status, "previous" => result.previous,
                 "note" => result.note, "owner" => result.owner, "by" => by, "revision" => result.revision}
         data["change"] = "owner" if result.status == result.previous && result.note == result.previous_note
+        data["check"] = result.check if result.check
+        data["previous_check"] = result.previous_check if result.check != result.previous_check
         @event_log&.record(type: "spine_changed", project: name, data: data)
+      end
+
+      def refuse_verify(name, stage, file)
+        if (word = file.value("check")) && !file.check
+          raise Workspace::Error.new("#{stage.path} has `check: #{word}`, which is not one of #{SpineFile::CHECKS.join(", ")}, so it has no check. Fix the value in the file.",
+            code: "check_not_required", details: {"workspace" => name, "path" => stage.path, "value" => word})
+        end
+        unless file.check
+          raise Workspace::Error.new("#{stage.path} has not opted in to a check (its file has no check: line), so there is nothing to verify. Add `check: required` to the file.",
+            code: "check_not_required", details: {"workspace" => name, "path" => stage.path})
+        end
+        return if file.status == "completed"
+        raise Workspace::Error.new("#{stage.path} is #{file.status}, not completed, so it has nothing to check yet.",
+          code: "stage_not_completed", details: {"workspace" => name, "path" => stage.path, "status" => file.status})
+      end
+
+      def record_verify(name, stage, result)
+        data = {"workspace" => name, "path" => stage.path, "change" => "check", "check" => result.check, "previous_check" => result.previous,
+                "status" => result.status, "check_note" => result.check_note, "by" => result.checked_by, "revision" => result.revision}
+        @event_log&.record(type: "spine_changed", project: name, data: data)
+      end
+
+      def report_verify(name, stage, result, json)
+        if json
+          @output.puts JSON.generate({"schema_version" => JSON_SCHEMA_VERSION, "ok" => true, "workspace" => name, "path" => stage.path,
+            "file" => stage.relative, "check" => result.check, "previous_check" => result.previous, "checked_by" => result.checked_by,
+            "checked_at" => result.checked_at, "check_note" => result.check_note, "changed" => result.changed, "revision" => result.revision})
+        elsif result.changed
+          @output.puts "#{name}: #{stage.path} check #{result.check} (was #{result.previous || "none"}) by #{result.checked_by}"
+        else
+          @output.puts "#{name}: #{stage.path} check already reads #{result.check}"
+        end
       end
 
       def record_check(name, stage, result, by)
@@ -564,6 +640,7 @@ module Workspace
           line << " (sub-stages #{stage.rollup["status"]})" if stage.rollup
           owner = stage.file&.value("owner")
           line << "  owner #{owner}" if owner
+          line << "  check #{stage.file.check}" if stage.file&.check
           done = stage.file&.done_when
           line << "  #{done["done"]}/#{done["total"]} done" if done && done["total"].positive?
           warnings = stage.all_warnings.map { |w| w["code"] }.uniq

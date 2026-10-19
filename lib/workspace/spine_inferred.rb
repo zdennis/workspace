@@ -43,7 +43,7 @@ module Workspace
           "path" => kind, "file" => nil, "number" => number, "id" => kind, "revision" => nil, "title" => TITLES.fetch(kind),
           "description" => nil, "status" => status, "status_raw" => nil, "note" => nil, "kind" => kind, "owner" => owner,
           "depends_on" => [], "gates" => gates, "artifacts" => [], "play" => nil, "agent" => nil,
-          "updated" => nil, "updated_by" => nil, "modified_at" => nil,
+          "updated" => nil, "updated_by" => nil, "check" => nil, "checked_by" => nil, "checked_at" => nil, "check_note" => nil, "modified_at" => nil,
           "done_when" => {"total" => 0, "done" => 0, "items" => []}, "warnings" => [], "truncated" => false, "children" => []
         }
       end

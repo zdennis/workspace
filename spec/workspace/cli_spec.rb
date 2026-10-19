@@ -6631,6 +6631,33 @@ RSpec.describe Workspace::CLI do
     end
   end
 
+  describe "#run with spine verify" do
+    let(:spine_command) { instance_double(Workspace::Commands::Spine, verify: nil) }
+    let(:detector) { instance_double(Workspace::ProjectDetector, detect: "detected-ws") }
+    let(:built) { build_test_cli(spine_command: spine_command, project_detector: detector, working_dir: "/some/dir") }
+    let(:cli) { built[0] }
+
+    it "passes the verdict, note, label and revision to the workspace detected, named first or named with --name" do
+      cli.run(["spine", "verify", "relationships", "--pass", "--note", "all fine"])
+      cli.run(["spine", "verify", "api", "verify", "--fail", "--note=item 2 missing", "--by=claude %27", "--if-revision=abc12345", "--json"])
+      cli.run(["spine", "--name", "api", "verify", "verify", "--pass", "--note", "ok"])
+
+      expect(spine_command).to have_received(:verify).with(name: "detected-ws", path: "relationships", verdict: "passed", note: "all fine", by: nil, if_revision: nil, json: false)
+      expect(spine_command).to have_received(:verify).with(name: "api", path: "verify", verdict: "failed", note: "item 2 missing", by: "claude %27", if_revision: "abc12345", json: true)
+      expect(spine_command).to have_received(:verify).with(hash_including(name: "api", path: "verify", verdict: "passed"))
+    end
+
+    it "refuses a missing or doubled verdict, a missing note or path, and options of other verbs" do
+      [%w[verify verify --note x], %w[verify verify --pass --fail --note x], %w[verify verify --pass], ["verify", "verify", "--pass", "--note", " "],
+        %w[verify --pass --note x], %w[verify verify --pass --note x --status done], %w[verify verify --pass --note x --item 1],
+        %w[set verify --status done --pass], %w[show --fail], %w[check verify --item 1 --done --pass]].each do |args|
+        expect { cli.run(["spine", *args]) }.to raise_error(FakeSystemExit)
+      end
+
+      expect(spine_command).not_to have_received(:verify)
+    end
+  end
+
   describe "#run with spine goal set" do
     let(:spine_command) { instance_double(Workspace::Commands::Spine, goal_set: nil) }
     let(:detector) { instance_double(Workspace::ProjectDetector, detect: "detected-ws") }

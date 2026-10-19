@@ -170,6 +170,7 @@ module Workspace
           next
         end
         stages[stage.relative] = {"path" => stage.path, "status" => file.status, "note" => file.value("note"), "owner" => file.value("owner"),
+                                  "check" => file.check, "checked_by" => file.value("checked_by"), "check_note" => file.value("check_note"),
                                   "updated" => file.value("updated"), "updated_by" => file.value("updated_by"),
                                   "revision" => file.revision}
       end
@@ -191,12 +192,20 @@ module Workspace
             {"workspace" => @workspace, "path" => after["path"], "change" => "added"}
           elsif after.nil?
             {"workspace" => @workspace, "path" => before["path"], "change" => "removed"}
-          elsif %w[status note owner].any? { |key| before[key] != after[key] }
+          elsif %w[status note owner check checked_by check_note].any? { |key| before[key] != after[key] }
             own ||= own_revisions
             next if own[after["path"]] == after["revision"]
             line = {"workspace" => @workspace, "path" => after["path"], "status" => after["status"], "previous" => before["status"],
                     "note" => after["note"], "owner" => after["owner"], "by" => by(before, after), "revision" => after["revision"]}
-            line["change"] = "owner" if before["status"] == after["status"] && before["note"] == after["note"]
+            if after["check"]
+              line["check"] = after["check"]
+              line["check_note"] = after["check_note"] if after["check_note"]
+              line["previous_check"] = before["check"] if before["check"] != after["check"]
+            end
+            if before["status"] == after["status"] && before["note"] == after["note"]
+              line["change"] = (before["owner"] == after["owner"]) ? "check" : "owner"
+              line["by"] = after["checked_by"] || line["by"] if line["change"] == "check"
+            end
             line
           end
         wrote = true if data && @event_log.record(type: "spine_changed", project: @workspace, data: data)

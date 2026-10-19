@@ -146,16 +146,21 @@ RSpec.describe Workspace::Commands::Capabilities do
       expect(document["features"]).to include("spine_eval" => 2)
     end
 
-    it "reports spine_set 2 once spine set takes --owner and --note alone" do
+    it "reports spine_set 3 once spine set keeps the check in step with the status" do
       command.call(json: true)
 
-      expect(document["features"]).to include("spine_set" => 2)
+      expect(document["features"]).to include("spine_set" => 3)
     end
 
     it "reports spine_start 1 once spine start writes, delivers and binds" do
       command.call(json: true)
 
       expect(document["features"]).to include("spine_start" => 1)
+    end
+
+    it "reports spine_verify 1 and spine_set 3 once spine verify records a check" do
+      command.call(json: true)
+      expect(document["features"]).to include("spine_verify" => 1, "spine_set" => 3)
     end
 
     it "reports spine_check 1 once spine check ticks Done when items" do

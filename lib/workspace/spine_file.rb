@@ -34,7 +34,7 @@ module Workspace
     MAX_LIST = 20
 
     # Per-key value limits that differ from {MAX_VALUE}.
-    VALUE_LIMITS = {"title" => 120, "description" => 300, "note" => 300}.freeze
+    VALUE_LIMITS = {"title" => 120, "description" => 300, "note" => 300, "check_note" => 300}.freeze
 
     # The longest body {#body_excerpt} returns, in bytes.
     MAX_BODY = 16_384
@@ -53,6 +53,13 @@ module Workspace
       "done" => "completed", "complete" => "completed", "finished" => "completed", "closed" => "completed",
       "skip" => "skipped", "n/a" => "skipped", "wontdo" => "skipped"
     }.freeze
+
+    # The values `check:` may hold. The key's presence is a stage's opt-in to a separate check: `required`
+    # (opted in, nothing to check yet), `pending` (completed, awaiting a verdict), `passed` or `failed`.
+    CHECKS = %w[required pending passed failed].freeze
+
+    # The keys besides `check` that `spine verify` writes and a status change clears.
+    CHECK_KEYS = %w[checked_by checked_at check_note].freeze
 
     KEY_LINE = /\A([A-Za-z_][\w-]*)\s*:\s*(.*?)\s*\z/
     private_constant :KEY_LINE
@@ -178,6 +185,12 @@ module Workspace
     # @return [String, nil] the word `status:` holds, nil when absent or empty
     def status_raw = value("status")
 
+    # @return [String, nil] one of {CHECKS}; nil when `check:` is absent, empty or not one of them (the stage has not opted in)
+    def check
+      word = value("check")&.downcase
+      CHECKS.include?(word) ? word : nil
+    end
+
     # @return [String] one of {STATUSES}, or `unknown`
     def status = self.class.canonical_status(status_raw)
 
@@ -276,6 +289,9 @@ module Workspace
       end
       @frontmatter_lines = 2..close
       read_keys(lines, close)
+      if (word = value("check")) && !CHECKS.include?(word.downcase)
+        @warnings << self.class.warning("unknown_check", @key_spans["check"]&.first, "check #{word} is not one of #{CHECKS.join(", ")}, so the stage has no check.", value: word)
+      end
       close + 1
     end
 

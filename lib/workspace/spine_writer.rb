@@ -4,7 +4,8 @@ require "securerandom"
 
 module Workspace
   # Rewrites frontmatter keys of one spine stage file: any set of `status`, `note` and `owner`, plus
-  # `updated` and `updated_by` on every write. It keeps every other byte (line endings, a BOM, comments,
+  # `updated` and `updated_by` on every write; a status change on a stage that has opted in to a check (it has
+  # a `check:` key) also resets `check` and drops the `checked_*` lines. {#verify} writes the check keys alone. It keeps every other byte (line endings, a BOM, comments,
   # unknown keys, lists). The file is read again from its raw bytes each time, since {SpineFile}
   # keeps line spans, not offsets, and the new bytes go out through a temp file in the same folder,
   # an fsync and a rename.
@@ -22,7 +23,21 @@ module Workspace
     # @!attribute previous_note [String, nil] the note before
     # @!attribute previous_owner [String, nil] the owner before
     # @!attribute revision [String] the file's revision after (the current one when nothing changed)
-    Result = Struct.new(:changed, :previous, :status, :note, :owner, :previous_note, :previous_owner, :revision, keyword_init: true)
+    # @!attribute check [String, nil] the check after (nil when the stage has not opted in)
+    # @!attribute previous_check [String, nil] the check before
+    Result = Struct.new(:changed, :previous, :status, :note, :owner, :previous_note, :previous_owner, :revision, :check, :previous_check, keyword_init: true)
+
+    # What one {#verify} did.
+    #
+    # @!attribute changed [Boolean] whether the file was written
+    # @!attribute check [String] the check after
+    # @!attribute previous [String, nil] the check before
+    # @!attribute checked_by [String] who gave the verdict
+    # @!attribute checked_at [String] when, UTC ISO
+    # @!attribute check_note [String] the verdict's note
+    # @!attribute status [String] the stage's status (always `completed`)
+    # @!attribute revision [String] the file's revision after (the current one when nothing changed)
+    VerifyResult = Struct.new(:changed, :check, :previous, :checked_by, :checked_at, :check_note, :status, :revision, keyword_init: true)
 
     # What one {#check} did.
     #
@@ -74,7 +89,7 @@ module Workspace
 
         previous = file.status
         edits, after = edits_for(file, values, by, updated, previous)
-        return Result.new(changed: false, previous: previous, status: previous, note: file.value("note"), owner: file.value("owner"), previous_note: file.value("note"), previous_owner: file.value("owner"), revision: file.revision) if edits.empty?
+        return Result.new(changed: false, previous: previous, status: previous, note: file.value("note"), owner: file.value("owner"), previous_note: file.value("note"), previous_owner: file.value("owner"), revision: file.revision, check: file.check, previous_check: file.check) if edits.empty?
 
         rewritten = edits.reduce(bytes) { |current, (key, value)| apply(current, key, value) }
         unless reads_back?(rewritten, after)
@@ -82,6 +97,47 @@ module Workspace
         end
         next unless replace_unless_changed(path, relative, rewritten, info)
         return Result.new(changed: true, previous: previous, status: after["status"], note: after["note"], owner: after["owner"], previous_note: file.value("note"), previous_owner: file.value("owner"),
+          revision: Digest::SHA256.hexdigest(rewritten)[0, 8], check: after["check"], previous_check: file.check)
+      end
+      raise unwritable(relative, "changed_while_writing", "#{relative} kept changing while it was being written. Nothing was changed; try again.")
+    end
+
+    # Writes a verdict: `check`, `checked_by`, `checked_at` and `check_note`, and nothing else (`updated` and
+    # `updated_by` stay, since the claim did not change). The caller's block runs after the revision check and
+    # may refuse; nothing is written when the verdict, label and note already read as asked (the time alone does not count, so a retry is a no-op).
+    #
+    # @param path [String] absolute path of the stage file
+    # @param relative [String] its name below `spine/`, for messages
+    # @param check [String] `passed` or `failed`
+    # @param by [String] who gives the verdict
+    # @param at [String] the time, UTC ISO
+    # @param note [String] one line, already checked
+    # @param if_revision [String, nil] refuse unless the file's revision is this
+    # @yieldparam file [SpineFile] the file as read, for the caller's refusals
+    # @return [VerifyResult]
+    # @raise [Workspace::Error] `stale_revision`, what the block raises, or `spine_unwritable` as {#write}
+    def verify(path, relative:, check:, by:, at:, note:, if_revision: nil)
+      2.times do
+        bytes, info = read(path, relative)
+        file = SpineFile.parse(bytes, relative: relative)
+        raise unwritable(relative, "not_utf8", "#{relative} isn't text, so its frontmatter can't be updated safely.") unless file.read?
+        raise unwritable(relative, "no_frontmatter", "#{relative} has no frontmatter block closed within #{SpineFile::MAX_FRONTMATTER_LINES} lines, so it can't be updated safely.") unless file.frontmatter_lines
+        verify_revision(file, relative, if_revision)
+        yield file if block_given?
+
+        wanted = {"check" => check, "checked_by" => by, "checked_at" => at, "check_note" => note}
+        edits = wanted.reject { |key, value| file.value(key) == value }
+        if edits.keys.all? { |key| key == "checked_at" } && file.value("checked_at")
+          return VerifyResult.new(changed: false, check: check, previous: file.check, checked_by: by, checked_at: file.value("checked_at"), check_note: note, status: file.status, revision: file.revision)
+        end
+
+        rewritten = edits.reduce(bytes) { |current, (key, value)| apply(current, key, value) }
+        written = SpineFile.parse(rewritten)
+        unless written.read? && wanted.all? { |key, value| written.value(key) == value }
+          raise unwritable(relative, "unreadable_result", "#{relative} would not read as asked after the change (its frontmatter is at a size limit), so nothing was written.")
+        end
+        next unless replace_unless_changed(path, relative, rewritten, info)
+        return VerifyResult.new(changed: true, check: check, previous: file.check, checked_by: by, checked_at: at, check_note: note, status: file.status,
           revision: Digest::SHA256.hexdigest(rewritten)[0, 8])
       end
       raise unwritable(relative, "changed_while_writing", "#{relative} kept changing while it was being written. Nothing was changed; try again.")
@@ -228,11 +284,17 @@ module Workspace
       %w[note owner].each do |key|
         edits[key] = wanted[key] || :delete if wanted[key] != file.value(key)
       end
+      check = file.check
+      if edits.key?("status") && check
+        check = (status == "completed") ? "pending" : "required"
+        edits["check"] = check if check != file.check
+        SpineFile::CHECK_KEYS.each { |key| edits[key] = :delete if file.value(key) }
+      end
       return [{}, nil] if edits.empty?
 
       edits["updated"] = updated
       edits["updated_by"] = by
-      [edits, {"status" => status}.merge(wanted)]
+      [edits, {"status" => status, "check" => check}.merge(wanted)]
     end
 
     def blank(text)
@@ -279,7 +341,7 @@ module Workspace
     def reads_back?(bytes, after)
       written = SpineFile.parse(bytes)
       written.read? && !written.frontmatter_lines.nil? && written.status == after["status"] &&
-        written.value("note") == after["note"] && written.value("owner") == after["owner"]
+        written.value("note") == after["note"] && written.value("owner") == after["owner"] && written.check == after["check"]
     end
 
     def line_ending(line)
@@ -289,7 +351,7 @@ module Workspace
     # Timestamps and the canonical statuses go bare; text goes bare when a YAML reader would take it as text too,
     # else as a double-quoted JSON string, which both readers understand.
     def format_value(key, value)
-      return value if key == "updated" || key == "status"
+      return value if %w[updated status check checked_at].include?(key)
       (value.match?(BARE) && !value.match?(NOT_TEXT) && !value.end_with?(" ")) ? value : JSON.generate(value)
     end
 
