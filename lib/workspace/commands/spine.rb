@@ -99,6 +99,37 @@ module Workspace
         report(name, written, unchanged, json)
       end
 
+      # Ticks or unticks items of one stage's `## Done when` checklist (see {SpineWriter#check}), under the same
+      # write lock as {#set}. It records `spine_changed` with `change: "done_when"` when a box changed.
+      #
+      # @param name [String] the workspace
+      # @param path [String] a stage path
+      # @param items [Array<Integer>] 1-based item numbers, as `show` lists them
+      # @param done [Boolean] true to tick, false to untick
+      # @param if_revision [String, nil] refuse with `stale_revision` unless the stage file's revision is this
+      # @param by [String, nil] the label in the event; default the agent label of `$TMUX_PANE`, else `person`
+      # @param json [Boolean] print one JSON document instead of a summary
+      # @return [void]
+      # @raise [Workspace::UsageError] no item given, or an item that is not a positive number
+      # @raise [Workspace::Error] `no_spine`, `unknown_stage`, `unknown_item`, `stale_revision`, `spine_unwritable`
+      def check(name:, path:, items:, done:, if_revision: nil, by: nil, json: false)
+        raise Workspace::UsageError, "Give at least one --item N." if items.nil? || items.empty?
+        raise Workspace::UsageError, "--item takes a positive number." unless items.all? { |n| n.is_a?(Integer) && n.positive? }
+        by = one_line(by, "--by", MAX_BY)
+        raise Workspace::UsageError, "--by can't be empty." if by&.empty?
+
+        notes_dir = @notes.info(name: name)["dir"]
+        stage = result = nil
+        with_lock(name) do
+          _, stage = stage!(name, path, SpineTree.read(real(notes_dir)))
+          raise no_file(stage) unless stage.file
+          by ||= default_by(name)
+          result = @writer.check(stage.file.path, relative: stage.relative, numbers: items, done: done, if_revision: if_revision)
+          record_check(name, stage, result, by) if result.changed
+        end
+        report_check(name, stage, result, done, json)
+      end
+
       # @param name [String] the workspace
       # @param json [Boolean] print the document documented in docs/README.spine.md instead of a short summary
       # @param stage [String, nil] a stage path: show that one stage (and its sub-stages) instead of the tree
@@ -340,6 +371,26 @@ module Workspace
         @event_log&.record(type: "spine_changed", project: name, data: data)
       end
 
+      def record_check(name, stage, result, by)
+        data = {"workspace" => name, "path" => stage.path, "change" => "done_when", "items" => result.changed_items,
+                "by" => by, "revision" => result.revision}
+        @event_log&.record(type: "spine_changed", project: name, data: data)
+      end
+
+      def report_check(name, stage, result, done, json)
+        total = result.items.size
+        count = result.items.count { |item| item["done"] }
+        if json
+          @output.puts JSON.generate({"schema_version" => JSON_SCHEMA_VERSION, "ok" => true, "workspace" => name, "path" => stage.path,
+            "file" => stage.relative, "items" => result.items, "done_when" => {"total" => total, "done" => count},
+            "changed" => result.changed_items, "revision" => result.revision})
+        elsif result.changed
+          @output.puts "#{name}: #{stage.path} item #{result.changed_items.join(", ")} #{done ? "ticked" : "unticked"} (#{count}/#{total} done)"
+        else
+          @output.puts "#{name}: #{stage.path} already reads as asked (#{count}/#{total} done)"
+        end
+      end
+
       def field_change(key, before, after)
         return nil if before == after
         if after
@@ -364,7 +415,7 @@ module Workspace
       end
 
       def with_lock(name)
-        raise Workspace::Error, "spine set is not available: no writer or lock folder was wired" unless @writer && @lock_dir
+        raise Workspace::Error, "spine writes are not available: no writer or lock folder was wired" unless @writer && @lock_dir
         lock = open_lock(name)
         begin
           deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + @lock_wait

@@ -557,7 +557,7 @@ module Workspace
           sessions        Show coding-agent sessions and sub-agents in a workspace
           snapshot        Print everything a UI polls (projects, panes, git, asks, locks, dev) as one JSON document
           step            For the agent on a workflow step: report on it (done), or see what it is (status)
-          spine           Read a workspace's plan spine (spine/ in its notes directory): show, init, set a stage's status, start an agent on a stage
+          spine           Read a workspace's plan spine (spine/ in its notes directory): show, init, set a stage's status, tick its checklist, start an agent on a stage
           start           Create a worktree and launch it (from JIRA key, PR URL or #n, or branch)
           status          Show detailed state of tracked launcher sessions
           set-command     Set the shell command for a pane in a project config (--pane <N>)
@@ -6930,6 +6930,8 @@ module Workspace
         opts.banner = "Usage: workspace spine show [WORKSPACE] [--name WORKSPACE] [--stage STAGE-PATH] [--body] [--evaluate] [--json]\n" \
                       "       workspace spine set [WORKSPACE] STAGE-PATH [--status VALUE] [--note TEXT] [--owner VALUE]\n" \
                       "                           [--if-revision REV] [--recursive] [--by LABEL] [--json]\n" \
+                      "       workspace spine check [WORKSPACE] STAGE-PATH --item N [--item N ...] (--done | --undone)\n" \
+                      "                             [--if-revision REV] [--by LABEL] [--json]\n" \
                       "       workspace spine start [WORKSPACE] STAGE-PATH [--pane PANE | --spawn KIND] [--play REF]\n" \
                       "                             [--if-revision REV] [--json]"
         opts.separator ""
@@ -6943,6 +6945,11 @@ module Workspace
         opts.separator "joined with /, as show reports `path`, such as verify or implement/api. It rewrites only the"
         opts.separator "status, note, owner, updated and updated_by lines of the stage file and writes a spine_changed"
         opts.separator "event. Writers of a workspace take turns."
+        opts.separator ""
+        opts.separator "check ticks (--done) or unticks (--undone) items of a stage's '## Done when' checklist; N is the"
+        opts.separator "item's 1-based position, as show lists them. Only the [ ] or [x] on that item's line changes, not"
+        opts.separator "the frontmatter. An item already in the asked state is left alone. It writes a spine_changed event"
+        opts.separator "with change done_when. Refuses an item that is not there (unknown_item)."
         opts.separator ""
         opts.separator "start gets an agent working on one stage: the pane named, a new one (--spawn), the stage's"
         opts.separator "owner when it is a live agent pane, else the main Claude Code or Codex pane; a workspace with"
@@ -6961,6 +6968,9 @@ module Workspace
         opts.on("--note TEXT", "set: one line of at most 300 characters; alone it changes only the note (empty clears it). With a new status and no --note the note is cleared") { |v| options[:note] = v }
         opts.on("--owner VALUE", "set: who works the stage: a pane id such as %6, you, or an agent label; one line of at most 64 characters (empty clears it). Not with --recursive") { |v| options[:owner] = v }
         opts.on("--if-revision REV", "set, start: refuse with stale_revision unless the stage file's revision (from show) is REV") { |v| options[:if_revision] = v }
+        opts.on("--item N", Integer, "check: the checklist item, 1-based; repeat for several") { |v| (options[:items] ||= []) << v }
+        opts.on("--done", "check: tick the items") { options[:check_done] = true }
+        opts.on("--undone", "check: untick the items") { options[:check_undone] = true }
         opts.on("--pane PANE", "start: the pane to send the stage to, a pane id (%21) or window.pane (0.1) of the workspace's session") { |v| options[:pane] = v }
         opts.on("--spawn KIND", "start: split a new pane and start that agent in it (#{Commands::SpineStart::AGENT_KINDS.join(", ")})") { |v| options[:spawn] = v }
         opts.on("--play REF", "start: the play to send (default: the stage's play:, else research, implementation-plan or review by its kind)") { |v| options[:play] = v }
@@ -6979,6 +6989,8 @@ module Workspace
         opts.separator "  workspace spine set verify --owner %6 --note \"waiting on CI\""
         opts.separator "  workspace spine set api.worktree-login review --status=completed --note=\"2 nits, fixed\" --json"
         opts.separator "  workspace spine set api.worktree-login implement --status completed --recursive --if-revision 9f8e7d6c"
+        opts.separator "  workspace spine check verify --item 2 --done"
+        opts.separator "  workspace spine check api.worktree-login implement/api --item 1 --item 3 --undone --if-revision 9f8e7d6c --json"
         opts.separator "  workspace spine start verify    # the stage's owner pane, else the main agent pane"
         opts.separator "  workspace spine start api.worktree-login implement/api --spawn codex --json"
         opts.separator "  workspace spine start research --pane %21 --play team-research"
@@ -7058,8 +7070,12 @@ module Workspace
       return @output.puts(parser.help) if options[:help]
 
       subcommand = args.shift
-      raise UsageError, "Missing subcommand: show, set, start or init.\n\n#{parser.help}" unless subcommand
-      raise UsageError, "Unknown spine subcommand: #{subcommand}. Run 'workspace spine --help'." unless %w[show set start].include?(subcommand)
+      raise UsageError, "Missing subcommand: show, set, check, start or init.\n\n#{parser.help}" unless subcommand
+      raise UsageError, "Unknown spine subcommand: #{subcommand}. Run 'workspace spine --help'." unless %w[show set check start].include?(subcommand)
+      return cmd_spine_check(args, options, parser) if subcommand == "check"
+      if options[:items] || options[:check_done] || options[:check_undone]
+        raise UsageError, "--item, --done and --undone are for 'spine check'. Run 'workspace spine --help'."
+      end
       return cmd_spine_start(args, options, parser) if subcommand == "start"
       if options[:pane] || options[:spawn] || options[:play]
         raise UsageError, "--pane, --spawn and --play are for 'spine start'. Run 'workspace spine --help'."
@@ -7093,6 +7109,27 @@ module Workspace
 
       @spine_command.set(name: name, path: path, status: options[:status], note: options[:note], owner: options[:owner], if_revision: options[:if_revision],
         recursive: options[:recursive] || false, by: options[:by], json: options[:json])
+    end
+
+    def cmd_spine_check(args, options, parser)
+      if options[:stage] || options[:body] || options[:evaluate] || options[:status] || options[:note] || options[:owner] || options[:recursive] || options[:pane] || options[:spawn] || options[:play]
+        raise UsageError, "spine check takes --item, --done, --undone, --if-revision, --by and --json; the other options are for show, set and start."
+      end
+      raise UsageError, "Give at least one --item N." if options[:items].to_a.empty?
+      raise UsageError, "--item takes a positive number." unless options[:items].all?(&:positive?)
+      raise UsageError, "Give only one of --done and --undone." if options[:check_done] && options[:check_undone]
+      raise UsageError, "Give --done or --undone." unless options[:check_done] || options[:check_undone]
+      positional = (args.size > 1 && !options[:name]) ? settle_name(args.shift) : nil
+      path = args.shift
+      raise UsageError, "Missing STAGE-PATH, the stage's ids joined with / (as 'spine show' reports path).\n\n#{parser.help}" unless path
+      raise UsageError, "Unexpected argument: #{args.first}. Run 'workspace spine --help'." if args.any?
+      raise Error, "spine is not available: no spine command was wired" unless @spine_command
+
+      name = options[:name] || positional || @project_detector.detect(@working_dir)
+      raise Error.new("No workspace found for #{@working_dir}. Run from inside a workspace or pass --name.", code: "not_in_workspace", details: {"path" => @working_dir}) unless name
+
+      @spine_command.check(name: name, path: path, items: options[:items], done: options[:check_done] ? true : false,
+        if_revision: options[:if_revision], by: options[:by], json: options[:json])
     end
 
     def cmd_spine_start(args, options, parser)

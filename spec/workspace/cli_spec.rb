@@ -6429,6 +6429,32 @@ RSpec.describe Workspace::CLI do
     end
   end
 
+  describe "#run with spine check" do
+    let(:spine_command) { instance_double(Workspace::Commands::Spine, check: nil) }
+    let(:detector) { instance_double(Workspace::ProjectDetector, detect: "detected-ws") }
+    let(:built) { build_test_cli(spine_command: spine_command, project_detector: detector, working_dir: "/some/dir") }
+    let(:cli) { built[0] }
+    let(:error_output) { built[2] }
+
+    it "passes the repeated items, the direction and the options to the command" do
+      cli.run(["spine", "check", "verify", "--item", "1", "--item=3", "--done"])
+      cli.run(["spine", "check", "api", "implement/api", "--item", "2", "--undone", "--if-revision", "abc12345", "--by", "me", "--json"])
+
+      expect(spine_command).to have_received(:check).with(name: "detected-ws", path: "verify", items: [1, 3], done: true, if_revision: nil, by: nil, json: false)
+      expect(spine_command).to have_received(:check).with(name: "api", path: "implement/api", items: [2], done: false, if_revision: "abc12345", by: "me", json: true)
+    end
+
+    it "refuses a missing item, a missing or doubled direction, a bad number, other verbs' options and a missing path" do
+      [%w[check verify --done], %w[check verify --item 1], %w[check verify --item 1 --done --undone], %w[check verify --item 0 --done],
+        %w[check verify --item x --done], %w[check verify --item 1 --done --status done], %w[check --item 1 --done],
+        %w[set verify --status done --item 1], %w[show --done]].each do |args|
+        expect { cli.run(["spine", *args]) }.to raise_error(FakeSystemExit)
+      end
+
+      expect(spine_command).not_to have_received(:check)
+    end
+  end
+
   describe "#run with spine start" do
     let(:doc) do
       {"schema_version" => 1, "ok" => true, "workspace" => "api", "path" => "verify", "file" => "40-verify.md", "outcome" => "sent", "reason" => nil,

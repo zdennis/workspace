@@ -24,6 +24,18 @@ module Workspace
     # @!attribute revision [String] the file's revision after (the current one when nothing changed)
     Result = Struct.new(:changed, :previous, :status, :note, :owner, :previous_note, :previous_owner, :revision, keyword_init: true)
 
+    # What one {#check} did.
+    #
+    # @!attribute changed [Boolean] whether the file was written
+    # @!attribute items [Array<Hash>] every `## Done when` item after: `{"n", "text", "done"}`
+    # @!attribute changed_items [Array<Integer>] the numbers of the items whose box changed
+    # @!attribute revision [String] the file's revision after (the current one when nothing changed)
+    CheckResult = Struct.new(:changed, :items, :changed_items, :revision, keyword_init: true)
+
+    # The box at the start of a `## Done when` item line.
+    BOX = /\A- \[[ xX]\]/n
+    private_constant :BOX
+
     # A value written without quotes: plain words and the punctuation common in a short note.
     # It starts with a letter, so a number, a date or a hex value is quoted.
     BARE = /\A[A-Za-z][A-Za-z0-9 ._,;()\/%@+=-]*\z/
@@ -49,10 +61,7 @@ module Workspace
         file = SpineFile.parse(bytes, relative: relative)
         raise unwritable(relative, "not_utf8", "#{relative} isn't text, so its frontmatter can't be updated safely.") unless file.read?
         raise unwritable(relative, "no_frontmatter", "#{relative} has no frontmatter block closed within #{SpineFile::MAX_FRONTMATTER_LINES} lines, so it can't be updated safely.") unless file.frontmatter_lines
-        if if_revision && if_revision.downcase != file.revision
-          raise Workspace::Error.new("#{relative} changed: its revision is #{file.revision}, not #{if_revision}.",
-            code: "stale_revision", details: {"revision" => file.revision, "status" => file.status})
-        end
+        verify_revision(file, relative, if_revision)
 
         previous = file.status
         edits, after = edits_for(file, values, by, updated, previous)
@@ -69,7 +78,63 @@ module Workspace
       raise unwritable(relative, "changed_while_writing", "#{relative} kept changing while it was being written. Nothing was changed; try again.")
     end
 
+    # Ticks or unticks items of the `## Done when` checklist of one stage file. Only the `[ ]` or `[x]` of each
+    # item's line changes; the frontmatter (`updated` too) and every other byte stay. An item already in the
+    # asked state is left alone, and when none changes nothing is written.
+    #
+    # @param path [String] absolute path of the stage file
+    # @param relative [String] its name below `spine/`, for messages
+    # @param numbers [Array<Integer>] 1-based positions in the checklist, as `show` lists them
+    # @param done [Boolean] true to tick, false to untick
+    # @param if_revision [String, nil] refuse unless the file's revision is this
+    # @return [CheckResult]
+    # @raise [Workspace::Error] `unknown_item` (details `item`, `total`), `stale_revision`, or `spine_unwritable` as {#write}
+    def check(path, relative:, numbers:, done:, if_revision: nil)
+      2.times do
+        bytes, info = read(path, relative)
+        file = SpineFile.parse(bytes, relative: relative)
+        raise unwritable(relative, "not_utf8", "#{relative} isn't text, so its checklist can't be updated safely.") unless file.read?
+        verify_revision(file, relative, if_revision)
+        if (bad = numbers.find { |n| n < 1 || n > file.items.size })
+          raise Workspace::Error.new("#{relative} has #{file.items.size} Done when #{(file.items.size == 1) ? "item" : "items"}; there is no item #{bad}.",
+            code: "unknown_item", details: {"item" => bad, "total" => file.items.size, "file" => relative})
+        end
+
+        todo = numbers.uniq.sort.reject { |n| file.items[n - 1]["done"] == done }
+        return check_result(file.items, [], file.revision) if todo.empty?
+
+        lines = bytes.lines
+        todo.each do |n|
+          index = file.items[n - 1]["line"] - 1
+          unless lines[index]&.match?(BOX)
+            raise unwritable(relative, "unreadable_result", "Item #{n} of #{relative} is not where it was read, so nothing was written.")
+          end
+          lines[index] = lines[index].sub(BOX, done ? "- [x]".b : "- [ ]".b)
+        end
+        rewritten = lines.join
+        after = SpineFile.parse(rewritten, relative: relative)
+        expected = file.items.each_with_index.map { |item, i| todo.include?(i + 1) ? done : item["done"] }
+        unless after.read? && after.items.map { |item| item["done"] } == expected
+          raise unwritable(relative, "unreadable_result", "#{relative} would not read as asked after the change, so nothing was written.")
+        end
+        next unless replace_unless_changed(path, relative, rewritten, info)
+        return check_result(after.items, todo, Digest::SHA256.hexdigest(rewritten)[0, 8])
+      end
+      raise unwritable(relative, "changed_while_writing", "#{relative} kept changing while it was being written. Nothing was changed; try again.")
+    end
+
     private
+
+    def verify_revision(file, relative, if_revision)
+      return unless if_revision && if_revision.downcase != file.revision
+      raise Workspace::Error.new("#{relative} changed: its revision is #{file.revision}, not #{if_revision}.",
+        code: "stale_revision", details: {"revision" => file.revision, "status" => file.status})
+    end
+
+    def check_result(items, changed_items, revision)
+      CheckResult.new(changed: !changed_items.empty?, changed_items: changed_items, revision: revision,
+        items: items.each_with_index.map { |item, i| {"n" => i + 1, "text" => item["text"], "done" => item["done"]} })
+    end
 
     # @return [Array(Hash, Hash)] the keys to write (empty when nothing would change) and the status, note and owner they leave
     def edits_for(file, values, by, updated, previous)

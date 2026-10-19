@@ -6,6 +6,7 @@ Read a workspace's plan spine, set a stage's status, and start an agent on a sta
 
 ```sh
 workspace spine show [WORKSPACE] [--name WORKSPACE] [--stage STAGE-PATH] [--body] [--evaluate] [--json]
+workspace spine check [WORKSPACE] STAGE-PATH --item N [--item N ...] (--done | --undone) [--if-revision REV] [--json]
 ```
 
 ## Options
@@ -118,6 +119,26 @@ A refusal is the standard error document. With `--recursive` the run stops at th
 | `usage` | A missing `--status` or path, or a `--note` or `--by` that is not one short line |
 
 `spine_set` in [`capabilities`](README.capabilities.md) is `2` when this verb takes `--owner` and accepts `--note` or `--owner` without `--status`. The 64-character limit on `--owner` applies to the command; a hand-edited owner is read up to 500 characters.
+
+## spine check
+
+```sh
+workspace spine check [WORKSPACE] STAGE-PATH --item N [--item N ...] (--done | --undone) [--if-revision REV] [--by LABEL] [--json]
+```
+
+Ticks (`--done`) or unticks (`--undone`) items of the stage's `## Done when` checklist. `N` is the item's 1-based position in `done_when.items`, as `show` lists them; repeat `--item` for several. Only the `[ ]` or `[x]` on each item's line changes. Every other byte stays (line endings, a BOM, the frontmatter, `updated` and `updated_by` too: a tick is not a status change). The write takes the same lock and the same temp-file-and-rename path as `set`. An item already in the asked state is left alone, and when no item changes nothing is written and no event is recorded. Every item number is checked first: one that is not there (`unknown_item`) writes nothing.
+
+When a box changed, one [`spine_changed`](README.event-log.md) line is recorded with `change: "done_when"`, `items` (the numbers that changed), `by` and the new `revision`.
+
+```json
+{
+  "schema_version": 1, "ok": true, "workspace": "fix-oauth-refresh", "path": "verify", "file": "40-verify.md",
+  "items": [{"n": 1, "text": "Tests pass", "done": true}, {"n": 2, "text": "Docs updated", "done": false}],
+  "done_when": {"total": 2, "done": 1}, "changed": [1], "revision": "0c1d2e3f"
+}
+```
+
+`items` lists every item after the call, `changed` only the ones this call flipped (empty when it was a no-op). Refusals: `unknown_item` (`details.item`, `details.total`), `stale_revision`, `spine_unwritable`, `no_spine`, `unknown_stage`. `spine_check` in [`capabilities`](README.capabilities.md) is `1`.
 
 ## spine start
 
@@ -353,6 +374,7 @@ With `--stage`, the document is `{"schema_version", "ok", "workspace", "dir", "g
 | `unknown_workspace` | The workspace has no known checkout (`details.name`) |
 | `not_in_workspace` | No workspace given and none detected from the current directory |
 | `notes_dir_unresolved` | The notes directory can't be worked out (see [`notes`](README.notes.md)) |
+| `unknown_item` | `check`: the stage's checklist has no item with that number (`details.item`, `details.total`, `details.file`) |
 | `unknown_stage` | `show --stage` or `set`: no stage has that path (`details.path`, `details.stages`) |
 | `usage` | A missing or unknown subcommand, an extra argument, or two different workspace names (`show`); `--stage`, `--body` or `--evaluate` with `set`; see above for `set` |
 | `unknown_template` | `spine init`: no `spine` library entry has that name (`details.template`, `details.scopes`, `details.source`; the message says where the name came from) |
