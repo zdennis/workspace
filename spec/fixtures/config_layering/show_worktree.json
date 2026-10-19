@@ -1091,6 +1091,38 @@
       ]
     },
     {
+      "key": "launch.restore_window_position",
+      "scope": "global",
+      "type": "boolean",
+      "value": null,
+      "masked": false,
+      "default": true,
+      "effective": true,
+      "source": "default",
+      "source_file": null,
+      "line": null,
+      "column": null,
+      "resolve": "global",
+      "target_layer": "global",
+      "affects": [
+        "main",
+        "main.worktree-a"
+      ],
+      "applies": "next_call",
+      "settable": true,
+      "sensitive": false,
+      "overridable_in": [
+        "global"
+      ],
+      "layers": [],
+      "doc": "`true` or `false`: whether `launch` puts a window back where it was when the workspace was stopped, if that spot is still on a connected screen (default `true`). `false` tiles every new window, as `launch --arrange` does; `stop` saves the position either way. See [`launch`](README.launch.md#window-position)",
+      "problems": [],
+      "choices": [
+        "true",
+        "false"
+      ]
+    },
+    {
       "key": "workflows.defaults.include",
       "scope": "global",
       "type": "text",

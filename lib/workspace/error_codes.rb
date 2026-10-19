@@ -27,6 +27,8 @@ module Workspace
       "stale_pane" => "The question's pane may not be the one that asked (tmux restarted since, or the question predates the check).",
       "focus_failed" => "tmux couldn't select the pane; the window is already in front.",
       "launcher_pane_missing" => "launch: an iTerm pane for a workspace was still missing after one retry (a warning on stderr, not an error); the workspace was not started in a pane.",
+      "saved_window_offscreen" => "launch: a workspace's saved window position is on no connected screen, so its window was tiled instead (a warning, not an error).",
+      "window_position_unreadable" => "launch: a workspace's saved window position file could not be read, so its window was tiled instead and the file was left alone (a warning, not an error).",
       "no_window" => "The workspace has no iTerm window recorded.",
       "no_windows_to_cycle" => "focus --cycle found no tracked workspace with a live iTerm window.",
       "window_gone" => "The recorded iTerm window no longer exists.",

@@ -382,7 +382,7 @@ module Workspace
     pane_locator = PaneLocator.new(tmux: tmux)
     pane_bindings = PaneBindings.new(path: config.pane_bindings_path, logger: logger, error_output: error_output)
     binding_command = Commands::Binding.new(bindings: pane_bindings, locator: pane_locator, tmux: tmux, output: output)
-    launch_command = Commands::Launch.new(state: state, iterm: iterm, window_manager: window_manager, tmux: tmux, project_config: project_config, window_layout: window_layout, config: config, pipeline_config: pipeline_config, agent_ensurer: ensure_agent_command, agent_readiness: agent_readiness, binder: binding_command, output: output, error_output: error_output)
+    launch_command = Commands::Launch.new(state: state, iterm: iterm, window_manager: window_manager, tmux: tmux, project_config: project_config, window_layout: window_layout, config: config, pipeline_config: pipeline_config, agent_ensurer: ensure_agent_command, agent_readiness: agent_readiness, window_positions: window_positions, restore_enabled: -> { project_settings.load_global.dig("launch", "restore_window_position").to_s != "false" }, binder: binding_command, output: output, error_output: error_output)
     lineage = WorkspaceLineage.new
     task_store = TaskStore.new(dir: config.task_dir, error_output: error_output)
     library = Library.new(config: config, lineage: lineage, project_config: project_config)

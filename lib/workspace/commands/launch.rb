@@ -30,6 +30,9 @@ module Workspace
       #   ready, shared by every project in one launch
       # @param agent_ensurer [Workspace::Commands::EnsureAgent, nil] starts each project's agent daemon
       #   when none is running (built from +config+ and +pipeline_config+ when nil)
+      # @param window_positions [Workspace::WindowPositions, nil] saved window positions to put a new
+      #   window back to; nil restores nothing
+      # @param restore_enabled [#call] returns false when the `launch.restore_window_position` key turns restoring off
       # @param binder [Workspace::Commands::Binding, nil] binds the pane a prompt was
       #   delivered to, for the projects +bindings:+ names; nil binds nothing
       # @param sleeper [#call] sleeps the given seconds, injected for fast tests
@@ -37,7 +40,7 @@ module Workspace
       # @param output [IO] output stream for user-facing messages
       # @param error_output [IO] error output stream for warnings
       def initialize(state:, iterm:, window_manager:, tmux:, project_config:, window_layout:, config:, pipeline_config: nil,
-        agent_ensurer: nil, agent_readiness: nil, prompt_timeout: AgentReadiness::DEFAULT_TIMEOUT, binder: nil, sleeper: ->(seconds) { sleep(seconds) },
+        agent_ensurer: nil, agent_readiness: nil, prompt_timeout: AgentReadiness::DEFAULT_TIMEOUT, window_positions: nil, restore_enabled: -> { true }, binder: nil, sleeper: ->(seconds) { sleep(seconds) },
         clock: -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) }, output: $stdout, error_output: $stderr)
         @state = state
         @iterm = iterm
@@ -50,6 +53,8 @@ module Workspace
         @agent_ensurer = agent_ensurer || EnsureAgent.new(config: config, pipeline_config: @pipeline_config, sleeper: sleeper, clock: clock, error_output: error_output)
         @agent_readiness = agent_readiness || AgentReadiness.new(tmux: tmux, process_tree: ProcessTree.new)
         @prompt_timeout = prompt_timeout
+        @window_positions = window_positions
+        @restore_enabled = restore_enabled
         @binder = binder
         @sleeper = sleeper
         @clock = clock
@@ -73,6 +78,7 @@ module Workspace
       #   {Workspace::PaneBindings#bind}) for the pane its prompt is delivered to,
       #   such as a play from {Workspace::Library#play_binding}. Fields with `"keep_existing" => true`
       #   (see {Workspace::Library#packs_binding}) leave a pane that already has a live binding as it is
+      # @param arrange [Boolean] tile every new window, ignoring saved window positions (`--arrange`)
       # @param report_panes [Boolean] add +delivered_panes:+ to the result: project => the pane id its
       #   prompt was delivered to, bound or not
       # @param optional [Hash{String => Array<String>}] project => names of the automatic packs its prompt
@@ -89,8 +95,10 @@ module Workspace
       #   was already running and so was attached to instead of started).
       #   With +bindings+, +bound_panes:+ maps each project whose pane was bound
       #   to that pane id; one that could not be bound is a warning, not a failure.
+      #   The windowed path also adds +positions:+ (project => "restored" or "arranged") and +warnings:+
+      #   (sentences for a saved position that was off screen or unreadable).
       # @raise [Workspace::Error] if any project configs are missing
-      def call(projects, reattach: false, prompts: {}, prompt_timeout: @prompt_timeout, headless: false, quiet: false, bindings: {}, report_panes: false, optional: {})
+      def call(projects, reattach: false, prompts: {}, prompt_timeout: @prompt_timeout, headless: false, quiet: false, bindings: {}, report_panes: false, optional: {}, arrange: false)
         @quiet = quiet
         @optional = optional
         @skipped_prompts = {}
@@ -98,6 +106,9 @@ module Workspace
         @report_panes = report_panes
         @bound_panes = {}
         @delivered_panes = {}
+        @already_open = []
+        @positions = {}
+        @position_warnings = []
         validate_configs(projects)
         return call_headless(projects, prompts: prompts, prompt_timeout: prompt_timeout) if headless
 
@@ -116,6 +127,7 @@ module Workspace
           new_projects = projects.reject { |p| existing.key?(p) }
 
           relaunch_existing(reuse_projects, existing, new_projects, reattach: reattach)
+          @already_open = reuse_projects - new_projects
           reused = create_new_panes(new_projects, reattach: reattach, live_sessions: live_sessions)
 
           @state.save
@@ -133,7 +145,7 @@ module Workspace
 
         @state.save
 
-        arrange_windows(projects)
+        arrange_windows(projects, arrange: arrange)
 
         failures = prompts.any? ? send_prompts(session_names, prompts, prompt_timeout) : {}
 
@@ -141,7 +153,7 @@ module Workspace
         unless failures.empty?
           @error_output.puts "Error: the prompt was not sent to: #{failures.keys.join(", ")}"
         end
-        with_bound_panes(exit_code: failures.empty? ? 0 : 1, prompt_failures: failures, reused: reused)
+        with_bound_panes(exit_code: failures.empty? ? 0 : 1, prompt_failures: failures, reused: reused, positions: @positions, warnings: @position_warnings)
       end
 
       private
@@ -625,13 +637,63 @@ module Workspace
         @error_output.puts "Warning: the #{fields["kind"]} sent to #{project} was not bound to its pane: #{e.message}"
       end
 
-      def arrange_windows(projects)
+      def arrange_windows(projects, arrange: false)
         log("Arranging windows...")
         project_window_ids = projects.filter_map do |project|
           window_id = @found_windows[project]
           {project: project, window_id: window_id} if window_id
         end
-        @window_layout.arrange(project_window_ids, quiet: @quiet)
+        restored = arrange ? [] : restore_positions(project_window_ids)
+        remaining = project_window_ids.reject { |entry| restored.include?(entry[:project]) }
+        @window_layout.arrange(remaining, quiet: @quiet) unless remaining.empty? && restored.any?
+        project_window_ids.each { |entry| @positions[entry[:project]] = restored.include?(entry[:project]) ? "restored" : "arranged" }
+      end
+
+      # Puts each new window back at its saved bounds when its title bar is still on a connected
+      # screen. A window that was already open is never moved by this.
+      #
+      # @return [Array<String>] the projects whose window was restored
+      def restore_positions(entries)
+        return [] unless @window_positions && @restore_enabled.call
+
+        candidates = entries.reject { |entry| @already_open.include?(entry[:project]) }
+        screens = nil
+        candidates.filter_map do |entry|
+          name = entry[:project]
+          saved = begin
+            @window_positions.read(name)
+          rescue Workspace::Error => e
+            warn_position("window_position_unreadable", "#{name}: #{e.message}; tiled the window instead")
+            next
+          end
+          next unless saved
+
+          screens ||= @window_manager.screens
+          bounds = saved[:bounds]
+          unless title_bar_on_screen?(bounds, screens)
+            warn_position("saved_window_offscreen", "#{name}: the saved window position is on no connected screen; tiled the window instead (stopping it saves a new position)")
+            next
+          end
+          next unless @window_manager.set_window_bounds(entry[:window_id], bounds[:x], bounds[:y], bounds[:width], bounds[:height])
+          name
+        end
+      end
+
+      # Whether the window's top 30px (its title bar) lies on a screen, with enough of it showing to grab.
+      def title_bar_on_screen?(bounds, screens)
+        bar_height = [bounds[:height], 30].min
+        grab_width = [bounds[:width], 60].min
+        screens.any? do |screen|
+          overlap_width = [bounds[:x] + bounds[:width], screen[:x] + screen[:width]].min - [bounds[:x], screen[:x]].max
+          overlap_height = [bounds[:y] + bar_height, screen[:y] + screen[:height]].min - [bounds[:y], screen[:y]].max
+          overlap_width >= grab_width && overlap_height >= bar_height
+        end
+      end
+
+      def warn_position(code, message)
+        sentence = "#{code}: #{message}"
+        @position_warnings << sentence
+        @error_output.puts "Warning: #{sentence}"
       end
     end
   end

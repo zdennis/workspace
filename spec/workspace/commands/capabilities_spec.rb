@@ -92,6 +92,12 @@ RSpec.describe Workspace::Commands::Capabilities do
       expect(document["features"]).to include("window_state" => 1)
     end
 
+    it "reports window_position once launch restores a saved window position" do
+      command.call(json: true)
+
+      expect(document["features"]).to include("window_position" => 1)
+    end
+
     it "reports notes once notes dir exists" do
       command.call(json: true)
 

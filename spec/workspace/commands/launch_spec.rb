@@ -312,7 +312,7 @@ RSpec.describe Workspace::Commands::Launch do
         expect(agent_readiness).to have_received(:wait).with("tmux-proj2", deadline: 60.0)
         expect(tmux).to have_received(:deliver).with("tmux-proj1", "0.1", "fix it")
         expect(tmux).to have_received(:deliver).with("tmux-proj2", "0.1", "test it")
-        expect(result).to eq(exit_code: 0, prompt_failures: {}, reused: [])
+        expect(result).to include(exit_code: 0, prompt_failures: {}, reused: [])
         expect(output.string).to include("Sending prompt to proj1 (Claude Code, pane 0.1)")
         expect(error_output.string).to be_empty
       end
@@ -374,7 +374,7 @@ RSpec.describe Workspace::Commands::Launch do
       end
 
       it "does not wait for agents when there are no prompts" do
-        expect(command.call(["proj1"])).to eq(exit_code: 0, prompt_failures: {}, reused: [])
+        expect(command.call(["proj1"])).to include(exit_code: 0, prompt_failures: {}, reused: [])
         expect(agent_readiness).not_to have_received(:wait)
       end
 
@@ -602,5 +602,147 @@ RSpec.describe Workspace::Commands::Launch do
         expect(result).to include(exit_code: 0, bound_panes: {})
       end
     end
+  end
+end
+
+RSpec.describe Workspace::Commands::Launch, "window position restore" do
+  let(:tmpdir) { Dir.mktmpdir }
+  let(:config) { Workspace::Config.new(workspace_dir: tmpdir) }
+  let(:state) do
+    allow(config).to receive(:state_file).and_return(File.join(tmpdir, "state.json"))
+    allow(config).to receive(:event_log_file).and_return(File.join(tmpdir, "events.jsonl"))
+    Workspace::State.new(config: config, event_log: Workspace::EventLog.new(config: config))
+  end
+  let(:error_output) { StringIO.new }
+  let(:iterm) { double("iterm") }
+  let(:window_manager) { double("window_manager", screens: screens, set_window_bounds: true) }
+  let(:window_layout) { double("window_layout", arrange: nil) }
+  let(:tmux) { double("tmux") }
+  let(:project_config) { double("project_config", exists?: true) }
+  let(:screens) { [{x: 0, y: 0, width: 1920, height: 1080}] }
+  let(:positions) { Workspace::WindowPositions.new(dir: File.join(tmpdir, "positions")) }
+  let(:enabled) { true }
+  let(:saved) { {x: 100, y: 80, width: 800, height: 600} }
+  let(:existing) { {} }
+
+  subject(:command) do
+    described_class.new(state: state, iterm: iterm, window_manager: window_manager, tmux: tmux, project_config: project_config,
+      window_layout: window_layout, config: config,
+      pipeline_config: double("pipeline_config", stages_for: nil, literal_sentinel_warnings: []),
+      agent_ensurer: double("ensurer", call: Workspace::Commands::EnsureAgent::Result.new(:started)),
+      window_positions: positions, restore_enabled: -> { enabled },
+      sleeper: ->(_seconds) {}, output: StringIO.new, error_output: error_output)
+  end
+
+  before do
+    allow(Process).to receive(:spawn).and_return(999)
+    allow(Process).to receive(:detach)
+    allow(tmux).to receive_messages(start_server: nil, rename_window: nil)
+    allow(tmux).to receive(:command_for) { |name, **| "tmuxinator start #{name}" }
+    allow(tmux).to receive(:session_name_for) { |name| name }
+    allow(tmux).to receive(:sessions).and_return(%w[proj1 proj2])
+    allow(tmux).to receive(:reattach_or_start) { |_session, start| start }
+    allow(iterm).to receive(:session_map).and_return({"uid-1" => "1", "uid-2" => "2"})
+    allow(iterm).to receive(:find_existing_sessions).and_return(existing)
+    allow(iterm).to receive(:find_launcher_window_id).and_return(nil)
+    allow(iterm).to receive(:create_launcher_panes).and_return({"proj1" => "uid-1", "proj2" => "uid-2"})
+    allow(iterm).to receive(:relaunch_in_session).and_return("ok")
+    allow(window_manager).to receive(:iterm_windows).and_return({301 => "workspace-proj1", 302 => "workspace-proj2"})
+    positions.write("proj1", saved, screens.first)
+  end
+
+  def launch(projects = ["proj1"], **options)
+    command.call(projects, **options)
+  end
+
+  it "moves a new window back to its saved bounds when its title bar is on a screen" do
+    result = launch
+
+    expect(window_manager).to have_received(:set_window_bounds).with("301", 100, 80, 800, 600)
+    expect(window_layout).not_to have_received(:arrange)
+    expect(result[:positions]).to eq("proj1" => "restored")
+    expect(result[:warnings]).to eq([])
+  end
+
+  it "tiles the windows that have no saved position and restores the rest" do
+    result = launch(%w[proj1 proj2])
+
+    expect(window_manager).to have_received(:set_window_bounds).once
+    expect(window_layout).to have_received(:arrange).with([{project: "proj2", window_id: "302"}], quiet: false)
+    expect(result[:positions]).to eq("proj1" => "restored", "proj2" => "arranged")
+  end
+
+  it "tiles with a warning when the saved bounds are on no connected screen" do
+    positions.write("proj1", {x: 5000, y: 80, width: 800, height: 600})
+
+    result = launch
+
+    expect(window_manager).not_to have_received(:set_window_bounds)
+    expect(window_layout).to have_received(:arrange).with([{project: "proj1", window_id: "301"}], quiet: false)
+    expect(result[:positions]).to eq("proj1" => "arranged")
+    expect(error_output.string).to include("Warning: saved_window_offscreen: proj1")
+    expect(result[:warnings].first).to start_with("saved_window_offscreen: proj1")
+  end
+
+  it "tiles with a warning when the screens cannot be read" do
+    allow(window_manager).to receive(:screens).and_return([])
+
+    launch
+
+    expect(error_output.string).to include("saved_window_offscreen")
+    expect(window_manager).not_to have_received(:set_window_bounds)
+  end
+
+  it "tiles with a warning and keeps the file when window.json is unreadable" do
+    path = positions.path_for("proj1")
+    File.write(path, "{nope")
+
+    result = launch
+
+    expect(error_output.string).to include("Warning: window_position_unreadable: proj1")
+    expect(result[:positions]).to eq("proj1" => "arranged")
+    expect(File.read(path)).to eq("{nope")
+  end
+
+  it "ignores saved positions with arrange: true" do
+    result = launch(arrange: true)
+
+    expect(window_manager).not_to have_received(:set_window_bounds)
+    expect(window_layout).to have_received(:arrange)
+    expect(result[:positions]).to eq("proj1" => "arranged")
+  end
+
+  context "when launch.restore_window_position is false" do
+    let(:enabled) { false }
+
+    it "tiles every window" do
+      result = launch
+
+      expect(window_manager).not_to have_received(:set_window_bounds)
+      expect(result[:positions]).to eq("proj1" => "arranged")
+    end
+  end
+
+  context "when the window is already open" do
+    let(:existing) { {"proj1" => "uid-1"} }
+
+    it "does not move it to the saved position" do
+      state["proj1"] = {"unique_id" => "uid-1"}
+      state.save
+
+      result = launch
+
+      expect(window_manager).not_to have_received(:set_window_bounds)
+      expect(result[:positions]).to eq("proj1" => "arranged")
+    end
+  end
+
+  it "tiles a window whose move failed" do
+    allow(window_manager).to receive(:set_window_bounds).and_return(false)
+
+    result = launch
+
+    expect(window_layout).to have_received(:arrange)
+    expect(result[:positions]).to eq("proj1" => "arranged")
   end
 end

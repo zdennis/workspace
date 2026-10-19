@@ -5,7 +5,7 @@ RSpec.describe Workspace::ConfigSchema do
 
   it "lists the settable keys in the order `config set` has always reported them" do
     expect(described_class.project_keys.map(&:name)).to eq(%w[dev.up dev.ready dev.stop_timeout dev.startup_timeout dev.ready_timeout dev.kill_grace dev.release_on_session_end dev.instructions locks.idle_grace locks.ps_timeout locks.reap_interval alerts.notify alerts.idle_after agentd.poll_interval handoff.threshold handoff.check_prompt handoff.resume_prompt handoff.auto commands.test commands.lint notes.dir notes.default_dir notes.instructions spine.template spine.auto plan.stall_seconds])
-    expect(described_class.global_keys.map(&:name)).to eq(%w[statusline.command context.source context.pattern launch.headless workflows.defaults.include events.rotate_size codex.hooks.install])
+    expect(described_class.global_keys.map(&:name)).to eq(%w[statusline.command context.source context.pattern launch.headless launch.restore_window_position workflows.defaults.include events.rotate_size codex.hooks.install])
   end
 
   it "names the keys a running daemon only reads at startup" do

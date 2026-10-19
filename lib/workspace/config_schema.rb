@@ -357,6 +357,8 @@ module Workspace
         doc: "Edited in the file by hand: a mapping of agent kind (`claude`, `codex`, ...) to a regex with exactly one capture group that reads the percent of the context window used from that agent's pane. A kind listed here is read from its pane whatever `context.source` says; Codex has a built-in reading of its \"Context N% used\" line. `context.pattern` stays the fallback in `scrape` mode for a kind with neither. See [`handoff`](README.handoff.md#codex)"),
       Key.new(name: "launch.headless", scope: :global, type: :boolean, settable: true, parser: HEADLESS,
         doc: "`true` or `false`: whether `launch`, `start` and `doctor` run [headless](README.launch.md#headless) on this machine when no `--headless`/`--no-headless` flag is given. Unset, they pick headless off macOS, without `osascript`, or when `CI` is set"),
+      Key.new(name: "launch.restore_window_position", scope: :global, type: :boolean, settable: true, default: true, parser: BOOLEAN,
+        doc: "`true` or `false`: whether `launch` puts a window back where it was when the workspace was stopped, if that spot is still on a connected screen (default `true`). `false` tiles every new window, as `launch --arrange` does; `stop` saves the position either way. See [`launch`](README.launch.md#window-position)"),
       # Packs suit projects differently, and compose already knows the cwd.
       Key.new(name: "workflows.defaults.include", scope: :global, resolve: :layered, overridable_in: [:global, :project, :worktree], type: :text, settable: true, examples: ["binding, commits"], default: DEFAULT_PACKS, parser: PACK_LIST,
         doc: "Instruction packs every workflow step and [`workspace instructions compose`](README.instructions.md) start with, " \

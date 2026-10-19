@@ -9511,6 +9511,20 @@ RSpec.describe Workspace::CLI do
         expect(raw.string).not_to include("Launching")
       end
 
+      it "reports each row's window position, passes --arrange on, and carries position warnings" do
+        state = CLITestHelpers::FakeState.new
+        launch = launch_class.new(state: state, output: StringIO.new,
+          result: {positions: {"api" => "restored", "web" => "arranged"}, warnings: ["saved_window_offscreen: web: gone"]})
+        cli, raw, = action_cli(state: state) { {launch_command: launch} }
+
+        cli.run(["launch", "api", "web", "--arrange", "--json"])
+
+        doc = parse_one(raw)
+        expect(doc["results"].map { |r| r["position"] }).to eq(%w[restored arranged])
+        expect(doc["warnings"]).to eq(["saved_window_offscreen: web: gone"])
+        expect(launch.calls.first.last).to include(arrange: true)
+      end
+
       it "is partial (exit 3) when a prompt could not be sent to one project" do
         state = CLITestHelpers::FakeState.new
         cli, raw, = action_cli(state: state, &launching(state, result: {exit_code: 1, prompt_failures: {"web" => "agent not ready"}}))

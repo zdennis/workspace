@@ -598,6 +598,7 @@ module Workspace
       packs = []
       no_packs = false
       handoff = nil
+      arrange = false
       json = false
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: workspace launch [options] <project1> [project2] ..."
@@ -643,6 +644,10 @@ module Workspace
           "whose main agent is neither fails before anything launches (handoff_unsupported_agent)") do |v|
           handoff = v
         end
+        opts.on("--arrange", "Tile the new windows, ignoring the window positions saved when they were",
+          "stopped (launch.restore_window_position false does the same on every launch)") do
+          arrange = true
+        end
         opts.on("--json", "Print one action document (see docs/README.json.md) instead of progress text;",
           "the text goes to stderr. Exit 0, 3 when some projects failed, 1 when all did") do
           json = true
@@ -664,6 +669,7 @@ module Workspace
         opts.separator "  workspace launch my-notes work-notes billing    # launch several projects"
         opts.separator "  workspace launch ~/Code/my-project    # launch from a directory path (creates a config)"
         opts.separator "  workspace launch --reattach my-project    # reuse the pane's existing tmux session"
+        opts.separator "  workspace launch --arrange my-project    # tile the window, ignoring its saved position"
         opts.separator "  workspace launch --prompt \"Review the README\" my-project    # send the agent an initial prompt"
         opts.separator "  workspace launch --play kickoff my-project    # point the agent at a library play"
       end
@@ -675,9 +681,9 @@ module Workspace
 
       run_action("launch", json: json) do
         launched = launch_projects(args, reattach: reattach, headless: headless, prompt: prompt, prompt_timeout: prompt_timeout, play: play,
-          packs: packs, no_packs: no_packs, handoff: handoff, with_packs: true)
+          packs: packs, no_packs: no_packs, handoff: handoff, with_packs: true, arrange: arrange)
         {exit_code: launched[:exit_code], results: json ? launch_rows(launched[:projects], launched[:result], plays: launched[:plays], packs: launched[:packs], skipped_packs: launched[:skipped_packs], prompts: launched[:prompts]) : [],
-         warnings: launched[:skipped_packs].values.flatten.map { |pack| pack["message"] } + (launched[:result]&.dig(:skipped_prompts) || {}).values}
+         warnings: launched[:skipped_packs].values.flatten.map { |pack| pack["message"] } + (launched[:result]&.dig(:skipped_prompts) || {}).values + (launched[:result]&.dig(:warnings) || [])}
       end
     end
 
@@ -689,7 +695,7 @@ module Workspace
     # A play and the packs are resolved for every project before any config is
     # created. Packs are sent only when +with_packs+ is true (`launch` itself), so
     # `relaunch` and `restore` do not type them into an agent again.
-    def launch_projects(args, reattach: false, headless: nil, prompt: nil, prompt_timeout: nil, play: nil, packs: [], no_packs: false, handoff: nil, with_packs: false)
+    def launch_projects(args, reattach: false, headless: nil, prompt: nil, prompt_timeout: nil, play: nil, packs: [], no_packs: false, handoff: nil, with_packs: false, arrange: false)
       # A mixed-case workspace is renamed to lowercase before anything is keyed on its name
       # (see NameMigration), as its agent daemon would rename it once started.
       resolved = args.map { |arg| @project_config.resolve_project_arg(arg) }
@@ -717,6 +723,7 @@ module Workspace
       call_options[:optional] = optional.transform_values { |c| InstructionComposer.pack_names(c["packs"]) } if optional.any?
       call_options[:prompt_timeout] = prompt_timeout if prompt_timeout
       call_options[:headless] = true if @launch_mode.resolve(headless).headless?
+      call_options[:arrange] = true if arrange
       result = @launch_command.call(projects, **call_options)
 
       projects.each do |p|
@@ -770,6 +777,7 @@ module Workspace
         skipped = result&.dig(:skipped_prompts)&.key?(project)
         details = {iterm_window_id: entry.is_a?(Hash) ? entry["iterm_window_id"] : nil, headless: entry.is_a?(Hash) && entry["headless"] == true}
         prompt_sent = prompts[project] ? (sent && !skipped) : nil
+        details[:position] = result&.dig(:positions, project)
         details[:prompt_sent] = prompt_sent
         details[:pane] = prompt_sent ? result&.dig(:delivered_panes, project) : nil
         if plays[project]
