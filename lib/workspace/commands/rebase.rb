@@ -175,7 +175,9 @@ module Workspace
         return stashed if stashed && success
 
         kept = stashed ? " (git stored them in the stash as #{stashed.sha})" : ""
-        raise Workspace::Error, "Could not stash the changes in #{holder}#{kept}: #{first_line(stderr)}"
+        reason = first_line(stderr)
+        reason = "git saved nothing" if reason.empty?
+        raise Workspace::Error, "Could not stash the changes in #{holder}#{kept}: #{reason}"
       end
 
       def run_rebase(path, branch, ref)

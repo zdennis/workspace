@@ -521,6 +521,18 @@ RSpec.describe Workspace::Commands::Rebase do
       expect(File.read(File.join(repo, "base.txt"))).to eq("dirty\n")
     end
 
+    it "says git saved nothing when the stash push succeeds without an entry" do
+      File.write(File.join(repo, "base.txt"), "dirty\n")
+      saving_nothing = lambda do |argv, chdir:, timeout:|
+        next ["", "", true] if argv.include?("stash") && argv.include?("push")
+        Workspace::TimedProcess.run(argv, chdir: chdir, timeout: timeout)
+      end
+      quiet_git = Workspace::Git.new(output: StringIO.new, input: StringIO.new, runner: saving_nothing)
+      cmd = described_class.new(git: quiet_git, checkout: checkout, output: output)
+
+      expect { cmd.call(onto: "update", working_dir: wt) }.to raise_error(Workspace::Error, /Could not stash the changes in .+: git saved nothing\z/)
+    end
+
     it "reports diverged when the checked-out default branch cannot be fast-forwarded" do
       failing_git = Workspace::Git.new(output: StringIO.new, input: StringIO.new, runner: failing("merge"))
       cmd = described_class.new(git: failing_git, checkout: checkout, output: output)
