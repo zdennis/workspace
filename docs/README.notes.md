@@ -75,3 +75,7 @@ workspace-ui://notes/api
 $ workspace notes dir --name api --json
 {"schema_version":1,"ok":true,"workspace":"api","dir":"/Users/z/notes/api","source":"project","exists":true,"inside_worktree":false,"excluded":true}
 ```
+
+## See also
+
+[`promote`](README.promote.md) moves a main checkout's `IMPLEMENTATION_PLAN.md` and `spine/`, and any notes you name, into the new workspace's notes directory.

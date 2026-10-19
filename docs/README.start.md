@@ -264,3 +264,7 @@ workspace start PROJ-123 --headless --yes --json
 # Non-interactive, from a script or agent
 workspace start PROJ-123 --base main --yes --json
 ```
+
+## See also
+
+To move work already in a main checkout into a new workspace, use [`promote`](README.promote.md). It makes the worktree a workspace through `start` and marks the `worktree_started` event `promoted: true`.

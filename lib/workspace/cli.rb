@@ -533,7 +533,7 @@ module Workspace
           help            Show this help message
           init            Install tmuxinator templates and create config directory
           inbox           Keep a durable list of things that need a person: add, list, show, edit, done, dismiss, reopen
-          instructions    Print the instructions built from library packs (binding, orchestrator, commits, review, notes, handoff, dev, implementation-plan)
+          instructions    Print the instructions built from library packs (binding, orchestrator, commits, review, notes, handoff, dev, implementation-plan, research, spine, promote)
           kill            Kill a worktree project and remove its worktree (auto-detects from cwd)
           launch          Launch tmuxinator projects in iTerm windows, or headless in plain tmux
           layout          Save/restore tmux pane layouts (auto-saved before resize)
@@ -7444,7 +7444,7 @@ module Workspace
     def promote_parser(options)
       OptionParser.new do |opts|
         opts.banner = "Usage: workspace promote [BRANCH] [--name PROJECT] [--title TEXT] [--spine[=TEMPLATE] | --no-spine] [--plan[=TITLE]]\n" \
-          "                         [--carry-note FILE]... [--launch [--prompt TEXT] [--prompt-timeout SECONDS]]\n" \
+          "                         [--carry-note FILE]... [--launch [--prompt TEXT] [--prompt-timeout DURATION]]\n" \
           "                         [--agent-kind KIND] [--[no-]headless] [--force] [--dry-run] [--json]"
         opts.separator ""
         opts.separator "Move the work in a main checkout into a new workspace: the staged, unstaged and untracked changes, and"

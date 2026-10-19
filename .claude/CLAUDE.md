@@ -9,6 +9,10 @@ A macOS CLI (Ruby) for managing tmuxinator-based development workspaces in iTerm
 - `lib/workspace/cli.rb` — CLI dispatch, OptionParser definitions, simple command methods
 - `lib/workspace/config.rb` — Path constants and configuration
 - `lib/workspace/commands/notes.rb` — `notes dir`: the one answer to where a workspace's notes are, through `NotesDir`; `--create` makes the directory and lists it in `info/exclude`; `workspace ui open notes [WS]` sends the person to the Notes view through `Commands::Ui` (`workspace-ui://notes/<ws>`)
+- `lib/workspace/commands/promote.rb` — `promote [BRANCH] [--name WS] [--dry-run] [--json]`: moves a main checkout's changes and branch commits into a new `.worktrees/<branch>` through `CheckoutMove`, makes it a workspace through `start` (no launch, plan or spine), carries notes through `NotesCarry`, then makes the spine and plan asked for and not carried; refuses `agent_working` (the caller's `$TMUX_PANE` aside); writes `workspace_promoted`; docs in `docs/README.promote.md`
+- `lib/workspace/checkout_move.rb` — The git half of `promote`: checks (`plan`, read-only), one tagged stash pinned to `refs/workspace/promote/<id>`, switch, `worktree add`, `stash apply --index` checked against trees recorded before; a failure is undone in reverse (`move_failed`) or kept under the ref (`move_incomplete`)
+- `lib/workspace/notes_carry.rb` — Moves `IMPLEMENTATION_PLAN.md` and `spine/` (the old ones renamed `.moved-<time>`) and copies each `--carry-note` into the new notes directory, never over a file; problems are warnings
+- `lib/library/play/promote.md` — The `promote` pack: tell the person what moves, run promote, seed the spine and plan, write `HANDOFF.md`, start the agent, stop
 - `lib/workspace/config_schema.rb` — The one table of config keys: scope, settable, default, value parser, restart flag, doc text; readers, `config set/get/unset` and the docs take their key lists and checks from it
 - `lib/workspace/notes_dir.rb` — The one resolver for where a workspace's notes go: its own `notes.dir`, else the directory the project's `notes.default_dir` rule computes (`tmp/workspace-notes` in the checkout when unset); `config show --json` reports it as `effective_path`
 - `lib/workspace/config_schema_docs.rb` — Renders the schema into the generated blocks of `docs/README.config.md`; `script/generate-config-docs [--check]` runs it, and a spec fails on drift
@@ -133,7 +137,7 @@ A macOS CLI (Ruby) for managing tmuxinator-based development workspaces in iTerm
 
 ## Subcommands
 
-init, doctor, launch, start, add, stop, kill, finish, relaunch, restore, focus, list, status, whereis, agent, daemon, pipeline, sessions, review, snapshot, session-event, lock, dev, parent, notes, plan, ticket, spine, pr, rebase, push, projects, ask, inbox, capabilities, ui, binding, library, instructions, workflow, step
+init, doctor, launch, start, add, stop, kill, finish, relaunch, restore, focus, list, status, whereis, agent, daemon, pipeline, sessions, review, snapshot, session-event, lock, dev, parent, notes, plan, ticket, spine, pr, rebase, push, promote, projects, ask, inbox, capabilities, ui, binding, library, instructions, workflow, step
 
 ## Adding a Subcommand
 
