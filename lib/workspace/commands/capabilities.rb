@@ -53,7 +53,7 @@ module Workspace
         "dev_queue" => 2,
         "plan" => 5,
         "ticket" => 2,
-        "spine" => 1,
+        "spine" => 2,
         "spine_set" => 1,
         "spine_init" => 2,
         "spine_pack" => 1,

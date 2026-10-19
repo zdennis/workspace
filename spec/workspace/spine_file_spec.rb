@@ -326,4 +326,43 @@ RSpec.describe Workspace::SpineFile do
       expect { described_class.parse(bytes) }.not_to raise_error
     end
   end
+
+  describe "#body" do
+    it "is the text after the frontmatter" do
+      expect(parse("---\nstatus: done\n---\nline 1\nline 2\n").body).to eq("line 1\nline 2\n")
+    end
+
+    it "is the whole text without frontmatter" do
+      expect(parse("just text\n").body).to eq("just text\n")
+    end
+
+    it "is nil for bytes that are not text" do
+      expect(parse("---\nstatus: done\n---\n\xFF\xFE".b).body).to be_nil
+    end
+
+    it "is cut to 16 KB without splitting a character, and reports the cut" do
+      file = parse("---\n---\n" + ("é" * 9000))
+
+      text, cut = file.body_excerpt
+      expect(cut).to be(true)
+      expect(text.bytesize).to eq(16_384)
+      expect(text).to be_valid_encoding
+    end
+
+    it "is the whole file when the frontmatter never closes" do
+      expect(parse("---\nstatus: done\nbody\n").body).to eq("---\nstatus: done\nbody\n")
+    end
+
+    it "reports a cut when the file itself was cut at 64 KB" do
+      file = described_class.parse("x")
+      file.instance_variable_set(:@body, "short")
+      file.instance_variable_set(:@truncated, true)
+
+      expect(file.body_excerpt).to eq(["short", true])
+    end
+
+    it "is not cut at the limit" do
+      expect(parse("---\n---\n" + ("a" * 16_384)).body_excerpt).to eq(["a" * 16_384, false])
+    end
+  end
 end

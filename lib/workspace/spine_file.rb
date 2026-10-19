@@ -36,6 +36,9 @@ module Workspace
     # Per-key value limits that differ from {MAX_VALUE}.
     VALUE_LIMITS = {"title" => 120, "description" => 300, "note" => 300}.freeze
 
+    # The longest body {#body_excerpt} returns, in bytes.
+    MAX_BODY = 16_384
+
     # The format version this code reads; a file that says `spine: 2` or more is still read.
     FORMAT = 1
 
@@ -189,6 +192,22 @@ module Workspace
       STATUS_ALIASES.fetch(word, "unknown")
     end
 
+    # The text after the frontmatter (the whole text without frontmatter), from the bytes read.
+    #
+    # @return [String, nil] nil when the file was not read as text
+    attr_reader :body
+
+    # The body cut to {MAX_BODY} bytes on a character boundary.
+    #
+    # @return [Array(String, Boolean), nil] the text and whether it was cut; nil when the file was not read as text
+    def body_excerpt
+      return nil unless @body
+      return [@body, @truncated] if @body.bytesize <= MAX_BODY
+      cut = @body.byteslice(0, MAX_BODY).force_encoding(Encoding::UTF_8)
+      cut = cut.byteslice(0, cut.bytesize - 1).force_encoding(Encoding::UTF_8) until cut.valid_encoding?
+      [cut, true]
+    end
+
     # @return [Hash] `total`, `done` and `items` of the `## Done when` checklist
     def done_when
       {"total" => @items.size, "done" => @items.count { |item| item["done"] }, "items" => @items}
@@ -238,7 +257,9 @@ module Workspace
       @warnings << self.class.warning("too_large", nil, "Only the first #{MAX_BYTES} bytes of #{@relative} were read.") if truncated
       lines = text.split("\n", -1).map { |line| line.chomp("\r") }
       lines[0] = lines[0].delete_prefix("﻿") if lines.first
-      read_body(lines, read_frontmatter(lines))
+      first = read_frontmatter(lines)
+      @body = lines[first..].join("\n")
+      read_body(lines, first)
       @warnings << self.class.warning("newer_format", @key_spans["spine"]&.first, "#{@relative} is written for spine format #{format_version}; this reads format #{FORMAT}.") if format_version > FORMAT
     end
 

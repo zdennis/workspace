@@ -67,7 +67,7 @@ module Workspace
       "unknown_agent_kind" => "start --agent-kind named a kind that is not a known coding agent, or hooks uninstall --agent one with no hooks. details.kind, details.known. Nothing was created or changed.",
       "hook_settings_unreadable" => "A coding agent's hook settings file (Codex's hooks.json, Claude Code's settings.json) is not a JSON object with a hooks object, so workspace left it alone. details.path.",
       "no_spine" => "spine set: the workspace has no spine/ folder in its notes directory. details.workspace, details.dir.",
-      "unknown_stage" => "spine set: no stage has that path. details.path, details.stages (the paths there are).",
+      "unknown_stage" => "spine set, spine show --stage: no stage has that path. details.path, details.stages (the paths there are).",
       "invalid_status" => "spine set: --status is not a status or an alias of one (unknown is not settable). details.status, details.allowed.",
       "stale_revision" => "spine set or plan task --if-revision: the file changed since that revision. details.revision is the current one (and details.status for a stage file; details.path for a plan).",
       "spine_unwritable" => "spine set or spine init: the stage file cannot be rewritten safely, another spine write did not finish in time, or spine init cannot write the spine (its path is a link, or the notes directory or files cannot be written; details.path). details.reason: link, not_a_file, too_large, not_utf8, no_frontmatter, no_file, missing, lock_unavailable, unreadable_result, io_error, changed_while_writing or lock_busy; details.file.",

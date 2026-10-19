@@ -89,14 +89,26 @@ module Workspace
 
       # @param name [String] the workspace
       # @param json [Boolean] print the document documented in docs/README.spine.md instead of a short summary
+      # @param stage [String, nil] a stage path: show that one stage (and its sub-stages) instead of the tree
+      # @param body [Boolean] add the text after the frontmatter: to the one stage, else to the goal
       # @return [void]
-      # @raise [Workspace::Error] `unknown_workspace`, `notes_dir_unresolved` or `config_parse`; never because of a file's content
-      def show(name:, json: false)
+      # @raise [Workspace::Error] `unknown_workspace`, `notes_dir_unresolved` or `config_parse`; `unknown_stage` for a +stage+ that is not there
+      def show(name:, json: false, stage: nil, body: false)
         tree = read(name)
+        found = stage && (tree.find(stage) || raise(unknown_stage(name, stage, tree)))
         if json
-          @output.puts JSON.generate({"schema_version" => JSON_SCHEMA_VERSION, "ok" => true, "workspace" => name}.merge(tree.to_h))
+          head = {"schema_version" => JSON_SCHEMA_VERSION, "ok" => true, "workspace" => name}
+          doc = if found
+            full = tree.to_h
+            head.merge("dir" => full["dir"], "goal" => full["goal"], "stage" => found.to_h(body: body))
+          else
+            head.merge(tree.to_h(body: body))
+          end
+          @output.puts JSON.generate(doc)
+        elsif found
+          print_stage(found, body)
         else
-          print_text(name, tree)
+          print_text(name, tree, body)
         end
       end
 
@@ -242,7 +254,23 @@ module Workspace
         path
       end
 
-      def print_text(name, tree)
+      def print_stage(stage, body)
+        print_stages([stage], 0)
+        stage.file&.value("description")&.then { |text| @output.puts "Description: #{text}" }
+        stage.all_warnings.each { |w| @output.puts "warning #{w["code"]}: #{w["message"]}" }
+        print_body(stage.file, body)
+      end
+
+      def print_body(file, body)
+        return unless body
+        text, cut = file&.body_excerpt
+        return unless text
+        @output.puts
+        @output.puts text.gsub(/[\p{Cc}&&[^\n\t]]|\p{Cf}/) { |c| format("\\u{%x}", c.ord) }
+        @output.puts "(body cut at #{SpineFile::MAX_BODY} bytes)" if cut
+      end
+
+      def print_text(name, tree, body = false)
         unless tree.exists
           @output.puts "#{name}: no spine/ in #{File.dirname(tree.dir)}"
           return
@@ -251,6 +279,7 @@ module Workspace
         tree.each_stage { count += 1 }
         @output.puts "#{name}: #{count} #{(count == 1) ? "stage" : "stages"} in #{tree.dir}"
         @output.puts "Goal: #{tree.goal.value("title")}" if tree.goal&.value("title")
+        print_body(tree.goal, body)
         print_stages(tree.stages, 0)
         tree.warnings.each { |w| @output.puts "warning #{w["code"]}: #{w["message"]}" }
         @output.puts "Not stages: #{tree.not_stages.join(", ")}" unless tree.not_stages.empty?

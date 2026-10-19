@@ -153,4 +153,119 @@ RSpec.describe Workspace::Commands::Spine do
       expect(output.string).to include("warning link: spine is a link")
     end
   end
+
+  describe "#show with stage and body" do
+    before do
+      write("goal.md", "---\ntitle: Ship it\n---\n# Goal\nBuild the thing.\n")
+      write("30-implement.md", "---\nstatus: active\ntitle: Implement\n---\n# Implement\n\nDo it.\n")
+      write("30-implement/10-api.md", "---\nstatus: done\n---\nAPI body\n")
+    end
+
+    def document = JSON.parse(output.string)
+
+    it "prints the envelope, goal and the one stage with its children, and no tree keys" do
+      command.show(name: "api", json: true, stage: "implement")
+
+      expect(document.keys).to eq(%w[schema_version ok workspace dir goal stage])
+      expect(document["stage"]).to include("path" => "implement", "status" => "in_progress")
+      expect(document["stage"]["children"].map { |c| c["path"] }).to eq(["implement/api"])
+      expect(document["stage"]).not_to have_key("body")
+      expect(document["goal"]).not_to have_key("body")
+    end
+
+    it "finds a sub-stage by its path" do
+      command.show(name: "api", json: true, stage: "implement/api", body: true)
+
+      expect(document["stage"]).to include("path" => "implement/api", "body" => "API body\n", "body_truncated" => false)
+    end
+
+    it "adds the body after the frontmatter to the stage only, not to its children" do
+      command.show(name: "api", json: true, stage: "implement", body: true)
+
+      expect(document["stage"]).to include("body" => "# Implement\n\nDo it.\n", "body_truncated" => false)
+      expect(document["stage"]["children"].first).not_to have_key("body")
+    end
+
+    it "adds goal.body without --stage and no stage bodies" do
+      command.show(name: "api", json: true, body: true)
+
+      expect(document["goal"]).to include("title" => "Ship it", "body" => "# Goal\nBuild the thing.\n", "body_truncated" => false)
+      expect(document["stages"].first).not_to have_key("body")
+    end
+
+    it "leaves goal null with --body when there is no goal.md" do
+      File.delete(File.join(@notes, "spine", "goal.md"))
+
+      command.show(name: "api", json: true, body: true)
+
+      expect(document["goal"]).to be_nil
+    end
+
+    it "cuts a long body at 16 KB on a character boundary and says so" do
+      write("40-verify.md", "---\nstatus: todo\n---\n" + ("é" * 9000))
+
+      command.show(name: "api", json: true, stage: "verify", body: true)
+
+      stage = document["stage"]
+      expect(stage["body_truncated"]).to be(true)
+      expect(stage["body"].bytesize).to eq(16_384)
+      expect(stage["body"]).to eq("é" * 8192)
+    end
+
+    it "gives a null body for a folder-only stage" do
+      write("50-ship/10-pr.md", "---\nstatus: todo\n---\n")
+
+      command.show(name: "api", json: true, stage: "ship", body: true)
+
+      expect(document["stage"]).to include("body" => nil, "body_truncated" => false)
+    end
+
+    it "does not follow a link for a body" do
+      File.write(File.join(@notes, "secret.md"), "---\nstatus: done\n---\nsecret")
+      File.symlink(File.join(@notes, "secret.md"), File.join(@notes, "spine", "60-ship.md"))
+
+      command.show(name: "api", json: true, stage: "ship", body: true)
+
+      expect(document["stage"]).to include("body" => nil)
+      expect(output.string).not_to include("secret")
+    end
+
+    it "raises unknown_stage with the paths there are" do
+      expect { command.show(name: "api", json: true, stage: "nope", body: true) }.to raise_error(Workspace::Error) { |e|
+        expect(e.code).to eq("unknown_stage")
+        expect(e.details).to include("path" => "nope", "stages" => %w[implement implement/api])
+      }
+      expect(output.string).to be_empty
+    end
+
+    it "is unknown_stage with no stages when there is no spine/" do
+      FileUtils.rm_rf(File.join(@notes, "spine"))
+
+      expect { command.show(name: "api", json: true, stage: "verify") }.to raise_error(Workspace::Error) { |e|
+        expect(e.details).to include("stages" => [])
+      }
+    end
+
+    it "prints a stage and its body as text" do
+      command.show(name: "api", stage: "implement", body: true)
+
+      expect(output.string).to include("implement  in_progress")
+      expect(output.string).to include("# Implement\n\nDo it.")
+    end
+
+    it "escapes control characters in a text body" do
+      write("70-x.md", "---\nstatus: todo\n---\nhi \e[31mred\n")
+
+      command.show(name: "api", stage: "x", body: true)
+
+      expect(output.string).not_to include("\e")
+      expect(output.string).to include("hi \\u{1b}[31mred")
+    end
+
+    it "prints the goal body as text without --stage" do
+      command.show(name: "api", body: true)
+
+      expect(output.string).to include("Goal: Ship it", "Build the thing.")
+    end
+  end
 end

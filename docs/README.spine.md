@@ -5,7 +5,7 @@ Read a workspace's plan spine, and set a stage's status. The spine is the stage 
 ## Usage
 
 ```sh
-workspace spine show [WORKSPACE] [--name WORKSPACE] [--json]
+workspace spine show [WORKSPACE] [--name WORKSPACE] [--stage STAGE-PATH] [--body] [--json]
 ```
 
 ## Options
@@ -13,13 +13,15 @@ workspace spine show [WORKSPACE] [--name WORKSPACE] [--json]
 | Option | Description |
 |--------|-------------|
 | `WORKSPACE`, `--name WORKSPACE` | The workspace to read. Default: the one detected from the current directory. Give it once; two different names are a usage error |
+| `--stage STAGE-PATH` | Only that stage, with its sub-stages (`verify`, `implement/api`, as `path` reports). Its own flag because the one positional is the workspace. A path no stage has is `unknown_stage` with the paths there are, the one place `show` errors on content |
+| `--body` | Add the text after the frontmatter: to the stage with `--stage`, else to `goal` (stage bodies are never added to the whole tree). At most 16 KB (16384 bytes), cut on a character boundary; read without following links |
 | `--json` | Print one JSON document |
 
 `show` only reads. It creates no folder and writes no file, never follows a link, and never fails because of what a file holds: a problem is a `warnings` entry, and the exit status stays 0. The only errors are `unknown_workspace`, `notes_dir_unresolved` and `config_parse` (the notes directory can't be worked out), and `not_in_workspace`. A workspace with no `spine/` answers `exists: false`.
 
 Plain output is a short summary: one line per stage with its status, owner, `Done when` counts and the codes of its warnings.
 
-`spine` in [`capabilities`](README.capabilities.md) is `1` when this command exists.
+`spine` in [`capabilities`](README.capabilities.md) is `2` when this command has the roll-up described below, `--stage` and `--body`.
 
 ## Setting a status
 
@@ -235,6 +237,15 @@ A link is never followed. A linked `spine`, stage file, `goal.md` or stage folde
 | `truncated` (top level) | `entries`, `stages` or `null` |
 | `not_stages` | Names below `spine/` that are not stages, sorted |
 
+### `--stage` and `--body`
+
+With `--stage`, the document is `{"schema_version", "ok", "workspace", "dir", "goal", "stage"}`: `stage` has the shape above, `children` included, and there are no `exists`, `stages` or `not_stages` keys. With `--body`, `stage` (or `goal`, without `--stage`; `null` without `goal.md`) gains:
+
+| Field | Meaning |
+|-------|---------|
+| `body` | The text after the frontmatter (the whole text when there is none), at most 16384 bytes, with line endings as `\n` (a CRLF file's `\r` is dropped, so the text can differ from the bytes `revision` covers). Plain output prints control characters other than newline and tab as `\u{..}`. `null` when there is no file or it was not read as text (a link, a non-file, not UTF-8) |
+| `body_truncated` | Whether the body was cut at 16 KB, or the file itself was cut at 64 KB. Not `truncated`, which says only the first 64 KB of the file were read |
+
 ### Warning codes
 
 `no_frontmatter`, `bad_line`, `duplicate_key`, `duplicate_id` (the second stage with an id; `depends_on` means the first), `unknown_kind`, `unknown_gate`, `unknown_dependency`, `dependency_cycle`, `clipped`, `not_utf8`, `link`, `not_a_file`, `too_large`, `folder_without_file`, `too_deep`, `newer_format`.
@@ -246,6 +257,7 @@ A link is never followed. A linked `spine`, stage file, `goal.md` or stage folde
 | `unknown_workspace` | The workspace has no known checkout (`details.name`) |
 | `not_in_workspace` | No workspace given and none detected from the current directory |
 | `notes_dir_unresolved` | The notes directory can't be worked out (see [`notes`](README.notes.md)) |
-| `usage` | A missing or unknown subcommand, an extra argument, or two different workspace names (`show`); see above for `set` |
+| `unknown_stage` | `show --stage` or `set`: no stage has that path (`details.path`, `details.stages`) |
+| `usage` | A missing or unknown subcommand, an extra argument, or two different workspace names (`show`); `--stage` or `--body` with `set`; see above for `set` |
 | `unknown_template` | `spine init`: no `spine` library entry has that name (`details.template`, `details.scopes`, `details.source`; the message says where the name came from) |
 | `spine_unwritable` | `spine init`: `spine/` is a link, or the notes directory or a file could not be written (`details.path`); for `spine set` see above |

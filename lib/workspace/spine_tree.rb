@@ -71,7 +71,8 @@ module Workspace
       end
 
       # @return [Hash] the stage as `spine show --json` lists it
-      def to_h
+      # @param body [Boolean] add `body` and `body_truncated`
+      def to_h(body: false)
         doc = {
           "path" => path, "file" => relative, "number" => number, "id" => id,
           "revision" => file&.revision, "title" => title,
@@ -86,8 +87,16 @@ module Workspace
           "children" => children.map(&:to_h)
         }
         doc.delete("rollup") unless doc["rollup"]
+        doc.merge!(SpineTree.body_keys(file)) if body
         doc
       end
+    end
+
+    # @param file [SpineFile, nil]
+    # @return [Hash] `body` (capped at {SpineFile::MAX_BODY} bytes) and `body_truncated`; `body` is nil without a readable file
+    def self.body_keys(file)
+      text, cut = file&.body_excerpt
+      {"body" => text, "body_truncated" => cut || false}
     end
 
     # @return [String] absolute path of the `spine/` folder
@@ -151,16 +160,23 @@ module Workspace
     # @yieldparam stage [Stage] each stage, parents before their children, in order
     def each_stage(&block) = walk(@stages, &block)
 
+    # @param body [Boolean] add `body` and `body_truncated` to the goal (never to the stages)
     # @return [Hash] `dir`, `exists`, `goal`, `stages`, `not_stages`, `truncated`, `warnings`
-    def to_h
+    def to_h(body: false)
       {
-        "dir" => @dir, "exists" => @exists,
-        "goal" => goal && {"file" => goal.relative, "title" => goal.value("title"), "revision" => goal.revision, "warnings" => goal.warnings},
+        "dir" => @dir, "exists" => @exists, "goal" => goal_h(body),
         "stages" => @stages.map(&:to_h), "not_stages" => @not_stages.sort, "truncated" => @truncated, "warnings" => @warnings
       }
     end
 
     private
+
+    def goal_h(body)
+      return nil unless goal
+      doc = {"file" => goal.relative, "title" => goal.value("title"), "revision" => goal.revision, "warnings" => goal.warnings}
+      doc.merge!(self.class.body_keys(goal)) if body
+      doc
+    end
 
     def walk(stages, &block)
       stages.each do |stage|
