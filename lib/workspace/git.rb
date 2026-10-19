@@ -1,4 +1,5 @@
 require "open3"
+require "securerandom"
 require "timeout"
 
 module Workspace
@@ -161,19 +162,45 @@ module Workspace
       success
     end
 
+    # A stash entry this process made: its commit and the unique tag in its message.
+    Stash = Struct.new(:sha, :tag)
+
+    # Stashes the changes to tracked files under a unique tag and finds the entry
+    # by that tag, so nothing depends on its position in the stack (shared with
+    # every worktree and session).
+    #
     # @param path [String] the checkout
-    # @param message [String]
-    # @return [Boolean] whether the changes to tracked files were stashed
-    def stash_push(path, message)
-      _, _, success = run_git(path, "stash", "push", "--quiet", "-m", message, timeout: QUICK_TIMEOUT)
-      success
+    # @param label [String] readable text for the stash message
+    # @return [Stash, nil] nil when git saved nothing or failed
+    def stash_push(path, label)
+      tag = "workspace-rebase-#{SecureRandom.hex(8)}"
+      _, _, success = run_git(path, "stash", "push", "--quiet", "-m", "#{tag} #{label}", timeout: QUICK_TIMEOUT)
+      return nil unless success
+      entry = stash_entries(path).find { |_, subject| subject.include?(tag) }
+      entry && Stash.new(entry.first, tag)
     end
 
+    # Applies the stash by its commit; the entry stays in the stack.
+    #
     # @param path [String] the checkout
-    # @return [Array(Boolean, String)] whether the newest stash applied cleanly, and git's stderr
-    def stash_pop(path)
-      _, stderr, success = run_git(path, "stash", "pop", "--quiet", timeout: QUICK_TIMEOUT)
+    # @param stash [Stash]
+    # @return [Array(Boolean, String)] whether it applied cleanly, and git's stderr
+    def stash_apply(path, stash)
+      _, stderr, success = run_git(path, "stash", "apply", "--quiet", stash.sha, timeout: QUICK_TIMEOUT)
       [success, stderr]
+    end
+
+    # Drops the stash's entry, found again by its tag (other entries may have
+    # been pushed since). Never touches an entry without the tag.
+    #
+    # @param path [String] the checkout
+    # @param stash [Stash]
+    # @return [Boolean] whether an entry was dropped
+    def stash_drop(path, stash)
+      index = stash_entries(path).index { |_, subject| subject.include?(stash.tag) }
+      return false if index.nil?
+      _, _, success = run_git(path, "stash", "drop", "--quiet", "stash@{#{index}}", timeout: QUICK_TIMEOUT)
+      success
     end
 
     # Whether the branch's own history once held every commit that +upstream+
@@ -716,6 +743,12 @@ module Workspace
       raise Workspace::Error, "git is not installed."
     rescue Timeout::Error
       raise Workspace::Error, "git #{args.first} did not finish within #{timeout} seconds."
+    end
+
+    def stash_entries(path)
+      stdout, _, success = run_git(path, "stash", "list", "--format=%H %gs", timeout: QUICK_TIMEOUT)
+      return [] unless success
+      stdout.scrub.lines.map { |line| line.chomp.split(" ", 2) }
     end
 
     def ref_exists?(path, ref)

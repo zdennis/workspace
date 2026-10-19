@@ -424,6 +424,17 @@ RSpec.describe Workspace::Commands::Rebase do
       expect(sh("stash", "list")).to eq("")
     end
 
+    it "leaves another session's stash entry alone" do
+      File.write(File.join(repo, "base.txt"), "other session\n")
+      sh("stash", "push", "-m", "someone else")
+      File.write(File.join(repo, "base.txt"), "dirty\n")
+
+      expect(run_json("update")).to include("outcome" => "rebased")
+
+      expect(File.read(File.join(repo, "base.txt"))).to eq("dirty\n")
+      expect(sh("stash", "list")).to match(/\Astash@\{0\}: On main: someone else\n\z/)
+    end
+
     it "reports stash_pop when the stashed changes do not apply back, keeping the stash" do
       sh("fetch", "-q", "origin")
       commit_file("shared.txt", "one\n", "add shared", dir: other)
@@ -437,7 +448,8 @@ RSpec.describe Workspace::Commands::Rebase do
 
       expect(result).to include("outcome" => "default_not_updated", "reason" => "stash_pop")
       expect(result["detail"]).to include("kept in the stash")
-      expect(sh("stash", "list")).not_to eq("")
+      expect(sh("stash", "list")).to include("workspace-rebase-")
+      expect(result["detail"]).to match(/kept in the stash as \h{40}/)
     end
 
     it "reports diverged when local and origin each have commits the other lacks" do

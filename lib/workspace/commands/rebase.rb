@@ -155,11 +155,12 @@ module Workspace
 
         moved = @git.fast_forward(holder, remote)
         if stashed
-          popped, stderr = @git.stash_pop(holder)
-          unless popped
+          applied, stderr = @git.stash_apply(holder, stashed)
+          unless applied
             return {"outcome" => "default_not_updated", "reason" => "stash_pop",
-                    "detail" => "'#{default}' #{moved ? "was moved" : "was not moved"}, but the changes stashed in #{holder} did not apply back (kept in the stash): #{first_line(stderr)}"}
+                    "detail" => "'#{default}' #{moved ? "was moved" : "was not moved"}, but the changes stashed in #{holder} did not apply back (kept in the stash as #{stashed.sha}): #{first_line(stderr)}"}
           end
+          @git.stash_drop(holder, stashed)
         end
         return nil if moved
 

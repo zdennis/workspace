@@ -1076,3 +1076,78 @@ RSpec.describe Workspace::Git, "write operations on a checkout" do
     expect(calls).to eq([[%w[git push -u --force-with-lease origin feature/x], wt, described_class::PUSH_TIMEOUT]])
   end
 end
+
+RSpec.describe Workspace::Git, "stash by tag" do
+  subject(:git) { described_class.new(output: StringIO.new, input: StringIO.new) }
+
+  around do |example|
+    Dir.mktmpdir { |dir| (@repo = File.realpath(dir)) && example.run }
+  end
+
+  def sh(*args)
+    out = IO.popen(["git", "-c", "user.name=t", "-c", "user.email=t@example.com", "-C", @repo, *args], err: [:child, :out], &:read)
+    raise "git #{args.join(" ")} failed: #{out}" unless $?.success?
+    out
+  end
+
+  before do
+    sh("init", "-q", "-b", "main")
+    File.write(File.join(@repo, "a.txt"), "base\n")
+    sh("add", ".")
+    sh("commit", "-q", "-m", "init")
+  end
+
+  def dirty!(content = "mine\n")
+    File.write(File.join(@repo, "a.txt"), content)
+  end
+
+  it "pushes under a unique tag and returns the entry's sha and tag" do
+    dirty!
+    stash = git.stash_push(@repo, "workspace rebase: main")
+
+    expect(stash.tag).to match(/\Aworkspace-rebase-\h{16}\z/)
+    expect(sh("stash", "list", "--format=%H %gs").lines.map(&:strip)).to eq(["#{stash.sha} On main: #{stash.tag} workspace rebase: main"])
+    expect(File.read(File.join(@repo, "a.txt"))).to eq("base\n")
+  end
+
+  it "returns nil and leaves the stack alone when there is nothing to stash" do
+    expect(git.stash_push(@repo, "x")).to be_nil
+    expect(sh("stash", "list")).to eq("")
+  end
+
+  it "applies by sha even when another entry was pushed on top, then drops only its own entry" do
+    dirty!
+    stash = git.stash_push(@repo, "x")
+    File.write(File.join(@repo, "a.txt"), "other session\n")
+    sh("stash", "push", "-m", "someone else")
+
+    expect(git.stash_apply(@repo, stash)).to eq([true, ""])
+    expect(File.read(File.join(@repo, "a.txt"))).to eq("mine\n")
+    expect(git.stash_drop(@repo, stash)).to be(true)
+
+    expect(sh("stash", "list")).to match(/\Astash@\{0\}: On main: someone else\n\z/)
+  end
+
+  it "does not drop anything when its tag is no longer in the stack" do
+    dirty!
+    stash = git.stash_push(@repo, "x")
+    sh("stash", "drop", "--quiet")
+    File.write(File.join(@repo, "a.txt"), "other\n")
+    sh("stash", "push", "-m", "someone else")
+
+    expect(git.stash_drop(@repo, stash)).to be(false)
+    expect(sh("stash", "list").lines.size).to eq(1)
+  end
+
+  it "reports a conflicting apply with git's message and keeps the entry" do
+    dirty!
+    stash = git.stash_push(@repo, "x")
+    File.write(File.join(@repo, "a.txt"), "changed meanwhile\n")
+
+    applied, stderr = git.stash_apply(@repo, stash)
+
+    expect(applied).to be(false)
+    expect(stderr).not_to be_empty
+    expect(sh("stash", "list")).to include(stash.tag)
+  end
+end
