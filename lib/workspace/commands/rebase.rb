@@ -1,4 +1,5 @@
 require "json"
+require "securerandom"
 
 module Workspace
   module Commands
@@ -150,12 +151,11 @@ module Workspace
       def move_checked_out(holder, default, remote)
         dirty = @git.dirty_tracked_files(holder)
         raise Workspace::Error, "git could not read the state of #{holder}." if dirty.nil?
-        stashed = !dirty.empty? && @git.stash_push(holder, "workspace rebase: #{default}")
-        raise Workspace::Error, "Could not stash the changes in #{holder}." if !dirty.empty? && !stashed
+        stashed = !dirty.empty? && stash_changes(holder, default)
 
         moved = @git.fast_forward(holder, remote)
         if stashed
-          applied, stderr = @git.stash_apply(holder, stashed)
+          applied, stderr = @git.stash_apply(holder, stashed.sha)
           unless applied
             return {"outcome" => "default_not_updated", "reason" => "stash_pop",
                     "detail" => "'#{default}' #{moved ? "was moved" : "was not moved"}, but the changes stashed in #{holder} did not apply back (kept in the stash as #{stashed.sha}): #{first_line(stderr)}"}
@@ -166,6 +166,16 @@ module Workspace
 
         {"outcome" => "default_not_updated", "reason" => "diverged",
          "detail" => "'#{default}' in #{holder} could not be fast-forwarded to #{remote} (a local file may be in the way)."}
+      end
+
+      # Stashes the tracked changes in +holder+ under a unique tag, so the entry is
+      # found by that tag, never by its position in the shared stack.
+      def stash_changes(holder, default)
+        stashed, success, stderr = @git.stash_push(holder, "workspace-rebase-#{SecureRandom.hex(8)} workspace rebase: #{default}")
+        return stashed if stashed && success
+
+        kept = stashed ? " (git stored them in the stash as #{stashed.sha})" : ""
+        raise Workspace::Error, "Could not stash the changes in #{holder}#{kept}: #{first_line(stderr)}"
       end
 
       def run_rebase(path, branch, ref)

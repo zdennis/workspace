@@ -1,5 +1,6 @@
 require "open3"
-require "securerandom"
+require "fileutils"
+require "tmpdir"
 require "timeout"
 
 module Workspace
@@ -28,6 +29,13 @@ module Workspace
 
     # Seconds any other git call that changes a checkout may take.
     QUICK_TIMEOUT = 30
+
+    # Seconds a stash push or apply, a switch or a `worktree add` may take: each writes
+    # the whole set of changed files, or the whole tree, and may run a hook.
+    MOVE_TIMEOUT = 600
+
+    # The file git keeps while each operation is stopped, and the name {#operation_in_progress} gives it.
+    OPERATION_FILES = {"MERGE_HEAD" => "merge", "CHERRY_PICK_HEAD" => "cherry_pick", "REVERT_HEAD" => "revert", "BISECT_LOG" => "bisect"}.freeze
 
     # Pushes a branch to origin.
     #
@@ -159,47 +167,6 @@ module Workspace
     # @return [Boolean]
     def fast_forward(path, target)
       _, _, success = run_git(path, "merge", "--ff-only", "--quiet", target, timeout: QUICK_TIMEOUT)
-      success
-    end
-
-    # A stash entry this process made: its commit and the unique tag in its message.
-    Stash = Struct.new(:sha, :tag)
-
-    # Stashes the changes to tracked files under a unique tag and finds the entry
-    # by that tag, so nothing depends on its position in the stack (shared with
-    # every worktree and session).
-    #
-    # @param path [String] the checkout
-    # @param label [String] readable text for the stash message
-    # @return [Stash, nil] nil when git saved nothing or failed
-    def stash_push(path, label)
-      tag = "workspace-rebase-#{SecureRandom.hex(8)}"
-      _, _, success = run_git(path, "stash", "push", "--quiet", "-m", "#{tag} #{label}", timeout: QUICK_TIMEOUT)
-      return nil unless success
-      entry = stash_entries(path).find { |_, subject| subject.include?(tag) }
-      entry && Stash.new(entry.first, tag)
-    end
-
-    # Applies the stash by its commit; the entry stays in the stack.
-    #
-    # @param path [String] the checkout
-    # @param stash [Stash]
-    # @return [Array(Boolean, String)] whether it applied cleanly, and git's stderr
-    def stash_apply(path, stash)
-      _, stderr, success = run_git(path, "stash", "apply", "--quiet", stash.sha, timeout: QUICK_TIMEOUT)
-      [success, stderr]
-    end
-
-    # Drops the stash's entry, found again by its tag (other entries may have
-    # been pushed since). Never touches an entry without the tag.
-    #
-    # @param path [String] the checkout
-    # @param stash [Stash]
-    # @return [Boolean] whether an entry was dropped
-    def stash_drop(path, stash)
-      index = stash_entries(path).index { |_, subject| subject.include?(stash.tag) }
-      return false if index.nil?
-      _, _, success = run_git(path, "stash", "drop", "--quiet", "stash@{#{index}}", timeout: QUICK_TIMEOUT)
       success
     end
 
@@ -733,7 +700,265 @@ module Workspace
       end
     end
 
+    # @param path [String] the checkout
+    # @return [String, nil] the git operation stopped in it: `merge`, `cherry_pick`, `revert` or `bisect`
+    #   (a rebase is {#rebase_in_progress?}); nil when none is, or git could not answer
+    def operation_in_progress(path)
+      stdout, _, status = capture_git("-C", path, "rev-parse", *OPERATION_FILES.keys.flat_map { |name| ["--git-path", name] })
+      return nil unless status.success?
+      files = stdout.lines.map(&:chomp)
+      OPERATION_FILES.values.zip(files).find { |_, file| file && File.exist?(File.expand_path(file, path)) }&.first
+    end
+
+    # The checkout's changes from `git status --porcelain=v2 -z`, every untracked file
+    # listed on its own. A staged rename is listed by its new path. An untracked
+    # directory that is a repository of its own is listed once, with a trailing `/`.
+    #
+    # @param path [String] the checkout
+    # @return [Hash{Symbol => Array<String>}, nil] `:staged`, `:unstaged`, `:untracked`, `:unmerged`,
+    #   `:intent_to_add` (`git add -N` files), `:submodule` (a submodule with any change) and `:deleted`
+    #   (tracked paths deleted in the index or the working tree, a rename's old path among them), paths
+    #   relative to the checkout root; nil when git could not answer
+    def status_entries(path)
+      stdout, _, status = capture_git("-C", path, "status", "--porcelain=v2", "-z", "--untracked-files=all", "--ignore-submodules=none")
+      return nil unless status.success?
+      entries = {staged: [], unstaged: [], untracked: [], unmerged: [], intent_to_add: [], submodule: [], deleted: []}
+      tokens = stdout.scrub.split("\0")
+      until tokens.empty?
+        entry = tokens.shift
+        case entry[0]
+        when "1", "2"
+          fields = entry.split(" ", (entry[0] == "1") ? 9 : 10)
+          entries[:deleted] << tokens.shift if entry[0] == "2"
+          classify_change(entries, fields[1], fields[2], fields.last)
+        when "u" then entries[:unmerged] << entry.split(" ", 11).last
+        when "?" then entries[:untracked] << entry[2..]
+        end
+      end
+      entries
+    end
+
+    # Tracked files git is told not to look at: marked `--assume-unchanged`, or
+    # `--skip-worktree` and on disk (a sparse checkout's skipped files are not).
+    # `git status` and `git stash` pass over their changes, and the stash's reset
+    # can overwrite them.
+    #
+    # @param path [String] the checkout root
+    # @return [Array<String>, nil] paths relative to the root; nil when git could not answer
+    def hidden_files(path)
+      stdout, _, status = capture_git("-C", path, "ls-files", "-v", "-z")
+      return nil unless status.success?
+      stdout.scrub.split("\0").filter_map do |entry|
+        tag, file = entry.split(" ", 2)
+        next unless file
+        file if tag.match?(/\A[a-z]\z/) || (tag == "S" && (File.exist?(File.join(path, file)) || File.symlink?(File.join(path, file))))
+      end
+    end
+
+    # Two trees that record a checkout's state without changing it: the index as
+    # `git write-tree` writes it, and the working tree with untracked files, from
+    # `git add -A` into a copy of the index (ignored files are in neither).
+    #
+    # @param path [String] the checkout root
+    # @param skip [Array<String>] directories (relative, such as untracked nested repositories) left out
+    #   of the working tree
+    # @return [Hash{Symbol => String}, nil] `:index` and `:worktree` tree ids; nil when git could not
+    #   write either (an unmerged index, an unreadable file)
+    def snapshot_trees(path, skip: [])
+      index, _, status = capture_git("-C", path, "write-tree")
+      return nil unless status.success?
+      index_file, _, status = capture_git("-C", path, "rev-parse", "--git-path", "index")
+      return nil unless status.success?
+      index_file = File.expand_path(index_file.chomp, path)
+      Dir.mktmpdir("workspace-snapshot") do |dir|
+        env = {"GIT_INDEX_FILE" => File.join(dir, "index")}
+        FileUtils.cp(index_file, env["GIT_INDEX_FILE"]) if File.file?(index_file)
+        excludes = skip.map { |skipped| ":(top,exclude)#{skipped.chomp("/")}" }
+        _, _, status = capture_git("--no-literal-pathspecs", "-C", path, "add", "-A", "--", ":/", *excludes, env: env)
+        return nil unless status.success?
+        worktree, _, status = capture_git("-C", path, "write-tree", env: env)
+        return nil unless status.success?
+        {index: index.strip, worktree: worktree.strip}
+      end
+    rescue SystemCallError
+      nil
+    end
+
+    # @param path [String] any checkout of the repository
+    # @param from [String] a tree id
+    # @param to [String] a tree id
+    # @return [Array<Array(String, String)>, nil] `[status, path]` for each file that differs (`A` only in
+    #   +to+, `D` only in +from+, `M` changed, `T` changed type), renames not detected; nil when git could not answer
+    def tree_diff(path, from, to)
+      stdout, _, status = capture_git("-C", path, "diff-tree", "-r", "-z", "--no-renames", from, to)
+      return nil unless status.success?
+      stdout.scrub.split("\0").each_slice(2).filter_map { |meta, file| [meta.split(" ").last, file] if file }
+    end
+
+    # @param path [String] the checkout
+    # @param rev [String] anything `rev-parse` takes
+    # @return [String, nil] the commit id it names, or nil when it names none
+    def rev_parse(path, rev)
+      stdout, _, status = capture_git("-C", path, "rev-parse", "--verify", "--quiet", "#{rev}^{commit}")
+      status.success? ? stdout.strip : nil
+    end
+
+    # @param path [String] any checkout of the repository
+    # @param name [String] a would-be branch name
+    # @return [Boolean] whether git accepts +name+ as a new branch's name
+    def valid_branch_name?(path, name)
+      return false if name.empty? || name.start_with?("-")
+      _, _, status = capture_git("-C", path, "check-ref-format", "refs/heads/#{name}")
+      status.success?
+    end
+
+    # The stash entries, newest first.
+    #
+    # @param path [String] any checkout of the repository
+    # @return [Array<Hash>, nil] `{sha:, message:}` each (`message` is the reflog subject, such as
+    #   `On main: <message>`); nil when git could not answer
+    def stash_list(path)
+      stdout, _, status = capture_git("-C", path, "stash", "list", "--format=%H %gs")
+      return nil unless status.success?
+      stdout.scrub.lines.filter_map do |line|
+        sha, message = line.chomp.split(" ", 2)
+        {sha: sha, message: message.to_s} if sha
+      end
+    end
+
+    # A stash entry this process made: its commit and the unique message (tag) it was pushed under.
+    Stash = Struct.new(:sha, :tag)
+
+    # Runs `git stash push -m TAG` and finds the entry by its tag, never by its
+    # position on the list, which other sessions change. The exit status alone
+    # says nothing: git exits 0 when it had nothing to save, and can fail after
+    # storing the entry (removing the untracked files failed).
+    #
+    # @param path [String] the checkout
+    # @param tag [String] a message no other entry has
+    # @param include_untracked [Boolean] pass `--include-untracked`
+    # @return [Array(Stash, Boolean, String)] the entry (nil when no entry has the tag),
+    #   whether git succeeded, and git's stderr
+    def stash_push(path, tag, include_untracked: false)
+      flags = include_untracked ? ["--include-untracked"] : []
+      begin
+        _, stderr, success = run_git(path, "stash", "push", *flags, "--quiet", "-m", tag, timeout: MOVE_TIMEOUT)
+      rescue Workspace::Error => e
+        stderr = e.message
+        success = false
+      end
+      entry = stash_list(path)&.find { |candidate| candidate[:message].end_with?(": #{tag}") }
+      [entry && Stash.new(entry[:sha], tag), success, stderr]
+    end
+
+    # Takes the stash's entry off the list. It is found again by its tag and its
+    # commit, and checked with `rev-parse stash@{n}` just before the drop (git refuses
+    # `git stash drop <sha>`). If an entry pushed in that instant was dropped instead,
+    # it is stored back, so another session's entry is never lost.
+    #
+    # @param path [String] the checkout
+    # @param stash [Stash]
+    # @return [Boolean] whether the entry is off the list now (also true when it was never on it)
+    def stash_drop(path, stash)
+      3.times do
+        before = stash_list(path) or return false
+        index = before.index { |entry| entry[:sha] == stash.sha && entry[:message].end_with?(": #{stash.tag}") }
+        return true unless index
+        named, _, status = capture_git("-C", path, "rev-parse", "--verify", "--quiet", "stash@{#{index}}")
+        next unless status.success? && named.strip == stash.sha
+        # git prints "Dropped stash@{n} (<id>)", in any language with the id in parentheses.
+        stdout, = run_git(path, "stash", "drop", "stash@{#{index}}", timeout: QUICK_TIMEOUT)
+        dropped = stdout.to_s[/\((\h{40,64})\)/, 1]
+        after = stash_list(path) or return false
+        return true if dropped == stash.sha || (dropped.nil? && after.none? { |entry| entry[:sha] == stash.sha })
+        restore = dropped ? [dropped] : before.map { |entry| entry[:sha] } - after.map { |entry| entry[:sha] } - [stash.sha]
+        restore.each { |other| stash_store(path, other) }
+      end
+      false
+    end
+
+    # Applies a stash commit; an entry for it stays on the list.
+    #
+    # @param path [String] the checkout
+    # @param sha [String] a stash commit, on the stash list or not
+    # @param index [Boolean] pass `--index`, keeping staged changes apart
+    # @return [Array(Boolean, String)] whether `git stash apply` worked, and git's stderr
+    def stash_apply(path, sha, index: false)
+      flags = index ? ["--index"] : []
+      _, stderr, success = run_git(path, "stash", "apply", *flags, "--quiet", sha, timeout: MOVE_TIMEOUT)
+      [success, stderr]
+    end
+
+    # Points +ref+ at +sha+, only when +ref+ does not exist yet.
+    #
+    # @param path [String] any checkout of the repository
+    # @param ref [String] a full ref name
+    # @param sha [String]
+    # @return [Boolean]
+    def pin_ref(path, ref, sha)
+      _, _, success = run_git(path, "update-ref", ref, sha, "", timeout: QUICK_TIMEOUT)
+      success
+    end
+
+    # Deletes +ref+, only while it still points at +sha+.
+    #
+    # @param path [String] any checkout of the repository
+    # @param ref [String] a full ref name
+    # @param sha [String]
+    # @return [Boolean]
+    def delete_ref(path, ref, sha)
+      _, _, success = run_git(path, "update-ref", "-d", ref, sha, timeout: QUICK_TIMEOUT)
+      success
+    end
+
+    # `git switch --no-overwrite-ignore`: without the flag git silently replaces an
+    # ignored file that +branch+ tracks. The repository's `post-checkout` hook runs,
+    # and its exit status becomes git's, so judge the result by {#worktree_branch}.
+    #
+    # @param path [String] the checkout
+    # @param branch [String] an existing local branch
+    # @return [Array(Boolean, String)] git's success and stderr
+    def switch(path, branch)
+      _, stderr, success = run_git(path, "switch", "--no-overwrite-ignore", "--quiet", branch, timeout: MOVE_TIMEOUT)
+      [success, stderr]
+    end
+
+    # `git worktree add` at +worktree+: the existing local +branch+, or, with
+    # +start_point+, a new branch made there. The `post-checkout` hook runs, so
+    # judge the result by the worktree's state, not the exit status.
+    #
+    # @param repo [String] any checkout of the repository
+    # @param worktree [String] the new worktree's absolute path
+    # @param branch [String]
+    # @param start_point [String, nil] a commit to make +branch+ at; nil checks out the existing branch
+    # @return [Array(Boolean, String)] git's success and stderr
+    def create_worktree_at(repo, worktree, branch, start_point: nil)
+      argv = start_point ? ["-b", branch, worktree, start_point] : [worktree, branch]
+      _, stderr, success = run_git(repo, "worktree", "add", "--quiet", *argv, timeout: MOVE_TIMEOUT)
+      [success, stderr]
+    end
+
     private
+
+    # Puts a stash commit back on the list under its own subject, which is the
+    # message `git stash list` showed for it ("On main: ...").
+    def stash_store(path, sha)
+      subject, _, status = capture_git("-C", path, "log", "-1", "--format=%s", sha)
+      message = status.success? ? subject.scrub.strip : "restored #{sha}"
+      run_git(path, "stash", "store", "-m", message, sha, timeout: QUICK_TIMEOUT)
+    end
+
+    def classify_change(entries, xy, submodule, file)
+      if xy == ".A"
+        entries[:intent_to_add] << file
+      elsif submodule.start_with?("S")
+        entries[:submodule] << file
+      else
+        entries[:staged] << file unless xy[0] == "."
+        entries[:unstaged] << file unless xy[1] == "."
+        entries[:deleted] << file if xy.include?("D")
+      end
+    end
 
     # Runs git in +path+ through the runner, turning a missing git and a
     # timeout into errors.
@@ -743,12 +968,6 @@ module Workspace
       raise Workspace::Error, "git is not installed."
     rescue Timeout::Error
       raise Workspace::Error, "git #{args.first} did not finish within #{timeout} seconds."
-    end
-
-    def stash_entries(path)
-      stdout, _, success = run_git(path, "stash", "list", "--format=%H %gs", timeout: QUICK_TIMEOUT)
-      return [] unless success
-      stdout.scrub.lines.map { |line| line.chomp.split(" ", 2) }
     end
 
     def ref_exists?(path, ref)
@@ -782,8 +1001,8 @@ module Workspace
     # SIGTERM, then SIGKILL after a second.
     #
     # @return [Array(String, String, Process::Status)] stdout, stderr, status
-    def capture_git(*args)
-      Open3.popen3("git", *args, pgroup: true) do |stdin, stdout, stderr, waiter|
+    def capture_git(*args, env: {})
+      Open3.popen3(env, "git", *args, pgroup: true) do |stdin, stdout, stderr, waiter|
         stdin.close
         errors = Thread.new { stderr.read }
         begin
