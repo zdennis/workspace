@@ -55,10 +55,10 @@ module Workspace
     # The new directory may sit inside the main one (the default is `<main notes>/<branch>`), but not
     # inside what is moved, and the main one may not sit inside the new one.
     def nested?(from, to)
-      a = real(from) + "/"
-      b = real(to) + "/"
+      a = real(from).downcase + "/"
+      b = real(to).downcase + "/"
       return true if a.start_with?(b)
-      b.start_with?(a + "spine/") || b.start_with?(a + PLAN_FILE + "/")
+      b.start_with?(a + "spine/") || b.start_with?(a + PLAN_FILE.downcase + "/")
     end
 
     def real(path)

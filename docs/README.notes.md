@@ -22,7 +22,7 @@ Agents, scripts and the app all ask this one command, so they get the same direc
 
 1. The workspace's own `notes.dir`: a worktree's own config file, or the project's file for a main checkout (a worktree never reads the project's `notes.dir`).
 2. The project's `notes.default_dir` rule, with `{workspace}` and `{branch}` filled in.
-3. For a linked worktree workspace: the main checkout workspace's notes directory (its own `notes.dir`, else `tmp/workspace-notes` in the main checkout) with the worktree's branch added as one directory, slashes made safe the way `{branch}` is (`feature/x` becomes `feature-x`). With the project's `notes.dir` at `/tmp/my-notes`, a worktree on branch `research-dx` gets `/tmp/my-notes/research-dx`.
+3. For a linked worktree workspace: the main checkout workspace's notes directory (its own `notes.dir`, else `tmp/workspace-notes` in the main checkout) with the worktree's branch added as one directory, slashes made safe the way `{branch}` is (`feature/x` becomes `feature-x`). With the project's `notes.dir` at `/tmp/my-notes`, a worktree on branch `research-dx` gets `/tmp/my-notes/research-dx`. A branch named `spine` or `IMPLEMENTATION_PLAN.md` (any case) gets `-branch` added, so it never lands on the main workspace's own spine or plan. Two branches that sanitize alike (`feat/a`, `feat-a`) share a directory; `start` and `add` warn when the directory already holds files. A worktree on a detached HEAD gets rule 4, and keeps it once recorded.
 4. `tmp/workspace-notes` inside the checkout: the main checkout itself, and a worktree whose main workspace or branch is not known.
 
 See [`config`](README.config.md) for both keys. A stored value that fails its key's checks counts as unset, as it does in `config show`.

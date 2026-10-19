@@ -22,6 +22,13 @@ RSpec.describe Workspace::NotesDir do
       expect(resolve(main_dir: "/tmp/my-notes", worktree: false).path).to eq("/src/api/.worktrees/x/tmp/workspace-notes")
     end
 
+    it "adds -branch to a branch named like the main workspace's spine or plan, in any case" do
+      %w[spine Spine IMPLEMENTATION_PLAN.md].each do |branch|
+        allow(git).to receive(:worktree_branch).with("/src/api/.worktrees/x").and_return(branch)
+        expect(resolve(main_dir: "/tmp/my-notes").path).to eq("/tmp/my-notes/#{branch}-branch")
+      end
+    end
+
     it "falls back to the checkout's own default without a main directory or a branch" do
       expect(resolve(main_dir: nil).path).to eq("/src/api/.worktrees/x/tmp/workspace-notes")
       allow(git).to receive(:worktree_branch).with("/src/api/.worktrees/x").and_return(nil)

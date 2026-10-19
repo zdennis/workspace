@@ -11,6 +11,10 @@ module Workspace
     # The rule used when a project sets no `notes.default_dir`, relative to the checkout root.
     FALLBACK = "tmp/workspace-notes".freeze
 
+    # Names the main workspace's own notes use in its notes directory; a branch with one of
+    # these names (in any case) gets `-branch` added, so its directory never lands on the spine or the plan.
+    RESERVED = ["spine", "implementation_plan.md"].freeze
+
     # @!attribute path [String, nil] absolute directory, nil when nothing can be computed
     # @!attribute source [String] "worktree", "project" or "default"
     Result = Struct.new(:path, :source, keyword_init: true)
@@ -71,7 +75,9 @@ module Workspace
     def inherited_path(main_dir, root)
       branch = main_dir && root && @git.worktree_branch(root)
       name = branch && @git.sanitize_for_filesystem(branch)
-      File.join(main_dir, name) if name && !name.empty?
+      return nil if name.nil? || name.empty?
+      name += "-branch" if RESERVED.include?(name.downcase)
+      File.join(main_dir, name)
     end
   end
 end

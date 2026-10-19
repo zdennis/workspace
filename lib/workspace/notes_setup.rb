@@ -18,8 +18,12 @@ module Workspace
     # @return [Hash] `"dir"` (the absolute directory, nil when it could not be worked out)
     #   and `"warnings"` (a list of sentences, empty when all went well)
     def call(workspace)
-      path = @notes.info(name: workspace)["dir"]
+      before = @notes.info(name: workspace)
+      path = before["dir"]
       warnings = []
+      if before["source"] != "worktree" && before["exists"] && WorkspaceLineage.split_worktree_name(workspace) && !Dir.empty?(path)
+        warnings << "Warning: the notes directory #{path} for #{workspace} already holds files; another branch whose name maps to the same directory (feat/a and feat-a) may share it. Set notes.dir for this workspace to keep them apart."
+      end
       store(workspace, path, warnings) if WorkspaceLineage.split_worktree_name(workspace)
       create(workspace, path, warnings)
       {"dir" => path, "warnings" => warnings}

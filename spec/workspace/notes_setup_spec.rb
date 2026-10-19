@@ -56,6 +56,25 @@ RSpec.describe Workspace::NotesSetup do
     expect(File.read(File.join(repo, ".git", "info", "exclude")).lines.map(&:chomp)).to include("/tmp/workspace-notes/feature-x/")
   end
 
+  it "warns when the directory already holds files, as a second branch with the same safe name would find it" do
+    FileUtils.mkdir_p("#{repo}/tmp/workspace-notes/feature-x")
+    File.write("#{repo}/tmp/workspace-notes/feature-x/a.md", "a")
+
+    result = setup.call("api.worktree-x")
+
+    expect(result["warnings"].size).to eq(1)
+    expect(result["warnings"].first).to include("already holds files")
+    expect(stored("api.worktree-x")).to eq("#{repo}/tmp/workspace-notes/feature-x")
+  end
+
+  it "does not warn for a directory already holding files once the path is the worktree's own, nor for an empty one" do
+    FileUtils.mkdir_p("#{repo}/tmp/workspace-notes/feature-x")
+    expect(setup.call("api.worktree-x")["warnings"]).to eq([])
+    File.write("#{repo}/tmp/workspace-notes/feature-x/a.md", "a")
+
+    expect(setup.call("api.worktree-x")["warnings"]).to eq([])
+  end
+
   it "writes the project's notes.dir plus the branch when the project sets one" do
     write_config("api", "notes:\n  dir: #{@dir}/my-notes\n")
 

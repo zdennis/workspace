@@ -232,6 +232,22 @@ RSpec.describe Workspace::NotesCarry do
     expect(Dir.children(File.join(from, "spine"))).to eq(["goal.md"])
   end
 
+  it "carries nothing when the new directory is the spine folder under another case" do
+    put(from, "spine/goal.md")
+
+    result = carry.call(from: from, to: File.join(from, "SPINE/x"), name: "api")
+
+    expect(result["warnings"].first["code"]).to eq("same_notes_dir")
+  end
+
+  it "carries nothing when the new directory is the plan file under another case" do
+    put(from, "IMPLEMENTATION_PLAN.md", "plan\n")
+
+    result = carry.call(from: from, to: File.join(from, "implementation_plan.md/x"), name: "api")
+
+    expect(result["warnings"].first["code"]).to eq("same_notes_dir")
+  end
+
   it "carries when the new directory is inside the main one, as the default <main notes>/<branch> is" do
     put(from, "IMPLEMENTATION_PLAN.md", "plan\n")
     put(from, "a.md", "a\n")
