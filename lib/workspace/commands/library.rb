@@ -190,10 +190,11 @@ module Workspace
       end
 
       # What `install` and `uninstall` did, as the document `--json` prints.
-      InstallResult = Struct.new(:ref, :workspace, :result, :path, :dry_run, :user) do
+      # `entry` is the library entry `install` copied ("ref", "kind", "name", "scope", "path"), nil for `uninstall`.
+      InstallResult = Struct.new(:ref, :workspace, :result, :path, :dry_run, :user, :entry) do
         def to_h
           {"schema_version" => JSON_SCHEMA_VERSION, "ok" => true, "ref" => ref, "workspace" => workspace,
-           "result" => result, "path" => path, "dry_run" => dry_run, "user" => user == true}
+           "result" => result, "path" => path, "dry_run" => dry_run, "user" => user == true, "entry" => entry}
         end
       end
 
@@ -205,17 +206,19 @@ module Workspace
       # @param force [Boolean] replace a copy with different content
       # @param dry_run [Boolean] report and write nothing
       # @param user [Boolean] copy into the user-level directory (`library.install.user_*_dir`) instead of a workspace; `name` must be nil
+      # @param from [String, nil] "global" or "project": copy that store's entry, not the project's over the global one
       # @param cwd [String]
       # @return [InstallResult] result "installed", "unchanged", or "would_install" on a dry run
+      # @raise [Workspace::UsageError] for a `from` that is not global or project
       # @raise [Workspace::Error] `unknown_workspace`, `unknown_library_entry`, `library_kind_not_copyable`,
-      #   `library_install_exists`, `library_path_outside`, `path_linked`, `path_tracked`
-      def install(ref, name: nil, force: false, dry_run: false, user: false, cwd: Dir.pwd)
+      #   `library_source_missing`, `library_install_exists`, `library_path_outside`, `path_linked`, `path_tracked`
+      def install(ref, name: nil, force: false, dry_run: false, user: false, from: nil, cwd: Dir.pwd)
         raise Error, "library install is not available: no installer was wired." unless @installer && @checkout
-        return install_user(ref, force: force, dry_run: dry_run, cwd: cwd) if user
+        return install_user(ref, force: force, dry_run: dry_run, from: from, cwd: cwd) if user
         target = @checkout.resolve(name, working_dir: cwd, allow_detached: true)
-        entry = copyable_entry(ref, target["path"])
+        entry = copyable_entry(ref, target["path"], from: from)
         found = @installer.install(entry, worktree: target["path"], project: target["workspace"], force: force, dry_run: dry_run)
-        finish_install(entry["ref"], target, found, dry_run, {"installed" => "Installed", "unchanged" => "Unchanged", "would_install" => "Would install"})
+        finish_install(entry["ref"], target, found, dry_run, {"installed" => "Installed", "unchanged" => "Unchanged", "would_install" => "Would install"}, entry: entry)
       end
 
       # Removes the workspace's copy of a library agent or skill. The library
@@ -225,20 +228,18 @@ module Workspace
       # @param name [String, nil]
       # @param force [Boolean] remove a copy that differs from the library entry
       # @param dry_run [Boolean]
+      # @param user [Boolean] remove the user-level copy (`library.install.user_*_dir`); `name` must be nil
       # @param cwd [String]
       # @return [InstallResult] result "removed", "absent", or "would_remove" on a dry run
       # @raise [Workspace::Error] `unknown_workspace`, `unknown_library_entry`, `ambiguous_library_entry`,
-      #   `library_kind_not_copyable`, `library_uninstall_modified`, `library_path_outside`, `path_linked`, `path_tracked`
-      def uninstall(ref, name: nil, force: false, dry_run: false, cwd: Dir.pwd)
+      #   `library_kind_not_copyable`, `library_uninstall_modified`, `library_path_outside`, `path_linked`, `path_tracked`,
+      #   `invalid_library_install_dir`
+      def uninstall(ref, name: nil, force: false, dry_run: false, user: false, cwd: Dir.pwd)
         raise Error, "library uninstall is not available: no installer was wired." unless @installer && @checkout
+        return uninstall_user(ref, force: force, dry_run: dry_run, cwd: cwd) if user
         target = @checkout.resolve(name, working_dir: cwd, allow_detached: true)
         kind, entry_name = installed_kind(ref, target["path"], target["workspace"])
-        library_entry = force ? nil : begin
-          @library.copyable(kind, "#{kind}/#{entry_name}", cwd: target["path"])
-        rescue Error => e
-          raise unless e.code == "unknown_library_entry"
-          nil
-        end
+        library_entry = force ? nil : library_entry_for(kind, entry_name, target["path"])
         found = @installer.uninstall(kind, entry_name, worktree: target["path"], project: target["workspace"], dry_run: dry_run, entry: library_entry, force: force)
         finish_install("#{kind}/#{entry_name}", target, found, dry_run, {"removed" => "Removed", "absent" => "Absent", "would_remove" => "Would remove"})
       end
@@ -255,12 +256,30 @@ module Workspace
       private
 
       # `install --user`: the entry is looked up from the working directory's project.
-      def install_user(ref, force:, dry_run:, cwd:)
-        entry = copyable_entry(ref, cwd)
+      def install_user(ref, force:, dry_run:, from:, cwd:)
+        entry = copyable_entry(ref, cwd, from: from)
         found = @installer.install_user(entry, force: force, dry_run: dry_run)
         verb = {"installed" => "Installed", "unchanged" => "Unchanged", "would_install" => "Would install"}.fetch(found["result"])
         @output.puts "#{verb} #{entry["ref"]} at #{found["path"]} (user level)."
-        InstallResult.new(entry["ref"], nil, found["result"], found["path"], dry_run, true)
+        InstallResult.new(entry["ref"], nil, found["result"], found["path"], dry_run, true, entry)
+      end
+
+      # `uninstall --user`: the copy is compared with the entry the working directory's project sees.
+      def uninstall_user(ref, force:, dry_run:, cwd:)
+        kind, entry_name = installed_kind(ref, cwd, nil, user: true)
+        library_entry = force ? nil : library_entry_for(kind, entry_name, cwd)
+        found = @installer.uninstall_user(kind, entry_name, dry_run: dry_run, entry: library_entry, force: force)
+        verb = {"removed" => "Removed", "absent" => "Absent", "would_remove" => "Would remove"}.fetch(found["result"])
+        @output.puts "#{verb} #{kind}/#{entry_name} #{(found["result"] == "absent") ? "at" : "from"} #{found["path"]} (user level)."
+        InstallResult.new("#{kind}/#{entry_name}", nil, found["result"], found["path"], dry_run, true)
+      end
+
+      # The library entry an installed copy is compared with; nil when it is gone.
+      def library_entry_for(kind, name, root)
+        @library.copyable(kind, "#{kind}/#{name}", cwd: root)
+      rescue Error => e
+        raise unless e.code == "unknown_library_entry"
+        nil
       end
 
       def not_copyable(ref, kind)
@@ -269,16 +288,20 @@ module Workspace
       end
 
       # The entry `install` copies: a bare name is resolved first, then must be an agent or skill.
-      def copyable_entry(ref, root)
+      def copyable_entry(ref, root, from: nil)
         given, name = ref.to_s.include?("/") ? ref.split("/", 2) : [nil, ref.to_s]
-        kind = given || @library.resolve(name, @library.stores(cwd: root))["kind"]
+        stores = from ? @library.user_stores(root, from: from) : @library.stores(cwd: root)
+        if stores.empty?
+          raise Error.new("No library entry '#{ref}' in #{from}.", code: "unknown_library_entry", details: {"ref" => ref, "scopes" => [from]})
+        end
+        kind = given || @library.resolve(name, stores)["kind"]
         raise not_copyable(ref, kind) unless Workspace::Library::COPY_KINDS.key?(kind)
-        @library.copyable(kind, "#{kind}/#{name}", cwd: root)
+        @library.copyable(kind, "#{kind}/#{name}", cwd: root, from: from)
       end
 
       # The kind and name `uninstall` removes. The library entry need not exist,
       # so a bare name is settled by the library, then by what is on disk.
-      def installed_kind(ref, root, project)
+      def installed_kind(ref, root, project, user: false)
         given, name = ref.to_s.include?("/") ? ref.split("/", 2) : [nil, ref.to_s]
         @library.validate_name!(name)
         if given
@@ -286,8 +309,8 @@ module Workspace
           return [given, name]
         end
         kinds = Workspace::Library::COPY_KINDS.keys.select do |kind|
-          @library.entries(@library.stores(cwd: root), kind: kind).any? { |e| e["name"] == name } ||
-            File.exist?(File.join(root, @installer.relative_path(kind, name, project: project)))
+          copy = user ? @installer.user_path(kind, name) : File.join(root, @installer.relative_path(kind, name, project: project))
+          @library.entries(@library.stores(cwd: root), kind: kind).any? { |e| e["name"] == name } || File.exist?(copy)
         end
         if kinds.empty?
           other = @library.entries(@library.stores(cwd: root)).find { |e| e["name"] == name }
@@ -301,10 +324,10 @@ module Workspace
         [kinds.first, name]
       end
 
-      def finish_install(ref, target, found, dry_run, verbs)
+      def finish_install(ref, target, found, dry_run, verbs, entry: nil)
         verb = verbs.fetch(found["result"])
         @output.puts "#{verb} #{ref} #{%w[removed would_remove].include?(found["result"]) ? "from" : "at"} #{found["path"]} (workspace #{target["workspace"]})."
-        InstallResult.new(ref, target["workspace"], found["result"], found["path"], dry_run)
+        InstallResult.new(ref, target["workspace"], found["result"], found["path"], dry_run, false, entry)
       end
 
       def find(ref, scope, project, cwd)

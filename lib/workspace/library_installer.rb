@@ -83,12 +83,7 @@ module Workspace
     # @return [Hash] "result" ("installed", "unchanged", or "would_install" on a dry run) and "path"
     # @raise [Workspace::Error] codes `library_install_exists`, `invalid_library_install_dir`
     def install_user(entry, force: false, dry_run: false)
-      dir = @dirs.user(entry["kind"])
-      dest = File.join(dir, (entry["kind"] == "agent") ? "#{entry["name"]}.md" : entry["name"])
-      unless File.dirname(File.expand_path(dest)) == File.expand_path(dir)
-        raise Error.new("#{dest} is not directly under #{dir}; #{entry["ref"]} was not touched.",
-          code: "library_path_outside", details: {"ref" => entry["ref"], "path" => dest})
-      end
+      dest = user_path(entry["kind"], entry["name"])
       {"result" => write_copy(entry, dest, force: force, dry_run: dry_run), "path" => dest}
     end
 
@@ -110,6 +105,41 @@ module Workspace
       rel = relative_path(kind, name, project: project)
       dest = File.join(worktree, rel)
       guard!(worktree, rel, "#{kind}/#{name}", dest)
+      remove_copy(dest, entry: entry, force: force, dry_run: dry_run)
+    end
+
+    # Removes the user-level copy of a library agent or skill (the counterpart of
+    # {#install_user}), under the same rules as {#uninstall}. There is no git and
+    # no `info/exclude` line to leave behind.
+    #
+    # @param kind [String] "agent" or "skill"
+    # @param name [String] a valid library name
+    # @param dry_run [Boolean] report and write nothing
+    # @param entry [Hash, nil] the library entry the copy came from; see {#uninstall}
+    # @param force [Boolean] remove a locally modified copy
+    # @return [Hash] "result" ("removed", "absent", or "would_remove" on a dry run) and "path"
+    # @raise [Workspace::Error] codes `library_uninstall_modified`, `library_path_outside`, `invalid_library_install_dir`
+    def uninstall_user(kind, name, dry_run: false, entry: nil, force: false)
+      remove_copy(user_path(kind, name), entry: entry, force: force, dry_run: dry_run)
+    end
+
+    # @param kind [String] "agent" or "skill"
+    # @param name [String] a valid library name
+    # @return [String] where `install --user` puts the copy
+    # @raise [Workspace::Error] codes `library_path_outside`, `invalid_library_install_dir`
+    def user_path(kind, name)
+      dir = @dirs.user(kind)
+      dest = File.join(dir, (kind == "agent") ? "#{name}.md" : name)
+      unless File.dirname(File.expand_path(dest)) == File.expand_path(dir)
+        raise Error.new("#{dest} is not directly under #{dir}; #{kind}/#{name} was not touched.",
+          code: "library_path_outside", details: {"ref" => "#{kind}/#{name}", "path" => dest})
+      end
+      dest
+    end
+
+    private
+
+    def remove_copy(dest, entry:, force:, dry_run:)
       return {"result" => "absent", "path" => dest} unless File.exist?(dest) || File.symlink?(dest)
       if entry && !force && (File.symlink?(dest) || LibraryStore.snapshot(dest) != LibraryStore.snapshot(entry["path"]))
         raise Error.new("#{dest} differs from #{entry["ref"]} in the library, so it may hold local edits; pass --force to remove it.",
@@ -120,8 +150,6 @@ module Workspace
       LibraryStore.remove(dest)
       {"result" => "removed", "path" => dest}
     end
-
-    private
 
     # The shared step of both installs: "unchanged" when the same content is
     # there, `library_install_exists` over different content without +force+,

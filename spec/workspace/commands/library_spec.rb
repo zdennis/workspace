@@ -561,8 +561,9 @@ RSpec.describe Workspace::Commands::Library do
 
       result = command.install("tests", name: "app", force: true, cwd: "/elsewhere")
 
-      expect(result.to_h).to eq("schema_version" => 1, "ok" => true, "ref" => "skill/tests", "workspace" => "app",
-        "result" => "installed", "path" => "#{cwd}/.claude/skills/tests", "dry_run" => false, "user" => false)
+      expect(result.to_h).to include("schema_version" => 1, "ok" => true, "ref" => "skill/tests", "workspace" => "app",
+        "result" => "installed", "path" => "#{cwd}/.claude/skills/tests", "dry_run" => false, "user" => false,
+        "entry" => a_hash_including("ref" => "skill/tests", "scope" => "project"))
       expect(output.string).to eq("Installed skill/tests at #{cwd}/.claude/skills/tests (workspace app).\n")
     end
 
@@ -616,6 +617,64 @@ RSpec.describe Workspace::Commands::Library do
 
       expect(result.to_h).to include("workspace" => nil, "result" => "installed", "path" => "/home/me/.agents/skills/tests", "user" => true)
       expect(output.string).to eq("Installed skill/tests at /home/me/.agents/skills/tests (user level).\n")
+    end
+
+    it "--from pins the store an install copies, and names it in the entry" do
+      seen = []
+      allow(installer).to receive(:install) { |entry, **| seen << entry && {"result" => "installed", "path" => "/x"} }
+      allow(installer).to receive(:install_user) { |entry, **| seen << entry && {"result" => "installed", "path" => "/u"} }
+
+      global = command.install("skill/tests", name: "app", from: "global", cwd: cwd)
+      from_user = command.install("tests", user: true, from: "global", cwd: cwd)
+
+      expect(global.entry).to include("scope" => "global", "ref" => "skill/tests")
+      expect(from_user.to_h).to include("user" => true, "entry" => a_hash_including("scope" => "global"))
+    end
+
+    it "--from project finds the project entry, and names the stores searched when there is none" do
+      allow(installer).to receive(:install).and_return({"result" => "installed", "path" => "/x"})
+      command.add(kind: "agent", body: "g", name: "only-global", cwd: cwd)
+
+      expect(command.install("skill/tests", name: "app", from: "project", cwd: cwd).entry["scope"]).to eq("project")
+      expect { command.install("agent/only-global", name: "app", from: "project", cwd: cwd) }
+        .to raise_error(Workspace::Error) { |e| expect([e.code, e.details["scopes"]]).to eq(["unknown_library_entry", ["project:app"]]) }
+    end
+
+    it "--from project outside any project is unknown_library_entry naming project, for a bare name and a ref" do
+      allow(lineage).to receive(:resolve).with(cwd: @dir).and_return(Workspace::WorkspaceLineage::Lineage.new(name: nil))
+      %w[tests skill/tests].each do |ref|
+        expect { command.install(ref, user: true, from: "project", cwd: @dir) }
+          .to raise_error(Workspace::Error) { |e| expect([e.code, e.details["scopes"]]).to eq(["unknown_library_entry", ["project"]]) }
+      end
+    end
+
+    it "refuses a --from that is not global or project as a usage error" do
+      expect { command.install("skill/tests", name: "app", from: "builtin", cwd: cwd) }.to raise_error(Workspace::UsageError, /global or project/)
+      expect { command.install("skill/tests", user: true, from: "nope", cwd: cwd) }.to raise_error(Workspace::UsageError)
+    end
+
+    it "uninstalls at user level, comparing with the working directory's library entry" do
+      expect(checkout).not_to receive(:resolve)
+      expect(installer).to receive(:uninstall_user).with("skill", "tests", dry_run: true, entry: a_hash_including("ref" => "skill/tests"), force: false)
+        .and_return({"result" => "would_remove", "path" => "/home/me/.claude/skills/tests"})
+
+      result = command.uninstall("skill/tests", user: true, dry_run: true, cwd: cwd)
+
+      expect(result.to_h).to include("workspace" => nil, "user" => true, "result" => "would_remove", "ref" => "skill/tests", "dry_run" => true)
+      expect(output.string).to eq("Would remove skill/tests from /home/me/.claude/skills/tests (user level).\n")
+    end
+
+    it "uninstalls a bare name found only on disk at user level, and skips the comparison under --force" do
+      allow(installer).to receive(:user_path) { |kind, name| (kind == "agent") ? "/h/agents/#{name}.md" : "/h/skills/#{name}" }
+      allow(File).to receive(:exist?).and_call_original
+      allow(File).to receive(:exist?).with("/h/agents/gone.md").and_return(true)
+      expect(installer).to receive(:uninstall_user).with("agent", "gone", dry_run: false, entry: nil, force: false)
+        .and_return({"result" => "removed", "path" => "/h/agents/gone.md"})
+      expect(installer).to receive(:uninstall_user).with("skill", "tests", dry_run: false, entry: nil, force: true)
+        .and_return({"result" => "absent", "path" => "/h/skills/tests"})
+
+      expect(command.uninstall("gone", user: true, cwd: cwd).result).to eq("removed")
+      expect(command.uninstall("skill/tests", user: true, force: true, cwd: cwd).result).to eq("absent")
     end
 
     it "reports a dry-run install as would_install" do

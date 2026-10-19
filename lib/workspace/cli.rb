@@ -4376,8 +4376,8 @@ module Workspace
           "       workspace library add PATH|- --kind KIND [--as NAME] [--link] [--force] [--project [NAME]] [--dry-run] [--json]\n" \
           "       workspace library update REF PATH|- [--link] [--project [NAME]] [--dry-run] [--json]\n" \
           "       workspace library remove REF [--yes] [--project [NAME]] [--dry-run] [--json]\n" \
-          "       workspace library install REF [--name WS | --user] [--force] [--dry-run] [--json]\n" \
-          "       workspace library uninstall REF [--name WS] [--force] [--dry-run] [--json]"
+          "       workspace library install REF [--name WS | --user] [--from global|project] [--force] [--dry-run] [--json]\n" \
+          "       workspace library uninstall REF [--name WS | --user] [--force] [--dry-run] [--json]"
         opts.separator ""
         opts.separator "A store of named plays, prompts, agents and skills under #{@config.library_dir}."
         opts.separator "A play is a document an agent reads and follows; a prompt is short text sent as typed;"
@@ -4405,9 +4405,10 @@ module Workspace
         opts.separator "            agents_dir says otherwise), as start --skill/--agent does for a new one: identical"
         opts.separator "            content is unchanged, different content needs --force, a path the repo tracks is"
         opts.separator "            never overwritten; the copy is listed in info/exclude. --user copies to your home-level"
-        opts.separator "            directory instead (library.install.user_skills_dir, user_agents_dir; ~/.claude/... by default)"
-        opts.separator "  uninstall delete that copy from the checkout; a copy that differs from the library entry needs --force;"
-        opts.separator "            the library entry and the info/exclude line stay"
+        opts.separator "            directory instead (library.install.user_skills_dir, user_agents_dir; ~/.claude/... by default)."
+        opts.separator "            --from global|project copies that store's entry, not the project's over the global one"
+        opts.separator "  uninstall delete that copy from the checkout, or with --user from the home-level directory; a copy that"
+        opts.separator "            differs from the library entry needs --force; the library entry and the info/exclude line stay"
         opts.separator ""
         opts.on("--kind KIND", "agent, play, prompt, skill or spine (add: required; list: a filter);",
           "add --kind skill takes a directory holding SKILL.md;",
@@ -4415,7 +4416,8 @@ module Workspace
         opts.on("--as NAME", "add: the entry name (lowercase letters, digits and hyphens)") { |v| options[:name] = v }
         opts.on("--link", "add, update: store a symlink to PATH instead of a copy") { options[:link] = true }
         opts.on("--force", "add: replace an entry that has different content;", "install: replace a copy that has different content;", "uninstall: remove a copy that differs from the library entry") { options[:force] = true }
-        opts.on("--user", "install: copy to the user-level directory instead of a workspace") { options[:user] = true }
+        opts.on("--user", "install: copy to the user-level directory instead of a workspace;", "uninstall: remove the user-level copy") { options[:user] = true }
+        opts.on("--from STORE", "install: copy the entry of this store, global or project (default: the project's, else global)") { |v| options[:from] = v }
         opts.on("--yes", "remove: don't ask") { options[:yes] = true }
         opts.on("--global", "reads: only the global store") { options[:global] = true }
         opts.on("--builtin", "reads: only the entries that ship with workspace") { options[:builtin] = true }
@@ -4458,6 +4460,8 @@ module Workspace
         raise UsageError, "library #{subcommand} takes --name WS, not --global or --builtin."
       end
 
+      raise UsageError, "--from is for library install." if options[:from] && subcommand != "install"
+
       scope = scopes.first
       project = options[:project].is_a?(String) ? options[:project] : nil
       where = {scope: scope, project: project, cwd: @working_dir}
@@ -4499,14 +4503,13 @@ module Workspace
         raise UsageError, "Unexpected argument: #{args.first}. Run 'workspace library --help'." if args.any?
         workspace = options[:project].is_a?(String) ? options[:project] : nil
         if options[:user]
-          raise UsageError, "--user is for library install; uninstall takes --name WS." unless subcommand == "install"
-          raise UsageError, "--user copies to the user-level directory, so it takes no --name." if options[:project]
+          raise UsageError, "--user #{(subcommand == "install") ? "copies to" : "removes from"} the user-level directory, so it takes no --name." if options[:project]
         end
         library_install_action(options) do
           if subcommand == "install"
-            @library_command.install(ref, name: workspace, force: options[:force], dry_run: options[:dry_run], user: options[:user], cwd: @working_dir)
+            @library_command.install(ref, name: workspace, force: options[:force], dry_run: options[:dry_run], user: options[:user], from: options[:from], cwd: @working_dir)
           else
-            @library_command.uninstall(ref, name: workspace, force: options[:force], dry_run: options[:dry_run], cwd: @working_dir)
+            @library_command.uninstall(ref, name: workspace, force: options[:force], dry_run: options[:dry_run], user: options[:user], cwd: @working_dir)
           end
         end
       when "remove"

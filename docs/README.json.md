@@ -263,12 +263,12 @@ The registry lives in `Workspace::ErrorCodes`; a spec checks that every code a r
 | `library_entry_exists` | `library add` would replace an entry with different content. `details.ref`, `details.scope`; `retry` names `--force` (destructive). |
 | `library_install_exists` | `library install` would replace a worktree copy with different content. `details.ref`, `details.path`; `retry` names `--force` (destructive). |
 | `library_kind_not_copyable` | `library install`/`uninstall` was given an entry that is not an agent or skill. `details.ref`, `details.kind`. |
-| `library_uninstall_modified` | `library uninstall` would delete a worktree copy that differs from the library entry (or is a symlink). `details.ref`, `details.path`; `retry` names `--force` (destructive). |
+| `library_uninstall_modified` | `library uninstall` would delete a worktree (or `--user`) copy that differs from the library entry (or is a symlink). `details.ref`, `details.path`; `retry` names `--force` (destructive). |
 | `library_path_outside` | `library install`/`uninstall` would act on a path not directly under the configured install directory (`.claude/skills/` or `.claude/agents/` by default). `details.ref`, `details.path`. |
 | `invalid_library_install_dir` | A `library.install.*_dir` value in a config file is not valid (a hand edit; `config set` refuses such values). `details.key`. |
 | `path_tracked` | `library install`/`uninstall`: the repo tracks that path, so it is never overwritten or deleted. `details.ref`, `details.path`. |
 | `path_linked` | `library install`/`uninstall`: the install directory, or one above it such as `.claude`, is a symlink, so git can't tell what is tracked. `details.ref`, `details.path`. |
-| `library_source_missing` | The file to add doesn't exist, or a linked entry's target can't be read. `details.ref`, `details.path`. |
+| `library_source_missing` | The file to add doesn't exist, or a linked entry's target can't be read (`library install`, including `--dry-run`, and `uninstall` without `--force` too). `details.ref`, `details.path`. |
 | `unknown_workflow` | No workflow definition has that id. `details.workflow`, `details.known`. |
 | `inbox_store_unreadable` | An inbox scope's file (or `acks`, the acks of derived rows) can't be read, so nothing was written to it. `details.scope`. |
 | `inbox_full` | The scope already holds 500 open or snoozed items, so nothing was added (also for a reopen that would pass 500). `details.scope`, `details.limit`. |

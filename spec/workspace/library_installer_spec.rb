@@ -405,6 +405,48 @@ RSpec.describe Workspace::LibraryInstaller do
       expect(Dir.children(File.join(@dir, "elsewhere"))).to be_empty
     end
 
+    describe "#uninstall_user" do
+      let(:dest) { File.join(home, ".agents", "skills", "write-tests") }
+
+      it "removes the copy, previews with dry_run, and says absent when there is none" do
+        expect(installer.uninstall_user("skill", "write-tests")).to eq("result" => "absent", "path" => dest)
+        installer.install_user(entry("skill", "write-tests"))
+
+        expect(installer.uninstall_user("skill", "write-tests", dry_run: true)["result"]).to eq("would_remove")
+        expect(File.exist?(dest)).to be(true)
+        expect(installer.uninstall_user("skill", "write-tests")["result"]).to eq("removed")
+        expect(File.exist?(dest)).to be(false)
+      end
+
+      it "refuses a copy that differs from the library entry unless forced" do
+        installer.install_user(entry("skill", "write-tests"))
+        File.write(File.join(dest, "scripts", "run.sh"), "edited\n")
+
+        expect { installer.uninstall_user("skill", "write-tests", entry: entry("skill", "write-tests")) }
+          .to raise_error(Workspace::Error) { |e| expect(e.code).to eq("library_uninstall_modified") }
+        expect(File.exist?(dest)).to be(true)
+        expect(installer.uninstall_user("skill", "write-tests", entry: entry("skill", "write-tests"), force: true)["result"]).to eq("removed")
+      end
+
+      it "removes a symlinked copy only with force, and never what it points at" do
+        target = File.join(@dir, "kept")
+        FileUtils.mkdir_p(target)
+        FileUtils.mkdir_p(File.dirname(dest))
+        File.symlink(target, dest)
+
+        expect { installer.uninstall_user("skill", "write-tests", entry: entry("skill", "write-tests")) }
+          .to raise_error(Workspace::Error) { |e| expect(e.code).to eq("library_uninstall_modified") }
+        installer.uninstall_user("skill", "write-tests", entry: entry("skill", "write-tests"), force: true)
+        expect(File.symlink?(dest)).to be(false)
+        expect(File.directory?(target)).to be(true)
+      end
+
+      it "refuses a name that climbs out of the directory" do
+        expect { installer.uninstall_user("agent", "../x") }
+          .to raise_error(Workspace::Error) { |e| expect(e.code).to eq("library_path_outside") }
+      end
+    end
+
     describe "#install_user" do
       it "installs, reports unchanged, and writes nothing on a dry run or to the repo" do
         dest = File.join(home, ".agents", "skills", "write-tests")

@@ -143,6 +143,9 @@ module Workspace
       find_play(ref, [builtin_store] + user_stores(cwd), "--pack")
     end
 
+    # The stores `install --from` can pin.
+    COPY_FROM = %w[global project].freeze
+
     # The kinds `start --agent` and `--skill` copy into a worktree, and the article for each.
     COPY_KINDS = {"agent" => "an agent", "skill" => "a skill"}.freeze
 
@@ -154,17 +157,22 @@ module Workspace
     # @param kind [String] "agent" or "skill"
     # @param ref [String] `name` or `kind/name`
     # @param cwd [String, nil] the project's directory; nil searches global only
+    # @param from [String, nil] "global" or "project" to look in that store alone; nil searches both
     # @return [Hash] "ref", "kind", "name", "scope" and "path" (the store's file, or a skill's directory)
     # @raise [ArgumentError] for a kind that is not copied
-    # @raise [Workspace::UsageError] for a bad name or an entry of another kind
+    # @raise [Workspace::UsageError] for a bad name, an entry of another kind, or a `from` that is not global or project
     # @raise [Workspace::Error] code `unknown_library_entry`, or `library_source_missing` when it can't be read
-    def copyable(kind, ref, cwd:)
+    def copyable(kind, ref, cwd:, from: nil)
       article = COPY_KINDS.fetch(kind) { raise ArgumentError, "#{kind} entries are not copied into a worktree" }
       given, name = parse_ref(ref)
       if given && given != kind
         raise UsageError, "--#{kind} takes #{article}, and '#{ref}' is a #{given}."
       end
-      entry = resolve("#{kind}/#{name}", user_stores(cwd))
+      stores = user_stores(cwd, from: from)
+      if stores.empty?
+        raise Error.new("No library entry '#{ref}' in #{from}.", code: "unknown_library_entry", details: {"ref" => ref, "scopes" => [from]})
+      end
+      entry = resolve("#{kind}/#{name}", stores)
       raise source_missing(entry) unless entry["readable"]
       entry.slice("ref", "kind", "name", "scope", "path")
     end
@@ -254,6 +262,18 @@ module Workspace
       raise UsageError, "'#{name}' is not a valid library name: lowercase letters, digits and hyphens, e.g. my-play."
     end
 
+    # The project's store (when `cwd` is a known workspace), then global; the built-in store is left out.
+    # With +from+ ("global" or "project"), only that store: none when `cwd` is in no project.
+    #
+    # @param cwd [String, nil]
+    # @param from [String, nil]
+    # @return [Array<Workspace::LibraryStore>]
+    # @raise [Workspace::UsageError] for a `from` that is not global or project
+    def user_stores(cwd, from: nil)
+      check_from!(from)
+      stores(cwd: expand(cwd)).reject { |store| store.scope == "builtin" || (from && store.scope != from) }
+    end
+
     private
 
     # A tmuxinator `root:` is often written `~/...`, which git -C won't expand.
@@ -261,9 +281,9 @@ module Workspace
       cwd && File.expand_path(cwd)
     end
 
-    # The project's store (when `cwd` is a known workspace), then global.
-    def user_stores(cwd)
-      stores(cwd: expand(cwd)).reject { |store| store.scope == "builtin" }
+    def check_from!(from)
+      return if from.nil? || COPY_FROM.include?(from)
+      raise UsageError, "--from takes global or project, not '#{from.to_s[0, 40]}'."
     end
 
     # The play `ref` names in `stores`, read once, and its body. `flag` is the

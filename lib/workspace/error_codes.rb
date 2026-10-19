@@ -166,7 +166,7 @@ module Workspace
       "unknown_library_entry" => "No library entry has that name in the scopes searched.",
       "ambiguous_library_entry" => "A bare library name matches more than one kind.",
       "library_entry_exists" => "library add would replace an entry with different content; pass --force.",
-      "library_source_missing" => "The file to add doesn't exist, or a linked entry's target can't be read.",
+      "library_source_missing" => "The file to add doesn't exist, or a linked entry's target can't be read (also library install, including --dry-run, and uninstall without --force).",
       "library_install_exists" => "library install would replace a worktree copy that has different content; pass --force.",
       "library_kind_not_copyable" => "library install or uninstall was given an entry that is not an agent or skill.",
       "library_uninstall_modified" => "library uninstall would delete a worktree copy that differs from the library entry; pass --force.",

@@ -11,8 +11,8 @@ workspace library info   REF [--global | --builtin | --project [NAME]] [--json]
 workspace library add    PATH|- --kind KIND [--as NAME] [--link] [--force] [--project [NAME]] [--dry-run] [--json]
 workspace library update REF PATH|- [--link] [--project [NAME]] [--dry-run] [--json]
 workspace library remove REF [--yes] [--project [NAME]] [--dry-run] [--json]
-workspace library install   REF [--name WS | --user] [--force] [--dry-run] [--json]
-workspace library uninstall REF [--name WS] [--force] [--dry-run] [--json]
+workspace library install   REF [--name WS | --user] [--from global|project] [--force] [--dry-run] [--json]
+workspace library uninstall REF [--name WS | --user] [--force] [--dry-run] [--json]
 ```
 
 `REF` is `kind/name` or a bare `name`. A bare name works when one kind has it; when two do, the command fails with `ambiguous_library_entry` and lists both. A built-in play never makes a bare name ambiguous: with your own `prompt/review`, `show review` prints the prompt, and `show play/review` the built-in play. Scripts should pass `kind/name`. Names are lowercase letters, digits and hyphens.
@@ -86,8 +86,11 @@ The built-in scope is searched last here and by `--play`, so `workspace start --
 `--json` prints one document (text goes to stderr):
 
 ```json
-{"schema_version":1,"ok":true,"ref":"skill/write-tests","workspace":"my-app","result":"installed","path":"/abs/my-app/.claude/skills/write-tests","dry_run":false,"user":false}
+{"schema_version":1,"ok":true,"ref":"skill/write-tests","workspace":"my-app","result":"installed","path":"/abs/my-app/.claude/skills/write-tests","dry_run":false,"user":false,
+ "entry":{"ref":"skill/write-tests","kind":"skill","name":"write-tests","scope":"global","path":"/Users/me/.config/workspace/library/global/skill/write-tests"}}
 ```
+
+`entry` names the library entry `install` copied (`scope` is `global` or `project`, `path` its directory or file); it is `null` for `uninstall`.
 
 | Command | `result` |
 |---|---|
@@ -102,6 +105,8 @@ The built-in scope is searched last here and by `--play`, so `workspace start --
 | any `--dry-run` that would write | `would_install` or `would_remove` |
 
 `uninstall` compares the copy with the library entry it came from; with the entry gone there is nothing to compare, so the copy is removed without `--force`. `--dry-run` raises the same refusals as the real command (so `library_uninstall_modified` shows in a preview) and writes nothing; where the real command would write it reports `would_install` or `would_remove`, and `unchanged`, `absent` and every refusal read as they do without it. Unlike `start`, which replaces an untracked copy silently, `install` refuses different content without `--force`. Neither verb touches a path the repo tracks (`path_tracked`) or goes through a symlinked install directory or one above it, such as `.claude` (`path_linked`); `library_path_outside` refuses any path not directly under the install directory. A `play`, `prompt` or `spine` ref is `library_kind_not_copyable`; unknown workspace is `unknown_workspace`; an unknown ref is `unknown_library_entry`.
+
+`install` raises `library_source_missing` (`details.ref`, `details.path`) when the entry it would copy is a link whose target can't be read (`readable: false` in `library info`), for `--user` too, and `--dry-run` raises it as well: a preview reads the entry the same way. `uninstall` raises it only when it needs the entry to compare the copy with and that entry is an unreadable link; `uninstall --force` never reads the entry. Nothing is changed when it is raised.
 
 ### Install directories
 
@@ -123,7 +128,9 @@ workspace library install skill/pdf-tools --name fix-login   # -> .agents/skills
 workspace library install skill/pdf-tools --user             # -> ~/.agents/skills/pdf-tools
 ```
 
-- `install --user` copies into the user-level directory, so every project sees it. It takes no `--name`, uses no git and writes no `info/exclude` line; the `unchanged` and `--force` rules and `--dry-run` are the same, and the library entry is looked up from the current directory's project. `--user` with `--name`, or with `uninstall`, is `usage`. The `--json` document has `"workspace": null` and `"user": true`. `uninstall` has no `--user`: remove a user-level copy by hand.
+- `install --user` copies into the user-level directory, so every project sees it. It takes no `--name`, uses no git and writes no `info/exclude` line; the `unchanged` and `--force` rules and `--dry-run` are the same, and the library entry is looked up from the current directory's project. `--user` with `--name` is `usage`. The `--json` document has `"workspace": null` and `"user": true`.
+- `uninstall --user` removes that copy from `library.install.user_skills_dir` or `user_agents_dir`, with the same results and rules as the workspace form: `removed`, `absent`, `would_remove` on a dry run, and `library_uninstall_modified` for a copy that differs from the library entry (looked up from the current directory's project) unless `--force`. It takes no `--name` (`usage`), writes no `info/exclude` line, and `library_path_outside` and `invalid_library_install_dir` apply. A user directory that is itself a symlink (a dotfiles-managed `~/.claude`) is allowed, as for `install --user`.
+- `install --from global|project` pins the store the entry is copied from. Without it, the target's project store hides the global entry of the same name, so a project that has its own `skill/x` gets that one. `--from global` copies the global entry anyway; `--from project` copies only the project's. It applies to `--user` too, where the project is the one of the current directory. A value other than `global` or `project` is `usage`; nothing in that store is `unknown_library_entry` with `details.scopes` naming the store searched (`["global"]`, or `["project:NAME"]`, or `["project"]` when the directory is in no project). The result's `entry.scope` and `entry.path` say which entry was copied. `uninstall` takes no `--from`.
 - The `info/exclude` line, the tracked-path check and `uninstall`'s allowed directory all follow the configured directory. `start --skill` and `--agent` use the same keys, so a new worktree and an existing one get the same layout.
 - Changing a key does not move copies already installed. `uninstall` looks in the current setting, so remove copies before changing it.
 - The setting only says where `workspace` copies files. Claude Code loads `.claude/skills/` and `~/.claude/skills/`; pointing the keys at `.agents/skills/` helps only for agents that read that location. Install refuses to write through a symlinked install directory (`path_linked`), so a link that makes both locations one directory must not be the configured install directory itself.
@@ -183,9 +190,9 @@ Each command acts on one entry, so a failure is the error envelope, never a `ref
 | `unknown_library_entry` | No entry has that name in the scopes searched | `ref`, `scopes` |
 | `ambiguous_library_entry` | A bare name matches more than one kind | `ref`, `candidates` |
 | `library_entry_exists` | `add` would replace different content | `ref`, `scope`; `retry` with `--force`, marked `destructive` |
-| `library_source_missing` | `PATH` does not exist, or a link's target can't be read | `ref`, `path` |
+| `library_source_missing` | `PATH` does not exist, or a link's target can't be read; also `install` (with or without `--dry-run`) and `uninstall` of an entry whose link is unreadable | `ref`, `path` |
 
-A bad name, an unknown kind, or a missing `--kind` is `usage`. `capabilities` reports `"library_copy": 3` for `install`/`uninstall` (revision 3 adds `install --user`, the `user` field and the `library.install.*` directories), `"library": 2` (revision 2 adds the `agent` and `skill` kinds; a skill's `path` is a directory) and `paths.library`.
+A bad name, an unknown kind, or a missing `--kind` is `usage`. `capabilities` reports `"library_copy": 4` for `install`/`uninstall` (revision 3 adds `install --user`, the `user` field and the `library.install.*` directories; revision 4 adds `uninstall --user`, `install --from` and the `entry` object in the install document), `"library": 2` (revision 2 adds the `agent` and `skill` kinds; a skill's `path` is a directory) and `paths.library`.
 
 ## Examples
 
