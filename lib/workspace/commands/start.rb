@@ -125,6 +125,17 @@ module Workspace
         start!(input_string, quiet: false, **options)
       end
 
+      # What {#call} prints with +json: true+, returned instead of printed, with a failure raised rather than
+      # printed; nothing goes to the output stream. `promote` runs `start` through it.
+      #
+      # @param input_string [String] as for {#call}
+      # @param options [Hash] the keywords of {#call} but +json+
+      # @return [Hash] `{exit_code:, json:}`
+      # @raise [Workspace::Error] what {#call} would report
+      def payload(input_string, prompt: nil, prompt_timeout: nil, base: nil, yes: false, headless: false, **options)
+        start!(input_string, quiet: true, prompt: prompt, prompt_timeout: prompt_timeout, base: base, yes: yes, headless: headless, **options)
+      end
+
       private
 
       def call_json(input_string, **options)

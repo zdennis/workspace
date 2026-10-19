@@ -1767,6 +1767,18 @@ RSpec.describe Workspace::Commands::Start do
       expect(event_log.events.fetch(0)["data"]).to include("parent" => "elsewhere", "branch" => "feature")
     end
 
+    it "returns the JSON payload from #payload without printing it, and raises a failure" do
+      allow(git).to receive(:worktree_exists?).with(worktree_path).and_return(true)
+
+      result = command.payload("feature", no_launch: true, promoted: true, spine: false, root: tmpdir)
+
+      expect(result[:exit_code]).to eq(0)
+      expect(result[:json]).to include("ok" => true, "workspace" => "app.worktree-feature", "created" => true, "launched" => false)
+      expect(output.string).to eq("")
+      allow(git).to receive(:root).and_return(nil)
+      expect { command.payload("feature") }.to raise_error(Workspace::Error, /Not inside a git repository/)
+    end
+
     it "records the event before launching, so a launch failure still shows the worktree" do
       allow(launch_command).to receive(:call).and_raise(Workspace::Error, "no tmux")
 
