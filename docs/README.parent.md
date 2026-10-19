@@ -5,7 +5,7 @@ Print the parent workspace of the current (or given) workspace.
 ## Usage
 
 ```sh
-workspace parent [NAME] [--path] [--json]
+workspace parent [NAME] [--path] [--json | --json-envelope]
 ```
 
 ## Options
@@ -14,6 +14,7 @@ workspace parent [NAME] [--path] [--json]
 |--------|-------------|
 | `--path` | Print the parent's root directory instead of its name |
 | `--json` | Print `name`, `path`, `git_common_dir`, `is_worktree`, `worktree` as JSON |
+| `--json-envelope` | Print the same fields under a `parent` key in the standard envelope (implies `--json`): `{"schema_version":1,"ok":true,"parent":{...},"warnings":[]}`. See [`--json` output](README.json.md#success-output-without-the-envelope) |
 
 ## Details
 

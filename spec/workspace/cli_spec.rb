@@ -460,6 +460,29 @@ RSpec.describe Workspace::CLI do
       expect(output.string).to include("project-b")
     end
 
+    it "wraps the names in the envelope under workspaces with --json-envelope" do
+      state = CLITestHelpers::FakeState.new
+      state["proj-b"] = {"unique_id" => "uid1", "iterm_window_id" => 100}
+      state["proj-a"] = {"unique_id" => "uid2", "iterm_window_id" => 200}
+
+      cli, output, _ = build_test_cli(state: state)
+      cli.run(["list", "--json-envelope"])
+
+      expect(JSON.parse(output.string)).to eq("schema_version" => 1, "ok" => true, "workspaces" => %w[proj-a proj-b], "warnings" => [])
+    end
+
+    it "wraps an empty list with --json-envelope" do
+      cli, output, _ = build_test_cli
+      cli.run(["list", "--json-envelope"])
+      expect(JSON.parse(output.string)).to eq("schema_version" => 1, "ok" => true, "workspaces" => [], "warnings" => [])
+    end
+
+    it "wraps list --all rows with --json-envelope" do
+      cli, output, _ = build_test_cli
+      cli.run(["list", "--all", "--json-envelope"])
+      expect(JSON.parse(output.string)).to include("ok" => true, "workspaces" => an_instance_of(Array), "warnings" => [])
+    end
+
     it "outputs JSON array with --json" do
       cli, output, _ = build_test_cli
       cli.run(["list", "--all", "--json"])
@@ -570,6 +593,27 @@ RSpec.describe Workspace::CLI do
       )
     end
 
+    it "wraps the state in the envelope under status with --json-envelope" do
+      state = CLITestHelpers::FakeState.new
+      state["proj1"] = {"unique_id" => "uid1", "iterm_window_id" => 100}
+      wm = CLITestHelpers::FakeWindowManager.new
+      wm.define_singleton_method(:live_window_ids) { Set.new([100]) }
+
+      cli, output, _ = build_test_cli(state: state, window_manager: wm)
+      cli.run(["status", "--json-envelope"])
+
+      result = JSON.parse(output.string)
+      expect(result.keys).to eq(%w[schema_version ok status warnings])
+      expect(result).to include("schema_version" => 1, "ok" => true, "warnings" => [])
+      expect(result["status"]).to include("proj1" => a_hash_including("unique_id" => "uid1", "alive" => true))
+    end
+
+    it "wraps an empty state as an empty status with --json-envelope" do
+      cli, output, _ = build_test_cli
+      cli.run(["status", "--json-envelope"])
+      expect(JSON.parse(output.string)).to eq("schema_version" => 1, "ok" => true, "status" => {}, "warnings" => [])
+    end
+
     it "outputs empty JSON object with --json when no sessions" do
       cli, output, _ = build_test_cli
       cli.run(["status", "--json"])
@@ -647,6 +691,15 @@ RSpec.describe Workspace::CLI do
       cli, output, _ = build_test_cli(state: state, liveness: liveness)
       cli.run(["list", "--liveness"])
       expect(output.string).to eq("gone  [dead]\nup    [alive]\n")
+    end
+
+    it "wraps the name and alive objects with --json-envelope" do
+      cli, output, _ = build_test_cli(state: state, liveness: liveness)
+      cli.run(["list", "--liveness", "--json-envelope"])
+      expect(JSON.parse(output.string)).to eq(
+        "schema_version" => 1, "ok" => true, "warnings" => [],
+        "workspaces" => [{"name" => "gone", "alive" => false, "window_alive" => nil}, {"name" => "up", "alive" => true, "window_alive" => nil}]
+      )
     end
 
     it "prints name and alive objects with --json" do
@@ -1906,6 +1959,12 @@ RSpec.describe Workspace::CLI do
       error = Workspace::UnsavedWorkError.new("unsaved", unsaved: {changed_files: 2, unpushed_commits: 0, branch: "b"})
       _, out, _ = run_failing(["parent", "--json"], error)
       expect(JSON.parse(out)).to include("code" => "unsaved_work", "retry" => {"flags" => ["--force"], "destructive" => true})
+    end
+
+    it "treats --json-envelope as a request for the failure envelope" do
+      _, out, err = run_failing(["parent", "x", "--json-envelope"], Workspace::Error.new("boom", code: "unknown_workspace"))
+      expect(err).to eq("")
+      expect(JSON.parse(out)).to include("ok" => false, "code" => "unknown_workspace")
     end
 
     it "finds --json in any position before --" do
@@ -4902,7 +4961,7 @@ RSpec.describe Workspace::CLI do
 
       cli.run(["parent"])
 
-      expect(parent_command.calls).to eq([{name: nil, path: false, json: false}])
+      expect(parent_command.calls).to eq([{name: nil, path: false, json: false, envelope: false}])
     end
 
     it "dispatches with a given project name" do
@@ -4911,7 +4970,7 @@ RSpec.describe Workspace::CLI do
 
       cli.run(["parent", "app.worktree-login"])
 
-      expect(parent_command.calls).to eq([{name: "app.worktree-login", path: false, json: false}])
+      expect(parent_command.calls).to eq([{name: "app.worktree-login", path: false, json: false, envelope: false}])
     end
 
     it "dispatches with --path" do
@@ -4920,7 +4979,25 @@ RSpec.describe Workspace::CLI do
 
       cli.run(["parent", "--path"])
 
-      expect(parent_command.calls).to eq([{name: nil, path: true, json: false}])
+      expect(parent_command.calls).to eq([{name: nil, path: true, json: false, envelope: false}])
+    end
+
+    it "dispatches --json-envelope as json with envelope" do
+      parent_command = CLITestHelpers::FakeParentCommand.new
+      cli, _, _ = build_test_cli(parent_command: parent_command)
+
+      cli.run(["parent", "--json-envelope"])
+
+      expect(parent_command.calls).to eq([{name: nil, path: false, json: true, envelope: true}])
+    end
+
+    it "refuses --path with --json-envelope" do
+      parent_command = CLITestHelpers::FakeParentCommand.new
+      cli, output, _ = build_test_cli(parent_command: parent_command)
+
+      expect { cli.run(["parent", "--path", "--json-envelope"]) }.to raise_error(FakeSystemExit)
+      expect(JSON.parse(output.string)).to include("ok" => false, "code" => "usage")
+      expect(parent_command.calls).to be_empty
     end
 
     it "dispatches with --json" do
@@ -4929,7 +5006,7 @@ RSpec.describe Workspace::CLI do
 
       cli.run(["parent", "--json"])
 
-      expect(parent_command.calls).to eq([{name: nil, path: false, json: true}])
+      expect(parent_command.calls).to eq([{name: nil, path: false, json: true, envelope: false}])
     end
 
     it "shows parent in help output" do

@@ -478,11 +478,11 @@ module Workspace
       File.expand_path(root)
     end
 
-    # Whether `--json` appears as its own argument before a bare `--`.
+    # Whether `--json` or `--json-envelope` appears as its own argument before a bare `--`.
     #
     # @param argv [Array<String>]
     def json_flag?(argv)
-      argv.take_while { |arg| arg != "--" }.include?("--json")
+      argv.take_while { |arg| arg != "--" }.any? { |arg| arg == "--json" || arg == "--json-envelope" }
     end
 
     def resolve_claude_targets(args, all, parser)
@@ -5756,6 +5756,7 @@ module Workspace
       json = false
       show_urls = false
       show_liveness = false
+      envelope = false
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: workspace list [options]"
         opts.separator ""
@@ -5768,6 +5769,7 @@ module Workspace
           all = true
         end
         opts.on("--json", "Output as JSON") { json = true }
+        opts.on("--json-envelope", "Output as JSON in the standard envelope (implies --json)") { json = envelope = true }
         opts.on("--show-urls", "Include the git origin URL alongside each project name") { show_urls = true }
         opts.on("--liveness", "Mark each active project alive, dead, or unknown from its tmux session") { show_liveness = true }
         opts.separator ""
@@ -5777,6 +5779,7 @@ module Workspace
         opts.separator "  workspace list-projects    # alias for 'list --all'"
         opts.separator "  workspace list --show-urls    # each active project with its git origin URL"
         opts.separator "  workspace list --json    # active projects as JSON"
+        opts.separator "  workspace list --json-envelope    # {\"schema_version\":1,\"ok\":true,\"workspaces\":[...],\"warnings\":[]}"
         opts.separator "  workspace list --liveness    # each active project marked [alive], [dead], or [unknown]"
         opts.separator "  workspace list --liveness --json    # [{\"name\":\"my-notes\",\"alive\":true,\"window_alive\":true},...]"
         opts.separator "  workspace list --all --json --show-urls    # all projects with directories and URLs as JSON"
@@ -5794,7 +5797,7 @@ module Workspace
             entry["url"] = root ? @git.remote_url(directory || root) : nil if show_urls
             entry
           end
-          @output.puts JSON.generate(projects)
+          @output.puts JSON.generate(wrap_json(envelope, "workspaces", projects))
         elsif show_urls
           rows = @project_config.available_projects.map do |name|
             root = @project_config.project_root_for(name)
@@ -5813,7 +5816,7 @@ module Workspace
       @state.load
       if @state.empty?
         if json
-          @output.puts "[]"
+          @output.puts JSON.generate(wrap_json(envelope, "workspaces", []))
         else
           @output.puts "No active projects. Run 'workspace list --all' to see available projects."
         end
@@ -5821,16 +5824,16 @@ module Workspace
       end
 
       if show_liveness
-        list_with_liveness(json: json, show_urls: show_urls)
+        list_with_liveness(json: json, show_urls: show_urls, envelope: envelope)
       elsif json && show_urls
         projects = @state.keys.sort.map do |name|
           root = @project_config.project_root_for(name)
           dir = root ? File.expand_path(root) : nil
           {"name" => name, "directory" => dir, "url" => (dir ? @git.remote_url(dir) : nil)}
         end
-        @output.puts JSON.generate(projects)
+        @output.puts JSON.generate(wrap_json(envelope, "workspaces", projects))
       elsif json
-        @output.puts JSON.generate(@state.keys.sort)
+        @output.puts JSON.generate(wrap_json(envelope, "workspaces", @state.keys.sort))
       elsif show_urls
         rows = @state.keys.sort.map do |name|
           root = @project_config.project_root_for(name)
@@ -5847,6 +5850,7 @@ module Workspace
 
     def cmd_status(args)
       json = false
+      envelope = false
       parser = OptionParser.new do |opts|
         opts.banner = "Usage: workspace status [options]"
         opts.separator ""
@@ -5856,29 +5860,27 @@ module Workspace
         opts.separator ""
         opts.separator "Options:"
         opts.on("--json", "Output as JSON") { json = true }
+        opts.on("--json-envelope", "Output as JSON in the standard envelope (implies --json)") { json = envelope = true }
         opts.separator ""
         opts.separator "Examples:"
         opts.separator "  workspace status          # tracked sessions with window ids, headless ones marked"
         opts.separator "  workspace status --json   # machine-readable state (unique ids, window ids, alive: true/false/null)"
+        opts.separator "  workspace status --json-envelope    # the same under a \"status\" key, with schema_version, ok and warnings"
         opts.separator "  workspace status --json | jq -r '.[\"my-notes\"].iterm_window_id'    # one project's window id"
       end
       parser.parse!(args)
 
       @state.load
       if @state.empty?
-        json ? @output.puts("{}") : @output.puts("No tracked sessions.")
-        return
-      end
-
-      if @state.empty?
-        json ? @output.puts("{}") : @output.puts("No tracked sessions.")
+        json ? @output.puts(JSON.generate(wrap_json(envelope, "status", {}))) : @output.puts("No tracked sessions.")
         return
       end
 
       alive = @liveness.call(@state.keys)
       if json
         windows = @window_liveness.call(@state.to_h)
-        @output.puts JSON.pretty_generate(@state.to_h.to_h { |project, info| [project, info.merge("alive" => alive[project], "window_alive" => windows[project])] })
+        rows = @state.to_h.to_h { |project, info| [project, info.merge("alive" => alive[project], "window_alive" => windows[project])] }
+        @output.puts JSON.pretty_generate(wrap_json(envelope, "status", rows))
       else
         @state.each do |project, info|
           wid = info["iterm_window_id"]
@@ -5892,6 +5894,14 @@ module Workspace
       end
     end
 
+    # The document a read-only `--json` command prints: the bare value, or with
+    # `--json-envelope` the value under `key` after `schema_version` and `ok`.
+    def wrap_json(envelope, key, value)
+      return value unless envelope
+
+      JsonEnvelope.document(key, value)
+    end
+
     def liveness_label(alive)
       case alive
       when true then "alive"
@@ -5900,7 +5910,7 @@ module Workspace
       end
     end
 
-    def list_with_liveness(json:, show_urls:)
+    def list_with_liveness(json:, show_urls:, envelope: false)
       names = @state.keys.sort
       alive = @liveness.call(names)
       windows = json ? @window_liveness.call(@state.to_h.slice(*names)) : {}
@@ -5918,7 +5928,7 @@ module Workspace
       end
 
       if json
-        @output.puts JSON.generate(entries)
+        @output.puts JSON.generate(wrap_json(envelope, "workspaces", entries))
         return
       end
 
@@ -6816,14 +6826,16 @@ module Workspace
     def cmd_parent(args)
       path = false
       json = false
+      envelope = false
       parser = OptionParser.new do |opts|
-        opts.banner = "Usage: workspace parent [NAME] [--path] [--json]"
+        opts.banner = "Usage: workspace parent [NAME] [--path] [--json | --json-envelope]"
         opts.separator ""
         opts.separator "Print the parent workspace of the current (or given) workspace."
         opts.separator "In a non-worktree workspace, prints its own name."
         opts.separator ""
         opts.on("--path", "Print the parent's root directory instead of its name") { path = true }
         opts.on("--json", "Print name, path, git_common_dir, is_worktree, worktree as JSON") { json = true }
+        opts.on("--json-envelope", "Print the same under a \"parent\" key in the standard envelope (implies --json)") { json = envelope = true }
         opts.separator ""
         opts.separator "Examples:"
         opts.separator "  workspace parent    # the parent of the current directory's workspace"
@@ -6835,7 +6847,7 @@ module Workspace
       raise UsageError, "--path and --json cannot be used together." if path && json
 
       name = args.first
-      @parent_command.call(name, path: path, json: json)
+      @parent_command.call(name, path: path, json: json, envelope: envelope)
     end
 
     def notes_parser(options)

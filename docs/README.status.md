@@ -13,6 +13,7 @@ workspace status [options]
 | Flag | Description |
 |------|-------------|
 | `--json` | Output as JSON |
+| `--json-envelope` | Output as JSON in the standard envelope (implies `--json`): `{"schema_version":1,"ok":true,"status":{...},"warnings":[]}`, where `status` is the object `--json` prints. See [`--json` output](README.json.md#success-output-without-the-envelope) |
 
 ## Details
 

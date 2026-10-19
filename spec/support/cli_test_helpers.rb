@@ -864,8 +864,8 @@ module CLITestHelpers
       @result = nil
     end
 
-    def call(name = nil, path: false, json: false)
-      @calls << {name: name, path: path, json: json}
+    def call(name = nil, path: false, json: false, envelope: false)
+      @calls << {name: name, path: path, json: json, envelope: envelope}
       @result
     end
   end

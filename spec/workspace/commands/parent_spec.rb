@@ -52,6 +52,20 @@ RSpec.describe Workspace::Commands::Parent do
       )
     end
 
+    it "wraps the JSON in the envelope with envelope: true" do
+      allow(lineage).to receive(:resolve).with(cwd: Dir.pwd).and_return(info)
+
+      command.call(nil, json: true, envelope: true)
+
+      expect(JSON.parse(output.string)).to eq(
+        "schema_version" => 1, "ok" => true, "warnings" => [],
+        "parent" => {
+          "name" => "app", "path" => "/Users/z/src/app", "git_common_dir" => "/Users/z/src/app/.git",
+          "is_worktree" => true, "worktree" => "app.worktree-login"
+        }
+      )
+    end
+
     it "resolves a given project name via project_config's root" do
       allow(project_config).to receive(:project_root_for).with("app.worktree-login").and_return("/Users/z/src/app/.worktrees/login")
       allow(lineage).to receive(:resolve).with(cwd: "/Users/z/src/app/.worktrees/login").and_return(info)

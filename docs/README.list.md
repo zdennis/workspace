@@ -16,6 +16,7 @@ workspace list [options]
 |------|-------------|
 | `--all` | List all available projects (not just active ones) |
 | `--json` | Output as JSON |
+| `--json-envelope` | Output as JSON in the standard envelope (implies `--json`): `{"schema_version":1,"ok":true,"workspaces":[...],"warnings":[]}`, where `workspaces` is the array `--json` prints. See [`--json` output](README.json.md#success-output-without-the-envelope) |
 | `--show-urls` | Include the git origin URL alongside each project name |
 | `--liveness` | Mark each active project `[alive]`, `[dead]`, or `[unknown]` from its tmux session |
 

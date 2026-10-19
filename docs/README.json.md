@@ -1,6 +1,6 @@
 # `--json` output
 
-Every command that takes `--json` prints exactly one JSON value on stdout, and with `--json` nothing is written to stderr for a failure. A failure (refusal, usage error, unknown subcommand) is always the error envelope below. Success is an enveloped object for every command except the three listed under [Success output without the envelope](#success-output-without-the-envelope).
+Every command that takes `--json` prints exactly one JSON value on stdout, and with `--json` nothing is written to stderr for a failure. A failure (refusal, usage error, unknown subcommand) is always the error envelope below. Success is an enveloped object for every command except three, which print their bare document under `--json` and the envelope under `--json-envelope`; see [Success output without the envelope](#success-output-without-the-envelope).
 
 ## Success
 
@@ -12,7 +12,7 @@ Every command that takes `--json` prints exactly one JSON value on stdout, and w
 
 ### Success output without the envelope
 
-These commands keep their original success shape, which other tools already parse. Their failures still use the envelope, so check for `ok` being `false` before reading the success shape.
+With `--json` these commands keep their original success shape, which other tools already parse. Their failures use the envelope with either flag, so check for `ok` being `false` before reading the success shape. `--json-envelope` (it implies `--json`) opts in to the envelope for one call.
 
 | Command | Success shape |
 |---|---|
@@ -20,7 +20,13 @@ These commands keep their original success shape, which other tools already pars
 | `status --json` | A bare object keyed by project name (`{}` when nothing is tracked). |
 | `parent --json` | A bare object with `name`, `path`, `git_common_dir`, `is_worktree`, `worktree`; no `schema_version` or `ok`. |
 
-Wrapping these in the envelope would change what existing callers parse, so it is later work and not part of CLI10. CLI12 and CLI13 in the implementation plan do not name it.
+| Command | With `--json-envelope` |
+|---|---|
+| `list` | `{"schema_version":1,"ok":true,"workspaces":[...],"warnings":[]}`; `workspaces` is the array `--json` prints (also with `--all`, `--show-urls`, `--liveness`). |
+| `status` | `{"schema_version":1,"ok":true,"status":{...},"warnings":[]}`; `status` is the object `--json` prints. |
+| `parent` | `{"schema_version":1,"ok":true,"parent":{...},"warnings":[]}`; `parent` holds `name`, `path`, `git_common_dir`, `is_worktree`, `worktree`. |
+
+`warnings` is always a list (empty today). The bare `--json` default stays until a later major version. It is a per-call flag, not a config key, so a caller states which shape it parses in the command itself.
 
 To ask which of these a given CLI supports, run `workspace capabilities --json` (see [capabilities](README.capabilities.md)).
 

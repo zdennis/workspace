@@ -20,6 +20,18 @@ module Workspace
       doc
     end
 
+    # The success document of a read-only command that has a single payload:
+    # `{schema_version, ok: true, <key>: value, warnings}`.
+    #
+    # @param key [String] the payload's key, e.g. "workspaces"
+    # @param value [Object] the payload
+    # @param schema_version [Integer]
+    # @param warnings [Array<Hash>]
+    # @return [Hash]
+    def self.document(key, value, schema_version: SCHEMA_VERSION, warnings: [])
+      {"schema_version" => schema_version, "ok" => true, key => value, "warnings" => warnings}
+    end
+
     # Outcomes that make a result row count as a failure when deriving a status.
     FAILED_OUTCOMES = %w[failed refused].freeze
 

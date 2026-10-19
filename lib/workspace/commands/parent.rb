@@ -19,22 +19,25 @@ module Workspace
       # @param name [String, nil] a project or worktree config name; defaults to the cwd
       # @param path [Boolean] print the parent's root path instead of its name
       # @param json [Boolean] print name, path, git_common_dir, is_worktree, worktree as JSON
+      # @param envelope [Boolean] with +json+, wrap it as `{schema_version, ok, parent, warnings}`
       # @return [void]
       # @raise [Workspace::Error] if the name can't be resolved to a project, or nothing resolves
-      def call(name = nil, path: false, json: false)
+      def call(name = nil, path: false, json: false, envelope: false)
         cwd = resolve_cwd(name)
         info = @lineage.resolve(cwd: cwd)
 
         raise Workspace::Error, "Could not resolve a parent workspace for '#{cwd}'" if info.name.nil? || info.name.empty?
 
         if json
-          @output.puts JSON.generate(
-            name: info.name,
-            path: info.path,
-            git_common_dir: info.git_common_dir,
-            is_worktree: info.is_worktree,
-            worktree: info.worktree
-          )
+          parent = {
+            "name" => info.name,
+            "path" => info.path,
+            "git_common_dir" => info.git_common_dir,
+            "is_worktree" => info.is_worktree,
+            "worktree" => info.worktree
+          }
+          parent = JsonEnvelope.document("parent", parent) if envelope
+          @output.puts JSON.generate(parent)
         elsif path
           @output.puts info.path
         else
