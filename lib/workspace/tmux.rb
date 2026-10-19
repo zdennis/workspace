@@ -707,8 +707,8 @@ module Workspace
     # @param lines [Integer] number of lines from the bottom to capture (default 100)
     # @param all [Boolean] capture the full history up to history-limit (overrides lines:)
     # @return [String, nil] the captured text, or nil if tmux reported failure
-    def capture_pane(session_name, pane, lines: 100, all: false)
-      capture_pane_target(session_target(session_name, "0.#{pane}"), lines: lines, all: all)
+    def capture_pane(session_name, pane, lines: 100, all: false, join: false)
+      capture_pane_target(session_target(session_name, "0.#{pane}"), lines: lines, all: all, join: join)
     end
 
     # Captures the scrollback buffer of a tmux pane by its pane id, which
@@ -721,8 +721,21 @@ module Workspace
     # @param lines [Integer] number of lines from the bottom to capture (default 100)
     # @param all [Boolean] capture the full history up to history-limit (overrides lines:)
     # @return [String, nil] the captured text, or nil if tmux reported failure
-    def capture_pane_by_id(pane_id, lines: 100, all: false)
-      capture_pane_target(pane_id, lines: lines, all: all)
+    def capture_pane_by_id(pane_id, lines: 100, all: false, join: false)
+      capture_pane_target(pane_id, lines: lines, all: all, join: join)
+    end
+
+    # Reads how full a pane's scrollback is.
+    #
+    # @param pane_id [String] a tmux pane id (e.g. "%23")
+    # @return [Array(Integer, Integer), nil] [history_size, history_limit],
+    #   or nil if tmux failed or answered with something else
+    def pane_history(pane_id)
+      stdout, _, status = Open3.capture3("tmux", "display-message", "-p", "-t", pane_id, "\#{history_size} \#{history_limit}")
+      return nil unless status.success?
+      size, limit = stdout.split
+      return nil unless size&.match?(/\A\d+\z/) && limit&.match?(/\A\d+\z/)
+      [size.to_i, limit.to_i]
     end
 
     # @param session_name [String] tmux session name
@@ -836,7 +849,7 @@ module Workspace
 
     # Runs capture-pane against any tmux target ("my-session:0.2" or a pane
     # id like "%19"), shared by {#capture_pane} and {#capture_pane_by_id}.
-    def capture_pane_target(target, lines:, all:)
+    def capture_pane_target(target, lines:, all:, join: false)
       @logger.debug { "tmux: capture-pane -t #{target} (all=#{all}, lines=#{lines})" }
       # A bounded window asks tmux to start N lines back instead of at the top
       # of the history, so it doesn't ship the whole scrollback; the Ruby trim
@@ -844,6 +857,7 @@ module Workspace
       # the visible pane's own lines are included in the capture.
       start = all ? "-" : "-#{lines}"
       args = ["tmux", "capture-pane", "-t", target, "-p", "-S", start]
+      args << "-J" if join
       stdout, _, status = Open3.capture3(*args)
       return nil unless status.success?
 

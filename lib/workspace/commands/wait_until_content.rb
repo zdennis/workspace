@@ -85,11 +85,10 @@ module Workspace
       # @param since_start [Boolean] only match content written after this
       #   command starts (content-anchored baseline of the full scrollback).
       #   A target string spanning the anchor boundary (part pre-start,
-      #   part post-start) never matches. Known limitation: a mid-wait
-      #   reflow (e.g. a resize rewrapping the baseline lines) can lose
-      #   the anchor, and the surviving==0 fallback then treats
-      #   pre-start content as post-start — content alone cannot
-      #   distinguish reflow from full history eviction.
+      #   part post-start) never matches. Captures are joined (-J); if a
+      #   reflow loses the anchor while tmux history has room, the wait
+      #   takes a new baseline. Text written in the last poll interval
+      #   before a reflow can be missed.
       # @param exec_command [nil, Array, String] command to exec on match:
       #   an Array is passed straight to exec (no shell re-quoting), a String
       #   is a shell command; nil means report the match and return 0
@@ -120,7 +119,7 @@ module Workspace
 
         baseline = nil
         if since_start
-          baseline_capture = @tmux.capture_pane_by_id(pane_id, all: true)
+          baseline_capture = @tmux.capture_pane_by_id(pane_id, all: true, join: true)
           if baseline_capture.nil?
             raise Workspace::Error,
               "Could not capture the pane to take a --since-start baseline " \
@@ -147,7 +146,7 @@ module Workspace
             # pick up after a renumber.
             anchored_pane.resolve(session_name)
 
-            if match?(capture(pane_id, lines, baseline), content)
+            if match?(capture(pane_id, lines, baseline) { |fresh| baseline = fresh }, content)
               stop_spinner(spinner)
               elapsed = @clock.call - start
               @output.puts Color.wrap(@output, Color::GREEN, "  ✓ Matched after #{format_elapsed(elapsed)}")
@@ -184,11 +183,22 @@ module Workspace
       # just confirmed exists: it reads as no-match and polling continues, in
       # both the bounded and the baseline path. A pane or session that no
       # longer exists raises from the anchored resolve instead.
+      #
+      # When the anchor is lost while history has room, the pane was
+      # reflowed: the block is given the current capture as the new
+      # baseline, and this poll matches nothing.
       def capture(pane_id, lines, baseline)
         if baseline
-          blob = @tmux.capture_pane_by_id(pane_id, all: true)
+          blob = @tmux.capture_pane_by_id(pane_id, all: true, join: true)
           return "" if blob.nil?
-          post_start_lines(blob, baseline).last(lines).join
+          post = post_start_lines(blob, baseline, pane_id)
+          if post.nil?
+            yield blob
+            @error_output.puts Color.wrap(@error_output, Color::DIM,
+              "  anchor lost (pane reflowed); re-baselined")
+            return ""
+          end
+          post.last(lines).join
         else
           @tmux.capture_pane_by_id(pane_id, lines: lines).to_s
         end
@@ -209,17 +219,17 @@ module Workspace
       # post-start content can never match), and a clear-history keeps the
       # line count plausible while the pre-start content survives.
       #
-      # When no suffix survives — the baseline fully evicted at the history
-      # limit, or the pane cleared and rewritten — everything in the capture
-      # is post-start content, so all of it is the match window.
+      # When no suffix survives and tmux's history is at its limit (or
+      # tmux cannot say), the baseline was fully evicted: everything in the
+      # capture is post-start content, so all of it is the match window.
       #
-      # Limitation: a mid-wait reflow (a resize rewrapping the baseline
-      # lines, or an alt-screen round-trip transforming them) breaks the
-      # suffix anchor, and the surviving==0 fallback then admits
-      # pre-start content. Content alone cannot distinguish reflow from
-      # full history eviction, and full eviction must treat everything
-      # as post-start (the history-limit case), so the trade-off is
-      # inherent.
+      # When no suffix survives but history still has room, the anchor was
+      # lost rather than evicted (a reflow, or a TUI repainting at the new
+      # width), and this returns nil so the caller takes a new baseline.
+      # Captures are joined (-J), so a resize that only rewraps keeps the
+      # anchor. Limitation: text written in the last poll interval before a
+      # reflow can be missed, and a reflow while history is full still gets
+      # eviction semantics.
       #
       # Duplicate-tail absorption: post-start lines identical to the
       # evicted baseline tail can be absorbed into the anchor — a
@@ -239,16 +249,29 @@ module Workspace
       #
       # @param blob [String] the full scrollback captured this poll
       # @param baseline [String] the full scrollback captured at start
-      # @return [Array<String>] the post-start lines, padding included
-      def post_start_lines(blob, baseline)
+      # @param pane_id [String] the pane, for reading its history fullness
+      # @return [Array<String>, nil] the post-start lines, padding included;
+      #   nil when the anchor was lost with history not near its limit
+      def post_start_lines(blob, baseline, pane_id)
         current = blob.lines
         baseline_lines = strip_trailing_blanks(baseline.lines)
         max = [baseline_lines.size, current.size].min
         max.downto(0) do |surviving|
           if current.first(surviving) == baseline_lines.last(surviving)
+            return nil if surviving == 0 && !baseline_lines.empty? && !history_full?(pane_id)
             return current.drop(surviving)
           end
         end
+      end
+
+      # Whether tmux's history is within 10% of its limit (tmux trims about
+      # 10% when it reaches the limit, so a full history sits just under
+      # it). True when tmux cannot say, which keeps the eviction behavior.
+      def history_full?(pane_id)
+        history = @tmux.pane_history(pane_id)
+        return true if history.nil?
+        size, limit = history
+        size >= 0.9 * limit
       end
 
       # Removes the visible screen's blank padding below the cursor from

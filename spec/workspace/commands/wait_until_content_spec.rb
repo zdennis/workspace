@@ -33,6 +33,7 @@ RSpec.describe Workspace::Commands::WaitUntilContent do
     allow(tmux).to receive(:panes).with("myproject", window: "0").and_return([0, 1, 2])
     allow(tmux).to receive(:pane_details).and_return(pane_details)
     allow(tmux).to receive(:capture_pane_by_id).and_return("some output\n")
+    allow(tmux).to receive(:pane_history).and_return(nil)
   end
 
   describe "preflight" do
@@ -151,7 +152,7 @@ RSpec.describe Workspace::Commands::WaitUntilContent do
       status = command.call("myproject", "READY", since_start: true, max_wait_time: 10)
       expect(status).to eq(1)
       expect(tmux).to have_received(:capture_pane_by_id)
-        .with("%12", all: true).at_least(:twice)
+        .with("%12", all: true, join: true).at_least(:twice)
     end
 
     it "matches content written after start" do
@@ -279,6 +280,62 @@ RSpec.describe Workspace::Commands::WaitUntilContent do
         .and_return("pre1\npre2\n#{"\n" * 8}", "pre1\npre2\nNEW-TARGET\n#{"\n" * 7}")
       status = command.call("myproject", "pre1", since_start: true, max_wait_time: 10)
       expect(status).to eq(1)
+    end
+
+    describe "after a reflow" do
+      it "keeps the anchor when joined captures are unchanged by a rewrap" do
+        allow(tmux).to receive(:capture_pane_by_id)
+          .and_return("pre1\npre2\n", "pre1\npre2\nNEW-TARGET\n")
+        allow(tmux).to receive(:pane_history).and_return([10, 2000])
+        expect(command.call("myproject", "NEW-TARGET", since_start: true)).to eq(0)
+        expect(tmux).not_to have_received(:pane_history)
+      end
+
+      it "re-baselines when the anchor is lost and history has room, with no false match" do
+        allow(tmux).to receive(:capture_pane_by_id)
+          .and_return("pre1\n", "reflowed pre1\n", "reflowed pre1\n", "reflowed pre1\nNEW-TARGET\n")
+        allow(tmux).to receive(:pane_history).and_return([100, 2000])
+        expect(command.call("myproject", "pre1", since_start: true, max_wait_time: 3)).to eq(1)
+        expect(error_output.string).to include("anchor lost (pane reflowed); re-baselined")
+      end
+
+      it "re-baselines after a clear as well, so output from that interval is not matched" do
+        allow(tmux).to receive(:capture_pane_by_id)
+          .and_return("pre1\npre2\n", "READY\n", "READY\n")
+        allow(tmux).to receive(:pane_history).and_return([0, 2000])
+        expect(command.call("myproject", "READY", since_start: true, max_wait_time: 2)).to eq(1)
+        expect(error_output.string).to include("re-baselined")
+      end
+
+      it "matches post-reflow content after re-baselining" do
+        allow(tmux).to receive(:capture_pane_by_id)
+          .and_return("pre1\n", "reflowed pre1\n", "reflowed pre1\nNEW-TARGET\n")
+        allow(tmux).to receive(:pane_history).and_return([100, 2000])
+        expect(command.call("myproject", "NEW-TARGET", since_start: true)).to eq(0)
+        expect(error_output.string.scan("re-baselined").size).to eq(1)
+      end
+
+      it "treats a lost anchor as eviction when history is at its limit" do
+        allow(tmux).to receive(:capture_pane_by_id)
+          .and_return("old1\nold2\n", "brand new\nNEW-TARGET\n")
+        allow(tmux).to receive(:pane_history).and_return([1900, 2000])
+        expect(command.call("myproject", "NEW-TARGET", since_start: true)).to eq(0)
+        expect(error_output.string).to eq("")
+      end
+
+      it "keeps eviction behaviour when history cannot be read" do
+        allow(tmux).to receive(:capture_pane_by_id)
+          .and_return("old1\nold2\n", "brand new\nNEW-TARGET\n")
+        allow(tmux).to receive(:pane_history).and_return(nil)
+        expect(command.call("myproject", "NEW-TARGET", since_start: true)).to eq(0)
+      end
+
+      it "does not consult history for an empty baseline" do
+        allow(tmux).to receive(:capture_pane_by_id).and_return("", "NEW-TARGET\n")
+        allow(tmux).to receive(:pane_history).and_return([0, 2000])
+        expect(command.call("myproject", "NEW-TARGET", since_start: true)).to eq(0)
+        expect(tmux).not_to have_received(:pane_history)
+      end
     end
   end
 

@@ -678,10 +678,50 @@ RSpec.describe Workspace::Tmux do
       expect(tmux.capture_pane_by_id("%19", lines: 2)).to eq("recent1\nrecent2\n")
     end
 
+    it "adds -J when join is true" do
+      allow(Open3).to receive(:capture3)
+        .with("tmux", "capture-pane", "-t", "%19", "-p", "-S", "-", "-J")
+        .and_return(["joined\n", "", double(success?: true)])
+
+      expect(tmux.capture_pane_by_id("%19", all: true, join: true)).to eq("joined\n")
+    end
+
+    it "omits -J by default" do
+      allow(Open3).to receive(:capture3).and_return(["x\n", "", double(success?: true)])
+
+      tmux.capture_pane_by_id("%19")
+
+      expect(Open3).to have_received(:capture3).with("tmux", "capture-pane", "-t", "%19", "-p", "-S", "-100")
+    end
+
     it "returns nil on failure" do
       allow(Open3).to receive(:capture3).and_return(["", "error", double(success?: false)])
 
       expect(tmux.capture_pane_by_id("%99")).to be_nil
+    end
+  end
+
+  describe "#pane_history" do
+    let(:tmux) { described_class.new(config: config) }
+
+    it "parses history_size and history_limit" do
+      allow(Open3).to receive(:capture3)
+        .with("tmux", "display-message", "-p", "-t", "%19", "\#{history_size} \#{history_limit}")
+        .and_return(["120 2000\n", "", double(success?: true)])
+
+      expect(tmux.pane_history("%19")).to eq([120, 2000])
+    end
+
+    it "returns nil on failure" do
+      allow(Open3).to receive(:capture3).and_return(["", "error", double(success?: false)])
+
+      expect(tmux.pane_history("%99")).to be_nil
+    end
+
+    it "returns nil on unparseable output" do
+      allow(Open3).to receive(:capture3).and_return(["oops\n", "", double(success?: true)])
+
+      expect(tmux.pane_history("%19")).to be_nil
     end
   end
 
