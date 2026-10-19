@@ -11,6 +11,8 @@ workspace library info   REF [--global | --builtin | --project [NAME]] [--json]
 workspace library add    PATH|- --kind KIND [--as NAME] [--link] [--force] [--project [NAME]] [--dry-run] [--json]
 workspace library update REF PATH|- [--link] [--project [NAME]] [--dry-run] [--json]
 workspace library remove REF [--yes] [--project [NAME]] [--dry-run] [--json]
+workspace library install   REF [--name WS] [--force] [--dry-run] [--json]
+workspace library uninstall REF [--name WS] [--dry-run] [--json]
 ```
 
 `REF` is `kind/name` or a bare `name`. A bare name works when one kind has it; when two do, the command fails with `ambiguous_library_entry` and lists both. A built-in play never makes a bare name ambiguous: with your own `prompt/review`, `show review` prints the prompt, and `show play/review` the built-in play. Scripts should pass `kind/name`. Names are lowercase letters, digits and hyphens.
@@ -77,6 +79,27 @@ The built-in scope is searched last here and by `--play`, so `workspace start --
 
 `remove` asks before deleting. `--yes` skips the question. With `--json`, or under `--no-input` (`WORKSPACE_NO_INPUT`), it needs `--yes` or `--dry-run`, as `projects kill` does: `--json` without them is a `usage` error, `--no-input` without them is `confirmation_required` with `retry.flags: ["--yes"]`.
 
+## install and uninstall
+
+`install` copies a library agent or skill into an existing workspace's checkout, by the code `start --skill` and `--agent` use: `.claude/skills/<name>/` or `.claude/agents/<name>.md`, listed in the repo's `info/exclude`. `REF` is `skill/name`, `agent/name` or a bare name one kind has. It is looked up from the named workspace's project (its project store, then global), not from the current directory. `--name WS` picks the workspace (default: the one of the current directory; here `--name` is the workspace, as `--project` is for the other verbs). `uninstall` removes only that copy; the library entry is never touched and need not exist any more. It leaves the `info/exclude` line, which is harmless and which a later install needs.
+
+`--json` prints one document (text goes to stderr):
+
+```json
+{"schema_version":1,"ok":true,"ref":"skill/write-tests","workspace":"my-app","result":"installed","path":"/abs/my-app/.claude/skills/write-tests","dry_run":false}
+```
+
+| Command | `result` |
+|---|---|
+| `install`, nothing there | `installed` |
+| `install`, identical content already there | `unchanged` |
+| `install --force`, different content | `installed` (replaced) |
+| `install`, different content, no `--force` | error `library_install_exists` |
+| `uninstall`, the copy exists | `removed` |
+| `uninstall`, no copy | `absent` |
+
+`--dry-run` reports the result and writes nothing. Unlike `start`, which replaces an untracked copy silently, `install` refuses different content without `--force`. Neither verb touches a path the repo tracks (`path_tracked`) or goes through a symlinked `.claude`, `.claude/skills` or `.claude/agents` (`path_linked`); `library_path_outside` refuses any path not directly under `.claude/skills/` or `.claude/agents/`. A `play`, `prompt` or `spine` ref is `library_kind_not_copyable`; unknown workspace is `unknown_workspace`; an unknown ref is `unknown_library_entry`.
+
 ## Change events
 
 `add`, `update` and `remove` write a `library_changed` line (`ref`, `scope`, `action`) to the event log when they change the store, so a reader can refetch `library list --json` instead of polling. An unchanged entry, `--dry-run`, a declined `remove` or a failed write writes nothing. See [the event log](README.event-log.md).
@@ -133,7 +156,7 @@ Each command acts on one entry, so a failure is the error envelope, never a `ref
 | `library_entry_exists` | `add` would replace different content | `ref`, `scope`; `retry` with `--force`, marked `destructive` |
 | `library_source_missing` | `PATH` does not exist, or a link's target can't be read | `ref`, `path` |
 
-A bad name, an unknown kind, or a missing `--kind` is `usage`. `capabilities` reports `"library": 2` (revision 2 adds the `agent` and `skill` kinds; a skill's `path` is a directory) and `paths.library`.
+A bad name, an unknown kind, or a missing `--kind` is `usage`. `capabilities` reports `"library_copy": 2` for `install`/`uninstall`, `"library": 2` (revision 2 adds the `agent` and `skill` kinds; a skill's `path` is a directory) and `paths.library`.
 
 ## Examples
 

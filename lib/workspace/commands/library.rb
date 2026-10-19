@@ -23,7 +23,11 @@ module Workspace
       # @param output [IO]
       # @param input [IO] where `remove` reads its confirmation
       # @param event_log [Workspace::EventLog, nil] records `library_changed` after a write that changed the store
-      def initialize(library:, output: $stdout, input: $stdin, event_log: nil)
+      # @param installer [Workspace::LibraryInstaller, nil] copies into and removes from a worktree, for `install` and `uninstall`
+      # @param checkout [Workspace::WorkspaceCheckout, nil] finds the worktree `install` and `uninstall` act on
+      def initialize(library:, output: $stdout, input: $stdin, event_log: nil, installer: nil, checkout: nil)
+        @installer = installer
+        @checkout = checkout
         @library = library
         @event_log = event_log
         @output = output
@@ -185,6 +189,51 @@ module Workspace
         Result.new("removed", store.project, entry, message)
       end
 
+      # What `install` and `uninstall` did, as the document `--json` prints.
+      InstallResult = Struct.new(:ref, :workspace, :result, :path, :dry_run) do
+        def to_h
+          {"schema_version" => JSON_SCHEMA_VERSION, "ok" => true, "ref" => ref, "workspace" => workspace,
+           "result" => result, "path" => path, "dry_run" => dry_run}
+        end
+      end
+
+      # Copies a library agent or skill into an existing workspace's checkout,
+      # the way `start --agent/--skill` does for a new one.
+      #
+      # @param ref [String] `skill/name`, `agent/name`, or a bare name one kind has
+      # @param name [String, nil] the workspace; nil means the one the working directory is in
+      # @param force [Boolean] replace a copy with different content
+      # @param dry_run [Boolean] report and write nothing
+      # @param cwd [String]
+      # @return [InstallResult] result "installed" or "unchanged"
+      # @raise [Workspace::Error] `unknown_workspace`, `unknown_library_entry`, `library_kind_not_copyable`,
+      #   `library_install_exists`, `library_path_outside`, `path_linked`, `path_tracked`
+      def install(ref, name: nil, force: false, dry_run: false, cwd: Dir.pwd)
+        raise Error, "library install is not available: no installer was wired." unless @installer && @checkout
+        target = @checkout.resolve(name, working_dir: cwd, allow_detached: true)
+        entry = copyable_entry(ref, target["path"])
+        found = @installer.install(entry, worktree: target["path"], force: force, dry_run: dry_run)
+        finish_install(entry["ref"], target, found, dry_run, {"installed" => "Installed", "unchanged" => "Unchanged"})
+      end
+
+      # Removes the workspace's copy of a library agent or skill. The library
+      # entry is never touched, and may no longer exist.
+      #
+      # @param ref [String] as for {#install}
+      # @param name [String, nil]
+      # @param dry_run [Boolean]
+      # @param cwd [String]
+      # @return [InstallResult] result "removed" or "absent"
+      # @raise [Workspace::Error] `unknown_workspace`, `unknown_library_entry`, `ambiguous_library_entry`,
+      #   `library_kind_not_copyable`, `library_path_outside`, `path_linked`, `path_tracked`
+      def uninstall(ref, name: nil, dry_run: false, cwd: Dir.pwd)
+        raise Error, "library uninstall is not available: no installer was wired." unless @installer && @checkout
+        target = @checkout.resolve(name, working_dir: cwd, allow_detached: true)
+        kind, entry_name = installed_kind(ref, target["path"])
+        found = @installer.uninstall(kind, entry_name, worktree: target["path"], dry_run: dry_run)
+        finish_install("#{kind}/#{entry_name}", target, found, dry_run, {"removed" => "Removed", "absent" => "Absent"})
+      end
+
       # The default entry name for a file: its name without extension, in kebab case.
       #
       # @param path [String]
@@ -195,6 +244,51 @@ module Workspace
       end
 
       private
+
+      def not_copyable(ref, kind)
+        Error.new("#{ref} is not an agent or skill (its kind is #{kind}); only those are copied into a worktree.",
+          code: "library_kind_not_copyable", details: {"ref" => ref, "kind" => kind})
+      end
+
+      # The entry `install` copies: a bare name is resolved first, then must be an agent or skill.
+      def copyable_entry(ref, root)
+        given, name = ref.to_s.include?("/") ? ref.split("/", 2) : [nil, ref.to_s]
+        kind = given || @library.resolve(name, @library.stores(cwd: root))["kind"]
+        raise not_copyable(ref, kind) unless Workspace::Library::COPY_KINDS.key?(kind)
+        @library.copyable(kind, "#{kind}/#{name}", cwd: root)
+      end
+
+      # The kind and name `uninstall` removes. The library entry need not exist,
+      # so a bare name is settled by the library, then by what is on disk.
+      def installed_kind(ref, root)
+        given, name = ref.to_s.include?("/") ? ref.split("/", 2) : [nil, ref.to_s]
+        @library.validate_name!(name)
+        if given
+          raise not_copyable(ref, given) unless Workspace::Library::COPY_KINDS.key?(given)
+          return [given, name]
+        end
+        kinds = Workspace::Library::COPY_KINDS.keys.select do |kind|
+          @library.entries(@library.stores(cwd: root), kind: kind).any? { |e| e["name"] == name } ||
+            File.exist?(File.join(root, Workspace::LibraryInstaller::DESTINATIONS.fetch(kind).call(name)))
+        end
+        if kinds.empty?
+          other = @library.entries(@library.stores(cwd: root)).find { |e| e["name"] == name }
+          raise not_copyable(ref, other["kind"]) if other
+          raise Error.new("No library entry or installed copy '#{ref}'.", code: "unknown_library_entry", details: {"ref" => ref})
+        elsif kinds.size > 1
+          candidates = kinds.map { |k| "#{k}/#{name}" }
+          raise Error.new("'#{ref}' matches more than one kind: #{candidates.join(", ")}. Name one of them.",
+            code: "ambiguous_library_entry", details: {"ref" => ref, "candidates" => candidates})
+        end
+        [kinds.first, name]
+      end
+
+      def finish_install(ref, target, found, dry_run, verbs)
+        verb = verbs.fetch(found["result"])
+        verb = {"Installed" => "Would install", "Removed" => "Would remove"}.fetch(verb, verb) if dry_run
+        @output.puts "#{verb} #{ref} #{(found["result"] == "removed") ? "from" : "at"} #{found["path"]} (workspace #{target["workspace"]})."
+        InstallResult.new(ref, target["workspace"], found["result"], found["path"], dry_run)
+      end
 
       def find(ref, scope, project, cwd)
         stores = @library.stores(scope: scope, project: project, cwd: cwd)

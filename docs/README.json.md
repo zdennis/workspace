@@ -203,6 +203,11 @@ The registry lives in `Workspace::ErrorCodes`; a spec checks that every code a r
 | `unknown_library_entry` | No library entry has that name in the scopes searched. `details.ref`, `details.scopes` in the order searched, e.g. `["project:api", "global", "builtin"]` (see [`library`](README.library.md)). |
 | `ambiguous_library_entry` | A bare library name matches more than one kind. `details.ref`, `details.candidates`. |
 | `library_entry_exists` | `library add` would replace an entry with different content. `details.ref`, `details.scope`; `retry` names `--force` (destructive). |
+| `library_install_exists` | `library install` would replace a worktree copy with different content. `details.ref`, `details.path`; `retry` names `--force` (destructive). |
+| `library_kind_not_copyable` | `library install`/`uninstall` was given an entry that is not an agent or skill. `details.ref`, `details.kind`. |
+| `library_path_outside` | `library install`/`uninstall` would act on a path not directly under the checkout's `.claude/skills/` or `.claude/agents/`. `details.ref`, `details.path`. |
+| `path_tracked` | `library install`/`uninstall`: the repo tracks that path, so it is never overwritten or deleted. `details.ref`, `details.path`. |
+| `path_linked` | `library install`/`uninstall`: `.claude` or its `skills`/`agents` directory is a symlink, so git can't tell what is tracked. `details.ref`, `details.path`. |
 | `library_source_missing` | The file to add doesn't exist, or a linked entry's target can't be read. `details.ref`, `details.path`. |
 | `unknown_workflow` | No workflow definition has that id. `details.workflow`, `details.known`. |
 | `inbox_store_unreadable` | An inbox scope's file (or `acks`, the acks of derived rows) can't be read, so nothing was written to it. `details.scope`. |

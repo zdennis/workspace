@@ -4361,7 +4361,7 @@ module Workspace
       @instruction_composer.compose(packs: names, cwd: @working_dir)
     end
 
-    LIBRARY_SUBCOMMANDS = %w[list show info add update remove].freeze
+    LIBRARY_SUBCOMMANDS = %w[list show info add update remove install uninstall].freeze
 
     def library_parser(options)
       OptionParser.new do |opts|
@@ -4370,7 +4370,9 @@ module Workspace
           "       workspace library info REF [--global | --builtin | --project [NAME]] [--json]\n" \
           "       workspace library add PATH|- --kind KIND [--as NAME] [--link] [--force] [--project [NAME]] [--dry-run] [--json]\n" \
           "       workspace library update REF PATH|- [--link] [--project [NAME]] [--dry-run] [--json]\n" \
-          "       workspace library remove REF [--yes] [--project [NAME]] [--dry-run] [--json]"
+          "       workspace library remove REF [--yes] [--project [NAME]] [--dry-run] [--json]\n" \
+          "       workspace library install REF [--name WS] [--force] [--dry-run] [--json]\n" \
+          "       workspace library uninstall REF [--name WS] [--dry-run] [--json]"
         opts.separator ""
         opts.separator "A store of named plays, prompts, agents and skills under #{@config.library_dir}."
         opts.separator "A play is a document an agent reads and follows; a prompt is short text sent as typed;"
@@ -4393,18 +4395,23 @@ module Workspace
         opts.separator "            different content under the same name needs --force"
         opts.separator "  update    replace an existing entry's content, or repoint its link"
         opts.separator "  remove    delete the entry or its link from the store; the source file is never touched"
+        opts.separator "  install   copy a library skill or agent into an existing workspace's checkout"
+        opts.separator "            (.claude/skills/NAME/ or .claude/agents/NAME.md), as start --skill/--agent does for"
+        opts.separator "            a new one: identical content is unchanged, different content needs --force, a path"
+        opts.separator "            the repo tracks is never overwritten; the copy is listed in info/exclude"
+        opts.separator "  uninstall delete that copy from the checkout; the library entry and the info/exclude line stay"
         opts.separator ""
         opts.on("--kind KIND", "agent, play, prompt, skill or spine (add: required; list: a filter);",
           "add --kind skill takes a directory holding SKILL.md;",
           "add --kind spine takes a folder of plan-spine stage files (a template for 'spine init')") { |v| options[:kind] = v }
         opts.on("--as NAME", "add: the entry name (lowercase letters, digits and hyphens)") { |v| options[:name] = v }
         opts.on("--link", "add, update: store a symlink to PATH instead of a copy") { options[:link] = true }
-        opts.on("--force", "add: replace an entry that has different content") { options[:force] = true }
+        opts.on("--force", "add: replace an entry that has different content;", "install: replace a copy that has different content") { options[:force] = true }
         opts.on("--yes", "remove: don't ask") { options[:yes] = true }
         opts.on("--global", "reads: only the global store") { options[:global] = true }
         opts.on("--builtin", "reads: only the entries that ship with workspace") { options[:builtin] = true }
-        opts.on("--project [NAME]", "--name [NAME]", "the project's store (NAME, or the project of the current directory)") { |v| options[:project] = v || true }
-        opts.on("--dry-run", "add, update, remove: report what would happen and write nothing") { options[:dry_run] = true }
+        opts.on("--project [NAME]", "--name [NAME]", "the project's store (NAME, or the project of the current directory);", "install, uninstall: the workspace to act on (default: the one of the current directory)") { |v| options[:project] = v || true }
+        opts.on("--dry-run", "add, update, remove, install, uninstall: report what would happen and write nothing") { options[:dry_run] = true }
         opts.on("--json", "Print one JSON document (see docs/README.library.md)") { options[:json] = true }
         opts.on("-h", "--help", "Show this help") { options[:help] = true }
         opts.separator ""
@@ -4415,6 +4422,8 @@ module Workspace
         opts.separator "  workspace library add ~/Notes/spine-template --kind spine --as team --link"
         opts.separator "  workspace start feature/x --prompt \"$(workspace library show prompt/kickoff)\""
         opts.separator "  workspace library remove play/agent-orchestration-playbook --yes"
+        opts.separator "  workspace library install skill/write-tests --name my-app --json"
+        opts.separator "  workspace library uninstall skill/write-tests --name my-app"
       end
     end
 
@@ -4467,6 +4476,18 @@ module Workspace
         library_action("library update", options) do
           @library_command.update(ref, path: path, body: body, link: options[:link], dry_run: options[:dry_run], **where)
         end
+      when "install", "uninstall"
+        raise UsageError, "library #{subcommand} needs a REF (skill/name or agent/name)." unless ref
+        raise UsageError, "Unexpected argument: #{args.first}. Run 'workspace library --help'." if args.any?
+        raise UsageError, "library uninstall has no --force." if subcommand == "uninstall" && options[:force]
+        workspace = options[:project].is_a?(String) ? options[:project] : nil
+        library_install_action(options) do
+          if subcommand == "install"
+            @library_command.install(ref, name: workspace, force: options[:force], dry_run: options[:dry_run], cwd: @working_dir)
+          else
+            @library_command.uninstall(ref, name: workspace, dry_run: options[:dry_run], cwd: @working_dir)
+          end
+        end
       when "remove"
         raise UsageError, "library remove needs a REF (kind/name or name)." unless ref
         raise UsageError, "Unexpected argument: #{args.first}. Run 'workspace library --help'." if args.any?
@@ -4484,6 +4505,13 @@ module Workspace
     rescue OptionParser::ParseError, UsageError => e
       raise unless json_requested?(options[:json], given)
       emit_json_error(JsonEnvelope::SCHEMA_VERSION, e, message: e.message.lines.first.strip)
+    end
+
+    # Runs `library install` or `uninstall`: its own words, or with --json the one
+    # `{ok, ref, workspace, result, path}` document.
+    def library_install_action(options)
+      result = options[:json] ? divert_output { yield } : yield
+      @output.puts JSON.generate(result.to_h) if options[:json]
     end
 
     # Runs a library write under {#run_action}; a nil result is a declined prompt.

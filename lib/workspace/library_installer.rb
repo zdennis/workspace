@@ -47,7 +47,77 @@ module Workspace
       result.merge("outcome" => outcome)
     end
 
+    # Copies one entry into +worktree+ for `library install`. Unlike {#copy}, a
+    # copy that differs from the library entry is refused unless +force+, and a
+    # tracked path or a symlinked directory is an error, not a note.
+    #
+    # @param entry [Hash] from {Workspace::Library#copyable}
+    # @param worktree [String] the checkout root
+    # @param force [Boolean] replace different content
+    # @param dry_run [Boolean] report and write nothing
+    # @return [Hash] "result" ("installed" or "unchanged") and "path"
+    # @raise [Workspace::Error] codes `library_install_exists`, `path_tracked`, `library_path_outside`
+    def install(entry, worktree:, force: false, dry_run: false)
+      rel = DESTINATIONS.fetch(entry["kind"]).call(entry["name"])
+      dest = File.join(worktree, rel)
+      guard!(worktree, rel, entry["ref"], dest)
+      exists = File.exist?(dest) || File.symlink?(dest)
+      if exists && !File.symlink?(dest) && LibraryStore.snapshot(dest) == LibraryStore.snapshot(entry["path"])
+        return {"result" => "unchanged", "path" => dest}
+      end
+      if exists && !force
+        raise Error.new("#{dest} exists with different content than #{entry["ref"]}; pass --force to replace it.",
+          code: "library_install_exists", details: {"ref" => entry["ref"], "path" => dest},
+          retry_with: {"flags" => ["--force"], "destructive" => true})
+      end
+      unless dry_run
+        place(entry["path"], dest)
+        exclude(worktree, "/#{rel}#{"/" if entry["kind"] == "skill"}")
+      end
+      {"result" => "installed", "path" => dest}
+    end
+
+    # Removes the worktree copy of a library agent or skill, and nothing else:
+    # the library entry and the `info/exclude` line stay (the line is harmless,
+    # and a later install needs it).
+    #
+    # @param kind [String] "agent" or "skill"
+    # @param name [String] a valid library name
+    # @param worktree [String] the checkout root
+    # @param dry_run [Boolean] report and write nothing
+    # @return [Hash] "result" ("removed" or "absent") and "path"
+    # @raise [Workspace::Error] codes `path_tracked`, `library_path_outside`
+    def uninstall(kind, name, worktree:, dry_run: false)
+      rel = DESTINATIONS.fetch(kind).call(name)
+      dest = File.join(worktree, rel)
+      guard!(worktree, rel, "#{kind}/#{name}", dest)
+      return {"result" => "absent", "path" => dest} unless File.exist?(dest) || File.symlink?(dest)
+      LibraryStore.remove(dest) unless dry_run
+      {"result" => "removed", "path" => dest}
+    end
+
     private
+
+    # Refuses a destination that is not directly under the checkout's
+    # `.claude/skills/` or `.claude/agents/` (a symlinked `.claude` or kind
+    # directory, or a name that climbs out), or that the repo tracks.
+    def guard!(worktree, rel, ref, dest)
+      parent = File.dirname(rel)
+      allowed = %w[skills agents].map { |d| File.join(".claude", d) }
+      outside = !allowed.include?(parent) ||
+        File.dirname(File.expand_path(dest)) != File.join(File.expand_path(worktree), parent)
+      if outside
+        raise Error.new("#{dest} is not under #{worktree}/.claude/skills/ or .claude/agents/; #{ref} was not touched.",
+          code: "library_path_outside", details: {"ref" => ref, "path" => dest})
+      end
+      if linked_parent?(worktree, rel)
+        raise Error.new("#{dest} is under a symlinked directory, where git can't tell what it tracks; #{ref} was not touched.",
+          code: "path_linked", details: {"ref" => ref, "path" => dest})
+      end
+      return unless @git.tracked?(worktree, rel)
+      raise Error.new("The repo tracks #{dest}; #{ref} was not touched.",
+        code: "path_tracked", details: {"ref" => ref, "path" => dest})
+    end
 
     # Whether `.claude` or `.claude/<kind>s` under +worktree+ is a symlink.
     def linked_parent?(worktree, rel)

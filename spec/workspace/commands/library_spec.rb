@@ -528,4 +528,79 @@ RSpec.describe Workspace::Commands::Library do
       expect(output.string).to eq("---\ndescription: Team\n---\n")
     end
   end
+
+  describe "#install and #uninstall" do
+    let(:installer) { instance_double(Workspace::LibraryInstaller) }
+    let(:checkout) { instance_double(Workspace::WorkspaceCheckout) }
+    let(:target) { {"workspace" => "app", "path" => cwd, "branch" => "main"} }
+    subject(:command) { described_class.new(library: library, output: output, input: input, installer: installer, checkout: checkout) }
+
+    before do
+      allow(checkout).to receive(:resolve).with("app", working_dir: anything, allow_detached: true).and_return(target)
+      command.add(kind: "skill", path: skill_dir("global body"), name: "tests", cwd: cwd)
+      command.add(kind: "skill", path: skill_dir("project body"), name: "tests", scope: "project", cwd: cwd)
+      command.add(kind: "play", body: "p", name: "kickoff", cwd: cwd)
+      output.truncate(0)
+      output.rewind
+    end
+
+    def skill_dir(body)
+      File.join(@dir, "skill-#{body.tr(" ", "-")}").tap do |dir|
+        FileUtils.mkdir_p(dir)
+        File.write(File.join(dir, "SKILL.md"), body)
+      end
+    end
+
+    it "installs the entry from the target workspace's project store, reporting the document" do
+      expect(installer).to receive(:install) do |entry, worktree:, force:, dry_run:|
+        expect(entry).to include("ref" => "skill/tests", "scope" => "project")
+        expect([worktree, force, dry_run]).to eq([cwd, true, false])
+        {"result" => "installed", "path" => "#{cwd}/.claude/skills/tests"}
+      end
+
+      result = command.install("tests", name: "app", force: true, cwd: "/elsewhere")
+
+      expect(result.to_h).to eq("schema_version" => 1, "ok" => true, "ref" => "skill/tests", "workspace" => "app",
+        "result" => "installed", "path" => "#{cwd}/.claude/skills/tests", "dry_run" => false)
+      expect(output.string).to eq("Installed skill/tests at #{cwd}/.claude/skills/tests (workspace app).\n")
+    end
+
+    it "refuses a play with library_kind_not_copyable and an unknown ref with unknown_library_entry" do
+      expect { command.install("play/kickoff", name: "app", cwd: cwd) }
+        .to raise_error(Workspace::Error) { |e| expect(e.code).to eq("library_kind_not_copyable") }
+      expect { command.install("kickoff", name: "app", cwd: cwd) }
+        .to raise_error(Workspace::Error) { |e| expect(e.code).to eq("library_kind_not_copyable") }
+      expect { command.install("skill/nope", name: "app", cwd: cwd) }
+        .to raise_error(Workspace::Error) { |e| expect(e.code).to eq("unknown_library_entry") }
+    end
+
+    it "passes unknown_workspace through from the checkout" do
+      allow(checkout).to receive(:resolve).with("nope", working_dir: cwd, allow_detached: true)
+        .and_raise(Workspace::Error.new("Unknown workspace 'nope'", code: "unknown_workspace"))
+
+      expect { command.install("skill/tests", name: "nope", cwd: cwd) }
+        .to raise_error(Workspace::Error) { |e| expect(e.code).to eq("unknown_workspace") }
+    end
+
+    it "uninstalls by a library ref, or by what is installed once the entry is gone, without touching the library" do
+      expect(installer).to receive(:uninstall).with("skill", "tests", worktree: cwd, dry_run: true)
+        .and_return({"result" => "removed", "path" => "#{cwd}/.claude/skills/tests"})
+      expect(installer).to receive(:uninstall).with("agent", "gone", worktree: cwd, dry_run: false)
+        .and_return({"result" => "absent", "path" => "#{cwd}/.claude/agents/gone.md"})
+
+      expect(command.uninstall("tests", name: "app", dry_run: true, cwd: cwd).result).to eq("removed")
+      expect(output.string).to start_with("Would remove skill/tests from")
+      FileUtils.mkdir_p(File.join(cwd, ".claude", "agents"))
+      File.write(File.join(cwd, ".claude", "agents", "gone.md"), "x")
+      expect(command.uninstall("gone", name: "app", cwd: cwd).result).to eq("absent")
+      expect(library.entries(library.stores(cwd: cwd)).map { |e| e["ref"] }).to include("skill/tests")
+    end
+
+    it "refuses an uninstall of a play or an unknown name" do
+      expect { command.uninstall("play/kickoff", name: "app", cwd: cwd) }
+        .to raise_error(Workspace::Error) { |e| expect(e.code).to eq("library_kind_not_copyable") }
+      expect { command.uninstall("nothing", name: "app", cwd: cwd) }
+        .to raise_error(Workspace::Error) { |e| expect(e.code).to eq("unknown_library_entry") }
+    end
+  end
 end

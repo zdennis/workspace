@@ -497,7 +497,9 @@ module Workspace
     daemon_command = Commands::Daemon.new(config: config, project_config: project_config, ensure_agent: ensure_agent_command, version_client: agent_snapshot_client,
       process_tree: ProcessTree.new(logger: logger), output: output)
     ui_command = Commands::Ui.new(output: output)
-    library_command = Commands::Library.new(library: library, output: output, input: input, event_log: event_log)
+    workspace_checkout = WorkspaceCheckout.new(git: git, project_config: project_config, project_detector: project_detector)
+    library_command = Commands::Library.new(library: library, output: output, input: input, event_log: event_log,
+      installer: library_installer, checkout: workspace_checkout)
     instructions_command = Commands::Instructions.new(composer: instruction_composer, bindings: binding_command, output: output)
     ask_store_for = ->(workspace) { AskStore.new(path: config.ask_state_path(workspace), error_output: error_output) }
     workflow_store = WorkflowRunStore.new(dir: config.workflow_runs_dir, archive_dir: config.workflow_archive_dir)
@@ -530,7 +532,6 @@ module Workspace
       log_path: ->(workspace) { config.agent_log_path(workspace) }, logger: logger, error_output: error_output)
     kill_command = Commands::Kill.new(git: git, project_config: project_config, project_settings: project_settings, stop_command: stop_command, window_positions: window_positions, notes: notes_command, project_detector: project_detector, task_store: task_store, event_log: event_log, workflow_runs: workflow_engine, dev: dev_command, output: output, input: input)
     pull_request_command = Commands::PullRequest.new(git: git, project_config: project_config, project_detector: project_detector, output: output)
-    workspace_checkout = WorkspaceCheckout.new(git: git, project_config: project_config, project_detector: project_detector)
     rebase_command = Commands::Rebase.new(git: git, checkout: workspace_checkout, output: output)
     push_command = Commands::Push.new(git: git, checkout: workspace_checkout, output: output)
     finish_command = Commands::Finish.new(git: git, project_config: project_config, kill_command: kill_command, project_detector: project_detector, pull_request: pull_request_command, output: output, error_output: error_output, input: input)
