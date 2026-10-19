@@ -296,27 +296,57 @@ module Workspace
         @warnings = facts[:warnings].dup
       end
 
+      # A Ctrl-C, SIGTERM or SIGHUP while the move runs waits for the step under way to end,
+      # then the move is rolled back: `move_failed` with `details.signal`, or `move_incomplete`
+      # when the undo fails. One that comes once the work is safe in the worktree, or while
+      # nothing has moved yet and the move fails on its own, is sent again after the old
+      # handlers are back.
+      #
       # @return [Hash] `:facts`, `:snapshot`, `:main_clean`, `:warnings`
       # @raise [Workspace::Error] `stash_failed`, `move_failed` or `move_incomplete`
       def call
-        @recorded = @git.snapshot_trees(@root, skip: @facts[:left_behind]) or
-          raise Workspace::Error, "Could not record the state of #{@root} (git write-tree or git add failed). Nothing was moved."
-        stash if changes?
-        begin
-          @step = "stash"
-          check_stash_kept if @sha
-          check_clean
-          switch_main if @facts[:switch]
-          add_worktree
-          apply
-          verify
-        rescue => e
-          raise roll_back(e)
+        deferring_signals do
+          @recorded = @git.snapshot_trees(@root, skip: @facts[:left_behind]) or
+            raise Workspace::Error, "Could not record the state of #{@root} (git write-tree or git add failed). Nothing was moved."
+          stash if changes?
+          begin
+            @step = "stash"
+            [-> { check_stash_kept if @sha }, -> { check_clean }, -> { switch_main if @facts[:switch] },
+              -> { add_worktree }, -> { apply }, -> { verify }].each do |step|
+              halt_if_signalled
+              step.call
+            end
+            halt_if_signalled
+          rescue StandardError, SignalException => e
+            raise roll_back(e)
+          end
+          {facts: @facts, snapshot: release, main_clean: main_clean?, warnings: @warnings}
         end
-        {facts: @facts, snapshot: release, main_clean: main_clean?, warnings: @warnings}
       end
 
       private
+
+      # The signals a move holds until the step under way has ended.
+      DEFERRED_SIGNALS = %w[INT TERM HUP].freeze
+
+      def deferring_signals
+        previous = {}
+        DEFERRED_SIGNALS.each do |name|
+          handler = Signal.trap(name) { @signal ||= name }
+          # A signal the process ignores (nohup's SIGHUP) stays ignored.
+          ignored = handler.nil? || handler == "IGNORE"
+          ignored ? Signal.trap(name, handler) : previous[name] = handler
+        end
+        yield
+      ensure
+        previous.each { |name, handler| Signal.trap(name, handler) }
+        # Not named in a move_failed or move_incomplete: the work moved, or nothing did.
+        Process.kill(@signal, Process.pid) if @signal && !@signal_reported
+      end
+
+      def halt_if_signalled
+        raise StepFailed, "interrupted by SIG#{@signal}" if @signal
+      end
 
       def changes?
         @facts[:changes].values.any? { |files| !files.empty? }
@@ -398,7 +428,12 @@ module Workspace
       # @return [Workspace::Error] `move_failed`, for the caller to raise; an undo that fails raises `move_incomplete`
       def roll_back(error)
         failed = @step
-        reason = error.is_a?(StepFailed) ? error.message : "#{error.class}: #{error.message}"
+        @signal ||= Signal.signame(error.signo) if error.is_a?(SignalException)
+        reason = if @signal then "interrupted by SIG#{@signal}"
+        elsif error.is_a?(StepFailed) then error.message
+        else
+          "#{error.class}: #{error.message}"
+        end
         undo("worktree_remove") { @git.remove_worktree(@worktree, force: true) } if worktree_registered?
         if branch_made?
           undo("branch_delete") { @git.delete_ref(@root, "refs/heads/#{@branch}", @facts[:base]) or raise StepFailed, "could not delete #{@branch}" }
@@ -418,7 +453,7 @@ module Workspace
         end
         undo("rollback_verify") { compare(@root) or raise StepFailed, "#{@root} does not match what it was before the move" }
         Workspace::Error.new("Could not move the work: #{reason}. Nothing moved: the main checkout is as it was.",
-          code: MOVE_FAILED, details: {"step" => failed, "rolled_back" => true, "snapshot" => release})
+          code: MOVE_FAILED, details: {"step" => failed, "rolled_back" => true, "snapshot" => release}.merge(signal_details))
       end
 
       # The preflight saw no such branch, so one at the base commit now is the one this move made.
@@ -430,7 +465,7 @@ module Workspace
         @step = step
         yield
         @done << step
-      rescue => e
+      rescue StandardError, SignalException => e
         incomplete(e.is_a?(StepFailed) ? e.message : "#{e.class}: #{e.message}")
       end
 
@@ -441,7 +476,13 @@ module Workspace
           code: MOVE_INCOMPLETE,
           details: {"step" => @step, "steps_done" => @done.dup, "snapshot" => snapshot_details(kept: true),
                     "main_branch" => @git.worktree_branch(@root), "worktree" => (@worktree if worktree_registered?),
-                    "recover" => recover_commands})
+                    "recover" => recover_commands}.merge(signal_details))
+      end
+
+      def signal_details
+        return {} unless @signal
+        @signal_reported = true
+        {"signal" => "SIG#{@signal}"}
       end
 
       def recover_commands

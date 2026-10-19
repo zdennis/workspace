@@ -38,13 +38,14 @@ module Workspace
       # @param plan_dispatch [Workspace::Commands::PlanDispatch, nil] starts the plan for `launch:` when there is one
       # @param workspace_at [#call] `(checkout_path)` to the name of the workspace whose checkout that is, or nil; names the
       #   main checkout's workspace when no `--name` is given (else its config is looked up by the directory's name)
-      # @param locks [#call] `(checkout_path)` to the names of the locks held in that repository; for the `locks_held` warning
+      # @param locks [#call] `(checkout_path)` to `{names:, own:}`, the live locks in that repository (only the caller's
+      #   when `own`); for the `locks_held` warning (see {Workspace::HeldLocks})
       # @param event_log [Workspace::EventLog, nil] gets the `workspace_promoted` line
       # @param env [#[]] reads `TMUX_PANE`, the caller's own pane
       # @param output [IO] the human summary
       # @param error_output [IO] the human warnings
       def initialize(checkout_move:, notes_carry:, start:, notes:, project_config:, panes:, spine_init: nil, spine_config: nil,
-        plan_command: nil, plan_dispatch: nil, workspace_at: ->(_path) {}, locks: ->(_path) { [] }, event_log: nil, env: ENV, output: $stdout, error_output: $stderr)
+        plan_command: nil, plan_dispatch: nil, workspace_at: ->(_path) {}, locks: ->(_path) { {names: [], own: true} }, event_log: nil, env: ENV, output: $stdout, error_output: $stderr)
         @checkout_move = checkout_move
         @notes_carry = notes_carry
         @start = start
@@ -250,9 +251,15 @@ module Workspace
       end
 
       def locks_warning(root)
-        names = Array(@locks.call(root))
+        held = @locks.call(root)
+        names = held[:names]
         return [] if names.empty?
-        [{"code" => "locks_held", "message" => "Locks held in this repository were not released: #{names.join(", ")} (workspace lock status).", "locks" => names}]
+        message = if held[:own]
+          "Locks you hold in this repository were not released: #{names.join(", ")} (workspace lock status)."
+        else
+          "Locks are held in this repository, perhaps by other sessions (promote could not tell which are yours): #{names.join(", ")} (workspace lock status)."
+        end
+        [{"code" => "locks_held", "message" => message, "locks" => names, "own" => held[:own]}]
       rescue Workspace::Error, SystemCallError
         []
       end

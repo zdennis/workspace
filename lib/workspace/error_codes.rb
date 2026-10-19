@@ -108,7 +108,7 @@ module Workspace
       "hook_failed" => "promote warning: git exited with an error during switch or worktree_add (likely post-checkout) but the step worked. hook, step.",
       "submodules_not_initialized" => "promote warning: the new worktree's submodules are empty. command.",
       "snapshot_not_deleted" => "promote warning: the work moved, but the snapshot ref could not be deleted. ref, command.",
-      "locks_held" => "promote warning: locks held in the repository were not released. locks (names).",
+      "locks_held" => "promote warning: locks the caller holds in the repository were not released, or, when the caller cannot be told, every live lock there. locks (names), own (false for the second).",
       "agent_state_unknown" => "promote warning: the main checkout's session runs but its agent daemon did not answer, so busy panes were not checked.",
       "start_note" => "promote warning: one of start's plain-text warnings, wrapped. message.",
       "notes_unavailable" => "promote warning: the main checkout's notes directory is not known, so nothing was carried.",

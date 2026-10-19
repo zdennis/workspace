@@ -162,7 +162,7 @@ The exit code is unchanged by `--json` (1 for most failures, 2 for `not_submitte
 
 ### promote codes
 
-`promote` refuses before it changes anything, except `move_failed` (undone) and `move_incomplete` (kept under a ref). Reused codes: `rebase_in_progress`, `usage`, `config_parse`, `unknown_workspace`. A `start` failure after the move carries `start`'s own code with `details.moved` and `details.next` (`["workspace start BRANCH"]`, which adopts the worktree).
+`promote` refuses before it changes anything, except `move_failed` (undone) and `move_incomplete` (kept under a ref). Reused codes: `rebase_in_progress`, `usage`, `config_parse`, `unknown_workspace`. A `start` failure after the move carries `start`'s own code with `details.moved` and `details.next` (`["workspace start BRANCH"]`, which adopts the worktree). A Ctrl-C, SIGTERM or SIGHUP during the move waits for the git step under way to end, then the move is undone; one that comes in the moment after the work is safe in the worktree (while the snapshot ref is deleted) stops promote there, before the workspace is made and with no document: `workspace start BRANCH` finishes it.
 
 | Code | Meaning |
 |---|---|
@@ -182,8 +182,8 @@ The exit code is unchanged by `--json` (1 for most failures, 2 for `not_submitte
 | `nothing_to_move` | No changes and no commits ahead of the default branch (use `workspace start BRANCH`). `details.branch`. |
 | `agent_working` | An agent pane of the main checkout's workspace is working or waiting; the caller's own `$TMUX_PANE` never counts. `retry` is `--force`. `details.workspace`, `details.panes` (`pane`, `state`). |
 | `stash_failed` | `git stash push` stored nothing; nothing changed. `details.path`. |
-| `move_failed` | A step failed and was undone; the main checkout is as it was. `details.step` (`stash`, `switch`, `worktree_add`, `apply`, `verify`), `details.rolled_back`, `details.snapshot` (`ref`, `id`, `kept`, or null). |
-| `move_incomplete` | The move stopped part way and could not be undone; the changes are under `details.snapshot.ref`. `details.step`, `details.steps_done`, `details.main_branch`, `details.worktree` (or null), `details.recover` (at most 8 `git -C ...` commands, in order; never run by promote). |
+| `move_failed` | A step failed and was undone; the main checkout is as it was. `details.step` (`stash`, `switch`, `worktree_add`, `apply`, `verify`), `details.rolled_back`, `details.snapshot` (`ref`, `id`, `kept`, or null), `details.signal` (`SIGINT`, `SIGTERM` or `SIGHUP`) when a signal stopped the move: it waits for the step under way, then the move is undone. |
+| `move_incomplete` | The move stopped part way and could not be undone; the changes are under `details.snapshot.ref`. `details.step`, `details.steps_done`, `details.main_branch`, `details.worktree` (or null), `details.recover` (at most 8 `git -C ...` commands, in order; never run by promote), `details.signal` when a signal stopped the move. |
 
 `promote --json` puts these in `warnings[]` as `{code, message, ...}`; none is an error envelope's code. Once the move is done, every later step is a warning: with `launch_failed` the document still says `ok: true` (the move and the workspace are done) and the exit code is 1, as for `start`'s `prompt_failures`; read `launched` and `warnings`.
 
@@ -195,7 +195,7 @@ The exit code is unchanged by `--json` (1 for most failures, 2 for `not_submitte
 | `hook_failed` | git exited with an error during a step that worked (likely `post-checkout`). `hook`, `step`. |
 | `submodules_not_initialized` | The new worktree's submodules are empty. `command`. |
 | `snapshot_not_deleted` | The work moved, but the snapshot ref could not be deleted. `ref`, `command`. |
-| `locks_held` | Locks held in the repository were not released. `locks` (names). |
+| `locks_held` | Locks the caller holds in the repository (its agent's, a dev environment started from its pane, its bound run's) were not released. `locks` (names), `own`: false when the caller could not be told and `locks` is every live lock in the repository, which may be other sessions'. |
 | `agent_state_unknown` | The main checkout's session runs, but its agent daemon did not answer, so busy panes were not checked. |
 | `start_note` | One of `start`'s plain-text warnings. |
 | `notes_unavailable` | The main checkout's notes directory is not known, so nothing was carried. |

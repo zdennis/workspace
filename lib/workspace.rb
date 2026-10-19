@@ -200,6 +200,7 @@ require_relative "workspace/events_config"
 require_relative "workspace/dev_config"
 require_relative "workspace/lock_namespace"
 require_relative "workspace/bound_run"
+require_relative "workspace/held_locks"
 require_relative "workspace/run_liveness"
 require_relative "workspace/lock_holder"
 require_relative "workspace/lock_audit_log"
@@ -565,11 +566,7 @@ module Workspace
       real = CheckoutMove.real_path(path)
       project_config.available_projects.find { |name| (root = project_config.project_root_for(name)) && CheckoutMove.real_path(File.expand_path(root)) == real }
     end
-    held_locks = lambda do |root|
-      dir = lock_namespace.resolve(cwd: root)[:dir]
-      next [] unless Dir.exist?(dir)
-      LockStore.new(dir: dir, liveness: lock_holder).status.select { |_, entry| entry["holder"] && !entry["holder"]["stale"] }.keys.sort
-    end
+    held_locks = HeldLocks.new(lock_namespace: lock_namespace, lock_holder: lock_holder, bound_run: bound_run, env: env)
     promote_command = Commands::Promote.new(
       checkout_move: CheckoutMove.new(git: git, git_exclude: GitExclude.new(git: git), workspace_name: workspace_at),
       notes_carry: NotesCarry.new(spine_init: spine_init_command), start: start_command, notes: notes_command,

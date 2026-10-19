@@ -381,6 +381,147 @@ RSpec.describe Workspace::CheckoutMove do
         expect(fingerprint).to eq(before)
       end
 
+      context "when interrupted" do
+        # Runs the block with +signals+ caught by the spec, so one that gets past the move never stops the suite.
+        # A signal Ruby sends to its own process runs the trap before Process.kill returns.
+        def catching(*signals)
+          caught = []
+          previous = signals.to_h { |name| [name, Signal.trap(name) { caught << name }] }
+          yield caught
+        ensure
+          previous.each { |name, handler| Signal.trap(name, handler) }
+        end
+
+        it "rolls back an Interrupt raised inside a step and names the signal" do
+          interrupted = git_with(stash_apply: lambda do |original, path, sha, **kw|
+            original.call(path, sha, **kw).tap { raise Interrupt if path.include?("/.worktrees/") }
+          end)
+          dirty_default
+          before = fingerprint
+
+          error = error_from { mover(interrupted).call(repo, "fix-login") }
+
+          expect(error.code).to eq("move_failed")
+          expect(error.message).to include("interrupted by SIGINT", "Nothing moved")
+          expect(error.details).to include("step" => "apply", "rolled_back" => true, "signal" => "SIGINT")
+          expect(fingerprint).to eq(before)
+          expect(File).not_to exist(worktree)
+          expect(promote_refs).to eq([])
+          expect(stash_shas).to eq([])
+        end
+
+        it "is move_incomplete with the recover commands when the rollback fails after an Interrupt" do
+          interrupted = git_with(stash_apply: lambda do |original, path, sha, **kw|
+            raise Interrupt if path.include?("/.worktrees/")
+            [false, "forced"]
+          end)
+          dirty_default
+          before = fingerprint
+
+          error = error_from { mover(interrupted).call(repo, "fix-login") }
+
+          expect(error.code).to eq("move_incomplete")
+          sha = error.details["snapshot"]["id"]
+          ref = error.details["snapshot"]["ref"]
+          expect(error.details).to include("step" => "rollback_apply", "signal" => "SIGINT")
+          expect(error.details["recover"]).to eq(described_class.leftover_commands(repo, ref, sha))
+          expect(promote_refs).to eq(["#{ref} #{sha}"])
+
+          error.details["recover"].each { |command| expect(system(command, out: File::NULL, err: File::NULL)).to be(true) }
+          expect(fingerprint).to eq(before)
+        end
+
+        it "holds a SIGTERM until the step ends, then rolls back and gives the old handler back" do
+          catching("TERM") do |caught|
+            signalled = git_with(create_worktree_at: lambda do |original, *args, **kw|
+              Process.kill("TERM", Process.pid)
+              original.call(*args, **kw)
+            end)
+            sh("switch", "-q", "-c", "feature-x")
+            dirty_default
+            before = fingerprint
+
+            error = error_from { mover(signalled).call(repo, nil) }
+
+            expect(error.code).to eq("move_failed")
+            expect(error.details).to include("step" => "worktree_add", "rolled_back" => true, "signal" => "SIGTERM")
+            expect(fingerprint).to eq(before)
+            expect(sh("worktree", "list", "--porcelain")).not_to include(".worktrees")
+            expect(caught).to eq([])
+            Process.kill("TERM", Process.pid)
+            expect(caught).to eq(["TERM"])
+          end
+        end
+
+        it "finishes a move whose work was already safe and sends the signal on afterwards" do
+          catching("INT") do |caught|
+            late = git_with(delete_ref: lambda do |original, *args|
+              Process.kill("INT", Process.pid)
+              original.call(*args)
+            end)
+            dirty_default
+            before = work(repo)
+
+            move = mover(late).call(repo, "fix-login")
+
+            expect(move["path"]).to eq(worktree)
+            expect(work(worktree)).to eq(before)
+            expect(promote_refs).to eq([])
+            expect(caught).to eq(["INT"])
+          end
+        end
+
+        it "rolls back at the first step when the signal came during the stash" do
+          catching("INT") do |caught|
+            signalled = git_with(stash_push: lambda do |original, *args, **kw|
+              Process.kill("INT", Process.pid)
+              original.call(*args, **kw)
+            end)
+            dirty_default
+            before = fingerprint
+
+            error = error_from { mover(signalled).call(repo, "fix-login") }
+
+            expect(error.code).to eq("move_failed")
+            expect(error.details).to include("step" => "stash", "rolled_back" => true, "signal" => "SIGINT")
+            expect(fingerprint).to eq(before)
+            expect(promote_refs).to eq([])
+            expect(caught).to eq([])
+          end
+        end
+
+        it "sends a signal on when the move fails on its own before anything moved" do
+          catching("TERM") do |caught|
+            failing = git_with(snapshot_trees: lambda do |*|
+              Process.kill("TERM", Process.pid)
+              nil
+            end)
+            write("app.rb", "changed\n")
+
+            error = error_from { mover(failing).call(repo, "fix-login") }
+
+            expect(error.message).to include("Nothing was moved")
+            expect(caught).to eq(["TERM"])
+          end
+        end
+
+        it "leaves an ignored SIGHUP ignored" do
+          previous = Signal.trap("HUP", "IGNORE")
+          hupped = git_with(create_worktree_at: lambda do |original, *args, **kw|
+            Process.kill("HUP", Process.pid)
+            original.call(*args, **kw)
+          end)
+          write("app.rb", "changed\n")
+
+          move = mover(hupped).call(repo, "fix-login")
+
+          expect(move["path"]).to eq(worktree)
+          expect(Signal.trap("HUP", "IGNORE")).to eq("IGNORE")
+        ensure
+          Signal.trap("HUP", previous)
+        end
+      end
+
       it "is move_incomplete with no re-apply when the stash push fails after storing the entry" do
         half = git_with(stash_push: ->(original, *args, **kw) { original.call(*args, **kw).then { |stash, _, _| [stash, false, "cannot remove spec/"] } })
         dirty_default

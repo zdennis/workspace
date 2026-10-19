@@ -105,6 +105,7 @@ A macOS CLI (Ruby) for managing tmuxinator-based development workspaces in iTerm
 - `lib/workspace/workflow_config.rb` — Reads the global `workflows.defaults.include` (the default packs)
 - `lib/workspace/git_exclude.rb` — Lists a path in a repository's `info/exclude` (`#add`) or reads whether it is listed (`#listed?`); keeps `.workflow/` and the notes directory out of `git status`
 - `lib/workflows/` — The workflow presets that ship (`rpiv.yml`)
+- `lib/workspace/held_locks.rb` — The live locks of a repository the caller holds (its agent's pid and start time, a process lock from its pane, its bound run's), for `promote`'s `locks_held` warning; every live lock with `own: false` when the caller cannot be told
 - `lib/workspace/bound_run.rb` — The run the calling pane is bound to (a non-stale `kind: run` binding of `$TMUX_PANE`); lets `dev up` and `lock acquire` tell the run's own agent from anyone else
 - `lib/workspace/lock_config.rb` — Reads a project's `locks.idle_grace` (falls back to 5m with a warning)
 - `lib/workspace/dev_session_release.rb` — On a `session-event` SessionEnd (never reason `clear`), finds a `devenv` lock record whose `started_by.session_id` is the session by reading the lock files, then starts `workspace dev __release SESSION` as its own process; `Commands::Dev#release_for_session` does the stop (unless `dev.release_on_session_end` is false, or anything cannot be read)

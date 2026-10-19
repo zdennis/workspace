@@ -67,7 +67,7 @@ RSpec.describe Workspace::Commands::Promote do
   let(:spine_config) { double("spine_config", auto?: false) }
   let(:plan_command) { double("plan_command") }
   let(:plan_dispatch) { double("plan_dispatch") }
-  let(:locks) { ->(_root) { [] } }
+  let(:locks) { ->(_root) { {names: [], own: true} } }
   let(:start) { FakePromoteStart.new(log: log) }
 
   def build(checkout_move:, notes:, project_config:, start: self.start, notes_carry: Workspace::NotesCarry.new(spine_init: spine_init))
@@ -424,14 +424,33 @@ RSpec.describe Workspace::Commands::Promote do
       expect(checkout_move).to have_received(:call)
     end
 
-    it "warns about held locks, naming them" do
-      locks_found = ->(path) { (path == root) ? ["devenv"] : [] }
+    def promote_with_locks(held)
+      locks_found = ->(path) { (path == root) ? held : {names: [], own: true} }
       command = described_class.new(checkout_move: checkout_move, notes_carry: notes_carry, start: start, notes: notes, project_config: project_config,
         panes: panes, locks: locks_found, output: output, error_output: error_output)
+      command.call(working_dir: root, branch: "fix-login", json: true)[:json]
+    end
 
-      doc = command.call(working_dir: root, branch: "fix-login", json: true)[:json]
+    it "warns about the locks the caller holds, naming them" do
+      doc = promote_with_locks(names: ["devenv"], own: true)
 
-      expect(doc["warnings"]).to include(include("code" => "locks_held", "locks" => ["devenv"]))
+      warning = doc["warnings"].find { |w| w["code"] == "locks_held" }
+      expect(warning).to include("locks" => ["devenv"], "own" => true)
+      expect(warning["message"]).to start_with("Locks you hold in this repository were not released: devenv")
+    end
+
+    it "says the locks may be other sessions' when it cannot tell whose they are" do
+      doc = promote_with_locks(names: ["devenv", "migrations"], own: false)
+
+      warning = doc["warnings"].find { |w| w["code"] == "locks_held" }
+      expect(warning).to include("locks" => ["devenv", "migrations"], "own" => false)
+      expect(warning["message"]).to include("perhaps by other sessions", "devenv, migrations")
+    end
+
+    it "gives no locks warning when the caller holds none" do
+      doc = promote_with_locks(names: [], own: true)
+
+      expect(doc["warnings"].map { |w| w["code"] }).not_to include("locks_held")
     end
 
     it "names the main workspace by its checkout when its config is not named after the directory" do
