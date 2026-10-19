@@ -279,6 +279,7 @@ require_relative "workspace/commands/kill"
 require_relative "workspace/commands/pull_request"
 require_relative "workspace/commands/rebase"
 require_relative "workspace/commands/push"
+require_relative "workspace/commands/promote"
 require_relative "workspace/commands/finish"
 require_relative "workspace/commands/focus"
 require_relative "workspace/commands/start"
@@ -560,6 +561,22 @@ module Workspace
     plan_command = Commands::Plan.new(notes: notes_command, access: plan_access, dispatch: plan_dispatch_command, catalog: project_catalog, groups: project_groups,
       plan_state: plan_state, plan_config: plan_config, snapshot_client: agent_snapshot_client, ask_store_for: ask_store_for, task_store: task_store, output: output)
     start_command = Commands::Start.new(git: git, project_config: project_config, project_settings: project_settings, launch_command: launch_command, lineage: lineage, hook_installer: hook_installer, hooks_config: hooks_config, task_store: task_store, event_log: event_log, library: library, library_installer: library_installer, notes_setup: notes_setup, instruction_composer: instruction_composer, start_ref: start_ref, main_agent: main_agent, ticket_source: ticket_source, spine_init: spine_init_command, spine_config: spine_config, plan_command: plan_command, output: output, input: input)
+    workspace_at = lambda do |path|
+      real = CheckoutMove.real_path(path)
+      project_config.available_projects.find { |name| (root = project_config.project_root_for(name)) && CheckoutMove.real_path(File.expand_path(root)) == real }
+    end
+    held_locks = lambda do |root|
+      dir = lock_namespace.resolve(cwd: root)[:dir]
+      next [] unless Dir.exist?(dir)
+      LockStore.new(dir: dir, liveness: lock_holder).status.select { |_, entry| entry["holder"] && !entry["holder"]["stale"] }.keys.sort
+    end
+    promote_command = Commands::Promote.new(
+      checkout_move: CheckoutMove.new(git: git, git_exclude: GitExclude.new(git: git), workspace_name: workspace_at),
+      notes_carry: NotesCarry.new(spine_init: spine_init_command), start: start_command, notes: notes_command,
+      project_config: project_config, panes: pane_dispatch, spine_init: spine_init_command, spine_config: spine_config,
+      plan_command: plan_command, plan_dispatch: plan_dispatch_command, workspace_at: workspace_at, locks: held_locks, event_log: event_log, env: env,
+      output: output, error_output: error_output
+    )
     doctor = Doctor.new(config: config, state: state, hook_installer: hook_installer, hooks_config: hooks_config, project_detector: project_detector, git: git, pipeline_config: pipeline_config, launch_mode: launch_mode, project_settings: project_settings, plan: plan_command, snapshot_client: agent_snapshot_client, name_migration: name_migration, project_catalog: project_catalog, output: output)
     events_command = Commands::Events.new(
       stream_factory: -> { EventStream.new(lifecycle_path: config.event_log_file, hook_dir: config.hook_events_dir) }, output: output
@@ -702,6 +719,7 @@ module Workspace
       pull_request_command: pull_request_command,
       rebase_command: rebase_command,
       push_command: push_command,
+      promote_command: promote_command,
       projects_command: projects_command,
       capabilities_command: capabilities_command,
       daemon_command: daemon_command,

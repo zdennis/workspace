@@ -111,6 +111,7 @@ RSpec.describe Workspace::CLI do
       pull_request_command: overrides[:pull_request_command],
       rebase_command: overrides[:rebase_command],
       push_command: overrides[:push_command],
+      promote_command: overrides[:promote_command],
       projects_command: overrides[:projects_command],
       groups_command: overrides[:groups_command],
       capabilities_command: overrides[:capabilities_command],
@@ -6725,6 +6726,86 @@ RSpec.describe Workspace::CLI do
 
       expect { cli.run(["spine", "init", "a", "b", "--json"]) }.to raise_error(FakeSystemExit)
       expect(spine_init_command).not_to have_received(:call)
+    end
+  end
+
+  describe "#run with promote" do
+    let(:promote_command) { instance_double(Workspace::Commands::Promote) }
+    let(:output) { StringIO.new }
+    let(:gate) { Workspace::OutputGate.new(output) }
+    let(:built) { build_test_cli(output: gate, promote_command: promote_command) }
+    let(:cli) { built[0] }
+    let(:error_output) { built[2] }
+    let(:document) { {"schema_version" => 1, "ok" => true, "dry_run" => false} }
+
+    before do
+      allow(promote_command).to receive(:call) do |json:, **|
+        gate.puts "noise from a collaborator"
+        {exit_code: 0, json: document}
+      end
+    end
+
+    it "passes every flag, in --flag=value form too, and prints one JSON document on stdout" do
+      cli.run(["promote", "fix-login", "--name=api", "--title=Fix it", "--spine=team", "--plan=Add SSO", "--carry-note=a.md",
+        "--carry-note", "b.md", "--force", "--agent-kind=codex", "--json"])
+
+      expect(promote_command).to have_received(:call).with(working_dir: an_instance_of(String), branch: "fix-login", name: "api", title: "Fix it",
+        spine: "team", plan: "Add SSO", carry_notes: ["a.md", "b.md"], launch: nil, prompt: nil, headless: false, agent_kind: "codex",
+        force: true, dry_run: false, json: true)
+      expect(JSON.parse(output.string)).to eq(document)
+      expect(error_output.string).to include("noise from a collaborator")
+    end
+
+    it "passes --no-spine as false, bare --spine and --plan as true, and --dry-run" do
+      cli.run(["promote", "--no-spine", "--plan", "--dry-run"])
+      cli.run(["promote", "--spine"])
+
+      expect(promote_command).to have_received(:call).with(hash_including(branch: nil, spine: false, plan: true, dry_run: true, json: false))
+      expect(promote_command).to have_received(:call).with(hash_including(spine: true, plan: nil))
+    end
+
+    it "gives --launch a launcher, and refuses --prompt or --prompt-timeout without it" do
+      cli.run(["promote", "x", "--launch", "--prompt=Go", "--prompt-timeout=90s"])
+      expect(promote_command).to have_received(:call).with(hash_including(launch: respond_to(:call), prompt: "Go"))
+
+      expect { cli.run(["promote", "x", "--prompt", "Go", "--json"]) }.to raise_error(FakeSystemExit)
+      expect(JSON.parse(output.string.lines.last)).to include("code" => "usage", "error" => "--prompt needs --launch.")
+    end
+
+    it "refuses --spine with --no-spine, and a second argument" do
+      [["promote", "--spine", "--no-spine"], ["promote", "a", "b"]].each do |argv|
+        expect { cli.run(argv + ["--json"]) }.to raise_error(FakeSystemExit), argv.inspect
+        expect(JSON.parse(output.string.lines.last)).to include("ok" => false, "code" => "usage"), argv.inspect
+      end
+    end
+
+    it "exits 2 for branch_required, with the envelope" do
+      allow(promote_command).to receive(:call).and_raise(Workspace::UsageError.new("name a branch", code: "branch_required", details: {"from_branch" => "main"}))
+
+      expect { cli.run(["promote", "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(2) }
+      expect(JSON.parse(output.string)).to include("ok" => false, "code" => "branch_required", "details" => {"from_branch" => "main"})
+    end
+
+    it "exits 1 with the envelope for a refusal, and with the command's exit code otherwise" do
+      allow(promote_command).to receive(:call).and_raise(Workspace::Error.new("busy", code: "agent_working", details: {"panes" => []}))
+      expect { cli.run(["promote", "x", "--json"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+      expect(JSON.parse(output.string)).to include("code" => "agent_working")
+
+      allow(promote_command).to receive(:call).and_return(exit_code: 1, json: document)
+      expect { cli.run(["promote", "x", "--launch"]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+    end
+
+    it "shows help naming the promote pack" do
+      cli.run(["promote", "--help"])
+
+      expect(output.string).to include("Usage: workspace promote [BRANCH]").and include("workspace instructions compose --pack promote")
+      expect(promote_command).not_to have_received(:call)
+    end
+
+    it "lists promote in the main help" do
+      cli.run(["help"])
+
+      expect(output.string).to match(/^\s+promote\s+Move the work in a main checkout/)
     end
   end
 

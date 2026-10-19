@@ -1,0 +1,14 @@
+{
+  "schema_version": 1, "ok": true, "dry_run": true, "branch_required": true,
+  "project": "api", "workspace": null, "path": null, "branch": null, "launched": false,
+  "moved": {
+    "from_branch": "main", "branch": null, "branch_created": null,
+    "base_commit": "0123456789abcdef0123456789abcdef01234567", "commits_ahead": 0,
+    "staged": [], "staged_count": 0, "unstaged": ["app.rb"], "unstaged_count": 1,
+    "untracked": [], "untracked_count": 0, "left_behind": [], "snapshot": null,
+    "main": {"path": "/src/api", "branch": "main", "clean": true}
+  },
+  "notes": {"plan": "none", "spine": "none", "carried": []},
+  "next": [],
+  "warnings": []
+}

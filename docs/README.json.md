@@ -152,13 +152,71 @@ The exit code is unchanged by `--json` (1 for most failures, 2 for `not_submitte
 | `gh_unavailable` | `pr create` (or `finish --pr`) needs `gh`, which is not installed (`details.reason` `missing`) or not logged in (`not_logged_in`, with `details.detail`). |
 | `nothing_to_push` | `pr create`: the branch has no commits ahead of its base. `details.branch`, `details.base`. |
 | `dirty_worktree` | `rebase`: the workspace has changes to tracked files. `details.path`, `details.files`. |
-| `rebase_in_progress` | `rebase`: a rebase is already stopped in the workspace, or git ran past its time limit during the rebase and `git rebase --abort` failed (`details.aborted` `false`). `details.path`. |
+| `rebase_in_progress` | `rebase` or `promote`: a rebase is already stopped in the workspace, or git ran past its time limit during the rebase and `git rebase --abort` failed (`details.aborted` `false`). `details.path`. |
 | `no_upstream` | `rebase --onto upstream`: the branch has no upstream configured. `details.branch`. |
 | `upstream_gone` | `rebase --onto upstream`: the branch's upstream no longer exists on the remote. `details.branch`, `details.upstream`. |
 | `fetch_failed` | `rebase --onto update\|remote\|upstream` or `push`: `git fetch origin` failed. `details.remote`, `details.detail`. |
 | `push_rejected` | `push`: origin refused the push, or the upstream has commits the branch never had so the push was not forced. `details.branch`, `details.upstream`, `details.detail`, `details.reason`: `origin_refused` (origin said no), `would_delete_commits` (the branch is only behind its upstream, so pushing would delete commits), `upstream_has_other_commits` (the upstream has commits the branch never had, or its reflog no longer shows them) or `upstream_mismatch` (the upstream is not `origin/<branch>`). |
 | `ticket_not_found` | `ticket show` asked `gh` or `jira` for a ticket the tool says does not exist. `details.source`, `details.ref`. |
 | `ticket_source_unavailable` | `ticket show` could not read the ticket (`ticket list` and `start --title-from-ticket` report it as a warning instead): `gh` or `jira` is not installed (`details.reason` `missing`), did not answer in time (`timeout`) or failed (`error`, with `details.detail`). `details.source`. |
+
+### promote codes
+
+`promote` refuses before it changes anything, except `move_failed` (undone) and `move_incomplete` (kept under a ref). Reused codes: `rebase_in_progress`, `usage`, `config_parse`, `unknown_workspace`. A `start` failure after the move carries `start`'s own code with `details.moved` and `details.next` (`["workspace start BRANCH"]`, which adopts the worktree).
+
+| Code | Meaning |
+|---|---|
+| `not_main_checkout` | The path is not the top of a main checkout, or `--name` names a linked worktree's workspace. `details.path`. |
+| `detached_head` | The main checkout is not on a branch with a commit. `details.path`. |
+| `git_operation_in_progress` | A merge, cherry-pick, revert or bisect is stopped. `details.path`, `details.operation` (`merge`, `cherry_pick`, `revert`, `bisect`). |
+| `unmerged_files` | Unmerged files. `details.paths`, `details.count`. |
+| `intent_to_add` | Files added with `git add -N`. `details.paths`, `details.count`. |
+| `submodule_changes` | A submodule has changes of its own. `details.paths`. |
+| `hidden_files` | Files marked `--assume-unchanged` or `--skip-worktree`. `details.paths`, `details.count`. |
+| `path_conflicts` | Untracked files where a deleted tracked file was (or inside or around it). `details.paths`, `details.count`. |
+| `no_default_branch` | No local default branch. `details.path`. |
+| `branch_required` | On the default branch with no `BRANCH` (a usage error, exit 2; `--dry-run` answers `branch_required: true` instead). `details.from_branch`. |
+| `branch_exists` | The branch exists at a commit other than `HEAD`. `details.branch`, `details.commit`. |
+| `branch_checked_out` | The branch (or the default branch) is checked out in another worktree. `details.branch`, `details.path`, `details.workspace` (or null). |
+| `worktree_exists` | `.worktrees/<branch>` already exists. `details.path`. |
+| `nothing_to_move` | No changes and no commits ahead of the default branch (use `workspace start BRANCH`). `details.branch`. |
+| `agent_working` | An agent pane of the main checkout's workspace is working or waiting; the caller's own `$TMUX_PANE` never counts. `retry` is `--force`. `details.workspace`, `details.panes` (`pane`, `state`). |
+| `stash_failed` | `git stash push` stored nothing; nothing changed. `details.path`. |
+| `move_failed` | A step failed and was undone; the main checkout is as it was. `details.step` (`stash`, `switch`, `worktree_add`, `apply`, `verify`), `details.rolled_back`, `details.snapshot` (`ref`, `id`, `kept`, or null). |
+| `move_incomplete` | The move stopped part way and could not be undone; the changes are under `details.snapshot.ref`. `details.step`, `details.steps_done`, `details.main_branch`, `details.worktree` (or null), `details.recover` (at most 8 `git -C ...` commands, in order; never run by promote). |
+
+`promote --json` puts these in `warnings[]` as `{code, message, ...}`; none is an error envelope's code. Once the move is done, every later step is a warning: with `launch_failed` the document still says `ok: true` (the move and the workspace are done) and the exit code is 1, as for `start`'s `prompt_failures`; read `launched` and `warnings`.
+
+| Code | Meaning |
+|---|---|
+| `default_ahead` | The local default branch is ahead of origin's; the new branch has those commits and the default is left as it is. `branch`, `upstream`, `count`, `command`. |
+| `left_behind` | Untracked nested repositories were not moved. `paths`. |
+| `extra_untracked` | The new worktree has files the main checkout did not have, likely from a hook. `paths`. |
+| `hook_failed` | git exited with an error during a step that worked (likely `post-checkout`). `hook`, `step`. |
+| `submodules_not_initialized` | The new worktree's submodules are empty. `command`. |
+| `snapshot_not_deleted` | The work moved, but the snapshot ref could not be deleted. `ref`, `command`. |
+| `locks_held` | Locks held in the repository were not released. `locks` (names). |
+| `agent_state_unknown` | The main checkout's session runs, but its agent daemon did not answer, so busy panes were not checked. |
+| `start_note` | One of `start`'s plain-text warnings. |
+| `notes_unavailable` | The main checkout's notes directory is not known, so nothing was carried. |
+| `spine_init_failed` | The spine asked for could not be made. |
+| `plan_init_failed` | The plan asked for could not be made. |
+| `launch_failed` | `--launch` did not start the workspace or deliver its first prompt (exit 1); the move and the workspace are done. |
+| `same_notes_dir` | The main and new notes directories are the same, or one holds the other; nothing was carried. `path`. |
+| `notes_link` | The plan, the spine or a file in it is a link, so it was not moved. `path`. |
+| `notes_not_file` | `IMPLEMENTATION_PLAN.md` is not a file. `path`. |
+| `notes_not_directory` | `spine` is not a directory. `path`. |
+| `notes_clash` | The new notes directory already has the plan or spine; the main checkout's was left alone. `path`. |
+| `notes_unwritable` | The plan or spine could not be moved. `path`. |
+| `notes_not_renamed` | Moved, but the original could not be renamed `.moved-<time>`. `path`. |
+| `ship_not_added` | The ship stage could not be added to the moved spine. |
+| `carry_note_invalid` | A `--carry-note` path is not inside the main notes directory. `path`. |
+| `carry_note_already_carried` | A `--carry-note` is inside the plan or spine, which moved whole. `path`. |
+| `carry_note_link` | A `--carry-note` is, or would be written through, a link. `path`. |
+| `carry_note_not_file` | A `--carry-note` is not a file. `path`. |
+| `carry_note_clash` | A `--carry-note` is already in the new notes directory. `path`. |
+| `carry_note_missing` | A `--carry-note` is not in the main notes directory. `path`. |
+| `carry_note_unwritable` | A `--carry-note` could not be copied. `path`. |
 
 The registry lives in `Workspace::ErrorCodes`; a spec checks that every code a raise site names is listed there and on this page. More codes arrive with the commands that need them.
 

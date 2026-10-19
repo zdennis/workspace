@@ -76,7 +76,8 @@ module Workspace
         "agent_hooks" => 1,
         "projects_multi" => 1,
         "json_envelope" => 1,
-        "remove" => 1
+        "remove" => 1,
+        "promote" => 1
       }.freeze
 
       # The exit statuses commands use, by meaning.

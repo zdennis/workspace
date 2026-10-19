@@ -1,0 +1,5 @@
+{"schema_version": 1, "ok": false,
+ "error": "Could not move the work: the changes did not apply in the new worktree: error: could not apply. Nothing moved: the main checkout is as it was.",
+ "code": "move_failed",
+ "details": {"step": "apply", "rolled_back": true,
+             "snapshot": {"ref": "refs/workspace/promote/0123456789ab", "id": "0123456789abcdef0123456789abcdef01234567", "kept": false}}}

@@ -1,0 +1,8 @@
+{"schema_version": 1, "ok": false,
+ "error": "The move stopped part way and could not be undone (the changes did not apply back in /src/api: error: could not apply). Your changes are safe in refs/workspace/promote/0123456789ab; if git stash apply refuses because files are in the way, move them aside and run it again.",
+ "code": "move_incomplete",
+ "details": {"step": "rollback_apply", "steps_done": ["stash", "worktree_add", "worktree_remove", "branch_delete"],
+             "snapshot": {"ref": "refs/workspace/promote/0123456789ab", "id": "0123456789abcdef0123456789abcdef01234567", "kept": true},
+             "main_branch": "main", "worktree": null,
+             "recover": ["git -C /src/api stash apply --index 0123456789abcdef0123456789abcdef01234567",
+                         "git -C /src/api update-ref -d refs/workspace/promote/0123456789ab 0123456789abcdef0123456789abcdef01234567"]}}

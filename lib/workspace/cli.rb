@@ -16,7 +16,7 @@ module Workspace
     # hint).
     SUBCOMMANDS = %w[
       init doctor launch start stop add add-project kill finish relaunch restore
-      focus deactivate reactivate tile resize capture agent agentd lock dev parent notes plan ticket spine pr rebase push projects
+      focus deactivate reactivate tile resize capture agent agentd lock dev parent notes plan ticket spine pr rebase push promote projects
       capabilities daemon sessions review snapshot ask inbox hooks session-event agent-run handoff pipeline run library lib instructions workflow step
       run-and-report report-run-status layout config tmux statusline current
       list-projects list status repair cleanup prune set-command event-log events
@@ -81,6 +81,7 @@ module Workspace
     # @param pull_request_command [Workspace::Commands::PullRequest, nil] pre-built pr command
     # @param rebase_command [Workspace::Commands::Rebase, nil] pre-built rebase command
     # @param push_command [Workspace::Commands::Push, nil] pre-built push command
+    # @param promote_command [Workspace::Commands::Promote, nil] pre-built promote command
     # @param projects_command [Workspace::Commands::Projects, nil] pre-built projects command
     # @param capabilities_command [Workspace::Commands::Capabilities, nil] pre-built capabilities command
     # @param daemon_command [Workspace::Commands::Daemon, nil] pre-built daemon command
@@ -114,7 +115,7 @@ module Workspace
     #   `list --liveness --json` and `status --json`; takes name => state entry
     # @param launch_mode [Workspace::LaunchMode, nil] decides whether launch/start
     #   run headless when no --[no-]headless flag is given; nil builds one
-    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, hooks_command: nil, restart_agent_command: nil, agent_status_command: nil, send_command: nil, ensure_agent_command: nil, name_migration: nil, spine_command: nil, spine_init_command: nil, spine_start_command: nil, handoff_command: nil, notes_command: nil, notes_setup: nil, plan_command: nil, plan_dispatch_command: nil, plan_task_command: nil, ticket_command: nil, pull_request_command: nil, rebase_command: nil, push_command: nil, projects_command: nil, groups_command: nil, capabilities_command: nil, daemon_command: nil, ui_command: nil, binding_command: nil, library_command: nil, library: nil, instructions_command: nil, instruction_composer: nil, workflow_command: nil, review_command: nil, restore_command: nil, snapshot_command: nil, events_command: nil, project_actions_command: nil, remove_command: nil, inbox_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil, liveness: nil, window_liveness: nil, env: ENV, editor_launcher: nil, interactive: nil, workspace_name: nil)
+    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, hooks_command: nil, restart_agent_command: nil, agent_status_command: nil, send_command: nil, ensure_agent_command: nil, name_migration: nil, spine_command: nil, spine_init_command: nil, spine_start_command: nil, handoff_command: nil, notes_command: nil, notes_setup: nil, plan_command: nil, plan_dispatch_command: nil, plan_task_command: nil, ticket_command: nil, pull_request_command: nil, rebase_command: nil, push_command: nil, promote_command: nil, projects_command: nil, groups_command: nil, capabilities_command: nil, daemon_command: nil, ui_command: nil, binding_command: nil, library_command: nil, library: nil, instructions_command: nil, instruction_composer: nil, workflow_command: nil, review_command: nil, restore_command: nil, snapshot_command: nil, events_command: nil, project_actions_command: nil, remove_command: nil, inbox_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil, liveness: nil, window_liveness: nil, env: ENV, editor_launcher: nil, interactive: nil, workspace_name: nil)
       @config = config
       @state = state
       @project_config = project_config
@@ -164,6 +165,7 @@ module Workspace
       @pull_request_command = pull_request_command
       @rebase_command = rebase_command
       @push_command = push_command
+      @promote_command = promote_command
       @notes_setup = notes_setup
       @agent_command = agent_command
       @config_command = config_command
@@ -280,6 +282,8 @@ module Workspace
         cmd_rebase(args)
       when "push"
         cmd_push(args)
+      when "promote"
+        cmd_promote(args)
       when "projects"
         cmd_projects(args)
       when "capabilities"
@@ -543,6 +547,7 @@ module Workspace
           pipeline        Deprecated (use workflow): inspect and drive a project's agent pipeline
           pr              Open a pull request for a workspace's branch without finishing it (create)
           projects        Group workspaces by repository (main checkout + worktrees); name several repositories as a group
+          promote         Move the work in a main checkout (changes and branch commits) into a new worktree workspace
           prune           Remove worktree projects whose PR is closed or merged
           push            Push a workspace's branch to origin, forcing with a lease only after a rebase
           reactivate      Reactivate Claude in a project's tmux pane
@@ -7434,6 +7439,94 @@ module Workspace
       raise Error, "push is not available: no push command was wired" unless @push_command
 
       @push_command.call(name: options[:name], json: options[:json], working_dir: @working_dir)
+    end
+
+    def promote_parser(options)
+      OptionParser.new do |opts|
+        opts.banner = "Usage: workspace promote [BRANCH] [--name PROJECT] [--title TEXT] [--spine[=TEMPLATE] | --no-spine] [--plan[=TITLE]]\n" \
+          "                         [--carry-note FILE]... [--launch [--prompt TEXT] [--prompt-timeout SECONDS]]\n" \
+          "                         [--agent-kind KIND] [--[no-]headless] [--force] [--dry-run] [--json]"
+        opts.separator ""
+        opts.separator "Move the work in a main checkout into a new workspace: the staged, unstaged and untracked changes, and"
+        opts.separator "the commits of the branch it is on, go to a worktree at .worktrees/BRANCH; the main checkout is left"
+        opts.separator "clean on the default branch. Ignored files stay behind. The plan (IMPLEMENTATION_PLAN.md) and spine/"
+        opts.separator "move to the new notes directory (the old ones are renamed .moved-<time>), and each --carry-note is copied."
+        opts.separator "BRANCH omitted moves the current branch; on the default branch, name a new one (made at HEAD)."
+        opts.separator "Nothing is launched unless --launch: seed the new workspace first, as the promote pack says"
+        opts.separator "(workspace instructions compose --pack promote)."
+        opts.separator ""
+        opts.on("--name PROJECT", "The main checkout's workspace, from any directory (default: the working directory, which",
+          "must be the top of a main checkout)") { |v| options[:name] = v }
+        opts.on("--title TEXT", "The new workspace's task title") { |v| options[:title] = v }
+        opts.on("--spine=[TEMPLATE]", "Make the spine (spine init) when none was carried; TEMPLATE as for start --spine") { |v| options[:spine] = v || true }
+        opts.on("--no-spine", "Make no spine, even when spine.auto is true") { options[:no_spine] = true }
+        opts.on("--plan=[TITLE]", "Make the plan (plan init) when none was carried") { |v| options[:plan] = v || true }
+        opts.on("--carry-note FILE", "Copy a note (relative to the main notes directory) into the new one; repeatable;",
+          "never over a file that is there") { |v| options[:carry_notes] << v }
+        opts.on("--launch", "Launch the new workspace once it is made: with a plan, as plan start does; else with --prompt") { options[:launch] = true }
+        opts.on("--prompt TEXT", "With --launch: text for the agent's first prompt") { |v| options[:prompt] = v }
+        opts.on("--prompt-timeout DURATION", "With --launch: how long to wait for the agent (default #{AgentReadiness::DEFAULT_TIMEOUT}s)") do |v|
+          options[:prompt_timeout] = parse_duration_option("--prompt-timeout", v, positive: true)
+        end
+        opts.on("--agent-kind KIND", "The new workspace's main agent: #{AgentProvider.all.map(&:key).join(", ")}") { |v| options[:agent_kind] = v }
+        opts.on("--[no-]headless", "With --launch: start the session in plain tmux (see workspace launch --help)") { |v| options[:headless] = v }
+        opts.on("--force", "Move even while an agent pane of the main checkout works or waits (the caller's own",
+          "pane, $TMUX_PANE, never counts)") { options[:force] = true }
+        opts.on("--dry-run", "Say what would move and write nothing; on the default branch BRANCH may be left out") { options[:dry_run] = true }
+        opts.on("--json", "Print one JSON document; other output goes to stderr") { options[:json] = true }
+        opts.on("-h", "--help", "Show this help") { options[:help] = true }
+        opts.separator ""
+        opts.separator "A failure part way is undone (move_failed); if undoing fails too, the changes are kept under"
+        opts.separator "refs/workspace/promote/<id> and the error lists the git commands that get them back (move_incomplete)."
+        opts.separator "Allow 60s without --launch, and --prompt-timeout plus 60s with it."
+        opts.separator ""
+        opts.separator "Examples:"
+        opts.separator "  workspace promote fix-login --dry-run --json"
+        opts.separator "  workspace promote fix-login --title \"Fix the login bug\" --spine --plan --carry-note research-login.md --json"
+        opts.separator "  workspace promote --name api --launch"
+      end
+    end
+
+    def cmd_promote(args)
+      options = {carry_notes: [], json: false}
+      parser = promote_parser(options)
+      parser.parse!(args)
+      return @output.puts(parser.help) if options[:help]
+
+      raise UsageError, "Unexpected argument: #{args[1]}. Run 'workspace promote --help'." if args.size > 1
+      raise UsageError, "--spine cannot be combined with --no-spine." if options[:spine] && options[:no_spine]
+      %i[prompt prompt_timeout].each do |key|
+        raise UsageError, "--#{key.to_s.tr("_", "-")} needs --launch." if options.key?(key) && !options[:launch]
+      end
+      raise Error, "promote is not available: no promote command was wired" unless @promote_command
+
+      json = options[:json]
+      headless = @launch_mode.resolve(options[:headless]).headless?
+      launch = options[:launch] && promote_launcher(headless: options[:headless], prompt_timeout: options[:prompt_timeout])
+      call = lambda do
+        @promote_command.call(working_dir: @working_dir, branch: args.first, name: options[:name], title: options[:title],
+          spine: options[:no_spine] ? false : options[:spine], plan: options[:plan], carry_notes: options[:carry_notes],
+          launch: launch, prompt: options[:prompt], headless: headless, agent_kind: options[:agent_kind],
+          force: options[:force] == true, dry_run: options[:dry_run] == true, json: json)
+      end
+      result = json ? divert_output(&call) : call.call
+      @output.puts JSON.generate(result[:json]) if json
+      @exit_handler.exit(result[:exit_code]) unless result[:exit_code].zero?
+    rescue UsageError => e
+      raise unless e.code == CheckoutMove::BRANCH_REQUIRED
+      report_failure(e, json ? ["--json"] : [], e.message, exit_code: 2)
+    end
+
+    # What `promote --launch` launches the new workspace with: {#launch_projects} with the packs composed from
+    # its own checkout (after the carry), a play and a prompt. Returns `{ok:, started:, reason:, message:, pane:, packs:}`.
+    def promote_launcher(headless:, prompt_timeout:)
+      lambda do |workspace, prompt:, play:|
+        launched = launch_projects([workspace], play: play, prompt: prompt, prompt_timeout: prompt_timeout, headless: headless, with_packs: true)
+        row = launch_rows(launched[:projects], launched[:result], plays: launched[:plays], packs: launched[:packs],
+          skipped_packs: launched[:skipped_packs], prompts: launched[:prompts]).first
+        {ok: row["outcome"] != "failed", started: !%w[session_not_started not_launched].include?(row["reason"]),
+         reason: row["reason"], message: row["message"], pane: row.dig("play", "pane") || row["pane"], packs: row["packs"]}
+      end
     end
 
     PLAN_FLAGS = {

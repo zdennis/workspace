@@ -1,0 +1,15 @@
+{
+  "schema_version": 1, "ok": true, "dry_run": true, "branch_required": false,
+  "project": "api", "workspace": "api.worktree-fix-login", "path": "/src/api/.worktrees/fix-login",
+  "branch": "fix-login", "launched": false,
+  "moved": {
+    "from_branch": "main", "branch": "fix-login", "branch_created": true,
+    "base_commit": "0123456789abcdef0123456789abcdef01234567", "commits_ahead": 0,
+    "staged": [], "staged_count": 0, "unstaged": ["app.rb"], "unstaged_count": 1,
+    "untracked": [], "untracked_count": 0, "left_behind": [], "snapshot": null,
+    "main": {"path": "/src/api", "branch": "main", "clean": true}
+  },
+  "notes": {"plan": "would_move", "spine": "none", "carried": [{"path": "research-login.md", "outcome": "would_copy"}]},
+  "next": [],
+  "warnings": []
+}

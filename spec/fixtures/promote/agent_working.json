@@ -1,0 +1,5 @@
+{"schema_version": 1, "ok": false,
+ "error": "An agent in api is working (pane %3); the move would take files out from under it. Wait for it to finish, or pass --force.",
+ "code": "agent_working",
+ "details": {"workspace": "api", "panes": [{"pane": "%3", "state": "working"}]},
+ "retry": {"flags": ["--force"], "destructive": true}}

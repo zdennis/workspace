@@ -1,0 +1,27 @@
+{
+  "schema_version": 1, "ok": true, "dry_run": false, "branch_required": false,
+  "project": "api", "workspace": "api.worktree-fix-login", "path": "/src/api/.worktrees/fix-login",
+  "branch": "fix-login", "base": null, "created": true, "headless": false, "launched": false,
+  "agent_kind": "claude", "notes_dir": "/src/api/.worktrees/fix-login/tmp/workspace-notes",
+  "task": {"id": "t-1", "title": "Fix the login bug"},
+  "packs": [],
+  "moved": {
+    "from_branch": "main", "branch": "fix-login", "branch_created": true,
+    "base_commit": "0123456789abcdef0123456789abcdef01234567", "commits_ahead": 1,
+    "staged": ["app.rb"], "staged_count": 1,
+    "unstaged": ["run.sh"], "unstaged_count": 1,
+    "untracked": ["spec/login_spec.rb"], "untracked_count": 1,
+    "left_behind": [],
+    "snapshot": {"ref": "refs/workspace/promote/0123456789ab", "id": "0123456789abcdef0123456789abcdef01234567", "kept": false},
+    "main": {"path": "/src/api", "branch": "main", "clean": true}
+  },
+  "notes": {
+    "plan": "moved", "spine": "moved",
+    "carried": [{"path": "research-login.md", "outcome": "copied"}]
+  },
+  "next": ["workspace plan start --name api.worktree-fix-login"],
+  "warnings": [
+    {"code": "default_ahead", "message": "main is 1 commit(s) ahead of origin/main; the new branch has them and main is left as it is.",
+     "branch": "main", "upstream": "origin/main", "count": 1, "command": "git -C /src/api reset --keep origin/main"}
+  ]
+}
