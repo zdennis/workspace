@@ -214,11 +214,17 @@ RSpec.describe Workspace::LibraryInstaller do
     it "installs, then reports unchanged, and writes nothing on a dry run" do
       dest = File.join(worktree, ".claude", "agents", "reviewer.md")
 
-      expect(installer.install(entry("agent", "reviewer"), worktree: worktree, dry_run: true)).to eq("result" => "installed", "path" => dest)
+      expect(installer.install(entry("agent", "reviewer"), worktree: worktree, dry_run: true)).to eq("result" => "would_install", "path" => dest)
       expect(File.exist?(dest)).to be(false)
       expect(installer.install(entry("agent", "reviewer"), worktree: worktree)).to eq("result" => "installed", "path" => dest)
       expect(installer.install(entry("agent", "reviewer"), worktree: worktree)).to eq("result" => "unchanged", "path" => dest)
       expect(File.read(exclude).lines.map(&:chomp)).to include("/.claude/agents/reviewer.md")
+    end
+
+    it "reports unchanged, not would_install, for an identical copy on a dry run" do
+      installer.install(entry("agent", "reviewer"), worktree: worktree)
+
+      expect(installer.install(entry("agent", "reviewer"), worktree: worktree, dry_run: true)["result"]).to eq("unchanged")
     end
 
     it "refuses different content with library_install_exists unless forced" do
@@ -241,6 +247,31 @@ RSpec.describe Workspace::LibraryInstaller do
       expect(File.read(File.join(worktree, ".claude", "agents", "tracked.md"))).to eq("the repo's own\n")
     end
 
+    it "refuses a symlinked .claude with path_linked and writes nothing outside" do
+      FileUtils.mkdir_p(File.join(@dir, "elsewhere"))
+      FileUtils.rm_rf(File.join(worktree, ".claude"))
+      File.symlink(File.join(@dir, "elsewhere"), File.join(worktree, ".claude"))
+
+      expect { installer.install(entry("skill", "write-tests"), worktree: worktree, force: true) }
+        .to raise_error(Workspace::Error) { |e| expect(e.code).to eq("path_linked") }
+      expect(Dir.children(File.join(@dir, "elsewhere"))).to be_empty
+    end
+
+    it "refuses a symlink at the destination with library_install_exists, and replaces the link, not its target, when forced" do
+      target = File.join(@dir, "target.md")
+      File.write(target, "You review.\n")
+      dest = File.join(worktree, ".claude", "agents", "reviewer.md")
+      FileUtils.mkdir_p(File.dirname(dest))
+      File.symlink(target, dest)
+
+      expect { installer.install(entry("agent", "reviewer"), worktree: worktree) }
+        .to raise_error(Workspace::Error) { |e| expect(e.code).to eq("library_install_exists") }
+      expect(File.symlink?(dest)).to be(true)
+      installer.install(entry("agent", "reviewer"), worktree: worktree, force: true)
+      expect(File.symlink?(dest)).to be(false)
+      expect(File.read(target)).to eq("You review.\n")
+    end
+
     it "refuses a symlinked kind directory with path_linked" do
       FileUtils.mkdir_p(File.join(@dir, "elsewhere"))
       FileUtils.mkdir_p(File.join(worktree, ".claude"))
@@ -258,13 +289,46 @@ RSpec.describe Workspace::LibraryInstaller do
       installer.install(entry("skill", "write-tests"), worktree: worktree)
       dest = File.join(worktree, ".claude", "skills", "write-tests")
 
-      expect(installer.uninstall("skill", "write-tests", worktree: worktree, dry_run: true)["result"]).to eq("removed")
+      expect(installer.uninstall("skill", "write-tests", worktree: worktree, dry_run: true)["result"]).to eq("would_remove")
       expect(File.directory?(dest)).to be(true)
       expect(installer.uninstall("skill", "write-tests", worktree: worktree)).to eq("result" => "removed", "path" => dest)
       expect(File.exist?(dest)).to be(false)
       expect(store.find("skill", "write-tests")).not_to be_nil
       expect(File.read(exclude)).to include("/.claude/skills/write-tests/")
       expect(installer.uninstall("skill", "write-tests", worktree: worktree)["result"]).to eq("absent")
+    end
+
+    it "refuses a copy that differs from the library entry unless forced" do
+      installer.install(entry("skill", "write-tests"), worktree: worktree)
+      dest = File.join(worktree, ".claude", "skills", "write-tests")
+      File.write(File.join(dest, "SKILL.md"), "local edit\n")
+
+      expect { installer.uninstall("skill", "write-tests", worktree: worktree, entry: entry("skill", "write-tests")) }
+        .to raise_error(Workspace::Error) { |e| expect(e.code).to eq("library_uninstall_modified") }
+      expect(File.read(File.join(dest, "SKILL.md"))).to eq("local edit\n")
+      expect(installer.uninstall("skill", "write-tests", worktree: worktree, entry: entry("skill", "write-tests"), force: true)["result"]).to eq("removed")
+      expect(File.exist?(dest)).to be(false)
+    end
+
+    it "treats a symlinked copy as modified" do
+      target = File.join(@dir, "target.md")
+      File.write(target, "You review.\n")
+      dest = File.join(worktree, ".claude", "agents", "reviewer.md")
+      FileUtils.mkdir_p(File.dirname(dest))
+      File.symlink(target, dest)
+
+      expect { installer.uninstall("agent", "reviewer", worktree: worktree, entry: entry("agent", "reviewer")) }
+        .to raise_error(Workspace::Error) { |e| expect(e.code).to eq("library_uninstall_modified") }
+      expect(File.symlink?(dest)).to be(true)
+    end
+
+    it "removes an unmodified copy with the entry given, and any copy once the entry is gone" do
+      installer.install(entry("skill", "write-tests"), worktree: worktree)
+      expect(installer.uninstall("skill", "write-tests", worktree: worktree, entry: entry("skill", "write-tests"))["result"]).to eq("removed")
+
+      dest = File.join(worktree, ".claude", "agents", "gone.md")
+      File.write(dest, "mine\n")
+      expect(installer.uninstall("agent", "gone", worktree: worktree)["result"]).to eq("removed")
     end
 
     it "never deletes a tracked path" do

@@ -121,6 +121,7 @@ module Workspace
       "library_source_missing" => "The file to add doesn't exist, or a linked entry's target can't be read.",
       "library_install_exists" => "library install would replace a worktree copy that has different content; pass --force.",
       "library_kind_not_copyable" => "library install or uninstall was given an entry that is not an agent or skill.",
+      "library_uninstall_modified" => "library uninstall would delete a worktree copy that differs from the library entry; pass --force.",
       "library_path_outside" => "library install or uninstall would act on a path that is not under the checkout's .claude/skills/ or .claude/agents/.",
       "path_tracked" => "library install or uninstall would touch a path the repo tracks; it is never overwritten or deleted.",
       "path_linked" => "library install or uninstall would act through a symlinked .claude or .claude/skills|agents, where git can't tell what it tracks.",

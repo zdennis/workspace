@@ -4372,7 +4372,7 @@ module Workspace
           "       workspace library update REF PATH|- [--link] [--project [NAME]] [--dry-run] [--json]\n" \
           "       workspace library remove REF [--yes] [--project [NAME]] [--dry-run] [--json]\n" \
           "       workspace library install REF [--name WS] [--force] [--dry-run] [--json]\n" \
-          "       workspace library uninstall REF [--name WS] [--dry-run] [--json]"
+          "       workspace library uninstall REF [--name WS] [--force] [--dry-run] [--json]"
         opts.separator ""
         opts.separator "A store of named plays, prompts, agents and skills under #{@config.library_dir}."
         opts.separator "A play is a document an agent reads and follows; a prompt is short text sent as typed;"
@@ -4399,14 +4399,15 @@ module Workspace
         opts.separator "            (.claude/skills/NAME/ or .claude/agents/NAME.md), as start --skill/--agent does for"
         opts.separator "            a new one: identical content is unchanged, different content needs --force, a path"
         opts.separator "            the repo tracks is never overwritten; the copy is listed in info/exclude"
-        opts.separator "  uninstall delete that copy from the checkout; the library entry and the info/exclude line stay"
+        opts.separator "  uninstall delete that copy from the checkout; a copy that differs from the library entry needs --force;"
+        opts.separator "            the library entry and the info/exclude line stay"
         opts.separator ""
         opts.on("--kind KIND", "agent, play, prompt, skill or spine (add: required; list: a filter);",
           "add --kind skill takes a directory holding SKILL.md;",
           "add --kind spine takes a folder of plan-spine stage files (a template for 'spine init')") { |v| options[:kind] = v }
         opts.on("--as NAME", "add: the entry name (lowercase letters, digits and hyphens)") { |v| options[:name] = v }
         opts.on("--link", "add, update: store a symlink to PATH instead of a copy") { options[:link] = true }
-        opts.on("--force", "add: replace an entry that has different content;", "install: replace a copy that has different content") { options[:force] = true }
+        opts.on("--force", "add: replace an entry that has different content;", "install: replace a copy that has different content;", "uninstall: remove a copy that differs from the library entry") { options[:force] = true }
         opts.on("--yes", "remove: don't ask") { options[:yes] = true }
         opts.on("--global", "reads: only the global store") { options[:global] = true }
         opts.on("--builtin", "reads: only the entries that ship with workspace") { options[:builtin] = true }
@@ -4445,6 +4446,10 @@ module Workspace
         raise UsageError, "library #{subcommand} can't change the built-in entries, which ship with workspace."
       end
 
+      if %w[install uninstall].include?(subcommand) && (options[:global] || options[:builtin])
+        raise UsageError, "library #{subcommand} takes --name WS, not --global or --builtin."
+      end
+
       scope = scopes.first
       project = options[:project].is_a?(String) ? options[:project] : nil
       where = {scope: scope, project: project, cwd: @working_dir}
@@ -4477,15 +4482,19 @@ module Workspace
           @library_command.update(ref, path: path, body: body, link: options[:link], dry_run: options[:dry_run], **where)
         end
       when "install", "uninstall"
-        raise UsageError, "library #{subcommand} needs a REF (skill/name or agent/name)." unless ref
+        unless ref
+          hint = if options[:project].to_s.match?(%r{\A(skill|agent)/})
+            " --name took '#{options[:project]}' as the workspace name; give the REF first, or give --name a workspace."
+          end
+          raise UsageError, "library #{subcommand} needs a REF (skill/name or agent/name).#{hint}"
+        end
         raise UsageError, "Unexpected argument: #{args.first}. Run 'workspace library --help'." if args.any?
-        raise UsageError, "library uninstall has no --force." if subcommand == "uninstall" && options[:force]
         workspace = options[:project].is_a?(String) ? options[:project] : nil
         library_install_action(options) do
           if subcommand == "install"
             @library_command.install(ref, name: workspace, force: options[:force], dry_run: options[:dry_run], cwd: @working_dir)
           else
-            @library_command.uninstall(ref, name: workspace, dry_run: options[:dry_run], cwd: @working_dir)
+            @library_command.uninstall(ref, name: workspace, force: options[:force], dry_run: options[:dry_run], cwd: @working_dir)
           end
         end
       when "remove"

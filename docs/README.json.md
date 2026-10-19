@@ -205,6 +205,7 @@ The registry lives in `Workspace::ErrorCodes`; a spec checks that every code a r
 | `library_entry_exists` | `library add` would replace an entry with different content. `details.ref`, `details.scope`; `retry` names `--force` (destructive). |
 | `library_install_exists` | `library install` would replace a worktree copy with different content. `details.ref`, `details.path`; `retry` names `--force` (destructive). |
 | `library_kind_not_copyable` | `library install`/`uninstall` was given an entry that is not an agent or skill. `details.ref`, `details.kind`. |
+| `library_uninstall_modified` | `library uninstall` would delete a worktree copy that differs from the library entry (or is a symlink). `details.ref`, `details.path`; `retry` names `--force` (destructive). |
 | `library_path_outside` | `library install`/`uninstall` would act on a path not directly under the checkout's `.claude/skills/` or `.claude/agents/`. `details.ref`, `details.path`. |
 | `path_tracked` | `library install`/`uninstall`: the repo tracks that path, so it is never overwritten or deleted. `details.ref`, `details.path`. |
 | `path_linked` | `library install`/`uninstall`: `.claude` or its `skills`/`agents` directory is a symlink, so git can't tell what is tracked. `details.ref`, `details.path`. |

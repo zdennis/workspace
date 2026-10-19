@@ -205,7 +205,7 @@ module Workspace
       # @param force [Boolean] replace a copy with different content
       # @param dry_run [Boolean] report and write nothing
       # @param cwd [String]
-      # @return [InstallResult] result "installed" or "unchanged"
+      # @return [InstallResult] result "installed", "unchanged", or "would_install" on a dry run
       # @raise [Workspace::Error] `unknown_workspace`, `unknown_library_entry`, `library_kind_not_copyable`,
       #   `library_install_exists`, `library_path_outside`, `path_linked`, `path_tracked`
       def install(ref, name: nil, force: false, dry_run: false, cwd: Dir.pwd)
@@ -213,7 +213,7 @@ module Workspace
         target = @checkout.resolve(name, working_dir: cwd, allow_detached: true)
         entry = copyable_entry(ref, target["path"])
         found = @installer.install(entry, worktree: target["path"], force: force, dry_run: dry_run)
-        finish_install(entry["ref"], target, found, dry_run, {"installed" => "Installed", "unchanged" => "Unchanged"})
+        finish_install(entry["ref"], target, found, dry_run, {"installed" => "Installed", "unchanged" => "Unchanged", "would_install" => "Would install"})
       end
 
       # Removes the workspace's copy of a library agent or skill. The library
@@ -221,17 +221,24 @@ module Workspace
       #
       # @param ref [String] as for {#install}
       # @param name [String, nil]
+      # @param force [Boolean] remove a copy that differs from the library entry
       # @param dry_run [Boolean]
       # @param cwd [String]
-      # @return [InstallResult] result "removed" or "absent"
+      # @return [InstallResult] result "removed", "absent", or "would_remove" on a dry run
       # @raise [Workspace::Error] `unknown_workspace`, `unknown_library_entry`, `ambiguous_library_entry`,
-      #   `library_kind_not_copyable`, `library_path_outside`, `path_linked`, `path_tracked`
-      def uninstall(ref, name: nil, dry_run: false, cwd: Dir.pwd)
+      #   `library_kind_not_copyable`, `library_uninstall_modified`, `library_path_outside`, `path_linked`, `path_tracked`
+      def uninstall(ref, name: nil, force: false, dry_run: false, cwd: Dir.pwd)
         raise Error, "library uninstall is not available: no installer was wired." unless @installer && @checkout
         target = @checkout.resolve(name, working_dir: cwd, allow_detached: true)
         kind, entry_name = installed_kind(ref, target["path"])
-        found = @installer.uninstall(kind, entry_name, worktree: target["path"], dry_run: dry_run)
-        finish_install("#{kind}/#{entry_name}", target, found, dry_run, {"removed" => "Removed", "absent" => "Absent"})
+        library_entry = force ? nil : begin
+          @library.copyable(kind, "#{kind}/#{entry_name}", cwd: target["path"])
+        rescue Error => e
+          raise unless e.code == "unknown_library_entry"
+          nil
+        end
+        found = @installer.uninstall(kind, entry_name, worktree: target["path"], dry_run: dry_run, entry: library_entry, force: force)
+        finish_install("#{kind}/#{entry_name}", target, found, dry_run, {"removed" => "Removed", "absent" => "Absent", "would_remove" => "Would remove"})
       end
 
       # The default entry name for a file: its name without extension, in kebab case.
@@ -285,8 +292,7 @@ module Workspace
 
       def finish_install(ref, target, found, dry_run, verbs)
         verb = verbs.fetch(found["result"])
-        verb = {"Installed" => "Would install", "Removed" => "Would remove"}.fetch(verb, verb) if dry_run
-        @output.puts "#{verb} #{ref} #{(found["result"] == "removed") ? "from" : "at"} #{found["path"]} (workspace #{target["workspace"]})."
+        @output.puts "#{verb} #{ref} #{%w[removed would_remove].include?(found["result"]) ? "from" : "at"} #{found["path"]} (workspace #{target["workspace"]})."
         InstallResult.new(ref, target["workspace"], found["result"], found["path"], dry_run)
       end
 

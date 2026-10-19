@@ -583,17 +583,40 @@ RSpec.describe Workspace::Commands::Library do
     end
 
     it "uninstalls by a library ref, or by what is installed once the entry is gone, without touching the library" do
-      expect(installer).to receive(:uninstall).with("skill", "tests", worktree: cwd, dry_run: true)
-        .and_return({"result" => "removed", "path" => "#{cwd}/.claude/skills/tests"})
-      expect(installer).to receive(:uninstall).with("agent", "gone", worktree: cwd, dry_run: false)
+      expect(installer).to receive(:uninstall).with("skill", "tests", worktree: cwd, dry_run: true, entry: a_hash_including("ref" => "skill/tests"), force: false)
+        .and_return({"result" => "would_remove", "path" => "#{cwd}/.claude/skills/tests"})
+      expect(installer).to receive(:uninstall).with("agent", "gone", worktree: cwd, dry_run: false, entry: nil, force: false)
         .and_return({"result" => "absent", "path" => "#{cwd}/.claude/agents/gone.md"})
 
-      expect(command.uninstall("tests", name: "app", dry_run: true, cwd: cwd).result).to eq("removed")
+      expect(command.uninstall("tests", name: "app", dry_run: true, cwd: cwd).result).to eq("would_remove")
       expect(output.string).to start_with("Would remove skill/tests from")
       FileUtils.mkdir_p(File.join(cwd, ".claude", "agents"))
       File.write(File.join(cwd, ".claude", "agents", "gone.md"), "x")
       expect(command.uninstall("gone", name: "app", cwd: cwd).result).to eq("absent")
       expect(library.entries(library.stores(cwd: cwd)).map { |e| e["ref"] }).to include("skill/tests")
+    end
+
+    it "passes --force through to uninstall without reading the library entry" do
+      expect(installer).to receive(:uninstall).with("skill", "tests", worktree: cwd, dry_run: false, entry: nil, force: true)
+        .and_return({"result" => "removed", "path" => "#{cwd}/.claude/skills/tests"})
+
+      expect(command.uninstall("skill/tests", name: "app", force: true, cwd: cwd).result).to eq("removed")
+    end
+
+    it "reports a dry-run install as would_install" do
+      allow(installer).to receive(:install).and_return({"result" => "would_install", "path" => "#{cwd}/.claude/skills/tests"})
+
+      expect(command.install("skill/tests", name: "app", dry_run: true, cwd: cwd).result).to eq("would_install")
+      expect(output.string).to start_with("Would install skill/tests at")
+    end
+
+    it "refuses an ambiguous bare name with ambiguous_library_entry" do
+      command.add(kind: "agent", body: "x", name: "tests", cwd: cwd)
+
+      expect { command.install("tests", name: "app", cwd: cwd) }
+        .to raise_error(Workspace::Error) { |e| expect(e.code).to eq("ambiguous_library_entry") }
+      expect { command.uninstall("tests", name: "app", cwd: cwd) }
+        .to raise_error(Workspace::Error) { |e| expect(e.code).to eq("ambiguous_library_entry") }
     end
 
     it "refuses an uninstall of a play or an unknown name" do

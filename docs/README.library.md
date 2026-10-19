@@ -12,7 +12,7 @@ workspace library add    PATH|- --kind KIND [--as NAME] [--link] [--force] [--pr
 workspace library update REF PATH|- [--link] [--project [NAME]] [--dry-run] [--json]
 workspace library remove REF [--yes] [--project [NAME]] [--dry-run] [--json]
 workspace library install   REF [--name WS] [--force] [--dry-run] [--json]
-workspace library uninstall REF [--name WS] [--dry-run] [--json]
+workspace library uninstall REF [--name WS] [--force] [--dry-run] [--json]
 ```
 
 `REF` is `kind/name` or a bare `name`. A bare name works when one kind has it; when two do, the command fails with `ambiguous_library_entry` and lists both. A built-in play never makes a bare name ambiguous: with your own `prompt/review`, `show review` prints the prompt, and `show play/review` the built-in play. Scripts should pass `kind/name`. Names are lowercase letters, digits and hyphens.
@@ -95,10 +95,13 @@ The built-in scope is searched last here and by `--play`, so `workspace start --
 | `install`, identical content already there | `unchanged` |
 | `install --force`, different content | `installed` (replaced) |
 | `install`, different content, no `--force` | error `library_install_exists` |
-| `uninstall`, the copy exists | `removed` |
+| `uninstall`, the copy exists and matches the library entry (or the entry is gone) | `removed` |
+| `uninstall`, the copy differs from the library entry, no `--force` | error `library_uninstall_modified` |
+| `uninstall --force`, the copy exists | `removed` |
 | `uninstall`, no copy | `absent` |
+| any `--dry-run` that would write | `would_install` or `would_remove` |
 
-`--dry-run` reports the result and writes nothing. Unlike `start`, which replaces an untracked copy silently, `install` refuses different content without `--force`. Neither verb touches a path the repo tracks (`path_tracked`) or goes through a symlinked `.claude`, `.claude/skills` or `.claude/agents` (`path_linked`); `library_path_outside` refuses any path not directly under `.claude/skills/` or `.claude/agents/`. A `play`, `prompt` or `spine` ref is `library_kind_not_copyable`; unknown workspace is `unknown_workspace`; an unknown ref is `unknown_library_entry`.
+`uninstall` compares the copy with the library entry it came from; with the entry gone there is nothing to compare, so the copy is removed without `--force`. `--dry-run` raises the same refusals as the real command (so `library_uninstall_modified` shows in a preview) and writes nothing; where the real command would write it reports `would_install` or `would_remove`, and `unchanged`, `absent` and every refusal read as they do without it. Unlike `start`, which replaces an untracked copy silently, `install` refuses different content without `--force`. Neither verb touches a path the repo tracks (`path_tracked`) or goes through a symlinked `.claude`, `.claude/skills` or `.claude/agents` (`path_linked`); `library_path_outside` refuses any path not directly under `.claude/skills/` or `.claude/agents/`. A `play`, `prompt` or `spine` ref is `library_kind_not_copyable`; unknown workspace is `unknown_workspace`; an unknown ref is `unknown_library_entry`.
 
 ## Change events
 

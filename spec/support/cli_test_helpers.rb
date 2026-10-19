@@ -766,6 +766,10 @@ module CLITestHelpers
 
     def remove(ref, **kw) = record(:remove, {ref: ref}.merge(kw))
 
+    def install(ref, **kw) = record(:install, {ref: ref}.merge(kw))
+
+    def uninstall(ref, **kw) = record(:uninstall, {ref: ref}.merge(kw))
+
     private
 
     def record(name, args)

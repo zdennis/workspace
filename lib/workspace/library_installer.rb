@@ -55,7 +55,7 @@ module Workspace
     # @param worktree [String] the checkout root
     # @param force [Boolean] replace different content
     # @param dry_run [Boolean] report and write nothing
-    # @return [Hash] "result" ("installed" or "unchanged") and "path"
+    # @return [Hash] "result" ("installed", "unchanged", or "would_install" on a dry run) and "path"
     # @raise [Workspace::Error] codes `library_install_exists`, `path_tracked`, `library_path_outside`
     def install(entry, worktree:, force: false, dry_run: false)
       rel = DESTINATIONS.fetch(entry["kind"]).call(entry["name"])
@@ -70,10 +70,9 @@ module Workspace
           code: "library_install_exists", details: {"ref" => entry["ref"], "path" => dest},
           retry_with: {"flags" => ["--force"], "destructive" => true})
       end
-      unless dry_run
-        place(entry["path"], dest)
-        exclude(worktree, "/#{rel}#{"/" if entry["kind"] == "skill"}")
-      end
+      return {"result" => "would_install", "path" => dest} if dry_run
+      place(entry["path"], dest)
+      exclude(worktree, "/#{rel}#{"/" if entry["kind"] == "skill"}")
       {"result" => "installed", "path" => dest}
     end
 
@@ -85,14 +84,23 @@ module Workspace
     # @param name [String] a valid library name
     # @param worktree [String] the checkout root
     # @param dry_run [Boolean] report and write nothing
-    # @return [Hash] "result" ("removed" or "absent") and "path"
-    # @raise [Workspace::Error] codes `path_tracked`, `library_path_outside`
-    def uninstall(kind, name, worktree:, dry_run: false)
+    # @param entry [Hash, nil] the library entry the copy came from; when given, a copy
+    #   that differs from it (or is a symlink) is refused unless +force+
+    # @param force [Boolean] remove a locally modified copy
+    # @return [Hash] "result" ("removed", "absent", or "would_remove" on a dry run) and "path"
+    # @raise [Workspace::Error] codes `library_uninstall_modified`, `path_tracked`, `library_path_outside`
+    def uninstall(kind, name, worktree:, dry_run: false, entry: nil, force: false)
       rel = DESTINATIONS.fetch(kind).call(name)
       dest = File.join(worktree, rel)
       guard!(worktree, rel, "#{kind}/#{name}", dest)
       return {"result" => "absent", "path" => dest} unless File.exist?(dest) || File.symlink?(dest)
-      LibraryStore.remove(dest) unless dry_run
+      if entry && !force && (File.symlink?(dest) || LibraryStore.snapshot(dest) != LibraryStore.snapshot(entry["path"]))
+        raise Error.new("#{dest} differs from #{entry["ref"]} in the library, so it may hold local edits; pass --force to remove it.",
+          code: "library_uninstall_modified", details: {"ref" => entry["ref"], "path" => dest},
+          retry_with: {"flags" => ["--force"], "destructive" => true})
+      end
+      return {"result" => "would_remove", "path" => dest} if dry_run
+      LibraryStore.remove(dest)
       {"result" => "removed", "path" => dest}
     end
 

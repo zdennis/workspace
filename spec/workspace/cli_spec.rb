@@ -5194,6 +5194,42 @@ RSpec.describe Workspace::CLI do
         "results" => [include("workspace" => "api", "outcome" => "removed")])
     end
 
+    describe "install and uninstall" do
+      let(:installed) { Workspace::Commands::Library::InstallResult.new("skill/x", "app", "installed", "/w/app/.claude/skills/x", false) }
+
+      before { library_command.result = installed }
+
+      it "passes the workspace, --force and --dry-run to install, and the working directory" do
+        cli.run(["library", "install", "skill/x", "--name", "app", "--force", "--dry-run"])
+        cli.run(["library", "install", "skill/x"])
+
+        expect(library_command.calls).to eq([
+          [:install, {ref: "skill/x", name: "app", force: true, dry_run: true, cwd: "/some/dir"}],
+          [:install, {ref: "skill/x", name: nil, force: false, dry_run: false, cwd: "/some/dir"}]
+        ])
+      end
+
+      it "passes the workspace, --force and --dry-run to uninstall" do
+        cli.run(["library", "uninstall", "--name", "app", "agent/y", "--force", "--dry-run"])
+
+        expect(library_command.calls).to eq([[:uninstall, {ref: "agent/y", name: "app", force: true, dry_run: true, cwd: "/some/dir"}]])
+      end
+
+      it "prints one document under --json and no extra text" do
+        cli.run(["library", "install", "skill/x", "--name", "app", "--json"])
+
+        expect(JSON.parse(output.string)).to eq("schema_version" => 1, "ok" => true, "ref" => "skill/x", "workspace" => "app",
+          "result" => "installed", "path" => "/w/app/.claude/skills/x", "dry_run" => false)
+      end
+
+      it "emits the error envelope for a refusal under --json" do
+        library_command.error = Workspace::Error.new("differs", code: "library_install_exists", details: {"ref" => "skill/x"})
+
+        expect { cli.run(["library", "install", "skill/x", "--json"]) }.to raise_error(FakeSystemExit)
+        expect(JSON.parse(output.string)).to include("ok" => false, "code" => "library_install_exists")
+      end
+    end
+
     it "prompts for remove on a terminal and reports cancelled when declined" do
       library_command.result = nil
 
@@ -5230,6 +5266,12 @@ RSpec.describe Workspace::CLI do
         ["library", "add", "x.md"] => /needs --kind/,
         ["library", "update", "play/x"] => /needs a REF and a PATH/,
         ["library", "remove"] => /needs a REF/,
+        ["library", "install"] => /library install needs a REF/,
+        ["library", "uninstall"] => /library uninstall needs a REF/,
+        ["library", "install", "--name", "skill/x"] => /--name took 'skill\/x' as the workspace name/,
+        ["library", "install", "skill/x", "--global"] => /takes --name WS/,
+        ["library", "uninstall", "skill/x", "--builtin"] => /takes --name WS/,
+        ["library", "install", "skill/x", "extra"] => /Unexpected argument: extra/,
         ["library", "list", "--global", "--project", "api"] => /--global, --builtin and --project/,
         ["library", "list", "--global", "--builtin"] => /can.t be combined/,
         ["library", "add", "x.md", "--kind", "play", "--builtin"] => /can.t change the built-in entries/,
