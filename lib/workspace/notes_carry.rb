@@ -1,4 +1,5 @@
 require "fileutils"
+require "securerandom"
 
 module Workspace
   # Carries the notes of the work `workspace promote` moves from a main checkout's notes
@@ -31,6 +32,7 @@ module Workspace
     def call(from:, to:, name: nil, carry_notes: [], dry_run: false)
       @warnings = []
       @dry_run = dry_run
+      @moved = []
       @stamp = @clock.call.utc.strftime("%Y%m%dT%H%M%SZ")
       from = File.expand_path(from)
       to = File.expand_path(to)
@@ -42,7 +44,9 @@ module Workspace
 
       plan = move_item(from, to, PLAN_FILE, directory: false)
       spine = move_item(from, to, "spine", directory: true)
-      {"plan" => plan, "spine" => spine, "ship" => ship(spine, from, name),
+      @moved << PLAN_FILE if %w[moved would_move].include?(plan)
+      @moved << "spine" if %w[moved would_move].include?(spine)
+      {"plan" => plan, "spine" => spine, "ship" => ship(spine, from, to, name),
        "carried" => carry_notes.uniq.map { |path| carry(from, to, path) }, "warnings" => @warnings}
     end
 
@@ -109,28 +113,49 @@ module Workspace
       File.directory?(path) && !File.symlink?(path) && Dir.empty?(path)
     end
 
+    # Copies to a temp file beside +target+ and links it into place only after the whole copy, so a
+    # failed copy leaves no partial file and a target that appeared meanwhile is never replaced
+    # (Errno::EEXIST).
     def copy_file(source, target)
+      tmp = File.join(File.dirname(target), ".#{File.basename(target)}.tmp-#{SecureRandom.hex(8)}")
       File.open(source, File::RDONLY | File::NOFOLLOW) do |input|
-        File.open(target, File::WRONLY | File::CREAT | File::EXCL | File::NOFOLLOW, input.stat.mode & 0o777) do |output|
+        File.open(tmp, File::WRONLY | File::CREAT | File::EXCL | File::NOFOLLOW, input.stat.mode & 0o777) do |output|
           IO.copy_stream(input, output)
         end
       end
+      File.link(tmp, target)
+    ensure
+      FileUtils.rm_f(tmp) if tmp
     end
 
     # Builds the copy beside +target+ and renames it into place, so a reader sees all of it or none.
     # Links inside the tree are left out with a warning.
     def copy_tree(source, target)
-      tmp = "#{target}.tmp-#{Process.pid}"
+      tmp = nil
       begin
+        tmp = make_temp_dir(target)
         copy_entries(source, tmp)
         File.rename(tmp, target)
       ensure
-        FileUtils.rm_rf(tmp)
+        FileUtils.rm_rf(tmp) if tmp
+      end
+    end
+
+    # A fresh directory beside +target+ under a random name; creating it is retried on a name clash.
+    def make_temp_dir(target)
+      attempts = 0
+      begin
+        tmp = "#{target}.tmp-#{SecureRandom.hex(8)}"
+        Dir.mkdir(tmp)
+        tmp
+      rescue Errno::EEXIST
+        retry if (attempts += 1) < 5
+        raise
       end
     end
 
     def copy_entries(source, dest)
-      Dir.mkdir(dest)
+      Dir.mkdir(dest) unless File.directory?(dest)
       Dir.children(source).sort.each do |child|
         from = File.join(source, child)
         to = File.join(dest, child)
@@ -154,11 +179,11 @@ module Workspace
       warn_item("notes_not_renamed", "Moved #{source}, but could not rename the original: #{e.message}.", "path" => source)
     end
 
-    def ship(spine, from, name)
+    def ship(spine, from, to, name)
       return nil unless @spine_init && name
       case spine
       when "moved"
-        outcome = @spine_init.add_missing_ship(name: name)["outcome"]
+        outcome = @spine_init.add_missing_ship(name: name, spine_dir: File.join(to, "spine"))["outcome"]
         warn_item("ship_not_added", "The ship stage could not be added to the moved spine.", {}) if outcome == "skipped"
         outcome
       when "would_move"
@@ -181,6 +206,10 @@ module Workspace
         warn_item("carry_note_invalid", "#{rel.inspect} is not a path inside the main checkout's notes directory; it was not copied.", "path" => rel)
         return "skipped"
       end
+      if @moved.include?(parts.first)
+        warn_item("carry_note_already_carried", "#{rel} is part of #{parts.first}, which was moved whole; it was not copied again.", "path" => rel)
+        return "skipped"
+      end
       source = File.join(from, *parts)
       stat = nil
       walk = from
@@ -195,6 +224,10 @@ module Workspace
         warn_item("carry_note_not_file", "#{rel} is not a file; it was not copied.", "path" => rel)
         return "skipped"
       end
+      if through_link?(to, parts)
+        warn_item("carry_note_link", "#{rel} would be written through a link; it was not copied.", "path" => rel)
+        return "skipped"
+      end
       target = File.join(to, *parts)
       if File.exist?(target) || File.symlink?(target)
         warn_item("carry_note_clash", "#{target} is there already; #{rel} was not copied over it.", "path" => rel)
@@ -202,16 +235,15 @@ module Workspace
       end
       return "would_copy" if @dry_run
 
-      if through_link?(to, parts)
-        warn_item("carry_note_link", "#{rel} would be written through a link; it was not copied.", "path" => rel)
-        return "skipped"
-      end
       FileUtils.mkdir_p(File.dirname(target))
       copy_file(source, target)
       "copied"
     rescue Errno::ENOENT, Errno::ENOTDIR
       warn_item("carry_note_missing", "#{rel} is not in the main checkout's notes directory.", "path" => rel)
       "missing"
+    rescue Errno::EEXIST
+      warn_item("carry_note_clash", "#{File.join(to, rel)} appeared while #{rel} was copied; it was not replaced.", "path" => rel)
+      "skipped"
     rescue SystemCallError => e
       warn_item("carry_note_unwritable", "Could not copy #{rel}: #{e.message}.", "path" => rel)
       "skipped"

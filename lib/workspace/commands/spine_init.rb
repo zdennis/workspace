@@ -1,5 +1,6 @@
 require "json"
 require "fileutils"
+require "securerandom"
 
 module Workspace
   module Commands
@@ -79,11 +80,11 @@ module Workspace
       # @return [Hash] `outcome` (`added`, `would_add`, `present`: a ship stage is there already,
       #   `no_spine`, `skipped`: a template file's path is taken) and `files` (relative paths)
       # @raise [Workspace::Error] `unknown_workspace`, `unknown_template`, `notes_dir_unresolved` or `config_parse`
-      def add_missing_ship(name:, dry_run: false)
+      def add_missing_ship(name:, dry_run: false, spine_dir: nil)
         root = @project_config.project_root_for(name)
         raise Error.new("Unknown workspace '#{name}'. Run 'workspace list --all' to see the names.", code: "unknown_workspace", details: {"name" => name}) unless root
         root = File.expand_path(root)
-        spine_dir = File.join(real(@notes.info(name: name)["dir"]), "spine")
+        spine_dir = spine_dir ? File.expand_path(spine_dir) : File.join(real(@notes.info(name: name)["dir"]), "spine")
         return {"outcome" => "no_spine", "files" => []} if File.symlink?(spine_dir) || !File.directory?(spine_dir)
         return {"outcome" => "present", "files" => []} if Dir.children(spine_dir).any? { |c| SHIP_STAGE.match?(c) }
 
@@ -106,10 +107,14 @@ module Workspace
         walk = spine_dir
         return false if rel.split("/")[0...-1].any? { |part| File.symlink?(walk = File.join(walk, part)) }
         FileUtils.mkdir_p(File.dirname(target))
-        File.open(target, File::WRONLY | File::CREAT | File::EXCL | File::NOFOLLOW, 0o644) { |f| f.write(fill(bytes, values)) }
+        tmp = File.join(File.dirname(target), ".#{File.basename(target)}.tmp-#{SecureRandom.hex(8)}")
+        File.open(tmp, File::WRONLY | File::CREAT | File::EXCL | File::NOFOLLOW, 0o644) { |f| f.write(fill(bytes, values)) }
+        File.link(tmp, target)
         true
       rescue SystemCallError
         false
+      ensure
+        FileUtils.rm_f(tmp) if tmp
       end
 
       # @return [Hash{String=>String}] the template's "name" and "source" (`flag`, `worktree`, `project`,

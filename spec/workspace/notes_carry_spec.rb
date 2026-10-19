@@ -42,7 +42,7 @@ RSpec.describe Workspace::NotesCarry do
     expect(File.read(File.join(to, "spine/10-research/10-a.md"))).to eq("a\n")
     expect(Dir.children(from).sort).to eq(%w[IMPLEMENTATION_PLAN.md.moved-20261019T120000Z spine.moved-20261019T120000Z])
     expect(File.read(File.join(from, "spine.moved-20261019T120000Z/goal.md"))).to eq("goal\n")
-    expect(spine_init).to have_received(:add_missing_ship).with(name: "api.worktree-x")
+    expect(spine_init).to have_received(:add_missing_ship).with(name: "api.worktree-x", spine_dir: File.join(to, "spine"))
   end
 
   it "answers none for a plan and spine that are not there" do
