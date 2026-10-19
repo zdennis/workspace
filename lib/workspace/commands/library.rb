@@ -244,6 +244,55 @@ module Workspace
         finish_install("#{kind}/#{entry_name}", target, found, dry_run, {"removed" => "Removed", "absent" => "Absent", "would_remove" => "Would remove"})
       end
 
+      # Prints the copies `install` made in a workspace's checkout, or at user level.
+      # A copy counts when its name is a library entry's, or (in a workspace) when
+      # the repo's `info/exclude` lists it; see {Workspace::LibraryInstaller#installed}.
+      #
+      # @param name [String, nil] the workspace; nil means the one the working directory is in
+      # @param user [Boolean] list the user-level directories instead; `name` must be nil
+      # @param kind [String, nil] "skill" or "agent"; nil lists both
+      # @param cwd [String]
+      # @param json [Boolean]
+      # @return [void]
+      # @raise [Workspace::UsageError] for `user` with `name`, or a kind that is not a library kind
+      # @raise [Workspace::Error] `unknown_workspace`, `library_kind_not_copyable`, `invalid_library_install_dir`
+      def installed(name: nil, user: false, kind: nil, cwd: Dir.pwd, json: false)
+        raise Error, "library installed is not available: no installer was wired." unless @installer && @checkout
+        raise UsageError, "--user lists the user-level directories, so it takes no --name." if user && name
+        if kind
+          @library.validate_kind!(kind)
+          raise not_copyable(kind, kind) unless Workspace::Library::COPY_KINDS.key?(kind)
+        end
+        target = user ? nil : @checkout.resolve(name, working_dir: cwd, allow_detached: true)
+        root = target ? target["path"] : cwd
+        entries = @library.entries(@library.stores(cwd: root))
+        copies = (kind ? [kind] : Workspace::Library::COPY_KINDS.keys).flat_map do |k|
+          effective = entries.select { |e| e["kind"] == k && e["effective"] }.to_h { |e| [e["name"], e] }
+          found = if target
+            @installer.installed(k, worktree: root, project: target["workspace"], known: effective.keys)
+          else
+            @installer.installed_user(k, known: effective.keys)
+          end
+          found.map { |c| installed_row(k, c, effective[c["name"]]) }
+        end
+        workspace = target && target["workspace"]
+        if json
+          @output.puts JSON.generate({"schema_version" => JSON_SCHEMA_VERSION, "ok" => true, "workspace" => workspace, "user" => user, "copies" => copies})
+        elsif copies.empty?
+          @output.puts "No installed copies #{user ? "at user level" : "in workspace #{workspace}"}."
+        else
+          width = copies.map { |c| c["ref"].length }.max
+          copies.each do |c|
+            state = if c["entry"].nil?
+              "entry gone"
+            else
+              c["modified"] ? "modified" : "matches #{c["entry"]}"
+            end
+            @output.puts "#{c["ref"].ljust(width)}  #{state.ljust(16)}  #{c["path"]}"
+          end
+        end
+      end
+
       # The default entry name for a file: its name without extension, in kebab case.
       #
       # @param path [String]
@@ -280,6 +329,12 @@ module Workspace
       rescue Error => e
         raise unless e.code == "unknown_library_entry"
         nil
+      end
+
+      def installed_row(kind, copy, entry)
+        {"kind" => kind, "name" => copy["name"], "ref" => "#{kind}/#{copy["name"]}", "path" => copy["path"],
+         "entry" => entry && entry["scope"],
+         "modified" => entry ? (!entry["readable"] || @installer.modified?(copy["path"], entry)) : false}
       end
 
       def not_copyable(ref, kind)

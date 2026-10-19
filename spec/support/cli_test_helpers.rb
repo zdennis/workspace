@@ -770,6 +770,8 @@ module CLITestHelpers
 
     def uninstall(ref, **kw) = record(:uninstall, {ref: ref}.merge(kw))
 
+    def installed(**kw) = record(:installed, kw)
+
     private
 
     def record(name, args)

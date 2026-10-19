@@ -40,6 +40,7 @@ module Workspace
         "library" => 5,
         "library_play" => 2,
         "library_copy" => 4,
+        "library_installed" => 1,
         "instructions" => 1,
         "restore" => 1,
         "workflow" => 2,

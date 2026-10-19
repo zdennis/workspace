@@ -4366,7 +4366,7 @@ module Workspace
       @instruction_composer.compose(packs: names, cwd: @working_dir)
     end
 
-    LIBRARY_SUBCOMMANDS = %w[list show info add update remove install uninstall].freeze
+    LIBRARY_SUBCOMMANDS = %w[list show info add update remove install uninstall installed].freeze
 
     def library_parser(options)
       OptionParser.new do |opts|
@@ -4377,7 +4377,8 @@ module Workspace
           "       workspace library update REF PATH|- [--link] [--project [NAME]] [--dry-run] [--json]\n" \
           "       workspace library remove REF [--yes] [--project [NAME]] [--dry-run] [--json]\n" \
           "       workspace library install REF [--name WS | --user] [--from global|project] [--force] [--dry-run] [--json]\n" \
-          "       workspace library uninstall REF [--name WS | --user] [--force] [--dry-run] [--json]"
+          "       workspace library uninstall REF [--name WS | --user] [--force] [--dry-run] [--json]\n" \
+          "       workspace library installed [--name WS | --user] [--kind skill|agent] [--json]"
         opts.separator ""
         opts.separator "A store of named plays, prompts, agents and skills under #{@config.library_dir}."
         opts.separator "A play is a document an agent reads and follows; a prompt is short text sent as typed;"
@@ -4409,6 +4410,9 @@ module Workspace
         opts.separator "            --from global|project copies that store's entry, not the project's over the global one"
         opts.separator "  uninstall delete that copy from the checkout, or with --user from the home-level directory; a copy that"
         opts.separator "            differs from the library entry needs --force; the library entry and the info/exclude line stay"
+        opts.separator "  installed list the copies install made in a workspace's checkout (--name WS, default: the current"
+        opts.separator "            directory's) or at user level (--user); read-only. A copy counts when its name is a library"
+        opts.separator "            entry's or the repo's info/exclude lists it; modified = differs from that entry"
         opts.separator ""
         opts.on("--kind KIND", "agent, play, prompt, skill or spine (add: required; list: a filter);",
           "add --kind skill takes a directory holding SKILL.md;",
@@ -4435,6 +4439,7 @@ module Workspace
         opts.separator "  workspace library remove play/agent-orchestration-playbook --yes"
         opts.separator "  workspace library install skill/write-tests --name my-app --json"
         opts.separator "  workspace library uninstall skill/write-tests --name my-app"
+        opts.separator "  workspace library installed --name my-app --kind skill --json"
       end
     end
 
@@ -4456,7 +4461,7 @@ module Workspace
         raise UsageError, "library #{subcommand} can't change the built-in entries, which ship with workspace."
       end
 
-      if %w[install uninstall].include?(subcommand) && (options[:global] || options[:builtin])
+      if %w[install uninstall installed].include?(subcommand) && (options[:global] || options[:builtin])
         raise UsageError, "library #{subcommand} takes --name WS, not --global or --builtin."
       end
 
@@ -4465,7 +4470,7 @@ module Workspace
       scope = scopes.first
       project = options[:project].is_a?(String) ? options[:project] : nil
       where = {scope: scope, project: project, cwd: @working_dir}
-      ref = args.shift unless subcommand == "list" || subcommand == "add"
+      ref = args.shift unless %w[list add installed].include?(subcommand)
 
       case subcommand
       when "list"
@@ -4493,6 +4498,11 @@ module Workspace
         library_action("library update", options) do
           @library_command.update(ref, path: path, body: body, link: options[:link], dry_run: options[:dry_run], **where)
         end
+      when "installed"
+        raise UsageError, "Unexpected argument: #{args.first}. Run 'workspace library --help'." if args.any?
+        workspace = options[:project].is_a?(String) ? options[:project] : nil
+        raise UsageError, "--user lists the user-level directories, so it takes no --name." if options[:user] && options[:project]
+        @library_command.installed(name: workspace, user: options[:user], kind: options[:kind], json: options[:json], cwd: @working_dir)
       when "install", "uninstall"
         unless ref
           hint = if options[:project].to_s.match?(%r{\A(skill|agent)/})

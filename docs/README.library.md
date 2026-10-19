@@ -13,6 +13,7 @@ workspace library update REF PATH|- [--link] [--project [NAME]] [--dry-run] [--j
 workspace library remove REF [--yes] [--project [NAME]] [--dry-run] [--json]
 workspace library install   REF [--name WS | --user] [--from global|project] [--force] [--dry-run] [--json]
 workspace library uninstall REF [--name WS | --user] [--force] [--dry-run] [--json]
+workspace library installed [--name WS | --user] [--kind skill|agent] [--json]
 ```
 
 `REF` is `kind/name` or a bare `name`. A bare name works when one kind has it; when two do, the command fails with `ambiguous_library_entry` and lists both. A built-in play never makes a bare name ambiguous: with your own `prompt/review`, `show review` prints the prompt, and `show play/review` the built-in play. Scripts should pass `kind/name`. Names are lowercase letters, digits and hyphens.
@@ -107,6 +108,26 @@ The built-in scope is searched last here and by `--play`, so `workspace start --
 `uninstall` compares the copy with the library entry it came from; with the entry gone there is nothing to compare, so the copy is removed without `--force`. `--dry-run` raises the same refusals as the real command (so `library_uninstall_modified` shows in a preview) and writes nothing; where the real command would write it reports `would_install` or `would_remove`, and `unchanged`, `absent` and every refusal read as they do without it. Unlike `start`, which replaces an untracked copy silently, `install` refuses different content without `--force`. Neither verb touches a path the repo tracks (`path_tracked`) or goes through a symlinked install directory or one above it, such as `.claude` (`path_linked`); `library_path_outside` refuses any path not directly under the install directory. A `play`, `prompt` or `spine` ref is `library_kind_not_copyable`; unknown workspace is `unknown_workspace`; an unknown ref is `unknown_library_entry`.
 
 `install` raises `library_source_missing` (`details.ref`, `details.path`) when the entry it would copy is a link whose target can't be read (`readable: false` in `library info`), for `--user` too, and `--dry-run` raises it as well: a preview reads the entry the same way. `uninstall` raises it only when it needs the entry to compare the copy with and that entry is an unreadable link; `uninstall --force` never reads the entry. Nothing is changed when it is raised.
+
+### installed
+
+`installed` lists the copies `install` made, read-only. It looks in the workspace's install directories (`--name WS`, default the workspace of the current directory) or, with `--user`, in `library.install.user_skills_dir` and `user_agents_dir`; `--kind skill|agent` narrows it. `--user` with `--name` is `usage`; a `--kind` of `play`, `prompt` or `spine` is `library_kind_not_copyable`; `unknown_workspace` and `invalid_library_install_dir` are as for `install`. Directories come from the same `library.install.*` keys.
+
+Copies are plain files and directories, so there is no mark on them. The rule for what counts, so a hand-made skill of your own stays out of the list:
+
+- In a workspace, an item counts when its name is a valid library name and either a library entry of that kind has the name (project or global), or the repo's `info/exclude` lists its path, which `install` and `start --skill/--agent` write and `uninstall` leaves. The second clause finds a copy whose library entry was deleted.
+- At user level there is no `info/exclude`, so only an item named like a library entry counts; a user-level copy whose entry is gone is not listed.
+- An install directory that is a symlink, or under one, lists nothing (`install` refuses it too); an unreadable one lists nothing.
+- Recognition by name can include a hand-made item that shares a library entry's name; it then reads as `modified`. `info/exclude` is shared by every worktree of a repo, and a changed `library.install.*_dir` hides older copies that only the exclude line named.
+- With `--user`, the entries compared against are those visible from the current directory (its project's, then global), the same lookup `install --user` uses. A symlinked copy always reads `modified`, as it does for `uninstall`.
+
+```json
+{"schema_version":1,"ok":true,"workspace":"fix-login","user":false,
+ "copies":[{"kind":"skill","name":"pdf-tools","ref":"skill/pdf-tools",
+   "path":"/abs/fix-login/.claude/skills/pdf-tools","entry":"global","modified":false}]}
+```
+
+`entry` is the scope of the library entry the copy matches (`global` or `project`), or `null` when the entry is gone. `modified` is the test `uninstall` refuses on without `--force`: the copy is a symlink, differs from the entry, or the entry cannot be read; it is `false` when `entry` is `null` (there is nothing to differ from, and `uninstall` removes it freely). `workspace` is `null` with `--user`, which also sets `"user": true`. Copies are sorted by kind (agent, then skill) and name. Text output has one line per copy. `capabilities` reports `"library_installed": 1`.
 
 ### Install directories
 

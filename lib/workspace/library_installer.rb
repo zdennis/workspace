@@ -137,11 +137,53 @@ module Workspace
       dest
     end
 
+    # The copies of one kind in a workspace's install directory that `install`
+    # (or `start --skill/--agent`) may have made: an entry whose name is a valid
+    # library name and that is either named in the repo's `info/exclude` (which
+    # install writes and uninstall leaves) or in +known+. Hand-made items stay out.
+    # Nothing is listed through a symlinked install directory.
+    #
+    # @param kind [String] "agent" or "skill"
+    # @param worktree [String] the checkout root
+    # @param project [String, nil] the workspace whose `library.install.*` values apply
+    # @param known [Array<String>] names of library entries of this kind, which count without an exclude line
+    # @return [Array<Hash>] "name" and "path", sorted by name
+    # @raise [Workspace::Error] code `invalid_library_install_dir`
+    def installed(kind, worktree:, project: nil, known: [])
+      rel_dir = @dirs.relative(kind, project: project)
+      return [] if linked_parent?(worktree, File.join(rel_dir, "x"))
+      listed = excluded_patterns(worktree)
+      scan(File.join(worktree, rel_dir), kind) do |name|
+        known.include?(name) || listed.include?("/#{relative_path(kind, name, project: project)}#{"/" if kind == "skill"}")
+      end
+    end
+
+    # The copies of one kind in the user-level directory whose names are in +known+
+    # (there is no `info/exclude` there, so a library entry's name is the only mark).
+    #
+    # @param kind [String] "agent" or "skill"
+    # @param known [Array<String>] names of library entries of this kind
+    # @return [Array<Hash>] "name" and "path", sorted by name
+    # @raise [Workspace::Error] code `invalid_library_install_dir`
+    def installed_user(kind, known: [])
+      scan(@dirs.user(kind), kind) { |name| known.include?(name) }
+    end
+
+    # Whether a copy differs from the library entry it came from: a symlink, or
+    # other content. The test `uninstall` refuses on without `--force`.
+    #
+    # @param path [String] the installed copy
+    # @param entry [Hash] with "path", the library entry's file or directory
+    # @return [Boolean]
+    def modified?(path, entry)
+      File.symlink?(path) || LibraryStore.snapshot(path) != LibraryStore.snapshot(entry["path"])
+    end
+
     private
 
     def remove_copy(dest, entry:, force:, dry_run:)
       return {"result" => "absent", "path" => dest} unless File.exist?(dest) || File.symlink?(dest)
-      if entry && !force && (File.symlink?(dest) || LibraryStore.snapshot(dest) != LibraryStore.snapshot(entry["path"]))
+      if entry && !force && modified?(dest, entry)
         raise Error.new("#{dest} differs from #{entry["ref"]} in the library, so it may hold local edits; pass --force to remove it.",
           code: "library_uninstall_modified", details: {"ref" => entry["ref"], "path" => dest},
           retry_with: {"flags" => ["--force"], "destructive" => true})
@@ -149,6 +191,31 @@ module Workspace
       return {"result" => "would_remove", "path" => dest} if dry_run
       LibraryStore.remove(dest)
       {"result" => "removed", "path" => dest}
+    end
+
+    def scan(dir, kind)
+      return [] unless File.directory?(dir)
+      children = begin
+        Dir.children(dir)
+      rescue SystemCallError
+        return []
+      end
+      children.filter_map do |child|
+        next if kind == "agent" && !child.end_with?(".md")
+        name = (kind == "agent") ? child.delete_suffix(".md") : child
+        next unless name.match?(LibraryStore::NAME) && yield(name)
+        path = File.join(dir, child)
+        next unless (kind == "agent") ? (File.file?(path) || File.symlink?(path)) : (File.directory?(path) || File.symlink?(path))
+        {"name" => name, "path" => path}
+      end.sort_by { |c| c["name"] }
+    end
+
+    def excluded_patterns(worktree)
+      common = @git.common_dir_from_files(worktree)
+      file = common && File.join(common, "info", "exclude")
+      (file && File.file?(file)) ? File.read(file).lines.map(&:strip) : []
+    rescue SystemCallError
+      []
     end
 
     # The shared step of both installs: "unchanged" when the same content is

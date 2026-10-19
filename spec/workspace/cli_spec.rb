@@ -5253,6 +5253,39 @@ RSpec.describe Workspace::CLI do
       end
     end
 
+    describe "installed" do
+      it "passes the workspace, --user, --kind and --json" do
+        cli.run(["library", "installed"])
+        cli.run(["library", "installed", "--name=app", "--kind=skill", "--json"])
+        cli.run(["library", "installed", "--user"])
+
+        expect(library_command.calls).to eq([
+          [:installed, {name: nil, user: false, kind: nil, json: false, cwd: "/some/dir"}],
+          [:installed, {name: "app", user: false, kind: "skill", json: true, cwd: "/some/dir"}],
+          [:installed, {name: nil, user: true, kind: nil, json: false, cwd: "/some/dir"}]
+        ])
+      end
+
+      it "refuses --user with --name, --global and a stray argument" do
+        expect { cli.run(["library", "installed", "--user", "--name=app"]) }.to raise_error(FakeSystemExit)
+        expect { cli.run(["library", "installed", "--global"]) }.to raise_error(FakeSystemExit)
+        expect { cli.run(["library", "installed", "skill/x"]) }.to raise_error(FakeSystemExit)
+        expect(library_command.calls).to be_empty
+      end
+
+      it "emits a usage error document under --json" do
+        expect { cli.run(["library", "installed", "--user", "--name=app", "--json"]) }.to raise_error(FakeSystemExit)
+        expect(JSON.parse(output.string)).to include("ok" => false, "code" => "usage")
+      end
+
+      it "emits the error envelope for a refusal under --json" do
+        library_command.error = Workspace::Error.new("no", code: "unknown_workspace", details: {"name" => "ghost"})
+
+        expect { cli.run(["library", "installed", "--name=ghost", "--json"]) }.to raise_error(FakeSystemExit)
+        expect(JSON.parse(output.string)).to include("ok" => false, "code" => "unknown_workspace")
+      end
+    end
+
     it "prompts for remove on a terminal and reports cancelled when declined" do
       library_command.result = nil
 
