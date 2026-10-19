@@ -353,6 +353,15 @@ module Workspace
         commands = new_projects.map { |p| [p, command_for_new_pane(p, reattach: reattach, running: running, reused: reused)] }.to_h
         launcher_wid = @iterm.find_launcher_window_id(@state, live_sessions: live_sessions)
         new_session_ids = @iterm.create_launcher_panes(new_projects, commands, launcher_wid: launcher_wid)
+        new_session_ids = verified_panes(new_session_ids)
+
+        missing_panes = new_projects - new_session_ids.keys
+        if missing_panes.any?
+          log("Retrying #{missing_panes.size} missing launcher pane(s)...")
+          retry_wid = @iterm.find_launcher_window_id(new_session_ids.transform_values { |uid| {"unique_id" => uid} }) || launcher_wid
+          retried = @iterm.create_launcher_panes(missing_panes, commands, launcher_wid: retry_wid)
+          new_session_ids = new_session_ids.merge(verified_panes(retried))
+        end
 
         @state.load
         new_session_ids.each do |project, uid|
@@ -362,9 +371,20 @@ module Workspace
 
         missing_panes = new_projects - new_session_ids.keys
         if missing_panes.any?
-          @error_output.puts "Warning: Failed to create panes for: #{missing_panes.join(", ")}"
+          @error_output.puts "Warning: launcher_pane_missing: Failed to create panes for: #{missing_panes.join(", ")}"
         end
         reused
+      end
+
+      # The entries of +panes+ whose session iTerm2 still lists. When iTerm2
+      # can't be asked, every entry is kept.
+      def verified_panes(panes)
+        return panes if panes.empty?
+
+        live = @iterm.session_map
+        panes.select { |_project, uid| live.key?(uid) }
+      rescue Workspace::Error
+        panes
       end
 
       # Command to run in a newly-created launcher pane for +project+. A

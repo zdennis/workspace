@@ -153,7 +153,7 @@ RSpec.describe Workspace::Commands::Launch do
         allow(tmux).to receive(:rename_window)
         allow(tmux).to receive(:reattach_or_start) { |session, start| "tmux -CC attach -t #{session} || tmux has-session -t #{session} 2>/dev/null || #{start}" }
 
-        allow(iterm).to receive(:session_map).and_return({})
+        allow(iterm).to receive(:session_map).and_return({"new-uid" => "300"})
         allow(iterm).to receive(:find_existing_sessions).and_return({})
         allow(iterm).to receive(:find_launcher_window_id).and_return(nil)
         allow(iterm).to receive(:create_launcher_panes).and_return({"proj1" => "new-uid"})
@@ -185,6 +185,44 @@ RSpec.describe Workspace::Commands::Launch do
         expect(result[:reused]).to eq(["proj1"])
       end
 
+      it "retries a pane the batch did not return and registers it" do
+        allow(iterm).to receive(:create_launcher_panes).and_return({}, {"proj1" => "new-uid"})
+
+        command.call(["proj1"])
+
+        expect(iterm).to have_received(:create_launcher_panes).twice
+        state.load
+        expect(state["proj1"]["unique_id"]).to eq("new-uid")
+        expect(error_output.string).not_to include("launcher_pane_missing")
+      end
+
+      it "retries a pane whose session iTerm does not list" do
+        allow(iterm).to receive(:create_launcher_panes).and_return({"proj1" => "ghost"}, {"proj1" => "new-uid"})
+
+        command.call(["proj1"])
+
+        state.load
+        expect(state["proj1"]["unique_id"]).to eq("new-uid")
+      end
+
+      it "keeps the panes when iTerm cannot list its sessions" do
+        allow(iterm).to receive(:session_map).and_return({}, *[nil]).and_invoke(->{ {} }, ->{ raise Workspace::Error, "no iTerm" })
+
+        command.call(["proj1"])
+
+        state.load
+        expect(state["proj1"]["unique_id"]).to eq("new-uid")
+      end
+
+      it "warns with launcher_pane_missing when the retry fails too" do
+        allow(iterm).to receive(:create_launcher_panes).and_return({})
+
+        command.call(["proj1"])
+
+        expect(iterm).to have_received(:create_launcher_panes).twice
+        expect(error_output.string).to include("launcher_pane_missing: Failed to create panes for: proj1")
+      end
+
       it "reports no reused sessions when the pane is freshly started" do
         result = command.call(["proj1"])
         expect(result[:reused]).to eq([])
@@ -214,7 +252,7 @@ RSpec.describe Workspace::Commands::Launch do
         state["proj1"] = {"unique_id" => "old-uid"}
         state.save
 
-        allow(iterm).to receive(:session_map).and_return({"old-uid" => "100"})
+        allow(iterm).to receive(:session_map).and_return({"old-uid" => "100", "new-uid" => "400"})
         allow(iterm).to receive(:find_existing_sessions).and_return({"proj1" => "old-uid"})
         allow(iterm).to receive(:relaunch_in_session).and_return("not_found")
         allow(iterm).to receive(:find_launcher_window_id).and_return(nil)
