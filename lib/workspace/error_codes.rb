@@ -66,7 +66,7 @@ module Workspace
       "template_outdated" => "start --agent-kind: the installed worktree template has no Claude Code pane to swap; run init --force. details.kind. Nothing was created.",
       "unknown_agent_kind" => "start --agent-kind named a kind that is not a known coding agent, or hooks uninstall --agent one with no hooks. details.kind, details.known. Nothing was created or changed.",
       "hook_settings_unreadable" => "A coding agent's hook settings file (Codex's hooks.json, Claude Code's settings.json) is not a JSON object with a hooks object, so workspace left it alone. details.path.",
-      "no_spine" => "spine set, spine check or spine start: the workspace has no spine/ folder in its notes directory. details.workspace, details.dir.",
+      "no_spine" => "spine set, spine check, spine goal set or spine start: the workspace has no spine/ folder in its notes directory. details.workspace, details.dir.",
       "stage_done" => "spine start: the stage file says completed or skipped. details.workspace, details.path, details.status.",
       "stage_waiting" => "spine start: a stage in the stage's depends_on is not completed or skipped by its file. details.workspace, details.path, details.waits_on.",
       "stage_owned" => "spine start: the stage's owner pane is working on it and another pane (or --spawn) was asked for. details.workspace, details.path, details.owner.",
@@ -74,7 +74,7 @@ module Workspace
       "unknown_item" => "spine check: the stage's ## Done when checklist has no item with that number. details.item, details.total, details.file.",
       "invalid_status" => "spine set: --status is not a status or an alias of one (unknown is not settable). details.status, details.allowed.",
       "stale_revision" => "spine set, spine check, spine start or plan task --if-revision: the file changed since that revision. details.revision is the current one (and details.status for a stage file; details.path for a plan).",
-      "spine_unwritable" => "spine set, spine check or spine init: the stage file cannot be rewritten safely, another spine write did not finish in time, or spine init cannot write the spine (its path is a link, or the notes directory or files cannot be written; details.path). details.reason: link, not_a_file, too_large, not_utf8, no_frontmatter, no_file, missing, lock_unavailable, unreadable_result, io_error, changed_while_writing or lock_busy; details.file.",
+      "spine_unwritable" => "spine set, spine check, spine goal set or spine init: the stage file cannot be rewritten safely, another spine write did not finish in time, or spine init cannot write the spine (its path is a link, or the notes directory or files cannot be written; details.path). details.reason: link, not_a_file, too_large, not_utf8, no_frontmatter, no_file, missing, lock_unavailable, unreadable_result, io_error, changed_while_writing or lock_busy; details.file.",
       "handoff_unsupported_agent" => "The handoff pack was asked for, but the project's main agent is not Claude Code or Codex.",
       # Codes the agent daemon puts in its replies; `agent-run` passes them through.
       "malformed_message" => "The daemon couldn't parse the request.",

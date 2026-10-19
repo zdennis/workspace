@@ -140,6 +140,22 @@ When a box changed, one [`spine_changed`](README.event-log.md) line is recorded 
 
 `items` lists every item after the call, `changed` only the ones this call flipped (empty when it was a no-op). Refusals: `unknown_item` (`details.item`, `details.total`), `stale_revision`, `spine_unwritable`, `no_spine`, `unknown_stage`. `spine_check` in [`capabilities`](README.capabilities.md) is `1`.
 
+## spine goal set
+
+```sh
+workspace spine goal set [WORKSPACE] TEXT [--if-revision REV] [--by LABEL] [--json]
+```
+
+Writes `title:` in `spine/goal.md`. TEXT is one line of at most 120 characters, without control characters; an empty or multi-line TEXT is a usage error. An existing `goal.md` keeps every other byte (the body, other keys, line endings, a BOM). A missing one is made with `spine: 1`, `title:` and a `# TEXT` heading, without replacing a file that appears meanwhile. A workspace with no `spine/` folder is refused (`no_spine`); this verb never makes the folder (use `spine init`). The write takes the same lock and temp-file-and-rename path as `set`; a link, a file that isn't UTF-8 or one with no frontmatter is `spine_unwritable`. A title already equal writes nothing and records nothing. `--if-revision` is checked against `goal.md`'s revision (from `spine show`); a missing file has none, so it is `stale_revision`.
+
+When the file changed, one [`spine_changed`](README.event-log.md) line is recorded with `change: "goal"`, `title`, `created`, `by` and the new `revision`.
+
+```json
+{"schema_version": 1, "ok": true, "workspace": "fix-oauth-refresh", "goal": {"file": "goal.md", "title": "Fix the OAuth refresh race", "revision": "5e6f7a8b"}, "created": false, "changed": true}
+```
+
+`changed` is false when the title already read as asked (nothing written, no event). TEXT that starts with a dash needs `--` before it. For a missing `goal.md`, `stale_revision` has `details.revision` null. Refusals: `no_spine`, `stale_revision`, `spine_unwritable`. `spine_goal` in [`capabilities`](README.capabilities.md) is `1`.
+
 ## spine start
 
 ```sh

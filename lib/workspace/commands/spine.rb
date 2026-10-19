@@ -130,6 +130,47 @@ module Workspace
         report_check(name, stage, result, done, json)
       end
 
+      # Sets the goal's `title:` (see {SpineWriter#goal}), under the same write lock as {#set}; makes `spine/goal.md`
+      # when it is missing. It records `spine_changed` with `change: "goal"` when the file changed.
+      #
+      # @param name [String] the workspace
+      # @param text [String] one line of at most 120 characters
+      # @param if_revision [String, nil] refuse with `stale_revision` unless `goal.md`'s revision is this
+      # @param by [String, nil] the label in the event; default the agent label of `$TMUX_PANE`, else `person`
+      # @param json [Boolean] print one JSON document instead of a summary
+      # @return [void]
+      # @raise [Workspace::UsageError] +text+ empty, over 120 characters, or not one line
+      # @raise [Workspace::Error] `no_spine`, `stale_revision`, `spine_unwritable`
+      def goal_set(name:, text:, if_revision: nil, by: nil, json: false)
+        title = one_line(text, "TEXT", SpineFile::VALUE_LIMITS.fetch("title"))
+        raise Workspace::UsageError, "Give the goal as TEXT." if title.nil? || title.empty?
+        by = one_line(by, "--by", MAX_BY)
+        raise Workspace::UsageError, "--by can't be empty." if by&.empty?
+
+        notes_dir = @notes.info(name: name)["dir"]
+        result = nil
+        with_lock(name) do
+          tree = SpineTree.read(real(notes_dir))
+          raise Workspace::Error.new("#{name} has no spine/ in its notes directory. Run 'workspace spine init' first.", code: "no_spine", details: {"workspace" => name, "dir" => tree.dir}) unless tree.exists
+          by ||= default_by(name)
+          result = @writer.goal(File.join(tree.dir, SpineTree::GOAL_FILE), relative: SpineTree::GOAL_FILE, title: title, if_revision: if_revision)
+          if result.changed
+            @event_log&.record(type: "spine_changed", project: name, data: {"workspace" => name, "change" => "goal", "title" => result.title,
+                                                                            "created" => result.created, "by" => by, "revision" => result.revision})
+          end
+        end
+        goal = {"file" => SpineTree::GOAL_FILE, "title" => result.title, "revision" => result.revision}
+        if json
+          @output.puts JSON.generate({"schema_version" => JSON_SCHEMA_VERSION, "ok" => true, "workspace" => name, "goal" => goal, "created" => result.created, "changed" => result.changed})
+        elsif result.created
+          @output.puts "#{name}: goal.md made: #{result.title}"
+        elsif result.changed
+          @output.puts "#{name}: goal set: #{result.title}"
+        else
+          @output.puts "#{name}: goal already reads: #{result.title}"
+        end
+      end
+
       # @param name [String] the workspace
       # @param json [Boolean] print the document documented in docs/README.spine.md instead of a short summary
       # @param stage [String, nil] a stage path: show that one stage (and its sub-stages) instead of the tree

@@ -6455,6 +6455,30 @@ RSpec.describe Workspace::CLI do
     end
   end
 
+  describe "#run with spine goal set" do
+    let(:spine_command) { instance_double(Workspace::Commands::Spine, goal_set: nil) }
+    let(:detector) { instance_double(Workspace::ProjectDetector, detect: "detected-ws") }
+    let(:built) { build_test_cli(spine_command: spine_command, project_detector: detector, working_dir: "/some/dir") }
+    let(:cli) { built[0] }
+
+    it "passes the text, the revision and the label to the workspace detected, named first or named with --name" do
+      cli.run(["spine", "goal", "set", "Ship it"])
+      cli.run(["spine", "goal", "set", "api", "Other goal", "--if-revision", "ab12cd34", "--by", "me", "--json"])
+      cli.run(["spine", "--name", "api", "goal", "set", "Third"])
+
+      expect(spine_command).to have_received(:goal_set).with(hash_including(name: "detected-ws", text: "Ship it", if_revision: nil, by: nil))
+      expect(spine_command).to have_received(:goal_set).with(name: "api", text: "Other goal", if_revision: "ab12cd34", by: "me", json: true)
+      expect(spine_command).to have_received(:goal_set).with(hash_including(name: "api", text: "Third"))
+    end
+
+    it "refuses a missing verb, missing text, extra arguments and options of other verbs" do
+      [%w[goal], %w[goal get x], %w[goal set], %w[goal set a b c], %w[goal set x --status done], %w[goal set x --item 1]].each do |args|
+        expect { cli.run(["spine", *args]) }.to raise_error(FakeSystemExit)
+      end
+      expect(spine_command).not_to have_received(:goal_set)
+    end
+  end
+
   describe "#run with spine start" do
     let(:doc) do
       {"schema_version" => 1, "ok" => true, "workspace" => "api", "path" => "verify", "file" => "40-verify.md", "outcome" => "sent", "reason" => nil,

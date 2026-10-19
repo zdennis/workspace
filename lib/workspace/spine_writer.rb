@@ -32,6 +32,15 @@ module Workspace
     # @!attribute revision [String] the file's revision after (the current one when nothing changed)
     CheckResult = Struct.new(:changed, :items, :changed_items, :revision, keyword_init: true)
 
+    # What one {#goal} did.
+    #
+    # @!attribute created [Boolean] whether `goal.md` was made
+    # @!attribute changed [Boolean] whether the file was written (also true when created)
+    # @!attribute title [String] the title after
+    # @!attribute previous [String, nil] the title before
+    # @!attribute revision [String] the file's revision after
+    GoalResult = Struct.new(:created, :changed, :title, :previous, :revision, keyword_init: true)
+
     # The box at the start of a `## Done when` item line.
     BOX = /\A- \[[ xX]\]/n
     private_constant :BOX
@@ -123,12 +132,84 @@ module Workspace
       raise unwritable(relative, "changed_while_writing", "#{relative} kept changing while it was being written. Nothing was changed; try again.")
     end
 
+    # Sets the `title:` of `goal.md`, keeping every other byte of an existing file. A missing file is made
+    # (`spine: 1`, `title:`, a `# TEXT` heading); the make fails rather than replace a file that appeared meanwhile.
+    #
+    # @param path [String] absolute path of `goal.md`
+    # @param relative [String] its name below `spine/`, for messages
+    # @param title [String] one line, already checked
+    # @param if_revision [String, nil] refuse unless the file's revision is this (a missing file has none)
+    # @return [GoalResult]
+    # @raise [Workspace::Error] `stale_revision` or `spine_unwritable` as {#write}
+    def goal(path, relative:, title:, if_revision: nil)
+      2.times do
+        missing = begin
+          File.lstat(path)
+          false
+        rescue Errno::ENOENT
+          true
+        rescue SystemCallError => e
+          raise unwritable(relative, "io_error", "#{relative} can't be read: #{e.message}")
+        end
+        if missing
+          if if_revision
+            raise Workspace::Error.new("#{relative} doesn't exist, so it has no revision #{if_revision}.", code: "stale_revision", details: {"revision" => nil, "status" => nil})
+          end
+          made = create_goal(path, relative, title)
+          return made if made
+          next
+        end
+        bytes, info = read(path, relative)
+        file = SpineFile.parse(bytes, relative: relative)
+        raise unwritable(relative, "not_utf8", "#{relative} isn't text, so its frontmatter can't be updated safely.") unless file.read?
+        raise unwritable(relative, "no_frontmatter", "#{relative} has no frontmatter block closed within #{SpineFile::MAX_FRONTMATTER_LINES} lines, so it can't be updated safely.") unless file.frontmatter_lines
+        verify_revision(file, relative, if_revision)
+
+        previous = file.value("title")
+        return GoalResult.new(created: false, changed: false, title: title, previous: previous, revision: file.revision) if previous == title
+
+        rewritten = apply(bytes, "title", title)
+        unless SpineFile.parse(rewritten).then { |w| w.read? && w.value("title") == title }
+          raise unwritable(relative, "unreadable_result", "#{relative} would not read as asked after the change (its frontmatter is at a size limit), so nothing was written.")
+        end
+        next unless replace_unless_changed(path, relative, rewritten, info)
+        return GoalResult.new(created: false, changed: true, title: title, previous: previous, revision: Digest::SHA256.hexdigest(rewritten)[0, 8])
+      end
+      raise unwritable(relative, "changed_while_writing", "#{relative} kept changing while it was being written. Nothing was changed; try again.")
+    end
+
     private
 
     def verify_revision(file, relative, if_revision)
       return unless if_revision && if_revision.downcase != file.revision
       raise Workspace::Error.new("#{relative} changed: its revision is #{file.revision}, not #{if_revision}.",
         code: "stale_revision", details: {"revision" => file.revision, "status" => file.status})
+    end
+
+    # @return [GoalResult, nil] nil when the file appeared while it was being made
+    def create_goal(path, relative, title)
+      text = "---\nspine: 1\ntitle: #{format_value("title", title)}\n---\n\n# #{title}\n"
+      parsed = SpineFile.parse(text)
+      unless parsed.read? && parsed.value("title") == title
+        raise unwritable(relative, "unreadable_result", "#{relative} would not read as asked, so nothing was written.")
+      end
+      temp = File.join(File.dirname(path), ".#{File.basename(path)}.#{Process.pid}.#{SecureRandom.hex(4)}.tmp")
+      File.open(temp, File::WRONLY | File::CREAT | File::EXCL | File::NOFOLLOW, 0o644) do |io|
+        io.binmode
+        io.write(text)
+        io.fsync
+      end
+      begin
+        File.link(temp, path)
+      rescue Errno::EEXIST
+        return nil
+      end
+      sync_directory(File.dirname(path))
+      GoalResult.new(created: true, changed: true, title: title, previous: nil, revision: Digest::SHA256.hexdigest(text)[0, 8])
+    rescue SystemCallError => e
+      raise unwritable(relative, "io_error", "#{relative} can't be written: #{e.message}")
+    ensure
+      File.unlink(temp) if temp && File.exist?(temp)
     end
 
     def check_result(items, changed_items, revision)

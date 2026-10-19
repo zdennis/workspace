@@ -6932,6 +6932,7 @@ module Workspace
                       "                           [--if-revision REV] [--recursive] [--by LABEL] [--json]\n" \
                       "       workspace spine check [WORKSPACE] STAGE-PATH --item N [--item N ...] (--done | --undone)\n" \
                       "                             [--if-revision REV] [--by LABEL] [--json]\n" \
+                      "       workspace spine goal set [WORKSPACE] TEXT [--if-revision REV] [--by LABEL] [--json]\n" \
                       "       workspace spine start [WORKSPACE] STAGE-PATH [--pane PANE | --spawn KIND] [--play REF]\n" \
                       "                             [--if-revision REV] [--json]"
         opts.separator ""
@@ -6951,6 +6952,10 @@ module Workspace
         opts.separator "the frontmatter. An item already in the asked state is left alone. It writes a spine_changed event"
         opts.separator "with change done_when. Refuses an item that is not there (unknown_item)."
         opts.separator ""
+        opts.separator "goal set writes title: in spine/goal.md (one line, at most 120 characters), keeping the rest of an"
+        opts.separator "existing file, and makes the file (spine: 1, title, a '# TEXT' heading) when it is missing. Refuses"
+        opts.separator "a workspace with no spine/ (no_spine). It writes a spine_changed event with change goal."
+        opts.separator ""
         opts.separator "start gets an agent working on one stage: the pane named, a new one (--spawn), the stage's"
         opts.separator "owner when it is a live agent pane, else the main Claude Code or Codex pane; a workspace with"
         opts.separator "no session is launched. It first sets the stage in_progress with that pane as its owner, then"
@@ -6967,7 +6972,7 @@ module Workspace
         opts.on("--status VALUE", "set: not_started, in_progress, blocked, completed or skipped (or an alias such as done)") { |v| options[:status] = v }
         opts.on("--note TEXT", "set: one line of at most 300 characters; alone it changes only the note (empty clears it). With a new status and no --note the note is cleared") { |v| options[:note] = v }
         opts.on("--owner VALUE", "set: who works the stage: a pane id such as %6, you, or an agent label; one line of at most 64 characters (empty clears it). Not with --recursive") { |v| options[:owner] = v }
-        opts.on("--if-revision REV", "set, start: refuse with stale_revision unless the stage file's revision (from show) is REV") { |v| options[:if_revision] = v }
+        opts.on("--if-revision REV", "set, goal set, start: refuse with stale_revision unless the stage file's (goal.md's for goal set) revision (from show) is REV") { |v| options[:if_revision] = v }
         opts.on("--item N", Integer, "check: the checklist item, 1-based; repeat for several") { |v| (options[:items] ||= []) << v }
         opts.on("--done", "check: tick the items") { options[:check_done] = true }
         opts.on("--undone", "check: untick the items") { options[:check_undone] = true }
@@ -6991,6 +6996,7 @@ module Workspace
         opts.separator "  workspace spine set api.worktree-login implement --status completed --recursive --if-revision 9f8e7d6c"
         opts.separator "  workspace spine check verify --item 2 --done"
         opts.separator "  workspace spine check api.worktree-login implement/api --item 1 --item 3 --undone --if-revision 9f8e7d6c --json"
+        opts.separator "  workspace spine goal set \"Fix the OAuth refresh race\""
         opts.separator "  workspace spine start verify    # the stage's owner pane, else the main agent pane"
         opts.separator "  workspace spine start api.worktree-login implement/api --spawn codex --json"
         opts.separator "  workspace spine start research --pane %21 --play team-research"
@@ -7070,8 +7076,9 @@ module Workspace
       return @output.puts(parser.help) if options[:help]
 
       subcommand = args.shift
-      raise UsageError, "Missing subcommand: show, set, check, start or init.\n\n#{parser.help}" unless subcommand
-      raise UsageError, "Unknown spine subcommand: #{subcommand}. Run 'workspace spine --help'." unless %w[show set check start].include?(subcommand)
+      raise UsageError, "Missing subcommand: show, set, check, goal, start or init.\n\n#{parser.help}" unless subcommand
+      raise UsageError, "Unknown spine subcommand: #{subcommand}. Run 'workspace spine --help'." unless %w[show set check start goal].include?(subcommand)
+      return cmd_spine_goal(args, options, parser) if subcommand == "goal"
       return cmd_spine_check(args, options, parser) if subcommand == "check"
       if options[:items] || options[:check_done] || options[:check_undone]
         raise UsageError, "--item, --done and --undone are for 'spine check'. Run 'workspace spine --help'."
@@ -7109,6 +7116,25 @@ module Workspace
 
       @spine_command.set(name: name, path: path, status: options[:status], note: options[:note], owner: options[:owner], if_revision: options[:if_revision],
         recursive: options[:recursive] || false, by: options[:by], json: options[:json])
+    end
+
+    def cmd_spine_goal(args, options, parser)
+      if options[:stage] || options[:body] || options[:evaluate] || options[:status] || options[:note] || options[:owner] || options[:recursive] || options[:pane] || options[:spawn] || options[:play] || options[:items] || options[:check_done] || options[:check_undone]
+        raise UsageError, "spine goal set takes --if-revision, --by, --name and --json; the other options are for show, set, check and start."
+      end
+      verb = args.shift
+      raise UsageError, "Missing goal subcommand. Use 'workspace spine goal set TEXT'." unless verb
+      raise UsageError, "Unknown spine goal subcommand: #{verb}. Use 'workspace spine goal set TEXT'." unless verb == "set"
+      positional = (args.size > 1 && !options[:name]) ? settle_name(args.shift) : nil
+      text = args.shift
+      raise UsageError, "Missing TEXT, the goal as one line.\n\n#{parser.help}" unless text
+      raise UsageError, "Unexpected argument: #{args.first}. Quote TEXT if it has spaces, and put -- before text that starts with a dash. Run 'workspace spine --help'." if args.any?
+      raise Error, "spine is not available: no spine command was wired" unless @spine_command
+
+      name = options[:name] || positional || @project_detector.detect(@working_dir)
+      raise Error.new("No workspace found for #{@working_dir}. Run from inside a workspace or pass --name.", code: "not_in_workspace", details: {"path" => @working_dir}) unless name
+
+      @spine_command.goal_set(name: name, text: text, if_revision: options[:if_revision], by: options[:by], json: options[:json])
     end
 
     def cmd_spine_check(args, options, parser)

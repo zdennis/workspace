@@ -58,6 +58,7 @@ module Workspace
         "spine_set" => 2,
         "spine_start" => 1,
         "spine_check" => 1,
+        "spine_goal" => 1,
         "spine_init" => 2,
         "spine_pack" => 1,
         "pr_create" => 1,
