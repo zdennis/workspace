@@ -23,27 +23,28 @@ Plain output is a short summary: one line per stage with its status, owner, `Don
 
 `spine` in [`capabilities`](README.capabilities.md) is `2` when this command has the roll-up described below, `--stage` and `--body`.
 
-## Setting a status
+## Setting a status, note or owner
 
 ```sh
-workspace spine set [WORKSPACE] STAGE-PATH --status VALUE [--note TEXT] [--if-revision REV] [--recursive] [--by LABEL] [--json]
+workspace spine set [WORKSPACE] STAGE-PATH [--status VALUE] [--note TEXT] [--owner VALUE] [--if-revision REV] [--recursive] [--by LABEL] [--json]
 ```
 
-`STAGE-PATH` is the stage's ids joined with `/` (`verify`, `implement/api`), as `show` reports `path`. With `--name WORKSPACE` the one argument is the path.
+At least one of `--status`, `--note` and `--owner` is required (a usage error otherwise). `STAGE-PATH` is the stage's ids joined with `/` (`verify`, `implement/api`), as `show` reports `path`. With `--name WORKSPACE` the one argument is the path.
 
 | Option | Description |
 |--------|-------------|
-| `--status VALUE` | Required. A status or an alias (see Status), written as the canonical value. `unknown` is refused (`invalid_status`) |
-| `--note TEXT` | One line of at most 300 characters, written as `note:`. Without it the note is cleared when the status changes and kept when it stays. An empty `--note ""` clears it |
+| `--status VALUE` | A status or an alias (see Status), written as the canonical value. `unknown` is refused (`invalid_status`) |
+| `--note TEXT` | One line of at most 300 characters, written as `note:`. Alone it changes only the note and keeps the status. With a status change and no `--note` the note is cleared; when the status stays, the note is kept. An empty `--note ""` clears it |
+| `--owner VALUE` | Who works the stage: a pane id such as `%6`, `you`, or an agent label such as `claude %6`; one line of at most 64 characters, written as `owner:`. Alone it changes only the owner. An empty `--owner ""` removes the line. A usage error with `--recursive`, since an owner belongs to one stage |
 | `--if-revision REV` | Refuse with `stale_revision` unless the stage file's current `revision` is `REV`. With `--recursive` it checks the named stage's file only |
 | `--recursive` | Also set every sub-stage, at any depth, that is neither `completed` nor `skipped`, parents first, each file written whole. A sub-stage that is a folder with no file is left out |
 | `--by LABEL` | The `updated_by` label (at most 100 characters). Default: `<agent> <pane>` (such as `claude %6`) when `$TMUX_PANE` is a pane the workspace's agent daemon has logged as a coding agent, else `person` |
 
-The file's `status`, `note`, `updated` (now, UTC) and `updated_by` lines are the only bytes that change: the other lines, the body, line endings (LF or CRLF), a byte order mark, comments, unknown keys and lists stay as they were. A key that is missing is added at the end of the frontmatter block; a note being cleared is removed. A note or label that is not plain words is written as a double-quoted string. Nothing is written when the stage already reads the status and the note would not change; the stage is in `unchanged`.
+Every write sets `updated` (now, UTC) and `updated_by`. Beyond those, only the `status`, `note` and `owner` lines that the call changes are touched (a `status` that already reads as asked keeps its text, even an alias), and the other bytes stay as they were: the other lines, the body, line endings (LF or CRLF), a byte order mark, comments, unknown keys and lists stay as they were. A key that is missing is added at the end of the frontmatter block; a note being cleared is removed. A note or label that is not plain words is written as a double-quoted string. Nothing is written when the stage already reads the status, the note and the owner as asked; the stage is in `unchanged`.
 
 The file is read as bytes, opened without following a link, written to a temp file in the same folder (a dot name, so it is never read as a stage), fsynced and renamed over the original. If the file changes between the read and the rename, the write starts over once, then is refused (`changed_while_writing`). Writers of one workspace take turns through a lock file in the CLI's state folder (`$XDG_STATE_HOME/workspace/.spine/`, never the notes folder), waited for up to 10 seconds, so two calls that overlap both land, the second one on top of the first. An editor holding an unsaved buffer is not covered by the lock.
 
-Each file written appends one [`spine_changed`](README.event-log.md) line to the event log, carrying the new `revision`.
+Each file written appends one [`spine_changed`](README.event-log.md) line to the event log, carrying the new `revision` and the `owner` after; a write that changed only the owner has `change: "owner"`.
 
 A stage changed some other way, by hand in an editor or by an agent's edit tool, is logged too while the workspace's agent daemon runs (`spine_events` in [`capabilities`](README.capabilities.md)): see [`event-log`](README.event-log.md). The daemon recognises a `spine set` write by its revision, so one write is one line.
 
@@ -52,9 +53,9 @@ A stage changed some other way, by hand in an editor or by an agent's edit tool,
   "schema_version": 1, "ok": true, "workspace": "fix-oauth-refresh",
   "written": [
     {"path": "verify", "file": "40-verify.md", "status": "completed", "previous": "in_progress", "revision": "0c1d2e3f",
-     "updated": "2026-10-17T22:01:00Z", "updated_by": "person", "note": null}
+     "updated": "2026-10-17T22:01:00Z", "updated_by": "person", "note": null, "owner": null}
   ],
-  "unchanged": [{"path": "review", "file": "50-review.md", "status": "completed", "revision": "5a6b7c8d"}]
+  "unchanged": [{"path": "review", "file": "50-review.md", "status": "completed", "owner": null, "revision": "5a6b7c8d"}]
 }
 ```
 
@@ -71,7 +72,7 @@ A refusal is the standard error document. With `--recursive` the run stops at th
 | `spine_unwritable` | The file can't be rewritten safely. `details.reason`: `link`, `not_a_file`, `too_large` (over 64 KB), `not_utf8`, `no_frontmatter` (no opening `---`, or none closed within 100 lines), `no_file` (a stage folder without a file), `missing`, `lock_unavailable` (the lock file in the state folder can't be opened), `unreadable_result` (the change would not read back: the closing `---` would pass line 100 or the status the 40-key cap), `io_error`, `changed_while_writing`, or `lock_busy`; `details.file` |
 | `usage` | A missing `--status` or path, or a `--note` or `--by` that is not one short line |
 
-`spine_set` in [`capabilities`](README.capabilities.md) is `1` when this verb exists.
+`spine_set` in [`capabilities`](README.capabilities.md) is `2` when this verb takes `--owner` and accepts `--note` or `--owner` without `--status`. The 64-character limit on `--owner` applies to the command; a hand-edited owner is read up to 500 characters.
 
 ## spine init
 

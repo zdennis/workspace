@@ -6926,8 +6926,8 @@ module Workspace
     def spine_parser(options)
       OptionParser.new do |opts|
         opts.banner = "Usage: workspace spine show [WORKSPACE] [--name WORKSPACE] [--stage STAGE-PATH] [--body] [--json]\n" \
-                      "       workspace spine set [WORKSPACE] STAGE-PATH --status VALUE [--note TEXT] [--if-revision REV]\n" \
-                      "                           [--recursive] [--by LABEL] [--json]"
+                      "       workspace spine set [WORKSPACE] STAGE-PATH [--status VALUE] [--note TEXT] [--owner VALUE]\n" \
+                      "                           [--if-revision REV] [--recursive] [--by LABEL] [--json]"
         opts.separator ""
         opts.separator "show reads a workspace's plan spine: the stage files in spine/ of its notes directory, one"
         opts.separator "Markdown file per stage (10-research.md, 20-plan.md, ...), and sub-stages in a folder named"
@@ -6935,9 +6935,10 @@ module Workspace
         opts.separator "blocked, completed, skipped or unknown. A bad file is a warning in the answer, never an"
         opts.separator "error, and nothing is written, created or followed through a link."
         opts.separator ""
-        opts.separator "set changes one stage's status (STAGE-PATH is the ids joined with /, as show reports `path`,"
-        opts.separator "such as verify or implement/api). It rewrites only the status, note, updated and updated_by"
-        opts.separator "lines of the stage file and writes a spine_changed event. Writers of a workspace take turns."
+        opts.separator "set changes one stage's status, note or owner (give at least one). STAGE-PATH is the ids"
+        opts.separator "joined with /, as show reports `path`, such as verify or implement/api. It rewrites only the"
+        opts.separator "status, note, owner, updated and updated_by lines of the stage file and writes a spine_changed"
+        opts.separator "event. Writers of a workspace take turns."
         opts.separator ""
         opts.separator "Other verb: init (create the folder from a template; run 'workspace spine init --help')."
         opts.separator ""
@@ -6945,7 +6946,8 @@ module Workspace
         opts.on("--stage STAGE-PATH", "show: only that stage (with its sub-stages); unknown_stage when there is none") { |v| options[:stage] = v }
         opts.on("--body", "show: add the text after the frontmatter (16 KB at most) to the stage, or to the goal without --stage") { options[:body] = true }
         opts.on("--status VALUE", "set: not_started, in_progress, blocked, completed or skipped (or an alias such as done)") { |v| options[:status] = v }
-        opts.on("--note TEXT", "set: one line of at most 300 characters. Without it the note is cleared when the status changes, kept when not") { |v| options[:note] = v }
+        opts.on("--note TEXT", "set: one line of at most 300 characters; alone it changes only the note (empty clears it). With a new status and no --note the note is cleared") { |v| options[:note] = v }
+        opts.on("--owner VALUE", "set: who works the stage: a pane id such as %6, you, or an agent label; one line of at most 64 characters (empty clears it). Not with --recursive") { |v| options[:owner] = v }
         opts.on("--if-revision REV", "set: refuse with stale_revision unless the stage file's revision (from show) is REV") { |v| options[:if_revision] = v }
         opts.on("--recursive", "set: also set every sub-stage that is not completed or skipped") { options[:recursive] = true }
         opts.on("--by LABEL", "set: the updated_by label (default: the agent and pane id of $TMUX_PANE, else person)") { |v| options[:by] = v }
@@ -6958,6 +6960,7 @@ module Workspace
         opts.separator "  workspace spine show --name=api.worktree-login --json"
         opts.separator "  workspace spine show --stage implement/api --body --json"
         opts.separator "  workspace spine set verify --status in_progress"
+        opts.separator "  workspace spine set verify --owner %6 --note \"waiting on CI\""
         opts.separator "  workspace spine set api.worktree-login review --status=completed --note=\"2 nits, fixed\" --json"
         opts.separator "  workspace spine set api.worktree-login implement --status completed --recursive --if-revision 9f8e7d6c"
       end
@@ -7055,7 +7058,7 @@ module Workspace
 
     def cmd_spine_set(args, options, parser)
       raise UsageError, "--stage and --body are for 'spine show'; 'spine set' takes the stage path as an argument." if options[:stage] || options[:body]
-      raise UsageError, "Missing --status.\n\n#{parser.help}" unless options[:status]
+      raise UsageError, "Give at least one of --status, --note and --owner.\n\n#{parser.help}" unless options[:status] || options[:note] || options[:owner]
       positional = (args.size > 1 && !options[:name]) ? settle_name(args.shift) : nil
       path = args.shift
       raise UsageError, "Missing STAGE-PATH, the stage's ids joined with / (as 'spine show' reports path).\n\n#{parser.help}" unless path
@@ -7065,7 +7068,7 @@ module Workspace
       name = options[:name] || positional || @project_detector.detect(@working_dir)
       raise Error.new("No workspace found for #{@working_dir}. Run from inside a workspace or pass --name.", code: "not_in_workspace", details: {"path" => @working_dir}) unless name
 
-      @spine_command.set(name: name, path: path, status: options[:status], note: options[:note], if_revision: options[:if_revision],
+      @spine_command.set(name: name, path: path, status: options[:status], note: options[:note], owner: options[:owner], if_revision: options[:if_revision],
         recursive: options[:recursive] || false, by: options[:by], json: options[:json])
     end
 

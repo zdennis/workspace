@@ -3,8 +3,8 @@ require "json"
 require "securerandom"
 
 module Workspace
-  # Rewrites the status of one spine stage file. It changes the frontmatter lines for `status`,
-  # `note`, `updated` and `updated_by` and keeps every other byte (line endings, a BOM, comments,
+  # Rewrites frontmatter keys of one spine stage file: any set of `status`, `note` and `owner`, plus
+  # `updated` and `updated_by` on every write. It keeps every other byte (line endings, a BOM, comments,
   # unknown keys, lists). The file is read again from its raw bytes each time, since {SpineFile}
   # keeps line spans, not offsets, and the new bytes go out through a temp file in the same folder,
   # an fsync and a rename.
@@ -18,8 +18,11 @@ module Workspace
     # @!attribute previous [String] the status before, canonical (`unknown` when the file had none)
     # @!attribute status [String] the status after
     # @!attribute note [String, nil] the note after
+    # @!attribute owner [String, nil] the owner after
+    # @!attribute previous_note [String, nil] the note before
+    # @!attribute previous_owner [String, nil] the owner before
     # @!attribute revision [String] the file's revision after (the current one when nothing changed)
-    Result = Struct.new(:changed, :previous, :status, :note, :revision, keyword_init: true)
+    Result = Struct.new(:changed, :previous, :status, :note, :owner, :previous_note, :previous_owner, :revision, keyword_init: true)
 
     # A value written without quotes: plain words and the punctuation common in a short note.
     # It starts with a letter, so a number, a date or a hex value is quoted.
@@ -32,16 +35,15 @@ module Workspace
 
     # @param path [String] absolute path of the stage file
     # @param relative [String] its name below `spine/`, for messages
-    # @param status [String] canonical status to set
+    # @param values [Hash{String => String, nil}] the keys to set: `status` (canonical), `note` and `owner`;
+    #   nil or empty removes `note` or `owner`. A `status` that changes also clears the note unless `note` is given.
     # @param by [String] the `updated_by` label
     # @param updated [String] the `updated` time, UTC ISO
-    # @param note [String, nil] the note to set (empty clears it); nil when the caller gave none: the note is
-    #   cleared if the status changes and kept if it does not
     # @param if_revision [String, nil] refuse unless the file's revision is this
     # @return [Result]
     # @raise [Workspace::Error] `stale_revision` (details `revision`, `status`) or `spine_unwritable` (details `file`, `reason`:
     #   `link`, `not_a_file`, `too_large`, `not_utf8`, `no_frontmatter`, `missing`, `unreadable_result`, `io_error` or `changed_while_writing`)
-    def write(path, relative:, status:, by:, updated:, note: nil, if_revision: nil)
+    def write(path, relative:, values:, by:, updated:, if_revision: nil)
       2.times do
         bytes, info = read(path, relative)
         file = SpineFile.parse(bytes, relative: relative)
@@ -53,38 +55,42 @@ module Workspace
         end
 
         previous = file.status
-        edits, wanted_note = edits_for(file, status, note, by, updated, previous)
-        return Result.new(changed: false, previous: previous, status: previous, note: file.value("note"), revision: file.revision) if edits.empty?
+        edits, after = edits_for(file, values, by, updated, previous)
+        return Result.new(changed: false, previous: previous, status: previous, note: file.value("note"), owner: file.value("owner"), previous_note: file.value("note"), previous_owner: file.value("owner"), revision: file.revision) if edits.empty?
 
         rewritten = edits.reduce(bytes) { |current, (key, value)| apply(current, key, value) }
-        unless reads_back?(rewritten, status)
-          raise unwritable(relative, "unreadable_result", "#{relative} would not read as #{status} after the change (its frontmatter is at a size limit), so nothing was written.")
+        unless reads_back?(rewritten, after)
+          raise unwritable(relative, "unreadable_result", "#{relative} would not read as asked after the change (its frontmatter is at a size limit), so nothing was written.")
         end
         next unless replace_unless_changed(path, relative, rewritten, info)
-        return Result.new(changed: true, previous: previous, status: status, note: wanted_note, revision: Digest::SHA256.hexdigest(rewritten)[0, 8])
+        return Result.new(changed: true, previous: previous, status: after["status"], note: after["note"], owner: after["owner"], previous_note: file.value("note"), previous_owner: file.value("owner"),
+          revision: Digest::SHA256.hexdigest(rewritten)[0, 8])
       end
       raise unwritable(relative, "changed_while_writing", "#{relative} kept changing while it was being written. Nothing was changed; try again.")
     end
 
     private
 
-    # @return [Array(Hash, String)] the keys to write (empty when nothing would change) and the note they leave
-    def edits_for(file, status, note, by, updated, previous)
-      wanted_note = if note
-        note.empty? ? nil : note
-      elsif previous != status
-        nil
-      else
-        file.value("note")
+    # @return [Array(Hash, Hash)] the keys to write (empty when nothing would change) and the status, note and owner they leave
+    def edits_for(file, values, by, updated, previous)
+      status = values["status"] || previous
+      wanted = {"note" => file.value("note"), "owner" => file.value("owner")}
+      wanted["note"] = nil if values.key?("status") && previous != status
+      %w[note owner].each { |key| wanted[key] = blank(values[key]) if values.key?(key) }
+      edits = {}
+      edits["status"] = status if values.key?("status") && previous != status
+      %w[note owner].each do |key|
+        edits[key] = wanted[key] || :delete if wanted[key] != file.value(key)
       end
-      changed_note = wanted_note != file.value("note")
-      return [{}, wanted_note] unless previous != status || changed_note
+      return [{}, nil] if edits.empty?
 
-      edits = {"status" => status}
-      edits["note"] = wanted_note || :delete if changed_note
       edits["updated"] = updated
       edits["updated_by"] = by
-      [edits, wanted_note]
+      [edits, {"status" => status}.merge(wanted)]
+    end
+
+    def blank(text)
+      (text.nil? || text.empty?) ? nil : text
     end
 
     # @return [String] +bytes+ with the one key set, added at the end of the block, or removed (value :delete).
@@ -122,11 +128,12 @@ module Workspace
       owned
     end
 
-    # Whether {SpineFile} reads +status+ from +bytes+: added lines can push the closing `---` past the line limit
-    # or a key past the key limit, where the reader would not see them.
-    def reads_back?(bytes, status)
+    # Whether {SpineFile} reads the status, note and owner in +after+ from +bytes+: added lines can push the
+    # closing `---` past the line limit or a key past the key limit, where the reader would not see them.
+    def reads_back?(bytes, after)
       written = SpineFile.parse(bytes)
-      written.read? && !written.frontmatter_lines.nil? && written.status == status
+      written.read? && !written.frontmatter_lines.nil? && written.status == after["status"] &&
+        written.value("note") == after["note"] && written.value("owner") == after["owner"]
     end
 
     def line_ending(line)

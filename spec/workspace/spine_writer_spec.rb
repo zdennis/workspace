@@ -20,8 +20,9 @@ RSpec.describe Workspace::SpineWriter do
     path
   end
 
-  def set(path, status: "completed", note: nil, by: "person", if_revision: nil)
-    writer.write(path, relative: File.basename(path), status: status, note: note, by: by, updated: updated, if_revision: if_revision)
+  def set(path, status: "completed", note: nil, owner: nil, by: "person", if_revision: nil)
+    values = {"status" => status, "note" => note, "owner" => owner}.compact
+    writer.write(path, relative: File.basename(path), values: values, by: by, updated: updated, if_revision: if_revision)
   end
 
   it "keeps every byte outside the four keys: comments, unknown keys, block lists, CRLF and a BOM" do
@@ -158,6 +159,47 @@ RSpec.describe Workspace::SpineWriter do
       path = stage("---\nstatus: in_progress\n---\n")
 
       expect(set(path, if_revision: Workspace::SpineFile.read(path).revision.upcase).changed).to be(true)
+    end
+  end
+
+  describe "owner" do
+    it "changes only the owner line, updated and updated_by, byte for byte" do
+      original = "\xEF\xBB\xBF---\r\nspine: 1\r\n# c\r\nstatus: in_progress\r\nowner: \"%6\"\r\nnote: keep me\r\ntags:\r\n  - a\r\n---\r\n\r\n# Body\r\n".b
+      path = stage(original)
+
+      result = set(path, status: nil, owner: "%9")
+
+      expect(result).to have_attributes(changed: true, previous: "in_progress", status: "in_progress", owner: "%9", previous_owner: "%6", note: "keep me")
+      expected = original.sub('owner: "%6"', 'owner: "%9"').sub("  - a\r\n", "  - a\r\nupdated: 2026-10-17T22:01:00Z\r\nupdated_by: person\r\n")
+      expect(File.binread(path)).to eq(expected)
+    end
+
+    it "adds a missing owner and clears it with an empty value" do
+      path = stage("---\nstatus: blocked\n---\nBody\n")
+
+      set(path, status: nil, owner: "claude %6")
+      expect(File.read(path)).to eq("---\nstatus: blocked\nowner: claude %6\nupdated: 2026-10-17T22:01:00Z\nupdated_by: person\n---\nBody\n")
+
+      result = set(path, status: nil, owner: "")
+      expect(result).to have_attributes(changed: true, owner: nil)
+      expect(File.read(path)).not_to include("owner")
+    end
+
+    it "writes nothing when the owner is already that value" do
+      path = stage("---\nstatus: blocked\nowner: you\n---\n")
+      expect(set(path, status: nil, owner: "you")).to have_attributes(changed: false, owner: "you")
+      expect(File.read(path)).to eq("---\nstatus: blocked\nowner: you\n---\n")
+    end
+
+    it "changes only the note when given a note alone, keeping the status line as written" do
+      path = stage("---\nstatus: done\n---\n")
+      set(path, status: nil, note: "why")
+      expect(File.read(path)).to eq("---\nstatus: done\nnote: why\nupdated: 2026-10-17T22:01:00Z\nupdated_by: person\n---\n")
+    end
+
+    it "keeps the owner when the status changes" do
+      path = stage("---\nstatus: blocked\nowner: you\n---\n")
+      expect(set(path, status: "completed")).to have_attributes(owner: "you")
     end
   end
 

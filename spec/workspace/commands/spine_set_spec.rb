@@ -66,9 +66,9 @@ RSpec.describe Workspace::Commands::Spine, "#set" do
       row = answer["written"].first
       expect(answer).to include("schema_version" => 1, "ok" => true, "workspace" => "api", "unchanged" => [])
       expect(row).to eq("path" => "verify", "file" => "40-verify.md", "status" => "completed", "previous" => "in_progress",
-        "revision" => revision_of("40-verify.md"), "updated" => "2026-10-17T22:01:00Z", "updated_by" => "person", "note" => nil)
+        "revision" => revision_of("40-verify.md"), "updated" => "2026-10-17T22:01:00Z", "updated_by" => "person", "note" => nil, "owner" => nil)
       expect(events).to eq([{type: "spine_changed", project: "api", data: {"workspace" => "api", "path" => "verify", "status" => "completed",
-                                                                           "previous" => "in_progress", "note" => nil, "by" => "person", "revision" => row["revision"]}}])
+                                                                           "previous" => "in_progress", "note" => nil, "owner" => nil, "by" => "person", "revision" => row["revision"]}}])
     end
 
     it "is seen by the next read: the new status and revision" do
@@ -87,7 +87,7 @@ RSpec.describe Workspace::Commands::Spine, "#set" do
       command.set(name: "api", path: "research", status: "completed", json: true)
 
       expect(answer["written"]).to eq([])
-      expect(answer["unchanged"]).to eq([{"path" => "research", "file" => "10-research.md", "status" => "completed", "revision" => revision_of("10-research.md")}])
+      expect(answer["unchanged"]).to eq([{"path" => "research", "file" => "10-research.md", "status" => "completed", "owner" => nil, "revision" => revision_of("10-research.md")}])
       expect(events).to be_empty
       expect(read("10-research.md")).to eq("---\nstatus: done\n---\n")
     end
@@ -211,6 +211,18 @@ RSpec.describe Workspace::Commands::Spine, "#set" do
       expect(read("40-verify.md")).to eq("---\nstatus: in_progress\n---\n")
     end
 
+    it "needs at least one of status, note and owner" do
+      expect { command.set(name: "api", path: "verify") }.to raise_error(Workspace::UsageError, /at least one/)
+    end
+
+    it "refuses an owner that is not one line of at most 64 characters, or with --recursive" do
+      [{owner: "a\nb"}, {owner: "x" * 65}, {owner: "bell\a"}].each do |extra|
+        expect { command.set(name: "api", path: "verify", **extra) }.to raise_error(Workspace::UsageError)
+      end
+      expect { command.set(name: "api", path: "verify", owner: "%6", recursive: true) }.to raise_error(Workspace::UsageError, /recursive/)
+      expect(read("40-verify.md")).to eq("---\nstatus: in_progress\n---\n")
+    end
+
     it "accepts a note of exactly 300 characters" do
       command.set(name: "api", path: "verify", status: "completed", note: "x" * 300)
 
@@ -267,6 +279,15 @@ RSpec.describe Workspace::Commands::Spine, "#set" do
       write("40-verify.md", "---\nstatus: not_started\n---\n")
     end
 
+    it "writes a note alone to the stage and the sub-stages that are not done, keeping every status" do
+      command.set(name: "api", path: "implement", note: "freeze", recursive: true, json: true)
+
+      expect(answer["written"].map { |row| [row["path"], row["status"], row["note"]] }).to eq(
+        [["implement", "in_progress", "freeze"], ["implement/api", "in_progress", "freeze"], ["implement/ui", "not_started", "freeze"], ["implement/ui/form", "blocked", "freeze"]]
+      )
+      expect(read("30-implement/20-docs.md")).to eq("---\nstatus: completed\nnote: kept\n---\n")
+    end
+
     it "sets the stage and every sub-stage that is not completed or skipped, in tree order, one event each" do
       command.set(name: "api", path: "implement", status: "completed", recursive: true, json: true)
 
@@ -311,6 +332,60 @@ RSpec.describe Workspace::Commands::Spine, "#set" do
 
       error = refusal { command.set(name: "api", path: "implement/ui", status: "in_progress") }
       expect(error.details).to include("reason" => "no_file")
+    end
+  end
+
+  describe "--owner and --note without --status" do
+    before { write("40-verify.md", "---\nstatus: in_progress\nnote: keep\n---\nBody\n") }
+
+    it "sets only the owner, keeps status and note, and logs change owner" do
+      command.set(name: "api", path: "verify", owner: "%6", json: true)
+
+      expect(read("40-verify.md")).to eq("---\nstatus: in_progress\nnote: keep\nowner: \"%6\"\nupdated: 2026-10-17T22:01:00Z\nupdated_by: person\n---\nBody\n")
+      expect(answer["written"].first).to include("status" => "in_progress", "previous" => "in_progress", "note" => "keep", "owner" => "%6")
+      expect(events.map { |e| e[:data] }).to eq([{"workspace" => "api", "path" => "verify", "status" => "in_progress", "previous" => "in_progress",
+                                                  "note" => "keep", "owner" => "%6", "by" => "person", "revision" => revision_of("40-verify.md"), "change" => "owner"}])
+    end
+
+    it "clears the owner with an empty value" do
+      command.set(name: "api", path: "verify", owner: "you")
+      command.set(name: "api", path: "verify", owner: "")
+
+      expect(read("40-verify.md")).not_to include("owner:")
+      expect(events.last[:data]).to include("owner" => nil, "change" => "owner")
+    end
+
+    it "changes only the note when given a note alone, with no change key" do
+      command.set(name: "api", path: "verify", note: "new")
+
+      expect(read("40-verify.md")).to start_with("---\nstatus: in_progress\nnote: new\n")
+      expect(events.first[:data]).not_to have_key("change")
+    end
+
+    it "omits change when the owner changes with the status" do
+      command.set(name: "api", path: "verify", status: "completed", owner: "you")
+      expect(events.first[:data]).to include("status" => "completed", "owner" => "you")
+      expect(events.first[:data]).not_to have_key("change")
+    end
+
+    it "lists an owner that is already set as unchanged" do
+      command.set(name: "api", path: "verify", owner: "you")
+      output.truncate(0)
+      output.rewind
+      command.set(name: "api", path: "verify", owner: "you", json: true)
+
+      expect(answer["unchanged"].first).to include("owner" => "you")
+      expect(events.size).to eq(1)
+    end
+
+    it "still refuses a stale revision" do
+      error = refusal { command.set(name: "api", path: "verify", owner: "you", if_revision: "deadbeef") }
+      expect(error.code).to eq("stale_revision")
+    end
+
+    it "says what changed in the plain line" do
+      command.set(name: "api", path: "verify", owner: "you")
+      expect(output.string).to eq("api: verify still in_progress, owner set to you\n")
     end
   end
 

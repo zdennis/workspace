@@ -6347,7 +6347,7 @@ RSpec.describe Workspace::CLI do
       before { allow(spine_command).to receive(:set) }
 
       def expect_set(**expected)
-        defaults = {note: nil, if_revision: nil, recursive: false, by: nil, json: false}
+        defaults = {note: nil, owner: nil, if_revision: nil, recursive: false, by: nil, json: false}
         expect(spine_command).to have_received(:set).with(**defaults.merge(expected))
       end
 
@@ -6376,8 +6376,16 @@ RSpec.describe Workspace::CLI do
         expect_set(name: "api", path: "verify", status: "done")
       end
 
-      it "needs --status and a path" do
-        [["spine", "set", "api", "verify", "--json"], ["spine", "set", "--status", "done", "--json"]].each do |argv|
+      it "passes --owner and a note alone, with no status" do
+        cli.run(["spine", "set", "api", "verify", "--owner", "%6"])
+        expect_set(name: "api", path: "verify", status: nil, owner: "%6")
+
+        cli.run(["spine", "set", "api", "verify", "--note", "why", "--owner="])
+        expect(spine_command).to have_received(:set).with(hash_including(status: nil, note: "why", owner: ""))
+      end
+
+      it "needs at least one of --status, --note and --owner, and a path" do
+        [["spine", "set", "api", "verify", "--json"], ["spine", "set", "--status", "done", "--json"], ["spine", "set", "--owner", "you", "--json"]].each do |argv|
           expect { cli.run(argv) }.to raise_error(FakeSystemExit), argv.inspect
           expect(JSON.parse(output.string.lines.last)).to include("ok" => false, "code" => "usage"), argv.inspect
         end

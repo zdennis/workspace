@@ -21,9 +21,10 @@ RSpec.describe Workspace::SpineWatcher do
 
   after { FileUtils.remove_entry(notes) }
 
-  def stage(name, status: "in_progress", note: nil, updated: nil, updated_by: nil, body: "Body\n")
+  def stage(name, status: "in_progress", note: nil, owner: nil, updated: nil, updated_by: nil, body: "Body\n")
     lines = ["---", "spine: 1", "status: #{status}"]
     lines << "note: #{note}" if note
+    lines << "owner: #{owner}" if owner
     lines << "updated: #{updated}" if updated
     lines << "updated_by: #{updated_by}" if updated_by
     path = File.join(spine, name)
@@ -56,7 +57,7 @@ RSpec.describe Workspace::SpineWatcher do
     expect(tick(0.5)).to be(true)
     expect(recorded).to eq([{type: "spine_changed", project: "ws", data: {
       "workspace" => "ws", "path" => "verify", "status" => "completed", "previous" => "in_progress",
-      "note" => nil, "by" => "file", "revision" => revision("40-verify.md")
+      "note" => nil, "owner" => nil, "by" => "file", "revision" => revision("40-verify.md")
     }}])
   end
 
@@ -95,6 +96,41 @@ RSpec.describe Workspace::SpineWatcher do
     settle
 
     expect(recorded.first[:data]).to include("status" => "in_progress", "previous" => "in_progress", "note" => "two nits")
+  end
+
+  it "records a hand-edited owner as change owner, with the owner after" do
+    stage("40-verify.md", owner: "you")
+    watcher.baseline
+
+    stage("40-verify.md", owner: "claude")
+    settle
+
+    expect(recorded.map { |r| r[:data] }).to eq([{
+      "workspace" => "ws", "path" => "verify", "status" => "in_progress", "previous" => "in_progress", "note" => nil,
+      "owner" => "claude", "by" => "file", "revision" => revision("40-verify.md"), "change" => "owner"
+    }])
+  end
+
+  it "records an owner change that comes with a status change without change" do
+    stage("40-verify.md", owner: "you")
+    watcher.baseline
+
+    stage("40-verify.md", status: "completed", owner: "claude")
+    settle
+
+    expect(recorded.first[:data]).to include("status" => "completed", "owner" => "claude")
+    expect(recorded.first[:data]).not_to have_key("change")
+  end
+
+  it "skips an owner change that is a spine set write" do
+    stage("40-verify.md")
+    watcher.baseline
+
+    stage("40-verify.md", owner: "you")
+    recent_lines << {"path" => "verify", "revision" => revision("40-verify.md")}
+    settle
+
+    expect(recorded).to be_empty
   end
 
   it "coalesces a burst of saves into one line per stage" do

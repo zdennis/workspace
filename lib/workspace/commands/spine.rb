@@ -5,7 +5,7 @@ require "json"
 module Workspace
   module Commands
     # `spine show` and `spine set`: one workspace's plan spine (the `spine/` folder of its notes
-    # directory) as the stages {SpineTree} reads from it, and the one write to it, a stage's status.
+    # directory) as the stages {SpineTree} reads from it, and the one write to it, a stage's status, note and owner.
     # `show` is read-only: it creates no folder and writes no file, and a bad file is a warning in
     # the answer, never an error.
     class Spine
@@ -14,6 +14,9 @@ module Workspace
 
       # The longest `--note`, as long as the `note:` a reader keeps.
       MAX_NOTE = SpineFile::VALUE_LIMITS.fetch("note")
+
+      # The longest `--owner`.
+      MAX_OWNER = 64
 
       # The longest `--by`.
       MAX_BY = 100
@@ -46,42 +49,48 @@ module Workspace
         @output = output
       end
 
-      # Sets the status of one stage, and with +recursive+ of the stages under it that are not done.
+      # Sets the status, note or owner of one stage, and with +recursive+ of the stages under it that are not done.
       # Writers of one workspace take turns; each file is written whole, in tree order, and a refusal
       # stops the run with what was already written in `details.written`.
       #
       # @param name [String] the workspace
       # @param path [String] a stage path such as `implement/api`
-      # @param status [String] a status or an alias; written as the canonical value
-      # @param note [String, nil] one line; nil keeps the note when the status stays and clears it when it changes
+      # @param status [String, nil] a status or an alias, written as the canonical value; nil leaves the status alone
+      # @param note [String, nil] one line (empty clears); nil keeps the note when the status stays and clears it when it changes
+      # @param owner [String, nil] a pane id, `you` or an agent label, one line of at most 64 characters (empty clears); nil leaves it alone
       # @param if_revision [String, nil] refuse with `stale_revision` unless the stage file's revision is this
       # @param recursive [Boolean] also set every sub-stage that is neither `completed` nor `skipped`
       # @param by [String, nil] the `updated_by` label; default the agent label of `$TMUX_PANE`, else `person`
       # @param json [Boolean] print one JSON document instead of a summary
       # @return [void]
-      # @raise [Workspace::UsageError] a note or label that is not one short line
+      # @raise [Workspace::UsageError] none of status, note and owner given; an owner with +recursive+; a note, owner or label that is not one short line
       # @raise [Workspace::Error] `unknown_workspace`, `invalid_status`, `no_spine`, `unknown_stage`, `stale_revision`,
       #   `spine_unwritable`, or what {#show} raises
-      def set(name:, path:, status:, note: nil, if_revision: nil, recursive: false, by: nil, json: false)
-        canonical = SpineFile.canonical_status(status)
-        unless SpineFile::STATUSES.include?(canonical)
+      def set(name:, path:, status: nil, note: nil, owner: nil, if_revision: nil, recursive: false, by: nil, json: false)
+        raise Workspace::UsageError, "Give at least one of --status, --note and --owner." if status.nil? && note.nil? && owner.nil?
+        raise Workspace::UsageError, "--owner can't be used with --recursive: an owner belongs to one stage." if owner && recursive
+        canonical = status && SpineFile.canonical_status(status)
+        if status && !SpineFile::STATUSES.include?(canonical)
           raise Workspace::Error.new("'#{status}' is not a status to set. Use one of: #{SpineFile::STATUSES.join(", ")}.",
             code: "invalid_status", details: {"status" => status, "allowed" => SpineFile::STATUSES})
         end
         note = one_line(note, "--note", MAX_NOTE)
+        owner = one_line(owner, "--owner", MAX_OWNER)
+        values = {"status" => canonical, "note" => note, "owner" => owner}.compact
         by = one_line(by, "--by", MAX_BY)
         raise Workspace::UsageError, "--by can't be empty." if by&.empty?
 
         notes_dir = @notes.info(name: name)["dir"]
         written = []
         unchanged = []
+        @what = {}
         with_lock(name) do
           tree = SpineTree.read(real(notes_dir))
           raise Workspace::Error.new("#{name} has no spine/ in its notes directory.", code: "no_spine", details: {"workspace" => name, "dir" => tree.dir}) unless tree.exists
           stage = tree.find(path) || raise(unknown_stage(name, path, tree))
           by ||= default_by(name)
           targets(stage, recursive).each_with_index do |target, index|
-            write_stage(name, target, canonical, note, by, (index.zero? ? if_revision : nil), recursive, written, unchanged)
+            write_stage(name, target, values, by, (index.zero? ? if_revision : nil), recursive, written, unchanged)
           end
         end
         report(name, written, unchanged, json)
@@ -164,27 +173,39 @@ module Workspace
         found
       end
 
-      def write_stage(name, stage, status, note, by, if_revision, recursive, written, unchanged)
+      def write_stage(name, stage, values, by, if_revision, recursive, written, unchanged)
         unless stage.file
           raise refusal(Workspace::Error.new("#{stage.path} has no stage file, only a folder, so there is nothing to write.",
             code: "spine_unwritable", details: {"file" => stage.relative, "reason" => "no_file"}), recursive, written)
         end
         updated = @clock.call.utc.strftime("%Y-%m-%dT%H:%M:%SZ")
         result = begin
-          @writer.write(stage.file.path, relative: stage.relative, status: status, note: note, by: by,
+          @writer.write(stage.file.path, relative: stage.relative, values: values, by: by,
             updated: updated, if_revision: if_revision)
         rescue Workspace::Error => e
           raise refusal(e, recursive, written)
         end
         unless result.changed
-          unchanged << {"path" => stage.path, "file" => stage.relative, "status" => result.status, "revision" => result.revision}
+          unchanged << {"path" => stage.path, "file" => stage.relative, "status" => result.status, "owner" => result.owner, "revision" => result.revision}
           return
         end
         entry = {"path" => stage.path, "file" => stage.relative, "status" => result.status, "previous" => result.previous,
-                 "revision" => result.revision, "updated" => updated, "updated_by" => by, "note" => result.note}
+                 "revision" => result.revision, "updated" => updated, "updated_by" => by, "note" => result.note, "owner" => result.owner}
+        @what[stage.path] = [field_change("note", result.previous_note, result.note), field_change("owner", result.previous_owner, result.owner)].compact.join(", ")
         written << entry
-        @event_log&.record(type: "spine_changed", project: name, data: {"workspace" => name, "path" => stage.path,
-                                                                        "status" => result.status, "previous" => result.previous, "note" => result.note, "by" => by, "revision" => result.revision})
+        data = {"workspace" => name, "path" => stage.path, "status" => result.status, "previous" => result.previous,
+                "note" => result.note, "owner" => result.owner, "by" => by, "revision" => result.revision}
+        data["change"] = "owner" if result.status == result.previous && result.note == result.previous_note
+        @event_log&.record(type: "spine_changed", project: name, data: data)
+      end
+
+      def field_change(key, before, after)
+        return nil if before == after
+        if after
+          "#{key} #{(key == "note") ? "changed" : "set to #{after}"}"
+        else
+          "#{key} cleared"
+        end
       end
 
       def refusal(error, recursive, written)
@@ -239,9 +260,9 @@ module Workspace
         end
         written.each do |row|
           line = if row["status"] == row["previous"]
-            "#{row["path"]} still #{row["status"]}, note #{row["note"] ? "changed" : "cleared"}"
+            "#{row["path"]} still #{row["status"]}, #{@what[row["path"]]}"
           else
-            "#{row["path"]} set to #{row["status"]} (was #{row["previous"]})"
+            ["#{row["path"]} set to #{row["status"]} (was #{row["previous"]})", @what[row["path"]]].reject { |t| t.to_s.empty? }.join(", ")
           end
           @output.puts "#{name}: #{line}"
         end

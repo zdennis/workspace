@@ -2,7 +2,7 @@ require "time"
 
 module Workspace
   # Watches one workspace's `spine/` folder and records `spine_changed` in the event log when a
-  # stage's `status` or `note` changes, or a stage file is added or removed, however it happened
+  # stage's `status`, `note` or `owner` changes, or a stage file is added or removed, however it happened
   # (an editor, an agent's edit tool, a script). It follows {PlanProgressWatcher}: a stat of the
   # folder on a short tick, a read with {SpineTree} only once the folder has sat still for
   # {SETTLE} seconds (so a burst of saves is one line per stage), and a baseline taken at the
@@ -169,7 +169,7 @@ module Workspace
           stages[stage.relative] = previous[stage.relative] if previous&.key?(stage.relative)
           next
         end
-        stages[stage.relative] = {"path" => stage.path, "status" => file.status, "note" => file.value("note"),
+        stages[stage.relative] = {"path" => stage.path, "status" => file.status, "note" => file.value("note"), "owner" => file.value("owner"),
                                   "updated" => file.value("updated"), "updated_by" => file.value("updated_by"),
                                   "revision" => file.revision}
       end
@@ -191,11 +191,13 @@ module Workspace
             {"workspace" => @workspace, "path" => after["path"], "change" => "added"}
           elsif after.nil?
             {"workspace" => @workspace, "path" => before["path"], "change" => "removed"}
-          elsif before["status"] != after["status"] || before["note"] != after["note"]
+          elsif %w[status note owner].any? { |key| before[key] != after[key] }
             own ||= own_revisions
             next if own[after["path"]] == after["revision"]
-            {"workspace" => @workspace, "path" => after["path"], "status" => after["status"], "previous" => before["status"],
-             "note" => after["note"], "by" => by(before, after), "revision" => after["revision"]}
+            line = {"workspace" => @workspace, "path" => after["path"], "status" => after["status"], "previous" => before["status"],
+                    "note" => after["note"], "owner" => after["owner"], "by" => by(before, after), "revision" => after["revision"]}
+            line["change"] = "owner" if before["status"] == after["status"] && before["note"] == after["note"]
+            line
           end
         wrote = true if data && @event_log.record(type: "spine_changed", project: @workspace, data: data)
       end
