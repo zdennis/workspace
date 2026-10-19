@@ -4857,7 +4857,7 @@ module Workspace
     def hooks_uninstall_targets(agent, name, project, dry_run, json)
       rows = @hooks_command.uninstall_in(agent: agent, name: name, project: project, dry_run: dry_run)
       results = rows.map do |row|
-        extra = row.reject { |key, _| %w[workspace outcome reason message].include?(key) }
+        extra = row.except("workspace", "outcome", "reason", "message")
         action_row(row["workspace"], row["outcome"], reason: row["reason"], message: row["message"], **extra.transform_keys(&:to_sym))
       end
       derived = JsonEnvelope.action_status(results)
