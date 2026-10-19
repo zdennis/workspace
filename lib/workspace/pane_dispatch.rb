@@ -46,6 +46,16 @@ module Workspace
     attr_reader :prompt_timeout
 
     # @param name [String] the workspace
+    # @return [Boolean, nil] whether its tmux session runs; nil when that can't be told (a custom tmux
+    #   socket, or tmux did not answer), which callers treat as running
+    def session_live?(name)
+      return nil if @tmux.custom_socket_option(name)
+      @tmux.sessions(strict: true).include?(@tmux.session_name_for(name))
+    rescue Workspace::Error, SystemCallError
+      nil
+    end
+
+    # @param name [String] the workspace
     # @return [Array<Hash>] the daemon's pane rows (`pane_id`, `kind`, `state`, ...)
     # @raise [Workspace::Error] `no_daemon` when the agent daemon does not answer
     def panes(name)

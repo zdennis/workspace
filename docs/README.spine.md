@@ -1,6 +1,6 @@
 # workspace spine
 
-Read a workspace's plan spine, and set a stage's status. The spine is the stage level of a workspace's plan (research, plan, implement, verify, ...): one Markdown file per stage in a `spine/` folder of the workspace's notes directory. The task level is [`IMPLEMENTATION_PLAN.md`](README.plan.md), which the spine links to and does not replace.
+Read a workspace's plan spine, set a stage's status, and start an agent on a stage. The spine is the stage level of a workspace's plan (research, plan, implement, verify, ...): one Markdown file per stage in a `spine/` folder of the workspace's notes directory. The task level is [`IMPLEMENTATION_PLAN.md`](README.plan.md), which the spine links to and does not replace.
 
 ## Usage
 
@@ -118,6 +118,56 @@ A refusal is the standard error document. With `--recursive` the run stops at th
 | `usage` | A missing `--status` or path, or a `--note` or `--by` that is not one short line |
 
 `spine_set` in [`capabilities`](README.capabilities.md) is `2` when this verb takes `--owner` and accepts `--note` or `--owner` without `--status`. The 64-character limit on `--owner` applies to the command; a hand-edited owner is read up to 500 characters.
+
+## spine start
+
+```sh
+workspace spine start [WORKSPACE] STAGE-PATH [--pane PANE | --spawn KIND] [--play REF] [--if-revision REV] [--json]
+```
+
+Gets an agent working on one stage. `STAGE-PATH` is as for `set`: with two arguments the first is the workspace, and with `--name WORKSPACE` the one argument is the path. It is modelled on [`plan start --task`](README.plan.md#one-task).
+
+| Option | Description |
+|--------|-------------|
+| `--pane PANE` | Send the stage to that pane: a pane id (`%21`) or `window.pane` (`0.1`) of the workspace's own session (`bad_pane`, `no_such_pane`, `wrong_session` otherwise) |
+| `--spawn KIND` | Split a new pane, start that agent in it (`claude`, `codex`, ..., as `plan start --spawn`), and wait until it is ready for text |
+| `--play REF` | The play to send. Default: the stage file's `play:`, else by `kind`: `research` gets `research`, `plan` and `implement` get `implementation-plan`, `review` gets `review`, the others none |
+| `--if-revision REV` | Refuse with `stale_revision` unless the stage file's `revision` is `REV` |
+| `--json` | Print one JSON document |
+
+Without `--pane` or `--spawn` the pane is the stage's `owner` when the agent daemon lists it as a coding-agent pane, else the main Claude Code or Codex pane. A workspace with no session is launched with the play and the brief (with the packs `launch` sends, the `spine` pack among them); `--pane` or `--spawn` on a workspace with no session is `no_session`.
+
+It works in this order:
+
+1. Under the spine write lock (the one `set` takes), the stage is read again and the file-only refusals are made again, then one write sets `status: in_progress` (when it isn't already), `owner: <pane>`, `updated` and `updated_by` (the pane's agent label, `claude %21`) and records `spine_changed`. A refusal here stops before anything is typed. The agent's first `spine show` therefore already reads `in_progress` with itself as the owner.
+2. The brief is typed into the pane: the play's line, the `spine` pack, and a few lines that name the stage's path and file and the goal file, with the stage title quoted as data. No stage body is pasted.
+3. The pane is bound as a play binding with the `spine` pack and `focus: "spine stage <path>"`, so the SessionStart hook repeats both after `/clear`. A pane bound to a run or a review keeps that binding. A binding that fails is a note in `message`.
+
+With `--spawn` the write waits until the new agent is ready, since its pane id is not known before; an agent that is not ready in time is `failed` with `reason: "prompt_not_sent"`, and nothing is written or typed; a refusal made under the lock after the split names the new pane in `details.pane`, which is left open. A launch writes `in_progress` (with `updated_by: "spine start"`) before it launches and the owner once the launch names the pane. If the brief can't be delivered, the file is left as written, and the result is `failed` with the delivery's error code as `reason` and a `message` that gives the `spine set` command that sets the stage back (its previous status and owner).
+
+```json
+{"schema_version": 1, "ok": true, "workspace": "fix-oauth", "path": "verify", "file": "40-verify.md",
+ "outcome": "sent", "reason": null, "pane": "%21", "owner": "%21", "status": "in_progress", "previous": "not_started",
+ "revision": "3e1f0a9b", "play": null, "message": null}
+```
+
+`outcome` is `sent`, `spawned` (to a new pane), `launched`, `already_working` (the owner pane already works on the stage; nothing is written, and the document reads the file as it is), or `failed`, the one outcome with `ok: false` and exit status 1. `revision` is the stage file's revision after the write, for a later `--if-revision`. `play` is the play's ref, or null. Plain output is one line, plus any note.
+
+| `code` | When |
+|--------|------|
+| `no_spine`, `unknown_stage` | As for `set` |
+| `spine_unwritable` | As for `set`; `no_file` for a stage that is only a folder |
+| `stage_done` | The file says `completed` or `skipped` (`details.status`); the message gives `spine set --status in_progress` to reopen it |
+| `stage_waiting` | A stage in its `depends_on` is not `completed` or `skipped` by its file (a folder-only stage by its sub-stages); `details.waits_on`. File statuses only, so `start` runs no `gh`: a dependency `--evaluate` reads as `disputed` does not hold it back |
+| `stale_revision` | `--if-revision` differs from the file's revision |
+| `stage_owned` | Its owner pane is working on it and another pane, or `--spawn`, was asked for (`details.owner`) |
+| `pane_busy` | The pane waits on a person or works on something else (`details.state`) |
+| `no_agent_pane` | The named pane runs no coding agent the daemon knows, or no pane runs Claude Code or Codex |
+| `no_daemon` | The workspace's agent daemon did not answer |
+| `no_session` | `--pane` or `--spawn` and the workspace has no session |
+| `usage` | A missing path, `--pane` with `--spawn`, an unknown `--spawn` kind, or an option of `show` or `set` |
+
+`spine_start` in [`capabilities`](README.capabilities.md) is `1` when this verb exists.
 
 ## spine init
 

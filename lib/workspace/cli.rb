@@ -77,6 +77,7 @@ module Workspace
     # @param ticket_command [Workspace::Commands::Ticket, nil] pre-built ticket command
     # @param spine_command [Workspace::Commands::Spine, nil] pre-built spine command
     # @param spine_init_command [Workspace::Commands::SpineInit, nil] pre-built spine init command
+    # @param spine_start_command [Workspace::Commands::SpineStart, nil] pre-built spine start command
     # @param pull_request_command [Workspace::Commands::PullRequest, nil] pre-built pr command
     # @param rebase_command [Workspace::Commands::Rebase, nil] pre-built rebase command
     # @param push_command [Workspace::Commands::Push, nil] pre-built push command
@@ -113,7 +114,7 @@ module Workspace
     #   `list --liveness --json` and `status --json`; takes name => state entry
     # @param launch_mode [Workspace::LaunchMode, nil] decides whether launch/start
     #   run headless when no --[no-]headless flag is given; nil builds one
-    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, hooks_command: nil, restart_agent_command: nil, agent_status_command: nil, send_command: nil, ensure_agent_command: nil, name_migration: nil, spine_command: nil, spine_init_command: nil, handoff_command: nil, notes_command: nil, notes_setup: nil, plan_command: nil, plan_dispatch_command: nil, plan_task_command: nil, ticket_command: nil, pull_request_command: nil, rebase_command: nil, push_command: nil, projects_command: nil, groups_command: nil, capabilities_command: nil, daemon_command: nil, ui_command: nil, binding_command: nil, library_command: nil, library: nil, instructions_command: nil, instruction_composer: nil, workflow_command: nil, review_command: nil, restore_command: nil, snapshot_command: nil, events_command: nil, project_actions_command: nil, inbox_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil, liveness: nil, window_liveness: nil, env: ENV, editor_launcher: nil, interactive: nil, workspace_name: nil)
+    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, hooks_command: nil, restart_agent_command: nil, agent_status_command: nil, send_command: nil, ensure_agent_command: nil, name_migration: nil, spine_command: nil, spine_init_command: nil, spine_start_command: nil, handoff_command: nil, notes_command: nil, notes_setup: nil, plan_command: nil, plan_dispatch_command: nil, plan_task_command: nil, ticket_command: nil, pull_request_command: nil, rebase_command: nil, push_command: nil, projects_command: nil, groups_command: nil, capabilities_command: nil, daemon_command: nil, ui_command: nil, binding_command: nil, library_command: nil, library: nil, instructions_command: nil, instruction_composer: nil, workflow_command: nil, review_command: nil, restore_command: nil, snapshot_command: nil, events_command: nil, project_actions_command: nil, inbox_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil, liveness: nil, window_liveness: nil, env: ENV, editor_launcher: nil, interactive: nil, workspace_name: nil)
       @config = config
       @state = state
       @project_config = project_config
@@ -158,6 +159,7 @@ module Workspace
       @ticket_command = ticket_command
       @spine_command = spine_command
       @spine_init_command = spine_init_command
+      @spine_start_command = spine_start_command
       @pull_request_command = pull_request_command
       @rebase_command = rebase_command
       @push_command = push_command
@@ -555,7 +557,7 @@ module Workspace
           sessions        Show coding-agent sessions and sub-agents in a workspace
           snapshot        Print everything a UI polls (projects, panes, git, asks, locks, dev) as one JSON document
           step            For the agent on a workflow step: report on it (done), or see what it is (status)
-          spine           Read a workspace's plan spine (spine/ in its notes directory): show, init, set a stage's status
+          spine           Read a workspace's plan spine (spine/ in its notes directory): show, init, set a stage's status, start an agent on a stage
           start           Create a worktree and launch it (from JIRA key, PR URL or #n, or branch)
           status          Show detailed state of tracked launcher sessions
           set-command     Set the shell command for a pane in a project config (--pane <N>)
@@ -6927,7 +6929,9 @@ module Workspace
       OptionParser.new do |opts|
         opts.banner = "Usage: workspace spine show [WORKSPACE] [--name WORKSPACE] [--stage STAGE-PATH] [--body] [--evaluate] [--json]\n" \
                       "       workspace spine set [WORKSPACE] STAGE-PATH [--status VALUE] [--note TEXT] [--owner VALUE]\n" \
-                      "                           [--if-revision REV] [--recursive] [--by LABEL] [--json]"
+                      "                           [--if-revision REV] [--recursive] [--by LABEL] [--json]\n" \
+                      "       workspace spine start [WORKSPACE] STAGE-PATH [--pane PANE | --spawn KIND] [--play REF]\n" \
+                      "                             [--if-revision REV] [--json]"
         opts.separator ""
         opts.separator "show reads a workspace's plan spine: the stage files in spine/ of its notes directory, one"
         opts.separator "Markdown file per stage (10-research.md, 20-plan.md, ...), and sub-stages in a folder named"
@@ -6940,6 +6944,13 @@ module Workspace
         opts.separator "status, note, owner, updated and updated_by lines of the stage file and writes a spine_changed"
         opts.separator "event. Writers of a workspace take turns."
         opts.separator ""
+        opts.separator "start gets an agent working on one stage: the pane named, a new one (--spawn), the stage's"
+        opts.separator "owner when it is a live agent pane, else the main Claude Code or Codex pane; a workspace with"
+        opts.separator "no session is launched. It first sets the stage in_progress with that pane as its owner, then"
+        opts.separator "types the brief (the play, the spine pack, and the stage's path and file), then binds the pane."
+        opts.separator "Refuses a stage that is completed or skipped (stage_done) or whose depends_on stages are not"
+        opts.separator "(stage_waiting), and a pane that is busy (pane_busy)."
+        opts.separator ""
         opts.separator "Other verb: init (create the folder from a template; run 'workspace spine init --help')."
         opts.separator ""
         opts.on("--name NAME", "The workspace (default: the one detected from the current directory)") { |v| options[:name] = v }
@@ -6949,7 +6960,10 @@ module Workspace
         opts.on("--status VALUE", "set: not_started, in_progress, blocked, completed or skipped (or an alias such as done)") { |v| options[:status] = v }
         opts.on("--note TEXT", "set: one line of at most 300 characters; alone it changes only the note (empty clears it). With a new status and no --note the note is cleared") { |v| options[:note] = v }
         opts.on("--owner VALUE", "set: who works the stage: a pane id such as %6, you, or an agent label; one line of at most 64 characters (empty clears it). Not with --recursive") { |v| options[:owner] = v }
-        opts.on("--if-revision REV", "set: refuse with stale_revision unless the stage file's revision (from show) is REV") { |v| options[:if_revision] = v }
+        opts.on("--if-revision REV", "set, start: refuse with stale_revision unless the stage file's revision (from show) is REV") { |v| options[:if_revision] = v }
+        opts.on("--pane PANE", "start: the pane to send the stage to, a pane id (%21) or window.pane (0.1) of the workspace's session") { |v| options[:pane] = v }
+        opts.on("--spawn KIND", "start: split a new pane and start that agent in it (#{Commands::SpineStart::AGENT_KINDS.join(", ")})") { |v| options[:spawn] = v }
+        opts.on("--play REF", "start: the play to send (default: the stage's play:, else research, implementation-plan or review by its kind)") { |v| options[:play] = v }
         opts.on("--recursive", "set: also set every sub-stage that is not completed or skipped") { options[:recursive] = true }
         opts.on("--by LABEL", "set: the updated_by label (default: the agent and pane id of $TMUX_PANE, else person)") { |v| options[:by] = v }
         opts.on("--json", "Print one JSON document (see docs/README.spine.md)") { options[:json] = true }
@@ -6965,6 +6979,9 @@ module Workspace
         opts.separator "  workspace spine set verify --owner %6 --note \"waiting on CI\""
         opts.separator "  workspace spine set api.worktree-login review --status=completed --note=\"2 nits, fixed\" --json"
         opts.separator "  workspace spine set api.worktree-login implement --status completed --recursive --if-revision 9f8e7d6c"
+        opts.separator "  workspace spine start verify    # the stage's owner pane, else the main agent pane"
+        opts.separator "  workspace spine start api.worktree-login implement/api --spawn codex --json"
+        opts.separator "  workspace spine start research --pane %21 --play team-research"
       end
     end
 
@@ -7017,7 +7034,7 @@ module Workspace
       args.each_with_index do |arg, i|
         if skip
           skip = false
-        elsif %w[--name --template --stage --status --note --if-revision --by].include?(arg)
+        elsif %w[--name --template --stage --status --note --owner --if-revision --by --pane --spawn --play].include?(arg)
           skip = true
         elsif arg == "--"
           return nil
@@ -7041,8 +7058,12 @@ module Workspace
       return @output.puts(parser.help) if options[:help]
 
       subcommand = args.shift
-      raise UsageError, "Missing subcommand: show or set.\n\n#{parser.help}" unless subcommand
-      raise UsageError, "Unknown spine subcommand: #{subcommand}. Run 'workspace spine --help'." unless %w[show set].include?(subcommand)
+      raise UsageError, "Missing subcommand: show, set, start or init.\n\n#{parser.help}" unless subcommand
+      raise UsageError, "Unknown spine subcommand: #{subcommand}. Run 'workspace spine --help'." unless %w[show set start].include?(subcommand)
+      return cmd_spine_start(args, options, parser) if subcommand == "start"
+      if options[:pane] || options[:spawn] || options[:play]
+        raise UsageError, "--pane, --spawn and --play are for 'spine start'. Run 'workspace spine --help'."
+      end
       return cmd_spine_set(args, options, parser) if subcommand == "set"
 
       positional = settle_name(args.shift)
@@ -7072,6 +7093,45 @@ module Workspace
 
       @spine_command.set(name: name, path: path, status: options[:status], note: options[:note], owner: options[:owner], if_revision: options[:if_revision],
         recursive: options[:recursive] || false, by: options[:by], json: options[:json])
+    end
+
+    def cmd_spine_start(args, options, parser)
+      if options[:stage] || options[:body] || options[:evaluate] || options[:status] || options[:note] || options[:owner] || options[:recursive] || options[:by]
+        raise UsageError, "spine start takes --pane, --spawn, --play, --if-revision and --json; the other options are for show and set."
+      end
+      raise UsageError, "Give only one of --pane and --spawn." if options[:pane] && options[:spawn]
+      if options[:spawn] && !Commands::SpineStart::AGENT_KINDS.include?(options[:spawn])
+        raise UsageError, "Unknown agent kind for --spawn: #{options[:spawn]}. One of #{Commands::SpineStart::AGENT_KINDS.join(", ")}."
+      end
+      positional = (args.size > 1 && !options[:name]) ? settle_name(args.shift) : nil
+      path = args.shift
+      raise UsageError, "Missing STAGE-PATH, the stage's ids joined with / (as 'spine show' reports path).\n\n#{parser.help}" unless path
+      raise UsageError, "Unexpected argument: #{args.first}. Run 'workspace spine --help'." if args.any?
+      raise Error, "spine start is not available: no spine start command was wired" unless @spine_start_command
+
+      name = options[:name] || positional || @project_detector.detect(@working_dir)
+      raise Error.new("No workspace found for #{@working_dir}. Run from inside a workspace or pass --name.", code: "not_in_workspace", details: {"path" => @working_dir}) unless name
+
+      start = -> {
+        @spine_start_command.start(name: name, path: path, pane: options[:pane], spawn: options[:spawn], play: options[:play],
+          if_revision: options[:if_revision], launch: spine_launcher)
+      }
+      doc = options[:json] ? divert_output(&start) : start.call
+      if options[:json]
+        @output.puts JSON.generate(doc)
+      elsif !doc["ok"]
+        @error_output.puts "Error: could not start stage #{doc["path"]} of #{name}: #{doc["message"]}"
+      end
+      @exit_handler.exit(1) unless doc["ok"]
+    end
+
+    # What `spine start` uses to launch a workspace that has no session: `launch --play REF --prompt BRIEF`, with the
+    # packs a launch sends (the spine pack among them). Returns `{ok:, reason:, message:, pane:}`.
+    def spine_launcher
+      lambda do |workspace, play, prompt|
+        launched = launch_projects([workspace], play: play, prompt: prompt, with_packs: true)
+        launched_pane(launched)
+      end
     end
 
     def pr_parser(options)
@@ -7386,11 +7446,15 @@ module Workspace
     # --prompt "Continue the plan."` (or a task's prompt), with the packs a launch sends. Returns `{ok:, reason:, message:, pane:}`.
     def plan_launcher
       lambda do |workspace, prompt = Commands::PlanDispatch::CONTINUE_PROMPT|
-        launched = launch_projects([workspace], play: Commands::PlanDispatch::PLAY, prompt: prompt, with_packs: true)
-        row = launch_rows(launched[:projects], launched[:result], plays: launched[:plays], packs: launched[:packs], skipped_packs: launched[:skipped_packs], prompts: launched[:prompts]).first
-        pane = row.dig("play", "pane") || row["pane"]
-        {ok: row["outcome"] != "failed", reason: row["reason"], message: row["message"], pane: pane}
+        launched_pane(launch_projects([workspace], play: Commands::PlanDispatch::PLAY, prompt: prompt, with_packs: true))
       end
+    end
+
+    # The one launched workspace's row from {#launch_projects}, as `{ok:, reason:, message:, pane:}`.
+    def launched_pane(launched)
+      row = launch_rows(launched[:projects], launched[:result], plays: launched[:plays], packs: launched[:packs], skipped_packs: launched[:skipped_packs], prompts: launched[:prompts]).first
+      pane = row.dig("play", "pane") || row["pane"]
+      {ok: row["outcome"] != "failed", reason: row["reason"], message: row["message"], pane: pane}
     end
 
     def cmd_dir(args)

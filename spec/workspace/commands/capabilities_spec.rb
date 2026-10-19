@@ -146,6 +146,12 @@ RSpec.describe Workspace::Commands::Capabilities do
       expect(document["features"]).to include("spine_set" => 2)
     end
 
+    it "reports spine_start 1 once spine start writes, delivers and binds" do
+      command.call(json: true)
+
+      expect(document["features"]).to include("spine_start" => 1)
+    end
+
     it "reports spine_pack 1 once the spine pack exists" do
       command.call(json: true)
 

@@ -107,6 +107,7 @@ RSpec.describe Workspace::CLI do
       ticket_command: overrides[:ticket_command],
       spine_command: overrides[:spine_command],
       spine_init_command: overrides[:spine_init_command],
+      spine_start_command: overrides[:spine_start_command],
       pull_request_command: overrides[:pull_request_command],
       rebase_command: overrides[:rebase_command],
       push_command: overrides[:push_command],
@@ -6425,6 +6426,66 @@ RSpec.describe Workspace::CLI do
 
         expect(output.string).to include("workspace spine set").and include("--status").and include("--if-revision").and include("--recursive").and include("--by")
       end
+    end
+  end
+
+  describe "#run with spine start" do
+    let(:doc) do
+      {"schema_version" => 1, "ok" => true, "workspace" => "api", "path" => "verify", "file" => "40-verify.md", "outcome" => "sent", "reason" => nil,
+       "pane" => "%21", "owner" => "%21", "status" => "in_progress", "previous" => "not_started", "revision" => "3e1f0a9b", "play" => nil, "message" => nil}
+    end
+    let(:spine_start_command) { instance_double(Workspace::Commands::SpineStart, start: doc) }
+    let(:detector) { instance_double(Workspace::ProjectDetector, detect: "detected-ws") }
+    let(:built) { build_test_cli(spine_start_command: spine_start_command, project_detector: detector, working_dir: "/some/dir") }
+    let(:cli) { built[0] }
+    let(:output) { built[1] }
+    let(:error_output) { built[2] }
+
+    it "starts the stage of the detected workspace, or of the one named first or with --name" do
+      cli.run(["spine", "start", "verify"])
+      cli.run(["spine", "start", "api", "verify", "--pane", "%21", "--if-revision", "3e1f0a9b"])
+      cli.run(["spine", "--name", "api", "start", "verify", "--spawn", "codex", "--play", "research"])
+
+      expect(spine_start_command).to have_received(:start).with(hash_including(name: "detected-ws", path: "verify", pane: nil, spawn: nil, play: nil, if_revision: nil))
+      expect(spine_start_command).to have_received(:start).with(hash_including(name: "api", path: "verify", pane: "%21", if_revision: "3e1f0a9b"))
+      expect(spine_start_command).to have_received(:start).with(hash_including(name: "api", path: "verify", spawn: "codex", play: "research"))
+    end
+
+    it "prints the command's document with --json" do
+      cli.run(["spine", "start", "verify", "--json"])
+
+      expect(JSON.parse(output.string)).to eq(doc)
+    end
+
+    it "exits 1 on a failed outcome, with the document under --json and the message on stderr without it" do
+      allow(spine_start_command).to receive(:start).and_return(doc.merge("ok" => false, "outcome" => "failed", "message" => "not submitted"))
+
+      expect { cli.run(["spine", "start", "verify", "--json"]) }.to raise_error(FakeSystemExit)
+      expect(JSON.parse(output.string)).to include("outcome" => "failed")
+      expect { cli.run(["spine", "start", "verify"]) }.to raise_error(FakeSystemExit)
+      expect(error_output.string).to include("could not start stage verify of detected-ws: not submitted")
+    end
+
+    it "refuses options of show and set, both --pane and --spawn, an unknown agent kind, and a missing path" do
+      [%w[start verify --status done], %w[start verify --stage x], %w[start verify --pane %1 --spawn claude],
+        %w[start verify --spawn vim], %w[start], %w[set verify --status done --pane %1], %w[show --play research]].each do |args|
+        expect { cli.run(["spine", *args, "--json"]) }.to raise_error(FakeSystemExit)
+      end
+      expect(output.string.lines.map { |line| JSON.parse(line)["code"] }.uniq).to eq(["usage"])
+      expect(spine_start_command).not_to have_received(:start)
+    end
+
+    it "prints a refusal as the error envelope" do
+      allow(spine_start_command).to receive(:start).and_raise(Workspace::Error.new("waits", code: "stage_waiting", details: {"waits_on" => ["research"]}))
+
+      expect { cli.run(["spine", "start", "verify", "--json"]) }.to raise_error(FakeSystemExit)
+      expect(JSON.parse(output.string)).to include("ok" => false, "code" => "stage_waiting", "details" => {"waits_on" => ["research"]})
+    end
+
+    it "lists start in the help" do
+      cli.run(["spine", "--help"])
+
+      expect(output.string).to include("workspace spine start").and include("--spawn").and include("--play")
     end
   end
 

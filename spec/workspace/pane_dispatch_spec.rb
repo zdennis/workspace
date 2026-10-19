@@ -15,6 +15,21 @@ RSpec.describe Workspace::PaneDispatch do
       runner: runner, readiness: readiness, main_agent: main_agent, tmux: tmux, prompt_timeout: 30)
   end
 
+  describe "#session_live?" do
+    before { allow(tmux).to receive(:custom_socket_option).and_return(nil) }
+
+    it "says whether the workspace's session runs, and nil when tmux can't tell" do
+      allow(tmux).to receive(:sessions).with(strict: true).and_return(["api"])
+      expect(dispatch.session_live?("api")).to be(true)
+      allow(tmux).to receive(:sessions).with(strict: true).and_return([])
+      expect(dispatch.session_live?("api")).to be(false)
+      allow(tmux).to receive(:sessions).and_raise(Workspace::Error, "no tmux")
+      expect(dispatch.session_live?("api")).to be_nil
+      allow(tmux).to receive(:custom_socket_option).and_return("-L x")
+      expect(dispatch.session_live?("api")).to be_nil
+    end
+  end
+
   describe "#panes" do
     it "turns a daemon that does not answer into no_daemon" do
       allow(snapshot_client).to receive(:fetch).and_raise(Workspace::AgentSnapshotClient::Unavailable.new("no daemon", reason: :no_daemon))

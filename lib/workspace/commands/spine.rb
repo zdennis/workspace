@@ -90,9 +90,7 @@ module Workspace
         unchanged = []
         @what = {}
         with_lock(name) do
-          tree = SpineTree.read(real(notes_dir))
-          raise Workspace::Error.new("#{name} has no spine/ in its notes directory.", code: "no_spine", details: {"workspace" => name, "dir" => tree.dir}) unless tree.exists
-          stage = tree.find(path) || raise(unknown_stage(name, path, tree))
+          _, stage = stage!(name, path, SpineTree.read(real(notes_dir)))
           by ||= default_by(name)
           targets(stage, recursive).each_with_index do |target, index|
             write_stage(name, target, values, by, (index.zero? ? if_revision : nil), recursive, written, unchanged)
@@ -149,6 +147,50 @@ module Workspace
       def read(name)
         notes_dir = @notes.info(name: name)["dir"]
         SpineTree.read(real(notes_dir))
+      end
+
+      # @param name [String] the workspace
+      # @param path [String] a stage path
+      # @param tree [SpineTree, nil] an already read tree; read when nil
+      # @return [Array(SpineTree, SpineTree::Stage)]
+      # @raise [Workspace::Error] `no_spine`, `unknown_stage`, or what {#read} raises
+      def stage!(name, path, tree = nil)
+        tree ||= read(name)
+        raise Workspace::Error.new("#{name} has no spine/ in its notes directory.", code: "no_spine", details: {"workspace" => name, "dir" => tree.dir}) unless tree.exists
+        [tree, tree.find(path) || raise(unknown_stage(name, path, tree))]
+      end
+
+      # One write to one stage file, as {#set} makes it, for `spine start`: under the workspace's write lock the
+      # tree is read again and yielded with the stage, so the caller can refuse before anything changes; then
+      # +values+ are written and a `spine_changed` line is recorded when the file changed.
+      #
+      # @param name [String] the workspace
+      # @param path [String] a stage path
+      # @param values [Hash{String => String}] as {SpineWriter#write} takes them
+      # @param by [String] the `updated_by` label
+      # @param if_revision [String, nil] refuse with `stale_revision` unless the file's revision is this
+      # @yieldparam tree [SpineTree]
+      # @yieldparam stage [SpineTree::Stage]
+      # @return [Array(SpineTree::Stage, SpineWriter::Result)]
+      # @raise [Workspace::Error] `no_spine`, `unknown_stage`, `stale_revision`, `spine_unwritable`, or what the block raises
+      def write_one(name:, path:, values:, by:, if_revision: nil)
+        notes_dir = @notes.info(name: name)["dir"]
+        with_lock(name) do
+          tree, stage = stage!(name, path, SpineTree.read(real(notes_dir)))
+          yield tree, stage if block_given?
+          raise no_file(stage) unless stage.file
+          result = @writer.write(stage.file.path, relative: stage.relative, values: values, by: by,
+            updated: @clock.call.utc.strftime("%Y-%m-%dT%H:%M:%SZ"), if_revision: if_revision)
+          record_change(name, stage, result, by) if result.changed
+          [stage, result]
+        end
+      end
+
+      # @param stage [SpineTree::Stage]
+      # @return [Workspace::Error] `spine_unwritable` with reason `no_file`, for a stage that is only a folder
+      def no_file(stage)
+        Workspace::Error.new("#{stage.path} has no stage file, only a folder, so there is nothing to write.",
+          code: "spine_unwritable", details: {"file" => stage.relative, "reason" => "no_file"})
       end
 
       private
@@ -272,10 +314,7 @@ module Workspace
       end
 
       def write_stage(name, stage, values, by, if_revision, recursive, written, unchanged)
-        unless stage.file
-          raise refusal(Workspace::Error.new("#{stage.path} has no stage file, only a folder, so there is nothing to write.",
-            code: "spine_unwritable", details: {"file" => stage.relative, "reason" => "no_file"}), recursive, written)
-        end
+        raise refusal(no_file(stage), recursive, written) unless stage.file
         updated = @clock.call.utc.strftime("%Y-%m-%dT%H:%M:%SZ")
         result = begin
           @writer.write(stage.file.path, relative: stage.relative, values: values, by: by,
@@ -291,6 +330,10 @@ module Workspace
                  "revision" => result.revision, "updated" => updated, "updated_by" => by, "note" => result.note, "owner" => result.owner}
         @what[stage.path] = [field_change("note", result.previous_note, result.note), field_change("owner", result.previous_owner, result.owner)].compact.join(", ")
         written << entry
+        record_change(name, stage, result, by)
+      end
+
+      def record_change(name, stage, result, by)
         data = {"workspace" => name, "path" => stage.path, "status" => result.status, "previous" => result.previous,
                 "note" => result.note, "owner" => result.owner, "by" => by, "revision" => result.revision}
         data["change"] = "owner" if result.status == result.previous && result.note == result.previous_note
