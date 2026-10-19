@@ -17,6 +17,8 @@ module Workspace
       "unsaved_unknown" => "git couldn't tell whether the worktree has unsaved work.",
       "not_prunable" => "prune: a --name is not a prune candidate (text mode; with --json it is a failed row). details.names.",
       "prune_remove_failed" => "prune --json: a row's error when git refused to remove the worktree (locked, for example). Appears in rows only.",
+      "session_running" => "remove: the workspace's tmux session is up; stop it first. details.name, details.session.",
+      "not_removable" => "remove: the workspace is a worktree project; kill, finish or prune removes those. details.name, details.root.",
       "not_submitted" => "Text reached the pane but wasn't confirmed submitted; check before resending.",
       "confirmation_required" => "A prompt would have read stdin while --no-input or WORKSPACE_NO_INPUT was set, or plan delete was run without --yes.",
       "no_session" => "The workspace has no running tmux session.",

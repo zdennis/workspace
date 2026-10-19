@@ -26,7 +26,7 @@ It reads constants, config paths and the `PATH`. It starts no process and touche
    "doctor_json":1,"daemon_control":4,"config_json":2,"config_scopes":2,"tmux_show":1,"tasks":1,"event_emitters":1,
    "ui_open":3,"pane_bindings":3,"library":5,"library_play":2,"library_copy":1,"instructions":1,"restore":1,
    "workflow":2,"window_state":1,"cleanup_dry_run":1,"notes":1,"start_packs":2,"start_agent":1,"start_plan":1,
-   "handoff_auto":2,"handoff_codex":1,"dev_queue":2,"plan":5,"inbox":3,"ask_withdraw":1,"review":1,"add_json":1,"plan_progress":1,"spine_events":2,"spine_eval":2,"spine_start":1,"spine_check":1,"spine_goal":1,"agent_status":1,"plan_tasks":2,"agent_hooks":1,"projects_multi":1,"json_envelope":1},
+   "handoff_auto":2,"handoff_codex":1,"dev_queue":2,"plan":5,"inbox":3,"ask_withdraw":1,"review":1,"add_json":1,"plan_progress":1,"spine_events":2,"spine_eval":2,"spine_start":1,"spine_check":1,"spine_goal":1,"agent_status":1,"plan_tasks":2,"agent_hooks":1,"projects_multi":1,"json_envelope":1,"remove":1},
  "exit_codes":{"ok":0,"failed":1,"not_submitted":2,"partial":3,"lock_cleared":4,"timeout":75},
  "paths":{"event_log":"/Users/me/.workspace-events.jsonl","hook_events":"/Users/me/.local/state/workspace/.events",
    "run_dir":"/Users/me/.local/workspace/run",
@@ -55,6 +55,7 @@ It reads constants, config paths and the `PATH`. It starts no process and touche
 | `json_envelope` | `list`, `status` and `parent` take `--json-envelope` and print the standard envelope (`schema_version`, `ok`, then `workspaces`, `status` or `parent`, then `warnings`) instead of the bare `--json` document (see [`--json` output](README.json.md#success-output-without-the-envelope)) |
 | `git_facts` | `projects show` reports git facts per workspace |
 | `prune_safe` | `prune` skips a worktree with unsaved work and reports it, rather than removing it. Revision 2: `prune --json [--name=WS]...` prints an action document with a row per candidate (see [`prune`](README.prune.md)) |
+| `remove` | `remove NAME [--yes] [--dry-run] [--json]` deletes a plain workspace's tmuxinator config, project settings file and state entry; refuses `session_running` and `not_removable` (see [`remove`](README.remove.md)) |
 | `snapshot` | `snapshot --json` (see [`snapshot`](README.snapshot.md)); `sessions --json` panes carry `display_label` (see [`sessions`](README.sessions.md)). Revision 1 was `display_label` alone; revision 3 adds each member's `plan`; revision 4 reports `task` for stopped and ended workspaces; revision 5 adds each member's `spine` summary |
 | `events_follow` | `events [--follow] [--json] [--types] [--since CURSOR]` reads the event log and every agent daemon's hook events (`tool_started`, `tool_finished`, `subagent_started`, `subagent_stopped`, `session_started`, `session_ended`, `prompt_submitted`, each with `boot_id` and `seq`) as one stream, with an opaque cursor on every line (see [`events`](README.events.md)) |
 | `actions_manifest` | Not available yet |

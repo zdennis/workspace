@@ -114,7 +114,7 @@ module Workspace
     #   `list --liveness --json` and `status --json`; takes name => state entry
     # @param launch_mode [Workspace::LaunchMode, nil] decides whether launch/start
     #   run headless when no --[no-]headless flag is given; nil builds one
-    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, hooks_command: nil, restart_agent_command: nil, agent_status_command: nil, send_command: nil, ensure_agent_command: nil, name_migration: nil, spine_command: nil, spine_init_command: nil, spine_start_command: nil, handoff_command: nil, notes_command: nil, notes_setup: nil, plan_command: nil, plan_dispatch_command: nil, plan_task_command: nil, ticket_command: nil, pull_request_command: nil, rebase_command: nil, push_command: nil, projects_command: nil, groups_command: nil, capabilities_command: nil, daemon_command: nil, ui_command: nil, binding_command: nil, library_command: nil, library: nil, instructions_command: nil, instruction_composer: nil, workflow_command: nil, review_command: nil, restore_command: nil, snapshot_command: nil, events_command: nil, project_actions_command: nil, inbox_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil, liveness: nil, window_liveness: nil, env: ENV, editor_launcher: nil, interactive: nil, workspace_name: nil)
+    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, hooks_command: nil, restart_agent_command: nil, agent_status_command: nil, send_command: nil, ensure_agent_command: nil, name_migration: nil, spine_command: nil, spine_init_command: nil, spine_start_command: nil, handoff_command: nil, notes_command: nil, notes_setup: nil, plan_command: nil, plan_dispatch_command: nil, plan_task_command: nil, ticket_command: nil, pull_request_command: nil, rebase_command: nil, push_command: nil, projects_command: nil, groups_command: nil, capabilities_command: nil, daemon_command: nil, ui_command: nil, binding_command: nil, library_command: nil, library: nil, instructions_command: nil, instruction_composer: nil, workflow_command: nil, review_command: nil, restore_command: nil, snapshot_command: nil, events_command: nil, project_actions_command: nil, remove_command: nil, inbox_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil, liveness: nil, window_liveness: nil, env: ENV, editor_launcher: nil, interactive: nil, workspace_name: nil)
       @config = config
       @state = state
       @project_config = project_config
@@ -141,6 +141,7 @@ module Workspace
       @repair_command = repair_command
       @cleanup_command = cleanup_command
       @prune_command = prune_command
+      @remove_command = remove_command
       @claude_command = claude_command
       @lookup_command = lookup_command
       @update_pane_command = update_pane_command
@@ -345,6 +346,8 @@ module Workspace
         cmd_cleanup(args)
       when "prune"
         cmd_prune(args)
+      when "remove"
+        cmd_remove(args)
       when "set-command"
         cmd_set_pane_command(args)
       when "event-log"
@@ -545,6 +548,7 @@ module Workspace
           reactivate      Reactivate Claude in a project's tmux pane
           rebase          Rebase a workspace's branch onto the default branch (--onto local|update|remote|upstream)
           relaunch        Stop and relaunch all active workspace projects
+          remove          Delete a stopped project's config, settings and state entry (not worktree projects)
           repair          Rebuild state from live iTerm windows
           resize          Resize tmux panes for a running project
           restore         Bring back agent panes after a reboot: recreate them and resume their sessions
@@ -6135,6 +6139,51 @@ module Workspace
           removed.zero? ? "failed" : "partial"
         end
         {results: rows, status: status}
+      end
+    end
+
+    def cmd_remove(args)
+      yes = false
+      dry_run = false
+      json = false
+      parser = OptionParser.new do |opts|
+        opts.banner = "Usage: workspace remove [options] NAME"
+        opts.separator ""
+        opts.separator "Delete a workspace's generated files: its tmuxinator config, its project"
+        opts.separator "settings file and its state entry. Each file is copied aside first"
+        opts.separator "(<file>.workspace-backup-<time>). The project's directory, git worktrees and"
+        opts.separator "notes are never touched."
+        opts.separator ""
+        opts.separator "Refuses while the workspace's tmux session is up (session_running; run"
+        opts.separator "'workspace stop NAME' first) and for a worktree project (not_removable; use"
+        opts.separator "'workspace kill', 'finish' or 'prune'). Asks before deleting unless --yes;"
+        opts.separator "under --no-input it refuses without --yes."
+        opts.separator ""
+        opts.separator "Options:"
+        opts.on("--yes", "Skip the confirmation prompt") { yes = true }
+        opts.on("--dry-run", "List what would be removed; no prompt, nothing changes") { dry_run = true }
+        opts.on("--json", "Print one action document (see docs/README.json.md) instead of text, which goes",
+          "to stderr; a refusal is the error envelope. The prompt still asks: pass --yes in scripts") { json = true }
+        opts.separator ""
+        opts.separator "Examples:"
+        opts.separator "  workspace remove myproject --dry-run    # see which files would go"
+        opts.separator "  workspace remove myproject    # ask, then remove"
+        opts.separator "  workspace remove myproject --yes --json    # no prompt, one action document"
+      end
+      parser.parse!(args)
+      raise UsageError, "workspace remove takes exactly one NAME.\n\n#{parser.help}" unless args.size == 1
+      raise Error, "remove is not available: no remove command was wired" unless @remove_command
+
+      name = args.first
+      run_action("remove", json: json) do
+        row = @remove_command.call(name, yes: yes, dry_run: dry_run)
+        if !json
+          {}
+        elsif row
+          {results: [action_row(name, row["outcome"], files: row["files"], backups: row["backups"], state_entry: row["state_entry"])], status: dry_run ? "dry_run" : nil}
+        else
+          {results: [action_row(name, "cancelled", reason: "declined", message: "Not confirmed; nothing was removed.")], status: "cancelled"}
+        end
       end
     end
 

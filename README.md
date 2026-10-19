@@ -113,6 +113,7 @@ workspace <subcommand> [options]
 | reactivate | [README](docs/README.reactivate.md) | Reactivate Claude in a project's tmux pane |
 | rebase | [README](docs/README.rebase.md) | Rebase a workspace's branch onto the default branch (`--onto local\|update\|remote\|upstream`); a conflict is aborted and reported |
 | relaunch | [README](docs/README.relaunch.md) | Stop and relaunch all active workspace projects |
+| remove | [README](docs/README.remove.md) | Delete a stopped project's tmuxinator config, project settings and state entry (never its directory or notes) |
 | restore | [README](docs/README.restore.md) | Bring back agent panes after a reboot: launch the active workspaces, recreate recorded agent panes (hand-split ones too) and resume their sessions with `claude --resume`; `--dry-run` shows the plan and what can't be matched |
 | report-run-status | [README](docs/README.report-run-status.md) | Internal: write run result for --wait (called by shell wrapper) |
 | run | [README](docs/README.run.md) | Send a shell command to a pane in a project's tmux session |

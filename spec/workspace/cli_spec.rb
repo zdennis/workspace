@@ -128,6 +128,7 @@ RSpec.describe Workspace::CLI do
       snapshot_command: overrides[:snapshot_command],
       events_command: overrides[:events_command],
       project_actions_command: overrides[:project_actions_command],
+      remove_command: overrides[:remove_command],
       inbox_command: overrides[:inbox_command],
       config_report: overrides[:config_report],
       tmuxinator_report: overrides[:tmuxinator_report],
@@ -10211,6 +10212,54 @@ RSpec.describe Workspace::CLI do
         cli.run(["repair", "api", "--window-id", "9", "--json"])
 
         expect(parse_one(raw)["results"].first).to include("workspace" => "api", "outcome" => "repaired", "iterm_window_id" => 9)
+      end
+    end
+
+    describe "remove" do
+      let(:removed_row) { {"workspace" => "app", "outcome" => "removed", "files" => ["/c.yml"], "backups" => ["/c.yml.b"], "state_entry" => true} }
+
+      it "passes the options to the command" do
+        remove = double("remove", call: removed_row)
+        cli, = action_cli(remove_command: remove)
+
+        cli.run(["remove", "app", "--yes", "--dry-run"])
+
+        expect(remove).to have_received(:call).with("app", yes: true, dry_run: true)
+      end
+
+      it "prints one action document with the files and exits 0" do
+        remove = double("remove", call: removed_row)
+        cli, raw, = action_cli(remove_command: remove)
+
+        expect(exit_status { cli.run(["remove", "app", "--yes", "--json"]) }).to eq(0)
+
+        doc = parse_one(raw)
+        expect(doc).to include("action" => "remove", "status" => "ok")
+        expect(doc["results"].first).to include("workspace" => "app", "outcome" => "removed", "files" => ["/c.yml"], "state_entry" => true)
+      end
+
+      it "reports a dry run as status dry_run" do
+        remove = double("remove", call: removed_row.merge("outcome" => "would_remove"))
+        cli, raw, = action_cli(remove_command: remove)
+
+        expect(exit_status { cli.run(["remove", "app", "--dry-run", "--json"]) }).to eq(0)
+
+        expect(parse_one(raw)).to include("status" => "dry_run")
+      end
+
+      it "reports a declined prompt as cancelled" do
+        remove = double("remove", call: nil)
+        cli, raw, = action_cli(remove_command: remove)
+
+        expect(exit_status { cli.run(["remove", "app", "--json"]) }).to eq(0)
+
+        expect(parse_one(raw)).to include("status" => "cancelled")
+      end
+
+      it "needs exactly one name" do
+        cli, = action_cli(remove_command: double("remove"))
+
+        expect(exit_status { cli.run(["remove"]) }).to eq(1)
       end
     end
 

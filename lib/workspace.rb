@@ -285,6 +285,7 @@ require_relative "workspace/commands/layout"
 require_relative "workspace/commands/repair"
 require_relative "workspace/commands/cleanup"
 require_relative "workspace/commands/prune"
+require_relative "workspace/commands/remove"
 require_relative "workspace/commands/lookup"
 require_relative "workspace/commands/update_pane_command"
 require_relative "workspace/commands/run"
@@ -415,6 +416,7 @@ module Workspace
     repair_command = Commands::Repair.new(state: state, iterm: iterm, window_manager: window_manager, output: output)
     cleanup_command = Commands::Cleanup.new(state: state, window_liveness: WindowLiveness.new(window_manager: window_manager), tmux: tmux, output: output, input: input)
     prune_command = Commands::Prune.new(state: state, project_config: project_config, project_settings: project_settings, git: git, stop_command: stop_command, output: output, input: input)
+    remove_command = Commands::Remove.new(project_config: project_config, project_settings: project_settings, state: state, tmux: tmux, git: git, file_backup: file_backup, output: output, input: input)
     claude_command = Commands::Claude.new(state: state, tmux: tmux, output: output, error_output: error_output)
     lookup_command = Commands::Lookup.new(project_config: project_config, output: output)
     update_pane_command = Commands::UpdatePaneCommand.new(config: config, project_config: project_config, output: output, input: input)
@@ -670,6 +672,7 @@ module Workspace
       repair_command: repair_command,
       cleanup_command: cleanup_command,
       prune_command: prune_command,
+      remove_command: remove_command,
       claude_command: claude_command,
       lookup_command: lookup_command,
       update_pane_command: update_pane_command,
