@@ -194,6 +194,17 @@ module Workspace
     # @return [String] one of {STATUSES}, or `unknown`
     def status = self.class.canonical_status(status_raw)
 
+    # The one place that reads a claim against its check.
+    #
+    # @return [Boolean] whether the claim is `completed` and the check is `required` or `pending` (no verdict yet)
+    def awaiting_check? = status == "completed" && %w[required pending].include?(check)
+
+    # @return [Boolean] whether the claim is `completed` and the check is `failed`
+    def check_failed? = status == "completed" && check == "failed"
+
+    # @return [Boolean] whether `check: passed` stands on a stage whose claim is no longer `completed` (a hand reopening)
+    def stale_pass? = check == "passed" && !%w[completed unknown].include?(status)
+
     # Reads a status word the way a stage file is read.
     #
     # @param raw [String, nil] a status or an alias, in any case, with `-` or spaces for `_`
@@ -291,6 +302,9 @@ module Workspace
       read_keys(lines, close)
       if (word = value("check")) && !CHECKS.include?(word.downcase)
         @warnings << self.class.warning("unknown_check", @key_spans["check"]&.first, "check #{word} is not one of #{CHECKS.join(", ")}, so the stage has no check.", value: word)
+      end
+      if stale_pass?
+        @warnings << self.class.warning("check_passed_not_completed", @key_spans["check"]&.first, "check is passed, but status is #{status}: the pass belongs to an earlier completion. Run spine set to clear it.", value: status)
       end
       close + 1
     end

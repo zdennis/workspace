@@ -74,7 +74,7 @@ module Workspace
       # @return [Hash] the document documented in docs/README.spine.md#spine-start: `outcome` `sent`, `spawned`,
       #   `launched`, `already_working` (nothing written) or `failed` (`reason` `prompt_not_sent` with nothing
       #   written, or the delivery's error code with the file left as written)
-      # @raise [Workspace::Error] `no_spine`, `unknown_stage`, `spine_unwritable`, `stage_done`, `stage_waiting`,
+      # @raise [Workspace::Error] `no_spine`, `unknown_stage`, `spine_unwritable`, `stage_done`, `stage_waiting` (`details.reasons`: `check_pending` or `check_failed` per stage),
       #   `stale_revision`, `no_session`, `stage_owned`, `pane_busy`, `no_agent_pane`, `no_daemon`, the
       #   {Workspace::PaneLocator} codes, and the library's codes for a play that can't be read
       def start(name:, path:, launch:, pane: nil, spawn: nil, play: nil, if_revision: nil)
@@ -107,23 +107,33 @@ module Workspace
         end
         waits = waits_on(tree, stage)
         if waits.any?
-          raise Workspace::Error.new("Stage #{stage.path} of '#{name}' depends on #{waits.join(", ")}, which #{(waits.size == 1) ? "is" : "are"} not completed or skipped.",
-            code: "stage_waiting", details: {"workspace" => name, "path" => stage.path, "waits_on" => waits})
+          reasons = waits.to_h { |id, sibling| [id, wait_reason(sibling)] }.compact
+          note = reasons.empty? ? "" : " (#{reasons.map { |id, reason| "#{id}: #{reason}" }.join(", ")})"
+          ids = waits.keys
+          raise Workspace::Error.new("Stage #{stage.path} of '#{name}' depends on #{ids.join(", ")}, which #{(ids.size == 1) ? "is" : "are"} not completed or skipped#{note}.",
+            code: "stage_waiting", details: {"workspace" => name, "path" => stage.path, "waits_on" => ids, "reasons" => reasons})
         end
         return if if_revision.nil? || if_revision.downcase == stage.file.revision
         raise Workspace::Error.new("#{stage.relative} changed: its revision is #{stage.file.revision}, not #{if_revision}.",
           code: "stale_revision", details: {"revision" => stage.file.revision, "status" => stage.status})
       end
 
-      # The ids in `depends_on` whose sibling is not done by its file (a folder-only sibling by its sub-stages).
-      # A repeated id means the first stage with it.
+      # The ids in `depends_on` whose sibling is not done by its file (a folder-only sibling by its sub-stages),
+      # with the sibling. A completed claim whose check has no passing verdict is not done. A repeated id means
+      # the first stage with it.
       def waits_on(tree, stage)
         parent = stage.path.include?("/") ? tree.find(stage.path.sub(%r{/[^/]+\z}, "")) : nil
         siblings = parent ? parent.children : tree.stages
-        stage.depends_on.reject do |id|
+        stage.depends_on.filter_map do |id|
           sibling = siblings.find { |candidate| candidate.id == id }
-          sibling.nil? || DONE.include?(sibling.effective_state)
-        end
+          [id, sibling] unless sibling.nil? || DONE.include?(sibling.effective_state)
+        end.to_h
+      end
+
+      # @return [String, nil] `check_pending` or `check_failed` when the sibling claims completed without a passing check
+      def wait_reason(sibling)
+        return "check_failed" if sibling.check_failed?
+        "check_pending" if sibling.awaiting_check?
       end
 
       def find_play(stage, ref, cwd)

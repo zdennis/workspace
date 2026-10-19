@@ -7129,7 +7129,7 @@ module Workspace
         opts.on("--name NAME", "The workspace (default: the one detected from the current directory)") { |v| options[:name] = v }
         opts.on("--stage STAGE-PATH", "show: only that stage (with its sub-stages); unknown_stage when there is none") { |v| options[:stage] = v }
         opts.on("--body", "show: add the text after the frontmatter (16 KB at most) to the stage, or to the goal without --stage") { options[:body] = true }
-        opts.on("--evaluate", "show: judge each stage against the plan, git, the pull request, the review agent and the panes (reads gh and the agent daemon, up to about 5s; an unreadable source leaves its gates unchecked)") { options[:evaluate] = true }
+        opts.on("--evaluate", "show: judge each stage against the plan, git, the pull request, the review agent and the panes (reads gh and the agent daemon, up to about 5s; an unreadable source leaves its gates unchecked; a completed stage with a check: line reads checking or check_failed until the check passes)") { options[:evaluate] = true }
         opts.on("--status VALUE", "set: not_started, in_progress, blocked, completed or skipped (or an alias such as done)") { |v| options[:status] = v }
         opts.on("--note TEXT", "set: one line of at most 300 characters; alone it changes only the note (empty clears it). With a new status and no --note the note is cleared. verify: the verdict's note, required, 300 characters at most") { |v| options[:note] = v }
         opts.on("--pass", "verify: the stage passed its check") { options[:pass] = true }
@@ -7152,7 +7152,7 @@ module Workspace
         opts.separator "  workspace spine show api.worktree-login --json"
         opts.separator "  workspace spine show --name=api.worktree-login --json"
         opts.separator "  workspace spine show --stage implement/api --body --json"
-        opts.separator "  workspace spine show --evaluate --json    # state, gate_results, disputes and current for every stage"
+        opts.separator "  workspace spine show --evaluate --json    # state (incl. checking, check_failed), gate_results, disputes, checker and current for every stage"
         opts.separator "  workspace spine set verify --status in_progress"
         opts.separator "  workspace spine set verify --owner %6 --note \"waiting on CI\""
         opts.separator "  workspace spine set api.worktree-login review --status=completed --note=\"2 nits, fixed\" --json"

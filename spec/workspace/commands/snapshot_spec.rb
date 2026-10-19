@@ -779,8 +779,18 @@ RSpec.describe Workspace::Commands::Snapshot do
       block = spine_of("app.worktree-fix")
       expect(block).to include("exists" => true, "current" => "implement", "title" => "Build it", "state" => "in_progress",
         "status" => "in_progress", "owner" => "%19", "owner_state" => "waiting", "stages" => 3, "partial" => false)
-      expect(block["counts"]).to eq({"completed" => 1, "in_progress" => 1, "not_started" => 1, "blocked" => 0, "skipped" => 0, "unknown" => 0, "disputed" => 0})
+      expect(block["counts"]).to eq({"completed" => 1, "in_progress" => 1, "not_started" => 1, "blocked" => 0, "skipped" => 0, "unknown" => 0, "disputed" => 0, "checking" => 0, "check_failed" => 0})
       expect(block["signature"]).to match(/\A\h{8}\z/)
+    end
+
+    it "reads a completed stage whose check has no passing verdict as checking, and a failed one as check_failed" do
+      write_spine("app", "10-a.md", "---\nstatus: completed\ncheck: pending\n---\n")
+      write_spine("app", "20-b.md", "---\nstatus: completed\ncheck: failed\n---\n")
+      write_spine("app", "30-c.md", "---\nstatus: completed\ncheck: passed\n---\n")
+      snapshot.call
+
+      expect(spine_of("app")).to include("current" => "a", "state" => "checking", "status" => "completed")
+      expect(spine_of("app")["counts"]).to include("completed" => 1, "checking" => 1, "check_failed" => 1)
     end
 
     it "has no current stage when every stage is done" do

@@ -289,8 +289,8 @@ RSpec.describe Workspace::SpineTree do
       implement = doc["stages"].first
       cache = implement["children"][1]
 
-      expect(implement["rollup"]).to eq("status" => "in_progress", "done" => 1, "total" => 3, "counts" => {"completed" => 1, "in_progress" => 1, "not_started" => 0, "blocked" => 0, "skipped" => 0, "unknown" => 1, "disputed" => 0})
-      expect(cache["rollup"]).to eq("status" => "blocked", "done" => 0, "total" => 2, "counts" => {"completed" => 0, "in_progress" => 0, "not_started" => 1, "blocked" => 1, "skipped" => 0, "unknown" => 0, "disputed" => 0})
+      expect(implement["rollup"]).to eq("status" => "in_progress", "done" => 1, "total" => 3, "counts" => {"completed" => 1, "in_progress" => 1, "not_started" => 0, "blocked" => 0, "skipped" => 0, "unknown" => 1, "disputed" => 0, "checking" => 0, "check_failed" => 0})
+      expect(cache["rollup"]).to eq("status" => "blocked", "done" => 0, "total" => 2, "counts" => {"completed" => 0, "in_progress" => 0, "not_started" => 1, "blocked" => 1, "skipped" => 0, "unknown" => 0, "disputed" => 0, "checking" => 0, "check_failed" => 0})
       expect(implement["children"][0]).not_to have_key("rollup")
     end
 
@@ -575,5 +575,17 @@ RSpec.describe Workspace::SpineTree do
     end
 
     expect { JSON.generate(doc) }.not_to raise_error
+  end
+
+  describe "Stage#effective_state with a check" do
+    def checked(check, status: "completed")
+      file = Workspace::SpineFile.parse("---\nstatus: #{status}\ncheck: #{check}\n---\n")
+      described_class::Stage.new(path: "a", id: "a", number: 10, level: 1, file: file, relative: "10-a.md", children: [], warnings: [], kind: "custom", depends_on: [], gates: [])
+    end
+
+    it "is checking or check_failed for a completed claim without a passing check, and the status otherwise" do
+      expect(%w[required pending failed passed].map { |check| checked(check).effective_state }).to eq(%w[checking checking check_failed completed])
+      expect(checked("required", status: "in_progress").effective_state).to eq("in_progress")
+    end
   end
 end

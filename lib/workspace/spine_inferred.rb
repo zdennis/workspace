@@ -38,6 +38,10 @@ module Workspace
 
       def children = []
 
+      def awaiting_check? = false
+
+      def check_failed? = false
+
       def to_h
         {
           "path" => kind, "file" => nil, "number" => number, "id" => kind, "revision" => nil, "title" => TITLES.fetch(kind),

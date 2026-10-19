@@ -144,6 +144,25 @@ RSpec.describe Workspace::Commands::SpineStart do
       expect(error.details["waits_on"]).to eq(["research"])
     end
 
+    it "refuses a stage whose dependency claims completed but has no passing check, naming why" do
+      write("10-research.md", "---\nstatus: completed\ncheck: pending\n---\n")
+      error = refusal { start }
+      expect(error.code).to eq("stage_waiting")
+      expect(error.details).to include("waits_on" => ["research"], "reasons" => {"research" => "check_pending"})
+      expect(error.message).to include("research: check_pending")
+
+      write("10-research.md", "---\nstatus: completed\ncheck: failed\n---\n")
+      expect(refusal { start }.details["reasons"]).to eq("research" => "check_failed")
+    end
+
+    it "refuses a stage whose folder-only dependency has a sub-stage still being checked" do
+      FileUtils.rm_f(File.join(@notes, "spine", "10-research.md"))
+      write("10-research/10-a.md", "---\nstatus: completed\ncheck: required\n---\n")
+      error = refusal { start }
+      expect(error.code).to eq("stage_waiting")
+      expect(error.details).to include("waits_on" => ["research"], "reasons" => {})
+    end
+
     it "refuses a stale --if-revision" do
       expect(refusal { start(if_revision: "00000000") }.code).to eq("stale_revision")
     end

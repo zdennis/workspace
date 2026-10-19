@@ -4,11 +4,13 @@ require "tmpdir"
 # Ported from workspace-ui's src/core/spine/model.test.ts, case for case, in the reply's shape:
 # `gate_results` with reason codes, snake_case dispute kinds, `owner_state` in place of overlays.
 RSpec.describe Workspace::SpineEvaluator do
-  def stage(path, status: "not_started", gates: [], depends_on: [], owner: nil, done_when: nil, children: [], number: 10)
+  def stage(path, status: "not_started", gates: [], depends_on: [], owner: nil, done_when: nil, children: [], number: 10, check: nil, checked_by: nil)
     id = path.split("/").last
     text = +"---\n"
     text << "status: #{status}\n" unless status == "unknown"
     text << "owner: \"#{owner}\"\n" if owner
+    text << "check: #{check}\n" if check
+    text << "checked_by: #{checked_by}\n" if checked_by
     text << "---\n"
     if done_when
       done, total = done_when
@@ -517,6 +519,64 @@ RSpec.describe Workspace::SpineEvaluator do
 
     it "is current nil for a missing spine" do
       expect(described_class.call(Workspace::SpineTree.read(@notes))).to include("exists" => false, "stages" => [], "current" => nil)
+    end
+  end
+
+  describe "checks" do
+    def pane(id, working: false, waiting: false) = Workspace::SpineEvaluator::Pane.new(pane: id, waiting: waiting, working: working, since: nil)
+
+    it "reads a completed claim awaiting its check as checking, and a failed one as check_failed" do
+      states = %w[required pending passed failed].map { |check| one(stage("a", status: "completed", check: check))["state"] }
+      expect(states).to eq(%w[checking checking completed check_failed])
+    end
+
+    it "leaves a stage that is not completed, and a stage without a check, as it was" do
+      expect(one(stage("a", status: "in_progress", check: "required"))["state"]).to eq("in_progress")
+      expect(one(stage("a", status: "completed"))["state"]).to eq("completed")
+    end
+
+    it "lets a dispute outrank the check state" do
+      doc = one(stage("a", status: "completed", check: "pending", done_when: [1, 2]))
+      expect(doc["state"]).to eq("disputed")
+      expect(doc["check"]).to eq("pending")
+    end
+
+    it "holds a checking stage as the current one and its dependents waiting" do
+      docs = evaluate([stage("a", status: "completed", check: "pending"), stage("b", depends_on: ["a"], number: 20)])
+      expect(docs[1]["waits_on"]).to eq(["a"])
+      expect(described_class.current(docs)).to eq("a")
+
+      passed = evaluate([stage("a", status: "completed", check: "passed"), stage("b", depends_on: ["a"], number: 20)])
+      expect(passed[1]["waits_on"]).to eq([])
+      expect(described_class.current(passed)).to eq("b")
+    end
+
+    it "counts checking and check_failed children in the roll-up, never as done" do
+      parent = one(stage("parent", status: "unknown", children: [child("a", "completed"), stage("parent/b", status: "completed", check: "pending", number: 20), stage("parent/c", status: "completed", check: "failed", number: 30)]))
+      expect(parent["rollup"]).to include("status" => "in_progress", "done" => 1, "total" => 3)
+      expect(parent["rollup"]["counts"]).to include("completed" => 1, "checking" => 1, "check_failed" => 1)
+      expect(parent["state"]).to eq("in_progress")
+    end
+
+    it "does not roll a parent up to completed while its only open child is checking" do
+      parent = one(stage("parent", status: "unknown", children: [stage("parent/a", status: "completed", check: "pending")]))
+      expect(parent["rollup"]["status"]).to eq("in_progress")
+    end
+
+    it "holds a completed parent back with a sub_stages dispute while a child is checking" do
+      parent = one(stage("parent", status: "completed", children: [stage("parent/a", status: "completed", check: "pending")]))
+      expect(parent["disputes"].map { |d| d["kind"] }).to eq(["sub_stages"])
+    end
+
+    it "reports the checker from checked_by: a pane id found in the label, else the label, with its pane state" do
+      panes = [pane("%27", working: true), pane("%28")]
+      doc = one(stage("a", status: "completed", check: "failed", checked_by: "claude %27"), facts(panes: panes))
+      expect(doc.values_at("checker", "checker_state")).to eq(["%27", "working"])
+
+      expect(one(stage("a", status: "completed", check: "failed", checked_by: "claude %29"), facts(panes: panes)).values_at("checker", "checker_state")).to eq(["%29", "gone"])
+      expect(one(stage("a", status: "completed", check: "failed", checked_by: "claude %27"), facts(panes: nil))["checker_state"]).to eq("unknown")
+      expect(one(stage("a", status: "completed", check: "passed", checked_by: "person"), facts(panes: panes)).values_at("checker", "checker_state")).to eq(["person", nil])
+      expect(one(stage("a", status: "completed", check: "pending"), facts(panes: panes)).values_at("checker", "checker_state")).to eq([nil, nil])
     end
   end
 end

@@ -288,7 +288,10 @@ module Workspace
       if edits.key?("status") && check
         check = (status == "completed") ? "pending" : "required"
         edits["check"] = check if check != file.check
-        SpineFile::CHECK_KEYS.each { |key| edits[key] = :delete if file.value(key) }
+        SpineFile::CHECK_KEYS.each do |key|
+          next if key == "check_note" && %w[failed required].include?(file.check) && status != "completed"
+          edits[key] = :delete if file.value(key)
+        end
       end
       return [{}, nil] if edits.empty?
 

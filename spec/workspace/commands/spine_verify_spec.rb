@@ -184,8 +184,24 @@ RSpec.describe Workspace::Commands::Spine, "#verify and the check kept by #set" 
       command.set(name: "api", path: "verify", status: "in_progress")
       file = parsed
       expect(file.check).to eq("required")
-      expect(%w[checked_by checked_at check_note].map { |key| file.value(key) }).to all(be_nil)
-      expect(file.frontmatter.keys).not_to include("checked_by", "checked_at", "check_note")
+      expect(%w[checked_by checked_at].map { |key| file.value(key) }).to all(be_nil)
+      expect(file.frontmatter.keys).not_to include("checked_by", "checked_at")
+      expect(file.value("check_note")).to eq("item 2 missing")
+    end
+
+    it "clears check_note when a passed verdict is reopened, and the kept failure note when completed again" do
+      write(stage_text(check: "passed", extra: "checked_by: someone\ncheck_note: fine"))
+      command.set(name: "api", path: "verify", status: "in_progress")
+      expect(parsed.frontmatter.keys).not_to include("check_note")
+
+      write(stage_text(check: "failed", extra: "checked_by: someone\ncheck_note: bad"))
+      command.set(name: "api", path: "verify", status: "in_progress")
+      expect(parsed.value("check_note")).to eq("bad")
+      command.set(name: "api", path: "verify", status: "blocked")
+      expect(parsed.value("check_note")).to eq("bad")
+      command.set(name: "api", path: "verify", status: "completed")
+      expect(parsed.frontmatter.keys).not_to include("check_note")
+      expect(parsed.check).to eq("pending")
     end
 
     it "clears a passed verdict when the stage is completed again after a reopening" do

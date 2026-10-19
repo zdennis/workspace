@@ -180,6 +180,30 @@ RSpec.describe Workspace::SpineFile do
     end
   end
 
+  describe "check against the claim" do
+    def checks(status, check) = parse("---\nstatus: #{status}\ncheck: #{check}\n---\n")
+
+    it "awaits a check for a completed claim whose check is required or pending" do
+      expect([checks("completed", "required"), checks("completed", "pending")].map(&:awaiting_check?)).to eq([true, true])
+      expect([checks("completed", "passed"), checks("completed", "failed"), checks("in_progress", "required")].map(&:awaiting_check?)).to eq([false] * 3)
+      expect(parse("---\nstatus: completed\n---\n").awaiting_check?).to be(false)
+    end
+
+    it "reports a failed check only on a completed claim" do
+      expect(checks("completed", "failed").check_failed?).to be(true)
+      expect(checks("in_progress", "failed").check_failed?).to be(false)
+      expect(checks("completed", "passed").check_failed?).to be(false)
+    end
+
+    it "warns check_passed_not_completed when a pass stands on a claim that is not completed" do
+      warning = checks("in_progress", "passed").warnings.first
+      expect(warning).to include("code" => "check_passed_not_completed", "line" => 3, "value" => "in_progress")
+      expect(checks("completed", "passed").warnings).to be_empty
+      expect(checks("in_progress", "required").warnings).to be_empty
+      expect(parse("---\ncheck: passed\n---\n").warnings).to be_empty
+    end
+  end
+
   describe "#check" do
     it "reads the four values, in any case" do
       %w[required pending passed failed].each do |word|

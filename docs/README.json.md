@@ -136,7 +136,7 @@ The exit code is unchanged by `--json` (1 for most failures, 2 for `not_submitte
 | `stage_done` | `spine start` named a stage whose file says `completed` or `skipped`; reopen it with `spine set --status in_progress`. `details.workspace`, `details.path`, `details.status`. |
 | `check_not_required` | `spine verify`: the stage's file has no `check:` line, so it has not opted in. Add `check: required` to the file. `details.workspace`, `details.path`. |
 | `stage_not_completed` | `spine verify`: the stage's file does not say `completed`, so there is nothing to check yet. `details.workspace`, `details.path`, `details.status`. |
-| `stage_waiting` | `spine start`: a stage named in the stage's `depends_on` is not `completed` or `skipped` by its file (a folder-only stage by its sub-stages). `details.workspace`, `details.path`, `details.waits_on`. |
+| `stage_waiting` | `spine start`: a stage named in the stage's `depends_on` is not `completed` or `skipped` by its file (a folder-only stage by its sub-stages). `details.workspace`, `details.path`, `details.waits_on` and `details.reasons` (stage id to `check_pending` or `check_failed`, for a dependency that claims completed without a passing check). |
 | `stage_owned` | `spine start`: the stage's owner pane is working on it, and another pane (or `--spawn`) was asked for. `details.workspace`, `details.path`, `details.owner`. |
 | `unknown_stage` | `spine set`, `spine verify`, `spine start` or `spine show --stage` was given a stage path no stage has (`details.path`, `details.stages` lists the paths there are). |
 | `unknown_item` | `spine check` named an item number the stage's `## Done when` checklist does not have (`details.item`, `details.total`, `details.file`). Nothing is written. |

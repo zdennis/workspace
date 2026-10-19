@@ -7,6 +7,11 @@ module Workspace
   #
   # Pure: it reads only the {SpineTree} and a {Facts} value, and runs nothing. A fact that is nil was
   # not read, and every gate that needs it is `unchecked`; `pending` and `unchecked` never dispute.
+  #
+  # A stage that has opted in to a check (see {SpineFile#check}) and claims `completed` reads `checking`
+  # until a verdict (no `passed` yet) and `check_failed` after a `failed` one. A dispute outranks both:
+  # evidence against the claim is shown first, and the check is still reported in `check`. Neither state is
+  # done, so `current`, `waits_on` and the roll-up hold the stage back.
   module SpineEvaluator
     # What one evaluation is checked against. Every field may be nil: not read, or unknown.
     #
@@ -76,7 +81,7 @@ module Workspace
     # @param facts [Facts]
     # @return [Array<Hash>] each {SpineTree::Stage#to_h} plus `state`, `from_sub_stages`,
     #   `looks_completed`, `gate_results`, `disputes`, `waits_on`, `owner_state`, `owner_since`,
-    #   `dimmed` and `current`; `rollup` is over the children's evaluated states, and `children` are
+    #   `checker`, `checker_state`, `dimmed` and `current`; `rollup` is over the children's evaluated states, and `children` are
     #   evaluated the same way
     def self.evaluate_stages(stages, facts = Facts.new) = level(stages, facts, false)
 
@@ -130,16 +135,29 @@ module Workspace
       looks_completed = %w[not_started in_progress].include?(effective) && evidence &&
         gates.all? { |gate| gate["result"] == "pass" } && !criteria_open && open.zero?
       owner_state, owner_since = owner(doc["owner"], facts)
+      checker = checker_of(doc["checked_by"])
+      checker_state, = owner(checker, facts)
+      state = if !disputes.empty? then "disputed"
+      elsif stage.check_failed? then "check_failed"
+      elsif stage.awaiting_check? then "checking"
+      else effective
+      end
 
       doc.delete("children")
       doc.delete("rollup")
       doc["rollup"] = rollup if rollup
       doc.merge(
-        "state" => disputes.empty? ? effective : "disputed", "from_sub_stages" => from_sub_stages,
+        "state" => state, "from_sub_stages" => from_sub_stages,
         "looks_completed" => looks_completed, "gate_results" => gates, "disputes" => disputes, "waits_on" => [],
-        "owner_state" => owner_state, "owner_since" => owner_since, "dimmed" => dimmed,
+        "owner_state" => owner_state, "owner_since" => owner_since, "checker" => checker, "checker_state" => checker_state, "dimmed" => dimmed,
         "current" => current(children), "children" => children
       )
+    end
+
+    # The pane id in a `checked_by` label (`claude %27` is `%27`), else the label as written.
+    def self.checker_of(label)
+      return nil if label.nil?
+      label[/(?<![\w%])%\d+\b/] || label
     end
 
     def self.owner(owner, facts)
@@ -229,7 +247,7 @@ module Workspace
       ["fail", "review_running", "Review not finished"]
     end
 
-    private_class_method :level, :evaluate, :owner, :check, :unread, :check_plan, :check_checklist,
+    private_class_method :level, :evaluate, :owner, :checker_of, :check, :unread, :check_plan, :check_checklist,
       :check_pushed, :check_pr, :check_ci, :check_merged, :check_review
   end
 end

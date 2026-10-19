@@ -24,7 +24,7 @@ workspace spine verify [WORKSPACE] STAGE-PATH (--pass | --fail) --note TEXT [--b
 
 Plain output is a short summary: one line per stage with its status, owner, `Done when` counts and the codes of its warnings.
 
-`spine` in [`capabilities`](README.capabilities.md) is `2` when this command has the roll-up described below, `--stage` and `--body`; `spine_eval` is `1` when it has `--evaluate`, and `2` when `--evaluate` infers stages for a workspace with no `spine/`.
+`spine` in [`capabilities`](README.capabilities.md) is `2` when this command has the roll-up described below, `--stage` and `--body`; `spine_eval` is `1` when it has `--evaluate`, `2` when `--evaluate` infers stages for a workspace with no `spine/`, and `3` when it judges a stage's [check](#checking-a-stage-apart-from-its-claim) (`checking`, `check_failed`, `checker`, `checker_state`).
 
 ## Evaluating the stages
 
@@ -52,21 +52,23 @@ At the top level (and in the `--stage` document): `"evaluated": true`, `"evaluat
 
 | Field | Meaning |
 |-------|---------|
-| `state` | The file's claim, or `disputed` when evidence holds a `completed` claim back. A stage with no status of its own (`unknown`) and sub-stages takes its roll-up's status, with `from_sub_stages: true` |
+| `state` | The file's claim, or `disputed` when evidence holds a `completed` claim back. A `completed` claim on a stage that has opted in to a check reads `checking` while the check is `required` or `pending`, and `check_failed` when it is `failed`; `passed` reads `completed`. A dispute outranks both (the evidence against the claim is shown first, and `check` still tells the check's value). A stage with no status of its own (`unknown`) and sub-stages takes its roll-up's status, with `from_sub_stages: true` |
 | `looks_completed` | A `not_started` or `in_progress` stage with some evidence (a gate, a non-empty Done when, or completed sub-stages), every gate `pass`, nothing unticked and nothing open. It never moves the stage |
 | `gate_results` | One entry per declared gate: `gate`, `result` (`pass`, `fail`, `pending`, `unchecked`), `reason` (a stable code) and `message` (words). `pending` and `unchecked` never dispute |
 | `disputes` | Why a `completed` claim is held back. `kind` is `gate` (with `gate`), `done_when` (`done`, `total`) or `sub_stages` (`open`, `total`), each with a `message`. Unticked criteria are named once, as `done_when`, not again as a failing `checklist` gate |
-| `waits_on` | The sibling ids in `depends_on` that are not `completed` or `skipped` by evaluated state |
-| `current` (document) | The first top-level stage whose evaluated state is not `completed` or `skipped` (`disputed` and `unknown` count as not done) |
+| `waits_on` | The sibling ids in `depends_on` that are not `completed` or `skipped` by evaluated state, so a dependency that is `checking` or `check_failed` is listed |
+| `current` (document) | The first top-level stage whose evaluated state is not `completed` or `skipped` (`disputed`, `checking`, `check_failed` and `unknown` count as not done) |
 | `current` (stage) | The same for the stage's children: a child path or `null` |
 | `owner_state` | Set when `owner` is a pane id: `working`, `waiting` (waiting, or has an open question), `idle` (an agent at rest, or a shell pane), `gone` (the daemon answered and the pane is not among its panes) or `unknown` (it didn't answer). `null` when the owner is `you`, a label or empty |
+| `checker` | The pane that gave the verdict: the `%N` in `checked_by` (`claude %27` is `%27`), else `checked_by` as written (`person`); `null` without `checked_by`. There is none while a check is `required` or `pending`, since `spine set` clears `checked_by` and the verdict has not been written yet |
+| `checker_state` | As `owner_state`, for the `checker` pane, from the same daemon read; `null` when `checker` is not a pane id |
 | `owner_since` | When the owner pane started working, when `owner_state` is `working` |
 | `dimmed` | `true` under a skipped parent |
-| `rollup` | Over the children's evaluated states, so `counts.disputed` can be above 0 |
+| `rollup` | Over the children's evaluated states, so `counts.disputed`, `counts.checking` and `counts.check_failed` can be above 0. A `checking` or `check_failed` child is not done: it counts in `total`, not in `done`, and keeps the roll-up `in_progress` |
 
 Gate facts: `pushed` passes for a merged pull request; a deleted remote branch or an ahead count git could not give is `unchecked`; no upstream is a fail. `pr` reads "no pull request" (a fail) for a branch never pushed, and `unchecked` when the remote is gone and no merged pull request is on record, or when `gh` can't say. `review` is `unchecked` when the agent's state can't be read or the branch is 0 commits ahead; it passes when the agent is `done` and the review decision is not `CHANGES_REQUESTED`. `ci` is `unchecked` with no pull request or no checks. `checklist`, once declared, fails on an empty list.
 
-Plain output adds `Current:` and one line per stage with its `state` (and `(file says X)` when disputed), `looks completed`, the owner and its state, `waits on`, each dispute and each gate that is not a pass, and `Not read:` for a source that was unavailable.
+Plain output adds `Current:` and one line per stage with its `state` (and `(file says X)` when disputed), `looks completed`, the owner and its state, the checker and its state, `waits on`, each dispute and each gate that is not a pass, and `Not read:` for a source that was unavailable.
 
 Gates move with git and CI, not with files, so a reader that keeps the evaluation on screen should run it again on a timer.
 
@@ -156,7 +158,7 @@ A stage's `status` is its claim. A stage can also ask for a separate check: a se
 
 **Opt-in is the presence of a `check:` line.** A stage with no `check:` (or one holding a value that is not one of the four, which is the warning `unknown_check`) has no check; its `check`, `checked_by`, `checked_at` and `check_note` read `null` in `spine show --json`, and nothing here changes how it behaves. One mechanism was chosen on purpose: a stage opts in by writing `check: required` in its file (a template, `spine init`'s output or a hand edit), so the request needs no second switch (a `checked` gate would have to be listed in `gates:` and kept in step with the value). `required` is the resting value: the stage asks for a check and has none to give yet.
 
-`spine set` keeps the check in step with the claim, only for a stage that has opted in and only when the status changes: setting `completed` writes `check: pending` and removes `checked_by`, `checked_at` and `check_note`; setting any other status (a reopening) writes `check: required` and removes the same three lines. A call that leaves the status alone (a new `--note`, or `--status completed` on a completed stage) does not touch them. `spine verify` writes the verdict. The reset on reopening is deliberate and loses a failed verdict's `check_note`: copy it into the stage's `note` or the brief before reopening. A hand edit that sets `status: completed` without `spine set` leaves `check` as it was; `spine verify` accepts a completed stage whose check is `required`.
+`spine set` keeps the check in step with the claim, only for a stage that has opted in and only when the status changes: setting `completed` writes `check: pending` and removes `checked_by`, `checked_at` and `check_note`; setting any other status (a reopening) writes `check: required` and removes the same three lines. A call that leaves the status alone (a new `--note`, or `--status completed` on a completed stage) does not touch them. `spine verify` writes the verdict. Reopening a stage whose check `failed` keeps its `check_note` (and only that line, so `spine set` writes no `note`): the reason it failed stays in the file for whoever picks it up, beside `check: required`. It stays through further reopenings until `spine set --status completed` removes it again, and reopening a `passed` stage clears all three lines. A hand reopening that leaves `check: passed` behind is the warning `check_passed_not_completed`. A hand edit that sets `status: completed` without `spine set` leaves `check` as it was; `spine verify` accepts a completed stage whose check is `required`.
 
 ## spine verify
 
@@ -183,7 +185,9 @@ When a line changed, one [`spine_changed`](README.event-log.md) line is recorded
  "check_note": "74 commands classed, no gaps", "changed": true, "revision": "0c1d2e3f"}
 ```
 
-`spine_verify` in [`capabilities`](README.capabilities.md) is `1`. `spine_set` is `3` when `set` keeps the check in step with the status. `spine show` does not yet judge the check: `--evaluate`'s `state` and `waits_on` still follow the claim, so a completed stage with `check: pending` reads `completed` there until a later revision of `spine_eval`.
+`spine_verify` in [`capabilities`](README.capabilities.md) is `1`. `spine_set` is `3` when `set` keeps the check in step with the status. `spine_eval` is `3`: `--evaluate` reads a completed stage with `check: required` or `pending` as `checking` and one with `check: failed` as `check_failed` (see [Evaluating the stages](#evaluating-the-stages)), neither is done for `current`, `waits_on`, the roll-up or `spine start`, and the [`snapshot`](README.snapshot.md) spine block follows. Plain `show` (no `--evaluate`) still prints the file's claim and `check`.
+
+Model parity: the app's `model.ts` `rollUp` has no check states yet; until it does, `checking` and `check_failed` are the CLI's additions, counted as in progress and never as done, so the two agree on every stage that has not opted in.
 
 ## spine check
 
@@ -260,7 +264,7 @@ With `--spawn` the write waits until the new agent is ready, since its pane id i
 | `no_spine`, `unknown_stage` | As for `set` |
 | `spine_unwritable` | As for `set`; `no_file` for a stage that is only a folder |
 | `stage_done` | The file says `completed` or `skipped` (`details.status`); the message gives `spine set --status in_progress` to reopen it |
-| `stage_waiting` | A stage in its `depends_on` is not `completed` or `skipped` by its file (a folder-only stage by its sub-stages); `details.waits_on`. File statuses only, so `start` runs no `gh`: a dependency `--evaluate` reads as `disputed` does not hold it back |
+| `stage_waiting` | A stage in its `depends_on` is not `completed` or `skipped` by its file (a folder-only stage by its sub-stages); `details.waits_on`. File statuses only, so `start` runs no `gh`: a dependency `--evaluate` reads as `disputed` does not hold it back. A dependency that claims `completed` while its check is `required`, `pending` or `failed` holds it back; `details.reasons` maps its id to `check_pending` or `check_failed` (a folder-only dependency, held by a sub-stage's check, has no reason) |
 | `stale_revision` | `--if-revision` differs from the file's revision |
 | `stage_owned` | Its owner pane is working on it and another pane, or `--spawn`, was asked for (`details.owner`) |
 | `pane_busy` | The pane waits on a person or works on something else (`details.state`) |
@@ -406,7 +410,7 @@ A link is never followed. A linked `spine`, stage file, `goal.md` or stage folde
       "depends_on": ["plan"], "gates": ["plan"], "artifacts": ["IMPLEMENTATION_PLAN.md"], "play": null, "agent": null,
       "updated": "2026-10-17T21:40:00Z", "updated_by": "claude %6", "check": null, "checked_by": null, "checked_at": null, "check_note": null, "modified_at": "2026-10-17T21:40:02Z",
       "done_when": {"total": 4, "done": 2, "items": [{"text": "...", "done": true, "line": 18}]},
-      "rollup": {"status": "in_progress", "done": 1, "total": 3, "counts": {"completed": 1, "in_progress": 1, "not_started": 1, "blocked": 0, "skipped": 0, "unknown": 0, "disputed": 0}},
+      "rollup": {"status": "in_progress", "done": 1, "total": 3, "counts": {"completed": 1, "in_progress": 1, "not_started": 1, "blocked": 0, "skipped": 0, "unknown": 0, "disputed": 0, "checking": 0, "check_failed": 0}},
       "warnings": [{"code": "bad_line", "line": 7, "message": "..."}],
       "truncated": false,
       "children": [{"path": "implement/api", "file": "30-implement/10-api.md", "...": "same shape"}]
@@ -431,7 +435,7 @@ A link is never followed. A linked `spine`, stage file, `goal.md` or stage folde
 | `kind`, `depends_on`, `gates` | After the checks above: always a known kind, and only known gates and sibling ids |
 | `modified_at` | The file's modification time, UTC, to the second |
 | `done_when` | The `## Done when` checklist: `total`, `done` and the `items` with their line |
-| `rollup` | Only on a stage with children: `status`, `done`, `total` and `counts`. It reads each child's effective state: the child's own `status`, or, when it has none (`unknown`, as a folder with no stage file always does) and has sub-stages of its own, the status of its own roll-up, worked out from the bottom up. Over the children that are not skipped (`total` counts them, `done` the completed ones): `skipped` when none are left; `completed` when all are completed; else `blocked` when any is blocked; else `in_progress` when any is in progress, completed or disputed; else `not_started`. A leaf with no status counts as not started. `counts` lists every child by effective state (`completed`, `in_progress`, `not_started`, `blocked`, `skipped`, `unknown`, `disputed`), skipped ones included; `disputed` is 0 until a verdict is evaluated. A skipped stage still reports its `rollup` |
+| `rollup` | Only on a stage with children: `status`, `done`, `total` and `counts`. It reads each child's effective state: the child's own `status`, or, when it has none (`unknown`, as a folder with no stage file always does) and has sub-stages of its own, the status of its own roll-up, worked out from the bottom up. Over the children that are not skipped (`total` counts them, `done` the completed ones): `skipped` when none are left; `completed` when all are completed; else `blocked` when any is blocked; else `in_progress` when any is in progress, completed or disputed; else `not_started`. A leaf with no status counts as not started. `counts` lists every child by effective state (`completed`, `in_progress`, `not_started`, `blocked`, `skipped`, `unknown`, `disputed`, `checking`, `check_failed`), skipped ones included; the last three are 0 until a verdict is evaluated. Plain `show` rolls a completed child that awaits a check up as `checking` (not done), so a parent is `completed` only when every child is done. A skipped stage still reports its `rollup` |
 | `warnings` | `{"code", "line", "message"}`, plus `value` for the codes that name one; `line` is `null` for a warning about the whole file |
 | `truncated` (stage) | Whether only the start of the file was read |
 | `truncated` (top level) | `entries`, `stages` or `null` |
@@ -448,7 +452,7 @@ With `--stage`, the document is `{"schema_version", "ok", "workspace", "dir", "g
 
 ### Warning codes
 
-`no_frontmatter`, `bad_line`, `duplicate_key`, `duplicate_id` (the second stage with an id; `depends_on` means the first), `unknown_kind`, `unknown_gate`, `unknown_check`, `unknown_dependency`, `dependency_cycle`, `clipped`, `not_utf8`, `link`, `not_a_file`, `too_large`, `folder_without_file`, `too_deep`, `newer_format`.
+`no_frontmatter`, `bad_line`, `duplicate_key`, `duplicate_id` (the second stage with an id; `depends_on` means the first), `unknown_kind`, `unknown_gate`, `unknown_check`, `check_passed_not_completed` (`check: passed` on a stage whose status is not `completed`; `value` is the status), `unknown_dependency`, `dependency_cycle`, `clipped`, `not_utf8`, `link`, `not_a_file`, `too_large`, `folder_without_file`, `too_deep`, `newer_format`.
 
 ## Errors
 

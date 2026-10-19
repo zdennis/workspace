@@ -396,6 +396,8 @@ module Workspace
           line << "  looks completed" if doc["looks_completed"]
           line << "  owner #{doc["owner"]}" if doc["owner"]
           line << " (#{doc["owner_state"]})" if doc["owner_state"]
+          line << "  checker #{doc["checker"]}" if doc["checker"]
+          line << " (#{doc["checker_state"]})" if doc["checker_state"]
           line << "  waits on #{doc["waits_on"].join(", ")}" unless doc["waits_on"].empty?
           line << "  dimmed" if doc["dimmed"]
           line << "  from #{doc["source"]}" if doc["inferred"]

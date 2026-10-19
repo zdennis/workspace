@@ -61,8 +61,19 @@ module Workspace
       # @return [String] the `title:`, else the id with its hyphens read as spaces and a capital first letter
       def title = file&.value("title") || id.tr("-", " ").sub(/\A./, &:upcase)
 
-      # @return [String] the status, or, for a stage with none of its own and sub-stages, its roll-up's
-      def effective_state = SpineRollup.effective(status, rollup)
+      # @return [Boolean] whether the stage claims completed and its check has no verdict yet
+      def awaiting_check? = file ? file.awaiting_check? : false
+
+      # @return [Boolean] whether the stage claims completed and its check failed
+      def check_failed? = file ? file.check_failed? : false
+
+      # @return [String] the status, or, for a stage with none of its own and sub-stages, its roll-up's;
+      #   `checking` or `check_failed` for a completed claim whose check has no passing verdict
+      def effective_state
+        return "checking" if awaiting_check?
+        return "check_failed" if check_failed?
+        SpineRollup.effective(status, rollup)
+      end
 
       # @return [Hash, nil] {SpineRollup} over the children's effective states, computed bottom-up; nil without children
       def rollup
