@@ -127,6 +127,37 @@ RSpec.describe Workspace::WindowManager do
     end
   end
 
+  describe "#screens" do
+    it "returns each screen's full frame" do
+      json = '[{"frame_x": 0, "frame_y": 0, "frame_width": 1728, "frame_height": 1117, "visible_width": 1728}, {"frame_x": -1920, "frame_y": 0, "frame_width": 1920, "frame_height": 1080}]'
+      status = instance_double(Process::Status, success?: true)
+      allow(Open3).to receive(:capture3).with(config.window_tool, "screens", "--json").and_return([json, "", status])
+
+      expect(manager.screens).to eq([{x: 0, y: 0, width: 1728, height: 1117}, {x: -1920, y: 0, width: 1920, height: 1080}])
+    end
+
+    it "returns an empty list when window-tool fails" do
+      status = instance_double(Process::Status, success?: false)
+      allow(Open3).to receive(:capture3).with(config.window_tool, "screens", "--json").and_return(["", "", status])
+
+      expect(manager.screens).to eq([])
+    end
+
+    it "returns an empty list for JSON that is not a list of screens" do
+      status = instance_double(Process::Status, success?: true)
+      allow(Open3).to receive(:capture3).with(config.window_tool, "screens", "--json").and_return(["{}", "", status])
+
+      expect(manager.screens).to eq([])
+    end
+
+    it "returns an empty list for output it cannot read" do
+      status = instance_double(Process::Status, success?: true)
+      allow(Open3).to receive(:capture3).with(config.window_tool, "screens", "--json").and_return(["nope", "", status])
+
+      expect(manager.screens).to eq([])
+    end
+  end
+
   describe "#set_window_bounds" do
     it "calls window-tool move with id= and coordinates" do
       allow(manager).to receive(:system).and_return(true)

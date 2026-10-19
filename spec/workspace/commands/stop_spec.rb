@@ -28,6 +28,9 @@ RSpec.describe Workspace::Commands::Stop do
     )
   end
 
+  let(:positions_dir) { File.join(tmpdir, "positions") }
+  let(:window_positions) { Workspace::WindowPositions.new(dir: positions_dir) }
+
   after { FileUtils.remove_entry(tmpdir) }
 
   describe "#call" do
@@ -274,6 +277,117 @@ RSpec.describe Workspace::Commands::Stop do
       expect(tmux).to have_received(:kill_session).with("proj", project: "proj")
       state.load
       expect(state["proj"]).to be_nil
+    end
+    describe "saving window positions" do
+      subject(:command) do
+        described_class.new(state: state, iterm: iterm, window_manager: window_manager, tmux: tmux,
+          window_positions: window_positions, output: output, error_output: error_output)
+      end
+
+      let(:bounds) { {x: 10, y: 20, width: 800, height: 600} }
+      let(:screen) { {x: 0, y: 0, width: 1728, height: 1117} }
+
+      before do
+        allow(iterm).to receive(:find_existing_sessions).and_return({})
+        allow(tmux).to receive(:sessions).and_return([])
+        allow(tmux).to receive(:session_name_for) { |p| p }
+        allow(window_manager).to receive(:screens).and_return([screen])
+      end
+
+      it "saves the window's bounds and screen before the state entry goes" do
+        state["proj"] = {"unique_id" => "u", "iterm_window_id" => 100}
+        state.save
+        saved_with_entry = nil
+        allow(window_manager).to receive(:all_window_bounds).with([100]) do
+          saved_with_entry = state["proj"]
+          {100 => bounds}
+        end
+
+        command.call(["proj"])
+
+        expect(saved_with_entry).not_to be_nil
+        expect(window_positions.read("proj")).to include(bounds: bounds, screen: screen)
+        expect(state["proj"]).to be_nil
+      end
+
+      it "reads every target window in one call" do
+        state["a"] = {"unique_id" => "u1", "iterm_window_id" => 100}
+        state["b"] = {"unique_id" => "u2", "iterm_window_id" => 200}
+        state.save
+        allow(window_manager).to receive(:all_window_bounds).with([100, 200]).and_return({100 => bounds, 200 => bounds.merge(x: 5)})
+
+        command.call
+
+        expect(window_manager).to have_received(:all_window_bounds).once
+        expect(window_positions.read("b")[:bounds][:x]).to eq(5)
+      end
+
+      it "records a nil screen when the window is on no listed screen" do
+        state["proj"] = {"unique_id" => "u", "iterm_window_id" => 100}
+        state.save
+        allow(window_manager).to receive(:all_window_bounds).and_return({100 => bounds.merge(x: 5000)})
+
+        command.call(["proj"])
+
+        expect(window_positions.read("proj")[:screen]).to be_nil
+      end
+
+      it "finds a window on a second screen left of the first" do
+        state["proj"] = {"unique_id" => "u", "iterm_window_id" => 100}
+        state.save
+        left = {x: -1920, y: 0, width: 1920, height: 1080}
+        allow(window_manager).to receive(:screens).and_return([screen, left])
+        allow(window_manager).to receive(:all_window_bounds).and_return({100 => bounds.merge(x: -1500)})
+
+        command.call(["proj"])
+
+        expect(window_positions.read("proj")[:screen]).to eq(left)
+      end
+
+      it "still stops when the window read or the write fails" do
+        state["proj"] = {"unique_id" => "u", "iterm_window_id" => 100}
+        state.save
+        allow(window_manager).to receive(:all_window_bounds).and_raise(JSON::ParserError, "bad")
+
+        expect(command.call(["proj"])).to eq(["proj"])
+
+        state.load
+        expect(state["proj"]).to be_nil
+        expect(error_output.string).to eq("")
+      end
+
+      it "skips headless entries without reading any window" do
+        state["proj"] = {"headless" => true}
+        state.save
+        allow(window_manager).to receive(:all_window_bounds)
+
+        command.call(["proj"])
+
+        expect(window_manager).not_to have_received(:all_window_bounds)
+        expect(window_positions.read("proj")).to be_nil
+      end
+
+      it "saves nothing for a window that is already gone and keeps the old file" do
+        window_positions.write("proj", bounds, screen)
+        state["proj"] = {"unique_id" => "u", "iterm_window_id" => 100}
+        state.save
+        allow(window_manager).to receive(:all_window_bounds).and_return({})
+
+        command.call(["proj"])
+
+        expect(window_positions.read("proj")[:bounds]).to eq(bounds)
+        expect(error_output.string).to eq("")
+      end
+
+      it "does not save when asked not to" do
+        state["proj"] = {"unique_id" => "u", "iterm_window_id" => 100}
+        state.save
+        allow(window_manager).to receive(:all_window_bounds)
+
+        command.call(["proj"], save_position: false)
+
+        expect(window_manager).not_to have_received(:all_window_bounds)
+      end
     end
   end
 end

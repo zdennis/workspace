@@ -127,6 +127,24 @@ module Workspace
       result
     end
 
+    # The connected screens, from `window-tool screens --json`.
+    #
+    # @return [Array<Hash>] one `{x:, y:, width:, height:}` per screen (its full frame);
+    #   empty when window-tool fails or answers something unreadable
+    def screens
+      require "json"
+      output, _, status = window_tool("screens", "--json")
+      return [] unless status.success?
+
+      JSON.parse(output).filter_map do |s|
+        rect = %w[frame_x frame_y frame_width frame_height].map { |key| s[key] }
+        next unless rect.all?(Numeric)
+        {x: rect[0], y: rect[1], width: rect[2], height: rect[3]}
+      end
+    rescue JSON::ParserError, NoMethodError, TypeError
+      []
+    end
+
     # @param window_id [String, Integer] window ID (CGWindowID)
     # @param x [Integer] x position
     # @param y [Integer] y position

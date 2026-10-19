@@ -171,6 +171,7 @@ require_relative "workspace/project_config"
 require_relative "workspace/osascript_runner"
 require_relative "workspace/iterm"
 require_relative "workspace/window_manager"
+require_relative "workspace/window_positions"
 require_relative "workspace/window_layout"
 require_relative "workspace/project_settings"
 require_relative "workspace/config_resolver"
@@ -361,6 +362,7 @@ module Workspace
     tmux = Tmux.new(config: config, logger: logger)
     git = Git.new(output: output, input: input, logger: logger)
     project_config = ProjectConfig.new(config: config, git: git, output: output)
+    window_positions = WindowPositions.new(dir: config.state_dir, logger: logger)
     window_layout = WindowLayout.new(window_manager: window_manager, config: config, output: output, logger: logger)
     hook_runner = HookRunner.new(project_settings: project_settings, project_config: project_config, output: output, error_output: error_output, logger: logger)
     workspace_name = WorkspaceName.new(project_config: project_config)
@@ -371,7 +373,7 @@ module Workspace
     launch_mode = LaunchMode.new(project_settings: project_settings)
 
     # Pre-build command objects so CLI delegates rather than constructs
-    stop_command = Commands::Stop.new(state: state, iterm: iterm, window_manager: window_manager, tmux: tmux, output: output, error_output: error_output)
+    stop_command = Commands::Stop.new(state: state, iterm: iterm, window_manager: window_manager, tmux: tmux, window_positions: window_positions, output: output, error_output: error_output)
     agent_readiness = AgentReadiness.new(tmux: tmux, process_tree: ProcessTree.new(logger: logger), logger: logger)
     name_migration = NameMigration.new(config: config, project_config: project_config, tmux: tmux, state: state, event_log: event_log,
       project_catalog_factory: -> { ProjectCatalog.new(project_config: project_config, git: git) })
@@ -526,7 +528,7 @@ module Workspace
     )
     workflow_nudger = WorkflowNudger.new(store: workflow_store, panes: workflow_panes, executable: File.expand_path("../bin/workspace", __dir__),
       log_path: ->(workspace) { config.agent_log_path(workspace) }, logger: logger, error_output: error_output)
-    kill_command = Commands::Kill.new(git: git, project_config: project_config, project_settings: project_settings, stop_command: stop_command, notes: notes_command, project_detector: project_detector, task_store: task_store, event_log: event_log, workflow_runs: workflow_engine, dev: dev_command, output: output, input: input)
+    kill_command = Commands::Kill.new(git: git, project_config: project_config, project_settings: project_settings, stop_command: stop_command, window_positions: window_positions, notes: notes_command, project_detector: project_detector, task_store: task_store, event_log: event_log, workflow_runs: workflow_engine, dev: dev_command, output: output, input: input)
     pull_request_command = Commands::PullRequest.new(git: git, project_config: project_config, project_detector: project_detector, output: output)
     workspace_checkout = WorkspaceCheckout.new(git: git, project_config: project_config, project_detector: project_detector)
     rebase_command = Commands::Rebase.new(git: git, checkout: workspace_checkout, output: output)

@@ -11,13 +11,16 @@ module Workspace
       # @param iterm [Workspace::ITerm] iTerm session/pane automation
       # @param window_manager [Workspace::WindowManager] iTerm window operations
       # @param tmux [Workspace::Tmux] tmux session operations
+      # @param window_positions [Workspace::WindowPositions, nil] saves each stopped window's bounds for
+      #   the next launch; nil saves nothing
       # @param output [IO] output stream for user-facing messages
       # @param error_output [IO] error output stream for warnings
-      def initialize(state:, iterm:, window_manager:, tmux:, output: $stdout, error_output: $stderr)
+      def initialize(state:, iterm:, window_manager:, tmux:, window_positions: nil, output: $stdout, error_output: $stderr)
         @state = state
         @iterm = iterm
         @window_manager = window_manager
         @tmux = tmux
+        @window_positions = window_positions
         @output = output
         @error_output = error_output
         @warnings = []
@@ -37,10 +40,12 @@ module Workspace
       # @param quiet [Boolean] print nothing to the output stream
       # @param warn_inactive [Boolean] warn on the error stream about each named
       #   project that is not active
+      # @param save_position [Boolean] save each target's window bounds first (`kill` passes false: its
+      #   workspace is going away)
       # @return [Array<String>] names of stopped projects. If iTerm2 does not
       #   answer in time, the launcher windows are left open and {#warnings}
       #   says so; the entries are still removed and saved.
-      def call(projects = [], quiet: false, warn_inactive: true)
+      def call(projects = [], quiet: false, warn_inactive: true, save_position: true)
         out = quiet ? StringIO.new : @output
         @warnings = []
         @state.load
@@ -60,6 +65,7 @@ module Workspace
         killed_projects = targets.dup
 
         launcher_window_ids_to_close = find_launcher_windows_to_close(targets)
+        save_window_positions(targets) if save_position
         remove_from_state(targets)
         @state.save
 
@@ -142,6 +148,32 @@ module Workspace
           message = "iTerm did not close launcher window #{wid}; it was left open."
           @warnings << message
           @error_output.puts "Warning: #{message}"
+        end
+      end
+
+      # One read of the windows and one of the screens, before the state entries (and so the
+      # window ids) go. A read that fails, or a window already gone, leaves the old file alone.
+      def save_window_positions(targets)
+        return unless @window_positions
+        window_ids = targets.filter_map { |p| @state[p]["iterm_window_id"] if @state[p].is_a?(Hash) }
+        return if window_ids.empty?
+
+        bounds = @window_manager.all_window_bounds(window_ids)
+        return if bounds.empty?
+
+        screens = @window_manager.screens
+        targets.each do |p|
+          next unless @state[p].is_a?(Hash) && (rect = bounds[@state[p]["iterm_window_id"].to_i])
+          @window_positions.write(p, rect, screen_holding(rect, screens))
+        end
+      rescue
+        # A position that cannot be saved must never keep the workspace from stopping.
+        nil
+      end
+
+      def screen_holding(rect, screens)
+        screens.find do |s|
+          rect[:x] >= s[:x] && rect[:x] < s[:x] + s[:width] && rect[:y] >= s[:y] && rect[:y] < s[:y] + s[:height]
         end
       end
 

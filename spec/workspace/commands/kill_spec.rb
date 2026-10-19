@@ -12,6 +12,7 @@ RSpec.describe Workspace::Commands::Kill do
   let(:project_detector) { Workspace::ProjectDetector.new(state: CLITestHelpers::FakeState.new, project_config: project_config) }
   let(:notes) { nil }
   let(:dev) { nil }
+  let(:window_positions) { Workspace::WindowPositions.new(dir: File.join(tmpdir, "positions")) }
 
   subject(:command) do
     described_class.new(
@@ -20,6 +21,7 @@ RSpec.describe Workspace::Commands::Kill do
       project_settings: project_settings,
       stop_command: stop_command,
       project_detector: project_detector,
+      window_positions: window_positions,
       notes: notes,
       dev: dev,
       output: output,
@@ -235,10 +237,23 @@ RSpec.describe Workspace::Commands::Kill do
           command.call("myproject.worktree-PROJ-123")
 
           expect(git).to have_received(:remove_worktree).with("/path/to/worktree", force: false)
-          expect(stop_command).to have_received(:call).with(["myproject.worktree-PROJ-123"], quiet: false, warn_inactive: true)
+          expect(stop_command).to have_received(:call).with(["myproject.worktree-PROJ-123"], quiet: false, warn_inactive: true, save_position: false)
           expect(project_config).to have_received(:remove).with("myproject.worktree-PROJ-123", quiet: false)
           expect(project_settings).to have_received(:remove).with("myproject.worktree-PROJ-123")
           expect(output.string).to include("Killing session...")
+        end
+
+        it "deletes the saved window position and does not ask stop to save a new one" do
+          window_positions.write("myproject.worktree-PROJ-123", {x: 1, y: 2, width: 3, height: 4})
+          allow(git).to receive(:remove_worktree)
+          allow(stop_command).to receive(:call).and_return([])
+          allow(project_config).to receive(:remove)
+          allow(project_settings).to receive(:remove)
+
+          command.call("myproject.worktree-PROJ-123", force: true)
+
+          expect(window_positions.read("myproject.worktree-PROJ-123")).to be_nil
+          expect(stop_command).to have_received(:call).with(anything, hash_including(save_position: false))
         end
 
         it "removes worktree before killing session" do
@@ -295,7 +310,7 @@ RSpec.describe Workspace::Commands::Kill do
 
           expect(output.string).to eq("")
           expect(project_config).to have_received(:remove).with("myproject.worktree-PROJ-123", quiet: true)
-          expect(stop_command).to have_received(:call).with(["myproject.worktree-PROJ-123"], quiet: true, warn_inactive: true)
+          expect(stop_command).to have_received(:call).with(["myproject.worktree-PROJ-123"], quiet: true, warn_inactive: true, save_position: false)
         end
 
         it "yields the project after removing the worktree and before removing config or stopping" do
@@ -397,7 +412,7 @@ RSpec.describe Workspace::Commands::Kill do
         )
         cmd.call(nil, force: true, working_dir: marker_dir)
 
-        expect(stop_command).to have_received(:call).with(["myproject.worktree-PROJ-123"], quiet: false, warn_inactive: true)
+        expect(stop_command).to have_received(:call).with(["myproject.worktree-PROJ-123"], quiet: false, warn_inactive: true, save_position: false)
         expect(output.string).to include("Killing session...")
       end
 
@@ -421,7 +436,7 @@ RSpec.describe Workspace::Commands::Kill do
         )
         cmd.call(nil, force: true, working_dir: sub_dir)
 
-        expect(stop_command).to have_received(:call).with(["myproject.worktree-PROJ-123"], quiet: false, warn_inactive: true)
+        expect(stop_command).to have_received(:call).with(["myproject.worktree-PROJ-123"], quiet: false, warn_inactive: true, save_position: false)
       end
 
       it "raises error when no marker file found and no project given" do

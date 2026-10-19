@@ -28,7 +28,7 @@ module T4ConcurrencyFakes
       @on_call = on_call
     end
 
-    def call(projects = [], quiet: false, warn_inactive: true)
+    def call(projects = [], quiet: false, warn_inactive: true, save_position: true)
       @calls << projects
       @on_call&.call
       projects

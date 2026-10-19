@@ -17,12 +17,14 @@ module Workspace
       #   worktree is removed; nil records nothing
       # @param workflow_runs [#workspace_killed, nil] ends the project's workflow runs once its
       #   worktree is removed, so none goes on holding a lock; nil leaves runs alone
+      # @param window_positions [Workspace::WindowPositions, nil] deletes the project's saved window position
+      #   once its worktree is removed; nil leaves it alone
       # @param notes [Workspace::Commands::Notes, nil] says whether the project's notes directory sits inside its
       #   worktree with files in it, so removing the worktree can warn first; nil never warns
       # @param dev [Workspace::Commands::Dev, nil] stops the worktree's dev environment before the worktree
       #   is removed, when the worktree holds the `devenv` lock; nil leaves it alone
       # @param input [IO] input stream for interactive prompts
-      def initialize(git:, project_config:, project_settings:, stop_command:, project_detector:, task_store: nil, event_log: nil, workflow_runs: nil, notes: nil, dev: nil, output: $stdout, input: $stdin)
+      def initialize(git:, project_config:, project_settings:, stop_command:, project_detector:, window_positions: nil, task_store: nil, event_log: nil, workflow_runs: nil, notes: nil, dev: nil, output: $stdout, input: $stdin)
         @dev = dev
         @dev_stopped = false
         @git = git
@@ -30,6 +32,7 @@ module Workspace
         @project_settings = project_settings
         @stop_command = stop_command
         @project_detector = project_detector
+        @window_positions = window_positions
         @task_store = task_store
         @event_log = event_log
         @workflow_runs = workflow_runs
@@ -152,11 +155,12 @@ module Workspace
         yield project if block_given?
         @project_config.remove(project, quiet: quiet)
         @project_settings.remove(project)
+        @window_positions&.delete(project)
         # EventLog#record never raises.
         @event_log&.record(type: "worktree_finished", project: project, data: {"workspace" => project, "outcome" => outcome})
 
         out.puts "Killing session..."
-        @stop_command.call([project], quiet: quiet, warn_inactive: warn_inactive)
+        @stop_command.call([project], quiet: quiet, warn_inactive: warn_inactive, save_position: false)
         project
       end
 
