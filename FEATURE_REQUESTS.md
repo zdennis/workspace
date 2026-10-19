@@ -4,54 +4,12 @@ Feature requests and ideas for the workspace CLI.
 
 ## Open
 
-### Investigate state loss during individual sequential launches
-
-The merge-on-save fix handles concurrent writes, but there may still be
-a scenario where launching projects one at a time loses previous entries.
-Needs reproduction and debugging with `WORKSPACE_DEBUG=1`.
-
-### `workspace focus --cycle`
-
-Cycle through workspace windows with repeated invocations, similar to
-Cmd+Tab behavior. Each call focuses the next project in the list.
-
 ### `workspace layout save/restore` across sessions
 
 Persist window positions so relaunching projects restores them to their
 previous screen locations automatically.
 
-### `workspace remove` subcommand
-
-Remove a workspace project entirely — delete its tmuxinator config and
-project settings files. Unlike `kill` (which stops a running session),
-`remove` would clean up the on-disk configuration so the project no
-longer appears in `workspace list --all`.
-
-**Note:** Before implementing, consult the agent team to evaluate whether
-this overlaps too much with `kill` or is distinct enough to warrant a
-separate command. Key question: should `kill` gain a `--remove` flag
-instead, or is the destructive nature of removing configs better served
-by a dedicated subcommand with its own confirmation prompt?
-
-### Structured JSON envelope for --json output
-
-Wrap all --json output in a standard envelope object (e.g. {"data": ..., "warnings": [...]}) so metadata like event log size warnings can be included without polluting the data. Currently warnings go to stderr which works but loses the info in non-interactive/piped contexts.
-
-
-### Create launcher panes individually instead of in a single AppleScript
-
-The current approach builds all panes in one AppleScript that concatenates uid/project output. If the output is truncated with many panes, some projects silently fail to register. Creating panes one at a time (or in smaller batches) would be more reliable, though slower. Consider a hybrid approach: batch creation with per-pane verification and retry.
-
-### `wait-until-content --since-start` reflow limitation
-
-If a pane is reflowed mid-wait (e.g. a rewrapping resize), the content anchor
-can be lost and the surviving==0 fallback treats pre-start content as
-post-start, allowing a possible false match. Content alone cannot distinguish
-reflow from full history eviction, and full eviction must treat everything as
-post-start — so fixing this needs an out-of-band signal (e.g. a pane resize
-event, capture-time pane dimensions, or a marker-based baseline). See
-`docs/README.wait-until-content.md` and
-`lib/workspace/commands/wait_until_content.rb`.
+**In progress:** saving on stop is FR6a, restoring on launch is FR6b.
 
 ## Completed
 
@@ -92,3 +50,27 @@ For a bare Enter, use `workspace agent-run send --name WS --pane P --keys Enter`
 Still open (low value, not implemented): clear any stray unsubmitted input
 before pasting a new command, so a missed submission doesn't silently
 concatenate with the next one.
+
+### Investigate state loss during individual sequential launches
+
+Done in main `6bf064d`: `State#save` now locked.
+
+### `workspace focus --cycle`
+
+Done in main `46742c7`: `focus --cycle [--reverse]`.
+
+### `workspace remove` subcommand
+
+Done in main `f2b639c`: `workspace remove`.
+
+### Structured JSON envelope for --json output
+
+Done in main `924e50a`: `--json-envelope`.
+
+### Create launcher panes individually instead of in a single AppleScript
+
+Done in main `0a59d77`: panes verified, one retry, `launcher_pane_missing` warning.
+
+### `wait-until-content --since-start` reflow limitation
+
+Done in main `1066bc3`: re-baselines on reflow; remaining limits documented.
