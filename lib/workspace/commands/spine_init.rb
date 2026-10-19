@@ -70,7 +70,47 @@ module Workspace
         answer
       end
 
+      # Adds the template's ship stage (placeholders filled) to a workspace's existing `spine/`
+      # that has none, as a spine moved from a main checkout does. Never overwrites a file and
+      # never writes through a link; a spine that is missing, a link or not a directory is `no_spine`.
+      #
+      # @param name [String] the workspace
+      # @param dry_run [Boolean] report what would be added and write nothing
+      # @return [Hash] `outcome` (`added`, `would_add`, `present`: a ship stage is there already,
+      #   `no_spine`, `skipped`: a template file's path is taken) and `files` (relative paths)
+      # @raise [Workspace::Error] `unknown_workspace`, `unknown_template`, `notes_dir_unresolved` or `config_parse`
+      def add_missing_ship(name:, dry_run: false)
+        root = @project_config.project_root_for(name)
+        raise Error.new("Unknown workspace '#{name}'. Run 'workspace list --all' to see the names.", code: "unknown_workspace", details: {"name" => name}) unless root
+        root = File.expand_path(root)
+        spine_dir = File.join(real(@notes.info(name: name)["dir"]), "spine")
+        return {"outcome" => "no_spine", "files" => []} if File.symlink?(spine_dir) || !File.directory?(spine_dir)
+        return {"outcome" => "present", "files" => []} if Dir.children(spine_dir).any? { |c| SHIP_STAGE.match?(c) }
+
+        entry = find_template(choose_template(name, nil), root)
+        template_root = File.realpath(entry["path"])
+        files = entry["files"].select { |rel| SHIP_STAGE.match?(rel.split("/").first) }
+        return {"outcome" => "present", "files" => []} if files.empty?
+        return {"outcome" => "would_add", "files" => files} if dry_run
+
+        values = fill_values(name, root)
+        written = files.select { |rel| write_new(spine_dir, rel, File.binread(File.join(template_root, rel)), values) }
+        {"outcome" => (written.size == files.size) ? "added" : "skipped", "files" => written}
+      end
+
       private
+
+      # Creates one file that is not there yet; false when the path is taken or runs through a link.
+      def write_new(spine_dir, rel, bytes, values)
+        target = File.join(spine_dir, rel)
+        walk = spine_dir
+        return false if rel.split("/")[0...-1].any? { |part| File.symlink?(walk = File.join(walk, part)) }
+        FileUtils.mkdir_p(File.dirname(target))
+        File.open(target, File::WRONLY | File::CREAT | File::EXCL | File::NOFOLLOW, 0o644) { |f| f.write(fill(bytes, values)) }
+        true
+      rescue SystemCallError
+        false
+      end
 
       # @return [Hash{String=>String}] the template's "name" and "source" (`flag`, `worktree`, `project`,
       #   `global` or `default`)

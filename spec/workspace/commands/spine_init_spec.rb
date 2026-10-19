@@ -364,4 +364,57 @@ RSpec.describe Workspace::Commands::SpineInit do
     expect(output.string).to start_with("api.worktree-fix: wrote 8 files to #{spine_dir} from template default.")
     expect(output.string).to include("  10-research.md")
   end
+
+  describe "#add_missing_ship" do
+    def main_spine
+      command.call(name: "api", print: false)
+    end
+
+    it "adds the ship stage with its placeholders filled, beside the files already there" do
+      main_spine
+      expect(File.exist?(File.join(spine_dir, "60-ship.md"))).to be(false)
+
+      answer = command.add_missing_ship(name: "api")
+
+      expect(answer).to eq("outcome" => "added", "files" => ["60-ship.md"])
+      expect(File.read(File.join(spine_dir, "60-ship.md"))).not_to include("{{")
+      expect(Workspace::SpineTree.read(notes_dir).warnings).to eq([])
+    end
+
+    it "says present and writes nothing when a ship stage is there" do
+      command.call(name: "api.worktree-fix", print: false)
+      before = Dir.children(spine_dir).sort
+
+      expect(command.add_missing_ship(name: "api")).to eq("outcome" => "present", "files" => [])
+      expect(Dir.children(spine_dir).sort).to eq(before)
+    end
+
+    it "lists the file on a dry run and writes nothing" do
+      main_spine
+
+      expect(command.add_missing_ship(name: "api", dry_run: true)).to eq("outcome" => "would_add", "files" => ["60-ship.md"])
+      expect(File.exist?(File.join(spine_dir, "60-ship.md"))).to be(false)
+    end
+
+    it "answers no_spine for a missing spine/ and for a link, writing nothing through the link" do
+      expect(command.add_missing_ship(name: "api")["outcome"]).to eq("no_spine")
+
+      elsewhere = File.join(@dir, "elsewhere")
+      FileUtils.mkdir_p([elsewhere, notes_dir])
+      File.symlink(elsewhere, spine_dir)
+      expect(command.add_missing_ship(name: "api")["outcome"]).to eq("no_spine")
+      expect(Dir.children(elsewhere)).to eq([])
+    end
+
+    it "counts a link named like a ship stage as present, never writing over or through it" do
+      main_spine
+      File.symlink(File.join(@dir, "gone"), File.join(spine_dir, "60-ship.md"))
+
+      expect(command.add_missing_ship(name: "api")).to eq("outcome" => "present", "files" => [])
+    end
+
+    it "refuses an unknown workspace" do
+      expect { command.add_missing_ship(name: "nope") }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("unknown_workspace") }
+    end
+  end
 end
