@@ -245,6 +245,7 @@ RSpec.describe Workspace::Commands::Focus do
       command = described_class.new(state: state, window_manager: window_manager, window_liveness: liveness, output: output)
 
       expect(command.cycle).to eq("alpha")
+      expect(output.string).to include("Couldn't tell which window is in front")
     end
 
     it "refuses with no_windows_to_cycle when no window is live" do

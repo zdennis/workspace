@@ -10055,7 +10055,7 @@ RSpec.describe Workspace::CLI do
       it "refuses a project, --pane, or --reverse alone" do
         {
           ["focus", "--cycle", "api"] => /takes no project/,
-          ["focus", "--cycle", "--pane", "%3"] => /takes no project or --pane/,
+          ["focus", "--cycle", "--pane", "%3"] => /can't be combined with --pane/,
           ["focus", "--reverse", "api"] => /needs --cycle/
         }.each do |argv, message|
           cli, _, err = cycle_cli

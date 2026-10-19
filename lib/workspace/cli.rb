@@ -1128,20 +1128,21 @@ module Workspace
         opts.on("--json", "Print one action document (see docs/README.json.md) instead of text, which goes to stderr") { json = true }
         opts.separator ""
         opts.separator "Examples:"
-        opts.separator "  workspace focus --cycle    # focus the next workspace window; repeat to keep going"
-        opts.separator "  workspace focus --cycle --reverse    # go the other way"
         opts.separator "  workspace focus    # focus the current directory's project"
         opts.separator "  workspace focus my-notes --pane %19    # focus the window and select pane %19"
         opts.separator "  workspace focus my-notes    # focus a specific project"
         opts.separator "  workspace focus --shake my-notes    # shake the window after focusing"
         opts.separator "  workspace focus --highlight my-notes    # highlight the window green (default)"
         opts.separator "  workspace focus --highlight --color blue my-notes    # highlight in another color"
+        opts.separator "  workspace focus --cycle    # focus the next workspace window; repeat to keep going"
+        opts.separator "  workspace focus --cycle --reverse    # go the other way"
       end
       parser.parse!(args)
 
       raise UsageError, "--reverse needs --cycle\n\n#{parser.help}" if reverse && !cycle
       if cycle
-        raise UsageError, "--cycle takes no project or --pane\n\n#{parser.help}" if args.any? || pane
+        raise UsageError, "--cycle takes no project; it picks one\n\n#{parser.help}" if args.any?
+        raise UsageError, "--cycle can't be combined with --pane\n\n#{parser.help}" if pane
         return run_action("focus", json: json) do
           project = @focus_command.cycle(reverse: reverse, shake: shake, highlight: highlight ? highlight_color : nil)
           @hook_runner.run(project, "post_focus")

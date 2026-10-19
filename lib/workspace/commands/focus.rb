@@ -87,7 +87,7 @@ module Workspace
         names = live.select { |_, alive| alive }.keys.sort
         if names.empty?
           raise Workspace::Error.new(
-            "No tracked workspace has a live iTerm window to cycle to.\n" \
+            "No tracked workspace has a live iTerm window to cycle to (headless projects have none).\n" \
             "Run 'workspace launch PROJECT' first, or 'workspace status' to see tracked projects.",
             code: "no_windows_to_cycle", details: {}
           )
@@ -107,7 +107,8 @@ module Workspace
           return by_window[id] if by_window.key?(id)
         end
         nil
-      rescue Workspace::Error
+      rescue Workspace::Error => e
+        @output.puts("Couldn't tell which window is in front (#{e.message}); starting from the first.")
         nil
       end
 
