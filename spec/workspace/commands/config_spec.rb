@@ -1497,10 +1497,10 @@ RSpec.describe Workspace::Commands::Config do
     it "says no settable key matches when --settable filters out the exact name" do
       command, = build_command
 
-      expect { command.keys(query: "hooks", settable: true) }.to raise_error(Workspace::Error) { |e|
+      expect { command.keys(query: "layouts", settable: true) }.to raise_error(Workspace::Error) { |e|
         expect(e.code).to eq("unknown_config_key")
-        expect(e.message).to include("No settable config key matches 'hooks'")
-        expect(e.details).to eq("key" => "hooks", "settable" => true)
+        expect(e.message).to include("No settable config key matches 'layouts'")
+        expect(e.details).to eq("key" => "layouts", "settable" => true)
       }
     end
 

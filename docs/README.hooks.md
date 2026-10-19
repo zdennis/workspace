@@ -24,7 +24,7 @@ For `codex` it edits `$CODEX_HOME/hooks.json` (default `~/.codex/hooks.json`); f
 
 The file is backed up first (`hooks.json.workspace-backup-<timestamp>`, see [`init`](README.init.md#agent-session-hooks)) and replaced in one rename, so Codex never reads half a file; a symlinked file is written at its target. Running it again finds nothing and changes nothing, with no backup.
 
-`workspace init`, `start` and `doctor --fix` install the hooks again when Codex is on `PATH`; run `init --no-install-hooks` to skip that step.
+`workspace init`, `start` and `doctor --fix` install the hooks again when Codex is on `PATH`; run `init --no-install-hooks` to skip that step. To stop `start` from touching the file, run `workspace config set codex.hooks.install false` (see [`start`](README.start.md)); `init` and `doctor --fix` are explicit and still install.
 
 ### Other checkouts (`--name`, `--project`)
 

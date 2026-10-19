@@ -211,6 +211,29 @@ RSpec.describe Workspace::Doctor do
       expect(result[:rows].map { |r| r[:id] }).not_to include("hooks")
     end
 
+    it "reports them as turned off by config, not as a failure, when codex.hooks.install is false" do
+      hooks_config = instance_double(Workspace::HooksConfig, install_user_hooks?: false)
+      allow(hook_installer).to receive(:installed?).and_return(false)
+
+      result = build_doctor(which: ->(exe) { exe == "codex" }, hooks_config: hooks_config).report(headless: true)
+
+      expect(codex_row(result)).to include(status: "ok")
+      expect(codex_row(result)[:message]).to include("turned off by config")
+      expect(codex_row(result)[:message]).not_to include("earlier install")
+      expect(codex_row(result)[:fix_command]).to be_nil
+    end
+
+    it "says so when hooks from an earlier install are still there, and names hooks uninstall" do
+      hooks_config = instance_double(Workspace::HooksConfig, install_user_hooks?: false)
+      allow(hook_installer).to receive(:installed?).and_return(true)
+
+      result = build_doctor(which: ->(exe) { exe == "codex" }, hooks_config: hooks_config).report(headless: true)
+
+      expect(codex_row(result)).to include(status: "ok")
+      expect(codex_row(result)[:message]).to include("earlier install are still there")
+      expect(codex_row(result)[:hints]).to include("workspace hooks uninstall --agent codex")
+    end
+
     it "warns, without failing doctor, when they are missing, and names doctor --fix" do
       allow(hook_installer).to receive(:installed?).and_return(false)
 

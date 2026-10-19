@@ -244,6 +244,7 @@ require_relative "workspace/plan_state"
 require_relative "workspace/plan_access"
 require_relative "workspace/plan_progress_watcher"
 require_relative "workspace/spine_watcher"
+require_relative "workspace/hooks_config"
 require_relative "workspace/plan_config"
 require_relative "workspace/workflow_config"
 require_relative "workspace/workflow_definition"
@@ -527,6 +528,7 @@ module Workspace
     project_groups = ProjectGroups.new(config: config, git: git)
     projects_command = Commands::Projects.new(catalog: project_catalog, tmux: tmux, facts: project_facts, output: output, error_output: error_output, groups: project_groups)
     groups_command = Commands::Groups.new(groups: project_groups, projects: projects_command, output: output, error_output: error_output)
+    hooks_config = HooksConfig.new(config_resolver: config_resolver, error_output: error_output)
     plan_config = PlanConfig.new(config_resolver: config_resolver, error_output: error_output)
     plan_state = PlanState.new
     plan_access = PlanAccess.new(notes: notes_command, tmux: tmux, event_log: event_log)
@@ -535,8 +537,8 @@ module Workspace
     plan_task_command = Commands::PlanTask.new(access: plan_access, output: output)
     plan_command = Commands::Plan.new(notes: notes_command, access: plan_access, dispatch: plan_dispatch_command, catalog: project_catalog, groups: project_groups,
       plan_state: plan_state, plan_config: plan_config, snapshot_client: agent_snapshot_client, ask_store_for: ask_store_for, task_store: task_store, output: output)
-    start_command = Commands::Start.new(git: git, project_config: project_config, project_settings: project_settings, launch_command: launch_command, lineage: lineage, hook_installer: hook_installer, task_store: task_store, event_log: event_log, library: library, library_installer: library_installer, notes_setup: notes_setup, instruction_composer: instruction_composer, start_ref: start_ref, main_agent: main_agent, ticket_source: ticket_source, spine_init: spine_init_command, spine_config: spine_config, plan_command: plan_command, output: output, input: input)
-    doctor = Doctor.new(config: config, state: state, hook_installer: hook_installer, project_detector: project_detector, git: git, pipeline_config: pipeline_config, launch_mode: launch_mode, project_settings: project_settings, plan: plan_command, snapshot_client: agent_snapshot_client, name_migration: name_migration, output: output)
+    start_command = Commands::Start.new(git: git, project_config: project_config, project_settings: project_settings, launch_command: launch_command, lineage: lineage, hook_installer: hook_installer, hooks_config: hooks_config, task_store: task_store, event_log: event_log, library: library, library_installer: library_installer, notes_setup: notes_setup, instruction_composer: instruction_composer, start_ref: start_ref, main_agent: main_agent, ticket_source: ticket_source, spine_init: spine_init_command, spine_config: spine_config, plan_command: plan_command, output: output, input: input)
+    doctor = Doctor.new(config: config, state: state, hook_installer: hook_installer, hooks_config: hooks_config, project_detector: project_detector, git: git, pipeline_config: pipeline_config, launch_mode: launch_mode, project_settings: project_settings, plan: plan_command, snapshot_client: agent_snapshot_client, name_migration: name_migration, output: output)
     snapshot_command = Commands::Snapshot.new(catalog: project_catalog, facts: project_facts, tmux: tmux, state: state, config: config,
       snapshot_client: agent_snapshot_client, sessions: sessions_command, git: git, pull_request_status: PullRequestStatus.new,
       ask_store_for: ask_store_for, plan: plan_command, plan_state: plan_state, plan_config: plan_config, task_store: task_store,

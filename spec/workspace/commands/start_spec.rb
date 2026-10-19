@@ -285,6 +285,33 @@ RSpec.describe Workspace::Commands::Start do
           expect(JSON.parse(output.string)["warnings"]).to include(a_string_including("run /hooks in Codex"))
         end
 
+        context "when codex.hooks.install is false" do
+          let(:hooks_config) { instance_double(Workspace::HooksConfig, install_user_hooks?: false) }
+
+          subject(:command) do
+            described_class.new(
+              git: git, project_config: project_config, project_settings: project_settings,
+              launch_command: launch_command, hook_installer: hook_installer, hooks_config: hooks_config,
+              which: which, output: output, input: input
+            )
+          end
+
+          it "leaves the user-level file alone and says so once in the JSON warnings" do
+            command.call("PROJ-123", json: true)
+
+            expect(File).not_to exist(codex_path)
+            warnings = JSON.parse(output.string)["warnings"]
+            expect(warnings.grep(/codex\.hooks\.install is false/).size).to eq(1)
+          end
+
+          it "prints the note once in plain mode" do
+            command.call("PROJ-123")
+
+            expect(File).not_to exist(codex_path)
+            expect(output.string.scan("codex.hooks.install is false").size).to eq(1)
+          end
+        end
+
         it "warns rather than fails when Codex's hook file can't be read" do
           FileUtils.mkdir_p(codex_home)
           File.write(codex_path, "{ nope")

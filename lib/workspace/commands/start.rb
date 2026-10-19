@@ -21,6 +21,7 @@ module Workspace
       #   worktree, so the new worktree targets the parent project
       # @param hook_installer [Workspace::HookInstaller, nil] installs agent hooks
       #   (edit lock enforcement, session monitoring) into the new worktree; nil skips it
+      # @param hooks_config [Workspace::HooksConfig, nil] reads `codex.hooks.install`; nil installs every agent's hooks
       # @param which [#call] returns true when an executable is on PATH
       # @param task_store [Workspace::TaskStore, nil] records the workspace's task and
       #   exports its id as `WORKSPACE_TASK` in the panes; nil starts without a task
@@ -40,7 +41,7 @@ module Workspace
       # @param ticket_source [Workspace::TicketSource, nil] reads the ticket's title for +title_from_ticket+ and +slug+; nil reads none
       # @param plan_command [Workspace::Commands::Plan, nil] writes the new plan for `--plan` (`plan init`); nil refuses `--plan`
       def initialize(git:, project_config:, project_settings:, launch_command:, lineage: WorkspaceLineage.new,
-        hook_installer: nil, which: nil, task_store: nil, event_log: nil, library: nil, library_installer: nil,
+        hook_installer: nil, hooks_config: nil, which: nil, task_store: nil, event_log: nil, library: nil, library_installer: nil,
         notes_setup: nil, instruction_composer: nil, start_ref: nil, main_agent: nil, ticket_source: nil, spine_init: nil, spine_config: nil, plan_command: nil, output: $stdout, input: $stdin, error_output: $stderr)
         @git = git
         @project_config = project_config
@@ -49,6 +50,7 @@ module Workspace
         @lineage = lineage
         @start_ref = start_ref || StartRef.new(git: git, lineage: lineage)
         @hook_installer = hook_installer
+        @hooks_config = hooks_config
         @which = which || Workspace::Which
         @task_store = task_store
         @event_log = event_log
@@ -712,6 +714,11 @@ module Workspace
         return unless @hook_installer
 
         AgentProvider.all.select { |p| p.supports_hooks? && @which.call(p.executable) }.each do |provider|
+          if @hooks_config && !@hooks_config.install_user_hooks?(provider)
+            message = "#{provider.label} hooks not installed: codex.hooks.install is false (workspace config set codex.hooks.install true to change)"
+            quiet ? @warnings << "Note: #{message}" : @output.puts("Note: #{message}")
+            next
+          end
           install_provider_hooks(provider, worktree_path, quiet: quiet)
         end
 

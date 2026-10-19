@@ -363,6 +363,8 @@ module Workspace
           "as names separated by commas (default `binding, orchestrator, commits`)"),
       Key.new(name: "events.rotate_size", scope: :global, type: :size, unit: "bytes", settable: true, examples: ["512KB", "5MB"], default: 5 * 1024 * 1024, restart: true, min: MIN_EVENTS_ROTATE_SIZE, parser: EVENTS_ROTATE_SIZE,
         doc: "Size at which a daemon's hook-event file rotates to `<workspace>.jsonl.1` (default `5MB`, at least `64KB`). A byte count or a number with a `KB`, `MB` or `GB` suffix, where `1KB` is 1024 bytes; see [`workspace events`](README.events.md)"),
+      Key.new(name: "codex.hooks.install", scope: :global, type: :boolean, settable: true, default: true, parser: BOOLEAN,
+        doc: "`true` or `false`: whether `start` installs workspace's hooks into Codex's user-level `$CODEX_HOME/hooks.json` (default `true`). `false` leaves that file alone, `doctor` reports the hooks as turned off by config, and Codex panes read as `hook_mode: \"scrape\"`; `init`, `doctor --fix` and `hooks uninstall` are unaffected. See [`start`](README.start.md)"),
       Key.new(name: "hooks", scope: :global, type: :mapping, sensitive: true, resolve: :none, settable: false, doc: "Global hooks applied to all projects"),
       Key.new(name: "layouts", scope: :global, type: :mapping, resolve: :merge, settable: false, doc: "Default tmux pane layouts"),
       Key.new(name: "event_log_compact_threshold", scope: :global, type: :text, settable: false,

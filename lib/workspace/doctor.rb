@@ -16,6 +16,7 @@ module Workspace
     # @param which [#call] returns true when an executable is on PATH
     # @param git [Workspace::Git, nil] lists worktrees to check for lock hooks; nil skips that check
     # @param pipeline_config [Workspace::PipelineConfig, nil] validates the current project's pipeline config
+    # @param hooks_config [Workspace::HooksConfig, nil] reads `codex.hooks.install`; nil reads it as on
     # @param launch_mode [Workspace::LaunchMode, nil] decides whether iTerm2 and
     #   window-tool are needed; nil builds one from +config+
     # @param project_settings [Workspace::ProjectSettings, nil] reads/writes the
@@ -28,11 +29,12 @@ module Workspace
     # @param working_dir [String] directory to detect the current project from
     # @param output [IO] output stream for results
     def initialize(config:, state:, hook_installer:, project_detector:, which: nil, git: nil,
-      pipeline_config: nil, launch_mode: nil, project_settings: nil, plan: nil, snapshot_client: nil, name_migration: nil, working_dir: Dir.pwd, output: $stdout)
+      pipeline_config: nil, hooks_config: nil, launch_mode: nil, project_settings: nil, plan: nil, snapshot_client: nil, name_migration: nil, working_dir: Dir.pwd, output: $stdout)
       @launch_mode = launch_mode || LaunchMode.new(project_settings: ProjectSettings.new(config: config), which: which)
       @config = config
       @state = state
       @hook_installer = hook_installer
+      @hooks_config = hooks_config
       @project_detector = project_detector
       @which = which || Workspace::Which
       @git = git
@@ -316,6 +318,18 @@ module Workspace
     def check_user_hooks(provider, project)
       id = "hooks-#{provider.key}"
       return if @rows.any? { |row| row[:id] == id }
+
+      if @hooks_config && !@hooks_config.install_user_hooks?(provider)
+        path = @hook_installer.settings_path_for(provider, @working_dir)
+        message = "#{provider.label} hooks turned off by config (codex.hooks.install is false; start leaves #{path} alone)"
+        hints = ["workspace config set codex.hooks.install true"]
+        if @hook_installer.installed?(provider, @working_dir, Commands::Init::HOOK_COMMAND)
+          message += ", but hooks from an earlier install are still there"
+          hints << "workspace hooks uninstall --agent #{provider.key}"
+        end
+        add_row(id, "ok", message, hints: hints, project: project)
+        return
+      end
 
       path = @hook_installer.settings_path_for(provider, @working_dir)
       if @hook_installer.installed?(provider, @working_dir, Commands::Init::HOOK_COMMAND)
