@@ -8,7 +8,7 @@ Print the instructions an agent is given, built from library packs.
 workspace instructions compose [--pack NAME]... [--pane %ID] [--name WORKSPACE] [--json]
 ```
 
-A pack is a [library](README.library.md) play. workspace ships nine:
+A pack is a [library](README.library.md) play. workspace ships eleven:
 
 | Pack | What it tells the agent |
 |---|---|
@@ -22,6 +22,7 @@ A pack is a [library](README.library.md) play. workspace ships nine:
 | `research` | Answer the goal by reading, run only read-only commands, change no repository file and never commit, and write one findings note (answer first, evidence as `path:line`, open questions) in the notes directory. Not sent automatically: name it with `--pack research` or `--play` |
 | `notes` | Where this workspace's working notes go (`workspace notes dir --create`), what belongs there, how to name files, to read the plan first, to write as you work, and never to commit them |
 | `spine` | Keep this workspace's stages current with `workspace spine`: find `spine/` through `workspace notes dir`, change a stage only with `spine set` and `spine check`, never by hand (`in_progress` on starting, `blocked` with a one-line `--note`, `completed` only when every `Done when` item is met and checked), check `spine show --evaluate` for a failing gate or dispute before claiming it done, work only on its own stage and sub-stages, leave other files, numbers, `gates` and `depends_on` alone, and list artifacts in `artifacts:`. Sent by `start` and `launch` when the workspace has a `spine/` folder in its notes directory (see [`spine`](README.spine.md#telling-agents-the-convention)) |
+| `promote` | Move this checkout's work into a new workspace with `workspace promote` and seed it: tell the person what will move (`--dry-run`), run promote from the agent's own pane with no sub-agent still working, set the goal and each stage with `spine goal set`, `spine set` and `spine check` (never marking a stage done that was not checked), write the stage text, add the tasks with `plan task add`, write `HANDOFF.md` in the notes directory, start the new agent with `plan start` or `launch --prompt`, then say where the work went and stop working on it. Not sent automatically: name it with `--pack promote` |
 
 With no `--pack`, the default packs are composed: `binding`, `orchestrator` and `commits`, in that order, or the ones the global key `workflows.defaults.include` names (`workspace config set workflows.defaults.include "binding, commits"`). `--pack` repeats, and packs are composed in the order given; a name given twice is composed once.
 

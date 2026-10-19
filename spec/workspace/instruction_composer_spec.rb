@@ -635,12 +635,12 @@ RSpec.describe Workspace::InstructionComposer, "with the packs workspace ships" 
       pane_bindings: Workspace::PaneBindings.new(path: "/nonexistent/bindings.json"))
   end
 
-  it "ships exactly the ten packs, as plays, each readable with a description" do
+  it "ships exactly the eleven packs, as plays, each readable with a description" do
     shipped = Workspace::LibraryStore.new(dir: builtin_dir, scope: "builtin")
 
     expect(Dir.children(builtin_dir).sort).to eq(%w[play spine])
     plays = shipped.entries(kind: "play")
-    expect(plays.map { |e| e["ref"] }).to eq(%w[play/binding play/commits play/dev play/handoff play/implementation-plan play/notes play/orchestrator play/research play/review play/spine])
+    expect(plays.map { |e| e["ref"] }).to eq(%w[play/binding play/commits play/dev play/handoff play/implementation-plan play/notes play/orchestrator play/promote play/research play/review play/spine])
     expect(plays).to all(include("readable" => true, "link" => nil, "description" => a_string_matching(/\A\S.{10,}/)))
   end
 
@@ -668,6 +668,28 @@ RSpec.describe Workspace::InstructionComposer, "with the packs workspace ships" 
     expect(result["text"]).to include("`workspace notes dir`", "workspace spine set <stage-path> --status in_progress --owner", "workspace spine check <stage-path> --item N --done", "spine show --stage <stage-path> --evaluate --json", "gate_results", "disputes", "Do not run `spine start`",
       '--status blocked --note "<why, one line>"', "## Done when", "--status completed", "`gates`", "`depends_on`", "`artifacts:`")
     expect(result["text"]).not_to match(/^---$|^description:/)
+  end
+
+  it "composes the promote pack by name: the real verbs in order, then stop working on it here" do
+    result = composer.compose(cwd: "/work/app", packs: %w[promote])
+    text = result["text"]
+
+    expect(result["packs"].map { |p| [p["ref"], p["scope"]] }).to eq([["play/promote", "builtin"]])
+    expect(text).to start_with("## From pack promote (built-in)\n\nYou are moving the work in this main checkout")
+    expect(text).not_to match(/^---$|^description:/)
+    expect(text).to include("workspace promote BRANCH --dry-run --json", "--carry-note", "--spine --plan", "`notes_dir`", "no sub-agent", "workspace spine goal set --name <workspace>",
+      "workspace spine check --name <workspace> <stage-path> --item N --done", "workspace spine set --name <workspace> <stage-path> --status completed", "workspace plan task add --name <workspace> --title",
+      "HANDOFF.md", "workspace plan start --name <workspace>", "workspace launch <workspace> --prompt", "stop working on this task")
+    expect(text.scan(/^(\d+)\. /).flatten).to eq(%w[1 2 3 4 5 6 7 8 9])
+  end
+
+  it "lists the promote pack as a built-in play in `library list`" do
+    out = StringIO.new
+    Workspace::Commands::Library.new(library: library, output: out, input: StringIO.new)
+      .list(kind: "play", scope: "builtin", json: true, cwd: "/work/app")
+    entry = JSON.parse(out.string)["entries"].find { |e| e["ref"] == "play/promote" }
+
+    expect(entry).to include("kind" => "play", "name" => "promote", "scope" => "builtin", "effective" => true)
   end
 
   it "composes the dev pack by name, with the real exit codes of dev wait and the commands that release the environment" do
