@@ -98,6 +98,41 @@ RSpec.describe Workspace::Commands::Remove do
     expect(File.exist?(config_path)).to be true
   end
 
+  it "refuses not_removable for a worktree config name when there is no config root" do
+    allow(project_config).to receive(:project_root_for).and_return(nil)
+    allow(state).to receive(:[]).with("app.worktree-PROJ-1").and_return({"unique_id" => "x"})
+
+    expect { command.call("app.worktree-PROJ-1", yes: true) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("not_removable") }
+    expect(state).not_to have_received(:delete)
+  end
+
+  it "refuses not_removable when the root's marker names a worktree" do
+    File.write(File.join(tmpdir, ".workspace-project"), "app.worktree-PROJ-1\n")
+    allow(project_config).to receive(:project_root_for).and_return(tmpdir)
+
+    expect { command.call("app", yes: true) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("not_removable") }
+    expect(File.exist?(config_path)).to be true
+  end
+
+  it "counts a session under the lowercase name as running for a mixed-case name" do
+    allow(state).to receive(:[]).with("App").and_return({"unique_id" => "x"})
+    allow(tmux).to receive(:session_name_for).with("App").and_return("App")
+    allow(tmux).to receive(:session_name_for).with("app").and_return("app")
+    allow(tmux).to receive(:session_exists?).with("app", project: "App").and_return(true)
+
+    expect { command.call("App", yes: true) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("session_running") }
+    expect(File.exist?(config_path)).to be true
+  end
+
+  it "deletes nothing when a backup comes back nil" do
+    allow(file_backup).to receive(:backup).and_return(nil)
+
+    expect { command.call("app", yes: true) }.to raise_error(Workspace::Error, /Could not back up/)
+    expect(File.exist?(config_path)).to be true
+    expect(File.exist?(settings_path)).to be true
+    expect(state).not_to have_received(:delete)
+  end
+
   it "raises unknown_workspace when nothing exists for the name" do
     File.delete(config_path)
     File.delete(settings_path)

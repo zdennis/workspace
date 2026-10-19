@@ -57,8 +57,13 @@ module Workspace
           end
         end
 
-        backups = dry_run ? [] : files.filter_map { |path| @file_backup.backup(path, quiet: true) }
+        backups = []
         unless dry_run
+          files.each do |path|
+            backup = @file_backup.backup(path, quiet: true)
+            raise Workspace::Error, "Could not back up #{path}; nothing was removed." unless backup
+            backups << backup
+          end
           @project_config.remove(name, quiet: true)
           @project_settings.remove(name)
           if in_state
@@ -74,18 +79,42 @@ module Workspace
 
       private
 
+      # Checks the name as given and in lowercase, as a mixed-case workspace is
+      # renamed to lowercase by NameMigration and its session may carry either.
       def refuse_if_running!(name)
-        session = @tmux.session_name_for(name)
-        return unless @tmux.session_exists?(session, project: name)
-        raise Workspace::Error.new("'#{name}' has a running tmux session (#{session}). Run 'workspace stop #{name}' first.",
-          code: "session_running", details: {"name" => name, "session" => session})
+        [name, name.downcase].uniq.each do |candidate|
+          session = @tmux.session_name_for(candidate)
+          [session, session.downcase].uniq.each do |session_name|
+            next unless @tmux.session_exists?(session_name, project: candidate)
+            raise Workspace::Error.new("'#{name}' has a running tmux session (#{session_name}). Run 'workspace stop #{name}' first.",
+              code: "session_running", details: {"name" => name, "session" => session_name})
+          end
+        end
       end
 
+      # A worktree project is told by its root being a linked worktree, by the
+      # `.workspace-project` marker in its root, or by a worktree config name,
+      # so a workspace with no config (and so no root) is still caught.
       def refuse_if_worktree!(name)
         root = @project_config.project_root_for(name)
-        return unless root && @git.linked_worktree?(root)
+        worktree = (root && @git.linked_worktree?(root)) ||
+          marker_names(root).any? { |marker| lineage_worktree?(marker) } ||
+          lineage_worktree?(name)
+        return unless worktree
         raise Workspace::Error.new("'#{name}' is a worktree project. Use 'workspace kill', 'workspace finish' or 'workspace prune' to remove it with its worktree.",
           code: "not_removable", details: {"name" => name, "root" => root})
+      end
+
+      def marker_names(root)
+        return [] unless root
+        path = File.join(root, WorkspaceLineage::MARKER_FILE)
+        File.file?(path) ? [File.read(path).strip] : []
+      rescue SystemCallError
+        []
+      end
+
+      def lineage_worktree?(name)
+        !WorkspaceLineage.split_worktree_name(name).nil?
       end
     end
   end
