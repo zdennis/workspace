@@ -117,6 +117,35 @@ RSpec.describe Workspace::Commands::Review do
     store.withdraw(record["id"]) if withdrawn
   end
 
+  describe "#agent_facts_from" do
+    it "judges the agent from panes already read, with no daemon read" do
+      allow(snapshot_client).to receive(:fetch)
+      facts = review.agent_facts_from("app", panes: [pane("%2", "done", "stop_reason" => "end_turn"), pane("%3", "working", kind: "shell")])
+      expect(facts).to include("available" => true, "source" => "live", "state" => "done", "done_pane_id" => "%2")
+      expect(snapshot_client).not_to have_received(:fetch)
+    end
+
+    it "falls back to the recorded states when there is no daemon" do
+      recorded_states["app"] = {"%2" => {"pane_id" => "%2", "kind" => "claude", "state" => "done", "since" => "t"}}
+      expect(review.agent_facts_from("app", panes: nil, unavailable: "no_daemon")).to include("source" => "recorded", "state" => "done")
+    end
+
+    it "is unavailable when the daemon timed out" do
+      recorded_states["app"] = {"%2" => {"pane_id" => "%2", "kind" => "claude", "state" => "done", "since" => "t"}}
+      expect(review.agent_facts_from("app", panes: nil, unavailable: "timeout")).to eq("available" => false, "reason" => "timeout")
+    end
+  end
+
+  describe "#commits_ahead_of_base" do
+    it "counts the commits the base lacks" do
+      expect(review.commits_ahead_of_base("/src/app.worktree-fix")).to eq(2)
+    end
+
+    it "is nil when git can't answer" do
+      expect(review.commits_ahead_of_base("/src/elsewhere")).to be_nil
+    end
+  end
+
   describe "#show" do
     it "builds the packet for a ready workspace" do
       result = review.show(name: "app.worktree-fix", json: true)

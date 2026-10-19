@@ -114,6 +114,30 @@ module Workspace
         {exit_code: 1}
       end
 
+      # The review agent's state from a daemon snapshot already read, so a caller that holds the
+      # panes needs no second daemon read. With no panes, a `no_daemon` answer falls back to the
+      # states the event log last recorded, as {#show} does.
+      #
+      # @param workspace [String]
+      # @param panes [Array<Hash>, nil] the snapshot's `panes`; nil when the daemon didn't answer
+      # @param unavailable [String, nil] why it didn't (`no_daemon`, `timeout`, `error`); ignored when
+      #   +panes+ is given
+      # @return [Hash] `available`, and with it `source`, `state` (`waiting`, `working`, `done`, `idle`
+      #   or nil), `stop_reason`, `state_since`, `done_pane_id` and `panes`; else `reason`
+      def agent_facts_from(workspace, panes:, unavailable: nil)
+        return pane_agent_facts(panes) if panes
+        (unavailable == "no_daemon" && recorded_agent_facts(workspace, recorded_lookup([workspace]))) ||
+          {"available" => false, "reason" => unavailable || "error"}
+      end
+
+      # @param path [String] the checkout
+      # @return [Integer, nil] commits the branch has that its base ({Workspace::Git#base_ref}) lacks;
+      #   nil when there is no base or git can't answer in time
+      def commits_ahead_of_base(path)
+        git = git_facts(path)
+        git["available"] ? git["ahead"] : nil
+      end
+
       private
 
       def find_member(name)
@@ -203,17 +227,19 @@ module Workspace
       # (`source` "recorded"), when it holds any; `reason` stays `no_daemon`
       # otherwise.
       def agent_facts(workspace, recorded = nil)
-        snapshot = @snapshot_client.fetch(workspace, timeout: @agent_timeout)
-        panes = Array(snapshot["panes"]).select { |pane| pane["kind"] != "shell" }
-        pane_facts = panes.map do |pane|
-          {"pane_id" => pane["pane_id"], "kind" => pane["kind"], "state" => pane["state"], "stop_reason" => pane["stop_reason"],
-           "state_since" => pane["state_since"]}
-        end
-        agent_state_facts(pane_facts, "live")
+        pane_agent_facts(@snapshot_client.fetch(workspace, timeout: @agent_timeout)["panes"])
       rescue AgentSnapshotClient::Unavailable => e
         (e.reason.to_s == "no_daemon" && recorded_agent_facts(workspace, recorded)) || {"available" => false, "reason" => e.reason.to_s}
       rescue Workspace::Error => e
         {"available" => false, "reason" => "error", "detail" => e.message.lines.first.to_s.strip[0, MAX_ASK_TEXT]}
+      end
+
+      def pane_agent_facts(panes)
+        pane_facts = Array(panes).select { |pane| pane["kind"] != "shell" }.map do |pane|
+          {"pane_id" => pane["pane_id"], "kind" => pane["kind"], "state" => pane["state"], "stop_reason" => pane["stop_reason"],
+           "state_since" => pane["state_since"]}
+        end
+        agent_state_facts(pane_facts, "live")
       end
 
       def agent_state_facts(pane_facts, source)
