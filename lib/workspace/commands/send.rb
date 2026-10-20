@@ -34,12 +34,20 @@ module Workspace
       # character, or any of those with `C-`, `M-` or `S-` modifiers.
       KEY = /\A(?:[CMS]-){0,3}(?:#{Regexp.union(KEY_NAMES)}|#{FUNCTION_KEY}|#{CHARACTER})\z/
 
+      # Seconds to wait for the agent daemon to queue or type a `--when-idle`
+      # prompt: a ready pane gets it typed during the call, after a quiet
+      # wait and possibly after a delivery already running for the pane.
+      WHEN_IDLE_TIMEOUT = 60
+
       # @param locator [Workspace::PaneLocator] validates the pane
       # @param tmux [Workspace::Tmux] delivers text and keys
+      # @param client [Workspace::AgentSnapshotClient, nil] asks the agent
+      #   daemon to queue a `--when-idle` prompt; nil refuses `--when-idle`
       # @param output [IO] stream for the result
-      def initialize(locator:, tmux:, output: $stdout)
+      def initialize(locator:, tmux:, client: nil, output: $stdout)
         @locator = locator
         @tmux = tmux
+        @client = client
         @output = output
       end
 
@@ -126,7 +134,85 @@ module Workspace
         keys ? send_keys(detail, keys, details) : send_text(detail, body, enter, details)
       end
 
+      # Hands the text to the workspace's agent daemon, which types it now if
+      # the pane's turn has ended and otherwise keeps it until it has (see
+      # {Workspace::PromptQueueDesk}), then prints the answer.
+      #
+      # @param name [String] workspace name
+      # @param pane [String] a pane id ("%19") or "window.pane" ("0.1")
+      # @param body [String] the prompt, at most {PromptQueueStore::MAX_BYTES} bytes
+      # @param json [Boolean] print the result as JSON instead of a sentence
+      # @return [Hash] the daemon's answer: `"delivered"` and `"submitted"`,
+      #   or `"queued"`, `"id"` and `"position"`
+      # @raise [Workspace::UsageError] for a body over the limit
+      # @raise [Workspace::Error] `no_daemon`, `connection_failed`,
+      #   `unreadable_reply`, the {Workspace::PaneLocator} codes, and the
+      #   daemon's refusals (`pane_waiting`, `not_an_agent`,
+      #   `unsupported_agent`, `queue_full`, `pane_not_ready`,
+      #   `not_delivered`); `not_submitted` (exit 2) when the text was pasted
+      #   but not confirmed submitted
+      def when_idle(name:, pane:, body:, json: false)
+        if body.bytesize > PromptQueueStore::MAX_BYTES
+          raise Workspace::UsageError.new("--body is #{body.bytesize} bytes; --when-idle takes at most #{PromptQueueStore::MAX_BYTES}.",
+            details: {"limit" => PromptQueueStore::MAX_BYTES})
+        end
+        raise Workspace::Error, "agent-run send --when-idle is not available in this build" unless @client
+
+        detail = locate(name, pane)
+        reply = exchange(name, {"type" => "prompt_send", "pane_id" => detail[:id], "text" => body})
+        fail_with(reply, name, detail[:id]) unless reply["ok"]
+
+        result = reply.except("ok", "pane").merge("pane" => detail[:id])
+        if json
+          @output.puts JSON.generate({"schema_version" => JSON_SCHEMA_VERSION, "ok" => true, "workspace" => name}.merge(result))
+        elsif result["queued"]
+          @output.puts "Queued for pane #{detail[:id]} at position #{result["position"]} (#{result["id"]}); " \
+            "the agent daemon types it when the agent's turn ends."
+        else
+          @output.puts "Pane #{detail[:id]} was idle; typed the text and pressed Enter."
+        end
+        result
+      end
+
       private
+
+      def exchange(name, message)
+        reply = @client.exchange_message(name, message, timeout: WHEN_IDLE_TIMEOUT)
+        unless reply.is_a?(Hash)
+          raise Workspace::Error.new("Unreadable reply from the agent daemon for '#{name}'. #{MAYBE_SENT}",
+            code: "unreadable_reply", details: {"maybe_delivered" => true})
+        end
+        reply
+      rescue AgentSnapshotClient::Unavailable => e
+        if e.reason == :timeout
+          raise Workspace::Error.new("#{e.message}. #{MAYBE_SENT}", code: "connection_failed", details: {"maybe_delivered" => true})
+        end
+        raise Workspace::Error.new("#{e.message}; --when-idle needs the workspace's agent daemon (workspace agentd --name #{name}). " \
+          "Nothing was queued.", code: "no_daemon")
+      end
+
+      # What a caller is told when the daemon had the prompt but its answer was lost.
+      MAYBE_SENT = "The prompt may have been queued or typed; check the pane (or prompt_queued in workspace events) before sending it again."
+
+      # The daemon's reply fields other than ok, error and message become
+      # details, with `pane` the pane id as on success.
+      def fail_with(reply, name, pane_id)
+        code = reply["error"].to_s
+        message = reply["message"] || code
+        if code == "unknown_type"
+          code = "error"
+          message = "The agent daemon for '#{name}' predates --when-idle; restart it with: workspace agentd restart #{name}"
+        end
+        code = "error" unless ErrorCodes.known?(code)
+        details = reply.except("ok", "error", "message")
+        details["pane"] = pane_id if details.key?("pane")
+        error_class = case code
+        when "not_submitted" then Run::NotSubmittedError
+        when "usage" then Workspace::UsageError
+        else Workspace::Error
+        end
+        raise error_class.new(message, code: code, details: details.empty? ? nil : details)
+      end
 
       def send_text(detail, body, enter, details)
         delivery = @tmux.deliver(detail[:session], detail[:id], body, enter: enter)

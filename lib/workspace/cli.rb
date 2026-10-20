@@ -3261,6 +3261,7 @@ module Workspace
       body = nil
       keys = nil
       no_enter = false
+      when_idle = false
       json = false
 
       parser = OptionParser.new do |opts|
@@ -3276,21 +3277,29 @@ module Workspace
         opts.separator "               yourself (\"Escape\", \"Up Up Enter\", \"C-c\", \"y\"). Anything that isn't a key"
         opts.separator "               name is refused before the first key is sent."
         opts.separator ""
+        opts.separator "  --when-idle  hands --body to the workspace's agent daemon instead: typed now if the agent's"
+        opts.separator "               turn has ended, else queued and typed (paste, then Enter) when it ends, one"
+        opts.separator "               prompt per turn end, in order. Claude Code panes only; a pane waiting on a"
+        opts.separator "               person is refused (pane_waiting), and so is a 9th queued prompt (queue_full)."
+        opts.separator ""
         opts.separator "Options:"
         opts.on("--name NAME", "Workspace name (default: detected from cwd)") { |v| name = v }
         opts.on("--pane PANE", "Pane id (%19) or window.pane (0.1)  (required)") { |v| pane = v }
         opts.on("--body TEXT", "Literal text to paste, then Enter") { |v| body = v }
         opts.on("--keys KEYS", "Space-separated tmux key names") { |v| keys = v }
         opts.on("--no-enter", "With --body, paste the text without pressing Enter") { no_enter = true }
+        opts.on("--when-idle", "With --body, type it once the agent's turn ends (queued by the agent daemon)") { when_idle = true }
         opts.on("--json", "Print the result as JSON; errors as {\"schema_version\":1,\"ok\":false,\"error\":...}") { json = true }
         opts.separator ""
-        opts.separator "Exit codes: 0 delivered; 1 not delivered (safe to resend) or bad input; 2 text landed but wasn't"
-        opts.separator "  confirmed submitted (check the pane before resending)."
+        opts.separator "Exit codes: 0 delivered (or, with --when-idle, queued); 1 not delivered (safe to resend), refused or"
+        opts.separator "  bad input, except --when-idle's connection_failed with details.maybe_delivered (check first);"
+        opts.separator "  2 text landed but wasn't confirmed submitted (check the pane before resending)."
         opts.separator ""
         opts.separator "Examples:"
         opts.separator "  workspace agent-run send --name api --pane %19 --body \"yes\""
         opts.separator "  workspace agent-run send --name api --pane %19 --keys Escape --json"
         opts.separator "  workspace agent-run send --pane 0.1 --keys \"Up Enter\""
+        opts.separator "  workspace agent-run send --name api --pane %19 --body \"Now run the specs\" --when-idle --json"
       end
       parser.parse!(args)
       raise UsageError, "Unexpected argument: #{args.first}\n\n#{parser.help}" if args.any?
@@ -3302,7 +3311,10 @@ module Workspace
       raise UsageError, "Missing --body or --keys.\n\n#{parser.help}" if body.nil? && keys.nil?
       raise UsageError, "--body can't be empty.\n\n#{parser.help}" if body && body.empty?
       raise UsageError, "--no-enter applies to --body; --keys never presses Enter on its own.\n\n#{parser.help}" if no_enter && keys
+      raise UsageError, "--when-idle takes --body, not --keys.\n\n#{parser.help}" if when_idle && keys
+      raise UsageError, "--when-idle always presses Enter; drop --no-enter.\n\n#{parser.help}" if when_idle && no_enter
       raise Error, "workspace agent-run send is not available in this build" unless @send_command
+      return @send_command.when_idle(name: name, pane: pane, body: body, json: json) if when_idle
 
       key_names = keys && Commands::Send.parse_keys(keys)
       @send_command.call(name: name, pane: pane, body: body, keys: key_names, enter: !no_enter, json: json)

@@ -83,14 +83,21 @@ module Workspace
       unless text.is_a?(String) && !text.empty? && text.bytesize <= PromptQueueStore::MAX_BYTES
         return error("usage", "the text must be non-empty and at most #{PromptQueueStore::MAX_BYTES} bytes")
       end
-      detail = pane_detail(pane_id)
+      detail = pane_lookup(pane_id)
+      return error("pane_not_ready", "tmux didn't list the session's panes; try again", "reason" => "unknown") if detail == :unknown
       return error("no_such_pane", "no pane #{pane_id.inspect} in tmux session #{@session_name}") unless detail
       context = {"pane" => "#{detail[:window]}.#{detail[:index]}", "pane_id" => pane_id}
       facts = @session_monitor.delivery_facts(pane_id)
       refused = refusal(pane_id, facts)
       return refused.merge(context) if refused
 
-      identity = {"server_pid" => @tmux.server_pid_for_pane(pane_id), "pane_pid" => detail[:pid],
+      # Without these a later restart of tmux or of the agent couldn't be told apart.
+      server_pid = @tmux.server_pid_for_pane(pane_id)
+      unless server_pid && facts[:agent_pid]
+        return error("pane_not_ready", "the pane's tmux server or agent process can't be read yet; try again in a few seconds",
+          "reason" => "unknown").merge(context)
+      end
+      identity = {"server_pid" => server_pid, "pane_pid" => detail[:pid],
                   "agent_pid" => facts[:agent_pid], "session_id" => facts[:session_id]}
       with_pane(pane_id) do
         outcome, entry = @store.add(pane_id: pane_id, text: text, identity: identity)

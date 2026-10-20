@@ -16,7 +16,7 @@ workspace agent-run --body '<full message JSON>' [--dry-run]
 | `command` | Send a `command` message — delivers work to the first pipeline stage |
 | `inject` | Send an `inject` message — steers a running work item |
 | `restart` | Send a `restart_agent` message — clears the coding agent in one pane and types a fresh prompt |
-| `send` | Type text or tmux keys into one named pane, straight through tmux (no daemon) |
+| `send` | Type text or tmux keys into one named pane, straight through tmux (no daemon); with `--when-idle`, hand the text to the agent daemon to type once the agent's turn ends |
 | `examples` | Print all stock example messages without sending anything |
 
 ## Options
@@ -74,6 +74,7 @@ When `--work-item` is omitted a random UUID is generated for the message's `work
 | `--body TEXT` | Literal text to paste, then press Enter |
 | `--keys KEYS` | Space-separated tmux key names to send, e.g. `Escape`, `Up Up Enter`, `C-c`, `y` |
 | `--no-enter` | With `--body`, paste the text without pressing Enter |
+| `--when-idle` | With `--body`: typed now if the agent's turn has ended, else queued by the agent daemon and typed when it ends (Claude Code panes only) |
 | `--json` | Print the result as JSON |
 
 ## Details
@@ -102,6 +103,35 @@ With `--json`, success prints the daemon's reply with `schema_version: 1` (`stat
 - `--body` and `--keys` are mutually exclusive, and one is required; `--no-enter` with `--keys` is a usage error.
 
 With `--json`, success prints `{"schema_version":1,"ok":true,"workspace":"api","pane":"%19","mode":"text","submitted":true}`; `mode` is `keys` (with a `keys` array and `submitted: true`) for `--keys`. `submitted` is false only for `--body --no-enter`. `pane` is always the pane id, even when the pane was named `window.pane`. Failures are the standard error envelope with the codes above.
+
+#### `send --when-idle`
+
+`--when-idle` sends a prompt to an agent that may be in the middle of a turn without typing into that turn. The pane is checked as for `send` (same pane errors, before anything else), then the text goes to the workspace's agent daemon ([`agentd`](README.agentd.md)), which owns a queue per workspace (`~/.local/state/workspace/<workspace>/prompt-queue.json`) and is the only thing that types queued text:
+
+- **The pane's turn has ended** (the agent reads `done` or `idle` in [`sessions`](README.sessions.md), from evidence this daemon saw itself): the text is typed during the call, as `send` types it (paste, then Enter), and the answer is `{"delivered": true, "submitted": true, "id": ...}`.
+- **Otherwise** (the agent is working, holds a draft in its input line, or other prompts are queued ahead): the text is queued and the answer is `{"queued": true, "id": "<16 hex>", "position": N}`, `position` counting from 1 within the pane. The daemon types it when the turn ends: on the main agent's Stop hook, or, for a Claude Code pane without hooks, on its regular scan (every 10s) once the screen has been unchanged for `idle_after` (30s). Several prompts for one pane go in order, one per turn end. The queue survives the app quitting and the daemon restarting; a restarted daemon types nothing until it has seen the turn end itself.
+
+Before typing, the daemon waits for the screen to stay unchanged for 2s, then checks again, under the lock it types every prompt under, that the pane, its tmux server, its agent and its conversation (`session_id`) are the ones the prompt was queued for, that the turn is still over and no prompt was submitted since, and that the input line is empty and no dialog is open. The text is pasted without Enter and Enter is pressed only once the input line shows it (or Claude Code's `[Pasted text #N` placeholder for a long paste). Text that never reached the pane goes back to the head of the queue; text that reached it, or may have, is never typed again.
+
+A queued prompt is dropped, never typed, when its pane closed or was replaced or tmux restarted (`pane_gone`), its agent exited or was restarted, or its session ended other than by a `/clear` (`session_ended`), the pane started another conversation (`conversation_changed`), its text was pasted but Enter couldn't be confirmed (`not_submitted`; it stays in the pane), or a delivery was cut off after its paste started (`interrupted`). A prompt queued for a pane that is now waiting on a person is kept, and typed once the agent's turn ends again. These outcomes are `prompt_dequeued` events in [`events`](README.events.md); a prompt answered `queued` also records `prompt_queued`. A prompt typed during its own call records no event.
+
+Refusals, all before anything is queued:
+
+| `code` | When |
+|---|---|
+| `no_daemon` | No agent daemon runs for the workspace; nothing is queued. Start one with `workspace agentd --name WS`. |
+| `not_an_agent` | The pane runs a shell. |
+| `unsupported_agent` | The pane runs an agent whose screen can't be checked for an open dialog or a person's draft: Codex, OpenCode and Pi. Only Claude Code is supported. `details.kind`. |
+| `pane_waiting` | The agent waits on a person (a permission prompt or question, or `AskUserQuestion`/`ExitPlanMode` is running). Answer it first. `details.reason`: `waiting` or `question_open`. |
+| `queue_full` | The pane already has 8 prompts queued. `details.limit`. |
+| `pane_not_ready` | The daemon hasn't scanned or identified the pane yet (`details.reason: unknown`); try again in a few seconds. |
+| `usage` | `--body` is over 32 KB (`details.limit`), or `--when-idle` was given with `--keys` or `--no-enter`. |
+
+When the call types the text itself it can also end in `not_submitted` (exit 2, `details.delivered: true`, `details.submitted: false`: pasted but not confirmed; check the pane before resending) or `not_delivered` (exit 1, `details.reason` says why the prompt was dropped instead; nothing reached the pane). A `connection_failed` or `unreadable_reply` with `details.maybe_delivered: true` means the daemon had the prompt but its answer was lost (no answer within 60s, or an unreadable one): the prompt may have been queued or typed, so check the pane (or `prompt_queued` in the events) before sending it again. In error `details`, `pane` is the pane id, as on success.
+
+**One race is accepted.** After the last check and before Enter, the daemon reads the screen and waits for it to settle; a turn that starts in that window gets the text mid-turn, which Claude Code takes at its next step, as with `send` without `--when-idle`.
+
+With `--json`, success prints `{"schema_version":1,"ok":true,"workspace":"api","pane":"%19","pane_id":"%19","queued":true,"id":"5f0c...","position":1}` or the same with `"delivered":true,"submitted":true` instead of `queued` and `position`. Exit codes: 0 typed or queued, 1 refused or not delivered, 2 `not_submitted`.
 
 **`examples`** prints the full set of stock example messages (with realistic field values for the detected workspace) without sending anything. Use it to see the wire format before firing a real message.
 
@@ -140,6 +170,9 @@ workspace agent-run send --name myapp --pane %19 --keys Escape --json
 
 # Type a prompt into pane 0.1 and press Enter
 workspace agent-run send --name myapp --pane 0.1 --body "Run the specs and report failures"
+
+# Hand pane %19 its next prompt once its current turn ends
+workspace agent-run send --name myapp --pane %19 --body "Now update the docs" --when-idle --json
 
 # Print examples for the current workspace without sending
 workspace agent-run examples

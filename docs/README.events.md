@@ -25,12 +25,23 @@ Without `--json`, each line is `at  workspace  type  key=value ...`, like [`even
 
 The stream has two kinds of source:
 
-- **The event log**, `~/.workspace-events.jsonl` ([`event-log`](README.event-log.md)): state changes and lifecycle events such as `plan_changed`, `plan_progress` (a plan task changed state), `spine_changed` (a spine stage's status or note changed, or a stage file was added or removed), `inbox_changed`, `ask_created`, `agent_state`. Its lines are printed as they are in the log (`timestamp`, `type`, `project`, `data`), with `source: "lifecycle"`, `at` (the `timestamp`) and `workspace` (`data.workspace`, else `project`) added.
+- **The event log**, `~/.workspace-events.jsonl` ([`event-log`](README.event-log.md)): state changes and lifecycle events such as `plan_changed`, `plan_progress` (a plan task changed state), `spine_changed` (a spine stage's status or note changed, or a stage file was added or removed), `inbox_changed`, `ask_created`, `agent_state`, `prompt_queued` and `prompt_dequeued` (below). Its lines are printed as they are in the log (`timestamp`, `type`, `project`, `data`), with `source: "lifecycle"`, `at` (the `timestamp`) and `workspace` (`data.workspace`, else `project`) added.
 - **Each agent daemon's hook event file**, `~/.local/state/workspace/.events/<workspace>.jsonl` (the `hook_events` path in [`capabilities --json`](README.capabilities.md)). [`agentd`](README.agentd.md) writes one line for each hook event [`session-event`](README.session-event.md) forwards, and one for each [`agent status post`](README.agent.md#status). Its lines are printed as they are in the file, with `source: "hook"` added.
 
 Every printed line also carries `cursor`. Lines from different sources come out in time order, and lines from one file always keep that file's order.
 
 `events` only reads files. A slow or stopped reader never holds up a daemon or a command that writes to the log, and one `events` process covers every workspace, including ones started after it.
+
+### Queued prompt lines
+
+[`agent-run send --when-idle`](README.agent-run.md#send---when-idle) queues a prompt with the workspace's agent daemon when the agent's turn hasn't ended. Only a prompt whose send answered `queued` produces these lines; one typed during its own call reports on the call. Neither carries the text: match on `id`, which the send answered.
+
+| `type` | `data` |
+|---|---|
+| `prompt_queued` | `id`, `pane_id`, `position` (from 1, within the pane), `clear_first` (`false`) |
+| `prompt_dequeued` | `id`, `pane_id`, `outcome` (`delivered` or `dropped`; `cancelled` is reserved for a cancel command not in this release), `reason` (with `dropped`), `submitted` (with `delivered`: `true`; with `dropped` for `not_submitted`: `false`) |
+
+`reason` is `pane_gone` (the pane closed or was replaced, or tmux restarted), `session_ended` (the agent exited or was restarted, or its session ended other than by `/clear`), `conversation_changed` (the pane started another conversation), `not_submitted` (pasted, but Enter couldn't be confirmed; the text stays in the pane) or `interrupted` (a delivery was cut off after its paste started). A prompt for a pane that is waiting on a person is kept, not dropped.
 
 ### Hook event lines
 

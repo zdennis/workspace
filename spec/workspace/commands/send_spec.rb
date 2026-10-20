@@ -158,6 +158,87 @@ RSpec.describe Workspace::Commands::Send do
     expect(command.server_pid("%99")).to be_nil
   end
 
+  describe "#when_idle" do
+    let(:client) { double("client") }
+    let(:command) { described_class.new(locator: Workspace::PaneLocator.new(tmux: tmux), tmux: tmux, client: client, output: output) }
+
+    def reply_with(reply)
+      allow(client).to receive(:exchange_message).and_return(reply)
+    end
+
+    def error_from
+      yield
+      nil
+    rescue Workspace::Error => e
+      e
+    end
+
+    it "prints a queued answer as a sentence" do
+      reply_with("ok" => true, "queued" => true, "id" => "q1", "position" => 1, "pane_id" => "%3")
+
+      result = command.when_idle(name: "api", pane: "%3", body: "go")
+
+      expect(result).to include("queued" => true, "pane" => "%3")
+      expect(output.string).to eq("Queued for pane %3 at position 1 (q1); the agent daemon types it when the agent's turn ends.\n")
+    end
+
+    it "refuses a body over the limit as usage, before asking the daemon" do
+      error = error_from { command.when_idle(name: "api", pane: "%3", body: "x" * (Workspace::PromptQueueStore::MAX_BYTES + 1)) }
+
+      expect(error).to be_a(Workspace::UsageError)
+      expect(error.details).to eq("limit" => Workspace::PromptQueueStore::MAX_BYTES)
+    end
+
+    it "gives the pane id as details.pane, as on success, and a usage refusal as a UsageError" do
+      reply_with("ok" => false, "error" => "usage", "message" => "too long", "pane" => "0.0", "pane_id" => "%3")
+
+      error = error_from { command.when_idle(name: "api", pane: "%3", body: "go") }
+
+      expect(error).to be_a(Workspace::UsageError)
+      expect(error.details).to eq("pane" => "%3", "pane_id" => "%3")
+    end
+
+    it "names a daemon too old for prompt_send" do
+      reply_with("ok" => false, "error" => "unknown_type")
+
+      error = error_from { command.when_idle(name: "api", pane: "%3", body: "go") }
+
+      expect(error.code).to eq("error")
+      expect(error.message).to include("workspace agentd restart api")
+    end
+
+    it "turns a code the registry doesn't know into error" do
+      reply_with("ok" => false, "error" => "mystery_code", "message" => "boom")
+
+      expect(error_from { command.when_idle(name: "api", pane: "%3", body: "go") }.code).to eq("error")
+    end
+
+    it "says a timed-out call may have queued or typed the text" do
+      allow(client).to receive(:exchange_message).and_raise(Workspace::AgentSnapshotClient::Unavailable.new("timed out", reason: :timeout))
+
+      error = error_from { command.when_idle(name: "api", pane: "%3", body: "go") }
+
+      expect(error.code).to eq("connection_failed")
+      expect(error.details).to eq("maybe_delivered" => true)
+      expect(error.message).to include("check the pane")
+    end
+
+    it "answers unreadable_reply for a reply that isn't a JSON object" do
+      reply_with(nil)
+
+      error = error_from { command.when_idle(name: "api", pane: "%3", body: "go") }
+
+      expect(error.code).to eq("unreadable_reply")
+      expect(error.details).to eq("maybe_delivered" => true)
+    end
+
+    it "refuses with no client wired" do
+      bare = described_class.new(locator: Workspace::PaneLocator.new(tmux: tmux), tmux: tmux, output: output)
+
+      expect(error_from { bare.when_idle(name: "api", pane: "%3", body: "go") }.message).to include("not available")
+    end
+  end
+
   it "exposes the locator as #locate" do
     expect(command.locate("api", "%3")).to include(id: "%3")
   end

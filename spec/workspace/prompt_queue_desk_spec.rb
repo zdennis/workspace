@@ -493,6 +493,19 @@ RSpec.describe Workspace::PromptQueueDesk do
       expect(send_prompt(pane_id: "%9")).to include("error" => "no_such_pane")
     end
 
+    it "refuses while tmux can't list the panes, or the tmux server or agent pid can't be read" do
+      tmux.details = []
+      expect(send_prompt).to include("error" => "pane_not_ready", "reason" => "unknown")
+
+      tmux.details = [{id: "%5", window: 0, index: 1, pid: 100}]
+      tmux.server_pid = nil
+      expect(send_prompt).to include("error" => "pane_not_ready", "reason" => "unknown")
+
+      tmux.server_pid = "77"
+      facts[:agent_pid] = nil
+      expect(send_prompt).to include("error" => "pane_not_ready", "reason" => "unknown")
+    end
+
     it "refuses empty or oversized text" do
       expect(send_prompt("")).to include("error" => "usage")
       expect(send_prompt("x" * (Workspace::PromptQueueStore::MAX_BYTES + 1))).to include("error" => "usage")

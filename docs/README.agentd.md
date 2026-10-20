@@ -136,6 +136,24 @@ The coordinator's answer to a status report decides what the agent does next:
 | `error: "not_delivered"`, `message` | An urgent steer never reached the pane |
 | `error: "not_submitted"`, `message` | An urgent steer is in the pane but Enter didn't appear to submit it; don't resend, or it will be typed twice |
 
+### Prompt send
+
+A `prompt_send` message queues a prompt for one coding-agent pane and types it once the agent's turn ends; `workspace agent-run send --when-idle` sends it (see [README.agent-run.md](README.agent-run.md#send---when-idle) for what is checked, the drop rules and the events). The daemon answers from a worker thread: a pane whose turn has ended gets the text typed before the reply.
+
+```json
+{"type": "prompt_send", "workspace": "myapp", "pane_id": "%18", "text": "Now update the docs"}
+```
+
+| Reply | Meaning |
+|-------|---------|
+| `{"ok": true, "delivered": true, "submitted": true, "id": ...}` | Typed during the call |
+| `{"ok": true, "queued": true, "id": ..., "position": N}` | Queued; typed when the turn ends |
+| `error: "not_an_agent"`, `"unsupported_agent"`, `"pane_waiting"`, `"queue_full"`, `"pane_not_ready"`, `"no_such_pane"`, `"usage"` | Refused; nothing was queued |
+| `error: "not_submitted"` | Pasted during the call but not confirmed submitted; never typed again |
+| `error: "not_delivered"`, `reason` | Dropped during the call (`reason` as in the drop rules) |
+
+Every reply also carries `pane` (window.pane) and `pane_id`. The daemon checks the 32 KB limit on `text` too (`usage`). The queue's other triggers are the main agent's Stop hook and the session monitor's scan.
+
 ### Restart agent
 
 A `restart_agent` message gives the coding agent in one pane a fresh conversation. `workspace agent-run restart` sends it (see [README.agent-run.md](README.agent-run.md)).

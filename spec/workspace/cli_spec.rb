@@ -1518,7 +1518,9 @@ RSpec.describe Workspace::CLI do
       [["--name", "api", "--pane", "%3", "--body", "x", "--keys", "y"], "Pass --body or --keys, not both."],
       [["--name", "api", "--pane", "%3", "--body", ""], "--body can't be empty."],
       [["--name", "api", "--pane", "%3", "--keys", "y", "--no-enter"], "--no-enter applies to --body; --keys never presses Enter on its own."],
-      [["--name", "api", "--pane", "%3", "--body", "x", "extra"], "Unexpected argument: extra"]
+      [["--name", "api", "--pane", "%3", "--body", "x", "extra"], "Unexpected argument: extra"],
+      [["--name", "api", "--pane", "%3", "--keys", "y", "--when-idle"], "--when-idle takes --body, not --keys."],
+      [["--name", "api", "--pane", "%3", "--body", "x", "--when-idle", "--no-enter"], "--when-idle always presses Enter; drop --no-enter."]
     ].each do |args, message|
       it "rejects #{args.join(" ").inspect} as a usage error naming #{message.inspect}" do
         cli, output = send_cli
@@ -1527,6 +1529,80 @@ RSpec.describe Workspace::CLI do
 
         expect(JSON.parse(output.string)).to include("ok" => false, "code" => "usage", "error" => message)
         expect(tmux.deliveries + tmux.keys_sent).to be_empty
+      end
+    end
+
+    describe "--when-idle" do
+      let(:replies) { [] }
+      let(:client) do
+        double("client").tap do |c|
+          allow(c).to receive(:exchange_message) do |name, message, timeout:|
+            replies.shift || {"ok" => true, "queued" => true, "id" => "q1", "position" => 2, "pane" => "1.2", "pane_id" => message["pane_id"]}
+          end
+        end
+      end
+
+      def idle_cli(**overrides)
+        out = StringIO.new
+        send_command = Workspace::Commands::Send.new(locator: Workspace::PaneLocator.new(tmux: tmux), tmux: tmux, client: client, output: out)
+        build_test_cli(output: out, send_command: send_command, **overrides)
+      end
+
+      it "asks the daemon to queue the text for the pane id and prints its answer, typing nothing itself" do
+        cli, output = idle_cli
+
+        cli.run(["agent-run", "send", "--name", "api", "--pane", "1.2", "--body", "--next step", "--when-idle", "--json"])
+
+        expect(client).to have_received(:exchange_message)
+          .with("api", {"type" => "prompt_send", "pane_id" => "%19", "text" => "--next step"}, timeout: Workspace::Commands::Send::WHEN_IDLE_TIMEOUT)
+        expect(JSON.parse(output.string)).to eq("schema_version" => 1, "ok" => true, "workspace" => "api",
+          "queued" => true, "id" => "q1", "position" => 2, "pane" => "%19", "pane_id" => "%19")
+        expect(tmux.deliveries).to be_empty
+      end
+
+      it "says so when the pane was idle and the text was typed" do
+        replies << {"ok" => true, "delivered" => true, "submitted" => true, "id" => "q1", "pane_id" => "%19"}
+        cli, output = idle_cli
+
+        cli.run(["agent-run", "send", "--name", "api", "--pane", "%19", "--body", "go", "--when-idle"])
+
+        expect(output.string).to eq("Pane %19 was idle; typed the text and pressed Enter.\n")
+      end
+
+      it "prints a refusal as the error envelope, exit 1, with the daemon's details" do
+        replies << {"ok" => false, "error" => "queue_full", "message" => "pane 1.2 already has 8 prompts queued", "limit" => 8, "pane_id" => "%19"}
+        cli, output = idle_cli
+
+        expect(status_of { cli.run(["agent-run", "send", "--name", "api", "--pane", "%19", "--body", "go", "--when-idle", "--json"]) }).to eq(1)
+
+        expect(JSON.parse(output.string)).to include("ok" => false, "code" => "queue_full", "details" => {"limit" => 8, "pane_id" => "%19"})
+      end
+
+      it "exits 2 when the daemon typed the text but couldn't confirm it submitted" do
+        replies << {"ok" => false, "error" => "not_submitted", "message" => "pasted but not confirmed", "delivered" => true, "submitted" => false}
+        cli, output = idle_cli
+
+        expect(status_of { cli.run(["agent-run", "send", "--name", "api", "--pane", "%19", "--body", "go", "--when-idle", "--json"]) }).to eq(2)
+
+        expect(JSON.parse(output.string)).to include("code" => "not_submitted")
+      end
+
+      it "refuses no_daemon when no agent daemon answers, queueing nothing" do
+        allow(client).to receive(:exchange_message).and_raise(Workspace::AgentSnapshotClient::Unavailable.new("no agent daemon", reason: :no_daemon))
+        cli, output = idle_cli
+
+        expect(status_of { cli.run(["agent-run", "send", "--name", "api", "--pane", "%19", "--body", "go", "--when-idle", "--json"]) }).to eq(1)
+
+        expect(JSON.parse(output.string)).to include("code" => "no_daemon")
+      end
+
+      it "checks the pane before asking the daemon" do
+        cli, output = idle_cli
+
+        expect(status_of { cli.run(["agent-run", "send", "--name", "api", "--pane", "%7", "--body", "go", "--when-idle", "--json"]) }).to eq(1)
+
+        expect(JSON.parse(output.string)).to include("code" => "wrong_session")
+        expect(client).not_to have_received(:exchange_message)
       end
     end
 

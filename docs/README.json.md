@@ -88,8 +88,8 @@ The exit code is unchanged by `--json` (1 for most failures, 2 for `not_submitte
 | `workspace_name_case_conflict` | A new workspace would have a name that differs only in case from an existing workspace with a different directory (`add`, `launch PATH`, `start`). The existing one is renamed to lowercase the next time its agentd starts. `details.name`, `details.existing`, `details.existing_root`. |
 | `not_in_workspace` | No workspace could be detected from the working directory. `details.path`. |
 | `no_daemon` | No agent daemon is running for the workspace. |
-| `connection_failed` | The agent daemon's socket refused or dropped the connection. |
-| `unreadable_reply` | The agent daemon's reply couldn't be read. |
+| `connection_failed` | The agent daemon's socket refused or dropped the connection. From `agent-run send --when-idle`, `details.maybe_delivered: true` means the daemon had the prompt but didn't answer within 60s: it may have been queued or typed, so check the pane (or `prompt_queued` in `events`) before sending it again. |
+| `unreadable_reply` | The agent daemon's reply couldn't be read. `details.maybe_delivered: true` as for `connection_failed`. |
 | `unsaved_work` | The worktree has uncommitted changes or unpushed commits. `details` has the counts; `retry` is `--force`. |
 | `unsaved_unknown` | git couldn't tell whether the worktree has unsaved work. `retry` is `--force`. |
 | `not_prunable` | prune: a `--name` is not a prune candidate (text mode; with `--json` it is a failed row). `details.names`. |
@@ -236,7 +236,7 @@ The registry lives in `Workspace::ErrorCodes`; a spec checks that every code a r
 | `no_active_pipeline` | No pipeline work item is in flight. |
 | `stale_token` | The pipeline token no longer matches the in-flight item. |
 | `no_next_stage` | The pipeline has no stage after the current one. |
-| `not_delivered` | The text never reached the pane, or `send --keys` stopped partway (`details.keys_sent`); safe to resend. |
+| `not_delivered` | The text never reached the pane, or `send --keys` stopped partway (`details.keys_sent`); safe to resend. From `send --when-idle`: the prompt was dropped before it was typed (`details.reason`: `pane_gone`, `session_ended` or `conversation_changed`; `details.id`); nothing reached the pane. (A prompt cut off after its paste started answers `not_submitted` instead.) |
 | `missing_prompt` | restart needs a non-empty prompt. |
 | `missing_pane` | restart needs a pane. |
 | `bad_pane` | The pane reference isn't a pane id, window.pane, or index (`send`, `focus --pane` and `ask answer --deliver` accept only a pane id or window.pane; also from `agent-run restart` and `handoff`). |
@@ -246,15 +246,17 @@ The registry lives in `Workspace::ErrorCodes`; a spec checks that every code a r
 | `pane_gone` | The pane closed before or during the restart. |
 | `pane_busy` | The pane didn't go quiet in time, or `plan start` or `spine start` found it waiting on a person (or, with `--task` or `spine start`, working on something else); nothing was typed. `plan start` and `spine start` give `details.workspace`, `details.pane` and, with `--task` and always for `spine start`, `details.state`. |
 | `pane_in_pipeline` | A pipeline stage is running on the pane; pass force to restart it. |
-| `not_an_agent` | The pane is running a shell, not a coding agent. |
-| `unsupported_agent` | The pane's agent can't be restarted. |
+| `not_an_agent` | The pane is running a shell, not a coding agent (`agent-run restart`, `agent-run send --when-idle`). |
+| `unsupported_agent` | The pane's agent can't be restarted. From `agent-run send --when-idle`: the pane runs an agent whose screen can't be checked for an open dialog or a draft (Codex, OpenCode, Pi; only Claude Code is supported), so nothing was queued. `details.kind`. |
+| `pane_waiting` | `agent-run send --when-idle`: the pane's agent waits on a person (a permission prompt or question, or `AskUserQuestion`/`ExitPlanMode` is running), so nothing was queued; answer it first. `details.reason`: `waiting` or `question_open`. |
+| `queue_full` | `agent-run send --when-idle`: the pane already has 8 prompts queued, so nothing was queued. `details.limit`. |
 | `context_unavailable` | The agent can't report context usage, so /clear can't be confirmed. |
 | `context_unknown` | The agent's context usage couldn't be read. |
 | `clear_not_confirmed` | /clear was typed but a new conversation didn't appear. |
 | `restart_in_progress` | A restart is already running on the pane. |
 | `agent_stopped` | The agent stopped during the restart. |
 | `not_bound` | The pane isn't bound to a run, review or play (`binding show`, `binding clear`), or not to a workflow run (`step done`, `step status`). |
-| `pane_not_ready` | `agent status request`: the pane can't take typed text safely now; nothing was typed. `details.reason`: `unknown` (not scanned or not identified yet), `unsupported_agent` (an agent whose input prompt can't be recognized, so a dialog can't be ruled out), `waiting` (a permission prompt or question is open), `question_open` (`AskUserQuestion` or `ExitPlanMode` is running), `no_input_prompt` (the agent's input prompt isn't on screen), `input_not_empty` (the input line holds a draft), `input_changed` (from the check after pasting, which then answers `not_submitted`). `details.pane`, `details.pane_id`. See [`agent`](README.agent.md). |
+| `pane_not_ready` | `agent status request`: the pane can't take typed text safely now; nothing was typed. `details.reason`: `unknown` (not scanned or not identified yet), `unsupported_agent` (an agent whose input prompt can't be recognized, so a dialog can't be ruled out), `waiting` (a permission prompt or question is open), `question_open` (`AskUserQuestion` or `ExitPlanMode` is running), `no_input_prompt` (the agent's input prompt isn't on screen), `input_not_empty` (the input line holds a draft), `input_changed` (from the check after pasting, which then answers `not_submitted`). `details.pane`, `details.pane_id`. See [`agent`](README.agent.md). Also from `agent-run send --when-idle` with `reason: unknown` (the agent daemon hasn't scanned or identified the pane yet); nothing was queued. |
 | `status_request_open` | `agent status request`: the pane already has an open status request; nothing was typed. `details.request_id`, `details.expires_at`. |
 | `status_request_unknown` | `agent status post --reply-to`: no open request has that id (already answered, never made, or the agent daemon restarted). `details.request_id`. |
 | `status_request_expired` | `agent status post --reply-to`: the request expired before the reply. `details.request_id`. |
