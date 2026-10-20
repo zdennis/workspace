@@ -1281,7 +1281,7 @@ module Workspace
         opts.separator ""
         opts.separator "Options:"
         opts.on("--pane N", String,
-          "Target pane: zero-based index, 'window.pane' (e.g. '0.1', as shown by 'workspace sessions'), a tmux pane id (e.g. '%19', from 'workspace sessions --json'), 'bottom', or a title substring (e.g. 'Claude Code')") do |n|
+          "Target pane: zero-based index, 'window.pane' (e.g. '0.1', as shown by 'workspace sessions'), a tmux pane id (e.g. '%19', from 'workspace sessions --json'), 'bottom', or a title substring (e.g. 'Claude Code'). A title is matched against the raw pane title, then the agent label shown in 'workspace sessions' TITLE; the first matching pane wins, so use 'window.pane' or a '%id' to be exact") do |n|
           pane_opt = n
         end
         # --bottom is intentionally equivalent to the default. It exists so scripts can
@@ -1493,7 +1493,7 @@ module Workspace
         opts.separator ""
         opts.separator "Options:"
         opts.on("--pane N", String,
-          "Target pane: zero-based index, 'window.pane' (e.g. '0.1', from 'workspace sessions'), a tmux pane id (e.g. '%19', from 'workspace sessions --json'), 'bottom', or a title substring (e.g. 'Claude Code')") do |n|
+          "Target pane: zero-based index, 'window.pane' (e.g. '0.1', from 'workspace sessions'), a tmux pane id (e.g. '%19', from 'workspace sessions --json'), 'bottom', or a title substring (e.g. 'Claude Code'). A title is matched against the raw pane title, then the agent label shown in 'workspace sessions' TITLE; the first matching pane wins, so use 'window.pane' or a '%id' to be exact") do |n|
           pane_opt = n
         end
         opts.on("--lines N", Integer,
@@ -1558,7 +1558,7 @@ module Workspace
         opts.separator ""
         opts.separator "Options:"
         opts.on("--pane N", String,
-          "Target pane: zero-based index, 'window.pane' (e.g. '0.1', as shown by 'workspace sessions'), a tmux pane id (e.g. '%19', from 'workspace sessions --json'), 'bottom', or a title substring (e.g. 'Claude Code') (default: bottom)") do |n|
+          "Target pane: zero-based index, 'window.pane' (e.g. '0.1', as shown by 'workspace sessions'), a tmux pane id (e.g. '%19', from 'workspace sessions --json'), 'bottom', or a title substring (e.g. 'Claude Code'). A title is matched against the raw pane title, then the agent label shown in 'workspace sessions' TITLE; the first matching pane wins, so use 'window.pane' or a '%id' to be exact (default: bottom)") do |n|
           pane_opt = n
         end
         opts.on("--lines N", Integer,

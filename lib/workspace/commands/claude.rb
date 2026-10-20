@@ -11,11 +11,13 @@ module Workspace
 
       # @param state [Workspace::State] state persistence
       # @param tmux [Workspace::Tmux] tmux session operations
+      # @param agent_labels [Workspace::AgentLabels, nil] lets a --pane title search match the agent label
       # @param output [IO] output stream for user-facing messages
       # @param error_output [IO] error output stream for warnings
-      def initialize(state:, tmux:, output: $stdout, error_output: $stderr)
+      def initialize(state:, tmux:, agent_labels: nil, output: $stdout, error_output: $stderr)
         @state = state
         @tmux = tmux
+        @agent_labels = agent_labels
         @output = output
         @error_output = error_output
       end
@@ -62,7 +64,7 @@ module Workspace
       private
 
       def claude_pane(session_name)
-        TmuxPane.new("Claude Code", tmux: @tmux).target(session_name)
+        TmuxPane.new("Claude Code", tmux: @tmux, agent_labels: @agent_labels).target(session_name)
       rescue Workspace::Error
         CLAUDE_PANE_FALLBACK
       end

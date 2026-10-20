@@ -8,7 +8,14 @@ module Workspace
   #   String matching /\A\d+\.\d+\z/ → "window.pane" (as shown by `workspace sessions`/tmux); window overrides the window: kwarg
   #   String matching /\A%\d+\z/     → a tmux pane id (as shown by `workspace sessions --json`'s pane_id); searched
   #                                     across the whole session, so it resolves regardless of window
-  #   Any other String               → case-insensitive title search via Tmux#find_pane_by_title
+  #   Any other String               → case-insensitive title search via Tmux#find_pane_by_title, then
+  #                                     against the agent label `workspace sessions` shows in TITLE
+  #                                     ("Claude Code", "Codex"), since an agent often rewrites its own
+  #                                     pane title (Claude Code sets "✳ <task name>")
+  #
+  # A title search tries the raw tmux pane title first, then the agent label, each as a
+  # case-insensitive substring; the first matching pane (lowest index) wins. Use
+  # "window.pane" or a "%id" to be exact.
   #
   # @example
   #   TmuxPane.new("Claude Code", tmux: tmux).target("my-session")  # → "0.1"
@@ -22,9 +29,12 @@ module Workspace
 
     # @param spec [nil, :bottom, Integer, String] pane selector
     # @param tmux [Workspace::Tmux] tmux operations
-    def initialize(spec, tmux:)
+    # @param agent_labels [Workspace::AgentLabels, nil] names the agent in each pane, read only
+    #   when no raw title matches; nil searches raw titles alone
+    def initialize(spec, tmux:, agent_labels: nil)
       @spec = spec
       @tmux = tmux
+      @agent_labels = agent_labels
     end
 
     # Resolves the spec to a zero-based pane index.
@@ -51,10 +61,12 @@ module Workspace
         validate_index!(index, pane_list, session_name)
         index
       else
-        index = @tmux.find_pane_by_title(session_name, spec.to_s, window: window)
+        index = @tmux.find_pane_by_title(session_name, spec.to_s, window: window) ||
+          find_by_agent_label(session_name, spec.to_s, window)
         unless index
           raise Workspace::Error,
-            "No pane matching #{spec.inspect} found in session '#{session_name}'"
+            "No pane matching #{spec.inspect} found in session '#{session_name}' " \
+            "(searched pane titles and agent labels; see `workspace sessions`)"
         end
         index
       end
@@ -111,6 +123,21 @@ module Workspace
         raise Workspace::Error, "No pane with id #{spec} in session '#{session_name}'"
       end
       detail
+    end
+
+    # Index of the first pane (lowest index) whose agent label contains the text
+    # (case-insensitive): the label `workspace sessions` shows. Searches the same
+    # window as the raw title search; with no window there is no one window to
+    # take an index from, so it finds nothing rather than risk another window's pane.
+    def find_by_agent_label(session_name, text, window)
+      return nil unless @agent_labels && window
+
+      details = @tmux.pane_details(session_name, window: window)
+      wanted = text.downcase
+      @agent_labels.by_index(details).sort.each do |index, label|
+        return index if label.downcase.include?(wanted)
+      end
+      nil
     end
 
     # Splits a "window.pane" spec into its window and pane parts, so the window

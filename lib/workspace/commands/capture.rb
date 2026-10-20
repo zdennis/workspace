@@ -3,10 +3,12 @@ module Workspace
     # Reads a tmux pane's scrollback buffer and writes it to output.
     class Capture
       # @param tmux [Workspace::Tmux] tmux session operations
+      # @param agent_labels [Workspace::AgentLabels, nil] lets a --pane title search match the agent label
       # @param output [IO] output stream for captured text
       # @param error_output [IO] error output stream for error messages
-      def initialize(tmux:, output: $stdout, error_output: $stderr)
+      def initialize(tmux:, agent_labels: nil, output: $stdout, error_output: $stderr)
         @tmux = tmux
+        @agent_labels = agent_labels
         @output = output
         @error_output = error_output
       end
@@ -29,7 +31,7 @@ module Workspace
             "No active tmux session for '#{project}'.\nRun 'workspace launch #{project}' to start it."
         end
 
-        pane_index = TmuxPane.new(pane, tmux: @tmux).resolve(session_name)
+        pane_index = TmuxPane.new(pane, tmux: @tmux, agent_labels: @agent_labels).resolve(session_name)
         result = @tmux.capture_pane(session_name, pane_index, lines: lines, all: all)
 
         unless result

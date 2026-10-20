@@ -233,6 +233,7 @@ require_relative "workspace/transcript_label"
 require_relative "workspace/session_monitor"
 require_relative "workspace/scan_slot_limiter"
 require_relative "workspace/agent_provider"
+require_relative "workspace/agent_labels"
 require_relative "workspace/pane_dispatch"
 require_relative "workspace/file_backup"
 require_relative "workspace/process_group_terminator"
@@ -384,6 +385,7 @@ module Workspace
 
     # Pre-build command objects so CLI delegates rather than constructs
     stop_command = Commands::Stop.new(state: state, iterm: iterm, window_manager: window_manager, tmux: tmux, window_positions: window_positions, output: output, error_output: error_output)
+    agent_labels = AgentLabels.new(process_tree: ProcessTree.new(logger: logger))
     agent_readiness = AgentReadiness.new(tmux: tmux, process_tree: ProcessTree.new(logger: logger), logger: logger)
     name_migration = NameMigration.new(config: config, project_config: project_config, tmux: tmux, state: state, event_log: event_log,
       project_catalog_factory: -> { ProjectCatalog.new(project_config: project_config, git: git) })
@@ -430,11 +432,12 @@ module Workspace
     cleanup_command = Commands::Cleanup.new(state: state, window_liveness: WindowLiveness.new(window_manager: window_manager), tmux: tmux, output: output, input: input)
     prune_command = Commands::Prune.new(state: state, project_config: project_config, project_settings: project_settings, git: git, stop_command: stop_command, output: output, input: input)
     remove_command = Commands::Remove.new(project_config: project_config, project_settings: project_settings, state: state, tmux: tmux, git: git, file_backup: file_backup, output: output, input: input)
-    claude_command = Commands::Claude.new(state: state, tmux: tmux, output: output, error_output: error_output)
+    claude_command = Commands::Claude.new(state: state, tmux: tmux, agent_labels: agent_labels, output: output, error_output: error_output)
     lookup_command = Commands::Lookup.new(project_config: project_config, output: output)
     update_pane_command = Commands::UpdatePaneCommand.new(config: config, project_config: project_config, output: output, input: input)
     run_command = Commands::Run.new(
       tmux: tmux,
+      agent_labels: agent_labels,
       state: state,
       window_manager: window_manager,
       output: output,
@@ -451,8 +454,8 @@ module Workspace
     )
     run_result_store = RunResultStore.new(config: config, cleaner: run_result_cleaner)
     run_and_report_command = Commands::RunAndReport.new(run_result_store: run_result_store)
-    capture_command = Commands::Capture.new(tmux: tmux, output: output, error_output: error_output)
-    wait_until_content_command = Commands::WaitUntilContent.new(tmux: tmux, output: output, error_output: error_output)
+    capture_command = Commands::Capture.new(tmux: tmux, agent_labels: agent_labels, output: output, error_output: error_output)
+    wait_until_content_command = Commands::WaitUntilContent.new(tmux: tmux, agent_labels: agent_labels, output: output, error_output: error_output)
 
     lock_namespace = LockNamespace.new(config: config, lineage: lineage)
     dev_config = DevConfig.new(config_resolver: config_resolver)
@@ -640,6 +643,7 @@ module Workspace
     agent_command = Commands::Agent.new(
       config: config,
       tmux: tmux,
+      agent_labels: agent_labels,
       work_coordinator_client: work_coordinator_client,
       pipeline_config: pipeline_config,
       # Its own LockHolder: the reaper runs on the monitor thread, and a

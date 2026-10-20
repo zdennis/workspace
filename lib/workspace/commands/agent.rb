@@ -28,6 +28,7 @@ module Workspace
 
       # @param config [Workspace::Config] path configuration
       # @param tmux [Workspace::Tmux] tmux session operations
+      # @param agent_labels [Workspace::AgentLabels, nil] lets a --pane title search match the agent label
       # @param work_coordinator_client [Workspace::WorkCoordinatorClient] coordinator client
       # @param pipeline_config [Workspace::PipelineConfig] per-project pipeline configuration
       # @param pipeline_state [Workspace::PipelineState, nil] in-flight work item
@@ -86,7 +87,7 @@ module Workspace
       # @param scan_slots [Workspace::ScanSlotLimiter, nil] bounds how many
       #   monitors scan at once, machine-wide; nil builds one from config
       #   when the session monitor starts
-      def initialize(config:, tmux:, work_coordinator_client:, pipeline_config:, pipeline_state: nil,
+      def initialize(config:, tmux:, work_coordinator_client:, pipeline_config:, agent_labels: nil, pipeline_state: nil,
         epoch_generator: -> { "wa-#{Agent.ulid}" },
         signal_trapper: Signal,
         sentinel_poller_factory: nil,
@@ -117,6 +118,7 @@ module Workspace
         @name_migration = name_migration
         @config = config
         @tmux = tmux
+        @agent_labels = agent_labels
         @work_coordinator_client = work_coordinator_client
         @pipeline_config = pipeline_config
         @pipeline_state = pipeline_state
@@ -891,7 +893,7 @@ module Workspace
       # Detects by pane title so that layout changes don't break routing.
       # Falls back to pane 1 if detection fails.
       def claude_pane_target
-        TmuxPane.new("Claude Code", tmux: @tmux).target(@tmux_session)
+        TmuxPane.new("Claude Code", tmux: @tmux, agent_labels: @agent_labels).target(@tmux_session)
       rescue Workspace::Error => e
         @logger.debug { "agent: Claude pane not found (#{e.message}); falling back to pane 1" }
         pane_target(1)

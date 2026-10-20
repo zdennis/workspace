@@ -191,6 +191,10 @@ module CLITestHelpers
       nil
     end
 
+    def pane_details(_session, **_opts)
+      []
+    end
+
     def find_claude_pane(_session, **_opts)
       1
     end

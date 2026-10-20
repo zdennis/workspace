@@ -83,6 +83,17 @@ RSpec.describe Workspace do
       expect(terminator).to equal(lock_command.instance_variable_get(:@terminator))
     end
 
+    it "gives every command that resolves a pane title the one shared AgentLabels" do
+      cli = Workspace.build_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new)
+
+      labels = %i[@run_command @capture_command @wait_until_content_command @claude_command @agent_command].map do |name|
+        cli.instance_variable_get(name).instance_variable_get(:@agent_labels)
+      end
+
+      expect(labels.first).to be_a(Workspace::AgentLabels)
+      expect(labels.map(&:object_id).uniq.size).to eq(1)
+    end
+
     it "gives lock and dev the same view of which run a pane is bound to, from the bindings `binding set` writes" do
       cli = Workspace.build_cli(output: StringIO.new, error_output: StringIO.new, input: StringIO.new)
 
