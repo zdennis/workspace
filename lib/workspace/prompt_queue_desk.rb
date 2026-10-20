@@ -252,7 +252,7 @@ module Workspace
         case result[:reason]
         when "clear_unconfirmed"
           error("clear_unconfirmed", "the clear was typed but #{result[:message]}, so the prompt was not typed; " \
-            "check the pane before sending again", id)
+            "check the pane, then send again if it was not cleared", id)
         when "not_submitted", "interrupted"
           error("not_submitted", "the prompt was pasted but not confirmed submitted: #{result[:message]}; " \
             "check the pane before sending it again", id.merge("delivered" => true, "submitted" => false))

@@ -400,6 +400,8 @@ module Workspace
       report_failure(e, argv, e.message, json_message: e.message.lines.first.to_s.strip)
     rescue Workspace::Commands::Run::NotSubmittedError => e
       report_failure(e, argv, "Error: #{e.message}", exit_code: Workspace::Commands::Run::NotSubmittedError::EXIT_CODE)
+    rescue Workspace::Commands::Send::ClearUnconfirmedError => e
+      report_failure(e, argv, "Error: #{e.message}", exit_code: Workspace::Commands::Send::ClearUnconfirmedError::EXIT_CODE)
     rescue Error => e
       report_failure(e, argv, "Error: #{e.message}")
     end
@@ -3262,6 +3264,7 @@ module Workspace
       keys = nil
       no_enter = false
       when_idle = false
+      clear_first = false
       json = false
 
       parser = OptionParser.new do |opts|
@@ -3281,6 +3284,12 @@ module Workspace
         opts.separator "               turn has ended, else queued and typed (paste, then Enter) when it ends, one"
         opts.separator "               prompt per turn end, in order. Claude Code panes only; a pane waiting on a"
         opts.separator "               person is refused (pane_waiting), and so is a 9th queued prompt (queue_full)."
+        opts.separator "  --clear-first  types the agent's clear (/clear) first and waits up to 15s for its hooks to report"
+        opts.separator "               the new conversation (SessionStart, source clear), then the text. Claude Code panes"
+        opts.separator "               with hooks only (else clear_unsupported). With --when-idle it waits for the turn to"
+        opts.separator "               end; without, a pane mid-turn, with a draft or with prompts queued is refused"
+        opts.separator "               (pane_busy). Not confirmed: nothing more"
+        opts.separator "               is typed (clear_unconfirmed, exit 75, details.clear_typed)."
         opts.separator ""
         opts.separator "Options:"
         opts.on("--name NAME", "Workspace name (default: detected from cwd)") { |v| name = v }
@@ -3289,17 +3298,20 @@ module Workspace
         opts.on("--keys KEYS", "Space-separated tmux key names") { |v| keys = v }
         opts.on("--no-enter", "With --body, paste the text without pressing Enter") { no_enter = true }
         opts.on("--when-idle", "With --body, type it once the agent's turn ends (queued by the agent daemon)") { when_idle = true }
+        opts.on("--clear-first", "With --body, clear the conversation and confirm it before typing (agent daemon)") { clear_first = true }
         opts.on("--json", "Print the result as JSON; errors as {\"schema_version\":1,\"ok\":false,\"error\":...}") { json = true }
         opts.separator ""
         opts.separator "Exit codes: 0 delivered (or, with --when-idle, queued); 1 not delivered (safe to resend), refused or"
         opts.separator "  bad input, except --when-idle's connection_failed with details.maybe_delivered (check first);"
-        opts.separator "  2 text landed but wasn't confirmed submitted (check the pane before resending)."
+        opts.separator "  2 text landed but wasn't confirmed submitted (check the pane before resending);"
+        opts.separator "  75 --clear-first typed the clear but it wasn't confirmed, so the text wasn't typed (check, then retry)."
         opts.separator ""
         opts.separator "Examples:"
         opts.separator "  workspace agent-run send --name api --pane %19 --body \"yes\""
         opts.separator "  workspace agent-run send --name api --pane %19 --keys Escape --json"
         opts.separator "  workspace agent-run send --pane 0.1 --keys \"Up Enter\""
         opts.separator "  workspace agent-run send --name api --pane %19 --body \"Now run the specs\" --when-idle --json"
+        opts.separator "  workspace agent-run send --name api --pane %19 --body \"Start on the docs\" --when-idle --clear-first --json"
       end
       parser.parse!(args)
       raise UsageError, "Unexpected argument: #{args.first}\n\n#{parser.help}" if args.any?
@@ -3311,10 +3323,15 @@ module Workspace
       raise UsageError, "Missing --body or --keys.\n\n#{parser.help}" if body.nil? && keys.nil?
       raise UsageError, "--body can't be empty.\n\n#{parser.help}" if body && body.empty?
       raise UsageError, "--no-enter applies to --body; --keys never presses Enter on its own.\n\n#{parser.help}" if no_enter && keys
-      raise UsageError, "--when-idle takes --body, not --keys.\n\n#{parser.help}" if when_idle && keys
-      raise UsageError, "--when-idle always presses Enter; drop --no-enter.\n\n#{parser.help}" if when_idle && no_enter
+      [["--when-idle", when_idle], ["--clear-first", clear_first]].each do |flag, given|
+        raise UsageError, "#{flag} takes --body, not --keys.\n\n#{parser.help}" if given && keys
+        raise UsageError, "#{flag} always presses Enter; drop --no-enter.\n\n#{parser.help}" if given && no_enter
+      end
       raise Error, "workspace agent-run send is not available in this build" unless @send_command
-      return @send_command.when_idle(name: name, pane: pane, body: body, json: json) if when_idle
+      if when_idle || clear_first
+        return @send_command.through_daemon(name: name, pane: pane, body: body, when_idle: when_idle,
+          clear_first: clear_first, json: json)
+      end
 
       key_names = keys && Commands::Send.parse_keys(keys)
       @send_command.call(name: name, pane: pane, body: body, keys: key_names, enter: !no_enter, json: json)

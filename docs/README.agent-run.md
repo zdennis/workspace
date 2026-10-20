@@ -16,7 +16,7 @@ workspace agent-run --body '<full message JSON>' [--dry-run]
 | `command` | Send a `command` message — delivers work to the first pipeline stage |
 | `inject` | Send an `inject` message — steers a running work item |
 | `restart` | Send a `restart_agent` message — clears the coding agent in one pane and types a fresh prompt |
-| `send` | Type text or tmux keys into one named pane, straight through tmux (no daemon); with `--when-idle`, hand the text to the agent daemon to type once the agent's turn ends |
+| `send` | Type text or tmux keys into one named pane, straight through tmux (no daemon); with `--when-idle`, hand the text to the agent daemon to type once the agent's turn ends; with `--clear-first`, have the daemon clear the conversation first |
 | `examples` | Print all stock example messages without sending anything |
 
 ## Options
@@ -75,6 +75,7 @@ When `--work-item` is omitted a random UUID is generated for the message's `work
 | `--keys KEYS` | Space-separated tmux key names to send, e.g. `Escape`, `Up Up Enter`, `C-c`, `y` |
 | `--no-enter` | With `--body`, paste the text without pressing Enter |
 | `--when-idle` | With `--body`: typed now if the agent's turn has ended, else queued by the agent daemon and typed when it ends (Claude Code panes only) |
+| `--clear-first` | With `--body`: the agent daemon types the agent's clear (`/clear`) first, waits for the new conversation, then types the text. With or without `--when-idle` (Claude Code panes with hooks only) |
 | `--json` | Print the result as JSON |
 
 ## Details
@@ -127,11 +128,26 @@ Refusals, all before anything is queued:
 | `pane_not_ready` | The daemon hasn't scanned or identified the pane yet (`details.reason: unknown`); try again in a few seconds. |
 | `usage` | `--body` is over 32 KB (`details.limit`), or `--when-idle` was given with `--keys` or `--no-enter`. |
 
-When the call types the text itself it can also end in `not_submitted` (exit 2, `details.delivered: true`, `details.submitted: false`: pasted but not confirmed; check the pane before resending) or `not_delivered` (exit 1, `details.reason` says why the prompt was dropped instead; nothing reached the pane). A `connection_failed` or `unreadable_reply` with `details.maybe_delivered: true` means the daemon had the prompt but its answer was lost (no answer within 60s, or an unreadable one): the prompt may have been queued or typed, so check the pane (or `prompt_queued` in the events) before sending it again. In error `details`, `pane` is the pane id, as on success.
+When the call types the text itself it can also end in `not_submitted` (exit 2, `details.delivered: true`, `details.submitted: false`: pasted but not confirmed; check the pane before resending) or `not_delivered` (exit 1, `details.reason` says why the prompt was dropped instead; nothing reached the pane). A `connection_failed` or `unreadable_reply` with `details.maybe_delivered: true` means the daemon had the prompt but its answer was lost (no answer within 90s, or an unreadable one): the prompt may have been queued or typed, so check the pane (or `prompt_queued` in the events) before sending it again. In error `details`, `pane` is the pane id, as on success.
 
 **One race is accepted.** After the last check and before Enter, the daemon reads the screen and waits for it to settle; a turn that starts in that window gets the text mid-turn, which Claude Code takes at its next step, as with `send` without `--when-idle`.
 
-With `--json`, success prints `{"schema_version":1,"ok":true,"workspace":"api","pane":"%19","pane_id":"%19","queued":true,"id":"5f0c...","position":1}` or the same with `"delivered":true,"submitted":true` instead of `queued` and `position`. Exit codes: 0 typed or queued, 1 refused or not delivered, 2 `not_submitted`.
+With `--json`, success prints `{"schema_version":1,"ok":true,"workspace":"api","pane":"%19","pane_id":"%19","queued":true,"id":"5f0c...","position":1}` or the same with `"delivered":true,"submitted":true` instead of `queued` and `position`. Exit codes: 0 typed or queued, 1 refused or not delivered, 2 `not_submitted`, 75 `clear_unconfirmed` (below).
+
+#### `send --clear-first`
+
+`--clear-first` gives the agent a fresh conversation before the text, so the caller never types `/clear` itself. It goes through the agent daemon like `--when-idle`, with the same checks, and works with or without it:
+
+- **With `--when-idle`**, the clear happens at delivery time: now if the agent's turn has ended, else when it ends. The prompt is queued with `clear_first: true` (in `prompt_queued`). A change of conversation while it waits doesn't drop it (it is about to start a new one anyway), and the prompts queued behind it move to the conversation its clear starts.
+- **Without `--when-idle`**, the clear and the text are typed now or not at all: a pane mid-turn, holding a draft, or held by a restart is refused `pane_busy` (`details.reason: not_ready`), and so is one with prompts already queued (`queued_ahead`). Nothing is queued.
+
+At delivery the daemon checks the pane as for `--when-idle`, claims it the way `agent-run restart` does (a restart already running leaves the prompt queued, or refuses `pane_busy` without `--when-idle`), and types `/clear` with the same check-paste-check-Enter it uses for text. It then waits up to 15s for a SessionStart hook from that pane with `source: clear`, recorded after the clear was typed. A new `session_id` alone doesn't count, and a prompt submitted in the pane between the clear and that SessionStart voids it (a person typed into the pane). Once confirmed it waits for the screen to settle, checks the pane again (no prompt submitted since the clear), and types the text. The pane stays claimed until the text is typed, so `agent-run restart` and `agent status request` refuse it meanwhile (`restart_in_progress`). A prompt cancelled while the clear is being confirmed gets nothing typed after the clear.
+
+**When the clear isn't confirmed, nothing more is typed.** A call that typed the clear itself answers `clear_unconfirmed` with `details.clear_typed: true` and exits **75**: nothing went wrong that a retry can't fix, but the conversation may or may not have been cleared, so look at the pane (or `workspace sessions --json`) before sending again. A queued prompt ends as `prompt_dequeued` with outcome `dropped` and reason `clear_unconfirmed`. Once its clear was typed a prompt never goes back to the queue: if the text then can't be typed it is dropped with reason `not_delivered` (answered `not_delivered`, exit 1, `details.clear_typed: true`), so the pane is never cleared twice for one prompt.
+
+Only Claude Code panes whose hooks reach the daemon (`hook_mode: "hooks"` in [`sessions`](README.sessions.md)) can be confirmed. Anything else is refused `clear_unsupported` before anything is typed or queued: `details.reason` is `agent` for Codex, OpenCode and Pi (`details.kind` names it), and `no_hooks` for a Claude Code pane no hook event has reached yet (install them with `workspace init --install-hooks`, or wait for the agent's first hook event).
+
+With `--json`, a call that cleared and typed prints `"delivered":true,"submitted":true,"cleared":true`. `--clear-first` takes `--body`; `--keys` and `--no-enter` with it are usage errors.
 
 **`examples`** prints the full set of stock example messages (with realistic field values for the detected workspace) without sending anything. Use it to see the wire format before firing a real message.
 
@@ -173,6 +189,9 @@ workspace agent-run send --name myapp --pane 0.1 --body "Run the specs and repor
 
 # Hand pane %19 its next prompt once its current turn ends
 workspace agent-run send --name myapp --pane %19 --body "Now update the docs" --when-idle --json
+
+# Give pane %19 a fresh conversation and its next prompt once its current turn ends
+workspace agent-run send --name myapp --pane %19 --body "Start on the docs" --when-idle --clear-first --json
 
 # Print examples for the current workspace without sending
 workspace agent-run examples

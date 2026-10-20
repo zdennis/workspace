@@ -70,7 +70,7 @@ These commands take `--json` and print one action document: `add`, `launch`, `st
 - `details` is machine data, present only when the command has some.
 - `retry` is present only when a flag turns the refusal into a forced run: `{"flags":["--force"],"destructive":true}`.
 
-The exit code is unchanged by `--json` (1 for most failures, 2 for `not_submitted`).
+The exit code is unchanged by `--json` (1 for most failures, 2 for `not_submitted`, 75 for `clear_unconfirmed`).
 
 `--json` is found as its own argument anywhere before a bare `--`, so `workspace parent --json` and `workspace parent --json app` both ask for it, and `workspace run app -- cmd --json` passes `--json` through to the command.
 
@@ -88,7 +88,7 @@ The exit code is unchanged by `--json` (1 for most failures, 2 for `not_submitte
 | `workspace_name_case_conflict` | A new workspace would have a name that differs only in case from an existing workspace with a different directory (`add`, `launch PATH`, `start`). The existing one is renamed to lowercase the next time its agentd starts. `details.name`, `details.existing`, `details.existing_root`. |
 | `not_in_workspace` | No workspace could be detected from the working directory. `details.path`. |
 | `no_daemon` | No agent daemon is running for the workspace. |
-| `connection_failed` | The agent daemon's socket refused or dropped the connection. From `agent-run send --when-idle`, `details.maybe_delivered: true` means the daemon had the prompt but didn't answer within 60s: it may have been queued or typed, so check the pane (or `prompt_queued` in `events`) before sending it again. |
+| `connection_failed` | The agent daemon's socket refused or dropped the connection. From `agent-run send --when-idle` or `--clear-first`, `details.maybe_delivered: true` means the daemon had the prompt but didn't answer within 90s: it may have been queued or typed, so check the pane (or `prompt_queued` in `events`) before sending it again. |
 | `unreadable_reply` | The agent daemon's reply couldn't be read. `details.maybe_delivered: true` as for `connection_failed`. |
 | `unsaved_work` | The worktree has uncommitted changes or unpushed commits. `details` has the counts; `retry` is `--force`. |
 | `unsaved_unknown` | git couldn't tell whether the worktree has unsaved work. `retry` is `--force`. |
@@ -236,7 +236,7 @@ The registry lives in `Workspace::ErrorCodes`; a spec checks that every code a r
 | `no_active_pipeline` | No pipeline work item is in flight. |
 | `stale_token` | The pipeline token no longer matches the in-flight item. |
 | `no_next_stage` | The pipeline has no stage after the current one. |
-| `not_delivered` | The text never reached the pane, or `send --keys` stopped partway (`details.keys_sent`); safe to resend. From `send --when-idle`: the prompt was dropped before it was typed (`details.reason`: `pane_gone`, `session_ended` or `conversation_changed`; `details.id`); nothing reached the pane. (A prompt cut off after its paste started answers `not_submitted` instead.) |
+| `not_delivered` | The text never reached the pane, or `send --keys` stopped partway (`details.keys_sent`); safe to resend. From `send --when-idle` or `--clear-first`: the prompt was dropped before it was typed (`details.reason`: `pane_gone`, `session_ended`, `conversation_changed`, `cancelled`, or `not_delivered` when the text couldn't be typed after a confirmed clear; `details.id`); the text never reached the pane. `details.clear_typed: true` says a `--clear-first` clear was typed first. (A prompt cut off after its paste started answers `not_submitted` instead.) |
 | `missing_prompt` | restart needs a non-empty prompt. |
 | `missing_pane` | restart needs a pane. |
 | `bad_pane` | The pane reference isn't a pane id, window.pane, or index (`send`, `focus --pane` and `ask answer --deliver` accept only a pane id or window.pane; also from `agent-run restart` and `handoff`). |
@@ -244,16 +244,18 @@ The registry lives in `Workspace::ErrorCodes`; a spec checks that every code a r
 | `wrong_session` | The pane belongs to another tmux session. `details.pane`, and `details.session`, the workspace's own session (also from `send`, `focus --pane`, `ask answer --deliver`, and from `agent-run restart` and `handoff` before the daemon is asked). |
 | `no_such_pane` | No pane matches the reference. `details.pane` (also from `send`, `focus --pane`, `ask answer --deliver`, and from `agent-run restart` and `handoff` before the daemon is asked). |
 | `pane_gone` | The pane closed before or during the restart. |
-| `pane_busy` | The pane didn't go quiet in time, or `plan start` or `spine start` found it waiting on a person (or, with `--task` or `spine start`, working on something else); nothing was typed. `plan start` and `spine start` give `details.workspace`, `details.pane` and, with `--task` and always for `spine start`, `details.state`. |
+| `pane_busy` | The pane didn't go quiet in time, or `plan start` or `spine start` found it waiting on a person (or, with `--task` or `spine start`, working on something else); nothing was typed. `plan start` and `spine start` give `details.workspace`, `details.pane` and, with `--task` and always for `spine start`, `details.state`. From `agent-run send --clear-first` without `--when-idle`: the agent is mid-turn, holds a draft or is held by a restart (`details.reason: not_ready`), or prompts are queued ahead of this one (`queued_ahead`); nothing was typed or queued. Retry, or add `--when-idle` to queue it. |
 | `pane_in_pipeline` | A pipeline stage is running on the pane; pass force to restart it. |
-| `not_an_agent` | The pane is running a shell, not a coding agent (`agent-run restart`, `agent-run send --when-idle`). |
+| `not_an_agent` | The pane is running a shell, not a coding agent (`agent-run restart`, `agent-run send --when-idle` or `--clear-first`). |
 | `unsupported_agent` | The pane's agent can't be restarted. From `agent-run send --when-idle`: the pane runs an agent whose screen can't be checked for an open dialog or a draft (Codex, OpenCode, Pi; only Claude Code is supported), so nothing was queued. `details.kind`. |
-| `pane_waiting` | `agent-run send --when-idle`: the pane's agent waits on a person (a permission prompt or question, or `AskUserQuestion`/`ExitPlanMode` is running), so nothing was queued; answer it first. `details.reason`: `waiting` or `question_open`. |
-| `queue_full` | `agent-run send --when-idle`: the pane already has 8 prompts queued, so nothing was queued. `details.limit`. |
+| `pane_waiting` | `agent-run send --when-idle` or `--clear-first`: the pane's agent waits on a person (a permission prompt or question, or `AskUserQuestion`/`ExitPlanMode` is running), so nothing was queued; answer it first. `details.reason`: `waiting` or `question_open`. |
+| `queue_full` | `agent-run send --when-idle` or `--clear-first`: the pane already has 8 prompts queued, so nothing was queued. `details.limit`. |
 | `context_unavailable` | The agent can't report context usage, so /clear can't be confirmed. |
 | `context_unknown` | The agent's context usage couldn't be read. |
-| `clear_not_confirmed` | /clear was typed but a new conversation didn't appear. |
-| `restart_in_progress` | A restart is already running on the pane. |
+| `clear_not_confirmed` | `agent-run restart` or `handoff new`: /clear was typed but no status-line reading from a new conversation appeared; exit 1. Not `clear_unconfirmed`, which comes from `agent-run send --clear-first`. |
+| `clear_unconfirmed` | `agent-run send --clear-first`: the clear was typed (`details.clear_typed: true`, `details.id`) but no SessionStart with source `clear` came from the pane within 15s, or a prompt was submitted in the pane in between, so the text was not typed. **Exit 75**: nothing failed that a retry can't fix; check the pane (the conversation may or may not be cleared) before sending again. A queued prompt that ends this way is a `prompt_dequeued` event with reason `clear_unconfirmed` instead. Not `clear_not_confirmed`, which comes from `agent-run restart`. |
+| `clear_unsupported` | `agent-run send --clear-first`: the pane's clear can't be confirmed, so nothing was typed or queued. `details.kind`; `details.reason`: `agent` (Codex, OpenCode, Pi: only Claude Code is supported) or `no_hooks` (no hook event has reached the agent daemon from the pane; install them with `workspace init --install-hooks`). |
+| `restart_in_progress` | A restart is already running on the pane. From `agent status request` also while an `agent-run send --clear-first` delivery holds the pane (from its clear until its text is typed); nothing was typed. |
 | `agent_stopped` | The agent stopped during the restart. |
 | `not_bound` | The pane isn't bound to a run, review or play (`binding show`, `binding clear`), or not to a workflow run (`step done`, `step status`). |
 | `pane_not_ready` | `agent status request`: the pane can't take typed text safely now; nothing was typed. `details.reason`: `unknown` (not scanned or not identified yet), `unsupported_agent` (an agent whose input prompt can't be recognized, so a dialog can't be ruled out), `waiting` (a permission prompt or question is open), `question_open` (`AskUserQuestion` or `ExitPlanMode` is running), `no_input_prompt` (the agent's input prompt isn't on screen), `input_not_empty` (the input line holds a draft), `input_changed` (from the check after pasting, which then answers `not_submitted`). `details.pane`, `details.pane_id`. See [`agent`](README.agent.md). Also from `agent-run send --when-idle` with `reason: unknown` (the agent daemon hasn't scanned or identified the pane yet); nothing was queued. |

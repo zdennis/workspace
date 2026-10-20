@@ -1604,6 +1604,65 @@ RSpec.describe Workspace::CLI do
         expect(JSON.parse(output.string)).to include("code" => "wrong_session")
         expect(client).not_to have_received(:exchange_message)
       end
+
+      describe "with --clear-first" do
+        it "asks the daemon to clear first and queue when the turn hasn't ended" do
+          cli, = idle_cli
+
+          cli.run(["agent-run", "send", "--name", "api", "--pane", "%19", "--body", "go", "--when-idle", "--clear-first", "--json"])
+
+          expect(client).to have_received(:exchange_message).with("api",
+            {"type" => "prompt_send", "pane_id" => "%19", "text" => "go", "clear_first" => true, "when_idle" => true},
+            timeout: Workspace::Commands::Send::WHEN_IDLE_TIMEOUT)
+        end
+
+        it "goes through the daemon without --when-idle too, asking it not to queue" do
+          replies << {"ok" => true, "delivered" => true, "submitted" => true, "cleared" => true, "id" => "q1", "pane_id" => "%19"}
+          cli, output = idle_cli
+
+          cli.run(["agent-run", "send", "--name", "api", "--pane", "%19", "--body", "go", "--clear-first"])
+
+          expect(client).to have_received(:exchange_message).with("api",
+            {"type" => "prompt_send", "pane_id" => "%19", "text" => "go", "clear_first" => true, "when_idle" => false},
+            timeout: Workspace::Commands::Send::WHEN_IDLE_TIMEOUT)
+          expect(output.string).to eq("Pane %19 was idle; cleared the conversation, typed the text and pressed Enter.\n")
+          expect(tmux.deliveries).to be_empty
+        end
+
+        it "exits 75 with clear_typed when the clear wasn't confirmed" do
+          replies << {"ok" => false, "error" => "clear_unconfirmed", "message" => "the clear was typed but no SessionStart came",
+                      "id" => "q1", "clear_typed" => true, "pane" => "1.2", "pane_id" => "%19"}
+          cli, output = idle_cli
+
+          expect(status_of { cli.run(["agent-run", "send", "--name", "api", "--pane", "%19", "--body", "go", "--clear-first", "--json"]) }).to eq(75)
+
+          expect(JSON.parse(output.string)).to include("ok" => false, "code" => "clear_unconfirmed",
+            "details" => {"id" => "q1", "clear_typed" => true, "pane" => "%19", "pane_id" => "%19"})
+        end
+
+        it "exits 1 on clear_unsupported, before anything is typed" do
+          replies << {"ok" => false, "error" => "clear_unsupported", "message" => "Codex's clear can't be confirmed", "kind" => "codex", "reason" => "agent"}
+          cli, output = idle_cli
+
+          expect(status_of { cli.run(["agent-run", "send", "--name", "api", "--pane", "%19", "--body", "go", "--clear-first", "--json"]) }).to eq(1)
+
+          expect(JSON.parse(output.string)).to include("code" => "clear_unsupported", "details" => {"kind" => "codex", "reason" => "agent"})
+        end
+
+        [
+          [["--keys", "y"], "--clear-first takes --body, not --keys."],
+          [["--body", "x", "--no-enter"], "--clear-first always presses Enter; drop --no-enter."]
+        ].each do |extra, message|
+          it "refuses #{extra.join(" ")} as usage" do
+            cli, output = idle_cli
+
+            expect(status_of { cli.run(["agent-run", "send", "--name", "api", "--pane", "%19", "--clear-first", *extra, "--json"]) }).to eq(1)
+
+            expect(JSON.parse(output.string)).to include("code" => "usage", "error" => message)
+            expect(client).not_to have_received(:exchange_message)
+          end
+        end
+      end
     end
 
     it "reports an unwired build plainly" do

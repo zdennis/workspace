@@ -158,7 +158,7 @@ RSpec.describe Workspace::Commands::Send do
     expect(command.server_pid("%99")).to be_nil
   end
 
-  describe "#when_idle" do
+  describe "#through_daemon" do
     let(:client) { double("client") }
     let(:command) { described_class.new(locator: Workspace::PaneLocator.new(tmux: tmux), tmux: tmux, client: client, output: output) }
 
@@ -176,14 +176,40 @@ RSpec.describe Workspace::Commands::Send do
     it "prints a queued answer as a sentence" do
       reply_with("ok" => true, "queued" => true, "id" => "q1", "position" => 1, "pane_id" => "%3")
 
-      result = command.when_idle(name: "api", pane: "%3", body: "go")
+      result = command.through_daemon(name: "api", pane: "%3", body: "go")
 
       expect(result).to include("queued" => true, "pane" => "%3")
-      expect(output.string).to eq("Queued for pane %3 at position 1 (q1); the agent daemon types it when the agent's turn ends.\n")
+      expect(output.string).to eq("Queued for pane %3 at position 1 (q1); the agent daemon types it when the agent's turn ends (prompt_dequeued in workspace events says how it went).\n")
+    end
+
+    it "says a queued --clear-first prompt clears the conversation first" do
+      reply_with("ok" => true, "queued" => true, "id" => "q1", "position" => 2, "pane_id" => "%3")
+
+      command.through_daemon(name: "api", pane: "%3", body: "go", clear_first: true)
+
+      expect(output.string).to eq("Queued for pane %3 at position 2 (q1); the agent daemon clears the conversation and " \
+        "types it when the agent's turn ends (prompt_dequeued in workspace events says how it went).\n")
+    end
+
+    it "raises clear_unconfirmed as the exit-75 error, with its details" do
+      reply_with("ok" => false, "error" => "clear_unconfirmed", "message" => "not confirmed", "id" => "q1", "clear_typed" => true)
+
+      error = error_from { command.through_daemon(name: "api", pane: "%3", body: "go", when_idle: false, clear_first: true) }
+
+      expect(error).to be_a(described_class::ClearUnconfirmedError)
+      expect(described_class::ClearUnconfirmedError::EXIT_CODE).to eq(75)
+      expect(error.code).to eq("clear_unconfirmed")
+      expect(error.details).to eq("id" => "q1", "clear_typed" => true)
+    end
+
+    it "names --clear-first in the size refusal when it is used without --when-idle" do
+      error = error_from { command.through_daemon(name: "api", pane: "%3", body: "x" * (Workspace::PromptQueueStore::MAX_BYTES + 1), when_idle: false, clear_first: true) }
+
+      expect(error.message).to include("--clear-first takes at most")
     end
 
     it "refuses a body over the limit as usage, before asking the daemon" do
-      error = error_from { command.when_idle(name: "api", pane: "%3", body: "x" * (Workspace::PromptQueueStore::MAX_BYTES + 1)) }
+      error = error_from { command.through_daemon(name: "api", pane: "%3", body: "x" * (Workspace::PromptQueueStore::MAX_BYTES + 1)) }
 
       expect(error).to be_a(Workspace::UsageError)
       expect(error.details).to eq("limit" => Workspace::PromptQueueStore::MAX_BYTES)
@@ -192,7 +218,7 @@ RSpec.describe Workspace::Commands::Send do
     it "gives the pane id as details.pane, as on success, and a usage refusal as a UsageError" do
       reply_with("ok" => false, "error" => "usage", "message" => "too long", "pane" => "0.0", "pane_id" => "%3")
 
-      error = error_from { command.when_idle(name: "api", pane: "%3", body: "go") }
+      error = error_from { command.through_daemon(name: "api", pane: "%3", body: "go") }
 
       expect(error).to be_a(Workspace::UsageError)
       expect(error.details).to eq("pane" => "%3", "pane_id" => "%3")
@@ -201,7 +227,7 @@ RSpec.describe Workspace::Commands::Send do
     it "names a daemon too old for prompt_send" do
       reply_with("ok" => false, "error" => "unknown_type")
 
-      error = error_from { command.when_idle(name: "api", pane: "%3", body: "go") }
+      error = error_from { command.through_daemon(name: "api", pane: "%3", body: "go") }
 
       expect(error.code).to eq("error")
       expect(error.message).to include("workspace agentd restart api")
@@ -210,13 +236,13 @@ RSpec.describe Workspace::Commands::Send do
     it "turns a code the registry doesn't know into error" do
       reply_with("ok" => false, "error" => "mystery_code", "message" => "boom")
 
-      expect(error_from { command.when_idle(name: "api", pane: "%3", body: "go") }.code).to eq("error")
+      expect(error_from { command.through_daemon(name: "api", pane: "%3", body: "go") }.code).to eq("error")
     end
 
     it "says a timed-out call may have queued or typed the text" do
       allow(client).to receive(:exchange_message).and_raise(Workspace::AgentSnapshotClient::Unavailable.new("timed out", reason: :timeout))
 
-      error = error_from { command.when_idle(name: "api", pane: "%3", body: "go") }
+      error = error_from { command.through_daemon(name: "api", pane: "%3", body: "go") }
 
       expect(error.code).to eq("connection_failed")
       expect(error.details).to eq("maybe_delivered" => true)
@@ -226,7 +252,7 @@ RSpec.describe Workspace::Commands::Send do
     it "answers unreadable_reply for a reply that isn't a JSON object" do
       reply_with(nil)
 
-      error = error_from { command.when_idle(name: "api", pane: "%3", body: "go") }
+      error = error_from { command.through_daemon(name: "api", pane: "%3", body: "go") }
 
       expect(error.code).to eq("unreadable_reply")
       expect(error.details).to eq("maybe_delivered" => true)
@@ -235,7 +261,7 @@ RSpec.describe Workspace::Commands::Send do
     it "refuses with no client wired" do
       bare = described_class.new(locator: Workspace::PaneLocator.new(tmux: tmux), tmux: tmux, output: output)
 
-      expect(error_from { bare.when_idle(name: "api", pane: "%3", body: "go") }.message).to include("not available")
+      expect(error_from { bare.through_daemon(name: "api", pane: "%3", body: "go") }.message).to include("not available")
     end
   end
 
