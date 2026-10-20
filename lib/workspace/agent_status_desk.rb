@@ -46,18 +46,21 @@ module Workspace
     # @param session_monitor [Workspace::SessionMonitor, nil] pane facts
     # @param hook_event_log [Workspace::HookEventLog, nil] where posts are written
     # @param delivery_lock [Mutex] held while typing, shared with the daemon's other deliveries
+    # @param restarting [#call] given a pane id, whether a restart (or a --clear-first prompt
+    #   delivery) holds the pane; such a pane is refused, not waited for
     # @param requests [Workspace::AgentStatusRequests] the open requests
     # @param typer [Workspace::PromptTyper, nil] checks the pane and types the line; nil builds
     #   one from +tmux+ and +session_monitor+
     # @param logger [Workspace::Logger] debug logger
     def initialize(tmux:, session_name:, workspace:, session_monitor:, hook_event_log:, delivery_lock:,
-      requests: AgentStatusRequests.new, typer: nil, logger: Workspace::Logger.new)
+      restarting: ->(_pane_id) { false }, requests: AgentStatusRequests.new, typer: nil, logger: Workspace::Logger.new)
       @tmux = tmux
       @session_name = session_name
       @workspace = workspace
       @session_monitor = session_monitor
       @hook_event_log = hook_event_log
       @delivery_lock = delivery_lock
+      @restarting = restarting
       @requests = requests
       @typer = typer || PromptTyper.new(tmux: tmux, session_monitor: session_monitor, logger: logger)
       @logger = logger
@@ -131,6 +134,7 @@ module Workspace
     end
 
     def refusal(pane_id)
+      return restart_refusal(pane_id) if @restarting.call(pane_id)
       result = @typer.check(pane_id)
       result && error(result[:code], "nothing was typed: #{result[:message]}", "reason" => result[:reason])
     end
@@ -146,6 +150,8 @@ module Workspace
           next error("no_such_pane", "pane #{request.pane_id} closed or was replaced; nothing was typed")
         end
 
+        next restart_refusal(request.pane_id) if @restarting.call(request.pane_id)
+
         target = "#{detail[:window]}.#{detail[:index]}"
         opened = {"request_id" => request.id, "expires_at" => request.expires_at.utc.iso8601}
         typed = @typer.type(session_name: @session_name, target: target, pane_id: request.pane_id,
@@ -159,6 +165,10 @@ module Workspace
         else error("not_delivered", "the request was not typed into pane #{target}: #{typed.message}")
         end
       end
+    end
+
+    def restart_refusal(pane_id)
+      error("restart_in_progress", "a restart or a --clear-first prompt holds pane #{pane_id}; nothing was typed, try again shortly")
     end
 
     def unsubmitted(target, why, opened, delivery)

@@ -303,8 +303,12 @@ module Workspace
     #
     # @param pane_id [String] tmux pane id
     # @return [Hash, nil] `:kind`, `:pane_pid`, `:agent_pid`, `:session_id`,
-    #   `:state` (as `sessions` reports it), `:fresh_since` ({#fresh_since})
-    #   and `:last_user_prompt_at`; nil when the pane hasn't been scanned yet
+    #   `:state` (as `sessions` reports it), `:fresh_since` ({#fresh_since}),
+    #   `:last_user_prompt_at`, `:hooks` (whether the pane's current agent
+    #   has sent this monitor a hook event: `hook_mode` "hooks" in `sessions`)
+    #   and `:last_session_start` (`:at`, `:source` and `:session_id` of the
+    #   last SessionStart this monitor heard from the pane, or nil); nil when
+    #   the pane hasn't been scanned yet
     def delivery_facts(pane_id)
       now = @clock.now
       @lock.synchronize do
@@ -312,7 +316,8 @@ module Workspace
         next unless pane && pane[:pid]
         {kind: pane[:kind], pane_pid: pane[:pid], agent_pid: pane[:agent_pid], session_id: pane[:session_id],
          state: reported_state(pane, now - (pane[:last_activity_at] || now)), fresh_since: fresh_since_of(pane, now),
-         last_user_prompt_at: pane[:last_user_prompt_at]}
+         last_user_prompt_at: pane[:last_user_prompt_at], hooks: pane[:hook_kind] == pane[:kind],
+         last_session_start: pane[:last_session_start]&.dup}
       end
     end
 
@@ -716,6 +721,9 @@ module Workspace
       when "user_prompt", "session_start", "session_end", "tool_use" then pane.delete(:done)
       end
       pane[:last_user_prompt_at] = @clock.now if event["event"] == "user_prompt"
+      if event["event"] == "session_start"
+        pane[:last_session_start] = {at: @clock.now, source: event["source"], session_id: event["session_id"]}
+      end
 
       case event["event"]
       when "subagent_start"

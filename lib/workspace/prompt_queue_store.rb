@@ -177,6 +177,40 @@ module Workspace
       end
     end
 
+    # Says whether a claim may go on to type its clear command: the claim
+    # is still current and no cancel was asked for. A cancelled entry is
+    # removed. Unlike {#start_paste} it marks nothing, so the entry can
+    # still be cancelled while the clear is confirmed.
+    #
+    # @param claim [Hash] the entry {#claim} returned
+    # @return [Symbol] `:ok`, `:cancelled` or `:missing`
+    def proceed(claim)
+      with_lock do |data|
+        entry = claimed(data, claim)
+        next :missing unless entry && !entry["paste_started_at"]
+        next :ok unless entry["cancel_requested"]
+        data["entries"].delete(entry)
+        :cancelled
+      end
+    end
+
+    # Moves a pane's entries from one conversation to the next, after a
+    # clear the queue typed itself: the entries queued behind a
+    # `clear_first` entry were meant for the conversation it starts.
+    #
+    # @param pane_id [String]
+    # @param from [String, nil] the conversation that was cleared; nil changes nothing
+    # @param to [String] the new conversation's session id
+    # @return [Integer] how many entries took it
+    def rebind_session(pane_id, from:, to:)
+      return 0 unless from && to
+      with_lock do |data|
+        moved = data["entries"].select { |e| e["pane_id"] == pane_id && e["session_id"] == from }
+        moved.each { |e| e["session_id"] = to }
+        moved.size
+      end
+    end
+
     # Marks the paste as starting, unless a cancel was asked for meanwhile:
     # then the entry is removed and nothing should be typed. Only the claim
     # that is current may start it, once: a claim that was reaped and taken

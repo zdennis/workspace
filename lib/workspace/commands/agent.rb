@@ -61,11 +61,12 @@ module Workspace
       # @param hook_event_log_factory [#call, nil] given the workspace name, builds the
       #   {Workspace::HookEventLog} each forwarded hook event is written to; nil writes none
       # @param agent_status_desk_factory [#call, nil] given the workspace, its tmux session, the session
-      #   monitor, the hook event log and the delivery lock, builds the {Workspace::AgentStatusDesk}
-      #   that answers `status_request` and `status_post`; nil builds the default one
+      #   monitor, the hook event log, the delivery lock and a pane-restarting check, builds the
+      #   {Workspace::AgentStatusDesk} that answers `status_request` and `status_post`; nil builds the default one
       # @param prompt_queue_desk_factory [#call, nil] given the workspace, its tmux session, the session
-      #   monitor, the delivery lock and a pane-restarting check, builds the {Workspace::PromptQueueDesk}
-      #   that answers `prompt_send` and delivers queued prompts; nil builds the default one
+      #   monitor, the delivery lock, a pane-restarting check and the calls that claim and release a
+      #   pane for a restart, builds the {Workspace::PromptQueueDesk} that answers `prompt_send` and
+      #   delivers queued prompts; nil builds the default one
       # @param name_migration [Workspace::NameMigration, nil] renames a mixed-case workspace
       #   to lowercase before the socket is claimed; nil renames nothing
       # @param plan_progress_watcher_factory [#call, nil] given the workspace name, builds the
@@ -222,11 +223,16 @@ module Workspace
         @spine_watcher = @spine_watcher_factory&.call(name)
         @spine_watcher.owner_report = @spine_owner_report if @spine_watcher.respond_to?(:owner_report=)
         @spine_watcher&.start
+        restarting = ->(pane_id) { @state_lock.synchronize { @restarts.key?(pane_id) } }
         @agent_status_desk = @agent_status_desk_factory.call(workspace: name, session_name: @tmux_session,
-          session_monitor: @session_monitor, hook_event_log: @hook_event_log, delivery_lock: @delivery_lock)
+          session_monitor: @session_monitor, hook_event_log: @hook_event_log, delivery_lock: @delivery_lock,
+          restarting: restarting)
+        # A --clear-first delivery holds the pane in @restarts from its clear
+        # until its text is typed, so restart_agent and status requests keep out.
         @prompt_queue_desk = @prompt_queue_desk_factory.call(workspace: name, session_name: @tmux_session,
-          session_monitor: @session_monitor, delivery_lock: @delivery_lock,
-          restarting: ->(pane_id) { @state_lock.synchronize { @restarts.key?(pane_id) } })
+          session_monitor: @session_monitor, delivery_lock: @delivery_lock, restarting: restarting,
+          claim_restart: ->(pane_id) { claim_restart_for_queue(pane_id) },
+          release_restart: ->(pane_id, token) { release_restart_for_queue(pane_id, token) })
         # The scan is the queue's regular trigger, besides the send and the Stop hook.
         @session_monitor.on_scan = -> { @prompt_queue_desk.scan } if @prompt_queue_desk && @session_monitor.respond_to?(:on_scan=)
 
@@ -1200,15 +1206,33 @@ module Workspace
         end
       end
 
-      def build_agent_status_desk(workspace:, session_name:, session_monitor:, hook_event_log:, delivery_lock:)
+      def build_agent_status_desk(workspace:, session_name:, session_monitor:, hook_event_log:, delivery_lock:, restarting:)
         AgentStatusDesk.new(tmux: @tmux, workspace: workspace, session_name: session_name, session_monitor: session_monitor,
-          hook_event_log: hook_event_log, delivery_lock: delivery_lock, logger: @logger)
+          hook_event_log: hook_event_log, delivery_lock: delivery_lock, restarting: restarting, logger: @logger)
       end
 
-      def build_prompt_queue_desk(workspace:, session_name:, session_monitor:, delivery_lock:, restarting:)
+      def build_prompt_queue_desk(workspace:, session_name:, session_monitor:, delivery_lock:, restarting:,
+        claim_restart:, release_restart:)
         PromptQueueDesk.new(tmux: @tmux, workspace: workspace, session_name: session_name, session_monitor: session_monitor,
           store: PromptQueueStore.new(path: @config.prompt_queue_path(workspace)), delivery_lock: delivery_lock,
-          restarting: restarting, event_log: @event_log, logger: @logger)
+          restarting: restarting, claim_restart: claim_restart, release_restart: release_restart,
+          event_log: @event_log, logger: @logger)
+      end
+
+      # Claims a pane in @restarts for a queued prompt's clear, refusing
+      # (never waiting) when a restart already holds it.
+      #
+      # @return [Object, nil] the claim's token, for releasing it; nil when the pane is held
+      def claim_restart_for_queue(pane_id)
+        @state_lock.synchronize do
+          next nil if @restarts.key?(pane_id)
+          @restarts[pane_id] = Object.new
+        end
+      end
+
+      # Releases a claim {#claim_restart_for_queue} made, and only that one.
+      def release_restart_for_queue(pane_id, token)
+        @state_lock.synchronize { @restarts.delete(pane_id) if @restarts[pane_id].equal?(token) }
       end
 
       # Watches for the agent's socket file going missing — macOS sweeps old

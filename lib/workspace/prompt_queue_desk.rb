@@ -1,7 +1,8 @@
 module Workspace
-  # The agent daemon's side of `agent-run send --when-idle`: it queues a
-  # prompt for a coding-agent pane in the workspace's {PromptQueueStore} and
-  # types it once the pane's turn has ended, one entry per turn end.
+  # The agent daemon's side of `agent-run send --when-idle` and
+  # `--clear-first`: it queues a prompt for a coding-agent pane in the
+  # workspace's {PromptQueueStore} and types it once the pane's turn has
+  # ended, one entry per turn end.
   #
   # {#deliver_next} is the only code that types queued text. Three things
   # start it: the send itself (an idle pane gets its text during the call),
@@ -22,6 +23,18 @@ module Workspace
   # 6. finishes the entry: removed once the text landed, back to `queued`
   #    when it never reached the pane or a check failed.
   #
+  # A `clear_first` entry starts a fresh conversation before its text.
+  # After step 3 it claims the pane as a restart would (refused, never
+  # waited for, when a restart holds it: the entry stays queued), types the
+  # agent's clear command through {PromptTyper}, lets go of the delivery
+  # lock, and waits up to {CLEAR_TIMEOUT} for a SessionStart from the pane
+  # with source `clear`, recorded after the clear was typed, with no prompt
+  # submitted since. Confirmed, it waits for quiet and runs steps 3 to 6
+  # for the new conversation; not confirmed, it types nothing more and
+  # drops the entry `clear_unconfirmed`. The claim is held until the entry
+  # finishes. Once its clear was typed an entry never goes back to the
+  # queue, so the pane is never cleared twice for it.
+  #
   # An entry whose send answered `queued` is announced: `prompt_queued` is
   # recorded then, and `prompt_dequeued` when it leaves the queue. An entry
   # delivered during its own send reports on the call and records nothing.
@@ -30,8 +43,14 @@ module Workspace
     QUIET_FOR = AgentRestart::QUIET_FOR
     # Longest wait for that quiet; past it the entry stays queued.
     QUIET_TIMEOUT = 10
-    # Seconds between screen reads while waiting for quiet.
+    # Seconds between screen reads while waiting for quiet, and between
+    # looks for the SessionStart that confirms a clear.
     POLL_INTERVAL = 0.25
+    # Longest wait for the SessionStart that confirms a clear.
+    CLEAR_TIMEOUT = 15
+    # The agents whose clear can be confirmed: their hooks report a
+    # SessionStart with source `clear`. Codex waits on a check against a live pane.
+    CLEARABLE_KINDS = %w[claude].freeze
 
     # @param tmux [Workspace::Tmux] pane lookups, screen reads, server pids
     # @param session_name [String] the workspace's tmux session
@@ -40,16 +59,20 @@ module Workspace
     # @param store [Workspace::PromptQueueStore] the workspace's queue
     # @param delivery_lock [Mutex] held while typing, shared with the daemon's other deliveries
     # @param restarting [#call] given a pane id, whether a restart holds the pane
+    # @param claim_restart [#call] given a pane id, claims it as a restart would, for a
+    #   clear; returns a token, or nil when a restart already holds the pane
+    # @param release_restart [#call] given a pane id and a token, releases that claim
     # @param event_log [Workspace::EventLog, nil] where `prompt_queued` and `prompt_dequeued` go
     # @param typer [Workspace::PromptTyper, nil] nil builds one from +tmux+ and +session_monitor+
     # @param providers [Array<Workspace::AgentProvider>] the known agents
-    # @param clock [#now] time source
+    # @param clock [#now] time source; the session monitor's, so their times compare
     # @param sleeper [#call] sleeps the given seconds
     # @param spawn [#call] runs the given block on its own thread
     # @param daemon_pid [Integer] written into each claim
     # @param logger [Workspace::Logger] debug logger
     def initialize(tmux:, session_name:, workspace:, session_monitor:, store:, delivery_lock:,
-      restarting: ->(_pane_id) { false }, event_log: nil, typer: nil, providers: AgentProvider.all,
+      restarting: ->(_pane_id) { false }, claim_restart: ->(_pane_id) { Object.new },
+      release_restart: ->(_pane_id, _token) {}, event_log: nil, typer: nil, providers: AgentProvider.all,
       clock: Time, sleeper: ->(seconds) { sleep(seconds) }, spawn: ->(&block) { Thread.new(&block) },
       daemon_pid: Process.pid, logger: Workspace::Logger.new)
       @tmux = tmux
@@ -59,6 +82,8 @@ module Workspace
       @store = store
       @delivery_lock = delivery_lock
       @restarting = restarting
+      @claim_restart = claim_restart
+      @release_restart = release_restart
       @event_log = event_log
       @typer = typer || PromptTyper.new(tmux: tmux, session_monitor: session_monitor, logger: logger)
       @providers = providers
@@ -74,12 +99,18 @@ module Workspace
     # Handles a "prompt_send" message. Runs on a worker thread: when the
     # pane is ready the text is typed before the reply.
     #
-    # @param message [Hash] carries "pane_id" and "text"
-    # @return [Hash] `{"ok": true, "delivered": true, "submitted": true, ...}`,
-    #   `{"ok": true, "queued": true, "id", "position", ...}`, or an error reply
+    # @param message [Hash] carries "pane_id" and "text"; "clear_first" true
+    #   clears the conversation first; "when_idle" false (default true) types
+    #   now or not at all: an entry that would wait in the queue comes out
+    #   again and the send is refused `pane_busy`
+    # @return [Hash] `{"ok": true, "delivered": true, "submitted": true, ...}`
+    #   (plus "cleared": true after a clear), `{"ok": true, "queued": true,
+    #   "id", "position", ...}`, or an error reply
     def send_prompt(message)
       pane_id = message["pane_id"]
       text = message["text"]
+      clear_first = message["clear_first"] == true
+      when_idle = message["when_idle"] != false
       unless text.is_a?(String) && !text.empty? && text.bytesize <= PromptQueueStore::MAX_BYTES
         return error("usage", "the text must be non-empty and at most #{PromptQueueStore::MAX_BYTES} bytes")
       end
@@ -88,7 +119,7 @@ module Workspace
       return error("no_such_pane", "no pane #{pane_id.inspect} in tmux session #{@session_name}") unless detail
       context = {"pane" => "#{detail[:window]}.#{detail[:index]}", "pane_id" => pane_id}
       facts = @session_monitor.delivery_facts(pane_id)
-      refused = refusal(pane_id, facts)
+      refused = refusal(pane_id, facts, clear_first)
       return refused.merge(context) if refused
 
       # Without these a later restart of tmux or of the agent couldn't be told apart.
@@ -100,14 +131,15 @@ module Workspace
       identity = {"server_pid" => server_pid, "pane_pid" => detail[:pid],
                   "agent_pid" => facts[:agent_pid], "session_id" => facts[:session_id]}
       with_pane(pane_id) do
-        outcome, entry = @store.add(pane_id: pane_id, text: text, identity: identity)
+        outcome, entry = @store.add(pane_id: pane_id, text: text, identity: identity, clear_first: clear_first)
         if outcome == :queue_full
           next error("queue_full", "pane #{context["pane"]} already has #{PromptQueueStore::MAX_PER_PANE} prompts queued; nothing was queued",
             "limit" => PromptQueueStore::MAX_PER_PANE).merge(context)
         end
 
         result = (entry["position"] == 1) ? deliver_locked(pane_id) : nil
-        send_reply(entry, result).merge(context)
+        busy = when_idle ? nil : withdrawn(entry, result)
+        (busy || send_reply(entry, result)).merge(context)
       end
     end
 
@@ -161,7 +193,8 @@ module Workspace
     # @param wait [Boolean] wait for a delivery already running for the pane;
     #   false returns nil at once instead
     # @return [Hash, nil] what happened to the entry claimed (`:id`,
-    #   `:outcome` and `:submitted` or `:reason`), or nil when none was claimed
+    #   `:outcome`, `:cleared`, and `:submitted` or `:reason`), or nil when
+    #   none was claimed
     def deliver_next(pane_id, wait: true)
       lock = pane_lock(pane_id)
       return nil unless wait || lock.try_lock
@@ -178,21 +211,24 @@ module Workspace
 
     private
 
+    # A send that may not wait: its entry, still queued, comes out again.
+    # The send holds the pane's lock, so no other delivery can have claimed
+    # the entry meanwhile.
+    #
+    # @return [Hash, nil] the `pane_busy` refusal, or nil when the delivery
+    #   ended the entry one way or another
+    def withdrawn(entry, result)
+      return nil if result && result[:id] == entry["id"] && result[:outcome] != :requeued
+      return nil unless @store.cancel(entry["id"]).first == :cancelled
+      ahead = entry["position"] - 1
+      why = ahead.positive? ? "has #{ahead} prompt(s) queued ahead" : "is mid-turn, holds a draft, or is held by a restart"
+      error("pane_busy", "the pane #{why}; nothing was typed. Pass --when-idle to queue it until the turn ends",
+        "reason" => ahead.positive? ? "queued_ahead" : "not_ready")
+    end
+
     def send_reply(entry, result)
-      if result && result[:id] == entry["id"]
-        case result[:outcome]
-        when :delivered
-          return {"ok" => true, "delivered" => true, "submitted" => true, "id" => entry["id"]}
-        when :dropped
-          if result[:reason] == "not_submitted" || result[:reason] == "interrupted"
-            return error("not_submitted", "the prompt was pasted but not confirmed submitted: #{result[:message]}; " \
-              "check the pane before sending it again", "id" => entry["id"], "delivered" => true, "submitted" => false)
-          end
-          return error("not_delivered", "the prompt was not typed: #{result[:reason]}", "id" => entry["id"], "reason" => result[:reason])
-        when :cancelled
-          return error("not_delivered", "the prompt was cancelled before it was typed", "id" => entry["id"], "reason" => "cancelled")
-        end
-      end
+      reply = result && result[:id] == entry["id"] && finished_reply(entry, result)
+      return reply if reply
 
       announced = @store.announce(entry["id"])
       return error("not_delivered", "the prompt left the queue before it could be reported", "id" => entry["id"]) unless announced
@@ -201,11 +237,48 @@ module Workspace
       {"ok" => true, "queued" => true, "id" => entry["id"], "position" => announced["position"]}
     end
 
-    def refusal(pane_id, facts)
+    # The reply for an entry its own send's delivery ended; nil when the
+    # delivery put it back in the queue.
+    def finished_reply(entry, result)
+      if result[:outcome] == :delivered
+        reply = {"ok" => true, "delivered" => true, "submitted" => true, "id" => entry["id"]}
+        return result[:cleared] ? reply.merge("cleared" => true) : reply
+      end
+
+      id = {"id" => entry["id"]}
+      id["clear_typed"] = true if result[:cleared]
+      case result[:outcome]
+      when :dropped
+        case result[:reason]
+        when "clear_unconfirmed"
+          error("clear_unconfirmed", "the clear was typed but #{result[:message]}, so the prompt was not typed; " \
+            "check the pane before sending again", id)
+        when "not_submitted", "interrupted"
+          error("not_submitted", "the prompt was pasted but not confirmed submitted: #{result[:message]}; " \
+            "check the pane before sending it again", id.merge("delivered" => true, "submitted" => false))
+        else
+          why = result[:message] ? "#{result[:reason]}: #{result[:message]}" : result[:reason]
+          error("not_delivered", "the prompt was not typed (#{why})", id.merge("reason" => result[:reason]))
+        end
+      when :cancelled
+        error("not_delivered", "the prompt was cancelled before it was typed", id.merge("reason" => "cancelled"))
+      end
+    end
+
+    def refusal(pane_id, facts, clear_first)
       return error("pane_not_ready", "the agent daemon hasn't scanned this pane yet; try again in a few seconds", "reason" => "unknown") unless facts
       return error("not_an_agent", "the pane is running a shell, not a coding agent") if facts[:kind] == "shell"
       provider = @providers.find { |p| p.key == facts[:kind] }
       return error("pane_not_ready", "the agent daemon hasn't identified the agent in this pane yet", "reason" => "unknown") unless provider
+      if clear_first && !CLEARABLE_KINDS.include?(provider.key)
+        return error("clear_unsupported", "#{provider.label}'s clear can't be confirmed, so --clear-first works only with " \
+          "Claude Code; nothing was typed", "kind" => provider.key, "reason" => "agent")
+      end
+      if clear_first && !facts[:hooks]
+        return error("clear_unsupported", "no hook event has reached the agent daemon from this pane, so its clear can't be " \
+          "confirmed (install the hooks with workspace init --install-hooks, or wait for the agent's first hook event); " \
+          "nothing was typed", "kind" => provider.key, "reason" => "no_hooks")
+      end
       unless provider.ready_pattern
         return error("unsupported_agent", "#{provider.label}'s screen can't be checked for an open dialog or a draft, " \
           "so --when-idle only queues for Claude Code; nothing was queued", "kind" => provider.key)
@@ -231,35 +304,133 @@ module Workspace
       deliver_claimed(pane_id, entry)
     end
 
-    # Steps 2 to 6. Whatever happens, the entry doesn't stay `delivering`.
+    # Steps 2 to 6, with a clear between 3 and 4 for a `clear_first` entry.
+    # Whatever happens, the entry doesn't stay `delivering`, and a restart
+    # claim taken for the clear is released.
     def deliver_claimed(pane_id, entry)
       result = nil
-      pasted = false
+      progress = {pasted: false, cleared_at: nil, restart: nil}
       begin
         result = finish(entry, :requeue, outcome: :requeued) unless wait_until_quiet(pane_id)
         result ||= @delivery_lock.synchronize do
-          reason, detail = recheck(pane_id, entry)
+          reason, detail, facts = recheck(pane_id, entry)
           next finish(entry, :drop, outcome: :dropped, reason: reason) if reason && reason != :not_ready
           next finish(entry, :requeue, outcome: :requeued) if reason
+          next type_text(pane_id, entry, detail, progress) unless entry["clear_first"]
 
-          paste = nil
-          typed = @typer.type(session_name: @session_name, target: "#{detail[:window]}.#{detail[:index]}", pane_id: pane_id,
-            text: entry["text"], before_paste: -> { pasted = (paste = @store.start_paste(entry)) == :started })
-          @logger.debug { "prompt queue: #{entry["id"]} to #{pane_id}: #{typed.outcome}" }
-          case typed.outcome
-          when :submitted then finish(entry, :delivered, outcome: :delivered, submitted: true)
-          when :not_submitted
-            finish(entry, :delivered, outcome: :dropped, reason: "not_submitted", submitted: false, message: typed.message)
-          when :aborted
-            @logger.debug { "prompt queue: #{entry["id"]} not pasted: the claim was #{paste}" }
-            {id: entry["id"], outcome: (paste == :cancelled) ? :cancelled : :gone}
-          else finish(entry, :requeue, outcome: :requeued)
-          end
+          type_clear(pane_id, entry, detail, facts, progress)
         end
+        result ||= after_clear(pane_id, entry, progress)
       ensure
-        result ||= pasted ? finish(entry, :drop, outcome: :dropped, reason: "interrupted") : finish(entry, :requeue, outcome: :requeued)
+        result ||= if progress[:pasted] || progress[:cleared_at]
+          finish(entry, :drop, outcome: :dropped, reason: "interrupted")
+        else
+          finish(entry, :requeue, outcome: :requeued)
+        end
+        @release_restart.call(pane_id, progress[:restart]) if progress[:restart]
       end
-      result
+      progress[:cleared_at] ? result.merge(cleared: true) : result
+    end
+
+    # Steps 4 to 6.
+    def type_text(pane_id, entry, detail, progress)
+      paste = nil
+      typed = @typer.type(session_name: @session_name, target: "#{detail[:window]}.#{detail[:index]}", pane_id: pane_id,
+        text: entry["text"], before_paste: -> { progress[:pasted] = (paste = @store.start_paste(entry)) == :started })
+      @logger.debug { "prompt queue: #{entry["id"]} to #{pane_id}: #{typed.outcome}" }
+      case typed.outcome
+      when :submitted then finish(entry, :delivered, outcome: :delivered, submitted: true)
+      when :not_submitted
+        finish(entry, :delivered, outcome: :dropped, reason: "not_submitted", submitted: false, message: typed.message)
+      when :aborted
+        @logger.debug { "prompt queue: #{entry["id"]} not pasted: the claim was #{paste}" }
+        {id: entry["id"], outcome: (paste == :cancelled) ? :cancelled : :gone}
+      else
+        # Text that never reached the pane is safe to type again, but not
+        # after a clear: the entry would clear the pane a second time.
+        if progress[:cleared_at]
+          finish(entry, :drop, outcome: :dropped, reason: "not_delivered", message: typed.message || typed.outcome.to_s)
+        else
+          finish(entry, :requeue, outcome: :requeued)
+        end
+      end
+    end
+
+    # Claims the pane as a restart would and types the clear command.
+    #
+    # @return [Hash, nil] the entry's end, or nil once the clear was typed
+    #   and its SessionStart is to be waited for
+    def type_clear(pane_id, entry, detail, facts, progress)
+      progress[:restart] = @claim_restart.call(pane_id)
+      return finish(entry, :requeue, outcome: :requeued) unless progress[:restart]
+      case @store.proceed(entry)
+      when :cancelled then return {id: entry["id"], outcome: :cancelled}
+      when :missing then return {id: entry["id"], outcome: :gone}
+      end
+
+      command = @providers.find { |p| p.key == facts[:kind] }&.clear_command || "/clear"
+      cleared_at = @clock.now
+      typed = @typer.type(session_name: @session_name, target: "#{detail[:window]}.#{detail[:index]}", pane_id: pane_id,
+        text: command)
+      @logger.debug { "prompt queue: #{entry["id"]} cleared #{pane_id}: #{typed.outcome}" }
+      progress[:session_before] = facts[:session_id]
+      case typed.outcome
+      when :submitted
+        progress[:cleared_at] = cleared_at
+        # The typer's settle waits don't count against the wait for the SessionStart.
+        progress[:clear_deadline] = @clock.now + CLEAR_TIMEOUT
+        nil
+      when :not_submitted
+        progress[:cleared_at] = cleared_at
+        finish(entry, :drop, outcome: :dropped, reason: "clear_unconfirmed", message: "Enter wasn't confirmed (#{typed.message})")
+      else finish(entry, :requeue, outcome: :requeued)
+      end
+    end
+
+    # Waits for the clear's SessionStart, then steps 2 to 6 for the new conversation.
+    def after_clear(pane_id, entry, progress)
+      started, why = wait_for_clear(pane_id, progress[:cleared_at], progress[:clear_deadline])
+      return finish(entry, :drop, outcome: :dropped, reason: "clear_unconfirmed", message: why) unless started
+
+      # The pane's lock is held throughout, so no prune can drop the entries
+      # behind this one as conversation_changed before they are moved.
+      @store.rebind_session(pane_id, from: progress[:session_before], to: started[:session_id])
+      unless wait_until_quiet(pane_id)
+        return finish(entry, :drop, outcome: :dropped, reason: "not_delivered", message: "the screen didn't settle after the clear")
+      end
+      @delivery_lock.synchronize do
+        reason, detail = recheck(pane_id, entry, cleared_at: progress[:cleared_at])
+        next finish(entry, :drop, outcome: :dropped, reason: reason) if reason && reason != :not_ready
+        if reason
+          next finish(entry, :drop, outcome: :dropped, reason: "not_delivered",
+            message: "the pane changed after the clear (a prompt was submitted, or tmux didn't answer)")
+        end
+        type_text(pane_id, entry, detail, progress)
+      end
+    end
+
+    # Waits until +deadline+ for a SessionStart with source `clear` from the
+    # pane, recorded at or after +cleared_at+. A prompt submitted between
+    # the clear and that SessionStart voids the clear: a person typed into
+    # the pane meanwhile. (One submitted after the SessionStart is caught
+    # by the re-check before the text is typed.)
+    #
+    # @return [Array] the SessionStart (`:at`, `:source`, `:session_id`), or
+    #   nil and why it wasn't confirmed
+    def wait_for_clear(pane_id, cleared_at, deadline)
+      voided = [nil, "a prompt was submitted in the pane after the clear"]
+      loop do
+        facts = @session_monitor.delivery_facts(pane_id)
+        prompt = facts&.dig(:last_user_prompt_at)
+        prompt = nil unless prompt && prompt >= cleared_at
+        started = facts&.dig(:last_session_start)
+        if started && started[:source] == "clear" && started[:at] >= cleared_at
+          return (prompt && prompt < started[:at]) ? voided : [started, nil]
+        end
+        return voided if prompt
+        return [nil, "no SessionStart with source clear came from the pane within #{CLEAR_TIMEOUT}s"] if @clock.now >= deadline
+        @sleeper.call(POLL_INTERVAL)
+      end
     end
 
     def finish(entry, how, outcome:, reason: nil, submitted: nil, message: nil)
@@ -269,22 +440,31 @@ module Workspace
     end
 
     # The checks made again under the delivery lock, after the quiet wait.
+    # After a clear (+cleared_at+) the pane is ready while no prompt was
+    # submitted since the clear; the restart claim is the delivery's own.
+    # The new conversation has no turn end to compare with on purpose: the
+    # confirmed clear, the quiet wait and {PromptTyper}'s screen check stand in.
     #
-    # @return [Array] a drop reason, :not_ready or nil; and the pane's details
-    def recheck(pane_id, entry)
+    # @return [Array] a drop reason, :not_ready or nil; the pane's details;
+    #   and the monitor's facts
+    def recheck(pane_id, entry, cleared_at: nil)
       detail = pane_lookup(pane_id)
-      return [:not_ready, nil] if detail == :unknown
+      return [:not_ready, nil, nil] if detail == :unknown
       facts = @session_monitor.delivery_facts(pane_id)
       server_pid = detail && @tmux.server_pid_for_pane(pane_id)
       reason = identity_change(entry, detail, server_pid, facts)
-      return [reason, detail] if reason
-      return [:not_ready, detail] unless server_pid
+      return [reason, detail, facts] if reason
+      return [:not_ready, detail, facts] unless server_pid && facts
 
-      fresh = facts && PromptQueueStore.stamp(facts[:fresh_since])
-      prompt = facts && facts[:last_user_prompt_at]
-      ready = fresh && fresh == entry["claimed_fresh_since"] && (prompt.nil? || prompt <= facts[:fresh_since]) &&
-        !@restarting.call(pane_id)
-      [ready ? nil : :not_ready, detail]
+      prompt = facts[:last_user_prompt_at]
+      ready = if cleared_at
+        prompt.nil? || prompt < cleared_at
+      else
+        fresh = PromptQueueStore.stamp(facts[:fresh_since])
+        fresh && fresh == entry["claimed_fresh_since"] && (prompt.nil? || prompt <= facts[:fresh_since]) &&
+          !@restarting.call(pane_id)
+      end
+      [ready ? nil : :not_ready, detail, facts]
     end
 
     # Why the entry can no longer go to this pane, or nil. What can't be
@@ -349,11 +529,6 @@ module Workspace
 
     def record(type, data)
       @event_log&.record(type: type, project: @workspace, data: data)
-    end
-
-    def pane_detail(pane_id)
-      found = pane_lookup(pane_id)
-      found.is_a?(Hash) ? found : nil
     end
 
     # The pane's details, nil when the session doesn't have it, or

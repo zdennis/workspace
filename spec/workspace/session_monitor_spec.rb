@@ -867,7 +867,21 @@ RSpec.describe Workspace::SessionMonitor do
       monitor.record("pane_id" => "%2", "event" => "stop", "session_id" => "s1")
 
       expect(monitor.delivery_facts("%2")).to eq(kind: "claude", pane_pid: 200, agent_pid: 250, session_id: "s1",
-        state: "done", fresh_since: now + 9, last_user_prompt_at: now + 5)
+        state: "done", fresh_since: now + 9, last_user_prompt_at: now + 5, hooks: true, last_session_start: nil)
+    end
+
+    it "says hooks: false for an agent pane no hook has reached" do
+      expect(monitor.delivery_facts("%2")).to include(hooks: false, last_session_start: nil)
+    end
+
+    it "keeps the last SessionStart's time, source and session id" do
+      at(3)
+      monitor.record("pane_id" => "%2", "event" => "session_start", "session_id" => "s1", "source" => "startup")
+      at(8)
+      monitor.record("pane_id" => "%2", "event" => "session_start", "session_id" => "s2", "source" => "clear")
+      monitor.record("pane_id" => "%2", "event" => "stop", "session_id" => "s2")
+
+      expect(monitor.delivery_facts("%2")[:last_session_start]).to eq(at: now + 8, source: "clear", session_id: "s2")
     end
   end
 

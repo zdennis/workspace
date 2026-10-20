@@ -67,11 +67,15 @@ RSpec.describe Workspace::PromptQueueDesk do
     end
   end
   let(:restarting) { [] }
+  let(:refuse_claim) { [false] }
   let(:on_sleep) { [] }
 
   subject(:desk) do
     described_class.new(tmux: tmux, session_name: "api", workspace: "api", session_monitor: monitor, store: store,
-      delivery_lock: Mutex.new, restarting: ->(id) { restarting.include?(id) }, event_log: event_log, clock: clock,
+      delivery_lock: Mutex.new, restarting: ->(id) { restarting.include?(id) },
+      claim_restart: ->(id) { (restarting.include?(id) || refuse_claim[0]) ? nil : (restarting << id) && :claim },
+      release_restart: ->(id, token) { restarting.delete(id) if token == :claim },
+      event_log: event_log, clock: clock,
       sleeper: ->(seconds) {
         on_sleep.shift&.call
         now[0] += seconds
@@ -585,6 +589,308 @@ RSpec.describe Workspace::PromptQueueDesk do
       stop_hook
 
       expect(typed).to eq(["run the specs"])
+    end
+  end
+
+  describe "--clear-first" do
+    # What the pane's hooks answer the first clear with, once its Enter was
+    # pressed; [nil] sends no SessionStart.
+    let(:answer) { [{source: "clear", session_id: "s2"}] }
+    # Run on each look at the pane after the clear, until it is answered.
+    let(:after_clear) { [] }
+    let(:held_during_wait) { [] }
+
+    before do
+      facts.merge!(hooks: true, last_session_start: nil)
+      answered = false
+      allow(monitor).to receive(:delivery_facts) do |id|
+        next nil unless id == "%5"
+        if clear_entered? && !answered
+          held_during_wait << restarting.include?("%5")
+          after_clear.each(&:call)
+          if answer[0]
+            answered = true
+            facts.merge!(session_id: answer[0][:session_id], last_session_start: answer[0].merge(at: now[0]))
+          end
+        end
+        facts
+      end
+    end
+
+    def clear_entered?
+      index = tmux.delivered.index { |_, _, text, enter| text == "/clear" && !enter }
+      index && tmux.delivered[index + 1]&.last == true
+    end
+
+    def send_clear_first(text = "run the specs", when_idle: true)
+      desk.send_prompt("pane_id" => "%5", "text" => text, "clear_first" => true, "when_idle" => when_idle)
+    end
+
+    def dequeued = events.select { |type, _, _| type == "prompt_dequeued" }.map(&:last)
+
+    context "on a pane whose turn has ended" do
+      it "types the clear, waits for its SessionStart, then types the text" do
+        reply = send_clear_first
+
+        expect(reply).to eq("ok" => true, "delivered" => true, "submitted" => true, "cleared" => true,
+          "id" => "0000000000000001", "pane" => "0.1", "pane_id" => "%5")
+        expect(typed).to eq(["/clear", "run the specs"])
+        expect(store.entries).to eq([])
+        expect(events).to eq([])
+      end
+
+      it "holds the pane as a restart from the clear until the text is typed, then lets go" do
+        send_clear_first
+
+        expect(held_during_wait).to all(be(true))
+        expect(held_during_wait).not_to be_empty
+        expect(restarting).to eq([])
+      end
+
+      it "types nothing more when no SessionStart comes within the wait, answering clear_unconfirmed" do
+        answer[0] = nil
+
+        reply = send_clear_first
+
+        expect(reply).to include("ok" => false, "error" => "clear_unconfirmed", "clear_typed" => true, "id" => "0000000000000001")
+        expect(reply["message"]).to include("no SessionStart")
+        expect(typed).to eq(["/clear"])
+        expect(now[0] - t0).to be >= described_class::CLEAR_TIMEOUT
+        expect(store.entries).to eq([])
+        expect(restarting).to eq([])
+      end
+
+      it "doesn't take a SessionStart from another source, even with a new session id" do
+        answer[0] = {source: "resume", session_id: "s2"}
+
+        expect(send_clear_first).to include("error" => "clear_unconfirmed")
+        expect(typed).to eq(["/clear"])
+      end
+
+      it "doesn't take a clear's SessionStart recorded before this clear was typed" do
+        answer[0] = nil
+        facts[:last_session_start] = {at: t0 - 1, source: "clear", session_id: "s1"}
+
+        expect(send_clear_first).to include("error" => "clear_unconfirmed")
+      end
+
+      it "takes a prompt submitted after the clear as voiding it" do
+        answer[0] = nil
+        after_clear << -> { facts[:last_user_prompt_at] = now[0] }
+
+        reply = send_clear_first
+
+        expect(reply).to include("error" => "clear_unconfirmed")
+        expect(reply["message"]).to include("prompt was submitted")
+        expect(typed).to eq(["/clear"])
+      end
+
+      it "lets a prompt submitted after the SessionStart through the wait, and the re-check then types nothing" do
+        after_clear << -> { facts[:last_user_prompt_at] = now[0] }
+
+        reply = send_clear_first
+
+        expect(reply).to include("error" => "not_delivered", "reason" => "not_delivered", "clear_typed" => true)
+        expect(reply["message"]).to include("pane changed after the clear")
+        expect(typed).to eq(["/clear"])
+      end
+
+      it "drops the entry with the identity reason when the pane is replaced during the wait" do
+        after_clear << -> { tmux.details = [{id: "%5", window: 0, index: 1, pid: 999}] }
+
+        reply = send_clear_first
+
+        expect(reply).to include("error" => "not_delivered", "reason" => "pane_gone", "clear_typed" => true)
+        expect(typed).to eq(["/clear"])
+        expect(restarting).to eq([])
+      end
+
+      it "drops the entry when the screen doesn't settle after the clear" do
+        frames = (1..1000).map { |n| "frame #{n}\n#{empty_prompt}" }
+        after_clear << -> { tmux.scripted = -> { frames.shift } }
+
+        reply = send_clear_first
+
+        expect(reply).to include("error" => "not_delivered", "clear_typed" => true)
+        expect(reply["message"]).to include("didn't settle")
+        expect(typed).to eq(["/clear"])
+      end
+
+      it "types nothing and keeps the entry queued when a restart claims the pane before the clear" do
+        refuse_claim[0] = true
+
+        expect(send_clear_first).to include("queued" => true)
+        expect(typed).to eq([])
+        expect(store.entries.first).to include("state" => "queued")
+      end
+
+      it "answers clear_unconfirmed when the clear's Enter isn't confirmed" do
+        tmux.statuses = [:pasted, :unsubmitted]
+
+        expect(send_clear_first).to include("error" => "clear_unconfirmed", "clear_typed" => true)
+        expect(typed).to eq(["/clear"])
+      end
+
+      it "drops the entry, never clearing twice, when the text doesn't reach the pane after the clear" do
+        tmux.statuses = [:pasted, :submitted, :not_landed]
+
+        reply = send_clear_first
+
+        expect(reply).to include("ok" => false, "error" => "not_delivered", "reason" => "not_delivered", "clear_typed" => true)
+        expect(store.entries).to eq([])
+        expect(typed).to eq(["/clear", "run the specs"])
+      end
+
+      it "types nothing and keeps the entry queued when the clear isn't pasted" do
+        tmux.screen = "────────\n❯ half a thought\n"
+
+        expect(send_clear_first).to include("queued" => true)
+        expect(typed).to eq([])
+        expect(restarting).to eq([])
+      end
+    end
+
+    context "queued for a working pane" do
+      before { working! }
+
+      it "is announced as clear_first and cleared at the end of the turn" do
+        expect(send_clear_first).to include("queued" => true, "position" => 1)
+        expect(events.first.last).to include("clear_first" => true)
+        turn_ends!(t0 + 30)
+
+        stop_hook
+
+        expect(typed).to eq(["/clear", "run the specs"])
+        expect(dequeued).to eq([{"id" => "0000000000000001", "pane_id" => "%5", "outcome" => "delivered", "submitted" => true}])
+      end
+
+      it "is dropped clear_unconfirmed, with nothing more typed, when the clear isn't confirmed" do
+        answer[0] = nil
+        send_clear_first
+        turn_ends!(t0 + 30)
+
+        stop_hook
+
+        expect(typed).to eq(["/clear"])
+        expect(dequeued).to eq([{"id" => "0000000000000001", "pane_id" => "%5", "outcome" => "dropped", "reason" => "clear_unconfirmed"}])
+      end
+
+      it "survives a change of conversation before its turn comes" do
+        send_clear_first
+        facts[:session_id] = "s9"
+        turn_ends!(t0 + 30)
+
+        stop_hook
+
+        expect(typed).to eq(["/clear", "run the specs"])
+      end
+
+      it "moves the entries queued behind it to the conversation its clear started" do
+        send_clear_first("one")
+        send_prompt("two")
+        turn_ends!(t0 + 30)
+        stop_hook
+        expect(store.entries.first).to include("text" => "two", "session_id" => "s2")
+
+        turn_ends!(t0 + 90)
+        desk.scan
+
+        expect(typed).to eq(["/clear", "one", "two"])
+      end
+
+      it "types nothing after the clear when the entry is cancelled during the wait" do
+        send_clear_first
+        turn_ends!(t0 + 30)
+        after_clear << -> { store.cancel("0000000000000001") }
+
+        stop_hook
+
+        expect(typed).to eq(["/clear"])
+        expect(store.entries).to eq([])
+        expect(dequeued).to eq([])
+        expect(restarting).to eq([])
+      end
+
+      it "drops the entry interrupted, and lets go of the pane, when the delivery raises after the clear" do
+        send_clear_first
+        turn_ends!(t0 + 30)
+        after_clear << -> { raise IOError, "monitor gone" }
+
+        stop_hook
+
+        expect(typed).to eq(["/clear"])
+        expect(dequeued).to eq([{"id" => "0000000000000001", "pane_id" => "%5", "outcome" => "dropped", "reason" => "interrupted"}])
+        expect(restarting).to eq([])
+      end
+
+      it "doesn't clear when the entry was cancelled before the clear" do
+        send_clear_first
+        turn_ends!(t0 + 30)
+        on_sleep << -> { store.cancel("0000000000000001") }
+
+        stop_hook
+
+        expect(typed).to eq([])
+        expect(store.entries).to eq([])
+      end
+
+      it "leaves the entry queued while a restart holds the pane" do
+        send_clear_first
+        turn_ends!(t0 + 30)
+        restarting << "%5"
+
+        stop_hook
+
+        expect(typed).to eq([])
+        expect(store.entries.first).to include("state" => "queued")
+      end
+    end
+
+    context "without --when-idle" do
+      it "clears and types now when the pane's turn has ended" do
+        expect(send_clear_first(when_idle: false)).to include("delivered" => true, "cleared" => true)
+      end
+
+      it "refuses pane_busy, keeping nothing, while the agent works" do
+        working!
+
+        reply = send_clear_first(when_idle: false)
+
+        expect(reply).to include("ok" => false, "error" => "pane_busy", "reason" => "not_ready")
+        expect(store.entries).to eq([])
+        expect(events).to eq([])
+        expect(typed).to eq([])
+      end
+
+      it "refuses pane_busy when prompts are queued ahead" do
+        working!
+        send_prompt("first")
+
+        reply = send_clear_first(when_idle: false)
+
+        expect(reply).to include("error" => "pane_busy", "reason" => "queued_ahead")
+        expect(store.entries.map { |e| e["text"] }).to eq(["first"])
+      end
+    end
+
+    describe "refusals" do
+      it "refuses clear_unsupported for an agent other than Claude Code" do
+        facts[:kind] = "codex"
+        typing[:kind] = "codex"
+
+        reply = send_clear_first
+
+        expect(reply).to include("ok" => false, "error" => "clear_unsupported", "kind" => "codex", "reason" => "agent")
+        expect(store.entries).to eq([])
+      end
+
+      it "refuses clear_unsupported for a Claude Code pane no hook has reached" do
+        facts[:hooks] = false
+
+        expect(send_clear_first).to include("error" => "clear_unsupported", "kind" => "claude", "reason" => "no_hooks")
+        expect(store.entries).to eq([])
+        expect(typed).to eq([])
+      end
     end
   end
 end

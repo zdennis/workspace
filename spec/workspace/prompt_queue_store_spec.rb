@@ -244,6 +244,44 @@ RSpec.describe Workspace::PromptQueueStore do
     end
   end
 
+  describe "#proceed" do
+    before { add("one") }
+
+    let!(:claimed) { store.claim("%5", daemon_pid: 4242) { ready_at(1) }.first }
+
+    it "lets a current claim go on, marking nothing, so it can still be cancelled" do
+      expect(store.proceed(claimed)).to eq(:ok)
+      expect(store.entries.first.keys).not_to include("paste_started_at")
+      expect(store.cancel(claimed["id"]).first).to eq(:cancel_requested)
+    end
+
+    it "removes an entry cancelled while claimed" do
+      store.cancel(claimed["id"])
+
+      expect(store.proceed(claimed)).to eq(:cancelled)
+      expect(store.entries).to eq([])
+    end
+
+    it "says a claim that is no longer current is missing" do
+      store.finish(claimed, :requeue)
+
+      expect(store.proceed(claimed)).to eq(:missing)
+    end
+  end
+
+  it "moves a pane's entries from one conversation to the next" do
+    add("one")
+    add("two")
+    add("other", pane_id: "%6")
+    identity["session_id"] = "s0"
+    add("older")
+
+    expect(store.rebind_session("%5", from: "s1", to: "s2")).to eq(2)
+    expect(store.entries.map { |e| [e["text"], e["session_id"]] })
+      .to eq([["one", "s2"], ["two", "s2"], ["other", "s1"], ["older", "s0"]])
+    expect(store.rebind_session("%5", from: nil, to: "s3")).to eq(0)
+  end
+
   describe "#cancel" do
     it "removes a queued entry, refuses one being pasted, and doesn't know a gone one" do
       add("one")

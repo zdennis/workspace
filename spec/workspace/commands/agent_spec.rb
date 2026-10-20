@@ -2244,11 +2244,14 @@ RSpec.describe Workspace::Commands::Agent do
         end
       end
 
-      it "builds the desk with the workspace, its session, the monitor and the delivery lock" do
+      it "builds the desk with the workspace, its session, the monitor, the delivery lock and a restart check" do
         run_agent do
           expect(built.size).to eq(1)
           expect(built.first).to include(workspace: "myapp", session_monitor: monitor, hook_event_log: nil)
           expect(built.first[:delivery_lock]).to be_a(Mutex)
+          expect(built.first[:restarting].call("%5")).to be(false)
+          agent.instance_variable_get(:@restarts)["%5"] = :starting
+          expect(built.first[:restarting].call("%5")).to be(true)
         end
       end
 
@@ -2331,6 +2334,22 @@ RSpec.describe Workspace::Commands::Agent do
           expect(built.first[:restarting].call("%5")).to be(false)
           agent.instance_variable_get(:@restarts)["%5"] = :starting
           expect(built.first[:restarting].call("%5")).to be(true)
+        end
+      end
+
+      it "gives the desk a restart claim that refuses a held pane and releases only its own claim" do
+        run_agent do
+          restarts = agent.instance_variable_get(:@restarts)
+          claim, release = built.first.values_at(:claim_restart, :release_restart)
+
+          token = claim.call("%5")
+          expect(token).not_to be_nil
+          expect(built.first[:restarting].call("%5")).to be(true)
+          expect(claim.call("%5")).to be_nil
+          release.call("%5", Object.new)
+          expect(restarts.key?("%5")).to be(true)
+          release.call("%5", token)
+          expect(restarts.key?("%5")).to be(false)
         end
       end
 

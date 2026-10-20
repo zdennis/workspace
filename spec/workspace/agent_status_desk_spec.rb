@@ -66,6 +66,34 @@ RSpec.describe Workspace::AgentStatusDesk do
       expect(described_class.prompt_for("sr-abc")).to include("workspace agent status post --reply-to sr-abc --summary")
     end
 
+    context "while a restart or a --clear-first prompt holds the pane" do
+      let(:held) { ["%5"] }
+
+      subject(:desk) do
+        described_class.new(tmux: tmux, session_name: "api", workspace: "api", session_monitor: monitor,
+          hook_event_log: hook_log, delivery_lock: Mutex.new, requests: requests, restarting: ->(id) { held.include?(id) })
+      end
+
+      it "refuses restart_in_progress, typing and opening nothing" do
+        reply = desk.request("pane_id" => "%5")
+
+        expect(reply).to include("ok" => false, "error" => "restart_in_progress", "pane_id" => "%5")
+        expect(tmux.delivered).to be_empty
+        expect(requests.claim("sr-abc", pane_id: "%5", pane_pid: 100).first).to eq("status_request_unknown")
+      end
+
+      it "refuses when the hold starts after the first check, under the delivery lock" do
+        held.clear
+        allow(monitor).to receive(:typing_facts) do |id|
+          held << id
+          facts[id]
+        end
+
+        expect(desk.request("pane_id" => "%5")).to include("error" => "restart_in_progress")
+        expect(tmux.delivered).to be_empty
+      end
+    end
+
     it "refuses a pane that isn't in the session" do
       expect(desk.request("pane_id" => "%9")).to include("ok" => false, "error" => "no_such_pane")
       expect(tmux.delivered).to be_empty
