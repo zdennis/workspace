@@ -180,7 +180,8 @@ module Workspace
     # Marks the paste as starting, unless a cancel was asked for meanwhile:
     # then the entry is removed and nothing should be typed. Only the claim
     # that is current may start it, once: a claim that was reaped and taken
-    # again finds the entry `:missing`.
+    # again finds the entry `:missing`. Its `claimed_at` becomes the paste
+    # time.
     #
     # @param claim [Hash] the entry {#claim} returned
     # @return [Symbol] `:started`, `:cancelled` or `:missing`
@@ -192,7 +193,9 @@ module Workspace
           data["entries"].delete(entry)
           next :cancelled
         end
-        entry["paste_started_at"] = now
+        # The paste restarts the claim's clock, so time spent waiting for the
+        # delivery lock never gets a claim mid-paste reaped.
+        entry["paste_started_at"] = entry["claimed_at"] = now
         :started
       end
     end

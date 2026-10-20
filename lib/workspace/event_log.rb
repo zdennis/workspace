@@ -45,6 +45,13 @@ module Workspace
     # is "idle" or "waiting"; an event without one is an idle alert.
     AGENT_ALERT = "agent_alert"
 
+    # Lifecycle event type for a prompt `agent-run send --when-idle` queued.
+    PROMPT_QUEUED = "prompt_queued"
+
+    # Lifecycle event type for a queued prompt leaving the queue: its data's
+    # `outcome` is "delivered", "cancelled" or "dropped" (with a `reason`).
+    PROMPT_DEQUEUED = "prompt_dequeued"
+
     # Event types {#reconstruct} replays into state.
     STATE_EVENT_TYPES = ["state_set", "launched", "window_discovered", "repaired", "migrated", "compacted",
       "state_removed", "killed", "stopped", "pruned"].freeze

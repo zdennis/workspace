@@ -63,6 +63,9 @@ module Workspace
       # @param agent_status_desk_factory [#call, nil] given the workspace, its tmux session, the session
       #   monitor, the hook event log and the delivery lock, builds the {Workspace::AgentStatusDesk}
       #   that answers `status_request` and `status_post`; nil builds the default one
+      # @param prompt_queue_desk_factory [#call, nil] given the workspace, its tmux session, the session
+      #   monitor, the delivery lock and a pane-restarting check, builds the {Workspace::PromptQueueDesk}
+      #   that answers `prompt_send` and delivers queued prompts; nil builds the default one
       # @param name_migration [Workspace::NameMigration, nil] renames a mixed-case workspace
       #   to lowercase before the socket is claimed; nil renames nothing
       # @param plan_progress_watcher_factory [#call, nil] given the workspace name, builds the
@@ -104,6 +107,7 @@ module Workspace
         agent_restart_factory: nil,
         hook_event_log_factory: nil,
         agent_status_desk_factory: nil,
+        prompt_queue_desk_factory: nil,
         name_migration: nil,
         plan_progress_watcher_factory: nil,
         spine_watcher_factory: nil,
@@ -136,6 +140,7 @@ module Workspace
         @spine_watcher_factory = spine_watcher_factory
         @spine_owner_report_factory = spine_owner_report_factory
         @agent_status_desk_factory = agent_status_desk_factory || method(:build_agent_status_desk)
+        @prompt_queue_desk_factory = prompt_queue_desk_factory || method(:build_prompt_queue_desk)
         # Restart workers by pane id, so one pane is restarted once at a time.
         @restarts = {}
         # When the main agent's current turn began, by pane id, for the workflow nudger.
@@ -219,6 +224,11 @@ module Workspace
         @spine_watcher&.start
         @agent_status_desk = @agent_status_desk_factory.call(workspace: name, session_name: @tmux_session,
           session_monitor: @session_monitor, hook_event_log: @hook_event_log, delivery_lock: @delivery_lock)
+        @prompt_queue_desk = @prompt_queue_desk_factory.call(workspace: name, session_name: @tmux_session,
+          session_monitor: @session_monitor, delivery_lock: @delivery_lock,
+          restarting: ->(pane_id) { @state_lock.synchronize { @restarts.key?(pane_id) } })
+        # The scan is the queue's regular trigger, besides the send and the Stop hook.
+        @session_monitor.on_scan = -> { @prompt_queue_desk.scan } if @prompt_queue_desk && @session_monitor.respond_to?(:on_scan=)
 
         @output.puts "workspace agent '#{name}' ready"
         log_activity("daemon_started", "workspace" => name, "daemon" => "agent", "pid" => Process.pid)
@@ -384,8 +394,10 @@ module Workspace
           @hook_event_log&.record(message)
           nudge_workflow(message) if @workflow_nudger && message["agent_id"].nil?
           report_owner_finished(message) if @spine_owner_report && message["agent_id"].nil?
+          @prompt_queue_desk&.session_event(message)
           reply_to(client, "ok" => true)
         when "status_request" then handle_status_request(message, client)
+        when "prompt_send" then handle_prompt_send(message, client)
         when "status_post" then reply_to(client, @agent_status_desk.post(message))
         when "sessions"
           reply_to(client, @session_monitor&.snapshot || {"workspace" => @current_name, "panes" => []})
@@ -447,6 +459,29 @@ module Workspace
             @agent_status_desk.request(message)
           rescue => e
             {"ok" => false, "error" => "internal_error", "message" => e.message}
+          end
+          reply_to(client, reply)
+        ensure
+          begin
+            client&.close
+          rescue IOError, SystemCallError
+            nil
+          end
+        end
+        :handed_off
+      end
+
+      # Answers `agent-run send --when-idle` from a worker thread, which owns
+      # +client+: a ready pane gets its text typed before the reply.
+      #
+      # @return [Symbol] :handed_off
+      def handle_prompt_send(message, client)
+        Thread.new do
+          reply = begin
+            @prompt_queue_desk.send_prompt(message)
+          rescue => e
+            code = e.is_a?(Workspace::Error) ? e.code : "internal_error"
+            {"ok" => false, "error" => code, "message" => e.message}
           end
           reply_to(client, reply)
         ensure
@@ -1168,6 +1203,12 @@ module Workspace
       def build_agent_status_desk(workspace:, session_name:, session_monitor:, hook_event_log:, delivery_lock:)
         AgentStatusDesk.new(tmux: @tmux, workspace: workspace, session_name: session_name, session_monitor: session_monitor,
           hook_event_log: hook_event_log, delivery_lock: delivery_lock, logger: @logger)
+      end
+
+      def build_prompt_queue_desk(workspace:, session_name:, session_monitor:, delivery_lock:, restarting:)
+        PromptQueueDesk.new(tmux: @tmux, workspace: workspace, session_name: session_name, session_monitor: session_monitor,
+          store: PromptQueueStore.new(path: @config.prompt_queue_path(workspace)), delivery_lock: delivery_lock,
+          restarting: restarting, event_log: @event_log, logger: @logger)
       end
 
       # Watches for the agent's socket file going missing — macOS sweeps old

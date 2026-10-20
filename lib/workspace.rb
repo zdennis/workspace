@@ -221,6 +221,7 @@ require_relative "workspace/context_reader"
 require_relative "workspace/statusline_renderer"
 require_relative "workspace/ask_store"
 require_relative "workspace/prompt_queue_store"
+require_relative "workspace/prompt_queue_desk"
 require_relative "workspace/inbox_store"
 require_relative "workspace/inbox_derived"
 require_relative "workspace/inbox_acks"
@@ -417,6 +418,7 @@ module Workspace
     start_ref = StartRef.new(git: git, lineage: lineage)
     ticket_source = TicketSource.new
     ticket_command = Commands::Ticket.new(git: git, project_config: project_config, start_ref: start_ref, source: ticket_source, output: output, error_output: error_output)
+    agent_snapshot_client = AgentSnapshotClient.new(config: config)
     send_command = Commands::Send.new(locator: pane_locator, tmux: tmux, output: output)
     focus_command = Commands::Focus.new(state: state, window_manager: window_manager, tmux: tmux, pane_locator: pane_locator, window_liveness: WindowLiveness.new(window_manager: window_manager), output: output)
     tile_command = Commands::Tile.new(state: state, window_manager: window_manager, window_layout: window_layout, output: output)
@@ -468,7 +470,6 @@ module Workspace
     process_tree = ProcessTree.new(logger: logger, timeout: ps_timeout)
     run_liveness = RunLiveness.new(dir: config.workflow_runs_dir)
     lock_holder = LockHolder.new(process_tree: process_tree, run_liveness: run_liveness)
-    agent_snapshot_client = AgentSnapshotClient.new(config: config)
     sessions_command = Commands::Sessions.new(config: config, lock_namespace: lock_namespace, lock_holder: lock_holder,
       project_config: project_config, snapshot_client: agent_snapshot_client, output: output, error_output: error_output)
     lock_idle_tracker = LockIdleTracker.new(config: config, lock_namespace: lock_namespace, lock_holder: lock_holder, logger: logger)

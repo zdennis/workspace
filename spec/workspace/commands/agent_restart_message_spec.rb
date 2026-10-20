@@ -74,6 +74,7 @@ RSpec.describe Workspace::Commands::Agent, "restart_agent" do
       allow(c).to receive(:agent_socket_path).with("myapp").and_return(agent_socket_path)
       allow(c).to receive(:project_config_path).with("myapp").and_return(File.join(tmpdir, "myapp.yml"))
       allow(c).to receive(:pipeline_state_path).and_return(File.join(tmpdir, "pipeline.json"))
+      allow(c).to receive(:prompt_queue_path).and_return(File.join(tmpdir, "prompt-queue.json"))
     end
   end
   let(:coordinator_client) do

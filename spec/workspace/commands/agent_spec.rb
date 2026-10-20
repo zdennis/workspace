@@ -65,6 +65,7 @@ RSpec.describe Workspace::Commands::Agent do
   let(:config) do
     instance_double(Workspace::Config).tap do |c|
       allow(c).to receive(:agent_socket_path).with("myapp").and_return(agent_socket_path)
+      allow(c).to receive(:prompt_queue_path) { |name| File.join(tmpdir, "#{name}-prompt-queue.json") }
       allow(c).to receive(:work_coordinator_socket).and_return(wc_socket_path)
       allow(c).to receive(:work_coordinator_status_socket).and_return(wc_status_socket_path)
       allow(c).to receive(:project_config_path).with("myapp").and_return(project_config_path)
@@ -2273,6 +2274,83 @@ RSpec.describe Workspace::Commands::Agent do
         run_agent do
           expect(send_message("type" => "status_request", "pane_id" => "%5"))
             .to eq("ok" => false, "error" => "internal_error", "message" => "tmux went away")
+          expect(send_event("stop")).to eq("ok" => true)
+        end
+      end
+    end
+
+    context "with a prompt queue desk" do
+      let(:built) { [] }
+      let(:release) { Queue.new }
+      let(:desk) do
+        Class.new do
+          attr_reader :events
+
+          def initialize(release)
+            @release = release
+            @events = Queue.new
+          end
+
+          def session_event(message) = @events << message["event"]
+
+          def scan = nil
+
+          def send_prompt(message)
+            @release.pop
+            {"ok" => true, "queued" => true, "id" => "q1", "position" => 1, "pane_id" => message["pane_id"]}
+          end
+        end.new(release)
+      end
+
+      subject(:agent) do
+        described_class.new(
+          config: config, tmux: tmux, work_coordinator_client: client,
+          pipeline_config: pipeline_config, pipeline_state: pipeline_state,
+          epoch_generator: -> { "wa-TESTEPOCH" }, signal_trapper: signal_trapper,
+          sentinel_poller_factory: sentinel_poller_factory, token_generator: token_generator,
+          clock: -> { now }, retry_backoff: 0, session_monitor_factory: ->(_name) { monitor },
+          prompt_queue_desk_factory: ->(**args) {
+            built << args
+            desk
+          },
+          output: output, error_output: error_output
+        )
+      end
+
+      def send_message(message)
+        UNIXSocket.open(agent_socket_path) do |socket|
+          socket.puts(message.merge("workspace" => "myapp").to_json)
+          JSON.parse(socket.gets)
+        end
+      end
+
+      it "builds the desk with the workspace, the monitor, the delivery lock and a restart check" do
+        run_agent do
+          expect(built.first).to include(workspace: "myapp", session_monitor: monitor)
+          expect(built.first[:delivery_lock]).to be_a(Mutex)
+          expect(built.first[:restarting].call("%5")).to be(false)
+          agent.instance_variable_get(:@restarts)["%5"] = :starting
+          expect(built.first[:restarting].call("%5")).to be(true)
+        end
+      end
+
+      it "answers prompt_send from a worker, serving hook events meanwhile, and passes hook events on" do
+        run_agent do
+          reply = Thread.new { send_message("type" => "prompt_send", "pane_id" => "%5", "text" => "hi") }
+
+          expect(send_event("stop")).to eq("ok" => true)
+          expect(desk.events.pop).to eq("stop")
+          release << :go
+          expect(reply.value).to include("queued" => true, "id" => "q1", "pane_id" => "%5")
+        end
+      end
+
+      it "answers a Workspace::Error's code when the send raises, and keeps serving" do
+        allow(desk).to receive(:send_prompt).and_raise(Workspace::Error, "queue file broken")
+
+        run_agent do
+          expect(send_message("type" => "prompt_send", "pane_id" => "%5", "text" => "hi"))
+            .to eq("ok" => false, "error" => "error", "message" => "queue file broken")
           expect(send_event("stop")).to eq("ok" => true)
         end
       end

@@ -199,6 +199,15 @@ RSpec.describe Workspace::PromptQueueStore do
       expect(JSON.parse(File.read(path))["panes"]).to eq("%5" => {"last_delivered_at" => "2026-10-19T12:00:02.000Z"})
     end
 
+    it "restarts the claim's clock at the paste, so a long wait for the delivery lock doesn't get it reaped mid-paste" do
+      now[0] += described_class::STALE_CLAIM - 1
+      store.start_paste(claimed)
+      now[0] += described_class::STALE_CLAIM - 1
+
+      expect(store.claim("%5", daemon_pid: 4242) { ready_at(1) }).to eq([nil, []])
+      expect(store.entries.first).to include("state" => "delivering")
+    end
+
     it "puts a requeued entry back at the head with no claim" do
       add("two")
       store.start_paste(claimed)

@@ -114,6 +114,7 @@ RSpec.describe "agent-run restart adversarial CLI behavior" do
       allow(c).to receive(:agent_socket_path).with("myapp").and_return(socket_path)
       allow(c).to receive(:project_config_path).with("myapp").and_return(File.join(tmpdir, "myapp.yml"))
       allow(c).to receive(:pipeline_state_path).and_return(File.join(tmpdir, "pipeline.json"))
+      allow(c).to receive(:prompt_queue_path).and_return(File.join(tmpdir, "prompt-queue.json"))
     end
     coordinator_client = instance_double(Workspace::WorkCoordinatorClient, register: {"ok" => true, "epoch" => "e"},
       deregister: nil, status_socket_path: nil)
