@@ -825,6 +825,69 @@ RSpec.describe Workspace::SessionMonitor do
     end
   end
 
+  describe "#fresh_since and #delivery_facts" do
+    before { monitor.scan }
+
+    def at(seconds)
+      allow(clock).to receive(:now).and_return(now + seconds)
+    end
+
+    it "is nil while the pane works, for a shell and for a pane it hasn't scanned" do
+      expect(monitor.fresh_since("%2")).to be_nil
+      expect(monitor.fresh_since("%1")).to be_nil
+      expect(monitor.fresh_since("%9")).to be_nil
+      expect(monitor.delivery_facts("%9")).to be_nil
+    end
+
+    it "is the time of the Stop for a done pane" do
+      at(5)
+      monitor.record("pane_id" => "%2", "event" => "stop")
+
+      expect(monitor.fresh_since("%2")).to eq(now + 5)
+    end
+
+    it "is when the screen went quiet long enough for an idle pane" do
+      at(31)
+      monitor.scan
+
+      expect(monitor.fresh_since("%2")).to eq(now + 30)
+    end
+
+    it "is nil while a wait is open, even after a Stop" do
+      monitor.record("pane_id" => "%2", "event" => "stop")
+      monitor.record("pane_id" => "%2", "event" => "notification", "message" => "Allow?")
+
+      expect(monitor.fresh_since("%2")).to be_nil
+    end
+
+    it "gives what a delivery checks the pane against" do
+      at(5)
+      monitor.record("pane_id" => "%2", "event" => "user_prompt", "session_id" => "s1")
+      at(9)
+      monitor.record("pane_id" => "%2", "event" => "stop", "session_id" => "s1")
+
+      expect(monitor.delivery_facts("%2")).to eq(kind: "claude", pane_pid: 200, agent_pid: 250, session_id: "s1",
+        state: "done", fresh_since: now + 9, last_user_prompt_at: now + 5)
+    end
+  end
+
+  describe "#on_scan" do
+    it "is called after each scan, and what it raises doesn't end the scan thread" do
+      calls = Queue.new
+      quick = described_class.new(tmux: tmux, process_tree: process_tree, session_name: "proj", poll_interval: 0.001, clock: clock)
+      quick.on_scan = -> {
+        calls << :scanned
+        raise "boom"
+      }
+
+      thread = quick.start
+      2.times { calls.pop }
+
+      expect(thread).to be_alive
+      quick.stop
+    end
+  end
+
   describe "#snapshot" do
     it "orders panes by index" do
       monitor.scan
@@ -1135,6 +1198,68 @@ RSpec.describe Workspace::SessionMonitor do
       logging_monitor.scan
 
       expect(logged_states.last).to eq(["%2", "working", "2026-09-26T12:00:10.000Z"])
+    end
+
+    describe "fresh_since after a restart" do
+      def restored_done
+        first = logging_monitor
+        first.scan
+        first.record("pane_id" => "%2", "event" => "stop")
+        first.scan
+        allow(clock).to receive(:now).and_return(now + 100)
+        logging_monitor.tap(&:scan)
+      end
+
+      it "doesn't trust a restored done until a Stop this daemon heard" do
+        restarted = restored_done
+
+        expect(restarted.snapshot["panes"].find { |p| p["pane_id"] == "%2" }["state"]).to eq("done")
+        expect(restarted.fresh_since("%2")).to be_nil
+
+        allow(clock).to receive(:now).and_return(now + 105)
+        restarted.record("pane_id" => "%2", "event" => "stop")
+        expect(restarted.fresh_since("%2")).to eq(now + 105)
+      end
+
+      it "takes a restored done as fresh once two own scans idle_after apart saw the same screen" do
+        restarted = restored_done
+        allow(clock).to receive(:now).and_return(now + 120)
+        restarted.scan
+        expect(restarted.fresh_since("%2")).to be_nil
+
+        allow(clock).to receive(:now).and_return(now + 130)
+        restarted.scan
+        expect(restarted.fresh_since("%2")).to eq(now + 130)
+        allow(clock).to receive(:now).and_return(now + 140)
+        restarted.scan
+        expect(restarted.fresh_since("%2")).to eq(now + 130)
+      end
+
+      it "doesn't trust a restored idle until two own scans idle_after apart saw the same screen" do
+        first = logging_monitor
+        first.scan
+        allow(clock).to receive(:now).and_return(now + 31)
+        first.scan
+        allow(clock).to receive(:now).and_return(now + 100)
+        restarted = logging_monitor.tap(&:scan)
+
+        expect(restarted.snapshot["panes"].find { |p| p["pane_id"] == "%2" }["state"]).to eq("idle")
+        expect(restarted.fresh_since("%2")).to be_nil
+        allow(clock).to receive(:now).and_return(now + 130)
+        restarted.scan
+        expect(restarted.fresh_since("%2")).to eq(now + 130)
+      end
+
+      it "starts counting again when the screen changes" do
+        restarted = restored_done
+        allow(clock).to receive(:now).and_return(now + 120)
+        allow(tmux).to receive(:capture_pane).and_return("moved")
+        restarted.scan
+        allow(clock).to receive(:now).and_return(now + 140)
+        restarted.scan
+
+        expect(restarted.fresh_since("%2")).to be_nil
+      end
     end
 
     it "keeps scanning when the log can't be written, warning once" do

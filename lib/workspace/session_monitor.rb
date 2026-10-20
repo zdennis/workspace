@@ -131,6 +131,13 @@ module Workspace
       @running = false
     end
 
+    # Called on the scan thread after each scan; set once by the daemon,
+    # whose queued-prompt delivery is built after this monitor. Anything it
+    # raises is logged and swallowed.
+    #
+    # @return [#call, nil]
+    attr_writer :on_scan
+
     # Scans panes in a background thread until stopped.
     #
     # @return [Thread] the scanning thread
@@ -139,6 +146,7 @@ module Workspace
       @thread = Thread.new do
         while @running
           scan
+          after_scan
           send_alerts
           reap_locks
           sleep @poll_interval
@@ -274,6 +282,40 @@ module Workspace
       end
     end
 
+    # When the pane's current `done` or `idle` began, from evidence this
+    # monitor saw itself; nil when the pane is not `done` or `idle`, has a
+    # wait open, or runs no coding agent.
+    #
+    # A pane whose `done` or `idle` was restored from the event log after a
+    # daemon restart may be stale: a turn may have started while no daemon
+    # listened. Until this monitor hears a main-agent Stop from it, it reads
+    # nil, or, once two of its own scans at least `idle_after` apart saw the
+    # same screen, the time of the later one.
+    #
+    # @param pane_id [String] tmux pane id
+    # @return [Time, nil]
+    def fresh_since(pane_id)
+      now = @clock.now
+      @lock.synchronize { (pane = @panes[pane_id]) && fresh_since_of(pane, now) }
+    end
+
+    # What a queued-prompt delivery checks a pane against.
+    #
+    # @param pane_id [String] tmux pane id
+    # @return [Hash, nil] `:kind`, `:pane_pid`, `:agent_pid`, `:session_id`,
+    #   `:state` (as `sessions` reports it), `:fresh_since` ({#fresh_since})
+    #   and `:last_user_prompt_at`; nil when the pane hasn't been scanned yet
+    def delivery_facts(pane_id)
+      now = @clock.now
+      @lock.synchronize do
+        pane = @panes[pane_id]
+        next unless pane && pane[:pid]
+        {kind: pane[:kind], pane_pid: pane[:pid], agent_pid: pane[:agent_pid], session_id: pane[:session_id],
+         state: reported_state(pane, now - (pane[:last_activity_at] || now)), fresh_since: fresh_since_of(pane, now),
+         last_user_prompt_at: pane[:last_user_prompt_at]}
+      end
+    end
+
     # Reaps stale lock holds in the namespaces the panes are working in, when
     # the reaper is due. Runs on the scan thread, never the agent's accept
     # loop, so a slow `git` only delays the next scan. A lock store another
@@ -325,6 +367,25 @@ module Workspace
     end
 
     private
+
+    def after_scan
+      @on_scan&.call
+    rescue => e
+      begin
+        @logger.debug { "session monitor: after-scan call failed (#{e.class}: #{e.message})" }
+      rescue
+        nil
+      end
+    end
+
+    def fresh_since_of(pane, now)
+      return nil if NOT_AGENTS.include?(pane[:kind]) || !pane[:waits].empty?
+      state = reported_state(pane, now - (pane[:last_activity_at] || now))
+      return nil unless %w[done idle].include?(state)
+      return pane[:own_quiet_at] if pane[:restored_ready]
+      return pane[:done][:since] if state == "done"
+      pane[:last_activity_at] && pane[:last_activity_at] + @idle_after
+    end
 
     # The body of {#scan}, run under a machine-wide scan slot when a limiter
     # is injected.
@@ -397,6 +458,8 @@ module Workspace
       since = Time.iso8601(logged["since"].to_s)
       pane[:logged_state] = logged["state"]
       pane[:state_since] = since
+      # Read back, not seen: {#fresh_since} waits for this monitor's own evidence.
+      pane[:restored_ready] = true if %w[done idle].include?(logged["state"])
       case logged["state"]
       when "done" then restore_done(pane, detail, since, logged["stop_reason"], alerts["idle"])
       when "idle" then restore_idle(pane, detail, since, alerts["idle"])
@@ -604,7 +667,12 @@ module Workspace
         # pane: a pane restored as idle stays idle until its output changes.
         first_since_restore = pane[:digest].nil? && pane.delete(:quiet_since_restore)
         pane[:digest] = digest
+        pane[:digest_seen_at] = now
+        pane.delete(:own_quiet_at)
         pane[:last_activity_at] = now unless first_since_restore
+      elsif pane[:restored_ready] && !pane[:own_quiet_at] && now - pane[:digest_seen_at] >= @idle_after
+        # Two of this monitor's own scans, idle_after apart, saw the same screen.
+        pane[:own_quiet_at] = now
       end
       pane[:last_activity_at] ||= now
     end
@@ -640,9 +708,14 @@ module Workspace
       end
 
       case event["event"]
-      when "stop" then pane[:done] = done_mark(event) unless event["agent_id"]
+      when "stop"
+        unless event["agent_id"]
+          pane[:done] = done_mark(event)
+          pane.delete(:restored_ready)
+        end
       when "user_prompt", "session_start", "session_end", "tool_use" then pane.delete(:done)
       end
+      pane[:last_user_prompt_at] = @clock.now if event["event"] == "user_prompt"
 
       case event["event"]
       when "subagent_start"

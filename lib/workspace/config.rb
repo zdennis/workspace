@@ -274,6 +274,12 @@ module Workspace
       File.join(pipeline_state_dir(name), "asks.json")
     end
 
+    # @param name [String] the workspace name
+    # @return [String] path to the workspace's queue of prompts waiting for a pane to be idle
+    def prompt_queue_path(name)
+      File.join(pipeline_state_dir(name), "prompt-queue.json")
+    end
+
     # @return [String] path to the work-coordinator main socket
     def work_coordinator_socket
       File.join(work_coordinator_run_dir, "work-coordinator.sock")
