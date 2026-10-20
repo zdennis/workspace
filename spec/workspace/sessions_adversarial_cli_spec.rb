@@ -36,6 +36,7 @@ RSpec.describe Workspace::Commands::Sessions do
   before do
     allow(config).to receive(:agent_socket_path).with("proj").and_return(socket_path)
     allow(config).to receive(:ask_state_path).with("proj").and_return(File.join(Dir.mktmpdir, "asks.json"))
+    allow(config).to receive(:prompt_queue_path).with("proj").and_return(File.join(Dir.mktmpdir, "prompt-queue.json"))
   end
 
   after { FileUtils.remove_entry(tmpdir) }

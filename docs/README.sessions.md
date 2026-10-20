@@ -120,6 +120,8 @@ When the LOCK column is hidden (project root unresolved), all five fields (`lock
 
 **ASK column** — the pane's open [`workspace ask`](README.ask.md) count: blank when there are none, `"N asked"` otherwise. `--json` carries the same count as `open_questions` (an integer, always present, `0` when there are none). A question recorded outside tmux carries no pane id and isn't counted against any row; `workspace ask list` still shows it. Answering a question (`workspace ask answer`) drops it from the count on the next render.
 
+**Queued prompts** — `--json` stamps each coding-agent pane (any pane whose `kind` isn't `"shell"`) with `queued`, an integer: how many prompts [`agent-run send --when-idle`](README.agent-run.md#send---when-idle) holds for it, `queued` and `delivering` both, `0` when there are none. It is read from the workspace's `prompt-queue.json` once per render (each member's own file under `--worktrees`). When that file can't be read, `queued` is left off the panes, never `0`, and a warning goes to stderr. The table does not show it; `agent-run queue list` does.
+
 **Context usage fields** — a coding-agent pane (any pane whose `kind` isn't `"shell"`) carries `context_pct` (integer 0-100, or `null`), `context_error` (`null`, or a reason it couldn't be determined), and `context_updated_at` (ISO 8601 UTC, or `null`; set whenever a reading was recorded, including one from a session that hasn't reported usage yet). A shell pane never carries these fields at all. See [`workspace statusline`](README.statusline.md) for how the reading gets there. When `context_pct` is `null`, `context_error` is one of:
 
 | Reason | Meaning |

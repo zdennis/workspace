@@ -29,6 +29,7 @@ RSpec.describe Workspace::Commands::Sessions do
   before do
     allow(config).to receive(:agent_socket_path).with("proj").and_return(socket_path)
     allow(config).to receive(:ask_state_path).with("proj").and_return(File.join(tmpdir, "asks.json"))
+    allow(config).to receive(:prompt_queue_path).with("proj").and_return(File.join(tmpdir, "prompt-queue.json"))
   end
 
   after { FileUtils.remove_entry(tmpdir) }
@@ -69,7 +70,7 @@ RSpec.describe Workspace::Commands::Sessions do
     it "emits the payload with a leading schema_version with --json" do
       with_daemon { command.call(name: "proj", json: true) }
 
-      expected = payload.merge("panes" => payload["panes"].map { |pane| pane.merge("open_questions" => 0) })
+      expected = payload.merge("panes" => payload["panes"].map { |pane| pane.merge("open_questions" => 0).merge((pane["kind"] == "shell") ? {} : {"queued" => 0}) })
       expect(JSON.parse(output.string)).to eq({"schema_version" => 1, "ok" => true}.merge(expected))
     end
 
@@ -397,6 +398,51 @@ RSpec.describe Workspace::Commands::Sessions do
     end
   end
 
+  describe "queued prompts" do
+    let(:queue_path) { File.join(tmpdir, "prompt-queue.json") }
+    let(:identity) { {"server_pid" => "77", "pane_pid" => 100, "agent_pid" => 101, "session_id" => "s1"} }
+
+    before { allow(config).to receive(:prompt_queue_path).with("proj").and_return(queue_path) }
+
+    def panes
+      JSON.parse(output.string)["panes"]
+    end
+
+    it "counts a coding-agent pane's queued and delivering prompts and leaves shell panes alone" do
+      store = Workspace::PromptQueueStore.new(path: queue_path)
+      2.times { store.add(pane_id: "%1", text: "hi", identity: identity) }
+      store.claim("%1", daemon_pid: Process.pid) { Time.now }
+
+      with_daemon { command.call(name: "proj", json: true) }
+
+      expect(panes.find { |p| p["pane_id"] == "%1" }["queued"]).to eq(2)
+      expect(panes.find { |p| p["pane_id"] == "%2" }).not_to have_key("queued")
+    end
+
+    it "says 0 for an agent pane when the workspace has no queue file" do
+      with_daemon { command.call(name: "proj", json: true) }
+
+      expect(panes.find { |p| p["pane_id"] == "%1" }["queued"]).to eq(0)
+    end
+
+    it "leaves queued off, with a warning, when the file can't be read" do
+      File.write(queue_path, "not json")
+
+      with_daemon { command.call(name: "proj", json: true) }
+
+      expect(panes).to all(satisfy { |p| !p.key?("queued") })
+      expect(error_output.string).to include("workspace sessions: not showing queued prompts")
+    end
+
+    it "does not change the table" do
+      Workspace::PromptQueueStore.new(path: queue_path).add(pane_id: "%1", text: "hi", identity: identity)
+
+      with_daemon { command.call(name: "proj") }
+
+      expect(output.string).not_to include("queued")
+    end
+  end
+
   describe "ask column" do
     let(:ask_path) { File.join(tmpdir, "asks.json") }
 
@@ -480,6 +526,7 @@ RSpec.describe Workspace::Commands::Sessions do
     before do
       allow(config).to receive(:agent_socket_path) { |name| sockets[name] ||= File.join(tmpdir, "#{name}.sock") }
       allow(config).to receive(:ask_state_path) { |name| File.join(tmpdir, "#{name}-asks.json") }
+      allow(config).to receive(:prompt_queue_path) { |name| File.join(tmpdir, "#{name}-queue.json") }
     end
 
     # Stands in for the agent daemon for a specific member workspace, unless
@@ -579,6 +626,19 @@ RSpec.describe Workspace::Commands::Sessions do
       expect(parsed["schema_version"]).to eq(1)
       expect(parsed["workspaces"].map { |w| w["workspace"] }).to eq(%w[proj proj.worktree-a])
       expect(parsed["workspaces"]).to all(include("schema_version" => 1))
+    end
+
+    it "stamps each member's queued count from its own queue file" do
+      identity = {"server_pid" => "77", "pane_pid" => 100, "agent_pid" => 101, "session_id" => "s1"}
+      Workspace::PromptQueueStore.new(path: File.join(tmpdir, "proj.worktree-a-queue.json"))
+        .add(pane_id: "%1", text: "hi", identity: identity)
+
+      with_member_daemons("proj" => true, "proj.worktree-a" => true) do
+        command.call(name: "proj", worktrees: true, json: true)
+      end
+
+      queued = JSON.parse(output.string)["workspaces"].to_h { |w| [w["workspace"], w["panes"].first["queued"]] }
+      expect(queued).to eq("proj" => 0, "proj.worktree-a" => 1)
     end
 
     it "leaves default (non --worktrees) behavior unchanged" do

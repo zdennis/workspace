@@ -211,6 +211,19 @@ module Workspace
         panes.each { |pane| pane["waiting_message"] &&= SessionMonitor.clean_message(pane["waiting_message"]) }
         apply_lock_column(name, panes)
         apply_ask_column(name, panes)
+        apply_queue_column(name, panes)
+      end
+
+      # Stamps each coding-agent pane with `queued`: how many prompts
+      # `agent-run send --when-idle` holds for it (`queued` and `delivering`
+      # both; 0 for none). Reads the workspace's queue file once. A file that
+      # can't be read leaves `queued` off, never 0.
+      def apply_queue_column(name, panes)
+        return unless name
+        counts = PromptQueueStore.new(path: @config.prompt_queue_path(name)).entries.group_by { |e| e["pane_id"] }
+        panes.each { |pane| pane["queued"] = counts[pane["pane_id"]]&.size || 0 unless pane["kind"] == "shell" }
+      rescue Workspace::Error => e
+        @error_output.puts "workspace sessions: not showing queued prompts: #{e.message}"
       end
 
       def json_payload(snapshot)
