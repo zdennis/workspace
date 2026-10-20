@@ -266,7 +266,8 @@ module Workspace
     # @param id [String]
     # @return [Array(Symbol, Hash)] `:cancelled` (a queued entry, removed),
     #   `:cancel_requested` (a claimed entry not yet pasting; the delivery
-    #   removes it and types nothing), `:pasting` (its text may be in the
+    #   removes it and types nothing; `:cancel_pending` when that was already
+    #   asked), `:pasting` (its text may be in the
     #   pane; nothing changed) or `:unknown` (nil)
     def cancel(id)
       with_lock do |data|
@@ -274,8 +275,9 @@ module Workspace
         next [:unknown, nil] unless entry
         next [:pasting, entry] if entry["paste_started_at"]
         if entry["state"] == "delivering"
+          again = entry["cancel_requested"]
           entry["cancel_requested"] = true
-          next [:cancel_requested, entry]
+          next [again ? :cancel_pending : :cancel_requested, entry]
         end
         data["entries"].delete(entry)
         [:cancelled, entry]

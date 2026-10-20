@@ -60,6 +60,8 @@ module Workspace
     #   `agent status` command; optional so test builders need not wire it
     # @param send_command [Workspace::Commands::Send, nil] pre-built
     #   `agent-run send` command; optional so test builders need not wire it
+    # @param prompt_queue_command [Workspace::Commands::PromptQueue, nil] pre-built
+    #   `agent-run queue` command; optional so test builders need not wire it
     # @param handoff_command [Workspace::Commands::Handoff, nil] pre-built
     #   `handoff check`/`handoff new` command; optional so test builders need not wire it
     # @param logger [Workspace::Logger] debug logger
@@ -115,7 +117,7 @@ module Workspace
     #   `list --liveness --json` and `status --json`; takes name => state entry
     # @param launch_mode [Workspace::LaunchMode, nil] decides whether launch/start
     #   run headless when no --[no-]headless flag is given; nil builds one
-    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, hooks_command: nil, restart_agent_command: nil, agent_status_command: nil, send_command: nil, ensure_agent_command: nil, name_migration: nil, spine_command: nil, spine_init_command: nil, spine_start_command: nil, handoff_command: nil, notes_command: nil, notes_setup: nil, plan_command: nil, plan_dispatch_command: nil, plan_task_command: nil, ticket_command: nil, pull_request_command: nil, rebase_command: nil, push_command: nil, promote_command: nil, projects_command: nil, groups_command: nil, capabilities_command: nil, daemon_command: nil, ui_command: nil, binding_command: nil, library_command: nil, library: nil, instructions_command: nil, instruction_composer: nil, workflow_command: nil, review_command: nil, restore_command: nil, snapshot_command: nil, events_command: nil, project_actions_command: nil, remove_command: nil, inbox_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil, liveness: nil, window_liveness: nil, env: ENV, editor_launcher: nil, interactive: nil, workspace_name: nil)
+    def initialize(config:, state:, project_config:, git:, window_manager:, doctor:, project_settings:, hook_runner:, project_detector:, launch_command:, kill_command:, finish_command:, start_command:, stop_command:, focus_command:, tile_command:, layout_command:, resize_command:, init_command:, repair_command:, cleanup_command:, prune_command:, claude_command:, lookup_command:, update_pane_command:, run_command:, run_result_store:, run_and_report_command:, capture_command:, wait_until_content_command:, lock_command:, dev_command:, parent_command:, agent_command:, sessions_command:, session_event_command:, config_command:, statusline_command:, ask_command:, hooks_command: nil, restart_agent_command: nil, agent_status_command: nil, send_command: nil, prompt_queue_command: nil, ensure_agent_command: nil, name_migration: nil, spine_command: nil, spine_init_command: nil, spine_start_command: nil, handoff_command: nil, notes_command: nil, notes_setup: nil, plan_command: nil, plan_dispatch_command: nil, plan_task_command: nil, ticket_command: nil, pull_request_command: nil, rebase_command: nil, push_command: nil, promote_command: nil, projects_command: nil, groups_command: nil, capabilities_command: nil, daemon_command: nil, ui_command: nil, binding_command: nil, library_command: nil, library: nil, instructions_command: nil, instruction_composer: nil, workflow_command: nil, review_command: nil, restore_command: nil, snapshot_command: nil, events_command: nil, project_actions_command: nil, remove_command: nil, inbox_command: nil, config_report: nil, tmuxinator_report: nil, exit_handler: Kernel, logger: Workspace::Logger.new, output: $stdout, error_output: $stderr, input: $stdin, working_dir: Dir.pwd, clock: -> { Time.now }, launch_mode: nil, liveness: nil, window_liveness: nil, env: ENV, editor_launcher: nil, interactive: nil, workspace_name: nil)
       @config = config
       @state = state
       @project_config = project_config
@@ -175,6 +177,7 @@ module Workspace
       @restart_agent_command = restart_agent_command
       @agent_status_command = agent_status_command
       @send_command = send_command
+      @prompt_queue_command = prompt_queue_command
       @ensure_agent_command = ensure_agent_command
       @name_migration = name_migration
       @handoff_command = handoff_command
@@ -513,7 +516,7 @@ module Workspace
           add             Add a tmuxinator config for a project directory
           agent           Drive a workspace agent: agent run "prompt", agent status request|post
           agentd          Run the long-lived workspace agent daemon for a project, or replace it (agentd restart)
-          agent-run       Send a message to a running agent, or type into a pane (command, inject, restart, send)
+          agent-run       Send a message to a running agent, or type into a pane (command, inject, restart, send, queue)
           alfred          Manage the Alfred workflow for workspace focus
           ask             Record a question an unattended agent hit, with its default
           binding         Bind a pane to a workflow run, a PR review or a play, so it survives /clear and compaction
@@ -2988,6 +2991,7 @@ module Workspace
       when "inject" then cmd_agent_run_inject(args)
       when "restart" then cmd_agent_run_restart(args)
       when "send" then cmd_agent_run_send(args)
+      when "queue" then cmd_agent_run_queue(args)
       when "examples" then cmd_agent_run_examples
       else
         raise UsageError, agent_run_help
@@ -3023,6 +3027,7 @@ module Workspace
           inject     Send an "inject" message (steers a running work item)
           restart    Clear the coding agent in one pane and type a fresh prompt into it
           send       Type text or tmux keys into one named pane (straight through tmux; no daemon)
+          queue      List or cancel the prompts `send --when-idle` has queued (queue list, queue cancel; no daemon)
           examples   Print all stock example messages without sending anything
 
         Raw mode (paste a full message directly):
@@ -3061,6 +3066,10 @@ module Workspace
           --no-enter          With --body, don't press Enter
           --json              Print the result as JSON
 
+        Options (queue; see `workspace agent-run queue --help`):
+          queue list          [--name NAME] [--pane PANE] [--json]  What is queued, per pane
+          queue cancel        --id ID [--name NAME] [--json]  Take a queued prompt back; answers its text
+
         Examples:
           workspace agent-run command --body "Add OAuth support"
           workspace agent-run command --work-item WC-42 --body "Add OAuth support"
@@ -3071,6 +3080,8 @@ module Workspace
           workspace agent-run restart --pane %18 --prompt "Resume from HANDOFF.md" --json
           workspace agent-run send --pane %19 --body "yes"
           workspace agent-run send --pane %19 --keys Escape --json
+          workspace agent-run queue list --pane %19 --json
+          workspace agent-run queue cancel --id 3f9a2c41d07b5e88
           workspace agent-run examples
       HELP
     end
@@ -3335,6 +3346,78 @@ module Workspace
 
       key_names = keys && Commands::Send.parse_keys(keys)
       @send_command.call(name: name, pane: pane, body: body, keys: key_names, enter: !no_enter, json: json)
+    end
+
+    def agent_run_queue_help
+      <<~HELP
+        Usage: workspace agent-run queue list [--name NAME] [--pane PANE] [--json]
+               workspace agent-run queue cancel --id ID [--name NAME] [--json]
+
+        What `agent-run send --when-idle` has queued, and taking an entry back. Both read the
+        queue file directly, so they work with no agent daemon running.
+
+        list    One row per queued prompt: pane_id, position (from 1, within the pane), state
+                (queued or delivering), queued_at, clear_first, a 200-character preview and the
+                full length. Rows come grouped by pane, the pane with the oldest entry first.
+                --pane takes a pane id (%19, matched as given, no tmux call) or window.pane (0.1).
+        cancel  Removes a queued prompt and answers its full text. A prompt the daemon has claimed
+                but not started to paste is stopped before anything is typed. One already being
+                typed, already typed, or unknown is unknown_id (details.state "delivering" when it
+                is being typed). Without --name every workspace's queue is searched.
+
+        Examples:
+          workspace agent-run queue list --name api --json
+          workspace agent-run queue cancel --id 3f9a2c41d07b5e88 --json
+      HELP
+    end
+
+    def cmd_agent_run_queue(args)
+      verb = args.shift
+      case verb
+      when "list" then cmd_agent_run_queue_list(args)
+      when "cancel" then cmd_agent_run_queue_cancel(args)
+      when "-h", "--help", "help" then @output.puts agent_run_queue_help
+      when nil then raise UsageError, "Missing queue verb (list or cancel).\n\n#{agent_run_queue_help}"
+      else raise UsageError, "Unknown queue verb: #{verb}.\n\n#{agent_run_queue_help}"
+      end
+    end
+
+    def cmd_agent_run_queue_list(args)
+      name = nil
+      pane = nil
+      json = false
+      parser = OptionParser.new do |opts|
+        opts.banner = "Usage: workspace agent-run queue list [--name NAME] [--pane PANE] [--json]"
+        opts.on("--name NAME", "Workspace name (default: detected from cwd)") { |v| name = v }
+        opts.on("--pane PANE", "Only this pane: a pane id (%19) or window.pane (0.1)") { |v| pane = v }
+        opts.on("--json", "Print {\"entries\":[...]} as JSON; errors as {\"schema_version\":1,\"ok\":false,\"error\":...}") { json = true }
+      end
+      parser.parse!(args)
+      raise UsageError, "Unexpected argument: #{args.first}\n\n#{parser.help}" if args.any?
+      name ||= @project_detector.detect(@working_dir)
+      raise UsageError, "Missing workspace name (pass --name).\n\n#{parser.help}" if name.nil?
+      raise UsageError, "--pane can't be empty.\n\n#{parser.help}" if pane && pane.strip.empty?
+      raise Error, "workspace agent-run queue is not available in this build" unless @prompt_queue_command
+
+      @prompt_queue_command.list(name: name, pane: pane, json: json)
+    end
+
+    def cmd_agent_run_queue_cancel(args)
+      name = nil
+      id = nil
+      json = false
+      parser = OptionParser.new do |opts|
+        opts.banner = "Usage: workspace agent-run queue cancel --id ID [--name NAME] [--json]"
+        opts.on("--id ID", "The id `send --when-idle` answered  (required)") { |v| id = v }
+        opts.on("--name NAME", "Workspace name (default: look through every workspace's queue)") { |v| name = v }
+        opts.on("--json", "Print {\"cancelled\":true,\"id\",\"pane_id\",\"text\"} as JSON; errors as {\"schema_version\":1,\"ok\":false,\"error\":...}") { json = true }
+      end
+      parser.parse!(args)
+      raise UsageError, "Unexpected argument: #{args.first}\n\n#{parser.help}" if args.any?
+      raise UsageError, "Missing --id.\n\n#{parser.help}" if id.nil? || id.strip.empty?
+      raise Error, "workspace agent-run queue is not available in this build" unless @prompt_queue_command
+
+      @prompt_queue_command.cancel(id: id.strip, name: name, json: json)
     end
 
     def handoff_help

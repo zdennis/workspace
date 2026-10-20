@@ -72,7 +72,7 @@ workspace <subcommand> [options]
 | add | [README](docs/README.add.md) | Add a tmuxinator config for a project directory |
 | agent | [README](docs/README.agent.md) | Umbrella for driving a workspace agent: `agent run "prompt"`, `agent status request\|post` |
 | agentd | [README](docs/README.agentd.md) | Run the long-lived workspace agent daemon for a project, or replace it (`agentd restart`) |
-| agent-run | [README](docs/README.agent-run.md) | Send a message to a running agent, or type into a pane (command, inject, restart, send) |
+| agent-run | [README](docs/README.agent-run.md) | Send a message to a running agent, or type into a pane (command, inject, restart, send, queue) |
 | alfred | [README](docs/README.alfred.md) | Manage the Alfred workflow for workspace focus |
 | ask | [README](docs/README.ask.md) | Record a question an unattended agent hit, with its default; list/answer/withdraw them |
 | binding | [README](docs/README.binding.md) | Bind a pane to a workflow run, PR review or play, so it, and the packs it was sent, survive `/clear` and compaction |

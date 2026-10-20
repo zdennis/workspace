@@ -300,6 +300,7 @@ require_relative "workspace/commands/lookup"
 require_relative "workspace/commands/update_pane_command"
 require_relative "workspace/commands/run"
 require_relative "workspace/commands/send"
+require_relative "workspace/commands/prompt_queue"
 require_relative "workspace/commands/capture"
 require_relative "workspace/commands/lock"
 require_relative "workspace/commands/dev"
@@ -665,6 +666,7 @@ module Workspace
     )
 
     restart_agent_command = Commands::RestartAgent.new(config: config, locator: pane_locator, output: output)
+    prompt_queue_command = Commands::PromptQueue.new(config: config, locator: pane_locator, event_log: event_log, output: output, error_output: error_output)
     agent_status_command = Commands::AgentStatus.new(client: agent_snapshot_client, locator: pane_locator, tmux: tmux, output: output,
       workspace_for_session: ->(session) { project_config.available_projects.find { |name| tmux.session_name_for(name) == session } || session })
     handoff_config = HandoffConfig.new(config_resolver: config_resolver, project_config: project_config,
@@ -754,6 +756,7 @@ module Workspace
       restart_agent_command: restart_agent_command,
       agent_status_command: agent_status_command,
       send_command: send_command,
+      prompt_queue_command: prompt_queue_command,
       ensure_agent_command: ensure_agent_command,
       name_migration: name_migration,
       handoff_command: handoff_command,

@@ -96,6 +96,7 @@ RSpec.describe Workspace::CLI do
       restart_agent_command: overrides[:restart_agent_command],
       agent_status_command: overrides[:agent_status_command],
       send_command: overrides[:send_command],
+      prompt_queue_command: overrides[:prompt_queue_command],
       ensure_agent_command: overrides[:ensure_agent_command],
       name_migration: overrides[:name_migration],
       handoff_command: overrides[:handoff_command],
@@ -1411,6 +1412,42 @@ RSpec.describe Workspace::CLI do
       cli.run(["agent", "help"])
 
       expect(output.string).to include("workspace agent status post --summary TEXT").and include("status        Ask an agent pane")
+    end
+  end
+
+  describe "#run agent-run queue" do
+    let(:queue_command) { double("prompt queue", list: [], cancel: {}) }
+
+    it "passes list's workspace, pane and json" do
+      cli, = build_test_cli(prompt_queue_command: queue_command)
+
+      cli.run(["agent-run", "queue", "list", "--name=api", "--pane=%19", "--json"])
+
+      expect(queue_command).to have_received(:list).with(name: "api", pane: "%19", json: true)
+    end
+
+    it "passes cancel's id, leaving the workspace unset to search them all" do
+      cli, = build_test_cli(prompt_queue_command: queue_command)
+
+      cli.run(["agent-run", "queue", "cancel", "--id", " abc123 "])
+
+      expect(queue_command).to have_received(:cancel).with(id: "abc123", name: nil, json: false)
+    end
+
+    [
+      [%w[cancel], "Missing --id."],
+      [["list", "--name", "api", "--pane", ""], "--pane can't be empty"],
+      [%w[cancel --id x extra], "Unexpected argument: extra"],
+      [%w[nope], "Unknown queue verb: nope."],
+      [[], "Missing queue verb"]
+    ].each do |args, message|
+      it "refuses #{args.inspect} as a usage error" do
+        cli, _, error_output = build_test_cli(prompt_queue_command: queue_command)
+
+        expect { cli.run(["agent-run", "queue", *args]) }.to raise_error(FakeSystemExit) { |e| expect(e.status).to eq(1) }
+        expect(error_output.string).to include(message)
+        expect(queue_command).not_to have_received(:cancel)
+      end
     end
   end
 

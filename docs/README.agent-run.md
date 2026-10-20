@@ -17,6 +17,7 @@ workspace agent-run --body '<full message JSON>' [--dry-run]
 | `inject` | Send an `inject` message — steers a running work item |
 | `restart` | Send a `restart_agent` message — clears the coding agent in one pane and types a fresh prompt |
 | `send` | Type text or tmux keys into one named pane, straight through tmux (no daemon); with `--when-idle`, hand the text to the agent daemon to type once the agent's turn ends; with `--clear-first`, have the daemon clear the conversation first |
+| `queue` | `queue list` shows the prompts `send --when-idle` has queued; `queue cancel --id ID` takes one back. Both work with no agent daemon |
 | `examples` | Print all stock example messages without sending anything |
 
 ## Options
@@ -77,6 +78,13 @@ When `--work-item` is omitted a random UUID is generated for the message's `work
 | `--when-idle` | With `--body`: typed now if the agent's turn has ended, else queued by the agent daemon and typed when it ends (Claude Code panes only) |
 | `--clear-first` | With `--body`: the agent daemon types the agent's clear (`/clear`) first, waits for the new conversation, then types the text. With or without `--when-idle` (Claude Code panes with hooks only) |
 | `--json` | Print the result as JSON |
+
+### `queue` subcommand
+
+| Usage | Description |
+|-------|-------------|
+| `queue list [--name NAME] [--pane PANE] [--json]` | What is queued. `--pane` is a pane id (`%19`, matched as given with no tmux call) or `window.pane` (resolved through tmux, with the pane errors of `send`) |
+| `queue cancel --id ID [--name NAME] [--json]` | Take a queued prompt back. Without `--name`, every workspace's queue is searched for the id |
 
 ## Details
 
@@ -151,6 +159,20 @@ With `--json`, a call that cleared and typed prints `"delivered":true,"submitted
 
 **`examples`** prints the full set of stock example messages (with realistic field values for the detected workspace) without sending anything. Use it to see the wire format before firing a real message.
 
+#### `queue`
+
+`queue list` and `queue cancel` read and write the workspace's `prompt-queue.json` directly and never ask the agent daemon, so they work with the daemon stopped or gone (the entries then wait for the next daemon). `queue list` takes the workspace from `--name`, else the working directory.
+
+**`queue list --json`** prints `{"schema_version":1,"ok":true,"workspace":"api","entries":[...]}`. Each row is `{"id","pane_id","position","state","queued_at","clear_first","preview","length"}`: `position` counts from 1 within the pane, `state` is `queued` or `delivering`, `preview` is the first 200 characters with control characters escaped (`\n`, `\t`, `\uXXXX`), and `length` is the full text's character count. Rows are grouped by pane, the pane with the oldest `queued_at` first, each pane's rows in queue order. A pane with nothing queued lists nothing; that is not an error. The field is `pane_id`, the name `sessions --json` and the events use for the same `%N`. Without `--json`, one line per entry: pane, position, state, age, id and the preview cut to the terminal width.
+
+**`queue cancel --json`** prints `{"schema_version":1,"ok":true,"workspace":"api","cancelled":true,"id","pane_id","text"}`; `text` is the full prompt, so a caller can put it back in a prompt box. It records a `prompt_dequeued` event with outcome `cancelled` ([`events`](README.events.md)). It runs under the queue file's lock, so it never overlaps a delivery starting:
+
+- a `queued` prompt is removed;
+- one the daemon has claimed but not yet started to paste (for instance while a `--clear-first` clear is being confirmed) is marked to stop: the answer is the same plus `"cancel_requested":true`, and the delivery types nothing and removes it without a second event (cancelling it again answers the same and records no further event);
+- one being pasted, already typed, dropped or never made is refused `unknown_id`, with `details.state: "delivering"` when its text may already be in the pane (check the pane). A pasted prompt whose text never landed goes back to `queued` and can be cancelled then; `queue list` shows it.
+
+Exit codes: 0 listed or cancelled, 1 refused (`unknown_id`, `usage`, the pane codes of `send`, or a queue file that can't be read).
+
 ## Examples
 
 ```sh
@@ -192,6 +214,10 @@ workspace agent-run send --name myapp --pane %19 --body "Now update the docs" --
 
 # Give pane %19 a fresh conversation and its next prompt once its current turn ends
 workspace agent-run send --name myapp --pane %19 --body "Start on the docs" --when-idle --clear-first --json
+
+# See what is queued for pane %19, then take one prompt back
+workspace agent-run queue list --name myapp --pane %19 --json
+workspace agent-run queue cancel --id 5f0c1d2e3a4b5c6d --json
 
 # Print examples for the current workspace without sending
 workspace agent-run examples

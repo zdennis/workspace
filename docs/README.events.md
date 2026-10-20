@@ -39,7 +39,7 @@ Every printed line also carries `cursor`. Lines from different sources come out 
 | `type` | `data` |
 |---|---|
 | `prompt_queued` | `id`, `pane_id`, `position` (from 1, within the pane), `clear_first` (`true` for `--clear-first`) |
-| `prompt_dequeued` | `id`, `pane_id`, `outcome` (`delivered` or `dropped`; `cancelled` is reserved for a cancel command not in this release), `reason` (with `dropped`), `submitted` (with `delivered`: `true`; with `dropped` for `not_submitted`: `false`) |
+| `prompt_dequeued` | `id`, `pane_id`, `outcome` (`delivered`, `cancelled` by [`agent-run queue cancel`](README.agent-run.md#queue) or `dropped`), `reason` (with `dropped`), `submitted` (with `delivered`: `true`; with `dropped` for `not_submitted`: `false`) |
 
 `reason` is `pane_gone` (the pane closed or was replaced, or tmux restarted), `session_ended` (the agent exited or was restarted, or its session ended other than by `/clear`), `conversation_changed` (the pane started another conversation; a `--clear-first` prompt, and the prompts queued behind it once its own clear is confirmed, are kept), `not_submitted` (pasted, but Enter couldn't be confirmed; the text stays in the pane), `interrupted` (a delivery was cut off after its paste or its clear started), `clear_unconfirmed` (`--clear-first`: the clear was typed but no SessionStart with source `clear` came from the pane within 15s, or a prompt was submitted in between; the text was not typed) or `not_delivered` (`--clear-first`: the clear was confirmed but the text couldn't be typed; it is not tried again, so the pane is never cleared twice for one prompt). A prompt for a pane that is waiting on a person is kept, not dropped.
 
