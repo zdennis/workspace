@@ -8,11 +8,13 @@ module Workspace
     # @param window_manager [Workspace::WindowManager] window operations for setting bounds
     # @param config [Workspace::Config] configuration for window_tool path
     # @param output [IO] output stream for user-facing messages
+    # @param error_output [IO] stream for warnings
     # @param logger [Workspace::Logger] debug logger
-    def initialize(window_manager:, config:, output: $stdout, logger: Workspace::Logger.new)
+    def initialize(window_manager:, config:, output: $stdout, error_output: $stderr, logger: Workspace::Logger.new)
       @window_manager = window_manager
       @config = config
       @output = output
+      @error_output = error_output
       @logger = logger
     end
 
@@ -39,12 +41,10 @@ module Workspace
         return
       end
 
-      screen_json, status = Open3.capture2(@config.window_tool, "active-screen", "--json")
-      unless status.success?
+      screen_x, screen_y, screen_w, screen_h = read_screen
+      unless screen_x
         raise Workspace::Error, "Could not detect screen geometry. Is window-tool installed?"
       end
-      screen = JSON.parse(screen_json)
-      screen_x, screen_y, screen_w, screen_h = screen.values_at("x", "y", "width", "height")
 
       window_ids = project_window_ids.map { |e| e[:window_id] }
       bounds_map = @window_manager.all_window_bounds(window_ids)
@@ -138,17 +138,33 @@ module Workspace
 
     private
 
+    # The active screen as [x, y, width, height]: the visible area (below the menu bar),
+    # else the full frame, else bare x/y/width/height keys. Nil when window-tool is
+    # missing, fails, answers something unreadable, or leaves a number out.
+    def read_screen
+      json, status = Open3.capture2(@config.window_tool, "active-screen", "--json")
+      return unless status.success?
+      screen = JSON.parse(json)
+      @logger.debug { "window_layout: screen geometry #{screen.inspect}" }
+      %w[visible frame].each do |prefix|
+        rect = %w[x y width height].map { |k| screen["#{prefix}_#{k}"] }
+        return rect if rect.all?(Numeric)
+      end
+      rect = screen.values_at("x", "y", "width", "height")
+      rect if rect.all?(Numeric)
+    rescue JSON::ParserError, SystemCallError, NoMethodError, TypeError
+      nil
+    end
+
     def apply_layout(project_window_ids, calculator, verb, quiet: false)
       return if project_window_ids.empty?
 
       @logger.debug { "window_layout: fetching active screen geometry" }
-      screen_json, status = Open3.capture2(@config.window_tool, "active-screen", "--json")
-      unless status.success?
-        raise Workspace::Error, "Could not detect screen geometry. Is window-tool installed?"
+      screen_x, screen_y, screen_w, screen_h = read_screen
+      unless screen_x
+        @error_output.puts "Warning: could not read the screen geometry from window-tool; windows were left where they are."
+        return
       end
-      screen = JSON.parse(screen_json)
-      @logger.debug { "window_layout: screen geometry #{screen.inspect}" }
-      screen_x, screen_y, screen_w, screen_h = screen.values_at("x", "y", "width", "height")
 
       positions = calculator.call(
         screen_x: screen_x, screen_y: screen_y,

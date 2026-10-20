@@ -175,3 +175,52 @@ RSpec.describe Workspace::WindowLayout do
     end
   end
 end
+
+RSpec.describe Workspace::WindowLayout, "screen reading" do
+  let(:config) { Workspace::Config.new }
+  let(:window_manager) { double("window_manager", set_window_bounds: true, all_window_bounds: {}) }
+  let(:output) { StringIO.new }
+  let(:error_output) { StringIO.new }
+  let(:layout) { described_class.new(window_manager: window_manager, config: config, output: output, error_output: error_output) }
+  let(:entries) { [{project: "a", window_id: 1}] }
+  let(:ok) { instance_double(Process::Status, success?: true) }
+
+  def stub_screen(json, status = ok)
+    allow(Open3).to receive(:capture2).with(config.window_tool, "active-screen", "--json").and_return([json, status])
+  end
+
+  it "positions from window-tool's visible_* keys" do
+    stub_screen('{"frame_x":0,"frame_y":0,"frame_width":1728,"frame_height":1117,' \
+      '"visible_x":0,"visible_y":34,"visible_width":1728,"visible_height":1083}')
+    expect(window_manager).to receive(:set_window_bounds).with(1, anything, anything, 380, 974)
+    layout.arrange(entries, quiet: true)
+  end
+
+  it "falls back to frame_* keys" do
+    stub_screen('{"frame_x":0,"frame_y":0,"frame_width":1000,"frame_height":1000}')
+    expect(window_manager).to receive(:set_window_bounds).with(1, anything, anything, 220, 900)
+    layout.arrange(entries, quiet: true)
+  end
+
+  it "warns and leaves windows alone when the reading has no usable numbers" do
+    stub_screen('{"index":0}')
+    expect(window_manager).not_to receive(:set_window_bounds)
+    expect { layout.arrange(entries) }.not_to raise_error
+    expect(error_output.string).to include("could not read the screen geometry")
+  end
+
+  it "warns when window-tool fails, is missing or prints garbage" do
+    stub_screen("", instance_double(Process::Status, success?: false))
+    layout.arrange(entries)
+    stub_screen("not json")
+    layout.arrange(entries)
+    allow(Open3).to receive(:capture2).and_raise(Errno::ENOENT)
+    layout.arrange(entries)
+    expect(error_output.string.scan("Warning").size).to eq(3)
+  end
+
+  it "still raises from tile, which was asked for" do
+    stub_screen('{"index":0}')
+    expect { layout.tile(entries + [{project: "b", window_id: 2}]) }.to raise_error(Workspace::Error, /screen geometry/)
+  end
+end
