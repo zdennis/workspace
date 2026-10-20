@@ -68,4 +68,12 @@ RSpec.describe Workspace::TypingSafety do
     expect(safety.check(facts, "────────\n❯ 1. Yes\n", pasted: pasted)).to include(reason: "input_changed")
     expect(safety.check(facts, "────────\n❯ hello #{pasted}\n", pasted: pasted)).to include(reason: "input_changed")
   end
+
+  it "takes Claude Code's paste placeholder as the pasted text, but not before a paste" do
+    pasted = "line one\nline two\n" * 40
+
+    expect(safety.check(facts, "────────\n❯ [Pasted text #1 +80 lines]\n", pasted: pasted)).to be_nil
+    expect(safety.check(facts, "────────\n❯ [Pasted text #1 +80 lines]\n")).to include(reason: "input_not_empty")
+    expect(safety.check(facts, "────────\n❯ my draft [Pasted text #1 +80 lines]\n", pasted: pasted)).to include(reason: "input_changed")
+  end
 end

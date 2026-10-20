@@ -47,10 +47,11 @@ module Workspace
     # @param hook_event_log [Workspace::HookEventLog, nil] where posts are written
     # @param delivery_lock [Mutex] held while typing, shared with the daemon's other deliveries
     # @param requests [Workspace::AgentStatusRequests] the open requests
-    # @param safety [Workspace::TypingSafety] the typed-text test
+    # @param typer [Workspace::PromptTyper, nil] checks the pane and types the line; nil builds
+    #   one from +tmux+ and +session_monitor+
     # @param logger [Workspace::Logger] debug logger
     def initialize(tmux:, session_name:, workspace:, session_monitor:, hook_event_log:, delivery_lock:,
-      requests: AgentStatusRequests.new, safety: TypingSafety.new, logger: Workspace::Logger.new)
+      requests: AgentStatusRequests.new, typer: nil, logger: Workspace::Logger.new)
       @tmux = tmux
       @session_name = session_name
       @workspace = workspace
@@ -58,7 +59,7 @@ module Workspace
       @hook_event_log = hook_event_log
       @delivery_lock = delivery_lock
       @requests = requests
-      @safety = safety
+      @typer = typer || PromptTyper.new(tmux: tmux, session_monitor: session_monitor, logger: logger)
       @logger = logger
     end
 
@@ -129,44 +130,34 @@ module Workspace
       @tmux.pane_details(@session_name, window: nil).find { |d| d[:id] == pane_id }
     end
 
-    def check_pane(pane_id, pasted: nil)
-      @safety.check(@session_monitor&.typing_facts(pane_id), @tmux.capture_screen(pane_id), pasted: pasted)
-    end
-
     def refusal(pane_id)
-      result = check_pane(pane_id)
+      result = @typer.check(pane_id)
       result && error(result[:code], "nothing was typed: #{result[:message]}", "reason" => result[:reason])
     end
 
     # The pane is looked up and checked again under the lock: it may have
     # closed, been replaced, or opened a dialog while the request was opening.
-    # The line is pasted without Enter and the pane checked once more, so
-    # Enter is pressed only while the input prompt is still what's on screen.
+    # {PromptTyper} pastes the line without Enter and checks the pane once
+    # more, so Enter is pressed only while the input prompt is still what's on screen.
     def type_prompt(request)
       @delivery_lock.synchronize do
         detail = pane_detail(request.pane_id)
         unless detail && detail[:pid] == request.pane_pid
           next error("no_such_pane", "pane #{request.pane_id} closed or was replaced; nothing was typed")
         end
-        refused = refusal(request.pane_id)
-        next refused if refused
 
         target = "#{detail[:window]}.#{detail[:index]}"
         opened = {"request_id" => request.id, "expires_at" => request.expires_at.utc.iso8601}
-        pasted = @tmux.deliver(@session_name, target, self.class.prompt_for(request.id), enter: false)
-        @logger.debug { "status request #{request.id} pasted to #{@session_name}:#{target}: #{pasted.status}" }
-        next error("not_delivered", "the request was not typed into pane #{target}: #{pasted.message}") unless pasted.landed?
-        unless pasted.ok?
-          next unsubmitted(target, "it may not have arrived, so Enter was not pressed (#{pasted.message})", opened, pasted)
+        typed = @typer.type(session_name: @session_name, target: target, pane_id: request.pane_id,
+          text: self.class.prompt_for(request.id))
+        @logger.debug { "status request #{request.id} in #{@session_name}:#{target}: #{typed.outcome}" }
+        case typed.outcome
+        when :refused then error(typed.code, "nothing was typed: #{typed.message}", "reason" => typed.reason)
+        when :submitted then {"ok" => true}.merge(opened).merge("delivery" => typed.delivery.status.to_s)
+        when :not_submitted
+          unsubmitted(target, typed.message, typed.reason ? opened.merge("reason" => typed.reason) : opened, typed.delivery)
+        else error("not_delivered", "the request was not typed into pane #{target}: #{typed.message}")
         end
-
-        changed = check_pane(request.pane_id, pasted: self.class.prompt_for(request.id))
-        next unsubmitted(target, "Enter was not pressed: #{changed[:message]}", opened.merge("reason" => changed[:reason]), pasted) if changed
-
-        submitted = @tmux.deliver(@session_name, target, "", enter: true)
-        @logger.debug { "status request #{request.id} submitted in #{@session_name}:#{target}: #{submitted.status}" }
-        next unsubmitted(target, submitted.message, opened, submitted) unless submitted.ok?
-        {"ok" => true}.merge(opened).merge("delivery" => submitted.status.to_s)
       end
     end
 

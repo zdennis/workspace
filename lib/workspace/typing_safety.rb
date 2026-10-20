@@ -17,8 +17,9 @@ module Workspace
   # 5. The input line is empty, or shows only the agent's placeholder, so the
   #    text isn't appended to a person's draft (`input_not_empty`). For the
   #    check made after the text is pasted, the line must instead start with
-  #    that text (`input_changed`): a menu row or a draft there means Enter
-  #    would answer or send something else.
+  #    that text, or show Claude Code's `[Pasted text #N` placeholder for a
+  #    long or multi-line paste (`input_changed` otherwise): a menu row or a
+  #    draft there means Enter would answer or send something else.
   #
   # A `working` pane passes: Claude Code queues text typed during a turn.
   class TypingSafety
@@ -60,7 +61,9 @@ module Workspace
       input = input_line(pattern, screen)
       return refusal("no_input_prompt", "#{provider.label}'s input prompt isn't on screen (a dialog may be open)") unless input
       if pasted
-        return refusal("input_changed", "#{provider.label}'s input line doesn't start with the pasted text") unless input.start_with?(pasted[0, PASTED_PREFIX])
+        unless input.start_with?(pasted[0, PASTED_PREFIX]) || input.match?(/\A#{Tmux::PASTE_PLACEHOLDER.source}/)
+          return refusal("input_changed", "#{provider.label}'s input line doesn't start with the pasted text")
+        end
       elsif !(input.empty? || input.match?(PLACEHOLDER))
         return refusal("input_not_empty", "#{provider.label}'s input line already holds text (a draft)")
       end
