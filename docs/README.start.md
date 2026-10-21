@@ -14,7 +14,7 @@ workspace start [options] <jira-key|jira-url|pr-url|pr-ref|issue-url|branch>
 |--------|-------------|
 | `--prompt PROMPT` | Send an initial prompt to the coding agent once it is ready (up to 60s); exits 1 if it can't be sent. See [`launch`](README.launch.md#details) |
 | `--prompt-timeout DURATION` | How long to wait for the coding agent to be ready for `--prompt` (e.g. `90s`, `2m`, or a plain number of seconds); default 60s |
-| `--play NAME` | Send the agent a line pointing at a [library](README.library.md) play, then any `--prompt` text. See [Plays](#plays) |
+| `--play NAME[,NAME...]` | Send the agent a line pointing at a [library](README.library.md) play, then any `--prompt` text. Repeat the flag or separate names with commas to send several. See [Plays](#plays) |
 | `--pack NAME` | Also send the agent a library pack's text with the first prompt; repeatable. See [Packs](#packs) |
 | `--no-packs` | Send no automatic packs; cannot be combined with `--pack` or `--handoff` |
 | `--handoff` / `--no-handoff` | Send, or never send, the `handoff` pack for this run, whatever the `handoff.auto` key says. See [Packs](#packs) |
@@ -90,7 +90,7 @@ With `--spine[=NAME]`, or `spine.auto` true in the config and no `--no-spine`, `
 With `--plan[=TITLE]`, `start` runs [`plan init`](README.plan.md) for the new workspace once its notes directory exists, and sends the agent the built-in `implementation-plan` play (found built-in first, as `plan start` finds it) with the first prompt, so the agent's first job is to fill `## Tasks`. The title is `TITLE`, else the task title (`--title`, `--title-from-ticket`). Give it with an `=`: `--plan "Add SSO"` would take `Add SSO` as the ref; `start` refuses a ref with a space when `--plan` is set. How it combines:
 
 - `--prompt`: the first prompt is the play, the packs, the line "The plan has no tasks yet. Draft them as the play's "Draft the tasks" section says, then end your turn. Do not start any task.", then `The goal: <prompt>`. Without `--prompt` the agent takes the goal from the plan's title.
-- `--play`: refused with a usage error, because the first prompt carries one play. Add other text with `--prompt` or `--pack`.
+- `--play`: refused with a usage error, because the first prompt carries the plan play alone. Add other text with `--prompt` or `--pack`.
 - `--no-launch`: the plan is still made, nothing is sent, and `plan.drafting` is `false`. Run `plan start` later to send the draft request.
 - `--spine` and `spine.auto`: independent. Both run; the spine pack rides along with the play.
 - A plan already in the notes directory (a reused worktree) is kept, never replaced (`plan.outcome` `exists`). The draft line is sent only if it has no tasks; with tasks the agent gets the play and the `--prompt` text alone.
@@ -105,9 +105,20 @@ Read "/Users/me/.config/workspace/library/global/play/kickoff.md" and follow it.
 Start at step 2.
 ```
 
+`--play` may be given more than once, and each value may list plays separated by commas: `--play kickoff,review --play ship` sends three. Whitespace around a name is dropped, empty items are ignored, and a play named twice (also as `NAME` and `play/NAME`) is sent once, at the place it first appeared. The agent gets one `Read ... and follow it.` line per play, in the order given, as one block before the packs and the `--prompt` text:
+
+```
+Read "/Users/me/.config/workspace/library/global/play/kickoff.md" and follow it.
+Read "/Users/me/.config/workspace/library/global/play/review.md" and follow it.
+
+Start at step 2.
+```
+
+A `--play` value that names no play (`--play ""`, `--play ,`) is a usage error, as are more than 20 plays; both are refused before anything is created. Every play is looked up and read before the worktree is created, so one unknown or unreadable play among several fails the whole run with nothing changed.
+
 The play is looked up the way [`library`](README.library.md#scopes) reads are: the parent project's library first, then the global one, then the [built-in plays](README.library.md#built-in-plays). `NAME` is a bare name or `play/NAME`; a prompt of the same name doesn't get in the way, and `--play prompt/NAME` is a usage error. The play is found and read before the worktree is created, so an unknown name (`unknown_library_entry`) or a file that can't be read (`library_source_missing`, e.g. a link to a note iCloud has evicted) fails with nothing changed.
 
-The agent gets the path rather than the text, so it can read the play again after `/clear`. Once the play is delivered, the pane it went to is [bound](README.binding.md#plays) to it, replacing any earlier run, review or play binding of that pane, so the SessionStart hook reminds the agent of the play after `/clear` or compaction. The play is sent the way `--prompt` is, with the same wait and `--prompt-timeout`, and one that isn't sent fails the same way (`prompt_failures`, exit 1). If the workspace's session is already running, the play is typed into its agent, which may be in the middle of a task.
+The agent gets the path rather than the text, so it can read the play again after `/clear`. Once the plays are delivered, the pane they went to is [bound](README.binding.md#plays) to them (the first play is the binding's `id`), replacing any earlier run, review or play binding of that pane, so the SessionStart hook reminds the agent of the play after `/clear` or compaction. The play is sent the way `--prompt` is, with the same wait and `--prompt-timeout`, and one that isn't sent fails the same way (`prompt_failures`, exit 1). If the workspace's session is already running, the play is typed into its agent, which may be in the middle of a task.
 
 The file lives outside the worktree. An agent started without `--dangerously-skip-permissions` (the stock template passes it) asks before reading it.
 
@@ -178,6 +189,7 @@ On success, one line of JSON on stdout (nothing else is written to stdout under
   `delivered` is whether the prompt carrying it was sent, and `pane` is the tmux
   pane id (`%5`) bound to the play, or `null` when it was not delivered or the
   pane could not be bound
+- `plays` — present only with `--play`: an array with one object of the same shape as `play` for each play, in the order sent. `play` is the first of them. Both are absent when no play was given
 - `spine` — present only when `spine init` ran: `{"outcome", "template"}`. `outcome` is `created`, `exists` or `failed`; `template` is `{"name", "scope", "source"}` as in [`spine init`](README.spine.md#spine-init) (on `failed`, `{"name", "source"}` when known, plus `error`, the error code). A failure is also in `warnings`
 - `plan` — present only with `--plan`: `{"path", "outcome", "title", "drafting"}`. `outcome` is `created`, `exists` or `failed` (then `path` is `null` and `error` is the error code). `title` is left out when the plan has none. `drafting` is whether the draft request was sent with the first prompt (`false` with `--no-launch`, a plan that has tasks, or a failed init). The play it sent is the `play` object. A failure is also in `warnings`
 - `packs` — always present: one `{"name", "source", "delivered", "pane"}` object per pack sent, in order, `[]` when none applied. `source` is `config` (automatic) or `flag` (`--pack`); `delivered` is whether the prompt carrying it was sent, and `pane` the tmux pane id it went to (`null` when not delivered). With an explicit prompt, play or pack, an undelivered pack rides the same `prompt_not_sent` failure as the prompt; automatic packs alone only warn (see Packs). A config-driven pack that was left out has `delivered: false`, `pane: null` and a `reason` (`handoff_unsupported_agent`); only such rows carry `reason`
@@ -254,6 +266,9 @@ workspace start PROJ-123 --prompt "Fix the login bug"
 
 # Point the agent at a library play, with a note after it
 workspace start PROJ-123 --play kickoff --prompt "Start at step 2."
+
+# Point the agent at two plays
+workspace start PROJ-123 --play kickoff,review
 
 # Copy a library agent and skill into the worktree
 workspace start PROJ-123 --agent reviewer --skill write-tests

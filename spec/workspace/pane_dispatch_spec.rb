@@ -91,7 +91,7 @@ RSpec.describe Workspace::PaneDispatch do
       allow(binder).to receive(:live).and_return("kind" => "play", "packs" => ["notes"])
 
       expect(dispatch.bind_play("api", "%2", play, focus: "spine stage verify", packs: ["spine"])).to be_nil
-      fields = {"kind" => "play", "id" => "play/research", "instructions" => "/lib/play/research.md", "packs" => %w[notes spine], "focus" => "spine stage verify"}
+      fields = {"kind" => "play", "id" => "play/research", "instructions" => "/lib/play/research.md", "plays" => [{"id" => "play/research", "instructions" => "/lib/play/research.md"}], "packs" => %w[notes spine], "focus" => "spine stage verify"}
       expect(binder).to have_received(:bind).with(workspace: "api", pane: "%2", **fields)
     end
 

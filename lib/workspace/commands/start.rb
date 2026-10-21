@@ -27,7 +27,7 @@ module Workspace
       #   exports its id as `WORKSPACE_TASK` in the panes; nil starts without a task
       # @param event_log [Workspace::EventLog, nil] records `worktree_started` once the
       #   worktree's config is written; nil records nothing
-      # @param library [Workspace::Library, nil] resolves `play:`, `agents:` and `skills:`; nil refuses them
+      # @param library [Workspace::Library, nil] resolves `plays:`, `agents:` and `skills:`; nil refuses them
       # @param library_installer [Workspace::LibraryInstaller, nil] copies `agents:` and `skills:` into the worktree
       # @param notes_setup [Workspace::NotesSetup, nil] fixes the worktree's notes directory (its own `notes.dir`,
       #   the directory, its exclude line); nil sets nothing up
@@ -78,16 +78,17 @@ module Workspace
       #   base-branch prompt
       # @param yes [Boolean] accept every default instead of prompting
       # @param title [String, nil] a human title for the workspace's task
-      # @param play [String, nil] a library play (`name` or `play/name`) to send ahead of
-      #   +prompt+, resolved from the parent project's library, then global, before
-      #   anything is created; the JSON payload reports it as `play`
+      # @param plays [Array<String>] library plays (`name` or `play/name`) to send ahead of
+      #   +prompt+, one line each in order, resolved from the parent project's library, then
+      #   global, before anything is created; the JSON payload reports the first as `play`
+      #   and all of them as `plays`
       # @param agents [Array<String>] library agents to copy into the worktree's `.claude/agents/`
       # @param skills [Array<String>] library skills to copy into the worktree's `.claude/skills/`; both are
-      #   resolved like +play+ before anything is created, and reported as `agents` and `skills`
+      #   resolved like +plays+ before anything is created, and reported as `agents` and `skills`
       # @param headless [Boolean] launch the session in the background with plain
       #   tmux instead of in iTerm2 (see Commands::Launch#call)
       # @param no_launch [Boolean] create the worktree, config and task and start nothing; refused with
-      #   +prompt+, +prompt_timeout+, +play+, +packs+ or +handoff: true+, which all need an agent to send to.
+      #   +prompt+, +prompt_timeout+, +plays+, +packs+ or +handoff: true+, which all need an agent to send to.
       #   The automatic packs are not sent (+packs+ reports +[]+); `workspace launch` sends them later
       # @param agent_kind [String, nil] an {AgentProvider} key for the main agent pane of a config this run writes
       #   (`codex`); nil keeps the template's Claude Code. Checked before anything is created
@@ -115,9 +116,9 @@ module Workspace
       # @raise [Workspace::Error] if not in a git repository (unless +json+ is true)
       # @raise [Workspace::UsageError] if a prompt would block on a non-TTY stdin and
       #   neither +base+ nor +yes+ resolves it (unless +json+ is true)
-      def call(input_string, prompt: nil, prompt_timeout: nil, base: nil, yes: false, headless: false, json: false, title: nil, play: nil,
+      def call(input_string, prompt: nil, prompt_timeout: nil, base: nil, yes: false, headless: false, json: false, title: nil, plays: [],
         agents: [], skills: [], packs: [], no_packs: false, handoff: nil, no_launch: false, agent_kind: nil, title_from_ticket: false, slug: false, spine: nil, plan: nil, promoted: false, root: nil)
-        options = {prompt: prompt, prompt_timeout: prompt_timeout, base: base, yes: yes, headless: headless, title: title, play: play,
+        options = {prompt: prompt, prompt_timeout: prompt_timeout, base: base, yes: yes, headless: headless, title: title, plays: plays,
                    agents: agents, skills: skills, packs: packs, no_packs: no_packs, handoff: handoff, no_launch: no_launch, agent_kind: agent_kind,
                    title_from_ticket: title_from_ticket, slug: slug, spine: spine, plan: plan, promoted: promoted, root: root}
         return call_json(input_string, **options) if json
@@ -149,16 +150,16 @@ module Workspace
 
       # @return [Hash] when quiet is true, +{exit_code:, json:}+; otherwise the
       #   launch result, or nil if branch selection was cancelled
-      def start!(input_string, prompt:, prompt_timeout:, base:, yes:, headless:, quiet:, title: nil, play: nil, agents: [], skills: [], packs: [], no_packs: false, handoff: nil, no_launch: false, agent_kind: nil, title_from_ticket: false, slug: false, spine: nil, plan: nil, promoted: false, root: nil)
+      def start!(input_string, prompt:, prompt_timeout:, base:, yes:, headless:, quiet:, title: nil, plays: [], agents: [], skills: [], packs: [], no_packs: false, handoff: nil, no_launch: false, agent_kind: nil, title_from_ticket: false, slug: false, spine: nil, plan: nil, promoted: false, root: nil)
         root ||= @git.root
         raise Workspace::Error, "Not inside a git repository." unless root
-        check_no_launch!(no_launch, prompt: prompt, prompt_timeout: prompt_timeout, play: play, packs: packs, handoff: handoff)
+        check_no_launch!(no_launch, prompt: prompt, prompt_timeout: prompt_timeout, plays: plays, packs: packs, handoff: handoff)
         @agent_kind = check_agent_kind!(agent_kind)
         @project_config.check_agent_kind!(@agent_kind) if @agent_kind
         @no_launch = no_launch
         raise Workspace::Error, "--spine is not available: no spine init command was wired." if spine && !@spine_init
         @spine_flag = spine
-        check_plan!(plan, play: play, ref: input_string)
+        check_plan!(plan, plays: plays, ref: input_string)
         @plan_flag = plan
         @plan_result = nil
         @spine_result = nil
@@ -176,8 +177,8 @@ module Workspace
         note_parent_repo(project.root, quiet: quiet) if project.from_worktree
         root = project.root
         project_name = @project_config.existing_name(project.name) || WorkspaceName.normalize(project.name)
-        @play = play && resolve_play(play, root)
-        @play ||= resolve_plan_play(root) if plan && !no_launch
+        @plays = resolve_plays(plays, root)
+        @plays = [resolve_plan_play(root)] if @plays.empty? && plan && !no_launch
         @packs = no_launch ? nil : resolve_packs(root, packs, no_packs, handoff, quiet: quiet, agent_kind: @agent_kind)
         @copies = resolve_copies({"agent" => agents, "skill" => skills}, root, project_name)
         ref = @start_ref.call(input_string)
@@ -276,7 +277,7 @@ module Workspace
         end
         log(quiet, "Launching #{config_name}...")
         first_prompt = drafting? ? [PlanDispatch::DRAFT_PROMPT, ("The goal: #{prompt}" if prompt)].compact.join("\n\n") : prompt
-        text = (@play || @packs) ? @library.play_prompt(@play, first_prompt, packs: @packs&.fetch("text")) : first_prompt
+        text = (@plays.any? || @packs) ? @library.play_prompt(@plays, first_prompt, packs: @packs&.fetch("text")) : first_prompt
         prompts = text ? {config_name => text} : {}
         bindings = pane_bindings_for(config_name)
         @prompt = prompt
@@ -289,7 +290,11 @@ module Workspace
         started = !(result && result[:start_failures] && result[:start_failures][config_name])
         json = start_json(project_name, config_name, worktree_path, branch_name, base, created, headless,
           notes_dir, task, copied, agent_kind, launched: started)
-        json["play"] = @play.merge("delivered" => delivered?(result, config_name), "pane" => result&.dig(:bound_panes, config_name)) if @play
+        if @plays.any?
+          rows = @plays.map { |play| play.merge("delivered" => delivered?(result, config_name), "pane" => result&.dig(:bound_panes, config_name)) }
+          json["play"] = rows.first
+          json["plays"] = rows
+        end
         skipped = result&.dig(:skipped_prompts, config_name)
         @warnings << skipped if skipped
         json["packs"] = InstructionComposer.delivery_rows(@packs ? @packs["packs"] : [], delivered: delivered?(result, config_name) && !skipped, pane: result&.dig(:delivered_panes, config_name), skipped: @skipped_packs || [])
@@ -335,13 +340,13 @@ module Workspace
       end
 
       # `--plan` sends the implementation-plan play, which is the one play a first prompt carries.
-      def check_plan!(plan, play:, ref:)
+      def check_plan!(plan, plays:, ref:)
         return unless plan
         if ref.to_s.match?(/\s/)
           raise Workspace::UsageError, "--plan was given a title after a space, so #{ref.inspect} was read as the ref. Give the title with an '=': --plan=#{ref.inspect}."
         end
         raise Workspace::Error, "--plan is not available: no plan command was wired." unless @plan_command && @library
-        raise Workspace::UsageError, "--plan sends the implementation-plan play, so it cannot be combined with --play. Drop --play, or add the other text with --prompt or --pack." if play
+        raise Workspace::UsageError, "--plan sends the implementation-plan play, so it cannot be combined with --play. Drop --play, or add the other text with --prompt or --pack." if plays.any?
       end
 
       # The built-in play, found like `plan start` finds it: a project's own play of that name never takes its place.
@@ -380,18 +385,18 @@ module Workspace
       rescue Workspace::Error, SystemCallError => e
         message = "Could not make the plan: #{e.message} The agent starts without it; run `workspace plan init`, then `workspace plan start`."
         quiet ? @warnings << message : @error_output.puts("Warning: #{message}")
-        @play = nil
+        @plays = []
         @plan_result = {"path" => nil, "outcome" => "failed", "drafting" => false}
         @plan_result["error"] = e.code if e.respond_to?(:code) && e.code
       end
 
       # What a launch would send or wait for has nowhere to go, so each is refused rather than dropped.
-      def check_no_launch!(no_launch, prompt:, prompt_timeout:, play:, packs:, handoff:)
+      def check_no_launch!(no_launch, prompt:, prompt_timeout:, plays:, packs:, handoff:)
         return unless no_launch
         flags = []
         flags << "--prompt" if prompt
         flags << "--prompt-timeout" if prompt_timeout
-        flags << "--play" if play
+        flags << "--play" if plays.any?
         flags << "--pack" if packs.any?
         flags << "--handoff" if handoff == true
         return if flags.empty?
@@ -427,21 +432,23 @@ module Workspace
 
       # The play is checked before anything is created, so an unknown name or an
       # unreadable file changes nothing.
-      def resolve_play(play, root)
+      def resolve_plays(plays, root)
+        return [] if plays.empty?
+        Workspace::Library.check_play_count!(plays.uniq)
         raise Workspace::Error, "--play is not available: no library was wired." unless @library
-        @library.play(play, cwd: root)
+        plays.map { |play| @library.play(play, cwd: root) }.uniq { |play| play["ref"] }
       end
 
       # What to bind the prompt's pane to once it is delivered: the play with its packs, or the packs alone.
       def pane_bindings_for(config_name)
         names = @packs ? InstructionComposer.pack_names(@packs["packs"]) : []
-        return {config_name => @library.play_binding(@play, packs: names)} if @play
+        return {config_name => @library.play_binding(@plays, packs: names)} if @plays.any?
         names.any? ? {config_name => @library.packs_binding(names)} : {}
       end
 
       # Whether the prompt is automatic packs alone, which warns instead of failing.
       def optional_packs?
-        InstructionComposer.optional_prompt?(@packs, prompt: @prompt, play: @play)
+        InstructionComposer.optional_prompt?(@packs, prompt: @prompt, play: @plays.first)
       end
 
       # The packs sent with the prompt, composed before anything is created so an

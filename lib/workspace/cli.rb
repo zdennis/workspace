@@ -604,7 +604,7 @@ module Workspace
       headless = nil
       prompt = nil
       prompt_timeout = nil
-      play = nil
+      plays = []
       packs = []
       no_packs = false
       handoff = nil
@@ -635,10 +635,11 @@ module Workspace
           "(e.g. \"90s\", or a plain number of seconds); default #{AgentReadiness::DEFAULT_TIMEOUT}s") do |v|
           prompt_timeout = parse_duration_option("--prompt-timeout", v, positive: true)
         end
-        opts.on("--play NAME", "Send each project's agent 'Read \"<path>\" and follow it.' for a library play,",
-          "then any --prompt text. Looked up per project (its library, then global);",
-          "an unknown or unreadable play fails before anything launches") do |v|
-          play = v
+        opts.on("--play NAME[,NAME...]", "Send each project's agent 'Read \"<path>\" and follow it.' for a library play,",
+          "then any --prompt text. Repeatable, and each value may list plays separated by",
+          "commas; the agent gets one line per play, in order. Looked up per project (its",
+          "library, then global); an unknown or unreadable play fails before anything launches") do |v|
+          plays.concat(Library.split_plays([v]))
         end
         opts.on("--pack NAME", "Also send the agent a library pack's text with the first prompt (repeatable; see",
           "'workspace instructions compose --help'). An unknown pack fails before anything launches") do |v|
@@ -682,6 +683,7 @@ module Workspace
         opts.separator "  workspace launch --arrange my-project    # tile the window, ignoring its saved position"
         opts.separator "  workspace launch --prompt \"Review the README\" my-project    # send the agent an initial prompt"
         opts.separator "  workspace launch --play kickoff my-project    # point the agent at a library play"
+        opts.separator "  workspace launch --play kickoff,review my-project    # two plays; --play a --play b does the same"
       end
       parser.parse!(args)
 
@@ -690,7 +692,7 @@ module Workspace
       raise UsageError, "--no-packs cannot be combined with --handoff." if no_packs && handoff == true
 
       run_action("launch", json: json) do
-        launched = launch_projects(args, reattach: reattach, headless: headless, prompt: prompt, prompt_timeout: prompt_timeout, play: play,
+        launched = launch_projects(args, reattach: reattach, headless: headless, prompt: prompt, prompt_timeout: prompt_timeout, plays: plays.uniq,
           packs: packs, no_packs: no_packs, handoff: handoff, with_packs: true, arrange: arrange)
         {exit_code: launched[:exit_code], results: json ? launch_rows(launched[:projects], launched[:result], plays: launched[:plays], packs: launched[:packs], skipped_packs: launched[:skipped_packs], prompts: launched[:prompts]) : [],
          warnings: launched[:skipped_packs].values.flatten.map { |pack| pack["message"] } + (launched[:result]&.dig(:skipped_prompts) || {}).values + (launched[:result]&.dig(:warnings) || [])}
@@ -699,18 +701,19 @@ module Workspace
 
     # Launches the given project args (already parsed, no leading flags) and
     # returns `{exit_code:, projects:, result:, plays:, packs:}` (the project names,
-    # Launch's own result, each project's resolved play, and each project's
+    # Launch's own result, each project's resolved plays (a list), and each project's
     # composed packs) without exiting -- so callers with multiple batches to run
     # (e.g. cmd_relaunch) can attempt every batch before deciding whether to exit.
-    # A play and the packs are resolved for every project before any config is
+    # The plays and the packs are resolved for every project before any config is
     # created. Packs are sent only when +with_packs+ is true (`launch` itself), so
     # `relaunch` and `restore` do not type them into an agent again.
-    def launch_projects(args, reattach: false, headless: nil, prompt: nil, prompt_timeout: nil, play: nil, packs: [], no_packs: false, handoff: nil, with_packs: false, arrange: false)
+    def launch_projects(args, reattach: false, headless: nil, prompt: nil, prompt_timeout: nil, plays: [], packs: [], no_packs: false, handoff: nil, with_packs: false, arrange: false)
       # A mixed-case workspace is renamed to lowercase before anything is keyed on its name
       # (see NameMigration), as its agent daemon would rename it once started.
       resolved = args.map { |arg| @project_config.resolve_project_arg(arg) }
         .map { |name, root| [settle_launch_name(name), root] }
-      plays = play ? resolved.to_h { |name, root| [name, resolve_play(play, root || @project_config.project_root_for(name))] } : {}
+      Library.check_play_count!(plays.uniq)
+      by_project = plays.empty? ? {} : resolved.to_h { |name, root| [name, resolve_plays(plays, root || @project_config.project_root_for(name))] }
       composed = with_packs ? compose_launch_packs(resolved, packs, no_packs, handoff) : {}
       skipped_packs = composed.transform_values { |c| c["skipped"] || [] }.reject { |_, skipped| skipped.empty? }
       composed = composed.reject { |_, c| c["packs"].empty? }
@@ -718,18 +721,18 @@ module Workspace
       projects = resolved.map { |name, root| root ? @project_config.create(name, root) : name }
 
       prompts = projects.each_with_object({}) do |p, h|
-        text = (plays[p] || composed[p]) ? @library.play_prompt(plays[p], prompt, packs: composed[p]&.fetch("text")) : prompt
+        text = (by_project[p] || composed[p]) ? @library.play_prompt(by_project[p], prompt, packs: composed[p]&.fetch("text")) : prompt
         h[p] = text if text
       end
 
       call_options = {reattach: reattach, prompts: prompts}
       pane_bindings = projects.to_h do |name|
         names = composed[name] ? InstructionComposer.pack_names(composed[name]["packs"]) : []
-        [name, plays[name] ? @library.play_binding(plays[name], packs: names) : (@library.packs_binding(names) if names.any?)]
+        [name, by_project[name] ? @library.play_binding(by_project[name], packs: names) : (@library.packs_binding(names) if names.any?)]
       end.compact
       call_options[:bindings] = pane_bindings if pane_bindings.any?
       call_options[:report_panes] = true if composed.any? || prompts.any?
-      optional = composed.select { |name, c| InstructionComposer.optional_prompt?(c, prompt: prompt, play: plays[name]) }
+      optional = composed.select { |name, c| InstructionComposer.optional_prompt?(c, prompt: prompt, play: by_project[name]&.first) }
       call_options[:optional] = optional.transform_values { |c| InstructionComposer.pack_names(c["packs"]) } if optional.any?
       call_options[:prompt_timeout] = prompt_timeout if prompt_timeout
       call_options[:headless] = true if @launch_mode.resolve(headless).headless?
@@ -740,7 +743,7 @@ module Workspace
         @project_settings.ensure_exists(p)
         @hook_runner.run(p, "post_launch")
       end
-      {exit_code: result && result[:exit_code], projects: projects, result: result, plays: plays, packs: composed, skipped_packs: skipped_packs, prompts: prompts}
+      {exit_code: result && result[:exit_code], projects: projects, result: result, plays: by_project, packs: composed, skipped_packs: skipped_packs, prompts: prompts}
     end
 
     # The lowercase name once a mixed-case workspace is renamed; the name as
@@ -769,10 +772,10 @@ module Workspace
       end
     end
 
-    # The play `launch --play` sends one project, from its root's library, then global.
-    def resolve_play(play, root)
+    # The plays `launch --play` sends one project, from its root's library, then global.
+    def resolve_plays(plays, root)
       raise Error, "--play is not available: no library was wired." unless @library
-      @library.play(play, cwd: root)
+      plays.map { |play| @library.play(play, cwd: root) }.uniq { |play| play["ref"] }
     end
 
     # One `results` row per launched project, from the state Launch wrote.
@@ -790,9 +793,10 @@ module Workspace
         details[:position] = result&.dig(:positions, project)
         details[:prompt_sent] = prompt_sent
         details[:pane] = prompt_sent ? result&.dig(:delivered_panes, project) : nil
-        if plays[project]
-          details[:play] = plays[project].merge("delivered" => sent,
-            "pane" => result&.dig(:bound_panes, project))
+        if plays[project]&.any?
+          rows = Array(plays[project]).map { |play| play.merge("delivered" => sent, "pane" => result&.dig(:bound_panes, project)) }
+          details[:play] = rows.first
+          details[:plays] = rows
         end
         if packs
           details[:packs] = InstructionComposer.delivery_rows(packs[project] ? packs[project]["packs"] : [], delivered: sent && !skipped,
@@ -818,7 +822,7 @@ module Workspace
       headless = nil
       json = false
       title = nil
-      play = nil
+      plays = []
       packs = []
       no_packs = false
       handoff = nil
@@ -854,10 +858,11 @@ module Workspace
           "(e.g. \"90s\", or a plain number of seconds); default #{AgentReadiness::DEFAULT_TIMEOUT}s") do |v|
           prompt_timeout = parse_duration_option("--prompt-timeout", v, positive: true)
         end
-        opts.on("--play NAME", "Send the agent 'Read \"<path>\" and follow it.' for a library play,",
-          "then any --prompt text. Looked up in the project's library, then global;",
-          "an unknown or unreadable play fails before the worktree is created") do |v|
-          play = v
+        opts.on("--play NAME[,NAME...]", "Send the agent 'Read \"<path>\" and follow it.' for a library play,",
+          "then any --prompt text. Repeatable, and each value may list plays separated by",
+          "commas; the agent gets one line per play, in order. Looked up in the project's",
+          "library, then global; an unknown or unreadable play fails before the worktree is created") do |v|
+          plays.concat(Library.split_plays([v]))
         end
         opts.on("--pack NAME", "Also send the agent a library pack's text with the first prompt (repeatable; see",
           "'workspace instructions compose --help'). An unknown pack fails before the worktree is created") do |v|
@@ -948,6 +953,7 @@ module Workspace
         opts.separator "  workspace start '#471'    # check out PR 471 of the current repo, fork or not"
         opts.separator "  workspace start PROJ-123 --prompt \"Fix the login bug\"    # with an initial agent prompt"
         opts.separator "  workspace start PROJ-123 --play kickoff --prompt \"Start at step 2.\"    # point the agent at a library play"
+        opts.separator "  workspace start PROJ-123 --play kickoff,review    # two plays; --play kickoff --play review does the same"
         opts.separator "  workspace start PROJ-123 --agent reviewer --skill write-tests    # copy library entries into the worktree"
         opts.separator "  workspace start PROJ-123 --agent-kind codex    # the main agent pane runs Codex"
         opts.separator "  workspace start PROJ-123 --no-launch    # create the worktree and config, launch nothing"
@@ -967,7 +973,7 @@ module Workspace
 
       start_options = {prompt: prompt, prompt_timeout: prompt_timeout, base: base, yes: yes, json: json}
       start_options[:title] = title if title
-      start_options[:play] = play if play
+      start_options[:plays] = plays.uniq if plays.any?
       raise UsageError, "--no-packs cannot be combined with --pack." if no_packs && packs.any?
       start_options[:packs] = packs if packs.any?
       start_options[:no_packs] = true if no_packs
@@ -7514,7 +7520,7 @@ module Workspace
     # packs a launch sends (the spine pack among them). Returns `{ok:, reason:, message:, pane:}`.
     def spine_launcher
       lambda do |workspace, play, prompt|
-        launched = launch_projects([workspace], play: play, prompt: prompt, with_packs: true)
+        launched = launch_projects([workspace], plays: Array(play), prompt: prompt, with_packs: true)
         launched_pane(launched)
       end
     end
@@ -7703,7 +7709,7 @@ module Workspace
     # its own checkout (after the carry), a play and a prompt. Returns `{ok:, started:, reason:, message:, pane:, packs:}`.
     def promote_launcher(headless:, prompt_timeout:)
       lambda do |workspace, prompt:, play:|
-        launched = launch_projects([workspace], play: play, prompt: prompt, prompt_timeout: prompt_timeout, headless: headless, with_packs: true)
+        launched = launch_projects([workspace], plays: Array(play), prompt: prompt, prompt_timeout: prompt_timeout, headless: headless, with_packs: true)
         row = launch_rows(launched[:projects], launched[:result], plays: launched[:plays], packs: launched[:packs],
           skipped_packs: launched[:skipped_packs], prompts: launched[:prompts]).first
         {ok: row["outcome"] != "failed", started: !%w[session_not_started not_launched].include?(row["reason"]),
@@ -7927,7 +7933,7 @@ module Workspace
     # --prompt "Continue the plan."` (or a task's prompt), with the packs a launch sends. Returns `{ok:, reason:, message:, pane:}`.
     def plan_launcher
       lambda do |workspace, prompt = Commands::PlanDispatch::CONTINUE_PROMPT|
-        launched_pane(launch_projects([workspace], play: Commands::PlanDispatch::PLAY, prompt: prompt, with_packs: true))
+        launched_pane(launch_projects([workspace], plays: [Commands::PlanDispatch::PLAY], prompt: prompt, with_packs: true))
       end
     end
 

@@ -420,33 +420,74 @@ RSpec.describe Workspace::Commands::Start do
       end
 
       it "sends a line pointing at the play, then the --prompt text" do
-        play_command.call("PROJ-123", play: "kickoff", prompt: "Start at CLI27.")
+        play_command.call("PROJ-123", plays: ["kickoff"], prompt: "Start at CLI27.")
 
         expect(launch_command).to have_received(:call).with(["myproject.worktree-PROJ-123"],
           prompts: {"myproject.worktree-PROJ-123" => "Read \"#{global_path}\" and follow it.\n\nStart at CLI27."},
-          bindings: {"myproject.worktree-PROJ-123" => {"kind" => "play", "id" => "play/kickoff", "instructions" => global_path}})
+          bindings: {"myproject.worktree-PROJ-123" => {"kind" => "play", "id" => "play/kickoff", "instructions" => global_path, "plays" => [{"id" => "play/kickoff", "instructions" => global_path}]}})
+      end
+
+      it "sends one line per play in order, binds the first as id and lists all, and reports each in --json" do
+        review_path = library.global_store.path_for("play", "review")
+        library.global_store.write("play", "review", "# Review\n")
+        allow(launch_command).to receive(:call)
+          .and_return({exit_code: 0, prompt_failures: {}, bound_panes: {"myproject.worktree-PROJ-123" => "%5"}})
+
+        play_command.call("PROJ-123", plays: %w[kickoff play/review kickoff], prompt: "Go.", json: true)
+
+        expect(launch_command).to have_received(:call).with(["myproject.worktree-PROJ-123"],
+          quiet: true,
+          prompts: {"myproject.worktree-PROJ-123" => "Read \"#{global_path}\" and follow it.\nRead \"#{review_path}\" and follow it.\n\nGo."},
+          bindings: {"myproject.worktree-PROJ-123" => {"kind" => "play", "id" => "play/kickoff", "instructions" => global_path,
+                                                       "plays" => [{"id" => "play/kickoff", "instructions" => global_path}, {"id" => "play/review", "instructions" => review_path}]}})
+        payload = JSON.parse(output.string)
+        expect(payload["plays"].map { |p| p["ref"] }).to eq(%w[play/kickoff play/review])
+        expect(payload["plays"]).to all(include("delivered" => true, "pane" => "%5"))
+        expect(payload["play"]).to eq(payload["plays"].first)
+      end
+
+      it "refuses more than 20 plays with nothing created" do
+        names = (1..21).map { |i| "p#{i}" }
+
+        expect { play_command.call("PROJ-123", plays: names) }.to raise_error(Workspace::UsageError, /at most 20 plays/)
+        expect(project_config).not_to have_received(:create_worktree)
+        expect(launch_command).not_to have_received(:call)
+      end
+
+      it "leaves play and plays out of --json without --play" do
+        play_command.call("PROJ-123", json: true)
+
+        expect(JSON.parse(output.string)).not_to include("play", "plays")
+      end
+
+      it "fails an unknown play among several with nothing created" do
+        expect { play_command.call("PROJ-123", plays: %w[kickoff nope]) }.to raise_error(Workspace::Error) { |e| expect(e.code).to eq("unknown_library_entry") }
+
+        expect(git).not_to have_received(:create_worktree)
+        expect(project_config).not_to have_received(:create_worktree)
+        expect(launch_command).not_to have_received(:call)
       end
 
       it "sends only the line pointing at the play without --prompt" do
-        play_command.call("PROJ-123", play: "kickoff")
+        play_command.call("PROJ-123", plays: ["kickoff"])
 
         expect(launch_command).to have_received(:call).with(["myproject.worktree-PROJ-123"],
           prompts: {"myproject.worktree-PROJ-123" => "Read \"#{global_path}\" and follow it."},
-          bindings: {"myproject.worktree-PROJ-123" => {"kind" => "play", "id" => "play/kickoff", "instructions" => global_path}})
+          bindings: {"myproject.worktree-PROJ-123" => {"kind" => "play", "id" => "play/kickoff", "instructions" => global_path, "plays" => [{"id" => "play/kickoff", "instructions" => global_path}]}})
       end
 
       it "uses the parent project's play over the global one" do
         allow(project_config).to receive(:exists?).with(project_name).and_return(true)
         library.project_store(project_name).write("play", "kickoff", "# Project kickoff\n")
 
-        play_command.call("PROJ-123", play: "kickoff", json: true)
+        play_command.call("PROJ-123", plays: ["kickoff"], json: true)
 
         expect(JSON.parse(output.string)["play"]).to include("scope" => "project",
           "path" => library.project_store(project_name).path_for("play", "kickoff"))
       end
 
       it "reports the play it sent in --json" do
-        play_command.call("PROJ-123", play: "play/kickoff", json: true)
+        play_command.call("PROJ-123", plays: ["play/kickoff"], json: true)
 
         expect(JSON.parse(output.string)["play"]).to eq("ref" => "play/kickoff", "scope" => "global", "path" => global_path,
           "sha256" => Digest::SHA256.hexdigest("# Kickoff\n"), "delivered" => true, "pane" => nil)
@@ -456,7 +497,7 @@ RSpec.describe Workspace::Commands::Start do
         allow(launch_command).to receive(:call)
           .and_return({exit_code: 0, prompt_failures: {}, bound_panes: {"myproject.worktree-PROJ-123" => "%5"}})
 
-        play_command.call("PROJ-123", play: "kickoff", json: true)
+        play_command.call("PROJ-123", plays: ["kickoff"], json: true)
 
         expect(JSON.parse(output.string)["play"]).to include("delivered" => true, "pane" => "%5")
       end
@@ -465,7 +506,7 @@ RSpec.describe Workspace::Commands::Start do
         allow(launch_command).to receive(:call)
           .and_return({exit_code: 1, prompt_failures: {"myproject.worktree-PROJ-123" => "no coding agent"}})
 
-        result = play_command.call("PROJ-123", play: "kickoff", json: true)
+        result = play_command.call("PROJ-123", plays: ["kickoff"], json: true)
 
         payload = JSON.parse(output.string)
         expect(result).to eq({exit_code: 1})
@@ -477,7 +518,7 @@ RSpec.describe Workspace::Commands::Start do
         allow(launch_command).to receive(:call)
           .and_return({exit_code: 1, prompt_failures: {}, start_failures: {"myproject.worktree-PROJ-123" => "tmux refused"}})
 
-        play_command.call("PROJ-123", play: "kickoff", json: true)
+        play_command.call("PROJ-123", plays: ["kickoff"], json: true)
 
         expect(JSON.parse(output.string)["play"]).to include("delivered" => false)
       end
@@ -514,7 +555,7 @@ RSpec.describe Workspace::Commands::Start do
         end
 
         it "adds the packs to the play's binding" do
-          packs_command.call("PROJ-123", play: "kickoff", packs: %w[review])
+          packs_command.call("PROJ-123", plays: ["kickoff"], packs: %w[review])
 
           expect(launch_command).to have_received(:call).with(anything, hash_including(
             bindings: {"myproject.worktree-PROJ-123" => hash_including("id" => "play/kickoff", "instructions" => global_path, "packs" => %w[notes review])}
@@ -528,7 +569,7 @@ RSpec.describe Workspace::Commands::Start do
         end
 
         it "sends the play line, then the packs, then the prompt, with --pack after the automatic pack" do
-          packs_command.call("PROJ-123", play: "kickoff", packs: %w[review], prompt: "Go.")
+          packs_command.call("PROJ-123", plays: ["kickoff"], packs: %w[review], prompt: "Go.")
 
           expect(launch_command).to have_received(:call).with(["myproject.worktree-PROJ-123"], hash_including(
             prompts: {"myproject.worktree-PROJ-123" => "Read \"#{global_path}\" and follow it.\n\n#{notes_text}\n## From pack review (built-in)\n\nReview the diff.\n\nGo."}
@@ -575,7 +616,7 @@ RSpec.describe Workspace::Commands::Start do
           packs_command.call("PROJ-123")
           packs_command.call("PROJ-123", prompt: "Go.")
           packs_command.call("PROJ-123", packs: %w[review])
-          packs_command.call("PROJ-123", play: "kickoff")
+          packs_command.call("PROJ-123", plays: ["kickoff"])
 
           expect(launch_command).to have_received(:call).with(anything, hash_including(optional: {"myproject.worktree-PROJ-123" => ["notes"]})).once
           expect(launch_command).to have_received(:call).with(anything, hash_not_including(:optional)).exactly(3).times
@@ -717,7 +758,7 @@ RSpec.describe Workspace::Commands::Start do
       end
 
       it "fails an unknown play before creating anything" do
-        expect { play_command.call("PROJ-123", play: "nope") }.to raise_error(Workspace::Error) { |e|
+        expect { play_command.call("PROJ-123", plays: ["nope"]) }.to raise_error(Workspace::Error) { |e|
           expect(e.code).to eq("unknown_library_entry")
         }
         expect(git).not_to have_received(:parse_start_input)
@@ -729,7 +770,7 @@ RSpec.describe Workspace::Commands::Start do
       it "fails an unreadable play before creating anything, as a --json error" do
         library.global_store.link("play", "gone", File.join(tmpdir, "evicted.md"))
 
-        result = play_command.call("PROJ-123", play: "gone", json: true)
+        result = play_command.call("PROJ-123", plays: ["gone"], json: true)
 
         expect(result).to eq({exit_code: 1})
         expect(JSON.parse(output.string)).to include("ok" => false, "code" => "library_source_missing")
@@ -809,7 +850,7 @@ RSpec.describe Workspace::Commands::Start do
       end
 
       it "reports agents and skills in --json alongside the play, not inside it" do
-        kit_command.call("PROJ-123", agents: ["reviewer"], skills: ["write-tests"], play: "kickoff", json: true)
+        kit_command.call("PROJ-123", agents: ["reviewer"], skills: ["write-tests"], plays: ["kickoff"], json: true)
 
         payload = JSON.parse(output.string)
         expect(payload["agents"]).to eq([copied("agent/reviewer")])
@@ -1948,7 +1989,7 @@ RSpec.describe Workspace::Commands::Start do
       expect(JSON.parse(output.string)).to include("launched" => false)
     end
 
-    {prompt: "hi", prompt_timeout: 5, play: "kickoff", packs: %w[review], handoff: true}.each do |option, value|
+    {prompt: "hi", prompt_timeout: 5, plays: ["kickoff"], packs: %w[review], handoff: true}.each do |option, value|
       it "refuses --no-launch with #{option}, before anything is created" do
         result = command.call("PROJ-123", **{:no_launch => true, :json => true, option => value})
 
@@ -2163,8 +2204,8 @@ RSpec.describe Workspace::Commands::Start do
       allow(git).to receive(:create_worktree)
       allow(project_config).to receive(:create_worktree).and_return(name)
       allow(launch_command).to receive(:call)
-      allow(library).to receive(:play_prompt) { |play, prompt, packs: nil| ["Read \"#{play["path"]}\"", packs, prompt].compact.join("\n\n") }
-      allow(library).to receive(:play_binding) { |play, packs: []| {"kind" => "play", "id" => play["ref"]} }
+      allow(library).to receive(:play_prompt) { |plays, prompt, packs: nil| ["Read \"#{plays.first["path"]}\"", packs, prompt].compact.join("\n\n") }
+      allow(library).to receive(:play_binding) { |plays, packs: []| {"kind" => "play", "id" => plays.first["ref"]} }
       allow(plan_command).to receive(:init) do |**|
         File.write(plan_file, plan_text)
         {"path" => plan_file, "message" => nil}
@@ -2261,7 +2302,7 @@ RSpec.describe Workspace::Commands::Start do
     end
 
     it "refuses --play with --plan before anything is created" do
-      expect { command.call("PROJ-123", plan: true, play: "kickoff") }.to raise_error(Workspace::UsageError, /--plan sends the implementation-plan play/)
+      expect { command.call("PROJ-123", plan: true, plays: ["kickoff"]) }.to raise_error(Workspace::UsageError, /--plan sends the implementation-plan play/)
       expect(git).not_to have_received(:create_worktree)
     end
 

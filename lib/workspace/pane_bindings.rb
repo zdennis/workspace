@@ -44,7 +44,7 @@ module Workspace
     # Binds a pane, replacing any earlier binding for the same pane id.
     #
     # @param pane_id [String] a tmux pane id (e.g. "%5")
-    # @param fields [Hash{String=>Object}] `kind` and `id` (required), `attempt`, `packs`
+    # @param fields [Hash{String=>Object}] `kind` and `id` (required), `attempt`, `packs`, `plays`
     #   (names of library packs the agent was sent; stored as `[]` when absent),
     #   and any of {TEXT_FIELDS}; plus the `workspace`, tmux `session` and `pane_slot` it was made for
     # @return [Hash{String=>Object}] the stored entry
@@ -183,6 +183,19 @@ module Workspace
       packs
     end
 
+    # The plays a binding lists, whatever an older or hand-edited file holds; a binding without a
+    # usable `plays` list has just the play named by its `id` and `instructions`.
+    #
+    # @param entry [Hash{String=>Object}] a binding
+    # @return [Array<Hash{String=>String}>] `{"id", "instructions"}` for each play; empty when the entry has no instructions
+    def plays_for(entry)
+      plays = entry["plays"]
+      if plays.is_a?(Array) && plays.any? && plays.all? { |play| play.is_a?(Hash) && play["id"].is_a?(String) && play["instructions"].is_a?(String) }
+        return plays.map { |play| play.slice("id", "instructions") }
+      end
+      entry["instructions"] ? [{"id" => entry["id"], "instructions" => entry["instructions"]}] : []
+    end
+
     private
 
     # A play is a file the agent was told to read and follow; after `/clear` it
@@ -191,9 +204,20 @@ module Workspace
       # Packs sent without a play have no file to read again; the hook prints the packs themselves.
       return "This pane was started with instruction packs#{where}." if entry["instructions"].nil? && packs_for(entry).any?
 
+      plays = plays_for(entry)
+      return plays_context(entry, plays, where) if plays.length > 1
+
       lines = ["This pane is following play #{entry["id"]}#{where}."]
       lines << "Focus: #{entry["focus"]}." if entry["focus"]
       lines << "Instructions: #{entry["instructions"]}. Read it again and keep following it if it is no longer in your context." if entry["instructions"]
+      lines.join("\n")
+    end
+
+    def plays_context(entry, plays, where)
+      lines = ["This pane is following plays #{plays.map { |play| play["id"] }.join(", ")}#{where}."]
+      lines << "Focus: #{entry["focus"]}." if entry["focus"]
+      plays.each { |play| lines << "Instructions: #{play["instructions"]}." }
+      lines << "Read them again and keep following them if they are no longer in your context."
       lines.join("\n")
     end
 
@@ -220,8 +244,17 @@ module Workspace
       end
       TEXT_FIELDS.each { |key| entry[key] = line!(key, fields[key]) unless fields[key].nil? }
       entry["packs"] = packs!(fields["packs"])
+      entry["plays"] = plays!(fields["plays"]) unless fields["plays"].nil?
       %w[workspace session pane_slot].each { |key| entry[key] = fields[key] if fields[key] }
       entry
+    end
+
+    # The plays of a binding: a list of `{"id", "instructions"}`, each one line of text.
+    def plays!(value)
+      raise UsageError, "plays must be a list of plays, each with an id and instructions." unless value.is_a?(Array) && value.all? { |play| play.is_a?(Hash) }
+      raise UsageError, "plays can hold at most #{MAX_PACKS} plays." if value.length > MAX_PACKS
+
+      value.map { |play| {"id" => line!("play id", play["id"]), "instructions" => line!("play instructions", play["instructions"])} }
     end
 
     # The pack names of a binding, as library names without a `play/` prefix, each once.

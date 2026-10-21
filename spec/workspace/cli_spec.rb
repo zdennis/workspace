@@ -1924,7 +1924,38 @@ RSpec.describe Workspace::CLI do
       cli.run(["start", "--play", "kickoff", "PROJ-1"])
 
       expect(start_command).to have_received(:call).with("PROJ-1", prompt: nil, prompt_timeout: nil,
-        base: nil, yes: false, json: false, play: "kickoff")
+        base: nil, yes: false, json: false, plays: ["kickoff"])
+    end
+
+    it "passes repeated and comma-separated --play values to start as one list, without repeats" do
+      start_command = double("start", call: {exit_code: 0, prompt_failures: {}})
+      cli, = build_test_cli(start_command: start_command)
+
+      cli.run(["start", "--play", "a, b", "--play", "c,,a", "PROJ-1"])
+
+      expect(start_command).to have_received(:call).with("PROJ-1", prompt: nil, prompt_timeout: nil,
+        base: nil, yes: false, json: false, plays: %w[a b c])
+    end
+
+    it "refuses a --play value with no play name, on start and launch" do
+      start_command = double("start", call: {exit_code: 0})
+      launch_command = double("launch", call: {exit_code: 0})
+      cli, = build_test_cli(start_command: start_command, launch_command: launch_command)
+
+      [["start", "--play", "", "PROJ-1"], ["start", "--play", ",", "PROJ-1"], ["launch", "--play", "", "api"], ["launch", "--play", " , ", "api"]].each do |argv|
+        expect { cli.run(argv) }.to raise_error(FakeSystemExit)
+      end
+      expect(start_command).not_to have_received(:call)
+      expect(launch_command).not_to have_received(:call)
+    end
+
+    it "refuses more than 20 plays on launch before anything is launched" do
+      launch_command = double("launch", call: {exit_code: 0})
+      cli, _, error_output = build_test_cli(launch_command: launch_command)
+
+      expect { cli.run(["launch", "--play", (1..21).map { |i| "p#{i}" }.join(","), "api"]) }.to raise_error(FakeSystemExit)
+      expect(error_output.string).to include("at most 20 plays")
+      expect(launch_command).not_to have_received(:call)
     end
 
     it "sends no packs on relaunch or restore" do
@@ -9705,7 +9736,35 @@ RSpec.describe Workspace::CLI do
         projects, options = launch.calls.first
         expect(projects).to eq(["api"])
         expect(options[:prompts]).to eq("api" => "Read \"#{play}\" and follow it.\n\nContinue the plan.")
-        expect(options[:bindings]).to eq("api" => {"kind" => "play", "id" => "play/implementation-plan", "instructions" => play})
+        expect(options[:bindings]).to eq("api" => {"kind" => "play", "id" => "play/implementation-plan", "instructions" => play, "plays" => [{"id" => "play/implementation-plan", "instructions" => play}]})
+      end
+
+      it "gives the promote and spine launchers a single play name, or none, as a list of plays" do
+        state = CLITestHelpers::FakeState.new
+        project_config = CLITestHelpers::FakeProjectConfig.new("api" => "/work/api")
+        library = Workspace::Library.new(
+          config: instance_double(Workspace::Config, library_dir: Dir.mktmpdir, builtin_library_dir: File.expand_path("../../lib/library", __dir__)),
+          lineage: instance_double(Workspace::WorkspaceLineage, resolve: Workspace::WorkspaceLineage::Lineage.new(name: "api")), project_config: project_config
+        )
+        library.global_store.write("play", "kickoff", "# Kickoff\n")
+        path = library.global_store.path_for("play", "kickoff")
+        launch = nil
+        cli, = plan_cli(state: state, project_config: project_config, library: library) do |out|
+          launch = launch_class.new(state: state, output: out)
+          {launch_command: launch}
+        end
+        promote = cli.send(:promote_launcher, headless: nil, prompt_timeout: nil)
+        spine = cli.send(:spine_launcher)
+
+        promote.call("api", prompt: "Go.", play: nil)
+        promote.call("api", prompt: "Go.", play: "kickoff")
+        spine.call("api", nil, "Brief.")
+        spine.call("api", "kickoff", "Brief.")
+
+        prompts = launch.calls.map { |_, options| options[:prompts]["api"] }
+        expect(prompts.map { |text| text.include?("Read \"#{path}\"") }).to eq([false, true, false, true])
+        expect(launch.calls.map { |_, options| options[:bindings]&.dig("api", "plays") })
+          .to eq([nil, [{"id" => "play/kickoff", "instructions" => path}], nil, [{"id" => "play/kickoff", "instructions" => path}]])
       end
 
       it "gives start a launcher that reports a launch that never sent its prompt" do
@@ -10063,8 +10122,8 @@ RSpec.describe Workspace::CLI do
             "api" => "Read \"#{api_path}\" and follow it.\n\nGo.",
             "web" => "Read \"#{global_path}\" and follow it.\n\nGo."
           }, bindings: {
-            "api" => {"kind" => "play", "id" => "play/kickoff", "instructions" => api_path},
-            "web" => {"kind" => "play", "id" => "play/kickoff", "instructions" => global_path}
+            "api" => {"kind" => "play", "id" => "play/kickoff", "instructions" => api_path, "plays" => [{"id" => "play/kickoff", "instructions" => api_path}]},
+            "web" => {"kind" => "play", "id" => "play/kickoff", "instructions" => global_path, "plays" => [{"id" => "play/kickoff", "instructions" => global_path}]}
           }, report_panes: true)
         end
 
@@ -10099,7 +10158,7 @@ RSpec.describe Workspace::CLI do
             cli.run(["launch", "--play", "kickoff", "--pack", "review", "api"])
 
             expect(launch_command).to have_received(:call) do |_projects, **options|
-              expect(options[:bindings]).to eq("api" => {"kind" => "play", "id" => "play/kickoff", "instructions" => api_path, "packs" => %w[notes review]})
+              expect(options[:bindings]).to eq("api" => {"kind" => "play", "id" => "play/kickoff", "instructions" => api_path, "plays" => [{"id" => "play/kickoff", "instructions" => api_path}], "packs" => %w[notes review]})
             end
           end
 
@@ -10311,9 +10370,39 @@ RSpec.describe Workspace::CLI do
 
           expect(launch_command).to have_received(:call).with(["new"], reattach: false,
             prompts: {"new" => "Read \"#{library.project_store("new").path_for("play", "kickoff")}\" and follow it."},
-            bindings: {"new" => {"kind" => "play", "id" => "play/kickoff", "instructions" => library.project_store("new").path_for("play", "kickoff")}},
+            bindings: {"new" => {"kind" => "play", "id" => "play/kickoff", "instructions" => library.project_store("new").path_for("play", "kickoff"), "plays" => [{"id" => "play/kickoff", "instructions" => library.project_store("new").path_for("play", "kickoff")}]}},
             report_panes: true)
           expect(project_config).not_to have_received(:project_root_for)
+        end
+
+        it "sends several plays as one line each and reports them in every row" do
+          library.global_store.write("play", "review", "# Review\n")
+          review_path = library.global_store.path_for("play", "review")
+          state = CLITestHelpers::FakeState.new
+          launch = launch_class.new(state: state, output: StringIO.new, result: {bound_panes: {"api" => "%5"}})
+          cli, raw, = action_cli(state: state, project_config: project_config, library: library, launch_command: launch)
+
+          exit_status { cli.run(["launch", "--play", "kickoff,review", "--play", "kickoff", "api", "--json"]) }
+
+          expect(launch.calls.first.last).to include(prompts: {
+            "api" => "Read \"#{api_path}\" and follow it.\nRead \"#{review_path}\" and follow it."
+          }, bindings: {"api" => {"kind" => "play", "id" => "play/kickoff", "instructions" => api_path,
+                                  "plays" => [{"id" => "play/kickoff", "instructions" => api_path}, {"id" => "play/review", "instructions" => review_path}]}})
+          row = parse_one(raw)["results"].first
+          expect(row["plays"].map { |p| p["ref"] }).to eq(%w[play/kickoff play/review])
+          expect(row["play"]).to eq(row["plays"].first)
+        end
+
+        it "fails an unknown play among several with nothing launched or created" do
+          launch_command = double("launch", call: {exit_code: 0})
+          allow(project_config).to receive(:create).and_call_original
+          cli, raw, = action_cli(launch_command: launch_command, project_config: project_config, library: library)
+
+          status = exit_status { cli.run(["launch", "api", "--play", "kickoff,nope", "--json"]) }
+
+          expect(status).to eq(1)
+          expect(parse_one(raw)).to include("ok" => false, "code" => "unknown_library_entry")
+          expect(launch_command).not_to have_received(:call)
         end
 
         it "fails an unknown play with nothing launched or created" do

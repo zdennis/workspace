@@ -28,6 +28,20 @@ RSpec.describe Workspace::PaneBindings do
       expect(store.binding_for("%6")["id"]).to eq("acme/api#835")
     end
 
+    it "stores a list of plays and refuses a malformed one" do
+      plays = [{"id" => "play/a", "instructions" => "/a.md"}, {"id" => "play/b", "instructions" => "/b.md"}]
+
+      entry = store.bind("%5", "kind" => "play", "id" => "play/a", "instructions" => "/a.md", "plays" => plays)
+
+      expect(entry["plays"]).to eq(plays)
+      expect { store.bind("%5", "kind" => "play", "id" => "x", "plays" => "play/a") }.to raise_error(Workspace::UsageError, /plays/)
+      expect { store.bind("%5", "kind" => "play", "id" => "x", "plays" => ["play/a"]) }.to raise_error(Workspace::UsageError, /plays/)
+      expect { store.bind("%5", "kind" => "play", "id" => "x", "plays" => [{"id" => "a"}]) }.to raise_error(Workspace::UsageError, /play instructions/)
+      expect { store.bind("%5", "kind" => "play", "id" => "x", "plays" => [{"id" => "a", "instructions" => "b" * 201}]) }.to raise_error(Workspace::UsageError, /play instructions/)
+      too_many = Array.new(Workspace::PaneBindings::MAX_PACKS + 1) { |i| {"id" => "p#{i}", "instructions" => "/p#{i}.md"} }
+      expect { store.bind("%5", "kind" => "play", "id" => "x", "plays" => too_many) }.to raise_error(Workspace::UsageError, /at most/)
+    end
+
     it "binds a pane to a play" do
       entry = store.bind("%5", "kind" => "play", "id" => "play/kickoff", "instructions" => "/lib/play/kickoff.md")
 
@@ -243,6 +257,26 @@ RSpec.describe Workspace::PaneBindings do
         This pane is following play play/kickoff in api.
         Instructions: /lib/play/kickoff.md. Read it again and keep following it if it is no longer in your context.
       TEXT
+    end
+
+    it "names every play and each file when a pane follows several" do
+      text = store.context_for("kind" => "play", "id" => "play/a", "workspace" => "api", "instructions" => "/a.md",
+        "plays" => [{"id" => "play/a", "instructions" => "/a.md"}, {"id" => "play/b", "instructions" => "/b.md"}])
+
+      expect(text).to eq(<<~TEXT.chomp)
+        This pane is following plays play/a, play/b in api.
+        Instructions: /a.md.
+        Instructions: /b.md.
+        Read them again and keep following them if they are no longer in your context.
+      TEXT
+    end
+
+    it "keeps the single-play text for a one-item list or a malformed plays value" do
+      one = {"kind" => "play", "id" => "play/a", "instructions" => "/a.md"}
+      single = store.context_for(one)
+
+      expect(store.context_for(one.merge("plays" => [{"id" => "play/a", "instructions" => "/a.md"}]))).to eq(single)
+      expect(store.context_for(one.merge("plays" => "junk"))).to eq(single)
     end
 
     it "repeats a play binding's focus, such as the plan task the pane was sent" do

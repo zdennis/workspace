@@ -205,12 +205,14 @@ module Workspace
     # play's file, so the agent can read it again after `/clear`, then the
     # composed packs, then any prompt text, each part separated by a blank line.
     #
-    # @param play [Hash, nil] from {#play}
+    # @param plays [Hash, Array<Hash>, nil] one play or a list from {#play}; each gets its own
+    #   line, in order, as one block
     # @param prompt [String, nil] `--prompt` text
     # @param packs [String, nil] text from {Workspace::InstructionComposer#compose_start}
     # @return [String, nil] nil when there is no play, no packs and no prompt
-    def play_prompt(play, prompt, packs: nil)
-      parts = [("Read \"#{play["path"]}\" and follow it." if play), packs&.strip, prompt.to_s.strip.empty? ? nil : prompt]
+    def play_prompt(plays, prompt, packs: nil)
+      lines = list_of(plays).map { |play| "Read \"#{play["path"]}\" and follow it." }
+      parts = [(lines.join("\n") if lines.any?), packs&.strip, prompt.to_s.strip.empty? ? nil : prompt]
       parts = parts.reject { |part| part.to_s.empty? }
       parts.empty? ? nil : parts.join("\n\n")
     end
@@ -218,11 +220,15 @@ module Workspace
     # The pane binding recorded for a delivered play, so the SessionStart hook
     # points the agent back at the play after `/clear`. See {Workspace::PaneBindings}.
     #
-    # @param play [Hash] from {#play}
+    # @param plays [Hash, Array<Hash>] one play or a list from {#play}, at least one
     # @param packs [Array<String>] names of the packs sent with it, which the hook repeats too
-    # @return [Hash{String=>Object}] `kind`, `id` (the play ref), `instructions` (its path), and `packs` when any
-    def play_binding(play, packs: [])
-      binding = {"kind" => "play", "id" => play["ref"], "instructions" => play["path"]}
+    # @return [Hash{String=>Object}] `kind`, `id` and `instructions` (the first play's ref and path),
+    #   `plays` (every play as `{"id", "instructions"}`), and `packs` when any
+    def play_binding(plays, packs: [])
+      list = list_of(plays)
+      first = list.first
+      binding = {"kind" => "play", "id" => first["ref"], "instructions" => first["path"],
+                 "plays" => list.map { |play| {"id" => play["ref"], "instructions" => play["path"]} }}
       packs.any? ? binding.merge("packs" => packs) : binding
     end
 
@@ -274,7 +280,34 @@ module Workspace
       stores(cwd: expand(cwd)).reject { |store| store.scope == "builtin" || (from && store.scope != from) }
     end
 
+    # The play names of repeated `--play` values, each of which may be a comma-separated list:
+    # whitespace stripped, empty items dropped, repeats removed with the first kept.
+    #
+    # @param values [Array<String>] each `--play` value as given
+    # @return [Array<String>] play refs in the order first seen
+    # @raise [Workspace::UsageError] when a value yields no play name
+    def self.split_plays(values)
+      names = Array(values).flat_map { |value| value.to_s.split(",") }.map(&:strip).reject(&:empty?).uniq
+      raise UsageError, "--play needs at least one play name" if names.empty? && Array(values).any?
+      names
+    end
+
+    # Most plays one send can carry, the most a pane binding lists.
+    MAX_PLAYS = 20
+
+    # @param plays [Array<String>] play names after {.split_plays}
+    # @raise [Workspace::UsageError] when there are more than {MAX_PLAYS}
+    def self.check_play_count!(plays)
+      return if plays.length <= MAX_PLAYS
+      raise UsageError, "--play takes at most #{MAX_PLAYS} plays, not #{plays.length}."
+    end
+
     private
+
+    # One play or a list of them, as a list.
+    def list_of(plays)
+      plays.is_a?(Hash) ? [plays] : Array(plays)
+    end
 
     # A tmuxinator `root:` is often written `~/...`, which git -C won't expand.
     def expand(cwd)

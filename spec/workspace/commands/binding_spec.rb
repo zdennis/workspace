@@ -53,6 +53,20 @@ RSpec.describe Workspace::Commands::Binding do
       expect(command.clear(pane: "%5")["packs"]).to eq([])
     end
 
+    it "always reports plays from show and clear: the stored list, or the single play of a hand-set binding" do
+      listed = [{"id" => "play/a", "instructions" => "/a.md"}, {"id" => "play/b", "instructions" => "/b.md"}]
+      command.set(workspace: "app", pane: "%5", kind: "play", id: "play/a", instructions: "/a.md", plays: listed)
+      expect(command.show(pane: "%5")["plays"]).to eq(listed)
+
+      File.write(File.join(dir, "bindings.json"), JSON.generate(
+        "%5" => {"kind" => "play", "id" => "play/a", "instructions" => "/a.md", "session" => "app"},
+        "%6" => {"kind" => "run", "id" => "wr_1", "session" => "app"}
+      ))
+      expect(command.show(pane: "%5")["plays"]).to eq([{"id" => "play/a", "instructions" => "/a.md"}])
+      expect(command.show(pane: "%6")["plays"]).to eq([])
+      expect(command.clear(pane: "%5")["plays"]).to eq([{"id" => "play/a", "instructions" => "/a.md"}])
+    end
+
     it "prints no Packs line for a binding with none" do
       command.set(workspace: "app", pane: "%5", kind: "run", id: "wr_1")
       output.reopen(+"")

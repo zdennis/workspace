@@ -36,6 +36,15 @@ This pane is following play play/kickoff in api.
 Instructions: /Users/me/.config/workspace/library/global/play/kickoff.md. Read it again and keep following it if it is no longer in your context.
 ```
 
+With several plays (`--play a,b`), `id` and `instructions` are the first play's, and `plays` lists every play as `{"id", "instructions"}` in the order sent (at most 20, each value one line of up to 200 characters). A play binding made by `start` or `launch` always has `plays`; a binding set by hand may leave it out, and then names just the play in `id`. The reminder names them all:
+
+```text
+This pane is following plays play/kickoff, play/review in api.
+Instructions: /Users/me/.config/workspace/library/global/play/kickoff.md.
+Instructions: /Users/me/.config/workspace/library/global/play/review.md.
+Read them again and keep following them if they are no longer in your context.
+```
+
 The binding replaces any earlier binding of that pane, and stays until `binding clear --pane %ID` or a new binding; clear it when you give the pane other work, or the agent is pointed back at the play after its next `/clear`. Only a play that was delivered binds its pane. A pane that can't be bound, such as one whose play path is longer than 200 characters, gets a warning on stderr; the play was still sent.
 
 ## Packs
@@ -64,7 +73,7 @@ A binding only counts in the tmux session it was made in: a pane id from another
  "warnings":[],"summary":{"bound":1}}
 ```
 
-`outcome` is `bound`, `shown` or `cleared`. `show` adds `stale` (true or false) to `binding`; `set` and `clear` don't. Every `binding` object has `packs`, an array of pack names, `[]` for a binding with none or one made before packs existed. `show` and `clear` on a pane with no binding fail with the `not_bound` code; a bad kind, id or attempt is a `usage` error. `set` fails with `no_session`, `wrong_session` or `no_such_pane` like the other commands that take a pane.
+`outcome` is `bound`, `shown` or `cleared`. `show` adds `stale` (true or false) to `binding`; `set` and `clear` don't. Every `binding` object has `packs`, an array of pack names, `[]` for a binding with none or one made before packs existed. `show` and `clear` also always report `plays`, the `{"id", "instructions"}` list: a binding set by hand or made before `plays` existed reads as its single play, and a binding with no instructions as `[]`. `show` and `clear` on a pane with no binding fail with the `not_bound` code; a bad kind, id or attempt is a `usage` error. `set` fails with `no_session`, `wrong_session` or `no_such_pane` like the other commands that take a pane.
 
 ## Examples
 

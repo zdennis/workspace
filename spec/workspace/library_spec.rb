@@ -220,11 +220,45 @@ RSpec.describe Workspace::Library do
       expect(library.play_prompt(nil, "  ")).to be_nil
     end
 
+    it "sends one line per play, in order, as one block before the packs and the prompt" do
+      plays = [{"path" => "/lib/play/a.md"}, {"path" => "/lib/play/b.md"}]
+
+      expect(library.play_prompt(plays, nil)).to eq("Read \"/lib/play/a.md\" and follow it.\nRead \"/lib/play/b.md\" and follow it.")
+      expect(library.play_prompt(plays, "Go.", packs: "## Pack\n")).to eq("Read \"/lib/play/a.md\" and follow it.\nRead \"/lib/play/b.md\" and follow it.\n\n## Pack\n\nGo.")
+      expect(library.play_prompt([], nil)).to be_nil
+    end
+
+    it "binds several plays with the first as id and instructions" do
+      plays = [{"ref" => "play/a", "path" => "/lib/play/a.md"}, {"ref" => "play/b", "path" => "/lib/play/b.md"}]
+
+      expect(library.play_binding(plays)).to eq("kind" => "play", "id" => "play/a", "instructions" => "/lib/play/a.md",
+        "plays" => [{"id" => "play/a", "instructions" => "/lib/play/a.md"}, {"id" => "play/b", "instructions" => "/lib/play/b.md"}])
+    end
+
+    describe ".split_plays" do
+      it "splits commas and repeats, strips whitespace, drops empty items and repeats, keeping first-seen order" do
+        expect(described_class.split_plays(["a, b", " c ,,", "b", "a,d", ""])).to eq(%w[a b c d])
+        expect(described_class.split_plays(nil)).to eq([])
+      end
+
+      it "refuses a value that names no play" do
+        ["", ",", " , "].each do |value|
+          expect { described_class.split_plays([value]) }.to raise_error(Workspace::UsageError, "--play needs at least one play name")
+        end
+      end
+
+      it "refuses more plays than a binding can list" do
+        expect { described_class.check_play_count!(Array.new(21) { |i| "p#{i}" }) }.to raise_error(Workspace::UsageError, /at most 20 plays, not 21/)
+        expect { described_class.check_play_count!(Array.new(20) { |i| "p#{i}" }) }.not_to raise_error
+      end
+    end
+
     it "binds the pane a play was sent to by the play ref, with its path as the instructions" do
       play = {"ref" => "play/kickoff", "scope" => "global", "path" => "/lib/play/kickoff.md", "sha256" => "abc"}
 
-      expect(library.play_binding(play)).to eq("kind" => "play", "id" => "play/kickoff", "instructions" => "/lib/play/kickoff.md")
-      expect(library.play_binding(play, packs: %w[notes])).to eq("kind" => "play", "id" => "play/kickoff", "instructions" => "/lib/play/kickoff.md", "packs" => %w[notes])
+      listed = [{"id" => "play/kickoff", "instructions" => "/lib/play/kickoff.md"}]
+      expect(library.play_binding(play)).to eq("kind" => "play", "id" => "play/kickoff", "instructions" => "/lib/play/kickoff.md", "plays" => listed)
+      expect(library.play_binding(play, packs: %w[notes])).to eq("kind" => "play", "id" => "play/kickoff", "instructions" => "/lib/play/kickoff.md", "plays" => listed, "packs" => %w[notes])
       expect(library.packs_binding(%w[notes handoff])).to eq("kind" => "play", "id" => "play/notes", "packs" => %w[notes handoff], "keep_existing" => true)
     end
   end

@@ -323,7 +323,7 @@ RSpec.describe Workspace::Commands::SpineStart do
       expect(doc).to include("outcome" => "launched", "pane" => "%40", "owner" => "%40", "status" => "in_progress", "previous" => "not_started", "play" => "play/research")
       expect(stage_file.value("owner")).to eq("%40")
       expect(steps.last).to eq([:bind, "%40", {"kind" => "play", "id" => "play/research", "instructions" => "/builtin/research.md",
-                                               "packs" => ["spine"], "focus" => "spine stage verify"}])
+                                               "plays" => [{"id" => "play/research", "instructions" => "/builtin/research.md"}], "packs" => ["spine"], "focus" => "spine stage verify"}])
     end
 
     it "reports a launch that failed, with how to set the stage back" do

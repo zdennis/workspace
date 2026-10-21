@@ -38,7 +38,7 @@ module Workspace
         "ui_open" => 3,
         "pane_bindings" => 3,
         "library" => 5,
-        "library_play" => 2,
+        "library_play" => 3,
         "library_copy" => 4,
         "library_installed" => 1,
         "instructions" => 1,
